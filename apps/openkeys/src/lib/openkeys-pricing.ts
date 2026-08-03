@@ -12,6 +12,7 @@ import {
   OFFICIAL_ONE_TO_ONE_CONTRACT,
   OFFICIAL_ONE_TO_ONE_MULT_BP,
   officialOpenKeysBinding,
+  ensureOpenKeysPricingReleaseProvisioningV2,
   OpenKeysPolicyError as OpenKeysPricingError,
   type EngineClient,
   type OpenKeysPricingAuthority,
@@ -67,8 +68,16 @@ type OpenKeysPricingEngine = Pick<
   | "getActiveAccountPolicy"
   | "getActivePricingCatalog"
   | "getActiveProviderSwitches"
+  | "getFundingNormalizationPlanV2"
+  | "getPricingReleaseAssignmentExtensionV2"
+  | "getPricingReleasePolicyV2"
+  | "getPricingReleaseProvisioningContextV2"
+  | "getPricingReleaseV2"
   | "issueKey"
+  | "applyFundingNormalizationV2"
   | "prepareAccountPolicy"
+  | "preparePricingReleaseAssignmentExtensionV2"
+  | "preparePricingReleasePolicyV2"
 >;
 
 /** Read-only authority check: this application never invents or overwrites global switches. */
@@ -148,12 +157,13 @@ export async function activateOfficialOpenKeysPolicy(
   return policy;
 }
 
-/** Policy ACK precedes exact face-value funding, and funding precedes the usable secret. */
+/** Exact face-value funding and every applicable pricing ACK precede the usable secret. */
 export async function provisionOfficialOpenKeysCredential(
   engine: OpenKeysPricingEngine,
   input: {
     accountId: string;
-    authority: OpenKeysPricingAuthority;
+    authority: OpenKeysPricingAuthority | null;
+    releaseRequired: boolean;
     faceValueNano: bigint;
     creditReference: string;
     keyLabel: string;
@@ -163,8 +173,14 @@ export async function provisionOfficialOpenKeysCredential(
   if (input.faceValueNano <= 0n) {
     throw new OpenKeysPricingError("invalid_face_value", "OpenKeys face value must be positive");
   }
-  await activateOfficialOpenKeysPolicy(engine, input.accountId, input.authority);
+  if (input.authority !== null) {
+    await activateOfficialOpenKeysPolicy(engine, input.accountId, input.authority);
+  }
   await engine.creditAccount(input.accountId, input.faceValueNano, input.creditReference);
   await input.onCredited?.();
+  await ensureOpenKeysPricingReleaseProvisioningV2(engine, {
+    accountId: input.accountId,
+    releaseRequired: input.releaseRequired,
+  });
   return engine.issueKey(input.accountId, { label: input.keyLabel });
 }

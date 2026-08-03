@@ -148,7 +148,10 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
   const engine = getEngineClient();
   // Read and validate the already-reviewed product authority before creating a batch or account.
   // OpenKeys never mutates global catalogs/switches and cannot issue while they are absent/drifted.
-  const pricingAuthority = await resolveOpenKeysPricingAuthority(engine);
+  const releaseContext = await engine.getPricingReleaseProvisioningContextV2();
+  const pricingAuthority = releaseContext === null
+    ? await resolveOpenKeysPricingAuthority(engine)
+    : null;
 
   const [batch] = await db
     .insert(openkeysBatches)
@@ -189,11 +192,13 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
         status: "account_created", engineAccountId: account.account, updatedAt: new Date(),
       }).where(eq(openkeysIssuanceJobs.id, job.id));
 
-      // Exact policy prepare/activation/readback ACK happens before this helper credits the exact
-      // face value, and the usable secret is issued only after both durable steps succeed.
+      // Pre-cutover policy ACK remains policy-before-credit. Post-cutover the helper credits the
+      // exact face value, normalizes funding and completes release-v2 policy/extension readback;
+      // the usable secret is issued last in both paths.
       const key = await provisionOfficialOpenKeysCredential(engine, {
         accountId: account.account,
         authority: pricingAuthority,
+        releaseRequired: releaseContext !== null,
         faceValueNano: input.faceValueNano,
         creditReference: `openkeys:${batch.id}:${index}`,
         keyLabel: input.apiType === "anthropic"

@@ -42,7 +42,11 @@ import {
   type Database,
   type PricingReleaseActivationControlV2,
 } from "@claude-api/db";
-import { EngineClient } from "@claude-api/engine-client";
+import {
+  EngineClient,
+  ensureServicePricingReleaseProvisioningV2,
+  PricingReleaseAccountProvisioningV2Error,
+} from "@claude-api/engine-client";
 import type { Environment } from "./config.js";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
 
@@ -51,7 +55,8 @@ export class AdminServiceAccountInventoryError extends Error {
     public readonly code:
       | "engine_account_missing"
       | "engine_inventory_unstable"
-      | "account_owned_by_openkeys",
+      | "account_owned_by_openkeys"
+      | "pricing_release_not_ready",
     message: string,
   ) {
     super(message);
@@ -277,6 +282,32 @@ export class AdminService {
         "account_owned_by_openkeys",
         `engine account ${input.engine_account_id} belongs to OpenKeys`,
       );
+    }
+
+    const currentInventory = await readServiceAccountInventoryV2(this.database);
+    const current = currentInventory.accounts.find((account) => account.service_id === serviceId);
+    const exactReplay = current !== undefined
+      && current.engine_account_id === input.engine_account_id
+      && current.purpose === input.purpose
+      && current.responsible === input.responsible
+      && current.status === engineAccount.status;
+    if (!exactReplay) {
+      try {
+        await ensureServicePricingReleaseProvisioningV2(this.engine, {
+          accountId: input.engine_account_id,
+          serviceId,
+          purpose: input.purpose,
+          responsible: input.responsible,
+        });
+      } catch (error) {
+        if (error instanceof PricingReleaseAccountProvisioningV2Error) {
+          throw new AdminServiceAccountInventoryError(
+            "pricing_release_not_ready",
+            "service account pricing release provisioning is not durably ready",
+          );
+        }
+        throw error;
+      }
     }
 
     return upsertServiceAccountInventoryV2(this.database, {

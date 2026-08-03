@@ -871,6 +871,116 @@ export const pricingReleaseHeadV2Schema = z.object({
 export type PricingReleaseHeadV2 = z.infer<typeof pricingReleaseHeadV2Schema>;
 
 export const pricingReleaseActivationKindV2Schema = z.enum(["cutover", "recovery"]);
+
+export const pricingReleaseProvisioningReleaseV2Schema = z.object({
+  generation: pricingVersionSchema,
+  release_kind: pricingReleaseKindV2Schema,
+  schema_version: z.literal(PRICING_RELEASE_SCHEMA_VERSION_V2),
+  capability_generation: pricingVersionSchema,
+  capability_digest: pricingReleaseV2Schema.shape.capability_digest,
+  main_catalog_generation: pricingVersionSchema,
+  main_catalog_digest: pricingReleaseV2Schema.shape.main_catalog_digest,
+  openkeys_catalog_generation: pricingVersionSchema,
+  openkeys_catalog_digest: pricingReleaseV2Schema.shape.openkeys_catalog_digest,
+  switch_generation: pricingVersionSchema,
+  switch_digest: pricingReleaseV2Schema.shape.switch_digest,
+  inventory_digest: canonicalSha256V2Schema,
+  funding_manifest_digest: canonicalSha256V2Schema,
+  minimum_runtime_schema_version: pricingVersionSchema,
+  content_digest: canonicalSha256V2Schema,
+}).strict();
+export type PricingReleaseProvisioningReleaseV2 =
+  z.infer<typeof pricingReleaseProvisioningReleaseV2Schema>;
+
+export const pricingReleaseProvisioningActivationV2Schema = z.object({
+  activation_id: nonNegativeIntegerSchema.refine((value) => BigInt(value) > 0n, "activation_id must be positive"),
+  activation_kind: pricingReleaseActivationKindV2Schema,
+  evidence_digest: canonicalSha256V2Schema,
+  activated_ts: z.number().int().safe().positive(),
+}).strict();
+export type PricingReleaseProvisioningActivationV2 =
+  z.infer<typeof pricingReleaseProvisioningActivationV2Schema>;
+
+export const pricingReleaseProvisioningRecoveryV2Schema = z.object({
+  release: pricingReleaseProvisioningReleaseV2Schema,
+  recovery_link: pricingReleaseRecoveryLinkV2Schema,
+}).strict();
+export type PricingReleaseProvisioningRecoveryV2 =
+  z.infer<typeof pricingReleaseProvisioningRecoveryV2Schema>;
+
+export const pricingReleaseProvisioningContextV2Schema = z.object({
+  head: pricingReleaseHeadV2Schema,
+  activation: pricingReleaseProvisioningActivationV2Schema,
+  active_release: pricingReleaseProvisioningReleaseV2Schema,
+  paired_recovery: pricingReleaseProvisioningRecoveryV2Schema.nullable(),
+}).strict().superRefine((context, refinement) => {
+  const active = context.active_release;
+  if (context.head.active_generation !== active.generation
+      || context.head.active_digest !== active.content_digest) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "active release must match the exact provisioning head",
+    });
+  }
+  const expectedKind = context.activation.activation_kind === "cutover" ? "target" : "recovery";
+  if (active.release_kind !== expectedKind) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "active release kind must match the activation kind",
+    });
+  }
+  if (context.activation.activation_kind === "recovery") {
+    if (context.paired_recovery !== null) {
+      refinement.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "an active recovery cannot carry a further confirmed recovery pair",
+      });
+    }
+    return;
+  }
+  const paired = context.paired_recovery;
+  if (paired === null) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "an active target requires the evidence-selected recovery pair",
+    });
+    return;
+  }
+  const link = paired.recovery_link;
+  const sameRuntimeLineage = paired.release.schema_version === active.schema_version
+    && paired.release.capability_generation === active.capability_generation
+    && paired.release.capability_digest === active.capability_digest
+    && paired.release.main_catalog_generation === active.main_catalog_generation
+    && paired.release.main_catalog_digest === active.main_catalog_digest
+    && paired.release.openkeys_catalog_generation === active.openkeys_catalog_generation
+    && paired.release.openkeys_catalog_digest === active.openkeys_catalog_digest
+    && paired.release.switch_generation === active.switch_generation
+    && paired.release.switch_digest === active.switch_digest
+    && paired.release.inventory_digest === active.inventory_digest
+    && paired.release.funding_manifest_digest === active.funding_manifest_digest
+    && paired.release.minimum_runtime_schema_version === active.minimum_runtime_schema_version;
+  if (paired.release.release_kind !== "recovery"
+      || paired.release.generation <= active.generation
+      || !sameRuntimeLineage
+      || link.target_generation !== active.generation
+      || link.target_digest !== active.content_digest
+      || link.recovery_generation !== paired.release.generation
+      || link.recovery_digest !== paired.release.content_digest) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "paired recovery must match the exact active target lineage",
+    });
+  }
+});
+export type PricingReleaseProvisioningContextV2 =
+  z.infer<typeof pricingReleaseProvisioningContextV2Schema>;
+
+export const pricingReleaseProvisioningContextEnvelopeV2Schema = z.object({
+  context: pricingReleaseProvisioningContextV2Schema.nullable(),
+}).strict();
+export type PricingReleaseProvisioningContextEnvelopeV2 =
+  z.infer<typeof pricingReleaseProvisioningContextEnvelopeV2Schema>;
+
 export const pricingReleaseHeadExpectationV2Schema = z.union([
   z.literal("absent"),
   z.object({ exact: pricingReleaseHeadV2Schema }).strict(),

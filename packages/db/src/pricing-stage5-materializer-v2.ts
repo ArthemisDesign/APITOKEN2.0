@@ -25,7 +25,11 @@ import {
   type ServiceAccountInventoryEntryV2,
   type ServiceAccountInventoryV2,
 } from "@claude-api/contracts";
-import type { EngineClient } from "@claude-api/engine-client";
+import {
+  canonicalPricingReleaseV2Json,
+  pricingReleaseV2Digest,
+  type EngineClient,
+} from "@claude-api/engine-client";
 
 export const STAGE5_V2_CATALOG_GENERATION = 3;
 export const STAGE5_V2_SWITCH_GENERATION = 3;
@@ -185,29 +189,12 @@ function compareUtf8(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
 
-function canonicalValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalValue);
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .filter(([, child]) => child !== undefined)
-        .sort(([left], [right]) => compareUtf8(left, right))
-        .map(([key, child]) => [key, canonicalValue(child)]),
-    );
-  }
-  return value;
-}
-
 export function stage5V2CanonicalJson(value: unknown): string {
-  return JSON.stringify(canonicalValue(value));
+  return canonicalPricingReleaseV2Json(value);
 }
 
 export function stage5V2Digest(label: string, value: unknown): string {
-  const hex = createHash("sha256")
-    .update(`pricing-stage5-v2:${label}\n`, "utf8")
-    .update(stage5V2CanonicalJson(value), "utf8")
-    .digest("hex");
-  return `sha256:v2:${hex}`;
+  return pricingReleaseV2Digest(label, value);
 }
 
 function legacyStage5Digest(label: string, value: unknown): string {

@@ -24,6 +24,7 @@ import {
   pricingReleaseHeadV2Schema,
   pricingReleaseInventoryPageV2Schema,
   pricingReleasePolicyV2Schema,
+  pricingReleaseProvisioningContextEnvelopeV2Schema,
   pricingReleaseRecoveryLinkV2Schema,
   pricingReleaseV2Schema,
   providerSwitchSpecSchema,
@@ -51,6 +52,7 @@ import {
   type PricingReleaseHeadV2,
   type PricingReleaseInventoryPageV2,
   type PricingReleasePolicyV2,
+  type PricingReleaseProvisioningContextV2,
   type PricingReleaseRecoveryLinkV2,
   type PricingReleaseV2,
   type ProviderSwitchSpec,
@@ -70,6 +72,19 @@ export {
   stage7OpenKeysDigest,
   type OpenKeysPricingAuthority,
 } from "./openkeys-policy.js";
+
+export {
+  buildOpenKeysPricingReleasePolicyV2,
+  buildPricingReleaseAssignmentExtensionV2,
+  buildServicePricingReleasePolicyV2,
+  canonicalPricingReleaseV2Json,
+  ensureOpenKeysPricingReleaseProvisioningV2,
+  ensureServicePricingReleaseProvisioningV2,
+  PricingReleaseAccountProvisioningV2Error,
+  pricingReleaseV2Digest,
+  type PricingReleaseAccountProvisioningResultV2,
+  type PricingReleaseProvisioningTransportV2,
+} from "./release-provisioning.js";
 
 const JSONbig = JSONbigFactory({ storeAsString: true, useNativeBigInt: false });
 
@@ -767,6 +782,15 @@ export class EngineClient {
       payload,
       response,
     ).head;
+  }
+
+  async getPricingReleaseProvisioningContextV2(): Promise<PricingReleaseProvisioningContextV2 | null> {
+    const { response, payload } = await this.request("/admin/pricing/v2/provisioning-context");
+    return this.parsePricingResponse(
+      pricingReleaseProvisioningContextEnvelopeV2Schema,
+      payload,
+      response,
+    ).context;
   }
 
   async activatePricingReleaseV2(

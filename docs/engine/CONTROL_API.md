@@ -668,13 +668,19 @@ Apply берёт тот же account funding lock, что reserve/settlement/top
 lots и initial head. Legacy in-flight блокирует только свой account; writer, ожидавший lock,
 перечитывает новый head и dual-write'ит уже в funding v2. Глобального drain нет.
 
-Assignment-extension typed TS consumer и commerce provisioning writer подключены только после
-зелёного exact producer SHA. `packages/contracts` валидирует strict active/recovery pair,
-`packages/engine-client` выполняет typed prepare/GET, а
-`packages/db/src/pricing-provisioning-v2.ts` при ненулевом head завершает account-local funding,
-policy prepare/readback и extension prepare/readback до выдачи usable key. `apps/api` повторяет
-проверку после remote issue; если head или authority изменились, ключ отключается до возврата raw
-secret. При `head=null` consumer ничего не материализует, поэтому его deploy не запускает cutover.
+Assignment-extension typed TS consumers подключены только после зелёного exact producer SHA.
+`packages/contracts` strict-валидирует nullable provisioning context и exact active/recovery pair;
+`packages/engine-client` является единственным typed transport и владельцем canonical Stage 5 v2
+policy/assignment digest builder. При ненулевом context commerce, OpenKeys и service writers
+завершают нужную account-local цепочку, exact policy/extension prepare+GET readback и свежую
+финальную context-проверку до выдачи usable key или объявления service account доступным.
+OpenKeys сначала кредитует номинал, затем normalizes funding и сохраняет глобальную 1:1 policy;
+service policy rule-free, `meter_only`, без funding/catalog/switch pins и с обязательными
+purpose/responsible. Активный target получает только evidence-selected recovery member, активный
+recovery — один member. `apps/api` дополнительно повторяет commerce key-проверку после remote issue;
+если head или authority изменились, ключ отключается до возврата raw secret. При `context=null`
+consumer сохраняет pre-cutover путь и ничего release-v2 не materialize'ит, поэтому deploy сам не
+запускает cutover.
 Stage 8 evidence уже поддерживает zero-drain audit counts, а activation producer выполняет один
 CAS. Strict contracts/client/durable worker consumer подключены producer-first: request хранится до
 сети, complete ACK сохраняется до `confirmed`, timeout повторяет только exact body. Consumer не

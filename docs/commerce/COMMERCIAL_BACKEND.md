@@ -111,7 +111,8 @@ conditionally policy-before-key: when a managed Global B2C or B2B source policy 
 creates the binding, immutable effective version and durable job before a usable key, keeps the
 engine account pending, and activates it only after the exact ACK. Accounts with no managed policy
 authority retain the legacy path until Stage 5 creates that authority. OpenKeys follows its separate
-Stage 7 cutover.
+Stage 7 cutover for existing inventory and uses account-local release extensions for every account
+created after the global cutover.
 
 Key issuance checks exact desired/applied version and digest both before and after the remote issue.
 If policy authority appears or changes in that race window, commerce disables the just-issued engine
@@ -179,10 +180,16 @@ version/digest, update requires the current pair, and an exact replay returns `u
 operator supplies only stable service identity plus `purpose`/`responsible`; the API performs two
 matching exhaustive engine pricing-inventory scans and copies the current engine status. It rejects
 missing accounts, commerce mappings, OpenKeys handles, duplicate engine ownership and stale CAS,
-then writes the row and audit evidence in one `SERIALIZABLE` commerce transaction. The mutation does
-not create an engine account, policy, release or activation. Stage 5 still proves that the aggregate
+then, if the global provisioning context is non-null, durably prepares/reads back the rule-free
+`meter_only` service policy and exact context-selected assignment extension before writing the row
+and audit evidence in one `SERIALIZABLE` commerce transaction. A fresh final context must still be
+covered; rejected ACK or readback drift fails closed. The mutation does not create an engine
+account, release or activation and cannot move the head. Stage 5 still proves that the aggregate
 commerce/OpenKeys/service inventories cover engine inventory exactly once, so an unregistered or
 misclassified account remains a typed blocker rather than being inferred from its name.
+An exact replay of an already registered service skips a second extension write. Changing
+purpose/responsible or ownership under an immutable active base/extension fails closed and must be
+carried by a later reviewed release generation; the API never rewrites live assignment history.
 
 Strict mutation body (unknown fields are rejected):
 

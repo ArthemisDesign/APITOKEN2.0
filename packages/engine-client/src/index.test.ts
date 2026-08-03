@@ -3,6 +3,7 @@ import type {
   PricingReleaseAssignmentExtensionV2,
   PricingReleaseActivationRequestV2,
   PricingReleasePolicyV2,
+  PricingReleaseProvisioningContextV2,
   PricingReleaseRecoveryLinkV2,
   PricingReleaseV2,
 } from "@claude-api/contracts";
@@ -881,6 +882,90 @@ describe("EngineClient", () => {
       fetch: async () => Response.json({ release: { ...release, generation: 12 } }),
     });
     await expect(forgedReadClient.getPricingReleaseV2(10)).rejects.toThrow("different pricing release");
+  });
+
+  it("reads one strict nullable provisioning context and rejects forged lineage", async () => {
+    const digest = (seed: string): string => `sha256:v2:${seed.repeat(64)}`;
+    const legacyDigest = (seed: string): string => `sha256:v1:${seed.repeat(64)}`;
+    const target = {
+      generation: 10,
+      release_kind: "target" as const,
+      schema_version: 2 as const,
+      capability_generation: 3,
+      capability_digest: legacyDigest("a"),
+      main_catalog_generation: 3,
+      main_catalog_digest: legacyDigest("b"),
+      openkeys_catalog_generation: 3,
+      openkeys_catalog_digest: legacyDigest("c"),
+      switch_generation: 3,
+      switch_digest: legacyDigest("d"),
+      inventory_digest: digest("e"),
+      funding_manifest_digest: digest("f"),
+      minimum_runtime_schema_version: 2,
+      content_digest: digest("1"),
+    };
+    const recovery = {
+      ...target,
+      generation: 11,
+      release_kind: "recovery" as const,
+      content_digest: digest("2"),
+    };
+    const context: PricingReleaseProvisioningContextV2 = {
+      head: {
+        active_generation: target.generation,
+        active_digest: target.content_digest,
+        head_version: 1,
+        updated_ts: 1_000,
+      },
+      activation: {
+        activation_id: "1",
+        activation_kind: "cutover",
+        evidence_digest: digest("3"),
+        activated_ts: 1_000,
+      },
+      active_release: target,
+      paired_recovery: {
+        release: recovery,
+        recovery_link: {
+          target_generation: target.generation,
+          target_digest: target.content_digest,
+          recovery_generation: recovery.generation,
+          recovery_digest: recovery.content_digest,
+          link_digest: digest("4"),
+        },
+      },
+    };
+    const paths: string[] = [];
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async (input) => {
+        paths.push(String(input));
+        return Response.json({ context });
+      },
+    });
+    await expect(client.getPricingReleaseProvisioningContextV2()).resolves.toEqual(context);
+    expect(paths).toEqual(["http://engine.test/admin/pricing/v2/provisioning-context"]);
+
+    const preCutover = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => Response.json({ context: null }),
+    });
+    await expect(preCutover.getPricingReleaseProvisioningContextV2()).resolves.toBeNull();
+
+    const forged = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => Response.json({
+        context: {
+          ...context,
+          head: { ...context.head, active_digest: digest("9") },
+        },
+      }),
+    });
+    await expect(forged.getPricingReleaseProvisioningContextV2())
+      .rejects.toThrow("malformed pricing response");
   });
 
   it("validates the exact pricing release activation request, receipt, and rejection", async () => {

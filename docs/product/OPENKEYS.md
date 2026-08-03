@@ -72,6 +72,18 @@ release переводит все существующие и новые OpenKey
 multiplier только до Stage 9. После global cutover live reserve любого OpenKeys использует
 canonical 1:1; legacy contract нельзя выбрать для новой партии и нельзя переносить в target release.
 
+Issuance использует `GET /admin/pricing/v2/provisioning-context` как линейную границу cutover. Пока
+context равен `null`, сохраняется прежний catalog/switch policy-before-credit путь. После cutover
+аккаунт сначала получает ровно face value без usable secret, затем writer account-local normalizes
+funding, готовит canonical release-v2 OpenKeys policy с одной global rule
+`discount_bps=0/payable_multiplier_bp=10000`, записывает exact active/recovery assignment extension,
+читает его обратно и повторно читает свежий context. Только после совпавшего readback выпускается
+`sk-pool` secret. Активный target всегда использует evidence-selected recovery из context; активный
+recovery получает один member. Любой rejected ACK, funding blocker, readback mismatch или head drift
+оставляет secret невыпущенным, а существующая issuance compensation отключает незавершённый engine
+account. Поэтому OpenKeys не зависит от commerce activation tables и не требует остановки batch
+issuance во время global CAS.
+
 Stage 7 target materialization запускается только явной командой с exact Stage 5 plan/release
 digest. Сначала обязателен `dry_run`, затем idempotent `apply`. Команда включает disabled accounts,
 готовит canonical 1:1 bindings и не меняет OpenKeys rows, balances, key status или history. Она не

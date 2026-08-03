@@ -1,8 +1,13 @@
 import type {
   OpenKeysPricingInventoryAccountV2,
   PricingReleaseInventoryAccountV2,
+  PricingReleaseProvisioningContextV2,
   ServiceAccountInventoryEntryV2,
 } from "@claude-api/contracts";
+import {
+  buildOpenKeysPricingReleasePolicyV2,
+  buildServicePricingReleasePolicyV2,
+} from "@claude-api/engine-client";
 import { describe, expect, it } from "vitest";
 import {
   buildStage5ServiceInventoryV2,
@@ -194,6 +199,60 @@ describe("pricing Stage 5 v2 planner", () => {
         purpose: "internal metered automation",
         responsible: "platform-team",
       });
+  });
+
+  it("shares the exact Stage 5 policy identity with post-cutover external-owner writers", () => {
+    const plan = buildStage5V2Plan(completePlanInput());
+    const mainCatalog = plan.catalogs.find((catalog) => catalog.product_id === "main")!;
+    const openkeysCatalog = plan.catalogs.find((catalog) => catalog.product_id === "openkeys")!;
+    const release = {
+      generation: plan.target_generation,
+      release_kind: "target" as const,
+      schema_version: 2 as const,
+      capability_generation: plan.capability.generation,
+      capability_digest: plan.capability.content_digest,
+      main_catalog_generation: mainCatalog.generation,
+      main_catalog_digest: mainCatalog.content_digest,
+      openkeys_catalog_generation: openkeysCatalog.generation,
+      openkeys_catalog_digest: openkeysCatalog.content_digest,
+      switch_generation: plan.switches.generation,
+      switch_digest: plan.switches.content_digest,
+      inventory_digest: stage5V2Digest("test-inventory", []),
+      funding_manifest_digest: stage5V2Digest("test-funding", []),
+      minimum_runtime_schema_version: 2,
+      content_digest: stage5V2Digest("test-release", []),
+    };
+    const context: PricingReleaseProvisioningContextV2 = {
+      head: {
+        active_generation: release.generation,
+        active_digest: release.content_digest,
+        head_version: 1,
+        updated_ts: 1,
+      },
+      activation: {
+        activation_id: "1",
+        activation_kind: "cutover",
+        evidence_digest: stage5V2Digest("test-evidence", []),
+        activated_ts: 1,
+      },
+      active_release: release,
+      paired_recovery: {
+        release: { ...release, generation: plan.recovery_generation, release_kind: "recovery" },
+        recovery_link: {
+          target_generation: release.generation,
+          target_digest: release.content_digest,
+          recovery_generation: plan.recovery_generation,
+          recovery_digest: release.content_digest,
+          link_digest: stage5V2Digest("test-link", []),
+        },
+      },
+    };
+    expect(buildOpenKeysPricingReleasePolicyV2(context)).toEqual(
+      plan.policies.find((policy) => policy.policy_id === "release-v2:openkeys:global"),
+    );
+    expect(buildServicePricingReleasePolicyV2(context, "internal-worker")).toEqual(
+      plan.policies.find((policy) => policy.policy_id === "release-v2:service:internal-worker"),
+    );
   });
 
   it("treats moving money as Stage 6 state while blocking ownership and scalar ambiguity", () => {

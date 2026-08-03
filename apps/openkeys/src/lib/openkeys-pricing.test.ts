@@ -11,6 +11,7 @@ import {
   type AccountPolicyBinding,
   type AccountPolicySpec,
   type PricingCatalogSpec,
+  type PricingReleasePolicyV2,
   type ProviderSwitchSpec,
 } from "@claude-api/contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -301,11 +302,16 @@ describe("OpenKeys official 1:1 pricing", () => {
       getActiveAccountPolicy,
       creditAccount,
       issueKey,
+      getPricingReleaseProvisioningContextV2: vi.fn(async () => {
+        trace.push("read-release-context");
+        return null;
+      }),
     } as unknown as PricingEngine;
 
     await expect(provisionOfficialOpenKeysCredential(engine, {
       accountId: "acct_openkeys_new",
       authority: authority(),
+      releaseRequired: false,
       faceValueNano: 50_000_000_000n,
       creditReference: "openkeys:batch:0",
       keyLabel: "openkeys current",
@@ -319,6 +325,7 @@ describe("OpenKeys official 1:1 pricing", () => {
       "readback-policy",
       "credit",
       "credit-journal",
+      "read-release-context",
       "issue-secret",
     ]);
     expect(creditAccount).toHaveBeenCalledWith(
@@ -342,16 +349,139 @@ describe("OpenKeys official 1:1 pricing", () => {
       getActiveAccountPolicy: vi.fn(),
       creditAccount,
       issueKey,
+      getPricingReleaseProvisioningContextV2: vi.fn(async () => null),
     } as unknown as PricingEngine;
 
     await expect(provisionOfficialOpenKeysCredential(engine, {
       accountId: "acct_openkeys_rejected",
       authority: authority(),
+      releaseRequired: false,
       faceValueNano: 1_000_000_000n,
       creditReference: "openkeys:batch:1",
       keyLabel: "openkeys rejected",
     })).rejects.toMatchObject({ code: "policy_ack_rejected" });
     expect(creditAccount).not.toHaveBeenCalled();
+    expect(issueKey).not.toHaveBeenCalled();
+  });
+
+  it("credits safely but never issues a secret when post-cutover extension ACK is rejected", async () => {
+    const digest = (seed: string): string => `sha256:v2:${seed.repeat(64)}`;
+    const target = {
+      generation: 10,
+      release_kind: "target" as const,
+      schema_version: 2 as const,
+      capability_generation: 3,
+      capability_digest: digest("a"),
+      main_catalog_generation: 3,
+      main_catalog_digest: digest("b"),
+      openkeys_catalog_generation: 3,
+      openkeys_catalog_digest: digest("c"),
+      switch_generation: 3,
+      switch_digest: digest("d"),
+      inventory_digest: digest("e"),
+      funding_manifest_digest: digest("f"),
+      minimum_runtime_schema_version: 2,
+      content_digest: digest("1"),
+    };
+    const recovery = {
+      ...target,
+      generation: 11,
+      release_kind: "recovery" as const,
+      content_digest: digest("2"),
+    };
+    const context = {
+      head: {
+        active_generation: 10,
+        active_digest: target.content_digest,
+        head_version: 1,
+        updated_ts: 1,
+      },
+      activation: {
+        activation_id: "1",
+        activation_kind: "cutover" as const,
+        evidence_digest: digest("3"),
+        activated_ts: 1,
+      },
+      active_release: target,
+      paired_recovery: {
+        release: recovery,
+        recovery_link: {
+          target_generation: 10,
+          target_digest: target.content_digest,
+          recovery_generation: 11,
+          recovery_digest: recovery.content_digest,
+          link_digest: digest("4"),
+        },
+      },
+    };
+    const fullRelease = {
+      ...target,
+      policy_manifest_digest: digest("5"),
+      assignment_manifest_digest: digest("6"),
+      assignments: [],
+    };
+    const normalized = {
+      account_id: "acct_openkeys_post_cutover",
+      account_status: "active" as const,
+      status: "normalized" as const,
+      source: "stored_generation" as const,
+      source_state_digest: digest("7"),
+      normalization_digest: digest("8"),
+      funding_generation: 7,
+      funding_head_version: 1,
+      balance_nano: "1000000000",
+      reserved_nano: "0",
+      spent_nano: "0",
+      lots: [{
+        lot_id: "fundv2_openkeys",
+        source_type: "paid" as const,
+        source_ref: "openkeys:test",
+        balance_nano: "1000000000",
+        reserved_nano: "0",
+        spent_nano: "0",
+        version: 1,
+        status: "active" as const,
+      }],
+      blockers: [],
+    };
+    let preparedPolicy: PricingReleasePolicyV2 | null = null;
+    const creditAccount = vi.fn(async () => ({
+      account: "acct_openkeys_post_cutover",
+      balance_nano: "1000000000",
+      balance: "$1.000000000",
+      reference: "openkeys:test",
+    }));
+    const issueKey = vi.fn();
+    const engine = {
+      creditAccount,
+      issueKey,
+      getPricingReleaseProvisioningContextV2: vi.fn(async () => context),
+      getPricingReleaseV2: vi.fn(async () => fullRelease),
+      getFundingNormalizationPlanV2: vi.fn(async () => normalized),
+      applyFundingNormalizationV2: vi.fn(),
+      preparePricingReleasePolicyV2: vi.fn(async (policy: PricingReleasePolicyV2) => {
+        preparedPolicy = policy;
+        return { result: "stored" as const, identity: {} } as never;
+      }),
+      getPricingReleasePolicyV2: vi.fn(async () => preparedPolicy),
+      preparePricingReleaseAssignmentExtensionV2: vi.fn(async () => ({
+        result: "rejected" as const,
+        code: "invalid" as const,
+        rejection: { invalid: { reason: "test rejection" } },
+        identity: {},
+      } as never)),
+      getPricingReleaseAssignmentExtensionV2: vi.fn(),
+    } as unknown as PricingEngine;
+
+    await expect(provisionOfficialOpenKeysCredential(engine, {
+      accountId: "acct_openkeys_post_cutover",
+      authority: null,
+      releaseRequired: true,
+      faceValueNano: 1_000_000_000n,
+      creditReference: "openkeys:test",
+      keyLabel: "openkeys post-cutover",
+    })).rejects.toMatchObject({ code: "assignment_conflict" });
+    expect(creditAccount).toHaveBeenCalledOnce();
     expect(issueKey).not.toHaveBeenCalled();
   });
 });

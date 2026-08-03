@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES } from "@claude-api/contracts";
 import { getEngineClient } from "@/lib/engine";
 import { BatchIssuanceError, MAX_BATCH_QUANTITY, issueBatch, listBatches } from "@/lib/keys";
 import { formatUsd, usdStringToNano } from "@/lib/money";
@@ -38,13 +39,19 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
   const batches = await listBatches(admin, { limit, offset, q });
   try {
-    const authority = await resolveOpenKeysPricingAuthority(getEngineClient());
+    const engine = getEngineClient();
+    const context = await engine.getPricingReleaseProvisioningContextV2();
+    const supportedModels = context === null
+      ? (await resolveOpenKeysPricingAuthority(engine)).catalog.entries
+        .map((entry) => entry.canonical_model_id)
+      : MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES
+        .map((entry) => entry.canonical_model_id);
     return NextResponse.json({
       admin,
       ...batches,
       issuanceAuthority: {
         ready: true,
-        supportedModels: authority.catalog.entries.map((entry) => entry.canonical_model_id),
+        supportedModels,
       },
     });
   } catch {

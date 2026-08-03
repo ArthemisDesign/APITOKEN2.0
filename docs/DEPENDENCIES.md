@@ -20,7 +20,7 @@
 | Производитель | Контракт / канал | Потребители | Документ контракта |
 |---|---|---|---|
 | `crates/server` (`src/http.rs`, `src/admin.rs`) | HTTP `/admin/*` под `x-api-key: CLAUDE_API_CONTROL_KEY`; роуты только в режимах Combined/Anthropic | `packages/engine-client` — единственный клиент; прямые обращения к `/admin/*` вне него запрещены | `docs/engine/CONTROL_API.md` |
-| `packages/engine-client` | TS-клиент `EngineClient`, zod-валидация из `@claude-api/contracts`, деньги — `json-bigint` строками; pricing v2 cursor/prepare/readback и canonical pure OpenKeys policy builder | `apps/api`, `apps/worker`, `apps/openkeys`; `packages/db` Stage 5 materializer, Stage 8 collector и pre-delivery activation authority (env `ENGINE_BASE_URL` + `ENGINE_CONTROL_KEY` только у runtime-потребителей) | `docs/engine/CONTROL_API.md`, `docs/commerce/MULTI_DISCOUNT_STAGE5.md`, `docs/commerce/MULTI_DISCOUNT_STAGE7.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md` |
+| `packages/engine-client` | TS-клиент `EngineClient`, strict zod-валидация из `@claude-api/contracts`, деньги — `json-bigint` строками; pricing v2 provisioning-context/cursor/prepare/readback и единый canonical Stage 5 policy/assignment digest builder | `apps/api`, `apps/worker`, `apps/openkeys`; `packages/db` Stage 5 materializer, Stage 8 collector и pre-delivery activation authority (env `ENGINE_BASE_URL` + `ENGINE_CONTROL_KEY` только у runtime-потребителей) | `docs/engine/CONTROL_API.md`, `docs/commerce/MULTI_DISCOUNT_STAGE5.md`, `docs/commerce/MULTI_DISCOUNT_STAGE7.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md`, `docs/product/OPENKEYS.md` |
 | `claude-api db stage8-evidence` (`crates/registry`, `crates/server`) | protected schema-v2 JSON artifact with signed-i64 nanoUSD and canonical Rust `sha256:v2` evidence digest; exact target/recovery, full engine inventory/funding/shadow/runtime floor | `packages/db` Stage 8 consumer reads the explicit file path, verifies shape/digest/age and combines it with commerce/service plus two exhaustive OpenKeys scans; connected only after GREEN producer SHA | `docs/ops/DEPLOYMENT.md`, `docs/commerce/MULTI-DISCOUNT.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md` |
 | `crates/server` operator-роуты | read-only `/overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health` (→ 8790), `/codex-subs` (→ 8792), `/gemini-subs` (→ 8794) через Caddy `admin.apitoken.sale`, ключ подставляет прокси (`ADMIN_CONTROL_KEY`); Claude `/capacity`, `/overview` supply и Prometheus используют одну exact turn+quota authority, не pool prior/EMA | `apps/admin` (без engine-client и без своих секретов); `/metrics` также скрейпит Prometheus напрямую по loopback, минуя Caddy (`observability/prometheus/prometheus.yml`) | `docs/product/ADMIN_PANEL.md`, `docs/engine/CONTROL_API.md` |
 
@@ -34,7 +34,7 @@ nullable head, account-local funding normalization plan/apply и append-only ass
 `GET /admin/pricing/v2/provisioning-context` одним snapshot публикует exact head/audit/evidence,
 active release lineage и только evidence-selected recovery; до cutover возвращает `null`, а при
 расхождении authority fail closed. Это producer для независимого provisioning OpenKeys/service и
-замены commerce-local pair discovery после отдельного consumer GREEN. Единственный activation producer
+не требует доступа этих контекстов к commerce-local activation tables. Единственный activation producer
 принимает fresh combined evidence, повторно проверяет engine inventory/funding/runtime owner epochs
 и атомарно пишет audit + singleton head; cutover/recovery не обновляют accounts или money rows.
 Funding apply сериализуется с money writers и не требует global drain. После зелёного
@@ -47,11 +47,13 @@ account-local POST, full-coverage parent confirmation, одинаковое targ
 digest и доступен через DB package entrypoint только будущему защищённому production control-plane;
 CLI не является разрешением на ручной SSH. Наличие transport-методов или runner без явно staged
 job не запускает backfill, не создаёт Stage 8 evidence и не активирует release.
-После зелёного assignment-extension producer SHA отдельный consumer использует только эту цепочку:
-strict body/readback schema в `packages/contracts` → typed prepare/GET в
-`packages/engine-client` → `packages/db/src/pricing-provisioning-v2.ts` → `apps/api` key issuance.
-При ненулевом head writer завершает funding/policy/active+recovery extension и exact readback до
-usable key; postflight drift компенсируется disable выпущенного ключа. При null head путь dormant.
+После зелёного assignment-extension и provisioning-context producer SHA consumers используют только
+цепочку strict `packages/contracts` → typed/canonical `packages/engine-client`. Commerce key issuance
+идёт дальше через `packages/db/src/pricing-provisioning-v2.ts`; OpenKeys issuance и service-account
+admin CAS используют общий external-owner builder напрямую. При ненулевом context balance writers
+завершают funding/policy/active+recovery extension, service writer — rule-free `meter_only`
+policy/extension, и все требуют exact readback плюс свежий context до usable результата. При null
+context release-v2 path dormant.
 Activation подключён только через цепочку strict `packages/contracts` → единственный transport
 `packages/engine-client` → `packages/db/src/pricing-release-activation-jobs.ts` → `apps/worker`.
 DB consumer строит request из persisted passed evidence и engine release digests, хранит body до
@@ -84,7 +86,7 @@ snapshot и fail-closed stage'ит только explicit cutover/recovery пос
 |---|---|---|---|
 | `packages/contracts` | zod-схемы engine/pricing/auth/checkout-контрактов, canonical models и catalog pins; target pricing — global B2C/provider/model rules, B2B, OpenKeys 1:1, service `meter_only`, pricing releases | `apps/api`, `apps/worker`, `apps/openkeys`, `packages/db`, `packages/engine-client`. НЕ импортируют: `apps/web`, `apps/sales-*`, `apps/admin` | `docs/commerce/MULTI-DISCOUNT.md` |
 | `apps/api` (публичный API) | HTTPS `backend.apitoken.sale/v1/*`, cookie-сессия | `apps/web` (`src/lib/api.ts`, `NEXT_PUBLIC_BACKEND_URL`) | `docs/commerce/COMMERCIAL_BACKEND.md` |
-| `apps/api` (админ API) | `/v1/admin/*` через Caddy-rewrite `admin.apitoken.sale/admin/*`, заголовок `x-admin-key`; включает per-service CAS producer `/service-account-inventory/*`, который сверяет полный engine inventory через typed `packages/engine-client`; тот же канал и ключ на `content-studio.apitoken.sale/v1/*` | `apps/admin`; `packages/db` Stage 5 v2 читает durable `service_account_inventory_v2` в одном commerce snapshot; `apps/content-studio` (`/v1/admin/content/*`) | `docs/product/ADMIN_PANEL.md`, `docs/commerce/MULTI_DISCOUNT_STAGE5.md` |
+| `apps/api` (админ API) | `/v1/admin/*` через Caddy-rewrite `admin.apitoken.sale/admin/*`, заголовок `x-admin-key`; per-service CAS `/service-account-inventory/*` сверяет полный engine inventory и после cutover завершает exact `meter_only` release-v2 policy/extension до durable registration; тот же канал и ключ на `content-studio.apitoken.sale/v1/*` | `apps/admin`; `packages/db` Stage 5 v2 читает durable `service_account_inventory_v2` в одном commerce snapshot; engine Control API — через typed `packages/engine-client`; `apps/content-studio` (`/v1/admin/content/*`) | `docs/product/ADMIN_PANEL.md`, `docs/commerce/MULTI_DISCOUNT_STAGE5.md`, `docs/engine/CONTROL_API.md` |
 | `apps/openkeys` (админ API) | `/api/internal/admin/*` через Caddy `admin.apitoken.sale/openkeys-admin/*`, заголовок `X-OpenKeys-Control-Key` | `apps/admin` | `docs/product/OPENKEYS.md` |
 | `apps/openkeys` (pricing inventory producer) | loopback/internal GET `/api/internal/pricing/v2/inventory`, bounded cursor + full `sha256:v2` manifest под `X-OpenKeys-Control-Key`; без secrets/live money | `packages/db` Stage 5/Stage 8 consumers и activation first-delivery preflight исчерпывают cursor дважды и требуют один неизменный full-manifest digest; подключены только после GREEN producer SHA | `docs/product/OPENKEYS.md`, `docs/commerce/MULTI_DISCOUNT_STAGE5.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md`, `docs/ops/DEPLOYMENT.md` |
 | `apps/sales-api` (публичный + админ API) | `partners.apitoken.sale/v1/*`; `/v1/admin` через Caddy `admin.apitoken.sale/partner-admin/*`, заголовок `x-sales-admin-key` | `apps/sales-web`; `apps/admin` | `docs/sales/SALES_PORTAL.md` |

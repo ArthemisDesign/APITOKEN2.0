@@ -23,7 +23,13 @@ Mutation делает два совпадающих полных engine scans, �
 OpenKeys ownership и пишет monotonic per-service version/content digest по exact CAS. Простое
 отсутствие account в commerce/OpenKeys не превращает его в service автоматически: metadata должны
 быть явно зарегистрированы, а Stage 5 проверяет весь complement. GET этого admin endpoint возвращает
-canonical aggregate inventory digest; mutation не создаёт policy/release и не меняет live traffic.
+canonical aggregate inventory digest. До cutover (`provisioning-context=null`) mutation не создаёт
+release-v2 artifacts. После cutover она до записи inventory готовит rule-free service policy с
+`billing_mode=meter_only`, без product/catalog/switch pins, и exact active/recovery assignment
+extension с purpose/responsible; prepare ACK, GET readback и свежий context обязаны совпасть.
+Mutation не создаёт engine account, release или activation и не двигает global head.
+Exact replay существующей service identity остаётся `unchanged`; смена metadata уже immutable
+active assignment требует следующей release generation и не переписывается на месте.
 
 Ручная assignment matrix больше не является authority. Все владельцы должны следовать из
 authoritative inventory. Один account в двух inventories, неизвестный account, active account без
