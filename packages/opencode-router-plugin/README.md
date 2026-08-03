@@ -5,7 +5,13 @@
 добавляет GPT Fast entries с исходным model ID.
 
 Установить plugin можно копированием `apitoken-router.js` в
-`~/.config/opencode/plugin/apitoken-router.js`. Provider `apitoken` в `opencode.jsonc` должен
+`~/.config/opencode/plugin/apitoken-router.js` (или в auto-load каталог
+`~/.config/opencode/plugins/`). Клиентам сайт предлагает one-click installer
+`https://raw.githubusercontent.com/apitokensale-admin/apitoken.sale/main/opencode/install.sh`,
+который скачивает опубликованную копию этого файла из репозитория
+`apitokensale-admin/apitoken.sale` (`opencode/apitoken-router.js`) и добавляет provider
+`apitoken` в `~/.config/opencode/opencode.jsonc`. При изменении плагина опубликованную
+копию нужно обновить в том же релизе. Provider `apitoken` в `opencode.jsonc` должен
 использовать `@ai-sdk/openai-compatible`, `https://router.apitoken.sale/v1` и literal
 `sk-pool-…` key либо стандартный OpenCode placeholder `{env:NAME}`.
 

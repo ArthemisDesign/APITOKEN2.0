@@ -260,9 +260,48 @@ function openCodeConfig(provider: IntegrationProvider, model: IntegrationModel):
   }, null, 2);
 }
 
+export const OPENCODE_INSTALLER_URL =
+  "https://raw.githubusercontent.com/apitokensale-admin/apitoken.sale/main/opencode/install.sh";
+
 function openCodeGuide(provider: IntegrationProvider, model: IntegrationModel, os: IntegrationOs, language: IntegrationLanguage): IntegrationGuide {
   const path = configPath(os, "~/.config/opencode/opencode.json", "%USERPROFILE%\\.config\\opencode\\opencode.json");
   const modelRef = `apitoken/${model.id}`;
+  // The router plugin registers the live catalog under namespaced IDs, so the
+  // one-click setup addresses models as apitoken/<provider>/<model>.
+  const namespace = provider === "gemini" ? "google" : provider;
+  if (!isWindows(os)) {
+    return {
+      title: `OpenCode · ${model.name}`,
+      summary: localize(language, "Open-source terminal coding agent, connected in one command.", "Open-source coding agent в терминале, подключается одной командой."),
+      endpoint: PROVIDER_ENDPOINTS[provider],
+      steps: [
+        {
+          title: localize(language, "Run the one-click installer", "Запустите установку одной командой"),
+          text: localize(language,
+            "The script installs the router plugin (live model catalog, authoritative limits and pricing) and merges the apitoken provider into ~/.config/opencode/opencode.jsonc. It asks for your sk-pool-… key, stores it only in that file with 0600 permissions, backs up an existing config and leaves every other OpenCode setting untouched.",
+            "Скрипт установит router plugin (живой каталог моделей, точные лимиты и цены) и добавит провайдера apitoken в ~/.config/opencode/opencode.jsonc. Он спросит ваш sk-pool-… ключ, сохранит его только в этом файле с правами 0600, сделает резервную копию существующего конфига и не тронет остальные настройки OpenCode."),
+          code: `curl -fsSL ${OPENCODE_INSTALLER_URL} | bash`,
+          codeLabel: localize(language, "Terminal", "Терминал"),
+        },
+        {
+          title: localize(language, "Verify with a real request", "Проверьте реальным запросом"),
+          text: localize(language,
+            "Restart opencode first — configuration loads at startup. This one-shot command uses the same provider, tools and streaming client as an interactive session.",
+            "Сначала перезапустите opencode — конфигурация читается при старте. Одноразовая команда использует тот же провайдер, tools и streaming, что и интерактивная сессия."),
+          code: `opencode run --model apitoken/${namespace}/${model.id} "Reply with exactly: connected"`,
+          codeLabel: localize(language, "Verification", "Проверка"),
+        },
+        {
+          title: localize(language, "Manual setup (alternative)", "Ручная установка (альтернатива)"),
+          text: localize(language,
+            `Skip this if step 1 succeeded. Save the configuration as \`${path}\`, then export APITOKEN_API_KEY and start with \`opencode --model ${modelRef}\`.`,
+            `Пропустите, если шаг 1 сработал. Сохраните конфигурацию как \`${path}\`, затем экспортируйте APITOKEN_API_KEY и запустите \`opencode --model ${modelRef}\`.`),
+          code: openCodeConfig(provider, model),
+          codeLabel: path,
+        },
+      ],
+    };
+  }
   const run = `${environmentCommand(os, { APITOKEN_API_KEY: keyPlaceholder })}\n\nopencode --model ${modelRef}`;
   return {
     title: `OpenCode · ${model.name}`,

@@ -54,22 +54,31 @@ API Provider: Anthropic
 Base URL:     ${API_BASE_URL}
 API Key:      sk-pool-…
 Model:        claude-opus-4-8`,
-  opencode: `// opencode.json — provider block
-{
-  "provider": {
-    "apitoken": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "apiToken.sale",
-      "options": {
-        "baseURL": "${OPENAI_BASE_URL}",
-        "apiKey": "{env:APITOKEN_API_KEY}"
-      },
-      "models": {
-        "gpt-5.6-sol": { "name": "GPT-5.6 Sol" }
-      }
-    }
-  }
-}`,
+  opencode: `# one-click setup: installs the router plugin (live model catalog,
+# limits, pricing) and merges the apitoken provider into
+# ~/.config/opencode/opencode.jsonc — asks for your sk-pool-… key,
+# backs up an existing config, touches nothing else
+curl -fsSL https://raw.githubusercontent.com/apitokensale-admin/apitoken.sale/main/opencode/install.sh | bash
+
+# verify (models are namespaced: apitoken/<provider>/<model>)
+opencode run --model apitoken/openai/gpt-5.6-sol "Reply with exactly: connected"
+
+# manual alternative — opencode.json provider block:
+# {
+#   "provider": {
+#     "apitoken": {
+#       "npm": "@ai-sdk/openai-compatible",
+#       "name": "apiToken.sale",
+#       "options": {
+#         "baseURL": "${OPENAI_BASE_URL}",
+#         "apiKey": "{env:APITOKEN_API_KEY}"
+#       },
+#       "models": {
+#         "gpt-5.6-sol": { "name": "GPT-5.6 Sol" }
+#       }
+#     }
+#   }
+# }`,
   continue: `// ~/.continue/config.json
 {
   "models": [{

@@ -5,6 +5,7 @@ import {
   GEMINI_BASE_URL,
   INTEGRATION_MODELS,
   OPENAI_BASE_URL,
+  OPENCODE_INSTALLER_URL,
   ROUTER_BASE_URL,
   ROUTER_OPENAI_BASE_URL,
   TOOL_COMPATIBILITY,
@@ -86,11 +87,17 @@ describe("integration builder guide", () => {
 
   it("emits parseable OpenCode and Pi configs without embedding a secret", () => {
     const openCode = buildIntegrationGuide({ provider: "openai", tool: "opencode", os: "unix", modelId: "gpt-5.6-sol", language: "en" });
-    const openCodeConfig = JSON.parse(openCode.steps[0].code) as { provider: { apitoken: { options: { baseURL: string; apiKey: string }; models: Record<string, unknown> } } };
+    expect(openCode.steps[0].code).toBe(`curl -fsSL ${OPENCODE_INSTALLER_URL} | bash`);
+    expect(openCode.steps[1].code).toContain("apitoken/openai/gpt-5.6-sol");
+    const openCodeConfig = JSON.parse(openCode.steps[2].code) as { provider: { apitoken: { options: { baseURL: string; apiKey: string }; models: Record<string, unknown> } } };
     expect(openCodeConfig.provider.apitoken.options.baseURL).toBe(ROUTER_OPENAI_BASE_URL);
     expect(openCodeConfig.provider.apitoken.options.apiKey).toBe("{env:APITOKEN_API_KEY}");
     expect(openCodeConfig.provider.apitoken.models["gpt-5.6-sol"]).toBeTruthy();
-    expect(openCode.steps[1].code).toContain("export APITOKEN_API_KEY=\"sk-pool-•••\"");
+
+    const openCodeWindows = buildIntegrationGuide({ provider: "openai", tool: "opencode", os: "powershell", modelId: "gpt-5.6-sol", language: "en" });
+    const openCodeWindowsConfig = JSON.parse(openCodeWindows.steps[0].code) as { provider: { apitoken: { options: { apiKey: string } } } };
+    expect(openCodeWindowsConfig.provider.apitoken.options.apiKey).toBe("{env:APITOKEN_API_KEY}");
+    expect(openCodeWindows.steps[1].code).toContain('$env:APITOKEN_API_KEY = "sk-pool-•••"');
 
     const pi = buildIntegrationGuide({ provider: "openai", tool: "pi", os: "unix", modelId: "gpt-5.6-sol", language: "en" });
     const piConfig = JSON.parse(pi.steps[0].code) as { providers: { apitoken: { baseUrl: string; api: string; apiKey: string; models: Array<{ id: string }> } } };
@@ -100,7 +107,8 @@ describe("integration builder guide", () => {
     expect(piConfig.providers.apitoken.models[0].id).toBe("gpt-5.6-sol");
 
     const geminiOpenCode = buildIntegrationGuide({ provider: "gemini", tool: "opencode", os: "unix", modelId: "gemini-3.6-flash", language: "en" });
-    const geminiOpenCodeConfig = JSON.parse(geminiOpenCode.steps[0].code) as { provider: { apitoken: { npm: string; options: { baseURL: string; apiKey: string } } } };
+    expect(geminiOpenCode.steps[1].code).toContain("apitoken/google/gemini-3.6-flash");
+    const geminiOpenCodeConfig = JSON.parse(geminiOpenCode.steps[2].code) as { provider: { apitoken: { npm: string; options: { baseURL: string; apiKey: string } } } };
     expect(geminiOpenCodeConfig.provider.apitoken.npm).toBe("@ai-sdk/google");
     expect(geminiOpenCodeConfig.provider.apitoken.options.baseURL).toBe(`${ROUTER_BASE_URL}/v1beta`);
     expect(geminiOpenCodeConfig.provider.apitoken.options.apiKey).toBe("{env:APITOKEN_API_KEY}");
