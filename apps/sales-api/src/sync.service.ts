@@ -7,11 +7,14 @@ import {
   getSyncCursor,
   recordReferredDeposit,
   recordReferredSpend,
+  recordReferredSpendV2,
   reconcilePendingReferralEvents,
+  reconcilePendingReferralUsageEventsV2,
   resolveReferralCode,
   upsertReferredUser,
   getReferredUserPartner,
   type ReferredSpendAttribution,
+  type ReferredSpendV2Event,
   type SalesDatabase,
   type SyncFeed,
 } from "@claude-api/sales-db";
@@ -48,10 +51,18 @@ const nullableCommissionEligibleSchema = z.literal(true).nullable().optional()
   .transform((value): true | null => value ?? null);
 const nullableSnapshotDigestSchema = z.string().min(1).nullable().optional()
   .transform((value): string | null => value ?? null);
+const nullableNanoSchema = nanoStringSchema.nullable().optional()
+  .transform((value): bigint | null => value ?? null);
+const nullableDigestSchema = z.string().min(1).nullable().optional()
+  .transform((value): string | null => value ?? null);
 
-// Old producer payloads omit all attribution fields and remain the temporary legacy free-first
-// path. Any attributed payload must be the complete B2C track authority; partial or ineligible
-// shapes fail the page before cursor advancement.
+// Фид эмитит три формы usage-строки (expand-only, неизвестные поля игнорируются):
+//   legacy — старый producer без attribution: все поля attribution и v2-lineage null;
+//   v1 (policy_v1) — complete B2C track authority, amountNano === paidFundedNano > 0;
+//   v2 (release_v2) — pricingMode null, eligibility независима от pricing mode, полная release
+//     lineage (official/charged/bonus/other nano, releaseGeneration, releaseDigest) не-null,
+//     amountNano === exact paidFundedNano > 0.
+// Частичная или смешанная форма — ошибка страницы ДО продвижения курсора (fail closed).
 export const usageEventSchema = z.object({
   id: feedIdSchema,
   userId: z.string().uuid(),
@@ -62,31 +73,59 @@ export const usageEventSchema = z.object({
   paidFundedNano: nullablePaidFundedSchema,
   commissionEligible: nullableCommissionEligibleSchema,
   snapshotDigest: nullableSnapshotDigestSchema,
+  officialNano: nullableNanoSchema,
+  chargedNano: nullableNanoSchema,
+  bonusFundedNano: nullableNanoSchema,
+  otherFundedNano: nullableNanoSchema,
+  releaseGeneration: nullableNanoSchema,
+  releaseDigest: nullableDigestSchema,
   occurredAt: z.coerce.date(),
 }).superRefine((row, context) => {
-  const fields = [
+  const attribution = [
     row.providerId,
     row.accountClass,
-    row.pricingMode,
     row.paidFundedNano,
     row.commissionEligible,
     row.snapshotDigest,
   ];
-  if (fields.every((field) => field === null)) return;
-  if (fields.some((field) => field === null)) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "usage attribution must be entirely null or complete",
-    });
+  const lineage = [
+    row.officialNano,
+    row.chargedNano,
+    row.bonusFundedNano,
+    row.otherFundedNano,
+    row.releaseGeneration,
+    row.releaseDigest,
+  ];
+  const attributionComplete = attribution.every((field) => field !== null);
+  const attributionNull = attribution.every((field) => field === null);
+  const lineageComplete = lineage.every((field) => field !== null);
+  const lineageNull = lineage.every((field) => field === null);
+  const fail = (message: string) => context.addIssue({ code: z.ZodIssueCode.custom, message });
+
+  if (attributionNull && lineageNull && row.pricingMode === null) {
+    return; // legacy all-null free-first form
+  }
+  if (!attributionComplete) return fail("usage attribution must be entirely null or complete");
+  if (row.paidFundedNano! <= 0n || row.amountNano !== row.paidFundedNano) {
+    return fail("usage amount must equal positive attributed paid funding");
+  }
+  if (row.pricingMode === "track") {
+    // schema v1: lineage-поля обязаны отсутствовать — иначе это битый v2, а не v1.
+    if (!lineageNull) fail("release-v2 lineage is incompatible with track pricing mode");
     return;
   }
-  if (row.paidFundedNano! <= 0n || row.amountNano !== row.paidFundedNano) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "usage amount must equal positive attributed paid funding",
-    });
+  // schema v2: pricingMode всегда null; lineage обязана быть полной и согласованной.
+  if (!lineageComplete) return fail("release-v2 usage lineage must be entirely null or complete");
+  if (row.paidFundedNano! + row.bonusFundedNano! + row.otherFundedNano! !== row.chargedNano!
+    || row.releaseGeneration! <= 0n) {
+    fail("release-v2 funding buckets must sum to the charged amount");
   }
-});
+}).transform((row) => ({
+  ...row,
+  form: (row.providerId === null ? "legacy"
+    : row.pricingMode === "track" ? "v1"
+    : "v2") as "legacy" | "v1" | "v2",
+}));
 
 export interface FeedPage<T extends { id: bigint }> {
   items: T[];
@@ -128,9 +167,12 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
         await this.syncAttributions();
         await this.syncTopups();
         await this.syncUsageEvents();
-        // Догоняем события, пришедшие раньше атрибуции их юзера (буфер pending_referral_events).
+        // Догоняем события, пришедшие раньше атрибуции их юзера (буферы pending_referral_events
+        // для v1 и pending_referral_usage_events_v2 для release_v2).
         const replayed = await reconcilePendingReferralEvents(this.database);
         if (replayed > 0) this.logger.log(`reconciled ${replayed} buffered referral events`);
+        const replayedV2 = await reconcilePendingReferralUsageEventsV2(this.database);
+        if (replayedV2 > 0) this.logger.log(`reconciled ${replayedV2} buffered release-v2 usage events`);
       } catch (error) {
         this.logger.error(`sync iteration failed: ${message(error)}`);
       }
@@ -223,15 +265,21 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
   }
 
   /**
-   * New rows carry immutable B2C track attribution and use exact paid funding as commission basis.
-   * All-null/omitted attribution is the bounded rolling-compatibility path for old ledger rows,
-   * where amountNano remains the commerce free-first projection.
+   * Маршрутизация по форме строки: schema v2 (release_v2, pricingMode null + полная lineage) —
+   * в recordReferredSpendV2 (basis = exact paidFundedNano; bonus-funded часть НИКОГДА не
+   * комиссионируется); schema v1 (B2C track) и legacy all-null — в recordReferredSpend.
+   * Одно событие обрабатывается ровно одним writer'ом; курсор продвигается только когда вся
+   * страница обработана (at-least-once).
    */
   private async syncUsageEvents(): Promise<void> {
     const after = await getSyncCursor(this.database, "usage_events");
     const page = await this.fetchFeed("usage_events", `usage-events?after_id=${after}&limit=1000`, usageEventSchema);
     if (!page) return;
     for (const row of page.items) {
+      if (row.form === "v2") {
+        await recordReferredSpendV2(this.database, toReferredSpendV2Event(row));
+        continue;
+      }
       if (row.amountNano <= 0n) continue;
       await recordReferredSpend(this.database, {
         commerceEventId: row.id,
@@ -293,6 +341,42 @@ function toReferredSpendAttribution(
     paidFundedNano: row.paidFundedNano,
     commissionEligible: row.commissionEligible,
     snapshotDigest: row.snapshotDigest,
+  };
+}
+
+function toReferredSpendV2Event(row: z.infer<typeof usageEventSchema>): ReferredSpendV2Event {
+  // usageEventSchema уже гарантировал полную и согласованную v2-форму; локальный guard —
+  // защита от будущих правок схемы, чтобы частичный payload никогда не стал комиссией.
+  if (
+    row.form !== "v2"
+    || row.accountClass !== "b2c"
+    || row.commissionEligible !== true
+    || row.paidFundedNano === null
+    || row.paidFundedNano <= 0n
+    || row.officialNano === null
+    || row.chargedNano === null
+    || row.bonusFundedNano === null
+    || row.otherFundedNano === null
+    || row.releaseGeneration === null
+    || row.releaseDigest === null
+    || row.snapshotDigest === null
+    || row.providerId === null
+  ) throw new Error("validated release-v2 usage event became incomplete");
+  return {
+    commerceEventId: row.id,
+    commerceUserId: row.userId,
+    providerId: row.providerId,
+    accountClass: row.accountClass,
+    officialNano: row.officialNano,
+    chargedNano: row.chargedNano,
+    paidFundedNano: row.paidFundedNano,
+    bonusFundedNano: row.bonusFundedNano,
+    otherFundedNano: row.otherFundedNano,
+    commissionEligible: row.commissionEligible,
+    releaseGeneration: row.releaseGeneration,
+    releaseDigest: row.releaseDigest,
+    snapshotDigest: row.snapshotDigest,
+    occurredAt: row.occurredAt,
   };
 }
 

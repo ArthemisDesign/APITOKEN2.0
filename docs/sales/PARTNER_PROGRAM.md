@@ -95,7 +95,8 @@ snapshot, поэтому последующая смена provider/model discou
   (иначе раздавал бы маржу платформы). По умолчанию суб-сейлзу даётся ставка родителя.
 
 Все начисления идемпотентны (по `commerce_event_id` списания) и считаются в одной транзакции со
-вставкой строки `partner_usage_events`.
+вставкой строки `partner_usage_events` (schema v1) или `partner_usage_events_v2` (release-v2,
+basis — exact `paid_funded_nano`).
 
 ## 6. Кошелёк и валюта выплат
 

@@ -211,7 +211,8 @@ async function bufferPendingReferralEvent(
 }
 
 // Собирает цепочку партнёров (прямой реферер → родитель → …) для расчёта комиссии.
-async function loadCommissionChain(
+// Экспортирована для commissions-v2: цепочка и стоп-условия общие для обеих schema.
+export async function loadCommissionChain(
   client: PoolClient,
   directPartnerId: string,
 ): Promise<CommissionChainPartner[]> {
@@ -502,24 +503,43 @@ export interface PartnerEarningsTotals {
 }
 
 export async function getPartnerEarningsTotals(database: SalesDatabase, partnerId: string): Promise<PartnerEarningsTotals> {
+  // Комиссии и спенд агрегируются по ОБЕИМ schema (v1 commission_entries/partner_usage_events и
+  // v2 commission_entries_v2/partner_usage_events_v2): события между ними не пересекаются, поэтому
+  // UNION ALL не даёт двойного счёта. V2-спенд — exact paid_funded_nano (там нет amount_nano).
   const result = await database.pool.query<{
     earned: string; direct: string; override: string; paid: string; pending: string;
     spend_30d: string; earned_30d: string;
   }>(`
+    WITH all_commissions AS (
+      SELECT partner_id, level, amount_nano FROM commission_entries
+      UNION ALL
+      SELECT partner_id, level, amount_nano FROM commission_entries_v2
+    ), all_usage AS (
+      SELECT partner_id, amount_nano, occurred_at FROM partner_usage_events
+      UNION ALL
+      SELECT partner_id, paid_funded_nano, occurred_at FROM partner_usage_events_v2
+    ), all_earned_by_usage AS (
+      SELECT ce.partner_id, ce.amount_nano, pue.occurred_at
+      FROM commission_entries ce
+      JOIN partner_usage_events pue ON pue.id = ce.usage_event_id
+      UNION ALL
+      SELECT ce.partner_id, ce.amount_nano, pue.occurred_at
+      FROM commission_entries_v2 ce
+      JOIN partner_usage_events_v2 pue ON pue.id = ce.usage_event_id
+    )
     SELECT
-      COALESCE((SELECT SUM(amount_nano) FROM commission_entries WHERE partner_id = $1), 0)::text AS earned,
-      COALESCE((SELECT SUM(amount_nano) FROM commission_entries WHERE partner_id = $1 AND level = 0), 0)::text AS direct,
-      COALESCE((SELECT SUM(amount_nano) FROM commission_entries WHERE partner_id = $1 AND level > 0), 0)::text AS override,
+      COALESCE((SELECT SUM(amount_nano) FROM all_commissions WHERE partner_id = $1), 0)::text AS earned,
+      COALESCE((SELECT SUM(amount_nano) FROM all_commissions WHERE partner_id = $1 AND level = 0), 0)::text AS direct,
+      COALESCE((SELECT SUM(amount_nano) FROM all_commissions WHERE partner_id = $1 AND level > 0), 0)::text AS override,
       COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE partner_id = $1 AND status = 'paid'), 0)::text AS paid,
       COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE partner_id = $1 AND status IN ('requested', 'approved')), 0)::text AS pending,
       COALESCE((
-        SELECT SUM(amount_nano) FROM partner_usage_events
+        SELECT SUM(amount_nano) FROM all_usage
         WHERE partner_id = $1 AND occurred_at >= now() - interval '30 days'
       ), 0)::text AS spend_30d,
       COALESCE((
-        SELECT SUM(ce.amount_nano) FROM commission_entries ce
-        JOIN partner_usage_events pue ON pue.id = ce.usage_event_id
-        WHERE ce.partner_id = $1 AND pue.occurred_at >= now() - interval '30 days'
+        SELECT SUM(amount_nano) FROM all_earned_by_usage
+        WHERE partner_id = $1 AND occurred_at >= now() - interval '30 days'
       ), 0)::text AS earned_30d
   `, [partnerId]);
   const row = result.rows[0]!;
@@ -553,16 +573,27 @@ export async function getPartnerDailyEarnings(
     database.pool.query<{ day: string; total: string }>(`
       SELECT to_char(date_trunc('day', occurred_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
              SUM(amount_nano)::text AS total
-      FROM partner_usage_events
+      FROM (
+        SELECT partner_id, amount_nano, occurred_at FROM partner_usage_events
+        UNION ALL
+        SELECT partner_id, paid_funded_nano, occurred_at FROM partner_usage_events_v2
+      ) all_usage
       WHERE partner_id = $1 AND occurred_at >= now() - ($2 * interval '1 day')
       GROUP BY 1
     `, [partnerId, days]),
     database.pool.query<{ day: string; total: string }>(`
-      SELECT to_char(date_trunc('day', pue.occurred_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
-             SUM(ce.amount_nano)::text AS total
-      FROM commission_entries ce
-      JOIN partner_usage_events pue ON pue.id = ce.usage_event_id
-      WHERE ce.partner_id = $1 AND pue.occurred_at >= now() - ($2 * interval '1 day')
+      SELECT to_char(date_trunc('day', occurred_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+             SUM(amount_nano)::text AS total
+      FROM (
+        SELECT ce.partner_id, ce.amount_nano, pue.occurred_at
+        FROM commission_entries ce
+        JOIN partner_usage_events pue ON pue.id = ce.usage_event_id
+        UNION ALL
+        SELECT ce.partner_id, ce.amount_nano, pue.occurred_at
+        FROM commission_entries_v2 ce
+        JOIN partner_usage_events_v2 pue ON pue.id = ce.usage_event_id
+      ) all_earned
+      WHERE partner_id = $1 AND occurred_at >= now() - ($2 * interval '1 day')
       GROUP BY 1
     `, [partnerId, days]),
   ]);
@@ -603,11 +634,25 @@ export async function listPartnerTeam(database: SalesDatabase, partnerId: string
   }>(`
     SELECT p.id, p.email, p.telegram_username, p.display_name, p.status, p.commission_bps,
       (SELECT count(*) FROM referred_users ru WHERE ru.partner_id = p.id)::text AS referred_users,
-      COALESCE((SELECT SUM(ce.amount_nano) FROM commission_entries ce WHERE ce.partner_id = p.id), 0)::text AS their_earned,
       COALESCE((
-        SELECT SUM(ce.amount_nano) FROM commission_entries ce
-        JOIN partner_usage_events pue ON pue.id = ce.usage_event_id
-        WHERE ce.partner_id = $1 AND ce.level > 0 AND pue.partner_id = p.id
+        SELECT SUM(amount_nano) FROM (
+          SELECT partner_id, amount_nano FROM commission_entries
+          UNION ALL
+          SELECT partner_id, amount_nano FROM commission_entries_v2
+        ) ce WHERE ce.partner_id = p.id
+      ), 0)::text AS their_earned,
+      COALESCE((
+        SELECT SUM(amount_nano) FROM (
+          SELECT ce.partner_id, ce.level, ce.amount_nano, pue.partner_id AS source_partner_id
+          FROM commission_entries ce
+          JOIN partner_usage_events pue ON pue.id = ce.usage_event_id
+          UNION ALL
+          SELECT ce.partner_id, ce.level, ce.amount_nano, pue.partner_id
+          FROM commission_entries_v2 ce
+          JOIN partner_usage_events_v2 pue ON pue.id = ce.usage_event_id
+        ) override_entries
+        WHERE override_entries.partner_id = $1 AND override_entries.level > 0
+          AND override_entries.source_partner_id = p.id
       ), 0)::text AS my_override
     FROM partners p
     WHERE p.parent_partner_id = $1

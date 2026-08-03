@@ -127,10 +127,26 @@ export async function listPartnerAnalytics(
       COALESCE((SELECT SUM(rt.amount_nano) FROM referred_topups rt WHERE rt.partner_id = p.id AND rt.paid_at >= now() - interval '30 days'), 0) AS deposits_30d,
       (SELECT count(*) FROM referred_users ru WHERE ru.partner_id = p.id) AS referred_users,
       (SELECT count(DISTINCT rt.commerce_user_id) FROM referred_topups rt WHERE rt.partner_id = p.id) AS converted_users,
-      COALESCE((SELECT SUM(pue.amount_nano) FROM partner_usage_events pue WHERE pue.partner_id = p.id), 0) AS spend_total,
-      COALESCE((SELECT SUM(pue.amount_nano) FROM partner_usage_events pue WHERE pue.partner_id = p.id AND pue.occurred_at >= now() - interval '30 days'), 0) AS spend_30d,
-      COALESCE((SELECT SUM(ce.amount_nano) FROM commission_entries ce WHERE ce.partner_id = p.id), 0) AS earned_total,
-      COALESCE((SELECT SUM(ce.amount_nano) FROM commission_entries ce WHERE ce.partner_id = p.id AND ce.created_at >= now() - interval '30 days'), 0) AS earned_30d,
+      COALESCE((SELECT SUM(amount_nano) FROM (
+        SELECT partner_id, amount_nano FROM partner_usage_events
+        UNION ALL
+        SELECT partner_id, paid_funded_nano FROM partner_usage_events_v2
+      ) pue WHERE pue.partner_id = p.id), 0) AS spend_total,
+      COALESCE((SELECT SUM(amount_nano) FROM (
+        SELECT partner_id, amount_nano, occurred_at FROM partner_usage_events
+        UNION ALL
+        SELECT partner_id, paid_funded_nano, occurred_at FROM partner_usage_events_v2
+      ) pue WHERE pue.partner_id = p.id AND pue.occurred_at >= now() - interval '30 days'), 0) AS spend_30d,
+      COALESCE((SELECT SUM(amount_nano) FROM (
+        SELECT partner_id, amount_nano FROM commission_entries
+        UNION ALL
+        SELECT partner_id, amount_nano FROM commission_entries_v2
+      ) ce WHERE ce.partner_id = p.id), 0) AS earned_total,
+      COALESCE((SELECT SUM(amount_nano) FROM (
+        SELECT partner_id, amount_nano, created_at FROM commission_entries
+        UNION ALL
+        SELECT partner_id, amount_nano, created_at FROM commission_entries_v2
+      ) ce WHERE ce.partner_id = p.id AND ce.created_at >= now() - interval '30 days'), 0) AS earned_30d,
       COALESCE((SELECT SUM(po.amount_nano) FROM payouts po WHERE po.partner_id = p.id AND po.status = 'paid'), 0) AS paid_total,
       COALESCE((SELECT SUM(po.amount_nano) FROM payouts po WHERE po.partner_id = p.id AND po.status IN ('requested','approved','paid')), 0) AS committed_total,
       (SELECT count(*) FROM partners c WHERE c.parent_partner_id = p.id) AS team_size,
@@ -165,7 +181,11 @@ export async function listPartnerAnalytics(
       (SELECT count(*) FROM referred_users ru JOIN partners p ON p.id = ru.partner_id ${filter.clause})::int AS referred,
       (SELECT count(DISTINCT rt.commerce_user_id) FROM referred_topups rt JOIN partners p ON p.id = rt.partner_id ${filter.clause})::int AS converted,
       (
-        COALESCE((SELECT SUM(ce.amount_nano) FROM commission_entries ce JOIN partners p ON p.id = ce.partner_id ${filter.clause}), 0)
+        COALESCE((SELECT SUM(ce.amount_nano) FROM (
+                    SELECT partner_id, amount_nano FROM commission_entries
+                    UNION ALL
+                    SELECT partner_id, amount_nano FROM commission_entries_v2
+                  ) ce JOIN partners p ON p.id = ce.partner_id ${filter.clause}), 0)
         - COALESCE((SELECT SUM(po.amount_nano) FROM payouts po JOIN partners p ON p.id = po.partner_id ${filter.clause}${andActive} po.status IN ('requested','approved','paid')), 0)
       )::text AS unpaid
   `;

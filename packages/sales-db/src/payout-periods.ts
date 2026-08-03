@@ -53,7 +53,8 @@ function periodSummary(p: Period) {
   return { key: p.key, start: p.start.toISOString(), end: p.end.toISOString() };
 }
 
-/** SUM(commission_entries.amount_nano) for a partner over [from, to). Bounds may be null (open). */
+/** SUM комиссий партнёра за [from, to) по ОБЕИМ schema (v1 + v2; события не пересекаются,
+ * двойного счёта нет). Границы могут быть null (открытые). */
 async function sumCommissions(
   database: SalesDatabase,
   partnerId: string,
@@ -65,7 +66,11 @@ async function sumCommissions(
   if (from) { params.push(from); conditions.push(`created_at >= $${params.length}`); }
   if (to) { params.push(to); conditions.push(`created_at < $${params.length}`); }
   const result = await database.pool.query<{ total: string }>(
-    `SELECT COALESCE(SUM(amount_nano), 0)::text AS total FROM commission_entries WHERE ${conditions.join(" AND ")}`,
+    `SELECT COALESCE(SUM(amount_nano), 0)::text AS total FROM (
+       SELECT partner_id, amount_nano, created_at FROM commission_entries
+       UNION ALL
+       SELECT partner_id, amount_nano, created_at FROM commission_entries_v2
+     ) all_commissions WHERE ${conditions.join(" AND ")}`,
     params,
   );
   return BigInt(result.rows[0]?.total ?? "0");
@@ -162,7 +167,11 @@ export async function getPartnerPeriodHistory(
     SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM') AS ym,
            (CASE WHEN extract(day FROM created_at AT TIME ZONE 'UTC') <= 15 THEN 1 ELSE 2 END)::text AS half,
            SUM(amount_nano)::text AS earned
-    FROM commission_entries
+    FROM (
+      SELECT partner_id, amount_nano, created_at FROM commission_entries
+      UNION ALL
+      SELECT partner_id, amount_nano, created_at FROM commission_entries_v2
+    ) all_commissions
     WHERE partner_id = $1
     GROUP BY ym, half
     ORDER BY ym DESC, half DESC
@@ -215,7 +224,11 @@ export async function getDuePayoutList(
     `
     SELECT p.id AS partner_id, p.telegram_username, p.display_name, p.status, p.payout_method, p.payout_details,
       (
-        COALESCE((SELECT SUM(ce.amount_nano) FROM commission_entries ce
+        COALESCE((SELECT SUM(ce.amount_nano) FROM (
+                    SELECT partner_id, amount_nano, created_at FROM commission_entries
+                    UNION ALL
+                    SELECT partner_id, amount_nano, created_at FROM commission_entries_v2
+                  ) ce
                   WHERE ce.partner_id = p.id AND ce.created_at < $1), 0)
         - COALESCE((SELECT SUM(po.amount_nano) FROM payouts po
                     WHERE po.partner_id = p.id AND po.status IN ('requested', 'approved', 'paid')), 0)

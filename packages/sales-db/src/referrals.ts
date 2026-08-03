@@ -74,14 +74,24 @@ export async function listReferredUsers(database: SalesDatabase, partnerId: stri
   }>(`
     SELECT ru.commerce_user_id, ru.attributed_at,
       COALESCE((
-        SELECT SUM(pue.amount_nano) FROM partner_usage_events pue
+        SELECT SUM(amount_nano) FROM (
+          SELECT commerce_user_id, amount_nano FROM partner_usage_events
+          UNION ALL
+          SELECT commerce_user_id, paid_funded_nano FROM partner_usage_events_v2
+        ) pue
         WHERE pue.commerce_user_id = ru.commerce_user_id
       ), 0)::text AS spend_nano,
       COALESCE((
-        SELECT SUM(ce.amount_nano)
-        FROM commission_entries ce
-        JOIN partner_usage_events e ON e.id = ce.usage_event_id
-        WHERE ce.partner_id = $1 AND e.commerce_user_id = ru.commerce_user_id
+        SELECT SUM(amount_nano) FROM (
+          SELECT ce.partner_id, ce.amount_nano, e.commerce_user_id
+          FROM commission_entries ce
+          JOIN partner_usage_events e ON e.id = ce.usage_event_id
+          UNION ALL
+          SELECT ce.partner_id, ce.amount_nano, e.commerce_user_id
+          FROM commission_entries_v2 ce
+          JOIN partner_usage_events_v2 e ON e.id = ce.usage_event_id
+        ) earned
+        WHERE earned.partner_id = $1 AND earned.commerce_user_id = ru.commerce_user_id
       ), 0)::text AS earned_nano,
       COALESCE((
         SELECT SUM(rt.amount_nano) FROM referred_topups rt

@@ -20,8 +20,16 @@ export async function getSalesOverview(database: SalesDatabase): Promise<SalesOv
       (SELECT count(*) FROM partners)::text AS partners,
       (SELECT count(*) FROM partners WHERE status = 'active')::text AS active_partners,
       (SELECT count(*) FROM referred_users)::text AS referred_users,
-      COALESCE((SELECT SUM(amount_nano) FROM partner_usage_events), 0)::text AS total_spend,
-      COALESCE((SELECT SUM(amount_nano) FROM commission_entries), 0)::text AS total_commissions,
+      COALESCE((SELECT SUM(amount_nano) FROM (
+        SELECT amount_nano FROM partner_usage_events
+        UNION ALL
+        SELECT paid_funded_nano FROM partner_usage_events_v2
+      ) all_usage), 0)::text AS total_spend,
+      COALESCE((SELECT SUM(amount_nano) FROM (
+        SELECT amount_nano FROM commission_entries
+        UNION ALL
+        SELECT amount_nano FROM commission_entries_v2
+      ) all_commissions), 0)::text AS total_commissions,
       COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE status IN ('requested', 'approved')), 0)::text AS pending_payouts,
       COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE status = 'paid'), 0)::text AS paid_payouts
   `);
@@ -82,7 +90,11 @@ export async function listPartnersWithAggregates(database: SalesDatabase): Promi
       (SELECT count(*) FROM promo_codes pc WHERE pc.partner_id = p.id)::text AS promo_used,
       (SELECT count(*) FROM referred_users ru WHERE ru.partner_id = p.id)::text AS referred_users,
       (SELECT count(*) FROM partners child WHERE child.parent_partner_id = p.id)::text AS team_size,
-      COALESCE((SELECT SUM(amount_nano) FROM commission_entries ce WHERE ce.partner_id = p.id), 0)::text AS earned,
+      COALESCE((SELECT SUM(amount_nano) FROM (
+        SELECT partner_id, amount_nano FROM commission_entries
+        UNION ALL
+        SELECT partner_id, amount_nano FROM commission_entries_v2
+      ) ce WHERE ce.partner_id = p.id), 0)::text AS earned,
       COALESCE((SELECT SUM(amount_nano) FROM payouts po WHERE po.partner_id = p.id AND po.status = 'paid'), 0)::text AS paid,
       p.created_at
     FROM partners p
@@ -156,7 +168,11 @@ export async function deletePartnerAdmin(database: SalesDatabase, partnerId: str
       SELECT
         (SELECT count(*) FROM referred_users WHERE partner_id = $1)::text AS referred,
         (SELECT count(*) FROM referred_topups WHERE partner_id = $1)::text AS topups,
-        (SELECT count(*) FROM commission_entries WHERE partner_id = $1)::text AS commissions,
+        (SELECT count(*) FROM (
+          SELECT partner_id FROM commission_entries
+          UNION ALL
+          SELECT partner_id FROM commission_entries_v2
+        ) ce WHERE ce.partner_id = $1)::text AS commissions,
         (SELECT count(*) FROM payouts WHERE partner_id = $1)::text AS payouts,
         (SELECT count(*) FROM promo_codes WHERE partner_id = $1)::text AS promos,
         (SELECT count(*) FROM partner_discount_links WHERE partner_id = $1)::text AS links,

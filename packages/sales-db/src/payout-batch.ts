@@ -32,7 +32,11 @@ export async function getPayoutCandidates(database: SalesDatabase, minNano: bigi
     SELECT p.id AS partner_id, p.telegram_username, p.email, p.display_name,
       (p.payout_details->>'address') AS wallet,
       (
-        COALESCE((SELECT SUM(ce.amount_nano) FROM commission_entries ce WHERE ce.partner_id = p.id AND ($1::timestamptz IS NULL OR ce.created_at < $1)), 0)
+        COALESCE((SELECT SUM(ce.amount_nano) FROM (
+                    SELECT partner_id, amount_nano, created_at FROM commission_entries
+                    UNION ALL
+                    SELECT partner_id, amount_nano, created_at FROM commission_entries_v2
+                  ) ce WHERE ce.partner_id = p.id AND ($1::timestamptz IS NULL OR ce.created_at < $1)), 0)
         - COALESCE((SELECT SUM(po.amount_nano) FROM payouts po WHERE po.partner_id = p.id AND po.status IN ('requested','approved','paid')), 0)
       ) AS unpaid
     FROM partners p

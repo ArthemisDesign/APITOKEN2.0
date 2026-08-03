@@ -82,7 +82,11 @@ export async function requestPayout(database: SalesDatabase, input: {
     await client.query("SELECT id FROM partners WHERE id = $1 FOR UPDATE", [input.partnerId]);
     const balance = await client.query<{ available: string }>(`
       SELECT (
-        COALESCE((SELECT SUM(amount_nano) FROM commission_entries WHERE partner_id = $1), 0)
+        COALESCE((SELECT SUM(amount_nano) FROM (
+                    SELECT partner_id, amount_nano FROM commission_entries
+                    UNION ALL
+                    SELECT partner_id, amount_nano FROM commission_entries_v2
+                  ) all_commissions WHERE partner_id = $1), 0)
         - COALESCE((SELECT SUM(amount_nano) FROM payouts WHERE partner_id = $1 AND status IN ('requested', 'approved', 'paid')), 0)
       )::text AS available
     `, [input.partnerId]);

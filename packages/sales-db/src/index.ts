@@ -6,6 +6,7 @@ export * from "./outbox.js";
 export * from "./referrals.js";
 export * from "./discount-links.js";
 export * from "./commissions.js";
+export * from "./commissions-v2.js";
 export * from "./payouts.js";
 export * from "./invites.js";
 export * from "./admin.js";

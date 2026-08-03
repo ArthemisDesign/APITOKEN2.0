@@ -76,9 +76,11 @@ ledger-фида движка; строки моложе 10 с скрыты (ла
   поэтому `nextCursor` движется по watermark всей страницы, включая static/service/unreferred
   хвост, и он не пересканируется бесконечно.
 
-  Producer-first переход: producer уже эмитит обе схемы; sales consumer сначала принимает обе,
-  затем после зелёного producer SHA переключает расчёт на v2 — поле `track` не является target
-  authority.
+  Producer-first переход: producer эмитит обе схемы; sales consumer — dual-consumer
+  (доставлен): каждое событие маршрутизируется по форме строки ровно в один writer
+  (v1 → `recordReferredSpend`, v2 → `recordReferredSpendV2`), читатели агрегируют обе
+  таблицы комиссий. Поле `track` не является target authority; удаление legacy v1-формы —
+  последний контрактный шаг после Stage 9.
 - `GET /v1/internal/sales/topups?after_id&limit` (дефолт 500, макс 1000) — оплаченные
   `payments`; курсор — микросекунды epoch от `paid_at` (не `feed_seq`: оплата наступает позже
   insert, и просроченный `feed_seq` выпал бы из курсора навсегда). Тоже фильтруется по
@@ -114,11 +116,18 @@ ledger-фида движка; строки моложе 10 с скрыты (ла
   скидочной ссылки (победитель получает floor через `POST referral-discount` — либо впервые,
   либо как идемпотентный backfill, если синхронное применение при регистрации упало);
   топапы → `referred_topups` (только история/аналитика, комиссий не создают); usage-события →
-  комиссии (идемпотентны по `commerce_event_id`). Новый attributed payload принимается только в
-  текущей полной B2C schema-v1 форме, а его exact paid basis и immutable поля атомарно сохраняются в
-  `partner_usage_events`; частичный/ineligible payload останавливает страницу до cursor advance.
-  События, пришедшие раньше атрибуции их юзера, буферизуются в `pending_referral_events` вместе с
-  той же authority и догоняются replay без потери полей. Точный повтор идемпотентен, all-null row
+  комиссии (идемпотентны по `commerce_event_id`). Consumer — dual: строка release-v2
+  (`pricingMode=null` + полная lineage) уходит в schema-v2 writer (`recordReferredSpendV2`,
+  `packages/sales-db/src/commissions-v2.ts`), строка policy_v1 track и legacy all-null — в v1
+  writer (`recordReferredSpend`); одно событие обрабатывается ровно одним writer'ом, неполная
+  или смешанная форма останавливает страницу до cursor advance (fail closed, без молчаливого
+  отката на v1). Attributed v1 payload принимается только в текущей полной B2C schema-v1 форме,
+  а его exact paid basis и immutable поля атомарно сохраняются в
+  `partner_usage_events`. События, пришедшие раньше атрибуции их юзера, буферизуются: v1 — в
+  `pending_referral_events`, v2 — в `pending_referral_usage_events_v2` (детерминированный
+  `commerce_ref` вида `usage-v2:<commerce_event_id>`), и догоняются replay без потери полей
+  (`reconcilePendingReferralEvents` + `reconcilePendingReferralUsageEventsV2` на каждом тике).
+  Точный повтор идемпотентен, all-null row
   можно один раз обогатить attribution при rolling retry, а конфликтующий immutable replay
   отклоняется. 404 фида (сторона
   commerce ещё не задеплоена) — не ошибка, повтор на следующем тике; курсор продвигается
@@ -136,14 +145,16 @@ Sales-миграция `0014_usage_attribution_buffer.sql` была достав
 Сопутствующий constraint на `partner_usage_events` запрещает атрибутированную комиссию вне той же
 B2C track authority; application writer и replay теперь соблюдают эту форму.
 
-Target migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` создаёт отдельные
+Target migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` создала отдельные
 `partner_usage_events_v2`, `pending_referral_usage_events_v2` и `commission_entries_v2`. В них нет
 pricing-mode поля: eligibility задаётся referred-B2C authority, `commission_eligible=true` и
 положительным exact `paid_funded_nano`; trigger связывает direct partner, активную parent-chain,
 зафиксированные bps и integer-floor суммы. Usage/commission evidence immutable. Старые строки и
-constraints не переписываются, а новые таблицы остаются пустыми и dormant до отдельного
-dual-consumer checkpoint после зелёных production `deploy/migration` и `deploy/watchdog` на SHA
-миграции. Только затем schema-v2 consumer доставляется до Stage 9.
+constraints не переписываются. Dual-consumer checkpoint доставлен: v2-таблицы больше не dormant —
+schema-v2 writer (`commissions-v2.ts`) пишет их параллельно с v1 writer'ом (маршрутизация по форме
+события), а все читатели сумм (витрина партнёра, периоды/выплаты, аналитика, админка) агрегируют
+ОБЕ schema через UNION ALL — v1 и v2 события не пересекаются, двойного счёта нет. Удаление legacy
+v1-таблиц и v1-формы фида — последний контрактный шаг после Stage 9.
 
 ### Sales → Commerce: промо и регистрация (`apps/sales-api/src/internal.controller.ts`)
 
@@ -200,7 +211,8 @@ OAuth-транзакции (переживает редирект к прова�
 
 Полумесячные периоды (1–15, 16–конец, UTC), лок 7 дней, окно выплат 3 дня, авто-ролловер
 непокрытого, минимум `SALES_MIN_PAYOUT_USD` ($10), выплаты на привязанный BSC-кошелёк.
-Считается из `commission_entries` + `payouts` без отдельной таблицы. Полное описание —
+Считается из обеих таблиц комиссий (`commission_entries` + `commission_entries_v2`, UNION ALL —
+события не пересекаются) + `payouts` без отдельной таблицы. Полное описание —
 `docs/sales/SALES_PAYOUT_PERIODS.md`. Код: `periods.ts` (+тесты) и `payout-periods.ts`. Отправка
 выплат (on-chain) — отдельная предстоящая система.
 
@@ -214,7 +226,10 @@ attribution; bonus-funded/B2B/OpenKeys/service/ineligible строки до ра
 - level N: `amount(level N-1) * Pn.sub_commission_bps / 10000` вверх по цепочке родителей;
 - стоп: нет родителя, сумма 0, уровень > 10 или родитель suspended.
 Записи идемпотентны через уникальный `commerce_event_id`; расчёт в одной транзакции со вставкой
-события. Баланс к выплате = confirmed-комиссии − (выплаченные + активные заявки).
+события. Dual-consumer: v1 события пишутся в `partner_usage_events`/`commission_entries`, v2 — в
+`partner_usage_events_v2`/`commission_entries_v2` (trigger `enforce_commission_entry_v2_source`
+fail-closed отклоняет строку вне активной цепочки); читатели суммируют обе schema через
+UNION ALL. Баланс к выплате = confirmed-комиссии − (выплаченные + активные заявки).
 
 ## Env (apps/sales-api)
 
