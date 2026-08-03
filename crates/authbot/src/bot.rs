@@ -129,22 +129,30 @@ fn product_kb() -> Keyboard {
         vec![("ChatGPT Pro".into(), "noffer:gptpro".into())],
         vec![("Google AI Pro".into(), "noffer:gemini_pro".into())],
         vec![("Google AI Ultra".into(), "noffer:gemini_ultra".into())],
+        vec![("Kimi Andante".into(), "noffer:kimi_andante".into())],
+        vec![("Kimi Moderato".into(), "noffer:kimi_moderato".into())],
+        vec![("Kimi Allegretto".into(), "noffer:kimi_allegretto".into())],
     ]
 }
 
-/// Три несовместимые единицы пополнения: Claude token, ChatGPT CODEX_HOME и зашифрованный
-/// Gemini OAuth profile.
+/// Четыре несовместимые единицы пополнения: Claude token, ChatGPT CODEX_HOME, зашифрованный
+/// Gemini OAuth profile и зашифрованный KIMI (Kimi Code) OAuth profile.
 /// Явный enum не даёт новому продукту тихо провалиться в Claude setup-token ветку.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HandoffKind {
     Claude,
     Codex,
     Gemini,
+    Kimi,
 }
 
 fn handoff_kind(product: &str) -> HandoffKind {
     let p = product.to_lowercase();
-    if p.contains("gemini")
+    // KIMI is matched first: its plan names are generic musical terms, so a later substring rule
+    // must never be able to claim one of them.
+    if p.contains("kimi") || p.contains("moonshot") {
+        HandoffKind::Kimi
+    } else if p.contains("gemini")
         || p.contains("google ai")
         || p.contains("code assist")
         || p.contains("workspace ai")
@@ -168,6 +176,12 @@ fn tier_name(code: &str) -> Option<&'static str> {
         "gemini_standard" => Some("Code Assist Standard"),
         "gemini_enterprise" => Some("Code Assist Enterprise"),
         "gemini_workspace_ultra" => Some("Workspace AI Ultra"),
+        // Kimi Code plan names as published by the provider's own Kimi Code docs. Only the
+        // capability ladder is official; the prices differ between the provider's USD and CNY
+        // pages, which is why a price is entered per offer and never assumed here.
+        "kimi_andante" => Some("Kimi Andante"),
+        "kimi_moderato" => Some("Kimi Moderato"),
+        "kimi_allegretto" => Some("Kimi Allegretto"),
         _ => None,
     }
 }
@@ -184,6 +198,9 @@ fn admin_quick_tier(text: &str) -> Option<&'static str> {
         "📦 Code Assist Standard" | "📦 Code Assist Std" => Some("Code Assist Standard"),
         "📦 Code Assist Enterprise" | "📦 Code Assist Ent" => Some("Code Assist Enterprise"),
         "📦 Workspace AI Ultra" | "📦 Workspace Ultra" => Some("Workspace AI Ultra"),
+        "📦 Kimi Andante" => Some("Kimi Andante"),
+        "📦 Kimi Moderato" => Some("Kimi Moderato"),
+        "📦 Kimi Allegretto" => Some("Kimi Allegretto"),
         _ => None,
     }
 }
@@ -195,6 +212,7 @@ fn admin_home_kb() -> Vec<Vec<&'static str>> {
         vec!["📦 Claude Pro", "📦 Claude 5x", "📦 Claude 20x"],
         vec!["📦 ChatGPT Plus", "📦 ChatGPT Pro"],
         vec!["📦 Google AI Pro", "📦 Google AI Ultra"],
+        vec!["📦 Kimi Andante", "📦 Kimi Moderato", "📦 Kimi Allegretto"],
         vec!["🧺 Batch-покупка"],
         vec!["📋 Активные сделки"],
         vec!["🛠 Панель"],
@@ -455,6 +473,25 @@ const CLAUDE_PROXY_PROMPT: &str = "🔐 <b>Этап 1 из 3 — пришли HT
 Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
 Не регистрируй аккаунт до подтверждения прокси ботом: регистрация и дальнейшая авторизация должны пройти с одного IP.";
 
+const KIMI_OFFER_GUIDE: &str = "🧭 <b>Что нужно будет сделать после принятия</b>\n\
+1. Дождаться выплаты и персонального HTTP-прокси от бота.\n\
+2. Создать <b>новый чистый профиль</b> в антидетект-браузере и подключить к нему этот прокси.\n\
+3. Только через этот профиль самостоятельно зарегистрировать новый аккаунт Kimi и оформить тариф Kimi Code из оффера.\n\
+4. Вернуться в бот, нажать «Аккаунт готов», открыть присланную ссылку в том же профиле и подтвердить показанный код.\n\n\
+Если автоматическая выдача прокси временно недоступна, бот отдельно попросит прокси и продолжит только после его проверки.\n\n\
+⚠️ <b>Не регистрируй и не открывай аккаунт до получения прокси.</b> До завершения не меняй профиль, прокси или устройство. Пароль, cookie, банковские данные и коды из почты бот не просит.";
+
+const KIMI_ACCOUNT_SETUP: &str = "🧩 <b>Этап 2 из 3 — подготовь аккаунт Kimi</b>\n\n\
+1️⃣ Открой антидетект-браузер (например, Dolphin или AdsPower) и создай <b>новый чистый профиль</b>. Не используй обычный браузер, старый профиль или телефон.\n\n\
+2️⃣ В настройках профиля выбери тип прокси <b>HTTP</b> и вставь данные, которые бот прислал выше. Если браузер просит отдельные поля, строка <code>ip:port:user:pass</code> означает: IP — первое поле, порт — второе, логин — третье, пароль — четвёртое. Нажми проверку и продолжай только если прокси работает и IP изменился. Дополнительный VPN не включай.\n\n\
+3️⃣ В этом же профиле открой <code>https://www.kimi.com</code> и самостоятельно зарегистрируй <b>новый</b> аккаунт.\n\n\
+4️⃣ В том же профиле оформи тариф <b>Kimi Code</b>, указанный в оффере, и убедись, что подписка появилась именно на этом аккаунте. Обычная подписка на чат Kimi не подходит — нужен именно Kimi Code.\n\n\
+5️⃣ Не закрывай профиль и не меняй прокси: они понадобятся на следующем этапе. Когда аккаунт и подписка готовы, нажми кнопку <b>«Аккаунт готов — продолжить»</b> ниже.";
+
+const KIMI_PROXY_PROMPT: &str = "🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта Kimi</b>\n\
+Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
+Не регистрируй аккаунт Kimi до подтверждения прокси ботом: регистрация и дальнейшая авторизация должны пройти с одного IP.";
+
 const CODEX_PROXY_PROMPT: &str = "🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта ChatGPT</b>\n\
 Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
 Не регистрируй аккаунт до подтверждения прокси ботом: регистрация и дальнейшая авторизация должны пройти с одного IP.";
@@ -479,6 +516,7 @@ fn seller_offer_guide(product: &str) -> &'static str {
         HandoffKind::Claude => CLAUDE_OFFER_GUIDE,
         HandoffKind::Codex => CODEX_OFFER_GUIDE,
         HandoffKind::Gemini => GEMINI_OFFER_GUIDE,
+        HandoffKind::Kimi => KIMI_OFFER_GUIDE,
     }
 }
 
@@ -487,6 +525,7 @@ fn account_setup_prompt(step: &str) -> &'static str {
         "cx_email" => CODEX_ACCOUNT_SETUP,
         "ho_email" => CLAUDE_ACCOUNT_SETUP,
         "gm_ready" => GEMINI_ACCOUNT_SETUP,
+        "km_ready" => KIMI_ACCOUNT_SETUP,
         _ => "",
     }
 }
@@ -496,6 +535,7 @@ fn proxy_prompt(step: &str) -> &'static str {
     match step {
         "cx_proxy" => CODEX_PROXY_PROMPT,
         "gm_gproxy" => GEMINI_PROXY_PROMPT,
+        "km_proxy" => KIMI_PROXY_PROMPT,
         _ => CLAUDE_PROXY_PROMPT,
     }
 }
@@ -514,6 +554,7 @@ fn accepted_next_step(product: &str, proxy_source: &str) -> &'static str {
         HandoffKind::Claude => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай Claude-аккаунт.</b>",
         HandoffKind::Codex => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай ChatGPT-аккаунт.</b>",
         HandoffKind::Gemini => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай Google-аккаунт.</b>",
+        HandoffKind::Kimi => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай аккаунт Kimi.</b>",
     }
 }
 
@@ -2324,6 +2365,7 @@ fn handoff_steps_for_kind(kind: HandoffKind) -> (&'static str, &'static str) {
         HandoffKind::Claude => ("ho_proxy", "ho_email"),
         HandoffKind::Codex => ("cx_proxy", "cx_email"),
         HandoffKind::Gemini => ("gm_gproxy", "gm_ready"),
+        HandoffKind::Kimi => ("km_proxy", "km_ready"),
     }
 }
 
@@ -4906,7 +4948,9 @@ mod tests {
                 let code = data.strip_prefix("noffer:").expect("product button");
                 let name = tier_name(code).expect("every button has a product name");
                 assert_eq!(name, label, "button label and product name must match");
-                let expected = if label.contains("Gemini")
+                let expected = if label.contains("Kimi") {
+                    HandoffKind::Kimi
+                } else if label.contains("Gemini")
                     || label.contains("Google AI")
                     || label.contains("Code Assist")
                     || label.contains("Workspace AI")
@@ -4986,13 +5030,106 @@ mod tests {
                 (label, tier_name(code).expect("batch product code"))
             })
             .collect::<Vec<_>>();
-        assert_eq!(labels.len(), 7);
+        assert_eq!(labels.len(), 10);
         for (label, product) in labels {
             assert_eq!(label, product);
             assert!(matches!(
                 handoff_kind(product),
-                HandoffKind::Claude | HandoffKind::Codex | HandoffKind::Gemini
+                HandoffKind::Claude | HandoffKind::Codex | HandoffKind::Gemini | HandoffKind::Kimi
             ));
+        }
+    }
+
+    #[test]
+    fn kimi_products_are_a_distinct_handoff_and_never_fall_through_to_claude() {
+        // A new product silently classified as Claude would be handed to the setup-token branch
+        // and burn a paid subscription on the wrong flow.
+        for product in ["Kimi Andante", "Kimi Moderato", "Kimi Allegretto"] {
+            assert_eq!(handoff_kind(product), HandoffKind::Kimi, "{product}");
+        }
+        assert_eq!(handoff_kind("Moonshot Kimi Code"), HandoffKind::Kimi);
+    }
+
+    #[test]
+    fn kimi_plan_words_cannot_be_claimed_by_another_provider_rule() {
+        // The plan names are generic musical terms, so classification must key on the provider
+        // word rather than on the tier word.
+        for bare in ["Andante", "Moderato", "Allegretto", "Allegro", "Vivace"] {
+            assert_ne!(
+                handoff_kind(bare),
+                HandoffKind::Kimi,
+                "{bare} must not be treated as a KIMI product without the provider name"
+            );
+        }
+    }
+
+    #[test]
+    fn kimi_offers_route_to_their_own_wizard_steps_and_texts() {
+        assert_eq!(
+            handoff_steps_for_product("Kimi Moderato"),
+            ("km_proxy", "km_ready")
+        );
+        // Each provider owns distinct steps: a shared step id would let one provider's callback
+        // advance another provider's deal.
+        for other in ["Claude Pro", "ChatGPT Plus", "Google AI Pro"] {
+            assert_ne!(handoff_steps_for_product(other).0, "km_proxy");
+            assert_ne!(handoff_steps_for_product(other).1, "km_ready");
+        }
+        assert_eq!(seller_offer_guide("Kimi Allegretto"), KIMI_OFFER_GUIDE);
+        assert_eq!(account_setup_prompt("km_ready"), KIMI_ACCOUNT_SETUP);
+        assert_eq!(proxy_prompt("km_proxy"), KIMI_PROXY_PROMPT);
+    }
+
+    #[test]
+    fn kimi_seller_texts_demand_the_coding_plan_and_never_ask_for_secrets() {
+        // The consumer Kimi chat subscription does not grant API access, so buying it would cost
+        // a payout and deliver nothing routable.
+        assert!(KIMI_ACCOUNT_SETUP.contains("Kimi Code"));
+        assert!(
+            KIMI_ACCOUNT_SETUP.contains("чат") || KIMI_ACCOUNT_SETUP.contains("не подходит"),
+            "the seller must be told the consumer chat plan grants no API access"
+        );
+        // The guide must carry the explicit disclaimer, since that is what a seller reads before
+        // deciding whether a request for credentials is legitimate.
+        assert!(KIMI_OFFER_GUIDE.contains("бот не просит"));
+        // No text may instruct the seller to hand over account credentials. The word "пароль"
+        // appears legitimately in the proxy field explanation, so the check targets the phrasing
+        // that would actually solicit an account secret.
+        for text in [KIMI_OFFER_GUIDE, KIMI_ACCOUNT_SETUP, KIMI_PROXY_PROMPT] {
+            let lowered = text.to_lowercase();
+            for forbidden in [
+                "пришли пароль",
+                "пароль от аккаунта",
+                "пришли код из",
+                "пришли cookie",
+                "пришли токен",
+                "код 2fa",
+            ] {
+                assert!(
+                    !lowered.contains(forbidden),
+                    "seller text must never solicit: {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn kimi_appears_in_both_operator_menus() {
+        let offer_codes = product_kb()
+            .into_iter()
+            .flatten()
+            .filter_map(|(_, data)| {
+                data.strip_prefix("noffer:").map(str::to_string)
+            })
+            .filter(|code| code.starts_with("kimi_"))
+            .count();
+        assert_eq!(offer_codes, 3);
+        for label in ["📦 Kimi Andante", "📦 Kimi Moderato", "📦 Kimi Allegretto"] {
+            assert!(admin_quick_tier(label).is_some(), "{label} missing");
+            assert!(
+                admin_home_kb().iter().flatten().any(|b| *b == label),
+                "{label} missing from the persistent keyboard"
+            );
         }
     }
 
