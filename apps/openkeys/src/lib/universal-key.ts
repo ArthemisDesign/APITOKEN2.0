@@ -4,7 +4,7 @@ export const UNIVERSAL_CONNECTIONS = {
   claude: {
     label: "Claude / Anthropic API",
     shortLabel: "Claude",
-    baseUrl: "https://api.apitoken.sale",
+    baseUrl: "https://router.apitoken.sale",
     docsPath: "/docs/claude",
     baseUrlVariable: "ANTHROPIC_BASE_URL",
     apiKeyVariable: "ANTHROPIC_API_KEY",
@@ -13,7 +13,7 @@ export const UNIVERSAL_CONNECTIONS = {
   openai: {
     label: "GPT / OpenAI-совместимый API",
     shortLabel: "GPT / OpenAI",
-    baseUrl: "https://openai.api.apitoken.sale/v1",
+    baseUrl: "https://router.apitoken.sale/v1",
     docsPath: "/docs/openai",
     baseUrlVariable: "OPENAI_BASE_URL",
     apiKeyVariable: "OPENAI_API_KEY",
@@ -22,7 +22,7 @@ export const UNIVERSAL_CONNECTIONS = {
   gemini: {
     label: "Gemini / Google Gemini API",
     shortLabel: "Gemini",
-    baseUrl: "https://gemini.api.apitoken.sale",
+    baseUrl: "https://router.apitoken.sale",
     docsPath: "/docs",
     baseUrlVariable: "GOOGLE_GEMINI_BASE_URL",
     apiKeyVariable: "GEMINI_API_KEY",

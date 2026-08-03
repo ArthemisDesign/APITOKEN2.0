@@ -43,6 +43,28 @@ $50 получает ровно $50 engine balance, а $1 полной офиц�
 До общего Stage 9 cutover historical `pricing_contract=legacy` остаётся migration source. Target
 release переводит все существующие и новые OpenKeys на 1:1; прошлые ledger rows не пересчитываются.
 
+## Что видит покупатель
+
+Все покупательские подключения указывают на unified router `https://router.apitoken.sale`
+(контракт — `docs/engine/UNIFIED_ROUTER.md`): ключ `sk-pool` аутентифицируется на нём так же, как на
+прежних per-provider хостах. Текст выдачи (`universalKeyHandoverText`), карточки провайдеров на
+странице расхода и команды подключения Claude Code/Codex используют:
+
+- Claude / Anthropic API — `https://router.apitoken.sale` (`POST /v1/messages`, `x-api-key`,
+  `ANTHROPIC_BASE_URL=https://router.apitoken.sale`);
+- GPT / OpenAI-совместимый API — `https://router.apitoken.sale/v1` (`/responses`,
+  `/chat/completions`, `Authorization: Bearer`, Codex `base_url`);
+- Gemini / Google Gemini API — `https://router.apitoken.sale` (`POST
+  /v1beta/models/{model}:generateContent`, `x-goog-api-key`,
+  `GOOGLE_GEMINI_BASE_URL=https://router.apitoken.sale`).
+
+Блок Gemini остаётся в выдаче и карточках намеренно, хотя текущий pricing catalog покрывает только
+Anthropic/OpenAI; целевой product catalog может явно добавить Gemini. Прежние per-provider хосты
+(`api.apitoken.sale`, `openai.api.apitoken.sale`, `gemini.api.apitoken.sale`) продолжают работать,
+но покупателю как основная инструкция выдаётся только router-адрес. Поиск остатка по ключу
+(`/balance`) по-прежнему идёт на `ENGINE_PUBLIC_BASE_URL`/`ENGINE_OPENAI_PUBLIC_BASE_URL` — это
+server-side обращение, не входящее в контракт router.
+
 ## Переменные окружения (`/etc/apitoken/openkeys.env`, root-only, 0600)
 
 | Переменная | Назначение |
