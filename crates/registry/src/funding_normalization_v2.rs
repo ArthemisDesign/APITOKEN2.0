@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use postgres::{Client, GenericClient, IsolationLevel};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const FUNDING_NORMALIZATION_SCHEMA_VERSION_V2: i64 = 2;
@@ -383,6 +383,51 @@ fn consume_welcome(lots: &mut [WelcomeLotState], mut amount_nano: i64) -> Result
     Ok(consumed)
 }
 
+fn every_welcome_grant_was_exactly_revoked(ledger: &[LedgerState]) -> Result<bool> {
+    let mut grants = BTreeMap::<String, i64>::new();
+    let mut revocations = BTreeMap::<String, i64>::new();
+    for entry in ledger {
+        let Some(reference) = entry.reference.as_deref() else {
+            continue;
+        };
+        if entry.kind == "topup" && entry.amount_nano > 0 {
+            if let Some(subject) = reference.strip_prefix("signup-bonus:") {
+                if subject.is_empty()
+                    || grants
+                        .insert(subject.to_owned(), entry.amount_nano)
+                        .is_some()
+                {
+                    bail!("welcome top-up source reference is not unique");
+                }
+            }
+        } else if entry.kind == "adjust" {
+            if let Some(subject) = reference.strip_prefix("bonus-revoke:") {
+                let revoked = entry
+                    .amount_nano
+                    .checked_neg()
+                    .context("welcome bonus revocation cannot be negated")?;
+                if subject.is_empty() || revoked <= 0 {
+                    bail!("welcome bonus revocation has an invalid identity or amount");
+                }
+                if revocations.insert(subject.to_owned(), revoked).is_some() {
+                    bail!("welcome bonus revocation source reference is not unique");
+                }
+            }
+        }
+    }
+    if revocations.is_empty() {
+        return Ok(false);
+    }
+    if grants.len() != revocations.len()
+        || grants
+            .iter()
+            .any(|(subject, granted)| revocations.get(subject) != Some(granted))
+    {
+        bail!("welcome bonus revocation does not exactly match every retained grant");
+    }
+    Ok(!grants.is_empty())
+}
+
 fn target_from_legacy_buckets(state: &AccountState) -> Result<Vec<FundingNormalizationLotV2>> {
     let active: Vec<_> = state
         .legacy_buckets
@@ -478,6 +523,20 @@ fn target_from_legacy_buckets(state: &AccountState) -> Result<Vec<FundingNormali
 }
 
 fn target_from_ledger(state: &AccountState) -> Result<Vec<FundingNormalizationLotV2>> {
+    // A full admin revocation removes the welcome entitlement rather than spending it. Once every
+    // retained grant has an exact same-subject/full-amount revocation, no historical balance gap is
+    // needed to attribute the current aggregate: the complete live residual is paid authority.
+    // Partial, mismatched, duplicate, or mixed active/revoked evidence remains fail-closed.
+    if every_welcome_grant_was_exactly_revoked(&state.ledger)? {
+        return Ok(vec![lot(
+            &state.account_id,
+            "paid",
+            PAID_RESIDUAL_SOURCE_REF_V2,
+            state.balance_nano,
+            state.reserved_nano,
+            state.spent_nano,
+        )]);
+    }
     let mut welcome = Vec::<WelcomeLotState>::new();
     let mut seen_refs = BTreeSet::new();
     let mut previous_after: Option<i64> = None;
@@ -1163,6 +1222,83 @@ mod tests {
     }
 
     #[test]
+    fn exact_welcome_revocation_makes_the_current_aggregate_paid_only() {
+        let state = AccountState {
+            account_id: "revoked-bonus".into(),
+            status: "active".into(),
+            balance_nano: -3,
+            reserved_nano: 0,
+            spent_nano: 3,
+            legacy_funding_enforcement: None,
+            legacy_buckets: Vec::new(),
+            ledger: vec![
+                LedgerState {
+                    id: 1,
+                    kind: "topup".into(),
+                    amount_nano: 4,
+                    reference: Some("signup-bonus:user".into()),
+                    balance_after_nano: Some(4),
+                },
+                LedgerState {
+                    id: 2,
+                    kind: "adjust".into(),
+                    amount_nano: -4,
+                    reference: Some("bonus-revoke:user".into()),
+                    balance_after_nano: Some(-2),
+                },
+            ],
+            active_reservations: Vec::new(),
+            orphaned_generations: 0,
+        };
+        let lots = target_from_ledger(&state).unwrap();
+        assert_eq!(lots.len(), 1);
+        assert_eq!(lots[0].source_type, "paid");
+        assert_eq!(
+            (
+                lots[0].balance_nano,
+                lots[0].reserved_nano,
+                lots[0].spent_nano
+            ),
+            (-3, 0, 3)
+        );
+    }
+
+    #[test]
+    fn partial_welcome_revocation_remains_fail_closed() {
+        let state = AccountState {
+            account_id: "partial-revocation".into(),
+            status: "active".into(),
+            balance_nano: 1,
+            reserved_nano: 0,
+            spent_nano: 0,
+            legacy_funding_enforcement: None,
+            legacy_buckets: Vec::new(),
+            ledger: vec![
+                LedgerState {
+                    id: 1,
+                    kind: "topup".into(),
+                    amount_nano: 4,
+                    reference: Some("signup-bonus:user".into()),
+                    balance_after_nano: Some(4),
+                },
+                LedgerState {
+                    id: 2,
+                    kind: "adjust".into(),
+                    amount_nano: -3,
+                    reference: Some("bonus-revoke:user".into()),
+                    balance_after_nano: Some(1),
+                },
+            ],
+            active_reservations: Vec::new(),
+            orphaned_generations: 0,
+        };
+        assert!(target_from_ledger(&state)
+            .unwrap_err()
+            .to_string()
+            .contains("does not exactly match every retained grant"));
+    }
+
+    #[test]
     fn paid_anchor_is_always_materialized() {
         let state = AccountState {
             account_id: "bonus-only".into(),
@@ -1216,6 +1352,54 @@ mod tests {
         pg.client
             .batch_execute("TRUNCATE accounts RESTART IDENTITY CASCADE")
             .unwrap();
+
+        // An exact admin revocation removes the complete welcome entitlement even after part of
+        // the grant was spent. The current aggregate is therefore one paid lot, including debt;
+        // retained pre-revocation gaps are historical evidence, not a surviving bonus.
+        pg.account_create("normalize-revoked", None, 10_000)
+            .unwrap();
+        pg.account_topup("normalize-revoked", 4, Some("signup-bonus:revoked-user"))
+            .unwrap();
+        pg.client
+            .execute(
+                "UPDATE accounts SET balance_nano=2,spent_nano=2
+                  WHERE id='normalize-revoked'",
+                &[],
+            )
+            .unwrap();
+        pg.account_topup("normalize-revoked", -4, Some("bonus-revoke:revoked-user"))
+            .unwrap();
+        let revoked = pg
+            .funding_normalization_plan_v2("normalize-revoked")
+            .unwrap()
+            .unwrap();
+        assert_eq!(revoked.status, FundingNormalizationPlanStatusV2::Ready);
+        assert_eq!(revoked.source, FundingNormalizationSourceV2::LedgerReplay);
+        assert_eq!(
+            revoked
+                .lots
+                .iter()
+                .map(|lot| format!(
+                    "{}:{}:{}",
+                    lot.source_type, lot.balance_nano, lot.spent_nano
+                ))
+                .collect::<Vec<_>>(),
+            vec!["paid:-2:2"]
+        );
+        let revoked_stored = pg
+            .apply_funding_normalization_v2(
+                "normalize-revoked",
+                &FundingNormalizationApplyRequestV2 {
+                    expected_source_state_digest: revoked.source_state_digest,
+                    expected_normalization_digest: revoked.normalization_digest.unwrap(),
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            revoked_stored.status,
+            FundingNormalizationApplyStatusV2::Stored
+        );
 
         // The charge row is removed to model normal ledger retention. The next immutable top-up
         // balance still makes the post-welcome spend gap exact.

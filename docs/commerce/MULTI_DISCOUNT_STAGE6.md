@@ -14,6 +14,8 @@ Funding normalization нужна для paid/bonus attribution и реферал
 ограничения доступных моделей.
 
 - точный неотозванный `signup-bonus:<subject>` сохраняется как `welcome_bonus`;
+- точная пара `signup-bonus:<subject>` + полный отрицательный
+  `bonus-revoke:<subject>` удаляет welcome entitlement: весь текущий aggregate становится `paid`;
 - существующая выдача сохраняет фактический номинал `$4`;
 - новые выдачи после изменения контракта имеют номинал `$5`;
 - весь остальной существующий остаток по решению владельца классифицируется `paid`;
@@ -108,7 +110,10 @@ plan. Ответ `stored|unchanged|stale|blocked|conflict` не допускае
 Если legacy buckets отсутствуют, planner восстанавливает welcome по immutable
 `signup-bonus:*` top-up и `balance_after_nano`; удалённые retention-ом charge rows учитываются как
 точные отрицательные gaps между сохранившимися money rows. Без welcome evidence весь aggregate
-становится paid. В каждом варианте создаётся нулевой paid anchor.
+становится paid. То же верно после exact same-subject/full-amount `bonus-revoke:*`: это отзыв
+entitlement, а не расход welcome lot, поэтому pre-revoke gaps остаются историческим evidence и не
+создают активный bonus. Partial, mismatched, duplicate или mixed revoked/active grant остаётся
+`invalid_ledger_evidence`. В каждом варианте создаётся нулевой paid anchor.
 
 Apply идёт bounded batches. Каждая account-local `SERIALIZABLE` transaction:
 
@@ -222,6 +227,8 @@ reserve-time identity. Новые запросы продолжают посту
 объявить account ready при:
 
 - несовпадении aggregate и суммы lots;
+- partial/mismatched/duplicate `bonus-revoke:*`, который не доказывает полный отзыв каждого
+  retained `signup-bonus:*` того же subject;
 - negative/overflow, нарушающем money invariants;
 - конфликтующем idempotency reference;
 - незавершённой legacy reservation, для которой нет честного snapshot;

@@ -45,8 +45,9 @@ exact producer SHA `packages/contracts` валидирует strict release/fund
 `packages/engine-client` является единственным typed transport consumer. `apps/worker` через
 `packages/db/src/funding-normalization-jobs.ts` реализует отдельный bounded/resumable Stage 6
 application consumer: exhaustive cursor scans, exact service exclusion, fresh GET перед каждым
-account-local POST, full-coverage parent confirmation, одинаковое target/recovery funding evidence
-и prepare+readback обоих releases/recovery link. Job staging/status привязан к exact Stage 5 plan
+account-local POST, exact full welcome revocation → paid-only current aggregate, fail-closed
+partial/mismatched revocation, full-coverage parent confirmation, одинаковое target/recovery
+funding evidence и prepare+readback обоих releases/recovery link. Job staging/status привязан к exact Stage 5 plan
 digest. Production producer — AdminGuard-protected `apps/api` endpoints для Stage 5 dry-run /
 materialize и Stage 6 status / stage: они требуют verified `x-admin-actor`, exact plan digest,
 meaningful mutation reason, strict `packages/contracts` response и attributed transactional audit.

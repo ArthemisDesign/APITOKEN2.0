@@ -716,6 +716,10 @@ normalization = {
 Apply берёт тот же account funding lock, что reserve/settlement/top-up, и атомарно пишет generation,
 lots и initial head. Legacy in-flight блокирует только свой account; writer, ожидавший lock,
 перечитывает новый head и dual-write'ит уже в funding v2. Глобального drain нет.
+Неотозванный `signup-bonus:<subject>` остаётся `welcome_bonus`, но exact полный отрицательный
+`bonus-revoke:<subject>` того же subject превращает весь текущий aggregate в `paid`: entitlement
+отозван и historical pre-revoke gaps не восстанавливают его заново. Partial, mismatched, duplicate
+или mixed active/revoked evidence возвращает `invalid_ledger_evidence`, а не guessed plan.
 
 Assignment-extension typed TS consumers подключены только после зелёного exact producer SHA.
 `packages/contracts` strict-валидирует nullable provisioning context и exact active/recovery pair;
