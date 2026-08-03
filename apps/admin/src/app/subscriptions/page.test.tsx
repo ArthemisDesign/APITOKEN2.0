@@ -648,6 +648,62 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(text).not.toContain("99%");
   });
 
+  it("ClaudeCapacityBoard: stale исчерпанное окно показывает 100% и reset без cooling", () => {
+    const html = renderToString(
+      <ClaudeCapacityBoard
+        response={{
+          now: 2_000,
+          per_sub: [
+            {
+              email: "full…",
+              plan: "max20",
+              routable: false,
+              cooling: true,
+              auth_state: "healthy",
+              util5h: 1,
+              util7d: 0.42,
+              reset5h_in: 1_800,
+              reset7d_in: 86_400,
+              cap5h_nano: "60000000000",
+              cap7d_nano: "200000000000",
+              rem5h_nano: "0",
+              rem7d_nano: "116000000000",
+              windows: [
+                {
+                  window_kind: "5h",
+                  snapshot_fresh: false,
+                  used_fraction_units: 100_000_000,
+                  resets_at: null,
+                  capacity_nano: "60000000000",
+                  remaining_nano: null,
+                },
+                {
+                  window_kind: "7d",
+                  snapshot_fresh: true,
+                  used_fraction_units: 42_000_000,
+                  resets_at: 88_400,
+                  capacity_nano: "200000000000",
+                  remaining_nano: "116000000000",
+                },
+              ],
+            },
+          ],
+        }}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("лимит 5ч исчерпан");
+    expect(text).not.toContain("cooling");
+    expect(text).toContain("100%");
+    expect(text).toContain("42%");
+    expect(text).toContain("сброс 30м");
+    expect(text).toContain("сброс 1д 0ч");
+    expect(text).toContain("вне ротации");
+    expect(text).toContain("не входит в ёмкость");
+    expect(text).not.toContain("$60.00");
+    expect(text).not.toContain("$116.00");
+  });
+
   it("GeminiCapacityBoard: оставляет основные окна, модели и masked email", () => {
     const nowMs = 1_800_000_000_000;
     const html = renderToString(

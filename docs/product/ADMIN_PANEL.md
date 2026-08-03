@@ -192,7 +192,11 @@ Claude строится из `/capacity`:
   `ждём данные`. Свежая exact quota fraction из runtime даёт current remaining даже когда Anthropic
   не прислал reset — тогда UI пишет `сброс уточняется`, а не ложное `0м`. При stale/missing snapshot
   или pending/degraded FIFO строка показывает `обновляем`, не устаревший процент и не номинальную
-  ёмкость. Dead/non-routable аккаунт показывает `вне ротации` и не выглядит продаваемой supply;
+  ёмкость. Исчерпанное окно не скрывается общим runtime-cooling: строка показывает точные `100%`
+  и countdown до provider reset отдельно для 5ч/7д, а статус — `лимит … исчерпан` без внутреннего
+  термина `cooling`. До reset деньги остаются `вне ротации`; после deadline runtime автоматически
+  возвращает подписку в routing, и следующий poll панели показывает её активной. Dead и другие
+  non-routable аккаунты по-прежнему не выглядят продаваемой supply;
 - `calibration_evidence` и `conversion_models` продолжают приходить с backend как audit/calculation
   contract, но основной Claude UI их не разворачивает в дополнительные таблицы.
 

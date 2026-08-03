@@ -38,8 +38,9 @@ function claudeWindowView(item: CapacitySub, kind: "5h" | "7d", now: number): Cl
   const window = windowFor(item, kind);
   const remaining = window?.remaining_nano ?? (kind === "5h" ? item.rem5h_nano : item.rem7d_nano);
   const capacity = window?.capacity_nano ?? (kind === "5h" ? item.cap5h_nano : item.cap7d_nano);
-  const inactive = item.routable === false || item.auth_state === "dead";
-  if (inactive) {
+  const cooling = item.cooling === true;
+  const unavailableOutsideQuota = item.auth_state === "dead" || (item.routable === false && !cooling);
+  if (unavailableOutsideQuota) {
     return {
       state: "inactive",
       quota: { value: null, label: "—" },
@@ -49,28 +50,16 @@ function claudeWindowView(item: CapacitySub, kind: "5h" | "7d", now: number): Cl
     };
   }
 
-  // New payloads explicitly prove freshness. The remaining-money check keeps the compact board
-  // honest when calibration delivery or plan evidence is unavailable. Payloads without `windows`
-  // retain the old contract only when they already contain both exact money fields.
-  const snapshotFresh = window ? window.snapshot_fresh === true : true;
-  const moneyReady =
-    snapshotFresh && providerInteger(remaining) != null && providerInteger(capacity) != null;
-  if (!moneyReady) {
-    return {
-      state: "updating",
-      quota: { value: null, label: "обновляем" },
-      reset: "уточняется",
-      remaining,
-      capacity,
-    };
-  }
-
+  // Provider quota/reset and calibrated money have independent freshness. In particular, a
+  // quota-exhausted subscription is outside rotation but its exact 100% wall and reset remain the
+  // most useful operator facts. Payloads without `windows` retain the legacy live-quota contract.
   const usedFraction =
     window?.used_fraction_units == null
       ? kind === "5h"
         ? item.util5h
         : item.util7d
       : window.used_fraction_units / 100_000_000;
+  const quota = quotaValue(usedFraction);
   const resetIn =
     kind === "5h"
       ? item.reset5h_in
@@ -78,9 +67,30 @@ function claudeWindowView(item: CapacitySub, kind: "5h" | "7d", now: number): Cl
   const resetFromWindow =
     window?.resets_at == null ? null : Math.max(0, window.resets_at - now);
   const resetSeconds = resetIn ?? resetFromWindow;
+  const snapshotFresh = window ? window.snapshot_fresh === true : true;
+  if (!snapshotFresh) {
+    if (cooling && quota.value === 100 && resetSeconds != null) {
+      return {
+        state: "inactive",
+        quota,
+        reset: duration(resetSeconds),
+        remaining,
+        capacity,
+      };
+    }
+    return {
+      state: item.routable === false ? "inactive" : "updating",
+      quota: { value: null, label: "обновляем" },
+      reset: "уточняется",
+      remaining,
+      capacity,
+    };
+  }
+
+  const moneyReady = providerInteger(remaining) != null && providerInteger(capacity) != null;
   return {
-    state: "ready",
-    quota: quotaValue(usedFraction),
+    state: item.routable === false ? "inactive" : moneyReady ? "ready" : "updating",
+    quota,
     reset: resetSeconds == null ? "уточняется" : duration(resetSeconds),
     remaining,
     capacity,
@@ -106,7 +116,11 @@ function ClaudeMoney({ view, fiveHour = false }: { view: ClaudeWindowView; fiveH
   );
 }
 
-function subscriptionStatus(item: CapacitySub): { label: string; kind: "ok" | "warn" | "bad" } {
+function subscriptionStatus(
+  item: CapacitySub,
+  five: ClaudeWindowView,
+  weekly: ClaudeWindowView,
+): { label: string; kind: "ok" | "warn" | "bad" } {
   if (item.auth_state === "dead") {
     return {
       label: item.dead_reason === "permission_error" ? "токен мёртв · бан" : "токен мёртв",
@@ -114,7 +128,15 @@ function subscriptionStatus(item: CapacitySub): { label: string; kind: "ok" | "w
     };
   }
   if (item.auth_state === "suspect") return { label: "auth под наблюдением", kind: "warn" };
-  if (item.cooling) return { label: "cooling", kind: "warn" };
+  if (item.cooling) {
+    const exhausted = [
+      five.quota.value === 100 ? "5ч" : null,
+      weekly.quota.value === 100 ? "7д" : null,
+    ].filter((window): window is string => window != null);
+    if (exhausted.length === 2) return { label: "лимиты 5ч и 7д исчерпаны", kind: "warn" };
+    if (exhausted.length === 1) return { label: `лимит ${exhausted[0]} исчерпан`, kind: "warn" };
+    return { label: "временно вне ротации", kind: "warn" };
+  }
   if (item.routable === false) return { label: "вне ротации", kind: "warn" };
   if (item.calibrated === false) return { label: "ждём данные", kind: "warn" };
   return { label: "active", kind: "ok" };
@@ -139,7 +161,7 @@ function ClaudeSubscriptions({ items, now }: { items: CapacitySub[]; now: number
             {items.map((item, index) => {
               const five = claudeWindowView(item, "5h", now);
               const weekly = claudeWindowView(item, "7d", now);
-              const health = subscriptionStatus(item);
+              const health = subscriptionStatus(item, five, weekly);
               return (
                 <tr key={`${item.email ?? "claude"}-${index}`}>
                   <td className="left"><b>{item.email || "—"}</b><small>{item.plan ?? "—"}</small></td>
