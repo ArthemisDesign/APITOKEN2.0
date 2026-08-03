@@ -154,9 +154,11 @@ terminal evidence; retry разрешён только worker state machine дл
 точные charged nanoUSD отдельно для Anthropic/OpenAI/Google. Provider authority берётся из
 immutable pricing-attribution, а для legacy pricing — из сохранённого top-level provider engine
 ledger; worker повторно обрабатывает и ранее provisional `unattributed` строки после появления
-producer evidence, восстанавливает ещё доступные 30-дневные строки без эвристики по model id и
-терминализирует доказанно недоступные как `unavailable`. Оба неизвестных состояния не теряются и
-выводятся как `другое`. Все денежные вычисления и CSV сохраняют decimal nanoUSD strings; JS `number`
+producer evidence. Versioned recovery v2 также повторно выбирает старые `unavailable`, созданные
+слабым request-ID-only алгоритмом, восстанавливает ещё доступные 30-дневные строки по строгому
+settlement fingerprint и помечает каждый exact/exhausted результат версией `2`. Model ID не
+преобразуется в provider; оставшаяся неоднозначность не теряется и выводится как `другое`. Все
+денежные вычисления и CSV сохраняют decimal nanoUSD strings; JS `number`
 используется только для ограниченной доли 0–10000 basis points. Страница опрашивается раз в 30
 секунд и не выполняет денежных mutation.
 

@@ -35,8 +35,10 @@ Legacy ledger provider recovery остаётся producer-owned: сначала 
 только строгий account/key/amount/ref/model/time settlement fingerprint с единым непустым provider
 по всем кандидатам. Конфликт fail-closed, неоднозначность остаётся unknown, model-name inference
 запрещён. После GREEN producer SHA commerce отдельным consumer-коммитом повторно выбирает старые
-terminal sentinel rows по versioned recovery epoch, повышает точное evidence и не пересканирует
-безрезультатный алгоритм бесконечно.
+terminal sentinel rows по recovery version `2`, повышает точное evidence и не пересканирует
+безрезультатный алгоритм бесконечно. Strict fingerprint producer SHA
+`d5f3d6bccdaa5015a443500d2530f1430596362b` получил GREEN `deploy/watchdog` до подключения этого
+commerce consumer.
 Release-v2 producer публикует immutable policy/release/recovery prepare, полный engine inventory,
 nullable head, account-local funding normalization plan/apply и append-only assignment extension
 для exact active/recovery pair аккаунта, созданного после cutover. Read-only Stage 8 capture

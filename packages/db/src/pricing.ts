@@ -124,6 +124,7 @@ const SUPPORTED_LEDGER_ATTRIBUTION_SCHEMA_VERSIONS: ReadonlySet<bigint> = new Se
 const PROVIDER_BACKFILL_WINDOW_DAYS = 30;
 const UNATTRIBUTED_PROVIDER_ID = "unattributed";
 const UNAVAILABLE_PROVIDER_ID = "unavailable";
+const PROVIDER_RECOVERY_VERSION = 2;
 
 type LedgerAttribution = NonNullable<EngineLedgerEntry["attribution"]>;
 type LedgerFundingAllocation = NonNullable<EngineLedgerEntry["funding_allocations"]>[number];
@@ -164,10 +165,16 @@ function normalizedProviderId(value: string | null | undefined): string | null {
   return value;
 }
 
+function isProviderRecoverySentinel(value: string | null): boolean {
+  return value === UNATTRIBUTED_PROVIDER_ID || value === UNAVAILABLE_PROVIDER_ID;
+}
+
 function ledgerProviderEvidence(entry: EngineLedgerEntry): string {
-  return normalizedProviderId(entry.provider)
-    ?? normalizedProviderId(entry.attribution?.provider_id)
-    ?? UNATTRIBUTED_PROVIDER_ID;
+  const providerId = normalizedProviderId(entry.provider)
+    ?? normalizedProviderId(entry.attribution?.provider_id);
+  return providerId === null || isProviderRecoverySentinel(providerId)
+    ? UNATTRIBUTED_PROVIDER_ID
+    : providerId;
 }
 
 function requiredLedgerText(value: string | null | undefined, field: string): string {
@@ -1974,10 +1981,10 @@ async function insertPricingUsageAttribution(
 
 /**
  * Returns the ledger cursor immediately before the oldest recent usage row whose provider has not
- * completed recovery and cannot already be proven by immutable pricing attribution. Both legacy
- * NULL rows and provisional `unattributed` rows are retried once; terminal `unavailable` rows are
- * skipped. The engine retains charge detail for the same 30-day horizon used by the paying-users
- * control room.
+ * completed the current evidence algorithm and cannot already be proven by immutable pricing
+ * attribution. NULL and both historical sentinels are eligible only below the current version, so
+ * a stronger producer can retry old terminal rows once without creating an idle polling loop. The
+ * engine retains charge detail for the same 30-day horizon used by the paying-users control room.
  */
 export async function getPricingProviderBackfillCursor(
   database: Database,
@@ -1993,14 +2000,17 @@ export async function getPricingProviderBackfillCursor(
     WHERE event.user_id = $1 AND event.engine_account_id = $2
       AND event.ledger_entry_id <= $3
       AND event.occurred_at >= now() - make_interval(days => $4)
-      AND (event.provider_id IS NULL OR event.provider_id = $5)
+      AND event.provider_recovery_version < $5
+      AND (event.provider_id IS NULL OR event.provider_id IN ($6, $7))
       AND attribution.provider_id IS NULL
   `, [
     target.userId,
     target.engineAccountId,
     throughLedgerId.toString(),
     PROVIDER_BACKFILL_WINDOW_DAYS,
+    PROVIDER_RECOVERY_VERSION,
     UNATTRIBUTED_PROVIDER_ID,
+    UNAVAILABLE_PROVIDER_ID,
   ]);
   const firstLedgerId = result.rows[0]?.first_ledger_id;
   if (firstLedgerId === null || firstLedgerId === undefined) return null;
@@ -2048,10 +2058,12 @@ export async function applyPricingProviderBackfillPage(
       ledger_entry_id: string;
       amount_nano: string;
       provider_id: string | null;
+      provider_recovery_version: number;
       attributed_provider_id: string | null;
     }>(`
       SELECT event.ledger_entry_id::text, event.amount_nano::text,
-             event.provider_id, attribution.provider_id AS attributed_provider_id
+             event.provider_id, event.provider_recovery_version,
+             attribution.provider_id AS attributed_provider_id
       FROM pricing_usage_events event
       LEFT JOIN pricing_usage_attributions attribution
         ON attribution.pricing_usage_event_id = event.id
@@ -2071,7 +2083,7 @@ export async function applyPricingProviderBackfillPage(
       }
       const exactProviders = [row.provider_id, row.attributed_provider_id]
         .map(normalizedProviderId)
-        .filter((value): value is string => value !== null && value !== UNATTRIBUTED_PROVIDER_ID);
+        .filter((value): value is string => value !== null && !isProviderRecoverySentinel(value));
       if (
         candidate.providerId !== UNATTRIBUTED_PROVIDER_ID
         && exactProviders.some((providerId) => providerId !== candidate.providerId)
@@ -2084,11 +2096,11 @@ export async function applyPricingProviderBackfillPage(
         candidate.providerId === UNATTRIBUTED_PROVIDER_ID
         && exactProviders.length > 0
       ) continue;
-      if (
-        row.provider_id === null
-        || (row.provider_id === UNATTRIBUTED_PROVIDER_ID
-          && candidate.providerId !== UNATTRIBUTED_PROVIDER_ID)
-      ) {
+      const currentProviderId = normalizedProviderId(row.provider_id);
+      const needsCurrentRecovery = row.provider_recovery_version < PROVIDER_RECOVERY_VERSION
+        && (currentProviderId === null || isProviderRecoverySentinel(currentProviderId))
+        && normalizedProviderId(row.attributed_provider_id) === null;
+      if (needsCurrentRecovery && candidate.providerId !== UNATTRIBUTED_PROVIDER_ID) {
         updateLedgerIds.push(row.ledger_entry_id);
         updateProviderIds.push(candidate.providerId);
       }
@@ -2098,11 +2110,18 @@ export async function applyPricingProviderBackfillPage(
     if (updateLedgerIds.length > 0) {
       const result = await client.query(`
         UPDATE pricing_usage_events event
-        SET provider_id = evidence.provider_id
+        SET provider_id = evidence.provider_id,
+            provider_recovery_version = $5
         FROM unnest($3::bigint[], $4::text[]) AS evidence(ledger_entry_id, provider_id)
         WHERE event.user_id = $1 AND event.engine_account_id = $2
           AND event.ledger_entry_id = evidence.ledger_entry_id
-      `, [target.userId, target.engineAccountId, updateLedgerIds, updateProviderIds]);
+      `, [
+        target.userId,
+        target.engineAccountId,
+        updateLedgerIds,
+        updateProviderIds,
+        PROVIDER_RECOVERY_VERSION,
+      ]);
       updated = result.rowCount ?? 0;
     }
     await client.query("COMMIT");
@@ -2124,11 +2143,12 @@ export async function completePricingProviderBackfill(
   if (throughLedgerId < 0n) throw new RangeError("provider backfill cursor must not be negative");
   const result = await database.pool.query(`
     UPDATE pricing_usage_events event
-    SET provider_id = $4
+    SET provider_id = $4, provider_recovery_version = $5
     WHERE event.user_id = $1 AND event.engine_account_id = $2
       AND event.ledger_entry_id <= $3
-      AND event.occurred_at >= now() - make_interval(days => $5)
-      AND (event.provider_id IS NULL OR event.provider_id = $6)
+      AND event.occurred_at >= now() - make_interval(days => $6)
+      AND event.provider_recovery_version < $5
+      AND (event.provider_id IS NULL OR event.provider_id IN ($7, $8))
       AND NOT EXISTS (
         SELECT 1 FROM pricing_usage_attributions attribution
         WHERE attribution.pricing_usage_event_id = event.id
@@ -2139,8 +2159,10 @@ export async function completePricingProviderBackfill(
     target.engineAccountId,
     throughLedgerId.toString(),
     UNAVAILABLE_PROVIDER_ID,
+    PROVIDER_RECOVERY_VERSION,
     PROVIDER_BACKFILL_WINDOW_DAYS,
     UNATTRIBUTED_PROVIDER_ID,
+    UNAVAILABLE_PROVIDER_ID,
   ]);
   return result.rowCount ?? 0;
 }
@@ -2235,8 +2257,8 @@ export async function applyPricingLedgerPage(
       const inserted = await client.query<{ id: string }>(`
         INSERT INTO pricing_usage_events (
           id, user_id, engine_account_id, ledger_entry_id, provider_id,
-          amount_nano, real_funded_nano, occurred_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          amount_nano, real_funded_nano, occurred_at, provider_recovery_version
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ON CONFLICT (engine_account_id, ledger_entry_id) DO NOTHING
         RETURNING id
       `, [
@@ -2248,6 +2270,7 @@ export async function applyPricingLedgerPage(
         entry.amount_nano,
         realFunded.toString(),
         occurredAt,
+        providerId === UNATTRIBUTED_PROVIDER_ID ? 0 : PROVIDER_RECOVERY_VERSION,
       ]);
       if (!inserted.rows[0]) continue; // уже обработано — бесплатный баланс не трогаем повторно
       if (validatedAttribution !== null) {

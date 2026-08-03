@@ -509,6 +509,7 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
         (SELECT count(*)::int FROM pricing_usage_attributions) AS attributions,
         (SELECT real_funded_nano::text FROM pricing_usage_events) AS real_funded_nano,
         (SELECT provider_id FROM pricing_usage_events) AS provider_id,
+        (SELECT provider_recovery_version FROM pricing_usage_events) AS provider_recovery_version,
         (SELECT free_balance_nano::text FROM customer_profiles WHERE user_id = $1) AS free_balance_nano,
         (SELECT last_ledger_id::text FROM pricing_usage_cursors WHERE user_id = $1) AS cursor
     `, [userId]);
@@ -517,6 +518,7 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
       attributions: 0,
       real_funded_nano: "10",
       provider_id: "unattributed",
+      provider_recovery_version: 0,
       free_balance_nano: "0",
       cursor: "6",
     }]);
@@ -530,16 +532,19 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
     ];
     await applyPricingLedgerPage(database, { userId, engineAccountId }, entries);
     await expect(database.pool.query(`
-      SELECT ledger_entry_id::text, provider_id
+      SELECT ledger_entry_id::text, provider_id, provider_recovery_version
       FROM pricing_usage_events
       ORDER BY ledger_entry_id
     `)).resolves.toMatchObject({ rows: [
-      { ledger_entry_id: "10", provider_id: "anthropic" },
-      { ledger_entry_id: "11", provider_id: "openai" },
-      { ledger_entry_id: "12", provider_id: "google" },
+      { ledger_entry_id: "10", provider_id: "anthropic", provider_recovery_version: 2 },
+      { ledger_entry_id: "11", provider_id: "openai", provider_recovery_version: 2 },
+      { ledger_entry_id: "12", provider_id: "google", provider_recovery_version: 2 },
     ] });
 
-    await database.pool.query("UPDATE pricing_usage_events SET provider_id = NULL");
+    await database.pool.query(`
+      UPDATE pricing_usage_events
+      SET provider_id = NULL, provider_recovery_version = 0
+    `);
     await expect(getPricingProviderBackfillCursor(
       database,
       { userId, engineAccountId },
@@ -561,13 +566,13 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
       12n,
     )).resolves.toBe(0);
     await expect(database.pool.query(`
-      SELECT ledger_entry_id::text, provider_id
+      SELECT ledger_entry_id::text, provider_id, provider_recovery_version
       FROM pricing_usage_events
       ORDER BY ledger_entry_id
     `)).resolves.toMatchObject({ rows: [
-      { ledger_entry_id: "10", provider_id: "anthropic" },
-      { ledger_entry_id: "11", provider_id: "openai" },
-      { ledger_entry_id: "12", provider_id: "google" },
+      { ledger_entry_id: "10", provider_id: "anthropic", provider_recovery_version: 2 },
+      { ledger_entry_id: "11", provider_id: "openai", provider_recovery_version: 2 },
+      { ledger_entry_id: "12", provider_id: "google", provider_recovery_version: 2 },
     ] });
   });
 
@@ -579,7 +584,14 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
       { ...legacyEntry(23, "charge", 40n, null), model: "gpt-5" },
     ];
     await applyPricingLedgerPage(database, { userId, engineAccountId }, entries);
-    await database.pool.query("UPDATE pricing_usage_events SET provider_id = 'unattributed'");
+    await database.pool.query(`
+      UPDATE pricing_usage_events
+      SET provider_id = CASE
+            WHEN ledger_entry_id = 23 THEN 'unavailable'
+            ELSE 'unattributed'
+          END,
+          provider_recovery_version = 1
+    `);
 
     await expect(getPricingProviderBackfillCursor(
       database,
@@ -597,15 +609,20 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
       23n,
     )).resolves.toBe(1);
     await expect(database.pool.query(`
-      SELECT ledger_entry_id::text, provider_id
+      SELECT ledger_entry_id::text, provider_id, provider_recovery_version
       FROM pricing_usage_events
       ORDER BY ledger_entry_id
     `)).resolves.toMatchObject({ rows: [
-      { ledger_entry_id: "20", provider_id: "anthropic" },
-      { ledger_entry_id: "21", provider_id: "openai" },
-      { ledger_entry_id: "22", provider_id: "google" },
-      { ledger_entry_id: "23", provider_id: "unavailable" },
+      { ledger_entry_id: "20", provider_id: "anthropic", provider_recovery_version: 2 },
+      { ledger_entry_id: "21", provider_id: "openai", provider_recovery_version: 2 },
+      { ledger_entry_id: "22", provider_id: "google", provider_recovery_version: 2 },
+      { ledger_entry_id: "23", provider_id: "unavailable", provider_recovery_version: 2 },
     ] });
+    await expect(completePricingProviderBackfill(
+      database,
+      { userId, engineAccountId },
+      23n,
+    )).resolves.toBe(0);
     await expect(getPricingProviderBackfillCursor(
       database,
       { userId, engineAccountId },
