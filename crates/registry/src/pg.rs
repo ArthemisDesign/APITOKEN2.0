@@ -171,9 +171,11 @@ const MIGRATION_0025: &str =
     include_str!("../migrations_pg/0025_pricing_release_runtime_epoch_fence.sql");
 const MIGRATION_0026: &str =
     include_str!("../migrations_pg/0026_pricing_release_zero_drain_extensions.sql");
+const MIGRATION_0027: &str =
+    include_str!("../migrations_pg/0027_kimi_window_calibration.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 26;
+pub const CURRENT_SCHEMA_VERSION: i64 = 27;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -203,6 +205,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (24, MIGRATION_0024),
     (25, MIGRATION_0025),
     (26, MIGRATION_0026),
+    (27, MIGRATION_0027),
 ];
 
 #[cfg(test)]
@@ -9761,6 +9764,79 @@ mod tests {
         assert!(!normalized.contains("passed AND blocker_count = 0 AND legacy_inflight_count = 0"));
         assert!(!normalized.contains(" DROP TABLE "));
         assert!(!normalized.contains(" TRUNCATE "));
+    }
+
+    #[test]
+    fn kimi_calibration_migration_is_additive_and_keeps_served_model_identity() {
+        // Strip `--` comment lines first: the header prose deliberately names the 0019 authority
+        // to explain why this migration stands beside it, and that mention must not be mistaken
+        // for a statement touching it.
+        let ddl = MIGRATION_0027
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let normalized = ddl.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        for table in [
+            "kimi_turn_calibration_events",
+            "kimi_calibration_subject_spend",
+            "kimi_window_observations",
+            "kimi_window_calibrations",
+        ] {
+            assert!(
+                normalized.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")),
+                "missing KIMI calibration table {table}",
+            );
+        }
+
+        // Expand-only: nothing is dropped, truncated or altered.
+        assert!(!normalized.contains(" DROP TABLE "));
+        assert!(!normalized.contains(" TRUNCATE "));
+        assert!(!normalized.contains(" DROP CONSTRAINT "));
+        assert!(!normalized.contains(" ALTER TABLE "));
+
+        // The shared 0019 authority must be left completely untouched: its provider CHECK is a
+        // closed set, and its row carries a single model id, which cannot express a served model
+        // that differs from the requested one.
+        assert!(!normalized.contains("provider_turn_calibration_events"));
+        assert!(!normalized.contains("provider_calibration_subject_spend"));
+
+        // Billing follows the served model, so both identities are immutable columns.
+        assert!(normalized.contains("requested_model text NOT NULL"));
+        assert!(normalized.contains("served_model text NOT NULL"));
+
+        // Paid plan and the exact native window duration are part of the durable identity.
+        assert!(normalized.contains("PRIMARY KEY (subject_id, plan, window_duration_secs)"));
+
+        // Raw provider integers are the authority; the derived fraction sits beside them.
+        assert!(normalized.contains("native_used_units bigint NOT NULL"));
+        assert!(normalized
+            .contains("native_limit_units bigint NOT NULL CHECK (native_limit_units > 0)"));
+        assert!(normalized.contains("measurement_resolution_fraction_units bigint NOT NULL"));
+
+        // KIMI serves quota only from a separate endpoint, so no request id is ever invented.
+        assert!(normalized.contains("observation_source IN ('poll')"));
+        assert!(!normalized.contains("source_request_id"));
+
+        // Disjoint legs must sum exactly to the recorded total.
+        assert!(normalized.contains(
+            "api_total_nanousd = api_input_nanousd + api_cache_read_nanousd \
+             + api_cache_write_nanousd + api_output_nanousd"
+        ));
+        assert!(normalized.contains("CHECK (reasoning_output_tokens <= output_tokens)"));
+
+        assert!(normalized.contains("INSERT INTO engine_schema_migrations(version) VALUES (27)"));
+    }
+
+    #[test]
+    fn kimi_migration_is_registered_at_the_current_schema_version() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 27);
+        let registered = ENGINE_MIGRATIONS
+            .iter()
+            .find(|(version, _)| *version == 27)
+            .map(|(_, sql)| *sql);
+        assert_eq!(registered, Some(MIGRATION_0027));
     }
 
     #[test]
