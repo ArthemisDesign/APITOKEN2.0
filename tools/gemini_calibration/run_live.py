@@ -832,8 +832,11 @@ def verify_leg_usage(leg: Leg, event: dict[str, Any]) -> str | None:
         and event["thinking_output_tokens"] <= 0
     ):
         return THINKING_TOKENS_NOT_OBSERVED
-    if leg.kind == "tool" and event["tool_prompt_tokens"] <= 0:
-        return "tool prompt token class was not observed"
+    # `tool_prompt_tokens` is an optional subset diagnostic, not a separately priced leg.
+    # Antigravity can return a forced functionCall with exact terminal usage while folding the
+    # declaration into ordinary promptTokenCount. The functionCall proof in
+    # verify_generation_response plus response/event usage parity proves the control without
+    # inventing a subset split; the full fresh-input count remains billed exactly once.
     if leg.kind == "search" and event["search_queries"] + event["grounded_search_prompts"] <= 0:
         return "search billing unit was not observed"
     if leg.kind == "image" and event["image_output_tokens"] <= 0:

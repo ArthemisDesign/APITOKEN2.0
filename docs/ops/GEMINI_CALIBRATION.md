@@ -13,7 +13,10 @@ audio payload, function-declaration tool prompt и Google Search. Для мод�
 отдельный payload должен пересечь опубликованный long-context threshold по фактическому
 `countTokens`; для image-модели отдельно выполняются 1K, 2K и 4K. Бесплатный
 `countTokens` является preflight каждого платного запроса. HTTP 400/403/404 и успешный turn без
-ожидаемого token class записываются в `unavailable_capabilities`, а не считаются нулевым расходом.
+ожидаемой отдельно тарифицируемой token class записываются в `unavailable_capabilities`, а не
+считаются нулевым расходом. `toolUsePromptTokenCount` — только optional subset обычного input:
+отсутствующий subset допустим, если forced `functionCall`, terminal usage и response/event parity
+доказаны, потому что весь `promptTokenCount` уже тарифицируется ровно один раз.
 После уже оплаченного generation runner также проверяет само native-тело ответа: публичный
 `modelVersion`, видимый non-thought text (либо обязательный `functionCall`/`inlineData` для
 соответствующего control), `finishReason`, terminal `usageMetadata` и точное совпадение response
@@ -68,6 +71,10 @@ Backend estimator остаётся workload-dependent: он оценивает A
   thinking output tokens. `minimal` допускает нулевой счётчик: этот уровень использует dynamic
   thinking и успешный ответ с полным public identity/output/terminal usage proof не становится
   coverage miss только из-за отсутствия отдельного thinking token class.
+  Аналогично, `tool_prompt_tokens` является диагностическим subset `input_tokens`, а не отдельной
+  ценовой корзиной. Google может свернуть declaration в обычный `promptTokenCount`; runner требует
+  фактический forced `functionCall` и полное terminal response/event usage equality, но не выдумывает
+  отсутствующий subset и не списывает его второй раз.
   HTTP 400/403/404 required capability ведёт к тому же fail-closed исходу. Единственное
   неблокирующее `unavailable_capabilities` — заранее пропущенный без generation Search с
   документированно неограниченным per-query fanout (`blocking=false`,

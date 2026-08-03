@@ -600,7 +600,7 @@ text-generation check. A quota row by itself is never admission evidence.
 
 | Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
 |---|---|---|---|
-| `gemini-3-flash-preview` | dormant mapping → `gemini-3-flash`; quota admission joins `gemini-3-flash` + `gemini-3-flash-agent`; configured Antigravity origin, 2.2.1 UA, minimal headers; bounded inline PCM WAV fallback uses exact integral `duration × 32` AUDIO tokens and fails closed on ambiguous cache | accounting SHA `4b0c6443…` passed Pro+Ultra minimal/low/medium/high and two-frame SSE, then its controlled run failed on the Ultra cache-write turn: terminal response had no visible output, response/event usage parity was false, and a nominal first write already reported cache-read tokens after the Pro leg used the same lineage. No audio/tool leg was dispatched. The follow-up runner isolates cache lineage per profile and raises cache/audio output ceilings, but needs a wholly new exact-SHA matrix | withdrawal remains effective; absent from production defaults and public catalog until a later complete GREEN run |
+| `gemini-3-flash-preview` | dormant mapping → `gemini-3-flash`; quota admission joins `gemini-3-flash` + `gemini-3-flash-agent`; configured Antigravity origin, 2.2.1 UA, minimal headers; bounded inline PCM WAV fallback uses exact integral `duration × 32` AUDIO tokens and fails closed on ambiguous cache | runner SHA `b9d941c3…` passed Pro+Ultra minimal/low/medium/high, incremental SSE, isolated cache write/read and exact fresh/replayed WAV audio. Its fresh run then stopped after a valid forced function call because Google folded the declaration into 65 ordinary input tokens and omitted optional `toolUsePromptTokenCount`; terminal response/event usage still matched exactly. A later runner may treat that non-priced subset as diagnostic, but must execute a new full matrix | withdrawal remains effective; absent from production defaults and public catalog until a later complete GREEN run |
 | `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
 | `gemini-3.5-flash` | minimal → `gemini-3.5-flash-extra-low`; low/medium/high/default → `gemini-3.5-flash-low`, with the requested native thinking level preserved | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; default and `alt=json` JSON streams 200; canonical modelVersion and non-zero usage verified on Google AI Pro on 2026-07-31 | published |
 | `gemini-3.1-pro-preview` | low → `gemini-3.1-pro-low`; medium/high/default → `gemini-pro-agent` with the requested native thinking level preserved | default/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
@@ -705,6 +705,15 @@ Gemini 3 Flash Preview implementation evidence reviewed on 2026-08-02 and 2026-0
   run/model cache key. That paid turn is not replayable and does not authorize publication. The
   next dormant runner candidate derives an opaque per-profile cache scope and gives cache/audio
   512 output tokens; it requires a new run id and a full exact-SHA matrix from the beginning.
+- runner SHA `b9d941c36eb9189f2d11ed4d0a6d3f5b225dd1d8` then proved those isolated cache
+  write/read and exact PCM WAV fresh/replay paths on Pro and Ultra, in addition to every thinking
+  level and incremental SSE. Its nineteenth paid turn returned the required forced function call,
+  public identity, terminal usage and exact response/event parity, but Google reported 65 ordinary
+  input tokens and no `toolUsePromptTokenCount`. The old runner incorrectly treated that optional
+  non-priced subset as a required billing class and stopped before the second tool leg. The terminal
+  report is not resumable. The follow-up keeps the provider `promptTokenCount` as the complete
+  priced authority, leaves `tool_prompt_tokens=0` as honest diagnostic evidence and requires a new
+  full run; it does not reinterpret or reuse the failed turn.
 
 The reproducible source/plan/rate/wire dossiers are
 [`research/GEMINI_3_FLASH_PREVIEW.md`](../../research/GEMINI_3_FLASH_PREVIEW.md) and
@@ -715,6 +724,8 @@ the bounded accounting proof and new candidate contract are
 [`research/GEMINI_3_FLASH_AUDIO_ACCOUNTING.md`](../../research/GEMINI_3_FLASH_AUDIO_ACCOUNTING.md).
 The failed accounting-candidate gate is preserved in
 [`research/GEMINI_3_FLASH_AUDIO_ACCOUNTING_LIVE_WITHDRAWAL.md`](../../research/GEMINI_3_FLASH_AUDIO_ACCOUNTING_LIVE_WITHDRAWAL.md).
+The later optional tool-subset runner withdrawal is preserved in
+[`research/GEMINI_3_FLASH_TOOL_USAGE_LIVE_WITHDRAWAL.md`](../../research/GEMINI_3_FLASH_TOOL_USAGE_LIVE_WITHDRAWAL.md).
 
 ## Failure and stream safety
 

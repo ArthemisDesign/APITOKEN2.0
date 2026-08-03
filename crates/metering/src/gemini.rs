@@ -57,7 +57,8 @@ pub struct GeminiModelSpec {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GeminiUsage {
-    /// Uncached, non-audio input. `toolUsePromptTokenCount` is included here.
+    /// Uncached, non-audio input. A reported `toolUsePromptTokenCount` is included here; when the
+    /// optional subset is absent, provider `promptTokenCount` remains the complete authority.
     pub input_tokens: u64,
     /// Subset of `input_tokens` contributed by tool declarations/use prompts.
     pub tool_prompt_tokens: u64,
@@ -764,6 +765,31 @@ mod tests {
                 grounded_search_prompts: 1,
             })
         );
+    }
+
+    #[test]
+    fn missing_tool_subset_keeps_authoritative_prompt_billed_once() {
+        let response = serde_json::json!({
+            "usageMetadata": {
+                "promptTokenCount": 65,
+                "candidatesTokenCount": 20,
+                "thoughtsTokenCount": 59
+            }
+        });
+        let usage = usage_from_response_value(&response).unwrap();
+        assert_eq!(
+            usage,
+            GeminiUsage {
+                input_tokens: 65,
+                tool_prompt_tokens: 0,
+                output_tokens: 79,
+                thinking_output_tokens: 59,
+                ..GeminiUsage::default()
+            }
+        );
+
+        let prices = gemini_prices_at("gemini-3-flash-preview", 0).unwrap();
+        assert_eq!(cost_nanodollars(&usage, &prices), 65 * 500 + 79 * 3_000);
     }
 
     #[test]

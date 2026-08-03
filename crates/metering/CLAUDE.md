@@ -10,9 +10,11 @@
 - Считаем в ЦЕЛЫХ нанодолларах (1 USD = 1e9 нано; $/Mtoken × 1000 = нано/токен — целое).
   Никаких f64 в подсчёте денег.
 - Gemini catalog тоже живёт только здесь: paid-tier effective-dated ставки, uncached/audio/cached
-  input, candidate+thinking output, tool prompt, long-context и Search. Gemini 2.5 Search считается
-  per grounded prompt, Gemini 3 — per query. Новую модель/ценовую эпоху добавлять только с официальной
-  ссылкой и exact-rate тестом; отдельно тарифицируемый tool нельзя пропустить бесплатно.
+  input, candidate+thinking output, диагностический tool-prompt subset, long-context и Search.
+  Отсутствующий `toolUsePromptTokenCount` не вычитается из authoritative `promptTokenCount` и не
+  придумывается: subset не тарифицируется второй раз. Gemini 2.5 Search считается per grounded
+  prompt, Gemini 3 — per query. Новую модель/ценовую эпоху добавлять только с официальной ссылкой и
+  exact-rate тестом; отдельно тарифицируемый server tool нельзя пропустить бесплатно.
 - Codex catalog и ChatGPT Fast credit multiplier тоже живут только здесь. Fast — tier существующей
   модели, не отдельный model id: GPT-5.6/5.5 = 2.5x, GPT-5.4 = 2x. Изменять только по опубликованной
   OpenAI таблице с exact-multiplier тестом.

@@ -454,7 +454,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         )
         self.assertIn("terminal usageMetadata", error)
 
-    def test_tool_response_requires_function_call_and_exact_tool_usage(self):
+    def test_tool_response_requires_function_call_and_accepts_optional_subset_usage(self):
         leg = run_live.Leg("tool", "gemini-3-flash-preview", "tool")
         response = run_live.GenerationResponse(
             frames=({
@@ -483,12 +483,41 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(evidence["function_calls"], 1)
 
+        response_without_subset = dataclasses.replace(
+            response,
+            frames=({
+                **response.frames[0],
+                "usageMetadata": {
+                    "promptTokenCount": 65,
+                    "candidatesTokenCount": 2,
+                },
+            },),
+        )
+        immutable_without_subset = event(model=leg.model)
+        immutable_without_subset.update({
+            "input_tokens": 65,
+            "tool_prompt_tokens": 0,
+            "output_tokens": 2,
+        })
+        immutable_without_subset = run_live.recent_turn_events(
+            capacity([immutable_without_subset])
+        )["req-1"]
+        evidence, error = run_live.verify_generation_response(
+            leg,
+            response_without_subset,
+            immutable_without_subset,
+        )
+        self.assertIsNone(error)
+        self.assertEqual(evidence["function_calls"], 1)
+        self.assertTrue(evidence["usage_matches_immutable_event"])
+        self.assertIsNone(run_live.verify_leg_usage(leg, immutable_without_subset))
+
     def test_malformed_success_body_becomes_sanitized_response_proof_failure(self):
         response = run_live.decode_generation_response(b"data: {not-json}\n\n", stream=True)
         self.assertEqual(response.frames, ())
         self.assertIn("invalid JSON", response.parse_error)
 
-    def test_usage_verification_distinguishes_unavailable_token_classes(self):
+    def test_usage_verification_distinguishes_billable_classes_and_optional_tool_subset(self):
         raw = event()
         raw["output_tokens"] = "2"
         parsed = run_live.recent_turn_events(capacity([raw]))["req-1"]
@@ -498,7 +527,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         parsed["output_tokens"] = 2
         self.assertIsNone(run_live.verify_leg_usage(audio, parsed))
         tool = run_live.Leg("tool", "gemini-2.5-flash", "tool")
-        self.assertIn("tool", run_live.verify_leg_usage(tool, parsed))
+        self.assertIsNone(run_live.verify_leg_usage(tool, parsed))
         parsed["tool_prompt_tokens"] = 1
         self.assertIsNone(run_live.verify_leg_usage(tool, parsed))
 
