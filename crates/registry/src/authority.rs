@@ -746,6 +746,18 @@ impl Authority {
         }
     }
 
+    pub fn locked_openkeys_policy_transition(
+        &mut self,
+        transition: &crate::pricing::LockedOpenKeysPolicyTransitionSpec,
+    ) -> Result<crate::pricing::PricingMutation> {
+        match self {
+            Self::Sqlite(connection) => {
+                crate::pricing::sqlite_locked_openkeys_policy_transition(connection, transition)
+            }
+            Self::Postgres(store) => store.locked_openkeys_policy_transition(transition),
+        }
+    }
+
     pub fn activate_account_policy(
         &mut self,
         activation: &crate::pricing::AccountPolicyActivationSpec,

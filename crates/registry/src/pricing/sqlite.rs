@@ -2,16 +2,18 @@ use super::{
     expectation_matches, invalid, missing, normalize_catalog, normalize_policy, normalize_switches,
     policy_expectation_matches, require_id, required_catalog_generations, validate_account_policy,
     validate_account_policy_binding, validate_account_policy_shape, validate_active_expectation,
-    validate_legacy_snapshot_request_id, validate_policy_active_expectation,
+    validate_legacy_snapshot_request_id, validate_locked_openkeys_policy_transition,
+    validate_locked_openkeys_successor_identity, validate_policy_active_expectation,
     validate_pricing_catalog, validate_provider_switches, validate_version_target, AccountClass,
     AccountPolicyActivationSpec, AccountPolicyBindingSpec, AccountPolicyRuleSpec,
     AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation, ActivePolicyTarget,
     FundingEnforcement, LegacyPremiumModifiers, LegacyScalarAdmissionSnapshot,
-    LegacyScalarAdmissionSnapshotInput, LegacyScalarSnapshotLookup, PolicyActiveExpectation,
-    PolicyAdmissionSnapshot, PolicyAdmissionSnapshotInput, PolicyBindingState, PolicyEnforcement,
-    PolicyOwnerType, PolicyRuleScope, PolicySnapshotLookup, PricingCatalogEntrySpec,
-    PricingCatalogSpec, PricingMode, PricingMutation, PricingPolicySnapshot, PricingReadBundle,
-    PricingRejection, PricingShadowAdmissionEvaluation, PricingShadowAdmissionEvaluationInput,
+    LegacyScalarAdmissionSnapshotInput, LegacyScalarSnapshotLookup,
+    LockedOpenKeysPolicyTransitionSpec, PolicyActiveExpectation, PolicyAdmissionSnapshot,
+    PolicyAdmissionSnapshotInput, PolicyBindingState, PolicyEnforcement, PolicyOwnerType,
+    PolicyRuleScope, PolicySnapshotLookup, PricingCatalogEntrySpec, PricingCatalogSpec,
+    PricingMode, PricingMutation, PricingPolicySnapshot, PricingReadBundle, PricingRejection,
+    PricingShadowAdmissionEvaluation, PricingShadowAdmissionEvaluationInput,
     PricingShadowEvaluationWrite, PricingShadowStorageRow, ProviderSwitchEntrySpec,
     ProviderSwitchScope, ProviderSwitchSpec, ReconciliationState, RuleOrigin,
     ShadowActualSnapshotRef, SnapshotProvider, VersionTarget,
@@ -1561,6 +1563,71 @@ pub fn sqlite_pricing_read_bundle(
     Ok(bundle)
 }
 
+fn insert_account_policy_rows(
+    conn: &Connection,
+    incoming: &AccountPolicySpec,
+    created_ts: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO account_policy_versions(
+             account_id, effective_version, policy_id, policy_version,
+             source_policy_digest, owner_type, owner_id, account_class,
+             product_id, schema_version, catalog_generation, switch_generation,
+             content_digest, replacement_locked, created_ts
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+        params![
+            &incoming.account_id,
+            incoming.effective_version,
+            &incoming.policy_id,
+            incoming.policy_version,
+            &incoming.source_policy_digest,
+            incoming.owner_type.as_str(),
+            &incoming.owner_id,
+            incoming.account_class.as_str(),
+            &incoming.product_id,
+            incoming.schema_version,
+            incoming.catalog_generation,
+            incoming.switch_generation,
+            &incoming.content_digest,
+            incoming.replacement_locked,
+            created_ts,
+        ],
+    )
+    .context("insert SQLite account policy version")?;
+    let mut statement = conn
+        .prepare(
+            "INSERT INTO account_policy_rules(
+                 account_id, effective_version, rule_id, rule_digest, scope_type,
+                 provider_id, canonical_model_id, pricing_mode, rule_origin,
+                 discount_bps, payable_multiplier_bp, track_eligible,
+                 retention_eligible, commission_eligible
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+        )
+        .context("prepare SQLite account policy rule insert")?;
+    for rule in &incoming.rules {
+        let (scope_type, provider_id, canonical_model_id) = rule.scope.db_parts();
+        statement
+            .execute(params![
+                &incoming.account_id,
+                incoming.effective_version,
+                &rule.rule_id,
+                &rule.rule_digest,
+                scope_type,
+                provider_id,
+                canonical_model_id,
+                rule.pricing_mode.as_str(),
+                rule.rule_origin.as_str(),
+                rule.discount_bps,
+                rule.payable_multiplier_bp,
+                rule.track_eligible,
+                rule.retention_eligible,
+                rule.commission_eligible,
+            ])
+            .context("insert SQLite account policy rule")?;
+    }
+    Ok(())
+}
+
 pub fn sqlite_prepare_account_policy(
     conn: &Connection,
     incoming: &AccountPolicySpec,
@@ -1673,67 +1740,253 @@ pub fn sqlite_prepare_account_policy(
         return finish(transaction, invalid(error));
     }
 
-    transaction
-        .execute(
-            "INSERT INTO account_policy_versions(
-                 account_id, effective_version, policy_id, policy_version,
-                 source_policy_digest, owner_type, owner_id, account_class,
-                 product_id, schema_version, catalog_generation, switch_generation,
-                 content_digest, replacement_locked, created_ts
-             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            params![
-                &incoming.account_id,
-                incoming.effective_version,
-                &incoming.policy_id,
-                incoming.policy_version,
-                &incoming.source_policy_digest,
-                incoming.owner_type.as_str(),
-                &incoming.owner_id,
-                incoming.account_class.as_str(),
-                &incoming.product_id,
-                incoming.schema_version,
-                incoming.catalog_generation,
-                incoming.switch_generation,
-                &incoming.content_digest,
-                incoming.replacement_locked,
-                now(),
-            ],
-        )
-        .context("insert SQLite account policy version")?;
-    {
-        let mut statement = transaction
-            .prepare(
-                "INSERT INTO account_policy_rules(
-                     account_id, effective_version, rule_id, rule_digest, scope_type,
-                     provider_id, canonical_model_id, pricing_mode, rule_origin,
-                     discount_bps, payable_multiplier_bp, track_eligible,
-                     retention_eligible, commission_eligible
-                 ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-            )
-            .context("prepare SQLite account policy rule insert")?;
-        for rule in &incoming.rules {
-            let (scope_type, provider_id, canonical_model_id) = rule.scope.db_parts();
-            statement
-                .execute(params![
-                    &incoming.account_id,
-                    incoming.effective_version,
-                    &rule.rule_id,
-                    &rule.rule_digest,
-                    scope_type,
-                    provider_id,
-                    canonical_model_id,
-                    rule.pricing_mode.as_str(),
-                    rule.rule_origin.as_str(),
-                    rule.discount_bps,
-                    rule.payable_multiplier_bp,
-                    rule.track_eligible,
-                    rule.retention_eligible,
-                    rule.commission_eligible,
-                ])
-                .context("insert SQLite account policy rule")?;
-        }
-    }
+    insert_account_policy_rows(&transaction, &incoming, now())?;
     finish(transaction, PricingMutation::Stored)
+}
+
+pub fn sqlite_locked_openkeys_policy_transition(
+    conn: &Connection,
+    transition: &LockedOpenKeysPolicyTransitionSpec,
+) -> Result<PricingMutation> {
+    let transition = LockedOpenKeysPolicyTransitionSpec {
+        policy: normalize_policy(&transition.policy),
+        expected_active: transition.expected_active.clone(),
+    };
+    if let Err(error) = validate_locked_openkeys_policy_transition(&transition) {
+        return Ok(invalid(error));
+    }
+
+    let transaction = immediate(conn)?;
+    let current_binding = stored_policy_binding(&transaction, &transition.policy.account_id)?;
+    let actual_state = current_binding
+        .as_ref()
+        .map(StoredPolicyBinding::state)
+        .unwrap_or(PolicyBindingState::Unbound);
+    let Some(locked) = sqlite_account_policy_by_version(
+        &transaction,
+        &transition.policy.account_id,
+        transition.expected_active.target.version,
+    )?
+    else {
+        return finish(
+            transaction,
+            missing(format!(
+                "locked OpenKeys policy {:?} effective version {}",
+                transition.policy.account_id, transition.expected_active.target.version
+            )),
+        );
+    };
+    if locked.content_digest != transition.expected_active.target.content_digest {
+        return finish(
+            transaction,
+            PricingMutation::Rejected(PricingRejection::VersionConflict),
+        );
+    }
+    if let Err(error) = validate_locked_openkeys_successor_identity(&transition, &locked) {
+        return finish(transaction, invalid(error));
+    }
+    if current_binding
+        .as_ref()
+        .is_some_and(|binding| !binding.identity_matches(&locked))
+    {
+        return finish(
+            transaction,
+            PricingMutation::Rejected(PricingRejection::VersionConflict),
+        );
+    }
+
+    let desired = transition.desired_active();
+    if let Some(existing) = sqlite_account_policy_by_version(
+        &transaction,
+        &transition.policy.account_id,
+        transition.policy.effective_version,
+    )? {
+        let outcome = if existing == transition.policy
+            && actual_state == PolicyBindingState::Active(desired)
+        {
+            PricingMutation::Unchanged
+        } else {
+            PricingMutation::Rejected(PricingRejection::VersionConflict)
+        };
+        return finish(transaction, outcome);
+    }
+    if actual_state != PolicyBindingState::Active(transition.expected_active.clone()) {
+        return finish(
+            transaction,
+            PricingMutation::Rejected(PricingRejection::PolicyCasMismatch {
+                actual: actual_state.clone(),
+            }),
+        );
+    }
+    if latest_account_policy(&transaction, &transition.policy.account_id)?
+        .is_none_or(|latest| latest != locked)
+    {
+        return finish(
+            transaction,
+            PricingMutation::Rejected(PricingRejection::VersionConflict),
+        );
+    }
+
+    let Some(locked_catalog) = sqlite_pricing_catalog_by_generation(
+        &transaction,
+        &locked.product_id,
+        locked.catalog_generation,
+    )?
+    else {
+        return finish(
+            transaction,
+            missing(format!(
+                "pricing catalog {:?} generation {}",
+                locked.product_id, locked.catalog_generation
+            )),
+        );
+    };
+    let Some(locked_switches) =
+        sqlite_provider_switches_by_generation(&transaction, locked.switch_generation)?
+    else {
+        return finish(
+            transaction,
+            missing(format!(
+                "provider switch generation {}",
+                locked.switch_generation
+            )),
+        );
+    };
+    let Some(multiplier_bp) = live_account_multiplier(&transaction, &locked.account_id)? else {
+        return finish(
+            transaction,
+            missing(format!("account {:?}", locked.account_id)),
+        );
+    };
+    if let Err(error) = validate_account_policy(
+        &locked,
+        &locked_catalog,
+        &locked_switches,
+        Some(multiplier_bp),
+    ) {
+        return finish(transaction, invalid(error));
+    }
+
+    let Some(catalog) = sqlite_pricing_catalog_by_generation(
+        &transaction,
+        &transition.policy.product_id,
+        transition.policy.catalog_generation,
+    )?
+    else {
+        return finish(
+            transaction,
+            missing(format!(
+                "pricing catalog {:?} generation {}",
+                transition.policy.product_id, transition.policy.catalog_generation
+            )),
+        );
+    };
+    let Some(switches) =
+        sqlite_provider_switches_by_generation(&transaction, transition.policy.switch_generation)?
+    else {
+        return finish(
+            transaction,
+            missing(format!(
+                "provider switch generation {}",
+                transition.policy.switch_generation
+            )),
+        );
+    };
+    if let Err(error) =
+        validate_account_policy(&transition.policy, &catalog, &switches, Some(multiplier_bp))
+    {
+        return finish(transaction, invalid(error));
+    }
+    if sqlite_active_provider_switches(&transaction)?
+        .as_ref()
+        .is_none_or(|active| active.target() != switches.target())
+    {
+        return finish(
+            transaction,
+            missing(format!(
+                "active provider switch target {:?}",
+                switches.target()
+            )),
+        );
+    }
+    if sqlite_active_pricing_catalog(&transaction, &transition.policy.product_id)?
+        .as_ref()
+        .is_none_or(|active| active.target() != catalog.target())
+    {
+        return finish(
+            transaction,
+            missing(format!(
+                "active pricing catalog {:?} target {:?}",
+                transition.policy.product_id,
+                catalog.target()
+            )),
+        );
+    }
+
+    insert_account_policy_rows(&transaction, &transition.policy, now())?;
+    let desired_binding = desired.binding;
+    let affected = transaction.execute(
+        "UPDATE account_policy_bindings
+            SET active_effective_version=?1,
+                policy_enforcement=?2,
+                funding_enforcement=?3,
+                reconciliation_state=?4,
+                updated_ts=?5
+          WHERE account_id=?6
+            AND product_id=?7
+            AND account_class=?8
+            AND active_effective_version=?9
+            AND policy_enforcement=?10
+            AND funding_enforcement=?11
+            AND reconciliation_state=?12
+            AND EXISTS (
+                SELECT 1
+                  FROM account_policy_versions v
+                 WHERE v.account_id=account_policy_bindings.account_id
+                   AND v.effective_version=account_policy_bindings.active_effective_version
+                   AND v.product_id=account_policy_bindings.product_id
+                   AND v.content_digest=?13
+                   AND v.replacement_locked=1
+            )",
+        params![
+            transition.policy.effective_version,
+            desired_binding.policy_enforcement.as_str(),
+            desired_binding.funding_enforcement.as_str(),
+            desired_binding.reconciliation_state.as_str(),
+            now(),
+            &transition.policy.account_id,
+            &transition.policy.product_id,
+            transition.policy.account_class.as_str(),
+            transition.expected_active.target.version,
+            transition
+                .expected_active
+                .binding
+                .policy_enforcement
+                .as_str(),
+            transition
+                .expected_active
+                .binding
+                .funding_enforcement
+                .as_str(),
+            transition
+                .expected_active
+                .binding
+                .reconciliation_state
+                .as_str(),
+            &transition.expected_active.target.content_digest,
+        ],
+    )?;
+    if affected != 1 {
+        transaction
+            .rollback()
+            .context("rollback lost SQLite locked OpenKeys policy transition CAS")?;
+        return Ok(PricingMutation::Rejected(
+            PricingRejection::PolicyCasMismatch {
+                actual: actual_state,
+            },
+        ));
+    }
+    finish(transaction, PricingMutation::Applied)
 }
 
 pub fn sqlite_activate_account_policy(
@@ -3375,6 +3628,74 @@ mod tests {
         ];
         assert_eq!(
             sqlite_prepare_account_policy(&conn, &replacement).unwrap(),
+            PricingMutation::Rejected(PricingRejection::Locked)
+        );
+
+        let transition = LockedOpenKeysPolicyTransitionSpec {
+            policy: replacement.clone(),
+            expected_active: ActivePolicyTarget {
+                target: legacy_policy.target(),
+                binding: legacy_binding(),
+            },
+        };
+        let mut invalid_transition = transition.clone();
+        invalid_transition.policy.rules[0].scope = PolicyRuleScope::Model {
+            provider_id: "anthropic".to_owned(),
+            canonical_model_id: "claude-test".to_owned(),
+        };
+        assert!(matches!(
+            sqlite_locked_openkeys_policy_transition(&conn, &invalid_transition).unwrap(),
+            PricingMutation::Rejected(PricingRejection::Invalid { .. })
+        ));
+
+        conn.execute_batch(
+            "CREATE TRIGGER reject_locked_openkeys_transition_child
+             BEFORE INSERT ON account_policy_rules
+             WHEN NEW.account_id='legacy-openkeys'
+              AND NEW.effective_version=2
+              AND NEW.provider_id='openai'
+             BEGIN
+               SELECT RAISE(ABORT, 'injected locked OpenKeys child failure');
+             END;",
+        )
+        .unwrap();
+        assert!(sqlite_locked_openkeys_policy_transition(&conn, &transition).is_err());
+        assert_eq!(
+            sqlite_account_policy_by_version(&conn, "legacy-openkeys", 2).unwrap(),
+            None
+        );
+        assert_eq!(
+            sqlite_active_account_policy(&conn, "legacy-openkeys")
+                .unwrap()
+                .expect("legacy OpenKeys policy remains active")
+                .policy,
+            normalize_policy(&legacy_policy)
+        );
+        conn.execute_batch("DROP TRIGGER reject_locked_openkeys_transition_child;")
+            .unwrap();
+
+        assert_eq!(
+            sqlite_locked_openkeys_policy_transition(&conn, &transition).unwrap(),
+            PricingMutation::Applied
+        );
+        assert_eq!(
+            sqlite_locked_openkeys_policy_transition(&conn, &transition).unwrap(),
+            PricingMutation::Unchanged
+        );
+        assert_eq!(
+            sqlite_active_account_policy(&conn, "legacy-openkeys").unwrap(),
+            Some(ActiveAccountPolicy {
+                policy: normalize_policy(&replacement),
+                binding: super::super::locked_openkeys_transition_binding(),
+            })
+        );
+
+        let mut third = replacement;
+        third.effective_version = 3;
+        third.policy_version = 3;
+        third.content_digest = "third-policy".to_owned();
+        assert_eq!(
+            sqlite_prepare_account_policy(&conn, &third).unwrap(),
             PricingMutation::Rejected(PricingRejection::Locked)
         );
     }

@@ -18,14 +18,15 @@
 
 use registry::pricing::{
     AccountPolicyActivationSpec, AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation,
-    LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome, PolicyActiveExpectation,
-    PolicyAdmissionSnapshot, PolicyReserveOutcome, PricingCatalogSpec, PricingMutation,
-    PricingReadBundle, PricingReleaseActivationOutcomeV2, PricingReleaseActivationRequestV2,
-    PricingReleaseAssignmentExtensionV2, PricingReleaseHeadV2, PricingReleaseInventoryPageV2,
-    PricingReleasePolicyV2, PricingReleaseProvisioningContextV2, PricingReleaseQuoteV2,
-    PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2, PricingReleaseResolutionV2,
-    PricingReleaseV2, PricingRuntimeManifestEvidence, PricingShadowAdmissionEvaluationInput,
-    PricingShadowEvaluationWrite, ProviderSwitchSpec, VersionTarget,
+    LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome, LockedOpenKeysPolicyTransitionSpec,
+    PolicyActiveExpectation, PolicyAdmissionSnapshot, PolicyReserveOutcome, PricingCatalogSpec,
+    PricingMutation, PricingReadBundle, PricingReleaseActivationOutcomeV2,
+    PricingReleaseActivationRequestV2, PricingReleaseAssignmentExtensionV2, PricingReleaseHeadV2,
+    PricingReleaseInventoryPageV2, PricingReleasePolicyV2, PricingReleaseProvisioningContextV2,
+    PricingReleaseQuoteV2, PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2,
+    PricingReleaseResolutionV2, PricingReleaseV2, PricingRuntimeManifestEvidence,
+    PricingShadowAdmissionEvaluationInput, PricingShadowEvaluationWrite, ProviderSwitchSpec,
+    VersionTarget,
 };
 use registry::{
     AccountFundingSnapshot, AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation,
@@ -1302,6 +1303,10 @@ enum WriteCmd {
     },
     PrepareAccountPolicy {
         spec: AccountPolicySpec,
+        reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
+    },
+    LockedOpenKeysPolicyTransition {
+        transition: LockedOpenKeysPolicyTransitionSpec,
         reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
     },
     ActivateAccountPolicy {
@@ -2637,6 +2642,14 @@ impl AsyncBilling {
                             &conn, &spec,
                         ));
                     }
+                    WriteCmd::LockedOpenKeysPolicyTransition { transition, reply } => {
+                        let _ = reply.send(
+                            registry::pricing::sqlite_locked_openkeys_policy_transition(
+                                &conn,
+                                &transition,
+                            ),
+                        );
+                    }
                     WriteCmd::ActivateAccountPolicy { activation, expectation, reply } => {
                         let _ = reply.send(registry::pricing::sqlite_activate_account_policy(
                             &conn, &activation, &expectation,
@@ -3500,6 +3513,16 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
+                        WriteCmd::LockedOpenKeysPolicyTransition { transition, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "locked OpenKeys policy transition",
+                                |pg| pg.locked_openkeys_policy_transition(&transition),
+                            );
+                            let _ = reply.send(result);
+                        }
                         WriteCmd::ActivateAccountPolicy { activation, expectation, reply } => {
                             let result = run_pg_with_retry(
                                 &mut pg,
@@ -4185,6 +4208,20 @@ impl AsyncBilling {
         let (reply, result) = oneshot::channel();
         self.writer
             .send(WriteCmd::PrepareAccountPolicy { spec, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    pub async fn locked_openkeys_policy_transition(
+        &self,
+        transition: LockedOpenKeysPolicyTransitionSpec,
+    ) -> anyhow::Result<PricingMutation> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::LockedOpenKeysPolicyTransition { transition, reply })
             .await
             .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
         result

@@ -381,6 +381,7 @@ GET  /admin/pricing/policy/{account_id}/version/{effective_version}
 GET  /admin/pricing/policy/{account_id}/active
 GET  /admin/pricing/policy/{account_id}/state
 POST /admin/pricing/policy/{account_id}/activate
+POST /admin/pricing/policy/{account_id}/locked-openkeys-transition
 ```
 
 Prepare bodies are the complete immutable `PricingCatalogSpec`, `ProviderSwitchSpec`, or
@@ -431,6 +432,99 @@ typed and retain evidence:
 `GET .../state` reads the live scalar, policy binding, pinned policy catalog/switches, and current
 admission catalog/switches in one database snapshot. Stage 3C does not backfill data, issue keys,
 enable strict enforcement, or bypass the catalog → switches → policy order.
+
+#### Replacement-locked legacy OpenKeys transition
+
+`POST /admin/pricing/policy/{account_id}/locked-openkeys-transition` is an additive
+producer-first exception for one migration shape; it is not a general policy-unlock operation.
+The request is:
+
+```json
+{
+  "policy": {
+    "account_id": "openkeys-account",
+    "effective_version": 2,
+    "policy_id": "openkeys:openkeys-account",
+    "policy_version": 2,
+    "source_policy_digest": "sha256:managed-source",
+    "owner_type": "open_keys",
+    "owner_id": "openkeys-account",
+    "account_class": "open_keys",
+    "product_id": "openkeys",
+    "schema_version": 1,
+    "catalog_generation": 5,
+    "switch_generation": 5,
+    "content_digest": "sha256:managed-policy",
+    "replacement_locked": false,
+    "rules": [
+      {
+        "rule_id": "openkeys-anthropic-1to1",
+        "rule_digest": "sha256:anthropic-rule",
+        "scope": {"provider": {"provider_id": "anthropic"}},
+        "pricing_mode": "discount",
+        "rule_origin": "managed",
+        "discount_bps": 0,
+        "payable_multiplier_bp": 10000,
+        "track_eligible": false,
+        "retention_eligible": false,
+        "commission_eligible": false
+      },
+      {
+        "rule_id": "openkeys-openai-1to1",
+        "rule_digest": "sha256:openai-rule",
+        "scope": {"provider": {"provider_id": "openai"}},
+        "pricing_mode": "discount",
+        "rule_origin": "managed",
+        "discount_bps": 0,
+        "payable_multiplier_bp": 10000,
+        "track_eligible": false,
+        "retention_eligible": false,
+        "commission_eligible": false
+      }
+    ]
+  },
+  "expected_active": {
+    "target": {
+      "version": 1,
+      "content_digest": "sha256:legacy-policy"
+    },
+    "binding": {
+      "policy_enforcement": "legacy_scalar",
+      "funding_enforcement": "legacy_single",
+      "reconciliation_state": "pending"
+    }
+  }
+}
+```
+
+`policy.rules` must contain only managed provider rules for the providers enabled by the named
+catalog/switch lineage. Every rule has `pricing_mode=discount`, `discount_bps=0`,
+`payable_multiplier_bp=10000`, and all track/retention/commission flags false. Model rules,
+discounted OpenKeys, an empty ruleset, identity changes, retained replacement lock, or a version
+jump other than exactly one are `400 invalid`.
+
+Under the account policy lock the engine verifies that `expected_active` is the exact current and
+latest replacement-locked legacy OpenKeys policy, validates both old and new policies against the
+live account multiplier and immutable dependencies, and requires the successor's exact catalog and
+switch targets to be active. One SQLite/PostgreSQL transaction then inserts the immutable successor
+and CAS-moves the binding to:
+
+```json
+{
+  "policy_enforcement": "shadow",
+  "funding_enforcement": "legacy_single",
+  "reconciliation_state": "verified"
+}
+```
+
+Success is `result=applied`; an exact retry after a lost ACK is `result=unchanged`. A competing
+binding change is `409 policy_cas_mismatch`; missing/inactive exact dependencies and immutable
+version conflicts retain the normal typed pricing errors. Any child insert or CAS failure rolls the
+whole transaction back. Generic policy prepare/activate still return `423 locked` for this
+lineage. The transition changes neither live price nor funding authority: it only makes the
+canonical OpenKeys 1:1 successor available in shadow before the all-account Stage 9 release-head
+CAS. Contracts/client/worker consumers may be connected only after this producer SHA has a green
+`deploy/watchdog`.
 
 ### Pricing release v2: producer and activation surface
 

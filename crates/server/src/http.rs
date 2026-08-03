@@ -264,6 +264,13 @@ define_admin_routes!(
         admin::prepare_account_policy
     ),
     (
+        post,
+        POST,
+        "/admin/pricing/policy/{account_id}/locked-openkeys-transition",
+        "/admin/pricing/policy/test-account/locked-openkeys-transition",
+        admin::locked_openkeys_policy_transition
+    ),
+    (
         get,
         GET,
         "/admin/pricing/policy/{account_id}/active",
@@ -5573,7 +5580,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_admin_route_enforces_the_control_key_lattice() {
-        assert_eq!(ADMIN_ROUTE_CASES.len(), 42);
+        assert_eq!(ADMIN_ROUTE_CASES.len(), 43);
         let service = router(admin_auth_test_app(), Arc::new(AtomicBool::new(true)));
         let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
 
@@ -6103,6 +6110,322 @@ mod tests {
         assert_eq!(
             conflict["rejection"]["cas_mismatch"]["actual"]["version"],
             1
+        );
+
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn locked_openkeys_transition_http_contract_is_exact_and_replay_safe() {
+        use registry::pricing::{
+            AccountPolicyActivationSpec, AccountPolicyBindingSpec, AccountPolicySpec,
+            ActiveExpectation, PolicyActiveExpectation, PricingCatalogSpec, PricingMutation,
+            ProviderSwitchSpec,
+        };
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-locked-openkeys-transition-{}-{nonce}.sqlite",
+            std::process::id()
+        ));
+        let conn = registry::open(path.to_string_lossy().as_ref()).unwrap();
+        registry::account_create(&conn, "openkeys-http-locked", None, 7_300).unwrap();
+
+        let catalog_value = json!({
+            "product_id": "openkeys",
+            "generation": 1,
+            "schema_version": 1,
+            "capability_generation": 1,
+            "capability_digest": "openkeys-http-capability-v1",
+            "content_digest": "openkeys-http-catalog-v1",
+            "entries": [
+                {
+                    "provider_id": "anthropic",
+                    "canonical_model_id": "claude-sonnet-4-6",
+                    "enabled": true
+                },
+                {
+                    "provider_id": "openai",
+                    "canonical_model_id": "gpt-5.4",
+                    "enabled": true
+                }
+            ]
+        });
+        let catalog: PricingCatalogSpec = serde_json::from_value(catalog_value.clone()).unwrap();
+        assert_eq!(
+            registry::pricing::sqlite_prepare_pricing_catalog(&conn, &catalog).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            registry::pricing::sqlite_activate_pricing_catalog(
+                &conn,
+                "openkeys",
+                &catalog.target(),
+                &ActiveExpectation::Absent,
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+
+        let switches_value = json!({
+            "generation": 1,
+            "schema_version": 1,
+            "capability_generation": 1,
+            "capability_digest": "openkeys-http-capability-v1",
+            "content_digest": "openkeys-http-switches-v1",
+            "entries": [
+                {
+                    "provider_id": "anthropic",
+                    "scope": "master",
+                    "catalog_generation": null,
+                    "enabled": true
+                },
+                {
+                    "provider_id": "anthropic",
+                    "scope": {"product": {"product_id": "openkeys"}},
+                    "catalog_generation": 1,
+                    "enabled": true
+                },
+                {
+                    "provider_id": "openai",
+                    "scope": "master",
+                    "catalog_generation": null,
+                    "enabled": true
+                },
+                {
+                    "provider_id": "openai",
+                    "scope": {"product": {"product_id": "openkeys"}},
+                    "catalog_generation": 1,
+                    "enabled": true
+                }
+            ]
+        });
+        let switches: ProviderSwitchSpec = serde_json::from_value(switches_value.clone()).unwrap();
+        assert_eq!(
+            registry::pricing::sqlite_prepare_provider_switches(&conn, &switches).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            registry::pricing::sqlite_activate_provider_switches(
+                &conn,
+                &switches.target(),
+                &ActiveExpectation::Absent,
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+
+        let legacy_policy_value = json!({
+            "account_id": "openkeys-http-locked",
+            "effective_version": 1,
+            "policy_id": "openkeys:openkeys-http-locked",
+            "policy_version": 1,
+            "source_policy_digest": "openkeys-http-legacy-source",
+            "owner_type": "open_keys",
+            "owner_id": "openkeys-http-locked",
+            "account_class": "open_keys",
+            "product_id": "openkeys",
+            "schema_version": 1,
+            "catalog_generation": 1,
+            "switch_generation": 1,
+            "content_digest": "openkeys-http-legacy-policy",
+            "replacement_locked": true,
+            "rules": [
+                {
+                    "rule_id": "openkeys-http-anthropic-legacy",
+                    "rule_digest": "openkeys-http-anthropic-legacy-digest",
+                    "scope": {"provider": {"provider_id": "anthropic"}},
+                    "pricing_mode": "discount",
+                    "rule_origin": "legacy",
+                    "discount_bps": null,
+                    "payable_multiplier_bp": 7_300,
+                    "track_eligible": false,
+                    "retention_eligible": false,
+                    "commission_eligible": false
+                },
+                {
+                    "rule_id": "openkeys-http-openai-legacy",
+                    "rule_digest": "openkeys-http-openai-legacy-digest",
+                    "scope": {"provider": {"provider_id": "openai"}},
+                    "pricing_mode": "discount",
+                    "rule_origin": "legacy",
+                    "discount_bps": null,
+                    "payable_multiplier_bp": 7_300,
+                    "track_eligible": false,
+                    "retention_eligible": false,
+                    "commission_eligible": false
+                }
+            ]
+        });
+        let legacy_policy: AccountPolicySpec =
+            serde_json::from_value(legacy_policy_value.clone()).unwrap();
+        assert_eq!(
+            registry::pricing::sqlite_prepare_account_policy(&conn, &legacy_policy).unwrap(),
+            PricingMutation::Stored
+        );
+        let legacy_binding_value = json!({
+            "policy_enforcement": "legacy_scalar",
+            "funding_enforcement": "legacy_single",
+            "reconciliation_state": "pending"
+        });
+        let legacy_binding: AccountPolicyBindingSpec =
+            serde_json::from_value(legacy_binding_value.clone()).unwrap();
+        assert_eq!(
+            registry::pricing::sqlite_activate_account_policy(
+                &conn,
+                &AccountPolicyActivationSpec {
+                    account_id: legacy_policy.account_id.clone(),
+                    effective_version: legacy_policy.effective_version,
+                    content_digest: legacy_policy.content_digest.clone(),
+                    binding: legacy_binding,
+                },
+                &PolicyActiveExpectation::Unbound,
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+        drop(conn);
+
+        let billing =
+            Arc::new(forward::AsyncBilling::start(path.to_string_lossy().into_owned(), 1).unwrap());
+        let mut app = admin_auth_test_app();
+        app.billing = Some(billing);
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+
+        let successor = json!({
+            "account_id": "openkeys-http-locked",
+            "effective_version": 2,
+            "policy_id": "openkeys:openkeys-http-locked",
+            "policy_version": 2,
+            "source_policy_digest": "openkeys-http-managed-source",
+            "owner_type": "open_keys",
+            "owner_id": "openkeys-http-locked",
+            "account_class": "open_keys",
+            "product_id": "openkeys",
+            "schema_version": 1,
+            "catalog_generation": 1,
+            "switch_generation": 1,
+            "content_digest": "openkeys-http-managed-policy",
+            "replacement_locked": false,
+            "rules": [
+                {
+                    "rule_id": "openkeys-http-anthropic-managed",
+                    "rule_digest": "openkeys-http-anthropic-managed-digest",
+                    "scope": {"provider": {"provider_id": "anthropic"}},
+                    "pricing_mode": "discount",
+                    "rule_origin": "managed",
+                    "discount_bps": 0,
+                    "payable_multiplier_bp": 10_000,
+                    "track_eligible": false,
+                    "retention_eligible": false,
+                    "commission_eligible": false
+                },
+                {
+                    "rule_id": "openkeys-http-openai-managed",
+                    "rule_digest": "openkeys-http-openai-managed-digest",
+                    "scope": {"provider": {"provider_id": "openai"}},
+                    "pricing_mode": "discount",
+                    "rule_origin": "managed",
+                    "discount_bps": 0,
+                    "payable_multiplier_bp": 10_000,
+                    "track_eligible": false,
+                    "retention_eligible": false,
+                    "commission_eligible": false
+                }
+            ]
+        });
+        let transition = json!({
+            "policy": successor,
+            "expected_active": {
+                "target": {
+                    "version": 1,
+                    "content_digest": "openkeys-http-legacy-policy"
+                },
+                "binding": legacy_binding_value
+            }
+        });
+
+        let mut unknown_field = transition.clone();
+        unknown_field["allow_any_locked_policy"] = json!(true);
+        let (status, _) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/policy/openkeys-http-locked/locked-openkeys-transition",
+            unknown_field,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        let (status, mismatch) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/policy/another-openkeys-account/locked-openkeys-transition",
+            transition.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(mismatch["code"], "invalid");
+
+        let mut non_one_to_one = transition.clone();
+        non_one_to_one["policy"]["rules"][0]["discount_bps"] = json!(100);
+        non_one_to_one["policy"]["rules"][0]["payable_multiplier_bp"] = json!(9_900);
+        let (status, invalid) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/policy/openkeys-http-locked/locked-openkeys-transition",
+            non_one_to_one,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(invalid["code"], "invalid");
+
+        let (status, applied) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/policy/openkeys-http-locked/locked-openkeys-transition",
+            transition.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(applied["result"], "applied");
+        assert_eq!(
+            applied["identity"]["active"]["binding"],
+            json!({
+                "policy_enforcement": "shadow",
+                "funding_enforcement": "legacy_single",
+                "reconciliation_state": "verified"
+            })
+        );
+
+        let (status, replayed) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/policy/openkeys-http-locked/locked-openkeys-transition",
+            transition,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(replayed["result"], "unchanged");
+
+        let (status, state) = control_json_request(
+            &service,
+            Method::GET,
+            "/admin/pricing/policy/openkeys-http-locked/state",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            state["state"]["policy"]["active"]["policy"]["content_digest"],
+            "openkeys-http-managed-policy"
+        );
+        assert_eq!(
+            state["state"]["policy"]["active"]["binding"]["policy_enforcement"],
+            "shadow"
         );
 
         drop(service);

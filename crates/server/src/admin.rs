@@ -12,15 +12,16 @@ use axum::response::{IntoResponse, Json, Response};
 use forward::AppState;
 use registry::pricing::{
     validate_account_policy_binding, validate_account_policy_shape, validate_active_expectation,
-    validate_policy_active_expectation, validate_pricing_catalog,
-    validate_pricing_release_activation_v2, validate_pricing_release_assignment_extension_v2,
-    validate_pricing_release_policy_v2, validate_pricing_release_recovery_link_v2,
-    validate_pricing_release_v2, validate_provider_switches, AccountPolicyActivationSpec,
-    AccountPolicyBindingSpec, AccountPolicySpec, ActiveExpectation, PolicyActiveExpectation,
-    PricingCatalogSpec, PricingMutation, PricingRejection, PricingReleaseActivationOutcomeV2,
-    PricingReleaseActivationRejectionV2, PricingReleaseActivationRequestV2,
-    PricingReleaseAssignmentExtensionV2, PricingReleasePolicyV2, PricingReleaseRecoveryLinkV2,
-    PricingReleaseV2, ProviderSwitchSpec,
+    validate_locked_openkeys_policy_transition, validate_policy_active_expectation,
+    validate_pricing_catalog, validate_pricing_release_activation_v2,
+    validate_pricing_release_assignment_extension_v2, validate_pricing_release_policy_v2,
+    validate_pricing_release_recovery_link_v2, validate_pricing_release_v2,
+    validate_provider_switches, AccountPolicyActivationSpec, AccountPolicyBindingSpec,
+    AccountPolicySpec, ActiveExpectation, LockedOpenKeysPolicyTransitionSpec,
+    PolicyActiveExpectation, PricingCatalogSpec, PricingMutation, PricingRejection,
+    PricingReleaseActivationOutcomeV2, PricingReleaseActivationRejectionV2,
+    PricingReleaseActivationRequestV2, PricingReleaseAssignmentExtensionV2, PricingReleasePolicyV2,
+    PricingReleaseRecoveryLinkV2, PricingReleaseV2, ProviderSwitchSpec,
 };
 use registry::{FundingNormalizationApplyRequestV2, FundingNormalizationApplyStatusV2};
 use serde::Deserialize;
@@ -1390,6 +1391,40 @@ pub async fn prepare_account_policy(
     match b.prepare_account_policy(spec).await {
         Ok(mutation) => pricing_mutation_response(mutation, identity),
         Err(error) => authority_unavailable("account pricing policy prepare", error),
+    }
+}
+
+/// POST /admin/pricing/policy/{account_id}/locked-openkeys-transition — atomically replace one
+/// exact active replacement-locked legacy OpenKeys policy with its managed 1:1 shadow successor.
+pub async fn locked_openkeys_policy_transition(
+    State(app): State<AppState>,
+    Path(account_id): Path<String>,
+    Json(transition): Json<LockedOpenKeysPolicyTransitionSpec>,
+) -> Response {
+    if !valid_pricing_id(&account_id) {
+        return invalid_pricing_path("invalid account_id");
+    }
+    let identity = json!({
+        "policy": transition.policy.clone(),
+        "active": transition.desired_active(),
+        "expected_active": transition.expected_active.clone(),
+    });
+    if transition.policy.account_id != account_id {
+        return invalid_pricing_request(
+            "policy account_id does not match the transition URL",
+            identity,
+        );
+    }
+    if let Err(error) = validate_locked_openkeys_policy_transition(&transition) {
+        return invalid_pricing_request(error.to_string(), identity);
+    }
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing.locked_openkeys_policy_transition(transition).await {
+        Ok(mutation) => pricing_mutation_response(mutation, identity),
+        Err(error) => authority_unavailable("locked OpenKeys policy transition", error),
     }
 }
 

@@ -20,6 +20,7 @@
 | Производитель | Контракт / канал | Потребители | Документ контракта |
 |---|---|---|---|
 | `crates/server` (`src/http.rs`, `src/admin.rs`) | HTTP `/admin/*` под `x-api-key: CLAUDE_API_CONTROL_KEY`; роуты только в режимах Combined/Anthropic | `packages/engine-client` — единственный клиент; прямые обращения к `/admin/*` вне него запрещены | `docs/engine/CONTROL_API.md` |
+| `crates/server` + `crates/forward` + `crates/registry` locked-OpenKeys producer | `POST /admin/pricing/policy/{account_id}/locked-openkeys-transition`: strict exact request, atomic immutable successor insert + binding CAS, only managed provider-level 1:1 rules, fixed `shadow + legacy_single + verified` target; generic replacement lock remains intact | after GREEN exact producer SHA: `packages/contracts` → `packages/engine-client` → protected commerce rollout worker; no direct caller and no consumer in the producer commit | `docs/engine/CONTROL_API.md`, `docs/commerce/MULTI-DISCOUNT.md` |
 | `packages/engine-client` | TS-клиент `EngineClient`, strict zod-валидация из `@claude-api/contracts`, деньги — `json-bigint` строками; pricing v2 provisioning-context/cursor/prepare/readback и единый canonical Stage 5 policy/assignment digest builder | `apps/api`, `apps/worker`, `apps/openkeys`; `packages/db` Stage 5 materializer, Stage 8 collector и pre-delivery activation authority (env `ENGINE_BASE_URL` + `ENGINE_CONTROL_KEY` только у runtime-потребителей) | `docs/engine/CONTROL_API.md`, `docs/commerce/MULTI_DISCOUNT_STAGE5.md`, `docs/commerce/MULTI_DISCOUNT_STAGE7.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md`, `docs/product/OPENKEYS.md` |
 | `claude-api db stage8-evidence` (`crates/registry`, `crates/server`) | protected schema-v2 JSON artifact with signed-i64 nanoUSD and canonical Rust `sha256:v2` evidence digest; exact target/recovery, full engine inventory/funding/shadow/runtime floor | parity/diagnostic non-production input for `packages/db`; production no longer uses an SSH/file handoff | `docs/ops/DEPLOYMENT.md`, `docs/commerce/MULTI-DISCOUNT.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md` |
 | `crates/server` + `crates/forward` Stage 8 capture producer | protected `POST /admin/pricing/v2/stage8-evidence/capture`; strict explicit inputs, server-owned compile-fixed manifest, unwrapped schema-v2 report including `passed=false`; PostgreSQL bounded reader only | after GREEN exact producer SHA: strict `packages/contracts` → raw-text/`json-bigint` `packages/engine-client` → `apps/worker`; exact raw engine bytes are durable before `packages/db` combines commerce/service and two exhaustive OpenKeys scans | `docs/engine/CONTROL_API.md`, `docs/ops/DEPLOYMENT.md`, `docs/commerce/MULTI-DISCOUNT_STAGE9.md` |
@@ -27,7 +28,7 @@
 
 Группы эндпоинтов Control API: аккаунты, credit/ledger (идемпотентный credit по
 provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack`), usage, ключи, versioned pricing
-(catalog/switches/policy), и PostgreSQL-only release-v2 prepare/read/activation под
+(catalog/switches/policy, включая узкий atomic locked-OpenKeys transition), и PostgreSQL-only release-v2 prepare/read/activation под
 `/admin/pricing/v2/*`.
 Release-v2 producer публикует immutable policy/release/recovery prepare, полный engine inventory,
 nullable head, account-local funding normalization plan/apply и append-only assignment extension

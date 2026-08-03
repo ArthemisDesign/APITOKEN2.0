@@ -70,13 +70,14 @@ pub use sqlite::{
     sqlite_activate_pricing_catalog, sqlite_activate_provider_switches,
     sqlite_active_account_policy, sqlite_active_pricing_catalog, sqlite_active_provider_switches,
     sqlite_insert_pricing_shadow_admission_evaluation, sqlite_legacy_scalar_admission_snapshot,
-    sqlite_policy_admission_snapshot, sqlite_prepare_account_policy,
-    sqlite_prepare_pricing_catalog, sqlite_prepare_provider_switches,
-    sqlite_pricing_catalog_by_generation, sqlite_pricing_read_bundle,
-    sqlite_pricing_shadow_admission_evaluation, sqlite_provider_switches_by_generation,
+    sqlite_locked_openkeys_policy_transition, sqlite_policy_admission_snapshot,
+    sqlite_prepare_account_policy, sqlite_prepare_pricing_catalog,
+    sqlite_prepare_provider_switches, sqlite_pricing_catalog_by_generation,
+    sqlite_pricing_read_bundle, sqlite_pricing_shadow_admission_evaluation,
+    sqlite_provider_switches_by_generation,
 };
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -264,6 +265,18 @@ pub struct AccountPolicyActivationSpec {
     pub binding: AccountPolicyBindingSpec,
 }
 
+/// One narrowly constrained atomic replacement of an immutable legacy OpenKeys policy.
+///
+/// Generic policy prepare/activate deliberately keep treating every replacement-locked lineage as
+/// immutable. This request names the complete managed 1:1 successor and the exact active legacy
+/// target/binding that must still be current when the successor is inserted and shadow-bound.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LockedOpenKeysPolicyTransitionSpec {
+    pub policy: AccountPolicySpec,
+    pub expected_active: ActivePolicyTarget,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActiveAccountPolicy {
@@ -405,6 +418,15 @@ impl AccountPolicyActivationSpec {
         ActivePolicyTarget {
             target: VersionTarget::new(self.effective_version, self.content_digest.clone()),
             binding: self.binding.clone(),
+        }
+    }
+}
+
+impl LockedOpenKeysPolicyTransitionSpec {
+    pub fn desired_active(&self) -> ActivePolicyTarget {
+        ActivePolicyTarget {
+            target: self.policy.target(),
+            binding: locked_openkeys_transition_binding(),
         }
     }
 }
@@ -757,6 +779,96 @@ pub fn validate_account_policy_activation(spec: &AccountPolicyActivationSpec) ->
     validate_account_policy_binding(&spec.binding)
 }
 
+/// The only binding this transition may produce. It cannot change live pricing or funding before
+/// the global release-head cutover: the successor is evaluated in shadow while legacy funding
+/// remains authoritative.
+pub fn locked_openkeys_transition_binding() -> AccountPolicyBindingSpec {
+    AccountPolicyBindingSpec {
+        policy_enforcement: PolicyEnforcement::Shadow,
+        funding_enforcement: FundingEnforcement::LegacySingle,
+        reconciliation_state: ReconciliationState::Verified,
+    }
+}
+
+pub fn validate_locked_openkeys_policy_transition(
+    transition: &LockedOpenKeysPolicyTransitionSpec,
+) -> Result<()> {
+    validate_account_policy_shape(&transition.policy)?;
+    validate_version_target(&transition.expected_active.target)?;
+    validate_account_policy_binding(&transition.expected_active.binding)?;
+
+    let expected_effective_version = transition
+        .expected_active
+        .target
+        .version
+        .checked_add(1)
+        .context("locked OpenKeys effective version overflow")?;
+    if transition.policy.effective_version != expected_effective_version {
+        bail!("locked OpenKeys successor effective version must advance exactly once");
+    }
+    if transition.policy.owner_type != PolicyOwnerType::OpenKeys
+        || transition.policy.account_class != AccountClass::OpenKeys
+        || transition.policy.product_id != "openkeys"
+    {
+        bail!("locked OpenKeys successor must preserve the OpenKeys owner and product class");
+    }
+    if transition.policy.replacement_locked {
+        bail!("locked OpenKeys successor must not retain the replacement lock");
+    }
+    if transition.policy.schema_version != PRICING_SCHEMA_VERSION {
+        bail!("locked OpenKeys successor must use the current pricing schema");
+    }
+    if transition.policy.rules.is_empty() {
+        bail!("locked OpenKeys successor must contain provider rules");
+    }
+    for rule in &transition.policy.rules {
+        if !matches!(&rule.scope, PolicyRuleScope::Provider { .. })
+            || rule.pricing_mode != PricingMode::Discount
+            || rule.rule_origin != RuleOrigin::Managed
+            || rule.discount_bps != Some(0)
+            || rule.payable_multiplier_bp != 10_000
+            || rule.track_eligible
+            || rule.retention_eligible
+            || rule.commission_eligible
+        {
+            bail!("locked OpenKeys successor permits only managed zero-discount provider rules");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_locked_openkeys_successor_identity(
+    transition: &LockedOpenKeysPolicyTransitionSpec,
+    locked: &AccountPolicySpec,
+) -> Result<()> {
+    validate_locked_openkeys_policy_transition(transition)?;
+    if locked.target() != transition.expected_active.target
+        || !locked.replacement_locked
+        || locked.owner_type != PolicyOwnerType::OpenKeys
+        || locked.account_class != AccountClass::OpenKeys
+        || locked.product_id != "openkeys"
+    {
+        bail!("expected active policy is not the exact replacement-locked legacy OpenKeys source");
+    }
+    let expected_policy_version = locked
+        .policy_version
+        .checked_add(1)
+        .context("locked OpenKeys policy version overflow")?;
+    if transition.policy.policy_version != expected_policy_version {
+        bail!("locked OpenKeys successor policy version must advance exactly once");
+    }
+    if transition.policy.account_id != locked.account_id
+        || transition.policy.policy_id != locked.policy_id
+        || transition.policy.owner_type != locked.owner_type
+        || transition.policy.owner_id != locked.owner_id
+        || transition.policy.account_class != locked.account_class
+        || transition.policy.product_id != locked.product_id
+    {
+        bail!("locked OpenKeys successor changed immutable policy identity");
+    }
+    Ok(())
+}
+
 fn expected_account_class(owner_type: PolicyOwnerType) -> AccountClass {
     match owner_type {
         PolicyOwnerType::GlobalB2c => AccountClass::B2c,
@@ -1059,5 +1171,3 @@ pub(crate) fn required_catalog_generations(switches: &ProviderSwitchSpec) -> BTr
     }
     products
 }
-
-use anyhow::Context as _;

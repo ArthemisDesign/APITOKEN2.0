@@ -7153,6 +7153,16 @@ impl PgStore {
         crate::pricing::postgres::postgres_prepare_account_policy(&mut self.client, spec)
     }
 
+    pub fn locked_openkeys_policy_transition(
+        &mut self,
+        transition: &crate::pricing::LockedOpenKeysPolicyTransitionSpec,
+    ) -> Result<crate::pricing::PricingMutation> {
+        crate::pricing::postgres::postgres_locked_openkeys_policy_transition(
+            &mut self.client,
+            transition,
+        )
+    }
+
     pub fn activate_account_policy(
         &mut self,
         activation: &crate::pricing::AccountPolicyActivationSpec,

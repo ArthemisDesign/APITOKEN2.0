@@ -136,6 +136,13 @@ side effect. `serve` may only perform the read-only schema verification before c
   snake_case enums. Exact replay returns `Unchanged`; invalid, missing dependency, stale,
   version-conflict, catalog/switch CAS, policy-binding CAS and immutable-lock remain distinct typed
   outcomes. This surface does not seed/backfill data, issue keys or enable strict enforcement.
+  The sole exception to the generic replacement lock is
+  `locked_openkeys_policy_transition`: one transaction inserts the exact next provider-only
+  managed 1:1 OpenKeys policy and CAS-moves the exact active replacement-locked legacy binding to
+  `shadow + legacy_single + verified`. Account/policy/owner/product identity and both version
+  counters must be preserved/advance once; the successor's exact catalog and switches must already
+  be active. Generic prepare/activate remain locked, any model rule/discount/eligibility flag is
+  invalid, a lost-ACK exact replay is `Unchanged`, and any failed insert/CAS rolls back all rows.
 - **Stage 3B0/3B1b snapshot read — dormant:** `pricing_read_bundle(account_id)` за одну read-only
   транзакцию возвращает live `accounts.mult_bp`, binding/active policy, exact immutable
   `policy_catalog/policy_switches` и текущие `admission_catalog/admission_switches`: SQLite через

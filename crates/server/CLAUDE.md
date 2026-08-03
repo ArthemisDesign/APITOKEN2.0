@@ -55,7 +55,12 @@
   catalogs, provider switches and account policies. Requests/ACKs preserve complete version/digest,
   capability lineage and binding identity; typed CAS errors stay distinguishable. Routes only
   expose the registry contract through `AsyncBilling` actors and cannot backfill, issue keys,
-  enable strict enforcement or reorder catalog → switches → policy activation.
+  enable strict enforcement or reorder catalog → switches → policy activation. The additive
+  `POST /admin/pricing/policy/{account_id}/locked-openkeys-transition` producer is intentionally
+  narrower than generic activation: it accepts only the exact next managed provider-only OpenKeys
+  1:1 successor of the exact active replacement-locked legacy policy and commits insert plus
+  `shadow + legacy_single + verified` binding CAS atomically. Generic locked-policy routes remain
+  locked; the endpoint neither changes traffic/release head nor admits discounts/model rules.
   Account-local `/admin/pricing/v2/funding/{account_id}/normalization` is the narrow exception to
   “cannot backfill”: GET builds a read-only content-addressed plan, POST applies only its exact
   source/target digests under the registry funding lock. It cannot activate a pricing release and

@@ -25,7 +25,9 @@ through a reader; HTTP code never opens the authority directly.
 Stage 3C versioned pricing control follows the same ownership: catalog/switch/policy prepare and
 activate commands share the single writer, while immutable-version/head/bundle reads use the normal
 bounded reader pool. SQLite and PostgreSQL dispatch the same registry typed outcomes; no HTTP
-handler opens a second connection or assembles a policy bundle from separate reads.
+handler opens a second connection or assembles a policy bundle from separate reads. The constrained
+locked-OpenKeys transition is another single-writer command: it delegates one atomic
+insert-plus-binding-CAS to registry and never decomposes it into generic prepare/activate calls.
 Funding-v2 normalization follows that split: read-only account plans use a bounded reader, exact
 apply uses the existing single writer and PostgreSQL account lock, and SQLite fails closed.
 Credential в `x-api-key`, `x-goog-api-key` и `Authorization: Bearer` имеют OR-семантику без

@@ -438,6 +438,15 @@ Stage 6 становится resumable online-backfill с owner-approved пра�
 
 OpenKeys issuance заранее переходит на canonical 1:1 policy. Existing inventory также готовится к
 1:1 target release; live цена меняется только вместе со всеми аккаунтами на Stage 9.
+Replacement-locked legacy bindings не обходятся generic prepare/activate и не переписываются
+поаккаунтно несколькими вызовами. Отдельный engine producer
+`POST /admin/pricing/policy/{account_id}/locked-openkeys-transition` атомарно вставляет только
+точный следующий managed provider-only 1:1 successor и CAS-переводит exact legacy binding в
+`shadow + legacy_single + verified`. Catalog/switch target уже обязан быть active, identity
+сохраняется, обе версии увеличиваются ровно на один, exact replay возвращает `unchanged`, а
+discount/model/track/retention/commission rules запрещены. Этот pre-Stage-8 шаг не меняет live
+цену, funding authority или global release head; protected commerce rollout подключается отдельным
+consumer checkpoint только после GREEN producer SHA и должен охватить весь OpenKeys inventory.
 
 ### Stage 8 — full-inventory evidence
 

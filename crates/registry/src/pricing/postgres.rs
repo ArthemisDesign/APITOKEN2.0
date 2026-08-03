@@ -10,16 +10,18 @@ use super::{
     policy_expectation_matches, require_id, validate_account_policy,
     validate_account_policy_activation, validate_account_policy_binding,
     validate_account_policy_shape, validate_active_expectation,
-    validate_legacy_snapshot_request_id, validate_policy_active_expectation,
+    validate_legacy_snapshot_request_id, validate_locked_openkeys_policy_transition,
+    validate_locked_openkeys_successor_identity, validate_policy_active_expectation,
     validate_pricing_catalog, validate_provider_switches, validate_version_target, AccountClass,
     AccountPolicyActivationSpec, AccountPolicyBindingSpec, AccountPolicyRuleSpec,
     AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation, ActivePolicyTarget,
     FundingEnforcement, LegacyPremiumModifiers, LegacyScalarAdmissionSnapshot,
-    LegacyScalarAdmissionSnapshotInput, LegacyScalarSnapshotLookup, PolicyActiveExpectation,
-    PolicyAdmissionSnapshot, PolicyAdmissionSnapshotInput, PolicyBindingState, PolicyEnforcement,
-    PolicyOwnerType, PolicyRuleScope, PolicySnapshotLookup, PricingCatalogEntrySpec,
-    PricingCatalogSpec, PricingMode, PricingMutation, PricingPolicySnapshot, PricingReadBundle,
-    PricingRejection, PricingShadowAdmissionEvaluation, PricingShadowAdmissionEvaluationInput,
+    LegacyScalarAdmissionSnapshotInput, LegacyScalarSnapshotLookup,
+    LockedOpenKeysPolicyTransitionSpec, PolicyActiveExpectation, PolicyAdmissionSnapshot,
+    PolicyAdmissionSnapshotInput, PolicyBindingState, PolicyEnforcement, PolicyOwnerType,
+    PolicyRuleScope, PolicySnapshotLookup, PricingCatalogEntrySpec, PricingCatalogSpec,
+    PricingMode, PricingMutation, PricingPolicySnapshot, PricingReadBundle, PricingRejection,
+    PricingShadowAdmissionEvaluation, PricingShadowAdmissionEvaluationInput,
     PricingShadowEvaluationWrite, PricingShadowStorageRow, ProviderSwitchEntrySpec,
     ProviderSwitchScope, ProviderSwitchSpec, ReconciliationState, RuleOrigin,
     ShadowActualSnapshotRef, SnapshotProvider, VersionTarget,
@@ -2099,6 +2101,193 @@ pub(crate) fn postgres_prepare_account_policy(
         transaction,
         PricingMutation::Stored,
         "account policy prepare",
+    )
+}
+
+pub(crate) fn postgres_locked_openkeys_policy_transition(
+    client: &mut Client,
+    transition: &LockedOpenKeysPolicyTransitionSpec,
+) -> Result<PricingMutation> {
+    let transition = LockedOpenKeysPolicyTransitionSpec {
+        policy: normalize_policy(&transition.policy),
+        expected_active: transition.expected_active.clone(),
+    };
+    if let Err(error) = validate_locked_openkeys_policy_transition(&transition) {
+        return Ok(invalid(error));
+    }
+
+    let mut transaction = client
+        .transaction()
+        .context("begin PostgreSQL locked OpenKeys policy transition")?;
+    advisory_lock(
+        &mut transaction,
+        &policy_lock_key(&transition.policy.account_id),
+    )?;
+    let current_binding = policy_binding_locked(&mut transaction, &transition.policy.account_id)?;
+    let actual_state = current_binding
+        .as_ref()
+        .map(StoredPolicyBinding::state)
+        .unwrap_or(PolicyBindingState::Unbound);
+    let Some(locked_policy) = policy_by_version(
+        &mut transaction,
+        &transition.policy.account_id,
+        transition.expected_active.target.version,
+        true,
+    )?
+    else {
+        return commit_mutation(
+            transaction,
+            missing(format!(
+                "locked OpenKeys policy {:?} effective version {}",
+                transition.policy.account_id, transition.expected_active.target.version
+            )),
+            "locked OpenKeys policy transition",
+        );
+    };
+    if locked_policy.content_digest != transition.expected_active.target.content_digest {
+        return commit_mutation(
+            transaction,
+            version_conflict(),
+            "locked OpenKeys policy transition",
+        );
+    }
+    if let Err(error) = validate_locked_openkeys_successor_identity(&transition, &locked_policy) {
+        return commit_mutation(
+            transaction,
+            invalid(error),
+            "locked OpenKeys policy transition",
+        );
+    }
+    if current_binding
+        .as_ref()
+        .is_some_and(|binding| !binding_identity_matches(binding, &locked_policy))
+    {
+        return commit_mutation(
+            transaction,
+            version_conflict(),
+            "locked OpenKeys policy transition",
+        );
+    }
+
+    let desired = transition.desired_active();
+    if let Some(existing) = policy_by_version(
+        &mut transaction,
+        &transition.policy.account_id,
+        transition.policy.effective_version,
+        true,
+    )? {
+        let outcome = if existing == transition.policy
+            && actual_state == PolicyBindingState::Active(desired)
+        {
+            PricingMutation::Unchanged
+        } else {
+            version_conflict()
+        };
+        return commit_mutation(transaction, outcome, "locked OpenKeys policy transition");
+    }
+    if actual_state != PolicyBindingState::Active(transition.expected_active.clone()) {
+        return commit_mutation(
+            transaction,
+            policy_cas_mismatch(actual_state.clone()),
+            "locked OpenKeys policy transition",
+        );
+    }
+    if newest_policy_lineage(&mut transaction, &transition.policy.account_id)?
+        .is_none_or(|latest| latest.target != locked_policy.target())
+    {
+        return commit_mutation(
+            transaction,
+            version_conflict(),
+            "locked OpenKeys policy transition",
+        );
+    }
+
+    match policy_dependencies(&mut transaction, &locked_policy)? {
+        DependencyCheck::Ready(_) => {}
+        DependencyCheck::Rejected(outcome) => {
+            return commit_mutation(transaction, outcome, "locked OpenKeys policy transition");
+        }
+    }
+    let dependencies = match policy_dependencies(&mut transaction, &transition.policy)? {
+        DependencyCheck::Ready(dependencies) => dependencies,
+        DependencyCheck::Rejected(outcome) => {
+            return commit_mutation(transaction, outcome, "locked OpenKeys policy transition");
+        }
+    };
+    if let Some(outcome) = active_policy_dependencies(&mut transaction, &dependencies)? {
+        return commit_mutation(transaction, outcome, "locked OpenKeys policy transition");
+    }
+    if !insert_policy(&mut transaction, &transition.policy, now())? {
+        return commit_mutation(
+            transaction,
+            version_conflict(),
+            "locked OpenKeys policy transition",
+        );
+    }
+
+    let desired_binding = desired.binding;
+    let updated_ts = now();
+    let affected = transaction.execute(
+        "UPDATE account_policy_bindings b
+         SET active_effective_version=$2,
+             policy_enforcement=$3,
+             funding_enforcement=$4,
+             reconciliation_state=$5,
+             updated_ts=$6
+         WHERE b.account_id=$1
+           AND b.product_id=$7
+           AND b.account_class=$8
+           AND b.active_effective_version=$9
+           AND b.policy_enforcement=$10
+           AND b.funding_enforcement=$11
+           AND b.reconciliation_state=$12
+           AND EXISTS (
+               SELECT 1
+               FROM account_policy_versions v
+               WHERE v.account_id=b.account_id
+                 AND v.effective_version=b.active_effective_version
+                 AND v.product_id=b.product_id
+                 AND v.content_digest=$13
+                 AND v.replacement_locked
+           )",
+        &[
+            &transition.policy.account_id,
+            &transition.policy.effective_version,
+            &desired_binding.policy_enforcement.as_str(),
+            &desired_binding.funding_enforcement.as_str(),
+            &desired_binding.reconciliation_state.as_str(),
+            &updated_ts,
+            &transition.policy.product_id,
+            &transition.policy.account_class.as_str(),
+            &transition.expected_active.target.version,
+            &transition
+                .expected_active
+                .binding
+                .policy_enforcement
+                .as_str(),
+            &transition
+                .expected_active
+                .binding
+                .funding_enforcement
+                .as_str(),
+            &transition
+                .expected_active
+                .binding
+                .reconciliation_state
+                .as_str(),
+            &transition.expected_active.target.content_digest,
+        ],
+    )?;
+    if affected != 1 {
+        transaction
+            .rollback()
+            .context("rollback lost PostgreSQL locked OpenKeys policy transition CAS")?;
+        return Ok(policy_cas_mismatch(actual_state));
+    }
+    commit_mutation(
+        transaction,
+        PricingMutation::Applied,
+        "locked OpenKeys policy transition",
     )
 }
 
@@ -5811,8 +6000,113 @@ mod tests {
                 .expect("active OpenKeys policy"),
             ActiveAccountPolicy {
                 policy: normalize_policy(&openkeys_v1),
-                binding: openkeys_binding,
+                binding: openkeys_binding.clone(),
             }
+        );
+
+        let mut openkeys_successor = openkeys_v1.clone();
+        openkeys_successor.effective_version = 2;
+        openkeys_successor.policy_version = 2;
+        openkeys_successor.source_policy_digest = "contract-openkeys-managed-source-2".to_owned();
+        openkeys_successor.content_digest = "contract-openkeys-managed-policy-2".to_owned();
+        openkeys_successor.replacement_locked = false;
+        openkeys_successor.rules = ["anthropic", "openai"]
+            .into_iter()
+            .map(|provider_id| AccountPolicyRuleSpec {
+                rule_id: format!("contract-openkeys-{provider_id}-managed-2"),
+                rule_digest: format!("contract-openkeys-{provider_id}-managed-digest-2"),
+                scope: PolicyRuleScope::Provider {
+                    provider_id: provider_id.to_owned(),
+                },
+                pricing_mode: PricingMode::Discount,
+                rule_origin: RuleOrigin::Managed,
+                discount_bps: Some(0),
+                payable_multiplier_bp: 10_000,
+                track_eligible: false,
+                retention_eligible: false,
+                commission_eligible: false,
+            })
+            .collect();
+        let openkeys_transition = LockedOpenKeysPolicyTransitionSpec {
+            policy: openkeys_successor.clone(),
+            expected_active: ActivePolicyTarget {
+                target: openkeys_v1.target(),
+                binding: openkeys_binding,
+            },
+        };
+        let mut invalid_openkeys_transition = openkeys_transition.clone();
+        invalid_openkeys_transition.policy.rules[0].discount_bps = Some(100);
+        invalid_openkeys_transition.policy.rules[0].payable_multiplier_bp = 9_900;
+        assert!(matches!(
+            postgres_locked_openkeys_policy_transition(&mut client, &invalid_openkeys_transition)
+                .unwrap(),
+            PricingMutation::Rejected(PricingRejection::Invalid { .. })
+        ));
+
+        client
+            .batch_execute(
+                "CREATE FUNCTION pricing_contract_reject_locked_openkeys_child()
+                 RETURNS trigger LANGUAGE plpgsql AS $$
+                 BEGIN
+                     IF NEW.account_id = 'pricing-pg-contract-openkeys'
+                        AND NEW.effective_version = 2
+                        AND NEW.provider_id = 'openai' THEN
+                         RAISE EXCEPTION 'injected locked OpenKeys child failure';
+                     END IF;
+                     RETURN NEW;
+                 END;
+                 $$;
+                 CREATE TRIGGER pricing_contract_reject_locked_openkeys_child
+                 BEFORE INSERT ON account_policy_rules
+                 FOR EACH ROW EXECUTE FUNCTION pricing_contract_reject_locked_openkeys_child();",
+            )
+            .unwrap();
+        assert!(
+            postgres_locked_openkeys_policy_transition(&mut client, &openkeys_transition).is_err()
+        );
+        assert_eq!(
+            postgres_account_policy_by_version(&mut client, "pricing-pg-contract-openkeys", 2)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            postgres_active_account_policy(&mut client, "pricing-pg-contract-openkeys")
+                .unwrap()
+                .expect("legacy OpenKeys policy remains active")
+                .policy,
+            normalize_policy(&openkeys_v1)
+        );
+        client
+            .batch_execute(
+                "DROP TRIGGER pricing_contract_reject_locked_openkeys_child
+                     ON account_policy_rules;
+                 DROP FUNCTION pricing_contract_reject_locked_openkeys_child();",
+            )
+            .unwrap();
+
+        assert_eq!(
+            postgres_locked_openkeys_policy_transition(&mut client, &openkeys_transition).unwrap(),
+            PricingMutation::Applied
+        );
+        assert_eq!(
+            postgres_locked_openkeys_policy_transition(&mut client, &openkeys_transition).unwrap(),
+            PricingMutation::Unchanged
+        );
+        assert_eq!(
+            postgres_active_account_policy(&mut client, "pricing-pg-contract-openkeys").unwrap(),
+            Some(ActiveAccountPolicy {
+                policy: normalize_policy(&openkeys_successor),
+                binding: crate::pricing::locked_openkeys_transition_binding(),
+            })
+        );
+
+        let mut forbidden_third = openkeys_successor;
+        forbidden_third.effective_version = 3;
+        forbidden_third.policy_version = 3;
+        forbidden_third.content_digest = "contract-openkeys-managed-policy-3".to_owned();
+        assert_eq!(
+            postgres_prepare_account_policy(&mut client, &forbidden_third).unwrap(),
+            locked()
         );
 
         let b2b_v4 = b2b_policy(4, 4, "b2b-policy-4");
