@@ -137,7 +137,9 @@ Watchdog автоматически создаёт Redis/affinity secrets и у�
 Инстанс делят два потребителя с разным радиусом поражения: affinity (fail-open, теряется только
 prompt-cache hit) и Codex response history (потеря записи возвращается клиенту как 400). Поскольку
 `maxmemory` и `maxmemory-policy` в Redis задаются на инстанс, они разведены на два: history —
-`127.0.0.1:6379` (`volatile-lru`, 384 MiB), affinity — `127.0.0.1:6380` (`allkeys-lru`, 128 MiB).
+`127.0.0.1:6379` (`allkeys-lru`, 512 MiB), affinity — `127.0.0.1:6380` (`allkeys-lru`, 128 MiB).
+Первый split rollout сохраняет прежнюю Compose identity и конфигурацию history-контейнера, поэтому
+добавление 6380 не останавливает и не пересоздаёт контейнер с уже оплаченными разговорами.
 Память и eviction каждого сняты своим `redis_exporter` (`9121`/`9122`) с алертами `AffinityRedis*` —
 см. [`docs/ops/MONITORING.md`](docs/ops/MONITORING.md).
 

@@ -9,17 +9,17 @@ name: apitoken-affinity
 #   * Codex response history stores whole conversations, up to 16 MiB each. Losing one makes the
 #     engine answer previous_response_id with a 400 that well-behaved clients treat as permanent,
 #     so they discard a conversation the customer already paid to build.
-# While they shared a 512 MiB instance under allkeys-lru, a few dozen large conversations could
-# evict affinity, and affinity churn could evict conversations. The combined budget is unchanged.
+# While they shared one instance, a few dozen large conversations could evict affinity, and
+# affinity churn could evict conversations.
 #
-# WHICH CONSUMER MOVED, AND WHY. Response history keeps port 6379 and the existing data directory;
-# cache affinity moves to the new instance. The reverse would have been tidier to name but would
-# have stranded every stored conversation at cutover — precisely the customer-visible 400 this
-# change exists to prevent. Affinity is designed to be lossy, so moving it costs only prompt-cache
-# hit rate for one TTL. The directory below therefore keeps its historical name: renaming it would
-# mean abandoning the conversations it holds.
+# ZERO-DOWNTIME TRANSITION. The pre-split service identity `affinity-redis`, port 6379, command and
+# data directory stay byte-for-byte stable. Docker Compose can therefore add the second service
+# without recreating the container that holds live Codex response history. The legacy service name
+# is intentionally less important than preserving those conversations. Cache affinity moves to
+# 6380 because losing it costs only prompt-cache hit rate for one TTL.
 services:
-  history-redis:
+  # Legacy Compose service identity; this instance now owns Codex response history only.
+  affinity-redis:
     image: redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
     restart: unless-stopped
     environment:
@@ -31,13 +31,9 @@ services:
       - --appendfsync
       - everysec
       - --maxmemory
-      - 384mb
-      # volatile-lru rather than allkeys-lru: every history entry is written with an explicit EX,
-      # so the two behave identically in normal operation. The difference is the failure mode — if
-      # a future change ever writes an unexpiring key here, memory pressure surfaces as a loud
-      # write failure on that bug instead of silently deleting a customer's conversation.
+      - 512mb
       - --maxmemory-policy
-      - volatile-lru
+      - allkeys-lru
       - --requirepass
       - ${CLAUDE_API_REDIS_PASSWORD:?CLAUDE_API_REDIS_PASSWORD is required}
     ports:
@@ -68,7 +64,7 @@ services:
   # Cache-lineage affinity. Same password and trust domain as history: both are loopback-only,
   # root-provisioned and read by the same engine process, so separate credentials would add
   # provisioning failure modes without isolating anything.
-  affinity-redis:
+  cache-affinity-redis:
     image: redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
     restart: unless-stopped
     environment:

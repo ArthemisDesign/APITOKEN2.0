@@ -83,20 +83,21 @@ for redis_exporter_service in 'redis-exporter:' 'redis-exporter-affinity:'; do
     | grep -Fq 'cap_drop:' \
     || { printf 'root Redis exporter does not drop Linux capabilities\n' >&2; exit 1; }
 done
-# History keeps 6379 and the existing data directory on purpose: moving that side would strand
-# every stored conversation at cutover, which is the exact customer-visible failure being fixed.
-grep -F 'history-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
+# History keeps the legacy service identity, 6379 and the existing data directory on purpose:
+# changing that service would recreate the live container and strand conversations during rollout.
+grep -F '  affinity-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
   | grep -Fq '127.0.0.1:6379:6379' \
   || { printf 'response history must keep its existing port\n' >&2; exit 1; }
-grep -F 'history-redis:' -A 30 "$ROOT/deploy/affinity-redis.compose.yaml" \
+grep -F '  affinity-redis:' -A 30 "$ROOT/deploy/affinity-redis.compose.yaml" \
   | grep -Fq '/var/lib/apitoken/affinity-redis:/data' \
   || { printf 'response history must keep its existing data directory\n' >&2; exit 1; }
-# volatile-lru refuses to evict a key without an expiry. Every history entry is written with EX, so
-# a future unexpiring key surfaces as a loud write failure instead of a deleted conversation.
-grep -F 'history-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
-  | grep -Fq 'volatile-lru' \
-  || { printf 'response history must not use an allkeys eviction policy\n' >&2; exit 1; }
-grep -F 'affinity-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
+grep -F '  affinity-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
+  | grep -Fq '512mb' \
+  || { printf 'response history budget changed during the additive split\n' >&2; exit 1; }
+grep -F '  affinity-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
+  | grep -Fq 'allkeys-lru' \
+  || { printf 'response history eviction policy changed during the additive split\n' >&2; exit 1; }
+grep -F '  cache-affinity-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
   | grep -Fq '127.0.0.1:6380:6379' \
   || { printf 'cache affinity is not on its own instance\n' >&2; exit 1; }
 for redis_listener in 'wait_http Redis-Exporter http://127.0.0.1:9121/metrics' \

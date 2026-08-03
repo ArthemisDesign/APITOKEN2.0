@@ -1391,10 +1391,10 @@ grep -Fq 'CLAUDE_API_AFFINITY_REDIS_URL=redis://default:%s@127.0.0.1:6380/0' \
   || wd_die 'the affinity Redis URL is not provisioned for the second instance'
 # History keeps 6379 and the existing data directory. Moving that side instead would strand every
 # stored conversation at cutover — the exact customer-visible failure this split prevents.
-grep -F 'history-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
+grep -F '  affinity-redis:' -A 24 "$ROOT/deploy/affinity-redis.compose.yaml" \
   | grep -Fq '127.0.0.1:6379:6379' \
   || wd_die 'response history must keep the port that already holds its conversations'
-grep -F 'history-redis:' -A 30 "$ROOT/deploy/affinity-redis.compose.yaml" \
+grep -F '  affinity-redis:' -A 30 "$ROOT/deploy/affinity-redis.compose.yaml" \
   | grep -Fq '/var/lib/apitoken/affinity-redis:/data' \
   || wd_die 'response history must keep its existing data directory'
 # The engine must fall back to the shared URL when the second instance is not yet provisioned:
@@ -1537,9 +1537,11 @@ grep -Fq 'install -d -o 999 -g 1000 -m 0700 /var/lib/apitoken/affinity-redis' \
 grep -Fq "[[ ! -L /var/lib/apitoken/affinity-redis ]]" "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'if (( REDIS_RESTART_REQUIRED )); then' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'Redis activation is not fenced by an exact definition change'
-[[ $(grep -Fc 'systemctl restart apitoken-affinity-redis.service' \
-  "$ROOT/deploy/install-watchdog.sh") -eq 1 ]] \
-  || wd_die 'Redis has an unconditional or duplicate restart path'
+! grep -Fq 'systemctl restart apitoken-affinity-redis.service' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'Redis definition changes still stop live response history'
+grep -Fq 'up -d --wait --remove-orphans' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'Redis definition changes do not use an in-place Compose reconcile'
 grep -Fq 'cmp -s "$ROOT/deploy/affinity-redis.compose.yaml" "$redis_compose_target"' \
   "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'Redis compose changes do not request a restart'
@@ -1550,22 +1552,42 @@ grep -Fxq 'vm.overcommit_memory = 1' "$ROOT/systemd/sysctl-apitoken-redis.conf" 
   || wd_die 'Redis overcommit policy is not pinned'
 grep -Fq '"$SYSCTL" --load "$TARGET"' "$ROOT/deploy/install-sysctl.sh" \
   || wd_die 'Redis sysctl installer does not apply the persistent policy immediately'
-# Exercise the installer's real activation fence with a fake systemctl. Unrelated full/systemd
-# transactions must preserve the live container, while an exact Redis definition change performs
-# one restart after keeping the unit enabled.
-eval "$(sed -n '/^activate_redis_definition()/,/^}/p' "$ROOT/deploy/install-watchdog.sh")"
+# Exercise the installer's real activation fence with fake systemctl/docker commands. Unrelated
+# transactions preserve the live container; an exact Redis definition change performs one in-place
+# Compose reconcile after keeping the unit enabled.
+redis_env_fixture="$TEMP/server.env"
+redis_compose_fixture="$TEMP/affinity-redis.compose.yaml"
+: >"$redis_env_fixture"
+: >"$redis_compose_fixture"
+redis_activation_definition=$(sed -n '/^activate_redis_definition()/,/^}/p' \
+  "$ROOT/deploy/install-watchdog.sh")
+redis_activation_definition=${redis_activation_definition//\/srv\/claude-api\/data\/server.env/$redis_env_fixture}
+redis_activation_definition=${redis_activation_definition//\/usr\/local\/lib\/apitoken-watchdog\/controller\/affinity-redis.compose.yaml/$redis_compose_fixture}
+eval "$redis_activation_definition"
 redis_systemctl_log="$TEMP/redis-systemctl.log"
+redis_docker_log="$TEMP/redis-docker.log"
 systemctl() { printf '%s\n' "$*" >>"$redis_systemctl_log"; }
+docker() { printf '%s\n' "$*" >>"$redis_docker_log"; }
 REDIS_RESTART_REQUIRED=0
 activate_redis_definition >/dev/null
 [[ $(<"$redis_systemctl_log") == 'enable apitoken-affinity-redis.service' ]] \
   || wd_die 'unchanged infrastructure restarted Redis'
+[[ ! -s $redis_docker_log ]] \
+  || wd_die 'unchanged infrastructure reconciled Redis containers'
 : >"$redis_systemctl_log"
 REDIS_RESTART_REQUIRED=1
 activate_redis_definition >/dev/null
-[[ $(<"$redis_systemctl_log") == $'enable apitoken-affinity-redis.service\nrestart apitoken-affinity-redis.service' ]] \
-  || wd_die 'changed Redis definitions did not enable and restart exactly once'
-unset -f systemctl activate_redis_definition
+[[ $(<"$redis_systemctl_log") == 'enable apitoken-affinity-redis.service' ]] \
+  || wd_die 'changed Redis definitions restarted the systemd unit'
+[[ $(<"$redis_docker_log") == "compose --env-file $redis_env_fixture -f $redis_compose_fixture up -d --wait --remove-orphans" ]] \
+  || wd_die 'changed Redis definitions did not reconcile the exact Compose project in place'
+redis_activation_line=$(grep -n '^activate_redis_definition$' "$ROOT/deploy/install-watchdog.sh" \
+  | tail -n 1 | cut -d: -f1)
+monitoring_install_line=$(grep -n '^install_monitoring_definitions$' "$ROOT/deploy/install-watchdog.sh" \
+  | tail -n 1 | cut -d: -f1)
+[[ $redis_activation_line -lt $monitoring_install_line ]] \
+  || wd_die 'two-target monitoring is installed before the second Redis instance starts'
+unset -f systemctl docker activate_redis_definition
 ! grep -Fq 'partners.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'crm.panel.apitoken.sale {' "$ROOT/deploy/Caddyfile"
 [[ $(grep -Fc 'import managed_admin_auth' "$ROOT/deploy/Caddyfile") -ge 5 ]]

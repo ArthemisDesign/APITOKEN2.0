@@ -21,7 +21,17 @@ source "$ROOT/deploy/watchdog-lib.sh"
 activate_redis_definition() {
   systemctl enable apitoken-affinity-redis.service
   if (( REDIS_RESTART_REQUIRED )); then
-    systemctl restart apitoken-affinity-redis.service
+    # `systemctl restart` executes ExecStop=`docker compose down` and creates a customer-visible
+    # response-history outage. Compose can reconcile the additive definition in place: the 6379
+    # service identity/config remains unchanged, so only the new 6380 service is started.
+    local redis_env=/srv/claude-api/data/server.env
+    local redis_compose=/usr/local/lib/apitoken-watchdog/controller/affinity-redis.compose.yaml
+    [[ -f $redis_env && ! -L $redis_env ]] \
+      || { echo "$redis_env must be a regular file" >&2; return 1; }
+    [[ -f $redis_compose && ! -L $redis_compose ]] \
+      || { echo "$redis_compose must be a regular file" >&2; return 1; }
+    docker compose --env-file "$redis_env" -f "$redis_compose" \
+      up -d --wait --remove-orphans
   else
     echo 'Redis definitions unchanged; preserving the running affinity cache'
   fi
@@ -351,8 +361,10 @@ systemctl daemon-reload
 # This unit validates the candidate, saves a rollback copy, replaces the policy, verifies every
 # required and forbidden privilege as `deploy`, and restores the old policy on any failure.
 systemctl start apitoken-sudoers-install.service
-install_monitoring_definitions
+# Monitoring requires both Redis exporters to report `redis_up=1`. Reconcile the additive 6380
+# service first; doing this after monitoring makes a two-instance candidate fail deterministically.
 activate_redis_definition
+install_monitoring_definitions
 systemctl enable --now apitoken-candidate-validator.timer
 systemctl enable --now apitoken-deploy-watchdog.timer
 echo 'production watchdog and parallel candidate validator installed; verify with: sudo apitoken-watchdog status'

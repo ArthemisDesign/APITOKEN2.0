@@ -276,13 +276,10 @@ consequence differs completely:
 
 The two ran in one instance until the split; a few dozen large conversations could fill it and evict
 affinity, and affinity churn could delete conversations. They now have independent budgets
-(128 MiB affinity, 384 MiB history) so each can be sized on its own evidence.
-
-The `history` instance uses `volatile-lru`, not `allkeys-lru`. Every entry is written with an
-explicit `EX`, so in normal operation the two behave identically. The difference is the failure
-mode: if a future change ever writes an unexpiring key there, the instance answers `OOM command not
-allowed` on that write instead of silently deleting a customer's conversation. An OOM on this
-instance therefore means a code bug, not a capacity problem — find the key without a TTL.
+(128 MiB affinity, 512 MiB history) so each can be sized on its own evidence. The first split keeps
+the existing 6379 Compose service identity, command and data directory unchanged and adds 6380 with
+an in-place `docker compose up`; it must not use `systemctl restart`, which would run Compose
+`down` and make stored response history temporarily unavailable.
 
 Inspect with `redis-cli -p 6379 --no-auth-warning info memory` (history) and
 `redis-cli -p 6380 ...` (affinity). Mitigations, in order of preference: raise `--maxmemory` for the
