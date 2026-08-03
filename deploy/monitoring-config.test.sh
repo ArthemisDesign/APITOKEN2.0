@@ -496,6 +496,16 @@ grep -Fq 'claude_api_execution_group_double_winner_total' "$ROOT/crates/server/s
 grep -Fq 'increase(claude_api_execution_group_double_winner_total[5m]) > 0' \
   "$ROOT/observability/prometheus/rules/application.yml" \
   || { printf 'execution-group winner conflicts do not page\n' >&2; exit 1; }
+for fallback_metric in \
+  claude_api_claudestore_fallback_attempts_total \
+  claude_api_claudestore_fallback_successes_total \
+  claude_api_claudestore_fallback_failures_total; do
+  grep -Fq "$fallback_metric" "$ROOT/crates/server/src/http.rs" \
+    || { printf 'engine does not export ClaudeStore fallback metric %s\n' "$fallback_metric" >&2; exit 1; }
+done
+grep -Fq 'increase(claude_api_claudestore_fallback_failures_total{provider="anthropic"}[10m]) > 0' \
+  "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'ClaudeStore fallback failures do not alert\n' >&2; exit 1; }
 grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?)?|authbot|router)' \
   "$ROOT/observability/prometheus/rules/operations.yml" \
   || { printf 'systemd alerts omit a provider runtime unit\n' >&2; exit 1; }

@@ -14,7 +14,7 @@ mod anthropic_snapshot;
 use self::anthropic_snapshot::{
     prepare_anthropic_legacy_quote, AnthropicLegacyQuoteInput, PreparedAnthropicLegacyQuote,
 };
-use crate::meter::{BillCtx, CalibrationCtx, MeterCtx, TeeMeter};
+use crate::meter::{BillCtx, CalibrationCtx, MeterCtx, SubscriptionMeterCtx, TeeMeter};
 use crate::metrics::{Metrics, StrictPricingProvider, StrictPricingRejectionReason};
 use crate::pricing::{
     build_policy_admission_snapshot, EnginePricingRequestId, PricingBridgeDecision,
@@ -960,6 +960,57 @@ fn merged_beta(headers: &HeaderMap, configured: &str) -> Result<String, ()> {
     Ok(out.join(","))
 }
 
+/// Perform the single last-resort external attempt. A successful HTTP response is returned to the
+/// caller for the ordinary delivery marker and exact usage meter; every failure is deliberately
+/// collapsed back into the already-computed local terminal response so ClaudeStore credential,
+/// balance and infrastructure details never cross the public boundary.
+async fn attempt_claudestore_fallback(
+    app: &AppState,
+    config: &crate::config::ClaudeStoreFallbackConfig,
+    body: bytes::Bytes,
+    anthropic_version: &str,
+    client_beta: &str,
+) -> Option<wreq::Response> {
+    Metrics::inc(&app.metrics.claudestore_fallback_attempts);
+    // A dedicated cache identity creates a direct connection pool that is never shared with a
+    // subscription proxy/TLS session. No local OAuth or persona header is attached below.
+    let client = match app.clients.get("", "claudestore-fallback") {
+        Ok(client) => client,
+        Err(error) => {
+            Metrics::inc(&app.metrics.claudestore_fallback_failures);
+            eprintln!("ClaudeStore fallback client unavailable: {error}");
+            return None;
+        }
+    };
+    let url = format!("{}/v1/messages", config.base_url().trim_end_matches('/'));
+    let mut request = client
+        .request(Method::POST, url)
+        .header("x-api-key", config.api_key())
+        .header("anthropic-version", anthropic_version)
+        .header("content-type", "application/json")
+        .body(body);
+    if !client_beta.is_empty() {
+        request = request.header("anthropic-beta", client_beta);
+    }
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            Metrics::inc(&app.metrics.claudestore_fallback_failures);
+            eprintln!("ClaudeStore fallback transport failed: {error}");
+            return None;
+        }
+    };
+    if !response.status().is_success() {
+        Metrics::inc(&app.metrics.claudestore_fallback_failures);
+        eprintln!(
+            "ClaudeStore fallback returned terminal status {}",
+            response.status().as_u16()
+        );
+        return None;
+    }
+    Some(response)
+}
+
 /// Claude-Code persona нужна для OAuth-поведения, но документированную атрибуцию клиента нельзя
 /// перезаписывать. Добавляем persona только когда metadata/user_id отсутствуют; malformed metadata
 /// оставляем как есть, чтобы Anthropic вернул свою нативную validation error вместо panic шлюза.
@@ -1129,6 +1180,11 @@ pub async fn forward(
     let mut requested_us_inference = false;
     let mut affinity_input = None;
     let mut parsed = serde_json::from_slice::<Value>(&raw).ok();
+    let fallback_preeligible = billable
+        && matches!(authz, Authz::Metered { .. })
+        && operator_target.is_none()
+        && app.cfg.claudestore_fallback.is_some();
+    let mut fallback_parsed = None;
     // `parsed` (если тело — JSON) держим как ФИНАЛИЗИРУЕМЫЙ шаблон: инжектим identity/cap max_tokens
     // здесь, а per-sub metadata.user_id — в цикле per-подписка, и сериализуем тело per-attempt. `body_bytes`
     // (=raw) — фолбэк для не-JSON тела. В общем случае (1 попытка) это 1 сериализация, как и раньше.
@@ -1171,6 +1227,11 @@ pub async fn forward(
         if let Some(scope) = authz.affinity_scope() {
             affinity_input = app.affinity.infer(scope, &parts.headers, v);
         }
+        if fallback_preeligible {
+            // Clone after namespace normalization but before any local OAuth identity, persona
+            // metadata or billing block can be injected into the subscription-bound body.
+            fallback_parsed = Some(v.clone());
+        }
         if app.cfg.inject_identity {
             inject_identity(v, &app.cfg.identity);
         }
@@ -1192,11 +1253,13 @@ pub async fn forward(
     // лишних DB-записей (reserve+возврат) на каждый запрос thundering-herd. Резерва ещё нет — возвращать нечего.
     if let Some(retry) = app.breaker.open_for(pool::now()) {
         Metrics::inc(&app.metrics.breaker_rejects);
-        return local_err_for(
-            LocalErr::Overloaded,
-            "upstream_circuit_breaker",
-            Some(retry),
-        );
+        if fallback_parsed.is_none() {
+            return local_err_for(
+                LocalErr::Overloaded,
+                "upstream_circuit_breaker",
+                Some(retry),
+            );
+        }
     }
 
     // БАЛАНС-ЛИМИТ метерного ключа (точный контроль: клиент не получит ни токена/цента сверх баланса).
@@ -1929,6 +1992,9 @@ pub async fn forward(
             if let Some(v) = parsed.as_mut() {
                 v["max_tokens"] = serde_json::json!(eff_mt);
             }
+            if let Some(v) = fallback_parsed.as_mut() {
+                v["max_tokens"] = serde_json::json!(eff_mt);
+            }
         }
         reserved = Some((
             engine_request_id.clone(),
@@ -1961,6 +2027,17 @@ pub async fn forward(
     let beta = match merged_beta(&parts.headers, &app.cfg.default_beta) {
         Ok(v) => v,
         Err(()) => return local_err(LocalErr::BadBeta, None),
+    };
+    let fallback_beta = match merged_beta(&parts.headers, "") {
+        Ok(v) => v,
+        Err(()) => return local_err(LocalErr::BadBeta, None),
+    };
+    let fallback_body = if reserved.is_some() {
+        fallback_parsed
+            .and_then(|body| serde_json::to_vec(&body).ok())
+            .map(bytes::Bytes::from)
+    } else {
+        None
     };
 
     let mut affinity_newly_claimed = false;
@@ -2448,13 +2525,15 @@ pub async fn forward(
                     probe_poke: app.probe_poke.clone(),
                 });
                 Some(MeterCtx {
-                    pool: app.pool.clone(),
-                    email: sub.email.clone(),
                     model: model.clone(),
                     is_sse: is_event_stream(&resp),
                     bill,
-                    calibration,
-                    capacity,
+                    subscription: Some(SubscriptionMeterCtx {
+                        pool: app.pool.clone(),
+                        email: sub.email.clone(),
+                        calibration,
+                        capacity,
+                    }),
                 })
             } else {
                 // клиентская 4xx: подписка ни при чём. Слот закроет guard, резерв — hold_guard (на return).
@@ -2488,21 +2567,86 @@ pub async fn forward(
                 continue 'smooth;
             }
         }
+        // Only a metered request with an existing durable reservation can reach this branch. The
+        // local rotation and smooth-wait budget are terminal, no public byte has been emitted, and
+        // this is the sole external attempt. A failed external call leaves the hold guard armed and
+        // falls through to the original local terminal response/refund path.
+        let mut fallback_attempted = false;
+        if let (Some(config), Some(body)) =
+            (app.cfg.claudestore_fallback.as_ref(), fallback_body.clone())
+        {
+            fallback_attempted = true;
+            if let Some(resp) =
+                attempt_claudestore_fallback(&app, config, body, &version, &fallback_beta).await
+            {
+                let delivery_marked = match (reserved.as_ref(), app.billing.as_ref()) {
+                    (Some((request_id, ..)), Some(billing)) => {
+                        matches!(billing.mark_delivering(request_id, 3600).await, Ok(true))
+                    }
+                    _ => false,
+                };
+                if !delivery_marked {
+                    Metrics::inc(&app.metrics.claudestore_fallback_failures);
+                    return without_not_started(local_err_for(
+                        LocalErr::Overloaded,
+                        "billing_delivery_marker_unavailable",
+                        Some(2),
+                    ));
+                }
+                if let Some(guard) = hold_guard.as_mut() {
+                    guard.disarm();
+                }
+                let bill = match reserved.take() {
+                    Some((request_id, account_id, key, hold, payable_multiplier_bp, priced_ts)) => {
+                        app.billing.clone().map(|billing| BillCtx {
+                            billing,
+                            account_id,
+                            key,
+                            mult_bp: payable_multiplier_bp,
+                            hold,
+                            tariff_priced_ts: priced_ts,
+                            policy_fast: priced_ts.map(|_| requested_fast),
+                            policy_us_inference: priced_ts.map(|_| requested_us_inference),
+                            request_id,
+                            reference: request_id_of(&resp),
+                        })
+                    }
+                    None => None,
+                };
+                Metrics::inc(&app.metrics.claudestore_fallback_successes);
+                let status = resp.status();
+                let meter = MeterCtx {
+                    model: model.clone(),
+                    is_sse: is_event_stream(&resp),
+                    bill,
+                    subscription: None,
+                };
+                return stream_back(status, resp, Some(meter));
+            }
+        }
         // Терминал: реальный Anthropic-ответ приоритетнее локальной классификации; иначе backend-аутейдж
         // (или пул пуст) → last_local; иначе синтетический 429 с readiness всего пула.
-        if let Some((st, resp)) = last_upstream {
-            return stream_back(st, resp, None);
-        }
-        if backend_exhausted || tried.is_empty() {
-            return last_local;
-        }
-        Metrics::inc(&app.metrics.exhausted);
-        let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
-        return local_err_for(
-            LocalErr::RateLimited,
-            "subscription_pool_exhausted",
-            Some(retry),
-        );
+        let terminal = if let Some((st, resp)) = last_upstream {
+            stream_back(st, resp, None)
+        } else if backend_exhausted || tried.is_empty() {
+            last_local
+        } else {
+            Metrics::inc(&app.metrics.exhausted);
+            let retry = app.pool.soonest_ready().unwrap_or(app.cfg.cool_secs);
+            local_err_for(
+                LocalErr::RateLimited,
+                "subscription_pool_exhausted",
+                Some(retry),
+            )
+        };
+        // Once an external transport attempt begins, classify its failure conservatively: the
+        // provider might have accepted it before the response was lost. Preserve the local terminal
+        // status and refund, but never sign the stronger proof that execution definitely did not start.
+        return if fallback_attempted {
+            without_not_started(terminal)
+        } else {
+            terminal
+        };
     } // 'smooth: loop
 }
 
@@ -2787,6 +2931,7 @@ mod tests {
             pricing_shadow: crate::pricing::PricingShadowConfig::default(),
             trust_loopback: false,
             upstream: "http://127.0.0.1:1".to_string(),
+            claudestore_fallback: None,
             max_tries: 1,
             util_cap: 1.0,
             cool_secs: 1,
@@ -3930,6 +4075,154 @@ mod tests {
         }
     }
 
+    struct CapturingUpstream {
+        upstream: String,
+        requests: Arc<AtomicU64>,
+        captured: Arc<std::sync::Mutex<Option<(HeaderMap, serde_json::Value)>>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+    impl Drop for CapturingUpstream {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    struct BrokenSseUpstream {
+        upstream: String,
+        requests: Arc<AtomicU64>,
+        task: tokio::task::JoinHandle<()>,
+    }
+    impl Drop for BrokenSseUpstream {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn broken_sse_upstream() -> BrokenSseUpstream {
+        let requests = Arc::new(AtomicU64::new(0));
+        let handler_requests = Arc::clone(&requests);
+        let router = axum::Router::new().route(
+            "/v1/messages",
+            axum::routing::post(move || {
+                let requests = Arc::clone(&handler_requests);
+                async move {
+                    requests.fetch_add(1, Ordering::Relaxed);
+                    let first = futures_util::stream::once(async {
+                        Ok::<_, std::io::Error>(bytes::Bytes::from_static(
+                            b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n",
+                        ))
+                    });
+                    let failure = futures_util::stream::once(async {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        Err(std::io::Error::other("mock stream failure"))
+                    });
+                    let stream = first.chain(failure);
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from_stream(stream))
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        BrokenSseUpstream {
+            upstream: format!("http://{address}"),
+            requests,
+            task,
+        }
+    }
+
+    async fn capturing_upstream(
+        status: StatusCode,
+        response_body: serde_json::Value,
+    ) -> CapturingUpstream {
+        let requests = Arc::new(AtomicU64::new(0));
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let handler_requests = Arc::clone(&requests);
+        let handler_captured = Arc::clone(&captured);
+        let router = axum::Router::new().route(
+            "/v1/messages",
+            axum::routing::post(move |headers: HeaderMap, body: bytes::Bytes| {
+                let response_body = response_body.clone();
+                let requests = Arc::clone(&handler_requests);
+                let captured = Arc::clone(&handler_captured);
+                async move {
+                    requests.fetch_add(1, Ordering::Relaxed);
+                    let parsed = serde_json::from_slice(&body).unwrap();
+                    *captured.lock().unwrap() = Some((headers, parsed));
+                    (status, axum::Json(response_body))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        CapturingUpstream {
+            upstream: format!("http://{address}"),
+            requests,
+            captured,
+            task,
+        }
+    }
+
+    async fn fail_once_then_succeed_upstream(success_body: serde_json::Value) -> CapturingUpstream {
+        let requests = Arc::new(AtomicU64::new(0));
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let handler_requests = Arc::clone(&requests);
+        let handler_captured = Arc::clone(&captured);
+        let router = axum::Router::new().fallback(move |headers: HeaderMap, body: bytes::Bytes| {
+            let success_body = success_body.clone();
+            let requests = Arc::clone(&handler_requests);
+            let captured = Arc::clone(&handler_captured);
+            async move {
+                let attempt = requests.fetch_add(1, Ordering::Relaxed);
+                let parsed = serde_json::from_slice(&body).unwrap();
+                *captured.lock().unwrap() = Some((headers, parsed));
+                if attempt == 0 {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        axum::Json(serde_json::json!({
+                            "type": "error",
+                            "error": {"type": "api_error", "message": "retry"}
+                        })),
+                    )
+                } else {
+                    (StatusCode::OK, axum::Json(success_body))
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        CapturingUpstream {
+            upstream: format!("http://{address}"),
+            requests,
+            captured,
+            task,
+        }
+    }
+
+    fn enable_test_fallback(app: &mut AppState, upstream: String) {
+        let mut cfg = (*app.cfg).clone();
+        cfg.claudestore_fallback =
+            Some(crate::config::ClaudeStoreFallbackConfig::for_test(upstream));
+        cfg.inject_identity = true;
+        cfg.inject_billing = true;
+        cfg.identity = "local-oauth-identity-must-not-leak".to_owned();
+        let cfg = Arc::new(cfg);
+        app.clients = Arc::new(Clients::new(&cfg));
+        app.cfg = cfg;
+    }
+
     async fn invoke_not_started(app: &AppState) -> Response {
         let request = axum::extract::Request::builder()
             .method(Method::POST)
@@ -4028,6 +4321,235 @@ mod tests {
         drop(app);
         drop(billing);
         drop(mock);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn healthy_local_pool_never_calls_claudestore() {
+        let response_body = serde_json::json!({
+            "id": "msg_local",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-6",
+            "content": [{"type": "text", "text": "local"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        });
+        let local = fixed_upstream(StatusCode::OK, response_body.clone()).await;
+        let external = capturing_upstream(StatusCode::OK, response_body).await;
+        let (billing, path) = not_started_billing("fallback-local-healthy").await;
+        let mut app = not_started_pool_app(Arc::clone(&billing), local.upstream.clone());
+        enable_test_fallback(&mut app, external.upstream.clone());
+
+        let response = invoke_not_started(&app).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(external.requests.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            app.metrics
+                .claudestore_fallback_attempts
+                .load(Ordering::Relaxed),
+            0
+        );
+
+        drop(app);
+        drop(billing);
+        drop(local);
+        drop(external);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn local_rotation_success_prevents_claudestore_attempt() {
+        let response_body = serde_json::json!({
+            "id": "msg_local_retry",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-6",
+            "content": [{"type": "text", "text": "local retry"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        });
+        let local = fail_once_then_succeed_upstream(response_body.clone()).await;
+        let external = capturing_upstream(StatusCode::OK, response_body).await;
+        let (billing, path) = not_started_billing("fallback-local-rotation").await;
+        let mut app = not_started_pool_app(Arc::clone(&billing), local.upstream.clone());
+        app.pool = Arc::new(Pool::new(
+            vec![
+                registry::Sub {
+                    email: "rotation-a@example.test".into(),
+                    token: "secret-a".into(),
+                    proxy: String::new(),
+                    fleet: "test".into(),
+                    plan: "max20".into(),
+                },
+                registry::Sub {
+                    email: "rotation-b@example.test".into(),
+                    token: "secret-b".into(),
+                    proxy: String::new(),
+                    fleet: "test".into(),
+                    plan: "max20".into(),
+                },
+            ],
+            Reserve::FULL,
+            50.0,
+            1_500.0,
+        ));
+        app.breaker = Arc::new(Breaker::new(2));
+        let mut cfg = (*app.cfg).clone();
+        cfg.max_tries = 2;
+        app.cfg = Arc::new(cfg);
+        app.clients = Arc::new(Clients::new(&app.cfg));
+        enable_test_fallback(&mut app, external.upstream.clone());
+
+        let response = invoke_not_started(&app).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(local.requests.load(Ordering::Relaxed), 2);
+        assert_eq!(external.requests.load(Ordering::Relaxed), 0);
+
+        drop(app);
+        drop(billing);
+        drop(local);
+        drop(external);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn exhausted_local_pool_calls_claudestore_once_without_local_identity() {
+        let response_body = serde_json::json!({
+            "id": "msg_external",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-6",
+            "content": [{"type": "text", "text": "external"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        });
+        let external = capturing_upstream(StatusCode::OK, response_body).await;
+        let (billing, path) = not_started_billing("fallback-empty-pool").await;
+        let mut app = not_started_pool_app(Arc::clone(&billing), "http://127.0.0.1:1".to_owned());
+        app.pool = Arc::new(Pool::new(Vec::new(), Reserve::FULL, 50.0, 1_500.0));
+        enable_test_fallback(&mut app, external.upstream.clone());
+
+        let response = invoke_not_started(&app).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(EXECUTION_STATE_HEADER).is_none());
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(external.requests.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            app.metrics
+                .claudestore_fallback_attempts
+                .load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            app.metrics
+                .claudestore_fallback_successes
+                .load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            app.metrics
+                .claudestore_fallback_failures
+                .load(Ordering::Relaxed),
+            0
+        );
+        let (headers, outbound_body) = external.captured.lock().unwrap().clone().unwrap();
+        assert!(headers.get("x-api-key").is_some());
+        assert!(headers.get("authorization").is_none());
+        assert!(headers.get("x-claude-code-session-id").is_none());
+        assert_eq!(outbound_body["model"], "claude-sonnet-4-6");
+        let serialized = serde_json::to_string(&outbound_body).unwrap();
+        assert!(!serialized.contains("local-oauth-identity-must-not-leak"));
+        assert!(!serialized.contains("x-anthropic-billing-header"));
+        let account = settled_account(&billing).await;
+        assert!(account.balance_nano < NS_TOPUP);
+        let ledger = billing.ledger(NS_ACCOUNT, 10).await.unwrap();
+        assert!(ledger.iter().any(|row| row.kind == "charge"));
+
+        drop(app);
+        drop(billing);
+        drop(external);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn claudestore_failure_returns_local_terminal_and_refunds_hold() {
+        let external = capturing_upstream(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({
+                "type": "error",
+                "error": {"type": "api_error", "message": "external unavailable"}
+            }),
+        )
+        .await;
+        let (billing, path) = not_started_billing("fallback-external-failure").await;
+        let mut app = not_started_pool_app(Arc::clone(&billing), "http://127.0.0.1:1".to_owned());
+        app.pool = Arc::new(Pool::new(Vec::new(), Reserve::FULL, 50.0, 1_500.0));
+        enable_test_fallback(&mut app, external.upstream.clone());
+
+        let response = invoke_not_started(&app).await;
+        assert_eq!(response.status().as_u16(), 529);
+        assert!(response.headers().get(EXECUTION_STATE_HEADER).is_none());
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(external.requests.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            app.metrics
+                .claudestore_fallback_failures
+                .load(Ordering::Relaxed),
+            1
+        );
+        let account = settled_account(&billing).await;
+        assert_eq!(account.balance_nano, NS_TOPUP);
+        let ledger = billing.ledger(NS_ACCOUNT, 10).await.unwrap();
+        assert!(!ledger.iter().any(|row| row.kind == "charge"));
+
+        drop(app);
+        drop(billing);
+        drop(external);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn claudestore_post_byte_stream_failure_is_never_replayed() {
+        let external = broken_sse_upstream().await;
+        let (billing, path) = not_started_billing("fallback-broken-stream").await;
+        let mut app = not_started_pool_app(Arc::clone(&billing), "http://127.0.0.1:1".to_owned());
+        app.pool = Arc::new(Pool::new(Vec::new(), Reserve::FULL, 50.0, 1_500.0));
+        enable_test_fallback(&mut app, external.upstream.clone());
+
+        let response = invoke_not_started(&app).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let delivered = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let delivered = String::from_utf8(delivered.to_vec()).unwrap();
+        assert!(delivered.contains("event: message_start"));
+        assert!(delivered.contains("event: error"));
+        assert_eq!(external.requests.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            app.metrics
+                .claudestore_fallback_attempts
+                .load(Ordering::Relaxed),
+            1
+        );
+        let _ = settled_account(&billing).await;
+
+        drop(app);
+        drop(billing);
+        drop(external);
         let _ = std::fs::remove_file(path);
     }
 }

@@ -9,6 +9,58 @@
 pub const CLAUDE_CODE_IDENTITY: &str =
     "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 
+pub const CLAUDESTORE_FALLBACK_BASE_URL: &str = "https://api3.claudestore.store";
+
+/// Secret-bearing configuration for the last-resort ClaudeStore transport. The base URL is fixed
+/// in production so a compromised environment cannot turn the fallback into an arbitrary request
+/// target. `Debug` deliberately redacts the API key because `ProxyConfig` is otherwise printable.
+#[derive(Clone)]
+pub struct ClaudeStoreFallbackConfig {
+    base_url: String,
+    api_key: String,
+}
+
+impl std::fmt::Debug for ClaudeStoreFallbackConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClaudeStoreFallbackConfig")
+            .field("base_url", &self.base_url)
+            .field("api_key", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl ClaudeStoreFallbackConfig {
+    pub fn production(api_key: String) -> Result<Self, &'static str> {
+        if !(32..=256).contains(&api_key.len())
+            || !api_key.starts_with("sk-cs4-")
+            || !api_key.bytes().all(|byte| byte.is_ascii_graphic())
+        {
+            return Err("expected a 32..=256 byte printable sk-cs4-* API key");
+        }
+        Ok(Self {
+            base_url: CLAUDESTORE_FALLBACK_BASE_URL.to_owned(),
+            api_key,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(base_url: String) -> Self {
+        Self {
+            base_url,
+            api_key: "sk-cs4-test-only-placeholder-000000000000".to_owned(),
+        }
+    }
+
+    pub(crate) fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    pub(crate) fn api_key(&self) -> &str {
+        &self.api_key
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ProxyConfig {
     pub api_keys: Vec<String>, // ключи НАШЕГО API (пусто → см. trust_loopback)
@@ -35,6 +87,9 @@ pub struct ProxyConfig {
     /// форвардинг. На экспонированном bind без `api_keys` сервер отклоняет всё (безопасный дефолт).
     pub trust_loopback: bool,
     pub upstream: String, // база апстрима (https://api.anthropic.com)
+    /// Disabled-by-default external transport. It is attempted only by `forward` after local
+    /// pre-byte rotation is terminal and an existing metered reservation owns the request.
+    pub claudestore_fallback: Option<ClaudeStoreFallbackConfig>,
     pub max_tries: usize, // попыток ротации при 429/5xx
     pub util_cap: f64,    // клиентский потолок утилизации окна (для /pool)
     pub cool_secs: i64,   // cooling при 429 без известного reset
@@ -74,4 +129,29 @@ pub struct ProxyConfig {
     pub stainless_package_version: String, // версия @anthropic-ai/sdk (снимается refresh-скриптом)
     pub stainless_os: String,      // "MacOS"
     pub stainless_arch: String,    // "arm64"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claudestore_config_pins_origin_validates_shape_and_redacts_secret() {
+        let secret = "sk-cs4-test-secret-12345678901234567890".to_owned();
+        let config = ClaudeStoreFallbackConfig::production(secret.clone()).unwrap();
+        assert_eq!(config.base_url(), CLAUDESTORE_FALLBACK_BASE_URL);
+        let debug = format!("{config:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains(&secret));
+
+        assert!(ClaudeStoreFallbackConfig::production("sk-cs4-short".to_owned()).is_err());
+        assert!(ClaudeStoreFallbackConfig::production(
+            "sk-other-test-secret-12345678901234567890".to_owned()
+        )
+        .is_err());
+        assert!(ClaudeStoreFallbackConfig::production(
+            "sk-cs4-test-secret-1234567890123456\n7890".to_owned()
+        )
+        .is_err());
+    }
 }

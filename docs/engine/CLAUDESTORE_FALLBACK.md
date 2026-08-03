@@ -1,9 +1,9 @@
 # ClaudeStore — аварийный fallback Claude-plane
 
-Статус: **research / dormant preview**. Этот transport не является частью локального Claude
-subscription-пула, не публикуется как отдельный провайдер или модель и по умолчанию выключен.
-Его единственная предполагаемая роль — последний Anthropic-compatible attempt после доказанного
-исчерпания всей локальной pre-byte ротации.
+Статус: **implemented / default-off / production live pending**. Этот transport не является частью
+локального Claude subscription-пула, не публикуется как отдельный провайдер или модель и по
+умолчанию выключен. Его единственная роль — последний Anthropic-compatible attempt после
+доказанного исчерпания всей локальной pre-byte ротации.
 
 ## Граница применения
 
@@ -17,7 +17,10 @@ subscription-пула, не публикуется как отдельный п�
 - Внешний turn не создаёт Claude subscription quota/calibration observation, affinity или health
   attribution конкретному локальному аккаунту.
 - Secret читается только `crates/server/src/config.rs`, не возвращается через API/метрики/логи и
-  хранится только в production secret env. URL имеет строгий HTTPS allowlist.
+  хранится только в production secret env. Production URL compile-fixed; произвольный upstream из
+  окружения задать нельзя.
+- Switch принимается только как strict `0|1|false|true`; enabled без валидного `sk-cs4-*` secret
+  или на fixed OpenAI/Gemini plane останавливает startup.
 
 ## Capability manifest
 
@@ -28,9 +31,9 @@ subscription-пула, не публикуется как отдельный п�
 | Native endpoint | `official` + unauthenticated live, 2026-08-03 | `POST https://api3.claudestore.store/v1/messages`; unauthenticated `/v1/models` отвечает bounded 401 `Missing API key` |
 | Anthropic version | `official`, 2026-08-03 | `anthropic-version: 2023-06-01` |
 | Non-stream | `official`; authenticated live `unknown` | Anthropic Messages JSON с terminal `usage.input_tokens/output_tokens` |
-| Streaming | `official`; authenticated live `unknown` | SSE `message_start` → deltas → `message_stop`; incrementality и terminal usage ещё не проверены на выданном ключе |
+| Streaming | `official`; authenticated live `unknown` | SSE `message_start` → deltas → `message_stop`; mock подтверждает отсутствие post-byte replay, incrementality и terminal usage живого сервиса ещё не проверены |
 | Tools | `official`; authenticated live `unknown` | Документация заявляет стандартный Anthropic `tools`; fail-closed сохраняется текущей wire-валидацией |
-| Models | `official` catalogue; key-scoped live `unknown` | Fallback не переписывает model id; неизвестная/недоступная модель возвращает внешний terminal error |
+| Models | `official` catalogue; key-scoped live `unknown` | Fallback не переписывает model id; неизвестная/недоступная модель завершает единственный внешний attempt, а наружу остаётся sanitized local terminal response |
 | Upstream quota | `official` | 429 + `Retry-After`; не используется как Claude subscription quota evidence |
 | Billing | `official`; authenticated live `unknown` | ClaudeStore списывает Anthropic-equivalent credits; customer settlement остаётся по локальному Anthropic rate card и terminal usage |
 | Data | `official`, policy v3.0 | Prompt/response content заявлен как не сохраняемый после request cycle; usage metadata хранится 12 месяцев |
@@ -42,21 +45,27 @@ subscription-пула, не публикуется как отдельный п�
 |---|---|---|
 | Messages | `POST /v1/messages`, `x-api-key`, `anthropic-version`, исходный Anthropic body | Forward байтов без OpenAI-transliteration; private локальные subscription headers не отправляются |
 | Stream | Anthropic SSE | Использовать существующий `TeeMeter`; до первого публичного байта возможен только один внешний attempt, после него replay запрещён |
-| 400/401/403/402 | terminal client/credential/balance failure | Не повторять и не возвращаться в уже исчерпанный локальный пул |
-| 429 | external capacity/rate limit, optional `Retry-After` | Один terminal external response; не записывать Claude subscription cooling/quota |
-| 5xx/network до bytes | внешний transport fault | Один terminal sanitized response; каскад на другие внешние сервисы отсутствует |
+| 400/401/403/402 | terminal client/credential/balance failure | Не повторять; скрыть ClaudeStore credential/balance details и вернуть уже вычисленный локальный terminal response |
+| 429 | external capacity/rate limit, optional `Retry-After` | Не повторять и не записывать Claude subscription cooling/quota; наружу остаётся локальный terminal response |
+| 5xx/network до bytes | внешний transport fault | Не повторять; наружу остаётся локальный terminal response, каскад на другие внешние сервисы отсутствует |
 | malformed/EOF после bytes | post-byte stream failure | Не replay; settlement следует существующей conservative missing-usage политике |
 
-## Compliance blocker
+После любого начатого внешнего `send` неуспех считается execution-ambiguous: клиент получает
+санитизированный локальный terminal status/body и refund, но `x-apitoken-execution-state:
+not_started` снимается. Поэтому router не может начать ещё одну billable continuation по ложному
+доказательству; только полный pre-external local terminal сохранял бы этот proof.
+
+## Письменное разрешение
 
 Действующие [Terms and Conditions](https://claudestore.store/terms-and-conditions/) версии
 `v3.0-2026-07-23`, пункт 8.2, запрещают resell/redistribute/sublicense API access третьим лицам без
 явного письменного согласия ClaudeStore. Клиентский fallback-трафик попадает в эту зону.
 
-Поэтому production secret **не провиженится**, switch **не включается**, а интеграция не может
-перейти из dormant preview в serving, пока оператор не сохранит проверяемое письменное разрешение
-ClaudeStore для этого сценария. Наличие рабочего ключа или успешный mock/live request этого
-разрешения не заменяет.
+3 августа 2026 оператор получил от администратора ClaudeStore явное письменное разрешение
+APIToken.sale использовать ключ ClaudeStore как резервный upstream для обработки клиентских
+запросов и redistribution API-доступа. Оригинал переписки и identity отправителя хранит оператор
+вне Git; screenshot, персональные данные и credential в репозиторий не копируются. Этот grant
+снимает blocker пункта 8.2 для заявленного сценария, но не заменяет технические live-гейты ниже.
 
 ## Evidence и незакрытые live-гейты
 
@@ -72,15 +81,20 @@ ClaudeStore для этого сценария. Наличие рабочего 
   `Retry-After`; стабильный RPM/TPM не публикуется.
 - [Privacy Policy](https://claudestore.store/legal/privacy/) `v3.0-2026-07-23` — request-cycle
   content handling и 12-month usage metadata retention.
+- Сайт ссылается на GitHub `zerofeesclub/claudestore`, но на дату проверки ссылка отвечает
+  `Repository not found`. Поэтому независимого inspectable implementation SHA нет: official docs
+  остаются wire-authority, а расхождение считается явным evidence conflict, не подтверждением кода.
 
 До serving остаются обязательными:
 
-1. письменное разрешение на клиентский fallback/resale use case;
-2. secret provisioning вне git с подтверждёнными owner/mode и kill switch;
-3. bounded authenticated live matrix: supported model list, minimal non-stream generation с
+1. secret provisioning вне git с подтверждёнными owner/mode и kill switch;
+2. bounded authenticated live matrix: supported model list, minimal non-stream generation с
    terminal usage, настоящий incremental SSE, deterministic 4xx, insufficient-balance/429 и
    secret/privacy scan;
-4. post-deploy smoke на exact watchdog-green SHA с проверкой единственного settlement и нулевой
+3. post-deploy smoke на exact watchdog-green SHA с проверкой единственного settlement и нулевой
    local subscription calibration attribution.
 
-Mock-тесты, сборка и merge сами по себе не закрывают эти гейты и не означают GA.
+Mock-матрица уже фиксирует: healthy local → 0 external attempts; local retry success → 0; empty
+pool → ровно 1; external 5xx → локальный terminal + refund; успешный ответ → customer settlement
+без local subscription attribution; post-byte SSE failure → error tail без replay. Эти тесты,
+сборка и merge сами по себе не закрывают authenticated live-гейты и не означают GA.

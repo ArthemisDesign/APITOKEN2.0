@@ -2,8 +2,9 @@
 //! [`forward::ProxyConfig`]. Единственное место в проекте, где читается env.
 
 use forward::{
-    CodexConfig, CodexModel, GeminiConfig, GeminiModel, PricingBridgeConfig, PricingShadowConfig,
-    PricingShadowConfigValues, ProviderMode, ProxyConfig, CLAUDE_CODE_IDENTITY,
+    ClaudeStoreFallbackConfig, CodexConfig, CodexModel, GeminiConfig, GeminiModel,
+    PricingBridgeConfig, PricingShadowConfig, PricingShadowConfigValues, ProviderMode, ProxyConfig,
+    CLAUDE_CODE_IDENTITY,
 };
 use std::{collections::BTreeMap, env, net::IpAddr};
 
@@ -107,6 +108,41 @@ fn parse_strict_bool(k: &str, value: Option<&str>, default: bool) -> Result<bool
             "{k}={value:?}: expected exactly 0, 1, false, or true"
         )),
     }
+}
+
+fn parse_claudestore_fallback_config(
+    provider: ProviderMode,
+    enabled: Option<&str>,
+    api_key: Option<String>,
+) -> Result<Option<ClaudeStoreFallbackConfig>, String> {
+    let enabled = parse_strict_bool("CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED", enabled, false)?;
+    if !enabled {
+        return Ok(None);
+    }
+    if !provider.serves_anthropic() {
+        return Err(
+            "CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED is valid only for combined or anthropic provider planes"
+                .to_owned(),
+        );
+    }
+    let api_key = api_key.ok_or_else(|| {
+        String::from(
+            "CLAUDE_API_CLAUDESTORE_API_KEY is required when CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=1"
+        )
+    });
+    Ok(Some(
+        ClaudeStoreFallbackConfig::production(api_key?)
+            .map_err(|message| format!("CLAUDE_API_CLAUDESTORE_API_KEY: {message}"))?,
+    ))
+}
+
+fn claudestore_fallback_config(provider: ProviderMode) -> Option<ClaudeStoreFallbackConfig> {
+    parse_claudestore_fallback_config(
+        provider,
+        ev("CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED").as_deref(),
+        ev("CLAUDE_API_CLAUDESTORE_API_KEY"),
+    )
+    .unwrap_or_else(|message| panic!("{message}"))
 }
 
 fn parse_pricing_bridge_config(
@@ -724,6 +760,7 @@ impl Settings {
     pub fn from_env() -> Self {
         let provider = parse_provider_mode(ev("CLAUDE_API_PROVIDER").as_deref())
             .unwrap_or_else(|message| panic!("{message}"));
+        let claudestore_fallback = claudestore_fallback_config(provider);
         let cfg_dir = ev("SUB_CFG_DIR").unwrap_or_else(|| {
             let home = env::var("HOME").unwrap_or_default();
             format!("{home}/.config/claude-api")
@@ -886,6 +923,7 @@ impl Settings {
                 // OAuth-токены можно отправлять только на канонический Anthropic origin. Локальный HTTP
                 // mock разрешается исключительно явным opt-in и только на literal loopback IP.
                 upstream: ev_upstream(),
+                claudestore_fallback,
                 max_tries: bounded_usize("CLAUDE_API_MAX_TRIES", 3, 1, 10),
                 util_cap: ev_frac("CLAUDE_API_UTIL_CAP", 0.95),
                 cool_secs: bounded_i64("CLAUDE_API_COOL_SECS", 300, 1, 8 * 24 * 3600),
@@ -973,6 +1011,53 @@ mod tests {
         );
         assert!(parse_provider_mode(Some("both")).is_err());
         assert!(parse_provider_mode(Some("codex")).is_err());
+    }
+
+    #[test]
+    fn claudestore_fallback_is_strict_default_off_and_anthropic_only() {
+        let secret = Some("sk-cs4-test-secret-12345678901234567890".to_owned());
+        assert!(
+            parse_claudestore_fallback_config(ProviderMode::Anthropic, None, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(parse_claudestore_fallback_config(
+            ProviderMode::Anthropic,
+            Some("false"),
+            secret.clone(),
+        )
+        .unwrap()
+        .is_none());
+        assert!(parse_claudestore_fallback_config(
+            ProviderMode::Anthropic,
+            Some("true"),
+            secret.clone(),
+        )
+        .unwrap()
+        .is_some());
+        assert!(parse_claudestore_fallback_config(
+            ProviderMode::Combined,
+            Some("1"),
+            secret.clone(),
+        )
+        .unwrap()
+        .is_some());
+        assert!(parse_claudestore_fallback_config(
+            ProviderMode::Anthropic,
+            Some("yes"),
+            secret.clone(),
+        )
+        .is_err());
+        assert!(
+            parse_claudestore_fallback_config(ProviderMode::Anthropic, Some("1"), None,).is_err()
+        );
+        assert!(
+            parse_claudestore_fallback_config(ProviderMode::OpenAi, Some("1"), secret.clone(),)
+                .is_err()
+        );
+        assert!(
+            parse_claudestore_fallback_config(ProviderMode::Gemini, Some("1"), secret,).is_err()
+        );
     }
 
     #[test]

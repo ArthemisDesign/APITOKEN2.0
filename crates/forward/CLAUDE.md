@@ -535,6 +535,15 @@ In-flight держится всю жизнь стрима: успех → `mark_
   (аутейдж; breaker вот-вот разомкнётся); все подписки за лимитом → `429 + Retry-After = soonest_ready`
   (клиент откатится сам — именно это, а не ошибка отдельной забаненной подписки); пул пуст → `503`.
   Каждый `mark_used` парен с `InflightGuard`/`end_stream`/`mark_done`.
+- **ClaudeStore emergency fallback:** только configured metered `POST /v1/messages`, без operator
+  calibration target и с уже созданным durable reserve. Один внешний attempt разрешён лишь после
+  terminal всей local pre-byte ротации/smooth-wait. Тело клонируется после namespace strip и до
+  identity/persona/billing mutation; наружу уходят только `x-api-key`, Anthropic version, клиентский
+  beta и JSON body с balance cap. Local OAuth/proxy/subscription/persona не отправляются. Успех
+  использует тот же `BillCtx`/`TeeMeter`, но `MeterCtx.subscription=None`, поэтому customer exact
+  settlement сохраняется, а pool spend/quota/calibration/affinity не меняются. Non-2xx/network
+  fallback не повторяется и не раскрывается клиенту; после начатого external send снимается
+  `not_started` proof как execution-ambiguous. Post-byte replay запрещён.
 
 **Антифингерпринт флота (`persona_ua`):** флот из 100 байт-в-байт одинаковых UA — сам по себе
 отпечаток. `persona_ua(cfg, email)` даёт **стабильный во времени** для подписки, но **различный между

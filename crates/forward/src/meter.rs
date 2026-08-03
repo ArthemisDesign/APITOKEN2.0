@@ -49,18 +49,25 @@ pub struct CalibrationCtx {
     pub probe_poke: Option<Arc<tokio::sync::Notify>>,
 }
 
-/// Что нужно, чтобы обработать один успешный ответ на завершении стрима. Делаем ВСЕГДА
-/// (для калибровки ёмкости окна нужен расход ЛЮБОГО запроса, включая админский), а списание
-/// с баланса — опционально (`bill`), только для метерных ключей.
-pub struct MeterCtx {
+/// Attribution that exists only when a local Claude subscription served the successful attempt.
+/// An external emergency transport deliberately omits it so its usage cannot contaminate local
+/// subscription spend, quota calibration, health, or capacity leases.
+pub struct SubscriptionMeterCtx {
     pub pool: Arc<Pool>,
     pub email: String, // подписка, которая обслужила запрос (для record_spend/калибровки)
-    pub model: String,
-    pub is_sse: bool,
-    pub bill: Option<BillCtx>,
     pub calibration: Option<CalibrationCtx>,
     /// Durable capacity lease transferred from the attempt guard to the response stream.
     pub capacity: Option<(Arc<AsyncBilling>, String)>,
+}
+
+/// Что нужно, чтобы обработать один успешный ответ на завершении стрима. Списание с клиентского
+/// баланса опционально (`bill`), а local-subscription attribution существует только для попыток,
+/// действительно обслуженных локальным пулом.
+pub struct MeterCtx {
+    pub model: String,
+    pub is_sse: bool,
+    pub bill: Option<BillCtx>,
+    pub subscription: Option<SubscriptionMeterCtx>,
 }
 
 /// Non-SSE usage is a trailing field of one JSON document, so retain at most the public response
@@ -124,12 +131,21 @@ pub struct TeeMeter {
 impl TeeMeter {
     pub fn new(inner: ByteStream, ctx: MeterCtx) -> Self {
         let request_id = ctx.bill.as_ref().map(|bill| bill.request_id.clone());
-        let capacity_lease_id = ctx.capacity.as_ref().map(|(_, lease_id)| lease_id.clone());
+        let capacity_lease_id = ctx
+            .subscription
+            .as_ref()
+            .and_then(|subscription| subscription.capacity.as_ref())
+            .map(|(_, lease_id)| lease_id.clone());
         let billing = ctx
             .bill
             .as_ref()
             .map(|bill| bill.billing.clone())
-            .or_else(|| ctx.capacity.as_ref().map(|(billing, _)| billing.clone()));
+            .or_else(|| {
+                ctx.subscription
+                    .as_ref()
+                    .and_then(|subscription| subscription.capacity.as_ref())
+                    .map(|(billing, _)| billing.clone())
+            });
         let lease_heartbeat = billing.map(|billing| {
             tokio::spawn(async move {
                 loop {
@@ -251,11 +267,13 @@ impl TeeMeter {
         if let Some(heartbeat) = self.lease_heartbeat.take() {
             heartbeat.abort();
         }
-        // стрим завершён/оборван → освободить слот конкуррентности персоны (парен с mark_used).
-        // Делаем ПЕРВЫМ и безусловно, даже если usage пустой (иначе in-flight подтёк бы).
-        ctx.pool.end_stream(&ctx.email);
-        if let Some((billing, lease_id)) = &ctx.capacity {
-            billing.release_capacity(lease_id);
+        // Локальная попытка передала слоты стриму — освобождаем их ПЕРВЫМИ даже при пустом usage.
+        // External fallback не имеет subscription attribution и сюда не попадает.
+        if let Some(subscription) = &ctx.subscription {
+            subscription.pool.end_stream(&subscription.email);
+            if let Some((billing, lease_id)) = &subscription.capacity {
+                billing.release_capacity(lease_id);
+            }
         }
         let (usage, served_model, incomplete_non_sse, authoritative_usage, us_inference, speed) =
             if ctx.is_sse {
@@ -271,10 +289,12 @@ impl TeeMeter {
                 // ошибка ВНУТРИ стрима после 200 (overloaded посреди генерации) — HTTP-код её не отражал,
                 // ротация уже невозможна; логируем, чтобы не была «тихой» (клиент получил её байт-в-байт).
                 if metering::sse_has_error(&s) {
-                    eprintln!(
-                        "⚠ SSE-error после 200 на {} — стрим нёс error-евент",
-                        ctx.email
-                    );
+                    let source = ctx
+                        .subscription
+                        .as_ref()
+                        .map(|subscription| subscription.email.as_str())
+                        .unwrap_or("external-fallback");
+                    eprintln!("⚠ SSE-error после 200 на {source} — стрим нёс error-евент");
                 }
                 (
                     usage,
@@ -350,14 +370,20 @@ impl TeeMeter {
 
         // расход в пул только когда он реально был (0 калибровку не двигает)
         if real > 0 {
-            ctx.pool.record_spend(&ctx.email, real);
+            if let Some(subscription) = &ctx.subscription {
+                subscription.pool.record_spend(&subscription.email, real);
+            }
         }
 
         // Capacity calibration records the official-price workload before applying any customer
         // markup. Response quota snapshots travel in the same ordered writer command, so they can
         // only observe cumulative spend after the immutable turn insert wins.
         if authoritative_usage && real > 0 {
-            if let Some(calibration) = &ctx.calibration {
+            if let Some((subscription, calibration)) = ctx
+                .subscription
+                .as_ref()
+                .and_then(|s| s.calibration.as_ref().map(|calibration| (s, calibration)))
+            {
                 let to_i64 = |value: u64| i64::try_from(value).ok();
                 let cost_i64 = |value: i128| i64::try_from(value).ok();
                 let modifiers = metering::AnthropicAdmissionModifiers {
@@ -421,7 +447,7 @@ impl TeeMeter {
                     ) => Some(registry::ProviderTurnCalibrationEvent {
                         provider: registry::PROVIDER_ANTHROPIC.to_owned(),
                         request_id: calibration.request_id.clone(),
-                        subject_id: ctx.email.clone(),
+                        subject_id: subscription.email.clone(),
                         model_id: price_model.to_owned(),
                         service_tier: if fast { "fast" } else { "standard" }.to_owned(),
                         inference_geo: if us_inference { "us" } else { "global" }.to_owned(),
@@ -463,7 +489,7 @@ impl TeeMeter {
                         // Queue the immutable spend evidence before waking the free count-tokens
                         // probe. `AnthropicObserveWindow` also flushes the pending turn FIFO first,
                         // so writer backpressure cannot invert spend and quota observations.
-                        ctx.pool.request_probe(&ctx.email);
+                        subscription.pool.request_probe(&subscription.email);
                         if let Some(poke) = &calibration.probe_poke {
                             poke.notify_one();
                         }
@@ -657,8 +683,6 @@ mod tests {
         let mut meter = TeeMeter::new(
             inner,
             MeterCtx {
-                pool,
-                email: EMAIL.into(),
                 model: "claude-sonnet-4-6".into(),
                 is_sse: true,
                 bill: Some(BillCtx {
@@ -673,8 +697,12 @@ mod tests {
                     request_id: "request".into(),
                     reference: None,
                 }),
-                calibration: None,
-                capacity: None,
+                subscription: Some(SubscriptionMeterCtx {
+                    pool,
+                    email: EMAIL.into(),
+                    calibration: None,
+                    capacity: None,
+                }),
             },
         );
         let mut delivered = Vec::new();
@@ -775,19 +803,21 @@ mod tests {
         let mut meter = TeeMeter::new(
             inner,
             MeterCtx {
-                pool: Arc::clone(&pool),
-                email: EMAIL.into(),
                 model: "claude-sonnet-4-6".into(),
                 is_sse: true,
                 bill: None,
-                calibration: Some(CalibrationCtx {
-                    billing: Arc::clone(&billing),
-                    request_id: "calibration-probe-request".into(),
-                    plan: "max20".into(),
-                    quota_snapshots: Vec::new(),
-                    probe_poke: Some(Arc::clone(&probe_poke)),
+                subscription: Some(SubscriptionMeterCtx {
+                    pool: Arc::clone(&pool),
+                    email: EMAIL.into(),
+                    calibration: Some(CalibrationCtx {
+                        billing: Arc::clone(&billing),
+                        request_id: "calibration-probe-request".into(),
+                        plan: "max20".into(),
+                        quota_snapshots: Vec::new(),
+                        probe_poke: Some(Arc::clone(&probe_poke)),
+                    }),
+                    capacity: None,
                 }),
-                capacity: None,
             },
         );
         while meter.next().await.is_some() {}
@@ -939,8 +969,9 @@ impl Drop for TeeMeter {
                     .as_ref()
                     .map(|bill| bill.billing.track_detached_work())
                     .or_else(|| {
-                        ctx.capacity
+                        ctx.subscription
                             .as_ref()
+                            .and_then(|subscription| subscription.capacity.as_ref())
                             .map(|(billing, _)| billing.track_detached_work())
                     })
             });

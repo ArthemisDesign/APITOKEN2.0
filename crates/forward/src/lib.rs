@@ -50,7 +50,9 @@ pub use codex::{
     CodexOperationalStatus, CodexPrices, CodexProfileSpec, CodexProfilesFile, CodexRateLimitWindow,
     CodexRateLimits,
 };
-pub use config::{ProxyConfig, CLAUDE_CODE_IDENTITY};
+pub use config::{
+    ClaudeStoreFallbackConfig, ProxyConfig, CLAUDESTORE_FALLBACK_BASE_URL, CLAUDE_CODE_IDENTITY,
+};
 pub use gemini::{
     gemini_api, gemini_chat_completions, gemini_messages_count_tokens, gemini_messages_skin,
     gemini_responses, GeminiConfig, GeminiGateway, GeminiModel, GeminiModelStatus,

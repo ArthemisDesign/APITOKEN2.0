@@ -284,6 +284,11 @@ pub struct Metrics {
     pub breaker_rejects: AtomicU64, // отбито разомкнутым circuit breaker
     pub exhausted: AtomicU64,    // исчерпание пула (все за лимитом) → 429+Retry-After
     pub auth_failures: AtomicU64, // неудачных авторизаций (спайк = брутфорс/скан управляющих ключей)
+    /// Last-resort ClaudeStore transport. These counters are intentionally provider-wide and carry
+    /// no model, account, key, request, upstream-error, or customer labels.
+    pub claudestore_fallback_attempts: AtomicU64,
+    pub claudestore_fallback_successes: AtomicU64,
+    pub claudestore_fallback_failures: AtomicU64,
     /// Successful Gemini generations that ended without authoritative usage. Metered non-stream
     /// delivery is withheld; a stream already delivered settles its conservative hold.
     pub gemini_usage_missing: AtomicU64,

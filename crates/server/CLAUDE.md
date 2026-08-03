@@ -103,6 +103,11 @@
 - При старте PostgreSQL authority только read-only проверяет применённую схему; DDL выполняется
   отдельным `db migrate-engine` до запуска слота blue-green.
 - Новую env-переменную заводи ТОЛЬКО тут и прокидывай дальше через конфиг-структуры.
+- ClaudeStore emergency transport: `CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED` strict default-off
+  (`0|1|false|true`), secret `CLAUDE_API_CLAUDESTORE_API_KEY` обязателен только при enable и проходит
+  shape-validation/redacted Debug. Enable допустим лишь для `Combined|Anthropic`; production base
+  URL compile-fixed в `forward`, env override отсутствует. Secret живёт только в root-owned
+  `server.env`, а runtime-контракт — `docs/engine/CLAUDESTORE_FALLBACK.md`.
 - Atomic legacy snapshot bridge config читается только здесь
   `CLAUDE_API_PRICING_BRIDGE_ENABLED`/`CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP`. Default строго
   `false/0`; bool принимает только `0|1|false|true`, sample — integer `0..=10000`, несогласованные

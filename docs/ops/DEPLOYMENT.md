@@ -613,6 +613,25 @@ and schema changes. Ordinarily deploy and verify the engine first, then deploy t
 a change needs the reverse order, the old engine must already understand the new API calls. There is
 no atomic cross-component switch.
 
+## ClaudeStore emergency fallback
+
+The fallback binary is safe to deploy with no credential: its strict default is disabled. Enable it
+only after the exact implementation SHA is watchdog-green and the authorization/evidence record in
+`docs/engine/CLAUDESTORE_FALLBACK.md` is current. Put
+`CLAUDE_API_CLAUDESTORE_API_KEY` only in the root-owned `/srv/claude-api/data/server.env` through the
+host secret-provisioning path; never place it in Git, a command line, chat transcript, fixture or
+deploy log. Keep that file mode `0600`. The non-secret
+`CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=1` switch belongs to the Anthropic/Combined runtime config;
+enabled-without-key and enabling on OpenAI/Gemini fail startup.
+
+Use the normal watchdog-controlled engine cycle so a fresh inactive slot reads both values, then
+run the bounded authenticated smoke from the provider document. Confirm one attempt/settlement and
+zero local subscription calibration attribution. Roll back immediately by setting the switch to
+`0` (or removing the secret) through the same controlled config/secret path and cycling the engine;
+no database rollback is required. Observe
+`claude_api_claudestore_fallback_{attempts,successes,failures}_total` and the
+`ClaudeStoreFallbackFailing` runbook while enabled.
+
 ## Caddy and systemd definition changes
 
 Application deploys do not silently replace host infrastructure definitions. If `deploy/Caddyfile`

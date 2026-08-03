@@ -1067,6 +1067,21 @@ async fn metrics(
     );
     let _ = writeln!(
         body,
+        "# HELP claude_api_claudestore_fallback_attempts_total Last-resort external attempts after local Claude rotation became terminal.\n\
+         # TYPE claude_api_claudestore_fallback_attempts_total counter\n\
+         claude_api_claudestore_fallback_attempts_total {}\n\
+         # HELP claude_api_claudestore_fallback_successes_total Successful last-resort external responses admitted to customer delivery.\n\
+         # TYPE claude_api_claudestore_fallback_successes_total counter\n\
+         claude_api_claudestore_fallback_successes_total {}\n\
+         # HELP claude_api_claudestore_fallback_failures_total Failed external transport, HTTP, or delivery-marker attempts.\n\
+         # TYPE claude_api_claudestore_fallback_failures_total counter\n\
+         claude_api_claudestore_fallback_failures_total {}",
+        g(&m.claudestore_fallback_attempts),
+        g(&m.claudestore_fallback_successes),
+        g(&m.claudestore_fallback_failures),
+    );
+    let _ = writeln!(
+        body,
         "# TYPE claude_api_pricing_bridge_selected_total counter\n\
          # TYPE claude_api_pricing_bridge_snapshot_inserted_total counter\n\
          # TYPE claude_api_pricing_bridge_snapshot_replayed_total counter\n\

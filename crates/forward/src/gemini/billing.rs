@@ -1086,6 +1086,7 @@ mod tests {
             pricing_shadow: PricingShadowConfig::default(),
             trust_loopback: false,
             upstream: "http://127.0.0.1:1".to_string(),
+            claudestore_fallback: None,
             max_tries: 1,
             util_cap: 1.0,
             cool_secs: 1,

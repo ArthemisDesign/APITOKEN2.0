@@ -199,6 +199,15 @@ Control API движка использует только на чтение. С
   rollback/tests). Потребители winner-результата — money/funding settlement и
   `crates/server` `/metrics`; публичные API group identity не возвращают. Контракт —
   `docs/engine/ROUTING_FENCING.md` §4.
+- **ClaudeStore emergency transport (`crates/server` → `crates/forward` → ClaudeStore API3).**
+  `crates/server/src/config.rs` единолично читает strict enable switch и secret, а compile-fixed
+  `https://api3.claudestore.store` нельзя заменить env-URL. `crates/forward/src/proxy.rs` потребляет
+  конфиг только для metered Anthropic `POST /v1/messages`: после terminal всей локальной pre-byte
+  ротации выполняет максимум один очищенный внешний attempt, сохраняет исходный request/reservation
+  identity и customer exact settlement, но не пишет local subscription spend/quota/calibration/
+  affinity. Prometheus потребляет fixed-cardinality attempts/successes/failures; failure alert и
+  rollback описаны в `docs/ops/MONITORING.md#claudestorefallbackfailing`. Контракт и evidence —
+  `docs/engine/CLAUDESTORE_FALLBACK.md`.
 - **Контракт policy preflight (provider planes → router, фаза 6.4a).** Производитель — одинаковый
   `crates/server::router_policy` на каждом fixed runtime: authenticated loopback-only
   `POST /internal/router/policy/preflight` читает customer key и один coherent pricing bundle через
