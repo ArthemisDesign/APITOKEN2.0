@@ -6,9 +6,13 @@ import {
   type PricingReleaseActivationAckV2,
   type PricingReleaseActivationRequestV2,
 } from "@claude-api/contracts";
+import { EngineClientError } from "@claude-api/engine-client";
 import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
-import { stage5V2Digest } from "./pricing-stage5-materializer-v2.js";
+import {
+  Stage5MaterializerV2Error,
+  stage5V2Digest,
+} from "./pricing-stage5-materializer-v2.js";
 import {
   capturePricingReleaseActivationAuthorityV2,
   type PricingReleaseActivationAuthorityReadersV2,
@@ -35,6 +39,73 @@ export interface ClaimedPricingReleaseActivationJobV2 {
   expectedHeadVersion: bigint;
   payloadDigest: string;
   request: PricingReleaseActivationRequestV2;
+}
+
+export interface PricingReleaseActivationControlV2 {
+  databaseObservedAt: Date;
+  unresolvedPricingJobs: number;
+  releases: Array<{
+    generation: string;
+    releaseKind: "target" | "recovery";
+    status: string;
+    contentDigest: string;
+    engineReleaseDigest: string | null;
+    commerceInventoryDigest: string;
+    engineInventoryDigest: string;
+    openkeysInventoryDigest: string;
+    serviceInventoryDigest: string;
+    createdAt: Date;
+    updatedAt: Date;
+  }>;
+  evidence: Array<{
+    evidenceDigest: string;
+    engineEvidenceDigest: string | null;
+    engineCapturedAt: Date | null;
+    targetGeneration: string;
+    targetDigest: string;
+    recoveryGeneration: string;
+    recoveryDigest: string;
+    serviceInventoryDigest: string | null;
+    legacyInflightCount: string;
+    blockerCount: string;
+    passed: boolean;
+    observedAt: Date;
+    validUntil: Date;
+    targetStatus: string;
+    recoveryStatus: string;
+    targetEngineDigest: string | null;
+    recoveryEngineDigest: string | null;
+    fresh: boolean;
+    sourceComplete: boolean;
+    localBlockers: string[];
+  }>;
+  jobs: Array<{
+    id: string;
+    activationKind: PricingReleaseActivationJobKindV2;
+    releaseGeneration: string;
+    releaseDigest: string;
+    evidenceDigest: string;
+    status: string;
+    attempts: number;
+    operatorId: string | null;
+    reason: string | null;
+    lastError: string | null;
+    resultDigest: string | null;
+    confirmedAt: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }>;
+  receipts: Array<{
+    activationId: string;
+    activationKind: PricingReleaseActivationJobKindV2;
+    releaseGeneration: string;
+    releaseDigest: string;
+    evidenceDigest: string;
+    headVersion: string;
+    receiptDigest: string;
+    activatedAt: Date;
+    createdAt: Date;
+  }>;
 }
 
 interface ActivationEvidenceRow {
@@ -97,6 +168,24 @@ function permanent(message: string): PricingReleaseActivationJobV2Error {
 
 function transient(message: string): PricingReleaseActivationJobV2Error {
   return new PricingReleaseActivationJobV2Error(message, false);
+}
+
+function classifyAuthorityCaptureFailure(error: unknown): never {
+  if (error instanceof EngineClientError) {
+    throw error.retryable
+      ? transient("engine activation authority is temporarily unavailable")
+      : permanent("engine activation authority returned an invalid response");
+  }
+  if (
+    error instanceof Stage5MaterializerV2Error
+    && error.code === "openkeys_inventory_unavailable"
+  ) {
+    throw transient("OpenKeys activation authority is temporarily unavailable");
+  }
+  if (error instanceof TypeError && /fetch failed/i.test(error.message)) {
+    throw transient("activation authority transport is temporarily unavailable");
+  }
+  throw error;
 }
 
 function parsePositiveSafeInteger(value: string, label: string): number {
@@ -402,10 +491,252 @@ export async function stagePricingReleaseActivationJobV2(
       evidenceDigest,
       JSON.stringify(request),
     ]);
+    await client.query(`
+      INSERT INTO audit_log (
+        actor_type, actor_id, action, target_type, target_id, metadata
+      ) VALUES (
+        'admin', $1, 'pricing_release_activation_staged',
+        'pricing_release_control_job_v2', $2,
+        jsonb_build_object(
+          'activation_kind', $3::text,
+          'evidence_digest', $4::text,
+          'release_generation', $5::text,
+          'release_digest', $6::text,
+          'expected_head_version', $7::text,
+          'reason', $8::text
+        )
+      )
+    `, [
+      input.operatorId,
+      inserted.rows[0]!.id,
+      input.activationKind,
+      evidenceDigest,
+      releaseGeneration,
+      releaseDigest,
+      String(expectedHeadVersion),
+      input.reason,
+    ]);
     await client.query("COMMIT");
     return inserted.rows[0]!.id;
   } catch (error) {
     await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function readPricingReleaseActivationControlV2(
+  database: Database,
+  limit = 20,
+): Promise<PricingReleaseActivationControlV2> {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new RangeError("activation control limit must be an integer from 1 to 100");
+  }
+  const client = await database.pool.connect();
+  let transactionOpen = false;
+  try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    transactionOpen = true;
+    const observed = await client.query<{ database_now: Date }>(
+      "SELECT transaction_timestamp() AS database_now",
+    );
+    const databaseObservedAt = observed.rows[0]!.database_now;
+    const unresolvedPricingJobs = await unresolvedPricingJobCount(client);
+    const releases = await client.query<{
+      generation: string;
+      release_kind: "target" | "recovery";
+      status: string;
+      content_digest: string;
+      engine_release_digest: string | null;
+      commerce_inventory_digest: string;
+      engine_inventory_digest: string;
+      openkeys_inventory_digest: string;
+      service_inventory_digest: string;
+      created_at: Date;
+      updated_at: Date;
+    }>(`
+      SELECT generation::text, release_kind, status, content_digest,
+             engine_release_digest, commerce_inventory_digest,
+             engine_inventory_digest, openkeys_inventory_digest,
+             service_inventory_digest, created_at, updated_at
+      FROM pricing_release_plans_v2
+      ORDER BY generation DESC
+      LIMIT $1
+    `, [limit]);
+    const evidence = await client.query<{
+      evidence_digest: string;
+      engine_evidence_digest: string | null;
+      engine_captured_at: Date | null;
+      target_generation: string;
+      target_digest: string;
+      recovery_generation: string;
+      recovery_digest: string;
+      service_inventory_digest: string | null;
+      legacy_inflight_count: string;
+      blocker_count: string;
+      passed: boolean;
+      observed_at: Date;
+      valid_until: Date;
+      target_status: string;
+      recovery_status: string;
+      target_engine_digest: string | null;
+      recovery_engine_digest: string | null;
+    }>(`
+      SELECT evidence.evidence_digest, evidence.engine_evidence_digest,
+             evidence.engine_captured_at, evidence.target_generation::text,
+             evidence.target_digest, evidence.recovery_generation::text,
+             evidence.recovery_digest, evidence.service_inventory_digest,
+             evidence.legacy_inflight_count::text, evidence.blocker_count::text,
+             evidence.passed, evidence.observed_at, evidence.valid_until,
+             target.status AS target_status, recovery.status AS recovery_status,
+             target.engine_release_digest AS target_engine_digest,
+             recovery.engine_release_digest AS recovery_engine_digest
+      FROM pricing_stage8_evidence_v2 evidence
+      JOIN pricing_release_plans_v2 target
+        ON target.generation = evidence.target_generation
+       AND target.content_digest = evidence.target_digest
+       AND target.release_kind = 'target'
+      JOIN pricing_release_plans_v2 recovery
+        ON recovery.generation = evidence.recovery_generation
+       AND recovery.content_digest = evidence.recovery_digest
+       AND recovery.release_kind = 'recovery'
+      ORDER BY evidence.observed_at DESC, evidence.evidence_digest
+      LIMIT $1
+    `, [limit]);
+    const jobs = await client.query<{
+      id: string;
+      job_kind: "activate_release" | "activate_recovery";
+      release_generation: string;
+      release_digest: string;
+      stage8_evidence_digest: string;
+      activation_payload: unknown;
+      status: string;
+      attempts: number;
+      last_error: string | null;
+      result_digest: string | null;
+      confirmed_at: Date | null;
+      created_at: Date;
+      updated_at: Date;
+    }>(`
+      SELECT id, job_kind, release_generation::text, release_digest,
+             stage8_evidence_digest, activation_payload, status, attempts,
+             last_error, result_digest, confirmed_at, created_at, updated_at
+      FROM pricing_release_control_jobs_v2
+      WHERE job_kind IN ('activate_release', 'activate_recovery')
+      ORDER BY created_at DESC, id
+      LIMIT $1
+    `, [limit]);
+    const receipts = await client.query<{
+      activation_id: string;
+      activation_kind: PricingReleaseActivationJobKindV2;
+      release_generation: string;
+      release_digest: string;
+      evidence_digest: string;
+      head_version: string;
+      receipt_digest: string;
+      activated_at: Date;
+      created_at: Date;
+    }>(`
+      SELECT activation_id, activation_kind, release_generation::text,
+             release_digest, evidence_digest, head_version::text,
+             receipt_digest, activated_at, created_at
+      FROM pricing_release_activation_receipts_v2
+      ORDER BY head_version DESC
+      LIMIT $1
+    `, [limit]);
+    await client.query("COMMIT");
+    transactionOpen = false;
+
+    return {
+      databaseObservedAt,
+      unresolvedPricingJobs,
+      releases: releases.rows.map((row) => ({
+        generation: row.generation,
+        releaseKind: row.release_kind,
+        status: row.status,
+        contentDigest: row.content_digest,
+        engineReleaseDigest: row.engine_release_digest,
+        commerceInventoryDigest: row.commerce_inventory_digest,
+        engineInventoryDigest: row.engine_inventory_digest,
+        openkeysInventoryDigest: row.openkeys_inventory_digest,
+        serviceInventoryDigest: row.service_inventory_digest,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      })),
+      evidence: evidence.rows.map((row) => {
+        const fresh = row.valid_until.getTime() > databaseObservedAt.getTime();
+        const sourceComplete = row.engine_evidence_digest !== null
+          && row.engine_captured_at !== null
+          && row.service_inventory_digest !== null;
+        const localBlockers = [
+          ...(!row.passed || row.blocker_count !== "0" ? ["stage8_not_passed"] : []),
+          ...(row.engine_evidence_digest === null || row.engine_captured_at === null
+            ? ["engine_source_identity_missing"] : []),
+          ...(row.service_inventory_digest === null ? ["service_inventory_identity_missing"] : []),
+          ...(!fresh ? ["evidence_expired"] : []),
+          ...(row.target_status !== "prepared" ? ["target_release_not_prepared"] : []),
+          ...(row.recovery_status !== "prepared" ? ["recovery_release_not_prepared"] : []),
+          ...(row.target_engine_digest === null ? ["target_engine_digest_missing"] : []),
+          ...(row.recovery_engine_digest === null ? ["recovery_engine_digest_missing"] : []),
+          ...(unresolvedPricingJobs !== 0 ? ["unresolved_pricing_jobs"] : []),
+        ];
+        return {
+          evidenceDigest: row.evidence_digest,
+          engineEvidenceDigest: row.engine_evidence_digest,
+          engineCapturedAt: row.engine_captured_at,
+          targetGeneration: row.target_generation,
+          targetDigest: row.target_digest,
+          recoveryGeneration: row.recovery_generation,
+          recoveryDigest: row.recovery_digest,
+          serviceInventoryDigest: row.service_inventory_digest,
+          legacyInflightCount: row.legacy_inflight_count,
+          blockerCount: row.blocker_count,
+          passed: row.passed,
+          observedAt: row.observed_at,
+          validUntil: row.valid_until,
+          targetStatus: row.target_status,
+          recoveryStatus: row.recovery_status,
+          targetEngineDigest: row.target_engine_digest,
+          recoveryEngineDigest: row.recovery_engine_digest,
+          fresh,
+          sourceComplete,
+          localBlockers,
+        };
+      }),
+      jobs: jobs.rows.map((row) => {
+        const payload = pricingReleaseActivationRequestV2Schema.safeParse(row.activation_payload);
+        return {
+          id: row.id,
+          activationKind: row.job_kind === "activate_release" ? "cutover" : "recovery",
+          releaseGeneration: row.release_generation,
+          releaseDigest: row.release_digest,
+          evidenceDigest: row.stage8_evidence_digest,
+          status: row.status,
+          attempts: row.attempts,
+          operatorId: payload.success ? payload.data.operator_id : null,
+          reason: payload.success ? payload.data.reason : null,
+          lastError: row.last_error,
+          resultDigest: row.result_digest,
+          confirmedAt: row.confirmed_at,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        };
+      }),
+      receipts: receipts.rows.map((row) => ({
+        activationId: row.activation_id,
+        activationKind: row.activation_kind,
+        releaseGeneration: row.release_generation,
+        releaseDigest: row.release_digest,
+        evidenceDigest: row.evidence_digest,
+        headVersion: row.head_version,
+        receiptDigest: row.receipt_digest,
+        activatedAt: row.activated_at,
+        createdAt: row.created_at,
+      })),
+    };
+  } catch (error) {
+    if (transactionOpen) await client.query("ROLLBACK");
     throw error;
   } finally {
     client.release();
@@ -492,20 +823,25 @@ async function claimedJobFromRow(
     throw permanent("activation job payload differs from its durable evidence and release identity");
   }
   if (row.attempts === 1) {
-    const authority = await capturePricingReleaseActivationAuthorityV2(client, authorityReaders, {
-      activationKind,
-      targetGeneration: row.target_generation,
-      targetEngineDigest: row.target_engine_digest!,
-      recoveryGeneration: row.recovery_generation,
-      recoveryEngineDigest: row.recovery_engine_digest!,
-      targetCommerceInventoryDigest: row.target_commerce_inventory_digest,
-      targetEngineInventoryDigest: row.target_engine_inventory_digest,
-      targetOpenkeysInventoryDigest: row.target_openkeys_inventory_digest,
-      targetServiceInventoryDigest: row.target_service_inventory_digest,
-      expectedHead: storedRequest.expectation === "absent"
-        ? null
-        : storedRequest.expectation.exact,
-    });
+    let authority: Awaited<ReturnType<typeof capturePricingReleaseActivationAuthorityV2>>;
+    try {
+      authority = await capturePricingReleaseActivationAuthorityV2(client, authorityReaders, {
+        activationKind,
+        targetGeneration: row.target_generation,
+        targetEngineDigest: row.target_engine_digest!,
+        recoveryGeneration: row.recovery_generation,
+        recoveryEngineDigest: row.recovery_engine_digest!,
+        targetCommerceInventoryDigest: row.target_commerce_inventory_digest,
+        targetEngineInventoryDigest: row.target_engine_inventory_digest,
+        targetOpenkeysInventoryDigest: row.target_openkeys_inventory_digest,
+        targetServiceInventoryDigest: row.target_service_inventory_digest,
+        expectedHead: storedRequest.expectation === "absent"
+          ? null
+          : storedRequest.expectation.exact,
+      });
+    } catch (error) {
+      classifyAuthorityCaptureFailure(error);
+    }
     const drift = [
       ...authority.blockers.map((blocker) => blocker.code),
       ...(authority.commerceInventoryDigest === row.commerce_inventory_digest

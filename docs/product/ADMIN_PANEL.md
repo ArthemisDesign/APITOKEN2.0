@@ -107,9 +107,13 @@ policy. Preview/email/registration описывают provider/model досту�
 engine ACK; usable key до подтверждения policy не выдаётся.
 
 Админка не выполняет Stage 5 assignment/backfill сама и не выводит назначения B2B/service/OpenKeys
-из имён. Она показывает prepared target/recovery releases, freshness Stage 8 и единственный global
-active release head. Пока foundation отсутствует, редакторы fail closed; кнопки per-account canary
-activation и maintenance-mode cutover отсутствуют.
+из имён. Commerce producer теперь даёт защищённый bounded snapshot prepared target/recovery,
+freshness/source completeness Stage 8, durable activation jobs/receipts и отдельно timestamped
+engine head через `GET /admin/pricing-release-activation-v2`; единственный mutation endpoint —
+explicit `POST .../stage` с verified actor/reason и canonical evidence digest. Подключение этих
+endpoint'ов к странице `/pricing` идёт отдельным consumer-коммитом после GREEN backend producer
+SHA. Пока consumer не доставлен, UI эту поверхность не вызывает. Per-account canary и
+maintenance-mode controls запрещены.
 
 ## GPT capacity board на странице подписок
 

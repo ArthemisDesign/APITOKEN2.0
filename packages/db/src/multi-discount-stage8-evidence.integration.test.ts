@@ -7,6 +7,7 @@ import type {
   PricingReleaseInventoryAccountV2,
 } from "@claude-api/contracts";
 import { drizzle } from "drizzle-orm/node-postgres";
+import { EngineClientError } from "@claude-api/engine-client";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -17,6 +18,7 @@ import {
   confirmPricingReleaseActivationJobV2,
   createDatabase,
   recoverStalePricingReleaseActivationJobsV2,
+  readPricingReleaseActivationControlV2,
   stagePricingReleaseActivationJobV2,
   stage5V2CommerceInventoryDigest,
   stage5V2Digest,
@@ -637,6 +639,63 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
     }
   });
 
+  it("keeps a first-delivery authority outage retryable without consuming the attempt", async () => {
+    const seeded = await seedPreparedPair();
+    const database = createDatabase(databaseUrl, "stage8-activation-authority-unavailable");
+    try {
+      const evidence = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        seeded.report,
+      );
+      const jobId = await stagePricingReleaseActivationJobV2(database, {
+        activationKind: "cutover",
+        evidenceDigest: evidence.evidence_digest,
+        operatorId: "pricing-control-worker:authority-unavailable",
+        reason: "prove transient authority failure remains recoverable",
+      });
+      const engine = seeded.authority.readers.engine;
+      const readHead = engine.getPricingReleaseHeadV2.bind(engine);
+      engine.getPricingReleaseHeadV2 = async () => {
+        throw new EngineClientError("authority timeout", undefined, true);
+      };
+
+      await expect(claimNextPricingReleaseActivationJobV2(
+        database,
+        "activation-authority-unavailable",
+        seeded.authority.readers,
+      )).resolves.toBeNull();
+      const deferred = await seed.query<{
+        status: string;
+        attempts: number;
+        last_error: string;
+      }>(`
+        SELECT status, attempts, last_error
+        FROM pricing_release_control_jobs_v2
+        WHERE id = $1
+      `, [jobId]);
+      expect(deferred.rows[0]).toEqual({
+        status: "retry",
+        attempts: 0,
+        last_error: "engine activation authority is temporarily unavailable",
+      });
+
+      engine.getPricingReleaseHeadV2 = readHead;
+      await seed.query(`
+        UPDATE pricing_release_control_jobs_v2
+        SET next_attempt_at = now()
+        WHERE id = $1
+      `, [jobId]);
+      await expect(claimNextPricingReleaseActivationJobV2(
+        database,
+        "activation-authority-restored",
+        seeded.authority.readers,
+      )).resolves.toMatchObject({ id: jobId, attempts: 1 });
+    } finally {
+      await database.pool.end();
+    }
+  });
+
   it("accepts a post-cutover account only through an exact target/recovery extension", async () => {
     const seeded = await seedPreparedPair();
     const database = createDatabase(databaseUrl, "stage8-post-cutover-extension");
@@ -782,6 +841,25 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
         operatorId: "pricing-control-worker:integration",
         reason: "activate exact prepared Stage 9 target",
       })).resolves.toBe(cutoverJobId);
+      const cutoverAudit = await seed.query<{
+        actor_id: string;
+        target_type: string;
+        metadata: Record<string, unknown>;
+      }>(`
+        SELECT actor_id, target_type, metadata
+        FROM audit_log
+        WHERE action = 'pricing_release_activation_staged'
+          AND target_id = $1
+      `, [cutoverJobId]);
+      expect(cutoverAudit.rows).toEqual([expect.objectContaining({
+        actor_id: "pricing-control-worker:integration",
+        target_type: "pricing_release_control_job_v2",
+        metadata: expect.objectContaining({
+          activation_kind: "cutover",
+          evidence_digest: cutoverEvidence.evidence_digest,
+          reason: "activate exact prepared Stage 9 target",
+        }),
+      })]);
 
       const recoverySource = engineEvidence({
         engineInventoryDigest: seeded.report.engine_inventory_digest,
@@ -861,15 +939,60 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
         confirmed_jobs: string;
         receipts: string;
         payloads: string;
+        staged_audits: string;
       }>(`
         SELECT
           (SELECT count(*)::text FROM pricing_release_control_jobs_v2
            WHERE status = 'confirmed' AND result_digest LIKE 'sha256:v2:%') AS confirmed_jobs,
           (SELECT count(*)::text FROM pricing_release_activation_receipts_v2) AS receipts,
           (SELECT count(*)::text FROM pricing_release_activation_receipts_v2
-           WHERE receipt_payload IS NOT NULL) AS payloads
+           WHERE receipt_payload IS NOT NULL) AS payloads,
+          (SELECT count(*)::text FROM audit_log
+           WHERE action = 'pricing_release_activation_staged') AS staged_audits
       `);
-      expect(stored.rows[0]).toEqual({ confirmed_jobs: "2", receipts: "2", payloads: "2" });
+      expect(stored.rows[0]).toEqual({
+        confirmed_jobs: "2",
+        receipts: "2",
+        payloads: "2",
+        staged_audits: "2",
+      });
+
+      const control = await readPricingReleaseActivationControlV2(database);
+      expect(control.unresolvedPricingJobs).toBe(0);
+      expect(control.releases).toEqual(expect.arrayContaining([
+        expect.objectContaining({ generation: TARGET_GENERATION.toString(), releaseKind: "target", status: "prepared" }),
+        expect.objectContaining({ generation: RECOVERY_GENERATION.toString(), releaseKind: "recovery", status: "prepared" }),
+      ]));
+      expect(control.evidence).toHaveLength(2);
+      expect(control.evidence).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          evidenceDigest: cutoverEvidence.evidence_digest,
+          fresh: true,
+          sourceComplete: true,
+          localBlockers: [],
+        }),
+        expect.objectContaining({
+          evidenceDigest: recoveryEvidence.evidence_digest,
+          fresh: true,
+          sourceComplete: true,
+          localBlockers: [],
+        }),
+      ]));
+      expect(control.jobs).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: cutoverJobId,
+          activationKind: "cutover",
+          status: "confirmed",
+          operatorId: "pricing-control-worker:integration",
+        }),
+        expect.objectContaining({
+          id: recoveryJobId,
+          activationKind: "recovery",
+          status: "confirmed",
+          operatorId: "pricing-control-worker:integration",
+        }),
+      ]));
+      expect(control.receipts.map((receipt) => receipt.headVersion)).toEqual(["2", "1"]);
     } finally {
       await database.pool.end();
     }

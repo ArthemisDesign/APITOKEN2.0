@@ -4,6 +4,8 @@ import { Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   multiplierForDiscount,
+  pricingReleaseActivationStageResponseV2Schema,
+  type PricingReleaseActivationStageRequestV2,
   type PricingReleaseInventoryAccountV2,
   type PricingPolicyEditorRule,
   type ProviderSwitchEditorMutation,
@@ -27,15 +29,18 @@ import {
   listAdminUserOverview,
   recordAdminCredit,
   readServiceAccountInventoryV2,
+  readPricingReleaseActivationControlV2,
   revokeBusinessInvite,
   rotateBusinessInvite,
   setBusinessPricing,
+  stagePricingReleaseActivationJobV2,
   updateManagedPricingPolicy,
   updateManagedProviderSwitches,
   upsertServiceAccountInventoryV2,
   type AdminUserOverviewRow,
   type AdminUserOverviewQuery,
   type Database,
+  type PricingReleaseActivationControlV2,
 } from "@claude-api/db";
 import { EngineClient } from "@claude-api/engine-client";
 import type { Environment } from "./config.js";
@@ -198,6 +203,43 @@ export class AdminService {
 
   async getServiceAccountInventoryV2(): Promise<unknown> {
     return readServiceAccountInventoryV2(this.database);
+  }
+
+  async getPricingReleaseActivationControlV2(): Promise<Record<string, unknown>> {
+    const control = await readPricingReleaseActivationControlV2(this.database);
+    let engineHead: Awaited<ReturnType<EngineClient["getPricingReleaseHeadV2"]>> = null;
+    let engineAvailable = false;
+    try {
+      engineHead = await this.engine.getPricingReleaseHeadV2();
+      engineAvailable = true;
+    } catch {
+      // Local durable evidence remains observable, but the UI must fail closed before staging.
+    }
+    const engineObservedAt = new Date();
+    return serializePricingReleaseActivationControlV2(
+      control,
+      engineObservedAt,
+      engineAvailable,
+      engineHead,
+    );
+  }
+
+  async stagePricingReleaseActivationV2(
+    input: PricingReleaseActivationStageRequestV2,
+    actorId: string,
+  ): Promise<Record<string, unknown>> {
+    const jobId = await stagePricingReleaseActivationJobV2(this.database, {
+      activationKind: input.activation_kind,
+      evidenceDigest: input.evidence_digest,
+      operatorId: actorId,
+      reason: input.reason,
+    });
+    return pricingReleaseActivationStageResponseV2Schema.parse({
+      job_id: jobId,
+      activation_kind: input.activation_kind,
+      evidence_digest: input.evidence_digest,
+      status: "accepted",
+    });
   }
 
   async upsertServiceAccountInventoryV2(
@@ -487,6 +529,85 @@ function serializeUser(
     },
     api_keys: { active: row.apiKeysActive, total: row.apiKeysTotal },
     last_seen_at: row.lastSeenAt?.toISOString() ?? null,
+  };
+}
+
+function serializePricingReleaseActivationControlV2(
+  control: PricingReleaseActivationControlV2,
+  engineObservedAt: Date,
+  engineAvailable: boolean,
+  engineHead: Awaited<ReturnType<EngineClient["getPricingReleaseHeadV2"]>>,
+): Record<string, unknown> {
+  return {
+    database_observed_at: control.databaseObservedAt.toISOString(),
+    unresolved_pricing_jobs: control.unresolvedPricingJobs,
+    engine: {
+      observed_at: engineObservedAt.toISOString(),
+      available: engineAvailable,
+      head: engineHead,
+    },
+    releases: control.releases.map((release) => ({
+      generation: release.generation,
+      release_kind: release.releaseKind,
+      status: release.status,
+      content_digest: release.contentDigest,
+      engine_release_digest: release.engineReleaseDigest,
+      commerce_inventory_digest: release.commerceInventoryDigest,
+      engine_inventory_digest: release.engineInventoryDigest,
+      openkeys_inventory_digest: release.openkeysInventoryDigest,
+      service_inventory_digest: release.serviceInventoryDigest,
+      created_at: release.createdAt.toISOString(),
+      updated_at: release.updatedAt.toISOString(),
+    })),
+    evidence: control.evidence.map((evidence) => ({
+      evidence_digest: evidence.evidenceDigest,
+      engine_evidence_digest: evidence.engineEvidenceDigest,
+      engine_captured_at: evidence.engineCapturedAt?.toISOString() ?? null,
+      target_generation: evidence.targetGeneration,
+      target_digest: evidence.targetDigest,
+      recovery_generation: evidence.recoveryGeneration,
+      recovery_digest: evidence.recoveryDigest,
+      service_inventory_digest: evidence.serviceInventoryDigest,
+      legacy_inflight_count: evidence.legacyInflightCount,
+      blocker_count: evidence.blockerCount,
+      passed: evidence.passed,
+      observed_at: evidence.observedAt.toISOString(),
+      valid_until: evidence.validUntil.toISOString(),
+      target_status: evidence.targetStatus,
+      recovery_status: evidence.recoveryStatus,
+      target_engine_digest: evidence.targetEngineDigest,
+      recovery_engine_digest: evidence.recoveryEngineDigest,
+      fresh: evidence.fresh,
+      source_complete: evidence.sourceComplete,
+      local_blockers: evidence.localBlockers,
+    })),
+    jobs: control.jobs.map((job) => ({
+      id: job.id,
+      activation_kind: job.activationKind,
+      release_generation: job.releaseGeneration,
+      release_digest: job.releaseDigest,
+      evidence_digest: job.evidenceDigest,
+      status: job.status,
+      attempts: job.attempts,
+      operator_id: job.operatorId,
+      reason: job.reason,
+      last_error: job.lastError,
+      result_digest: job.resultDigest,
+      confirmed_at: job.confirmedAt?.toISOString() ?? null,
+      created_at: job.createdAt.toISOString(),
+      updated_at: job.updatedAt.toISOString(),
+    })),
+    receipts: control.receipts.map((receipt) => ({
+      activation_id: receipt.activationId,
+      activation_kind: receipt.activationKind,
+      release_generation: receipt.releaseGeneration,
+      release_digest: receipt.releaseDigest,
+      evidence_digest: receipt.evidenceDigest,
+      head_version: receipt.headVersion,
+      receipt_digest: receipt.receiptDigest,
+      activated_at: receipt.activatedAt.toISOString(),
+      created_at: receipt.createdAt.toISOString(),
+    })),
   };
 }
 

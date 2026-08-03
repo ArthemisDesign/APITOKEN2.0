@@ -453,9 +453,11 @@ production inventory. Engine producer уже реализует cutover из abs
 forward recovery из complete target head. Durable commerce consumer подключён после GREEN schema
 SHA: strict request сохраняется до сети, lost ACK повторяет exact body, complete ACK и canonical
 request/receipt digest коммитятся до `confirmed`, а recovery expectation берётся только из cutover
-receipt. Он не активируется сам: ни API, ни migration, ни startup, ни Stage 8 не создают job.
-Текущий source-capture gap также блокирует staging до следующего checkpoint. Stage 9 не
-останавливает сервис и не требует ручной финансовой подписи.
+receipt. Он не активируется сам: migration, startup, Stage 8 и read-only API не создают job.
+Единственный producer — намеренный authenticated Admin API staging call с canonical evidence
+digest, verified actor и reason; read endpoint сам ничего не stage'ит. Source engine и service
+identities уже сохраняются новым collector checkpoint и legacy `NULL` rows fail closed. Stage 9
+не останавливает сервис и не требует ручной финансовой подписи.
 
 ## 9. Контракты UI и API
 

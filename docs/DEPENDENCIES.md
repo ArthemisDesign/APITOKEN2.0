@@ -55,8 +55,11 @@ DB consumer строит request из persisted passed evidence и engine releas
 authority, а после возможной доставки восстанавливает lost ACK только exact replay и сохраняет
 полный validated receipt. Persisted service-inventory digest обязателен и должен совпасть с fresh
 capture; старые evidence rows с `NULL` не stage'ятся. Raw identities в blocker/error artifact не
-выходят. Recovery expectation берётся только из durable cutover receipt. Ни API, ни startup, ни migration, ни Stage 8
-автоматически не stage'ят activation job; без явной immutable job route не вызывается.
+выходят. Recovery expectation берётся только из durable cutover receipt. Startup, migration,
+Stage 8 collector и worker polling не stage'ят activation job. Единственный producer — защищённый
+`POST /v1/admin/pricing-release-activation-v2/stage` в `apps/api`; paired GET отдаёт bounded local
+snapshot и отдельно timestamped engine head. `apps/admin` подключается к этому expand-only
+контракту только после GREEN producer SHA.
 
 ### Sales feed (коммерция ↔ партнёрка)
 

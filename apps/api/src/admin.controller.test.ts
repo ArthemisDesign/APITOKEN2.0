@@ -1,5 +1,9 @@
 import { BadRequestException, HttpException, NotFoundException } from "@nestjs/common";
-import { PricingPolicyWriteError, ServiceAccountInventoryV2Error } from "@claude-api/db";
+import {
+  PricingPolicyWriteError,
+  PricingReleaseActivationJobV2Error,
+  ServiceAccountInventoryV2Error,
+} from "@claude-api/db";
 import { describe, expect, it, vi } from "vitest";
 import { AdminController } from "./admin.controller.js";
 import { AdminServiceAccountInventoryError, type AdminService } from "./admin.service.js";
@@ -173,6 +177,60 @@ describe("managed pricing HTTP contract", () => {
 
     await expect(controller.listServicePricingPolicies()).resolves.toEqual({ policies: [{ ownerId: "crm" }] });
     expect(listManagedServicePricingPolicies).toHaveBeenCalledOnce();
+  });
+
+  it("exposes read-only activation control and stages only an explicit attributed request", async () => {
+    const getPricingReleaseActivationControlV2 = vi.fn().mockResolvedValue({
+      database_observed_at: "2026-08-03T00:00:00.000Z",
+      engine: { available: true, head: null },
+    });
+    const stagePricingReleaseActivationV2 = vi.fn().mockResolvedValue({
+      job_id: "4f53639f-ced1-472f-998e-50e426bd5734",
+      status: "accepted",
+    });
+    const controller = new AdminController({
+      getPricingReleaseActivationControlV2,
+      stagePricingReleaseActivationV2,
+    } as unknown as AdminService);
+    const body = {
+      activation_kind: "cutover",
+      evidence_digest: `sha256:v2:${"a".repeat(64)}`,
+      reason: "activate the reviewed full-inventory target",
+    };
+
+    await expect(controller.getPricingReleaseActivationControlV2())
+      .resolves.toMatchObject({ engine: { available: true, head: null } });
+    await expect(controller.stagePricingReleaseActivationV2(body, "operator@example.test"))
+      .resolves.toMatchObject({ status: "accepted" });
+    expect(stagePricingReleaseActivationV2).toHaveBeenCalledWith(body, "operator@example.test");
+
+    await expect(controller.stagePricingReleaseActivationV2(body))
+      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.stagePricingReleaseActivationV2({ ...body, extra: true }, "operator"))
+      .rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("maps activation state conflicts to 409 without hiding transient staging failures", async () => {
+    const conflict = new AdminController({
+      stagePricingReleaseActivationV2: vi.fn().mockRejectedValue(
+        new PricingReleaseActivationJobV2Error("evidence expired", true),
+      ),
+    } as unknown as AdminService);
+    const unavailable = new AdminController({
+      stagePricingReleaseActivationV2: vi.fn().mockRejectedValue(
+        new PricingReleaseActivationJobV2Error("database unavailable", false),
+      ),
+    } as unknown as AdminService);
+    const body = {
+      activation_kind: "recovery",
+      evidence_digest: `sha256:v2:${"b".repeat(64)}`,
+      reason: "activate the exact reviewed recovery release",
+    };
+
+    await expect(conflict.stagePricingReleaseActivationV2(body, "operator"))
+      .rejects.toMatchObject({ status: 409 });
+    await expect(unavailable.stagePricingReleaseActivationV2(body, "operator"))
+      .rejects.toMatchObject({ status: 503 });
   });
 
   it("writes service inventory only through strict CAS metadata and a verified actor", async () => {

@@ -879,10 +879,27 @@ export type PricingReleaseHeadExpectationV2 =
   z.infer<typeof pricingReleaseHeadExpectationV2Schema>;
 
 const pricingReleaseActivationTimestampV2Schema = z.number().int().safe().positive();
-const pricingReleaseActivationOperatorV2Schema = z.string().min(1).max(200)
+export const pricingReleaseActivationOperatorV2Schema = z.string().min(1).max(200)
   .refine((value) => !/[\u0000-\u001f\u007f-\u009f]/u.test(value), "operator_id contains control characters");
-const pricingReleaseActivationReasonV2Schema = z.string().min(1).max(2_000)
+export const pricingReleaseActivationReasonV2Schema = z.string().min(1).max(2_000)
   .refine((value) => !/[\u0000-\u001f\u007f-\u009f]/u.test(value), "reason contains control characters");
+
+export const pricingReleaseActivationStageRequestV2Schema = z.object({
+  activation_kind: pricingReleaseActivationKindV2Schema,
+  evidence_digest: canonicalSha256V2Schema,
+  reason: pricingReleaseActivationReasonV2Schema,
+}).strict();
+export type PricingReleaseActivationStageRequestV2 =
+  z.infer<typeof pricingReleaseActivationStageRequestV2Schema>;
+
+export const pricingReleaseActivationStageResponseV2Schema = z.object({
+  job_id: z.string().uuid(),
+  activation_kind: pricingReleaseActivationKindV2Schema,
+  evidence_digest: canonicalSha256V2Schema,
+  status: z.literal("accepted"),
+}).strict();
+export type PricingReleaseActivationStageResponseV2 =
+  z.infer<typeof pricingReleaseActivationStageResponseV2Schema>;
 
 export const pricingReleaseActivationEvidenceV2Schema = z.object({
   evidence_digest: canonicalSha256V2Schema,

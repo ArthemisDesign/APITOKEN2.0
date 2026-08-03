@@ -138,10 +138,15 @@ OpenKeys inventories around a stable commerce/service snapshot, exact ownership/
 post-cutover assignment-extension/funding authority. Subject identities remain hashed. Once a
 request may have reached the engine, retry deliberately skips TTL and mutable-authority checks and
 replays the immutable body so an applied CAS with a lost ACK can return `unchanged`. Forward
-recovery derives its exact expected target head only from the durable cutover receipt. No API,
-migration, startup hook or evidence collection automatically stages a job. New Stage 8 rows persist
-both source-engine and service-inventory identities; staging rejects legacy rows where either
-expand-only field is still `NULL`, and first delivery requires the fresh service digest to match.
+recovery derives its exact expected target head only from the durable cutover receipt. Migration,
+startup, evidence collection and worker polling never create a job. The only production staging
+entrypoint is the AdminGuard-protected explicit POST below; it derives `operator_id` from the
+verified `x-admin-actor`, stores actor/reason in both the immutable request and `audit_log`, and
+cannot accept an inferred/default evidence identity. New Stage 8 rows persist both source-engine
+and service-inventory identities; staging rejects legacy rows where either expand-only field is
+still `NULL`, and first delivery requires the fresh service digest to match. A transient
+engine/OpenKeys authority outage keeps the job retryable without spending the first-delivery
+attempt; deterministic drift remains terminal.
 
 The commercial admin API exposes the complete managed surface:
 
@@ -156,7 +161,15 @@ GET       /admin/service-policies
 GET/PATCH /admin/service-policies/{id}?product_id=...
 GET       /admin/service-account-inventory
 PUT       /admin/service-account-inventory/{service_id}
+GET       /admin/pricing-release-activation-v2
+POST      /admin/pricing-release-activation-v2/stage
 ```
+
+The activation GET is a bounded read-only snapshot of exact local release/evidence/job/receipt
+identities plus separately timestamped live engine head availability. The POST accepts only strict
+`activation_kind`, canonical `evidence_digest` and `reason`; it creates or idempotently finds the
+single durable job and returns before the worker performs any network delivery. Neither route
+collects Stage 8 evidence or moves the engine head inline.
 
 Policy writes are full CAS replacements over provider/model rules. Their responses include source
 actor/reason/version, desired/applied target versions, durable delivery state and the latest error.

@@ -33,6 +33,31 @@ Consumer не создаёт job автоматически. Collector тепе�
 миграции 0031 и service identity из миграции 0032; любая legacy evidence row с `NULL` в этих полях
 непригодна для staging.
 
+## Protected control surface
+
+Commerce producer публикует два additive AdminGuard-protected endpoint'а:
+
+```text
+GET  /v1/admin/pricing-release-activation-v2
+POST /v1/admin/pricing-release-activation-v2/stage
+```
+
+GET выполняет bounded read-only repeatable snapshot prepared releases, Stage 8 freshness/source
+completeness, unresolved pricing backlog, activation jobs и receipts; live engine head читается
+отдельно и несёт собственное observation time/availability, поэтому недоступность engine не
+маскируется как absent head. POST требует strict `activation_kind`, canonical
+`evidence_digest`, human `reason` и verified `x-admin-actor`. Actor не принимается из JSON body.
+Новая job и audit row записываются одной `SERIALIZABLE` transaction; exact replay не создаёт
+второй audit/event. Ответ `accepted` означает только durable staging: CAS выполняет уже
+существующий worker lane после fresh first-delivery authority revalidation.
+Transient engine/OpenKeys transport unavailability leaves the job in `retry` without consuming its
+first-delivery attempt; semantic drift or malformed authority remains terminal. Поэтому краткий
+outage до CAS не превращает безопасно staged job в необратимый `dead` blocker.
+
+Это единственная production staging surface. Migration, startup, evidence collector, GET и worker
+polling не могут создать job. Endpoint не генерирует evidence и не выполняет engine network
+mutation inline. `apps/admin` подключается отдельным consumer-коммитом после GREEN producer SHA.
+
 ## Preconditions
 
 - deployed runtime на обоих blue-green слотах поддерживает target и recovery release schema, а
