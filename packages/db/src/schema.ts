@@ -239,6 +239,10 @@ export const signupProfiles = pgTable("signup_profiles", {
   userAgent: text("user_agent"),
   deviceHash: text("device_hash"),
   bonusGranted: boolean("bonus_granted").notNull().default(false),
+  // Nullable during the expand checkpoint: the previously deployed writer knows only the
+  // boolean claim. Migration 0034 backfills every already-granted bonus to its historical $4
+  // nominal; the follow-up consumer records the exact amount for every new claim.
+  bonusAmountNano: bigint("bonus_amount_nano", { mode: "bigint" }),
   flaggedReason: text("flagged_reason"),
   createdAt,
 }, (table) => [

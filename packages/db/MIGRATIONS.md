@@ -111,3 +111,11 @@ engine JSON before attaching the combined commerce result. The schema is dormant
 job, performs no engine request, changes no evidence/head/account/money row and does not replace the
 manual collector until the protected engine producer and commerce worker consumer have each passed
 their producer-first delivery checkpoints.
+
+Migration `0034_pricing_welcome_bonus_amount.sql` adds nullable exact nanoUSD storage to the
+existing signup anti-fraud profile and backfills every already-granted bonus to its historical
+`$4.000000000` nominal. Nullable is intentional during expand: the previously deployed writer can
+continue claiming the boolean without knowing the new column. The dependent consumer treats a
+granted `NULL` row as the same historical `$4`, records `$5.000000000` atomically for every new
+claim, and uses the persisted amount for recovery and administrative revocation. The migration
+itself changes no grant, engine balance or eligibility decision.

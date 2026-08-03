@@ -274,7 +274,9 @@ async function captureLegacyState(client: Client): Promise<Record<string, string
           "idempotency_key",
           "created_by_actor",
         ]
-      : table === "email_outbox" ? ["business_invite_id"] : [];
+      : table === "email_outbox"
+        ? ["business_invite_id"]
+        : table === "signup_profiles" ? ["bonus_amount_nano"] : [];
     const result = await client.query<{ rows: string }>(`
       SELECT COALESCE(
         jsonb_agg(
@@ -793,7 +795,7 @@ async function insertValidGraph(client: Client): Promise<ValidGraph> {
 }
 
 describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
-  it("upgrades an exact 0021 database without changing legacy rows and remains idempotent", async () => {
+  it("upgrades an exact 0021 database, backfills historical bonuses, and remains idempotent", async () => {
     const legacyMigrationsFolder = await createMigrationsThrough(
       LEGACY_MIGRATION_LAST_INDEX,
     );
@@ -805,14 +807,59 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         const before = await captureLegacyState(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(34);
+        expect(await migrationCount(client)).toBe(35);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
 
+        const historicalBonuses = await client.query<{
+          email_canonical: string;
+          bonus_granted: boolean;
+          bonus_amount_nano: string | null;
+        }>(`
+          SELECT email_canonical, bonus_granted, bonus_amount_nano::text
+          FROM signup_profiles
+          ORDER BY email_canonical
+        `);
+        expect(historicalBonuses.rows).toEqual([
+          {
+            email_canonical: "legacy-b2b@test.invalid",
+            bonus_granted: false,
+            bonus_amount_nano: null,
+          },
+          {
+            email_canonical: "legacy-b2c@test.invalid",
+            bonus_granted: true,
+            bonus_amount_nano: "4000000000",
+          },
+        ]);
+
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(34);
+        expect(await migrationCount(client)).toBe(35);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
+
+        const oldWriterUserId = randomUUID();
+        await client.query(`
+          INSERT INTO users (id, email, display_name, email_verified)
+          VALUES ($1, 'old-writer@test.invalid', 'Old writer', true)
+        `, [oldWriterUserId]);
+        await client.query(`
+          INSERT INTO signup_profiles (
+            user_id, email_canonical, bonus_granted
+          ) VALUES ($1, 'old-writer@test.invalid', true)
+        `, [oldWriterUserId]);
+        const oldWriterBonus = await client.query<{
+          bonus_granted: boolean;
+          bonus_amount_nano: string | null;
+        }>(`
+          SELECT bonus_granted, bonus_amount_nano::text
+          FROM signup_profiles
+          WHERE user_id = $1
+        `, [oldWriterUserId]);
+        expect(oldWriterBonus.rows).toEqual([{
+          bonus_granted: true,
+          bonus_amount_nano: null,
+        }]);
       });
     } finally {
       await rm(legacyMigrationsFolder, { recursive: true, force: true });
@@ -921,7 +968,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         `);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(34);
+        expect(await migrationCount(client)).toBe(35);
         const legacy = await client.query(`
           SELECT funding_generation::text, target_funding_digest,
                  normalization_source, blockers, status
