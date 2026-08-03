@@ -9,25 +9,69 @@
 //! `proxy::RetryReason`'s fail-closed transport/execution proof.
 
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use axum::body::{to_bytes, Body, Bytes};
+use axum::body::{Body, Bytes};
 use axum::extract::Request;
 use axum::http::{request::Parts, HeaderMap};
 use axum::response::Response;
+use futures_util::{stream, StreamExt};
+use tokio::sync::OwnedSemaphorePermit;
 
 use crate::auth::{self, AuthError};
 use crate::catalog::{self, NS_ANTHROPIC, NS_GOOGLE, NS_OPENAI};
 use crate::error::{self, Lane};
+use crate::metrics::{AuthOutcome, PolicyFailure, RouterMetrics};
 use crate::policy::{
     self, PolicyCandidate, PreflightError, ProviderNamespace, ProviderPreferences, SortMode,
 };
 use crate::{presets, proxy, AppState};
 
 const BODY_LIMIT: usize = 32 * 1024 * 1024;
+const BODY_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+const BODY_READ_MAX_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub const BODY_ADMISSION_UNIT_BYTES: usize = 1024 * 1024;
 pub const BODY_ADMISSION_UNITS: usize = 64;
 const MAX_BODY_ADMISSION_UNITS: u32 = (BODY_LIMIT / BODY_ADMISSION_UNIT_BYTES) as u32;
+
+struct BodyAdmissionPermit {
+    permit: OwnedSemaphorePermit,
+    metrics: Arc<RouterMetrics>,
+    units: u32,
+}
+
+impl BodyAdmissionPermit {
+    fn new(permit: OwnedSemaphorePermit, metrics: Arc<RouterMetrics>, units: u32) -> Self {
+        metrics.body_units_acquired(units);
+        Self {
+            permit,
+            metrics,
+            units,
+        }
+    }
+
+    fn merge(&mut self, permit: OwnedSemaphorePermit, units: u32) {
+        self.permit.merge(permit);
+        self.units += units;
+        self.metrics.body_units_acquired(units);
+    }
+}
+
+impl Drop for BodyAdmissionPermit {
+    fn drop(&mut self) {
+        self.metrics.body_units_released(self.units);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BodyReadError {
+    TooLarge,
+    Overloaded,
+    Timeout,
+    Transport,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Surface {
@@ -95,6 +139,13 @@ impl Surface {
         }
     }
 
+    fn body_timeout(self) -> Response {
+        match self {
+            Self::Chat | Self::Responses => error::body_read_timeout(),
+            Self::Messages => error::messages_body_read_timeout(),
+        }
+    }
+
     fn policy_unavailable(self) -> Response {
         match self {
             Self::Chat | Self::Responses => error::policy_unavailable(),
@@ -131,26 +182,33 @@ struct ExpandedCandidate {
 /// Shared universal handler. The response body is never buffered; only the
 /// already-required 32 MiB request body is materialized.
 pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surface) -> Response {
+    let _request_guard = state.metrics.universal_request();
     let auth_headers = proxy::auth_passthrough(req.headers());
-    match auth::preflight(&state.client, &crate::origins(&state), &auth_headers).await {
+    let auth_started = Instant::now();
+    let auth_result = auth::preflight(&state.client, &crate::origins(&state), &auth_headers).await;
+    state.metrics.auth(
+        match auth_result {
+            Ok(()) => AuthOutcome::Success,
+            Err(AuthError::Unauthorized) => AuthOutcome::Unauthorized,
+            Err(AuthError::Unavailable) => AuthOutcome::Unavailable,
+        },
+        auth_started.elapsed(),
+    );
+    match auth_result {
         Ok(()) => {}
         Err(AuthError::Unauthorized) => return surface.auth_rejected(),
         Err(AuthError::Unavailable) => return surface.auth_unavailable(),
     }
-    let admission_units = body_admission_units(req.headers());
-    let _body_permit = match state
-        .body_admission
-        .clone()
-        .try_acquire_many_owned(admission_units)
-    {
-        Ok(permit) => permit,
-        Err(_) => return surface.overloaded(),
-    };
     let (mut parts, body) = req.into_parts();
-    let bytes = match to_bytes(body, BODY_LIMIT).await {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return surface.invalid("Request body exceeds the 32 MiB limit.", None);
+    let (bytes, body_permit) = match read_body(&state, &parts.headers, body).await {
+        Ok(result) => result,
+        Err(BodyReadError::TooLarge) => {
+            return surface.invalid("Request body exceeds the 32 MiB limit.", None)
+        }
+        Err(BodyReadError::Overloaded) => return surface.overloaded(),
+        Err(BodyReadError::Timeout) => return surface.body_timeout(),
+        Err(BodyReadError::Transport) => {
+            return surface.invalid("Failed to read request body.", None)
         }
     };
     let mut value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
@@ -181,11 +239,12 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
             &state,
             parts,
             bytes,
-            &mut value,
+            value,
             &model,
             surface,
             fast_header,
             fast_body_alias,
+            body_permit,
         )
         .await;
     }
@@ -205,6 +264,10 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         };
         return surface.invalid(message, Some(param));
     }
+
+    // Advanced routing serializes a fresh body for each attempt; the original raw allocation is no
+    // longer needed after parsing. The weighted permit is transferred to attempt 1 below.
+    drop(bytes);
 
     let preferences = match value.get("provider") {
         Some(provider) => match ProviderPreferences::parse(provider) {
@@ -290,7 +353,12 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
     let auth = proxy::auth_passthrough(&parts.headers);
     let aggregate = state
         .catalog
-        .aggregate(&state.client, &crate::origins(&state), &auth)
+        .aggregate(
+            &state.client,
+            &crate::origins(&state),
+            &auth,
+            &state.metrics,
+        )
         .await;
     if aggregate.auth_rejected {
         return surface.auth_rejected();
@@ -390,18 +458,27 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
             canonical_model_id: &attempt.canonical_model_id,
         })
         .collect();
-    let allowed = match policy::preflight(
+    let allowed_result = policy::preflight(
         &state.client,
         &crate::origins(&state),
         &auth,
         &policy_candidates,
     )
-    .await
-    {
+    .await;
+    let allowed = match allowed_result {
         Ok(allowed) => allowed,
-        Err(PreflightError::Unauthorized) => return surface.auth_rejected(),
-        Err(PreflightError::Unavailable) => return surface.policy_unavailable(),
-        Err(PreflightError::Restricted) => return surface.policy_restricted(),
+        Err(PreflightError::Unauthorized) => {
+            state.metrics.policy_failure(PolicyFailure::Unauthorized);
+            return surface.auth_rejected();
+        }
+        Err(PreflightError::Unavailable) => {
+            state.metrics.policy_failure(PolicyFailure::Unavailable);
+            return surface.policy_unavailable();
+        }
+        Err(PreflightError::Restricted) => {
+            state.metrics.policy_failure(PolicyFailure::Restricted);
+            return surface.policy_restricted();
+        }
     };
     let allowed: HashSet<_> = allowed.iter().map(String::as_str).collect();
     attempts.retain(|attempt| allowed.contains(attempt.catalog_id.as_str()));
@@ -440,6 +517,10 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
     } else {
         None
     };
+    // Advanced routing must retain the parsed template to build a later attempt. Keep its
+    // admission weight until a terminal set of response headers is selected; otherwise a slow
+    // provider could leave large serde trees resident after their upload permit was released.
+    let _body_permit = body_permit;
     for (index, attempt) in attempts.into_iter().enumerate() {
         value
             .as_object_mut()
@@ -453,7 +534,7 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
             Err(_) => return surface.invalid("Invalid JSON in request body.", None),
         };
         let origin = origin_for_lane(&state, attempt.lane);
-        let request = request_from_parts(&parts, attempt_bytes);
+        let request = request_from_parts(&parts, attempt_bytes, None);
         let execution = group_id
             .as_ref()
             .map(|group_id| proxy::ExecutionAttemptHeaders {
@@ -467,6 +548,7 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
             surface.error_lane(),
             request,
             execution.as_ref(),
+            &state.metrics,
         )
         .await;
         let status = result.response.status();
@@ -495,18 +577,24 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
     surface.invalid("The fallback chain is empty.", Some("models"))
 }
 
-/// Reserve by declared wire size before reading the body. HTTP framing enforces a valid
-/// Content-Length; chunked, absent, malformed, and oversized lengths reserve the full 32 MiB
-/// allowance. One-unit rounding preserves normal concurrency for small harness requests while
-/// two worst-case bodies still exhaust the 64 MiB raw-body budget.
-fn body_admission_units(headers: &HeaderMap) -> u32 {
+/// A valid declared length reserves its complete weight before reading. Unknown/chunked requests
+/// start at one unit and fail-fast acquire further units only when their observed bytes cross each
+/// MiB boundary, so empty slow clients cannot pin half of the global budget each.
+fn declared_body_admission_units(headers: &HeaderMap) -> Result<Option<u32>, BodyReadError> {
     let Some(length) = headers
         .get(axum::http::header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<usize>().ok())
     else {
-        return MAX_BODY_ADMISSION_UNITS;
+        return Ok(None);
     };
+    if length > BODY_LIMIT {
+        return Err(BodyReadError::TooLarge);
+    }
+    Ok(Some(body_units_for_len(length)))
+}
+
+fn body_units_for_len(length: usize) -> u32 {
     length
         .saturating_add(BODY_ADMISSION_UNIT_BYTES - 1)
         .checked_div(BODY_ADMISSION_UNIT_BYTES)
@@ -514,15 +602,126 @@ fn body_admission_units(headers: &HeaderMap) -> u32 {
         .clamp(1, MAX_BODY_ADMISSION_UNITS as usize) as u32
 }
 
+async fn read_body(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: Body,
+) -> Result<(Bytes, BodyAdmissionPermit), BodyReadError> {
+    read_body_with_timeouts(
+        state,
+        headers,
+        body,
+        BODY_READ_IDLE_TIMEOUT,
+        BODY_READ_MAX_TIMEOUT,
+    )
+    .await
+}
+
+async fn read_body_with_timeouts(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: Body,
+    idle_timeout: Duration,
+    max_timeout: Duration,
+) -> Result<(Bytes, BodyAdmissionPermit), BodyReadError> {
+    let declared_units = declared_body_admission_units(headers)?;
+    let initial_units = declared_units.unwrap_or(1);
+    let permit = state
+        .body_admission
+        .clone()
+        .try_acquire_many_owned(initial_units)
+        .map_err(|_| {
+            state.metrics.body_admission_overload();
+            BodyReadError::Overloaded
+        })?;
+    let mut admission = BodyAdmissionPermit::new(permit, state.metrics.clone(), initial_units);
+    let admission_pool = state.body_admission.clone();
+    let metrics = state.metrics.clone();
+
+    let read = async move {
+        let mut stream = body.into_data_stream();
+        let started_at = tokio::time::Instant::now();
+        let mut last_progress_at = started_at;
+        let mut bytes = Vec::with_capacity(
+            headers
+                .get(axum::http::header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0)
+                .min(BODY_LIMIT),
+        );
+        loop {
+            let now = tokio::time::Instant::now();
+            let idle_remaining = idle_timeout
+                .checked_sub(now.duration_since(last_progress_at))
+                .ok_or(BodyReadError::Timeout)?;
+            let max_remaining = max_timeout
+                .checked_sub(now.duration_since(started_at))
+                .ok_or(BodyReadError::Timeout)?;
+            let next = tokio::time::timeout(idle_remaining.min(max_remaining), stream.next())
+                .await
+                .map_err(|_| BodyReadError::Timeout)?;
+            let Some(chunk) = next else {
+                break;
+            };
+            let chunk = chunk.map_err(|_| BodyReadError::Transport)?;
+            if chunk.is_empty() {
+                continue;
+            }
+            last_progress_at = tokio::time::Instant::now();
+            let next_len = bytes
+                .len()
+                .checked_add(chunk.len())
+                .ok_or(BodyReadError::TooLarge)?;
+            if next_len > BODY_LIMIT {
+                return Err(BodyReadError::TooLarge);
+            }
+            let needed_units = body_units_for_len(next_len);
+            if needed_units > admission.units {
+                let additional = needed_units - admission.units;
+                let permit = admission_pool
+                    .clone()
+                    .try_acquire_many_owned(additional)
+                    .map_err(|_| {
+                        metrics.body_admission_overload();
+                        BodyReadError::Overloaded
+                    })?;
+                admission.merge(permit, additional);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok((Bytes::from(bytes), admission))
+    };
+
+    match read.await {
+        Err(BodyReadError::Timeout) => {
+            state.metrics.body_read_timeout();
+            Err(BodyReadError::Timeout)
+        }
+        result => result,
+    }
+}
+
+fn upload_body(bytes: Bytes, permit: BodyAdmissionPermit) -> Body {
+    // The permit remains in the unfold state after yielding the only chunk. Reqwest polls once more
+    // for EOF only after it has consumed that chunk, so admission releases after upload rather than
+    // after provider TTFT/response headers. Transport cancellation drops the state immediately.
+    let stream = stream::unfold((Some(bytes), Some(permit)), |(bytes, permit)| async move {
+        bytes.map(|bytes| (Ok::<Bytes, Infallible>(bytes), (None, permit)))
+    });
+    Body::from_stream(stream)
+}
+
 async fn proxy_single(
     state: &AppState,
     parts: Parts,
     bytes: Bytes,
-    value: &mut serde_json::Value,
+    mut value: serde_json::Value,
     model: &str,
     surface: Surface,
     fast_header: bool,
     fast_body_alias: bool,
+    body_permit: BodyAdmissionPermit,
 ) -> Response {
     let lane = match catalog::namespace_lane(model) {
         Some(lane) => lane,
@@ -530,7 +729,7 @@ async fn proxy_single(
             let auth = proxy::auth_passthrough(&parts.headers);
             let aggregate = state
                 .catalog
-                .aggregate(&state.client, &crate::origins(state), &auth)
+                .aggregate(&state.client, &crate::origins(state), &auth, &state.metrics)
                 .await;
             if aggregate.auth_rejected {
                 return surface.auth_rejected();
@@ -560,21 +759,25 @@ async fn proxy_single(
                 }),
             );
         }
-        if let Err(response) = normalize_fast_service_tier(value, surface, fast_header) {
+        if let Err(response) = normalize_fast_service_tier(&mut value, surface, fast_header) {
             return response;
         }
-        match serde_json::to_vec(value) {
+        match serde_json::to_vec(&value) {
             Ok(bytes) => Bytes::from(bytes),
             Err(_) => return surface.invalid("Invalid JSON in request body.", None),
         }
     } else {
         bytes
     };
+    // The model and lane are now resolved and any rewritten body has been serialized. Drop the
+    // potentially large serde tree before transferring the only remaining body allocation and
+    // its admission permit into the outbound upload stream.
+    drop(value);
     let origin = origin_for_lane(state, lane);
     let request = if fast_compat {
-        request_from_parts(&parts, bytes)
+        request_from_parts(&parts, bytes, Some(body_permit))
     } else {
-        Request::from_parts(parts, Body::from(bytes))
+        Request::from_parts(parts, upload_body(bytes, body_permit))
     };
     proxy::proxy_attempt(
         &state.client,
@@ -583,6 +786,7 @@ async fn proxy_single(
         surface.error_lane(),
         request,
         None,
+        &state.metrics,
     )
     .await
     .response
@@ -646,7 +850,9 @@ fn normalize_fast_service_tier(
             ));
         }
         if !matches!(
-            object.get("serviceTier").and_then(serde_json::Value::as_str),
+            object
+                .get("serviceTier")
+                .and_then(serde_json::Value::as_str),
             Some("fast" | "priority")
         ) {
             return Err(surface.invalid(
@@ -707,12 +913,16 @@ fn fresh_execution_group_id() -> Result<String, ()> {
     ))
 }
 
-fn request_from_parts(parts: &Parts, body: Bytes) -> Request {
+fn request_from_parts(parts: &Parts, body: Bytes, permit: Option<BodyAdmissionPermit>) -> Request {
+    let body = match permit {
+        Some(permit) => upload_body(body, permit),
+        None => Body::from(body),
+    };
     let mut request = Request::builder()
         .method(parts.method.clone())
         .uri(parts.uri.clone())
         .version(parts.version)
-        .body(Body::from(body))
+        .body(body)
         .expect("validated request parts");
     *request.headers_mut() = parts.headers.clone();
     // Rewriting `model` and removing `models` changes the byte length. Let
@@ -762,6 +972,7 @@ fn bounded_log_id(id: &str) -> String {
 mod tests {
     use super::*;
     use axum::http::{HeaderValue, StatusCode};
+    use tokio::sync::Semaphore;
 
     #[test]
     fn attempt_log_model_is_single_line_and_bounded() {
@@ -884,30 +1095,137 @@ mod tests {
             "model": "openai/gpt-5.6",
             "serviceTier": "priority"
         });
-        assert!(normalize_fast_service_tier(&mut messages_alias, Surface::Messages, false).is_err());
+        assert!(
+            normalize_fast_service_tier(&mut messages_alias, Surface::Messages, false).is_err()
+        );
     }
 
     #[test]
-    fn body_admission_is_weighted_and_unknown_size_reserves_the_maximum() {
+    fn body_admission_is_weighted_and_unknown_size_grows_dynamically() {
         let mut headers = HeaderMap::new();
-        assert_eq!(body_admission_units(&headers), MAX_BODY_ADMISSION_UNITS);
+        assert_eq!(declared_body_admission_units(&headers), Ok(None));
 
         headers.insert(
             axum::http::header::CONTENT_LENGTH,
             HeaderValue::from_static("1"),
         );
-        assert_eq!(body_admission_units(&headers), 1);
+        assert_eq!(declared_body_admission_units(&headers), Ok(Some(1)));
 
         headers.insert(
             axum::http::header::CONTENT_LENGTH,
             HeaderValue::from_static("1048577"),
         );
-        assert_eq!(body_admission_units(&headers), 2);
+        assert_eq!(declared_body_admission_units(&headers), Ok(Some(2)));
 
         headers.insert(
             axum::http::header::CONTENT_LENGTH,
             HeaderValue::from_static("999999999"),
         );
-        assert_eq!(body_admission_units(&headers), MAX_BODY_ADMISSION_UNITS);
+        assert_eq!(
+            declared_body_admission_units(&headers),
+            Err(BodyReadError::TooLarge)
+        );
+    }
+
+    #[tokio::test]
+    async fn outbound_upload_releases_admission_at_eof() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let metrics = Arc::new(RouterMetrics::new());
+        let permit = semaphore.clone().try_acquire_owned().unwrap();
+        let admission = BodyAdmissionPermit::new(permit, metrics.clone(), 1);
+        let body = upload_body(Bytes::from_static(b"payload"), admission);
+
+        assert_eq!(semaphore.available_permits(), 0);
+        assert_eq!(
+            axum::body::to_bytes(body, 1024).await.unwrap(),
+            Bytes::from_static(b"payload")
+        );
+        assert_eq!(semaphore.available_permits(), 1);
+        assert!(metrics
+            .render()
+            .contains("claude_router_active_body_admission_units 0"));
+    }
+
+    #[tokio::test]
+    async fn body_read_idle_deadline_releases_admission_and_records_timeout() {
+        let metrics = Arc::new(RouterMetrics::new());
+        let state = AppState {
+            cfg: crate::config::Config {
+                host: "127.0.0.1".into(),
+                port: 0,
+                anthropic_origin: "http://127.0.0.1:1".into(),
+                openai_origin: "http://127.0.0.1:2".into(),
+                gemini_origin: "http://127.0.0.1:3".into(),
+                fallback_enabled: false,
+            },
+            client: crate::build_client().unwrap(),
+            catalog: crate::catalog::Catalog::new(),
+            metrics: metrics.clone(),
+            body_admission: Arc::new(Semaphore::new(BODY_ADMISSION_UNITS)),
+        };
+        let body = Body::from_stream(stream::pending::<Result<Bytes, Infallible>>());
+        assert!(matches!(
+            read_body_with_timeouts(
+                &state,
+                &HeaderMap::new(),
+                body,
+                Duration::from_millis(20),
+                Duration::from_secs(1),
+            )
+            .await,
+            Err(BodyReadError::Timeout)
+        ));
+        assert_eq!(
+            state.body_admission.available_permits(),
+            BODY_ADMISSION_UNITS
+        );
+        let rendered = metrics.render();
+        assert!(rendered.contains("claude_router_body_read_timeout_total 1"));
+        assert!(rendered.contains("claude_router_active_body_admission_units 0"));
+    }
+
+    #[tokio::test]
+    async fn body_read_progress_refreshes_idle_deadline() {
+        let metrics = Arc::new(RouterMetrics::new());
+        let state = AppState {
+            cfg: crate::config::Config {
+                host: "127.0.0.1".into(),
+                port: 0,
+                anthropic_origin: "http://127.0.0.1:1".into(),
+                openai_origin: "http://127.0.0.1:2".into(),
+                gemini_origin: "http://127.0.0.1:3".into(),
+                fallback_enabled: false,
+            },
+            client: crate::build_client().unwrap(),
+            catalog: crate::catalog::Catalog::new(),
+            metrics: metrics.clone(),
+            body_admission: Arc::new(Semaphore::new(BODY_ADMISSION_UNITS)),
+        };
+        let chunks = stream::unfold(0, |index| async move {
+            if index == 3 {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Some((Ok::<Bytes, Infallible>(Bytes::from_static(b"x")), index + 1))
+        });
+        let (bytes, permit) = read_body_with_timeouts(
+            &state,
+            &HeaderMap::new(),
+            Body::from_stream(chunks),
+            Duration::from_millis(50),
+            Duration::from_millis(200),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(bytes, Bytes::from_static(b"xxx"));
+        drop(permit);
+        assert_eq!(
+            state.body_admission.available_permits(),
+            BODY_ADMISSION_UNITS
+        );
+        assert!(metrics
+            .render()
+            .contains("claude_router_body_read_timeout_total 0"));
     }
 }

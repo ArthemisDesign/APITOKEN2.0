@@ -1,14 +1,16 @@
-//! Bodyless credential preflight client for buffered universal request surfaces.
+//! Bodyless credential and startup probes for universal request surfaces.
 //!
-//! Provider runtimes own customer-key authority. The router forwards only credential headers to
-//! their loopback-only producer contract and accepts an exact closed schema before it reads the
-//! public request body. Decisions are per request and never cached.
+//! Provider runtimes own customer-key authority. The router races all three fixed loopback planes
+//! so a dead first origin cannot serialize three two-second deadlines. A conclusive exact success
+//! or terminal 401 wins; malformed, mixed-version and transport outcomes remain inconclusive.
 
 use std::time::Duration;
 
 use axum::http::HeaderMap;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde::Deserialize;
 
+use crate::bounded;
 use crate::catalog::PlaneOrigins;
 
 const AUTH_PATH: &str = "/internal/router/auth/preflight";
@@ -28,62 +30,109 @@ struct AuthResponse {
     authenticated: bool,
 }
 
-/// Authenticate once before materializing a universal request body.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StartupErrorEnvelope {
+    error: StartupError,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StartupError {
+    code: String,
+    message: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProbeOutcome {
+    Success,
+    Unauthorized,
+    Inconclusive,
+}
+
+/// Authenticate once before materializing a universal request body. Requests are concurrent and
+/// cancelled when the first conclusive authority response arrives.
 pub async fn preflight(
     client: &reqwest::Client,
     origins: &PlaneOrigins<'_>,
     auth: &HeaderMap,
 ) -> Result<(), AuthError> {
+    let mut probes = FuturesUnordered::new();
     for origin in [origins.anthropic, origins.openai, origins.gemini] {
-        let response = match client
-            .post(format!("{origin}{AUTH_PATH}"))
-            .headers(auth.clone())
-            .timeout(AUTH_TIMEOUT)
-            .send()
-            .await
-        {
-            Ok(response) => response,
-            Err(_) => continue,
-        };
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(AuthError::Unauthorized);
-        }
-        if !response.status().is_success() {
-            continue;
-        }
-        let Some(bytes) = read_bounded(response).await else {
-            continue;
-        };
-        let Ok(response) = serde_json::from_slice::<AuthResponse>(&bytes) else {
-            continue;
-        };
-        if response.schema_version == 1 && response.authenticated {
-            return Ok(());
+        probes.push(probe_auth(client, origin, auth));
+    }
+    while let Some(outcome) = probes.next().await {
+        match outcome {
+            ProbeOutcome::Success => return Ok(()),
+            ProbeOutcome::Unauthorized => return Err(AuthError::Unauthorized),
+            ProbeOutcome::Inconclusive => {}
         }
     }
     Err(AuthError::Unavailable)
 }
 
-async fn read_bounded(mut response: reqwest::Response) -> Option<Vec<u8>> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_BODY_BYTES as u64)
+async fn probe_auth(client: &reqwest::Client, origin: &str, auth: &HeaderMap) -> ProbeOutcome {
+    let response = match client
+        .post(format!("{origin}{AUTH_PATH}"))
+        .headers(auth.clone())
+        .timeout(AUTH_TIMEOUT)
+        .send()
+        .await
     {
-        return None;
+        Ok(response) => response,
+        Err(_) => return ProbeOutcome::Inconclusive,
+    };
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return ProbeOutcome::Unauthorized;
     }
-    let mut body = Vec::new();
-    loop {
-        match response.chunk().await {
-            Ok(Some(chunk)) => {
-                if body.len().saturating_add(chunk.len()) > MAX_BODY_BYTES {
-                    return None;
-                }
-                body.extend_from_slice(&chunk);
-            }
-            Ok(None) => return Some(body),
-            Err(_) => return None,
+    if !response.status().is_success() {
+        return ProbeOutcome::Inconclusive;
+    }
+    let Ok(bytes) = bounded::response_bytes(response, MAX_BODY_BYTES).await else {
+        return ProbeOutcome::Inconclusive;
+    };
+    match serde_json::from_slice::<AuthResponse>(&bytes) {
+        Ok(response) if response.schema_version == 1 && response.authenticated => {
+            ProbeOutcome::Success
+        }
+        _ => ProbeOutcome::Inconclusive,
+    }
+}
+
+/// Deployment data-path probe. With no credential, a current provider runtime must return the
+/// exact closed unauthenticated contract. A Caddy-generated 503, old 404, permissive 200 or
+/// malformed body cannot admit a router slot for promotion.
+pub async fn startup_probe(client: &reqwest::Client, origins: &PlaneOrigins<'_>) -> bool {
+    let mut probes = FuturesUnordered::new();
+    for origin in [origins.anthropic, origins.openai, origins.gemini] {
+        probes.push(probe_unauthenticated_contract(client, origin));
+    }
+    while let Some(matches) = probes.next().await {
+        if matches {
+            return true;
         }
     }
+    false
+}
+
+async fn probe_unauthenticated_contract(client: &reqwest::Client, origin: &str) -> bool {
+    let response = match client
+        .post(format!("{origin}{AUTH_PATH}"))
+        .timeout(AUTH_TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED => response,
+        _ => return false,
+    };
+    let Ok(bytes) = bounded::response_bytes(response, MAX_BODY_BYTES).await else {
+        return false;
+    };
+    matches!(
+        serde_json::from_slice::<StartupErrorEnvelope>(&bytes),
+        Ok(StartupErrorEnvelope { error: StartupError { code, message } })
+            if code == "unauthorized" && message == "Invalid API credential."
+    )
 }
 
 #[cfg(test)]
@@ -98,7 +147,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn response_schema_is_closed_and_requires_exact_success() {
+    fn response_schemas_are_closed_and_require_exact_values() {
         assert!(serde_json::from_str::<AuthResponse>(
             r#"{"schema_version":1,"authenticated":true}"#
         )
@@ -107,13 +156,23 @@ mod tests {
             r#"{"schema_version":1,"authenticated":true,"account":"leak"}"#
         )
         .is_err());
+        assert!(serde_json::from_str::<StartupErrorEnvelope>(
+            r#"{"error":{"code":"unauthorized","message":"Invalid API credential.","extra":1}}"#
+        )
+        .is_err());
     }
 
-    async fn origin(status: StatusCode, body: &'static str, calls: Arc<AtomicUsize>) -> String {
+    async fn origin(
+        status: StatusCode,
+        body: &'static str,
+        delay: Duration,
+        calls: Arc<AtomicUsize>,
+    ) -> String {
         let app = Router::new().fallback(any(move || {
             let calls = calls.clone();
             async move {
                 calls.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(delay).await;
                 Response::builder()
                     .status(status)
                     .header("content-type", "application/json")
@@ -128,52 +187,93 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mixed_version_failover_accepts_only_exact_success_and_401_is_terminal() {
-        let first_calls = Arc::new(AtomicUsize::new(0));
-        let second_calls = Arc::new(AtomicUsize::new(0));
-        let first = origin(
-            StatusCode::OK,
-            r#"{"schema_version":1,"authenticated":true,"extra":1}"#,
-            first_calls.clone(),
+    async fn healthy_plane_wins_without_waiting_for_hung_first_origin() {
+        let slow_calls = Arc::new(AtomicUsize::new(0));
+        let fast_calls = Arc::new(AtomicUsize::new(0));
+        let slow = origin(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{}",
+            Duration::from_secs(5),
+            slow_calls.clone(),
         )
         .await;
-        let second = origin(
+        let fast = origin(
             StatusCode::OK,
             r#"{"schema_version":1,"authenticated":true}"#,
-            second_calls.clone(),
+            Duration::ZERO,
+            fast_calls.clone(),
         )
         .await;
         let origins = PlaneOrigins {
-            anthropic: &first,
-            openai: &second,
+            anthropic: &slow,
+            openai: &fast,
             gemini: "http://127.0.0.1:0",
         };
+        let started = tokio::time::Instant::now();
         assert_eq!(
             preflight(&reqwest::Client::new(), &origins, &HeaderMap::new()).await,
             Ok(())
         );
-        assert_eq!(first_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(second_calls.load(Ordering::SeqCst), 1);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(slow_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fast_calls.load(Ordering::SeqCst), 1);
+    }
 
-        let terminal_calls = Arc::new(AtomicUsize::new(0));
-        let unreachable_calls = Arc::new(AtomicUsize::new(0));
-        let terminal = origin(StatusCode::UNAUTHORIZED, "{}", terminal_calls.clone()).await;
-        let unreachable = origin(
+    #[tokio::test]
+    async fn terminal_401_wins_when_it_arrives_before_success() {
+        let terminal = origin(
+            StatusCode::UNAUTHORIZED,
+            "{}",
+            Duration::ZERO,
+            Arc::new(AtomicUsize::new(0)),
+        )
+        .await;
+        let delayed_success = origin(
             StatusCode::OK,
             r#"{"schema_version":1,"authenticated":true}"#,
-            unreachable_calls.clone(),
+            Duration::from_millis(100),
+            Arc::new(AtomicUsize::new(0)),
         )
         .await;
         let origins = PlaneOrigins {
             anthropic: &terminal,
-            openai: &unreachable,
+            openai: &delayed_success,
             gemini: "http://127.0.0.1:0",
         };
         assert_eq!(
             preflight(&reqwest::Client::new(), &origins, &HeaderMap::new()).await,
             Err(AuthError::Unauthorized)
         );
-        assert_eq!(terminal_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(unreachable_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn startup_requires_exact_missing_credential_contract() {
+        let valid = origin(
+            StatusCode::UNAUTHORIZED,
+            r#"{"error":{"code":"unauthorized","message":"Invalid API credential."}}"#,
+            Duration::ZERO,
+            Arc::new(AtomicUsize::new(0)),
+        )
+        .await;
+        let origins = PlaneOrigins {
+            anthropic: "http://127.0.0.1:0",
+            openai: &valid,
+            gemini: "http://127.0.0.1:0",
+        };
+        assert!(startup_probe(&reqwest::Client::new(), &origins).await);
+
+        let malformed = origin(
+            StatusCode::UNAUTHORIZED,
+            r#"{"error":{"code":"unauthorized","message":"different"}}"#,
+            Duration::ZERO,
+            Arc::new(AtomicUsize::new(0)),
+        )
+        .await;
+        let origins = PlaneOrigins {
+            anthropic: &malformed,
+            openai: "http://127.0.0.1:0",
+            gemini: "http://127.0.0.1:0",
+        };
+        assert!(!startup_probe(&reqwest::Client::new(), &origins).await);
     }
 }

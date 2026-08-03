@@ -347,6 +347,52 @@ that accepted the continuation. Check the corresponding loopback listener (`8790
 resets, DNS errors, and unsigned 5xx must remain terminal and must never be added to this alert as
 safe fallback reasons.
 
+## RouterAdmissionFailures
+
+Compare `claude_router_body_admission_overload_total` and
+`claude_router_body_read_timeout_total`, then inspect
+`claude_router_active_body_admission_units` beside `claude_router_active_universal_requests`.
+Admission is a fixed 64-unit memory guard, not an execution queue: declared bodies reserve their
+rounded MiB weight immediately; unknown/chunked bodies start at one unit and grow as bytes arrive.
+An overload with 64 active units means real buffered pressure. Repeated timeouts with few bytes are
+usually clients that made no byte progress for 15 seconds; steady uploads may run for at most five
+minutes. Confirm Caddy/client upload behavior and abusive source patterns without logging
+credentials or request contents. Do not increase the budget until RSS headroom is measured, and do
+not add a waiting semaphore or provider execution ceiling.
+
+## RouterAuthorityFailures
+
+Split the alert by its fixed metrics: `claude_router_auth_preflight_total{outcome="unavailable"}`,
+`claude_router_catalog_refresh_total{outcome="failed|oversized"}`,
+`claude_router_pricing_failure_total{reason="unavailable"}` and
+`claude_router_policy_failure_total{reason="unavailable"}`. Catalog labels identify only the fixed
+namespace; auth/pricing/policy never expose a key or model. Check stable loopback origins 8790,
+8792 and 8794, then provider slot health and Caddy logs. An `oversized` catalog is a producer
+contract violation (body over 4 MiB or more than 1,024 models), not a reason to
+raise consumer bounds blindly. Fresh-cache hits and last-good degradation remain visible through
+`claude_router_catalog_cache_hit_total` and `claude_router_catalog_degraded_total`.
+Waiting catalog callers share the exact failed in-flight refresh; a later independent request
+retries immediately, so a plane outage must not create a serialized refresh convoy or a lasting
+router-owned circuit breaker.
+
+Auth latency is the rate of `claude_router_auth_preflight_duration_seconds_sum` divided by the rate
+of `claude_router_auth_preflight_total` for the same outcome. The three probes race concurrently;
+a sustained rise means the winning authority itself is slow, not three serialized two-second
+timeouts. Personalized pricing and policy remain uncached and fail closed.
+
+## RouterResponseHeaderTimeout
+
+Use the fixed `namespace` label on `claude_router_response_header_timeout_total` to identify the
+provider plane, then correlate provider and Caddy request latency. This timeout is ambiguous: the
+provider may have accepted and billed the request before losing its response. Router must return the
+lane-shaped 502 and must not continue to another model. Never convert this alert into a retry signal;
+only exact `not_started` or TCP `ConnectionRefused` can continue a billable universal request.
+
+The read-only `/balance` path is the exception because it cannot execute or reserve money:
+`claude_router_balance_failover_total` records transport/5xx continuation across fixed authorities.
+A persistent increase means one runtime cannot serve shared account state and should be investigated,
+even when clients still receive a successful balance response from another plane.
+
 ## AnthropicCalibrationPersistenceFailed
 
 `claude_api_anthropic_calibration_persistence_ok` becomes zero when the exact turn FIFO has a

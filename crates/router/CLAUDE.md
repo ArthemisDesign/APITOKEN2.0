@@ -29,8 +29,12 @@
   никогда не возвращается клиенту.
 - **Никаких execution-очередей, semaphore, circuit breaker, rate limits** (инвариант 3).
   Единственное исключение — 64 MiB fail-fast budget с шагом 1 MiB на buffered universal request
-  bodies: известный `Content-Length` округляется вверх, неизвестный резервирует полные 32 MiB;
-  budget никогда не ждёт, освобождается после response headers и не держит native/SSE response.
+  bodies: известный `Content-Length` округляется вверх, неизвестный/chunked начинается с 1 MiB и
+  fail-fast добирает units по фактически прочитанным байтам. Read deadline — 15 секунд без
+  прогресса и 5 минут абсолютного времени.
+  Обычный single-model path удаляет parsed tree и освобождает permit после outbound upload;
+  расширенный routing удерживает permit до terminal response headers, потому что parsed template
+  нужен для следующей попытки. Budget никогда не ждёт и не держит native/SSE response body.
   Readiness (`/health`, `/live`, `/ready`) — router-local, никогда не
   конъюнкция health плоскостей; синхронных health-check'ов на пути запроса нет.
 - **SSE не буферизуется.** Тела запроса и ответа — потоки
@@ -61,9 +65,10 @@
 
 - `config.rs` — единственное место чтения env (`CLAUDE_ROUTER_*`), включая
   строгий off-by-default флаг `CLAUDE_ROUTER_FALLBACK_ENABLED` (`0|1|false|true`).
-- `auth.rs` — uncached bodyless early-auth клиент: до чтения universal body перебирает fixed
-  origins, принимает только exact schema-v1 success, считает 401 терминальным и fail closed
-  обрабатывает mixed-version/transport/5xx.
+- `auth.rs` — uncached bodyless early-auth клиент: до чтения universal body конкурентно опрашивает
+  fixed origins, принимает первый exact schema-v1 success либо terminal 401, а
+  mixed-version/transport/5xx считает inconclusive. Здесь же exact unauthenticated probe для
+  loopback-only `/startup`, которым blue-green проверяет реальный provider data path.
 - `proxy.rs` — байт-в-байт proxy native lanes, auth passthrough и классификация
   одной попытки до публичных headers: exact `not_started` / source-chain
   `ConnectionRefused`; 30-секундный deadline ограничивает только ожидание response headers и
@@ -71,9 +76,9 @@
   любой плоскостью также снимается публичный router capability-header
   `x-apitoken-service-tier`.
 - `routing.rs` — общий model dispatch и serial fallback для всех universal
-  поверхностей. Сначала выполняет bodyless auth, затем fail-fast резервирует размер body в общем
-  64 MiB budget и держит его до plane response headers; overload возвращает lane-shaped 503 без
-  billable call. Обычный запрос без `models`, `provider` и `preset/*` сохраняет
+  поверхностей. Сначала выполняет bodyless auth, затем динамически резервирует фактический размер
+  body в общем 64 MiB budget; overload/slow body возвращают lane-shaped 503/408 без billable call.
+  Обычный запрос без `models`, `provider` и `preset/*` сохраняет
   исходные байты и прямой namespaced dispatch. Расширенный planner раскрывает preset,
   получает один aggregate catalog snapshot, canonical-дедуплицирует цепочку, применяет
   provider filters/order/reviewed sort и `allow_fallbacks`, затем account-policy preflight.
@@ -93,15 +98,17 @@
   передаются verbatim, fixed origins перебираются последовательно, `401` терминален,
   malformed/mixed-version ответы fail closed. Credential и policy response не кэшируются.
 - `pricing.rs` — bounded клиент engine-owned `/internal/router/catalog/pricing`: credential
-  текущего catalog-request передаётся verbatim, fixed origins перебираются последовательно,
-  `401` терминален, а schema version/unit/canonical integer strings/ordered subset проверяются
-  fail closed. Персональные rate cards существуют только в памяти запроса и не кэшируются.
+  текущего catalog-request передаётся verbatim, каталог детерминированно режется на чанки не более
+  256 candidates, fixed origins перебираются последовательно для каждого чанка, а любой failed
+  chunk/`401` закрывает весь overlay. Schema version/unit/canonical integer strings/ordered subset
+  проверяются fail closed. Персональные rate cards существуют только в памяти запроса и не
+  кэшируются.
 - `presets.rs` + `routing-presets.json` — compiled reviewed presets, integer price/latency
   ranks и проверенный context window. Manifest валидируется при старте; отсутствующие live
   members пропускаются, полностью пустой preset не исполняется.
-- `metrics.rs` — compile-bounded `claude_router_fallback_total`: ровно 18 series для трёх
-  namespace и двух доказательств continuation. Инкремент происходит один раз непосредственно
-  перед следующей попыткой; model/credential/group/request identity в labels запрещены.
+- `metrics.rs` — fixed-cardinality telemetry admission/auth/catalog/pricing/policy/header-timeout/
+  balance и compile-bounded `claude_router_fallback_total` (ровно 18 series). Model, credential,
+  group и request identity в labels запрещены.
 - `chat.rs` и `responses.rs` — тонкие OpenAI-shaped entrypoints в `routing.rs`.
 - `messages.rs` — тонкий Anthropic-shaped entrypoint для `POST /v1/messages` и
   `POST /v1/messages/count_tokens`: namespaced `openai/*` уходит на Codex plane
@@ -115,8 +122,12 @@
   `.../input_items`) dispatch не используют — они остаются native OpenAI lane
   (stored responses только `openai/*`, решение 5).
 - `catalog.rs` — единый `/v1/models`: агрегация трёх плоскостей, namespaced ID
-  + только глобально однозначные aliases, TTL-кэш 30 с, last-good при падении плоскости, маркер деградации
-  `x-apitoken-catalog-degraded`. `main.rs` после той же aggregate-auth проверки отвечает
+  + только глобально однозначные aliases, per-plane singleflight refresh с общим результатом
+  успешной или неуспешной in-flight попытки, детерминированно
+  скошенный TTL 27/30/33 с, last-good при падении плоскости и маркер деградации
+  `x-apitoken-catalog-degraded`. Ответ плоскости ограничен 4 MiB, 1 024 моделями и 256 байтами на
+  ID/display name; hostile metadata не попадает в cache/logs. `main.rs` после той же
+  aggregate-auth проверки отвечает
   Codex `originator`/User-Agent backend-native overlay `{models:[]}` (CLI объединяет его со
   встроенными metadata), не меняя OpenAI-list для остальных клиентов. Consumer строго
   нормализует Anthropic native `max_input_tokens`/`max_tokens`/effort matrix и owned
@@ -134,9 +145,10 @@
 - `error.rs` — синтетические ошибки router'а в конверте соответствующего
   провайдера (ошибки плоскостей проксируются байт-в-байт, сюда не попадают).
 - `main.rs` — таблица маршрутов публичного контракта + композиция.
-  Loopback-only `GET /metrics` не требует отдельного секрета; Caddy не включает его в публичный
-  allowlist, а Prometheus скрейпит stable Caddy origin `127.0.0.1:8802`, который следует за тем же
-  single-active backend, что публичный vhost.
+  `/balance` — bodyless read-only failover Anthropic → OpenAI → Gemini: transport/header-timeout/
+  5xx продолжаются, 401 и любой non-5xx терминальны. Loopback-only `GET /startup` и `/metrics` не
+  входят в публичный allowlist; Prometheus и deploy используют stable Caddy origin
+  `127.0.0.1:8802`, который следует за тем же single-active backend, что публичный vhost.
 
 ## Проверка
 
@@ -147,8 +159,9 @@ cargo build && bash tests/router_fallback_smoke.sh  # concurrent 6.4c mock-load 
 ```
 
 Интеграционные тесты поднимают mock-плоскости на реальных loopback-сокетах и
-покрывают: early auth до незавершённого большого body, terminal 401 и mixed-version failover,
-weighted 64 MiB overload без очереди, release permit при parse error и после SSE headers,
+покрывают: concurrent early auth до незавершённого большого body, terminal 401 и mixed-version,
+dynamic weighted 64 MiB overload без очереди, slow-body deadline, release permit при parse error,
+outbound EOF и открытом SSE,
 pre-header deadline без retry, passthrough тела/заголовков, небуферизованный SSE, транзитивный
 disconnect, строгую нормализацию/деградацию/stale capability-каталога, снятие конфликтующих aliases,
 uncached key-scoped pricing для двух

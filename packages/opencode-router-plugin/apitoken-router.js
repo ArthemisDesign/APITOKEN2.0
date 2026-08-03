@@ -260,9 +260,11 @@ function describe(record, stale = false) {
       ...(image || efforts.length === 0
         ? {}
         : { interleaved: { field: "reasoning_content" }, variants: effortVariants(efforts) }),
-      modalities: image
-        ? { input: ["text", "image"], output: ["text", "image"] }
-        : { input: ["text", "image"], output: ["text"] },
+      // This provider uses @ai-sdk/openai-compatible. OpenCode 1.18.11 validates Chat message
+      // content as string/null and cannot consume Gemini inlineData or OpenRouter message.images.
+      // Advertising image output here makes OpenCode request a modality its transport discards.
+      // Native Gemini generateContent remains the supported generated-image surface.
+      modalities: { input: ["text", "image"], output: ["text"] },
     }
   }
 

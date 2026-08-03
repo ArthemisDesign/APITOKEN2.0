@@ -135,6 +135,7 @@ The production queue remains strictly one SHA at a time.
 | Anthropic provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-anthropic@8787.service` / `claude-api-anthropic@8788.service` | `http://127.0.0.1:<port>/ready`, stable 8790 |
 | OpenAI-compatible provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-openai@8793.service` / `claude-api-openai@8797.service` | `http://127.0.0.1:<port>/ready`, stable 8792 |
 | Native Gemini provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-gemini@8795.service` / `claude-api-gemini@8799.service` | `http://127.0.0.1:<port>/ready`, stable 8794 |
+| Unified router | `/srv/claude-api/releases/<sha>/claude-router` | `claude-router@8800.service` / `claude-router@8801.service` | direct `/ready` + `/startup` + exact binary, stable 8802 repeats both data-path probes |
 | Commerce worker | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-worker.service` | process-active + exact cwd |
 | Content Studio | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-content-studio.service` | `http://127.0.0.1:3500/api/health` + exact cwd |
 | Admin panel (admin.apitoken.sale) | `/opt/apitoken/admin-releases/<sha>` through `current` | `apitoken-admin.service` | `http://127.0.0.1:3700/api/health` |
@@ -163,9 +164,11 @@ Before any target slot is started, `engine-bluegreen.sh` invokes the fixed root-
 `engine-migrate.sh` helper for the selected release. Engine startup only verifies the installed
 schema and never runs DDL; pending migrations are applied explicitly, one version transaction at a
 time, while the existing slot remains the serving fallback.
-The router controller independently rolls fixed 8800/8801 slots: exact binary and direct readiness
-precede an atomic root-owned Caddy backend promotion; the predecessor is SIGTERM-drained only after
-new requests have moved. Public traffic and stable metrics origin 8802 share that one backend.
+The router controller independently rolls fixed 8800/8801 slots: exact binary, direct readiness and
+the exact unauthenticated provider contract on loopback-only `/startup` precede an atomic root-owned
+Caddy backend promotion. Stable origin 8802 repeats `/ready` and `/startup` after promotion; only
+then is the predecessor SIGTERM-drained. Public traffic and stable metrics origin 8802 share that
+one backend.
 Paid Gemini project/key provisioning is outside release artifacts and is documented in
 [`docs/engine/GEMINI_PROVIDER.md`](../docs/engine/GEMINI_PROVIDER.md).
 `api-bluegreen.sh` similarly owns commerce slots; `--with-worker` restarts the single worker and

@@ -109,6 +109,10 @@ Codex stream даже 200 не означает billable. Без явного с
   уже возможен. Gemini Messages skin (`gemini/skin.rs`) следует тому же правилу для своей
   поверхности. Отсутствующий либо неизвестный сигнал остаётся fail-closed: retry запрещён
   (§3.3).
+- **Stable Caddy origins** (8790/8792/8794) синтезируют тот же exact `not_started` только когда
+  сам reverse-proxy handler возвращает `503 no healthy upstream`: ни один health-gated runtime не
+  принял запрос. Runtime-produced HTTP 503 не входит в `handle_errors` и не получает сигнал.
+  Внешние provider-vhost'ы снимают header на outer hop; router видит его только по loopback.
 
 ### 3.3. Обязанности router (фаза 6.2)
 
@@ -307,7 +311,11 @@ Router экспортирует `/metrics` без авторизации на lo
 `claude_router_fallback_total{from_namespace,to_namespace,reason}` ровно один раз перед
 следующим attempt; множества labels compile-fixed (3×3 namespaces, два reason). Плоскость
 увеличивает `claude_api_execution_not_started_total{plane}` ровно для фактически возвращённого
-наружу exact `not_started` на non-2xx. Credential/model/group IDs в metrics запрещены.
+наружу exact `not_started` на non-2xx. Те же fixed dimensions покрывают active body units,
+overload/read timeout, auth outcomes/latency, catalog refresh/degradation, pricing/policy failure,
+response-header timeout и read-only `/balance` failover. Credential/model/group/request IDs в
+metrics запрещены; `RouterAdmissionFailures`, `RouterAuthorityFailures` и
+`RouterResponseHeaderTimeout` замыкаются на одноимённые runbook-секции.
 
 Порядок включения: producer 6.4a → consumer 6.4b при default-off → telemetry/Prometheus 6.4c
 при default-off → mock-load и live canary отдельным router-процессом → unit-флаг в production.
@@ -323,7 +331,8 @@ backlog. Production-флаг включается только последни�
   URL/query, auth headers, credentials и request/response bodies запрещены.
 - Счётчики фазы 6.4: `claude_router_fallback_total{from_namespace,to_namespace,reason}`
   (reason: `not_started`/`connect_refused`), `claude_api_execution_not_started_total{plane}`,
-  а фаза 6.3 уже экспортирует `claude_api_execution_group_double_winner_total`. Критический
+  fixed-cardinality admission/auth/catalog/pricing/policy/header-timeout/balance ряды, а фаза 6.3
+  уже экспортирует `claude_api_execution_group_double_winner_total`. Критический
   `ExecutionGroupDoubleWinner` срабатывает на любом росте за 5 минут; runbook —
   `docs/ops/MONITORING.md#executiongroupdoublewinner`. `RouterMetricsDown` закрывает потерю
   отдельного scrape, `RouterFallbackRateHigh` — устойчивую скорость >1 continuation/s, а

@@ -17,6 +17,7 @@
 //! общий billing authority, «частично валидного» ключа не бывает.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -24,6 +25,8 @@ use axum::http::HeaderMap;
 use serde_json::Value;
 
 use crate::error::Lane;
+use crate::metrics::{CatalogRefreshOutcome, RouterMetrics};
+use crate::{bounded, bounded::ReadError};
 
 /// Время жизни свежего кэша: частые клиенты (Claude Code discovery раз в
 /// сессию) не порождают по три запроса в плоскости на каждый свой запрос.
@@ -32,6 +35,11 @@ pub const CATALOG_TTL: Duration = Duration::from_secs(30);
 /// конкурентно, поэтому худший ответ укладывается в требование Claude Code
 /// «discovery быстрее трёх секунд».
 pub const PLANE_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
+/// A reviewed provider catalog is small. This cap bounds both streamed and declared response
+/// bodies before JSON parsing, while leaving ample room for 1,024 metadata-rich models.
+const MAX_CATALOG_BODY_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_MODELS_PER_PLANE: usize = 1024;
+pub const MAX_MODEL_STRING_BYTES: usize = 256;
 
 /// Заголовок-маркер частичного каталога: comma-joined namespace'ы плоскостей,
 /// отвечающих устаревшими данными или отсутствующих.
@@ -160,10 +168,30 @@ struct PlaneCache {
 /// In-memory кэш трёх плоскостей. Statelessness router'а относится к
 /// запросам и деньгам; кэш каталога — деградационный и не влияет на биллинг.
 pub struct Catalog {
-    anthropic: Mutex<Option<PlaneCache>>,
-    openai: Mutex<Option<PlaneCache>>,
-    gemini: Mutex<Option<PlaneCache>>,
+    anthropic: PlaneState,
+    openai: PlaneState,
+    gemini: PlaneState,
     ttl: Duration,
+}
+
+struct PlaneState {
+    cache: Mutex<Option<PlaneCache>>,
+    refresh: tokio::sync::Mutex<()>,
+    /// Incremented only for provider-wide failed/oversized refreshes. A caller that waited behind
+    /// that exact in-flight attempt reuses its stale/missing result instead of starting a convoy;
+    /// a later independent request still retries immediately. Credential-specific 401 is never
+    /// shared across callers.
+    failed_refresh_generation: AtomicU64,
+}
+
+impl PlaneState {
+    fn new() -> Self {
+        Self {
+            cache: Mutex::new(None),
+            refresh: tokio::sync::Mutex::new(()),
+            failed_refresh_generation: AtomicU64::new(0),
+        }
+    }
 }
 
 /// Чем ответила плоскость на опрос каталога.
@@ -206,14 +234,14 @@ impl Catalog {
     /// Каталог с нестандартным TTL — для тестов деградационных веток.
     pub(crate) fn with_ttl(ttl: Duration) -> Self {
         Catalog {
-            anthropic: Mutex::new(None),
-            openai: Mutex::new(None),
-            gemini: Mutex::new(None),
+            anthropic: PlaneState::new(),
+            openai: PlaneState::new(),
+            gemini: PlaneState::new(),
             ttl,
         }
     }
 
-    fn cache(&self, lane: Lane) -> &Mutex<Option<PlaneCache>> {
+    fn plane(&self, lane: Lane) -> &PlaneState {
         match lane {
             Lane::Anthropic => &self.anthropic,
             Lane::OpenAi => &self.openai,
@@ -222,17 +250,38 @@ impl Catalog {
     }
 
     fn read(&self, lane: Lane) -> Option<PlaneCache> {
-        self.cache(lane)
+        self.plane(lane)
+            .cache
             .lock()
             .expect("catalog cache poisoned")
             .clone()
     }
 
     fn write(&self, lane: Lane, entries: Vec<CatalogEntry>) {
-        *self.cache(lane).lock().expect("catalog cache poisoned") = Some(PlaneCache {
+        *self
+            .plane(lane)
+            .cache
+            .lock()
+            .expect("catalog cache poisoned") = Some(PlaneCache {
             entries,
             fetched_at: Instant::now(),
         });
+    }
+
+    /// Deterministic per-plane skew prevents a warm aggregate request from expiring every provider
+    /// snapshot on the same instant. Zero remains zero for expiry tests.
+    fn plane_ttl(&self, lane: Lane) -> Duration {
+        let multiplier = match lane {
+            Lane::Anthropic => 0.9,
+            Lane::OpenAi => 1.0,
+            Lane::Gemini => 1.1,
+        };
+        self.ttl.mul_f64(multiplier)
+    }
+
+    fn fresh(&self, lane: Lane) -> Option<PlaneCache> {
+        self.read(lane)
+            .filter(|cache| cache.fetched_at.elapsed() < self.plane_ttl(lane))
     }
 
     /// Опрос одной плоскости: сначала свежий кэш, затем живой fetch с
@@ -243,22 +292,64 @@ impl Catalog {
         origin: &str,
         lane: Lane,
         auth: &HeaderMap,
+        metrics: &RouterMetrics,
     ) -> PlaneOutcome {
-        if let Some(cache) = self.read(lane) {
-            if cache.fetched_at.elapsed() < self.ttl {
-                return PlaneOutcome::Fresh(cache.entries);
-            }
+        if let Some(cache) = self.fresh(lane) {
+            metrics.catalog_cache_hit(lane);
+            return PlaneOutcome::Fresh(cache.entries);
+        }
+        let plane = self.plane(lane);
+        let observed_failed_generation = plane
+            .failed_refresh_generation
+            .load(AtomicOrdering::Acquire);
+        let _refresh = plane.refresh.lock().await;
+        // Singleflight followers recheck after the leader publishes its snapshot.
+        if let Some(cache) = self.fresh(lane) {
+            metrics.catalog_cache_hit(lane);
+            return PlaneOutcome::Fresh(cache.entries);
+        }
+        // Reuse only a failure that completed while this caller waited. This coalesces one failed
+        // wave without adding negative-cache/circuit-breaker state between independent requests.
+        if plane
+            .failed_refresh_generation
+            .load(AtomicOrdering::Acquire)
+            != observed_failed_generation
+        {
+            return match self.read(lane) {
+                Some(cache) => PlaneOutcome::Stale(cache.entries),
+                None => PlaneOutcome::Missing,
+            };
         }
         match fetch_plane(client, origin, lane, auth).await {
             FetchResult::Entries(entries) => {
+                metrics.catalog_refresh(lane, CatalogRefreshOutcome::Success);
                 self.write(lane, entries.clone());
                 PlaneOutcome::Fresh(entries)
             }
-            FetchResult::AuthRejected => PlaneOutcome::AuthRejected,
-            FetchResult::Failed => match self.read(lane) {
-                Some(cache) => PlaneOutcome::Stale(cache.entries),
-                None => PlaneOutcome::Missing,
-            },
+            FetchResult::AuthRejected => {
+                metrics.catalog_refresh(lane, CatalogRefreshOutcome::AuthRejected);
+                PlaneOutcome::AuthRejected
+            }
+            FetchResult::Failed => {
+                plane
+                    .failed_refresh_generation
+                    .fetch_add(1, AtomicOrdering::Release);
+                metrics.catalog_refresh(lane, CatalogRefreshOutcome::Failed);
+                match self.read(lane) {
+                    Some(cache) => PlaneOutcome::Stale(cache.entries),
+                    None => PlaneOutcome::Missing,
+                }
+            }
+            FetchResult::Oversized => {
+                plane
+                    .failed_refresh_generation
+                    .fetch_add(1, AtomicOrdering::Release);
+                metrics.catalog_refresh(lane, CatalogRefreshOutcome::Oversized);
+                match self.read(lane) {
+                    Some(cache) => PlaneOutcome::Stale(cache.entries),
+                    None => PlaneOutcome::Missing,
+                }
+            }
         }
     }
 
@@ -268,26 +359,28 @@ impl Catalog {
         client: &reqwest::Client,
         origins: &PlaneOrigins<'_>,
         auth: &HeaderMap,
+        metrics: &RouterMetrics,
     ) -> Aggregate {
         let (anthropic, openai, gemini) = tokio::join!(
-            self.plane_entries(client, origins.anthropic, Lane::Anthropic, auth),
-            self.plane_entries(client, origins.openai, Lane::OpenAi, auth),
-            self.plane_entries(client, origins.gemini, Lane::Gemini, auth),
+            self.plane_entries(client, origins.anthropic, Lane::Anthropic, auth, metrics),
+            self.plane_entries(client, origins.openai, Lane::OpenAi, auth, metrics),
+            self.plane_entries(client, origins.gemini, Lane::Gemini, auth, metrics),
         );
         let mut aggregate = Aggregate {
             entries: Vec::new(),
             degraded: Vec::new(),
             auth_rejected: false,
         };
-        for (namespace, outcome) in [
-            (NS_ANTHROPIC, anthropic),
-            (NS_OPENAI, openai),
-            (NS_GOOGLE, gemini),
+        for (namespace, lane, outcome) in [
+            (NS_ANTHROPIC, Lane::Anthropic, anthropic),
+            (NS_OPENAI, Lane::OpenAi, openai),
+            (NS_GOOGLE, Lane::Gemini, gemini),
         ] {
             match &outcome {
                 PlaneOutcome::AuthRejected => aggregate.auth_rejected = true,
                 PlaneOutcome::Stale(_) | PlaneOutcome::Missing => {
-                    aggregate.degraded.push(namespace)
+                    aggregate.degraded.push(namespace);
+                    metrics.catalog_degraded(lane);
                 }
                 PlaneOutcome::Fresh(_) => {}
             }
@@ -313,6 +406,7 @@ enum FetchResult {
     Entries(Vec<CatalogEntry>),
     AuthRejected,
     Failed,
+    Oversized,
 }
 
 async fn fetch_plane(
@@ -343,10 +437,22 @@ async fn fetch_plane(
     if !status.is_success() {
         return FetchResult::Failed;
     }
-    let body: Value = match response.json().await {
+    let bytes = match bounded::response_bytes(response, MAX_CATALOG_BODY_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(ReadError::Oversized) => return FetchResult::Oversized,
+        Err(ReadError::Transport) => return FetchResult::Failed,
+    };
+    let body: Value = match serde_json::from_slice(&bytes) {
         Ok(body) => body,
         Err(_) => return FetchResult::Failed,
     };
+    let model_count = match lane {
+        Lane::Anthropic | Lane::OpenAi => body.get("data").and_then(Value::as_array),
+        Lane::Gemini => body.get("models").and_then(Value::as_array),
+    };
+    if model_count.is_some_and(|models| models.len() > MAX_MODELS_PER_PLANE) {
+        return FetchResult::Oversized;
+    }
     let entries = match lane {
         Lane::Anthropic => parse_anthropic(&body),
         Lane::OpenAi => parse_openai(&body),
@@ -364,6 +470,38 @@ async fn fetch_plane(
 }
 
 type ParseResult = Result<Vec<CatalogEntry>, ()>;
+
+fn bounded_model_id(value: Option<&str>) -> Result<Option<String>, ()> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() > MAX_MODEL_STRING_BYTES || value.chars().any(char::is_control) {
+        return Err(());
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn bounded_display_name(value: Option<String>) -> Result<Option<String>, ()> {
+    match value {
+        Some(value)
+            if value.is_empty()
+                || value.len() > MAX_MODEL_STRING_BYTES
+                || value.chars().any(char::is_control) =>
+        {
+            Err(())
+        }
+        value => Ok(value),
+    }
+}
+
+fn namespaced_id(namespace: &str, native_id: &str) -> Result<String, ()> {
+    let id = format!("{namespace}/{native_id}");
+    (id.len() <= MAX_MODEL_STRING_BYTES).then_some(id).ok_or(())
+}
 
 fn positive_limit(object: &serde_json::Map<String, Value>, field: &str) -> Result<Option<u64>, ()> {
     let Some(value) = object.get(field) else {
@@ -478,6 +616,9 @@ fn parse_anthropic_efforts(
 
 fn parse_anthropic(body: &Value) -> ParseResult {
     let models = body.get("data").and_then(Value::as_array).ok_or(())?;
+    if models.len() > MAX_MODELS_PER_PLANE {
+        return Err(());
+    }
     models
         .iter()
         .filter_map(|model| {
@@ -485,9 +626,10 @@ fn parse_anthropic(body: &Value) -> ParseResult {
                 Some(model) => model,
                 None => return Some(Err(())),
             };
-            let id = match model.get("id").and_then(Value::as_str) {
-                Some(id) if !id.trim().is_empty() => id.trim().to_string(),
-                Some(_) | None => return None,
+            let id = match bounded_model_id(model.get("id").and_then(Value::as_str)) {
+                Ok(Some(id)) => id,
+                Ok(None) => return None,
+                Err(()) => return Some(Err(())),
             };
             let input = match positive_limit(model, "max_input_tokens") {
                 Ok(value) => value,
@@ -506,14 +648,24 @@ fn parse_anthropic(body: &Value) -> ParseResult {
                 Ok(value) => value,
                 Err(()) => return Some(Err(())),
             };
-            Some(Ok(CatalogEntry {
-                id: format!("{NS_ANTHROPIC}/{id}"),
-                native_id: id.clone(),
-                aliases: vec![id],
-                display_name: model
+            let namespaced_id = match namespaced_id(NS_ANTHROPIC, &id) {
+                Ok(id) => id,
+                Err(()) => return Some(Err(())),
+            };
+            let display_name = match bounded_display_name(
+                model
                     .get("display_name")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+            ) {
+                Ok(name) => name,
+                Err(()) => return Some(Err(())),
+            };
+            Some(Ok(CatalogEntry {
+                id: namespaced_id,
+                native_id: id.clone(),
+                aliases: vec![id],
+                display_name,
                 limits,
                 reasoning_efforts,
                 service_tiers: None,
@@ -566,6 +718,9 @@ where
     Display: Fn(&serde_json::Map<String, Value>) -> Option<String>,
 {
     let models = models.ok_or(())?;
+    if models.len() > MAX_MODELS_PER_PLANE {
+        return Err(());
+    }
     models
         .iter()
         .filter_map(|model| {
@@ -573,19 +728,28 @@ where
                 Some(model) => model,
                 None => return Some(Err(())),
             };
-            let id = match id_of(model) {
-                Some(id) if !id.trim().is_empty() => id.trim().to_string(),
-                Some(_) | None => return None,
+            let id = match bounded_model_id(id_of(model).as_deref()) {
+                Ok(Some(id)) => id,
+                Ok(None) => return None,
+                Err(()) => return Some(Err(())),
             };
             let (limits, reasoning_efforts, service_tiers) = match parse_owned_metadata(model) {
                 Ok(metadata) => metadata,
                 Err(()) => return Some(Err(())),
             };
+            let namespaced_id = match namespaced_id(namespace, &id) {
+                Ok(id) => id,
+                Err(()) => return Some(Err(())),
+            };
+            let display_name = match bounded_display_name(display_of(model)) {
+                Ok(name) => name,
+                Err(()) => return Some(Err(())),
+            };
             Some(Ok(CatalogEntry {
-                id: format!("{namespace}/{id}"),
+                id: namespaced_id,
                 native_id: id.clone(),
                 aliases: vec![id],
-                display_name: display_of(model),
+                display_name,
                 limits,
                 reasoning_efforts,
                 service_tiers,
@@ -633,6 +797,14 @@ pub fn find<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::extract::Request;
+    use axum::response::Response;
+    use axum::routing::any;
+    use axum::Router;
+    use futures_util::future::join_all;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn namespace_lane_maps_known_prefixes() {
@@ -784,6 +956,121 @@ mod tests {
         let conflicting = serde_json::json!({"data":[{"id":"claude-x","capabilities":{
             "effort":{"supported":false,"low":{"supported":true}}}}]});
         assert!(parse_anthropic(&conflicting).is_err());
+    }
+
+    #[test]
+    fn catalog_count_ids_and_display_names_are_bounded() {
+        let too_many = vec![serde_json::json!({"id": "gpt-x"}); MAX_MODELS_PER_PLANE + 1];
+        assert!(parse_openai(&serde_json::json!({"data": too_many})).is_err());
+        let oversized = "x".repeat(MAX_MODEL_STRING_BYTES + 1);
+        assert!(parse_openai(&serde_json::json!({"data": [{"id": oversized}]})).is_err());
+        assert!(parse_gemini(&serde_json::json!({
+            "models": [{"name": "models/gemini-x", "displayName": oversized}]
+        }))
+        .is_err());
+        let longest_namespaced = "x".repeat(MAX_MODEL_STRING_BYTES);
+        assert!(parse_openai(&serde_json::json!({"data": [{"id": longest_namespaced}]})).is_err());
+    }
+
+    #[tokio::test]
+    async fn expired_catalog_refresh_is_singleflight_per_plane() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = calls.clone();
+        let app = Router::new().fallback(any(move |request: Request| {
+            let state = state.clone();
+            async move {
+                state.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                let body = match request.uri().query() {
+                    Some(query) if query.contains("pageSize") => {
+                        serde_json::json!({"models": [{"name": "models/gemini-x"}]})
+                    }
+                    Some(_) => serde_json::json!({"data": [{"id": "claude-x"}]}),
+                    None => serde_json::json!({"data": [{"id": "gpt-x"}]}),
+                };
+                Response::builder()
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap()
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let origin = format!("http://{address}");
+        let origins = PlaneOrigins {
+            anthropic: &origin,
+            openai: &origin,
+            gemini: &origin,
+        };
+        let catalog = Catalog::with_ttl(Duration::from_millis(20));
+        let metrics = RouterMetrics::new();
+        let client = reqwest::Client::new();
+        catalog
+            .aggregate(&client, &origins, &HeaderMap::new(), &metrics)
+            .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        let auth = HeaderMap::new();
+        let aggregates =
+            join_all((0..10).map(|_| catalog.aggregate(&client, &origins, &auth, &metrics))).await;
+        assert!(aggregates
+            .iter()
+            .all(|aggregate| aggregate.entries.len() == 3));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            6,
+            "one leader per provider plane must refresh after TTL"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_catalog_refresh_is_shared_by_waiting_followers() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = calls.clone();
+        let app = Router::new().fallback(any(move || {
+            let state = state.clone();
+            async move {
+                state.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                Response::builder()
+                    .status(reqwest::StatusCode::SERVICE_UNAVAILABLE)
+                    .body(Body::empty())
+                    .unwrap()
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let origin = format!("http://{address}");
+        let origins = PlaneOrigins {
+            anthropic: &origin,
+            openai: &origin,
+            gemini: &origin,
+        };
+        let catalog = Catalog::with_ttl(Duration::ZERO);
+        let metrics = RouterMetrics::new();
+        let client = reqwest::Client::new();
+        let auth = HeaderMap::new();
+
+        let aggregates =
+            join_all((0..10).map(|_| catalog.aggregate(&client, &origins, &auth, &metrics))).await;
+        assert!(aggregates
+            .iter()
+            .all(|aggregate| { aggregate.entries.is_empty() && aggregate.degraded.len() == 3 }));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "one failed fetch per plane must be shared by concurrent followers"
+        );
+
+        catalog.aggregate(&client, &origins, &auth, &metrics).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            6,
+            "a later independent request must retry without a negative-cache delay"
+        );
     }
 
     fn entry(id: &str, alias: &str) -> (String, CatalogEntry) {

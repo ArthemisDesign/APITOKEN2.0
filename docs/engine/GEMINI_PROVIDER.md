@@ -523,6 +523,14 @@ image tool, and the authenticated Google AI Pro catalogue exposes an independent
 `generateContent`/`streamGenerateContent`/`countTokens` envelope and returns generated media as
 `candidates[].content.parts[].inlineData`; images are never written to server disk.
 
+The canonical OpenCode integration deliberately does not advertise this as image output. Its
+custom provider is `@ai-sdk/openai-compatible` 2.0.41, whose Chat response schema accepts message
+content only as string/null and does not consume native `inlineData` or OpenRouter image metadata.
+The plugin therefore publishes `modalities.output:["text"]` even for the image model instead of
+promising media the client would discard. This is a client-transport limitation, not a provider
+outage: native Gemini callers continue to generate, receive and settle images through the routes
+above.
+
 Image requests use `https://cloudcode-pa.googleapis.com`, the production endpoint selected by the
 Antigravity language server and independent working implementations. The configured sandbox host
 continues to serve the live-verified text surface, but its advertised image quota row is not proof

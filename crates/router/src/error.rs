@@ -79,8 +79,10 @@ pub fn method_not_allowed(path: &str) -> Response {
             "message": "Method not allowed for this endpoint."}}),
         Some(Lane::Gemini) => json!({"error": {"code": 405,
             "message": "Method not allowed for this endpoint.", "status": "NOT_FOUND"}}),
-        Some(Lane::OpenAi) | None => json!({"error": {"message": "Method not allowed for this endpoint.",
-            "type": "invalid_request_error", "code": "method_not_allowed"}}),
+        Some(Lane::OpenAi) | None => {
+            json!({"error": {"message": "Method not allowed for this endpoint.",
+            "type": "invalid_request_error", "code": "method_not_allowed"}})
+        }
     };
     json_response(StatusCode::METHOD_NOT_ALLOWED, body)
 }
@@ -143,6 +145,16 @@ pub fn body_admission_overloaded() -> Response {
         StatusCode::SERVICE_UNAVAILABLE,
         json!({"error": {"message": "The router request-body budget is temporarily exhausted.",
             "type": "server_error", "code": "router_overloaded"}}),
+    )
+}
+
+/// 408 slow/incomplete universal request body. Idle and maximum read deadlines are admission
+/// safety; no provider execution has started and clients may retry with a complete request.
+pub fn body_read_timeout() -> Response {
+    json_response(
+        StatusCode::REQUEST_TIMEOUT,
+        json!({"error": {"message": "The request body was not received in time.",
+            "type": "invalid_request_error", "code": "request_timeout"}}),
     )
 }
 
@@ -245,6 +257,14 @@ pub fn messages_body_admission_overloaded() -> Response {
     )
 }
 
+/// 408 request-body deadline in the Anthropic Messages envelope.
+pub fn messages_body_read_timeout() -> Response {
+    json_response(
+        StatusCode::REQUEST_TIMEOUT,
+        json!({"type": "error", "error": {"type": "invalid_request_error",
+            "message": "The request body was not received in time."}}),
+    )
+}
 
 #[cfg(test)]
 mod tests {
@@ -291,18 +311,27 @@ mod tests {
     async fn method_not_allowed_follows_lane_of_path() {
         let response = method_not_allowed("/v1/messages");
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
-        assert_eq!(body_json(response).await["error"]["type"], "not_found_error");
+        assert_eq!(
+            body_json(response).await["error"]["type"],
+            "not_found_error"
+        );
 
         let response = method_not_allowed("/v1beta/models");
         assert_eq!(body_json(response).await["error"]["status"], "NOT_FOUND");
 
         let response = method_not_allowed("/v1/responses");
-        assert_eq!(body_json(response).await["error"]["code"], "method_not_allowed");
+        assert_eq!(
+            body_json(response).await["error"]["code"],
+            "method_not_allowed"
+        );
     }
 
     #[tokio::test]
     async fn invalid_chat_request_is_openai_shaped_400() {
-        let response = invalid_chat_request("Missing or invalid required parameter: model.", Some("model"));
+        let response = invalid_chat_request(
+            "Missing or invalid required parameter: model.",
+            Some("model"),
+        );
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let json = body_json(response).await;
         assert_eq!(json["error"]["type"], "invalid_request_error");
@@ -335,7 +364,17 @@ mod tests {
 
         let response = body_admission_overloaded();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(body_json(response).await["error"]["code"], "router_overloaded");
+        assert_eq!(
+            body_json(response).await["error"]["code"],
+            "router_overloaded"
+        );
+
+        let response = body_read_timeout();
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(
+            body_json(response).await["error"]["code"],
+            "request_timeout"
+        );
     }
 
     // ---------- universal messages dispatch: Anthropic-конверт (этап 5.1) ----------
@@ -378,5 +417,11 @@ mod tests {
             assert_eq!(json["type"], "error");
             assert_eq!(json["error"]["type"], "api_error");
         }
+        let response = messages_body_read_timeout();
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(
+            body_json(response).await["error"]["type"],
+            "invalid_request_error"
+        );
     }
 }

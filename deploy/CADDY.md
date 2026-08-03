@@ -67,9 +67,10 @@ A `503` returned by a normal proxied request is returned only to that caller and
 
 `api.apitoken.sale` and the unified admin proxy use stable Anthropic origin `127.0.0.1:8790`, whose
 health-gated upstreams are `127.0.0.1:8787` and `127.0.0.1:8788`. The OpenAI hostname uses a separate
-stable origin, `127.0.0.1:8792`, over singleton runtime `127.0.0.1:8793`. During the first split only,
-8792 also recognized the old combined slots. That bridge has been removed after the dedicated
-runtime was verified in production: 8792 now targets only 8793 and no API-plane routing header exists.
+stable origin, `127.0.0.1:8792`, over blue-green slots `127.0.0.1:8793` and
+`127.0.0.1:8797`. During the first split only, 8792 also recognized the old combined slots. That
+bridge has been removed after the dedicated runtime was verified in production: 8792 now targets
+only its two OpenAI slots and no API-plane routing header exists.
 The watchdog resolves the OpenAI hostname to loopback and probes it over HTTPS, covering the public
 vhost boundary end to end.
 
@@ -116,6 +117,13 @@ The commerce API and worker use `http://127.0.0.1:8790`, a loopback-only Caddy l
 Anthropic slots. They must never address a deployment slot, the OpenAI origin, or the Gemini origin.
 The provider controller requires 8790 throughout the handoff and verifies 8792 and 8794 separately.
 
+Each stable provider origin (8790/8792/8794) handles Caddy's own `503 no healthy upstream` failure
+by returning the internal header `X-Apitoken-Execution-State: not_started`. A normal runtime-produced
+HTTP 503 is a completed reverse-proxy response and does not enter `handle_errors`, so it never gains
+this proof. The unified router may continue an explicit fallback chain only on that exact signal;
+the three public provider vhosts remove the header on their outer proxy hop so direct customers
+cannot observe or depend on internal execution state.
+
 The 2-second `lb_try_duration` and 100 ms `lb_try_interval` hold and retry a newly arriving request when the loopback dial fails during a brief engine restart/bind gap. Dial failures are retryable for every HTTP method because the connection was never established and the request was not transmitted. The configuration does not broaden Caddy's default rule for failures after a connection was established, so POST bodies are not unsafely replayed after a partial round trip.
 
 The retry window applies only while Caddy is selecting and connecting to an upstream. It does not cap, restart, buffer, or resume an established response. In particular:
@@ -144,9 +152,11 @@ vhosts (`api`, `openai.api`, `gemini.api`, and `router`). The router then inject
 only for an explicit fallback chain; clients can neither choose nor replay a group.
 `/health` reaches the router as well and stays
 router-local there — unified liveness is deliberately not a conjunction of plane health.
-`router-bluegreen.sh` starts and exact-binary verifies the inactive slot before the root helper
+`router-bluegreen.sh` starts and exact-binary verifies the inactive slot, requires direct `/ready`
+and a direct loopback-only `/startup` exact provider-auth contract before the root helper
 atomically replaces `/etc/caddy/router-active.caddy`, validates the complete live config and reloads
-Caddy. Reload preserves established streams on the old config; only then is the predecessor sent
+Caddy. After promotion it repeats `/startup` through stable origin 8802. Reload preserves
+established streams on the old config; only then is the predecessor sent
 SIGTERM and allowed up to 660 seconds to drain. A rejected reload restores the previous snippet and
 reloads it before returning failure. The legacy singleton on 8798 remains only as the first-migration
 anchor and is never restarted by infrastructure rollout. The vhost has no `encode` policy so

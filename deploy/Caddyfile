@@ -82,6 +82,7 @@ import /etc/caddy/router-active.caddy
 (engine_backend) {
 	reverse_proxy 127.0.0.1:8790 {
 		header_up Host 127.0.0.1:8790
+		header_down -X-Apitoken-Execution-State
 	}
 }
 
@@ -90,6 +91,7 @@ import /etc/caddy/router-active.caddy
 (openai_engine_backend) {
 	reverse_proxy 127.0.0.1:8792 {
 		header_up Host 127.0.0.1:8792
+		header_down -X-Apitoken-Execution-State
 	}
 }
 
@@ -98,6 +100,7 @@ import /etc/caddy/router-active.caddy
 (gemini_engine_backend) {
 	reverse_proxy 127.0.0.1:8794 {
 		header_up Host 127.0.0.1:8794
+		header_down -X-Apitoken-Execution-State
 	}
 }
 
@@ -223,6 +226,13 @@ http://127.0.0.1:8790 {
 		health_timeout 2s
 		health_status 2xx
 	}
+	# `handle_errors` sees only Caddy handler failures, not a runtime-produced HTTP 503. Therefore
+	# this signal proves that no health-gated runtime accepted the request; router may safely try the
+	# next explicit model. Public provider vhosts strip it in their outer reverse_proxy snippets.
+	handle_errors 503 {
+		header X-Apitoken-Execution-State not_started
+		respond "No healthy Anthropic runtime is available." 503
+	}
 }
 
 # Stable OpenAI origin over health-gated blue-green HTTP slots. Both slots may overlap because the
@@ -239,6 +249,10 @@ http://127.0.0.1:8792 {
 		health_interval 2s
 		health_timeout 2s
 		health_status 2xx
+	}
+	handle_errors 503 {
+		header X-Apitoken-Execution-State not_started
+		respond "No healthy OpenAI runtime is available." 503
 	}
 }
 
@@ -257,6 +271,10 @@ http://127.0.0.1:8794 {
 		health_interval 2s
 		health_timeout 2s
 		health_status 2xx
+	}
+	handle_errors 503 {
+		header X-Apitoken-Execution-State not_started
+		respond "No healthy Gemini runtime is available." 503
 	}
 }
 

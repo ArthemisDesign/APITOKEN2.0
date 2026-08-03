@@ -222,6 +222,41 @@ groups:
           description: 'At least one serial continuation was started after a stable provider origin returned TCP ConnectionRefused.'
           runbook: 'docs/ops/MONITORING.md#routerconnectionrefusedfallback'
 
+      - alert: RouterAdmissionFailures
+        expr: increase(claude_router_body_admission_overload_total[5m]) + increase(claude_router_body_read_timeout_total[5m]) > 0
+        labels:
+          severity: warning
+          component: claude-router
+        annotations:
+          summary: 'The unified router rejected a request at body admission'
+          description: 'At least one universal request exhausted the bounded body budget or exceeded the idle/maximum body-read deadline.'
+          runbook: 'docs/ops/MONITORING.md#routeradmissionfailures'
+
+      - alert: RouterAuthorityFailures
+        expr: |
+          sum(increase(claude_router_auth_preflight_total{outcome="unavailable"}[10m]))
+          + sum(increase(claude_router_catalog_refresh_total{outcome=~"failed|oversized"}[10m]))
+          + sum(increase(claude_router_pricing_failure_total{reason="unavailable"}[10m]))
+          + sum(increase(claude_router_policy_failure_total{reason="unavailable"}[10m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: claude-router
+        annotations:
+          summary: 'Router metadata authorities are repeatedly unavailable'
+          description: 'Authentication, catalog, pricing, or routing-policy authority failures exceeded the bounded threshold.'
+          runbook: 'docs/ops/MONITORING.md#routerauthorityfailures'
+
+      - alert: RouterResponseHeaderTimeout
+        expr: increase(claude_router_response_header_timeout_total[5m]) > 0
+        labels:
+          severity: warning
+          component: claude-router
+        annotations:
+          summary: 'A provider plane exceeded the router response-header deadline'
+          description: 'At least one provider attempt had an ambiguous response-header timeout; the router correctly did not retry it.'
+          runbook: 'docs/ops/MONITORING.md#routerresponseheadertimeout'
+
   # The OpenAI-compatible Codex provider is optional and fail-closed. Every rule below is gated on
   # claude_api_codex_enabled so a deployment with the provider switched off stays silent.
   - name: codex-provider

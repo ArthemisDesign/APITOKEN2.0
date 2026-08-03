@@ -24,8 +24,10 @@ use axum::http::{HeaderMap, HeaderName, Request, Response, StatusCode};
 use reqwest::Client;
 
 use crate::error::{self, Lane};
+use crate::metrics::RouterMetrics;
 
 const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
+const BALANCE_HEADER_TIMEOUT: Duration = Duration::from_secs(2);
 
 // Hop-by-hop заголовки (RFC 9110 §7.6.1) плюс `host` (reqwest выставляет по
 // URL апстрима). `content-length` не трогаем: reqwest сам заменит его на
@@ -52,8 +54,7 @@ pub const AUTH_HEADERS: [HeaderName; 3] = [
 /// Public compatibility escape hatch for harnesses that can add headers but cannot add arbitrary
 /// JSON body properties. `routing.rs` consumes it on executable GPT universal requests; every
 /// proxy path removes it before contacting a provider plane.
-pub const SERVICE_TIER_HEADER: HeaderName =
-    HeaderName::from_static("x-apitoken-service-tier");
+pub const SERVICE_TIER_HEADER: HeaderName = HeaderName::from_static("x-apitoken-service-tier");
 
 /// Авторитетная семантика исполнения (docs/engine/ROUTING_FENCING.md §3): выставляется
 /// движком только на отказах без исполнения (`not_started`). С транзитных ответов router
@@ -123,6 +124,7 @@ pub async fn proxy_attempt(
     error_lane: Lane,
     req: Request<Body>,
     execution: Option<&ExecutionAttemptHeaders>,
+    metrics: &RouterMetrics,
 ) -> ProxyAttempt {
     proxy_attempt_with_header_timeout(
         client,
@@ -132,6 +134,7 @@ pub async fn proxy_attempt(
         req,
         execution,
         RESPONSE_HEADER_TIMEOUT,
+        metrics,
     )
     .await
 }
@@ -144,6 +147,7 @@ async fn proxy_attempt_with_header_timeout(
     req: Request<Body>,
     execution: Option<&ExecutionAttemptHeaders>,
     response_header_timeout: Duration,
+    metrics: &RouterMetrics,
 ) -> ProxyAttempt {
     let path_query = req
         .uri()
@@ -189,6 +193,7 @@ async fn proxy_attempt_with_header_timeout(
     {
         Ok(result) => result,
         Err(_) => {
+            metrics.response_header_timeout(target_lane);
             eprintln!(
                 "router: {target_lane:?} lane upstream transport failed class=response_header_timeout"
             );
@@ -244,7 +249,10 @@ async fn proxy_attempt_with_header_timeout(
                     }
                 }
             };
-            ProxyAttempt { response, retry_reason }
+            ProxyAttempt {
+                response,
+                retry_reason,
+            }
         }
         Err(e) => {
             // Сюда попадают только отказы ДО получения заголовков ответа
@@ -252,8 +260,8 @@ async fn proxy_attempt_with_header_timeout(
             // не дойти до плоскости. Только exact io::ErrorKind::ConnectionRefused
             // доказывает, что TCP-соединение не установилось; is_connect() также
             // включает timeout/DNS/ambiguous failures и потому недостаточен.
-            let retry_reason = error_chain_has_connection_refused(&e)
-                .then_some(RetryReason::ConnectionRefused);
+            let retry_reason =
+                error_chain_has_connection_refused(&e).then_some(RetryReason::ConnectionRefused);
             let class = retry_reason.map_or("ambiguous", RetryReason::as_str);
             // Display reqwest::Error содержит URL (и потенциальный secret query),
             // поэтому логируем только bounded classification.
@@ -276,10 +284,59 @@ pub async fn proxy_request(
     origin: &str,
     lane: Lane,
     req: Request<Body>,
+    metrics: &RouterMetrics,
 ) -> Response<Body> {
-    proxy_attempt(client, origin, lane, lane, req, None)
+    proxy_attempt(client, origin, lane, lane, req, None, metrics)
         .await
         .response
+}
+
+/// `/balance` is a read-only shared-authority surface. It is safe to continue after transport or
+/// 5xx because no execution or reservation can start; 401 and every non-5xx response are terminal.
+/// The first successful provider response keeps its body and end-to-end headers unchanged.
+pub async fn proxy_balance(
+    client: &Client,
+    origins: [(&str, Lane); 3],
+    req: Request<Body>,
+    metrics: &RouterMetrics,
+) -> Response<Body> {
+    let (mut parts, _body) = req.into_parts();
+    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+    let mut last = None;
+    for (index, (origin, lane)) in origins.into_iter().enumerate() {
+        let mut request = Request::builder()
+            .method(parts.method.clone())
+            .uri(parts.uri.clone())
+            .version(parts.version)
+            .body(Body::empty())
+            .expect("validated balance request parts");
+        *request.headers_mut() = parts.headers.clone();
+        let attempt = proxy_attempt_with_header_timeout(
+            client,
+            origin,
+            lane,
+            Lane::Anthropic,
+            request,
+            None,
+            BALANCE_HEADER_TIMEOUT,
+            metrics,
+        )
+        .await;
+        let status = attempt.response.status();
+        if status == StatusCode::UNAUTHORIZED || !status.is_server_error() {
+            return attempt.response;
+        }
+        last = Some(attempt.response);
+        if let Some((_, next_lane)) = origins.get(index + 1) {
+            metrics.balance_failover(lane, *next_lane);
+        }
+    }
+    last.unwrap_or_else(|| {
+        error::upstream_unavailable(
+            Lane::Anthropic,
+            "The balance authority is temporarily unavailable.",
+        )
+    })
 }
 
 fn error_chain_has_connection_refused(error: &(dyn StdError + 'static)) -> bool {
@@ -318,9 +375,11 @@ pub async fn health() -> (StatusCode, axum::Json<serde_json::Value>) {
 /// слушающий сокет — уже готовность. Деградация плоскостей видна в каталоге
 /// (заголовок x-apitoken-catalog-degraded), а не в этом ответе.
 pub async fn ready() -> (StatusCode, axum::Json<serde_json::Value>) {
-    (StatusCode::OK, axum::Json(serde_json::json!({"ready": true})))
+    (
+        StatusCode::OK,
+        axum::Json(serde_json::json!({"ready": true})),
+    )
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -337,7 +396,10 @@ mod tests {
         headers.insert("x-bye", HeaderValue::from_static("1"));
         headers.insert("transfer-encoding", HeaderValue::from_static("chunked"));
         headers.insert("x-api-key", HeaderValue::from_static("sk-pool-secret"));
-        headers.insert("anthropic-beta", HeaderValue::from_static("messages-2023-12-15"));
+        headers.insert(
+            "anthropic-beta",
+            HeaderValue::from_static("messages-2023-12-15"),
+        );
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
 
         let stripped = strip_hop_by_hop(&headers);
@@ -347,7 +409,10 @@ mod tests {
         assert!(stripped.get("x-bye").is_none());
         assert!(stripped.get("transfer-encoding").is_none());
         assert_eq!(stripped.get("x-api-key").unwrap(), "sk-pool-secret");
-        assert_eq!(stripped.get("anthropic-beta").unwrap(), "messages-2023-12-15");
+        assert_eq!(
+            stripped.get("anthropic-beta").unwrap(),
+            "messages-2023-12-15"
+        );
         assert_eq!(stripped.get("anthropic-version").unwrap(), "2023-06-01");
     }
 
@@ -384,7 +449,10 @@ mod tests {
         headers.append("x-api-key", HeaderValue::from_static("sk-pool-a"));
         headers.append("x-api-key", HeaderValue::from_static("sk-pool-a-rotating"));
         headers.insert("x-goog-api-key", HeaderValue::from_static("sk-pool-b"));
-        headers.insert("authorization", HeaderValue::from_static("Bearer sk-pool-c"));
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer sk-pool-c"),
+        );
         headers.insert("user-agent", HeaderValue::from_static("test"));
         headers.insert("anthropic-beta", HeaderValue::from_static("b"));
 
@@ -440,6 +508,7 @@ mod tests {
             request,
             None,
             Duration::from_millis(50),
+            &RouterMetrics::new(),
         )
         .await;
         server.abort();
@@ -451,13 +520,22 @@ mod tests {
     #[test]
     fn lane_from_path_covers_public_contract() {
         assert_eq!(Lane::from_path("/v1/messages"), Some(Lane::Anthropic));
-        assert_eq!(Lane::from_path("/v1/messages/count_tokens"), Some(Lane::Anthropic));
+        assert_eq!(
+            Lane::from_path("/v1/messages/count_tokens"),
+            Some(Lane::Anthropic)
+        );
         assert_eq!(Lane::from_path("/balance"), Some(Lane::Anthropic));
         assert_eq!(Lane::from_path("/v1/responses"), Some(Lane::OpenAi));
-        assert_eq!(Lane::from_path("/v1/responses/resp_1/input_items"), Some(Lane::OpenAi));
+        assert_eq!(
+            Lane::from_path("/v1/responses/resp_1/input_items"),
+            Some(Lane::OpenAi)
+        );
         assert_eq!(Lane::from_path("/v1/chat/completions"), Some(Lane::OpenAi));
         assert_eq!(Lane::from_path("/v1/models"), Some(Lane::OpenAi));
-        assert_eq!(Lane::from_path("/v1/models/anthropic/claude-x"), Some(Lane::OpenAi));
+        assert_eq!(
+            Lane::from_path("/v1/models/anthropic/claude-x"),
+            Some(Lane::OpenAi)
+        );
         assert_eq!(Lane::from_path("/v1beta/models"), Some(Lane::Gemini));
         assert_eq!(
             Lane::from_path("/v1beta/models/gemini-2.5-pro:generateContent"),

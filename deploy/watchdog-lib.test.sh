@@ -1823,6 +1823,10 @@ grep -Fq '"$CONTROLLER_ROOT/router-bluegreen.sh"' "$ROOT/deploy/watchdog.sh" \
   || wd_die "watchdog can select a new router binary without cutting over its slot"
 grep -Fq 'executable == "$release/claude-router"' "$ROOT/deploy/router-bluegreen.sh" \
   || wd_die "router candidate admission lacks exact-binary verification"
+grep -Fq 'ready_port "$port" && startup_port "$port"' "$ROOT/deploy/router-bluegreen.sh" \
+  || wd_die "router candidate admission lacks the provider data-path contract probe"
+grep -Fq 'stable_startup || die' "$ROOT/deploy/router-bluegreen.sh" \
+  || wd_die "router promotion never verifies the data path through the stable origin"
 target_ready_line=$(grep -nF 'wait_target || die' "$ROOT/deploy/router-bluegreen.sh" | cut -d: -f1)
 target_enable_line=$(grep -nF 'systemctl_command enable "$TARGET_UNIT"' \
   "$ROOT/deploy/router-bluegreen.sh" | head -n 1 | cut -d: -f1)

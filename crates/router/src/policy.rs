@@ -11,6 +11,7 @@ use std::time::Duration;
 use axum::http::HeaderMap;
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::bounded;
 use crate::catalog::PlaneOrigins;
 use crate::error::Lane;
 
@@ -266,7 +267,7 @@ pub async fn preflight(
         if !response.status().is_success() {
             continue;
         }
-        let Some(bytes) = read_bounded(response).await else {
+        let Ok(bytes) = bounded::response_bytes(response, MAX_BODY_BYTES).await else {
             continue;
         };
         let Ok(response) = serde_json::from_slice::<PreflightResponse>(&bytes) else {
@@ -295,28 +296,6 @@ fn origin_order(candidates: &[PolicyCandidate<'_>]) -> Vec<Lane> {
         }
     }
     order
-}
-
-async fn read_bounded(mut response: reqwest::Response) -> Option<Vec<u8>> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_BODY_BYTES as u64)
-    {
-        return None;
-    }
-    let mut body = Vec::new();
-    loop {
-        match response.chunk().await {
-            Ok(Some(chunk)) => {
-                if body.len().saturating_add(chunk.len()) > MAX_BODY_BYTES {
-                    return None;
-                }
-                body.extend_from_slice(&chunk);
-            }
-            Ok(None) => return Some(body),
-            Err(_) => return None,
-        }
-    }
 }
 
 fn validate_response(

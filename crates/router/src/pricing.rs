@@ -10,12 +10,13 @@ use std::time::Duration;
 use axum::http::HeaderMap;
 use serde::{Deserialize, Serialize};
 
+use crate::bounded;
 use crate::catalog::PlaneOrigins;
 use crate::error::Lane;
 
 const SCHEMA_VERSION: u64 = 1;
 const UNIT: &str = "nano_usd_per_million_tokens";
-const MAX_CANDIDATES: usize = 256;
+const MAX_CANDIDATES_PER_REQUEST: usize = 256;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const PRICING_TIMEOUT: Duration = Duration::from_secs(2);
 const PRICING_PATH: &str = "/internal/router/catalog/pricing";
@@ -122,9 +123,22 @@ pub async fn fetch(
     auth: &HeaderMap,
     candidates: &[PricingCandidate<'_>],
 ) -> Result<PricingOverlay, PricingError> {
-    if candidates.is_empty() || candidates.len() > MAX_CANDIDATES {
+    if candidates.is_empty() {
         return Err(PricingError::Unavailable);
     }
+    let mut entries = Vec::new();
+    for chunk in candidates.chunks(MAX_CANDIDATES_PER_REQUEST) {
+        entries.extend(fetch_chunk(client, origins, auth, chunk).await?);
+    }
+    Ok(PricingOverlay { entries })
+}
+
+async fn fetch_chunk(
+    client: &reqwest::Client,
+    origins: &PlaneOrigins<'_>,
+    auth: &HeaderMap,
+    candidates: &[PricingCandidate<'_>],
+) -> Result<Vec<PricingEntry>, PricingError> {
     let request = PricingRequest {
         schema_version: SCHEMA_VERSION,
         candidates: candidates
@@ -165,7 +179,7 @@ pub async fn fetch(
         if !response.status().is_success() {
             continue;
         }
-        let Some(bytes) = read_bounded(response).await else {
+        let Ok(bytes) = bounded::response_bytes(response, MAX_BODY_BYTES).await else {
             continue;
         };
         let Ok(response) = serde_json::from_slice::<PricingResponse>(&bytes) else {
@@ -174,7 +188,7 @@ pub async fn fetch(
         let Some(entries) = validate_response(candidates, response) else {
             continue;
         };
-        return Ok(PricingOverlay { entries });
+        return Ok(entries);
     }
     Err(PricingError::Unavailable)
 }
@@ -196,28 +210,6 @@ fn origin_order(candidates: &[PricingCandidate<'_>]) -> Vec<Lane> {
         }
     }
     order
-}
-
-async fn read_bounded(mut response: reqwest::Response) -> Option<Vec<u8>> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_BODY_BYTES as u64)
-    {
-        return None;
-    }
-    let mut body = Vec::new();
-    loop {
-        match response.chunk().await {
-            Ok(Some(chunk)) => {
-                if body.len().saturating_add(chunk.len()) > MAX_BODY_BYTES {
-                    return None;
-                }
-                body.extend_from_slice(&chunk);
-            }
-            Ok(None) => return Some(body),
-            Err(_) => return None,
-        }
-    }
 }
 
 fn validate_response(
@@ -281,6 +273,10 @@ fn canonical_nonnegative_integer(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::routing::post;
+    use axum::{Json, Router};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn candidate<'a>(id: &'a str, provider_id: &'a str) -> PricingCandidate<'a> {
         PricingCandidate {
@@ -357,5 +353,74 @@ mod tests {
             origin_order(&candidates),
             [Lane::OpenAi, Lane::Gemini, Lane::Anthropic]
         );
+    }
+
+    #[tokio::test]
+    async fn catalogs_larger_than_one_authority_request_are_chunked_and_merged() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = calls.clone();
+        let app = Router::new().route(
+            PRICING_PATH,
+            post(move |Json(request): Json<serde_json::Value>| {
+                let state = state.clone();
+                async move {
+                    state.fetch_add(1, Ordering::SeqCst);
+                    let entries: Vec<_> = request["candidates"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|candidate| {
+                            serde_json::json!({
+                                "id": candidate["id"],
+                                "standard": {
+                                    "input": "1", "output": "1", "cache_read": "1",
+                                    "cache_write": "1"
+                                },
+                                "priority": null,
+                                "long_context": null
+                            })
+                        })
+                        .collect();
+                    Json(serde_json::json!({
+                        "schema_version": 1,
+                        "unit": UNIT,
+                        "mode": "legacy",
+                        "entries": entries
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let origin = format!("http://{address}");
+        let origins = PlaneOrigins {
+            anthropic: "http://127.0.0.1:0",
+            openai: &origin,
+            gemini: "http://127.0.0.1:0",
+        };
+
+        let ids: Vec<_> = (0..257)
+            .map(|index| format!("openai/model-{index}"))
+            .collect();
+        let candidates: Vec<_> = ids
+            .iter()
+            .map(|id| PricingCandidate {
+                id,
+                provider_id: "openai",
+                model_id: id.split_once('/').unwrap().1,
+            })
+            .collect();
+        let overlay = fetch(
+            &reqwest::Client::new(),
+            &origins,
+            &HeaderMap::new(),
+            &candidates,
+        )
+        .await
+        .unwrap();
+        assert!(overlay.entry("openai/model-0").is_some());
+        assert!(overlay.entry("openai/model-256").is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

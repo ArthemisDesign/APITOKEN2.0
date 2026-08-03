@@ -23,6 +23,7 @@ CADDY_CONFIG=${CADDY_CONFIG:-/etc/caddy/Caddyfile}
 ACTIVE_SNIPPET=${ROUTER_ACTIVE_SNIPPET:-/etc/caddy/router-active.caddy}
 PROMOTE_HELPER=${ROUTER_PROMOTE_HELPER:-/usr/local/lib/apitoken-watchdog/controller/router-promote.sh}
 STABLE_READY_URL=${ROUTER_STABLE_READY_URL:-http://127.0.0.1:8802/ready}
+STABLE_STARTUP_URL=${ROUTER_STABLE_STARTUP_URL:-http://127.0.0.1:8802/startup}
 LEGACY_UNIT=claude-router.service
 ACTIVE_PORT=
 ACTIVE_UNIT=
@@ -47,8 +48,10 @@ validate_port() { [[ $1 == 8800 || $1 == 8801 ]] || die "router slot port must b
 other_port() { [[ $1 == 8800 ]] && printf '8801\n' || printf '8800\n'; }
 slot_unit() { printf 'claude-router@%s.service\n' "$1"; }
 slot_url() { printf 'http://127.0.0.1:%s/ready\n' "$1"; }
+slot_startup_url() { printf 'http://127.0.0.1:%s/startup\n' "$1"; }
 unit_active() { systemctl_raw is-active --quiet "$1" >/dev/null 2>&1; }
 ready_port() { curl --noproxy '*' --fail --silent --show-error --max-time 2 "$(slot_url "$1")" >/dev/null 2>&1; }
+startup_port() { curl --noproxy '*' --fail --silent --show-error --max-time 3 "$(slot_startup_url "$1")" >/dev/null 2>&1; }
 
 active_backend_port() {
   local ports
@@ -68,15 +71,16 @@ slot_serves_release() {
   [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
   executable=$(realpath -- "/proc/$pid/exe" 2>/dev/null) || return 1
   [[ $executable == "$release/claude-router" ]] || return 1
-  ready_port "$port"
+  ready_port "$port" && startup_port "$port"
 }
 
 stable_ready() { curl --noproxy '*' --fail --silent --show-error --max-time 3 "$STABLE_READY_URL" >/dev/null 2>&1; }
+stable_startup() { curl --noproxy '*' --fail --silent --show-error --max-time 3 "$STABLE_STARTUP_URL" >/dev/null 2>&1; }
 
 wait_target() {
   local deadline=$(( $(date +%s) + READINESS_TIMEOUT ))
   if [[ $DRY_RUN == 1 ]]; then
-    log "dry-run: would require $TARGET_UNIT to execute $CURRENT_RELEASE/claude-router and return 200 at $(slot_url "$TARGET_PORT")"
+    log "dry-run: would require $TARGET_UNIT to execute $CURRENT_RELEASE/claude-router and return 200 at $(slot_url "$TARGET_PORT") and $(slot_startup_url "$TARGET_PORT")"
     return 0
   fi
   while (( $(date +%s) < deadline )); do
@@ -153,6 +157,8 @@ validate_timeout "$READINESS_TIMEOUT"
   || die 'router promotion helper path is fixed'
 [[ $STABLE_READY_URL == http://127.0.0.1:8802/ready ]] \
   || die 'stable router readiness URL is fixed at 127.0.0.1:8802'
+[[ $STABLE_STARTUP_URL == http://127.0.0.1:8802/startup ]] \
+  || die 'stable router startup URL is fixed at 127.0.0.1:8802'
 validate_service_unit "$LEGACY_UNIT"
 validate_service_unit "$(slot_unit 8800)"
 validate_service_unit "$(slot_unit 8801)"
@@ -229,6 +235,7 @@ if [[ $TARGET_PORT != "$ACTIVE_PORT" ]]; then
     [[ $(active_backend_port) == "$TARGET_PORT" ]] || die 'Caddy state did not record the promoted router slot'
     slot_serves_release "$TARGET_PORT" "$CURRENT_RELEASE" || die 'promoted router lost exact-release readiness'
     stable_ready || die 'stable router origin lost readiness after promotion'
+    stable_startup || die 'stable router origin failed the provider data-path probe after promotion'
   fi
   # Caddy's graceful reload preserves established connections on the old configuration. Only after
   # new requests resolve exclusively to the target do we SIGTERM the old process and wait for its
@@ -256,6 +263,7 @@ if [[ $DRY_RUN == 0 ]]; then
   slot_serves_release "$TARGET_PORT" "$CURRENT_RELEASE" \
     || die 'router target failed final exact-binary verification'
   stable_ready || die 'stable router origin failed final readiness verification'
+  stable_startup || die 'stable router origin failed final provider data-path verification'
   [[ $(active_backend_port) == "$TARGET_PORT" ]] || die 'router active-backend state drifted after cutover'
   systemctl_raw is-enabled --quiet "$TARGET_UNIT" \
     || die "router target is not enabled after cutover: $TARGET_UNIT"

@@ -15,6 +15,13 @@
 использовать `@ai-sdk/openai-compatible`, `https://router.apitoken.sale/v1` и literal
 `sk-pool-…` key либо стандартный OpenCode placeholder `{env:NAME}`.
 
+Plugin рекламирует всем моделям только text output. Это намеренное ограничение OpenCode 1.18.11:
+его `@ai-sdk/openai-compatible` 2.0.41 не декодирует нативный Gemini `inlineData` и не принимает
+OpenRouter image metadata в Chat message. Нативная генерация картинок в gateway не отключена —
+`google/gemini-3.1-flash-image` нужно вызывать через Gemini
+`generateContent`/`streamGenerateContent`, где изображение возвращается в
+`candidates[].content.parts[].inlineData`.
+
 При временной недоступности каталога plugin может восстановить только capability metadata из
 локального last-good cache. Снимок AES-256-GCM зашифрован и привязан к точным credential/base URL,
 имеет режим `0600`, 15-минутный freshness TTL и предельный stale age 7 дней. Cached-модели явно

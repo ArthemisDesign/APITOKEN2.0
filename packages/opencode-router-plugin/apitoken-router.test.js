@@ -48,6 +48,16 @@ function catalog() {
           pricing: pricing(),
         },
       },
+      {
+        id: "google/gemini-3.1-flash-image",
+        name: "Gemini 3.1 Flash Image",
+        owned_by: "google",
+        apitoken: {
+          limits: { context: 131072, input: 65536, output: 32768 },
+          capabilities: {},
+          pricing: pricing(),
+        },
+      },
     ],
   }
 }
@@ -76,6 +86,11 @@ test("same credential uses explicit stale capability-only models after a transie
   const live = await discoverModels({ key: KEY_A, base: BASE_A, cachePath, fetchImpl: successfulFetch, now: NOW })
   assert.equal(live.source, "live")
   assert.equal(live.models["openai/gpt-5.6"].cost.input, 1)
+  assert.deepEqual(
+    live.models["google/gemini-3.1-flash-image"].modalities.output,
+    ["text"],
+    "OpenAI-compatible OpenCode transport must not advertise generated images it cannot consume",
+  )
   assert.equal(fs.statSync(cachePath).mode & 0o777, 0o600)
 
   const warnings = []

@@ -147,12 +147,33 @@ grep -F 'job_name: claude-router' -A 4 "$ROOT/observability/prometheus/prometheu
   || { printf 'router loopback metrics unexpectedly require a credential\n' >&2; exit 1; }
 grep -Fq 'claude_router_fallback_total' "$ROOT/crates/router/src/metrics.rs" \
   || { printf 'router does not export fallback continuations\n' >&2; exit 1; }
+[[ $(grep -Fc 'handle_errors 503 {' "$ROOT/deploy/Caddyfile") == 3 ]] \
+  || { printf 'stable provider origins must sign exactly three Caddy no-upstream error paths\n' >&2; exit 1; }
+[[ $(grep -Fc 'header X-Apitoken-Execution-State not_started' "$ROOT/deploy/Caddyfile") == 3 ]] \
+  || { printf 'stable provider no-upstream paths are missing execution fencing\n' >&2; exit 1; }
+[[ $(grep -Fc 'header_down -X-Apitoken-Execution-State' "$ROOT/deploy/Caddyfile") == 3 ]] \
+  || { printf 'public provider proxies must strip internal execution fencing\n' >&2; exit 1; }
+for router_metric in \
+  claude_router_active_universal_requests \
+  claude_router_active_body_admission_units \
+  claude_router_body_admission_overload_total \
+  claude_router_body_read_timeout_total \
+  claude_router_auth_preflight_total \
+  claude_router_catalog_refresh_total \
+  claude_router_pricing_failure_total \
+  claude_router_policy_failure_total \
+  claude_router_response_header_timeout_total \
+  claude_router_balance_failover_total; do
+  grep -Fq "$router_metric" "$ROOT/crates/router/src/metrics.rs" \
+    || { printf 'router metric is missing: %s\n' "$router_metric" >&2; exit 1; }
+done
 grep -Fq 'claude_api_execution_not_started_total' "$ROOT/crates/server/src/http.rs" \
   || { printf 'engine does not export exact not_started proofs\n' >&2; exit 1; }
 grep -Fq 'sum by (plane) (rate(claude_api_execution_not_started_total[5m]))' \
   "$ROOT/observability/prometheus/rules/application.yml" \
   || { printf 'no recording rule consumes exact not_started proofs by fixed plane\n' >&2; exit 1; }
-for router_alert in RouterMetricsDown RouterFallbackRateHigh RouterConnectionRefusedFallback; do
+for router_alert in RouterMetricsDown RouterFallbackRateHigh RouterConnectionRefusedFallback \
+  RouterAdmissionFailures RouterAuthorityFailures RouterResponseHeaderTimeout; do
   grep -Fq "alert: $router_alert" "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'missing router fallback alert %s\n' "$router_alert" >&2; exit 1; }
   anchor=$(printf '%s' "$router_alert" | tr '[:upper:]' '[:lower:]')

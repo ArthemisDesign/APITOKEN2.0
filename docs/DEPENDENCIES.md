@@ -208,10 +208,11 @@ Control API движка использует только на чтение. С
   `POST /internal/router/auth/preflight` проверяет forwarding-admin/customer credential через тот
   же `authed`/`AsyncBilling` resolver, что live admission, и возвращает только закрытый success
   marker либо 401/503 без reserve, pricing/policy read и identity. Потребитель — `crates/router`:
-  до materialization 32 MiB universal body последовательно перебирает fixed origins, принимает
-  только exact schema-v1 success, считает 401 терминальным, а mixed-version/transport/5xx fail
-  closed; fail-fast 64 MiB budget с шагом 1 MiB ограничивает raw-body residency без
-  execution-очереди и сохраняет concurrency малых запросов.
+  до materialization 32 MiB universal body конкурентно запускает три bounded probe, принимает
+  первый exact schema-v1 success либо terminal 401, а mixed-version/transport/5xx считает
+  inconclusive. Fail-fast 64 MiB budget с шагом 1 MiB динамически растёт по фактическим chunked
+  байтам, имеет 15-секундный idle и 5-минутный абсолютный body deadline и не создаёт
+  execution-очередь.
   Контракт —
   `docs/engine/UNIFIED_ROUTER.md` §«Ранний auth и граница памяти request body».
 - **Контракт catalog pricing (provider planes → router).** Производитель — одинаковый
@@ -223,7 +224,8 @@ Control API движка использует только на чтение. С
   `crates/router`: после отдельного producer-first GREEN SHA он валидирует version/unit/canonical
   integer strings и ordered subset, фильтрует недоступные модели, добавляет
   `data[].apitoken.pricing`, помечает ответ `private, no-store` и fail-closed возвращает 401/503.
-  Credential-specific overlay не кэшируется и никогда не попадает в общий catalog TTL-cache.
+  Каталоги больше 256 candidates режутся на детерминированные чанки; failed chunk закрывает весь
+  overlay. Credential-specific overlay не кэшируется и никогда не попадает в общий catalog TTL-cache.
   Публичные provider vhost'ы `/internal/*` не обслуживают.
 - **Контракт catalog runtime metadata (provider planes → router).** Anthropic производит native
   `max_input_tokens`/`max_tokens`/`capabilities`; owned OpenAI и Gemini model resources производят
@@ -243,18 +245,22 @@ Control API движка использует только на чтение. С
   `packages/opencode-router-plugin`: live-ответ переводится в model/variant/Fast schema OpenCode,
   а локальный last-good cache содержит только зашифрованные capability records без `pricing` и
   `cost`, привязан к exact credential/base URL и ограничен schema/TTL/max-stale guards. Cached
-  fallback всегда явно stale и без стоимости. Других потребителей cache-файла нет. Контракт —
+  fallback всегда явно stale и без стоимости. OpenCode transport не потребляет Gemini
+  `inlineData`, поэтому plugin не рекламирует generated-image output; нативный Gemini API остаётся
+  поддерживаемой image surface. Других потребителей cache-файла нет. Контракт —
   `docs/engine/UNIFIED_ROUTER.md` §§«Совместимость с harness-агентами», «Модели и каталог».
 - **Fallback telemetry (router/provider planes → Prometheus, фаза 6.4c).** `crates/router`
   производит unauthenticated loopback `/metrics`; Caddy stable origin 8802 направляет scrape в тот
   же active router slot 8800/8801, что и публичный vhost, с ровно 18
-  `claude_router_fallback_total{from_namespace,to_namespace,reason}` series; публичный Caddy
-  allowlist этот путь не пропускает. Каждая fixed `crates/server` plane через существующий
+  `claude_router_fallback_total{from_namespace,to_namespace,reason}` series плюс fixed-cardinality
+  admission/auth/catalog/pricing/policy/header-timeout/balance telemetry; публичный Caddy allowlist
+  этот путь не пропускает. Каждая fixed `crates/server` plane через существующий
   authenticated `/metrics` производит три bounded
   `claude_api_execution_not_started_total{plane}` series, считая только exact response реально
   возвращённой plane. Потребитель — `observability/prometheus/prometheus.yml` и recording/alert
   rules; Alertmanager/operator используют runbooks `RouterMetricsDown`, `RouterFallbackRateHigh`,
-  `RouterConnectionRefusedFallback`, а money-regression detectors остаются отдельными. Model,
+  `RouterConnectionRefusedFallback`, `RouterAdmissionFailures`, `RouterAuthorityFailures` и
+  `RouterResponseHeaderTimeout`, а money-regression detectors остаются отдельными. Model,
   credential, account, group и request identity через эту связь не проходят. Контракт —
   `docs/engine/ROUTING_FENCING.md` §§5.3–6 и `docs/ops/MONITORING.md`.
 - `crates/authbot` — производитель доступа вне слоёв; OAuth-callback на `127.0.0.1:8796`.
@@ -316,6 +322,11 @@ Authority — `crates/metering` (выше). Всё нижеописанное �
 | `mail.apitoken.sale` (+`autodiscover.`, `autoconfig.`) | почтовый сервис `127.0.0.1:8080` |
 | `sales.apitoken.sale` | 301-редирект на `partners.apitoken.sale` |
 | `admin.partners.apitoken.sale` | managed auth; `/v1/*` → sales-api `:3100`; остальное → sales-web `:3200` |
+
+Stable provider origins 8790/8792/8794 синтезируют внутренний
+`X-Apitoken-Execution-State: not_started` только на Caddy `no healthy upstream`; обычный runtime
+503 его не получает. Публичные provider vhost'ы снимают этот header, а loopback router использует
+его как безопасное fencing-доказательство до следующей explicit fallback attempt.
 
 ### systemd (`systemd/`) — сервис → приложение
 

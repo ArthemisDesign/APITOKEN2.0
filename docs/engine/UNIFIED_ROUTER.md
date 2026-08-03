@@ -128,6 +128,12 @@ GET  /v1beta/models                               Gemini native
 POST /v1beta/models/{id}:generateContent
 POST /v1beta/models/{id}:streamGenerateContent    (alt=sse и alt=json)
 POST /v1beta/models/{id}:countTokens
+
+GET  /balance                                    bodyless shared-authority read: Anthropic →
+                                                  OpenAI → Gemini только после transport,
+                                                  response-header timeout или 5xx; 401 и любой
+                                                  non-5xx терминальны
+GET  /health, /live, /ready                       router-local process probes
 ```
 
 Четыре universal POST-пути (`chat/completions`, `responses`, `messages` и
@@ -227,6 +233,15 @@ Plugin entrypoint имеет только один ESM export — default factor
 каждый export файла как отдельный plugin и отклоняет named constants/helpers с
 `Plugin export is not a function`. Exact export shape закреплён unit-тестом и клиентским smoke.
 
+Generated-image capability намеренно не рекламируется в OpenCode model schema. Provider пакета
+использует `@ai-sdk/openai-compatible` 2.0.41: его Chat decoder принимает
+`message.content` только как string/null и не потребляет нативный Gemini `inlineData` или
+OpenRouter-style image metadata. Поэтому даже image-model получает
+`modalities.output:["text"]`, иначе UI обещал бы результат, который transport отбросит. Это не
+отключает генерацию изображений в gateway: `google/gemini-3.1-flash-image` продолжает работать
+через нативный Gemini `generateContent`/`streamGenerateContent`, возвращая
+`candidates[].content.parts[].inlineData` с обычным authoritative settlement.
+
 После live discovery
 OpenCode сам считает стоимость сообщения по input/output/reasoning/cache token usage; отдельный
 `usage.cost` от router не требуется. Его custom-provider schema умеет отдельный
@@ -313,8 +328,12 @@ settlement и effective-tier evidence по-прежнему принадлежа
    перегруженная плоскость съест capacity остальных. Readiness router никогда не является
    конъюнкцией health всех плоскостей; синхронных health-check'ов на пути запроса нет. Единственное
    исключение — fail-fast 64 MiB memory admission для materialized universal request bodies:
-   известный размер округляется вверх с шагом 1 MiB, неизвестный резервирует максимум 32 MiB;
-   admission не ждёт в очереди, освобождается до response body и не ограничивает native/SSE response.
+   известный размер округляется вверх с шагом 1 MiB, неизвестный/chunked начинается с одного unit
+   и fail-fast добирает units по фактически прочитанным байтам. Admission не ждёт в очереди,
+   ограничен 15-секундным idle и 5-минутным абсолютным body-read deadline и не удерживает
+   native/SSE response body.
+   Single-model path освобождает permit после outbound upload; advanced fallback удерживает его до
+   terminal response headers, пока parsed template ещё нужен для следующей попытки.
 4. **SSE не буферизуется** ни в router, ни в Caddy перед ним (требование Claude Code
    gateway protocol). Disconnect клиента транзитивно рвёт соединение router→плоскость,
    чтобы существующий TeeMeter drain дочитывал authoritative usage и settle корректно.
@@ -341,17 +360,21 @@ pricing policy и возвращает только:
 - `503 auth_unavailable` при недоступной billing authority.
 
 Публичные provider vhost'ы не маршрутизируют `/internal/*`; router обращается только к stable
-loopback origins. Consumer последовательно перебирает transport/404/5xx для mixed-version
-availability, но 401 считает терминальным и исполняет universal request только после exact
-schema-v1 success. Success не кэшируется между запросами и credential.
+loopback origins. Consumer запускает три двухсекундных probe конкурентно: первый exact schema-v1
+success либо terminal 401 завершает race, а transport/404/5xx/malformed ответы inconclusive. Так
+живой OpenAI/Gemini authority не ждёт зависший первый origin; ни success, ни credential не
+кэшируются между запросами. Contradictory 200/401 означают нарушение общей authority; по wire
+действует первый полученный conclusive outcome, а фактическая provider-plane admission всё равно
+повторно проверяет credential до reserve.
 
 После auth consumer делает fail-fast reservation в 64 MiB budget с шагом 1 MiB. Валидный
-`Content-Length` округляется вверх; chunked/неизвестный размер резервирует полный 32 MiB максимум.
-При исчерпании router сразу возвращает lane-shaped 503 без очереди и billable call. Reservation
-удерживает body и его parsed/rewritten representation до получения response headers, затем
-освобождается; открытый SSE body его не держит. Поэтому worst-case materialization ограничена,
-но малые запросы сохраняют нормальную concurrency; native request/response bodies и SSE не
-буферизуются. Отдельный 30-секундный deadline ограничивает
+`Content-Length` округляется вверх; chunked/неизвестный размер сначала получает 1 MiB и добирает
+вес только при пересечении следующей MiB-границы. При исчерпании router сразу возвращает
+lane-shaped 503 без очереди и billable call; body без прогресса 15 секунд или незавершённый за
+5 минут получает 408 и освобождает units. У single-model path parsed JSON удаляется до сети, а permit передаётся outbound
+body и освобождается после upload/отмены. Advanced routing сохраняет один parsed template для
+следующих attempts, поэтому честно удерживает его permit до terminal response headers; открытый
+SSE response permit не держит. Отдельный 30-секундный deadline ограничивает
 только ожидание plane response headers; после заголовков response body не имеет total timeout.
 Истечение deadline неоднозначно и не разрешает fallback/retry billable request.
 
@@ -394,6 +417,13 @@ Bedrock, Vertex) route planner сможет выбирать между ними
 со всех конфликтующих записей и alias lookup возвращает 404; namespaced ID обеих моделей остаются
 исполнимыми, а их приватный native ID по-прежнему используется для body rewrite и pricing
 preflight. Поэтому новая модель не может молча перехватить существующий alias по порядку плоскостей.
+Каждый plane response ограничен 4 MiB и 1 024 моделями; ID и display name — 256 байтами без
+control characters. Expired refresh имеет отдельный per-plane singleflight: ожидающие callers
+используют и успешный, и failed/oversized результат той же in-flight попытки, но следующий
+независимый запрос сразу пробует снова без negative cache/circuit breaker. 30-секундный TTL
+детерминированно скошен до 27/30/33 секунд для Anthropic/OpenAI/Gemini, чтобы один тёплый aggregate
+не создавал синхронный refresh burst всех providers. Oversized/malformed producer сохраняет
+last-good и помечает namespace degraded.
 
 Нормализованные `reasoning_efforts` и `service_tiers` публикуются одновременно в
 `apitoken.capabilities` и как прежние top-level mirrors для совместимости клиентов. Клиенты с
@@ -452,8 +482,10 @@ catalog: персональные ставки в нём запрещены. Con
 malformed/mixed-version или oversized response после перебора fixed origins даёт публичный
 `503 pricing_unavailable`: нулевой, last-good или взятый у другого ключа rate card запрещён.
 
-Wire schema v1 закрыта для неизвестных полей. Request содержит `schema_version:1` и не более 256
-уникальных кандидатов:
+Wire schema v1 закрыта для неизвестных полей. Один authority request содержит `schema_version:1`
+и не более 256 уникальных кандидатов. Больший агрегированный каталог router режет на
+детерминированные чанки по 256, объединяет exact ordered subsets в исходном порядке и отклоняет
+весь pricing overlay, если хотя бы один chunk не прошёл transport/schema/auth validation:
 
 ```json
 {"schema_version":1,"candidates":[
@@ -610,8 +642,9 @@ request получает `400 invalid_request`, неизвестный/неак�
    трёх плоскостей без native retries и без
    общего таймаута (стримы не обрезаются), hop-by-hop заголовки снимаются, ошибки шейпятся
    под lane пути. Единый `/v1/models` агрегирует каталоги плоскостей конкурентно: namespaced
-   ID (`anthropic/…`, `openai/…`, `google/…`) + только глобально однозначные aliases, TTL-кэш
-   30 с + last-good без TTL. Router строго нормализует producer-owned limits/capabilities в
+   ID (`anthropic/…`, `openai/…`, `google/…`) + только глобально однозначные aliases, per-plane
+   singleflight TTL-кэш 27/30/33 с + last-good без TTL. Router строго нормализует
+   producer-owned limits/capabilities в
    `apitoken` и совместимые top-level mirrors: Anthropic native model resource, owned OpenAI
    `apitoken` metadata и owned Gemini `apitoken` metadata являются authority вместо model-name
    таблиц router/client. Межплоскостная коллизия снимает alias со всех конфликтующих записей;
@@ -620,7 +653,9 @@ request получает `400 invalid_request`, неизвестный/неак�
    плоскости считается сбоем, 401/403 плоскости → единый 401, все плоскости без кэша → 503.
    Auth passthrough без изменений; `/health`, `/live`, `/ready` — router-local. Деплой: третий
    tested artifact в цепочке watchdog → promote → stage. `router-bluegreen.sh` запускает inactive
-   slot, требует direct `/ready` и exact `/proc/<pid>/exe` из выбранного immutable release,
+   slot, требует direct `/ready`, exact `/proc/<pid>/exe` из выбранного immutable release и
+   loopback-only `/startup`, который получает exact unauthenticated auth contract хотя бы от одной
+   provider plane,
    после чего root-owned `router-promote.sh` атомарно заменяет
    `/etc/caddy/router-active.caddy`, валидирует и reload'ит Caddy. Новые запросы переходят на
    target, а старый Axum-процесс получает SIGTERM только после cutover и дренирует уже открытые SSE

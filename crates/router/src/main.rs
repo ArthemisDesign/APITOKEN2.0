@@ -12,6 +12,7 @@
 //! сигналам из docs/engine/ROUTING_FENCING.md.
 
 mod auth;
+mod bounded;
 mod catalog;
 mod chat;
 mod config;
@@ -40,7 +41,7 @@ use tokio::sync::Semaphore;
 use catalog::{Catalog, PlaneOrigins};
 use config::Config;
 use error::Lane;
-use metrics::RouterMetrics;
+use metrics::{PricingFailure, RouterMetrics};
 
 /// Состояние процесса: HTTP-клиент, кэш каталога и fail-fast 64 MiB budget для universal
 /// request bodies. Денег, ключей и execution-очередей здесь нет.
@@ -48,10 +49,10 @@ pub struct AppState {
     cfg: Config,
     client: Client,
     catalog: Catalog,
-    metrics: RouterMetrics,
-    /// Raw request-body admission only. Weighted units remain held until the buffered universal
-    /// body has been uploaded and response headers arrive; response streams and native lanes never
-    /// use them.
+    metrics: Arc<RouterMetrics>,
+    /// Raw request-body admission only. Weighted units grow with observed chunked bytes and remain
+    /// held through buffering until the outbound upload completes; provider TTFT/response streams
+    /// and native lanes never hold them.
     body_admission: Arc<Semaphore>,
 }
 
@@ -80,8 +81,9 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/health", get(proxy::health))
         .route("/live", get(proxy::health))
         .route("/ready", get(proxy::ready))
+        .route("/startup", get(startup))
         .route("/metrics", get(router_metrics))
-        .route("/balance", get(proxy_anthropic))
+        .route("/balance", get(proxy_balance))
         .route("/v1/messages", post(messages::proxy_messages))
         .route(
             "/v1/messages/count_tokens",
@@ -110,16 +112,54 @@ async fn router_metrics(State(state): State<Arc<AppState>>) -> Response {
         .into_response()
 }
 
-async fn proxy_anthropic(State(state): State<Arc<AppState>>, req: Request) -> Response {
-    proxy::proxy_request(&state.client, &state.cfg.anthropic_origin, Lane::Anthropic, req).await
+async fn proxy_balance(State(state): State<Arc<AppState>>, req: Request) -> Response {
+    proxy::proxy_balance(
+        &state.client,
+        [
+            (&state.cfg.anthropic_origin, Lane::Anthropic),
+            (&state.cfg.openai_origin, Lane::OpenAi),
+            (&state.cfg.gemini_origin, Lane::Gemini),
+        ],
+        req,
+        &state.metrics,
+    )
+    .await
+}
+
+/// Loopback-only deployment probe. Caddy's public allowlist omits `/startup`; blue-green admission
+/// calls the direct candidate slot and requires an exact provider unauthenticated wire contract.
+async fn startup(State(state): State<Arc<AppState>>) -> Response {
+    if auth::startup_probe(&state.client, &origins(&state)).await {
+        (axum::http::StatusCode::OK, axum::Json(serde_json::json!({"startup": true}))).into_response()
+    } else {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({"startup": false})),
+        )
+            .into_response()
+    }
 }
 
 async fn proxy_openai(State(state): State<Arc<AppState>>, req: Request) -> Response {
-    proxy::proxy_request(&state.client, &state.cfg.openai_origin, Lane::OpenAi, req).await
+    proxy::proxy_request(
+        &state.client,
+        &state.cfg.openai_origin,
+        Lane::OpenAi,
+        req,
+        &state.metrics,
+    )
+    .await
 }
 
 async fn proxy_gemini(State(state): State<Arc<AppState>>, req: Request) -> Response {
-    proxy::proxy_request(&state.client, &state.cfg.gemini_origin, Lane::Gemini, req).await
+    proxy::proxy_request(
+        &state.client,
+        &state.cfg.gemini_origin,
+        Lane::Gemini,
+        req,
+        &state.metrics,
+    )
+    .await
 }
 
 /// 404 вне контракта. OpenAI-совместимый конверт: универсальные клиенты —
@@ -147,7 +187,10 @@ pub(crate) fn origins(state: &AppState) -> PlaneOrigins<'_> {
 async fn list_models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let codex_envelope = requests_codex_models_envelope(&headers);
     let auth = proxy::auth_passthrough(&headers);
-    let aggregate = state.catalog.aggregate(&state.client, &origins(&state), &auth).await;
+    let aggregate = state
+        .catalog
+        .aggregate(&state.client, &origins(&state), &auth, &state.metrics)
+        .await;
     if aggregate.auth_rejected {
         return private_catalog_response(auth_rejected_response());
     }
@@ -203,7 +246,10 @@ async fn get_model(
     headers: HeaderMap,
 ) -> Response {
     let auth = proxy::auth_passthrough(&headers);
-    let aggregate = state.catalog.aggregate(&state.client, &origins(&state), &auth).await;
+    let aggregate = state
+        .catalog
+        .aggregate(&state.client, &origins(&state), &auth, &state.metrics)
+        .await;
     if aggregate.auth_rejected {
         return private_catalog_response(auth_rejected_response());
     }
@@ -256,8 +302,14 @@ async fn catalog_pricing(
     pricing::fetch(&state.client, &origins(state), auth, &candidates)
         .await
         .map_err(|error| match error {
-            pricing::PricingError::Unauthorized => auth_rejected_response(),
-            pricing::PricingError::Unavailable => error::pricing_unavailable(),
+            pricing::PricingError::Unauthorized => {
+                state.metrics.pricing_failure(PricingFailure::Unauthorized);
+                auth_rejected_response()
+            }
+            pricing::PricingError::Unavailable => {
+                state.metrics.pricing_failure(PricingFailure::Unavailable);
+                error::pricing_unavailable()
+            }
         })
 }
 
@@ -315,7 +367,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         client: build_client()?,
         catalog: Catalog::new(),
-        metrics: RouterMetrics::new(),
+        metrics: Arc::new(RouterMetrics::new()),
         body_admission: Arc::new(Semaphore::new(routing::BODY_ADMISSION_UNITS)),
         cfg,
     });
@@ -364,6 +416,15 @@ mod tests {
     }
 
     type SharedLog = Arc<StdMutex<Vec<Recorded>>>;
+
+    fn oversized_pending_body() -> reqwest::Body {
+        // Keep the upload pending after headers. The router rejects the declared length before
+        // reading, so the test observes the 400 deterministically instead of racing a 32 MiB
+        // client write against the server closing the HTTP/1 connection.
+        reqwest::Body::wrap_stream(futures_util::stream::pending::<
+            Result<Bytes, std::io::Error>,
+        >())
+    }
 
     fn record_of(req: &AxumRequest<Body>) -> Recorded {
         let header = |name: &str| {
@@ -451,7 +512,7 @@ mod tests {
             },
             client,
             catalog: Catalog::with_ttl(ttl),
-            metrics: RouterMetrics::new(),
+            metrics: Arc::new(RouterMetrics::new()),
             body_admission: Arc::new(Semaphore::new(routing::BODY_ADMISSION_UNITS)),
         }))
     }
@@ -1210,6 +1271,81 @@ mod tests {
         let anthropic_paths: Vec<String> =
             log_a.lock().unwrap().iter().map(|r| r.path.clone()).collect();
         assert_eq!(anthropic_paths, ["/balance"]);
+    }
+
+    #[tokio::test]
+    async fn balance_fails_over_from_anthropic_5xx_and_preserves_openai_response() {
+        let first_calls = Arc::new(AtomicUsize::new(0));
+        let state = first_calls.clone();
+        let anthropic = spawn(Router::new().fallback(any(move || {
+            let state = state.clone();
+            async move {
+                state.fetch_add(1, Ordering::SeqCst);
+                AxumResponse::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .header("x-first-plane", "failed")
+                    .body(Body::from("anthropic unavailable"))
+                    .unwrap()
+            }
+        })))
+        .await;
+        let (openai, openai_log) = echo_plane().await;
+        let router = spawn(make_router(
+            &anthropic,
+            &openai,
+            "http://127.0.0.1:0",
+            Duration::ZERO,
+        ))
+        .await;
+
+        let response = reqwest::Client::new()
+            .get(format!("{router}/balance"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("x-plane-marker").unwrap(), "echo");
+        assert!(response.headers().get("x-first-plane").is_none());
+        assert_eq!(response.bytes().await.unwrap(), Bytes::new());
+        assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(openai_log.lock().unwrap()[0].path, "/balance");
+    }
+
+    #[tokio::test]
+    async fn balance_unauthorized_is_terminal_and_never_reaches_another_plane() {
+        let anthropic = spawn(Router::new().fallback(any(|| async {
+            AxumResponse::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"error":{"type":"authentication_error"}}"#))
+                .unwrap()
+        })))
+        .await;
+        let later_calls = Arc::new(AtomicUsize::new(0));
+        let later_state = later_calls.clone();
+        let openai = spawn(Router::new().fallback(any(move || {
+            let later_calls = later_state.clone();
+            async move {
+                later_calls.fetch_add(1, Ordering::SeqCst);
+                AxumResponse::new(Body::from("unexpected"))
+            }
+        })))
+        .await;
+        let router = spawn(make_router(
+            &anthropic,
+            &openai,
+            "http://127.0.0.1:0",
+            Duration::ZERO,
+        ))
+        .await;
+
+        let response = reqwest::Client::new()
+            .get(format!("{router}/balance"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(later_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -2426,7 +2562,7 @@ mod tests {
                     return authenticated_response();
                 }
                 attempts.fetch_add(1, Ordering::SeqCst);
-                std::future::pending::<AxumResponse<Body>>().await
+                AxumResponse::new(Body::from("unexpected execution"))
             }
         })))
         .await;
@@ -2437,59 +2573,135 @@ mod tests {
             Duration::ZERO,
         ))
         .await;
-        let payload = Bytes::from_static(br#"{"model":"anthropic/claude-opus-4-8","messages":[]}"#);
-        let streaming_body = |payload: Bytes| {
-            reqwest::Body::wrap_stream(tokio_stream::iter(vec![Ok::<Bytes, std::io::Error>(
-                payload,
-            )]))
+        let held_body = || {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tx.try_send(Ok::<Bytes, std::io::Error>(Bytes::from(vec![
+                b' ';
+                32 * 1024 * 1024
+            ])))
+            .unwrap();
+            (reqwest::Body::wrap_stream(ReceiverStream::new(rx)), tx)
         };
+        let (first_body, first_tx) = held_body();
         let first_router = router.clone();
-        let first_payload = payload.clone();
         let first = tokio::spawn(async move {
             reqwest::Client::new()
                 .post(format!("{first_router}/v1/chat/completions"))
-                .body(streaming_body(first_payload))
+                .body(first_body)
                 .send()
                 .await
         });
+        let (second_body, second_tx) = held_body();
         let second_router = router.clone();
-        let second_payload = payload.clone();
         let second = tokio::spawn(async move {
             reqwest::Client::new()
                 .post(format!("{second_router}/v1/chat/completions"))
-                .body(streaming_body(second_payload))
+                .body(second_body)
                 .send()
                 .await
         });
+        let client = reqwest::Client::new();
         for _ in 0..100 {
-            if attempts.load(Ordering::SeqCst) == 2 {
+            let metrics = client
+                .get(format!("{router}/metrics"))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            if metrics.contains("claude_router_active_body_admission_units 64") {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
 
         let third = tokio::time::timeout(
             Duration::from_millis(500),
-            reqwest::Client::new()
+            client
                 .post(format!("{router}/v1/chat/completions"))
-                .body(streaming_body(payload))
+                .body(r#"{"model":"anthropic/claude-opus-4-8","messages":[]}"#)
                 .send(),
         )
         .await
         .expect("body admission overload must fail without queueing")
         .unwrap();
+        drop(first_tx);
+        drop(second_tx);
         first.abort();
         second.abort();
 
         assert_eq!(third.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body: serde_json::Value = third.json().await.unwrap();
         assert_eq!(body["error"]["code"], "router_overloaded");
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
-    async fn body_permit_releases_after_headers_while_sse_bodies_remain_open() {
+    async fn empty_chunked_slow_clients_reserve_one_unit_each_not_half_the_budget() {
+        let (plane, _) = echo_plane().await;
+        let router = spawn(make_router(
+            &plane,
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:0",
+            Duration::ZERO,
+        ))
+        .await;
+        let slow_body = || {
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(1);
+            (reqwest::Body::wrap_stream(ReceiverStream::new(rx)), tx)
+        };
+        let mut tasks = Vec::new();
+        let mut senders = Vec::new();
+        for _ in 0..2 {
+            let (body, tx) = slow_body();
+            let target = router.clone();
+            tasks.push(tokio::spawn(async move {
+                reqwest::Client::new()
+                    .post(format!("{target}/v1/chat/completions"))
+                    .body(body)
+                    .send()
+                    .await
+            }));
+            senders.push(tx);
+        }
+        let client = reqwest::Client::new();
+        for _ in 0..100 {
+            let metrics = client
+                .get(format!("{router}/metrics"))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            if metrics.contains("claude_router_active_body_admission_units 2") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(1),
+            client
+                .post(format!("{router}/v1/chat/completions"))
+                .body(r#"{"model":"anthropic/claude-opus-4-8","messages":[]}"#)
+                .send(),
+        )
+        .await
+        .expect("two empty slow bodies must leave capacity for normal traffic")
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        drop(senders);
+        for task in tasks {
+            task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn body_permit_is_not_retained_by_open_sse_responses() {
         type OpenStreams = Arc<StdMutex<Vec<tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>>>>;
         let open_streams: OpenStreams = Arc::new(StdMutex::new(Vec::new()));
         let stream_state = open_streams.clone();
@@ -2591,10 +2803,10 @@ mod tests {
     async fn chat_oversized_body_is_400_and_never_reaches_plane() {
         let (a, log_a) = echo_plane().await;
         let router = spawn(make_router(&a, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
-        let body = vec![b'x'; 32 * 1024 * 1024 + 1];
         let response = reqwest::Client::new()
             .post(format!("{router}/v1/chat/completions"))
-            .body(body)
+            .header(reqwest::header::CONTENT_LENGTH, 32 * 1024 * 1024 + 1)
+            .body(oversized_pending_body())
             .send()
             .await
             .unwrap();
@@ -2767,10 +2979,10 @@ mod tests {
     async fn responses_oversized_body_is_400_and_never_reaches_plane() {
         let (a, log_a) = echo_plane().await;
         let router = spawn(make_router(&a, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
-        let body = vec![b'x'; 32 * 1024 * 1024 + 1];
         let response = reqwest::Client::new()
             .post(format!("{router}/v1/responses"))
-            .body(body)
+            .header(reqwest::header::CONTENT_LENGTH, 32 * 1024 * 1024 + 1)
+            .body(oversized_pending_body())
             .send()
             .await
             .unwrap();
@@ -2957,10 +3169,10 @@ mod tests {
     async fn messages_oversized_body_is_400_and_never_reaches_plane() {
         let (a, log_a) = echo_plane().await;
         let router = spawn(make_router(&a, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
-        let body = vec![b'x'; 32 * 1024 * 1024 + 1];
         let response = reqwest::Client::new()
             .post(format!("{router}/v1/messages"))
-            .body(body)
+            .header(reqwest::header::CONTENT_LENGTH, 32 * 1024 * 1024 + 1)
+            .body(oversized_pending_body())
             .send()
             .await
             .unwrap();
