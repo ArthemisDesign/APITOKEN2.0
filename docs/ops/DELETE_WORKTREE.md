@@ -6,18 +6,25 @@ outputs after their branch has reached `origin/master`.
 
 ## Install and lifecycle
 
-Install it from the primary clone after the change is present in `master`:
+Install it from any worktree that contains the desired version of the agent, while identifying the
+primary repository explicitly when necessary:
 
 ```bash
 ./deploy/DELETE_WORKTREE.sh install
+# From a task worktree when the primary clone cannot be fast-forwarded safely:
+./deploy/DELETE_WORKTREE.sh install --repo /absolute/path/to/primary/clone
 ./deploy/DELETE_WORKTREE.sh status
 ```
 
 The installer writes `~/Library/LaunchAgents/sale.apitoken.DELETE_WORKTREE.plist`, validates it with
-`plutil`, bootstraps it into the current GUI session, and starts it immediately. `RunAtLoad` and
-`KeepAlive` restart the agent after login, reboot, or an unexpected exit. A per-user LaunchAgent is
-intentional: it operates on user-owned worktrees and reuses that user's Git and macOS Keychain
-environment instead of running destructive filesystem operations as root before login.
+`plutil`, atomically copies the invoking script to
+`~/Library/Application Support/DELETE_WORKTREE/runtime/DELETE_WORKTREE.sh`, bootstraps the plist into
+the current GUI session, and starts it immediately. The runtime copy does not depend on the
+installing task worktree continuing to exist or on the primary clone being clean and checked out at
+the installed revision. `RunAtLoad` and `KeepAlive` restart the agent after login, reboot, or an
+unexpected exit. A per-user LaunchAgent is intentional: it operates on user-owned worktrees and
+reuses that user's Git and macOS Keychain environment instead of running destructive filesystem
+operations as root before login.
 
 The daemon polls every 15 seconds. A candidate must remain identical and eligible for at least two
 observations and 30 seconds, so a newly merged worktree is normally reclaimed within 30–45 seconds.

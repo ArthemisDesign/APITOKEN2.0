@@ -18,7 +18,8 @@ dw_die() { dw_log "ERROR: $*"; exit 1; }
 dw_usage() {
   cat >&2 <<'USAGE'
 usage:
-  deploy/DELETE_WORKTREE.sh install [--interval-seconds N] [--settle-seconds N] [--dry-run]
+  deploy/DELETE_WORKTREE.sh install [--repo PATH] [--state-dir PATH]
+                                    [--interval-seconds N] [--settle-seconds N] [--dry-run]
   deploy/DELETE_WORKTREE.sh uninstall [--state-dir PATH]
   deploy/DELETE_WORKTREE.sh once [--repo PATH] [--state-dir PATH] [--settle-seconds N] [--dry-run]
   deploy/DELETE_WORKTREE.sh daemon [--repo PATH] [--state-dir PATH]
@@ -85,6 +86,8 @@ dw_prepare_state() {
   mkdir -p -- "$STATE_DIR"
   chmod 700 "$STATE_DIR"
   STATE_DIR=$(dw_canonical_dir "$STATE_DIR") || dw_die 'cannot canonicalize the state directory'
+  RUNTIME_DIR=$STATE_DIR/runtime
+  RUNTIME_PATH=$RUNTIME_DIR/DELETE_WORKTREE.sh
   CANDIDATES_FILE=$STATE_DIR/candidates.tsv
   CLONES_FILE=$STATE_DIR/clones
   REPO_FILE=$STATE_DIR/repo
@@ -441,7 +444,7 @@ dw_xml_escape() {
 
 dw_render_plist() {
   local script_xml repo_xml state_xml log_xml error_log_xml
-  script_xml=$(printf '%s' "$MAIN_TOP/deploy/DELETE_WORKTREE.sh" | dw_xml_escape)
+  script_xml=$(printf '%s' "$RUNTIME_PATH" | dw_xml_escape)
   repo_xml=$(printf '%s' "$MAIN_TOP" | dw_xml_escape)
   state_xml=$(printf '%s' "$STATE_DIR" | dw_xml_escape)
   log_xml=$(printf '%s' "$STATE_DIR/DELETE_WORKTREE.log" | dw_xml_escape)
@@ -489,17 +492,37 @@ PLIST
 }
 
 dw_install() {
-  local plist_dir plist_path staged domain
+  local plist_dir plist_path staged runtime_staged domain
   [[ $(uname -s) == Darwin ]] || dw_die 'install is supported only on macOS launchd'
   command -v launchctl >/dev/null 2>&1 || dw_die 'launchctl is unavailable'
   dw_resolve_repository "$REPO_PATH"
   dw_prepare_state
-  [[ -x $MAIN_TOP/deploy/DELETE_WORKTREE.sh ]] \
-    || dw_die 'install must run after DELETE_WORKTREE is present in the primary worktree'
   if (( DRY_RUN == 1 )); then
     dw_render_plist
     return 0
   fi
+  if [[ -e $RUNTIME_DIR || -L $RUNTIME_DIR ]]; then
+    [[ -d $RUNTIME_DIR && ! -L $RUNTIME_DIR ]] \
+      || dw_die "runtime path is not a safe directory: $RUNTIME_DIR"
+  else
+    mkdir -- "$RUNTIME_DIR"
+  fi
+  chmod 700 "$RUNTIME_DIR"
+  RUNTIME_DIR=$(dw_canonical_dir "$RUNTIME_DIR") \
+    || dw_die "cannot canonicalize runtime directory: $RUNTIME_DIR"
+  RUNTIME_PATH=$RUNTIME_DIR/DELETE_WORKTREE.sh
+  [[ ! -d $RUNTIME_PATH ]] || dw_die "runtime executable path is a directory: $RUNTIME_PATH"
+  runtime_staged=$(mktemp "$RUNTIME_DIR/.DELETE_WORKTREE.sh.XXXXXX")
+  if ! cp -- "$SCRIPT_PATH" "$runtime_staged"; then
+    rm -f -- "$runtime_staged"
+    dw_die 'cannot stage the DELETE_WORKTREE runtime copy'
+  fi
+  if ! /bin/bash -n "$runtime_staged"; then
+    rm -f -- "$runtime_staged"
+    dw_die 'staged DELETE_WORKTREE runtime copy failed the macOS bash syntax check'
+  fi
+  chmod 700 "$runtime_staged"
+  mv -f -- "$runtime_staged" "$RUNTIME_PATH"
   printf '%s\n' "$MAIN_TOP" >"$REPO_FILE"
   chmod 600 "$REPO_FILE"
   plist_dir=${HOME:?HOME is required}/Library/LaunchAgents

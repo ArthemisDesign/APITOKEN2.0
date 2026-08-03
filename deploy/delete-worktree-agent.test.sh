@@ -71,10 +71,20 @@ for contract in \
   '<key>RunAtLoad</key>' \
   '<key>KeepAlive</key>' \
   '<string>daemon</string>' \
+  "<string>$TEMP/state/runtime/DELETE_WORKTREE.sh</string>" \
   "<string>$PRIMARY</string>" \
   "<string>$TEMP/state</string>"; do
   grep -Fq "$contract" <<<"$plist" || fail "launchd plist lost contract: $contract"
 done
+
+if [[ $(uname -s) == Darwin ]]; then
+  run_agent install --dry-run >"$TEMP/install-dry-run.plist"
+  [[ ! -e $TEMP/state/runtime ]] \
+    || fail 'install --dry-run created the runtime directory or executable'
+  grep -Fq "<string>$TEMP/state/runtime/DELETE_WORKTREE.sh</string>" \
+    "$TEMP/install-dry-run.plist" \
+    || fail 'install --dry-run did not render the stable runtime executable path'
+fi
 
 eligible=$(run_manager create feat/eligible eligible)
 git_test -C "$eligible" commit --quiet --allow-empty -m eligible
