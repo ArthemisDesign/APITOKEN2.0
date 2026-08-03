@@ -163,9 +163,11 @@ export const pricingUsageEvents = pgTable("pricing_usage_events", {
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
   engineAccountId: text("engine_account_id").notNull(),
   ledgerEntryId: bigint("ledger_entry_id", { mode: "bigint" }).notNull(),
-  // Authoritative top-level provider copied from the immutable engine charge ledger. Nullable only
-  // for rows ingested before migration 0036; the worker resolves retained history without model guesses.
+  // Exact top-level provider copied from the immutable engine charge ledger. Historical sentinel
+  // values remain readable while provider_recovery_version records which evidence algorithm made
+  // the latest bounded attempt; provider identity is never inferred from a model name.
   providerId: text("provider_id"),
+  providerRecoveryVersion: integer("provider_recovery_version").notNull().default(0),
   amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
   // Legacy: free-first paid projection. Attributed: exact paid_funded only when commission-eligible;
   // static/ineligible rows store 0 while true paid evidence remains in pricing_usage_attributions.
@@ -180,6 +182,7 @@ export const pricingUsageEvents = pgTable("pricing_usage_events", {
   uniqueIndex("pricing_usage_events_feed_seq_uidx").on(table.feedSeq),
   index("pricing_usage_events_user_time_idx").on(table.userId, table.occurredAt),
   check("pricing_usage_events_amount_check", sql`${table.amountNano} > 0`),
+  check("pricing_usage_events_provider_recovery_version_check", sql`${table.providerRecoveryVersion} >= 0`),
 ]);
 
 export const enginePricingJobs = pgTable("engine_pricing_jobs", {

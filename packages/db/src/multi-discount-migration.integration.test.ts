@@ -283,7 +283,9 @@ async function captureLegacyState(client: Client): Promise<Record<string, string
         ? ["business_invite_id"]
         : table === "signup_profiles"
           ? ["bonus_amount_nano"]
-          : table === "pricing_usage_events" ? ["provider_id"] : [];
+          : table === "pricing_usage_events"
+            ? ["provider_id", "provider_recovery_version"]
+            : [];
     const result = await client.query<{ rows: string }>(`
       SELECT COALESCE(
         jsonb_agg(
@@ -815,9 +817,13 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         const before = await captureLegacyState(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(39);
+        expect(await migrationCount(client)).toBe(40);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
+        await expect(client.query(`
+          SELECT DISTINCT provider_recovery_version
+          FROM pricing_usage_events
+        `)).resolves.toMatchObject({ rows: [{ provider_recovery_version: 0 }] });
 
         const historicalBonuses = await client.query<{
           email_canonical: string;
@@ -842,7 +848,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         ]);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(39);
+        expect(await migrationCount(client)).toBe(40);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
 
@@ -976,7 +982,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         `);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(39);
+        expect(await migrationCount(client)).toBe(40);
         const legacy = await client.query(`
           SELECT funding_generation::text, target_funding_digest,
                  normalization_source, blockers, status

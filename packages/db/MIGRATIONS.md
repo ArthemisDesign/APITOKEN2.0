@@ -164,3 +164,10 @@ their non-NULL semantics because the unchanged per-kind branches of
 values for every non-release-v2 kind. The swap rewrites no data, and the release-v2 ingest
 consumer ships only after this migration SHA has green `deploy/migration` and
 `deploy/watchdog` in production.
+
+Migration `0039_pricing_provider_recovery_version.sql` adds a non-negative
+`provider_recovery_version` to immutable commerce usage rows with backward-compatible default `0`.
+It does not reclassify provider spend or start a backfill: the currently deployed writer continues
+to insert valid rows without naming the column. After this migration SHA is green, a separately
+delivered consumer can retry rows terminalized by an older evidence algorithm exactly once, record
+the current recovery version, and avoid both permanent skips and idle-poll rescans.

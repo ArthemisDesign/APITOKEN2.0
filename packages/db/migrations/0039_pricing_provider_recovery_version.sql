@@ -1,0 +1,2 @@
+ALTER TABLE "pricing_usage_events" ADD COLUMN "provider_recovery_version" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "pricing_usage_events" ADD CONSTRAINT "pricing_usage_events_provider_recovery_version_check" CHECK ("pricing_usage_events"."provider_recovery_version" >= 0);
