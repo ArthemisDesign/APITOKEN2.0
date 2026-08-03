@@ -68,6 +68,7 @@ context'ов. Правила размещения и обновления — в
 - [TESTS_AUDIT.md](audits/TESTS_AUDIT.md) — аудит полноты и достаточности тестов.
 - [2026-08-01-AGENT_DOCS_AUDIT.md](audits/2026-08-01-AGENT_DOCS_AUDIT.md) — аудит системы координации агентов (AGENTS.md, DEPENDENCIES.md, чеклисты, docs-gate).
 - [2026-08-03-UNIFIED_ROUTER_PRODUCTION_READINESS.md](audits/2026-08-03-UNIFIED_ROUTER_PRODUCTION_READINESS.md) — production-readiness аудит unified router: resource/auth, protocol parity, catalog, OpenCode и zero-downtime delivery.
+- [2026-08-03-UNIFIED_ROUTER_REMEDIATION_CLOSEOUT.md](audits/2026-08-03-UNIFIED_ROUTER_REMEDIATION_CLOSEOUT.md) — closeout remediation unified router: production SHA, повторная live/negative/harness проверка и три внешних/GA остатка.
 
 ## Рядом с кодом (не переносить сюда)
 
