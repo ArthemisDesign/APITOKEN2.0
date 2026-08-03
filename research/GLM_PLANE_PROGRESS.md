@@ -49,6 +49,16 @@ Deep research: официальные страницы Z.ai/bigmodel.cn (pricing
 10. безопасный live-runner (`tools/glm_calibration/`)
 11. live-матрица на собственной подписке — **заблокировано человеком (нужна GLM-подписка)**
 
+Шаблон цепочки снят с git-истории KIMI (b0937339 manifest → f5fbc9c2 metering →
+140b67d9 migration → ce9cd625 credential → fafb8682 estimator → 9d357dfb/5dd973cf/dc175204
+authbot → d8a37422…23e7baba runtime). Отличие GLM от KIMI на входе: статический API key
+из консоли вместо OAuth device flow — acquisition ближе к Claude setup-token ветке
+(продавец присылает ключ, бот валидирует probe'ом, seal, atomic roster), но без
+single-flight refresh-контура.
+
+Проверено заранее: baseline `cargo build --locked` зелёный; `git push -u origin HEAD`
+работает (ветка на origin); следов прежнего GLM в репо нет.
+
 ## Заблокировано человеком
 
 - Живая GLM Coding Plan подписка для live-гейтов (preview GA blocked).
