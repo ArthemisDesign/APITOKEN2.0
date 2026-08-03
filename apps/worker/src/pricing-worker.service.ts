@@ -174,7 +174,7 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
     }
     const providerRows = await this.backfillTargetProviders(target, cursor);
     if (providerRows > 0) {
-      this.logger.log(`resolved provider evidence for ${providerRows} usage rows of ${target.userId}`);
+      this.logger.log(`completed provider recovery for ${providerRows} usage rows of ${target.userId}`);
     }
   }
 

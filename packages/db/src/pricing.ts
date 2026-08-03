@@ -122,6 +122,7 @@ const POSTGRES_INTEGER_MAX = 2_147_483_647n;
 const SUPPORTED_LEDGER_ATTRIBUTION_SCHEMA_VERSION = 1n;
 const PROVIDER_BACKFILL_WINDOW_DAYS = 30;
 const UNATTRIBUTED_PROVIDER_ID = "unattributed";
+const UNAVAILABLE_PROVIDER_ID = "unavailable";
 
 type LedgerAttribution = NonNullable<EngineLedgerEntry["attribution"]>;
 type LedgerFundingAllocation = NonNullable<EngineLedgerEntry["funding_allocations"]>[number];
@@ -1767,9 +1768,11 @@ async function insertPricingUsageAttribution(
 }
 
 /**
- * Returns the ledger cursor immediately before the oldest recent usage row whose provider cannot
- * already be proven by either the event itself or its immutable pricing attribution. The engine
- * retains charge detail for the same 30-day horizon used by the paying-users control room.
+ * Returns the ledger cursor immediately before the oldest recent usage row whose provider has not
+ * completed recovery and cannot already be proven by immutable pricing attribution. Both legacy
+ * NULL rows and provisional `unattributed` rows are retried once; terminal `unavailable` rows are
+ * skipped. The engine retains charge detail for the same 30-day horizon used by the paying-users
+ * control room.
  */
 export async function getPricingProviderBackfillCursor(
   database: Database,
@@ -1785,13 +1788,14 @@ export async function getPricingProviderBackfillCursor(
     WHERE event.user_id = $1 AND event.engine_account_id = $2
       AND event.ledger_entry_id <= $3
       AND event.occurred_at >= now() - make_interval(days => $4)
-      AND event.provider_id IS NULL
+      AND (event.provider_id IS NULL OR event.provider_id = $5)
       AND attribution.provider_id IS NULL
   `, [
     target.userId,
     target.engineAccountId,
     throughLedgerId.toString(),
     PROVIDER_BACKFILL_WINDOW_DAYS,
+    UNATTRIBUTED_PROVIDER_ID,
   ]);
   const firstLedgerId = result.rows[0]?.first_ledger_id;
   if (firstLedgerId === null || firstLedgerId === undefined) return null;
@@ -1906,7 +1910,7 @@ export async function applyPricingProviderBackfillPage(
   }
 }
 
-/** Marks recent rows whose retained ledger evidence is unavailable as explicitly unattributed. */
+/** Terminalizes one attempted recovery range whose retained ledger evidence remains unavailable. */
 export async function completePricingProviderBackfill(
   database: Database,
   target: PricingSyncTarget,
@@ -1919,7 +1923,7 @@ export async function completePricingProviderBackfill(
     WHERE event.user_id = $1 AND event.engine_account_id = $2
       AND event.ledger_entry_id <= $3
       AND event.occurred_at >= now() - make_interval(days => $5)
-      AND event.provider_id IS NULL
+      AND (event.provider_id IS NULL OR event.provider_id = $6)
       AND NOT EXISTS (
         SELECT 1 FROM pricing_usage_attributions attribution
         WHERE attribution.pricing_usage_event_id = event.id
@@ -1929,8 +1933,9 @@ export async function completePricingProviderBackfill(
     target.userId,
     target.engineAccountId,
     throughLedgerId.toString(),
-    UNATTRIBUTED_PROVIDER_ID,
+    UNAVAILABLE_PROVIDER_ID,
     PROVIDER_BACKFILL_WINDOW_DAYS,
+    UNATTRIBUTED_PROVIDER_ID,
   ]);
   return result.rowCount ?? 0;
 }

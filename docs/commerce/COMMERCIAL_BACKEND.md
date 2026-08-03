@@ -358,8 +358,9 @@ change any of them. `paid_over` credits only the requested amount; underpayment 
   `paid_funded_nano`; commission eligibility is independent of pricing mode, and welcome-funded
   usage is excluded. Every new charge also persists the engine ledger's authoritative top-level
   `provider`; after the live cursor the worker repairs pre-column rows in bounded resumable pages
-  from the retained 30-day ledger and records unavailable evidence as `unattributed`, never by
-  parsing the model name.
+  from the retained 30-day ledger. It retries both legacy `NULL` and provisional `unattributed`
+  rows, promotes exact recovered evidence to Anthropic/OpenAI/Google, and records one completed
+  attempt without evidence as terminal `unavailable`. Model names never participate in recovery.
 - Legacy scalar pricing changes are persisted as durable jobs before the engine multiplier is
   updated. Once an account has a desired full policy, that scalar lane is audit-drained and only
   the monotonic versioned policy lane may advance its engine pricing state.

@@ -134,8 +134,11 @@ Migration `0036_pricing_usage_provider_attribution.sql` adds a nullable `provide
 commerce `pricing_usage_events`. It performs no backfill and keeps the deployed usage consumer
 compatible. The separately delivered consumer copies authoritative top-level provider evidence for
 new charge rows and performs bounded resumable recovery pages over the same retained 30-day ledger
-horizon for old rows; exact pricing attribution remains a query fallback. If retained evidence is
-absent, the row is explicitly `unattributed` rather than guessed from a model name.
+horizon for old rows; exact pricing attribution remains a query fallback. `unattributed` is a
+provisional state selected by that recovery, including rows written before the engine producer could
+restore legacy provider evidence. After one completed attempt without exact evidence the consumer
+stores terminal `unavailable`, so idle polls do not rescan it. Neither state is inferred from a
+model name.
 
 Migration `0037_pricing_attribution_release_v2.sql` prepares immutable `pricing_usage_attributions`
 for Stage 9 release-v2 charge rows. It adds five nullable release lineage columns

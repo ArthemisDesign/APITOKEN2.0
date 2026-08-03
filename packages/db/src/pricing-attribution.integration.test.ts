@@ -570,4 +570,46 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
       { ledger_entry_id: "12", provider_id: "google" },
     ] });
   });
+
+  it("retries provisional provider rows once and terminalizes missing evidence", async () => {
+    const entries = [
+      legacyEntry(20, "charge", 10n, null, "anthropic"),
+      legacyEntry(21, "charge", 20n, null, "openai"),
+      legacyEntry(22, "charge", 30n, null, "google"),
+      { ...legacyEntry(23, "charge", 40n, null), model: "gpt-5" },
+    ];
+    await applyPricingLedgerPage(database, { userId, engineAccountId }, entries);
+    await database.pool.query("UPDATE pricing_usage_events SET provider_id = 'unattributed'");
+
+    await expect(getPricingProviderBackfillCursor(
+      database,
+      { userId, engineAccountId },
+      23n,
+    )).resolves.toBe(19n);
+    await expect(applyPricingProviderBackfillPage(
+      database,
+      { userId, engineAccountId },
+      entries,
+    )).resolves.toBe(3);
+    await expect(completePricingProviderBackfill(
+      database,
+      { userId, engineAccountId },
+      23n,
+    )).resolves.toBe(1);
+    await expect(database.pool.query(`
+      SELECT ledger_entry_id::text, provider_id
+      FROM pricing_usage_events
+      ORDER BY ledger_entry_id
+    `)).resolves.toMatchObject({ rows: [
+      { ledger_entry_id: "20", provider_id: "anthropic" },
+      { ledger_entry_id: "21", provider_id: "openai" },
+      { ledger_entry_id: "22", provider_id: "google" },
+      { ledger_entry_id: "23", provider_id: "unavailable" },
+    ] });
+    await expect(getPricingProviderBackfillCursor(
+      database,
+      { userId, engineAccountId },
+      23n,
+    )).resolves.toBeNull();
+  });
 });

@@ -32,8 +32,9 @@ provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack`), usag
 `/admin/pricing/v2/*`.
 Legacy ledger provider recovery остаётся producer-owned: только exact immutable
 `usage_events.provider` той же пары `account_id + request_id` может заполнить nullable top-level
-provider; конфликт fail-closed, model-name inference запрещён. Commerce retry этого evidence
-подключается отдельным consumer-коммитом только после GREEN producer SHA.
+provider; конфликт fail-closed, model-name inference запрещён. После GREEN producer SHA commerce
+повторно выбирает legacy `NULL` и provisional `unattributed`, повышает точное evidence и после
+одной безрезультатной попытки переводит строку в terminal `unavailable`.
 Release-v2 producer публикует immutable policy/release/recovery prepare, полный engine inventory,
 nullable head, account-local funding normalization plan/apply и append-only assignment extension
 для exact active/recovery pair аккаунта, созданного после cutover. Read-only Stage 8 capture
