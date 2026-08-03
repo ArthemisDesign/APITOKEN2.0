@@ -32,7 +32,8 @@ backend-only (по образцу KIMI, `docs/engine/KIMI_PROVIDER.md` §0) до
 | **Мёрж в master, deploy/watchdog GREEN** | master `e9810ef9c6e2a000edb8fac9ad8997d04c8dad9b` (trusted host validation GREEN) | e9810ef9 |
 | Credential crate | `crates/glm-credential` (+ корневой Cargo.toml/lock) | 0363581a |
 | Calibration estimator | `crates/forward/src/glm_calibration.rs` | 3825be3b |
-| Auth Bot: протокол + roster (dormant) | `crates/authbot/src/{glm_key,glm_roster}.rs`, `main.rs`, CLAUDE.md | _этот коммит_ |
+| Auth Bot: протокол + roster (dormant) | `crates/authbot/src/{glm_key,glm_roster}.rs`, `main.rs`, CLAUDE.md | 3378eb06 |
+| Auth Bot: мастер продавца | `crates/authbot/src/{bot,db,main}.rs`, CLAUDE.md | _этот коммит_ |
 
 ## Рамка от владельца (2026-08-04)
 
@@ -69,11 +70,12 @@ reroute glm-5.1/5→5.2 (billing по served); rate card 5.2=$1.40/0.26/4.40,
 
 ## Следующее действие (ровно одно)
 
-Auth Bot мастер продавца в `bot.rs`: `HandoffKind::Glm` ПЕРВЫМ (компилятор покажет все
-места), правило handoff_kind() выше соседних, tier_name/product_kb/admin keyboards,
-тексты (GLM_OFFER_GUIDE/ACCOUNT_SETUP/PROXY_PROMPT), шаги glm_proxy → glm_ready →
-glm_wait, ввод ключа текстом на glm_wait, валидация через glm_key → glm_roster::publish
-→ выплата; exhaustive menu-тесты (счётчик labels, закрытый matches!).
+Runtime плоскости: `crates/forward/src/glm/**` (config/transport/roster/client/selection/
+pool/queue/gateway по образцу kimi — 8 файлов, Anthropic-совместимый транспорт БЕЗ OAuth
+refresh-контура: статический ключ, quota-probe вместо /me, business-code классификация),
+точка диспетча в `proxy.rs`, `AppState.glm`, writer в `billing.rs` (dual-ledger spend +
+window CAS), затем server wiring (`config.rs` CLAUDE_API_GLM_*, main.rs композиция,
+poller.rs maintenance loop).
 
 ## Очередь
 

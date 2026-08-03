@@ -15,9 +15,6 @@
 //! profile in place rather than creating a second one. The comparison runs on opened
 //! envelopes inside the safe zone; the raw key never leaves the sealed directory.
 
-// The seller wizard arrives as the next dependent change; until then only tests call this.
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;

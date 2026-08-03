@@ -3,8 +3,7 @@
 //! Pure protocol unit: it probes the plan quota, corroborates the declared plan against the
 //! observed window limit, runs one minimal paid admission generation and builds the credential
 //! that will be sealed. It owns no Telegram state, no seller job, no payout and no roster
-//! publication — the seller wizard arrives as the next dependent change, so this module can be
-//! reviewed and tested on its own.
+//! publication — the seller wizard in `bot.rs` drives it step by step.
 //!
 //! Contract: `docs/engine/PROVIDER_ONBOARDING.md` §7; provider facts and their evidence
 //! labels: `docs/engine/GLM_PROVIDER.md` §2 (credential/identity), §4 (wire), §7 (acquisition).
@@ -13,9 +12,6 @@
 //! their own account, creates a static API key in the console and sends the key to the bot as
 //! text. The key is the only credential artifact — validating it, then sealing it, is the
 //! whole acquisition.
-
-// The seller wizard arrives as the next dependent change; until then only tests call this.
-#![allow(dead_code)]
 
 use std::time::Duration;
 

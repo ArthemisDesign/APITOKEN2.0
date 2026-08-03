@@ -3,6 +3,8 @@
 
 use crate::db::{AdminState, BatchOverview, PurchaseBatch, SellerJob, SellerJobRef, Store};
 use crate::gemini_oauth;
+use crate::glm_key;
+use crate::glm_roster;
 use crate::kimi_oauth;
 use crate::kimi_roster;
 use crate::setup_token::{self, Outcome};
@@ -136,11 +138,18 @@ fn product_kb() -> Keyboard {
         vec![("Kimi Allegretto".into(), "noffer:kimi_allegretto".into())],
         vec![("Kimi Allegro".into(), "noffer:kimi_allegro".into())],
         vec![("Kimi Vivace".into(), "noffer:kimi_vivace".into())],
+        vec![(
+            "GLM Coding Plan Lite".into(),
+            "noffer:glm_lite".into(),
+        )],
+        vec![("GLM Coding Plan Pro".into(), "noffer:glm_pro".into())],
+        vec![("GLM Coding Plan Max".into(), "noffer:glm_max".into())],
     ]
 }
 
-/// Четыре несовместимые единицы пополнения: Claude token, ChatGPT CODEX_HOME, зашифрованный
-/// Gemini OAuth profile и зашифрованный KIMI (Kimi Code) OAuth profile.
+/// Пять несовместимых единиц пополнения: Claude token, ChatGPT CODEX_HOME, зашифрованный
+/// Gemini OAuth profile, зашифрованный KIMI (Kimi Code) OAuth profile и статический GLM
+/// (Zhipu AI / Z.ai Coding Plan) API-ключ.
 /// Явный enum не даёт новому продукту тихо провалиться в Claude setup-token ветку.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HandoffKind {
@@ -148,13 +157,24 @@ pub(crate) enum HandoffKind {
     Codex,
     Gemini,
     Kimi,
+    Glm,
 }
 
 fn handoff_kind(product: &str) -> HandoffKind {
     let p = product.to_lowercase();
-    // KIMI is matched first: its plan names are generic musical terms, so a later substring rule
-    // must never be able to claim one of them.
-    if p.contains("kimi") || p.contains("moonshot") {
+    // GLM is matched first: its tier names are generic (Lite/Pro/Max — Claude sells a Max too),
+    // so no later substring rule or the Claude fallback must ever be able to claim one of them.
+    // Classification keys on the provider/platform words, never on the bare tier word.
+    if p.contains("glm")
+        || p.contains("zhipu")
+        || p.contains("z.ai")
+        || p.contains("bigmodel")
+        || p.contains("coding plan")
+    {
+        HandoffKind::Glm
+    // KIMI is matched before the rest: its plan names are generic musical terms, so a later
+    // substring rule must never be able to claim one of them.
+    } else if p.contains("kimi") || p.contains("moonshot") {
         HandoffKind::Kimi
     } else if p.contains("gemini")
         || p.contains("google ai")
@@ -188,6 +208,12 @@ fn tier_name(code: &str) -> Option<&'static str> {
         "kimi_allegretto" => Some("Kimi Allegretto"),
         "kimi_allegro" => Some("Kimi Allegro"),
         "kimi_vivace" => Some("Kimi Vivace"),
+        // GLM Coding Plan tier names as published by the provider (Z.ai / Zhipu). Only the
+        // individual credits ladder is supported; Team and legacy prompts tiers fail closed
+        // at validation. Prices are entered per offer and never assumed.
+        "glm_lite" => Some("GLM Coding Plan Lite"),
+        "glm_pro" => Some("GLM Coding Plan Pro"),
+        "glm_max" => Some("GLM Coding Plan Max"),
         _ => None,
     }
 }
@@ -209,6 +235,9 @@ fn admin_quick_tier(text: &str) -> Option<&'static str> {
         "📦 Kimi Allegretto" => Some("Kimi Allegretto"),
         "📦 Kimi Allegro" => Some("Kimi Allegro"),
         "📦 Kimi Vivace" => Some("Kimi Vivace"),
+        "📦 GLM Coding Plan Lite" => Some("GLM Coding Plan Lite"),
+        "📦 GLM Coding Plan Pro" => Some("GLM Coding Plan Pro"),
+        "📦 GLM Coding Plan Max" => Some("GLM Coding Plan Max"),
         _ => None,
     }
 }
@@ -222,6 +251,11 @@ fn admin_home_kb() -> Vec<Vec<&'static str>> {
         vec!["📦 Google AI Pro", "📦 Google AI Ultra"],
         vec!["📦 Kimi Andante", "📦 Kimi Moderato", "📦 Kimi Allegretto"],
         vec!["📦 Kimi Allegro", "📦 Kimi Vivace"],
+        vec![
+            "📦 GLM Coding Plan Lite",
+            "📦 GLM Coding Plan Pro",
+            "📦 GLM Coding Plan Max",
+        ],
         vec!["🧺 Batch-покупка"],
         vec!["📋 Активные сделки"],
         vec!["🛠 Панель"],
@@ -501,6 +535,57 @@ const KIMI_PROXY_PROMPT: &str = "🔐 <b>Этап 1 из 3 — пришли HTTP
 Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
 Не регистрируй аккаунт Kimi до подтверждения прокси ботом: регистрация и дальнейшая авторизация должны пройти с одного IP.";
 
+const GLM_OFFER_GUIDE: &str = "🧭 <b>Что нужно будет сделать после принятия</b>\n\
+1. Дождаться выплаты и персонального HTTP-прокси от бота.\n\
+2. Создать <b>новый чистый профиль</b> в антидетект-браузере и подключить к нему этот прокси.\n\
+3. Только через этот профиль самостоятельно зарегистрировать новый аккаунт на выбранной площадке GLM (Z.ai или bigmodel.cn) и оформить <b>Individual Coding Plan</b> строго того тарифа, что в оффере.\n\
+4. В консоли плана создать API-ключ, вернуться в бот, нажать «Аккаунт готов» и прислать ключ одним сообщением.\n\n\
+Если автоматическая выдача прокси временно недоступна, бот отдельно попросит прокси и продолжит только после его проверки.\n\n\
+⚠️ <b>Не регистрируй и не открывай аккаунт до получения прокси.</b> До завершения не меняй профиль, прокси или устройство. Пароль, cookie, банковские данные и коды из почты бот не просит — единственное, что нужно прислать, это API-ключ из консоли.";
+
+const GLM_ACCOUNT_SETUP: &str = "🧩 <b>Этап 2 из 3 — подготовь аккаунт GLM (Z.ai / Zhipu)</b>\n\n\
+1️⃣ Открой антидетект-браузер (например, Dolphin или AdsPower) и создай <b>новый чистый профиль</b>. Не используй обычный браузер, старый профиль или телефон.\n\n\
+2️⃣ В настройках профиля выбери тип прокси <b>HTTP</b> и вставь данные, которые бот прислал выше. Если браузер просит отдельные поля, строка <code>ip:port:user:pass</code> означает: IP — первое поле, порт — второе, логин — третье, пароль — четвёртое. Нажми проверку и продолжай только если прокси работает и IP изменился. Дополнительный VPN не включай.\n\n\
+3️⃣ В этом же профиле открой сайт выбранной площадки — международную <code>https://z.ai</code> или китайскую <code>https://open.bigmodel.cn</code> — и самостоятельно зарегистрируй <b>новый</b> аккаунт. Аккаунт и ключ обязаны жить на одной площадке: ключ z.ai не работает на bigmodel.cn и наоборот.\n\n\
+4️⃣ В том же профиле оформи <b>Individual Coding Plan</b> ровно того тарифа, что указан в оффере (Lite/Pro/Max). <b>Team-версия и обычные pay-as-you-go пакеты не подходят</b> — нужен именно Individual Coding Plan.\n\n\
+5️⃣ В консоли открой <b>Individual Coding Plan → Plan Overview</b> и создай <b>API Key</b>. Сам ключ пока никуда не отправляй. Не закрывай профиль и не меняй прокси: они понадобятся на следующем этапе. Когда аккаунт, план и ключ готовы, нажми кнопку <b>«Аккаунт готов — продолжить»</b> ниже.\n\n\
+🔒 Бот никогда не попросит пароль, коды 2FA, cookie или банковские данные — только сам API-ключ.";
+
+const GLM_PROXY_PROMPT: &str = "🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта GLM (Z.ai / Zhipu)</b>\n\
+Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
+Не регистрируй аккаунт Z.ai или bigmodel.cn до подтверждения прокси ботом: регистрация и дальнейшая проверка ключа должны пройти с одного IP.";
+
+const GLM_STEP_PROXY_RETRY: &str = "🤔 Не разобрал прокси. Пришли его как <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code> одним сообщением.";
+
+/// Промпт шага `glm_wait`: API-ключ — единственный credential-артефакт этой ветки, как
+/// `sk-ant-oat01-…` у Claude. Продавец присылает только ключ, и бот подчёркивает это явно.
+const GLM_KEY_PROMPT: &str = "🔐 <b>Этап 3 из 3 — пришли API-ключ GLM</b>\n\n\
+В консоли выбранной площадки открой <b>Individual Coding Plan → Plan Overview</b>, создай <b>API Key</b> и пришли его сюда <b>одним сообщением</b>.\n\n\
+Бот проверит ключ (бесплатный запрос квоты и один минимальный вызов модели) и сразу подключит аккаунт. Ключ нигде не сохраняется в открытом виде и не пересылается дальше.\n\n\
+Больше ничего присылать не нужно: ни пароль, ни коды 2FA, ни cookie, ни банковские данные — только сам ключ.";
+
+/// Типовые подсказки шага `glm_wait`. Все статические: текст продавца (и тем более ключ) в
+/// ответ бота и в журнал не подставляется никогда.
+const GLM_KEY_MALFORMED: &str = "🤔 Это не похоже на API-ключ. Пришли ключ одной строкой, без пробелов и переносов — ровно так, как его показывает консоль.";
+const GLM_KEY_REJECTED: &str = "❌ Провайдер отклонил этот ключ. Проверь, что ключ скопирован из консоли полностью (Individual Coding Plan → Plan Overview → API Key), без лишних символов. Доступ не передан и выплата не завершена. Нажми «Аккаунт готов — продолжить» и пришли ключ ещё раз.";
+const GLM_PLAN_MISMATCH: &str = "❌ План этого ключа не совпадает с оффером: по квоте аккаунта виден другой тариф. Купи ровно тот Individual Coding Plan, что указан в оффере, или пришли ключ от аккаунта с нужным планом. Доступ не передан и выплата не завершена.";
+const GLM_PLAN_SHAPE: &str = "❌ Форма квоты этого аккаунта не похожа на Individual Coding Plan (возможно, оформлен Team или устаревший prompts-тариф). Нужен именно Individual Coding Plan. Доступ не передан и выплата не завершена.";
+const GLM_QUOTA_EXHAUSTED: &str = "⏳ Ключ действителен, но квота плана сейчас исчерпана. Это не ошибка ключа: пришли его ещё раз после сброса окна квоты (окно — 5 часов) или пришли ключ другого аккаунта. Доступ не передан и выплата не завершена.";
+const GLM_VALIDATION_TRANSPORT: &str = "⚠️ Не удалось проверить ключ: сервис провайдера временно недоступен. Ключ не отклонён и никуда не отправлен; платный вызов автоматически не повторялся. Нажми «Аккаунт готов — продолжить» и пришли ключ ещё раз чуть позже.";
+
+/// Подсказка по классу отказа платной проверки. Чистая функция: покрытие всех классов и их
+/// тексты проверяются тестом без единого сетевого вызова.
+fn glm_invalid_key_guidance(reason: glm_key::InvalidKeyReason) -> &'static str {
+    match reason {
+        glm_key::InvalidKeyReason::Auth => "❌ Ключ не прошёл проверку: провайдер его не принимает. Пересоздай ключ в консоли (Individual Coding Plan → Plan Overview → API Key) и пришли новый. Доступ не передан и выплата не завершена.",
+        glm_key::InvalidKeyReason::OutOfPlanBalance => "❌ Ключ оказался вне баланса или endpoint'ов своего плана. Убедись, что оформлен именно Individual Coding Plan, и пришли ключ ещё раз. Доступ не передан и выплата не завершена.",
+        glm_key::InvalidKeyReason::PlanExpired => "❌ Подписка за этим ключом истекла. Продли Individual Coding Plan на том же аккаунте и пришли ключ ещё раз. Доступ не передан и выплата не завершена.",
+        glm_key::InvalidKeyReason::ModelOutOfPlan => "❌ Тариф этого ключа не обслуживает нужную модель. Нужен Individual Coding Plan (Lite/Pro/Max) ровно того тарифа, что в оффере. Доступ не передан и выплата не завершена.",
+        glm_key::InvalidKeyReason::FairUse => "❌ Аккаунт отмечен риск-контролем провайдера (fair-use), такой ключ подключить нельзя. Нужен другой аккаунт с Individual Coding Plan. Доступ не передан и выплата не завершена.",
+        glm_key::InvalidKeyReason::WrongKeyKind => "❌ Этот ключ привязан к Team/enterprise-сценарию, а не к Individual Coding Plan. Нужен ключ individual-плана. Доступ не передан и выплата не завершена.",
+    }
+}
+
 const CODEX_PROXY_PROMPT: &str = "🔐 <b>Этап 1 из 3 — пришли HTTP-прокси для аккаунта ChatGPT</b>\n\
 Одним сообщением в формате <code>ip:port:user:pass</code> или <code>http://user:pass@ip:port</code>.\n\n\
 Не регистрируй аккаунт до подтверждения прокси ботом: регистрация и дальнейшая авторизация должны пройти с одного IP.";
@@ -516,6 +601,26 @@ fn kimi_ready_kb(back: Option<&HandoffStepBack>) -> Keyboard {
     )]];
     if let Some(step) = back {
         keyboard.push(handoff_back_row(step, "km_ready"));
+    }
+    keyboard
+}
+
+/// Площадка GLM-аккаунта: международная `api.z.ai` (default) или китайская `open.bigmodel.cn`.
+/// Ключ одной площадки не работает на другой, поэтому выбор доживает до `credential_from`.
+fn glm_region_row() -> Vec<(String, String)> {
+    vec![
+        ("🌐 Площадка: z.ai".into(), "glm:region:int".into()),
+        ("🌐 Площадка: bigmodel.cn".into(), "glm:region:cn".into()),
+    ]
+}
+
+fn glm_ready_kb(back: Option<&HandoffStepBack>) -> Keyboard {
+    let mut keyboard = vec![
+        vec![("✅ Аккаунт готов — продолжить".into(), "glm:ready".into())],
+        glm_region_row(),
+    ];
+    if let Some(step) = back {
+        keyboard.push(handoff_back_row(step, "glm_ready"));
     }
     keyboard
 }
@@ -537,6 +642,7 @@ fn seller_offer_guide(product: &str) -> &'static str {
         HandoffKind::Codex => CODEX_OFFER_GUIDE,
         HandoffKind::Gemini => GEMINI_OFFER_GUIDE,
         HandoffKind::Kimi => KIMI_OFFER_GUIDE,
+        HandoffKind::Glm => GLM_OFFER_GUIDE,
     }
 }
 
@@ -546,6 +652,7 @@ fn account_setup_prompt(step: &str) -> &'static str {
         "ho_email" => CLAUDE_ACCOUNT_SETUP,
         "gm_ready" => GEMINI_ACCOUNT_SETUP,
         "km_ready" => KIMI_ACCOUNT_SETUP,
+        "glm_ready" => GLM_ACCOUNT_SETUP,
         _ => "",
     }
 }
@@ -556,6 +663,7 @@ fn proxy_prompt(step: &str) -> &'static str {
         "cx_proxy" => CODEX_PROXY_PROMPT,
         "gm_gproxy" => GEMINI_PROXY_PROMPT,
         "km_proxy" => KIMI_PROXY_PROMPT,
+        "glm_proxy" => GLM_PROXY_PROMPT,
         _ => CLAUDE_PROXY_PROMPT,
     }
 }
@@ -575,6 +683,7 @@ fn accepted_next_step(product: &str, proxy_source: &str) -> &'static str {
         HandoffKind::Codex => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай ChatGPT-аккаунт.</b>",
         HandoffKind::Gemini => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай Google-аккаунт.</b>",
         HandoffKind::Kimi => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай аккаунт Kimi.</b>",
+        HandoffKind::Glm => "После подтверждения выплаты бот выдаст персональный прокси и подробную инструкцию. <b>До этого не создавай и не открывай аккаунт Z.ai или bigmodel.cn.</b>",
     }
 }
 
@@ -1563,6 +1672,70 @@ pub async fn on_message(
                             .await;
                     }
                 }
+            }
+            "glm_proxy" => {
+                let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+                    return;
+                };
+                if !seller_job_matches_handoff(&job, &job.reference, HandoffKind::Glm) {
+                    return;
+                }
+                match select_glm_proxy_input(store, &job.reference, &rec.hproxy, rec.hproxy_order, text)
+                {
+                    GlmProxyInput::SellerSupplied(proxy, credentials) => {
+                        if !credentials {
+                            // Тот же риск, что и у KIMI: обрезанная вставка без userinfo иначе
+                            // проявится только как отказ прокси внутри проверки ключа.
+                            let _ = bot
+                                .send(
+                                    chat,
+                                    "ℹ️ В этом прокси не распознаны логин и пароль — подключение пойдёт с авторизацией по IP. Если у прокси есть логин и пароль, пришли его целиком в формате <code>ip:port:user:pass</code>.",
+                                )
+                                .await;
+                        }
+                        // A manually supplied replacement is unrelated to any prior IPRoyal order.
+                        prepare_glm_account(bot, store, cfg, chat, Some(&proxy), 0).await;
+                    }
+                    GlmProxyInput::Fixed(..) => {
+                        let _ = bot
+                            .send(
+                                chat,
+                                "🔁 Использую закреплённый за этой позицией прокси. В следующем сообщении нажми <b>«Аккаунт готов — продолжить»</b>, чтобы прислать API-ключ. Сообщением продавца этот прокси заменить нельзя.",
+                            )
+                            .await;
+                        prepare_glm_account(bot, store, cfg, chat, None, rec.hproxy_order).await;
+                    }
+                    GlmProxyInput::Invalid => {
+                        eprintln!(
+                            "[glm-proxy] chat={} rejected seller proxy input: {}",
+                            chat,
+                            proxy_input_fingerprint(text)
+                        );
+                        let _ = bot
+                            .send_kb(
+                                chat,
+                                GLM_STEP_PROXY_RETRY,
+                                handoff_back_kb(store, cfg, chat).as_ref(),
+                            )
+                            .await;
+                    }
+                }
+            }
+            "glm_ready" => {
+                if text.to_lowercase() == "готово" {
+                    continue_glm_handoff(bot, store, cfg, chat).await;
+                } else {
+                    let _ = bot
+                        .send_kb(
+                            chat,
+                            "Когда аккаунт GLM создан, Individual Coding Plan из оффера активен и API-ключ создан в консоли, нажми кнопку ниже. До этого не меняй профиль или прокси.",
+                            Some(&glm_ready_kb(current_handoff_back(store, cfg, chat).as_ref())),
+                        )
+                        .await;
+                }
+            }
+            "glm_wait" => {
+                handle_glm_key_message(bot, store, cfg, chat, text).await;
             }
             "ho_code" => match extract_code_state(text) {
                 Some(cs) => do_feed_token(bot, store, cfg, chat, &cs).await,
@@ -2668,6 +2841,597 @@ fn new_profile_suffix() -> String {
     random.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Put the seller on the GLM "account ready" step and show the button that arms the key intake.
+/// Mirrors `prepare_kimi_account`: the GLM branch needs no keyring to reach this step — it is
+/// required only once a key is actually sealed. Entering this step resets the platform selection
+/// to the international default: the choice lives in the seller job context, and a finished deal
+/// must never leak its region into the next one.
+async fn prepare_glm_account(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    proxy: Option<&str>,
+    proxy_order_id: i64,
+) {
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        return;
+    };
+    let expected_job = job.job_ref();
+    if !seller_job_matches_handoff(&job, &expected_job, HandoffKind::Glm) {
+        return;
+    }
+    let user = store.get_user(chat).ok().flatten().unwrap_or_default();
+    let effective_proxy = proxy.unwrap_or(&user.hproxy);
+    let effective_order = if proxy.is_some() {
+        proxy_order_id
+    } else {
+        user.hproxy_order
+    };
+    if effective_proxy.is_empty() {
+        // Without an egress the seller must not open the account yet: registration and key
+        // validation have to come from the same IP.
+        if !store
+            .set_handoff_state_for_seller_job(chat, &expected_job, "glm_proxy", "", effective_order)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let _ = bot.send(chat, GLM_PROXY_PROMPT).await;
+        return;
+    }
+    // A proxy that only passed the shape check would strand the seller on glm_ready: key
+    // validation would run against an egress that can never work, with no way to fix it in
+    // place. Canonicalise before pinning, exactly like the KIMI branch does.
+    let replaceable_proxy = job_accepts_seller_proxy(store, &expected_job, effective_order);
+    let effective_proxy = match glm_credential::normalize_proxy_url(effective_proxy) {
+        Ok(proxy) => proxy,
+        Err(_) => {
+            eprintln!(
+                "[glm-proxy] chat={} canonicalisation rejected proxy: {}",
+                chat,
+                proxy_input_fingerprint(effective_proxy)
+            );
+            let (retry_proxy, retry_order) = if replaceable_proxy {
+                ("", 0)
+            } else {
+                (effective_proxy, effective_order)
+            };
+            if !store
+                .set_handoff_state_for_seller_job(
+                    chat,
+                    &expected_job,
+                    "glm_proxy",
+                    retry_proxy,
+                    retry_order,
+                )
+                .unwrap_or(false)
+            {
+                return;
+            }
+            let seller_message = if replaceable_proxy {
+                "❌ Не удалось разобрать этот прокси. Приём ключа не начат — пришли прокси заново в указанном формате."
+            } else {
+                "⚠️ Закреплённый за этой позицией прокси имеет неверный формат. Приём ключа не начат; администратор уведомлён."
+            };
+            let _ = bot.send(chat, seller_message).await;
+            notify_admins(
+                bot,
+                cfg,
+                &format!(
+                    "⚠️ GLM proxy не прошёл локальную проверку формата для {}. Сетевых запросов не выполнялось; секреты прокси не логировались.",
+                    seller_job_label(&job),
+                ),
+                None,
+            )
+            .await;
+            return;
+        }
+    };
+    // A fresh deal re-chooses the platform: the international default applies until the seller
+    // explicitly picks bigmodel.cn on the ready card.
+    let _ = store.set_hregion(chat, "");
+    if !store
+        .set_handoff_state_for_seller_job(
+            chat,
+            &expected_job,
+            "glm_ready",
+            &effective_proxy,
+            effective_order,
+        )
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let _ = bot
+        .send_kb(
+            chat,
+            GLM_ACCOUNT_SETUP,
+            Some(&glm_ready_kb(
+                current_handoff_back(store, cfg, chat).as_ref(),
+            )),
+        )
+        .await;
+}
+
+/// Return the proxy only for the explicit GLM readiness state. Callback buttons can be old or
+/// forwarded, so neither the button itself nor a stored proxy alone authorizes a state transition.
+fn glm_ready_handoff(store: &Store, chat: i64) -> Option<(String, i64)> {
+    let user = store.get_user(chat).ok().flatten()?;
+    if user.want != "glm_ready" || user.hproxy.is_empty() {
+        return None;
+    }
+    Some((user.hproxy, user.hproxy_order))
+}
+
+async fn continue_glm_handoff(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, chat: i64) {
+    let Some((proxy, proxy_order_id)) = glm_ready_handoff(store, chat) else {
+        let _ = bot
+            .send(
+                chat,
+                "Эта кнопка уже неактивна. Открой актуальное сообщение бота или отправь /start.",
+            )
+            .await;
+        return;
+    };
+    start_glm_handoff(bot, store, cfg, chat, &proxy, proxy_order_id).await;
+}
+
+/// Arm the GLM key intake for the seller's current deal.
+///
+/// Unlike KIMI there is no device flow to start: confirming readiness simply moves the deal to
+/// `glm_wait`, where the seller sends the console-issued API key as one text message. The key
+/// is the only credential artifact — the seller never sends a password, 2FA or cookie.
+async fn start_glm_handoff(
+    bot: &Bot,
+    store: &Arc<Store>,
+    cfg: &Arc<Config>,
+    chat: i64,
+    proxy: &str,
+    proxy_order_id: i64,
+) {
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        let _ = bot
+            .send(
+                chat,
+                "Эта кнопка уже не относится к активной сделке. Отправь /start.",
+            )
+            .await;
+        return;
+    };
+    let expected_job = job.job_ref();
+    if !seller_job_matches_handoff(&job, &expected_job, HandoffKind::Glm) {
+        let _ = bot
+            .send(
+                chat,
+                "Текущая сделка не является GLM-сделкой. Открой актуальную карточку через /start.",
+            )
+            .await;
+        return;
+    }
+    if cfg.glm_roster.is_none() {
+        // Without a keyring nothing can be sealed, so the seller must not be sent through a
+        // flow whose result we would have to throw away.
+        let _ = store.set_want_for_seller_job(chat, &expected_job, "glm_ready");
+        let _ = bot
+            .send_kb(
+                chat,
+                "⚠️ Подключение GLM сейчас временно недоступно. Доступ не передан; администратор уведомлён. Попробуй ещё раз этой же кнопкой после исправления.",
+                Some(&glm_ready_kb(None)),
+            )
+            .await;
+        notify_admins(
+            bot,
+            cfg,
+            "⚠️ GLM handoff недоступен: не настроен AEAD keyring (AUTH_BOT_GLM_CREDENTIAL_KEYS / _ACTIVE_KID).",
+            None,
+        )
+        .await;
+        return;
+    }
+    if proxy.is_empty() {
+        // The readiness gate already refuses to arm the intake without an egress; fail closed
+        // rather than validating a key from a different IP than the account was opened on.
+        if store
+            .set_handoff_state_for_seller_job(chat, &expected_job, "glm_proxy", "", proxy_order_id)
+            .unwrap_or(false)
+        {
+            let _ = bot.send(chat, GLM_PROXY_PROMPT).await;
+        }
+        return;
+    }
+    let _ = store.set_want_for_seller_job(chat, &expected_job, "glm_wait");
+    let _ = bot
+        .send_kb(chat, GLM_KEY_PROMPT, handoff_back_kb(store, cfg, chat).as_ref())
+        .await;
+}
+
+/// Callback `glm:region:int|cn` с карточки `glm_ready`. Кнопка ничего не авторизует сама по себе:
+/// выбор принимается только внутри активной GLM-сделки ровно на шаге подтверждения аккаунта и
+/// переживает рестарт в `users.hregion` до самого `credential_from`.
+async fn select_glm_region(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, chat: i64, region: &str) {
+    let region = match region {
+        "int" | "cn" => region,
+        _ => return,
+    };
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        let _ = bot
+            .send(
+                chat,
+                "Эта кнопка уже не относится к активной сделке. Отправь /start.",
+            )
+            .await;
+        return;
+    };
+    if !seller_job_matches_handoff(&job, &job.reference, HandoffKind::Glm) {
+        return;
+    }
+    let want = store
+        .get_user(chat)
+        .ok()
+        .flatten()
+        .map(|user| user.want)
+        .unwrap_or_default();
+    if want != "glm_ready" {
+        let _ = bot
+            .send(
+                chat,
+                "Эта кнопка уже неактивна. Открой актуальное сообщение бота или отправь /start.",
+            )
+            .await;
+        return;
+    }
+    if store.set_hregion(chat, region).is_err() {
+        return;
+    }
+    let label = if region == "cn" {
+        "open.bigmodel.cn (Китай)"
+    } else {
+        "api.z.ai (международная)"
+    };
+    let _ = bot
+        .send(
+            chat,
+            &format!(
+                "🌐 Площадка аккаунта: <b>{label}</b>. Аккаунт и API-ключ обязаны быть созданы именно на ней."
+            ),
+        )
+        .await;
+    send_handoff_step_card(bot, store, cfg, chat, "glm_ready", false).await;
+}
+
+/// Canonical base URL выбранной площадки. Пустое или неизвестное значение — международная
+/// площадка: default int по `docs/engine/GLM_PROVIDER.md` §7.
+fn glm_base_url(region: &str) -> &'static str {
+    match region {
+        "cn" => glm_credential::GLM_BASE_URL_CHINA,
+        _ => glm_credential::GLM_BASE_URL_INTERNATIONAL,
+    }
+}
+
+/// Declared tier продукта оффера. Классификация обязана подтвердить GLM-провайдера, иначе голое
+/// слово тарифа (Lite/Pro/Max — у Claude тоже есть Max) не имеет права стать GLM-планом.
+fn glm_declared_plan(product: &str) -> Option<glm_credential::GlmPlan> {
+    if handoff_kind(product) != HandoffKind::Glm {
+        return None;
+    }
+    let lowered = product.to_lowercase();
+    for (word, plan) in [
+        ("lite", glm_credential::GlmPlan::Lite),
+        ("pro", glm_credential::GlmPlan::Pro),
+        ("max", glm_credential::GlmPlan::Max),
+    ] {
+        if lowered.contains(word) {
+            return Some(plan);
+        }
+    }
+    None
+}
+
+/// Форма введённого ключа до любого сетевого вызова: одна непустая строка без пробельных
+/// символов. Всё остальное решает провайдер — локальных предположений о формате ключа нет.
+fn glm_key_text(text: &str) -> Option<&str> {
+    let key = text.trim();
+    if key.is_empty() || key.len() > 512 || key.chars().any(char::is_whitespace) {
+        return None;
+    }
+    Some(key)
+}
+
+/// Единственное, что журнал может узнать о ключе: его длину. Сам ключ не печатается никогда.
+fn glm_key_fingerprint(key: &str) -> String {
+    format!("key_len={}", key.len())
+}
+
+/// Вернуть сделку на подтверждение аккаунта после неудачной передачи ключа: ни конверта, ни
+/// строки roster, ни завершения выплаты. Подсказки статические — ключ в них не подставляется.
+async fn glm_back_to_ready(
+    bot: &Bot,
+    store: &Arc<Store>,
+    chat: i64,
+    expected_job: &SellerJobRef,
+    message: &str,
+) {
+    let _ = store.set_want_for_seller_job(chat, expected_job, "glm_ready");
+    let _ = bot
+        .send_kb(chat, message, Some(&glm_ready_kb(None)))
+        .await;
+}
+
+/// Приём API-ключа на шаге `glm_wait`. Вся цепочка идёт через egress продавца: аккаунт открыт с
+/// этого IP, и проверка с другого адреса — ровно то, что триггерит risk-контроль провайдера.
+/// Ключ — секрет уровня Claude setup-token: не логируется, не возвращается эхом в чат и не
+/// сохраняется в SQLite в открытом виде; валидация живёт только в памяти.
+async fn handle_glm_key_message(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, chat: i64, text: &str) {
+    let Some(job) = store.active_seller_job(chat).ok().flatten() else {
+        return;
+    };
+    if !seller_job_matches_handoff(&job, &job.reference, HandoffKind::Glm) {
+        return;
+    }
+    let expected_job = job.job_ref();
+    let Some(key) = glm_key_text(text) else {
+        let _ = bot
+            .send_kb(
+                chat,
+                GLM_KEY_MALFORMED,
+                handoff_back_kb(store, cfg, chat).as_ref(),
+            )
+            .await;
+        return;
+    };
+    let key = zeroize::Zeroizing::new(key.to_string());
+    let Some(roster) = cfg.glm_roster.clone() else {
+        glm_back_to_ready(
+            bot,
+            store,
+            chat,
+            &expected_job,
+            "⚠️ Подключение GLM сейчас временно недоступно. Доступ не передан; администратор уведомлён. Попробуй ещё раз после исправления.",
+        )
+        .await;
+        notify_admins(
+            bot,
+            cfg,
+            "⚠️ GLM handoff недоступен: не настроен AEAD keyring (AUTH_BOT_GLM_CREDENTIAL_KEYS / _ACTIVE_KID).",
+            None,
+        )
+        .await;
+        return;
+    };
+    let Some(plan) = glm_declared_plan(&job.product) else {
+        glm_back_to_ready(
+            bot,
+            store,
+            chat,
+            &expected_job,
+            "⚠️ Продукт оффера не распознан как GLM Coding Plan. Доступ не передан; администратор уведомлён.",
+        )
+        .await;
+        notify_admins(
+            bot,
+            cfg,
+            &format!(
+                "⚠️ GLM-сделка {} имеет нераспознанный declared plan; запрос к провайдеру не выполнялся.",
+                seller_job_label(&job),
+            ),
+            None,
+        )
+        .await;
+        return;
+    };
+    let user = store.get_user(chat).ok().flatten().unwrap_or_default();
+    let proxy = user.hproxy.clone();
+    if proxy.is_empty() {
+        if store
+            .set_handoff_state_for_seller_job(chat, &expected_job, "glm_proxy", "", user.hproxy_order)
+            .unwrap_or(false)
+        {
+            let _ = bot.send(chat, GLM_PROXY_PROMPT).await;
+        }
+        return;
+    }
+    let base_url = glm_base_url(&user.hregion);
+
+    // 1. Бесплатный read-only quota probe с bounded retry: он не расходует квоту, поэтому
+    // transport-сбой безопасно повторить. Отказ провайдера — финальный вердикт по ключу.
+    let mut attempt = 0u32;
+    let snapshot = loop {
+        if !seller_handoff_is_current(store, chat, Some(&expected_job), HandoffKind::Glm) {
+            return;
+        }
+        match glm_key::probe_quota(base_url, key.as_str(), &proxy).await {
+            Ok(glm_key::QuotaProbe::Valid(snapshot)) => break snapshot,
+            Ok(glm_key::QuotaProbe::Invalid) => {
+                eprintln!(
+                    "[glm-key] chat={} provider rejected key: {}",
+                    chat,
+                    glm_key_fingerprint(key.as_str())
+                );
+                glm_back_to_ready(bot, store, chat, &expected_job, GLM_KEY_REJECTED).await;
+                return;
+            }
+            Err(_) => {
+                attempt += 1;
+                if attempt >= 3 {
+                    eprintln!(
+                        "[glm-key] chat={} quota probe transport failed after {attempt} attempts",
+                        chat
+                    );
+                    glm_back_to_ready(bot, store, chat, &expected_job, GLM_VALIDATION_TRANSPORT)
+                        .await;
+                    return;
+                }
+                tokio::time::sleep(glm_key::probe_retry_backoff(attempt - 1)).await;
+            }
+        }
+    };
+
+    // 2. Declared план обязан совпасть с наблюдаемым окном квоты: машиночитаемого /me у GLM
+    // нет, поэтому corroboration — единственная проверка «продавец купил тот тариф».
+    match glm_key::corroborate_plan(&snapshot, plan) {
+        glm_key::PlanVerdict::Confirmed(_) => {}
+        glm_key::PlanVerdict::PlanMismatch { .. } => {
+            eprintln!(
+                "[glm-key] chat={} declared plan contradicts the observed quota window",
+                chat
+            );
+            glm_back_to_ready(bot, store, chat, &expected_job, GLM_PLAN_MISMATCH).await;
+            return;
+        }
+        glm_key::PlanVerdict::UnsupportedPlanShape => {
+            eprintln!(
+                "[glm-key] chat={} quota shape is not an individual credits plan",
+                chat
+            );
+            glm_back_to_ready(bot, store, chat, &expected_job, GLM_PLAN_SHAPE).await;
+            return;
+        }
+    }
+
+    // 3. Одна минимальная платная generation. После ambiguous transport она НИКОГДА не
+    // повторяется автоматически: вызов мог уже списать квоту.
+    let verdict = tokio::time::timeout(
+        glm_key::GENERATION_DEADLINE,
+        glm_key::run_admission_generation(base_url, key.as_str(), &proxy),
+    )
+    .await;
+    match verdict {
+        Ok(Ok(glm_key::KeyVerdict::Valid)) => {}
+        Ok(Ok(glm_key::KeyVerdict::Invalid(reason))) => {
+            eprintln!(
+                "[glm-key] chat={} admission refused key: class={reason:?} {}",
+                chat,
+                glm_key_fingerprint(key.as_str())
+            );
+            glm_back_to_ready(
+                bot,
+                store,
+                chat,
+                &expected_job,
+                glm_invalid_key_guidance(reason),
+            )
+            .await;
+            return;
+        }
+        Ok(Ok(glm_key::KeyVerdict::QuotaExhausted)) => {
+            glm_back_to_ready(bot, store, chat, &expected_job, GLM_QUOTA_EXHAUSTED).await;
+            return;
+        }
+        Ok(Ok(glm_key::KeyVerdict::UnsupportedPlanShape)) => {
+            glm_back_to_ready(bot, store, chat, &expected_job, GLM_PLAN_SHAPE).await;
+            return;
+        }
+        Ok(Err(_)) | Err(_) => {
+            eprintln!(
+                "[glm-key] chat={} admission generation transport ambiguous; paid call not replayed",
+                chat
+            );
+            glm_back_to_ready(bot, store, chat, &expected_job, GLM_VALIDATION_TRANSPORT)
+                .await;
+            return;
+        }
+    }
+
+    // Последний generation guard перед любой долговременной записью. SQLite и roster — не одна
+    // транзакция, поэтому это лишь сужает неизбежное cross-store окно, а не закрывает его.
+    if !seller_handoff_is_current(store, chat, Some(&expected_job), HandoffKind::Glm) {
+        return;
+    }
+    let credential = match glm_key::credential_from(key.as_str(), plan, base_url, &proxy) {
+        Ok(credential) => credential,
+        Err(_) => {
+            glm_back_to_ready(
+                bot,
+                store,
+                chat,
+                &expected_job,
+                "⚠️ Ключ не прошёл внутреннюю проверку формата. Доступ не передан и выплата не завершена; администратор уведомлён.",
+            )
+            .await;
+            notify_admins(
+                bot,
+                cfg,
+                &format!(
+                    "⚠️ GLM credential_from отклонил уже валидированный материал для {}; секреты не логировались.",
+                    seller_job_label(&job),
+                ),
+                None,
+            )
+            .await;
+            return;
+        }
+    };
+
+    let profile_id = format!("glm-{}", &new_profile_suffix());
+    match glm_roster::publish(
+        &roster.dir,
+        &roster.keyring,
+        &roster.active_key_id,
+        &profile_id,
+        &credential,
+    ) {
+        Ok(published) => {
+            let _ = bot
+                .send(
+                    chat,
+                    if published.replaced_existing {
+                        "✅ Аккаунт GLM подключён (обновлён существующий профиль этой подписки)."
+                    } else {
+                        "✅ Аккаунт GLM подключён."
+                    },
+                )
+                .await;
+            complete_seller_job_after_handoff(
+                bot,
+                store,
+                cfg,
+                chat,
+                Some(expected_job),
+                HandoffKind::Glm,
+            )
+            .await;
+        }
+        Err(glm_roster::PublishError::Duplicate) => {
+            glm_back_to_ready(
+                bot,
+                store,
+                chat,
+                &expected_job,
+                "⚠️ Такой идентификатор профиля уже занят другим ключом. Доступ не передан и выплата не завершена; администратор уведомлён.",
+            )
+            .await;
+            notify_admins(
+                bot,
+                cfg,
+                &format!(
+                    "⚠️ GLM publication hit a profile-id collision для {}; секреты не логировались.",
+                    seller_job_label(&job),
+                ),
+                None,
+            )
+            .await;
+        }
+        Err(glm_roster::PublishError::Storage) => {
+            glm_back_to_ready(
+                bot,
+                store,
+                chat,
+                &expected_job,
+                "⚠️ Не удалось сохранить доступ. Доступ не передан и выплата не завершена; администратор уведомлён.",
+            )
+            .await;
+            notify_admins(
+                bot,
+                cfg,
+                "⚠️ GLM publication failed closed. Проверь права AUTH_BOT_GLM_DIR, profiles.json и совпадение credential keyring; секреты не логировались.",
+                None,
+            )
+            .await;
+        }
+    }
+}
+
 async fn continue_gemini_handoff(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, chat: i64) {
     let Some((proxy, proxy_order_id)) = gemini_ready_handoff(store, chat) else {
         let _ = bot
@@ -2819,6 +3583,7 @@ fn handoff_steps_for_kind(kind: HandoffKind) -> (&'static str, &'static str) {
         HandoffKind::Codex => ("cx_proxy", "cx_email"),
         HandoffKind::Gemini => ("gm_gproxy", "gm_ready"),
         HandoffKind::Kimi => ("km_proxy", "km_ready"),
+        HandoffKind::Glm => ("glm_proxy", "glm_ready"),
     }
 }
 
@@ -2892,6 +3657,27 @@ pub(crate) fn handoff_step_back(
                 None
             }
         }
+        (HandoffKind::Glm, "glm_ready") => to_proxy_step("glm_proxy", false),
+        // Mirrors the KIMI edge: stepping back from the key intake must cancel the pending key
+        // submission, and without a recoverable egress it degrades to the proxy step rather
+        // than landing on glm_ready with an empty hproxy, which glm_ready_handoff rejects.
+        (HandoffKind::Glm, "glm_wait") => {
+            if pinned_egress_known {
+                Some(HandoffStepBack {
+                    target: "glm_ready",
+                    clears_proxy: false,
+                    invalidates_link: true,
+                })
+            } else if proxy_replaceable {
+                Some(HandoffStepBack {
+                    target: "glm_proxy",
+                    clears_proxy: true,
+                    invalidates_link: true,
+                })
+            } else {
+                None
+            }
+        }
         (HandoffKind::Gemini, "gm_ready") => to_proxy_step("gm_gproxy", false),
         // Единственное двухисходное ребро. Без восстановленного egress шаг назад привёл бы на
         // `gm_ready` с пустым `hproxy`, который `gemini_ready_handoff` отвергает — это тупик,
@@ -2928,6 +3714,8 @@ fn back_step_wire(want: &str) -> Option<&'static str> {
         "gm_wait" => Some("gm_wait"),
         "km_ready" => Some("km_ready"),
         "km_wait" => Some("km_wait"),
+        "glm_ready" => Some("glm_ready"),
+        "glm_wait" => Some("glm_wait"),
         _ => None,
     }
 }
@@ -2947,6 +3735,8 @@ fn handoff_back_row(step: &HandoffStepBack, from_wire: &str) -> Vec<(String, Str
         "↩️ Изменить прокси"
     } else if step.target == "gm_ready" {
         "↩️ Назад: новая ссылка"
+    } else if step.target == "glm_ready" {
+        "↩️ Назад: подтверждение аккаунта"
     } else {
         "↩️ Назад: другой email"
     };
@@ -3048,6 +3838,7 @@ fn handoff_back_confirm_text(want: &str) -> &'static str {
     match want {
         "ho_code" => "⚠️ Вернуться к вводу email?\n\nВыданная ссылка авторизации перестанет работать, и бот выдаст новую. Если ты <b>уже подтвердил доступ</b> в браузере, аккаунт может всё равно засчитаться — тогда напиши администратору, чтобы он сверил результат.",
         "km_wait" => "⚠️ Вернуться к подтверждению аккаунта?\n\nВыданный код устройства Kimi перестанет работать, и бот выдаст новый. Если ты <b>уже подтвердил вход</b>, аккаунт может всё равно засчитаться — тогда напиши администратору.",
+        "glm_wait" => "⚠️ Вернуться к подтверждению аккаунта?\n\nОжидание API-ключа будет сброшено: чтобы передать ключ, нажми «Аккаунт готов — продолжить» ещё раз. Если ты <b>уже прислал ключ</b> и бот его проверяет, аккаунт может всё равно засчитаться — тогда напиши администратору.",
         "cx_wait" => "⚠️ Вернуться к вводу email?\n\nВыданный одноразовый код ChatGPT перестанет работать, и бот выдаст новый. Если ты <b>уже подтвердил вход</b>, аккаунт может всё равно засчитаться — тогда напиши администратору.",
         _ => "⚠️ Вернуться на шаг назад?\n\nВыданная ссылка авторизации перестанет работать, и бот выдаст новую с тем же прокси. Если ты <b>уже подтвердил доступ</b> в браузере, аккаунт может всё равно засчитаться — тогда напиши администратору.",
     }
@@ -3192,7 +3983,7 @@ async fn send_handoff_step_card(
         Some(vec![handoff_back_row(back, back_step_wire(&want)?)])
     });
     match step {
-        "ho_proxy" | "cx_proxy" | "gm_gproxy" | "km_proxy" => {
+        "ho_proxy" | "cx_proxy" | "gm_gproxy" | "km_proxy" | "glm_proxy" => {
             let _ = bot
                 .send_kb(
                     chat,
@@ -3238,6 +4029,18 @@ async fn send_handoff_step_card(
                         moved("Вернулись на подтверждение аккаунта. Прокси сохранён.")
                     ),
                     Some(&kimi_ready_kb(back.as_ref())),
+                )
+                .await;
+        }
+        "glm_ready" => {
+            let _ = bot
+                .send_kb(
+                    chat,
+                    &format!(
+                        "{}{GLM_ACCOUNT_SETUP}",
+                        moved("Вернулись на подтверждение аккаунта. Прокси сохранён.")
+                    ),
+                    Some(&glm_ready_kb(back.as_ref())),
                 )
                 .await;
         }
@@ -3368,6 +4171,41 @@ fn select_kimi_proxy_input(
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum GlmProxyInput {
+    /// URL продавца плюс признак того, что в нём распознаны логин и пароль.
+    SellerSupplied(String, bool),
+    /// Закреплённый прокси покупателя/IPRoyal: сообщение продавца его заменить не может.
+    Fixed(String, i64),
+    /// Ввод не похож на прокси, а закреплённого egress подставить нечего.
+    Invalid,
+}
+
+/// Решение шага `glm_proxy`. Зеркалит KIMI-шаг: приём ключа живёт на более позднем шаге, поэтому
+/// здесь сообщение продавца — это всегда ввод egress. Закреплённый buyer/IPRoyal прокси
+/// сообщение продавца заменить не может никогда.
+fn select_glm_proxy_input(
+    store: &Store,
+    expected: &SellerJobRef,
+    current_proxy: &str,
+    current_proxy_order_id: i64,
+    input: &str,
+) -> GlmProxyInput {
+    if job_accepts_seller_proxy(store, expected, current_proxy_order_id) {
+        let parsed = parse_proxy_input(input);
+        return if parsed.url.is_empty() {
+            GlmProxyInput::Invalid
+        } else {
+            GlmProxyInput::SellerSupplied(parsed.url, parsed.credentials)
+        };
+    }
+    if current_proxy.is_empty() {
+        GlmProxyInput::Invalid
+    } else {
+        GlmProxyInput::Fixed(current_proxy.to_string(), current_proxy_order_id)
+    }
+}
+
 fn seller_job_matches_handoff(
     job: &SellerJob,
     expected: &SellerJobRef,
@@ -3470,7 +4308,8 @@ async fn start_batch_item(
         {
             return;
         }
-        let setup = if next_step == "gm_ready" || next_step == "km_ready" {
+        let setup = if next_step == "gm_ready" || next_step == "km_ready" || next_step == "glm_ready"
+        {
             ""
         } else {
             account_setup_prompt(next_step)
@@ -3488,6 +4327,8 @@ async fn start_batch_item(
             prepare_gemini_account(bot, store, cfg, seller_chat, None, 0).await;
         } else if next_step == "km_ready" {
             prepare_kimi_account(bot, store, cfg, seller_chat, None, 0).await;
+        } else if next_step == "glm_ready" {
+            prepare_glm_account(bot, store, cfg, seller_chat, None, 0).await;
         }
     } else {
         if !store
@@ -3969,7 +4810,7 @@ async fn deliver_issued_proxy(
                 .await;
                 return;
             }
-            let next_prompt = if gemini || next_step == "km_ready" {
+            let next_prompt = if gemini || next_step == "km_ready" || next_step == "glm_ready" {
                 "Сохрани эти данные: аккаунт нужно создать и подключить именно через этот прокси. Подробная инструкция придёт следующим сообщением."
             } else {
                 account_setup_prompt(next_step)
@@ -3991,6 +4832,8 @@ async fn deliver_issued_proxy(
                 prepare_gemini_account(bot, store, cfg, seller_chat, None, px.order_id).await;
             } else if next_step == "km_ready" {
                 prepare_kimi_account(bot, store, cfg, seller_chat, None, 0).await;
+            } else if next_step == "glm_ready" {
+                prepare_glm_account(bot, store, cfg, seller_chat, None, 0).await;
             }
             let _ = bot.send(admin_chat, &format!(
                 "✅ Прокси по офферу #{oid} выпущен (UK · {}, заказ IPRoyal #{}) и отправлен продавцу.",
@@ -4071,7 +4914,7 @@ async fn start_buyer_offer_handoff(
     {
         return;
     }
-    let setup = if next_step == "gm_ready" || next_step == "km_ready" {
+    let setup = if next_step == "gm_ready" || next_step == "km_ready" || next_step == "glm_ready" {
         ""
     } else {
         account_setup_prompt(next_step)
@@ -4084,6 +4927,8 @@ async fn start_buyer_offer_handoff(
         prepare_gemini_account(bot, store, cfg, seller_chat, None, 0).await;
     } else if next_step == "km_ready" {
         prepare_kimi_account(bot, store, cfg, seller_chat, None, 0).await;
+    } else if next_step == "glm_ready" {
+        prepare_glm_account(bot, store, cfg, seller_chat, None, 0).await;
     }
 }
 
@@ -4136,6 +4981,17 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
     // Readiness is state-bound: an old or forwarded button cannot skip account preparation.
     if data == "kimi:ready" {
         continue_kimi_handoff(bot, store, cfg, chat).await;
+        return;
+    }
+
+    if data == "glm:ready" {
+        continue_glm_handoff(bot, store, cfg, chat).await;
+        return;
+    }
+
+    // Platform selection for the GLM key intake: int (api.z.ai, default) or cn (bigmodel.cn).
+    if let Some(region) = data.strip_prefix("glm:region:") {
+        select_glm_region(bot, store, cfg, chat, region).await;
         return;
     }
 
@@ -5483,7 +6339,9 @@ mod tests {
                 let code = data.strip_prefix("noffer:").expect("product button");
                 let name = tier_name(code).expect("every button has a product name");
                 assert_eq!(name, label, "button label and product name must match");
-                let expected = if label.contains("Kimi") {
+                let expected = if label.contains("GLM") {
+                    HandoffKind::Glm
+                } else if label.contains("Kimi") {
                     HandoffKind::Kimi
                 } else if label.contains("Gemini")
                     || label.contains("Google AI")
@@ -5565,12 +6423,16 @@ mod tests {
                 (label, tier_name(code).expect("batch product code"))
             })
             .collect::<Vec<_>>();
-        assert_eq!(labels.len(), 12);
+        assert_eq!(labels.len(), 15);
         for (label, product) in labels {
             assert_eq!(label, product);
             assert!(matches!(
                 handoff_kind(product),
-                HandoffKind::Claude | HandoffKind::Codex | HandoffKind::Gemini | HandoffKind::Kimi
+                HandoffKind::Claude
+                    | HandoffKind::Codex
+                    | HandoffKind::Gemini
+                    | HandoffKind::Kimi
+                    | HandoffKind::Glm
             ));
         }
     }
@@ -5860,6 +6722,414 @@ mod tests {
         assert!(KIMI_STEP_PROXY_RETRY.contains("ip:port:user:pass"));
         // Подсказка не может содержать сам присланный прокси: только форма, никаких секретов.
         assert!(!KIMI_STEP_PROXY_RETRY.contains("<code>1"));
+    }
+
+    #[test]
+    fn glm_products_are_a_distinct_handoff_and_never_fall_through_to_claude() {
+        // A new product silently classified as Claude would be handed to the setup-token branch
+        // and burn a paid subscription on the wrong flow.
+        for product in [
+            "GLM Coding Plan Lite",
+            "GLM Coding Plan Pro",
+            "GLM Coding Plan Max",
+        ] {
+            assert_eq!(handoff_kind(product), HandoffKind::Glm, "{product}");
+        }
+        assert_eq!(handoff_kind("Zhipu GLM Coding Plan"), HandoffKind::Glm);
+        assert_eq!(handoff_kind("Z.ai Coding Plan Pro"), HandoffKind::Glm);
+        assert_eq!(handoff_kind("bigmodel.cn coding plan"), HandoffKind::Glm);
+    }
+
+    #[test]
+    fn glm_tier_words_cannot_be_claimed_by_another_provider_rule() {
+        // The tier names are generic — Claude sells a Max too — so classification must key on
+        // the provider/platform words, never on the bare tier word.
+        for bare in ["Lite", "Pro", "Max"] {
+            assert_ne!(
+                handoff_kind(bare),
+                HandoffKind::Glm,
+                "{bare} must not be treated as a GLM product without the provider name"
+            );
+        }
+        // The full product name must not be claimed by the Claude fallback either, even though
+        // Claude has its own Max.
+        assert_eq!(handoff_kind("GLM Coding Plan Max"), HandoffKind::Glm);
+    }
+
+    #[test]
+    fn glm_offers_route_to_their_own_wizard_steps_and_texts() {
+        assert_eq!(
+            handoff_steps_for_product("GLM Coding Plan Pro"),
+            ("glm_proxy", "glm_ready")
+        );
+        // Each provider owns distinct steps: a shared step id would let one provider's callback
+        // advance another provider's deal.
+        for other in ["Claude Pro", "ChatGPT Plus", "Google AI Pro", "Kimi Moderato"] {
+            assert_ne!(handoff_steps_for_product(other).0, "glm_proxy");
+            assert_ne!(handoff_steps_for_product(other).1, "glm_ready");
+        }
+        assert_eq!(seller_offer_guide("GLM Coding Plan Lite"), GLM_OFFER_GUIDE);
+        assert_eq!(account_setup_prompt("glm_ready"), GLM_ACCOUNT_SETUP);
+        assert_eq!(proxy_prompt("glm_proxy"), GLM_PROXY_PROMPT);
+    }
+
+    #[test]
+    fn glm_appears_in_both_operator_menus() {
+        let offer_codes = product_kb()
+            .into_iter()
+            .flatten()
+            .filter_map(|(_, data)| {
+                data.strip_prefix("noffer:").map(str::to_string)
+            })
+            .filter(|code| code.starts_with("glm_"))
+            .count();
+        assert_eq!(offer_codes, 3);
+        for label in [
+            "📦 GLM Coding Plan Lite",
+            "📦 GLM Coding Plan Pro",
+            "📦 GLM Coding Plan Max",
+        ] {
+            assert!(admin_quick_tier(label).is_some(), "{label} missing");
+            assert!(
+                admin_home_kb().iter().flatten().any(|b| *b == label),
+                "{label} missing from the persistent keyboard"
+            );
+        }
+    }
+
+    #[test]
+    fn glm_seller_texts_demand_the_individual_plan_and_never_ask_for_secrets() {
+        // Team and pay-as-you-go shapes do not match the corroborated credits ladder, so buying
+        // the wrong product would cost a payout and deliver nothing routable.
+        assert!(GLM_ACCOUNT_SETUP.contains("Individual Coding Plan"));
+        assert!(
+            GLM_ACCOUNT_SETUP.contains("Team-версия"),
+            "the seller must be told the Team version does not fit"
+        );
+        assert!(GLM_ACCOUNT_SETUP.contains("Plan Overview"));
+        assert!(GLM_OFFER_GUIDE.contains("бот не просит"));
+        // The API key is the only credential artifact: the key prompt asks for it alone, and no
+        // text may instruct the seller to hand over account credentials. The word "пароль"
+        // appears legitimately in the proxy field explanation, so the check targets the
+        // phrasing that would actually solicit an account secret.
+        assert!(GLM_KEY_PROMPT.contains("API-ключ"));
+        for text in [GLM_OFFER_GUIDE, GLM_ACCOUNT_SETUP, GLM_PROXY_PROMPT, GLM_KEY_PROMPT] {
+            let lowered = text.to_lowercase();
+            for forbidden in [
+                "пришли пароль",
+                "пароль от аккаунта",
+                "пришли код из",
+                "пришли cookie",
+                "пришли токен",
+                "код 2fa",
+            ] {
+                assert!(
+                    !lowered.contains(forbidden),
+                    "seller text must never solicit: {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn glm_proxy_step_accepts_and_reconstructs_seller_input() {
+        let store = store();
+        store.register_user(111, 111, "glm-seller").unwrap();
+        let offer = store
+            .create_offer("GLM Coding Plan Pro", "$20", 999, 111)
+            .unwrap();
+        let reference = SellerJobRef {
+            kind: "offer".into(),
+            offer_id: offer,
+            batch_id: 0,
+            item_no: 0,
+            token: "generation".into(),
+        };
+        assert_eq!(
+            select_glm_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080:user:pass"),
+            GlmProxyInput::SellerSupplied("http://user:pass@1.2.3.4:8080".into(), true)
+        );
+        // Пароль с двоеточием обязан пережить реконструкцию: режем ровно на четыре поля и
+        // процент-кодируем userinfo, иначе в CONNECT уедет чужой пароль.
+        assert_eq!(
+            select_glm_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080:user:pa:ss"),
+            GlmProxyInput::SellerSupplied("http://user:pa%3Ass@1.2.3.4:8080".into(), true)
+        );
+        assert_eq!(
+            select_glm_proxy_input(&store, &reference, "", 0, "http://user:pass@1.2.3.4:8080"),
+            GlmProxyInput::SellerSupplied("http://user:pass@1.2.3.4:8080".into(), true)
+        );
+        // Авторизация по IP законна, но продавец получает явное предупреждение о ней.
+        assert_eq!(
+            select_glm_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080"),
+            GlmProxyInput::SellerSupplied("http://1.2.3.4:8080".into(), false)
+        );
+    }
+
+    #[test]
+    fn glm_proxy_step_rejects_malformed_input_without_leaking_it() {
+        let store = store();
+        store.register_user(111, 111, "glm-seller").unwrap();
+        let offer = store
+            .create_offer("GLM Coding Plan Pro", "$20", 999, 111)
+            .unwrap();
+        let reference = SellerJobRef {
+            kind: "offer".into(),
+            offer_id: offer,
+            batch_id: 0,
+            item_no: 0,
+            token: "generation".into(),
+        };
+        for rejected in ["", "не прокси", "1.2.3.4", "1.2.3.4:abc", "1.2.3.4:0"] {
+            assert_eq!(
+                select_glm_proxy_input(&store, &reference, "", 0, rejected),
+                GlmProxyInput::Invalid,
+                "{rejected:?}"
+            );
+        }
+        // Отпечаток отвергнутого ввода — единственное, что попадает в журнал: ни логина, ни пароля.
+        let fingerprint = proxy_input_fingerprint("1.2.3.4:8080:secret-user:secret-pass");
+        assert!(!fingerprint.contains("secret-user"), "{fingerprint}");
+        assert!(!fingerprint.contains("secret-pass"), "{fingerprint}");
+    }
+
+    #[test]
+    fn glm_proxy_step_never_replaces_a_pinned_proxy() {
+        let store = store();
+        store.register_user(111, 111, "glm-seller").unwrap();
+        let offer = store
+            .create_offer("GLM Coding Plan Pro", "$20", 999, 111)
+            .unwrap();
+        let reference = SellerJobRef {
+            kind: "offer".into(),
+            offer_id: offer,
+            batch_id: 0,
+            item_no: 0,
+            token: "generation".into(),
+        };
+        // Оплаченный лиз закреплён: валидное сообщение продавца не может его заменить.
+        store.mark_offer_proxy_issued(offer).unwrap();
+        assert_eq!(
+            select_glm_proxy_input(
+                &store,
+                &reference,
+                "http://user:pass@5.6.7.8:8080",
+                0,
+                "1.2.3.4:8080:user:pass"
+            ),
+            GlmProxyInput::Fixed("http://user:pass@5.6.7.8:8080".into(), 0)
+        );
+        // Закреплённый egress потерян: принимать ввод продавца нельзя, остаёмся fail-closed.
+        assert_eq!(
+            select_glm_proxy_input(&store, &reference, "", 0, "1.2.3.4:8080:user:pass"),
+            GlmProxyInput::Invalid
+        );
+    }
+
+    #[test]
+    fn glm_seller_proxy_is_canonicalised_before_it_is_pinned() {
+        // parse_proxy_input проверяет только форму сообщения; мусор в URL-форме проходит форму,
+        // но не должен закрепляться за аккаунтом — иначе продавец застрял бы на glm_ready с
+        // egress, на котором проверка ключа не может начаться.
+        let shaped = parse_proxy_input("http://foo bar:8080");
+        assert!(!shaped.url.is_empty());
+        assert!(glm_credential::normalize_proxy_url(&shaped.url).is_err());
+        // Канонический вывод обеих форм ввода одинаково валиден для credential-контракта.
+        for raw in ["1.2.3.4:8080:user:pa:ss", "http://user:pa%3Ass@1.2.3.4:8080"] {
+            let parsed = parse_proxy_input(raw);
+            assert!(
+                glm_credential::normalize_proxy_url(&parsed.url).is_ok(),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn glm_proxy_step_has_clean_manual_and_retry_prompts() {
+        assert!(!GLM_PROXY_PROMPT.contains("не получилось"));
+        assert_eq!(
+            manual_proxy_prompt("glm_proxy"),
+            format!("{MANUAL_PROXY_WARNING}{GLM_PROXY_PROMPT}")
+        );
+        assert!(GLM_STEP_PROXY_RETRY.contains("ip:port:user:pass"));
+        // Подсказка не может содержать сам присланный прокси: только форма, никаких секретов.
+        assert!(!GLM_STEP_PROXY_RETRY.contains("<code>1"));
+    }
+
+    #[test]
+    fn the_glm_ready_button_carries_its_own_callback() {
+        let keyboard = glm_ready_kb(None);
+        assert_eq!(keyboard[0][0].1, "glm:ready");
+        // A shared callback would let one provider's button advance another provider's deal.
+        assert_ne!(keyboard[0][0].1, kimi_ready_kb(None)[0][0].1);
+        assert_ne!(keyboard[0][0].1, gemini_ready_kb(None)[0][0].1);
+        // The platform selection rides the same card, with its own callbacks.
+        assert_eq!(keyboard[1][0].1, "glm:region:int");
+        assert_eq!(keyboard[1][1].1, "glm:region:cn");
+    }
+
+    #[test]
+    fn the_glm_ready_gate_requires_both_its_step_and_a_stored_proxy() {
+        let store = store();
+        // Unknown seller, wrong step, or a right step with no stored egress must all leave the
+        // button inert: validating a key without the assigned proxy would authorize from a
+        // different IP than the one the account was opened on.
+        assert!(glm_ready_handoff(&store, 1).is_none());
+        let _ = store.set_want(1, "glm_ready");
+        assert!(glm_ready_handoff(&store, 1).is_none());
+    }
+
+    #[test]
+    fn stepping_back_from_glm_wait_requires_confirmation_and_invalidates() {
+        // The seller already armed the key intake; going back must cancel it, not leave an
+        // in-flight validation racing to publish into a rewound deal.
+        let back = handoff_step_back(HandoffKind::Glm, "glm_wait", true, true).expect("edge");
+        assert_eq!(back.target, "glm_ready");
+        assert!(back.invalidates_link);
+        assert!(!back.clears_proxy, "the pinned egress must survive a step back");
+        // Одноразовое ожидание молча не гасим: сначала явное подтверждение.
+        let row = handoff_back_row(&back, back_step_wire("glm_wait").unwrap());
+        assert_eq!(row[0].1, "hoback:glm_wait:ask");
+    }
+
+    #[test]
+    fn a_glm_step_back_without_a_recoverable_egress_degrades_to_the_proxy_step() {
+        // Landing on glm_ready with an empty hproxy would be a dead end: glm_ready_handoff
+        // rejects it and the seller could never continue.
+        let back = handoff_step_back(HandoffKind::Glm, "glm_wait", true, false).expect("edge");
+        assert_eq!(back.target, "glm_proxy");
+        assert!(back.clears_proxy);
+        // A seller who may not replace the proxy has no such step in their history at all.
+        assert!(handoff_step_back(HandoffKind::Glm, "glm_wait", false, false).is_none());
+    }
+
+    #[test]
+    fn glm_ready_steps_back_to_its_own_proxy_step() {
+        let back = handoff_step_back(HandoffKind::Glm, "glm_ready", true, true).expect("edge");
+        assert_eq!(back.target, "glm_proxy");
+        assert!(!back.invalidates_link, "the key intake has not been armed yet");
+    }
+
+    #[test]
+    fn the_glm_wait_confirmation_warns_that_the_key_intake_dies() {
+        let text = handoff_back_confirm_text("glm_wait");
+        assert!(text.contains("сброшено"));
+        assert!(text.contains("уже прислал"));
+    }
+
+    #[test]
+    fn glm_region_selection_persists_into_the_credential() {
+        let store = store();
+        store.register_user(111, 111, "glm-seller").unwrap();
+        // Default — международная площадка.
+        let region = store.get_user(111).unwrap().unwrap().hregion;
+        assert_eq!(glm_base_url(&region), glm_credential::GLM_BASE_URL_INTERNATIONAL);
+        store.set_hregion(111, "cn").unwrap();
+        let region = store.get_user(111).unwrap().unwrap().hregion;
+        assert_eq!(glm_base_url(&region), glm_credential::GLM_BASE_URL_CHINA);
+        // Выбор доживает до credential_from: ключ одной площадки не работает на другой.
+        let credential = glm_key::credential_from(
+            "zai-key-1",
+            glm_credential::GlmPlan::Max,
+            glm_base_url("cn"),
+            "",
+        )
+        .unwrap();
+        assert_eq!(credential.base_url, glm_credential::GLM_BASE_URL_CHINA);
+        let credential = glm_key::credential_from(
+            "zai-key-1",
+            glm_credential::GlmPlan::Max,
+            glm_base_url("int"),
+            "",
+        )
+        .unwrap();
+        assert_eq!(credential.base_url, glm_credential::GLM_BASE_URL_INTERNATIONAL);
+        // Сброс возвращает международный default.
+        store.set_hregion(111, "").unwrap();
+        let region = store.get_user(111).unwrap().unwrap().hregion;
+        assert_eq!(glm_base_url(&region), glm_credential::GLM_BASE_URL_INTERNATIONAL);
+    }
+
+    #[test]
+    fn glm_declared_plan_comes_from_the_offer_product() {
+        assert_eq!(
+            glm_declared_plan("GLM Coding Plan Lite"),
+            Some(glm_credential::GlmPlan::Lite)
+        );
+        assert_eq!(
+            glm_declared_plan("GLM Coding Plan Pro"),
+            Some(glm_credential::GlmPlan::Pro)
+        );
+        assert_eq!(
+            glm_declared_plan("GLM Coding Plan Max"),
+            Some(glm_credential::GlmPlan::Max)
+        );
+        // Голое слово тарифа не становится GLM-планом: классификация обязана подтвердить
+        // провайдера, а без тарифа сделка fail-closed.
+        assert_eq!(glm_declared_plan("Claude Pro"), None);
+        assert_eq!(glm_declared_plan("Max"), None);
+        assert_eq!(glm_declared_plan("GLM Coding Plan"), None);
+    }
+
+    #[test]
+    fn malformed_key_text_never_reaches_the_provider() {
+        let oversized = "x".repeat(513);
+        for rejected in ["", "  ", "key with spaces", "multi\nline", oversized.as_str()] {
+            assert_eq!(glm_key_text(rejected), None, "{rejected:?}");
+        }
+        assert_eq!(glm_key_text("  zai-key-abc123  "), Some("zai-key-abc123"));
+        // Журнал видит только длину ключа — никогда сам ключ.
+        let fingerprint = glm_key_fingerprint("zai-secret-key-9f8c7b");
+        assert!(!fingerprint.contains("zai-secret"), "{fingerprint}");
+        assert!(!fingerprint.contains("9f8c7b"), "{fingerprint}");
+    }
+
+    #[test]
+    fn invalid_key_guidance_is_typed_static_and_never_carries_the_key() {
+        // Каждый класс отказа платной проверки — своя подсказка продавцу.
+        let reasons = [
+            glm_key::InvalidKeyReason::Auth,
+            glm_key::InvalidKeyReason::OutOfPlanBalance,
+            glm_key::InvalidKeyReason::PlanExpired,
+            glm_key::InvalidKeyReason::ModelOutOfPlan,
+            glm_key::InvalidKeyReason::FairUse,
+            glm_key::InvalidKeyReason::WrongKeyKind,
+        ];
+        let texts: std::collections::HashSet<&'static str> =
+            reasons.iter().map(|reason| glm_invalid_key_guidance(*reason)).collect();
+        assert_eq!(
+            texts.len(),
+            reasons.len(),
+            "each invalid class needs its own guidance"
+        );
+        // Исчерпанная квота — НЕ невалидный ключ: отдельная подсказка «пришлите позже/другой».
+        assert!(GLM_QUOTA_EXHAUSTED.contains("действителен"));
+        assert!(GLM_QUOTA_EXHAUSTED.contains("квота"));
+        assert_ne!(GLM_QUOTA_EXHAUSTED, GLM_KEY_REJECTED);
+        // Подсказки статические и не содержат ни ключа продавца, ни формулировок-просьб секретов.
+        let submitted_key = "zai-secret-key-9f8c7b";
+        for text in reasons
+            .iter()
+            .map(|reason| glm_invalid_key_guidance(*reason))
+            .into_iter()
+            .chain([
+                GLM_KEY_REJECTED,
+                GLM_PLAN_MISMATCH,
+                GLM_PLAN_SHAPE,
+                GLM_QUOTA_EXHAUSTED,
+                GLM_VALIDATION_TRANSPORT,
+                GLM_KEY_MALFORMED,
+            ])
+        {
+            assert!(
+                !text.contains(submitted_key),
+                "guidance must be static, never an echo of the submitted key"
+            );
+            let lowered = text.to_lowercase();
+            for forbidden in ["пришли пароль", "пароль от аккаунта", "пришли cookie"] {
+                assert!(!lowered.contains(forbidden), "{forbidden}");
+            }
+        }
     }
 
     #[test]
@@ -6295,7 +7565,7 @@ mod tests {
     fn handoff_back_callback_data_covers_exactly_the_reversible_steps() {
         for step in [
             "ho_email", "ho_code", "cx_email", "cx_wait", "gm_ready", "gm_wait", "km_ready",
-            "km_wait",
+            "km_wait", "glm_ready", "glm_wait",
         ] {
             assert_eq!(back_step_wire(step), Some(step));
         }
@@ -6304,6 +7574,7 @@ mod tests {
             "cx_proxy",
             "gm_gproxy",
             "km_proxy",
+            "glm_proxy",
             "reg_address",
             "",
             "gm_wait:go",

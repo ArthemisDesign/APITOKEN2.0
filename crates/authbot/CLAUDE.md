@@ -341,13 +341,12 @@ state-машины продавца в одном diff. Факты и метки
 
 Проверка: `cargo test -p authbot kimi`.
 
-## GLM (Zhipu AI / Z.ai Coding Plan) — статический API-ключ, пока dormant
+## GLM (Zhipu AI / Z.ai Coding Plan) — статический API-ключ
 
 `glm_key.rs` — чистый протокольный модуль валидации ключа GLM Coding Plan. Он НЕ владеет
-Telegram-состоянием, seller job, выплатой и публикацией roster: **мастер продавца приезжает
-следующим зависимым изменением**, до которого ветка dormant (оба модуля под
-`#![allow(dead_code)]`, из `bot.rs` не вызываются). Факты и метки evidence —
-`docs/engine/GLM_PROVIDER.md` §2 (credential/identity), §4 (wire), §7 (acquisition flow).
+Telegram-состоянием, seller job, выплатой и публикацией roster: мастер продавца в `bot.rs`
+вызывает его шаг за шагом. Факты и метки evidence — `docs/engine/GLM_PROVIDER.md` §2
+(credential/identity), §4 (wire), §7 (acquisition flow).
 
 - **Credential — статический ключ из консоли**, OAuth device flow нет. Продавец покупает exact
   individual credits-план (Lite/Pro/Max по продукту оффера) на своём аккаунте и присылает ключ
@@ -389,12 +388,45 @@ Telegram-состоянием, seller job, выплатой и публикац�
   профиль; невалидный credential roster не трогает вообще. В roster лежат только opaque id и
   путь — ни ключа, ни плана, ни прокси.
 
+**Мастер продавца.** Шаги `glm_proxy → glm_ready → glm_wait`, кнопка `glm:ready`. Отдельный
+callback у каждого провайдера намеренно: общий id позволил бы кнопке одной сделки продвинуть
+другую. Продукты — три оффера «GLM Coding Plan Lite/Pro/Max»; правило `handoff_kind` ключуется
+на словах провайдера (`glm`, `zhipu`, `z.ai`, `bigmodel`, `coding plan`) и стоит выше
+остальных, потому что голые имена тиров (Lite/Pro/Max — у Claude тоже есть Max) ничего не
+значат. На `glm_proxy` бот принимает прокси текстовым сообщением: разбор тот же обратимый, что
+и у KIMI (`parse_proxy_input`, пароль с `:` переживает реконструкцию), а перед закреплением
+прокси проходит каноникализацию `glm_credential::normalize_proxy_url`, поэтому мусор не
+доходит до `glm_ready`. Закреплённый buyer/IPRoyal прокси сообщение продавца заменить не может
+— решает общий `job_accepts_seller_proxy`; невалидный ввод оставляет сделку на `glm_proxy` с
+безопасной повторной подсказкой, а в журнал уходит только бесключевой отпечаток формы.
+Single-оффер с прокси покупателя и выдача IPRoyal приходят на `glm_ready` через тот же
+`prepare_glm_account`, что и batch. На карточке `glm_ready` — выбор площадки
+(`glm:region:int`/`glm:region:cn`, default int): ключ `api.z.ai` не работает на
+`open.bigmodel.cn` и наоборот, поэтому выбор хранится в `users.hregion` до самого
+`credential_from`, переживает рестарт и сбрасывается на международный default при входе каждой
+новой сделки в `glm_ready`. `glm_ready` требует одновременно своего шага И сохранённого прокси
+— иначе кнопка инертна, потому что валидация без назначенного egress пошла бы не с того IP, с
+которого открыт аккаунт. На `glm_wait` продавец присылает API-ключ одним текстовым сообщением,
+и бот валидирует его на egress сделки: бесплатный quota-probe (bounded retry; отказ — возврат
+на `glm_ready` с typed-подсказкой) → corroborate_plan против declared продукта
+(mismatch/legacy — возврат с подсказкой) → одна минимальная платная generation
+(`QuotaExhausted` — отдельная подсказка «квота исчерпана, пришлите позже/другой», это НЕ
+невалидный ключ; ambiguous transport — платный запрос автоматически не повторяется) →
+`credential_from` → `glm_roster::publish` (тот же ключ — replace-in-place; занятый id — typed
+ошибка) → завершение выплаты ТОЛЬКО после публикации. Все подсказки статические: ключ не
+логируется (журнал видит лишь `key_len`), не возвращается эхом в чат и не сохраняется в SQLite
+— валидация живёт только в памяти. Шаг назад с `glm_wait` гасит ожидание ключа и требует
+подтверждения; без восстановимого egress он деградирует до `glm_proxy`, иначе продавец попал
+бы на `glm_ready` с пустым `hproxy` — тупик. Невалидный, wrong-plan или transport-сорванный
+flow возвращает на `glm_ready`, не оставляет ни конверта, ни строки roster и **не завершает
+выплату**. После рестарта незавершённый `glm_wait` восстанавливается в `glm_ready` — ключ
+продавец пришлёт заново, а прокси и выбор площадки рестарт переживают.
+
 **Env:** `AUTH_BOT_GLM_DIR` (корень `credentials/` + `profiles.json`, деф
 `/srv/claude-api/data/glm`), `AUTH_BOT_GLM_CREDENTIAL_KEYS`,
 `AUTH_BOT_GLM_CREDENTIAL_ACTIVE_KID`. Без keyring ветка не публикует ничего — как и у KIMI,
-intake гейтится только на AEAD keyring.
-
-**Мастер продавца — следующим изменением** (шаги `glm_proxy → glm_ready → glm_wait`, кнопка
-`glm:ready` по `docs/engine/GLM_PROVIDER.md` §7); этот diff намеренно не трогает `bot.rs`.
+intake гейтится только на AEAD keyring, и бот честно говорит продавцу, что подключение
+временно недоступно, вместо того чтобы провести его через flow, результат которого пришлось бы
+выбросить.
 
 Проверка: `cargo test -p authbot glm`.

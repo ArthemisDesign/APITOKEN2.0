@@ -21,9 +21,10 @@ pub struct UserRow {
     pub status: String,    // new | pending | approved | rejected | pending_admin
     pub role: String,      // "" | admin
     pub address: String,   // BEP-20
-    pub want: String, // ожидаемый ввод (reg_address | ho_* | cx_* | gm_gproxy | gm_ready | gm_wait)
+    pub want: String, // ожидаемый ввод (reg_address | ho_* | cx_* | gm_* | km_* | glm_*)
     pub hproxy: String, // прокси аккаунта при передаче доступа (handover)
     pub hproxy_order: i64, // IPRoyal order id за handover-прокси (0 = ручной/внешний)
+    pub hregion: String, // площадка GLM-аккаунта текущей сделки ("" = int, "cn" = bigmodel.cn)
 }
 
 #[derive(Clone, Debug)]
@@ -245,6 +246,9 @@ impl Store {
             "ALTER TABLE users ADD COLUMN hproxy_order INTEGER DEFAULT 0",
             [],
         );
+        // GLM platform of the current seller job ("" = international default, "cn" =
+        // bigmodel.cn). Per-deal context: prepare_glm_account resets it on entry.
+        let _ = c.execute("ALTER TABLE users ADD COLUMN hregion TEXT DEFAULT ''", []);
         let _ = c.execute(
             "ALTER TABLE gemini_oauth_sessions ADD COLUMN sealed_payload TEXT NOT NULL DEFAULT ''",
             [],
@@ -335,12 +339,12 @@ impl Store {
     pub fn get_user(&self, chat: i64) -> Result<Option<UserRow>> {
         let c = self.c.lock().unwrap();
         let r = c.query_row(
-            "SELECT chat_id,uid,username,status,role,address,want,hproxy,hproxy_order FROM users WHERE chat_id=?1",
+            "SELECT chat_id,uid,username,status,role,address,want,hproxy,hproxy_order,hregion FROM users WHERE chat_id=?1",
             rusqlite::params![chat],
             |r| Ok(UserRow {
                 chat_id: r.get(0)?, uid: r.get(1)?, username: r.get(2)?, status: r.get(3)?,
                 role: r.get(4)?, address: r.get(5)?, want: r.get(6)?, hproxy: r.get(7)?,
-                hproxy_order: r.get(8)?,
+                hproxy_order: r.get(8)?, hregion: r.get(9)?,
     }),
         ).optional()?;
         Ok(r)
@@ -385,6 +389,15 @@ impl Store {
         self.c.lock().unwrap().execute(
             "UPDATE users SET hproxy_order=?1 WHERE chat_id=?2",
             rusqlite::params![order_id, chat],
+        )?;
+        Ok(())
+    }
+    /// GLM platform of the seller's current deal. Callers gate on the active GLM job and the
+    /// `glm_ready` step; `""` restores the international default.
+    pub fn set_hregion(&self, chat: i64, region: &str) -> Result<()> {
+        self.c.lock().unwrap().execute(
+            "UPDATE users SET hregion=?1 WHERE chat_id=?2",
+            rusqlite::params![region, chat],
         )?;
         Ok(())
     }
@@ -841,6 +854,18 @@ impl Store {
             .execute("UPDATE users SET want='cx_email' WHERE want='cx_wait'", [])?)
     }
 
+    /// Key validation lives only in memory and the key itself is never persisted, so a restart
+    /// mid-validation loses it. Return the seller to the readiness step: they press the button
+    /// again and resend the key into a fresh validation. The proxy and the platform selection
+    /// survive, so the retry runs on the same egress and platform.
+    pub fn recover_interrupted_glm_handoffs(&self) -> Result<usize> {
+        Ok(self
+            .c
+            .lock()
+            .unwrap()
+            .execute("UPDATE users SET want='glm_ready' WHERE want='glm_wait'", [])?)
+    }
+
     /// Normalize every removed Gemini custom-client wizard state to the single official-CLI proxy
     /// step. A retained bot-issued proxy lets the bot show account preparation without asking for
     /// the proxy again; authorization starts only after the seller confirms that the account is ready.
@@ -861,7 +886,7 @@ impl Store {
 
     pub fn by_status(&self, status: &str) -> Result<Vec<UserRow>> {
         let c = self.c.lock().unwrap();
-        let mut s = c.prepare("SELECT chat_id,uid,username,status,role,address,want,hproxy,hproxy_order FROM users WHERE status=?1")?;
+        let mut s = c.prepare("SELECT chat_id,uid,username,status,role,address,want,hproxy,hproxy_order,hregion FROM users WHERE status=?1")?;
         let rows = s.query_map(rusqlite::params![status], |r| {
             Ok(UserRow {
                 chat_id: r.get(0)?,
@@ -873,6 +898,7 @@ impl Store {
                 want: r.get(6)?,
                 hproxy: r.get(7)?,
                 hproxy_order: r.get(8)?,
+                hregion: r.get(9)?,
             })
         })?;
         Ok(rows.filter_map(|x| x.ok()).collect())
@@ -2860,6 +2886,36 @@ mod tests {
         // Продавец, уже стоящий на шаге email, не трогается.
         assert_eq!(s.get_user(222).unwrap().unwrap().want, "cx_email");
         assert_eq!(s.recover_interrupted_codex_handoffs().unwrap(), 0);
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+    }
+
+    /// Валидация ключа GLM живёт только в памяти, а сам ключ нигде не персистится, поэтому
+    /// рестарт посреди `glm_wait` его теряет. Продавец возвращается на шаг подтверждения и
+    /// присылает ключ заново; прокси и выбор площадки при этом обязаны пережить рестарт.
+    #[test]
+    fn restart_returns_a_waiting_glm_seller_to_the_ready_step() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        {
+            let s = Store::open(&p).unwrap();
+            s.register_user(111, 111, "glm-seller").unwrap();
+            s.set_want(111, "glm_wait").unwrap();
+            s.set_hproxy(111, "http://user:pass@1.2.3.4:8080").unwrap();
+            s.set_hregion(111, "cn").unwrap();
+            s.register_user(222, 222, "glm-seller-at-ready").unwrap();
+            s.set_want(222, "glm_ready").unwrap();
+        }
+        let s = Store::open(&p).unwrap();
+        assert_eq!(s.recover_interrupted_glm_handoffs().unwrap(), 1);
+        let user = s.get_user(111).unwrap().unwrap();
+        assert_eq!(user.want, "glm_ready");
+        // Прокси и площадка сохраняются: повторная валидация уйдёт с того же egress на ту же
+        // площадку.
+        assert_eq!(user.hproxy, "http://user:pass@1.2.3.4:8080");
+        assert_eq!(user.hregion, "cn");
+        // Продавец, уже стоящий на шаге подтверждения, не трогается.
+        assert_eq!(s.get_user(222).unwrap().unwrap().want, "glm_ready");
+        assert_eq!(s.recover_interrupted_glm_handoffs().unwrap(), 0);
         let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
     }
 
