@@ -11,10 +11,10 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-export const DEFAULT_BASE = "https://router.apitoken.sale/v1"
-export const CACHE_SCHEMA = 1
-export const CACHE_FRESH_TTL_MS = 15 * 60 * 1000
-export const CACHE_MAX_STALE_MS = 7 * 24 * 60 * 60 * 1000
+const DEFAULT_BASE = "https://router.apitoken.sale/v1"
+const CACHE_SCHEMA = 1
+const CACHE_FRESH_TTL_MS = 15 * 60 * 1000
+const CACHE_MAX_STALE_MS = 7 * 24 * 60 * 60 * 1000
 
 const CACHE_DOMAIN = "apitoken-opencode-capability-cache-v1"
 const CACHE_ALGORITHM = "aes-256-gcm"
@@ -47,11 +47,11 @@ function configRoot(env = process.env) {
   return env.XDG_CONFIG_HOME || path.join(env.HOME || os.homedir(), ".config")
 }
 
-export function defaultConfigPath(env = process.env) {
+function defaultConfigPath(env = process.env) {
   return env.OPENCODE_CONFIG || path.join(configRoot(env), "opencode", "opencode.jsonc")
 }
 
-export function defaultCachePath(env = process.env) {
+function defaultCachePath(env = process.env) {
   const root = env.XDG_CACHE_HOME || path.join(env.HOME || os.homedir(), ".cache")
   return path.join(root, "opencode", "apitoken-router", "catalog-v1.json")
 }
@@ -122,7 +122,7 @@ function extractObjectProperty(text, property) {
   return undefined
 }
 
-export function readConnection({ env = process.env, configPath = defaultConfigPath(env) } = {}) {
+function readConnection({ env = process.env, configPath = defaultConfigPath(env) } = {}) {
   try {
     const text = fs.readFileSync(configPath, "utf8")
     const provider = extractObjectProperty(text, "apitoken")
@@ -390,7 +390,7 @@ function writeAtomic0600(target, content) {
   }
 }
 
-export function writeCapabilityCache({ cachePath, key, base, records, now = Date.now() }) {
+function writeCapabilityCache({ cachePath, key, base, records, now = Date.now() }) {
   const normalizedBase = normalizeBase(base)
   const normalizedRecords = records.map(validateRecord)
   const payload = Buffer.from(JSON.stringify({ schema: CACHE_SCHEMA, models: normalizedRecords }))
@@ -415,7 +415,7 @@ export function writeCapabilityCache({ cachePath, key, base, records, now = Date
   writeAtomic0600(cachePath, `${JSON.stringify(envelope)}\n`)
 }
 
-export function readCapabilityCache({ cachePath, key, base, now = Date.now() }) {
+function readCapabilityCache({ cachePath, key, base, now = Date.now() }) {
   const stat = fs.lstatSync(cachePath)
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("capability cache is not a regular file")
   if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
@@ -465,7 +465,7 @@ export function readCapabilityCache({ cachePath, key, base, now = Date.now() }) 
   }
 }
 
-export async function fetchCatalog(key, base, fetchImpl = fetch) {
+async function fetchCatalog(key, base, fetchImpl = fetch) {
   const response = await fetchImpl(`${normalizeBase(base)}/models`, {
     headers: { Authorization: `Bearer ${key}` },
     signal: AbortSignal.timeout(10000),
@@ -481,7 +481,7 @@ export async function fetchCatalog(key, base, fetchImpl = fetch) {
   return { models: liveModels(entries, records), records }
 }
 
-export async function discoverModels({
+async function discoverModels({
   key,
   base,
   cachePath = defaultCachePath(),
@@ -523,3 +523,16 @@ export default async function ApitokenRouter() {
     },
   }
 }
+
+// OpenCode treats every ESM export as a plugin factory. Keep the module's public export surface to
+// the single default function; deterministic tests use this non-enumerable property instead.
+Object.defineProperty(ApitokenRouter, "testing", {
+  value: Object.freeze({
+    CACHE_FRESH_TTL_MS,
+    CACHE_MAX_STALE_MS,
+    defaultCachePath,
+    discoverModels,
+    readCapabilityCache,
+    readConnection,
+  }),
+})

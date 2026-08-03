@@ -223,6 +223,9 @@ fallback каждая модель явно получает suffix `[stale meta
 Таким образом, краткий catalog outage не оставляет OpenCode без моделей и одновременно не может
 показать ставку другого ключа или устаревшую персональную цену. Контракт и crypto/negative tests
 живут рядом с plugin в `packages/opencode-router-plugin`.
+Plugin entrypoint имеет только один ESM export — default factory: OpenCode 1.18.11 интерпретирует
+каждый export файла как отдельный plugin и отклоняет named constants/helpers с
+`Plugin export is not a function`. Exact export shape закреплён unit-тестом и клиентским smoke.
 
 После live discovery
 OpenCode сам считает стоимость сообщения по input/output/reasoning/cache token usage; отдельный

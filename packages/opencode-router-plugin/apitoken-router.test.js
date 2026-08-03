@@ -4,13 +4,15 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 
-import {
+import ApitokenRouter, * as pluginExports from "./apitoken-router.js"
+
+const {
   CACHE_FRESH_TTL_MS,
   CACHE_MAX_STALE_MS,
   discoverModels,
   readCapabilityCache,
   readConnection,
-} from "./apitoken-router.js"
+} = ApitokenRouter.testing
 
 const KEY_A = "sk-pool-test-key-a"
 const KEY_B = "sk-pool-test-key-b"
@@ -63,6 +65,11 @@ function fixture(t) {
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   return path.join(directory, "catalog-v1.json")
 }
+
+test("module exposes only the OpenCode plugin factory", () => {
+  assert.deepEqual(Object.keys(pluginExports), ["default"])
+  assert.equal(typeof pluginExports.default, "function")
+})
 
 test("same credential uses explicit stale capability-only models after a transient outage", async (t) => {
   const cachePath = fixture(t)

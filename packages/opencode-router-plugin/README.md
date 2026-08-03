@@ -21,3 +21,7 @@ live discovery в OpenCode не показывается. Другой ключ,
 ```bash
 pnpm --filter @claude-api/opencode-router-plugin test
 ```
+
+Plugin-файл намеренно имеет ровно один ESM export — default factory. OpenCode 1.18.11 пытается
+загрузить каждый export модуля как plugin factory, поэтому даже test-only named export ломает весь
+provider на старте; export shape закреплён unit-тестом и реальным `opencode models apitoken` smoke.
