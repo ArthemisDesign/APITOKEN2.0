@@ -502,6 +502,12 @@ Local L1 всегда включён; optional Redis L2 делит TTL-прив�
 участвуют в auth, money или capacity. Первая попытка = `pool.route_affinity`
 (place/pin/immediate spill/rebind), ретраи = `pool.pick`. PostgreSQL capacity lease ниже остаётся
 авторитетным. SSE по-прежнему byte-for-byte.
+L2 покрыт гейтом, а не только на бумаге: watchdog поднимает disposable Redis и передаёт
+`CLAUDE_API_TEST_REDIS_URL` вместе с `CI=1`. Под этим маркером `redis_shares_opaque_affinity_across_processes`
+обязан выполниться — при недоступном Redis он падает, а не пропускается; локально без переменной
+тест скипается с сообщением. Форма ключей отдельно закреплена без инфраструктуры
+(`redis_keys_expose_only_opaque_digests`): только константный префикс, hash-tag и 64-символьные hex —
+любой сырой scope/session/prompt в ключе роняет тест.
 In-flight держится всю жизнь стрима: успех → `mark_healthy`, `end_stream` из tee-метеринга (`meter.rs`)
 снимает слот на завершении/обрыве; 4xx → `mark_ok`.
 

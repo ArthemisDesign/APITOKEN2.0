@@ -1616,6 +1616,37 @@ mod tests {
         assert_eq!(claimed.home, "opaque-home");
         assert_eq!(store.resolve(&input).await.unwrap().home, "opaque-home");
         assert!(store.stats().redis_errors >= 1);
+
+        // Fail-open is only half the property. The other half is that a dead Redis must not be
+        // redialled on every call: `redis_retry_after` suppresses connection attempts inside its
+        // window, so a sustained outage costs one dial per window rather than one per request.
+        // Distinct inputs are required here — a repeated input would be served by L1 and would
+        // never reach the Redis path at all, which is exactly why the previous `>= 1` assertion
+        // could not distinguish clean fallback from redialling on every request.
+        assert!(
+            store.redis_retry_after.load(Ordering::Relaxed) > 0,
+            "a failed dial must arm the backoff window"
+        );
+        let errors_before = store.stats().redis_errors;
+        for index in 0..25 {
+            let miss = store
+                .infer(
+                    "acct",
+                    &HeaderMap::new(),
+                    &json!({"messages":[{"role":"user","content":format!("miss-{index}")}]}),
+                )
+                .unwrap();
+            assert!(store.resolve(&miss).await.is_none());
+        }
+        assert_eq!(
+            store.stats().redis_errors - errors_before,
+            25,
+            "every L1 miss must fail fast through the backoff exactly once"
+        );
+        assert!(
+            store.connection.read().await.is_none(),
+            "a failed dial must not leave a connection behind"
+        );
     }
 
     #[tokio::test]
@@ -1675,10 +1706,106 @@ mod tests {
         }
     }
 
+    /// Resolve the disposable Redis the gate provisions. Returning `None` is only legitimate on a
+    /// developer machine that has no Redis. In CI the URL is mandatory: the watchdog always exports
+    /// it, so an absent value there means the shared-state backend silently disappeared and the L2
+    /// invariants below would stop being proven. Failing loudly is the whole point — this proof was
+    /// previously annotated as ignored and therefore never ran in the gate at all.
+    fn test_redis_url() -> Option<String> {
+        match std::env::var("CLAUDE_API_TEST_REDIS_URL") {
+            Ok(url) if !url.is_empty() => Some(url),
+            _ => {
+                assert!(
+                    std::env::var("CI").is_err(),
+                    "CLAUDE_API_TEST_REDIS_URL must be set in CI: the shared affinity L2 \
+                     single-winner and opaque-keyspace invariants cannot be proven without it"
+                );
+                eprintln!(
+                    "skipping shared Redis affinity proof: CLAUDE_API_TEST_REDIS_URL is unset"
+                );
+                None
+            }
+        }
+    }
+
+    /// The shared keyspace is the one surface where a bug becomes a cross-tenant data leak, so the
+    /// key shape is pinned without any infrastructure. A key may contain only the constant prefix,
+    /// the hash-tag braces and hex digests — never an account scope, session id or prompt fragment.
+    #[test]
+    fn redis_keys_expose_only_opaque_digests() {
+        let store = store();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-claude-code-session-id",
+            HeaderValue::from_static("secret-harness-session"),
+        );
+        let input = store
+            .infer(
+                "secret-account-scope",
+                &headers,
+                &json!({
+                    "model":"claude-test",
+                    "system":[{"type":"text","text":"secret system prompt","cache_control":{"type":"ephemeral"}}],
+                    "messages":[{"role":"user","content":"secret prompt text"}]
+                }),
+            )
+            .unwrap();
+
+        let home = store.home_id("secret-subscription@example.test");
+        let root = input.cache_root.as_ref().expect("cache root");
+        let keys = vec![
+            AffinityStore::redis_alias_key(&input.account_tag, &input.primary().digest),
+            AffinityStore::redis_session_key(&input.account_tag, &input.primary().digest),
+            AffinityStore::redis_root_key(&input.account_tag, &root.digest),
+        ];
+
+        for key in &keys {
+            for secret in [
+                "secret-account-scope",
+                "secret-harness-session",
+                "secret prompt text",
+                "secret system prompt",
+                "secret-subscription",
+            ] {
+                assert!(
+                    !key.contains(secret),
+                    "shared key {key} leaked the raw value {secret}"
+                );
+            }
+            // Structure, not just absence: prefix, one hash-tagged digest, one kind marker, one
+            // digest. Anything else means a raw component reached the key builder.
+            let rest = key
+                .strip_prefix(REDIS_PREFIX)
+                .or_else(|| key.strip_prefix(REDIS_ROOT_PREFIX))
+                .expect("key must carry a known constant prefix");
+            let parts: Vec<&str> = rest.split(':').collect();
+            assert_eq!(parts.len(), 4, "unexpected key shape in {key}");
+            assert!(parts[0].is_empty());
+            let tag = parts[1]
+                .strip_prefix('{')
+                .and_then(|value| value.strip_suffix('}'))
+                .expect("tenant tag must be hash-tagged for cluster co-location");
+            assert!(matches!(parts[2], "a" | "s" | "r"), "unknown kind in {key}");
+            for digest in [tag, parts[3]] {
+                assert_eq!(digest.len(), 64, "digest is not a full BLAKE3 hex in {key}");
+                assert!(
+                    digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                    "digest is not pure hex in {key}"
+                );
+            }
+        }
+        // The home identifier travels as a Redis *value*; it must be opaque for the same reason.
+        assert_eq!(home.len(), 64);
+        assert!(home.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(!home.contains("secret-subscription"));
+    }
+
     #[tokio::test]
-    #[ignore = "requires Redis at redis://default:test-affinity@127.0.0.1:16379/15"]
     async fn redis_shares_opaque_affinity_across_processes() {
-        let url = "redis://default:test-affinity@127.0.0.1:16379/15";
+        let Some(url) = test_redis_url() else {
+            return;
+        };
+        let url = url.as_str();
         let client = redis::Client::open(url).unwrap();
         let mut connection = client.get_connection_manager().await.unwrap();
         redis::cmd("FLUSHDB")

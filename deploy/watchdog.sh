@@ -654,9 +654,19 @@ test_typescript_lane() {
 }
 
 test_rust_lane() {
-  local candidate=$1 engine_dsn=$2 build_artifacts=$3
+  local candidate=$1 engine_dsn=$2 build_artifacts=$3 redis_url=$4
   wd_log "running the locked Rust workspace tests from the shared target cache"
+  # CLAUDE_API_TEST_REDIS_URL is mandatory here, not optional. The shared cache-affinity L2 is the
+  # only place where two engine slots agree on a prompt-cache home, and its single-winner and
+  # opaque-keyspace invariants are unprovable without a real Redis. Passing an empty value would
+  # silently return the suite to the state where ~350 lines of L2 code were never executed.
+  [[ -n $redis_url ]] || wd_die "the Rust lane requires a disposable Redis URL"
+  # CI=1 turns the suite's "no Redis configured" escape hatch into a hard failure. Locally that
+  # escape hatch keeps `cargo test` usable without Docker; here it must never be reachable, or the
+  # L2 coverage could silently regress to skipped without any lane turning red.
   run_as_ci env CLAUDE_API_TEST_DATABASE_URL="$engine_dsn" \
+    CLAUDE_API_TEST_REDIS_URL="$redis_url" \
+    CI=1 \
     cargo test --locked --workspace --manifest-path "$candidate/Cargo.toml"
   if (( build_artifacts == 1 )); then
     wd_log "building the production engine, authbot and router once, from the tested candidate"
@@ -713,7 +723,7 @@ prepare_and_test_candidate_unlocked() {
   local rust_required=$5 static_required=$6 engine_artifacts_required=$7
   local validation_policy_sha256=$8 validation_plan_sha256=$9
   local codex_artifacts_required=${10}
-  local candidate marker dsn= engine_dsn= sales_dsn= openkeys_dsn= manifest digest tree
+  local candidate marker dsn= engine_dsn= sales_dsn= openkeys_dsn= redis_url= manifest digest tree
   local typescript_pid= rust_pid= static_pid=
   local typescript_rc=0 rust_rc=0 codex_rc=0 static_rc=0
   local typescript_components=none typescript_digest=none component
@@ -765,6 +775,7 @@ prepare_and_test_candidate_unlocked() {
   fi
   if (( rust_required == 1 )); then
     engine_dsn=$(test_db engine-dsn)
+    redis_url=$(test_db redis-url)
   fi
 
   # Resolve every fallible prerequisite before starting children. Once launched, the parent reaches
@@ -775,7 +786,8 @@ prepare_and_test_candidate_unlocked() {
     typescript_pid=$!
   fi
   if (( rust_required == 1 )); then
-    run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" &
+    run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" \
+      "$redis_url" &
     rust_pid=$!
   fi
   run_candidate_lane test_static_lane "$candidate" "$sha" "$static_required" &

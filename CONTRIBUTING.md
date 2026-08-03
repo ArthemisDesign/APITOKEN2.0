@@ -53,6 +53,13 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    `deploy/docs-check.sh` (the documentation living-contract check, see `AGENTS.md`); the
    language lanes above are selected from the diff as described below.
 
+   The Rust lane provisions a disposable Redis alongside PostgreSQL and exports
+   `CLAUDE_API_TEST_REDIS_URL` with `CI=1`. The shared cache-affinity L2 proof is mandatory under
+   that marker: without a reachable Redis the suite fails instead of skipping, because the
+   single-winner claim and the "shared keyspace holds only opaque digests" invariant cannot be
+   verified any other way. Locally the same tests skip with a message when the variable is unset,
+   so `cargo test` stays usable without Docker; to run them, start any Redis and export the URL.
+
    The merge script selects TypeScript, Rust, and deployment lanes from the exact committed diff and
    runs the selected independent lanes concurrently. Shell syntax and exact-range whitespace checks
    always run. Documentation-only changes can therefore stay cheap; an unknown path, deletion or
@@ -117,7 +124,8 @@ The host then:
 1. installs and builds every deployable TypeScript artifact, then typechecks/tests the
    dependency-aware changed-package closure against disposable PostgreSQL (or the full workspace
    for shared/deleted inputs), and/or runs the selected locked Rust workspace lane against its
-   separate database using one shared Cargo target; the commerce lane then assembles a hashed
+   separate database and a disposable Redis using one shared Cargo target; the commerce lane then
+   assembles a hashed
    production-only bundle with one shared dependency store and the Content Studio standalone trace;
 2. builds production engine binaries in that same tested Rust lane when an engine rollout is needed,
    records runtime-artifact digests, and freezes the candidate;

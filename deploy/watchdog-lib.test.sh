@@ -1700,6 +1700,47 @@ grep -Fq 'NAME=apitoken-watchdog-postgres-$SLOT' "$ROOT/deploy/watchdog-test-db.
 grep -Fq -- '--label "apitoken.watchdog.slot=$SLOT"' "$ROOT/deploy/watchdog-test-db.sh" \
   || wd_die 'test database ownership is not fenced by slot'
 
+# The shared cache-affinity L2 is the only place two engine slots agree on a prompt-cache home. Its
+# single-winner and opaque-keyspace invariants were unprovable while the gate ran without Redis, so
+# the disposable instance and its mandatory wiring are pinned here. Losing any of these silently
+# returns ~350 lines of L2 code and the tenant-privacy assertions to zero executed coverage.
+redis_base_port=$(sed -n 's/^REDIS_BASE_PORT=${WATCHDOG_REDIS_PORT:-\([0-9]*\)}$/\1/p' \
+  "$ROOT/deploy/watchdog-test-db.sh")
+[[ -n $redis_base_port ]] || wd_die 'could not read the disposable test Redis base port'
+for redis_slot in 0 1 2; do
+  redis_slot_port=$((redis_base_port + redis_slot))
+  (( redis_slot_port < 32768 )) \
+    || wd_die "test Redis port $redis_slot_port is inside the ephemeral range and will collide"
+  (( redis_slot_port < test_db_base_port || redis_slot_port > test_db_base_port + 2 )) \
+    || wd_die "test Redis port $redis_slot_port collides with the disposable PostgreSQL range"
+done
+grep -Fq 'REDIS_NAME=apitoken-watchdog-redis-$SLOT' "$ROOT/deploy/watchdog-test-db.sh" \
+  || wd_die 'parallel test Redis slots do not have distinct container names'
+grep -Fq -- '--label apitoken.watchdog=test-redis' "$ROOT/deploy/watchdog-test-db.sh" \
+  || wd_die 'test Redis ownership is not labelled'
+grep -Fq 'redis-url)' "$ROOT/deploy/watchdog-test-db.sh" \
+  || wd_die 'the test helper cannot hand out a disposable Redis URL'
+# A --rm container must leave nothing behind, and the gate asserts protocol behaviour rather than
+# persistence. Durability flags here would only make the lane slower and flakier.
+grep -Fq -- "--save '' --appendonly no" "$ROOT/deploy/watchdog-test-db.sh" \
+  || wd_die 'the disposable Redis must stay in-memory only'
+grep -Fq 'if redis_is_owned; then' "$ROOT/deploy/watchdog-test-db.sh" \
+  || wd_die 'the disposable Redis is not torn down with the database'
+grep -Fq 'CLAUDE_API_TEST_REDIS_URL="$redis_url"' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the Rust lane does not receive the disposable Redis URL'
+grep -Fq 'wd_die "the Rust lane requires a disposable Redis URL"' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the Rust lane accepts a missing Redis URL instead of failing closed'
+grep -Fq 'redis_url=$(test_db redis-url)' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the candidate gate never resolves a disposable Redis URL'
+# CI=1 converts the suite's local "no Redis" escape hatch into a hard failure. Without it the
+# coverage could regress to silently skipped while every lane stayed green.
+grep -Fq 'CI=1 \' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the Rust lane does not mark itself as CI for the mandatory-Redis assertion'
+! grep -Fq '#[ignore' "$ROOT/crates/forward/src/affinity.rs" \
+  || wd_die 'the shared affinity Redis proof is ignored again and the gate would never run it'
+grep -Fq 'CLAUDE_API_TEST_REDIS_URL must be set in CI' "$ROOT/crates/forward/src/affinity.rs" \
+  || wd_die 'the affinity suite lost its mandatory-Redis assertion'
+
 # The authbot produces the subscriptions the engine serves from, so the production watchdog builds
 # it once beside the tested engine and the release controller only promotes those exact binaries.
 grep -Fq 'cargo build --locked --release -p claude-api -p authbot -p claude-router' "$ROOT/deploy/watchdog.sh" \
@@ -2169,7 +2210,7 @@ gate_contract=(
   'run_as_ci bash "$candidate/deploy/agent-merge.suite.sh"'
   'status --porcelain --untracked-files=no'
   'run_candidate_lane test_typescript_lane "$candidate" "$dsn" "$sales_dsn" "$openkeys_dsn"'
-  'run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" &'
+  'run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" \'
   'run_candidate_lane test_static_lane "$candidate" "$sha" "$static_required" &'
   'wait "$typescript_pid"'
   'wait "$rust_pid"'
