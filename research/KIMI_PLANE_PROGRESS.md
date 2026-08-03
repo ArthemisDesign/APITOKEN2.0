@@ -43,6 +43,8 @@
 | **всё вышеперечисленное в master, watchdog GREEN** | — | `f3974ac4` |
 | Плоскость: refresh + разбор `/usages` | `crates/forward/src/kimi/client.rs` | ветка |
 | Плоскость: цикл попыток и граница первого байта | `crates/forward/src/kimi/pool.rs` | ветка |
+| Durable-калибровка: типы turn event + валидация | `crates/registry/src/kimi_calibration.rs` | ветка |
+| Durable-калибровка: PostgreSQL read/write + CAS | `crates/registry/src/pg.rs` | ветка |
 | Auth Bot: публикация roster | `crates/authbot/src/kimi_roster.rs` | `dc175204` |
 | Auth Bot: обработчик `km_ready` (шов №1 закрыт) | `crates/authbot/src/bot.rs` | `391032bc` |
 | Плоскость: загрузчик roster | `crates/forward/src/kimi/roster.rs` | `d8a37422` |
@@ -59,11 +61,16 @@
 
 ## Следующее действие
 
-**Durable-калибровка** (`crates/registry`): read/write поверх уже вставших таблиц `0027` —
-вставка immutable turn event и продвижение cumulative subject spend одной транзакцией, CAS для
-состояния estimator'а, чтение истории наблюдений. Estimator и разбор `/usages` уже готовы и ждут
-только персистентности. После этого — поллер, который дренирует turn-FIFO перед каждым опросом
-квоты.
+**Bounded turn-FIFO и поллер квоты** (`crates/forward`): очередь между stream finalizer и
+authority — head остаётся pending при transient-сбое, semantic conflict карантинится и увеличивает
+dropped, flush происходит перед любым следующим turn'ом и перед каждым бесплатным опросом квоты,
+retire и shutdown делают финальный flush. Публиковать `pending_events`, `dropped_events`,
+`persistence_ok`. Персистентность и estimator готовы; не хватает именно порядка «сначала settle,
+потом quota».
+
+**Не забыть:** real-PG матрица для `record_kimi_turn` и `save_kimi_calibration`
+(`CLAUDE_API_TEST_DATABASE_URL=... cargo test -p registry`) — сейчас доказана только компиляция и
+инварианты в Rust, но не поведение CAS и idempotency против настоящей базы.
 
 **Процессные заметки (обе уже стоили потерянного мёржа):**
 

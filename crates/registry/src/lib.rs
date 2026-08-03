@@ -19,6 +19,62 @@ pub mod stage8;
 
 pub use funding_normalization_v2::*;
 pub use kimi_calibration::*;
+
+/// Column order shared by every KIMI calibration read. One list keeps SELECT and the row mapper
+/// from drifting apart, which is the classic source of silently shifted columns.
+pub const KIMI_CALIBRATION_COLUMNS: &str = "subject_id,plan,window_duration_secs,window_name,\
+resets_at,anchor_used_fraction_units,anchor_resolution_fraction_units,anchor_spend_nano,\
+used_fraction_units,measurement_resolution_fraction_units,observed_at,native_limit_units,\
+native_used_units,observed_fraction_units,observed_spend_nano,samples,\
+unattributed_fraction_units,current_capacity_nano,current_low_nano,current_high_nano,\
+current_confidence_bp,last_measured_at,estimator_version,version,updated_ts";
+
+/// Validate a KIMI calibration row read back from the authority.
+///
+/// A stored row that violates its own invariants is refused rather than served: publishing a
+/// capacity built on an impossible row would be worse than publishing nothing.
+pub fn validate_kimi_calibration_row(row: &KimiCalibrationRow) -> Result<()> {
+    if row.subject_id.is_empty() || row.plan.is_empty() {
+        bail!("KIMI calibration row has no identity");
+    }
+    if row.window_duration_secs <= 0 {
+        bail!("KIMI calibration row has an invalid window duration");
+    }
+    if row.native_limit_units <= 0 || row.native_used_units > row.native_limit_units {
+        bail!("KIMI calibration row has an invalid quota window");
+    }
+    if !(0..=KIMI_FRACTION_SCALE).contains(&row.used_fraction_units) {
+        bail!("KIMI calibration row fraction is out of range");
+    }
+    if !(1..=KIMI_FRACTION_SCALE).contains(&row.measurement_resolution_fraction_units) {
+        bail!("KIMI calibration row resolution is out of range");
+    }
+    match (row.current_low_nano, row.current_high_nano, row.current_capacity_nano) {
+        (Some(_), _, None) | (_, Some(_), None) => {
+            bail!("KIMI calibration row has bounds without a capacity")
+        }
+        (Some(low), Some(high), _) if low > high => {
+            bail!("KIMI calibration row bounds are inverted")
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Validate that a state row and the observation about to advance it describe the same window.
+pub fn validate_kimi_calibration_pair(
+    state: &KimiCalibrationRow,
+    observation: &KimiWindowObservation,
+) -> Result<()> {
+    validate_kimi_calibration_row(state)?;
+    if state.subject_id != observation.subject_id
+        || state.plan != observation.plan
+        || state.window_duration_secs != observation.window_duration_secs
+    {
+        bail!("KIMI calibration state and observation describe different windows");
+    }
+    Ok(())
+}
 pub use provider_calibration::*;
 
 use anyhow::{bail, Context, Result};

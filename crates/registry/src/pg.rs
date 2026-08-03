@@ -8,7 +8,8 @@ use crate::{
     AnthropicWindowObservation, BillingTotals, CodexCalibrationRow, CodexHomeCalibrationSpend,
     CodexTurnCalibrationAggregate, CodexTurnCalibrationEvent, CodexWindowObservation,
     GeminiCalibrationRow, GeminiExactCalibrationRow, GeminiExactWindowObservation,
-    GeminiWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerAttribution,
+    GeminiWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow, KimiCalibrationRow,
+    KimiTurnCalibrationEvent, KimiWindowObservation, LedgerAttribution,
     LedgerConsumerLag, LedgerFundingAllocation, LedgerRow, PoolStateRow,
     ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
     ProviderTurnCalibrationEvent, SettlementFailure, SettlementHealth, SpendAccountAgg,
@@ -5113,6 +5114,324 @@ impl PgStore {
             .iter()
             .map(pg_provider_turn_event)
             .collect())
+    }
+
+    fn kimi_calibration_row(row: &Row) -> KimiCalibrationRow {
+        KimiCalibrationRow {
+            subject_id: row.get(0),
+            plan: row.get(1),
+            window_duration_secs: row.get(2),
+            window_name: row.get(3),
+            resets_at: row.get(4),
+            anchor_used_fraction_units: row.get(5),
+            anchor_resolution_fraction_units: row.get(6),
+            anchor_spend_nano: row.get(7),
+            used_fraction_units: row.get(8),
+            measurement_resolution_fraction_units: row.get(9),
+            observed_at: row.get(10),
+            native_limit_units: row.get(11),
+            native_used_units: row.get(12),
+            observed_fraction_units: row.get(13),
+            observed_spend_nano: row.get(14),
+            samples: row.get(15),
+            unattributed_fraction_units: row.get(16),
+            current_capacity_nano: row.get(17),
+            current_low_nano: row.get(18),
+            current_high_nano: row.get(19),
+            current_confidence_bp: row.get(20),
+            last_measured_at: row.get(21),
+            estimator_version: row.get(22),
+            version: row.get(23),
+            updated_ts: row.get(24),
+        }
+    }
+
+    pub fn load_kimi_calibration(
+        &mut self,
+        subject_id: &str,
+        plan: &str,
+        window_duration_secs: i64,
+    ) -> Result<Option<KimiCalibrationRow>> {
+        let row = self.client.query_opt(
+            &format!(
+                "SELECT {} FROM kimi_window_calibrations \
+                 WHERE subject_id=$1 AND plan=$2 AND window_duration_secs=$3",
+                crate::KIMI_CALIBRATION_COLUMNS
+            ),
+            &[&subject_id, &plan, &window_duration_secs],
+        )?;
+        let row = row.as_ref().map(Self::kimi_calibration_row);
+        if let Some(row) = &row {
+            crate::validate_kimi_calibration_row(row)?;
+        }
+        Ok(row)
+    }
+
+    pub fn list_kimi_calibrations(&mut self) -> Result<Vec<KimiCalibrationRow>> {
+        let rows = self.client.query(
+            &format!(
+                "SELECT {} FROM kimi_window_calibrations \
+                 ORDER BY plan, window_duration_secs, subject_id",
+                crate::KIMI_CALIBRATION_COLUMNS
+            ),
+            &[],
+        )?;
+        let rows: Vec<KimiCalibrationRow> = rows.iter().map(Self::kimi_calibration_row).collect();
+        for row in &rows {
+            crate::validate_kimi_calibration_row(row)?;
+        }
+        Ok(rows)
+    }
+
+    /// Immutable observation history for one window, oldest first.
+    ///
+    /// This is what an estimator-version change rebuilds from: a stored derived value is never
+    /// authority, so the raw rows must remain readable in order.
+    pub fn load_kimi_window_observations(
+        &mut self,
+        subject_id: &str,
+        plan: &str,
+        window_duration_secs: i64,
+    ) -> Result<Vec<KimiWindowObservation>> {
+        let rows = self.client.query(
+            "SELECT subject_id,plan,window_duration_secs,window_name,resets_at,observed_at,\
+             native_used_units,native_limit_units,used_fraction_units,\
+             measurement_resolution_fraction_units,cumulative_api_spend_nano \
+             FROM kimi_window_observations \
+             WHERE subject_id=$1 AND plan=$2 AND window_duration_secs=$3 \
+             ORDER BY observed_at, id",
+            &[&subject_id, &plan, &window_duration_secs],
+        )?;
+        Ok(rows
+            .iter()
+            .map(|row| KimiWindowObservation {
+                subject_id: row.get(0),
+                plan: row.get(1),
+                window_duration_secs: row.get(2),
+                window_name: row.get(3),
+                resets_at: row.get(4),
+                observed_at: row.get(5),
+                native_used_units: row.get(6),
+                native_limit_units: row.get(7),
+                used_fraction_units: row.get(8),
+                measurement_resolution_fraction_units: row.get(9),
+                cumulative_api_spend_nano: row.get(10),
+            })
+            .collect())
+    }
+
+    /// Persist one priced turn and advance the subject's cumulative spend in the same
+    /// transaction.
+    ///
+    /// The pairing is the whole point: a quota observation read afterwards must never see a
+    /// window total that its own traffic has not yet been added to, or the estimator would
+    /// attribute our spend to somebody else's movement.
+    ///
+    /// Returns `Ok(true)` for a fresh insert and `Ok(false)` when the exact same payload was
+    /// already stored — the internal request id survives every pre-byte retry, so replay must be
+    /// a no-op. A *different* payload under that id is an error, never an update: overwriting
+    /// would silently rewrite priced history.
+    pub fn record_kimi_turn(&mut self, event: &KimiTurnCalibrationEvent) -> Result<bool> {
+        event.validate()?;
+        let mut tx = self.client.transaction()?;
+        let existing = tx.query_opt(
+            "SELECT subject_id,plan,requested_model,served_model,context_mode,reasoning_effort,\
+             tariff_schedule_id,priced_ts,completed_at,input_tokens,cache_read_tokens,\
+             cache_write_tokens,output_tokens,reasoning_output_tokens,api_input_nanousd,\
+             api_cache_read_nanousd,api_cache_write_nanousd,api_output_nanousd,api_total_nanousd \
+             FROM kimi_turn_calibration_events WHERE request_id=$1 FOR UPDATE",
+            &[&event.request_id],
+        )?;
+        if let Some(row) = existing {
+            let stored = KimiTurnCalibrationEvent {
+                request_id: event.request_id.clone(),
+                subject_id: row.get(0),
+                plan: row.get(1),
+                requested_model: row.get(2),
+                served_model: row.get(3),
+                context_mode: row.get(4),
+                reasoning_effort: row.get(5),
+                tariff_schedule_id: row.get(6),
+                priced_ts: row.get(7),
+                completed_at: row.get(8),
+                input_tokens: row.get(9),
+                cache_read_tokens: row.get(10),
+                cache_write_tokens: row.get(11),
+                output_tokens: row.get(12),
+                reasoning_output_tokens: row.get(13),
+                api_input_nanousd: row.get(14),
+                api_cache_read_nanousd: row.get(15),
+                api_cache_write_nanousd: row.get(16),
+                api_output_nanousd: row.get(17),
+                api_total_nanousd: row.get(18),
+            };
+            if !event.is_exact_replay_of(&stored) {
+                bail!("KIMI turn calibration replay conflict for the same request id");
+            }
+            tx.commit()?;
+            return Ok(false);
+        }
+
+        tx.execute(
+            "INSERT INTO kimi_turn_calibration_events(request_id,subject_id,plan,requested_model,\
+             served_model,context_mode,reasoning_effort,tariff_schedule_id,priced_ts,completed_at,\
+             input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,\
+             reasoning_output_tokens,api_input_nanousd,api_cache_read_nanousd,\
+             api_cache_write_nanousd,api_output_nanousd,api_total_nanousd) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)",
+            &[
+                &event.request_id,
+                &event.subject_id,
+                &event.plan,
+                &event.requested_model,
+                &event.served_model,
+                &event.context_mode,
+                &event.reasoning_effort,
+                &event.tariff_schedule_id,
+                &event.priced_ts,
+                &event.completed_at,
+                &event.input_tokens,
+                &event.cache_read_tokens,
+                &event.cache_write_tokens,
+                &event.output_tokens,
+                &event.reasoning_output_tokens,
+                &event.api_input_nanousd,
+                &event.api_cache_read_nanousd,
+                &event.api_cache_write_nanousd,
+                &event.api_output_nanousd,
+                &event.api_total_nanousd,
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO kimi_calibration_subject_spend(subject_id,spent_nano,\
+             tracking_started_ts,updated_ts) VALUES($1,$2,$3,$3) \
+             ON CONFLICT(subject_id) DO UPDATE SET \
+             spent_nano=kimi_calibration_subject_spend.spent_nano+EXCLUDED.spent_nano, \
+             updated_ts=EXCLUDED.updated_ts",
+            &[
+                &event.subject_id,
+                &event.api_total_nanousd,
+                &event.completed_at,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Cumulative official API replacement cost for a subject, or zero when nothing is tracked.
+    pub fn kimi_subject_spend(&mut self, subject_id: &str) -> Result<i64> {
+        let row = self.client.query_opt(
+            "SELECT spent_nano FROM kimi_calibration_subject_spend WHERE subject_id=$1",
+            &[&subject_id],
+        )?;
+        Ok(row.map(|row| row.get::<_, i64>(0)).unwrap_or(0))
+    }
+
+    /// Store an immutable observation and the estimator state it produced, under a CAS on
+    /// `version`.
+    ///
+    /// The observation row is inserted first and is idempotent by its own unique constraint, so a
+    /// duplicate poll adds no sample. Returns the new version, or `None` when the CAS lost — a
+    /// lost CAS means another writer advanced the same window and this caller must re-read rather
+    /// than overwrite.
+    pub fn save_kimi_calibration(
+        &mut self,
+        state: &KimiCalibrationRow,
+        observation: &KimiWindowObservation,
+    ) -> Result<Option<i64>> {
+        crate::validate_kimi_calibration_pair(state, observation)?;
+        let mut tx = self.client.transaction()?;
+        tx.execute(
+            "INSERT INTO kimi_window_observations(subject_id,plan,window_duration_secs,\
+             window_name,resets_at,observed_at,native_used_units,native_limit_units,\
+             used_fraction_units,measurement_resolution_fraction_units,\
+             cumulative_api_spend_nano,observation_source,estimator_version) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'poll',$12) \
+             ON CONFLICT DO NOTHING",
+            &[
+                &observation.subject_id,
+                &observation.plan,
+                &observation.window_duration_secs,
+                &observation.window_name,
+                &observation.resets_at,
+                &observation.observed_at,
+                &observation.native_used_units,
+                &observation.native_limit_units,
+                &observation.used_fraction_units,
+                &observation.measurement_resolution_fraction_units,
+                &observation.cumulative_api_spend_nano,
+                &state.estimator_version,
+            ],
+        )?;
+        let next_version = state.version + 1;
+        let updated = tx.execute(
+            "INSERT INTO kimi_window_calibrations(subject_id,plan,window_duration_secs,\
+             window_name,resets_at,anchor_used_fraction_units,anchor_resolution_fraction_units,\
+             anchor_spend_nano,used_fraction_units,measurement_resolution_fraction_units,\
+             observed_at,native_limit_units,native_used_units,observed_fraction_units,\
+             observed_spend_nano,samples,unattributed_fraction_units,current_capacity_nano,\
+             current_low_nano,current_high_nano,current_confidence_bp,last_measured_at,\
+             estimator_version,version,updated_ts) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,\
+             $22,$23,$24,$25) \
+             ON CONFLICT(subject_id,plan,window_duration_secs) DO UPDATE SET \
+             window_name=EXCLUDED.window_name,resets_at=EXCLUDED.resets_at,\
+             anchor_used_fraction_units=EXCLUDED.anchor_used_fraction_units,\
+             anchor_resolution_fraction_units=EXCLUDED.anchor_resolution_fraction_units,\
+             anchor_spend_nano=EXCLUDED.anchor_spend_nano,\
+             used_fraction_units=EXCLUDED.used_fraction_units,\
+             measurement_resolution_fraction_units=\
+             EXCLUDED.measurement_resolution_fraction_units,\
+             observed_at=EXCLUDED.observed_at,native_limit_units=EXCLUDED.native_limit_units,\
+             native_used_units=EXCLUDED.native_used_units,\
+             observed_fraction_units=EXCLUDED.observed_fraction_units,\
+             observed_spend_nano=EXCLUDED.observed_spend_nano,samples=EXCLUDED.samples,\
+             unattributed_fraction_units=EXCLUDED.unattributed_fraction_units,\
+             current_capacity_nano=EXCLUDED.current_capacity_nano,\
+             current_low_nano=EXCLUDED.current_low_nano,\
+             current_high_nano=EXCLUDED.current_high_nano,\
+             current_confidence_bp=EXCLUDED.current_confidence_bp,\
+             last_measured_at=EXCLUDED.last_measured_at,\
+             estimator_version=EXCLUDED.estimator_version,version=EXCLUDED.version,\
+             updated_ts=EXCLUDED.updated_ts \
+             WHERE kimi_window_calibrations.version=$26",
+            &[
+                &state.subject_id,
+                &state.plan,
+                &state.window_duration_secs,
+                &state.window_name,
+                &state.resets_at,
+                &state.anchor_used_fraction_units,
+                &state.anchor_resolution_fraction_units,
+                &state.anchor_spend_nano,
+                &state.used_fraction_units,
+                &state.measurement_resolution_fraction_units,
+                &state.observed_at,
+                &state.native_limit_units,
+                &state.native_used_units,
+                &state.observed_fraction_units,
+                &state.observed_spend_nano,
+                &state.samples,
+                &state.unattributed_fraction_units,
+                &state.current_capacity_nano,
+                &state.current_low_nano,
+                &state.current_high_nano,
+                &state.current_confidence_bp,
+                &state.last_measured_at,
+                &state.estimator_version,
+                &next_version,
+                &state.updated_ts,
+                &state.version,
+            ],
+        )?;
+        if updated == 0 {
+            // Another writer advanced this window first. Rolling back keeps the observation and
+            // the state consistent; the caller re-reads and folds again.
+            tx.rollback()?;
+            return Ok(None);
+        }
+        tx.commit()?;
+        Ok(Some(next_version))
     }
 
     pub fn load_anthropic_calibration(
