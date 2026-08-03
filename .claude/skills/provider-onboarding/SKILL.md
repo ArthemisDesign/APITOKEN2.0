@@ -13,7 +13,10 @@ request, mock test, merged runtime, or visually plausible capacity number.
 1. Create an isolated task worktree from current `origin/master` and follow `AGENTS.md`.
 2. Read `CLAUDE.md`, `BRANCHES.md`, `CONTRIBUTING.md`, `docs/CHANGE_CHECKLISTS.md`,
    `docs/DEPENDENCIES.md`, and every local `CLAUDE.md` for touched components.
-3. Read `docs/engine/PROVIDER_ONBOARDING.md` completely.
+3. Read `docs/engine/PROVIDER_ONBOARDING.md` completely, then
+   `docs/engine/PROVIDER_WIRING_CHECKLIST.md`, which maps the same contract onto the exact files,
+   symbols, commit order and already-encountered traps. Commit something within the first minutes:
+   a worktree with no commits reads as clean+merged and is reaped automatically.
 4. Compare the current Claude and GPT implementations before designing provider-specific code:
 
    - `crates/forward/src/anthropic_calibration.rs`;

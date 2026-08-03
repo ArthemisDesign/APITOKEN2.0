@@ -95,8 +95,9 @@ Code Assist OAuth subscriptions — AEAD-конвертами в атомарн�
 локальные правила — `crates/authbot/CLAUDE.md`.
 
 **Новый subscription-провайдер или полная переделка provider calibration** начинается с repo-skill
-`.claude/skills/provider-onboarding/SKILL.md` и канонического
-`docs/engine/PROVIDER_ONBOARDING.md`. Они задают terminal GA gate, Claude/GPT-grade immutable
+`.claude/skills/provider-onboarding/SKILL.md`, канонического
+`docs/engine/PROVIDER_ONBOARDING.md` и механической карты
+`docs/engine/PROVIDER_WIRING_CHECKLIST.md` (точные файлы, символы, порядок, ловушки). Они задают terminal GA gate, Claude/GPT-grade immutable
 calibration, безопасный live-runner и компактный admin control-room; один успешный запрос или
 правдоподобное число в UI этим gate не заменяются.
 
