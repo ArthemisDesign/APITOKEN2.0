@@ -210,7 +210,8 @@ Control API движка использует только на чтение. С
   fallback всегда явно stale и без стоимости. Других потребителей cache-файла нет. Контракт —
   `docs/engine/UNIFIED_ROUTER.md` §§«Совместимость с harness-агентами», «Модели и каталог».
 - **Fallback telemetry (router/provider planes → Prometheus, фаза 6.4c).** `crates/router`
-  производит unauthenticated loopback `/metrics` на 8798 с ровно 18
+  производит unauthenticated loopback `/metrics`; Caddy stable origin 8802 направляет scrape в тот
+  же active router slot 8800/8801, что и публичный vhost, с ровно 18
   `claude_router_fallback_total{from_namespace,to_namespace,reason}` series; публичный Caddy
   allowlist этот путь не пропускает. Каждая fixed `crates/server` plane через существующий
   authenticated `/metrics` производит три bounded
@@ -268,7 +269,7 @@ Authority — `crates/metering` (выше). Всё нижеописанное �
 | `api.apitoken.sale` | engine `127.0.0.1:8790` (blue-green слоты 8787/8788) |
 | `openai.api.apitoken.sale` | OpenAI-runtime `:8792` (слоты 8793/8797) |
 | `gemini.api.apitoken.sale` | Gemini-runtime `:8794` (слоты 8795/8799); `/oauth/callback` → authbot `:8796` |
-| `router.apitoken.sale` | claude-router `:8798` |
+| `router.apitoken.sale` | atomic `router_backend` → claude-router slot `:8800` или `:8801`; stable loopback `:8802` использует тот же backend |
 | `backend.apitoken.sale` | commerce `apps/api` `:8791` (слоты 3000/3001) |
 | `admin.apitoken.sale` | managed auth; data-роуты → engine 8790/8792/8794, `/admin/*` → commerce 8791, `/openkeys-admin/*` → 3410, `/partner-admin/*` → sales 3100; остальное → `apps/admin` `:3700` |
 | `partners.apitoken.sale` | `/v1/*` → sales-api `:3100`; остальное → sales-web `:3200` |
@@ -283,7 +284,7 @@ Authority — `crates/metering` (выше). Всё нижеописанное �
 ### systemd (`systemd/`) — сервис → приложение
 
 `claude-api-anthropic@` → Anthropic-слоты 8787/8788 (текущий юнит; `claude-api@` — legacy) ·
-`claude-api-openai@` → 8793/8797 · `claude-api-gemini@` → 8795/8799 · `claude-router` → 8798 ·
+`claude-api-openai@` → 8793/8797 · `claude-api-gemini@` → 8795/8799 · `claude-router@` → 8800/8801 (`claude-router` → 8798 только legacy handoff) ·
 `claude-authbot` → authbot ·
 `apitoken-api[@]` → `apps/api` 3000/3001 · `apitoken-worker` → `apps/worker` ·
 `apitoken-admin` → 3700 · `apitoken-content-studio` → 3500 · `apitoken-openkeys` → 3410 ·

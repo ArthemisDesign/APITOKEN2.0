@@ -131,8 +131,9 @@ restricted to `/v1beta/*`, `/health`, and `/balance`. Every other path returns `
 `router.apitoken.sale` is the unified multi-provider entry point (stage 1b of
 `docs/engine/UNIFIED_ROUTER.md`). The vhost only terminates TLS: the whole public contract
 (`/v1/messages*`, `/v1/responses*`, `/v1/chat/completions`, `/v1/models*`, `/v1beta/*`,
-`/health`, `/balance`) proxies to the router process — the `claude-router` singleton on
-loopback `127.0.0.1:8798` (`claude-router.service`). The router owns path-shape routing to the
+`/health`, `/balance`) imports the root-owned `router_backend` runtime snippet. In steady state it
+names exactly one `claude-router@` slot on loopback 8800 or 8801; the same snippet backs the
+loopback-only stable origin `127.0.0.1:8802` used by Prometheus and verification. The router owns path-shape routing to the
 three provider planes, the aggregated namespaced `/v1/models` catalog with its degradation
 policy, lane-shaped errors, and explicit off-by-default serial model fallback. Authentication,
 billing, in-plane retry boundaries, and streaming stay inside the planes; cross-plane fallback
@@ -142,9 +143,13 @@ snippet removes `X-Apitoken-Execution-Group` and `X-Apitoken-Attempt` at all fou
 vhosts (`api`, `openai.api`, `gemini.api`, and `router`). The router then injects its own identity
 only for an explicit fallback chain; clients can neither choose nor replay a group.
 `/health` reaches the router as well and stays
-router-local there — unified liveness is deliberately not a conjunction of plane health. The
-router is a singleton, so `deploy.sh` restarts it only on an actual binary change and gates the
-release on its `/ready`; blue-green for it is stage 6. The vhost has no `encode` policy so
+router-local there — unified liveness is deliberately not a conjunction of plane health.
+`router-bluegreen.sh` starts and exact-binary verifies the inactive slot before the root helper
+atomically replaces `/etc/caddy/router-active.caddy`, validates the complete live config and reloads
+Caddy. Reload preserves established streams on the old config; only then is the predecessor sent
+SIGTERM and allowed up to 660 seconds to drain. A rejected reload restores the previous snippet and
+reloads it before returning failure. The legacy singleton on 8798 remains only as the first-migration
+anchor and is never restarted by infrastructure rollout. The vhost has no `encode` policy so
 every lane keeps SSE identity-encoded end to end. Every other path returns `404`.
 
 ## References

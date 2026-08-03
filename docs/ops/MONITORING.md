@@ -249,7 +249,7 @@ or enable a broader fallback canary until the execution-state boundary is fixed 
 ## RouterMetricsDown
 
 Keep fallback disabled while telemetry is unavailable. Check `claude-router.service`, confirm
-`127.0.0.1:8798` is listening, and run `curl --fail http://127.0.0.1:8798/metrics` on the production
+`127.0.0.1:8802` is listening, and run `curl --fail http://127.0.0.1:8802/metrics` on the production
 host. The endpoint is intentionally unauthenticated because both the process and Prometheus are
 loopback-only; do not expose `/metrics` through Caddy or add a credential to request labels.
 

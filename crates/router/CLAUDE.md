@@ -135,7 +135,8 @@
   провайдера (ошибки плоскостей проксируются байт-в-байт, сюда не попадают).
 - `main.rs` — таблица маршрутов публичного контракта + композиция.
   Loopback-only `GET /metrics` не требует отдельного секрета; Caddy не включает его в публичный
-  allowlist, а Prometheus скрейпит `127.0.0.1:8798` напрямую.
+  allowlist, а Prometheus скрейпит stable Caddy origin `127.0.0.1:8802`, который следует за тем же
+  single-active backend, что публичный vhost.
 
 ## Проверка
 
@@ -175,11 +176,12 @@ divergence и settlement backlog. До зелёного результата uni
 
 ## Эксплуатация
 
-Юнит `systemd/claude-router.service` (singleton, `127.0.0.1:8798`; blue-green
-реплики — этап 6 документа). Публичная граница — Caddy vhost
-`router.apitoken.sale` (см. `deploy/CADDY.md`). Перезапуск рвёт живые стримы
-клиентов: плоскости корректно settle-ят через TeeMeter drain, клиенты
-переподключаются сами.
+Юнит `systemd/claude-router@.service` работает в двух fixed slots `127.0.0.1:8800/8801`;
+`deploy/router-bluegreen.sh` — единственный владелец их lifecycle. Он проверяет inactive slot по
+exact immutable binary, атомарно переводит Caddy через root-owned runtime snippet и лишь затем
+останавливает старый slot с bounded graceful drain. Legacy `claude-router.service:8798` существует
+только для первого handoff/rollback horizon. Публичная граница — Caddy vhost
+`router.apitoken.sale` (см. `deploy/CADDY.md`); multi-host HA этим не заявляется.
 
 Fallback после выката остаётся выключен: отсутствие env-флага — контрактный
 default. Canary включает его только явным

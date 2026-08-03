@@ -22,9 +22,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-ROUTER_SERVICE_PID=$(systemctl show --property MainPID --value claude-router.service)
+ROUTER_ACTIVE_PORT=$(sed -n \
+  's/^[[:space:]]*reverse_proxy 127\.0\.0\.1:\(880[01]\)[[:space:]]*$/\1/p' \
+  /etc/caddy/router-active.caddy)
+[[ $ROUTER_ACTIVE_PORT == 8800 || $ROUTER_ACTIVE_PORT == 8801 ]] || {
+  printf 'production router active-backend state is not a blue-green slot\n' >&2
+  exit 1
+}
+ROUTER_SERVICE="claude-router@$ROUTER_ACTIVE_PORT.service"
+ROUTER_SERVICE_PID=$(systemctl show --property MainPID --value "$ROUTER_SERVICE")
 [[ $ROUTER_SERVICE_PID =~ ^[1-9][0-9]*$ && -x /proc/$ROUTER_SERVICE_PID/exe ]] || {
-  printf 'production claude-router.service has no executable MainPID\n' >&2
+  printf 'production %s has no executable MainPID\n' "$ROUTER_SERVICE" >&2
   exit 1
 }
 DEPLOYED_BINARY=$(readlink -f "/proc/$ROUTER_SERVICE_PID/exe")

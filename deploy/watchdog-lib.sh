@@ -605,7 +605,7 @@ wd_verification_plan_has() {
 
 wd_path_is_engine() {
   case "$1" in
-    crates/*|vendor/*|Cargo.toml|Cargo.lock|config.env.example|server.env.example|schema/*|tests/*|tools/refresh-fingerprint.sh|tools/codex-native/*|systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-openai@.service|systemd/claude-api-gemini.service|systemd/claude-api-gemini@.service)
+    crates/*|vendor/*|Cargo.toml|Cargo.lock|config.env.example|server.env.example|schema/*|tests/*|tools/refresh-fingerprint.sh|tools/codex-native/*|systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-openai@.service|systemd/claude-api-gemini.service|systemd/claude-api-gemini@.service|systemd/claude-router.service|systemd/claude-router@.service|deploy/router-bluegreen.sh|deploy/router-promote.sh)
       return 0
       ;;
     *) return 1 ;;
@@ -756,7 +756,7 @@ wd_path_is_systemd_definition() {
     systemd/claude-api-backup.timer|systemd/claude-api-fingerprint.service|\
     systemd/claude-api-fingerprint.timer|systemd/apitoken-sales-api.service|\
     systemd/apitoken-sales-web.service|systemd/claude-authbot.service|\
-    systemd/claude-router.service|\
+    systemd/claude-router.service|systemd/claude-router@.service|\
     systemd/apitoken-openkeys.service|systemd/apitoken-admin.service|\
     systemd/apitoken-monitoring-collector.service|\
     systemd/apitoken-monitoring-collector.timer|systemd/journald-apitoken.conf|\
@@ -791,7 +791,7 @@ wd_path_is_controller_definition() {
     deploy/watchdog-github.sh|deploy/watchdog-control.sh|\
     deploy/deploy.sh|deploy/lib.sh|deploy/commerce-release-bundle.sh|\
     deploy/release-tree-digest.mjs|deploy/content-studio-start.sh|\
-    deploy/api-bluegreen.sh|deploy/engine-bluegreen.sh|deploy/engine-migrate.sh|deploy/codex-homes-migrate.sh|\
+    deploy/api-bluegreen.sh|deploy/engine-bluegreen.sh|deploy/router-bluegreen.sh|deploy/router-promote.sh|deploy/engine-migrate.sh|deploy/codex-homes-migrate.sh|\
     deploy/rollback.sh|deploy/sales-deploy.sh|deploy/openkeys-deploy.sh|\
     deploy/admin-deploy.sh)
       return 0

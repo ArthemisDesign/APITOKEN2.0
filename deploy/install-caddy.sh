@@ -6,11 +6,56 @@ set -euo pipefail
 TEMPLATE=${CADDY_TEMPLATE:-/opt/apitoken/repo/deploy/Caddyfile}
 LIVE=${CADDY_CONFIG:-/etc/caddy/Caddyfile}
 LIVE_DIR=${LIVE%/*}
+ROUTER_ACTIVE_SNIPPET=${ROUTER_ACTIVE_SNIPPET:-/etc/caddy/router-active.caddy}
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CHECK_ONLY=0
 [[ ${1:-} != --check ]] || CHECK_ONLY=1
 [[ $# -le 1 ]] || { echo "usage: $0 [--check]" >&2; exit 2; }
 [[ -f "$TEMPLATE" && -f "$LIVE" ]]
+[[ "$ROUTER_ACTIVE_SNIPPET" == /etc/caddy/router-active.caddy ]]
+
+router_backend_port() {
+  local ports
+  ports=$(sed -n 's/^[[:space:]]*reverse_proxy 127\.0\.0\.1:\([0-9][0-9]*\)[[:space:]]*$/\1/p' \
+    "$ROUTER_ACTIVE_SNIPPET") || return 1
+  [[ $ports != *$'\n'* ]] || return 1
+  case "$ports" in 8798|8800|8801) printf '%s\n' "$ports" ;; *) return 1 ;; esac
+}
+
+ensure_router_active_snippet() {
+  local port= candidate bootstrap_tmp
+  if [[ -e $ROUTER_ACTIVE_SNIPPET || -L $ROUTER_ACTIVE_SNIPPET ]]; then
+    [[ -f $ROUTER_ACTIVE_SNIPPET && ! -L $ROUTER_ACTIVE_SNIPPET ]] \
+      || { echo 'router active-backend state is unsafe' >&2; return 1; }
+    [[ $(stat -c '%u' -- "$ROUTER_ACTIVE_SNIPPET") == 0 ]] \
+      || { echo 'router active-backend state must be root-owned' >&2; return 1; }
+    router_backend_port >/dev/null \
+      || { echo 'router active-backend state is malformed' >&2; return 1; }
+    return 0
+  fi
+
+  # Bootstrap only: preserve the currently serving backend while the Caddy template learns the
+  # runtime import. This file does not affect the running Caddy config until the validated reload.
+  for candidate in 8798 8800 8801; do
+    if curl --noproxy '*' --fail --silent --show-error --max-time 2 \
+        "http://127.0.0.1:$candidate/ready" >/dev/null 2>&1; then
+      port=$candidate
+      break
+    fi
+  done
+  [[ -n $port ]] || { echo 'no ready router backend exists for Caddy bootstrap' >&2; return 1; }
+  bootstrap_tmp=$(mktemp /etc/caddy/.router-active.bootstrap.XXXXXX)
+  if ! { printf '(router_backend) {\n\treverse_proxy 127.0.0.1:%s\n}\n' "$port" >"$bootstrap_tmp" \
+      && chown root:root "$bootstrap_tmp" \
+      && chmod 0644 "$bootstrap_tmp" \
+      && mv -f -- "$bootstrap_tmp" "$ROUTER_ACTIVE_SNIPPET"; }; then
+    rm -f -- "$bootstrap_tmp"
+    return 1
+  fi
+  echo "initialized router active-backend state on 127.0.0.1:$port"
+}
+
+ensure_router_active_snippet
 
 tmp=$(mktemp "$LIVE_DIR/.Caddyfile.stage2.XXXXXX")
 legacy_payload=$(mktemp /etc/caddy/.admin-legacy.XXXXXX)

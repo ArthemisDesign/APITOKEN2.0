@@ -82,8 +82,8 @@ done
 # The stateless router owns a separate unauthenticated loopback endpoint. Its counter label matrix is
 # compile-bounded, and the engine proof counter is consumed only after aggregation by fixed plane.
 grep -F 'job_name: claude-router' -A 4 "$ROOT/observability/prometheus/prometheus.yml" \
-  | grep -Fq 'targets: ["127.0.0.1:8798"]' \
-  || { printf 'router metrics scrape is missing from loopback 8798\n' >&2; exit 1; }
+  | grep -Fq 'targets: ["127.0.0.1:8802"]' \
+  || { printf 'router metrics scrape is missing from stable loopback 8802\n' >&2; exit 1; }
 ! grep -F 'job_name: claude-router' -A 4 "$ROOT/observability/prometheus/prometheus.yml" \
   | grep -Fq 'authorization:' \
   || { printf 'router loopback metrics unexpectedly require a credential\n' >&2; exit 1; }

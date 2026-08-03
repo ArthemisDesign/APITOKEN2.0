@@ -64,6 +64,10 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/api-bluegreen.sh
   install -o root -g root -m 0755 "$ROOT/deploy/engine-bluegreen.sh" \
     /usr/local/lib/apitoken-watchdog/controller/engine-bluegreen.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/router-bluegreen.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/router-bluegreen.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/router-promote.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/router-promote.sh
   install -o root -g root -m 0755 "$ROOT/deploy/engine-migrate.sh" \
     /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/codex-homes-migrate.sh" \
@@ -84,7 +88,7 @@ install_controller_definitions() {
 install_systemd_definitions() {
   command -v systemctl >/dev/null || { echo 'systemd is required' >&2; return 1; }
   command -v systemd-tmpfiles >/dev/null || { echo 'systemd-tmpfiles is required' >&2; return 1; }
-  local restart_authbot=0 restart_router=0 engine_current
+  local restart_authbot=0 engine_current
   # The watchdog's `ProtectSystem=full` namespace keeps /etc/tmpfiles.d read-only even after sudo.
   # Stage the exact candidate input under the fixed root-owned controller path; a manager-spawned
   # root oneshot below publishes it from a fresh namespace, just like the sudoers installer.
@@ -105,7 +109,7 @@ install_systemd_definitions() {
     apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
-    claude-router.service \
+    claude-router.service claude-router@.service \
     apitoken-openkeys.service \
     apitoken-admin.service \
     apitoken-devbot.service \
@@ -123,12 +127,6 @@ install_systemd_definitions() {
       && ! cmp -s "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"; then
       restart_authbot=1
     fi
-    if [[ "$unit" == claude-router.service \
-      && -f "/etc/systemd/system/$unit" \
-      && ! -L "/etc/systemd/system/$unit" ]] \
-      && ! cmp -s "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"; then
-      restart_router=1
-    fi
     install -o root -g root -m 0644 "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"
   done
   systemctl daemon-reload
@@ -136,11 +134,6 @@ install_systemd_definitions() {
     # Unit contract changes must take effect; ordinary binary-only engine deploys still preserve
     # in-flight device authorization in deploy.sh.
     systemctl try-restart claude-authbot.service
-  fi
-  if (( restart_router )); then
-    # Router unit contract changes take effect immediately; the router is stateless, so a
-    # restart loses nothing (planes settle in-flight streams through the TeeMeter drain).
-    systemctl try-restart claude-router.service
   fi
   systemctl start apitoken-tmpfiles-install.service
   systemctl start apitoken-sysctl-install.service

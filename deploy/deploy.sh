@@ -274,57 +274,6 @@ restart_authbot_if_changed() {
     || die "$unit failed exact-release verification after restart"
 }
 
-# Restart the unified router only when the binary it is running differs from the one just shipped.
-#
-# Same adopt-exactly-what-was-tested contract as authbot, but the router terminates public client
-# traffic (stage 1b of docs/engine/UNIFIED_ROUTER.md), so promotion additionally fails unless the
-# restarted process answers /ready: a silent listener regression must not read as a green release.
-# The router is a singleton, so the restart briefly drops in-flight streams on router.apitoken.sale
-# (blue-green for it is stage 6) and therefore happens only on an actual binary change.
-restart_router_if_changed() {
-  local current=$1
-  local unit=claude-router.service
-  if [[ "$DRY_RUN" == "1" ]]; then
-    log "dry-run: would restart $unit unless it already runs $current/claude-router"
-    return 0
-  fi
-  if [[ ! -f "/etc/systemd/system/$unit" ]]; then
-    log "$unit is not installed on this host; skipping the router restart"
-    return 0
-  fi
-  local pid exe
-  pid=$(systemctl show "$unit" -p MainPID --value 2>/dev/null || true)
-  if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
-    exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)
-    if [[ -n "$exe" && -f "$exe" ]] && cmp -s "$exe" "$current/claude-router"; then
-      log "router already runs this exact binary; leaving $unit and any in-flight streams alone"
-      return 0
-    fi
-    log "$unit runs a different binary; restarting onto the tested release"
-  fi
-  log "restarting $unit onto the freshly released router"
-  if ! privileged_command systemctl restart "$unit"; then
-    die "$unit did not restart onto the tested release"
-  fi
-  sleep 1
-  pid=$(systemctl show "$unit" -p MainPID --value 2>/dev/null || true)
-  [[ "$pid" =~ ^[1-9][0-9]*$ ]] \
-    || die "$unit is not active after restart"
-  exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)
-  [[ -n "$exe" && -f "$exe" ]] && cmp -s "$exe" "$current/claude-router" \
-    || die "$unit failed exact-release verification after restart"
-  # The port must match CLAUDE_ROUTER_PORT in systemd/claude-router.service; pinned by
-  # watchdog-lib.test.sh so the two cannot drift apart silently.
-  local attempt
-  for attempt in $(seq 1 15); do
-    if curl --noproxy '*' -fsS --max-time 2 "http://127.0.0.1:8798/ready" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 2
-  done
-  die "$unit restarted onto the tested release but never became ready on 127.0.0.1:8798"
-}
-
 fetch_release_commit() {
   log "fetching tested commit $SHA from origin"
   run git -C "$SOURCE_REPO" fetch --no-tags origin "$SHA"
@@ -725,7 +674,8 @@ activate_release_links() {
 
   if [[ "$DEPLOY_ENGINE" == "1" ]]; then
     restart_authbot_if_changed "$ENGINE_RELEASE"
-    restart_router_if_changed "$ENGINE_RELEASE"
+    # The public router is deliberately not restarted here. deploy/router-bluegreen.sh starts an
+    # inactive exact-binary slot and promotes it after this release-selection transaction commits.
   fi
 
   if [[ "$DRY_RUN" != "1" ]]; then

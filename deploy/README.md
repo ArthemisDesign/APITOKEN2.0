@@ -137,8 +137,8 @@ server. Commerce application units receive no engine DSN and continue to communi
 the Control API. Both commerce processes use the stable loopback origin `http://127.0.0.1:8790`;
 Caddy health-routes that origin to the active engine slot.
 
-After the Stage-2 database cutover, use `deploy.sh --engine-bluegreen` followed by
-`engine-bluegreen.sh`. That controller owns the provider cohort: it rolls the Anthropic pair, the
+After the Stage-2 database cutover, use `deploy.sh --engine-bluegreen`, then
+`engine-bluegreen.sh`, then `router-bluegreen.sh`. The first controller owns the provider cohort: it rolls the Anthropic pair, the
 two OpenAI HTTP slots over a persistent per-home Codex daemon cohort, and the isolated active/passive
 Gemini slots from one selected SHA. An OpenAI candidate cannot drain its predecessor until the old and
 candidate HTTP generations expose the exact same opaque home set. Parity is candidate readiness,
@@ -154,6 +154,9 @@ Before any target slot is started, `engine-bluegreen.sh` invokes the fixed root-
 `engine-migrate.sh` helper for the selected release. Engine startup only verifies the installed
 schema and never runs DDL; pending migrations are applied explicitly, one version transaction at a
 time, while the existing slot remains the serving fallback.
+The router controller independently rolls fixed 8800/8801 slots: exact binary and direct readiness
+precede an atomic root-owned Caddy backend promotion; the predecessor is SIGTERM-drained only after
+new requests have moved. Public traffic and stable metrics origin 8802 share that one backend.
 Paid Gemini project/key provisioning is outside release artifacts and is documented in
 [`docs/engine/GEMINI_PROVIDER.md`](../docs/engine/GEMINI_PROVIDER.md).
 `api-bluegreen.sh` similarly owns commerce slots; `--with-worker` restarts the single worker and
@@ -230,6 +233,7 @@ deploy/deploy.sh --api-only <sha>
 deploy/api-bluegreen.sh
 deploy/deploy.sh --engine-bluegreen <sha>
 deploy/engine-bluegreen.sh
+deploy/router-bluegreen.sh
 ```
 
 ## One-time Stage-2 engine database cutover
@@ -253,6 +257,7 @@ sudo deploy/install-caddy.sh --check
 sudo deploy/install-caddy.sh
 sudo deploy/configure-engine-control-url.sh
 deploy/engine-bluegreen.sh
+deploy/router-bluegreen.sh
 ```
 
 After configuring the stable origin, start a new commerce API slot and restart the single worker so
@@ -335,6 +340,7 @@ Engine rollback is the same pattern:
 ```bash
 deploy/rollback.sh --engine-bluegreen [<sha>]
 deploy/engine-bluegreen.sh
+deploy/router-bluegreen.sh
 ```
 
 The first command selects the immutable rollback release without touching either running API slot. The second starts and verifies the inactive slot from that release, lets Caddy admit it, pre-drains the old slot, and then stops the old process. Do not insert an API restart between these commands.

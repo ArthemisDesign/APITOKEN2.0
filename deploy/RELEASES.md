@@ -61,6 +61,12 @@ preceding marker-less Gemini release. Rollback to a pre-Gemini release stops and
 incarnations.
 `claude-api.service` exists only as the bridge through the first cutover and is disabled afterward.
 
+The unified `claude-router` binary in the same engine release runs through
+`claude-router@8800/8801.service`. `/etc/caddy/router-active.caddy` names exactly one slot for both
+the public vhost and stable loopback origin 8802. `router-bluegreen.sh` admits an exact-release
+candidate before the root helper atomically reloads Caddy, then SIGTERM-drains the predecessor.
+The old `claude-router.service:8798` is retained only as the first-handoff/rollback anchor.
+
 The native Codex provider has no sidecar artifact: its wire identity and credentials discipline
 ship inside the tested engine binary, so a Codex-affecting change is gated by the same engine lane
 as everything else. Profiles are sealed envelopes under `/srv/claude-api/data/codex`, shared
@@ -103,7 +109,7 @@ When the target differs from `current`:
 1. the original `current` becomes `previous` when one exists;
 2. a temporary symlink is atomically moved over `current`;
 3. legacy engine mode may restart one unit; PostgreSQL mode leaves both engine slots untouched;
-4. `engine-bluegreen.sh` or `api-bluegreen.sh` exact-unit gates the inactive target before pre-drain.
+4. `engine-bluegreen.sh`, `router-bluegreen.sh`, or `api-bluegreen.sh` exact-unit gates the inactive target before pre-drain.
 
 If the target already equals `current`, neither `current` nor `previous` is rewritten. This preserves the real prior rollback target during a same-SHA deploy or no-op rollback.
 

@@ -2,8 +2,8 @@
 
 Статус: **этапы 1–5, фазы 6.1–6.3, policy/presets 6.4a–6.4b и telemetry/mock-load
 часть 6.4c реализованы при выключенном fallback.**
-`router.apitoken.sale` обслуживает весь публичный native-контракт через процесс
-`claude-router` (singleton `127.0.0.1:8798`), единый агрегированный каталог
+`router.apitoken.sale` обслуживает весь публичный native-контракт через blue-green процессы
+`claude-router@8800/8801` за атомарно переключаемым Caddy backend, единый агрегированный каталог
 `GET /v1/models{,/{id}}` и universal Chat/Responses/Messages lanes с model-based
 dispatch на три плоскости. `/v1/messages/count_tokens` использует тот же dispatch.
 До полного OpenRouter-grade routing остаются post-deploy live canary и отдельный GA-флаг 6.4c. Документ фиксирует целевую
@@ -600,9 +600,9 @@ request получает `400 invalid_request`, неизвестный/неак�
    конъюнкция health плоскостей), остальные пути — 404. Без нового кода; изоляция,
    биллинг и auth passthrough — «из коробки». Провайдер определяется путём, не ключом
    и не моделью. `/v1/models` намеренно не обслуживается до этапа 1b.
-2. **1b. `crates/router` + единый каталог — РЕАЛИЗОВАН (код и конвейер), cutover отдельным
-   шагом.** Stateless router (`crates/router`, бинарь `claude-router`, loopback `127.0.0.1:8798`,
-   singleton `claude-router.service`): байт-в-байт proxy трёх плоскостей без native retries и без
+2. **1b. `crates/router` + единый каталог — РЕАЛИЗОВАН.** Stateless router (`crates/router`,
+   бинарь `claude-router`, blue-green loopback slots `127.0.0.1:8800/8801`): байт-в-байт proxy
+   трёх плоскостей без native retries и без
    общего таймаута (стримы не обрезаются), hop-by-hop заголовки снимаются, ошибки шейпятся
    под lane пути. Единый `/v1/models` агрегирует каталоги плоскостей конкурентно: namespaced
    ID (`anthropic/…`, `openai/…`, `google/…`) + только глобально однозначные aliases, TTL-кэш
@@ -614,13 +614,19 @@ request получает `400 invalid_request`, неизвестный/неак�
    Упавшая плоскость опускается с маркировкой `x-apitoken-catalog-degraded`, пустой каталог
    плоскости считается сбоем, 401/403 плоскости → единый 401, все плоскости без кэша → 503.
    Auth passthrough без изменений; `/health`, `/live`, `/ready` — router-local. Деплой: третий
-   tested artifact в цепочке watchdog → promote → stage, `restart_router_if_changed` сравнивает
-   запущенный бинарь и требует `/ready` до зелёного релиза; юнит ставится watchdog-infrastructure
-   шагом. На этапе 1b — без cross-provider translation и fallback; последующие фазы
+   tested artifact в цепочке watchdog → promote → stage. `router-bluegreen.sh` запускает inactive
+   slot, требует direct `/ready` и exact `/proc/<pid>/exe` из выбранного immutable release,
+   после чего root-owned `router-promote.sh` атомарно заменяет
+   `/etc/caddy/router-active.caddy`, валидирует и reload'ит Caddy. Новые запросы переходят на
+   target, а старый Axum-процесс получает SIGTERM только после cutover и дренирует уже открытые SSE
+   в пределах `TimeoutStopSec=660`. На этапе 1b — без cross-provider translation и fallback;
+   последующие фазы
    расширяют тот же bounded context. Cutover Caddy выполнен: vhost
-   `router.apitoken.sale` терминирует TLS и проксирует весь публичный контракт (включая
-   `/v1/models*`) в router на `127.0.0.1:8798`; раздельные шаги (процесс, затем переворот)
-   исключили окно 502 между установкой Caddyfile и запуском router'а.
+   `router.apitoken.sale` терминирует TLS и импортирует тот же single-active backend, что stable
+   loopback origin `127.0.0.1:8802` для метрик/проверок. Legacy `claude-router.service:8798`
+   сохраняется только как bootstrap/rollback anchor первого перехода и после переключения
+   останавливается и отключается. Это устраняет и окно 502, и release-induced обрыв SSE, не
+   добавляя multi-host HA и не меняя default-off fallback.
 3. **Universal Chat (2–4 недели).** `/v1/chat/completions` для всех моделей каталога:
    text, images, tools, structured output, streaming. Реализуется по решениям 1–4 раздела
    «Решения universal lanes»: адаптеры в плоскостях, router — только model-based routing,

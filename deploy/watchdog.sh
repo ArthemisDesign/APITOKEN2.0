@@ -531,7 +531,7 @@ live_release_shas() {
     claude-api-openai.service claude-api-openai@8793.service claude-api-openai@8797.service \
     claude-api-gemini.service claude-api-gemini@8795.service claude-api-gemini@8799.service \
     claude-authbot.service \
-    claude-router.service \
+    claude-router.service claude-router@8800.service claude-router@8801.service \
     apitoken-api@3000.service apitoken-api@3001.service \
     apitoken-worker.service apitoken-content-studio.service; do
     systemctl is-active --quiet "$unit" || continue
@@ -1304,6 +1304,8 @@ final_verify_engine() {
   local sha=$1
   engine_runtime_aligned "$sha" \
     || wd_die "engine runtime is not in a single-slot steady state after cutover: $ENGINE_RUNTIME_DETAIL"
+  router_runtime_aligned "$sha" \
+    || wd_die "router runtime is not in a single-slot steady state after cutover: $ROUTER_RUNTIME_DETAIL"
 }
 
 engine_runtime_aligned() {
@@ -1523,19 +1525,88 @@ engine_runtime_aligned() {
     "$legacy_active" "$legacy_enabled"
 }
 
-reconcile_engine_runtime() {
-  local sha=$1 current expected
+router_active_backend_port() {
+  local snippet=/etc/caddy/router-active.caddy ports
+  [[ -f $snippet && ! -L $snippet ]] || return 1
+  [[ $(stat -c '%u' -- "$snippet" 2>/dev/null) == 0 ]] || return 1
+  ports=$(sed -n 's/^[[:space:]]*reverse_proxy 127\.0\.0\.1:\([0-9][0-9]*\)[[:space:]]*$/\1/p' \
+    "$snippet") || return 1
+  [[ $ports != *$'\n'* ]] || return 1
+  case "$ports" in 8800|8801) printf '%s\n' "$ports" ;; *) return 1 ;; esac
+}
+
+router_runtime_aligned() {
+  local sha=$1 expected active_port port unit pid executable status
+  local active_8800=0 ready_8800=0 current_8800=0 enabled_8800=0
+  local active_8801=0 ready_8801=0 current_8801=0 enabled_8801=0
+  local legacy_active=0 legacy_ready=0 legacy_enabled=0 stable_status
   expected="$ENGINE_RELEASE_ROOT/$sha"
-  if engine_runtime_aligned "$sha"; then return 0; fi
+  active_port=$(router_active_backend_port 2>/dev/null || true)
+  for port in 8800 8801; do
+    unit="claude-router@$port.service"
+    local active=0 ready=0 selected=0 enabled=0
+    systemctl is-active --quiet "$unit" && active=1
+    systemctl is-enabled --quiet "$unit" && enabled=1
+    status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+      "http://127.0.0.1:$port/ready" 2>/dev/null || true)
+    [[ $status == 200 ]] && ready=1
+    if (( active == 1 )); then
+      pid=$(systemctl show "$unit" -p MainPID --value)
+      if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
+        executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)
+        [[ $executable == "$expected/claude-router" ]] && selected=1
+      fi
+    fi
+    if [[ $port == 8800 ]]; then
+      active_8800=$active; ready_8800=$ready; current_8800=$selected; enabled_8800=$enabled
+    else
+      active_8801=$active; ready_8801=$ready; current_8801=$selected; enabled_8801=$enabled
+    fi
+  done
+  systemctl is-active --quiet claude-router.service && legacy_active=1
+  systemctl is-enabled --quiet claude-router.service && legacy_enabled=1
+  status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+    http://127.0.0.1:8798/ready 2>/dev/null || true)
+  [[ $status == 200 ]] && legacy_ready=1
+  stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+    http://127.0.0.1:8802/ready 2>/dev/null || true)
+  ROUTER_RUNTIME_DETAIL="active_backend=${active_port:-invalid} stable=${stable_status:-unreachable} 8800=$active_8800:$ready_8800:$current_8800:$enabled_8800 8801=$active_8801:$ready_8801:$current_8801:$enabled_8801 legacy=$legacy_active:$legacy_ready:$legacy_enabled"
+  [[ $stable_status == 200 && $legacy_active == 0 && $legacy_ready == 0 && $legacy_enabled == 0 ]] || return 1
+  case "$active_port" in
+    8800)
+      (( active_8800 == 1 && ready_8800 == 1 && current_8800 == 1 && enabled_8800 == 1 \
+        && active_8801 == 0 && ready_8801 == 0 && current_8801 == 0 && enabled_8801 == 0 ))
+      ;;
+    8801)
+      (( active_8801 == 1 && ready_8801 == 1 && current_8801 == 1 && enabled_8801 == 1 \
+        && active_8800 == 0 && ready_8800 == 0 && current_8800 == 0 && enabled_8800 == 0 ))
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+reconcile_engine_runtime() {
+  local sha=$1 current expected engine_ok=0 router_ok=0
+  expected="$ENGINE_RELEASE_ROOT/$sha"
+  engine_runtime_aligned "$sha" && engine_ok=1
+  router_runtime_aligned "$sha" && router_ok=1
+  if (( engine_ok == 1 && router_ok == 1 )); then return 0; fi
   current=$(readlink -f -- "$ENGINE_RELEASE_ROOT/current")
   [[ $current == "$expected" ]] \
-    || wd_die "refusing slot-only repair while engine release selection is wrong: $ENGINE_RUNTIME_DETAIL"
+    || wd_die "refusing slot-only repair while engine release selection is wrong: engine=$ENGINE_RUNTIME_DETAIL router=$ROUTER_RUNTIME_DETAIL"
   CURRENT_PHASE=reconciling-engine
-  status "repairing engine single-slot runtime drift: $ENGINE_RUNTIME_DETAIL"
-  wd_warn "engine runtime drift detected; converging through the health-gated controller: $ENGINE_RUNTIME_DETAIL"
-  "$CONTROLLER_ROOT/engine-bluegreen.sh"
+  if (( engine_ok == 0 )); then
+    status "repairing engine single-slot runtime drift: $ENGINE_RUNTIME_DETAIL"
+    wd_warn "engine runtime drift detected; converging through the health-gated controller: $ENGINE_RUNTIME_DETAIL"
+    "$CONTROLLER_ROOT/engine-bluegreen.sh"
+  fi
+  if (( router_ok == 0 )); then
+    status "repairing router single-slot runtime drift: $ROUTER_RUNTIME_DETAIL"
+    wd_warn "router runtime drift detected; converging through the atomic Caddy controller: $ROUTER_RUNTIME_DETAIL"
+    "$CONTROLLER_ROOT/router-bluegreen.sh"
+  fi
   final_verify_engine "$sha"
-  wd_log "engine runtime drift repaired; exactly one current slot is active, ready, and enabled"
+  wd_log "engine and router runtime drift repaired; each has exactly one current active, ready, and enabled slot"
 }
 
 final_verify_backend() {
@@ -1875,6 +1946,10 @@ rollback_engine() {
   previous_sha=$(basename -- "$(readlink -f -- "$ENGINE_RELEASE_ROOT/previous")")
   attempt_rollback engine --engine-bluegreen engine-bluegreen.sh "$ENGINE_RELEASE_ROOT/previous" \
     || return 1
+  if ! "$CONTROLLER_ROOT/router-bluegreen.sh"; then
+    wd_warn "engine providers rolled back, but router rollback cutover failed"
+    return 1
+  fi
   wd_atomic_write "$ENGINE_FILE" "$previous_sha"
   ENGINE_SHA=$previous_sha
 }
@@ -1903,16 +1978,21 @@ deploy_engine() {
     rollback_engine || true
     wd_die "engine provider controller failed (exit $controller_rc)"
   fi
+  "$CONTROLLER_ROOT/router-bluegreen.sh" || controller_rc=$?
+  if (( controller_rc != 0 )); then
+    rollback_engine || true
+    wd_die "unified router blue-green controller failed (exit $controller_rc)"
+  fi
   # HTTP admission must never queue behind a stateful daemon roll. First prove that the committed
   # target is the sole ready/enabled gateway and can use the currently serving authenticated
   # cohort, then converge a changed pin after traffic already has a healthy availability anchor.
-  if ! engine_runtime_aligned "$sha" serving; then
+  if ! engine_runtime_aligned "$sha" serving || ! router_runtime_aligned "$sha"; then
     rollback_engine || true
-    wd_die "engine runtime has no admitted single-slot serving state after cutover: $ENGINE_RUNTIME_DETAIL"
+    wd_die "engine/router runtime has no admitted single-slot serving state after cutover: engine=$ENGINE_RUNTIME_DETAIL router=$ROUTER_RUNTIME_DETAIL"
   fi
-  if ! engine_runtime_aligned "$sha" converged; then
+  if ! engine_runtime_aligned "$sha" converged || ! router_runtime_aligned "$sha"; then
     rollback_engine || true
-    wd_die "engine runtime is not converged after cutover: $ENGINE_RUNTIME_DETAIL"
+    wd_die "engine/router runtime is not converged after cutover: engine=$ENGINE_RUNTIME_DETAIL router=$ROUTER_RUNTIME_DETAIL"
   fi
   wd_atomic_write "$ENGINE_FILE" "$sha"
   github_deployment_success engine

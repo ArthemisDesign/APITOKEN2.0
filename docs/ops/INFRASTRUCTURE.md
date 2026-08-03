@@ -139,7 +139,8 @@ systemd/claude-api-anthropic@.service PostgreSQL-fenced Anthropic blue/green slo
 systemd/claude-api-openai.service   legacy pre-bluegreen singleton unit (superseded)
 systemd/claude-api-openai@.service  PostgreSQL-fenced OpenAI/Codex blue/green slots
 systemd/claude-api-gemini@.service  PostgreSQL-fenced Gemini active/passive slots
-systemd/claude-router.service       unified router singleton (loopback 8798, UNIFIED_ROUTER 1b)
+systemd/claude-router@.service      unified router blue-green slots (loopback 8800/8801; stable Caddy 8802)
+systemd/claude-router.service       legacy first-handoff/rollback anchor only (loopback 8798)
 systemd/claude-api-backup.service
 systemd/claude-api-backup.timer
 systemd/apitoken-deploy-watchdog.service

@@ -28,6 +28,9 @@ Cmnd_Alias APITOKEN_HELPERS = \
     /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh [0-9a-f]* --apply-caddy, \
     /usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh --apply, \
     /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh [0-9a-f]*, \
+    /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8798, \
+    /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8800, \
+    /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8801, \
     /usr/local/lib/apitoken-watchdog/watchdog-github *, \
     /usr/local/lib/apitoken-watchdog/controller/sales-deploy.sh [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/controller/openkeys-deploy.sh [0-9a-f]*, \
@@ -92,6 +95,11 @@ Cmnd_Alias APITOKEN_UNITS = \
     /usr/bin/systemctl stop claude-router.service, \
     /usr/bin/systemctl enable claude-router.service, \
     /usr/bin/systemctl disable claude-router.service, \
+    /usr/bin/systemctl start claude-router@[0-9]*.service, \
+    /usr/bin/systemctl stop claude-router@[0-9]*.service, \
+    /usr/bin/systemctl enable claude-router@[0-9]*.service, \
+    /usr/bin/systemctl disable claude-router@[0-9]*.service, \
+    /usr/bin/systemctl restart claude-router@[0-9]*.service, \
     /usr/bin/systemctl start apitoken-content-studio.service, \
     /usr/bin/systemctl stop apitoken-content-studio.service, \
     /usr/bin/systemctl enable apitoken-content-studio.service, \
@@ -191,7 +199,9 @@ Cmnd_Alias APITOKEN_PROBE = \
     /usr/bin/test -f /etc/systemd/system/claude-api-openai.service, \
     /usr/bin/test -f /etc/systemd/system/claude-api-openai@.service, \
     /usr/bin/test -f /etc/systemd/system/claude-api-gemini.service, \
-    /usr/bin/test -f /etc/systemd/system/claude-api-gemini@.service
+    /usr/bin/test -f /etc/systemd/system/claude-api-gemini@.service, \
+    /usr/bin/test -f /etc/systemd/system/claude-router@.service, \
+    /usr/bin/test -x /usr/local/lib/apitoken-watchdog/controller/router-promote.sh
 
 deploy ALL=(root) NOPASSWD: APITOKEN_HELPERS, APITOKEN_CANDIDATES, APITOKEN_RELEASES, \
     APITOKEN_UNITS, APITOKEN_INSPECT, APITOKEN_OPERATOR, APITOKEN_POLICY, APITOKEN_CADDY, \

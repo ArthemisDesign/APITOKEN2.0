@@ -184,6 +184,10 @@ require_permitted 'Gemini reverse old-slot async stop' \
   /usr/bin/systemctl --no-block stop claude-api-gemini@8799.service
 require_permitted 'Gemini slot drain signal' \
   /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-gemini@8795.service
+require_permitted 'router target start' /usr/bin/systemctl start claude-router@8801.service
+require_permitted 'router predecessor stop' /usr/bin/systemctl stop claude-router@8800.service
+require_permitted 'router target enable' /usr/bin/systemctl enable claude-router@8801.service
+require_permitted 'router predecessor disable' /usr/bin/systemctl disable claude-router@8800.service
 require_permitted 'commerce slot start' /usr/bin/systemctl start apitoken-api@3000.service
 require_permitted 'worker restart' /usr/bin/systemctl restart apitoken-worker.service
 require_permitted 'content studio restart' /usr/bin/systemctl restart apitoken-content-studio.service
@@ -195,6 +199,14 @@ require_permitted 'engine schema migration runner' \
   /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh "$sample_sha"
 require_permitted 'engine schema migration helper probe' \
   /usr/bin/test -x /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh
+require_permitted 'router promotion to slot A' \
+  /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8800
+require_permitted 'router promotion to slot B' \
+  /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8801
+require_permitted 'router promotion rollback to legacy singleton' \
+  /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8798
+require_permitted 'router promotion helper probe' \
+  /usr/bin/test -x /usr/local/lib/apitoken-watchdog/controller/router-promote.sh
 require_permitted 'retention helper' /usr/local/lib/apitoken-watchdog/watchdog-retention.sh 10
 require_permitted 'infrastructure runner' /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh "$sample_sha"
 require_permitted 'controller-only infrastructure runner' \
@@ -218,6 +230,8 @@ require_permitted 'Gemini slot-template probe' \
   /usr/bin/test -f /etc/systemd/system/claude-api-gemini@.service
 require_permitted 'Anthropic unit probe' \
   /usr/bin/test -f /etc/systemd/system/claude-api-anthropic@.service
+require_permitted 'router slot-template probe' \
+  /usr/bin/test -f /etc/systemd/system/claude-router@.service
 # Operator tooling must keep working: `apitoken-watchdog status|run|retry|logs`.
 require_permitted 'operator status command' /usr/local/bin/apitoken-watchdog status
 require_permitted 'operator run command' /usr/local/bin/apitoken-watchdog run

@@ -328,9 +328,9 @@ async fn main() -> anyhow::Result<()> {
         state.cfg.gemini_origin,
         state.cfg.fallback_enabled,
     );
-    // Graceful shutdown: SIGTERM прекращает приём новых соединений; живые
-    // SSE-стримы добиваются до TimeoutStopSec юнита (см.
-    // systemd/claude-router.service). Blue-green реплики router'а — этап 6.
+    // Graceful shutdown: после атомарного Caddy cutover SIGTERM прекращает приём новых
+    // соединений на старом slot; живые SSE-стримы добиваются до TimeoutStopSec юнита
+    // (см. systemd/claude-router@.service и deploy/router-bluegreen.sh).
     axum::serve(listener, app(state))
         .with_graceful_shutdown(shutdown_signal())
         .await?;

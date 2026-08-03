@@ -199,8 +199,9 @@ Body должен объяснять:
   `registry ← pool ← forward ← server` (бинарь `claude-api`). Рядом, со своими границами:
   `crates/metering` (тарификация, чистая математика, только `serde_json`), `crates/authbot`
   (пополнение пула, стоит ВНЕ слоёв, перед реестром), `crates/router` (stateless unified
-  endpoint `router.apitoken.sale`, бинарь `claude-router` на `127.0.0.1:8798`, юнит
-  `claude-router.service`; ВНЕ слоёв, к плоскостям только HTTP, без биллинга и registry —
+  endpoint `router.apitoken.sale`, бинарь `claude-router` в blue-green слотах
+  `127.0.0.1:8800/8801` (`claude-router@.service`, stable Caddy origin `:8802`); ВНЕ слоёв,
+  к плоскостям только HTTP, без биллинга и registry —
   см. `docs/engine/UNIFIED_ROUTER.md`) и credential-крейты `crates/gemini-credential`
   и `crates/codex-credential` (шифрованные OAuth-конверты подписок Gemini/Codex — без сети и HTTP).
   В API-слоях env читается только в `crates/server/src/config.rs`; `pool` — без сети

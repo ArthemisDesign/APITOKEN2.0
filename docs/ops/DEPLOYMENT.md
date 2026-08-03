@@ -400,6 +400,8 @@ deploy/deploy.sh --engine-bluegreen "$SHA"
 
 deploy/engine-bluegreen.sh --dry-run
 deploy/engine-bluegreen.sh
+deploy/router-bluegreen.sh --dry-run
+deploy/router-bluegreen.sh
 ```
 
 Phase 1 builds and finalizes `/srv/claude-api/releases/<sha>`, then atomically selects it without
@@ -412,10 +414,19 @@ in each startup-fixed provider mode before draining the predecessor.
 On the first split, this order guarantees the old combined process releases every Codex home before
 OpenAI starts; Gemini remains a separate subscription-pool failure domain throughout.
 
+Phase 3 rolls the unified stateless router independently on fixed ports 8800/8801. The controller
+starts the inactive slot, proves direct readiness and the exact selected `claude-router` executable,
+then invokes the fixed root helper to atomically publish `/etc/caddy/router-active.caddy`, validate
+and gracefully reload Caddy. Both the public hostname and stable loopback `127.0.0.1:8802` now send
+new requests only to the target. The predecessor remains alive for established connections until a
+post-cutover SIGTERM completes Axum's bounded drain. The first run uses the still-serving singleton
+on 8798 as its old anchor; infrastructure installation never restarts it.
+
 ```bash
 curl -fsS http://127.0.0.1:8790/ready
 curl -fsS http://127.0.0.1:8792/ready
 curl -fsS http://127.0.0.1:8794/ready
+curl -fsS http://127.0.0.1:8802/ready
 curl -fsS https://api.apitoken.sale/health
 openai_probe=$(mktemp)
 openai_status=$(curl -sS -o "$openai_probe" -w '%{http_code}' \
@@ -435,6 +446,7 @@ systemctl list-units 'claude-api-anthropic@*.service' 'claude-api@*.service'
 systemctl list-unit-files 'claude-api-anthropic@*.service' 'claude-api@*.service'
 systemctl status 'claude-api-openai@*.service'
 systemctl status 'claude-api-gemini@*.service'
+systemctl status 'claude-router@*.service'
 ```
 
 All provider slots alternate. Consumers must never hard-code 8787/8788, 8793/8797, or 8795/8799;
@@ -561,6 +573,8 @@ deploy/rollback.sh --engine-bluegreen --dry-run
 deploy/rollback.sh --engine-bluegreen
 deploy/engine-bluegreen.sh --dry-run
 deploy/engine-bluegreen.sh
+deploy/router-bluegreen.sh --dry-run
+deploy/router-bluegreen.sh
 ```
 
 API rollback:
@@ -581,7 +595,7 @@ Before traffic is admitted, the blue-green controllers already fail closed: the 
 serving and nothing is rolled back. Once the new slot has been admitted and the old one drained,
 however, a failed final verification would otherwise leave an unverified release serving with no
 automatic way back. In that window only, the watchdog re-selects `previous` and re-runs the same
-health-gated controller.
+health-gated provider controller and then the atomic router controller.
 
 This never masks the failure: the candidate is still quarantined and `deploy/watchdog` still goes
 red. A successful rollback only changes what is serving while you investigate. If the rollback

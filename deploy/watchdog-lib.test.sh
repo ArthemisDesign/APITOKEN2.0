@@ -1603,17 +1603,24 @@ grep -Fq 'header Content-Type application/json*' <<<"$openai_api_vhost" \
   || wd_die 'OpenAI compression is not restricted to complete JSON documents'
 ! grep -Fq 'text/event-stream' <<<"$openai_api_vhost" \
   || wd_die 'OpenAI compression matcher can buffer SSE lifecycle frames'
-# Unified stage-1b cutover: the vhost terminates TLS and forwards the whole public contract —
-# now including the aggregated /v1/models* — to the claude-router singleton on loopback 8798,
-# which owns lane routing, the catalog and lane-shaped errors. No lane may gain compression.
+# Unified router vhost and the stable loopback origin share one root-owned runtime backend snippet.
+# The blue-green controller replaces that snippet atomically; the public path never lists slots or
+# gains compression, and Prometheus never has to discover the active slot.
 router_vhost=$(sed -n '/^router\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
 grep -Fq '@public_core path /v1/messages* /v1/responses* /v1/chat/completions /v1/models* /v1beta/* /health /balance' \
   <<<"$router_vhost" \
   || wd_die 'unified router must forward exactly the documented public contract'
-grep -Fq 'reverse_proxy 127.0.0.1:8798' <<<"$router_vhost" \
-  || wd_die 'unified router must proxy to the claude-router loopback origin'
-[[ $(grep -Fc 'reverse_proxy' <<<"$router_vhost") == 1 ]] \
-  || wd_die 'unified router must have exactly one upstream: the router process'
+grep -Fq 'import router_backend' <<<"$router_vhost" \
+  || wd_die 'unified router does not consume the atomically selected backend'
+! grep -Fq 'reverse_proxy' <<<"$router_vhost" \
+  || wd_die 'public router vhost bypasses the runtime backend selector'
+grep -Fq 'import /etc/caddy/router-active.caddy' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'Caddy never loads the root-owned router backend state'
+router_stable_origin=$(sed -n '/^http:\/\/127\.0\.0\.1:8802 {$/,/^}$/p' \
+  "$ROOT/deploy/Caddyfile")
+grep -Fq 'bind 127.0.0.1' <<<"$router_stable_origin"
+grep -Fq 'import router_backend' <<<"$router_stable_origin" \
+  || wd_die 'stable router origin can drift from the public active slot'
 ! grep -Eq '^[[:space:]]*import (engine_backend|openai_engine_backend|gemini_engine_backend)([[:space:]]|$)' \
   <<<"$router_vhost" \
   || wd_die 'unified router must not import plane backends after the stage-1b cutover'
@@ -1743,9 +1750,9 @@ grep -Fq '$unit failed exact-release verification after restart' "$ROOT/deploy/d
 ! grep -Fq 'privileged_command test -f "/etc/systemd/system/$unit"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the authbot unit check must not require sudo"
 
-# The unified router is a third engine artifact: the gate builds it once beside the tested engine,
-# the marker pins its digest, the promoter verifies it, and the release controller restarts the
-# singleton only on an actual binary change, then requires /ready before reporting green.
+# The unified router is a third engine artifact. It is promoted through two fixed slots only after
+# direct readiness and exact-binary checks; Caddy switches new requests atomically before the old
+# process receives SIGTERM, so long SSE streams drain without a deployment 502 window.
 grep -Fq -- '-p claude-api -p authbot -p claude-router' "$ROOT/deploy/watchdog.sh" \
   || wd_die "the candidate gate does not build the production router artifact"
 grep -Fq 'router_binary_sha256' "$ROOT/deploy/watchdog.sh" \
@@ -1758,22 +1765,135 @@ grep -Fq '"$ENGINE_STAGE/claude-router"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the router binary is not installed into the engine release"
 grep -Fq 'staged router binary is missing' "$ROOT/deploy/deploy.sh" \
   || wd_die "a release without a router binary must fail closed"
-grep -Fq 'restart_router_if_changed "$ENGINE_RELEASE"' "$ROOT/deploy/deploy.sh" \
-  || wd_die "deployment can leave changed router code unadopted"
-grep -Fq 'cmp -s "$exe" "$current/claude-router"' "$ROOT/deploy/deploy.sh" \
-  || wd_die "the router restart must compare the running binary, not release paths"
-grep -Fq 'never became ready on 127.0.0.1:8798' "$ROOT/deploy/deploy.sh" \
-  || wd_die "a router that never answers /ready must fail the deployment"
-grep -Fq 'CLAUDE_ROUTER_PORT=8798' "$ROOT/systemd/claude-router.service" \
-  || wd_die "the router unit does not pin the deploy-verified loopback port"
-grep -Fq 'systemctl try-restart claude-router.service' "$ROOT/deploy/install-watchdog.sh" \
-  || wd_die "an updated router unit contract is not adopted by the running service"
-grep -Fq 'claude-router.service' "$ROOT/deploy/install-watchdog.sh" \
-  || wd_die "the router unit is never installed"
-grep -Fq '/usr/bin/systemctl restart claude-router.service' "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
-  || wd_die "the deploy user cannot restart the router"
-grep -Fq 'systemd/claude-router.service' "$ROOT/deploy/watchdog-lib.sh" \
-  || wd_die "the router unit definition is not scoped as systemd infrastructure"
+! grep -Fq 'restart_router_if_changed' "$ROOT/deploy/deploy.sh" \
+  || wd_die "release selection still restarts the public router singleton"
+grep -Fq 'CLAUDE_ROUTER_PORT=%i' "$ROOT/systemd/claude-router@.service" \
+  || wd_die "router slots do not bind their fixed instance port"
+grep -Fxq 'TimeoutStopSec=660' "$ROOT/systemd/claude-router@.service" \
+  || wd_die "router slots cannot drain provider-grade SSE sessions"
+grep -Fxq 'TimeoutStopSec=660' "$ROOT/systemd/claude-router.service" \
+  || wd_die "first singleton-to-slot handoff still truncates long SSE sessions"
+grep -Fq 'router-bluegreen.sh' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die "router blue-green controller is never installed"
+grep -Fq 'router-promote.sh' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die "root-owned Caddy promotion helper is never installed"
+grep -Fq '"$CONTROLLER_ROOT/router-bluegreen.sh"' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "watchdog can select a new router binary without cutting over its slot"
+grep -Fq 'executable == "$release/claude-router"' "$ROOT/deploy/router-bluegreen.sh" \
+  || wd_die "router candidate admission lacks exact-binary verification"
+target_ready_line=$(grep -nF 'wait_target || die' "$ROOT/deploy/router-bluegreen.sh" | cut -d: -f1)
+target_enable_line=$(grep -nF 'systemctl_command enable "$TARGET_UNIT"' \
+  "$ROOT/deploy/router-bluegreen.sh" | head -n 1 | cut -d: -f1)
+promotion_line=$(grep -nF 'privileged_command "$PROMOTE_HELPER" "$TARGET_PORT"' \
+  "$ROOT/deploy/router-bluegreen.sh" | cut -d: -f1)
+old_stop_line=$(grep -nF 'stop_unit "$ACTIVE_UNIT"' "$ROOT/deploy/router-bluegreen.sh" | cut -d: -f1)
+[[ -n $target_ready_line && -n $target_enable_line && -n $promotion_line && -n $old_stop_line \
+    && $target_ready_line -lt $target_enable_line && $target_enable_line -lt $promotion_line \
+    && $promotion_line -lt $old_stop_line ]] \
+  || wd_die "router cutover does not verify, boot-fence, promote, and drain in that order"
+grep -Fq 'mv -f -- "$candidate" "$SNIPPET"' "$ROOT/deploy/router-promote.sh" \
+  || wd_die "router backend selection is not an atomic same-directory rename"
+grep -Fq 'restore || true' "$ROOT/deploy/router-promote.sh" \
+  || wd_die "failed router promotion cannot restore the previous Caddy backend"
+grep -Fq 'claude-router@.service' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die "router slot template is never installed"
+! grep -Fq 'systemctl try-restart claude-router.service' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die "systemd definition rollout still interrupts the legacy router anchor"
+grep -Fq '/usr/bin/systemctl start claude-router@[0-9]*.service' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die "deploy user cannot start a router slot"
+grep -Fq 'systemd/claude-router@.service' "$ROOT/deploy/watchdog-lib.sh" \
+  || wd_die "router slot definition is not scoped as systemd infrastructure"
+
+# Exercise the production convergence predicate with mocked systemd/PID/HTTP state. Static script
+# ordering above protects the cutover protocol; this matrix protects the final GREEN verdict from
+# accepting two slots, the wrong executable, the legacy backend, or a dead stable origin.
+eval "$(sed -n '/^router_runtime_aligned()/,/^}/p' "$ROOT/deploy/watchdog.sh")"
+ROUTER_TEST_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ROUTER_TEST_ACTIVE_PORT=8800
+ROUTER_TEST_BOTH_ACTIVE=0
+ROUTER_TEST_WRONG_BINARY=0
+ROUTER_TEST_STABLE_STATUS=200
+ENGINE_RELEASE_ROOT=/srv/claude-api/releases
+router_active_backend_port() { printf '%s\n' "$ROUTER_TEST_ACTIVE_PORT"; }
+systemctl() {
+  local verb=$1 unit=${3:-}
+  case "$verb" in
+    is-active|is-enabled)
+      unit=${3:-${2:-}}
+      case "$unit" in
+        claude-router@8800.service)
+          [[ $ROUTER_TEST_ACTIVE_PORT == 8800 || $ROUTER_TEST_BOTH_ACTIVE == 1 ]]
+          ;;
+        claude-router@8801.service)
+          [[ $ROUTER_TEST_ACTIVE_PORT == 8801 || $ROUTER_TEST_BOTH_ACTIVE == 1 ]]
+          ;;
+        *) return 1 ;;
+      esac
+      ;;
+    show)
+      unit=$2
+      case "$unit" in
+        claude-router@8800.service) printf '8800\n' ;;
+        claude-router@8801.service) printf '8801\n' ;;
+        *) printf '0\n' ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
+}
+curl() {
+  local arg url=
+  for arg in "$@"; do [[ $arg == http://* ]] && url=$arg; done
+  case "$url" in
+    http://127.0.0.1:8802/ready) printf '%s' "$ROUTER_TEST_STABLE_STATUS" ;;
+    http://127.0.0.1:8800/ready)
+      [[ $ROUTER_TEST_ACTIVE_PORT == 8800 || $ROUTER_TEST_BOTH_ACTIVE == 1 ]] && printf '200' || printf '000'
+      ;;
+    http://127.0.0.1:8801/ready)
+      [[ $ROUTER_TEST_ACTIVE_PORT == 8801 || $ROUTER_TEST_BOTH_ACTIVE == 1 ]] && printf '200' || printf '000'
+      ;;
+    *) printf '000' ;;
+  esac
+}
+readlink() {
+  local path=${@: -1}
+  case "$path" in
+    /proc/8800/exe|/proc/8801/exe)
+      if [[ $ROUTER_TEST_WRONG_BINARY == 1 ]]; then
+        printf '/srv/claude-api/releases/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/claude-router\n'
+      else
+        printf '/srv/claude-api/releases/%s/claude-router\n' "$ROUTER_TEST_SHA"
+      fi
+      ;;
+    *) return 1 ;;
+  esac
+}
+router_runtime_aligned "$ROUTER_TEST_SHA" \
+  || wd_die 'one exact active router slot was rejected by the production verifier'
+ROUTER_TEST_ACTIVE_PORT=8801
+router_runtime_aligned "$ROUTER_TEST_SHA" \
+  || wd_die 'reverse router slot was rejected by the production verifier'
+ROUTER_TEST_BOTH_ACTIVE=1
+if router_runtime_aligned "$ROUTER_TEST_SHA"; then
+  wd_die 'production verifier accepted two active router slots'
+fi
+ROUTER_TEST_BOTH_ACTIVE=0
+ROUTER_TEST_WRONG_BINARY=1
+if router_runtime_aligned "$ROUTER_TEST_SHA"; then
+  wd_die 'production verifier accepted a router from the wrong immutable release'
+fi
+ROUTER_TEST_WRONG_BINARY=0
+ROUTER_TEST_ACTIVE_PORT=8798
+if router_runtime_aligned "$ROUTER_TEST_SHA"; then
+  wd_die 'production verifier accepted the legacy singleton as steady state'
+fi
+ROUTER_TEST_ACTIVE_PORT=8800
+ROUTER_TEST_STABLE_STATUS=503
+if router_runtime_aligned "$ROUTER_TEST_SHA"; then
+  wd_die 'production verifier accepted a dead stable router origin'
+fi
+unset -f router_runtime_aligned router_active_backend_port systemctl curl readlink
 
 # The native Codex provider ships its wire identity inside the tested engine binary: there is no
 # sidecar artifact, no isolated build lane and no promotion helper left.
@@ -1955,7 +2075,7 @@ grep -Fq 'recover_interrupted_handoffs' "$ROOT/crates/authbot/src/main.rs" \
 for retained_engine_unit in claude-api-openai.service claude-api-openai@8793.service \
   claude-api-openai@8797.service claude-api-gemini.service \
   claude-api-gemini@8795.service claude-api-gemini@8799.service claude-authbot.service \
-  claude-router.service; do
+  claude-router.service claude-router@8800.service claude-router@8801.service; do
   grep -Fq "$retained_engine_unit" "$ROOT/deploy/watchdog.sh" \
     || wd_die "release retention can unlink the executable backing $retained_engine_unit"
 done
