@@ -204,12 +204,19 @@ pub async fn gemini_health_loop(gateway: Arc<forward::GeminiGateway>) {
     let health_interval = Duration::from_secs(gateway.config().health_probe_interval_secs.max(30));
     let mut last_health = tokio::time::Instant::now();
     loop {
-        tokio::time::sleep(Duration::from_secs(PROFILE_DISCOVERY_SECS)).await;
-        if last_health.elapsed() >= health_interval {
-            gateway.probe_health().await;
-            last_health = tokio::time::Instant::now();
-        } else {
-            gateway.refresh_profiles().await;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(PROFILE_DISCOVERY_SECS)) => {
+                if last_health.elapsed() >= health_interval {
+                    gateway.probe_health().await;
+                    last_health = tokio::time::Instant::now();
+                } else {
+                    gateway.refresh_profiles().await;
+                }
+            }
+            _ = gateway.probe_requested() => {
+                gateway.probe_health().await;
+                last_health = tokio::time::Instant::now();
+            }
         }
     }
 }

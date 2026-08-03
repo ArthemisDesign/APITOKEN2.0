@@ -34,6 +34,7 @@ SAFE_READ_RETRY_DELAY_SECONDS = 2.0
 DEFAULT_EVIDENCE_TIMEOUT_SECONDS = 180
 DEFAULT_PROFILE_DELAY_SECONDS = 16.0
 DEFAULT_PRODUCTION_SSH_TARGET = "apitokensale"
+DEFAULT_PRODUCTION_CAPACITY_PORT = 8794
 DEFAULT_PRODUCTION_API_PORT = 8794
 IMAGE_OUTPUT_TOKEN_CEILINGS = {"1K": 1_120, "2K": 1_680, "4K": 2_520}
 EVENT_TOKEN_FIELDS = (
@@ -1496,10 +1497,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--production-capacity-over-ssh", action="store_true")
     parser.add_argument("--production-api-over-ssh", action="store_true")
     parser.add_argument("--production-ssh-target", default=DEFAULT_PRODUCTION_SSH_TARGET)
+    parser.add_argument(
+        "--production-capacity-port",
+        type=int,
+        default=DEFAULT_PRODUCTION_CAPACITY_PORT,
+    )
     parser.add_argument("--production-api-port", type=int, default=DEFAULT_PRODUCTION_API_PORT)
     args = parser.parse_args(argv)
     try:
         validate_production_ssh_target(args.production_ssh_target)
+        validate_production_api_port(args.production_capacity_port)
         validate_production_api_port(args.production_api_port)
     except CalibrationError as error:
         parser.error(str(error))
@@ -1513,6 +1520,8 @@ def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
         "paid_requests": 0,
         "budget_nanousd_total": str(budget_nano),
         "models": args.models or ["<all backend conversion_models>"],
+        "production_capacity_port": args.production_capacity_port,
+        "production_api_port": args.production_api_port,
         "coverage": [
             "fresh",
             "sse",
@@ -1559,7 +1568,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.production_api_over_ssh and not api_key:
         raise CalibrationError(f"missing API key environment variable: {args.api_key_env}")
     capacity = CapacityReader(
-        remote_capacity_command(args.production_ssh_target, args.production_api_port)
+        remote_capacity_command(args.production_ssh_target, args.production_capacity_port)
         if args.production_capacity_over_ssh
         else args.capacity_command,
         args.capacity_url,
@@ -1727,6 +1736,15 @@ def main(argv: list[str] | None = None) -> int:
         "budget_nanousd_total": str(budget_nano),
         "spent_nanousd_total": str(budget.total_nano),
         "spent_nanousd_per_profile": {key: str(value) for key, value in sorted(budget.by_profile.items())},
+        "production_transport": {
+            "capacity_over_ssh": args.production_capacity_over_ssh,
+            "api_over_ssh": args.production_api_over_ssh,
+            "ssh_target": args.production_ssh_target if (
+                args.production_capacity_over_ssh or args.production_api_over_ssh
+            ) else None,
+            "capacity_port": args.production_capacity_port if args.production_capacity_over_ssh else None,
+            "api_port": args.production_api_port if args.production_api_over_ssh else None,
+        },
         "profiles": profiles,
         "models": models,
         "records": runner.records,

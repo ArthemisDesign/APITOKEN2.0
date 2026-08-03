@@ -438,7 +438,9 @@ For every request the runtime:
   tool/search facts and every official API-cost leg in integer nanoUSD. The same authority
   transaction advances cumulative profile spend; missing terminal usage never fabricates an
   event. A bounded FIFO retains transient failures, prevents a quota poll from overtaking paid
-  evidence, quarantines only semantic replay conflicts and is drained on shutdown;
+  evidence, quarantines only semantic replay conflicts and is drained on shutdown. Once an
+  admin-only exact-target event is enqueued, a coalesced wake triggers the free quota/health probe
+  immediately; normal customer traffic retains the configured background cadence;
 - stores quota observations and estimator state in the plan-scoped exact authority keyed by
   `profile + paid plan + bucket + duration`. Provider decimals are fixed-point `10^-8`, while the
   actual lexical endpoint resolution is stored separately. The first snapshot is an anchor; the

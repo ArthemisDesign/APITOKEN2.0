@@ -93,6 +93,9 @@
   изменившийся вердикт персистится owner-fenced (`save_sub_health`); suspect/dead probe-ятся НЕЗАВИСИМО
   от cooling (`SUSPECT_INTERVAL`/`DEAD_RESURRECT_INTERVAL`), чтобы добрать корроборацию/ресуррекцию. На
   старте `serve` сеет вердикт через `pool.import_health` (мёртвые сразу вне ротации, переживают рестарт).
+  Отдельный Gemini health loop каждые 15 секунд обнаруживает новые roster profiles и по настроенной
+  cadence проверяет health/quota. После durable settlement admin-only exact-target turn он принимает
+  coalesced `Notify` и сразу выполняет бесплатный probe; обычные customer turns этот wake не посылают.
 - `main.rs` — clap CLI: `serve`, `sub add/add-file/list/rm/status/proxy/fleet/set-plan/detect-plan/health`
   и PostgreSQL-only read evidence `db stage8-evidence`.
 

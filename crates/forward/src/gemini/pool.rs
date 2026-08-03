@@ -1550,6 +1550,7 @@ pub struct GeminiGateway {
     shutting_down: AtomicBool,
     abort_streams: AtomicBool,
     abort_notify: tokio::sync::Notify,
+    probe_poke: tokio::sync::Notify,
     background_tasks: Arc<ActiveTaskTracker>,
 }
 
@@ -1606,12 +1607,23 @@ impl GeminiGateway {
             shutting_down: AtomicBool::new(false),
             abort_streams: AtomicBool::new(false),
             abort_notify: tokio::sync::Notify::new(),
+            probe_poke: tokio::sync::Notify::new(),
             background_tasks: Arc::new(ActiveTaskTracker::default()),
         })
     }
 
     pub fn config(&self) -> &GeminiConfig {
         &self.cfg
+    }
+
+    /// Wake the free provider quota sweep after an exact controlled turn. `Notify` coalesces a
+    /// burst, while normal customer traffic keeps the configured background cadence unchanged.
+    pub(crate) fn request_probe(&self) {
+        self.probe_poke.notify_one();
+    }
+
+    pub async fn probe_requested(&self) {
+        self.probe_poke.notified().await;
     }
 
     fn profiles_snapshot(&self) -> Vec<Arc<GeminiProfile>> {

@@ -613,12 +613,37 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         self.assertEqual(invoked.call_args.args[0][:2], ["ssh", "deploy@84.32.48.2"])
         self.assertIn("127.0.0.1:18895", invoked.call_args.args[0][2])
 
+    def test_production_capacity_and_billable_api_ports_are_independent(self):
+        args = run_live.parse_args([
+            "--production-capacity-over-ssh",
+            "--production-api-over-ssh",
+            "--production-capacity-port",
+            "8794",
+            "--production-api-port",
+            "8802",
+        ])
+        self.assertEqual(args.production_capacity_port, 8794)
+        self.assertEqual(args.production_api_port, 8802)
+        self.assertIn(
+            "127.0.0.1:8794/gemini-subs",
+            run_live.remote_capacity_command(api_port=args.production_capacity_port),
+        )
+        self.assertEqual(
+            run_live.ProductionSshJsonHttpClient(
+                timeout=10,
+                api_port=args.production_api_port,
+            ).api_port,
+            8802,
+        )
+
     def test_production_canary_target_rejects_ssh_options_and_invalid_ports(self):
         with self.assertRaises(run_live.CalibrationError):
             run_live.ProductionSshJsonHttpClient(timeout=10, ssh_target="-oProxyCommand=bad")
         for port in (0, 65_536):
             with self.assertRaises(run_live.CalibrationError):
                 run_live.remote_capacity_command(api_port=port)
+        with self.assertRaises(SystemExit):
+            run_live.parse_args(["--production-capacity-port", "0"])
 
     def test_production_ssh_keeps_secrets_remote_and_never_retries_paid_generation(self):
         client = run_live.ProductionSshJsonHttpClient(timeout=10)

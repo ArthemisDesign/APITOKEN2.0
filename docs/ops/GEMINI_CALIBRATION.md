@@ -74,10 +74,12 @@ Backend estimator остаётся workload-dependent: он оценивает A
   `skipped_before_dispatch=true`).
 - Cache payload содержит уникальный `run_id`; write/read пары байт-в-байт одинаковы, но другой запуск
   не может принять старую cache warmth за свою.
-- После turn runner выдерживает минимум 16 секунд и затем опрашивает backend до quota snapshot с
-  `quota_updated_at >= immutable completed_at`. До такого post-turn snapshot fraction delta не
-  считается model/token-class evidence и не попадает в profitability. Quota-only движение,
-  повторившееся без spend, уходит в `unattributed_fraction_units`.
+- После durable settlement exact-target turn немедленно будит бесплатный provider quota/health
+  probe; обычный customer traffic сохраняет фоновую cadence. Runner всё равно выдерживает минимум
+  16 секунд как независимый guard на provider snapshot propagation и затем опрашивает backend до
+  quota snapshot с `quota_updated_at >= immutable completed_at`. До такого post-turn snapshot
+  fraction delta не считается model/token-class evidence и не попадает в profitability. Quota-only
+  движение, повторившееся без spend, уходит в `unattributed_fraction_units`.
 - API/control keys загружаются только локально или внутри production shell и не входят в report.
 
 ## Production-команда
@@ -120,10 +122,28 @@ identity в один прогон не объединяется.
 
 Production SSH path читает `/gemini-subs` через стабильную Gemini-плоскость `127.0.0.1:8794` и
 отправляет generation туда же с remote-only forwarding-admin key. Секрет не возвращается через SSH.
+Для проверки полного публичного data path через unified router оставьте control/evidence на
+Gemini-плоскости, а платные запросы направьте в stable router origin `127.0.0.1:8802`:
+
+```bash
+python3 tools/gemini_calibration/run_live.py \
+  --execute \
+  --production-capacity-over-ssh \
+  --production-api-over-ssh \
+  --production-capacity-port 8794 \
+  --production-api-port 8802 \
+  --budget-usd 30 \
+  --report /tmp/gemini-router-calibration-report.json
+```
+
+Порты независимы намеренно: router не публикует `/gemini-subs`, а direct control-plane остаётся
+единственным authority immutable turn evidence, settlement/FIFO и quota observations. При этом
+`countTokens` и каждый billable generation проходят тот же active router slot, что клиентский
+traffic. Оба выбранных порта и способ доступа записываются в report.
 Для controlled gate dormant-модели оба чтения можно направить в заранее поднятый непубличный
 exact-SHA canary на том же host через `--production-ssh-target <user@host>` и
-`--production-api-port <loopback-port>`. Target и порт валидируются до SSH; default остаётся
-`apitokensale:8794`. Canary обязан использовать production PostgreSQL authority, billing и
+`--production-capacity-port <loopback-port> --production-api-port <loopback-port>`. Target и порты
+валидируются до SSH; default остаётся `apitokensale:8794`. Canary обязан использовать production PostgreSQL authority, billing и
 immutable calibration evidence: изолированный процесс без них не является публикационным
 доказательством.
 

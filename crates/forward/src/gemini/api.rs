@@ -1902,8 +1902,12 @@ async fn stream_response(
                 profile.mark_model_failure(&wire_model_id, "usage_metadata", gateway.config());
             }
         }
+        let request_probe = admission.requests_post_turn_probe();
         if let Some(event) = admission.settle(&model, usage, profile.id()) {
             profile.record_turn(event);
+            if request_probe {
+                gateway.request_probe();
+            }
         }
     });
     let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
@@ -2621,8 +2625,12 @@ async fn api_inner(
                     .take()
                     .expect("Gemini admission exists after upstream selection");
                 admission.mark_delivering().await?;
+                let request_probe = admission.requests_post_turn_probe();
                 if let Some(event) = admission.settle(&model, usage.as_ref(), profile.id()) {
                     profile.record_turn(event);
+                    if request_probe {
+                        gateway.request_probe();
+                    }
                 }
                 return Ok(translated_response(status, &response_headers, native_body));
             }
@@ -4198,6 +4206,9 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
+        tokio::time::timeout(Duration::from_millis(100), fixture.gateway.probe_requested())
+            .await
+            .expect("an exact settled turn must wake the free quota probe");
         billing.flush().await.unwrap();
 
         let connection = registry::open(&path_string).unwrap();

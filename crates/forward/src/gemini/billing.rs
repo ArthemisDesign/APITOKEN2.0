@@ -49,6 +49,7 @@ struct Reservation {
 pub(crate) struct GeminiAdmission {
     reservation: Option<Reservation>,
     calibration_request_id: String,
+    exact_calibration_target: bool,
 }
 
 pub(crate) struct PendingGeminiAdmission {
@@ -71,6 +72,7 @@ impl PendingGeminiAdmission {
         GeminiAdmission {
             reservation: None,
             calibration_request_id: self.calibration_request_id,
+            exact_calibration_target: self.calibration_target.is_some(),
         }
     }
 
@@ -141,6 +143,7 @@ impl PendingGeminiAdmission {
             GeminiAdmission {
                 reservation,
                 calibration_request_id: self.calibration_request_id,
+                exact_calibration_target: self.calibration_target.is_some(),
             },
             effective_output_tokens,
         ))
@@ -525,6 +528,10 @@ async fn reserve_gemini_legacy_mode(
 impl GeminiAdmission {
     pub(crate) fn requires_usage(&self) -> bool {
         self.reservation.is_some()
+    }
+
+    pub(crate) fn requests_post_turn_probe(&self) -> bool {
+        self.exact_calibration_target
     }
 
     pub(crate) async fn mark_delivering(&self) -> Result<(), AdmissionError> {

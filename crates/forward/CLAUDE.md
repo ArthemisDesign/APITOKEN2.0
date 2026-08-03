@@ -831,7 +831,10 @@ pricing threshold или family default не являются основание
    search facts и disjoint official API nanoUSD legs. Событие и cumulative subject spend пишутся
    атомарно; missing usage не создаёт evidence. Доставка — отдельный bounded FIFO 4096 с retained
    transient head, immutable replay, one-row conflict quarantine, poll-before-observation flush,
-   pending/drop/persistence diagnostics и shutdown drain.
+   pending/drop/persistence diagnostics и shutdown drain. После успешной постановки immutable
+   event для admin-only exact-target turn gateway coalesced `Notify`-сигналом немедленно будит
+   бесплатный quota/health probe; обычный customer traffic не меняет фоновую cadence и не создаёт
+   дополнительных provider probes.
    Exact window authority ключуется `profile + plan + bucket + duration`; legacy rows без plan не
    мигрируются. Окна независимы, provider fraction хранится fixed-point `10^-8` вместе с реальным
    lexical decimal resolution. Cold snapshot — anchor, а первый complete positive-spend interval
