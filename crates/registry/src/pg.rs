@@ -308,6 +308,11 @@ fn ledger_row(row: &Row) -> Result<LedgerRow> {
                 admission_switch_digest: row.get(49),
                 runtime_manifest_generation: row.get(50),
                 runtime_manifest_digest: row.get(51),
+                release_schema_version: row.get(52),
+                release_generation: row.get(53),
+                release_digest: row.get(54),
+                release_billing_mode: row.get(55),
+                release_funding_generation: row.get(56),
             })
         })
         .transpose()?;
@@ -344,7 +349,8 @@ const POSTGRES_LEDGER_READ_COLUMNS: &str = "
     ledger.snapshot_digest,ledger.source_policy_digest,ledger.admission_catalog_generation,
     ledger.admission_catalog_digest,ledger.admission_switch_generation,
     ledger.admission_switch_digest,ledger.runtime_manifest_generation,
-    ledger.runtime_manifest_digest";
+    ledger.runtime_manifest_digest,ledger.release_schema_version,ledger.release_generation,
+    ledger.release_digest,ledger.release_billing_mode,ledger.release_funding_generation";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Owner {
@@ -853,6 +859,7 @@ fn postgres_process_pricing_release_settlement_v2(
     reference: Option<&str>,
     usage: Option<&UsageEventInput>,
     snapshot: &crate::pricing::PricingRequestSnapshotV2,
+    funding: Option<&crate::funding_v2::SettlementFundingV2>,
     timestamp: i64,
 ) -> Result<i64> {
     use crate::pricing::BillingModeV2;
@@ -916,18 +923,46 @@ fn postgres_process_pricing_release_settlement_v2(
         snapshot.snapshot_digest.as_str(),
     );
     if actual_nano > 0 {
+        let funding = funding.context(
+            "pricing release balance settlement lacks its exact funding split evidence",
+        )?;
         let model = usage
             .map(|event| event.model.as_str())
             .unwrap_or(snapshot.canonical_model_id.as_str());
         let official_nano = usage
             .map(|event| event.real_nano)
             .unwrap_or(snapshot.official_hold_nano);
+        let (rule_id, rule_digest, rule_scope, discount_bps, payable_multiplier_bp) = snapshot
+            .rule
+            .as_ref()
+            .map(|rule| {
+                let (scope, _, _) = rule.scope.db_parts();
+                (
+                    Some(rule.rule_id.as_str()),
+                    Some(rule.rule_digest.as_str()),
+                    Some(scope),
+                    Some(rule.discount_bps),
+                    Some(rule.payable_multiplier_bp),
+                )
+            })
+            .unwrap_or((None, None, None, None, None));
+        let official_cost_json = serde_json::to_string(&snapshot.official_cost_json)
+            .context("encode pricing release official cost evidence")?;
+        let funding_allocation_json = funding.allocation_json()?;
         tx.execute(
             "INSERT INTO ledger(
                  account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model,
                  provider,official_nano,release_schema_version,release_generation,release_digest,
-                 release_billing_mode,release_funding_generation,release_snapshot_digest)
-             VALUES($1,$2,'charge',$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,$11,$12,$13,$14,$15,$16)",
+                 release_billing_mode,release_funding_generation,release_snapshot_digest,
+                 attribution_schema_version,snapshot_kind,account_class,requested_model_id,
+                 canonical_model_id,served_model_id,served_canonical_model_id,
+                 rule_id,rule_digest,rule_scope,discount_bps,payable_multiplier_bp,
+                 policy_id,policy_version,policy_digest,tariff_schedule_id,tariff_priced_ts,
+                 official_cost_json,paid_funded_nano,bonus_funded_nano,other_funded_nano,
+                 funding_allocation_json,snapshot_digest)
+             VALUES($1,$2,'charge',$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,$11,$12,$13,$14,$15,$16,
+                    2,'release_v2',$17,$18,$18,$19,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,
+                    $30::text::jsonb,$31,$32,$33,$34::text::jsonb,$35)",
             &[
                 &account_id,
                 &key,
@@ -945,6 +980,25 @@ fn postgres_process_pricing_release_settlement_v2(
                 &lineage.3,
                 &lineage.4,
                 &lineage.5,
+                &snapshot.account_class.as_str(),
+                &snapshot.canonical_model_id.as_str(),
+                &model,
+                &rule_id,
+                &rule_digest,
+                &rule_scope,
+                &discount_bps,
+                &payable_multiplier_bp,
+                &snapshot.policy_id,
+                &snapshot.policy_version,
+                &snapshot.policy_digest,
+                &snapshot.tariff_schedule_id,
+                &snapshot.tariff_priced_ts,
+                &official_cost_json,
+                &funding.paid_funded_nano,
+                &funding.bonus_funded_nano,
+                &funding.other_funded_nano,
+                &funding_allocation_json,
+                &snapshot.snapshot_digest,
             ],
         )?;
     }
@@ -3134,6 +3188,7 @@ impl PgStore {
                 reference.as_deref(),
                 release_usage.as_ref(),
                 snapshot,
+                funding_v2.as_ref(),
                 ts,
             )?;
         } else if let Some(snapshot) = policy_snapshot.as_ref() {
@@ -11597,6 +11652,632 @@ mod tests {
             PricingReleaseKindV2::Recovery
         );
         assert!(recovery_context.paired_recovery.is_none());
+
+        pg.client
+            .batch_execute(
+                "TRUNCATE pricing_release_policy_versions,pricing_release_versions,
+                 account_policy_bindings,account_policy_rules,account_policy_versions,
+                 provider_switch_head,provider_switch_entries,provider_switch_versions,
+                 pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
+                 execution_group_winner,settlement_outbox,reservations,capacity_leases,
+                 leader_leases,engine_instances,usage_events,ledger,api_keys,accounts,pool_state,
+                 subs RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+    }
+
+    /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+    /// pg::tests::pricing_release_ledger_attribution_v2_postgres_matrix`
+    #[test]
+    fn pricing_release_ledger_attribution_v2_postgres_matrix() {
+        use crate::pricing::{
+            AccountClass, BillingModeV2, PricingMutation, PricingReleaseAssignmentV2,
+            PricingReleaseKindV2, PricingReleasePolicyRuleV2, PricingReleasePolicyV2,
+            PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2,
+            PricingReleaseRuleScopeV2, PricingReleaseV2,
+        };
+
+        const TARGET_GENERATION: i64 = 93_001;
+        const RECOVERY_GENERATION: i64 = 93_002;
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!("skipping release-v2 ledger attribution matrix: test URL is unset");
+            return;
+        };
+        let mut pg = PgStore::connect(&url).unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+            .unwrap();
+        pg.migrate().unwrap();
+        pg.client
+            .batch_execute(
+                "TRUNCATE pricing_release_policy_versions,pricing_release_versions,
+                 account_policy_bindings,account_policy_rules,account_policy_versions,
+                 provider_switch_head,provider_switch_entries,provider_switch_versions,
+                 pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
+                 execution_group_winner,settlement_outbox,reservations,capacity_leases,
+                 leader_leases,engine_instances,usage_events,ledger,api_keys,accounts,pool_state,
+                 subs RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+
+        let owner = pg
+            .claim_instance_with_pricing_manifest("v2-ledger-engine", 600, &stage8_pg_manifest())
+            .unwrap();
+        pg.account_create("v2-ledger-b2c", None, 5_000).unwrap();
+        pg.account_topup("v2-ledger-b2c", 10_060, Some("v2-ledger-seed"))
+            .unwrap();
+        pg.key_issue("v2-ledger-b2c-key", "v2-ledger-b2c", None)
+            .unwrap();
+        pg.account_create("v2-ledger-service", None, 10_000)
+            .unwrap();
+        pg.key_issue("v2-ledger-service-key", "v2-ledger-service", None)
+            .unwrap();
+
+        for catalog in [stage8_pg_catalog("main"), stage8_pg_catalog("openkeys")] {
+            assert_eq!(
+                pg.prepare_pricing_catalog(&catalog).unwrap(),
+                PricingMutation::Stored
+            );
+            assert_eq!(
+                pg.activate_pricing_catalog(
+                    &catalog.product_id,
+                    &catalog.target(),
+                    &crate::pricing::ActiveExpectation::Absent,
+                )
+                .unwrap(),
+                PricingMutation::Applied
+            );
+        }
+        let switches = stage8_pg_switches();
+        assert_eq!(
+            pg.prepare_provider_switches(&switches).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            pg.activate_provider_switches(
+                &switches.target(),
+                &crate::pricing::ActiveExpectation::Absent,
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+
+        pg.client
+            .batch_execute(
+                "BEGIN;
+                 INSERT INTO account_funding_generations_v2(
+                     account_id,generation,schema_version,source_state_digest,
+                     normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                     normalized_ts,updated_ts
+                 ) VALUES(
+                     'v2-ledger-b2c',1,2,'v2-ledger-source','v2-ledger-normalization',
+                     10060,0,0,1,100,100
+                 );
+                 INSERT INTO funding_lots_v2(
+                     lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts
+                 ) VALUES
+                     ('v2-ledger-bonus','v2-ledger-b2c',1,'welcome_bonus',
+                      'signup-bonus:v2-ledger',60,0,0,1,'active',100,100),
+                     ('v2-ledger-paid','v2-ledger-b2c',1,'paid','v2-ledger-seed',
+                      10000,0,0,1,'active',100,100);
+                 INSERT INTO account_funding_head_v2(
+                     account_id,active_generation,head_version,updated_ts
+                 ) VALUES('v2-ledger-b2c',1,1,100);
+                 SET CONSTRAINTS ALL IMMEDIATE;
+                 COMMIT;",
+            )
+            .unwrap();
+
+        let b2c_policy = PricingReleasePolicyV2 {
+            policy_id: "v2-ledger-b2c-policy".into(),
+            policy_version: 1,
+            owner_type: crate::pricing::PolicyOwnerType::GlobalB2c,
+            owner_id: "global".into(),
+            account_class: AccountClass::B2c,
+            product_id: Some("main".into()),
+            billing_mode: BillingModeV2::Balance,
+            schema_version: 2,
+            capability_generation: 1,
+            capability_digest: "stage8-capability-1".into(),
+            catalog_generation: Some(1),
+            catalog_digest: Some("stage8-main-catalog-1".into()),
+            switch_generation: Some(1),
+            switch_digest: Some("stage8-switches-1".into()),
+            content_digest: "v2-ledger-b2c-policy-digest".into(),
+            rules: vec![PricingReleasePolicyRuleV2 {
+                rule_id: "v2-ledger-global-50".into(),
+                rule_digest: "v2-ledger-global-50-digest".into(),
+                scope: PricingReleaseRuleScopeV2::Global,
+                discount_bps: 5_000,
+                payable_multiplier_bp: 5_000,
+            }],
+        };
+        let service_policy = PricingReleasePolicyV2 {
+            policy_id: "v2-ledger-service-policy".into(),
+            policy_version: 1,
+            owner_type: crate::pricing::PolicyOwnerType::Service,
+            owner_id: "v2-ledger-service".into(),
+            account_class: AccountClass::Service,
+            product_id: None,
+            billing_mode: BillingModeV2::MeterOnly,
+            schema_version: 2,
+            capability_generation: 1,
+            capability_digest: "stage8-capability-1".into(),
+            catalog_generation: None,
+            catalog_digest: None,
+            switch_generation: None,
+            switch_digest: None,
+            content_digest: "v2-ledger-service-policy-digest".into(),
+            rules: Vec::new(),
+        };
+        for policy in [&b2c_policy, &service_policy] {
+            assert_eq!(
+                pg.prepare_pricing_release_policy_v2(policy).unwrap(),
+                PricingMutation::Stored
+            );
+        }
+
+        let assignments = vec![
+            PricingReleaseAssignmentV2 {
+                account_id: "v2-ledger-b2c".into(),
+                account_class: AccountClass::B2c,
+                policy_id: b2c_policy.policy_id.clone(),
+                policy_version: 1,
+                policy_digest: b2c_policy.content_digest.clone(),
+                billing_mode: BillingModeV2::Balance,
+                funding_generation: Some(1),
+                purpose: None,
+                responsible: None,
+                assignment_digest: "v2-ledger-b2c-assignment".into(),
+            },
+            PricingReleaseAssignmentV2 {
+                account_id: "v2-ledger-service".into(),
+                account_class: AccountClass::Service,
+                policy_id: service_policy.policy_id.clone(),
+                policy_version: 1,
+                policy_digest: service_policy.content_digest.clone(),
+                billing_mode: BillingModeV2::MeterOnly,
+                funding_generation: None,
+                purpose: Some("internal-ledger-test".into()),
+                responsible: Some("runtime-team".into()),
+                assignment_digest: "v2-ledger-service-assignment".into(),
+            },
+        ];
+        let release = |generation, release_kind, digest: &str| PricingReleaseV2 {
+            generation,
+            release_kind,
+            schema_version: 2,
+            capability_generation: 1,
+            capability_digest: "stage8-capability-1".into(),
+            main_catalog_generation: 1,
+            main_catalog_digest: "stage8-main-catalog-1".into(),
+            openkeys_catalog_generation: 1,
+            openkeys_catalog_digest: "stage8-openkeys-catalog-1".into(),
+            switch_generation: 1,
+            switch_digest: "stage8-switches-1".into(),
+            inventory_digest: "v2-ledger-inventory".into(),
+            policy_manifest_digest: format!("v2-ledger-policies-{generation}"),
+            assignment_manifest_digest: format!("v2-ledger-assignments-{generation}"),
+            funding_manifest_digest: "v2-ledger-funding".into(),
+            minimum_runtime_schema_version: 2,
+            content_digest: digest.into(),
+            assignments: assignments.clone(),
+        };
+        let target = release(
+            TARGET_GENERATION,
+            PricingReleaseKindV2::Target,
+            "v2-ledger-target",
+        );
+        let recovery = release(
+            RECOVERY_GENERATION,
+            PricingReleaseKindV2::Recovery,
+            "v2-ledger-recovery",
+        );
+        assert_eq!(
+            pg.prepare_pricing_release_v2(&target).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            pg.prepare_pricing_release_v2(&recovery).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            pg.prepare_pricing_release_recovery_link_v2(&PricingReleaseRecoveryLinkV2 {
+                target_generation: TARGET_GENERATION,
+                target_digest: target.content_digest.clone(),
+                recovery_generation: RECOVERY_GENERATION,
+                recovery_digest: recovery.content_digest.clone(),
+                link_digest: "v2-ledger-recovery-link".into(),
+            })
+            .unwrap(),
+            PricingMutation::Stored
+        );
+
+        let activated_ts = now();
+        pg.client
+            .execute(
+                "INSERT INTO pricing_stage8_evidence_v2(
+                     evidence_digest,target_generation,target_digest,recovery_generation,
+                     recovery_digest,inventory_digest,funding_digest,shadow_digest,
+                     runtime_floor_digest,legacy_inflight_count,blocker_count,passed,
+                     observed_ts,valid_until_ts
+                 ) VALUES(
+                     'v2-ledger-evidence',$1,$2,$3,$4,'v2-ledger-inventory',
+                     'v2-ledger-funding','v2-ledger-shadow','v2-ledger-floor',
+                     0,0,true,$5,$6
+                 )",
+                &[
+                    &TARGET_GENERATION,
+                    &target.content_digest,
+                    &RECOVERY_GENERATION,
+                    &recovery.content_digest,
+                    &activated_ts,
+                    &activated_ts.saturating_add(600),
+                ],
+            )
+            .unwrap();
+        pg.client
+            .batch_execute(&format!(
+                "BEGIN;
+                 INSERT INTO pricing_release_activations_v2(
+                     activation_kind,from_generation,from_digest,to_generation,to_digest,
+                     expected_head_version,resulting_head_version,evidence_digest,operator_id,
+                     reason,activated_ts
+                 ) VALUES(
+                     'cutover',NULL,NULL,{TARGET_GENERATION},'v2-ledger-target',0,1,
+                     'v2-ledger-evidence','ledger-test','ledger attribution matrix',{activated_ts}
+                 );
+                 INSERT INTO pricing_release_head_v2(
+                     singleton,active_generation,active_digest,head_version,updated_ts
+                 ) VALUES(1,{TARGET_GENERATION},'v2-ledger-target',1,{activated_ts});
+                 SET CONSTRAINTS ALL IMMEDIATE;
+                 COMMIT;"
+            ))
+            .unwrap();
+
+        let resolution = pg
+            .pricing_release_resolution_v2(
+                "v2-ledger-b2c",
+                crate::PROVIDER_GOOGLE,
+                "gemini-3-flash-preview",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolution.payable_multiplier_bp(), Some(5_000));
+        let admission_ts = now();
+        let legacy_snapshot = crate::pricing::LegacyScalarAdmissionSnapshot::new(
+            crate::pricing::LegacyScalarAdmissionSnapshotInput {
+                request_id: "v2-ledger-b2c-request".into(),
+                account_id: "v2-ledger-b2c".into(),
+                provider: crate::pricing::SnapshotProvider::Google,
+                requested_model_id: "gemini-3-flash-preview".into(),
+                canonical_model_id: "gemini-3-flash-preview".into(),
+                alias_generation: 1,
+                tariff_schedule_id: "google/v2-ledger/v1".into(),
+                tariff_priced_ts: admission_ts,
+                admission_ts,
+                payable_multiplier_bp: 5_000,
+                official_hold_nano: 200,
+                charged_hold_nano: 100,
+                premium_modifiers: crate::pricing::LegacyPremiumModifiers::GeminiV1 {
+                    context_rate: crate::pricing::SnapshotGeminiContextRate::ConservativeMaximum,
+                    search_billing: crate::pricing::SnapshotGeminiSearchBilling::PerQuery,
+                    grounding_enabled: false,
+                    search_reserve_units: 0,
+                },
+            },
+        )
+        .unwrap();
+        let quote =
+            crate::pricing::PricingReleaseQuoteV2::from_legacy_snapshot(&legacy_snapshot).unwrap();
+        let receipt = match pg
+            .reserve_request_with_pricing_release_v2(
+                &owner,
+                "v2-ledger-b2c-key",
+                600,
+                &resolution,
+                &quote,
+            )
+            .unwrap()
+        {
+            PricingReleaseReserveOutcomeV2::Inserted(receipt) => receipt,
+            other => panic!("unexpected release-v2 reserve outcome: {other:?}"),
+        };
+        assert_eq!(receipt.snapshot.charged_hold_nano, 100);
+        let reserve_allocations: Vec<(String, i64, i64)> = pg
+            .client
+            .query(
+                "SELECT lot_source_type,allocation_order,reserved_nano
+                   FROM pricing_request_funding_allocations_v2
+                  WHERE request_id='v2-ledger-b2c-request' ORDER BY allocation_order",
+                &[],
+            )
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.get(0), row.get(1), row.get(2)))
+            .collect();
+        assert_eq!(
+            reserve_allocations,
+            vec![
+                ("welcome_bonus".to_string(), 1, 60),
+                ("paid".to_string(), 2, 40),
+            ]
+        );
+
+        let usage = UsageEventInput {
+            model: "gemini-3-flash-preview".into(),
+            provider: crate::PROVIDER_GOOGLE.into(),
+            input_tokens: 8,
+            output_tokens: 4,
+            real_nano: 160,
+            input_nano: 80,
+            output_nano: 80,
+            priced_ts: admission_ts,
+            ..UsageEventInput::default()
+        };
+        assert_eq!(
+            pg.settle_request(
+                "v2-ledger-b2c-request",
+                80,
+                Some("v2-ledger-settle"),
+                Some(&usage),
+            )
+            .unwrap(),
+            Some(9_980)
+        );
+
+        let entries = pg.ledger_after("v2-ledger-b2c", 0, 10).unwrap();
+        assert_eq!(entries.len(), 2);
+        let charge = entries
+            .iter()
+            .find(|entry| entry.kind == "charge")
+            .expect("release-v2 settlement wrote a charge ledger row");
+        assert_eq!(charge.request_id.as_deref(), Some("v2-ledger-b2c-request"));
+        assert_eq!(charge.amount_nano, 80);
+        assert_eq!(charge.provider.as_deref(), Some("google"));
+        assert_eq!(charge.official_nano, Some(160));
+        let attribution = charge
+            .attribution
+            .as_ref()
+            .expect("release-v2 charge carries immutable attribution");
+        assert_eq!(attribution.attribution_schema_version, 2);
+        assert_eq!(attribution.snapshot_kind.as_deref(), Some("release_v2"));
+        assert_eq!(attribution.account_class.as_deref(), Some("b2c"));
+        assert_eq!(attribution.provider_id.as_deref(), Some("google"));
+        assert_eq!(
+            attribution.requested_model_id.as_deref(),
+            Some("gemini-3-flash-preview")
+        );
+        assert_eq!(
+            attribution.canonical_model_id.as_deref(),
+            Some("gemini-3-flash-preview")
+        );
+        assert_eq!(
+            attribution.served_model_id.as_deref(),
+            Some("gemini-3-flash-preview")
+        );
+        assert_eq!(
+            attribution.served_canonical_model_id.as_deref(),
+            Some("gemini-3-flash-preview")
+        );
+        assert_eq!(attribution.rule_id.as_deref(), Some("v2-ledger-global-50"));
+        assert_eq!(
+            attribution.rule_digest.as_deref(),
+            Some("v2-ledger-global-50-digest")
+        );
+        assert_eq!(attribution.rule_scope.as_deref(), Some("global"));
+        assert_eq!(attribution.discount_bps, Some(5_000));
+        assert_eq!(attribution.payable_multiplier_bp, Some(5_000));
+        assert_eq!(
+            attribution.policy_id.as_deref(),
+            Some("v2-ledger-b2c-policy")
+        );
+        assert_eq!(attribution.policy_version, Some(1));
+        assert_eq!(
+            attribution.policy_digest.as_deref(),
+            Some("v2-ledger-b2c-policy-digest")
+        );
+        assert_eq!(
+            attribution.tariff_schedule_id.as_deref(),
+            Some("google/v2-ledger/v1")
+        );
+        assert_eq!(attribution.tariff_priced_ts, Some(admission_ts));
+        assert_eq!(attribution.official_nano, Some(160));
+        assert!(
+            attribution
+                .official_cost_json
+                .as_ref()
+                .is_some_and(serde_json::Value::is_object)
+        );
+        assert_eq!(
+            (
+                attribution.paid_funded_nano,
+                attribution.bonus_funded_nano,
+                attribution.other_funded_nano,
+            ),
+            (Some(20), Some(60), Some(0))
+        );
+        assert_eq!(
+            attribution.paid_funded_nano.unwrap()
+                + attribution.bonus_funded_nano.unwrap()
+                + attribution.other_funded_nano.unwrap(),
+            charge.amount_nano
+        );
+        let funding_evidence = attribution
+            .funding_allocation_json
+            .as_ref()
+            .and_then(serde_json::Value::as_array)
+            .expect("release-v2 charge carries v2 funding allocation evidence");
+        assert_eq!(funding_evidence.len(), 2);
+        assert_eq!(funding_evidence[0]["allocation_order"], 1);
+        assert_eq!(funding_evidence[0]["lot_id"], "v2-ledger-bonus");
+        assert_eq!(funding_evidence[0]["lot_source_type"], "welcome_bonus");
+        assert_eq!(funding_evidence[0]["direction"], "debit");
+        assert_eq!(funding_evidence[0]["amount_nano"], 60);
+        assert!(funding_evidence[0]["lot_version"].as_i64().unwrap() > 0);
+        assert_eq!(funding_evidence[1]["allocation_order"], 2);
+        assert_eq!(funding_evidence[1]["lot_id"], "v2-ledger-paid");
+        assert_eq!(funding_evidence[1]["lot_source_type"], "paid");
+        assert_eq!(funding_evidence[1]["direction"], "debit");
+        assert_eq!(funding_evidence[1]["amount_nano"], 20);
+        assert_eq!(attribution.pricing_mode, None);
+        assert_eq!(attribution.rule_origin, None);
+        assert_eq!(attribution.track_eligible, None);
+        assert_eq!(attribution.retention_eligible, None);
+        assert_eq!(attribution.commission_eligible, None);
+        assert_eq!(
+            attribution.snapshot_digest.as_deref(),
+            Some(receipt.snapshot.snapshot_digest.as_str())
+        );
+        assert_eq!(attribution.release_schema_version, Some(2));
+        assert_eq!(attribution.release_generation, Some(TARGET_GENERATION));
+        assert_eq!(attribution.release_digest.as_deref(), Some("v2-ledger-target"));
+        assert_eq!(attribution.release_billing_mode.as_deref(), Some("balance"));
+        assert_eq!(attribution.release_funding_generation, Some(1));
+
+        let durable_allocations: Vec<(String, String, i64)> = pg
+            .client
+            .query(
+                "SELECT lot_id,lot_source_type,amount_nano
+                   FROM funding_ledger_allocations_v2
+                  WHERE ledger_id=$1 ORDER BY allocation_order",
+                &[&charge.id],
+            )
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.get(0), row.get(1), row.get(2)))
+            .collect();
+        assert_eq!(
+            durable_allocations,
+            vec![
+                ("v2-ledger-bonus".to_string(), "welcome_bonus".to_string(), 60),
+                ("v2-ledger-paid".to_string(), "paid".to_string(), 20),
+            ]
+        );
+
+        assert_eq!(
+            pg.settle_request(
+                "v2-ledger-b2c-request",
+                80,
+                Some("v2-ledger-settle"),
+                Some(&usage),
+            )
+            .unwrap(),
+            Some(9_980)
+        );
+        let charge_count: i64 = pg
+            .client
+            .query_one(
+                "SELECT count(*)::bigint FROM ledger
+                  WHERE account_id='v2-ledger-b2c' AND kind='charge'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(charge_count, 1);
+
+        let service_resolution = pg
+            .pricing_release_resolution_v2(
+                "v2-ledger-service",
+                crate::PROVIDER_GOOGLE,
+                "v2-ledger-meter-only-model",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(service_resolution.billing_mode(), BillingModeV2::MeterOnly);
+        let service_snapshot = crate::pricing::LegacyScalarAdmissionSnapshot::new(
+            crate::pricing::LegacyScalarAdmissionSnapshotInput {
+                request_id: "v2-ledger-service-request".into(),
+                account_id: "v2-ledger-service".into(),
+                provider: crate::pricing::SnapshotProvider::Google,
+                requested_model_id: "v2-ledger-meter-only-model".into(),
+                canonical_model_id: "v2-ledger-meter-only-model".into(),
+                alias_generation: 1,
+                tariff_schedule_id: "google/v2-ledger-service/v1".into(),
+                tariff_priced_ts: admission_ts,
+                admission_ts,
+                payable_multiplier_bp: 10_000,
+                official_hold_nano: 500,
+                charged_hold_nano: 500,
+                premium_modifiers: crate::pricing::LegacyPremiumModifiers::GeminiV1 {
+                    context_rate: crate::pricing::SnapshotGeminiContextRate::ConservativeMaximum,
+                    search_billing: crate::pricing::SnapshotGeminiSearchBilling::PerQuery,
+                    grounding_enabled: false,
+                    search_reserve_units: 0,
+                },
+            },
+        )
+        .unwrap();
+        let service_quote =
+            crate::pricing::PricingReleaseQuoteV2::from_legacy_snapshot(&service_snapshot).unwrap();
+        let service_receipt = match pg
+            .reserve_request_with_pricing_release_v2(
+                &owner,
+                "v2-ledger-service-key",
+                600,
+                &service_resolution,
+                &service_quote,
+            )
+            .unwrap()
+        {
+            PricingReleaseReserveOutcomeV2::Inserted(receipt) => receipt,
+            other => panic!("unexpected service release-v2 reserve outcome: {other:?}"),
+        };
+        assert_eq!(service_receipt.snapshot.charged_hold_nano, 0);
+        let service_usage = UsageEventInput {
+            model: "v2-ledger-meter-only-model".into(),
+            provider: crate::PROVIDER_GOOGLE.into(),
+            input_tokens: 10,
+            real_nano: 500,
+            input_nano: 500,
+            priced_ts: admission_ts,
+            ..UsageEventInput::default()
+        };
+        assert_eq!(
+            pg.settle_request(
+                "v2-ledger-service-request",
+                0,
+                None,
+                Some(&service_usage),
+            )
+            .unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            pg.settle_request(
+                "v2-ledger-service-request",
+                0,
+                None,
+                Some(&service_usage),
+            )
+            .unwrap(),
+            Some(0)
+        );
+        let service_ledger_count: i64 = pg
+            .client
+            .query_one(
+                "SELECT count(*)::bigint FROM ledger WHERE account_id='v2-ledger-service'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(service_ledger_count, 0);
 
         pg.client
             .batch_execute(

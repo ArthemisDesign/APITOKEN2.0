@@ -6332,6 +6332,11 @@ pub struct LedgerAttribution {
     pub retention_eligible: Option<bool>,
     pub commission_eligible: Option<bool>,
     pub snapshot_digest: Option<String>,
+    pub release_schema_version: Option<i64>,
+    pub release_generation: Option<i64>,
+    pub release_digest: Option<String>,
+    pub release_billing_mode: Option<String>,
+    pub release_funding_generation: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -6406,6 +6411,11 @@ fn sqlite_ledger_row(row: &rusqlite::Row<'_>) -> Result<LedgerRow> {
                 admission_switch_digest: row.get(49)?,
                 runtime_manifest_generation: row.get(50)?,
                 runtime_manifest_digest: row.get(51)?,
+                release_schema_version: None,
+                release_generation: None,
+                release_digest: None,
+                release_billing_mode: None,
+                release_funding_generation: None,
             })
         })
         .transpose()?;

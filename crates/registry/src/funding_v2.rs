@@ -61,6 +61,27 @@ pub(crate) struct SettlementFundingV2 {
     pub(crate) allocations: Vec<FundingLedgerAllocationV2>,
     pub(crate) paid_funded_nano: i64,
     pub(crate) bonus_funded_nano: i64,
+    pub(crate) other_funded_nano: i64,
+}
+
+impl SettlementFundingV2 {
+    pub(crate) fn allocation_json(&self) -> Result<String> {
+        let entries: Vec<serde_json::Value> = self
+            .allocations
+            .iter()
+            .map(|allocation| {
+                serde_json::json!({
+                    "allocation_order": allocation.allocation_order,
+                    "lot_id": allocation.lot_id,
+                    "lot_source_type": allocation.lot_source_type,
+                    "lot_version": allocation.lot_version,
+                    "direction": "debit",
+                    "amount_nano": allocation.amount_nano,
+                })
+            })
+            .collect();
+        Ok(serde_json::to_string(&entries)?)
+    }
 }
 
 fn digest_bytes(hasher: &mut Sha256, value: &[u8]) {
@@ -1145,16 +1166,25 @@ pub(crate) fn settle_pricing_release_funding_v2(
         {
             bail!("pricing release funding allocation was already terminalized");
         }
-        if allocation.lot_source_type == "paid" {
-            evidence.paid_funded_nano = evidence
-                .paid_funded_nano
-                .checked_add(charged)
-                .context("pricing release paid-funded total overflow")?;
-        } else {
-            evidence.bonus_funded_nano = evidence
-                .bonus_funded_nano
-                .checked_add(charged)
-                .context("pricing release bonus-funded total overflow")?;
+        match allocation.lot_source_type.as_str() {
+            "paid" => {
+                evidence.paid_funded_nano = evidence
+                    .paid_funded_nano
+                    .checked_add(charged)
+                    .context("pricing release paid-funded total overflow")?;
+            }
+            "welcome_bonus" => {
+                evidence.bonus_funded_nano = evidence
+                    .bonus_funded_nano
+                    .checked_add(charged)
+                    .context("pricing release bonus-funded total overflow")?;
+            }
+            _ => {
+                evidence.other_funded_nano = evidence
+                    .other_funded_nano
+                    .checked_add(charged)
+                    .context("pricing release other-funded total overflow")?;
+            }
         }
         if charged > 0 {
             evidence.allocations.push(FundingLedgerAllocationV2 {

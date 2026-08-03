@@ -269,6 +269,17 @@ side effect. `serve` may only perform the read-only schema verification before c
   policy_v1/legacy_scalar строки удовлетворяют прежнему выражению, данных миграция не переписывает
   (NOT VALID + VALIDATE). Никакой writer ещё не создаёт release-v2 attribution: dependent producer
   доставляется отдельным SHA после зелёного migration/watchdog этого checkpoint.
+- **Release-v2 ledger attribution producer:** release-v2 settlement в
+  `postgres_process_pricing_release_settlement_v2` пишет charge-строку атомарно с полной immutable
+  attribution (`attribution_schema_version=2`, `snapshot_kind='release_v2'`, account class,
+  rule/policy/tariff identity, `official_cost_json`, `snapshot_digest`) и exact paid/bonus/other
+  split, который `settle_pricing_release_funding_v2` возвращает в `SettlementFundingV2` вместе с
+  lot-level evidence; `funding_allocation_json` зеркалирует durable `funding_ledger_allocations_v2`
+  (lot_id/source_type/version/direction/amount_nano/allocation_order). Ledger read отдаёт release
+  lineage через `LedgerAttribution.release_*` (legacy/SQLite строки — `None`). `meter_only` по-
+  прежнему не создаёт charge-строку, terminal replay не дублирует её (unique `(kind,request_id)`),
+  а pricing-mode/eligibility поля остаются NULL по CHECK. Real-PG gate:
+  `pg::tests::pricing_release_ledger_attribution_v2_postgres_matrix`.
 - **Pre-cutover funding dual writers:** все три PostgreSQL reserve-пути (scalar,
   legacy-snapshot и strict-policy), settlement outbox и `account_topup` сериализуются в порядке
   `request advisory → funding account advisory → reread head → row locks/money writes` (у top-up

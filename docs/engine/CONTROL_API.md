@@ -304,6 +304,18 @@ optional `allocation_order`); старые строки честно возвр�
 IDs и generations остаются integer JSON values; `packages/contracts` нормализует их в decimal
 strings до попадания в JavaScript business logic.
 
+После Stage 9 charge-строки release-v2 settlement несут `attribution` со
+`snapshot_kind="release_v2"` и `attribution_schema_version=2`: release lineage
+(`release_schema_version`, `release_generation`, `release_digest`, `release_billing_mode`,
+`release_funding_generation`), `account_class`, exact `paid_funded_nano`/`bonus_funded_nano`/
+`other_funded_nano` split фактического charge (их сумма всегда равна `amount_nano`),
+`snapshot_digest` reserve-time snapshot и `funding_allocation_json` с v2 lot identity
+(`lot_id`, `lot_source_type`, `lot_version`, `direction`, `amount_nano`, `allocation_order`), зеркалирующий
+durable `funding_ledger_allocations_v2`. Legacy-поля `pricing_mode`, `rule_origin` и
+`*_eligible` у таких строк остаются `null`: commission eligibility для release-v2 consumer
+вычисляет сам из `account_class` + `paid_funded_nano`, а не из pricing mode. `meter_only`
+(service) settlement не создаёт charge-строку вовсе.
+
 `GET /admin/account/{id}/usage` агрегирует сохранённые immutable компоненты settlement за
 фиксированный полуинтервал `[since_ts, until_ts)` — это НЕ пересчёт по текущему прайсу. Все
 `*_nano` в ответе — decimal strings; токены, requests и timestamps — числа. `buckets` раскладывает
