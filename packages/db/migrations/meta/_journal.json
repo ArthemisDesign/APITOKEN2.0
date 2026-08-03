@@ -260,6 +260,13 @@
       "when": 1785775929200,
       "tag": "0036_pricing_usage_provider_attribution",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1785781339317,
+      "tag": "0037_pricing_attribution_release_v2",
+      "breakpoints": true
     }
   ]
 }

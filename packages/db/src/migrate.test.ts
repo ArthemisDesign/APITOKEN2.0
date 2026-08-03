@@ -842,4 +842,59 @@ describe("migration configuration", () => {
     expect(snapshot.tables["public.pricing_usage_events"]!.columns.provider_id)
       .toMatchObject({ notNull: false, type: "text" });
   });
+
+  it("expands pricing usage attributions with release-v2 lineage and a widened kind set", () => {
+    const migrationName = "0037_pricing_attribution_release_v2.sql";
+    const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, migrationName), "utf8");
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
+    const previousEntry = journal.entries.find((entry) => entry.idx === 36);
+    const currentEntry = journal.entries.find((entry) => entry.idx === 37);
+
+    expect(currentEntry).toMatchObject({
+      idx: 37,
+      version: "7",
+      tag: "0037_pricing_attribution_release_v2",
+      breakpoints: true,
+    });
+    expect(currentEntry!.when).toBeGreaterThan(previousEntry!.when);
+
+    // Expand-only: five nullable columns plus constraint supersets; no data rewrite and no
+    // table/index drop. Constraint swaps re-add the same names with a strictly wider expression.
+    for (const column of [
+      "release_schema_version",
+      "release_generation",
+      "release_digest",
+      "release_billing_mode",
+      "release_funding_generation",
+    ]) {
+      expect(migrationSql).toContain(
+        `ALTER TABLE "pricing_usage_attributions" ADD COLUMN "${column}"`,
+      );
+    }
+    expect(migrationSql).not.toMatch(/^(?:INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
+    expect(migrationSql).not.toMatch(/DROP (?:TABLE|INDEX|COLUMN)/i);
+    expect(migrationSql).toContain('"snapshot_kind" IN (\'policy_v1\', \'legacy_scalar\', \'legacy_b2c_track\', \'release_v2\')');
+    expect(migrationSql).toContain('"rule_scope" IN (\'global\', \'provider\', \'model\')');
+    expect(migrationSql).toContain('"release_billing_mode" IN (\'balance\', \'meter_only\')');
+    expect(migrationSql).toContain('"snapshot_kind" NOT IN (\'policy_v1\', \'release_v2\')');
+
+    const snapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0037_snapshot.json"), "utf8"),
+    ) as {
+      prevId: string;
+      tables: Record<string, { columns: Record<string, { notNull: boolean; type: string }> }>;
+    };
+    const previousSnapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0036_snapshot.json"), "utf8"),
+    ) as { id: string };
+    expect(snapshot.prevId).toBe(previousSnapshot.id);
+    const attributions = snapshot.tables["public.pricing_usage_attributions"]!;
+    expect(attributions.columns.release_schema_version).toMatchObject({ notNull: false });
+    expect(attributions.columns.release_generation).toMatchObject({ notNull: false });
+    expect(attributions.columns.release_digest).toMatchObject({ notNull: false });
+    expect(attributions.columns.release_billing_mode).toMatchObject({ notNull: false });
+    expect(attributions.columns.release_funding_generation).toMatchObject({ notNull: false });
+  });
 });

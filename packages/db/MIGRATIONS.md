@@ -136,3 +136,16 @@ compatible. The separately delivered consumer copies authoritative top-level pro
 new charge rows and performs bounded resumable recovery pages over the same retained 30-day ledger
 horizon for old rows; exact pricing attribution remains a query fallback. If retained evidence is
 absent, the row is explicitly `unattributed` rather than guessed from a model name.
+
+Migration `0037_pricing_attribution_release_v2.sql` prepares immutable `pricing_usage_attributions`
+for Stage 9 release-v2 charge rows. It adds five nullable release lineage columns
+(`release_schema_version`, `release_generation`, `release_digest`, `release_billing_mode`,
+`release_funding_generation`) and swaps the existing shape CHECKs for strict supersets: the
+snapshot-kind set additionally allows `release_v2`, rule scope allows `global`, commission
+eligibility no longer requires track eligibility for release-v2 rows (it derives from
+`account_class` + `paid_funded_nano` instead of a pricing mode), and a dedicated release-v2 branch
+requires release lineage, account class, exact funding split and NULL legacy pricing-mode fields.
+Existing `policy_v1`/`legacy_scalar`/`legacy_b2c_track` rows satisfy the unchanged remainder of each
+expression, so the swap rewrites no data and the currently deployed writer stays valid. No
+application writer stores release-v2 attributions yet; the dependent consumer ships only after this
+migration SHA has green `deploy/migration` and `deploy/watchdog` in production.

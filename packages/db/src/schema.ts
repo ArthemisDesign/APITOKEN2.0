@@ -1584,6 +1584,11 @@ export const pricingUsageAttributions = pgTable("pricing_usage_attributions", {
   retentionEligible: boolean("retention_eligible").notNull(),
   commissionEligible: boolean("commission_eligible").notNull(),
   snapshotDigest: text("snapshot_digest").notNull(),
+  releaseSchemaVersion: bigint("release_schema_version", { mode: "bigint" }),
+  releaseGeneration: bigint("release_generation", { mode: "bigint" }),
+  releaseDigest: text("release_digest"),
+  releaseBillingMode: text("release_billing_mode"),
+  releaseFundingGeneration: bigint("release_funding_generation", { mode: "bigint" }),
   createdAt,
 }, (table) => [
   // The atomic ledger consumer stores immutable raw engine evidence here and treats normalized
@@ -1614,7 +1619,7 @@ export const pricingUsageAttributions = pgTable("pricing_usage_attributions", {
   }).onDelete("restrict"),
   check("pricing_usage_attributions_base_check", sql`
     ${table.attributionSchemaVersion} > 0
-    AND ${table.snapshotKind} IN ('policy_v1', 'legacy_scalar', 'legacy_b2c_track')
+    AND ${table.snapshotKind} IN ('policy_v1', 'legacy_scalar', 'legacy_b2c_track', 'release_v2')
     AND ${table.pricingMode} IN ('track', 'discount', 'legacy_scalar')
     AND ${table.ruleOrigin} IN ('managed', 'legacy')
     AND ${table.chargedNano} > 0
@@ -1645,7 +1650,8 @@ export const pricingUsageAttributions = pgTable("pricing_usage_attributions", {
       ${table.officialCostJson} IS NULL
       OR jsonb_typeof(${table.officialCostJson}) = 'object'
     )
-    AND (NOT ${table.commissionEligible} OR ${table.trackEligible})
+    AND (NOT ${table.commissionEligible} OR ${table.trackEligible}
+      OR ${table.snapshotKind} = 'release_v2')
   `),
   check("pricing_usage_attributions_funding_check", sql`
     (
@@ -1766,6 +1772,64 @@ export const pricingUsageAttributions = pgTable("pricing_usage_attributions", {
       AND ${table.trackEligible}
       AND ${table.retentionEligible}
     )
+    OR (
+      ${table.snapshotKind} = 'release_v2'
+      AND ${table.engineRequestId} IS NOT NULL AND ${table.engineRequestId} <> ''
+      AND ${table.providerId} IS NOT NULL AND ${table.providerId} <> ''
+      AND ${table.accountClass} IS NOT NULL
+      AND ${table.accountClass} IN ('b2c', 'b2b', 'openkeys', 'service')
+      AND ${table.requestedModelId} IS NOT NULL AND ${table.requestedModelId} <> ''
+      AND ${table.canonicalModelId} IS NOT NULL AND ${table.canonicalModelId} <> ''
+      AND (${table.servedModelId} IS NULL OR ${table.servedModelId} <> '')
+      AND (
+        ${table.servedCanonicalModelId} IS NULL
+        OR ${table.servedCanonicalModelId} <> ''
+      )
+      AND (
+        ${table.ruleId} IS NULL
+        OR (
+          ${table.ruleId} <> ''
+          AND ${table.ruleDigest} IS NOT NULL AND ${table.ruleDigest} <> ''
+          AND ${table.ruleScope} IS NOT NULL
+          AND ${table.ruleScope} IN ('global', 'provider', 'model')
+          AND ${table.payableMultiplierBp} IS NOT NULL
+          AND (
+            ${table.discountBps} IS NULL
+            OR ${table.payableMultiplierBp} = 10000 - ${table.discountBps}
+          )
+        )
+      )
+      AND ${table.policyId} IS NOT NULL AND ${table.policyId} <> ''
+      AND ${table.policyVersion} IS NOT NULL
+      AND ${table.policyVersion} > 0
+      AND ${table.policyDigest} IS NOT NULL AND ${table.policyDigest} <> ''
+      AND ${table.tariffScheduleId} IS NOT NULL AND ${table.tariffScheduleId} <> ''
+      AND ${table.tariffPricedAt} IS NOT NULL
+      AND ${table.officialNano} IS NOT NULL
+      AND ${table.officialCostJson} IS NOT NULL
+      AND ${table.pricingMode} IS NULL
+      AND ${table.ruleOrigin} IS NULL
+      AND NOT ${table.trackEligible}
+      AND NOT ${table.retentionEligible}
+      AND ${table.releaseSchemaVersion} IS NOT NULL
+      AND ${table.releaseSchemaVersion} >= 2
+      AND ${table.releaseGeneration} IS NOT NULL
+      AND ${table.releaseGeneration} > 0
+      AND ${table.releaseDigest} IS NOT NULL AND ${table.releaseDigest} <> ''
+      AND ${table.releaseBillingMode} IS NOT NULL
+      AND ${table.releaseBillingMode} IN ('balance', 'meter_only')
+      AND (
+        (
+          ${table.releaseBillingMode} = 'balance'
+          AND ${table.releaseFundingGeneration} IS NOT NULL
+          AND ${table.releaseFundingGeneration} > 0
+        )
+        OR (
+          ${table.releaseBillingMode} = 'meter_only'
+          AND ${table.releaseFundingGeneration} IS NULL
+        )
+      )
+    )
   `),
   check("pricing_usage_attributions_effective_check", sql`
     (
@@ -1776,13 +1840,13 @@ export const pricingUsageAttributions = pgTable("pricing_usage_attributions", {
       AND ${table.effectivePolicyDigest} <> ''
     )
     OR (
-      ${table.snapshotKind} IN ('legacy_scalar', 'legacy_b2c_track')
+      ${table.snapshotKind} IN ('legacy_scalar', 'legacy_b2c_track', 'release_v2')
       AND ${table.bindingId} IS NULL
       AND ${table.effectivePolicyDigest} IS NULL
     )
   `),
   check("pricing_usage_attributions_policy_funding_check", sql`
-    ${table.snapshotKind} <> 'policy_v1'
+    ${table.snapshotKind} NOT IN ('policy_v1', 'release_v2')
     OR (
       ${table.paidFundedNano} IS NOT NULL
       AND ${table.bonusFundedNano} IS NOT NULL
