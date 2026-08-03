@@ -22,6 +22,7 @@
 | `crates/server` (`src/http.rs`, `src/admin.rs`) | HTTP `/admin/*` под `x-api-key: CLAUDE_API_CONTROL_KEY`; роуты только в режимах Combined/Anthropic | `packages/engine-client` — единственный клиент; прямые обращения к `/admin/*` вне него запрещены | `docs/engine/CONTROL_API.md` |
 | `packages/engine-client` | TS-клиент `EngineClient`, strict zod-валидация из `@claude-api/contracts`, деньги — `json-bigint` строками; pricing v2 provisioning-context/cursor/prepare/readback и единый canonical Stage 5 policy/assignment digest builder | `apps/api`, `apps/worker`, `apps/openkeys`; `packages/db` Stage 5 materializer, Stage 8 collector и pre-delivery activation authority (env `ENGINE_BASE_URL` + `ENGINE_CONTROL_KEY` только у runtime-потребителей) | `docs/engine/CONTROL_API.md`, `docs/commerce/MULTI_DISCOUNT_STAGE5.md`, `docs/commerce/MULTI_DISCOUNT_STAGE7.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md`, `docs/product/OPENKEYS.md` |
 | `claude-api db stage8-evidence` (`crates/registry`, `crates/server`) | protected schema-v2 JSON artifact with signed-i64 nanoUSD and canonical Rust `sha256:v2` evidence digest; exact target/recovery, full engine inventory/funding/shadow/runtime floor | `packages/db` Stage 8 consumer reads the explicit file path, verifies shape/digest/age and combines it with commerce/service plus two exhaustive OpenKeys scans; connected only after GREEN producer SHA | `docs/ops/DEPLOYMENT.md`, `docs/commerce/MULTI-DISCOUNT.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md` |
+| `crates/server` + `crates/forward` Stage 8 capture producer | protected `POST /admin/pricing/v2/stage8-evidence/capture`; strict explicit inputs, server-owned compile-fixed manifest, unwrapped schema-v2 report including `passed=false`; PostgreSQL bounded reader only | future `packages/engine-client` raw-text/`json-bigint` transport and `apps/worker` durable managed capture consumer, connected only in a separate checkpoint after GREEN exact producer SHA; this producer alone has no caller/job side effect | `docs/engine/CONTROL_API.md`, `docs/ops/DEPLOYMENT.md`, `docs/commerce/MULTI-DISCOUNT_STAGE9.md` |
 | `crates/server` operator-роуты | read-only `/overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health` (→ 8790), `/codex-subs` (→ 8792), `/gemini-subs` (→ 8794) через Caddy `admin.apitoken.sale`, ключ подставляет прокси (`ADMIN_CONTROL_KEY`); Claude `/capacity`, `/overview` supply и Prometheus используют одну exact turn+quota authority, не pool prior/EMA | `apps/admin` (без engine-client и без своих секретов); `/metrics` также скрейпит Prometheus напрямую по loopback, минуя Caddy (`observability/prometheus/prometheus.yml`) | `docs/product/ADMIN_PANEL.md`, `docs/engine/CONTROL_API.md` |
 
 Группы эндпоинтов Control API: аккаунты, credit/ledger (идемпотентный credit по
@@ -30,7 +31,9 @@ provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack`), usag
 `/admin/pricing/v2/*`.
 Release-v2 producer публикует immutable policy/release/recovery prepare, полный engine inventory,
 nullable head, account-local funding normalization plan/apply и append-only assignment extension
-для exact active/recovery pair аккаунта, созданного после cutover. Read-only
+для exact active/recovery pair аккаунта, созданного после cutover. Read-only Stage 8 capture
+возвращает тот же blocker-preserving report, что CLI, через bounded PostgreSQL reader и не stage'ит
+collection/activation work. Read-only
 `GET /admin/pricing/v2/provisioning-context` одним snapshot публикует exact head/audit/evidence,
 active release lineage и только evidence-selected recovery; до cutover возвращает `null`, а при
 расхождении authority fail closed. Это producer для независимого provisioning OpenKeys/service и

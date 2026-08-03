@@ -20,9 +20,16 @@ recovery CAS незамеченным.
 Commerce migration `0033_pricing_stage8_managed_capture.sql` — отдельный expand-only checkpoint
 для штатного production capture без SSH и файлового handoff. Она создаёт только пустую очередь и
 append-only хранилище исходного engine JSON/combined JSON по попыткам. Миграция не создаёт job, не
-вызывает engine, не собирает Stage 8 и не активирует release. После GREEN schema SHA сначала
-доставляется защищённый read-only engine producer, а только после его GREEN — commerce worker/API
-consumer и затем admin UI. Ни один из этих шагов не останавливает traffic или money writers.
+вызывает engine, не собирает Stage 8 и не активирует release. После GREEN schema SHA engine
+публикует защищённый read-only
+`POST /admin/pricing/v2/stage8-evidence/capture`: strict request содержит только exact generations,
+frozen window/sample limits и Gemini admission aggregate, а compile-fixed runtime manifest
+присоединяет сам server. Endpoint возвращает schema-v2 report и при `passed=false`, выполняет
+существующий `REPEATABLE READ READ ONLY` collector через bounded PostgreSQL reader и не меняет head,
+accounts, balances, reservations или traffic. Этот producer сам не создаёт job/caller. Только после
+GREEN exact producer SHA отдельный commerce worker/API consumer читает response как raw text через
+`json-bigint`, сохраняет исходный JSON и затем подключается admin UI. Ни один из этих шагов не
+останавливает traffic или money writers.
 
 После GREEN schema SHA durable consumer добавляет strict contracts, единственный typed engine
 transport и worker lifecycle `pending → processing → retry|dead|confirmed`. Explicit staging

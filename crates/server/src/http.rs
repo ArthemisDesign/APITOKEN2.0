@@ -350,6 +350,13 @@ define_admin_routes!(
     (
         post,
         POST,
+        "/admin/pricing/v2/stage8-evidence/capture",
+        "/admin/pricing/v2/stage8-evidence/capture",
+        admin::capture_stage8_engine_evidence
+    ),
+    (
+        post,
+        POST,
         "/admin/pricing/v2/activate",
         "/admin/pricing/v2/activate",
         admin::activate_pricing_release_v2
@@ -5392,7 +5399,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_admin_route_enforces_the_control_key_lattice() {
-        assert_eq!(ADMIN_ROUTE_CASES.len(), 41);
+        assert_eq!(ADMIN_ROUTE_CASES.len(), 42);
         let service = router(admin_auth_test_app(), Arc::new(AtomicBool::new(true)));
         let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
 
@@ -5431,6 +5438,60 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn stage8_capture_separates_malformed_input_from_unavailable_authority() {
+        let (app, dir) = billing_test_app("stage8_capture_validation");
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+        let valid = json!({
+            "target_generation": 41,
+            "recovery_generation": 42,
+            "window_start_ts": 1,
+            "window_end_ts": 2,
+            "min_samples_per_provider": 1,
+            "financial_sample_size": 1,
+            "gemini_client_admissions": 0
+        });
+
+        let mut unknown_field = valid.clone();
+        unknown_field["runtime_manifest"] = json!({"caller_controlled": true});
+        let (status, _) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/v2/stage8-evidence/capture",
+            unknown_field,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        let mut invalid_window = valid.clone();
+        invalid_window["window_end_ts"] = json!(1);
+        let (status, body) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/v2/stage8-evidence/capture",
+            invalid_window,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"],
+            "Stage 8 evidence window must be a positive non-empty half-open interval"
+        );
+
+        let (status, body) = control_json_request(
+            &service,
+            Method::POST,
+            "/admin/pricing/v2/stage8-evidence/capture",
+            valid,
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"], "billing authority unavailable");
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     async fn control_json_request(

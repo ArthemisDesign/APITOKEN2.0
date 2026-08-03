@@ -228,9 +228,12 @@ Engine хранит prepared releases и один active release head. Подг�
   `0032_pricing_activation_service_evidence.sql` отдельно добавляет nullable service inventory
   digest, чтобы новый collector связал recovery evidence и first-delivery revalidation с одной
   exact service authority без backfill старых строк; `0033_pricing_stage8_managed_capture.sql`
-  создаёт пустую durable очередь и append-only raw/combined artifacts для будущего protected
-  Stage 8 workflow без SSH/file handoff, но сама не создаёт job, не вызывает engine и не двигает
-  release head;
+  создаёт пустую durable очередь и append-only raw/combined artifacts для protected Stage 8
+  workflow без SSH/file handoff, но сама не создаёт job, не вызывает engine и не двигает release
+  head. Следующий за schema producer-first checkpoint добавляет защищённый read-only
+  `POST /admin/pricing/v2/stage8-evidence/capture`: server присоединяет compile-fixed manifest,
+  bounded PostgreSQL reader возвращает schema-v2 report также при `passed=false`, а consumer/job
+  подключается только отдельным checkpoint после GREEN producer SHA;
 - sales migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` добавляет
   отдельные immutable usage/commission v2 tables без pricing-mode поля.
 

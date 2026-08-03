@@ -214,6 +214,12 @@ request и compile-fixed `PricingRuntimeManifestEvidence`, registry выполн
 создаёт caller/job и не активирует head самостоятельно; data-plane readers этот control lock не
 берут.
 
+Stage 8 engine capture использует противоположную lane: `AsyncBilling::stage8_engine_evidence`
+передаёт полный request только в bounded reader pool, PostgreSQL выполняет один `REPEATABLE READ
+READ ONLY` report, а SQLite возвращает authority unavailable. Actor не имеет fallback в writer,
+не превращает `passed=false` в ошибку и не меняет head, account, balance, reservation или traffic.
+Compile-fixed runtime manifest присоединяет только `crates/server`, не HTTP caller.
+
 Read-only router policy preflight фазы 6.4a переиспользует публичные `resolve_pricing` и
 `RuntimePricingManifest::from_evidence` через композицию `crates/server`: тот же customer key и один
 coherent bundle фильтруют bounded catalog chain до первой router-attempt. Этот caller не строит

@@ -434,6 +434,7 @@ POST /admin/pricing/v2/recovery-link/prepare
 GET  /admin/pricing/v2/recovery-link/{target_generation}/{recovery_generation}
 POST /admin/pricing/v2/assignment-extension/prepare
 GET  /admin/pricing/v2/assignment-extension/{head_version}/{account_id}
+POST /admin/pricing/v2/stage8-evidence/capture
 POST /admin/pricing/v2/activate
 GET  /admin/pricing/v2/head
 GET  /admin/pricing/v2/provisioning-context
@@ -557,6 +558,40 @@ no longer current returns typed `stale` without inserting either member. `GET` p
 readback by that tuple. Runtime resolution reads one coherent base assignment or append-only
 extension for the active release; it never mutates the immutable release manifest. This surface does
 not create or activate a head.
+
+`POST /admin/pricing/v2/stage8-evidence/capture` is the producer-first machine transport for the
+same schema-v2 report as `claude-api db stage8-evidence`. Its body is strict and contains only
+explicit capture inputs; caller-supplied runtime evidence is rejected:
+
+```json
+{
+  "target_generation": 41,
+  "recovery_generation": 42,
+  "window_start_ts": 1785700000,
+  "window_end_ts": 1785700300,
+  "min_samples_per_provider": 100,
+  "financial_sample_size": 100,
+  "gemini_client_admissions": 27
+}
+```
+
+Target must be positive and recovery strictly newer. The window is a positive non-empty half-open
+past interval; provider minimum is `1..=1000000`, financial sample size `1..=1000`, and Gemini
+admissions is a nonnegative external aggregate. The server attaches its compile-fixed
+`PricingRuntimeManifestEvidence` from `AppState`; the HTTP caller cannot choose runtime capability
+lineage. A bounded `AsyncBilling` reader executes the existing PostgreSQL `REPEATABLE READ READ
+ONLY` collector. It never enters the billing writer and cannot update a release head, account,
+funding bucket, balance, reservation, ledger, activation evidence or traffic state.
+
+A successfully captured report is the unwrapped schema-v2 JSON object with HTTP `200` regardless
+of its `passed` value. In particular, `passed=false` plus `blockers[]` is valid durable evidence and
+must be persisted by the future consumer rather than translated into a transport failure.
+Malformed bounds are `400`, a shape/type/unknown-field error is `422`, missing control auth is
+`401`, and non-PostgreSQL or unavailable authority is `503`. The report contains signed-i64
+nanoUSD JSON numbers. TypeScript consumers must read the response as raw text and parse it with
+`json-bigint`; `response.json()` is forbidden because it can round those integers before evidence
+digest verification. No engine client/worker may call this expand-only producer until its exact
+producer SHA has a green `deploy/watchdog`.
 
 `POST /admin/pricing/v2/activate` is the only global live mutation. All unknown fields are rejected.
 The initial cutover request has this exact shape:

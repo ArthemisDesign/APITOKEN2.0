@@ -1575,6 +1575,10 @@ enum ReadCmd {
         account_id: String,
         reply: oneshot::Sender<anyhow::Result<Option<FundingNormalizationPlanV2>>>,
     },
+    Stage8EngineEvidence {
+        request: registry::stage8::Stage8EngineEvidenceRequest,
+        reply: oneshot::Sender<anyhow::Result<registry::stage8::Stage8EngineEvidenceReport>>,
+    },
     SpendByModel {
         since_ts: i64,
         until_ts: i64,
@@ -2836,6 +2840,11 @@ impl AsyncBilling {
                                     "funding normalization v2 authority requires PostgreSQL"
                                 )));
                             }
+                            ReadCmd::Stage8EngineEvidence { reply, .. } => {
+                                let _ = reply.send(Err(anyhow::anyhow!(
+                                    "Stage 8 engine evidence requires PostgreSQL authority"
+                                )));
+                            }
                             ReadCmd::SpendByModel {
                                 since_ts,
                                 until_ts,
@@ -3845,6 +3854,9 @@ impl AsyncBilling {
                             ReadCmd::FundingNormalizationPlanV2 { account_id, reply } => {
                                 answer!(reply, pg.funding_normalization_plan_v2(&account_id))
                             }
+                            ReadCmd::Stage8EngineEvidence { request, reply } => {
+                                answer!(reply, pg.stage8_engine_evidence(&request))
+                            }
                             ReadCmd::SpendByModel {
                                 since_ts,
                                 until_ts,
@@ -4413,6 +4425,23 @@ impl AsyncBilling {
                 account_id: account_id.to_owned(),
                 reply,
             })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    /// Capture one read-only Stage 8 report on a bounded PostgreSQL reader. The registry performs
+    /// the full evidence scan in a repeatable-read, read-only transaction; this actor never sends
+    /// the request through the billing writer or changes release/money state.
+    pub async fn stage8_engine_evidence(
+        &self,
+        request: registry::stage8::Stage8EngineEvidenceRequest,
+    ) -> anyhow::Result<registry::stage8::Stage8EngineEvidenceReport> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::Stage8EngineEvidence { request, reply })
             .await
             .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
         result

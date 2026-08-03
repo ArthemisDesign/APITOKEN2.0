@@ -291,6 +291,17 @@ claude-api db stage8-evidence \
   > stage8-engine-evidence.json
 ```
 
+The additive machine producer is
+`POST /admin/pricing/v2/stage8-evidence/capture` on the protected Combined/Anthropic Control API.
+It accepts the same seven explicit values as JSON, attaches the deployed compile-fixed runtime
+manifest server-side and returns the unwrapped schema-v2 report with HTTP 200 even when
+`passed=false`. The route uses only a bounded PostgreSQL reader and cannot stage a capture or
+activation job, move a head or touch accounts/money. Its dependent `packages/engine-client` and
+worker are a later producer-first checkpoint; until that exact producer SHA is GREEN and those
+consumers are separately delivered, the CLI/file command above remains the only wired capture
+workflow. The future TypeScript transport must read raw response text and parse with `json-bigint`,
+never `response.json()`, because the artifact contains signed-i64 nanoUSD JSON numbers.
+
 Immediately consume that exact JSON with the deployed commerce checkpoint. Inject
 `DATABASE_URL`, `ENGINE_CONTROL_KEY` and, when distinct, `OPENKEYS_CONTROL_KEY` through the normal
 protected environment. `ENGINE_BASE_URL` and `OPENKEYS_INTERNAL_BASE_URL` default to their stable
@@ -334,8 +345,9 @@ location; Stage 9 accepts only the exact, unexpired combined row with `passed=tr
 Commerce migration `0033_pricing_stage8_managed_capture.sql` reserves protected durable storage for
 the managed replacement of this file handoff: immutable job inputs plus append-only original engine
 and combined JSON per attempt. The migration is storage-only and does not authorize running the
-workflow. Until the engine producer and then commerce/admin consumers are delivered as separate
-GREEN checkpoints, the commands above remain the only active collector path; no service may infer a
+workflow. The engine producer is the read-only Control API route above; its deployment still creates
+no caller or job. Until the later commerce/admin consumers are delivered as separate GREEN
+checkpoints, the commands above remain the only active collector path; no service may infer a
 capture job from startup, migration or an activation request.
 
 `sales_contract_digest` binds the intended B2C `paid_funded_nano`/no-welcome-bonus commission
