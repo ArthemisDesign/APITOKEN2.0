@@ -667,6 +667,12 @@ printf '%s\n' "${prunable_dumps[@]}" | grep -Fxq "commerce.pre-deploy-$oldest_du
 # Path classifiers: sales vs backend/engine/infra separation.
 wd_path_is_typescript apps/web/src/app/page.tsx || wd_die "web app not classified for TypeScript validation"
 wd_path_is_typescript packages/contracts/src/index.ts || wd_die "workspace package not classified for TypeScript validation"
+wd_path_is_typescript packages/opencode-router-plugin/apitoken-router.js \
+  || wd_die "OpenCode plugin not classified for TypeScript validation"
+wd_path_is_web packages/opencode-router-plugin/apitoken-router.js \
+  || wd_die "OpenCode plugin not assigned to the web validation context"
+wd_path_is_backend packages/opencode-router-plugin/apitoken-router.js \
+  && wd_die "OpenCode plugin must not trigger a commerce backend deployment"
 wd_path_is_merge_workflow .claude/hooks/guard-git.sh || wd_die "git guard not classified as merge workflow"
 wd_path_is_validation_neutral docs/engine/STAGE2_POSTGRES_AUTHORITY.md \
   || wd_die "documentation should be validation-neutral"
@@ -2097,6 +2103,7 @@ const required = new Set([
   "apps/worker",
   "packages/db",
   "packages/engine-client",
+  "packages/opencode-router-plugin",
   "packages/payments",
   "packages/sales-db",
 ]);

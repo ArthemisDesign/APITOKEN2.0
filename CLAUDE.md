@@ -69,7 +69,8 @@ Human credentials и domain grants хранятся в commerce PostgreSQL и п
 Отдельно от commerce в том же pnpm-workspace живёт клиентская интеграция
 `packages/opencode-router-plugin`: канонический config-plugin OpenCode, который потребляет
 key-scoped unified `/v1/models`. Он не импортирует commerce packages и не деплоится на сервер;
-его capability-only cache не имеет права сохранять pricing/cost. Контракт —
+его capability-only cache не имеет права сохранять pricing/cost. Workspace gate относит пакет к
+Vercel/web validation-контексту, но не включает его в host commerce deployment. Контракт —
 `docs/engine/UNIFIED_ROUTER.md`, тест —
 `pnpm --filter @claude-api/opencode-router-plugin test`.
 

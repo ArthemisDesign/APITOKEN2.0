@@ -47,6 +47,7 @@ const expected = new Set([
   "@claude-api/db",
   "@claude-api/engine-client",
   "@claude-api/openkeys-db",
+  "@claude-api/opencode-router-plugin",
   "@claude-api/payments",
   "@claude-api/sales-db",
 ]);
@@ -134,7 +135,7 @@ cache_input_paths() {
       )
       ;;
     web)
-      CACHE_INPUT_PATHS+=(apps/web)
+      CACHE_INPUT_PATHS+=(apps/web packages/opencode-router-plugin)
       ;;
     admin)
       CACHE_INPUT_PATHS+=(apps/admin)
@@ -682,6 +683,9 @@ for context in ${BUILD_CONTEXTS[@]+"${BUILD_CONTEXTS[@]}"}; do
       add_shared @claude-api/contracts
       add_shared @claude-api/engine-client
       add_shared @claude-api/openkeys-db
+      ;;
+    web)
+      add_shared @claude-api/opencode-router-plugin
       ;;
   esac
 done

@@ -634,7 +634,7 @@ wd_path_is_typescript() {
 
 wd_path_is_web() {
   case "$1" in
-    apps/web/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig.base.json|.node-version)
+    apps/web/*|packages/opencode-router-plugin/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig.base.json|.node-version)
       return 0
       ;;
     *) return 1 ;;
@@ -643,9 +643,9 @@ wd_path_is_web() {
 
 wd_path_is_backend() {
   case "$1" in
-    # These database packages belong to independent bounded contexts. They still run in the
+    # These packages belong to independent client/database contexts. They still run in the
     # workspace-wide TypeScript validation lane, but must not roll the commerce backend.
-    packages/sales-db/*|packages/openkeys-db/*)
+    packages/sales-db/*|packages/openkeys-db/*|packages/opencode-router-plugin/*)
       return 1
       ;;
     apps/api/*|apps/worker/*|apps/content-studio/*|packages/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig.base.json|.node-version)
