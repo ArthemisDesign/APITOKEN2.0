@@ -724,11 +724,23 @@ settlement are identical to the native route. Responses are translated outside t
 SSE stream becomes `chat.completion.chunk` frames with a final usage chunk on EOF when
 `stream_options.include_usage` is set.
 
-Code Assist compatibility is normalized at the adapter boundary. Its private `Schema` parser rejects
-three legal JSON Schema 2020-12 keywords emitted by common OpenAI-compatible clients: `$schema` and
-numeric `exclusiveMinimum`/`exclusiveMaximum`. Chat and Responses tool declarations, Messages
-`input_schema`, and Chat/Responses structured-output schemas recursively remove only those schema
-keywords. Property names with the same spelling under `properties` remain intact.
+Code Assist compatibility is normalized at the adapter boundary. Its private `Schema` parser accepts
+the official Google `Schema` vocabulary, not arbitrary legal JSON Schema. One bounded translator is
+used by Chat and Responses tool declarations, Messages `input_schema`, and Chat/Responses
+structured-output schemas. It preserves the Google fields, expands local JSON Pointer
+`$ref`/`$defs`, maps string `const` to `enum`, numeric `const` to equal bounds,
+`type: [T, null]` to `nullable`, numeric exclusive bounds to the nearest representable inclusive
+IEEE-754 bound, and `contains: {}` cardinality to item bounds. Harmless annotations and unused
+definitions are removed. Property names that happen to equal schema keywords remain data.
+
+The translator never drops a validation constraint merely to satisfy Code Assist. Constraints with
+no exact Google representation (`patternProperties`, non-trivial dependencies/contains,
+`unevaluatedProperties:false`, `propertyNames`, conditionals, closed
+`additionalProperties`, `multipleOf` other than the integer no-op, uniqueness, composition and
+external/recursive references) and unknown keywords fail locally before reserve/upstream. OpenAI
+surfaces return the exact JSON Pointer suffix in `error.param`; Messages includes the same path in
+its Anthropic error message. Expansion is fail-closed at 4096 schema nodes or depth 64. This keeps
+common AI SDK schemas working without turning a stronger client contract into a weaker one.
 
 Replayed tool history is also stateless. Gemini thinking models require a `thoughtSignature` on a
 replayed model `functionCall` part, but OpenAI/Responses/Messages clients do not preserve Gemini's
@@ -750,7 +762,7 @@ outbound fetch for remote images, so an `http(s)` image URL is rejected with `40
 and a non-default `detail` with `400 unsupported_parameter`. `response_format` is translated into
 `generationConfig`: `json_object` and `json_schema` both set `responseMimeType:
 application/json`, and `json_schema` additionally sets `responseSchema`, dropping the OpenAI
-`name`/`strict` wrapper and applying the same Code Assist schema sanitizer used for tools.
+`name`/`strict` wrapper and applying the same Code Assist supported-subset translator used for tools.
 
 Stage 3.4b adds reasoning. `reasoning_effort` (`minimal`/`low`/`medium`/`high`; `null` or absent
 turns it off) is translated into `generationConfig.thinkingConfig` — `thinkingLevel` is proxied

@@ -634,10 +634,15 @@ request получает `400 invalid_request`, неизвестный/неак�
    `/v1beta/models/{model}:generateContent|streamGenerateContent?alt=sse` и вызывает
    общий `gemini_api()` — admission, reserve, affinity, ротация, Code Assist
    wrapper, tee-метеринг и settle без изменений. Tools: chat `tools[]`/legacy
-   `functions[]` → `tools:[{functionDeclarations}]` (parameters рекурсивно санитизируются
-   от неподдерживаемых Code Assist `$schema` и числовых
-   `exclusiveMinimum`/`exclusiveMaximum`, отсутствующие опускаются; одноимённые property names
-   сохраняются); `tool_choice`/legacy `function_call` →
+   `functions[]` → `tools:[{functionDeclarations}]`. Общий bounded translator для Chat tools,
+   Responses tools, Messages `input_schema` и обеих structured-output surfaces переводит legal
+   JSON Schema в точный Google `Schema` subset: локальные JSON Pointer `$ref`/`$defs` inline,
+   строковый `const` в `enum`, числовой `const` в равные bounds, nullable union и representable
+   exclusive/contains constraints — в нативные поля. Аннотации снимаются; непредставимые
+   constraints и неизвестные keywords получают локальный 400 с точным schema path вместо
+   ослабления контракта или upstream `INVALID_ARGUMENT`. Expansion ограничен 4096 узлами и
+   глубиной 64; одноимённые property names являются данными и сохраняются. Отсутствующие
+   parameters опускаются; `tool_choice`/legacy `function_call` →
    `toolConfig.functionCallingConfig` (auto не вставляется, required→ANY, none→NONE,
    именная → ANY+allowedFunctionNames). История: assistant `tool_calls[]`/
    `function_call` → functionCall-парты, role `tool`/`function` →
@@ -686,7 +691,7 @@ request получает `400 invalid_request`, неизвестный/неак�
    json_object у Messages нет → matrix 400), на Gemini json_object →
    `generationConfig.responseMimeType: application/json`, json_schema →
    +`responseSchema` (обёртка аналогично снимается, schema проходит общий
-   Code Assist sanitizer); **3.4b** —
+   Code Assist supported-subset translator); **3.4b** —
    `reasoning_effort` → native thinking-конфиг + `reasoning_content` дельты
    (решение 4) — **РЕАЛИЗОВАН** (обе плоскости): вход Anthropic `reasoning_effort`
    принимает compatibility-набор minimal|low|medium|high|xhigh|max (null/отсутствие — выкл;

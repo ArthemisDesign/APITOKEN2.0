@@ -377,10 +377,13 @@ id `callu_<name>[_N]`), ошибки Google-конверта конвертир�
 (принимаются только data: URL — исходящего fetch для внешних изображений на плоскости нет, поэтому
 http(s) image URL → `400 invalid_request`; `detail` != auto → `400 unsupported_parameter`),
 `response_format` json_object/json_schema → `generationConfig.responseMimeType`/`responseSchema`
-(обёртка name/strict снимается). Общий рекурсивный sanitizer снимает из tool parameters и
-structured-output schemas три неподдерживаемых Code Assist keyword: `$schema`, числовые
-`exclusiveMinimum` и `exclusiveMaximum`; одноимённые ключи внутри `properties` остаются именами
-параметров и не удаляются.
+(обёртка name/strict снимается). Общий `gemini_schema` translator обязателен для tool parameters и
+structured-output schemas на Chat, Responses и Messages skin. Он принимает только точный
+поддерживаемый Google `Schema` subset, inline-разворачивает bounded local `$ref`/`$defs`, переводит
+representable `const`/nullable union/exclusive bounds/true-contains и снимает annotations.
+Непредставимый или неизвестный validation keyword обязан дать локальный 400 с точным schema path;
+молча удалить constraint или передать его private Code Assist parser запрещено. Пределы — 4096
+expanded nodes и depth 64. Одноимённые ключи внутри `properties` остаются именами параметров.
 Reasoning (3.4b): `reasoning_effort` → `generationConfig.thinkingConfig`
 (`thinkingLevel` проксируется как есть — маппинг уровня в wire model id выполняет
 плоскость; `includeThoughts: true`; невалидное значение → `400 invalid_request`),
@@ -435,7 +438,8 @@ mid-stream error-кадр → `response.failed`; ошибки — общий с 
 `gemini_image_part`/`translate_reasoning_effort`/`parse_tool_arguments` с именем
 параметра, `function_declaration`, `code_assist_schema`, `replayed_function_call_part`,
 `function_response_value`, `synthetic_call_id`,
-`map_finish_reason`, константы лимитов) — `pub(crate)` в `gemini/chat.rs`.
+`map_finish_reason`, константы лимитов) — `pub(crate)` в `gemini/chat.rs`; сам schema translator
+изолирован в `gemini_schema.rs` и вызывается всеми тремя адаптерами.
 `gemini/skin.rs` — Anthropic Skin (этап 5.2 docs/engine/UNIFIED_ROUTER.md, роуты
 `POST /v1/messages` и `/v1/messages/count_tokens` в `ProviderMode::Gemini`, dispatch по
 модели — в router) — Gemini-зеркало `codex/skin.rs`: Messages-сторона словаря идентична 5.1

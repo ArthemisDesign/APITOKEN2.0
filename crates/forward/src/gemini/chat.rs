@@ -55,6 +55,7 @@ use serde_json::{json, Map, Value};
 
 use super::gemini_api;
 use crate::codex::new_id;
+use crate::gemini_schema;
 use crate::proxy::{
     read_body_limited, with_not_started, without_not_started, BodyReadError,
     TerminalErrorReason, EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
@@ -653,7 +654,10 @@ fn translate_response_format(value: Option<&Value>) -> Result<Option<(String, Op
                 })?;
             Ok(Some((
                 "application/json".to_string(),
-                Some(code_assist_schema(schema)),
+                Some(code_assist_schema(
+                    schema,
+                    "response_format.json_schema.schema",
+                )?),
             )))
         }
         // text — дефолт без перевода; остальные типы отклонены matrix.
@@ -850,7 +854,7 @@ fn translate_chat_tools(value: &Value, param: &str) -> Result<Vec<Value>, Respon
         )
     })?;
     let mut declarations = Vec::with_capacity(tools.len());
-    for tool in tools {
+    for (index, tool) in tools.iter().enumerate() {
         let function = if param == "functions" {
             tool.as_object()
         } else {
@@ -865,7 +869,12 @@ fn translate_chat_tools(value: &Value, param: &str) -> Result<Vec<Value>, Respon
                 Some(param),
             )
         })?;
-        declarations.push(function_declaration(function, param)?);
+        let descriptor_path = if param == "functions" {
+            format!("functions.{index}")
+        } else {
+            format!("tools.{index}.function")
+        };
+        declarations.push(function_declaration(function, param, &descriptor_path)?);
     }
     Ok(declarations)
 }
@@ -879,6 +888,7 @@ fn translate_chat_tools(value: &Value, param: &str) -> Result<Vec<Value>, Respon
 pub(crate) fn function_declaration(
     function: &Map<String, Value>,
     param: &str,
+    descriptor_path: &str,
 ) -> Result<Value, Response> {
     let name = function
         .get("name")
@@ -906,7 +916,10 @@ pub(crate) fn function_declaration(
     match function.get("parameters") {
         None | Some(Value::Null) => {}
         Some(schema) if schema.is_object() => {
-            declaration["parameters"] = code_assist_schema(schema)
+            declaration["parameters"] = code_assist_schema(
+                schema,
+                &format!("{descriptor_path}.parameters"),
+            )?
         }
         Some(_) => {
             return Err(invalid_request(
@@ -918,79 +931,16 @@ pub(crate) fn function_declaration(
     Ok(declaration)
 }
 
-/// Removes JSON Schema 2020-12 keywords rejected by the private Code Assist
-/// `Schema` parser while preserving the rest of the schema exactly.
-///
-/// Traversal follows schema-bearing JSON Schema keywords instead of blindly
-/// rewriting every object. In particular, arbitrary property names inside
-/// `properties`/`$defs` maps are data and must not be removed even when a tool
-/// parameter is literally named `$schema`, `exclusiveMinimum`, or
-/// `exclusiveMaximum`.
-pub(crate) fn code_assist_schema(schema: &Value) -> Value {
-    let mut sanitized = schema.clone();
-    sanitize_schema_node(&mut sanitized);
-    sanitized
-}
-
-fn sanitize_schema_node(schema: &mut Value) {
-    let Value::Object(object) = schema else {
-        return;
-    };
-
-    for keyword in ["$schema", "exclusiveMinimum", "exclusiveMaximum"] {
-        object.remove(keyword);
-    }
-
-    for keyword in ["allOf", "anyOf", "oneOf", "prefixItems"] {
-        if let Some(Value::Array(schemas)) = object.get_mut(keyword) {
-            for schema in schemas {
-                sanitize_schema_node(schema);
-            }
-        }
-    }
-
-    // `items` was an array before draft 2020-12; retaining support here makes
-    // the sanitizer safe for OpenAPI/older JSON Schema clients as well.
-    for keyword in [
-        "items",
-        "additionalItems",
-        "contains",
-        "not",
-        "if",
-        "then",
-        "else",
-        "additionalProperties",
-        "unevaluatedProperties",
-        "propertyNames",
-        "unevaluatedItems",
-        "contentSchema",
-    ] {
-        if let Some(value) = object.get_mut(keyword) {
-            match value {
-                Value::Array(schemas) => {
-                    for schema in schemas {
-                        sanitize_schema_node(schema);
-                    }
-                }
-                value => sanitize_schema_node(value),
-            }
-        }
-    }
-
-    for keyword in [
-        "properties",
-        "patternProperties",
-        "$defs",
-        "definitions",
-        "dependentSchemas",
-        "dependencies",
-    ] {
-        if let Some(Value::Object(schemas)) = object.get_mut(keyword) {
-            for schema in schemas.values_mut() {
-                sanitize_schema_node(schema);
-            }
-        }
-    }
+/// Translate a legal JSON Schema into the exact bounded Google `Schema`
+/// vocabulary accepted by Code Assist. Unrepresentable constraints fail
+/// locally with an exact JSON Pointer suffix in `error.param`.
+pub(crate) fn code_assist_schema(
+    schema: &Value,
+    root_path: &str,
+) -> Result<Value, Response> {
+    gemini_schema::translate(schema, root_path).map_err(|error| {
+        invalid_request(&error.message(), Some(error.path()))
+    })
 }
 
 /// Builds a replay-safe Gemini model part without persisting or exposing the
@@ -2059,18 +2009,15 @@ mod tests {
     }
 
     #[test]
-    fn schema_sanitizer_preserves_property_names_and_other_structure() {
+    fn schema_translator_preserves_property_names_and_exactly_rewrites_refs_and_bounds() {
         let schema = json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": {"Mode": {"type": "string", "const": "fast"}},
             "type": "object",
             "description": "unchanged",
-            "exclusiveMinimum": 0,
             "properties": {
-                "$schema": {"type": "string"},
+                "$schema": {"$ref": "#/$defs/Mode"},
                 "exclusiveMinimum": {"type": "number", "exclusiveMinimum": 1},
-                "exclusiveMaximum": {
-                    "allOf": [{"type": "number", "exclusiveMaximum": 10}]
-                },
                 "nested": {
                     "type": "array",
                     "items": {
@@ -2079,27 +2026,51 @@ mod tests {
                     }
                 }
             },
-            "required": ["$schema", "exclusiveMinimum", "exclusiveMaximum"]
+            "required": ["$schema", "exclusiveMinimum"]
         });
+        let translated = code_assist_schema(&schema, "tools.0.function.parameters").unwrap();
         assert_eq!(
-            code_assist_schema(&schema),
-            json!({
-                "type": "object",
-                "description": "unchanged",
-                "properties": {
-                    "$schema": {"type": "string"},
-                    "exclusiveMinimum": {"type": "number"},
-                    "exclusiveMaximum": {"allOf": [{"type": "number"}]},
-                    "nested": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {"value": {"type": "number"}}
-                        }
-                    }
-                },
-                "required": ["$schema", "exclusiveMinimum", "exclusiveMaximum"]
-            })
+            translated["properties"]["$schema"],
+            json!({"type":"string", "enum":["fast"]})
+        );
+        assert!(translated["properties"]["exclusiveMinimum"]["minimum"]
+            .as_f64()
+            .unwrap()
+            > 1.0);
+        assert!(translated["properties"]["nested"]["items"]["properties"]["value"]
+            ["minimum"]
+            .as_f64()
+            .unwrap()
+            > 2.0);
+        assert!(translated.get("$defs").is_none());
+    }
+
+    #[tokio::test]
+    async fn tool_and_structured_schema_errors_report_the_exact_pointer() {
+        let (status, body) = expect_err(json!({
+            "model": "gemini-2.5-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type":"function", "function":{"name":"f", "parameters":{
+                "type":"object", "properties":{"x":{"type":"object",
+                    "patternProperties":{"^a":{"type":"string"}}}}
+            }}}]
+        })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            body["error"]["param"],
+            "tools.0.function.parameters/properties/x/patternProperties"
+        );
+
+        let (status, body) = expect_err(json!({
+            "model": "gemini-2.5-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {"type":"json_schema", "json_schema":{"name":"x",
+                "schema":{"type":"boolean", "const":true}}}
+        })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            body["error"]["param"],
+            "response_format.json_schema.schema/const"
         );
     }
 

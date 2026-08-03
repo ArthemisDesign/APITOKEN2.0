@@ -130,11 +130,12 @@ use futures_util::{Stream, StreamExt};
 use serde_json::{json, Map, Value};
 
 use super::chat::{
-    code_assist_schema, function_response_value, map_finish_reason, merge_or_push,
-    replayed_function_call_part, CHAT_BODY_LIMIT, RESPONSE_BODY_LIMIT,
+    function_response_value, map_finish_reason, merge_or_push, replayed_function_call_part,
+    CHAT_BODY_LIMIT, RESPONSE_BODY_LIMIT,
 };
 use super::gemini_api;
 use crate::codex::new_id;
+use crate::gemini_schema;
 use crate::proxy::{
     read_body_limited, with_not_started, without_not_started, BodyReadError,
     TerminalErrorReason,
@@ -830,7 +831,9 @@ fn translate_tools(value: &Value) -> Result<Vec<Value>, Response> {
         match object.get("input_schema") {
             None | Some(Value::Null) => {}
             Some(schema) if schema.is_object() => {
-                declaration["parameters"] = code_assist_schema(schema)
+                let schema_path = format!("{param}.input_schema");
+                declaration["parameters"] = gemini_schema::translate(schema, &schema_path)
+                    .map_err(|error| invalid_request(error.message()))?
             }
             Some(_) => {
                 return Err(invalid_request(format!(
@@ -2203,6 +2206,26 @@ mod tests {
                 // input_schema отсутствует → parameters опускается (как function_declaration).
                 {"name": "no_args"}
             ]}])
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_schema_errors_report_the_exact_pointer() {
+        let (status, body) = expect_err(json!({
+            "model": "gemini-2.5-flash",
+            "max_tokens": 32,
+            "messages": [{"role":"user", "content":"hi"}],
+            "tools": [{"name":"f", "input_schema":{
+                "type":"object", "propertyNames":{"type":"string", "pattern":"^x"}
+            }}]
+        })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("tools.0.input_schema/propertyNames"),
+            "{body}"
         );
     }
 

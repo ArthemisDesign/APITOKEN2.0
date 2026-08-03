@@ -822,7 +822,7 @@ fn translate_responses_tools(value: &Value) -> Result<Vec<Value>, Response> {
         )
     })?;
     let mut declarations = Vec::with_capacity(tools.len());
-    for tool in tools {
+    for (index, tool) in tools.iter().enumerate() {
         match tool.get("type").and_then(Value::as_str) {
             Some("function") | None => {}
             Some(_) => return Err(unsupported_parameter("tools")),
@@ -833,7 +833,11 @@ fn translate_responses_tools(value: &Value) -> Result<Vec<Value>, Response> {
                 Some("tools"),
             )
         })?;
-        declarations.push(function_declaration(function, "tools")?);
+        declarations.push(function_declaration(
+            function,
+            "tools",
+            &format!("tools.{index}"),
+        )?);
     }
     Ok(declarations)
 }
@@ -928,7 +932,7 @@ fn translate_text_format(value: Option<&Value>) -> Result<Option<(String, Option
                 })?;
             Ok(Some((
                 "application/json".to_string(),
-                Some(code_assist_schema(schema)),
+                Some(code_assist_schema(schema, "text.format.schema")?),
             )))
         }
         Some(_) => Err(unsupported_parameter("text")),
@@ -2044,6 +2048,35 @@ mod tests {
                  "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}},
                 {"name": "no_args"}
             ]}])
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_and_structured_schema_errors_report_the_exact_pointer() {
+        let (status, body) = expect_err(json!({
+            "model": "gemini-2.5-flash",
+            "input": "hi",
+            "tools": [{"type":"function", "name":"f", "parameters":{
+                "type":"object", "dependentRequired":{"x":["y"]}
+            }}]
+        })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            body["error"]["param"],
+            "tools.0.parameters/dependentRequired"
+        );
+
+        let (status, body) = expect_err(json!({
+            "model": "gemini-2.5-flash",
+            "input": "hi",
+            "text": {"format":{"type":"json_schema", "name":"x", "schema":{
+                "type":"object", "unevaluatedProperties":false
+            }}}
+        })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            body["error"]["param"],
+            "text.format.schema/unevaluatedProperties"
         );
     }
 

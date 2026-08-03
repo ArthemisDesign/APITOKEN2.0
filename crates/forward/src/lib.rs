@@ -19,6 +19,7 @@ pub mod codex;
 mod config;
 mod execution;
 pub mod gemini;
+mod gemini_schema;
 mod gemini_stream;
 mod meter;
 mod metrics;
