@@ -124,6 +124,22 @@ target head и durable cutover receipt. Backend остаётся окончат�
 CAS сразу после fresh first-delivery revalidation. Per-account canary и maintenance-mode controls
 отсутствуют и запрещены.
 
+Перед activation на той же странице расположен отдельный `Managed Stage 8 capture` control. Он
+каждые пять секунд читает bounded `/admin/pricing-stage8-capture-v2`, показывает queue counts,
+immutable request identities, попытки, exact engine/combined digests, freshness и только sanitized
+blocker summary. Raw engine/combined JSON и исходные account/request identities в браузер не
+передаются. Новый capture stage'ится только из явной формы с новым UUID, target/recovery,
+закрытым epoch-window, provider/financial/Gemini bounds и содержательной причиной. Браузер
+сверяет window с commerce database time, требует точную confirmation phrase, повторяет fresh GET
+перед POST и fail-closed запрещает второй job, пока `pending|processing|retry` не стал terminal.
+Backend остаётся authority для strict shape, времени и idempotency conflict.
+
+Capture — read-only evidence workflow: он не создаёт activation job, не двигает head, не меняет
+accounts/balances/policies и не требует traffic/money-writer drain. `blocked` отображается как
+terminal evidence; retry разрешён только worker state machine для uncertain failures. Activation
+остаётся отдельной секцией и отдельным explicit подтверждением ниже, поэтому успешный capture сам
+по себе не переводит клиентов.
+
 ## GPT capacity board на странице подписок
 
 GPT-блок `/subscriptions` — компактная операторская сводка, полностью рассчитанная из backend

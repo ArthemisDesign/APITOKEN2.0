@@ -275,10 +275,11 @@ stale. Keep bridge and target shadow at 100% coverage, observe at least one comp
 and choose its exclusive `window_end_ts`. Traffic, top-ups and v2 reservations continue normally.
 
 Production capture uses the managed commerce queue; do not create a file handoff or run either CLI
-over SSH. First read the AdminGuard-protected
-`GET /v1/admin/pricing-stage8-capture-v2` snapshot. Then stage exactly one immutable request through
-`POST /v1/admin/pricing-stage8-capture-v2/stage` with a new UUID idempotency key, verified
-`x-admin-actor`, explicit reason and this strict body:
+over SSH. The normal operator surface is `https://admin.apitoken.sale/pricing` → `Managed Stage 8
+capture`: it reads the AdminGuard-protected `GET /v1/admin/pricing-stage8-capture-v2` snapshot,
+requires exact bounds plus a confirmation phrase, repeats a fresh preflight and stages exactly one
+immutable request through `POST /v1/admin/pricing-stage8-capture-v2/stage`. The underlying request
+has a new UUID idempotency key, verified `x-admin-actor`, explicit reason and this strict body:
 
 ```json
 {

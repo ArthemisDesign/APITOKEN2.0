@@ -65,8 +65,9 @@ reason и exact capture bounds; paired GET возвращает bounded local jo
 сохраняет exact engine bytes до combined collector и атомарно завершает combined artifact/job;
 GET раскрывает только freshness и sanitized blocker source/code/count с hashed subjects.
 Startup, migration, polling и activation request не создают capture job; capture не создаёт
-activation job и не двигает head. `apps/admin` operator UI для этих additive endpoints подключается
-отдельным consumer checkpoint после GREEN commerce producer SHA.
+activation job и не двигает head. После GREEN commerce producer SHA `apps/admin` подключён отдельным
+consumer checkpoint: `/pricing` показывает bounded queue/artifact snapshot и stage'ит новый job
+только после explicit exact-bounds form, confirmation phrase и fresh browser preflight.
 Activation подключён только через цепочку strict `packages/contracts` → единственный transport
 `packages/engine-client` → `packages/db/src/pricing-release-activation-jobs.ts` → `apps/worker`.
 DB consumer строит request из persisted passed evidence и engine release digests, хранит body до

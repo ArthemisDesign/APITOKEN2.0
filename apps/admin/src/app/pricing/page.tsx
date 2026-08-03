@@ -15,6 +15,7 @@ import {
 } from "../business/policy-editor";
 import { PANEL_REASON } from "../business/utils";
 import { PricingReleaseActivationControl } from "./activation-control";
+import { PricingStage8CaptureControl } from "./stage8-capture-control";
 
 interface PricingData {
   catalog: PricingCatalogView | null;
@@ -265,6 +266,8 @@ export default function PricingPage() {
         sub="Global B2C, provider gates и explicit service policies"
         badge={data.catalog ? <Pill kind="ok">catalog g{data.catalog.catalogGeneration}</Pill> : <Pill kind="bad">foundation missing</Pill>}
       />
+
+      <PricingStage8CaptureControl />
 
       <PricingReleaseActivationControl />
 
