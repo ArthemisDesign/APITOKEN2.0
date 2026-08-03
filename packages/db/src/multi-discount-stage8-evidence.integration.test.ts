@@ -535,20 +535,69 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
         evidence_digest: string;
         engine_evidence_digest: string;
         engine_captured_at: Date;
+        service_inventory_digest: string;
         passed: boolean;
         blocker_count: string;
       }>(`
         SELECT evidence_digest, engine_evidence_digest, engine_captured_at,
-               passed, blocker_count::text
+               service_inventory_digest, passed, blocker_count::text
         FROM pricing_stage8_evidence_v2
       `);
       expect(stored.rows).toEqual([{
         evidence_digest: report.evidence_digest,
         engine_evidence_digest: seeded.report.evidence_digest,
         engine_captured_at: new Date(Number(seeded.report.captured_ts) * 1_000),
+        service_inventory_digest: report.inventories.service_digest,
         passed: true,
         blocker_count: "0",
       }]);
+    } finally {
+      await database.pool.end();
+    }
+  });
+
+  it("requires and revalidates the exact persisted service inventory identity", async () => {
+    const seeded = await seedPreparedPair();
+    const database = createDatabase(databaseUrl, "stage8-service-evidence-authority");
+    try {
+      const evidence = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        seeded.report,
+      );
+      await seed.query(`
+        UPDATE pricing_stage8_evidence_v2
+        SET service_inventory_digest = NULL
+        WHERE evidence_digest = $1
+      `, [evidence.evidence_digest]);
+      await expect(stagePricingReleaseActivationJobV2(database, {
+        activationKind: "cutover",
+        evidenceDigest: evidence.evidence_digest,
+        operatorId: "pricing-control-worker:service-evidence",
+        reason: "reject legacy evidence without exact service authority",
+      })).rejects.toThrow("exact persisted service inventory identity");
+
+      await seed.query(`
+        UPDATE pricing_stage8_evidence_v2
+        SET service_inventory_digest = $2
+        WHERE evidence_digest = $1
+      `, [evidence.evidence_digest, digest("foreign-service-inventory")]);
+      const jobId = await stagePricingReleaseActivationJobV2(database, {
+        activationKind: "cutover",
+        evidenceDigest: evidence.evidence_digest,
+        operatorId: "pricing-control-worker:service-evidence",
+        reason: "prove exact service evidence at first delivery",
+      });
+      await expect(claimNextPricingReleaseActivationJobV2(
+        database,
+        "activation-service-evidence",
+        seeded.authority.readers,
+      )).rejects.toThrow("activation authority changed after Stage 8 evidence");
+      const stored = await seed.query<{ status: string; last_error: string }>(`
+        SELECT status, last_error FROM pricing_release_control_jobs_v2 WHERE id = $1
+      `, [jobId]);
+      expect(stored.rows[0]).toMatchObject({ status: "dead" });
+      expect(stored.rows[0]!.last_error).toContain("service_evidence_authority_drift");
     } finally {
       await database.pool.end();
     }

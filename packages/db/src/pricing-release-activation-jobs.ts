@@ -48,6 +48,7 @@ interface ActivationEvidenceRow {
   commerce_inventory_digest: string;
   engine_inventory_digest: string;
   openkeys_inventory_digest: string;
+  service_inventory_digest: string | null;
   funding_digest: string;
   shadow_digest: string;
   runtime_floor_digest: string;
@@ -157,6 +158,7 @@ async function loadActivationEvidence(
            evidence.target_digest, evidence.recovery_generation::text,
            evidence.recovery_digest, evidence.commerce_inventory_digest,
            evidence.engine_inventory_digest, evidence.openkeys_inventory_digest,
+           evidence.service_inventory_digest,
            evidence.funding_digest, evidence.shadow_digest,
            evidence.runtime_floor_digest, evidence.legacy_inflight_count::text,
            evidence.blocker_count::text, evidence.passed,
@@ -252,6 +254,10 @@ async function requestFromEvidence(
     throw permanent("activation requires the exact persisted source engine evidence identity");
   }
   canonicalSha256V2Schema.parse(evidence.engine_evidence_digest);
+  if (evidence.service_inventory_digest === null) {
+    throw permanent("activation requires the exact persisted service inventory identity");
+  }
+  canonicalSha256V2Schema.parse(evidence.service_inventory_digest);
   if (evidence.target_status !== "prepared" || evidence.recovery_status !== "prepared") {
     throw permanent("activation requires prepared target and recovery releases");
   }
@@ -417,6 +423,7 @@ async function loadActivationJob(client: PoolClient, jobId: string): Promise<Act
            evidence.target_digest, evidence.recovery_generation::text,
            evidence.recovery_digest, evidence.commerce_inventory_digest,
            evidence.engine_inventory_digest, evidence.openkeys_inventory_digest,
+           evidence.service_inventory_digest,
            evidence.funding_digest, evidence.shadow_digest,
            evidence.runtime_floor_digest, evidence.legacy_inflight_count::text,
            evidence.blocker_count::text, evidence.passed,
@@ -507,6 +514,8 @@ async function claimedJobFromRow(
         ? [] : ["engine_evidence_authority_drift"]),
       ...(authority.openkeysInventoryDigest === row.openkeys_inventory_digest
         ? [] : ["openkeys_evidence_authority_drift"]),
+      ...(authority.serviceInventoryDigest === row.service_inventory_digest
+        ? [] : ["service_evidence_authority_drift"]),
     ];
     if (drift.length > 0) {
       throw permanent(`activation authority changed after Stage 8 evidence: ${[...new Set(drift)].join(",")}`);

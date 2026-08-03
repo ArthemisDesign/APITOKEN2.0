@@ -225,6 +225,9 @@ Engine хранит prepared releases и один active release head. Подг�
   наблюдаемом legacy inflight count; `0031_pricing_activation_evidence_capture.sql` dormant и
   добавляет nullable-хранение exact source engine evidence, immutable activation request и полного
   validated receipt для безопасного replay после потери ACK;
+  `0032_pricing_activation_service_evidence.sql` отдельно добавляет nullable service inventory
+  digest, чтобы новый collector связал recovery evidence и first-delivery revalidation с одной
+  exact service authority без backfill старых строк;
 - sales migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` добавляет
   отдельные immutable usage/commission v2 tables без pricing-mode поля.
 

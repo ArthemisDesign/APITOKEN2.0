@@ -98,6 +98,8 @@ Stage 8 collector checkpoint.
 
 Migration `0032_pricing_activation_service_evidence.sql` adds one nullable, dormant service
 inventory digest to Stage 8 evidence. Existing writers remain compatible and no row is backfilled,
-job is created, or release head is moved. The follow-up collector fills the field for new evidence;
-the activation consumer then uses it to prove that post-cutover service-account authority did not
-change between fresh recovery evidence and the single global CAS.
+job is created, or release head is moved. The dependent collector fills the field for every new
+evidence row; activation staging rejects historical rows where it remains `NULL`, and first
+delivery requires a fresh service-authority digest match. This proves that post-cutover
+service-account authority did not change between fresh recovery evidence and the single global
+CAS.

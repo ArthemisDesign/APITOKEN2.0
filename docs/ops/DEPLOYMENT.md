@@ -314,6 +314,12 @@ engine identity digest и потому normal traffic/money writes не созд
 Account/request/binding subjects are emitted only as digests; neither command prints a database
 DSN.
 
+Новая evidence row обязана хранить тот же service-inventory digest в
+`pricing_stage8_evidence_v2.service_inventory_digest`. Legacy row с `NULL` не допускается к
+activation staging; непосредственно перед первой delivery worker повторно вычисляет digest и
+сравнивает его с persisted evidence. Это отдельная проверка от immutable target plan identity и
+закрывает post-cutover service-account drift.
+
 The combined schema-v2 report is valid for 300 seconds. When both local release plans exist, the
 consumer stores its identity immutably in `pricing_stage8_evidence_v2`, including blocked reports
 with `passed=false`; if either local release is absent it returns `write_result=not_persisted`.

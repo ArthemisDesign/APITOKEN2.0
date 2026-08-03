@@ -139,9 +139,9 @@ post-cutover assignment-extension/funding authority. Subject identities remain h
 request may have reached the engine, retry deliberately skips TTL and mutable-authority checks and
 replays the immutable body so an applied CAS with a lost ACK can return `unchanged`. Forward
 recovery derives its exact expected target head only from the durable cutover receipt. No API,
-migration, startup hook or evidence collection automatically stages a job. Until the follow-up
-Stage 8 collector fills the nullable source evidence fields, staging fails closed and this deployed
-consumer cannot call the activation route.
+migration, startup hook or evidence collection automatically stages a job. New Stage 8 rows persist
+both source-engine and service-inventory identities; staging rejects legacy rows where either
+expand-only field is still `NULL`, and first delivery requires the fresh service digest to match.
 
 The commercial admin API exposes the complete managed surface:
 

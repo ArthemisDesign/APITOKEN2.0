@@ -246,6 +246,7 @@ interface StoredEvidenceRow {
   commerce_inventory_digest: string;
   engine_inventory_digest: string;
   openkeys_inventory_digest: string;
+  service_inventory_digest: string | null;
   sales_contract_digest: string;
   funding_digest: string;
   shadow_digest: string;
@@ -429,6 +430,7 @@ function storedIdentity(row: StoredEvidenceRow): Record<string, unknown> {
     commerce_inventory_digest: row.commerce_inventory_digest,
     engine_inventory_digest: row.engine_inventory_digest,
     openkeys_inventory_digest: row.openkeys_inventory_digest,
+    service_inventory_digest: row.service_inventory_digest,
     sales_contract_digest: row.sales_contract_digest,
     funding_digest: row.funding_digest,
     shadow_digest: row.shadow_digest,
@@ -639,11 +641,12 @@ export async function collectStage8CombinedEvidenceV2(
           target_generation, target_digest,
           recovery_generation, recovery_digest,
           commerce_inventory_digest, engine_inventory_digest, openkeys_inventory_digest,
+          service_inventory_digest,
           sales_contract_digest, funding_digest, shadow_digest, runtime_floor_digest,
           legacy_inflight_count, blocker_count, passed, observed_at, valid_until
         ) VALUES (
           $1, $2, to_timestamp($3::bigint), $4, $5, $6, $7, $8, $9, $10,
-          $11, $12, $13, $14, $15, $16, $17, $18, $19
+          $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
         )
         ON CONFLICT (evidence_digest) DO NOTHING
         RETURNING evidence_digest
@@ -658,6 +661,7 @@ export async function collectStage8CombinedEvidenceV2(
         currentCommerceDigest,
         currentEngineDigest,
         currentOpenkeysDigest,
+        currentServiceDigest,
         STAGE8_SALES_CONTRACT_DIGEST,
         engine.funding_digest,
         engine.shadow_digest,
@@ -673,6 +677,7 @@ export async function collectStage8CombinedEvidenceV2(
                target_generation::text, target_digest,
                recovery_generation::text, recovery_digest,
                commerce_inventory_digest, engine_inventory_digest, openkeys_inventory_digest,
+               service_inventory_digest,
                sales_contract_digest, funding_digest, shadow_digest, runtime_floor_digest,
                legacy_inflight_count::text, blocker_count::text, passed, observed_at, valid_until
         FROM pricing_stage8_evidence_v2 WHERE evidence_digest = $1
@@ -688,6 +693,7 @@ export async function collectStage8CombinedEvidenceV2(
         commerce_inventory_digest: currentCommerceDigest,
         engine_inventory_digest: currentEngineDigest,
         openkeys_inventory_digest: currentOpenkeysDigest,
+        service_inventory_digest: currentServiceDigest,
         sales_contract_digest: STAGE8_SALES_CONTRACT_DIGEST,
         funding_digest: engine.funding_digest,
         shadow_digest: engine.shadow_digest,

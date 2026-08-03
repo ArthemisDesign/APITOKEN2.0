@@ -53,8 +53,9 @@ Activation подключён только через цепочку strict `pac
 DB consumer строит request из persisted passed evidence и engine release digests, хранит body до
 сети, перед первой delivery повторяет double-scan engine/OpenKeys и commerce/service ownership
 authority, а после возможной доставки восстанавливает lost ACK только exact replay и сохраняет
-полный validated receipt. Raw identities в blocker/error artifact не выходят. Recovery expectation
-берётся только из durable cutover receipt. Ни API, ни startup, ни migration, ни Stage 8
+полный validated receipt. Persisted service-inventory digest обязателен и должен совпасть с fresh
+capture; старые evidence rows с `NULL` не stage'ятся. Raw identities в blocker/error artifact не
+выходят. Recovery expectation берётся только из durable cutover receipt. Ни API, ни startup, ни migration, ни Stage 8
 автоматически не stage'ят activation job; без явной immutable job route не вызывается.
 
 ### Sales feed (коммерция ↔ партнёрка)

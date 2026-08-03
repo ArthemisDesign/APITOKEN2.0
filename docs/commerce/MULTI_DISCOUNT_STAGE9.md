@@ -10,6 +10,13 @@ backfill, не создаёт activation job и не вызывает engine CAS
 а dependent consumer доставляется только после GREEN `deploy/migration` и `deploy/watchdog` этого
 schema SHA.
 
+Commerce migration `0032_pricing_activation_service_evidence.sql` — следующий expand-only
+checkpoint. Она добавляет nullable service-inventory digest, не делает backfill и не создаёт job.
+После её GREEN SHA новый collector сохраняет digest в каждой evidence row, staging отвергает
+старую строку с `NULL`, а первый delivery требует, чтобы fresh service authority совпала именно с
+этим persisted digest. Так post-cutover service account не может появиться между evidence и
+recovery CAS незамеченным.
+
 После GREEN schema SHA durable consumer добавляет strict contracts, единственный typed engine
 transport и worker lifecycle `pending → processing → retry|dead|confirmed`. Explicit staging
 сохраняет immutable request до сети и принимает только persisted `passed=true`/zero-blocker
@@ -22,8 +29,9 @@ timeout, crash или lost ACK повторяет только это сохра
 preflight: CAS уже мог примениться, поэтому новая интерпретация retry была бы небезопасна. Успех
 атомарно сохраняет complete validated ACK и canonical request/receipt result digest.
 Recovery expectation не реконструируется: она читается только из полного durable cutover receipt.
-Consumer не создаёт job автоматически. Пока Stage 8 collector не заполнил nullable source digest и
-capture time из миграции 0031, staging fail-closed и production CAS невозможен.
+Consumer не создаёт job автоматически. Collector теперь заполняет source engine identity из
+миграции 0031 и service identity из миграции 0032; любая legacy evidence row с `NULL` в этих полях
+непригодна для staging.
 
 ## Preconditions
 
