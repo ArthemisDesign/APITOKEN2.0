@@ -18,6 +18,7 @@ export * from "./pricing-policy-write.js";
 export * from "./pricing-control-jobs.js";
 export * from "./funding-normalization-jobs.js";
 export * from "./pricing-provisioning-v2.js";
+export * from "./pricing-release-activation-jobs.js";
 export * from "./service-account-inventory-v2.js";
 export * from "./pricing-stage5-materializer-v2.js";
 export * from "./pricing-stage5-materializer-v2-store.js";

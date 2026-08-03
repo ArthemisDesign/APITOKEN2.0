@@ -4,28 +4,36 @@ import {
   applyPricingLedgerPage,
   claimNextPricingControlJob,
   claimNextPricingJob,
+  claimNextPricingReleaseActivationJobV2,
   closeElapsedTierWindows,
   completePricingUsageSync,
   confirmPricingControlJob,
   confirmPricingJob,
+  confirmPricingReleaseActivationJobV2,
   getPricingUsageCursor,
   listPricingSyncTargets,
   reconcileTierLadderMultipliers,
   recoverStalePricingControlJobs,
   recoverStalePricingJobs,
+  recoverStalePricingReleaseActivationJobsV2,
   refreshTierWindowUsage,
   releasePricingControlJob,
+  releasePricingReleaseActivationJobV2,
   retryPricingJob,
   utcMonthStart,
   type Database,
   type ClaimedPricingControlJob,
+  type ClaimedPricingReleaseActivationJobV2,
   type PricingControlJobDisposition,
+  PricingReleaseActivationJobV2Error,
+  type PricingReleaseActivationJobDispositionV2,
   type PricingSyncTarget,
 } from "@claude-api/db";
 import type {
   PolicyActiveExpectation,
   PricingActiveExpectation,
   PricingMutationAck,
+  PricingReleaseActivationAckV2,
 } from "@claude-api/contracts";
 import { EngineClient, EngineClientError } from "@claude-api/engine-client";
 import type { Environment } from "./config.js";
@@ -50,6 +58,10 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
     const recoveredControl = await recoverStalePricingControlJobs(this.database);
     if (recoveredControl > 0) {
       this.logger.warn(`recovered ${recoveredControl} stale pricing-control jobs`);
+    }
+    const recoveredActivation = await recoverStalePricingReleaseActivationJobsV2(this.database);
+    if (recoveredActivation > 0) {
+      this.logger.warn(`recovered ${recoveredActivation} stale pricing-release activation jobs`);
     }
     const recovered = await recoverStalePricingJobs(this.database);
     if (recovered > 0) this.logger.warn(`recovered ${recovered} stale pricing jobs`);
@@ -78,6 +90,10 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
         const recoveredControl = await recoverStalePricingControlJobs(this.database);
         if (recoveredControl > 0) {
           this.logger.warn(`recovered ${recoveredControl} stale pricing-control jobs`);
+        }
+        const recoveredActivation = await recoverStalePricingReleaseActivationJobsV2(this.database);
+        if (recoveredActivation > 0) {
+          this.logger.warn(`recovered ${recoveredActivation} stale pricing-release activation jobs`);
         }
 
         const now = new Date();
@@ -115,6 +131,7 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
         }
         await this.flushPricingControlJobs();
         await this.flushPricingJobs();
+        await this.flushPricingReleaseActivationJobs();
       } catch (error) {
         this.logger.error(message(error));
       }
@@ -244,6 +261,56 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
     return ack;
   }
 
+  private async flushPricingReleaseActivationJobs(): Promise<void> {
+    for (;;) {
+      const job = await claimNextPricingReleaseActivationJobV2(this.database, this.workerId);
+      if (!job) return;
+      try {
+        const ack = await this.deliverPricingReleaseActivationJob(job);
+        await confirmPricingReleaseActivationJobV2(
+          this.database,
+          job,
+          this.workerId,
+          ack,
+        );
+      } catch (error) {
+        const disposition = pricingReleaseActivationDisposition(error);
+        try {
+          await releasePricingReleaseActivationJobV2(
+            this.database,
+            job,
+            this.workerId,
+            disposition,
+            message(error),
+          );
+        } catch (releaseError) {
+          this.logger.error(
+            `failed to release pricing-release activation job ${job.id}: ${message(releaseError)}`,
+          );
+          throw releaseError;
+        }
+        if (disposition === "dead") {
+          this.logger.error(
+            `pricing-release activation job ${job.id} failed permanently: ${message(error)}`,
+          );
+        }
+      }
+    }
+  }
+
+  private async deliverPricingReleaseActivationJob(
+    job: ClaimedPricingReleaseActivationJobV2,
+  ): Promise<PricingReleaseActivationAckV2> {
+    const ack = await this.engine.activatePricingReleaseV2(job.request);
+    if (ack.result === "rejected") {
+      throw new PricingReleaseActivationDeliveryError(
+        `pricing release activation rejected with ${ack.code}`,
+        "dead",
+      );
+    }
+    return ack;
+  }
+
   private async flushPricingJobs(): Promise<void> {
     for (;;) {
       const job = await claimNextPricingJob(this.database, this.workerId);
@@ -332,6 +399,27 @@ export function requirePricingMutation(
 
 export function pricingControlDisposition(error: unknown): PricingControlJobDisposition {
   if (error instanceof PricingControlDeliveryError) return error.disposition;
+  if (error instanceof EngineClientError) return error.retryable ? "retry" : "dead";
+  return "retry";
+}
+
+class PricingReleaseActivationDeliveryError extends Error {
+  constructor(
+    message: string,
+    readonly disposition: PricingReleaseActivationJobDispositionV2,
+  ) {
+    super(message);
+    this.name = "PricingReleaseActivationDeliveryError";
+  }
+}
+
+export function pricingReleaseActivationDisposition(
+  error: unknown,
+): PricingReleaseActivationJobDispositionV2 {
+  if (error instanceof PricingReleaseActivationDeliveryError) return error.disposition;
+  if (error instanceof PricingReleaseActivationJobV2Error) {
+    return error.permanent ? "dead" : "retry";
+  }
   if (error instanceof EngineClientError) return error.retryable ? "retry" : "dead";
   return "retry";
 }

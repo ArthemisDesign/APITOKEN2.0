@@ -48,9 +48,12 @@ strict body/readback schema в `packages/contracts` → typed prepare/GET в
 `packages/engine-client` → `packages/db/src/pricing-provisioning-v2.ts` → `apps/api` key issuance.
 При ненулевом head writer завершает funding/policy/active+recovery extension и exact readback до
 usable key; postflight drift компенсируется disable выпущенного ключа. При null head путь dormant.
-Прямые вызовы route из `apps/api`/`apps/worker` по-прежнему запрещены. Activation route пока не имеет
-TS transport/caller: `packages/contracts` → `packages/engine-client` → durable commerce control job
-подключаются producer-first отдельным checkpoint после GREEN engine SHA.
+Activation подключён только через цепочку strict `packages/contracts` → единственный transport
+`packages/engine-client` → `packages/db/src/pricing-release-activation-jobs.ts` → `apps/worker`.
+DB consumer строит request из persisted passed evidence и engine release digests, хранит body до
+сети, восстанавливает lost ACK exact replay и сохраняет полный validated receipt. Recovery
+expectation берётся только из durable cutover receipt. Ни API, ни startup, ни migration, ни Stage 8
+автоматически не stage'ят activation job; без явной immutable job route не вызывается.
 
 ### Sales feed (коммерция ↔ партнёрка)
 

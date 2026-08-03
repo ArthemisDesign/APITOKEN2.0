@@ -125,7 +125,18 @@ returned only when the account is already in the immutable base release or after
 funding normalization, exact release-policy prepare/readback, atomic active/recovery assignment
 extension and exact extension GET readback. A stale head retries the complete bounded chain; a
 conflict or blocked funding plan fails closed. If the postflight check fails, the raw key is disabled
-before it can reach the browser. This consumer has no activation method and cannot move the head.
+before it can reach the browser. This provisioning consumer cannot move the head.
+
+Global activation is isolated in a separate durable worker lane. Strict contracts validate the
+complete request, receipt and each typed rejection; `packages/engine-client` exposes the only
+transport method; `packages/db/src/pricing-release-activation-jobs.ts` accepts only an explicitly
+staged immutable job bound to persisted `passed=true`, zero-blocker Stage 8 evidence and prepared
+target/recovery engine digests. The request is stored before network I/O, expired leases replay that
+exact body, and confirmation atomically stores the complete validated ACK plus canonical
+request/receipt result digest. Forward recovery derives its exact expected target head only from the
+durable cutover receipt. No API, migration, startup hook or evidence collection automatically stages
+a job. Until the follow-up Stage 8 collector fills the nullable source evidence fields, staging
+fails closed and this deployed consumer cannot call the activation route.
 
 The commercial admin API exposes the complete managed surface:
 

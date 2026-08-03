@@ -10,6 +10,15 @@ backfill, не создаёт activation job и не вызывает engine CAS
 а dependent consumer доставляется только после GREEN `deploy/migration` и `deploy/watchdog` этого
 schema SHA.
 
+После GREEN schema SHA durable consumer добавляет strict contracts, единственный typed engine
+transport и worker lifecycle `pending → processing → retry|dead|confirmed`. Explicit staging
+сохраняет immutable request до сети и принимает только persisted `passed=true`/zero-blocker
+evidence с prepared target/recovery engine digests. Timeout или lost ACK повторяет exact request;
+успех атомарно сохраняет complete validated ACK и canonical request/receipt result digest.
+Recovery expectation не реконструируется: она читается только из полного durable cutover receipt.
+Consumer не создаёт job автоматически. Пока Stage 8 collector не заполнил nullable source digest и
+capture time из миграции 0031, staging fail-closed и production CAS невозможен.
+
 ## Preconditions
 
 - deployed runtime на обоих blue-green слотах поддерживает target и recovery release schema, а

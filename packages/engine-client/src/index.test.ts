@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   PricingReleaseAssignmentExtensionV2,
+  PricingReleaseActivationRequestV2,
   PricingReleasePolicyV2,
   PricingReleaseRecoveryLinkV2,
   PricingReleaseV2,
@@ -880,6 +881,119 @@ describe("EngineClient", () => {
       fetch: async () => Response.json({ release: { ...release, generation: 12 } }),
     });
     await expect(forgedReadClient.getPricingReleaseV2(10)).rejects.toThrow("different pricing release");
+  });
+
+  it("validates the exact pricing release activation request, receipt, and rejection", async () => {
+    const digest = (value: string): string => `sha256:v2:${value.repeat(64)}`;
+    const request: PricingReleaseActivationRequestV2 = {
+      activation_kind: "cutover",
+      expectation: "absent",
+      evidence: {
+        evidence_digest: digest("a"),
+        target_generation: 41,
+        target_digest: digest("b"),
+        recovery_generation: 42,
+        recovery_digest: digest("c"),
+        engine_inventory_digest: digest("d"),
+        funding_digest: digest("e"),
+        shadow_digest: digest("f"),
+        runtime_floor_digest: digest("0"),
+        legacy_inflight_count: 7,
+        engine_captured_ts: 1_000,
+        observed_ts: 1_100,
+        valid_until_ts: 1_400,
+      },
+      operator_id: "pricing-control-worker:test",
+      reason: "activate exact prepared Stage 9 target",
+    };
+    let body: unknown;
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async (_input, init) => {
+        body = JSON.parse(String(init?.body));
+        return Response.json({
+          result: "applied",
+          activation: {
+            activation_id: 1,
+            activation_kind: "cutover",
+            from_generation: null,
+            from_digest: null,
+            expected_head_version: 0,
+            head: {
+              active_generation: 41,
+              active_digest: digest("b"),
+              head_version: 1,
+              updated_ts: 1_200,
+            },
+            evidence_digest: digest("a"),
+            operator_id: "pricing-control-worker:test",
+            reason: "activate exact prepared Stage 9 target",
+            activated_ts: 1_200,
+          },
+        });
+      },
+    });
+    await expect(client.activatePricingReleaseV2(request)).resolves.toMatchObject({
+      result: "applied",
+      activation: { activation_id: "1", head: { head_version: 1 } },
+    });
+    expect(body).toEqual(request);
+
+    const rejected = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => Response.json({
+        result: "rejected",
+        code: "evidence_stale",
+        rejection: {
+          evidence_stale: { now_ts: 1_401, observed_ts: 1_100, valid_until_ts: 1_400 },
+        },
+      }, { status: 409 }),
+    });
+    await expect(rejected.activatePricingReleaseV2(request)).resolves.toMatchObject({
+      result: "rejected",
+      code: "evidence_stale",
+    });
+
+    const forged = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => Response.json({
+        result: "unchanged",
+        activation: {
+          activation_id: 1,
+          activation_kind: "cutover",
+          from_generation: null,
+          from_digest: null,
+          expected_head_version: 0,
+          head: {
+            active_generation: 41,
+            active_digest: digest("9"),
+            head_version: 1,
+            updated_ts: 1_200,
+          },
+          evidence_digest: digest("a"),
+          operator_id: "pricing-control-worker:test",
+          reason: "activate exact prepared Stage 9 target",
+          activated_ts: 1_200,
+        },
+      }),
+    });
+    await expect(forged.activatePricingReleaseV2(request))
+      .rejects.toThrow("receipt does not match the immutable request");
+
+    const mismatchedRejection = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => Response.json({
+        result: "rejected",
+        code: "invalid",
+        rejection: { cas_mismatch: { actual: null } },
+      }, { status: 400 }),
+    });
+    await expect(mismatchedRejection.activatePricingReleaseV2(request))
+      .rejects.toThrow("malformed pricing response");
   });
 
   it("rejects malformed release-v2 scopes and cursor bounds before contacting the engine", async () => {

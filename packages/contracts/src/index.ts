@@ -665,12 +665,9 @@ export const pricingMutationAckSchema = z.union([
 ]);
 export type PricingMutationAck = z.infer<typeof pricingMutationAckSchema>;
 
-/**
- * Additive prepare/read contract for the dormant pricing-release v2 authority.
- * These schemas intentionally contain no activation request: a consumer can
- * materialize and inspect immutable data, but cannot change the live release head.
- */
+/** Additive prepare/read/activation contract for the pricing-release v2 authority. */
 export const PRICING_RELEASE_SCHEMA_VERSION_V2 = 2 as const;
+export const canonicalSha256V2Schema = z.string().regex(/^sha256:v2:[0-9a-f]{64}$/);
 export const pricingReleaseBillingModeV2Schema = z.enum(["balance", "meter_only"]);
 export const pricingReleaseKindV2Schema = z.enum(["target", "recovery"]);
 export const pricingReleaseAccountClassV2Schema = z.enum(["b2c", "b2b", "open_keys", "service"]);
@@ -873,6 +870,217 @@ export const pricingReleaseHeadV2Schema = z.object({
 }).strict();
 export type PricingReleaseHeadV2 = z.infer<typeof pricingReleaseHeadV2Schema>;
 
+export const pricingReleaseActivationKindV2Schema = z.enum(["cutover", "recovery"]);
+export const pricingReleaseHeadExpectationV2Schema = z.union([
+  z.literal("absent"),
+  z.object({ exact: pricingReleaseHeadV2Schema }).strict(),
+]);
+export type PricingReleaseHeadExpectationV2 =
+  z.infer<typeof pricingReleaseHeadExpectationV2Schema>;
+
+const pricingReleaseActivationTimestampV2Schema = z.number().int().safe().positive();
+const pricingReleaseActivationOperatorV2Schema = z.string().min(1).max(200)
+  .refine((value) => !/[\u0000-\u001f\u007f-\u009f]/u.test(value), "operator_id contains control characters");
+const pricingReleaseActivationReasonV2Schema = z.string().min(1).max(2_000)
+  .refine((value) => !/[\u0000-\u001f\u007f-\u009f]/u.test(value), "reason contains control characters");
+
+export const pricingReleaseActivationEvidenceV2Schema = z.object({
+  evidence_digest: canonicalSha256V2Schema,
+  target_generation: pricingVersionSchema,
+  target_digest: canonicalSha256V2Schema,
+  recovery_generation: pricingVersionSchema,
+  recovery_digest: canonicalSha256V2Schema,
+  engine_inventory_digest: canonicalSha256V2Schema,
+  funding_digest: canonicalSha256V2Schema,
+  shadow_digest: canonicalSha256V2Schema,
+  runtime_floor_digest: canonicalSha256V2Schema,
+  legacy_inflight_count: z.number().int().safe().nonnegative(),
+  engine_captured_ts: pricingReleaseActivationTimestampV2Schema,
+  observed_ts: pricingReleaseActivationTimestampV2Schema,
+  valid_until_ts: pricingReleaseActivationTimestampV2Schema,
+}).strict().superRefine((evidence, context) => {
+  if (evidence.recovery_generation <= evidence.target_generation) {
+    context.addIssue({ code: "custom", message: "recovery generation must be newer than target generation" });
+  }
+  if (evidence.engine_captured_ts > evidence.observed_ts + 5
+      || evidence.observed_ts - evidence.engine_captured_ts > 120) {
+    context.addIssue({ code: "custom", message: "engine evidence capture time is outside the accepted window" });
+  }
+  if (evidence.valid_until_ts <= evidence.observed_ts
+      || evidence.valid_until_ts - evidence.observed_ts > 300) {
+    context.addIssue({ code: "custom", message: "activation evidence TTL must be within 300 seconds" });
+  }
+});
+export type PricingReleaseActivationEvidenceV2 =
+  z.infer<typeof pricingReleaseActivationEvidenceV2Schema>;
+
+export const pricingReleaseActivationRequestV2Schema = z.object({
+  activation_kind: pricingReleaseActivationKindV2Schema,
+  expectation: pricingReleaseHeadExpectationV2Schema,
+  evidence: pricingReleaseActivationEvidenceV2Schema,
+  operator_id: pricingReleaseActivationOperatorV2Schema,
+  reason: pricingReleaseActivationReasonV2Schema,
+}).strict().superRefine((request, context) => {
+  if (request.activation_kind === "cutover") {
+    if (request.expectation !== "absent") {
+      context.addIssue({ code: "custom", message: "cutover requires an absent head expectation" });
+    }
+    return;
+  }
+  if (request.expectation === "absent") {
+    context.addIssue({ code: "custom", message: "recovery requires an exact target head" });
+    return;
+  }
+  if (request.expectation.exact.active_generation !== request.evidence.target_generation
+      || request.expectation.exact.active_digest !== request.evidence.target_digest) {
+    context.addIssue({ code: "custom", message: "recovery expectation must be the exact target head" });
+  }
+});
+export type PricingReleaseActivationRequestV2 =
+  z.infer<typeof pricingReleaseActivationRequestV2Schema>;
+
+const positiveDecimalIntegerSchema = nonNegativeIntegerSchema.refine(
+  (value) => BigInt(value) > 0n,
+  "value must be positive",
+);
+
+export const pricingReleaseActivationReceiptV2Schema = z.object({
+  activation_id: positiveDecimalIntegerSchema,
+  activation_kind: pricingReleaseActivationKindV2Schema,
+  from_generation: pricingVersionSchema.nullable(),
+  from_digest: canonicalSha256V2Schema.nullable(),
+  expected_head_version: z.number().int().safe().nonnegative(),
+  head: pricingReleaseHeadV2Schema,
+  evidence_digest: canonicalSha256V2Schema,
+  operator_id: pricingReleaseActivationOperatorV2Schema,
+  reason: pricingReleaseActivationReasonV2Schema,
+  activated_ts: pricingReleaseActivationTimestampV2Schema,
+}).strict();
+export type PricingReleaseActivationReceiptV2 =
+  z.infer<typeof pricingReleaseActivationReceiptV2Schema>;
+
+const activationInvalidRejectionSchema = z.object({
+  invalid: z.object({ reason: z.string().min(1) }).strict(),
+}).strict();
+const activationMissingDependencyRejectionSchema = z.object({
+  missing_dependency: z.object({ dependency: z.string().min(1) }).strict(),
+}).strict();
+const activationCasMismatchRejectionSchema = z.object({
+  cas_mismatch: z.object({ actual: pricingReleaseHeadV2Schema.nullable() }).strict(),
+}).strict();
+const activationEvidenceStaleRejectionSchema = z.object({
+  evidence_stale: z.object({
+    now_ts: pricingReleaseActivationTimestampV2Schema,
+    observed_ts: pricingReleaseActivationTimestampV2Schema,
+    valid_until_ts: pricingReleaseActivationTimestampV2Schema,
+  }).strict(),
+}).strict();
+const activationEvidenceConflictRejectionSchema = z.object({
+  evidence_conflict: z.object({ evidence_digest: canonicalSha256V2Schema }).strict(),
+}).strict();
+const activationReleaseLineageDriftRejectionSchema = z.object({
+  release_lineage_drift: z.object({ reason: z.string().min(1) }).strict(),
+}).strict();
+const activationInventoryDriftRejectionSchema = z.object({
+  inventory_drift: z.object({
+    expected_digest: canonicalSha256V2Schema,
+    actual_digest: canonicalSha256V2Schema,
+  }).strict(),
+}).strict();
+const activationFundingDriftRejectionSchema = z.object({
+  funding_drift: z.object({
+    expected_digest: canonicalSha256V2Schema,
+    actual_digest: canonicalSha256V2Schema,
+  }).strict(),
+}).strict();
+const activationFundingInvariantDriftRejectionSchema = z.object({
+  funding_invariant_drift: z.object({ account_count: z.number().int().safe().nonnegative() }).strict(),
+}).strict();
+const activationRuntimeFloorDriftRejectionSchema = z.object({
+  runtime_floor_drift: z.object({
+    expected_digest: canonicalSha256V2Schema,
+    actual_digest: canonicalSha256V2Schema,
+  }).strict(),
+}).strict();
+const activationRuntimeIncompatibleRejectionSchema = z.object({
+  runtime_incompatible: z.object({
+    live_instances: z.number().int().safe().nonnegative(),
+    compatible_instances: z.number().int().safe().nonnegative(),
+  }).strict(),
+}).strict();
+const activationAuthorityDriftRejectionSchema = z.object({
+  authority_drift: z.object({ changed_rows: z.number().int().safe().nonnegative() }).strict(),
+}).strict();
+
+export const pricingReleaseActivationAckV2Schema = z.union([
+  z.object({
+    result: z.enum(["applied", "unchanged"]),
+    activation: pricingReleaseActivationReceiptV2Schema,
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("invalid"),
+    rejection: activationInvalidRejectionSchema,
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("missing_dependency"),
+    rejection: activationMissingDependencyRejectionSchema,
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("cas_mismatch"),
+    rejection: activationCasMismatchRejectionSchema,
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("evidence_stale"),
+    rejection: activationEvidenceStaleRejectionSchema,
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("evidence_conflict"),
+    rejection: activationEvidenceConflictRejectionSchema,
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("release_lineage_drift"),
+    rejection: activationReleaseLineageDriftRejectionSchema,
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("inventory_drift"),
+    rejection: activationInventoryDriftRejectionSchema,
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("funding_drift"),
+    rejection: activationFundingDriftRejectionSchema,
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("funding_invariant_drift"),
+    rejection: activationFundingInvariantDriftRejectionSchema,
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("runtime_floor_drift"),
+    rejection: activationRuntimeFloorDriftRejectionSchema,
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("runtime_incompatible"),
+    rejection: activationRuntimeIncompatibleRejectionSchema,
+  }).strict(),
+  z.object({
+    result: z.literal("rejected"),
+    code: z.literal("authority_drift"),
+    rejection: activationAuthorityDriftRejectionSchema,
+  }).strict(),
+]);
+export type PricingReleaseActivationAckV2 =
+  z.infer<typeof pricingReleaseActivationAckV2Schema>;
+
 export const pricingReleaseInventoryAccountV2Schema = z.object({
   account_id: z.string().startsWith("acct_").max(200),
   status: z.enum(["active", "disabled"]),
@@ -890,8 +1098,6 @@ export const pricingReleaseInventoryPageV2Schema = z.object({
   next_after_account_id: z.string().startsWith("acct_").max(200).nullable(),
 }).strict();
 export type PricingReleaseInventoryPageV2 = z.infer<typeof pricingReleaseInventoryPageV2Schema>;
-
-export const canonicalSha256V2Schema = z.string().regex(/^sha256:v2:[0-9a-f]{64}$/);
 
 /**
  * Admin-managed authority for engine-native service accounts. The status is

@@ -5,8 +5,12 @@ import { Client } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   buildStage5ServiceInventoryV2,
+  claimNextPricingReleaseActivationJobV2,
   collectStage8CombinedEvidenceV2,
+  confirmPricingReleaseActivationJobV2,
   createDatabase,
+  recoverStalePricingReleaseActivationJobsV2,
+  stagePricingReleaseActivationJobV2,
   stage5V2CommerceInventoryDigest,
   stage5V2Digest,
   stage8EngineEvidenceDigestV2,
@@ -37,6 +41,7 @@ function engineEvidence(input: {
   passed?: boolean;
   legacyInflightReservations?: bigint;
   legacyInflightOutboxRows?: bigint;
+  activeHead?: Stage8EngineEvidenceV2["release"]["active_head"];
 }): Stage8EngineEvidenceV2 {
   const captured = BigInt(Math.floor(Date.now() / 1_000));
   const passed = input.passed ?? true;
@@ -60,7 +65,7 @@ function engineEvidence(input: {
       funding_digest: input.fundingDigest,
       target_assignment_count: 1n,
       recovery_assignment_count: 1n,
-      active_head: null,
+      active_head: input.activeHead ?? null,
     },
     runtime_manifest: {
       generation: 3n,
@@ -179,6 +184,7 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
     report: Stage8EngineEvidenceV2;
     openkeys: Stage5V2OpenKeysReader;
     accountId: string;
+    userId: string;
   }> {
     const userId = randomUUID();
     const recordId = randomUUID();
@@ -295,6 +301,7 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
     ]);
     return {
       accountId,
+      userId,
       report: engineEvidence({
         engineInventoryDigest,
         fundingDigest,
@@ -309,6 +316,19 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
         }),
       },
     };
+  }
+
+  async function persistActivationSource(
+    evidenceDigest: string,
+    source: Stage8EngineEvidenceV2,
+  ): Promise<void> {
+    const updated = await seed.query(`
+      UPDATE pricing_stage8_evidence_v2
+      SET engine_evidence_digest = $2,
+          engine_captured_at = to_timestamp($3::bigint)
+      WHERE evidence_digest = $1
+    `, [evidenceDigest, source.evidence_digest, source.captured_ts]);
+    expect(updated.rowCount).toBe(1);
   }
 
   it("stores one passed identity bound to exact commerce, OpenKeys and engine evidence", async () => {
@@ -339,6 +359,202 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
         passed: true,
         blocker_count: "0",
       }]);
+    } finally {
+      await database.pool.end();
+    }
+  });
+
+  it("durably replays a lost cutover ACK and binds forward recovery to its exact receipt", async () => {
+    const seeded = await seedPreparedPair();
+    const database = createDatabase(databaseUrl, "stage8-activation-lifecycle");
+    try {
+      const cutoverEvidence = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.openkeys,
+        seeded.report,
+      );
+      await expect(stagePricingReleaseActivationJobV2(database, {
+        activationKind: "cutover",
+        evidenceDigest: cutoverEvidence.evidence_digest,
+        operatorId: "pricing-control-worker:integration",
+        reason: "activate exact prepared Stage 9 target",
+      })).rejects.toThrow("source engine evidence identity");
+      await persistActivationSource(cutoverEvidence.evidence_digest, seeded.report);
+      const cutoverJobId = await stagePricingReleaseActivationJobV2(database, {
+        activationKind: "cutover",
+        evidenceDigest: cutoverEvidence.evidence_digest,
+        operatorId: "pricing-control-worker:integration",
+        reason: "activate exact prepared Stage 9 target",
+      });
+      const scalarJobId = randomUUID();
+      await seed.query(`
+        INSERT INTO engine_pricing_jobs (
+          id, user_id, engine_account_id, multiplier_bp, reason
+        ) VALUES ($1, $2, $3, 4000, 'activation-race-test')
+      `, [scalarJobId, seeded.userId, seeded.accountId]);
+      await expect(claimNextPricingReleaseActivationJobV2(
+        database,
+        "activation-integration-blocked",
+      )).resolves.toBeNull();
+      const deferred = await seed.query<{ status: string }>(`
+        SELECT status FROM pricing_release_control_jobs_v2 WHERE id = $1
+      `, [cutoverJobId]);
+      expect(deferred.rows[0]?.status).toBe("pending");
+      await seed.query(`
+        UPDATE engine_pricing_jobs
+        SET status = 'confirmed', confirmed_at = now()
+        WHERE id = $1
+      `, [scalarJobId]);
+      const firstClaim = await claimNextPricingReleaseActivationJobV2(
+        database,
+        "activation-integration-first",
+      );
+      expect(firstClaim).toMatchObject({
+        id: cutoverJobId,
+        attempts: 1,
+        request: {
+          activation_kind: "cutover",
+          expectation: "absent",
+          evidence: {
+            evidence_digest: cutoverEvidence.evidence_digest,
+            target_digest: seeded.report.release.target_digest,
+            recovery_digest: seeded.report.release.recovery_digest,
+          },
+        },
+      });
+      await seed.query(`
+        UPDATE pricing_release_control_jobs_v2
+        SET locked_at = now() - interval '10 minutes'
+        WHERE id = $1
+      `, [cutoverJobId]);
+      await expect(recoverStalePricingReleaseActivationJobsV2(database)).resolves.toBe(1);
+      const replayClaim = await claimNextPricingReleaseActivationJobV2(
+        database,
+        "activation-integration-replay",
+      );
+      expect(replayClaim).toMatchObject({ id: cutoverJobId, attempts: 2 });
+      expect(replayClaim!.request).toEqual(firstClaim!.request);
+      const cutoverActivatedTs = replayClaim!.request.evidence.observed_ts + 1;
+      const cutoverResultDigest = await confirmPricingReleaseActivationJobV2(
+        database,
+        replayClaim!,
+        "activation-integration-replay",
+        {
+          result: "unchanged",
+          activation: {
+            activation_id: "1",
+            activation_kind: "cutover",
+            from_generation: null,
+            from_digest: null,
+            expected_head_version: 0,
+            head: {
+              active_generation: Number(TARGET_GENERATION),
+              active_digest: seeded.report.release.target_digest!,
+              head_version: 1,
+              updated_ts: cutoverActivatedTs,
+            },
+            evidence_digest: cutoverEvidence.evidence_digest,
+            operator_id: "pricing-control-worker:integration",
+            reason: "activate exact prepared Stage 9 target",
+            activated_ts: cutoverActivatedTs,
+          },
+        },
+      );
+      expect(cutoverResultDigest).toMatch(/^sha256:v2:[0-9a-f]{64}$/);
+      await expect(stagePricingReleaseActivationJobV2(database, {
+        activationKind: "cutover",
+        evidenceDigest: cutoverEvidence.evidence_digest,
+        operatorId: "pricing-control-worker:integration",
+        reason: "activate exact prepared Stage 9 target",
+      })).resolves.toBe(cutoverJobId);
+
+      const recoverySource = engineEvidence({
+        engineInventoryDigest: seeded.report.engine_inventory_digest,
+        fundingDigest: seeded.report.funding_digest,
+        targetEngineDigest: seeded.report.release.target_digest!,
+        recoveryEngineDigest: seeded.report.release.recovery_digest!,
+        activeHead: {
+          active_generation: TARGET_GENERATION,
+          active_digest: seeded.report.release.target_digest!,
+          head_version: 1n,
+          updated_ts: BigInt(cutoverActivatedTs),
+        },
+      });
+      const recoveryEvidence = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.openkeys,
+        recoverySource,
+      );
+      expect(recoveryEvidence.evidence_digest).not.toBe(cutoverEvidence.evidence_digest);
+      await persistActivationSource(recoveryEvidence.evidence_digest, recoverySource);
+      const recoveryJobId = await stagePricingReleaseActivationJobV2(database, {
+        activationKind: "recovery",
+        evidenceDigest: recoveryEvidence.evidence_digest,
+        operatorId: "pricing-control-worker:integration",
+        reason: "activate exact prepared recovery release",
+      });
+      const recoveryClaim = await claimNextPricingReleaseActivationJobV2(
+        database,
+        "activation-integration-recovery",
+      );
+      expect(recoveryClaim).toMatchObject({
+        id: recoveryJobId,
+        attempts: 1,
+        request: {
+          activation_kind: "recovery",
+          expectation: {
+            exact: {
+              active_generation: Number(TARGET_GENERATION),
+              active_digest: seeded.report.release.target_digest,
+              head_version: 1,
+              updated_ts: cutoverActivatedTs,
+            },
+          },
+          evidence: { evidence_digest: recoveryEvidence.evidence_digest },
+        },
+      });
+      const recoveryActivatedTs = recoveryClaim!.request.evidence.observed_ts + 1;
+      const recoveryResultDigest = await confirmPricingReleaseActivationJobV2(
+        database,
+        recoveryClaim!,
+        "activation-integration-recovery",
+        {
+          result: "applied",
+          activation: {
+            activation_id: "2",
+            activation_kind: "recovery",
+            from_generation: Number(TARGET_GENERATION),
+            from_digest: seeded.report.release.target_digest!,
+            expected_head_version: 1,
+            head: {
+              active_generation: Number(RECOVERY_GENERATION),
+              active_digest: seeded.report.release.recovery_digest!,
+              head_version: 2,
+              updated_ts: recoveryActivatedTs,
+            },
+            evidence_digest: recoveryEvidence.evidence_digest,
+            operator_id: "pricing-control-worker:integration",
+            reason: "activate exact prepared recovery release",
+            activated_ts: recoveryActivatedTs,
+          },
+        },
+      );
+      expect(recoveryResultDigest).toMatch(/^sha256:v2:[0-9a-f]{64}$/);
+      expect(recoveryResultDigest).not.toBe(cutoverResultDigest);
+
+      const stored = await seed.query<{
+        confirmed_jobs: string;
+        receipts: string;
+        payloads: string;
+      }>(`
+        SELECT
+          (SELECT count(*)::text FROM pricing_release_control_jobs_v2
+           WHERE status = 'confirmed' AND result_digest LIKE 'sha256:v2:%') AS confirmed_jobs,
+          (SELECT count(*)::text FROM pricing_release_activation_receipts_v2) AS receipts,
+          (SELECT count(*)::text FROM pricing_release_activation_receipts_v2
+           WHERE receipt_payload IS NOT NULL) AS payloads
+      `);
+      expect(stored.rows[0]).toEqual({ confirmed_jobs: "2", receipts: "2", payloads: "2" });
     } finally {
       await database.pool.end();
     }

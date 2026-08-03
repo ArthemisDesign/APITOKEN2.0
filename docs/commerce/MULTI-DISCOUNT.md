@@ -440,11 +440,12 @@ checkpoint, а не обходится ослаблением Stage 8.
 
 Canary planner удаляется. Единственное apply-действие — CAS active release head для всего
 production inventory. Engine producer уже реализует cutover из absent head, exact lost-ACK replay и
-forward recovery из complete target head. До отдельного commerce consumer route остаётся без
-внутреннего caller и не может активироваться сам. Stage 9 не останавливает сервис и не требует
-ручной финансовой подписи. Expand-only commerce schema заранее хранит exact source evidence,
-неизменяемый request и полный engine ACK, но сама миграция не создаёт job и не вызывает CAS;
-consumer подключается только после GREEN schema SHA.
+forward recovery из complete target head. Durable commerce consumer подключён после GREEN schema
+SHA: strict request сохраняется до сети, lost ACK повторяет exact body, complete ACK и canonical
+request/receipt digest коммитятся до `confirmed`, а recovery expectation берётся только из cutover
+receipt. Он не активируется сам: ни API, ни migration, ни startup, ни Stage 8 не создают job.
+Текущий source-capture gap также блокирует staging до следующего checkpoint. Stage 9 не
+останавливает сервис и не требует ручной финансовой подписи.
 
 ## 9. Контракты UI и API
 

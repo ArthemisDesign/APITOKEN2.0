@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { PricingMutationAck } from "@claude-api/contracts";
 import { EngineClientError } from "@claude-api/engine-client";
+import { PricingReleaseActivationJobV2Error } from "@claude-api/db";
 import {
   pricingControlDisposition,
+  pricingReleaseActivationDisposition,
   requirePricingMutation,
 } from "./pricing-worker.service.js";
 
@@ -20,6 +22,7 @@ test("delegates pricing money mutations to the canonical database module", () =>
   assert.doesNotMatch(source, /UPDATE customer_profiles/);
   assert.doesNotMatch(source, /INSERT INTO engine_pricing_jobs/);
   assert.doesNotMatch(source, /INSERT INTO webhook_events/);
+  assert.doesNotMatch(source, /stagePricingReleaseActivationJobV2/);
 });
 
 test("classifies typed pricing rejections without retrying permanent failures", () => {
@@ -75,4 +78,23 @@ test("classifies typed pricing rejections without retrying permanent failures", 
   assert.equal(pricingControlDisposition(new EngineClientError("bad response", 200, false)), "dead");
   assert.equal(pricingControlDisposition(new EngineClientError("timeout", undefined, true)), "retry");
   assert.equal(pricingControlDisposition(new Error("database unavailable")), "retry");
+});
+
+test("retries uncertain activation transport but never retries a typed rejection", () => {
+  assert.equal(
+    pricingReleaseActivationDisposition(new EngineClientError("timeout", undefined, true)),
+    "retry",
+  );
+  assert.equal(
+    pricingReleaseActivationDisposition(new EngineClientError("malformed ACK", 200, false)),
+    "dead",
+  );
+  assert.equal(
+    pricingReleaseActivationDisposition(new PricingReleaseActivationJobV2Error("drift", true)),
+    "dead",
+  );
+  assert.equal(
+    pricingReleaseActivationDisposition(new PricingReleaseActivationJobV2Error("database", false)),
+    "retry",
+  );
 });

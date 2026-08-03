@@ -19,6 +19,8 @@ import {
   pricingPolicySnapshotSchema,
   pricingReleaseAssignmentExtensionIdentityV2Schema,
   pricingReleaseAssignmentExtensionV2Schema,
+  pricingReleaseActivationAckV2Schema,
+  pricingReleaseActivationRequestV2Schema,
   pricingReleaseHeadV2Schema,
   pricingReleaseInventoryPageV2Schema,
   pricingReleasePolicyV2Schema,
@@ -44,6 +46,8 @@ import {
   type PricingPolicySnapshot,
   type PricingReleaseAssignmentExtensionIdentityV2,
   type PricingReleaseAssignmentExtensionV2,
+  type PricingReleaseActivationAckV2,
+  type PricingReleaseActivationRequestV2,
   type PricingReleaseHeadV2,
   type PricingReleaseInventoryPageV2,
   type PricingReleasePolicyV2,
@@ -765,6 +769,21 @@ export class EngineClient {
     ).head;
   }
 
+  async activatePricingReleaseV2(
+    input: PricingReleaseActivationRequestV2,
+  ): Promise<PricingReleaseActivationAckV2> {
+    const request = pricingReleaseActivationRequestV2Schema.parse(input);
+    const { response, payload } = await this.request("/admin/pricing/v2/activate", {
+      method: "POST",
+      body: JSON.stringify(request),
+      acceptedStatuses: [400, 409],
+    });
+    const ack = this.parsePricingResponse(pricingReleaseActivationAckV2Schema, payload, response);
+    if (ack.result === "rejected") return ack;
+    assertPricingReleaseActivationReceipt(request, ack);
+    return ack;
+  }
+
   /** Returns one bounded page. Callers building release evidence must exhaust the cursor. */
   async getPricingReleaseInventoryV2(
     options: PricingReleaseInventoryV2Options = {},
@@ -949,5 +968,48 @@ export class EngineClient {
       throw new EngineClientError(error, response.status, response.status >= 500 || response.status === 429);
     }
     return payload;
+  }
+}
+
+function assertPricingReleaseActivationReceipt(
+  request: PricingReleaseActivationRequestV2,
+  ack: Extract<PricingReleaseActivationAckV2, { result: "applied" | "unchanged" }>,
+): void {
+  const receipt = ack.activation;
+  const expectation = request.expectation;
+  const expectedFrom = expectation === "absent"
+    ? { generation: null, digest: null, headVersion: 0 }
+    : {
+        generation: expectation.exact.active_generation,
+        digest: expectation.exact.active_digest,
+        headVersion: expectation.exact.head_version,
+      };
+  const expectedHead = request.activation_kind === "cutover"
+    ? {
+        generation: request.evidence.target_generation,
+        digest: request.evidence.target_digest,
+      }
+    : {
+        generation: request.evidence.recovery_generation,
+        digest: request.evidence.recovery_digest,
+      };
+  if (
+    receipt.activation_kind !== request.activation_kind
+    || receipt.from_generation !== expectedFrom.generation
+    || receipt.from_digest !== expectedFrom.digest
+    || receipt.expected_head_version !== expectedFrom.headVersion
+    || receipt.head.active_generation !== expectedHead.generation
+    || receipt.head.active_digest !== expectedHead.digest
+    || receipt.head.head_version !== expectedFrom.headVersion + 1
+    || receipt.head.updated_ts !== receipt.activated_ts
+    || receipt.evidence_digest !== request.evidence.evidence_digest
+    || receipt.operator_id !== request.operator_id
+    || receipt.reason !== request.reason
+  ) {
+    throw new EngineClientError(
+      "engine pricing release activation receipt does not match the immutable request",
+      undefined,
+      false,
+    );
   }
 }

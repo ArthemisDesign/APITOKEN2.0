@@ -600,10 +600,12 @@ whole transaction and return `result=rejected` with one typed code:
 - `409 release_lineage_drift`, `authority_drift`, `inventory_drift`, `funding_drift`,
   `funding_invariant_drift`, `runtime_floor_drift` or `runtime_incompatible`.
 
-The route is producer-first in this checkpoint: `packages/contracts`, `packages/engine-client` and
-the durable commerce activation job are connected only after this exact engine producer SHA has a
-green `deploy/watchdog`. Merely deploying the route cannot create a head; no in-repository caller
-exists in this checkpoint.
+After the producer SHA reached green `deploy/watchdog`, `packages/contracts` added the strict
+request/receipt/rejection schemas, `packages/engine-client` added the sole typed transport, and
+`packages/db/src/pricing-release-activation-jobs.ts` plus `apps/worker` added a durable consumer.
+The worker can call this route only after an explicit immutable activation job exists. No API,
+startup hook, migration or Stage 8 collection automatically stages that job; a deployed consumer
+with an empty queue cannot create a head.
 
 Inventory is ordered by `account_id`, returns at most 500 rows plus `next_after_account_id`, and
 contains status, legacy scalar, integer balance/reserved/spent and nullable funding-v2 head identity.
@@ -643,16 +645,19 @@ policy prepare/readback и extension prepare/readback до выдачи usable k
 проверку после remote issue; если head или authority изменились, ключ отключается до возврата raw
 secret. При `head=null` consumer ничего не материализует, поэтому его deploy не запускает cutover.
 Stage 8 evidence уже поддерживает zero-drain audit counts, а activation producer выполняет один
-CAS; его contracts/client/durable consumer остаются следующим producer-first checkpoint. Data-plane
-reserve/settlement release control-plane lock не берут.
+CAS. Strict contracts/client/durable worker consumer подключены producer-first: request хранится до
+сети, complete ACK сохраняется до `confirmed`, timeout повторяет только exact body. Consumer не
+создаёт job сам; до отдельного Stage 8 source-capture/control-plane checkpoint staging fail-closed
+на nullable source fields. Data-plane reserve/settlement release control-plane lock не берут.
 After each producer SHA reached a green exact-SHA `deploy/watchdog`, `packages/contracts` gained the
-strict release, funding-normalization and assignment-extension wire schemas, while
-`packages/engine-client` gained typed prepare/read plus account-local normalization and extension
-methods. The client surface still has no activation method. The bounded full-inventory application
-job is a separate `apps/worker` consumer:
+strict release, funding-normalization, assignment-extension and activation wire schemas, while
+`packages/engine-client` gained typed prepare/read, account-local normalization/extension and the
+single activation method. The bounded application jobs are separate `apps/worker` consumers:
 it runs only for an explicitly staged target-release job, re-GETs exact plan digests before every
 POST, excludes service `meter_only` accounts and confirms only complete funding-manifest coverage.
-Merely having a typed client or a deployed worker does not materialize any account.
+The activation lane likewise runs only for an explicitly staged immutable request and persists its
+full receipt. Merely having a typed client or a deployed worker does not materialize an account or
+move the release head.
 
 ### Коды ошибок
 `400` неверное тело (явная валидация handler'а) · `401` нет/неверный control-ключ · `404`

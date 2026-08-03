@@ -91,4 +91,7 @@ needed for safe activation recovery: the source engine evidence digest and exact
 the immutable activation request, and the complete validated engine receipt. It performs no
 backfill, creates no control job and cannot move the release head. Existing API/worker versions
 ignore the columns. The dependent durable activation consumer may be delivered only after this
-migration SHA has green `deploy/migration` and `deploy/watchdog` in production.
+migration SHA has green `deploy/migration` and `deploy/watchdog` in production. That consumer now
+stores exact requests and complete receipts but remains dormant without an explicitly staged job;
+it also rejects evidence whose nullable source fields have not yet been filled by the follow-up
+Stage 8 collector checkpoint.
