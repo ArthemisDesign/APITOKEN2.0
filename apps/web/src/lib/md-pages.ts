@@ -819,7 +819,7 @@ export function buildErrorsMarkdown(): string {
       : "";
     const origin =
       entry.surface === "openai"
-        ? "Returned by the OpenAI-compatible endpoint at openai.api.apitoken.sale."
+        ? "Returned by the OpenAI lanes of the unified endpoint (router.apitoken.sale/v1)."
         : entry.surface === "apitoken"
           ? "Specific to apiToken.sale — the Anthropic API has no equivalent response."
           : entry.status === 0
@@ -856,7 +856,7 @@ Short link: ${SITE_ORIGIN}/e/${entry.code} · ${origin}`;
     }) +
     `# API error codes
 
-## Anthropic surface (api.apitoken.sale)
+## Anthropic lane (router.apitoken.sale)
 
 Every error is returned with the same envelope, so branch on \`error.type\` and the HTTP
 status rather than on the message text:
@@ -875,7 +875,7 @@ ${anthropicEntries.map((e) => `| ${e.status === 0 ? "—" : e.status} | \`${e.ty
 
 ${anthropicEntries.map(sectionFor).join("\n\n")}
 
-## OpenAI-compatible surface (openai.api.apitoken.sale)
+## OpenAI lanes (router.apitoken.sale/v1)
 
 This surface returns the OpenAI error envelope — branch on \`error.code\` and the HTTP status:
 

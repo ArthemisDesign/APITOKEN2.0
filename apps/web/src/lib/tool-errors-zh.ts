@@ -236,7 +236,7 @@ export const toolErrorsZh: ToolErrorTranslations = {
         },
         {
           q: "Anthropic 覆盖项应该填什么 base URL？",
-          a: "只填源站——对于本网关是 https://api.apitoken.sale。不要追加 /v1：客户端会自己添加 API 路径，路径重复会导致失败。",
+          a: "只填源站——对于本网关是 https://router.apitoken.sale。不要追加 /v1：客户端会自己添加 API 路径，路径重复会导致失败。",
         },
       ],
     },
@@ -392,7 +392,7 @@ export const toolErrorsZh: ToolErrorTranslations = {
         },
         {
           q: "base_url 需要带 /v1 吗？",
-          a: "针对本网关的 Codex profile，需要：文档给出的值是 https://openai.api.apitoken.sale/v1，与文档完全一致。",
+          a: "针对本网关的 Codex profile，需要：文档给出的值是 https://router.apitoken.sale/v1，与文档完全一致。",
         },
       ],
     },
@@ -621,7 +621,7 @@ export const toolErrorsZh: ToolErrorTranslations = {
         "密钥已被吊销或已过期。",
       ],
       fixes: [
-        "在 Cline 的 Anthropic 提供商设置里启用自定义 base URL，并设置为签发密钥的源站——对于本网关是 https://api.apitoken.sale，不带 /v1 后缀。",
+        "在 Cline 的 Anthropic 提供商设置里启用自定义 base URL，并设置为签发密钥的源站——对于本网关是 https://router.apitoken.sale，不带 /v1 后缀。",
         "干净地重新粘贴密钥，并在签发方控制台确认它处于激活状态。",
         "回到 Cline 之前先用 curl 验证这一对配置。",
       ],

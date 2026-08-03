@@ -231,7 +231,7 @@ export const toolErrorsKo: ToolErrorTranslations = {
         },
         {
           q: "Anthropic 오버라이드의 base URL은 무엇이어야 하나요?",
-          a: "오리진만입니다 — 이 게이트웨이에서는 https://api.apitoken.sale입니다. /v1을 붙이지 마세요: 클라이언트가 API 경로를 스스로 추가하며, 중복된 경로는 실패합니다.",
+          a: "오리진만입니다 — 이 게이트웨이에서는 https://router.apitoken.sale입니다. /v1을 붙이지 마세요: 클라이언트가 API 경로를 스스로 추가하며, 중복된 경로는 실패합니다.",
         },
       ],
     },
@@ -357,7 +357,7 @@ export const toolErrorsKo: ToolErrorTranslations = {
         },
         {
           q: "base_url에 /v1이 필요한가요?",
-          a: "이 게이트웨이에 대한 Codex 프로필에서는 네: 문서화된 값은 문서에 실린 그대로 https://openai.api.apitoken.sale/v1입니다.",
+          a: "이 게이트웨이에 대한 Codex 프로필에서는 네: 문서화된 값은 문서에 실린 그대로 https://router.apitoken.sale/v1입니다.",
         },
       ],
     },
@@ -586,7 +586,7 @@ export const toolErrorsKo: ToolErrorTranslations = {
         "키가 폐기되었거나 만료되었습니다.",
       ],
       fixes: [
-        "Cline의 Anthropic 프로바이더 설정에서 커스텀 base URL을 켜고 키를 발급한 오리진으로 설정하세요 — 이 게이트웨이에서는 /v1 접미사 없이 https://api.apitoken.sale입니다.",
+        "Cline의 Anthropic 프로바이더 설정에서 커스텀 base URL을 켜고 키를 발급한 오리진으로 설정하세요 — 이 게이트웨이에서는 /v1 접미사 없이 https://router.apitoken.sale입니다.",
         "키를 깨끗하게 다시 붙여넣고 발급처 대시보드에서 활성 상태인지 확인하세요.",
         "Cline으로 돌아가기 전에 curl로 조합을 검증하세요.",
       ],

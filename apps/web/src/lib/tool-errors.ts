@@ -135,8 +135,8 @@ export const TOOL_ERRORS_INDEX = {
 
 // --- Entries ----------------------------------------------------------------
 
-const BASE = "https://api.apitoken.sale";
-const OPENAI_BASE = "https://openai.api.apitoken.sale/v1";
+const BASE = "https://router.apitoken.sale";
+const OPENAI_BASE = "https://router.apitoken.sale/v1";
 
 export const TOOL_ERRORS: ToolErrorEntry[] = [
   // ——— Claude Code ———
@@ -354,7 +354,7 @@ claude`,
       },
       {
         q: "What base URL should the Anthropic override use?",
-        a: "The origin only — for this gateway, https://api.apitoken.sale. Do not append /v1: clients add API paths themselves, and a doubled path fails.",
+        a: "The origin only — for this gateway, https://router.apitoken.sale. Do not append /v1: clients add API paths themselves, and a doubled path fails.",
       },
     ],
     retryable: true,
@@ -554,7 +554,7 @@ env_key = "APITOKEN_API_KEY"`,
       },
       {
         q: "Does the base_url need /v1?",
-        a: "For Codex profiles against this gateway, yes: the documented value is https://openai.api.apitoken.sale/v1, exactly as shipped in the docs.",
+        a: "For Codex profiles against this gateway, yes: the documented value is https://router.apitoken.sale/v1, exactly as shipped in the docs.",
       },
     ],
     retryable: false,
@@ -919,7 +919,7 @@ opencode
       "The key was revoked or expired.",
     ],
     fixes: [
-      "In Cline's Anthropic provider settings, enable the custom base URL and set it to the origin that issued the key — for this gateway, https://api.apitoken.sale, with no /v1 suffix.",
+      "In Cline's Anthropic provider settings, enable the custom base URL and set it to the origin that issued the key — for this gateway, https://router.apitoken.sale, with no /v1 suffix.",
       "Re-paste the key cleanly and confirm it is active in the issuer's dashboard.",
       "Verify the pair with curl before returning to Cline.",
     ],

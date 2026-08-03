@@ -238,7 +238,7 @@ export const toolErrorsRu: ToolErrorTranslations = {
         },
         {
           q: "Какой base URL ставить в override для Anthropic?",
-          a: "Только origin — для этого шлюза https://api.apitoken.sale. Не дописывайте /v1: клиенты добавляют пути API сами, и удвоенный путь падает.",
+          a: "Только origin — для этого шлюза https://router.apitoken.sale. Не дописывайте /v1: клиенты добавляют пути API сами, и удвоенный путь падает.",
         },
       ],
     },
@@ -394,7 +394,7 @@ export const toolErrorsRu: ToolErrorTranslations = {
         },
         {
           q: "Нужен ли /v1 в base_url?",
-          a: "Для профилей Codex на этом шлюзе — да: задокументированное значение https://openai.api.apitoken.sale/v1, ровно как в документации.",
+          a: "Для профилей Codex на этом шлюзе — да: задокументированное значение https://router.apitoken.sale/v1, ровно как в документации.",
         },
       ],
     },
@@ -623,7 +623,7 @@ export const toolErrorsRu: ToolErrorTranslations = {
         "Ключ отозван или истёк.",
       ],
       fixes: [
-        "В настройках провайдера Anthropic в Cline включите свой base URL и задайте origin, выпустивший ключ, — для этого шлюза https://api.apitoken.sale, без суффикса /v1.",
+        "В настройках провайдера Anthropic в Cline включите свой base URL и задайте origin, выпустивший ключ, — для этого шлюза https://router.apitoken.sale, без суффикса /v1.",
         "Вставьте ключ заново без мусора и убедитесь, что он активен в панели издателя.",
         "Проверьте пару через curl, прежде чем возвращаться в Cline.",
       ],
