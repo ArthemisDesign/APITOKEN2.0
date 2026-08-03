@@ -254,7 +254,9 @@ Gemini Chat/Responses, native Codex Chat/Responses и Codex/Gemini Messages skin
 message. Wiring закреплён contract-тестами каждого адаптера, а не только тестами helper'а;
 `anthropic.rs` — universal Chat Completions→Messages адаптер (этапы 3.1–3.4b
 docs/engine/UNIFIED_ROUTER.md): переводит chat-запрос в Messages JSON (strip
-`anthropic/`-префикса ДО admission, дефолт `max_tokens` 4096, склейка одноролевых
+`anthropic/`-префикса ДО admission; при отсутствии клиентского output cap обязательный для
+Messages `max_tokens` материализуется из нативного потолка модели (64k для Claude ≤4.5,
+128k для 4.6+/5) и затем может быть уменьшен только балансным admission; склейка одноролевых
 сообщений и серий tool-ответов, capability matrix из 16 правил с `400 unsupported_parameter`
 для не-дефолтных penalties/logprobs/seed) и вызывает общий `forward()` — auth, reserve,
 ротация, identity-инжект, tee-метеринг и settle без изменений; ответ переводится
@@ -308,7 +310,8 @@ assistant `tool_use`-блоки (`call_id` → `id`, `arguments` JSON-строк
 text-партов через \n, нетекстовые части → 400), pairing tool_use/tool_result не
 валидируется — как chat-адаптер 3.2, `tools` → `input_schema` (не-function tool → 400),
 `tool_choice`/`parallel_tool_calls` → Messages `tool_choice`, `max_output_tokens` →
-`max_tokens` дефолт 4096, `reasoning.effort` → та же model-specific матрица
+`max_tokens`; отсутствие клиентского cap материализует тот же нативный 64k/128k потолок,
+а не отдельный universal-lane default; `reasoning.effort` → та же model-specific матрица
 `output_config.effort` + инжект `thinking: {type:"adaptive", display:"summarized"}` как 3.4c
 (на прежних моделях hint деградирует к model default), `text.format` json_schema
 → `output_config.format`, capability matrix из 9 правил + open list) и вызывает общий
@@ -377,7 +380,9 @@ contract-тестами модуля, как 3.3/4.3; `gemini/` — native route
 settlement; `gemini/chat.rs` — universal Chat Completions→generateContent адаптер (этапы 3.3–3.4b
 docs/engine/UNIFIED_ROUTER.md) по той же схеме, что `anthropic.rs`: chat-запрос переводится в
 GenerateContentRequest JSON (system/developer → `systemInstruction`, склейка одноролевых contents
-и серий functionResponse, `maxOutputTokens` дефолт 4096, tool/function история ↔ functionCall/
+и серий functionResponse; `maxOutputTokens` передаётся только при явном клиентском cap,
+а при его отсутствии общий `gemini_api()` берёт нативный output limit модели и урезает
+его только по балансу; tool/function история ↔ functionCall/
 functionResponse с восстановлением имени по tool_call_id, `tool_choice` → `functionCallingConfig`,
 capability matrix из 18 правил (те же 16, что у Anthropic-плоскости, плюс `parallel_tool_calls`
 и `user`) ПЛЮС закрытый список top-level полей — неизвестное поле
@@ -433,7 +438,8 @@ items → functionResponse-парты user-content'а (имя восстанав
 call_id→name — functionResponse ссылается по имени, output без пары →
 `400 invalid_request`, в отличие от Anthropic-зеркала pairing валидируется), `tools` →
 functionDeclarations (плоский дескриптор, `strict` снимается), `tool_choice` →
-`functionCallingConfig`, `max_output_tokens` → `maxOutputTokens` дефолт 4096,
+`functionCallingConfig`, `max_output_tokens` → `maxOutputTokens`; при отсутствии cap поле не
+вставляется, а общий admission использует нативный output limit модели,
 `reasoning.effort` → `thinkingConfig` (minimal НЕ клампится — отличие от Anthropic),
 `text.format` → `responseMimeType`/`responseSchema` (json_object у generateContent есть),
 capability matrix — те же 9 правил, что у Anthropic-зеркала, плюс `parallel_tool_calls`

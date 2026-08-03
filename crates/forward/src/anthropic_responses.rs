@@ -29,8 +29,9 @@
 //! (`parameters`→`input_schema`, `strict` снимается — общий перевод
 //! function-дескриптора); `tool_choice` auto/required/none/именная функция →
 //! Messages `tool_choice`, `parallel_tool_calls:false` →
-//! `disable_parallel_tool_use:true`; `max_output_tokens` → `max_tokens`
-//! (дефолт 4096 — системная конвенция reserve-пути); `reasoning.effort` →
+//! `disable_parallel_tool_use:true`; `max_output_tokens` → `max_tokens`;
+//! при отсутствии cap обязательный Messages limit равен нативному потолку
+//! модели (64k для Claude ≤4.5, 128k для 4.6+/5); `reasoning.effort` →
 //! model-specific `output_config.effort` (minimal клампится в low; Claude 4.6
 //! принимает `max`, Claude 4.7+/5 также `xhigh`) + инжект
 //! `thinking: {"type":"adaptive","display":"summarized"}` на Claude 4.6+
@@ -126,8 +127,8 @@ use serde_json::{json, Map, Value};
 
 use crate::anthropic::{
     chat_error, convert_error_response, image_block, invalid_request, merge_or_push,
-    translate_reasoning_effort_for_model, translate_tool_function,
-    unsupported_parameter, CHAT_BODY_LIMIT, DEFAULT_MAX_TOKENS, RESPONSE_BODY_LIMIT,
+    native_max_output_tokens, translate_reasoning_effort_for_model, translate_tool_function,
+    unsupported_parameter, CHAT_BODY_LIMIT, RESPONSE_BODY_LIMIT,
 };
 use crate::anthropic_stream::AnthropicStreamState;
 use crate::codex::new_id;
@@ -312,8 +313,8 @@ fn translate_responses_request(value: Value) -> Result<Translated, Response> {
         .map_err(|field| invalid_request("stream must be a boolean.", Some(field)))?
         .unwrap_or(false);
 
-    // Messages требует max_tokens; дефолт — системная конвенция reserve-пути
-    // (как в chat-адаптере).
+    // Messages requires a concrete max_tokens. When Responses omitted its optional ceiling,
+    // materialize the native model maximum so omission stays uncapped like the Codex lane.
     let max_tokens = optional_positive_u64(&object, &["max_output_tokens"])
         .map_err(|field| {
             invalid_request(
@@ -321,7 +322,7 @@ fn translate_responses_request(value: Value) -> Result<Translated, Response> {
                 Some(field),
             )
         })?
-        .unwrap_or(DEFAULT_MAX_TOKENS);
+        .unwrap_or_else(|| native_max_output_tokens(&model));
 
     let mut body = Map::new();
     body.insert("model".to_string(), Value::String(model.clone()));
@@ -1821,7 +1822,7 @@ mod tests {
         }));
         let body = &translated.body;
         assert_eq!(body["model"], "claude-opus-4-8");
-        assert_eq!(body["max_tokens"], DEFAULT_MAX_TOKENS);
+        assert_eq!(body["max_tokens"], native_max_output_tokens("claude-opus-4-8"));
         assert_eq!(body["stream"], false);
         assert!(!translated.stream);
         assert_eq!(
@@ -1843,7 +1844,16 @@ mod tests {
             "max_output_tokens": null
         }));
         assert!(!translated.stream);
-        assert_eq!(translated.body["max_tokens"], DEFAULT_MAX_TOKENS);
+        assert_eq!(translated.body["max_tokens"], native_max_output_tokens("claude-opus-4-8"));
+    }
+
+    #[test]
+    fn omitted_responses_limit_uses_legacy_model_ceiling() {
+        let translated = ok_translated(serde_json::json!({
+            "model": "anthropic/claude-haiku-4-5-20251001",
+            "input": "Hello"
+        }));
+        assert_eq!(translated.body["max_tokens"], 64_000);
     }
 
     #[tokio::test]

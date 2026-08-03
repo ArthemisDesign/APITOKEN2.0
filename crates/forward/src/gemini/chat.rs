@@ -72,12 +72,6 @@ pub(crate) const CHAT_BODY_LIMIT: usize = 32 * 1024 * 1024;
 /// Верхняя граница буферизации error/non-stream тел ответа `gemini_api()`.
 pub(crate) const RESPONSE_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
-/// Дефолт `maxOutputTokens`, когда chat-запрос его не задал. Без него
-/// нативный путь резервирует под полный output_token_limit модели (65k) —
-/// для chat-клиента это неоправданный hold; 4096 — конвенция universal lane
-/// (так же, как в Anthropic-адаптере).
-pub(crate) const DEFAULT_MAX_TOKENS: u64 = 4096;
-
 /// Documented Gemini context-engineering marker for replayed function calls.
 ///
 /// Code Assist requires a `thoughtSignature` on a model `functionCall` part
@@ -249,11 +243,12 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
             &format!("{field} must be a positive integer."),
             Some(field),
         )
-    })?
-    .unwrap_or(DEFAULT_MAX_TOKENS);
+    })?;
 
     let mut generation_config = Map::new();
-    generation_config.insert("maxOutputTokens".to_string(), Value::from(max_tokens));
+    if let Some(max_tokens) = max_tokens {
+        generation_config.insert("maxOutputTokens".to_string(), Value::from(max_tokens));
+    }
     // Honored-параметры generationConfig.
     for (chat_key, native_key) in [
         ("temperature", "temperature"),
@@ -1800,10 +1795,7 @@ mod tests {
             body["contents"],
             json!([{"role": "user", "parts": [{"text": "Hello"}]}])
         );
-        assert_eq!(
-            body["generationConfig"]["maxOutputTokens"],
-            DEFAULT_MAX_TOKENS
-        );
+        assert!(body["generationConfig"].get("maxOutputTokens").is_none());
         // toolConfig отсутствует — дефолт AUTO не вставляется.
         assert!(body.get("toolConfig").is_none());
         assert!(body.get("tools").is_none());

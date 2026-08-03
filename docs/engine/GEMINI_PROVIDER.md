@@ -791,10 +791,13 @@ in `crates/forward/src/gemini/chat.rs`. It translates the OpenAI chat request in
 `GenerateContentRequest` (system/developer → `systemInstruction`, same-role merge of `contents`,
 tool history ↔ `functionCall`/`functionResponse` parts with the tool name recovered from
 `tool_call_id`, `tool_choice` → `toolConfig.functionCallingConfig`, generation knobs →
-`generationConfig` with a 4096 `maxOutputTokens` default), then issues an internal request to
+`generationConfig`; `maxOutputTokens` is emitted only for an explicit client cap), then issues an
+internal request to
 `/v1beta/models/{model}:generateContent` or `:streamGenerateContent?alt=sse` handled by the shared
 `gemini_api` path — admission, reserve, affinity, rotation, Code Assist wrapper, metering and
-settlement are identical to the native route. Responses are translated outside that path:
+settlement are identical to the native route. When the client omits the cap, shared admission uses
+the model's native output limit and lowers it only when the available balance requires it, matching
+the native route rather than imposing a universal-lane default. Responses are translated outside that path:
 `candidates[0]` parts become chat content/`tool_calls` (synthetic `callu_<name>[_N]` ids),
 `usageMetadata` becomes OpenAI usage (completion = candidates + thoughts tokens), and the data-only
 SSE stream becomes `chat.completion.chunk` frames with a final usage chunk on EOF when

@@ -43,8 +43,9 @@
 //! не-function tool → `400 unsupported_parameter`); `tool_choice`
 //! auto/required/none/именная функция (плоская форма `{type:"function",
 //! name}`) → `toolConfig.functionCallingConfig`; `max_output_tokens` →
-//! `generationConfig.maxOutputTokens` (дефолт 4096 — конвенция universal
-//! lane); `reasoning.effort` → `generationConfig.thinkingConfig`
+//! `generationConfig.maxOutputTokens` только при явном cap; omission оставляет
+//! поле отсутствующим до общего model-limit/balance admission;
+//! `reasoning.effort` → `generationConfig.thinkingConfig`
 //! (`thinkingLevel` проксируется как есть — minimal НЕ клампится, плоскость
 //! сама мапит уровень в wire model id; `includeThoughts: true`; невалидное
 //! значение → `400 invalid_request`) — как 3.4b chat-адаптера;
@@ -153,8 +154,7 @@ use super::chat::{
     chat_error, code_assist_schema, convert_error_response, function_declaration,
     function_response_value, gemini_image_part, invalid_request, map_finish_reason, merge_or_push,
     parse_tool_arguments, replayed_function_call_part, synthetic_call_id,
-    translate_reasoning_effort, unsupported_parameter, CHAT_BODY_LIMIT, DEFAULT_MAX_TOKENS,
-    RESPONSE_BODY_LIMIT,
+    translate_reasoning_effort, unsupported_parameter, CHAT_BODY_LIMIT, RESPONSE_BODY_LIMIT,
 };
 use super::gemini_api;
 use crate::codex::new_id;
@@ -342,19 +342,18 @@ fn translate_responses_request(value: Value) -> Result<Translated, Response> {
         .map_err(|field| invalid_request("stream must be a boolean.", Some(field)))?
         .unwrap_or(false);
 
-    // Без maxOutputTokens нативный путь резервирует под полный output_token_limit
-    // модели — дефолт 4096, конвенция universal lane (как в chat-адаптере).
     let max_tokens = optional_positive_u64(&object, &["max_output_tokens"])
         .map_err(|field| {
             invalid_request(
                 "max_output_tokens must be a positive integer.",
                 Some(field),
             )
-        })?
-        .unwrap_or(DEFAULT_MAX_TOKENS);
+        })?;
 
     let mut generation_config = Map::new();
-    generation_config.insert("maxOutputTokens".to_string(), Value::from(max_tokens));
+    if let Some(max_tokens) = max_tokens {
+        generation_config.insert("maxOutputTokens".to_string(), Value::from(max_tokens));
+    }
     // Honored-параметры с совпадающими именами.
     for (responses_key, native_key) in [("temperature", "temperature"), ("top_p", "topP")] {
         if let Some(value) = object.get(responses_key).filter(|v| !v.is_null()) {
@@ -1871,10 +1870,7 @@ mod tests {
         // google/-префикс снят — дальше нативный публичный id.
         assert_eq!(translated.model, "gemini-2.5-flash");
         assert!(!translated.stream);
-        assert_eq!(
-            body["generationConfig"]["maxOutputTokens"],
-            DEFAULT_MAX_TOKENS
-        );
+        assert!(body["generationConfig"].get("maxOutputTokens").is_none());
         assert_eq!(
             body["systemInstruction"],
             json!({"parts": [{"text": "Be terse."}]})
@@ -1897,10 +1893,9 @@ mod tests {
             "max_output_tokens": null
         }));
         assert!(!translated.stream);
-        assert_eq!(
-            translated.body["generationConfig"]["maxOutputTokens"],
-            DEFAULT_MAX_TOKENS
-        );
+        assert!(translated.body["generationConfig"]
+            .get("maxOutputTokens")
+            .is_none());
     }
 
     #[tokio::test]

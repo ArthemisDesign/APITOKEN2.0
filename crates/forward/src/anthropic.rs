@@ -69,20 +69,13 @@ pub(crate) const CHAT_BODY_LIMIT: usize = 32 * 1024 * 1024;
 /// Длинный non-stream completion укладывается в тот же 32 MiB предел.
 pub(crate) const RESPONSE_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
-/// Дефолт `max_tokens`, когда chat-запрос его не задал: системная конвенция
-/// reserve-пути (proxy.rs трактует отсутствующий `max_tokens` как 4096).
-pub(crate) const DEFAULT_MAX_TOKENS: u64 = 4096;
+const LEGACY_MAX_OUTPUT_TOKENS: u64 = 64_000;
+const CURRENT_MAX_OUTPUT_TOKENS: u64 = 128_000;
 
 const ADAPTIVE_EFFORTS_4_6: &[&str] = &["low", "medium", "high", "max"];
 const ADAPTIVE_EFFORTS_FULL: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
-/// Поддерживаемые нативной Anthropic-моделью уровни GA `output_config.effort`
-/// вместе с adaptive thinking. Живые пробы фиксируют не только нижнюю границу
-/// Claude 4.6, но и model-specific верхнюю: 4.6 принимает `max`, но не `xhigh`;
-/// 4.7+ и 5 принимают оба. 4.5 и прежние поколения отклоняют сам GA-контракт.
-/// Неизвестный/неразбираемый id трактуется консервативно — OpenAI-compatible
-/// effort остаётся hint'ом и деградирует к model default.
-pub(crate) fn supported_adaptive_efforts(model: &str) -> &'static [&'static str] {
+fn claude_version(model: &str) -> Option<(u16, Option<u16>)> {
     let model = model.strip_prefix("anthropic/").unwrap_or(model);
     let version = [
         "claude-opus-",
@@ -91,12 +84,38 @@ pub(crate) fn supported_adaptive_efforts(model: &str) -> &'static [&'static str]
         "claude-fable-",
     ]
     .into_iter()
-    .find_map(|prefix| model.strip_prefix(prefix));
-    let Some(version) = version else {
-        return &[];
-    };
+    .find_map(|prefix| model.strip_prefix(prefix))?;
     let mut parts = version.split('-');
-    let Some(major) = parts.next().and_then(|part| part.parse::<u16>().ok()) else {
+    let major = parts.next()?.parse::<u16>().ok()?;
+    // `claude-opus-4-20250514` is a dated Claude 4 id, not version 4.20M.
+    let minor = parts
+        .next()
+        .filter(|part| part.len() <= 2)
+        .and_then(|part| part.parse::<u16>().ok());
+    Some((major, minor))
+}
+
+/// Messages requires a concrete `max_tokens` even when an OpenAI-compatible client omitted its
+/// optional output ceiling. Materialize the provider's actual model ceiling so omission remains
+/// semantically uncapped, exactly like the Codex Chat/Responses lane. The published and priced
+/// Claude fleet is gated elsewhere; provider onboarding must update this capability if Anthropic
+/// changes a future generation's ceiling.
+pub(crate) fn native_max_output_tokens(model: &str) -> u64 {
+    match claude_version(model) {
+        Some((major, _)) if major < 4 => LEGACY_MAX_OUTPUT_TOKENS,
+        Some((4, None | Some(0..=5))) => LEGACY_MAX_OUTPUT_TOKENS,
+        _ => CURRENT_MAX_OUTPUT_TOKENS,
+    }
+}
+
+/// Поддерживаемые нативной Anthropic-моделью уровни GA `output_config.effort`
+/// вместе с adaptive thinking. Живые пробы фиксируют не только нижнюю границу
+/// Claude 4.6, но и model-specific верхнюю: 4.6 принимает `max`, но не `xhigh`;
+/// 4.7+ и 5 принимают оба. 4.5 и прежние поколения отклоняют сам GA-контракт.
+/// Неизвестный/неразбираемый id трактуется консервативно — OpenAI-compatible
+/// effort остаётся hint'ом и деградирует к model default.
+pub(crate) fn supported_adaptive_efforts(model: &str) -> &'static [&'static str] {
+    let Some((major, minor)) = claude_version(model) else {
         return &[];
     };
     if major > 4 {
@@ -105,16 +124,12 @@ pub(crate) fn supported_adaptive_efforts(model: &str) -> &'static [&'static str]
     if major < 4 {
         return &[];
     }
-    let Some(minor) = parts.next() else {
+    let Some(minor) = minor else {
         return &[];
     };
-    // `claude-opus-4-20250514` — legacy Claude 4 date id, не версия 4.20M.
-    if minor.len() > 2 {
-        return &[];
-    }
-    match minor.parse::<u16>() {
-        Ok(6) => ADAPTIVE_EFFORTS_4_6,
-        Ok(7..) => ADAPTIVE_EFFORTS_FULL,
+    match minor {
+        6 => ADAPTIVE_EFFORTS_4_6,
+        7.. => ADAPTIVE_EFFORTS_FULL,
         _ => &[],
     }
 }
@@ -280,7 +295,7 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
             Some(field),
         )
     })?
-    .unwrap_or(DEFAULT_MAX_TOKENS);
+    .unwrap_or_else(|| native_max_output_tokens(&model));
 
     let mut body = Map::new();
     body.insert("model".to_string(), Value::String(model.clone()));
@@ -1766,7 +1781,7 @@ mod tests {
         }));
         let body = &translated.body;
         assert_eq!(body["model"], "claude-opus-4-8");
-        assert_eq!(body["max_tokens"], DEFAULT_MAX_TOKENS);
+        assert_eq!(body["max_tokens"], CURRENT_MAX_OUTPUT_TOKENS);
         assert_eq!(body["stream"], false);
         assert!(!translated.include_usage);
         assert_eq!(
@@ -1780,6 +1795,26 @@ mod tests {
             body["messages"],
             serde_json::json!([{"role": "user", "content": [{"type": "text", "text": "Hello"}]}])
         );
+    }
+
+    #[test]
+    fn omitted_chat_limit_materializes_the_native_model_ceiling() {
+        for (model, expected) in [
+            ("claude-haiku-4-5-20251001", LEGACY_MAX_OUTPUT_TOKENS),
+            ("anthropic/claude-sonnet-4-5-20250929", LEGACY_MAX_OUTPUT_TOKENS),
+            ("claude-sonnet-4-6", CURRENT_MAX_OUTPUT_TOKENS),
+            ("claude-opus-4-7", CURRENT_MAX_OUTPUT_TOKENS),
+            ("claude-opus-4-8", CURRENT_MAX_OUTPUT_TOKENS),
+            ("claude-sonnet-5", CURRENT_MAX_OUTPUT_TOKENS),
+            ("claude-opus-5", CURRENT_MAX_OUTPUT_TOKENS),
+            ("claude-fable-5", CURRENT_MAX_OUTPUT_TOKENS),
+        ] {
+            let translated = ok_translated(serde_json::json!({
+                "model": model,
+                "messages": [{"role": "user", "content": "hi"}]
+            }));
+            assert_eq!(translated.body["max_tokens"], expected, "{model}");
+        }
     }
 
     #[test]

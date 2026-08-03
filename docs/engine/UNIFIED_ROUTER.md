@@ -709,7 +709,10 @@ request получает `400 invalid_request`, неизвестный/неак�
    503 `catalog_unavailable`, единый 401) — в OpenAI-конверте. Адаптер Anthropic plane
    (`crates/forward/src/anthropic.rs`, роут в `ProviderMode::Anthropic`) переводит
    chat→Messages (system/developer → top-level `system`, склейка подряд идущих одноролевых
-   сообщений, `max_completion_tokens`→`max_tokens` с дефолтом 4096, `stop`→`stop_sequences`,
+   сообщений, `max_completion_tokens`→`max_tokens`; если клиент не задал output cap,
+   обязательный Messages `max_tokens` равен нативному потолку модели
+   (64k для Claude ≤4.5, 128k для 4.6+/5) и может быть снижен только balance cap;
+   `stop`→`stop_sequences`,
    `user`→`metadata.user_id`, strip `anthropic/`-префикса до admission) и вызывает общий
    `forward()` — auth, reserve, ротация, identity-инжект, tee-метеринг и settle без
    изменений. Ответ переводится снаружи: Messages SSE → `chat.completion.chunk` (role/text/
@@ -748,7 +751,9 @@ request получает `400 invalid_request`, неизвестный/неак�
    роут в `ProviderMode::Gemini`. Chat→GenerateContentRequest: system/developer →
    `systemInstruction`, user/assistant → `contents` с Gemini-ролями user/model и
    склейкой подряд идущих одноролевых, `max_completion_tokens`/`max_tokens` →
-   `maxOutputTokens` (дефолт 4096), `stop` → `stopSequences` (≤5),
+   `maxOutputTokens` только при явном клиентском cap; при omission общий Gemini
+   admission использует нативный output limit модели и снижает его только
+   по балансу; `stop` → `stopSequences` (≤5),
    temperature/top_p/top_k → `generationConfig`, strip `google/`-префикса до
    admission. Адаптер синтезирует внутренний запрос на
    `/v1beta/models/{model}:generateContent|streamGenerateContent?alt=sse` и вызывает
@@ -889,7 +894,8 @@ request получает `400 invalid_request`, неизвестный/неак�
    url source, `detail` != auto → 400), `tools` → `tools[]` (`parameters`→`input_schema`,
    `strict` снимается; не-function tool → `400 unsupported_parameter`),
    `tool_choice`/`parallel_tool_calls` → Messages `tool_choice`, `max_output_tokens` →
-   `max_tokens` (дефолт 4096), `reasoning.effort` → та же model-specific матрица
+   `max_tokens`; omission материализует тот же нативный 64k/128k потолок,
+   а не universal-lane default; `reasoning.effort` → та же model-specific матрица
    `output_config.effort` (minimal клампится в low) + инжект
    `thinking: {type:"adaptive", display:"summarized"}` (как 3.4c; на прежних моделях hint
    деградирует к model default; явный `thinking` клиента не переопределяется),
@@ -962,7 +968,8 @@ request получает `400 invalid_request`, неизвестный/неак�
    `400 invalid_request` — отличие от Anthropic-зеркала, где pairing не валидируется),
    `tools` → `[{"functionDeclarations": …}]` (плоский дескриптор, `strict` снимается),
    `tool_choice` → `toolConfig.functionCallingConfig`, `max_output_tokens` →
-   `generationConfig.maxOutputTokens` (дефолт 4096), `reasoning.effort` →
+   `generationConfig.maxOutputTokens` только при явном cap; omission оставляет поле
+   отсутствующим до общего model-limit/balance admission; `reasoning.effort` →
    `generationConfig.thinkingConfig` (`thinkingLevel` проксируется как есть — minimal
    НЕ клампится, отличие от Anthropic-зеркала; `includeThoughts: true`), `text.format`
    json_schema → `responseMimeType: application/json` + `responseSchema` (обёртка

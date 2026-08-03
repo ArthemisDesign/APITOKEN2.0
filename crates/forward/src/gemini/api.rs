@@ -3757,6 +3757,23 @@ mod tests {
     }
 
     #[test]
+    fn omitted_generation_limit_uses_the_model_output_ceiling() {
+        let model = catalog_model("gemini-3.6-flash");
+        let uncapped = json!({"contents": [{"parts": [{"text": "hello"}]}]});
+        let (_, output, _, _) =
+            generation_controls(&uncapped, &model, 0, AudioUsageHint::default());
+        assert_eq!(output, model.output_token_limit);
+
+        let capped = json!({
+            "contents": [{"parts": [{"text": "hello"}]}],
+            "generationConfig": {"maxOutputTokens": 5_000}
+        });
+        let (_, output, _, _) =
+            generation_controls(&capped, &model, 0, AudioUsageHint::default());
+        assert_eq!(output, 5_000);
+    }
+
+    #[test]
     fn camel_case_wins_over_snake_case_duplicate() {
         let mut value = json!({
             "systemInstruction": {"parts": [{"text": "camel"}]},
