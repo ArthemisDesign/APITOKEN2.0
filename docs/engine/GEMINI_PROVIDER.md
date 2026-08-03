@@ -35,12 +35,13 @@ artifact: keep its digest for historical verification, but never materialize or 
 catalog/release on it. The later live-proven private-wire implementation remains dormant and does
 not rewrite that artifact. Successive 2026-08-03 exact-SHA gates fixed authoritative PCM audio
 accounting and an optional tool-subset harness error, then proved both owned plans through every
-thinking level and incremental SSE. The latest terminal run nevertheless returned the first
-profile's byte-identical cache replay entirely as fresh input after the runner had interposed the
-other profile's write and evidence wait. Publication therefore remains withdrawn. The dormant
-runner now keeps each profile-isolated write/read pair adjacent, but a fresh GREEN exact-SHA matrix
-must still observe the cache class and every later control before a new additive capability
-generation or any public/default surface is allowed.
+thinking level and incremental SSE. A later run returned a byte-identical cache replay entirely as
+fresh input after a cross-profile gap. The adjacent-pair correction then produced the expected cache
+class on Pro, but the immediately repeated Ultra request remained entirely fresh. Publication
+therefore remains withdrawn. The dormant runner now uses a fixed profile-local
+`write → prime → read` group and requires the final read to expose authoritative cached input; a
+fresh GREEN exact-SHA matrix under a separately approved `$24` aggregate cap must still pass every
+later control before a new additive capability generation or any public/default surface is allowed.
 The Stage 5 main catalog must opt in explicitly to a live-proven capability, while the
 contemporaneous OpenKeys catalog deliberately remains Anthropic/OpenAI until a separate reviewed
 1:1 OpenKeys generation enables Gemini.
@@ -719,6 +720,17 @@ Gemini 3 Flash Preview implementation evidence reviewed on 2026-08-02 and 2026-0
   report is not resumable. The follow-up keeps the provider `promptTokenCount` as the complete
   priced authority, leaves `tool_prompt_tokens=0` as honest diagnostic evidence and requires a new
   full run; it does not reinterpret or reuse the failed turn.
+- runner SHA `d0a9fb4052773517e987d1a79664965a131ef1ac` accepted that optional diagnostic and
+  again passed every thinking level plus incremental SSE on Pro and Ultra. Both cache writes were
+  successful, but the first read arrived only after the other profile's write and evidence wait and
+  contained 12,343 fresh input tokens with no cache class. Its terminal report and
+  `34,320,500 nanoUSD` spend are not resumed;
+- runner SHA `a4eed55b03835fb0a2b9d360b7c07ca37fe389b6` made replay groups adjacent per
+  profile. Pro then observed 8,170 cached tokens, while the immediately repeated Ultra body still
+  reported all 12,342 input tokens as fresh. Fourteen successful paid turns cost
+  `37,985,500 nanoUSD`; audio, tools and Search were not dispatched. A future fixed three-turn
+  cache group may add one deliberate prime, but its two-plan worst-case ceiling is
+  `23,099,392,000 nanoUSD` and cannot run under the prior `$21` approval.
 
 The reproducible source/plan/rate/wire dossiers are
 [`research/GEMINI_3_FLASH_PREVIEW.md`](../../research/GEMINI_3_FLASH_PREVIEW.md) and
@@ -731,6 +743,10 @@ The failed accounting-candidate gate is preserved in
 [`research/GEMINI_3_FLASH_AUDIO_ACCOUNTING_LIVE_WITHDRAWAL.md`](../../research/GEMINI_3_FLASH_AUDIO_ACCOUNTING_LIVE_WITHDRAWAL.md).
 The later optional tool-subset runner withdrawal is preserved in
 [`research/GEMINI_3_FLASH_TOOL_USAGE_LIVE_WITHDRAWAL.md`](../../research/GEMINI_3_FLASH_TOOL_USAGE_LIVE_WITHDRAWAL.md).
+The subsequent cache-liveness withdrawals are preserved in
+[`research/GEMINI_3_FLASH_CACHE_LIVENESS_LIVE_WITHDRAWAL.md`](../../research/GEMINI_3_FLASH_CACHE_LIVENESS_LIVE_WITHDRAWAL.md)
+and
+[`research/GEMINI_3_FLASH_ADJACENT_CACHE_LIVE_WITHDRAWAL.md`](../../research/GEMINI_3_FLASH_ADJACENT_CACHE_LIVE_WITHDRAWAL.md).
 
 ## Failure and stream safety
 

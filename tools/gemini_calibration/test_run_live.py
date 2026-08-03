@@ -241,6 +241,12 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         self.assertTrue(any(leg.stream for leg in legs if leg.model == "gemini-2.5-flash"))
         self.assertTrue(all(leg.max_output_tokens == 256 for leg in legs if leg.stream))
         self.assertTrue(any(leg.kind == "cache" and leg.cache_phase == "write" for leg in legs))
+        self.assertTrue(any(
+            leg.model == "gemini-3-flash-preview"
+            and leg.kind == "cache"
+            and leg.cache_phase == "prime"
+            for leg in legs
+        ))
         self.assertTrue(any(leg.kind == "cache" and leg.cache_phase == "read" for leg in legs))
         self.assertTrue(any(leg.kind == "audio" and leg.cache_phase == "write" for leg in legs))
         self.assertTrue(any(leg.kind == "audio" and leg.cache_phase == "read" for leg in legs))
@@ -271,8 +277,14 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         scope_b = scopes["profile-b"]
         cache_a = run_live.body_for_leg(cache[0], "run", scope_a)
         audio_a = run_live.body_for_leg(audio[0], "run", scope_a)
-        self.assertEqual(cache_a, run_live.body_for_leg(cache[1], "run", scope_a))
-        self.assertEqual(audio_a, run_live.body_for_leg(audio[1], "run", scope_a))
+        self.assertTrue(all(
+            cache_a == run_live.body_for_leg(leg, "run", scope_a)
+            for leg in cache[1:]
+        ))
+        self.assertTrue(all(
+            audio_a == run_live.body_for_leg(leg, "run", scope_a)
+            for leg in audio[1:]
+        ))
         self.assertNotEqual(cache_a, run_live.body_for_leg(cache[0], "run", scope_b))
         self.assertNotEqual(audio_a, run_live.body_for_leg(audio[0], "run", scope_b))
         self.assertNotIn("profile-a", json.dumps(cache_a))
@@ -293,8 +305,10 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         ]
         self.assertEqual(cache, [
             ("profile-a", "write"),
+            ("profile-a", "prime"),
             ("profile-a", "read"),
             ("profile-b", "write"),
+            ("profile-b", "prime"),
             ("profile-b", "read"),
         ])
         self.assertEqual(audio, [
@@ -315,7 +329,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             ("profile-b", "low"),
         ])
 
-    def test_flash_preview_two_plan_matrix_stays_inside_the_approved_twenty_one_dollar_cap(self):
+    def test_flash_preview_two_plan_matrix_needs_a_twenty_four_dollar_cap(self):
         rates = run_live.ModelRates(
             tariff_schedule_id="google/gemini-developer-api/2026-08-02",
             input_token_limit=1_048_576,
@@ -348,8 +362,9 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             rates.upper_bound(1, leg.max_output_tokens, leg.kind, leg.image_size)
             for leg in dispatchable
         )
-        self.assertEqual(aggregate, 20_999_168_000)
-        self.assertLessEqual(aggregate, 21 * run_live.NANO_PER_USD)
+        self.assertEqual(aggregate, 23_099_392_000)
+        self.assertGreater(aggregate, 23 * run_live.NANO_PER_USD)
+        self.assertLessEqual(aggregate, 24 * run_live.NANO_PER_USD)
 
     def test_tool_leg_forces_the_declared_function_instead_of_accepting_plain_text(self):
         leg = run_live.Leg("tool", "gemini-3-flash-preview", "tool")
@@ -567,6 +582,21 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         self.assertIsNone(run_live.verify_leg_usage(tool, parsed))
         parsed["tool_prompt_tokens"] = 1
         self.assertIsNone(run_live.verify_leg_usage(tool, parsed))
+        cache_prime = run_live.Leg(
+            "cache-prime",
+            "gemini-3-flash-preview",
+            "cache",
+            cache_phase="prime",
+        )
+        cache_read = dataclasses.replace(
+            cache_prime,
+            name="cache-read",
+            cache_phase="read",
+        )
+        self.assertIsNone(run_live.verify_leg_usage(cache_prime, parsed))
+        self.assertIn("cached input", run_live.verify_leg_usage(cache_read, parsed))
+        parsed["cache_read_tokens"] = 1
+        self.assertIsNone(run_live.verify_leg_usage(cache_read, parsed))
 
     def test_minimal_allows_zero_thinking_tokens_but_higher_levels_remain_strict(self):
         raw = event(model="gemini-3-flash-preview")

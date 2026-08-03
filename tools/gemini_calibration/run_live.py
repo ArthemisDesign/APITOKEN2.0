@@ -677,26 +677,36 @@ def build_coverage_legs(
         # A 128-token cache turn on Flash Preview exhausted its dynamic-thinking budget without
         # visible output, and the earlier audio probe used 119/128 output tokens. Keep both replay
         # pairs at 512 so the required visible answer is not a harness ceiling artifact; the full
-        # input-context reserve still keeps the complete two-plan matrix below the approved cap.
+        # input-context reserve keeps the fixed three-turn cache probe below its explicit $24 cap.
         replay_output_tokens = 512 if model == "gemini-3-flash-preview" else 128
         cache_key = f"{run_id}:{model}:text-cache"
-        legs.extend((
-            Leg(
-                f"cache-write:{model}",
+        legs.append(Leg(
+            f"cache-write:{model}",
+            model,
+            "cache",
+            cache_key=cache_key,
+            cache_phase="write",
+            max_output_tokens=replay_output_tokens,
+        ))
+        if model == "gemini-3-flash-preview":
+            # One adjacent replay hit on Pro but remained entirely fresh on Ultra. Make the second
+            # successful generation a planned prime, then require the third request to expose the
+            # authoritative cache class. This is a fixed matrix, not a retry after ambiguity.
+            legs.append(Leg(
+                f"cache-prime:{model}",
                 model,
                 "cache",
                 cache_key=cache_key,
-                cache_phase="write",
+                cache_phase="prime",
                 max_output_tokens=replay_output_tokens,
-            ),
-            Leg(
-                f"cache-read:{model}",
-                model,
-                "cache",
-                cache_key=cache_key,
-                cache_phase="read",
-                max_output_tokens=replay_output_tokens,
-            ),
+            ))
+        legs.append(Leg(
+            f"cache-read:{model}",
+            model,
+            "cache",
+            cache_key=cache_key,
+            cache_phase="read",
+            max_output_tokens=replay_output_tokens,
         ))
         audio_key = f"{run_id}:{model}:audio-cache"
         legs.extend((
@@ -751,25 +761,31 @@ def coverage_schedule(legs: Iterable[Leg], profiles: Iterable[str]) -> list[tupl
     index = 0
     while index < len(ordered_legs):
         write = ordered_legs[index]
-        read = ordered_legs[index + 1] if index + 1 < len(ordered_legs) else None
-        is_replay_pair = (
-            read is not None
+        group_end = index + 1
+        while (
+            write.cache_key is not None
+            and group_end < len(ordered_legs)
+            and ordered_legs[group_end].cache_key == write.cache_key
+            and ordered_legs[group_end].model == write.model
+            and ordered_legs[group_end].kind == write.kind
+        ):
+            group_end += 1
+        replay_group = ordered_legs[index:group_end]
+        is_replay_group = (
+            len(replay_group) >= 2
             and write.cache_key is not None
-            and write.cache_key == read.cache_key
-            and write.model == read.model
-            and write.kind == read.kind
             and write.cache_phase == "write"
-            and read.cache_phase == "read"
+            and replay_group[-1].cache_phase == "read"
+            and all(leg.cache_phase in {"write", "prime", "read"} for leg in replay_group)
         )
-        if is_replay_pair:
+        if is_replay_group:
             # Implicit provider cache admission is time-sensitive. Keep the byte-identical replay
-            # immediately behind its own profile's write instead of interposing another profile's
-            # generation plus the mandatory immutable-evidence propagation wait. A missing cache
-            # class on this adjacent read still fails closed; this changes ordering, not proof.
+            # group local to its own profile instead of interposing another profile's generation
+            # plus the mandatory immutable-evidence propagation wait. A missing cache class on the
+            # final read still fails closed; this changes ordering, not proof.
             for profile in ordered_profiles:
-                schedule.append((profile, write))
-                schedule.append((profile, read))
-            index += 2
+                schedule.extend((profile, leg) for leg in replay_group)
+            index = group_end
             continue
         schedule.extend((profile, write) for profile in ordered_profiles)
         index += 1
@@ -1615,7 +1631,7 @@ def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
             "fresh",
             "sse",
             "thinking-levels",
-            "cache-write/read",
+            "cache-write/prime/read",
             "audio-write/read",
             "function-tool-prompt",
             "google-search-when-hard-bounded",
