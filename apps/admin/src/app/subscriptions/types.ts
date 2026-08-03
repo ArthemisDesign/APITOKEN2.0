@@ -65,8 +65,10 @@ export interface ClaudeSubWindow {
   used_fraction_units?: number | null;
   measurement_resolution_fraction_units?: number | null;
   current_quota_source?: string | null;
+  last_known_quota_source?: string | null;
   capacity_nano?: string | null;
   remaining_nano?: string | null;
+  last_known_remaining_nano?: string | null;
   low_nano?: string | null;
   high_nano?: string | null;
   remaining_low_nano?: string | null;

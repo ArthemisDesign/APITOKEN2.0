@@ -547,7 +547,7 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(html).not.toContain("5ч · доступно");
   });
 
-  it("ClaudeCapacityBoard: различает свежую квоту без reset, stale и аккаунт вне ротации", () => {
+  it("ClaudeCapacityBoard: держит последнее точное значение до reset и отличает его от current", () => {
     const html = renderToString(
       <ClaudeCapacityBoard
         response={{
@@ -594,8 +594,8 @@ describe("таблицы флотов (smoke render с данными)", () => {
               auth_state: "healthy",
               util5h: 0.18,
               util7d: 0.93,
-              reset5h_in: 0,
-              reset7d_in: 0,
+              reset5h_in: 1_800,
+              reset7d_in: 86_400,
               cap5h_nano: "216730000000",
               cap7d_nano: "933330000000",
               windows: [
@@ -603,16 +603,22 @@ describe("таблицы флотов (smoke render с данными)", () => {
                   window_kind: "5h",
                   snapshot_fresh: false,
                   used_fraction_units: 18_000_000,
+                  resets_at: 3_800,
                   capacity_nano: "216730000000",
                   remaining_nano: null,
+                  last_known_remaining_nano: "177718600000",
+                  last_known_quota_source: "runtime_quota_snapshot",
                   missing_reason: "stale_current_quota_snapshot",
                 },
                 {
                   window_kind: "7d",
                   snapshot_fresh: false,
                   used_fraction_units: 93_000_000,
+                  resets_at: 88_400,
                   capacity_nano: "933330000000",
                   remaining_nano: null,
+                  last_known_remaining_nano: "65333100000",
+                  last_known_quota_source: "runtime_quota_snapshot",
                   missing_reason: "stale_current_quota_snapshot",
                 },
               ],
@@ -638,14 +644,71 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(text).toContain("$45.00");
     expect(text).toContain("сброс уточняется");
     expect(text).toContain("stal…");
-    expect(text).toContain("обновляем");
-    expect(text).not.toContain("18%");
-    expect(text).not.toContain("$216.73");
+    expect(text).toContain("18%");
+    expect(text).toContain("93%");
+    expect(text).toContain("сброс 30м");
+    expect(text).toContain("сброс 1д 0ч");
+    expect(text).toContain("$177.71");
+    expect(text).toContain("$65.33");
+    expect(text).toContain("последнее · из $216.73");
+    expect(text).toContain("последнее · из $933.33");
+    expect(text).not.toContain("обновляем");
     expect(text).toContain("dead…");
     expect(text).toContain("вне ротации");
     expect(text).toContain("не входит в ёмкость");
     expect(text).not.toContain("$1,222.19");
     expect(text).not.toContain("99%");
+  });
+
+  it("ClaudeCapacityBoard: после reset больше не переносит старое значение в новое окно", () => {
+    const html = renderToString(
+      <ClaudeCapacityBoard
+        response={{
+          now: 3_801,
+          per_sub: [
+            {
+              email: "expi…",
+              plan: "max20",
+              routable: true,
+              auth_state: "healthy",
+              util5h: 0.18,
+              util7d: 0.93,
+              reset5h_in: null,
+              reset7d_in: null,
+              windows: [
+                {
+                  window_kind: "5h",
+                  snapshot_fresh: false,
+                  used_fraction_units: null,
+                  resets_at: null,
+                  capacity_nano: "216730000000",
+                  remaining_nano: null,
+                  last_known_remaining_nano: null,
+                  missing_reason: "stale_current_quota_snapshot",
+                },
+                {
+                  window_kind: "7d",
+                  snapshot_fresh: false,
+                  used_fraction_units: null,
+                  resets_at: null,
+                  capacity_nano: "933330000000",
+                  remaining_nano: null,
+                  last_known_remaining_nano: null,
+                  missing_reason: "stale_current_quota_snapshot",
+                },
+              ],
+            },
+          ],
+        }}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("expi…");
+    expect(text).toContain("обновляем");
+    expect(text).not.toContain("18%");
+    expect(text).not.toContain("93%");
+    expect(text).not.toContain("$177.71");
+    expect(text).not.toContain("последнее");
   });
 
   it("ClaudeCapacityBoard: stale исчерпанное окно показывает 100% и reset без cooling", () => {
@@ -673,9 +736,11 @@ describe("таблицы флотов (smoke render с данными)", () => {
                   window_kind: "5h",
                   snapshot_fresh: false,
                   used_fraction_units: 100_000_000,
-                  resets_at: null,
+                  resets_at: 3_800,
                   capacity_nano: "60000000000",
                   remaining_nano: null,
+                  last_known_remaining_nano: "0",
+                  last_known_quota_source: "runtime_quota_snapshot",
                 },
                 {
                   window_kind: "7d",

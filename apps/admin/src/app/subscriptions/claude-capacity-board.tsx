@@ -12,6 +12,7 @@ function moneyOrDash(value: string | null | undefined): string {
 }
 
 function quotaValue(util: number | null | undefined): { value: number | null; label: string } {
+  if (util == null) return { value: null, label: "—" };
   const value = Number(util);
   if (!Number.isFinite(value)) return { value: null, label: "—" };
   const percent = Math.min(100, Math.max(0, value * 100));
@@ -19,7 +20,7 @@ function quotaValue(util: number | null | undefined): { value: number | null; la
   return { value: rounded, label: `${rounded.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%` };
 }
 
-type WindowState = "ready" | "updating" | "inactive";
+type WindowState = "ready" | "last_known" | "updating" | "inactive";
 
 interface ClaudeWindowView {
   state: WindowState;
@@ -50,15 +51,16 @@ function claudeWindowView(item: CapacitySub, kind: "5h" | "7d", now: number): Cl
     };
   }
 
-  // Provider quota/reset and calibrated money have independent freshness. In particular, a
-  // quota-exhausted subscription is outside rotation but its exact 100% wall and reset remain the
-  // most useful operator facts. Payloads without `windows` retain the legacy live-quota contract.
-  const usedFraction =
-    window?.used_fraction_units == null
-      ? kind === "5h"
-        ? item.util5h
-        : item.util7d
-      : window.used_fraction_units / 100_000_000;
+  // Provider quota/reset and saleable money have independent freshness. An exact last-known
+  // snapshot stays useful until its provider reset, but remains visually distinct from current
+  // capacity. Payloads without `windows` retain the legacy live-quota contract.
+  const usedFraction = window
+    ? window.used_fraction_units == null
+      ? null
+      : window.used_fraction_units / 100_000_000
+    : kind === "5h"
+      ? item.util5h
+      : item.util7d;
   const quota = quotaValue(usedFraction);
   const resetIn =
     kind === "5h"
@@ -69,12 +71,13 @@ function claudeWindowView(item: CapacitySub, kind: "5h" | "7d", now: number): Cl
   const resetSeconds = resetIn ?? resetFromWindow;
   const snapshotFresh = window ? window.snapshot_fresh === true : true;
   if (!snapshotFresh) {
-    if (cooling && quota.value === 100 && resetSeconds != null) {
+    const retainedBeforeReset = quota.value != null && resetSeconds != null && resetSeconds > 0;
+    if (retainedBeforeReset) {
       return {
-        state: "inactive",
+        state: item.routable === false ? "inactive" : "last_known",
         quota,
         reset: duration(resetSeconds),
-        remaining,
+        remaining: window?.last_known_remaining_nano,
         capacity,
       };
     }
@@ -104,6 +107,14 @@ function ClaudeMoney({ view, fiveHour = false }: { view: ClaudeWindowView; fiveH
   ].filter(Boolean).join(" ");
   if (view.state === "inactive") {
     return <td className={cellClass}><b>вне ротации</b><small>не входит в ёмкость</small></td>;
+  }
+  if (view.state === "last_known") {
+    return (
+      <td className={cellClass}>
+        <b>{moneyOrDash(view.remaining)}</b>
+        <small>{`последнее · из ${moneyOrDash(view.capacity)}`}</small>
+      </td>
+    );
   }
   if (view.state === "updating") {
     return <td className={cellClass}><b>обновляем</b><small>ждём свежую квоту</small></td>;
