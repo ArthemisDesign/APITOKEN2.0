@@ -251,6 +251,15 @@ token on every refresh with strict family reuse detection. The pool therefore:
 - **History.** `store=true` responses persist in the tenant-bound encrypted history store
   (local + optional Redis) and are retrievable/deletable through the public routes. A response
   id from one billed account cannot be replayed by another.
+  Losing an entry is customer-visible: `prepare_turn` answers a missing `previous_response_id`
+  with a 400, which well-behaved clients treat as permanent and respond to by discarding the
+  conversation. That failure is now measured rather than silent —
+  `claude_api_codex_history_{local_hits,redis_hits,misses,redis_errors,writes,write_failures,wrong_tenant,corrupt}_total`
+  are exported on `/metrics`, and an unreachable shared store is counted as an error rather than a
+  miss so an outage can never be mistaken for a genuine unknown id. `CodexHistoryWriteFailures` and
+  `CodexHistoryMissesElevated` alert on the two failure shapes; the shared instance's own memory
+  and eviction are covered by `AffinityRedis*` because history entries (up to 16 MiB each) are what
+  usually exhaust it.
 
 ## Failure and stream safety
 

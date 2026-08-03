@@ -83,6 +83,16 @@ else
 fi
 [[ $engine_key =~ ^[A-Za-z0-9._~-]{32,256}$ ]] || die "CLAUDE_API_PANEL_KEY has an unsafe format"
 
+# Cache-affinity Redis scrape credential. The password is owned by install-watchdog.sh in
+# server.env; monitoring only reads it, so the two never diverge. redis_exporter expects a JSON
+# map of address to password rather than a bare secret, verified against v1.67.0.
+affinity_redis_password=$(awk -F= '$1 == "CLAUDE_API_REDIS_PASSWORD" { print substr($0, index($0, "=") + 1) }' \
+  "$ENGINE_ENV" | tail -n 1)
+affinity_redis_password=${affinity_redis_password%\"}; affinity_redis_password=${affinity_redis_password#\"}
+affinity_redis_password=${affinity_redis_password%\'}; affinity_redis_password=${affinity_redis_password#\'}
+[[ $affinity_redis_password =~ ^[0-9a-fA-F]{64}$ ]] \
+  || die "CLAUDE_API_REDIS_PASSWORD must be 64 hex characters before monitoring can scrape Redis"
+
 monitoring_postgres_password=$(awk -F= '$1 == "MONITORING_POSTGRES_PASSWORD" { print substr($0, index($0, "=") + 1) }' "$ENV_FILE")
 [[ $monitoring_postgres_password =~ ^[a-f0-9]{64}$ ]] || die "MONITORING_POSTGRES_PASSWORD must be 64 lowercase hex characters"
 escaped_postgres_password=${monitoring_postgres_password//\'/\'\'}
@@ -108,6 +118,9 @@ cp -a -- "$SOURCE/." "$STAGE/"
 install -d -o root -g root -m 0700 "$STAGE/secrets" "$STAGE/rendered"
 printf '%s\n' "$engine_key" >"$STAGE/secrets/engine_metrics_token"
 chmod 0600 "$STAGE/secrets/engine_metrics_token"
+printf '{"redis://127.0.0.1:6379":"%s"}\n' "$affinity_redis_password" \
+  >"$STAGE/secrets/affinity_redis_password"
+chmod 0600 "$STAGE/secrets/affinity_redis_password"
 # Optional devbot webhook: the secret lives only in the operator-provisioned devbot env file,
 # which the bot itself also reads, so both sides of the authenticated path share one source.
 # When the file (or key) is absent the renderer strips the marked devbot block and the
@@ -125,7 +138,8 @@ DEVBOT_AM_SECRET=$devbot_am_secret node "$ROOT/deploy/render-alertmanager.mjs" \
 find "$STAGE" -type d -exec chmod 0755 {} +
 find "$STAGE" -type f ! -path "$STAGE/secrets/*" ! -path "$STAGE/rendered/*" -exec chmod 0644 {} +
 chmod 0700 "$STAGE/secrets" "$STAGE/rendered"
-chmod 0600 "$STAGE/secrets/engine_metrics_token" "$STAGE/rendered/alertmanager.yml"
+chmod 0600 "$STAGE/secrets/engine_metrics_token" "$STAGE/secrets/affinity_redis_password" \
+  "$STAGE/rendered/alertmanager.yml"
 chown -R root:root "$STAGE"
 
 log 'pulling pinned monitoring images'

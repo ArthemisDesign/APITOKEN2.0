@@ -12,7 +12,7 @@ mod chat;
 mod config;
 mod discovery;
 mod health;
-mod history;
+pub mod history;
 mod openai_snapshot;
 mod runner;
 mod skin;
@@ -2995,6 +2995,16 @@ impl CodexGateway {
 
     pub(crate) fn history(&self) -> &HistoryStore {
         &self.history
+    }
+
+    /// Shared response-history counters for `/metrics`. Unlike affinity, a lost entry here becomes
+    /// a customer-visible 400, so these are exported rather than kept internal.
+    pub fn history_stats(&self) -> history::HistoryStats {
+        self.history.stats()
+    }
+
+    pub fn history_redis_configured(&self) -> bool {
+        self.history.redis_configured()
     }
 
     /// Register one detached stream task in the shutdown barrier without a semaphore or wait.

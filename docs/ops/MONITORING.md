@@ -231,6 +231,64 @@ Infrastructure delivery preserves a healthy Redis container unless
 `systemd/apitoken-affinity-redis.service` or `deploy/affinity-redis.compose.yaml` changed. The managed
 sysctl definition also keeps `vm.overcommit_memory=1`, allowing Redis background persistence to fork
 without a false allocation refusal; verify it with `sysctl vm.overcommit_memory`.
+This alert covers every engine plane. It was previously scoped to `{provider="anthropic"}`, which
+silently excluded the OpenAI plane — the one plane where Redis also carries Codex response history
+and where its loss is customer-visible rather than a cache-hit regression.
+
+## AffinityRedisDown
+
+The exporter on `127.0.0.1:9121` cannot reach Redis. Confirm with
+`systemctl status apitoken-affinity-redis.service` and `docker compose -f
+/usr/local/lib/apitoken-watchdog/controller/affinity-redis.compose.yaml ps`.
+Claude and Gemini traffic degrade only in prompt-cache hit rate. The OpenAI plane is affected more
+sharply: Codex `previous_response_id` continuity falls back to per-process memory, so a
+conversation started on one slot cannot be continued on the other. Do not restart engine slots to
+"fix" this — restarting discards the local history that is currently the only copy.
+
+## AffinityRedisEvictingKeys
+
+Redis reached `maxmemory` and `allkeys-lru` began deleting keys. The policy cannot distinguish the
+two consumers sharing the instance:
+
+- Affinity keys are short digests; losing them costs prompt-cache hits and money, not correctness.
+- Codex response history entries are whole conversations, up to 16 MiB each
+  (`MAX_SERIALIZED_HISTORY_BYTES`), retained for `CLAUDE_API_CODEX_HISTORY_TTL_SECS` (24 h by
+  default). Losing one makes `prepare_turn` answer `previous_response_id was not found` as a 400,
+  which well-behaved clients treat as permanent and respond to by discarding the conversation.
+
+Because history entries are orders of magnitude larger, a few dozen large conversations can fill the
+instance and evict everything else. Check the split with
+`redis-cli --no-auth-warning info memory` and by counting the two prefixes
+(`claude-api:aff:` versus `claude-api:codex-history:`).
+Immediate mitigations, in order of preference: raise `--maxmemory` in
+`deploy/affinity-redis.compose.yaml`, or lower `CLAUDE_API_CODEX_HISTORY_TTL_SECS` so history
+expires before it crowds out affinity. Restarting Redis is not a mitigation — it discards
+everything at once.
+
+## AffinityRedisMemoryHigh
+
+Usage passed 85 % of `maxmemory`. This fires before `AffinityRedisEvictingKeys` so the budget can be
+adjusted while no data has been lost yet. Same mitigations as above. If this recurs, the instance is
+genuinely undersized for the history retention in force; treat the TTL and the memory budget as one
+decision.
+
+## CodexHistoryWriteFailures
+
+`claude_api_codex_history_write_failures_total` counts turns whose response history reached local
+memory but never the shared store. The turn itself succeeded and the client saw nothing wrong, which
+is exactly why this needs an alert: the damage appears later, when a follow-up request lands on the
+other slot and cannot resolve `previous_response_id`.
+Check `AffinityRedisDown` and `AffinityRedisEvictingKeys` first — both cause this. If Redis is
+healthy, check `claude_api_codex_history_redis_errors_total` for timeouts against
+`CLAUDE_API_CODEX_HISTORY_REDIS_TIMEOUT_MS` (1000 ms by default).
+
+## CodexHistoryMissesElevated
+
+Lookups of `previous_response_id` are finding nothing in either tier. Every miss becomes a 400 to a
+client that already paid to build the conversation. Legitimate causes are an expired TTL and a
+client replaying a genuinely old id; illegitimate causes are eviction and a lost shared store.
+Correlate with `redis_evicted_keys_total` and with `claude_api_codex_history_write_failures_total`.
+If misses rise while writes are failing, the shared store — not the client — is at fault.
 
 ## ExecutionGroupDoubleWinner
 

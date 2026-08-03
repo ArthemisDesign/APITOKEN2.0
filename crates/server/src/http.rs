@@ -879,6 +879,10 @@ async fn metrics(
     let affinity = app.affinity.stats();
     let (inflight, cooling) = app.pool.gauges();
     let breaker_open = app.breaker.open_for(pool::now()).is_some() as u8;
+    // Codex response history is the one shared-state surface whose loss is customer-visible: a
+    // missing previous_response_id becomes a 400 that clients treat as permanent. It had no
+    // counters at all, so eviction or a degraded write was invisible until a customer complained.
+    let history = app.codex.as_ref().map(|codex| codex.history_stats());
     let g = |c| Metrics::get(c);
     let body = format!(
         "# TYPE claude_api_requests_total counter\nclaude_api_requests_total {}\n\
@@ -904,6 +908,14 @@ async fn metrics(
          # TYPE claude_api_affinity_cache_root_cold_placements_total counter\nclaude_api_affinity_cache_root_cold_placements_total {}\n\
          # TYPE claude_api_affinity_claims_total counter\nclaude_api_affinity_claims_total {}\n\
          # TYPE claude_api_affinity_rebinds_total counter\nclaude_api_affinity_rebinds_total {}\n\
+         # TYPE claude_api_codex_history_local_hits_total counter\nclaude_api_codex_history_local_hits_total {}\n\
+         # TYPE claude_api_codex_history_redis_hits_total counter\nclaude_api_codex_history_redis_hits_total {}\n\
+         # TYPE claude_api_codex_history_misses_total counter\nclaude_api_codex_history_misses_total {}\n\
+         # TYPE claude_api_codex_history_redis_errors_total counter\nclaude_api_codex_history_redis_errors_total {}\n\
+         # TYPE claude_api_codex_history_writes_total counter\nclaude_api_codex_history_writes_total {}\n\
+         # TYPE claude_api_codex_history_write_failures_total counter\nclaude_api_codex_history_write_failures_total {}\n\
+         # TYPE claude_api_codex_history_wrong_tenant_total counter\nclaude_api_codex_history_wrong_tenant_total {}\n\
+         # TYPE claude_api_codex_history_corrupt_total counter\nclaude_api_codex_history_corrupt_total {}\n\
          # TYPE claude_api_inflight gauge\nclaude_api_inflight {}\n\
          # TYPE claude_api_subs gauge\nclaude_api_subs {}\n\
          # TYPE claude_api_cooling gauge\nclaude_api_cooling {}\n\
@@ -931,6 +943,14 @@ async fn metrics(
         affinity.cache_root_cold_placements,
         affinity.claims,
         affinity.rebinds,
+        history.map(|stats| stats.local_hits).unwrap_or(0),
+        history.map(|stats| stats.redis_hits).unwrap_or(0),
+        history.map(|stats| stats.misses).unwrap_or(0),
+        history.map(|stats| stats.redis_errors).unwrap_or(0),
+        history.map(|stats| stats.writes).unwrap_or(0),
+        history.map(|stats| stats.write_failures).unwrap_or(0),
+        history.map(|stats| stats.wrong_tenant).unwrap_or(0),
+        history.map(|stats| stats.corrupt).unwrap_or(0),
         inflight,
         app.pool.len(),
         cooling,

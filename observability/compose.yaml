@@ -149,6 +149,22 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  redis-exporter:
+    image: quay.io/oliver006/redis_exporter:v1.67.0@sha256:120f7ec77293459ccfdad66bb1db75ab72e8bfeab99f58b1cc2564cadcd7a9e7
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - --redis.addr=redis://127.0.0.1:6379
+      - --redis.password-file=/run/secrets/affinity_redis_password
+      - --web.listen-address=127.0.0.1:9121
+    volumes:
+      - ./secrets/affinity_redis_password:/run/secrets/affinity_redis_password:ro
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=32m
+    security_opt:
+      - no-new-privileges:true
+
   blackbox-exporter:
     image: quay.io/prometheus/blackbox-exporter:v0.28.0@sha256:e753ff9f3fc458d02cca5eddab5a77e1c175eee484a8925ac7d524f04366c2fc
     restart: unless-stopped

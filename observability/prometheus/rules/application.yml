@@ -87,13 +87,13 @@ groups:
           runbook: 'docs/ops/MONITORING.md#engineupstreamservererrors'
 
       - alert: EngineAffinityRedisErrors
-        expr: increase(claude_api_affinity_redis_errors_total{provider="anthropic"}[10m]) > 5
+        expr: sum by (provider) (increase(claude_api_affinity_redis_errors_total[10m])) > 5
         for: 5m
         labels:
           severity: warning
           component: claude-engine
         annotations:
-          summary: 'Claude cache-affinity Redis is degraded'
+          summary: 'Cache-affinity Redis is degraded on the {{ $labels.provider }} plane'
           description: 'Shared affinity operations are failing; requests remain available on local fail-open affinity.'
           runbook: 'docs/ops/MONITORING.md#engineaffinityrediserrors'
 
@@ -117,6 +117,68 @@ groups:
           summary: 'A fallback execution group attempted a second nonzero settlement'
           description: 'The durable winner fence refunded a later provider execution. Investigate the started/not-started boundary before enabling more fallback traffic.'
           runbook: 'docs/ops/MONITORING.md#executiongroupdoublewinner'
+
+  # Shared Redis holds two consumers with very different blast radii. Affinity stores short digests
+  # and its loss only costs prompt-cache hits; Codex response history stores whole conversations up
+  # to 16 MiB each, and its loss is reported to the client as a 400 that well-behaved clients treat
+  # as permanent. Under allkeys-lru the eviction policy cannot tell the two apart, so memory
+  # pressure silently deletes paid-for conversations. None of this was measured before.
+  - name: affinity-redis
+    rules:
+      - alert: AffinityRedisDown
+        expr: redis_up == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: affinity-redis
+        annotations:
+          summary: 'Cache-affinity Redis is unreachable'
+          description: 'The exporter cannot reach Redis. Engine traffic stays available on local fail-open affinity, but Codex previous_response_id continuity is lost across slots.'
+          runbook: 'docs/ops/MONITORING.md#affinityredisdown'
+
+      - alert: AffinityRedisEvictingKeys
+        expr: increase(redis_evicted_keys_total[15m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: affinity-redis
+        annotations:
+          summary: 'Cache-affinity Redis is evicting keys under memory pressure'
+          description: 'allkeys-lru does not distinguish affinity digests from Codex response history, so sustained eviction drops stored conversations and clients receive a permanent-looking 400.'
+          runbook: 'docs/ops/MONITORING.md#affinityredisevictingkeys'
+
+      - alert: AffinityRedisMemoryHigh
+        expr: redis_memory_used_bytes / redis_config_maxmemory > 0.85
+        for: 15m
+        labels:
+          severity: warning
+          component: affinity-redis
+        annotations:
+          summary: 'Cache-affinity Redis is near its memory ceiling'
+          description: 'Eviction begins at the ceiling. This fires before keys are lost so the budget can be raised or the history TTL shortened first.'
+          runbook: 'docs/ops/MONITORING.md#affinityredismemoryhigh'
+
+      - alert: CodexHistoryWriteFailures
+        expr: increase(claude_api_codex_history_write_failures_total[15m]) > 5
+        for: 10m
+        labels:
+          severity: warning
+          component: codex-provider
+        annotations:
+          summary: 'Codex response history is not reaching the shared store'
+          description: 'Turns still succeed on local memory, so this is silent to the caller until a later request lands on another slot and cannot resolve previous_response_id.'
+          runbook: 'docs/ops/MONITORING.md#codexhistorywritefailures'
+
+      - alert: CodexHistoryMissesElevated
+        expr: increase(claude_api_codex_history_misses_total[15m]) > 20
+        for: 10m
+        labels:
+          severity: warning
+          component: codex-provider
+        annotations:
+          summary: 'Codex previous_response_id lookups are missing'
+          description: 'Each miss becomes a 400 that clients treat as permanent, so they discard a conversation the customer already paid to build. Check Redis eviction and history TTL together.'
+          runbook: 'docs/ops/MONITORING.md#codexhistorymisseselevated'
 
   # Serial continuation is off by default. These rules make the canary and eventual GA observable
   # without adding request, model, credential or execution-group identities to Prometheus labels.

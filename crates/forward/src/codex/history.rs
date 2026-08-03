@@ -10,7 +10,7 @@ use redis::aio::ConnectionManager;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
@@ -74,6 +74,41 @@ struct RedisEnvelope {
     history: StoredHistory,
 }
 
+/// Observable outcomes of the shared history store.
+///
+/// Unlike cache affinity, losing an entry here is visible to the customer: `prepare_turn` maps a
+/// missing `previous_response_id` to a 400 that well-behaved clients treat as permanent, so they
+/// discard a conversation the customer already paid to build. That failure was previously
+/// unmeasured — the store had no counters at all and a degraded write only reached stderr.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HistoryStats {
+    pub local_hits: u64,
+    pub redis_hits: u64,
+    /// Reads that found nothing anywhere. With Redis configured this is the counter that turns
+    /// into a customer-visible 400, so a rising rate means conversations are being dropped.
+    pub misses: u64,
+    pub redis_errors: u64,
+    pub writes: u64,
+    /// Writes that reached the local cache but never made it into the shared store. The turn still
+    /// succeeds, so this is silent unless counted: the next request on another slot cannot resolve
+    /// the conversation.
+    pub write_failures: u64,
+    pub wrong_tenant: u64,
+    pub corrupt: u64,
+}
+
+#[derive(Default)]
+struct Stats {
+    local_hits: AtomicU64,
+    redis_hits: AtomicU64,
+    misses: AtomicU64,
+    redis_errors: AtomicU64,
+    writes: AtomicU64,
+    write_failures: AtomicU64,
+    wrong_tenant: AtomicU64,
+    corrupt: AtomicU64,
+}
+
 /// Shared history store with lazy Redis connection setup. Redis loss never authorizes a cross-tenant
 /// lookup: an unavailable shared store is reported distinctly from a genuine unknown id.
 pub(crate) struct HistoryStore {
@@ -87,6 +122,7 @@ pub(crate) struct HistoryStore {
     connection: RwLock<Option<ConnectionManager>>,
     connect_lock: AsyncMutex<()>,
     redis_retry_after: AtomicI64,
+    stats: Stats,
 }
 
 impl HistoryStore {
@@ -128,7 +164,25 @@ impl HistoryStore {
             connection: RwLock::new(None),
             connect_lock: AsyncMutex::new(()),
             redis_retry_after: AtomicI64::new(0),
+            stats: Stats::default(),
         })
+    }
+
+    pub(crate) fn stats(&self) -> HistoryStats {
+        HistoryStats {
+            local_hits: self.stats.local_hits.load(Ordering::Relaxed),
+            redis_hits: self.stats.redis_hits.load(Ordering::Relaxed),
+            misses: self.stats.misses.load(Ordering::Relaxed),
+            redis_errors: self.stats.redis_errors.load(Ordering::Relaxed),
+            writes: self.stats.writes.load(Ordering::Relaxed),
+            write_failures: self.stats.write_failures.load(Ordering::Relaxed),
+            wrong_tenant: self.stats.wrong_tenant.load(Ordering::Relaxed),
+            corrupt: self.stats.corrupt.load(Ordering::Relaxed),
+        }
+    }
+
+    pub(crate) fn redis_configured(&self) -> bool {
+        self.client.is_some()
     }
 
     pub(crate) async fn put(
@@ -146,7 +200,11 @@ impl HistoryStore {
         }
 
         self.local_put(tenant_scope, history.clone());
-        let Some(mut connection) = self.connection().await? else {
+        self.stats.writes.fetch_add(1, Ordering::Relaxed);
+        let Some(mut connection) = self.connection().await.inspect_err(|_| {
+            self.stats.write_failures.fetch_add(1, Ordering::Relaxed);
+        })?
+        else {
             return Ok(());
         };
         let ciphertext = self.encrypt(&history.response_id, &plaintext)?;
@@ -161,6 +219,8 @@ impl HistoryStore {
         match tokio::time::timeout(self.timeout, query).await {
             Ok(Ok(())) => Ok(()),
             _ => {
+                self.stats.redis_errors.fetch_add(1, Ordering::Relaxed);
+                self.stats.write_failures.fetch_add(1, Ordering::Relaxed);
                 self.reset_connection().await;
                 Err(HistoryError::Unavailable)
             }
@@ -174,12 +234,18 @@ impl HistoryStore {
     ) -> Result<StoredHistory, HistoryError> {
         if let Some(entry) = self.local_get(response_id) {
             if entry.scope_tag != self.scope_tag(tenant_scope) {
+                self.stats.wrong_tenant.fetch_add(1, Ordering::Relaxed);
                 return Err(HistoryError::WrongTenant);
             }
+            self.stats.local_hits.fetch_add(1, Ordering::Relaxed);
             return Ok(entry.history);
         }
 
-        let Some(mut connection) = self.connection().await? else {
+        let Some(mut connection) = self.connection().await.inspect_err(|_| {
+            self.stats.redis_errors.fetch_add(1, Ordering::Relaxed);
+        })?
+        else {
+            self.stats.misses.fetch_add(1, Ordering::Relaxed);
             return Err(HistoryError::NotFound);
         };
         let mut command = redis::cmd("GET");
@@ -188,20 +254,31 @@ impl HistoryStore {
         let encrypted = match tokio::time::timeout(self.timeout, query).await {
             Ok(Ok(value)) => value,
             _ => {
+                self.stats.redis_errors.fetch_add(1, Ordering::Relaxed);
                 self.reset_connection().await;
                 return Err(HistoryError::Unavailable);
             }
         }
-        .ok_or(HistoryError::NotFound)?;
-        let plaintext = self.decrypt(response_id, &encrypted)?;
-        let envelope: RedisEnvelope =
-            serde_json::from_slice(&plaintext).map_err(|_| HistoryError::Corrupt)?;
+        .ok_or_else(|| {
+            self.stats.misses.fetch_add(1, Ordering::Relaxed);
+            HistoryError::NotFound
+        })?;
+        let plaintext = self.decrypt(response_id, &encrypted).inspect_err(|_| {
+            self.stats.corrupt.fetch_add(1, Ordering::Relaxed);
+        })?;
+        let envelope: RedisEnvelope = serde_json::from_slice(&plaintext).map_err(|_| {
+            self.stats.corrupt.fetch_add(1, Ordering::Relaxed);
+            HistoryError::Corrupt
+        })?;
         if envelope.scope_tag != self.scope_tag(tenant_scope) {
+            self.stats.wrong_tenant.fetch_add(1, Ordering::Relaxed);
             return Err(HistoryError::WrongTenant);
         }
         if envelope.history.response_id != response_id {
+            self.stats.corrupt.fetch_add(1, Ordering::Relaxed);
             return Err(HistoryError::Corrupt);
         }
+        self.stats.redis_hits.fetch_add(1, Ordering::Relaxed);
         self.local_put(tenant_scope, envelope.history.clone());
         Ok(envelope.history)
     }
@@ -222,7 +299,10 @@ impl HistoryStore {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             local.remove(response_id);
         }
-        let Some(mut connection) = self.connection().await? else {
+        let Some(mut connection) = self.connection().await.inspect_err(|_| {
+            self.stats.redis_errors.fetch_add(1, Ordering::Relaxed);
+        })?
+        else {
             return Ok(());
         };
         let mut command = redis::cmd("DEL");
@@ -231,6 +311,7 @@ impl HistoryStore {
         match tokio::time::timeout(self.timeout, query).await {
             Ok(Ok(())) => Ok(()),
             _ => {
+                self.stats.redis_errors.fetch_add(1, Ordering::Relaxed);
                 self.reset_connection().await;
                 Err(HistoryError::Unavailable)
             }
@@ -440,5 +521,88 @@ mod tests {
             HistoryError::Corrupt
         );
         assert!(!encrypted.windows(5).any(|window| window == b"hello"));
+    }
+
+    /// Losing a stored response is reported to the client as a 400 that well-behaved clients treat
+    /// as permanent, so they discard a conversation the customer already paid for. Before these
+    /// counters existed that failure was invisible: the store had no metrics and a degraded write
+    /// only reached stderr. Pin each outcome to its own counter so an operator can tell a genuine
+    /// unknown id apart from eviction or a broken shared store.
+    #[tokio::test]
+    async fn history_outcomes_are_counted_separately() {
+        let store = store();
+        assert_eq!(store.stats(), HistoryStats::default());
+
+        store.put("account-a", history("resp_1")).await.unwrap();
+        assert_eq!(store.stats().writes, 1);
+        // No Redis is configured, so a local-only write is complete rather than degraded.
+        assert_eq!(store.stats().write_failures, 0);
+
+        store.get("account-a", "resp_1").await.unwrap();
+        assert_eq!(store.stats().local_hits, 1);
+
+        assert_eq!(
+            store.get("account-b", "resp_1").await.unwrap_err(),
+            HistoryError::WrongTenant
+        );
+        assert_eq!(store.stats().wrong_tenant, 1);
+        assert_eq!(
+            store.stats().local_hits,
+            1,
+            "a cross-tenant read must never count as a hit"
+        );
+
+        assert_eq!(
+            store.get("account-a", "resp_missing").await.unwrap_err(),
+            HistoryError::NotFound
+        );
+        assert_eq!(
+            store.stats().misses,
+            1,
+            "an unknown id is the counter that becomes a customer-visible 400"
+        );
+        assert_eq!(store.stats().redis_errors, 0);
+        assert_eq!(store.stats().corrupt, 0);
+    }
+
+    /// A shared store that cannot be reached must be distinguishable from an unknown id. Conflating
+    /// them is what turns a Redis outage into "your conversation does not exist" for every client
+    /// mid-conversation, which is precisely what happens during a routine blue/green deploy.
+    #[tokio::test]
+    async fn unreachable_shared_store_is_counted_as_error_not_miss() {
+        let store = HistoryStore::new(
+            Some("redis://127.0.0.1:1/"),
+            Some("outage-test-secret"),
+            600,
+            32,
+            5,
+        )
+        .unwrap();
+        assert!(store.redis_configured());
+
+        // The write still lands locally so the turn itself succeeds, but the shared copy is lost.
+        assert_eq!(
+            store.put("account-a", history("resp_1")).await.unwrap_err(),
+            HistoryError::Unavailable
+        );
+        assert_eq!(store.stats().writes, 1);
+        assert_eq!(store.stats().write_failures, 1);
+
+        // A local hit must not consult Redis at all.
+        store.get("account-a", "resp_1").await.unwrap();
+        assert_eq!(store.stats().local_hits, 1);
+
+        let errors_before = store.stats().redis_errors;
+        assert_eq!(
+            store.get("account-a", "resp_absent").await.unwrap_err(),
+            HistoryError::Unavailable,
+            "an unreachable store must not be reported as a genuine unknown id"
+        );
+        assert!(store.stats().redis_errors > errors_before);
+        assert_eq!(
+            store.stats().misses,
+            0,
+            "an outage must never be counted as a miss"
+        );
     }
 }

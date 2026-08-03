@@ -134,6 +134,11 @@ rollback на выпуски до slot-safe markers; untemplated
 [`systemd/claude-api.service`](systemd/claude-api.service) оставлен только как one-time bridge.
 Watchdog автоматически создаёт Redis/affinity secrets и управляет локальным
 [`apitoken-affinity-redis.service`](systemd/apitoken-affinity-redis.service).
+Инстанс делят два потребителя с разным радиусом поражения: affinity (fail-open, теряется только
+prompt-cache hit) и Codex response history (потеря записи возвращается клиенту как 400). Под
+`allkeys-lru` политика вытеснения их не различает, поэтому память и eviction сняты отдельным
+`redis_exporter` на `127.0.0.1:9121` с алертами `AffinityRedis*` —
+см. [`docs/ops/MONITORING.md`](docs/ops/MONITORING.md).
 
 Опциональный native Codex-транспорт для строгого OpenAI-compatible text subset (пул sealed
 ChatGPT OAuth-профилей, как у Gemini) доступен только через

@@ -124,6 +124,7 @@ Control API движка использует только на чтение. С
 | `crates/server` Control API | readonly/control GET (`/pool`, `/codex-subs`, `/gemini-subs`, `/settlement-health`, слоты `/ready`) | `apps/devbot` (команды бота) | `docs/engine/CONTROL_API.md` |
 | journald | чтение журнала юнитов deploy-контура (префиксы `[watchdog]`, `[admin-deploy]` и т.п.) | `apps/devbot` (этап 3) | `docs/ops/DEVBOT.md` |
 | `apps/devbot` | node-exporter textfile `devbot_heartbeat_timestamp_seconds` (`/var/lib/apitoken/monitoring/textfile/devbot.prom`, атомарно каждые 60 с) | Prometheus → алерт `DevBotHeartbeatMissing` | `docs/ops/MONITORING.md#devbotheartbeatmissing` |
+| `apitoken-affinity-redis.service` | `redis_exporter` на `127.0.0.1:9121` (job `redis`); пароль читается из `CLAUDE_API_REDIS_PASSWORD` в `server.env` и публикуется как JSON-секрет `observability/secrets/affinity_redis_password` | Prometheus → алерты `AffinityRedisDown`, `AffinityRedisEvictingKeys`, `AffinityRedisMemoryHigh` | `docs/ops/MONITORING.md#affinityredisevictingkeys` |
 
 ## 2. Внутри движка (кратко)
 

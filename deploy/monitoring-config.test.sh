@@ -46,14 +46,56 @@ for pinned_image in \
   'grafana/alloy:v1.16.1@sha256:51aeb9d829239345070619dad3edd6873186f913c84f45b365b74574fcb38ec0' \
   'quay.io/prometheus/node-exporter:v1.11.1@sha256:0f422f62c15f154af8d8572b23d623aebfb10cec73a5c654d18f911f3f9df241' \
   'quay.io/prometheuscommunity/postgres-exporter:v0.19.1@sha256:e96064f876226d94bb6ce48a4c4b3dd76edba91168ec1ab024e5c4b959310b0f' \
+  'quay.io/oliver006/redis_exporter:v1.67.0@sha256:120f7ec77293459ccfdad66bb1db75ab72e8bfeab99f58b1cc2564cadcd7a9e7' \
   'quay.io/prometheus/blackbox-exporter:v0.28.0@sha256:e753ff9f3fc458d02cca5eddab5a77e1c175eee484a8925ac7d524f04366c2fc'; do
   grep -Fq "image: $pinned_image" "$ROOT/observability/compose.yaml"
 done
 
-[[ $(grep -Fc 'network_mode: host' "$ROOT/observability/compose.yaml") == 8 ]]
+[[ $(grep -Fc 'network_mode: host' "$ROOT/observability/compose.yaml") == 9 ]]
 for listener in 127.0.0.1:9090 127.0.0.1:9093 127.0.0.1:12345 127.0.0.1:9100 \
-  127.0.0.1:9187 127.0.0.1:9115; do
+  127.0.0.1:9187 127.0.0.1:9121 127.0.0.1:9115; do
   grep -Fq "$listener" "$ROOT/observability/compose.yaml" "$ROOT/observability/loki/loki.yml"
+done
+
+# Shared Redis carries two consumers with different blast radii: affinity digests (fail-open) and
+# Codex response history (a lost entry becomes a customer-visible 400). Memory pressure under
+# allkeys-lru cannot tell them apart, so eviction and headroom must stay measured.
+grep -Fq -- '--redis.password-file=/run/secrets/affinity_redis_password' \
+  "$ROOT/observability/compose.yaml"
+grep -Fq './secrets/affinity_redis_password:/run/secrets/affinity_redis_password:ro' \
+  "$ROOT/observability/compose.yaml"
+grep -Fq 'job_name: redis' "$ROOT/observability/prometheus/prometheus.yml"
+# redis_exporter reads a JSON address-to-password map, not a bare secret; a plain string makes it
+# exit at startup. Verified against v1.67.0.
+grep -Fq 'printf '"'"'{"redis://127.0.0.1:6379":"%s"}\n'"'"'' "$ROOT/deploy/install-monitoring.sh"
+grep -Fq 'chmod 0600 "$STAGE/secrets/affinity_redis_password"' "$ROOT/deploy/install-monitoring.sh"
+# The affinity alert must not be scoped to one plane. It was pinned to {provider="anthropic"},
+# which excluded the OpenAI plane — the only plane where Redis also holds Codex history. It keeps a
+# per-provider aggregation so the firing plane is still identifiable.
+! grep -Fq 'claude_api_affinity_redis_errors_total{provider="anthropic"}' \
+  "$ROOT/observability/prometheus/rules/application.yml"
+grep -Fq 'sum by (provider) (increase(claude_api_affinity_redis_errors_total[10m]))' \
+  "$ROOT/observability/prometheus/rules/application.yml"
+
+# Redis memory pressure and Codex history loss were entirely unmeasured before these alerts.
+# Pin the engine-side export too: an alert on a metric nothing emits is silently always-inactive.
+for history_metric in \
+  'claude_api_codex_history_write_failures_total' \
+  'claude_api_codex_history_misses_total'; do
+  grep -Fq "$history_metric" "$ROOT/crates/server/src/http.rs" \
+    || { printf 'engine does not export %s\n' "$history_metric" >&2; exit 1; }
+  grep -Fq "$history_metric" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'no alert rule consumes %s\n' "$history_metric" >&2; exit 1; }
+done
+for redis_alert in AffinityRedisDown AffinityRedisEvictingKeys AffinityRedisMemoryHigh \
+  CodexHistoryWriteFailures CodexHistoryMissesElevated; do
+  grep -Fq "alert: $redis_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'missing shared-state alert %s\n' "$redis_alert" >&2; exit 1; }
+  anchor=$(printf '%s' "$redis_alert" | tr '[:upper:]' '[:lower:]')
+  grep -Fq "docs/ops/MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'alert %s has no runbook anchor\n' "$redis_alert" >&2; exit 1; }
+  grep -Fqi "## $redis_alert" "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$redis_alert" >&2; exit 1; }
 done
 grep -Fq 'GF_SERVER_HTTP_ADDR: 127.0.0.1' "$ROOT/observability/compose.yaml"
 grep -Fq 'GF_SERVER_HTTP_PORT: "3600"' "$ROOT/observability/compose.yaml"
@@ -355,8 +397,7 @@ for gated_alert in CodexProviderDown CodexNoAvailableHomes; do
     || { printf '%s is not gated on the provider being enabled\n' "$gated_alert" >&2; exit 1; }
 done
 for anthropic_metric in claude_api_breaker_open claude_api_subs claude_api_cooling \
-  claude_api_upstream_429_total claude_api_upstream_auth_total claude_api_upstream_5xx_total \
-  claude_api_affinity_redis_errors_total; do
+  claude_api_upstream_429_total claude_api_upstream_auth_total claude_api_upstream_5xx_total; do
   grep -Fq "${anthropic_metric}{provider=\"anthropic\"}" \
     "$ROOT/observability/prometheus/rules/application.yml" \
     || { printf 'Claude alert is not scoped to Anthropic: %s\n' "$anthropic_metric" >&2; exit 1; }
