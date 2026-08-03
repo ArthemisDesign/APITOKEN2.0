@@ -199,14 +199,20 @@ legacy writer после своей request-id replay-проверки боль�
 чтобы pinned funding generation всё ещё была current: account head нельзя продвинуть поверх
 незавершённых allocations. После monotonic advance разрешён только terminal replay без повторной
 money mutation. `meter_only` пишет usage с нулевым customer debit и не читает баланс как admission
-gate. Этот checkpoint не создаёт и не двигает release head; runtime остаётся dormant до отдельного
-producer-first Stage 9 activation.
+gate. Runtime path сам не создаёт и не двигает release head; до защищённого Stage 9 consumer он
+остаётся dormant.
 
 Post-cutover provisioning использует тот же `AsyncBilling` ownership split: append-only
 assignment-extension prepare идёт через single writer, exact
 `(provisioning_head_version,account_id)` readback — через bounded reader. Registry resolver
 материализует assignment из immutable base manifest либо exact current-head extension; forward не
-собирает пару и не открывает PostgreSQL напрямую. Этот producer не выдаёт key и не активирует head.
+собирает пару и не открывает PostgreSQL напрямую. Этот producer не выдаёт key.
+
+Stage 9 activation идёт отдельной typed командой того же single writer: handler передаёт strict
+request и compile-fixed `PricingRuntimeManifestEvidence`, registry выполняет один PostgreSQL CAS и
+возвращает `applied|unchanged|typed rejection`. SQLite всегда unavailable. Наличие actor method не
+создаёт caller/job и не активирует head самостоятельно; data-plane readers этот control lock не
+берут.
 
 Read-only router policy preflight фазы 6.4a переиспользует публичные `resolve_pricing` и
 `RuntimePricingManifest::from_evidence` через композицию `crates/server`: тот же customer key и один

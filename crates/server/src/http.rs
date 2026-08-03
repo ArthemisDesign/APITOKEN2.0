@@ -348,6 +348,13 @@ define_admin_routes!(
         admin::pricing_release_assignment_extension_v2
     ),
     (
+        post,
+        POST,
+        "/admin/pricing/v2/activate",
+        "/admin/pricing/v2/activate",
+        admin::activate_pricing_release_v2
+    ),
+    (
         get,
         GET,
         "/admin/pricing/v2/head",
@@ -5378,7 +5385,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_admin_route_enforces_the_control_key_lattice() {
-        assert_eq!(ADMIN_ROUTE_CASES.len(), 39);
+        assert_eq!(ADMIN_ROUTE_CASES.len(), 40);
         let service = router(admin_auth_test_app(), Arc::new(AtomicBool::new(true)));
         let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
 

@@ -419,10 +419,11 @@ typed and retain evidence:
 admission catalog/switches in one database snapshot. Stage 3C does not backfill data, issue keys,
 enable strict enforcement, or bypass the catalog → switches → policy order.
 
-### Pricing release v2: producer prepare/read surface
+### Pricing release v2: producer and activation surface
 
 Engine PostgreSQL exposes an additive producer-first surface for the immutable release/funding-v2
-authority. It is intentionally limited to prepare and read operations:
+authority. Immutable preparation remains traffic-neutral; activation is a separate evidence-gated
+operation:
 
 ```text
 POST /admin/pricing/v2/policy/prepare
@@ -433,19 +434,19 @@ POST /admin/pricing/v2/recovery-link/prepare
 GET  /admin/pricing/v2/recovery-link/{target_generation}/{recovery_generation}
 POST /admin/pricing/v2/assignment-extension/prepare
 GET  /admin/pricing/v2/assignment-extension/{head_version}/{account_id}
+POST /admin/pricing/v2/activate
 GET  /admin/pricing/v2/head
 GET  /admin/pricing/v2/inventory?after_account_id=<id>&limit=500
 GET  /admin/pricing/v2/funding/{account_id}/normalization
 POST /admin/pricing/v2/funding/{account_id}/normalization
 ```
 
-There is no activation route in this producer checkpoint. Policy/release/link/assignment-extension
-rows are append-only; policy and release identities are monotonic by policy version or release
-generation. Prepare returns the same typed
+Policy/release/link/assignment-extension rows are append-only; policy and release identities are
+monotonic by policy version or release generation. Prepare returns the same typed
 `stored|unchanged|stale|version_conflict|missing_dependency|invalid` result envelope as Stage 3C.
-`GET .../head` returns `{ "head": null }` until the separately reviewed
-Stage 9 producer exists and a fresh full-inventory Stage 8 proof authorizes one global CAS. Therefore
-these routes cannot move the global head, mutate an immutable release manifest or change balances.
+`GET .../head` returns `{ "head": null }` until a protected consumer submits a fresh passed Stage 8
+identity to the activation route. Prepare routes cannot move the global head, mutate an immutable
+release manifest or change balances.
 An assignment extension can make one post-cutover account resolvable under an already-active head;
 the provisioning consumer must therefore complete its exact readback before issuing or enabling a
 usable customer key.
@@ -526,6 +527,84 @@ readback by that tuple. Runtime resolution reads one coherent base assignment or
 extension for the active release; it never mutates the immutable release manifest. This surface does
 not create or activate a head.
 
+`POST /admin/pricing/v2/activate` is the only global live mutation. All unknown fields are rejected.
+The initial cutover request has this exact shape:
+
+```json
+{
+  "activation_kind": "cutover",
+  "expectation": "absent",
+  "evidence": {
+    "evidence_digest": "sha256:v2:<combined-commerce-evidence>",
+    "target_generation": 41,
+    "target_digest": "sha256:v2:<engine-target-release>",
+    "recovery_generation": 42,
+    "recovery_digest": "sha256:v2:<engine-recovery-release>",
+    "engine_inventory_digest": "sha256:v2:<engine-inventory>",
+    "funding_digest": "sha256:v2:<funding-manifest>",
+    "shadow_digest": "sha256:v2:<shadow-window>",
+    "runtime_floor_digest": "sha256:v2:<runtime-floor>",
+    "legacy_inflight_count": 7,
+    "engine_captured_ts": 1785700000,
+    "observed_ts": 1785700010,
+    "valid_until_ts": 1785700310
+  },
+  "operator_id": "pricing-control-worker:<instance>",
+  "reason": "activate exact prepared Stage 9 target"
+}
+```
+
+The combined evidence TTL is at most 300 seconds; its source engine capture may be at most 120
+seconds older than `observed_ts` (with at most five seconds of source clock skew). The protected
+commerce consumer must first verify the canonical source engine digest, exact persisted
+`passed=true` combined row, commerce/service/OpenKeys authority, job backlog and sales runtime.
+`evidence_digest` is that combined-row audit identity, while target/recovery digests are the engine
+release identities, not commerce plan digests.
+
+For forward recovery, `activation_kind` is `recovery` and `expectation` is the complete exact target
+head returned by the cutover:
+
+```json
+{
+  "exact": {
+    "active_generation": 41,
+    "active_digest": "sha256:v2:<engine-target-release>",
+    "head_version": 1,
+    "updated_ts": 1785700012
+  }
+}
+```
+
+Cutover is accepted only from an absent head and only to the prepared target. Recovery is accepted
+only as a monotonic CAS from that exact target to its linked newer recovery. Engine runs one
+`SERIALIZABLE` transaction under `pricing-release-v2:control-plane`, locks the singleton head,
+re-reads the immutable pair/link and active catalog/switch heads, and independently recomputes the
+base inventory, funding manifest/parity and live runtime-floor digest. Every live instance must
+claim release/funding schema v2, the exact compile-fixed runtime digest and its own current owner
+epoch. A recovery also proves that any account created after cutover has the exact atomic
+target/recovery assignment extension. With the exact target head active, the Stage 8 engine report
+keeps the immutable base inventory identity and validates every later account through that paired
+extension and its live funding head, so fresh recovery evidence remains obtainable after the
+original 300-second cutover proof expires. Only then does the transaction append the evidence row
+and activation audit and insert/update one head row. It does not write accounts, balances, funding
+lots, reservations, ledger or usage rows, and it does not take data-plane request locks.
+
+Success is `200` with `result=applied|unchanged` and an `activation` receipt containing the durable
+activation id/kind, from identity, expected head version, resulting complete head, evidence digest,
+operator/reason and timestamp. Exact replay of the same committed request returns `unchanged` from
+the durable audit, including after its original evidence TTL elapsed. Rejections roll back the
+whole transaction and return `result=rejected` with one typed code:
+
+- `400 invalid`;
+- `409 missing_dependency`, `cas_mismatch`, `evidence_stale`, `evidence_conflict`;
+- `409 release_lineage_drift`, `authority_drift`, `inventory_drift`, `funding_drift`,
+  `funding_invariant_drift`, `runtime_floor_drift` or `runtime_incompatible`.
+
+The route is producer-first in this checkpoint: `packages/contracts`, `packages/engine-client` and
+the durable commerce activation job are connected only after this exact engine producer SHA has a
+green `deploy/watchdog`. Merely deploying the route cannot create a head; no in-repository caller
+exists in this checkpoint.
+
 Inventory is ordered by `account_id`, returns at most 500 rows plus `next_after_account_id`, and
 contains status, legacy scalar, integer balance/reserved/spent and nullable funding-v2 head identity.
 It contains no key secret. Consumers must exhaust the cursor and join this engine inventory with the
@@ -563,7 +642,8 @@ Assignment-extension typed TS consumer и commerce provisioning writer подк�
 policy prepare/readback и extension prepare/readback до выдачи usable key. `apps/api` повторяет
 проверку после remote issue; если head или authority изменились, ключ отключается до возврата raw
 secret. При `head=null` consumer ничего не материализует, поэтому его deploy не запускает cutover.
-Stage 8 evidence и один activation CAS остаются следующими checkpoints; data-plane
+Stage 8 evidence уже поддерживает zero-drain audit counts, а activation producer выполняет один
+CAS; его contracts/client/durable consumer остаются следующим producer-first checkpoint. Data-plane
 reserve/settlement release control-plane lock не берут.
 After each producer SHA reached a green exact-SHA `deploy/watchdog`, `packages/contracts` gained the
 strict release, funding-normalization and assignment-extension wire schemas, while

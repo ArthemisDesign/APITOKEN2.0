@@ -13,12 +13,14 @@ use forward::AppState;
 use registry::pricing::{
     validate_account_policy_binding, validate_account_policy_shape, validate_active_expectation,
     validate_policy_active_expectation, validate_pricing_catalog,
-    validate_pricing_release_assignment_extension_v2, validate_pricing_release_policy_v2,
-    validate_pricing_release_recovery_link_v2, validate_pricing_release_v2,
-    validate_provider_switches, AccountPolicyActivationSpec, AccountPolicyBindingSpec,
-    AccountPolicySpec, ActiveExpectation, PolicyActiveExpectation, PricingCatalogSpec,
-    PricingMutation, PricingRejection, PricingReleaseAssignmentExtensionV2, PricingReleasePolicyV2,
-    PricingReleaseRecoveryLinkV2, PricingReleaseV2, ProviderSwitchSpec,
+    validate_pricing_release_activation_v2, validate_pricing_release_assignment_extension_v2,
+    validate_pricing_release_policy_v2, validate_pricing_release_recovery_link_v2,
+    validate_pricing_release_v2, validate_provider_switches, AccountPolicyActivationSpec,
+    AccountPolicyBindingSpec, AccountPolicySpec, ActiveExpectation, PolicyActiveExpectation,
+    PricingCatalogSpec, PricingMutation, PricingRejection, PricingReleaseActivationOutcomeV2,
+    PricingReleaseActivationRejectionV2, PricingReleaseActivationRequestV2,
+    PricingReleaseAssignmentExtensionV2, PricingReleasePolicyV2, PricingReleaseRecoveryLinkV2,
+    PricingReleaseV2, ProviderSwitchSpec,
 };
 use registry::{FundingNormalizationApplyRequestV2, FundingNormalizationApplyStatusV2};
 use serde::Deserialize;
@@ -1735,6 +1737,95 @@ pub async fn pricing_release_assignment_extension_v2(
         )
             .into_response(),
         Err(error) => authority_unavailable("pricing assignment extension v2 read", error),
+    }
+}
+
+fn pricing_release_activation_response(outcome: PricingReleaseActivationOutcomeV2) -> Response {
+    match outcome {
+        PricingReleaseActivationOutcomeV2::Applied(activation) => Json(json!({
+            "result": "applied",
+            "activation": activation,
+        }))
+        .into_response(),
+        PricingReleaseActivationOutcomeV2::Unchanged(activation) => Json(json!({
+            "result": "unchanged",
+            "activation": activation,
+        }))
+        .into_response(),
+        PricingReleaseActivationOutcomeV2::Rejected(rejection) => {
+            let (status, code) = match &rejection {
+                PricingReleaseActivationRejectionV2::Invalid { .. } => {
+                    (StatusCode::BAD_REQUEST, "invalid")
+                }
+                PricingReleaseActivationRejectionV2::MissingDependency { .. } => {
+                    (StatusCode::CONFLICT, "missing_dependency")
+                }
+                PricingReleaseActivationRejectionV2::CasMismatch { .. } => {
+                    (StatusCode::CONFLICT, "cas_mismatch")
+                }
+                PricingReleaseActivationRejectionV2::EvidenceStale { .. } => {
+                    (StatusCode::CONFLICT, "evidence_stale")
+                }
+                PricingReleaseActivationRejectionV2::EvidenceConflict { .. } => {
+                    (StatusCode::CONFLICT, "evidence_conflict")
+                }
+                PricingReleaseActivationRejectionV2::ReleaseLineageDrift { .. } => {
+                    (StatusCode::CONFLICT, "release_lineage_drift")
+                }
+                PricingReleaseActivationRejectionV2::InventoryDrift { .. } => {
+                    (StatusCode::CONFLICT, "inventory_drift")
+                }
+                PricingReleaseActivationRejectionV2::FundingDrift { .. } => {
+                    (StatusCode::CONFLICT, "funding_drift")
+                }
+                PricingReleaseActivationRejectionV2::FundingInvariantDrift { .. } => {
+                    (StatusCode::CONFLICT, "funding_invariant_drift")
+                }
+                PricingReleaseActivationRejectionV2::RuntimeFloorDrift { .. } => {
+                    (StatusCode::CONFLICT, "runtime_floor_drift")
+                }
+                PricingReleaseActivationRejectionV2::RuntimeIncompatible { .. } => {
+                    (StatusCode::CONFLICT, "runtime_incompatible")
+                }
+                PricingReleaseActivationRejectionV2::AuthorityDrift { .. } => {
+                    (StatusCode::CONFLICT, "authority_drift")
+                }
+            };
+            (
+                status,
+                Json(json!({
+                    "result": "rejected",
+                    "code": code,
+                    "rejection": rejection,
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// POST /admin/pricing/v2/activate — one evidence-gated global release-head CAS.
+pub async fn activate_pricing_release_v2(
+    State(app): State<AppState>,
+    Json(request): Json<PricingReleaseActivationRequestV2>,
+) -> Response {
+    if let Err(error) = validate_pricing_release_activation_v2(&request) {
+        return pricing_release_activation_response(PricingReleaseActivationOutcomeV2::Rejected(
+            PricingReleaseActivationRejectionV2::Invalid {
+                reason: error.to_string(),
+            },
+        ));
+    }
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing
+        .activate_pricing_release_v2(request, (*app.pricing_manifest).clone())
+        .await
+    {
+        Ok(outcome) => pricing_release_activation_response(outcome),
+        Err(error) => authority_unavailable("pricing release v2 activation", error),
     }
 }
 

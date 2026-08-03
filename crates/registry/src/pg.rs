@@ -6919,6 +6919,18 @@ impl PgStore {
         crate::pricing::postgres::postgres_pricing_release_head_v2(&mut self.client)
     }
 
+    pub fn activate_pricing_release_v2(
+        &mut self,
+        request: &crate::pricing::PricingReleaseActivationRequestV2,
+        runtime_manifest: &crate::pricing::PricingRuntimeManifestEvidence,
+    ) -> Result<crate::pricing::PricingReleaseActivationOutcomeV2> {
+        crate::pricing::postgres::postgres_activate_pricing_release_v2(
+            &mut self.client,
+            request,
+            runtime_manifest,
+        )
+    }
+
     pub fn pricing_release_resolution_v2(
         &mut self,
         account_id: &str,
@@ -8633,6 +8645,502 @@ mod tests {
             (row.get(0), row.get(1), row.get(2), row.get(3))
         };
         assert_eq!(durable_after, durable_before);
+
+        // Zero-drain means legacy-format work is audit evidence, not an activation blocker. Its
+        // immutable reserve-time snapshot must remain settleable after both forward head steps.
+        let legacy_inflight = stage8_pg_snapshot(
+            "stage8-legacy-inflight-request",
+            "anthropic",
+            window_start_ts - 10,
+            0,
+        );
+        assert!(matches!(
+            pg.reserve_request_with_legacy_snapshot(&owner, "stage8-key", 600, &legacy_inflight,)
+                .unwrap(),
+            crate::pricing::LegacyScalarReserveOutcome::Inserted(_)
+        ));
+        let activation_report = pg.stage8_engine_evidence(&audited_request).unwrap();
+        assert!(
+            activation_report.passed,
+            "legacy inflight must remain audit-only: {:?}",
+            activation_report.blockers
+        );
+        assert_eq!(activation_report.legacy_inflight_count, 1);
+
+        let target_digest = activation_report
+            .release
+            .target_digest
+            .clone()
+            .expect("prepared target digest");
+        let recovery_digest = activation_report
+            .release
+            .recovery_digest
+            .clone()
+            .expect("prepared recovery digest");
+        let activation = crate::pricing::PricingReleaseActivationRequestV2 {
+            activation_kind: crate::pricing::PricingReleaseActivationKindV2::Cutover,
+            expectation: crate::pricing::PricingReleaseHeadExpectationV2::Absent,
+            evidence: crate::pricing::PricingReleaseActivationEvidenceV2 {
+                evidence_digest: format!("sha256:v2:{}", "a".repeat(64)),
+                target_generation: TARGET_GENERATION,
+                target_digest: target_digest.clone(),
+                recovery_generation: RECOVERY_GENERATION,
+                recovery_digest: recovery_digest.clone(),
+                engine_inventory_digest: activation_report.engine_inventory_digest.clone(),
+                funding_digest: activation_report.funding_digest.clone(),
+                shadow_digest: activation_report.shadow_digest.clone(),
+                runtime_floor_digest: activation_report.runtime_floor_digest.clone(),
+                legacy_inflight_count: activation_report.legacy_inflight_count,
+                engine_captured_ts: activation_report.captured_ts,
+                observed_ts: activation_report.captured_ts,
+                valid_until_ts: activation_report.captured_ts + 300,
+            },
+            operator_id: "stage8-activation-test".into(),
+            reason: "prove atomic zero-drain target cutover".into(),
+        };
+        let runtime_manifest = audited_request.runtime_manifest.clone();
+        let account_rows_before = pg
+            .client
+            .query(
+                "SELECT id,xmin::text,balance_nano,reserved_nano,spent_nano,mult_bp,status \
+                 FROM accounts ORDER BY id COLLATE \"C\"",
+                &[],
+            )
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<_, String>(0),
+                    row.get::<_, String>(1),
+                    row.get::<_, i64>(2),
+                    row.get::<_, i64>(3),
+                    row.get::<_, i64>(4),
+                    row.get::<_, i64>(5),
+                    row.get::<_, String>(6),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let mut stale = activation.clone();
+        stale.evidence.observed_ts = activation.evidence.observed_ts - 301;
+        stale.evidence.engine_captured_ts = stale.evidence.observed_ts - 120;
+        stale.evidence.valid_until_ts = stale.evidence.observed_ts + 300;
+        assert!(matches!(
+            pg.activate_pricing_release_v2(&stale, &runtime_manifest)
+                .unwrap(),
+            crate::pricing::PricingReleaseActivationOutcomeV2::Rejected(
+                crate::pricing::PricingReleaseActivationRejectionV2::EvidenceStale { .. }
+            )
+        ));
+        assert_eq!(pg.pricing_release_head_v2().unwrap(), None);
+
+        let mut inventory_drift = activation.clone();
+        inventory_drift.evidence.engine_inventory_digest = format!("sha256:v2:{}", "b".repeat(64));
+        assert!(matches!(
+            pg.activate_pricing_release_v2(&inventory_drift, &runtime_manifest)
+                .unwrap(),
+            crate::pricing::PricingReleaseActivationOutcomeV2::Rejected(
+                crate::pricing::PricingReleaseActivationRejectionV2::InventoryDrift { .. }
+            )
+        ));
+        assert_eq!(pg.pricing_release_head_v2().unwrap(), None);
+
+        let mut funding_drift = activation.clone();
+        funding_drift.evidence.funding_digest = format!("sha256:v2:{}", "c".repeat(64));
+        assert!(matches!(
+            pg.activate_pricing_release_v2(&funding_drift, &runtime_manifest)
+                .unwrap(),
+            crate::pricing::PricingReleaseActivationOutcomeV2::Rejected(
+                crate::pricing::PricingReleaseActivationRejectionV2::FundingDrift { .. }
+            )
+        ));
+        assert_eq!(pg.pricing_release_head_v2().unwrap(), None);
+
+        let mut runtime_drift = activation.clone();
+        runtime_drift.evidence.runtime_floor_digest = format!("sha256:v2:{}", "d".repeat(64));
+        assert!(matches!(
+            pg.activate_pricing_release_v2(&runtime_drift, &runtime_manifest)
+                .unwrap(),
+            crate::pricing::PricingReleaseActivationOutcomeV2::Rejected(
+                crate::pricing::PricingReleaseActivationRejectionV2::RuntimeFloorDrift { .. }
+            )
+        ));
+        assert_eq!(pg.pricing_release_head_v2().unwrap(), None);
+
+        pg.client
+            .execute(
+                "UPDATE engine_instances SET pricing_release_runtime_digest='wrong-runtime' \
+                 WHERE instance_id='stage8-engine'",
+                &[],
+            )
+            .unwrap();
+        assert!(matches!(
+            pg.activate_pricing_release_v2(&activation, &runtime_manifest)
+                .unwrap(),
+            crate::pricing::PricingReleaseActivationOutcomeV2::Rejected(
+                crate::pricing::PricingReleaseActivationRejectionV2::RuntimeIncompatible { .. }
+            )
+        ));
+        assert_eq!(pg.pricing_release_head_v2().unwrap(), None);
+        pg.client
+            .execute(
+                "UPDATE engine_instances SET pricing_release_runtime_digest=$1, \
+                        pricing_release_claim_epoch=owner_epoch+1 \
+                 WHERE instance_id='stage8-engine'",
+                &[&crate::pricing::PRICING_RELEASE_RUNTIME_DIGEST_V2],
+            )
+            .unwrap();
+        assert!(matches!(
+            pg.activate_pricing_release_v2(&activation, &runtime_manifest)
+                .unwrap(),
+            crate::pricing::PricingReleaseActivationOutcomeV2::Rejected(
+                crate::pricing::PricingReleaseActivationRejectionV2::RuntimeIncompatible { .. }
+            )
+        ));
+        assert_eq!(pg.pricing_release_head_v2().unwrap(), None);
+        pg.client
+            .execute(
+                "UPDATE engine_instances SET pricing_release_claim_epoch=owner_epoch \
+                 WHERE instance_id='stage8-engine'",
+                &[],
+            )
+            .unwrap();
+
+        pg.client
+            .execute(
+                "UPDATE account_policy_bindings SET updated_ts=$1 \
+                 WHERE account_id='stage8-account'",
+                &[&activation.evidence.engine_captured_ts],
+            )
+            .unwrap();
+        assert!(matches!(
+            pg.activate_pricing_release_v2(&activation, &runtime_manifest)
+                .unwrap(),
+            crate::pricing::PricingReleaseActivationOutcomeV2::Rejected(
+                crate::pricing::PricingReleaseActivationRejectionV2::AuthorityDrift { .. }
+            )
+        ));
+        assert_eq!(pg.pricing_release_head_v2().unwrap(), None);
+        pg.client
+            .execute(
+                "UPDATE account_policy_bindings SET updated_ts=$1 \
+                 WHERE account_id='stage8-account'",
+                &[&authority_ts],
+            )
+            .unwrap();
+
+        let recovery_without_target = crate::pricing::PricingReleaseActivationRequestV2 {
+            activation_kind: crate::pricing::PricingReleaseActivationKindV2::Recovery,
+            expectation: crate::pricing::PricingReleaseHeadExpectationV2::Exact(
+                crate::pricing::PricingReleaseHeadV2 {
+                    active_generation: TARGET_GENERATION,
+                    active_digest: target_digest.clone(),
+                    head_version: 1,
+                    updated_ts: activation.evidence.observed_ts,
+                },
+            ),
+            operator_id: "stage8-recovery-test".into(),
+            reason: "prove forward recovery".into(),
+            ..activation.clone()
+        };
+        assert!(matches!(
+            pg.activate_pricing_release_v2(&recovery_without_target, &runtime_manifest)
+                .unwrap(),
+            crate::pricing::PricingReleaseActivationOutcomeV2::Rejected(
+                crate::pricing::PricingReleaseActivationRejectionV2::CasMismatch { actual: None }
+            )
+        ));
+        let rejected_rows: (i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT (SELECT COUNT(*)::bigint FROM pricing_stage8_evidence_v2), \
+                            (SELECT COUNT(*)::bigint FROM pricing_release_activations_v2), \
+                            (SELECT COUNT(*)::bigint FROM pricing_release_head_v2)",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2))
+        };
+        assert_eq!(rejected_rows, (0, 0, 0));
+
+        // Two concurrent target calls linearize to one applied CAS and one exact replay.
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let url = url.clone();
+            let barrier = barrier.clone();
+            let activation = activation.clone();
+            let runtime_manifest = runtime_manifest.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut contender = PgStore::connect(&url).unwrap();
+                barrier.wait();
+                for _ in 0..5 {
+                    match contender.activate_pricing_release_v2(&activation, &runtime_manifest) {
+                        Ok(outcome) => return outcome,
+                        Err(error)
+                            if format!("{error:#}").contains("could not serialize access") =>
+                        {
+                            continue;
+                        }
+                        Err(error) => panic!("unexpected concurrent activation error: {error:#}"),
+                    }
+                }
+                panic!("concurrent activation kept losing SERIALIZABLE retries")
+            }));
+        }
+        let outcomes = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(
+                    outcome,
+                    crate::pricing::PricingReleaseActivationOutcomeV2::Applied(_)
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(
+                    outcome,
+                    crate::pricing::PricingReleaseActivationOutcomeV2::Unchanged(_)
+                ))
+                .count(),
+            1
+        );
+        let target_head = pg
+            .pricing_release_head_v2()
+            .unwrap()
+            .expect("target release head");
+        assert_eq!(target_head.active_generation, TARGET_GENERATION);
+        assert_eq!(target_head.head_version, 1);
+        let account_rows_after_target = pg
+            .client
+            .query(
+                "SELECT id,xmin::text,balance_nano,reserved_nano,spent_nano,mult_bp,status \
+                 FROM accounts ORDER BY id COLLATE \"C\"",
+                &[],
+            )
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<_, String>(0),
+                    row.get::<_, String>(1),
+                    row.get::<_, i64>(2),
+                    row.get::<_, i64>(3),
+                    row.get::<_, i64>(4),
+                    row.get::<_, i64>(5),
+                    row.get::<_, String>(6),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(account_rows_after_target, account_rows_before);
+
+        let mut stale_target_head = recovery_without_target.clone();
+        stale_target_head.expectation = crate::pricing::PricingReleaseHeadExpectationV2::Exact(
+            crate::pricing::PricingReleaseHeadV2 {
+                head_version: target_head.head_version + 1,
+                ..target_head.clone()
+            },
+        );
+        assert!(matches!(
+            pg.activate_pricing_release_v2(&stale_target_head, &runtime_manifest)
+                .unwrap(),
+            crate::pricing::PricingReleaseActivationOutcomeV2::Rejected(
+                crate::pricing::PricingReleaseActivationRejectionV2::CasMismatch {
+                    actual: Some(_)
+                }
+            )
+        ));
+        assert_eq!(
+            pg.pricing_release_head_v2().unwrap(),
+            Some(target_head.clone())
+        );
+
+        // A later account is not added to either immutable base manifest. Its exact paired
+        // extension must make a fresh recovery proof possible after the original evidence expires.
+        pg.account_create("stage8-post-cutover", None, 5_000)
+            .unwrap();
+        pg.account_topup(
+            "stage8-post-cutover",
+            75_000_000,
+            Some("post-cutover-stage8-seed"),
+        )
+        .unwrap();
+        assert_eq!(
+            pg.account_set_status("stage8-post-cutover", "disabled")
+                .unwrap(),
+            1
+        );
+        seed_active_funding_v2(
+            &mut pg,
+            "stage8-post-cutover",
+            &[(
+                "stage8-post-cutover-paid",
+                "paid",
+                "post-cutover-stage8-seed",
+                75_000_000,
+            )],
+        );
+        let post_cutover_assignment =
+            |assignment_digest: &str| crate::pricing::PricingReleaseAssignmentV2 {
+                account_id: "stage8-post-cutover".into(),
+                account_class: crate::pricing::AccountClass::B2c,
+                policy_id: "stage8-v2-policy".into(),
+                policy_version: 1,
+                policy_digest: "stage8-v2-policy-digest".into(),
+                billing_mode: crate::pricing::BillingModeV2::Balance,
+                funding_generation: Some(1),
+                purpose: None,
+                responsible: None,
+                assignment_digest: assignment_digest.into(),
+            };
+        let post_cutover_extension = crate::pricing::PricingReleaseAssignmentExtensionV2 {
+            provisioning_head_generation: TARGET_GENERATION,
+            provisioning_head_digest: target_digest.clone(),
+            provisioning_head_version: target_head.head_version,
+            paired_recovery_generation: Some(RECOVERY_GENERATION),
+            paired_recovery_digest: Some(recovery_digest.clone()),
+            extension_group_digest: "stage8-post-cutover-extension-group".into(),
+            members: vec![
+                crate::pricing::PricingReleaseAssignmentExtensionMemberV2 {
+                    release_generation: TARGET_GENERATION,
+                    assignment: post_cutover_assignment("stage8-post-cutover-target-assignment"),
+                    extension_digest: "stage8-post-cutover-target-extension".into(),
+                },
+                crate::pricing::PricingReleaseAssignmentExtensionMemberV2 {
+                    release_generation: RECOVERY_GENERATION,
+                    assignment: post_cutover_assignment("stage8-post-cutover-recovery-assignment"),
+                    extension_digest: "stage8-post-cutover-recovery-extension".into(),
+                },
+            ],
+        };
+        let uncovered_recovery_report = pg.stage8_engine_evidence(&audited_request).unwrap();
+        assert!(!uncovered_recovery_report.passed);
+        assert!(uncovered_recovery_report.blockers.iter().any(|blocker| {
+            blocker.code == "target_release_assignment_inventory_drift"
+                || blocker.code == "recovery_release_assignment_inventory_drift"
+        }));
+        assert_eq!(
+            pg.prepare_pricing_release_assignment_extension_v2(&post_cutover_extension)
+                .unwrap(),
+            crate::pricing::PricingMutation::Stored
+        );
+        let fresh_recovery_report = pg.stage8_engine_evidence(&audited_request).unwrap();
+        assert!(
+            fresh_recovery_report.passed,
+            "post-cutover extension must preserve fresh recovery evidence: {:?}",
+            fresh_recovery_report.blockers
+        );
+        assert_eq!(
+            fresh_recovery_report.engine_inventory_digest,
+            activation.evidence.engine_inventory_digest
+        );
+        assert_eq!(
+            fresh_recovery_report.funding_digest,
+            activation.evidence.funding_digest
+        );
+        let account_rows_before_recovery = pg
+            .client
+            .query(
+                "SELECT id,xmin::text,balance_nano,reserved_nano,spent_nano,mult_bp,status \
+                 FROM accounts ORDER BY id COLLATE \"C\"",
+                &[],
+            )
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<_, String>(0),
+                    row.get::<_, String>(1),
+                    row.get::<_, i64>(2),
+                    row.get::<_, i64>(3),
+                    row.get::<_, i64>(4),
+                    row.get::<_, i64>(5),
+                    row.get::<_, String>(6),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let recovery = crate::pricing::PricingReleaseActivationRequestV2 {
+            expectation: crate::pricing::PricingReleaseHeadExpectationV2::Exact(
+                target_head.clone(),
+            ),
+            evidence: crate::pricing::PricingReleaseActivationEvidenceV2 {
+                evidence_digest: format!("sha256:v2:{}", "e".repeat(64)),
+                target_generation: TARGET_GENERATION,
+                target_digest: target_digest.clone(),
+                recovery_generation: RECOVERY_GENERATION,
+                recovery_digest: recovery_digest.clone(),
+                engine_inventory_digest: fresh_recovery_report.engine_inventory_digest,
+                funding_digest: fresh_recovery_report.funding_digest,
+                shadow_digest: fresh_recovery_report.shadow_digest,
+                runtime_floor_digest: fresh_recovery_report.runtime_floor_digest,
+                legacy_inflight_count: fresh_recovery_report.legacy_inflight_count,
+                engine_captured_ts: fresh_recovery_report.captured_ts,
+                observed_ts: fresh_recovery_report.captured_ts,
+                valid_until_ts: fresh_recovery_report.captured_ts + 300,
+            },
+            ..recovery_without_target
+        };
+        let recovery_receipt = match pg
+            .activate_pricing_release_v2(&recovery, &runtime_manifest)
+            .unwrap()
+        {
+            crate::pricing::PricingReleaseActivationOutcomeV2::Applied(receipt) => receipt,
+            outcome => panic!("unexpected recovery outcome: {outcome:?}"),
+        };
+        assert_eq!(recovery_receipt.head.active_generation, RECOVERY_GENERATION);
+        assert_eq!(recovery_receipt.head.head_version, 2);
+        assert!(matches!(
+            pg.activate_pricing_release_v2(&recovery, &runtime_manifest)
+                .unwrap(),
+            crate::pricing::PricingReleaseActivationOutcomeV2::Unchanged(_)
+        ));
+
+        let account_rows_after = pg
+            .client
+            .query(
+                "SELECT id,xmin::text,balance_nano,reserved_nano,spent_nano,mult_bp,status \
+                 FROM accounts ORDER BY id COLLATE \"C\"",
+                &[],
+            )
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<_, String>(0),
+                    row.get::<_, String>(1),
+                    row.get::<_, i64>(2),
+                    row.get::<_, i64>(3),
+                    row.get::<_, i64>(4),
+                    row.get::<_, i64>(5),
+                    row.get::<_, String>(6),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(account_rows_after, account_rows_before_recovery);
+        let activation_rows: (i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT (SELECT COUNT(*)::bigint FROM pricing_stage8_evidence_v2), \
+                            (SELECT COUNT(*)::bigint FROM pricing_release_activations_v2), \
+                            (SELECT COUNT(*)::bigint FROM pricing_release_head_v2)",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2))
+        };
+        assert_eq!(activation_rows, (2, 2, 1));
+        pg.cancel_request("stage8-legacy-inflight-request")
+            .expect("legacy reserve settles after target and recovery CAS");
 
         pg.client
             .query_one(

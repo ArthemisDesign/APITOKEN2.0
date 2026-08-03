@@ -20,11 +20,12 @@ use registry::pricing::{
     AccountPolicyActivationSpec, AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation,
     LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome, PolicyActiveExpectation,
     PolicyAdmissionSnapshot, PolicyReserveOutcome, PricingCatalogSpec, PricingMutation,
-    PricingReadBundle, PricingReleaseAssignmentExtensionV2, PricingReleaseHeadV2,
-    PricingReleaseInventoryPageV2, PricingReleasePolicyV2, PricingReleaseQuoteV2,
-    PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2, PricingReleaseResolutionV2,
-    PricingReleaseV2, PricingShadowAdmissionEvaluationInput, PricingShadowEvaluationWrite,
-    ProviderSwitchSpec, VersionTarget,
+    PricingReadBundle, PricingReleaseActivationOutcomeV2, PricingReleaseActivationRequestV2,
+    PricingReleaseAssignmentExtensionV2, PricingReleaseHeadV2, PricingReleaseInventoryPageV2,
+    PricingReleasePolicyV2, PricingReleaseQuoteV2, PricingReleaseRecoveryLinkV2,
+    PricingReleaseReserveOutcomeV2, PricingReleaseResolutionV2, PricingReleaseV2,
+    PricingRuntimeManifestEvidence, PricingShadowAdmissionEvaluationInput,
+    PricingShadowEvaluationWrite, ProviderSwitchSpec, VersionTarget,
 };
 use registry::{
     AccountFundingSnapshot, AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation,
@@ -1324,6 +1325,11 @@ enum WriteCmd {
         extension: PricingReleaseAssignmentExtensionV2,
         reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
     },
+    ActivatePricingReleaseV2 {
+        request: PricingReleaseActivationRequestV2,
+        runtime_manifest: PricingRuntimeManifestEvidence,
+        reply: oneshot::Sender<anyhow::Result<PricingReleaseActivationOutcomeV2>>,
+    },
     ApplyFundingNormalizationV2 {
         account_id: String,
         request: FundingNormalizationApplyRequestV2,
@@ -2514,6 +2520,11 @@ impl AsyncBilling {
                             "pricing release v2 authority requires PostgreSQL"
                         )));
                     }
+                    WriteCmd::ActivatePricingReleaseV2 { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "pricing release v2 authority requires PostgreSQL"
+                        )));
+                    }
                     WriteCmd::ApplyFundingNormalizationV2 { reply, .. } => {
                         let _ = reply.send(Err(anyhow::anyhow!(
                             "funding normalization v2 authority requires PostgreSQL"
@@ -3396,6 +3407,22 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
+                        WriteCmd::ActivatePricingReleaseV2 {
+                            request,
+                            runtime_manifest,
+                            reply,
+                        } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "pricing release v2 activation",
+                                |pg| {
+                                    pg.activate_pricing_release_v2(&request, &runtime_manifest)
+                                },
+                            );
+                            let _ = reply.send(result);
+                        }
                         WriteCmd::ApplyFundingNormalizationV2 {
                             account_id,
                             request,
@@ -4074,6 +4101,25 @@ impl AsyncBilling {
         let (reply, result) = oneshot::channel();
         self.writer
             .send(WriteCmd::PreparePricingReleaseAssignmentExtensionV2 { extension, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    pub async fn activate_pricing_release_v2(
+        &self,
+        request: PricingReleaseActivationRequestV2,
+        runtime_manifest: PricingRuntimeManifestEvidence,
+    ) -> anyhow::Result<PricingReleaseActivationOutcomeV2> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::ActivatePricingReleaseV2 {
+                request,
+                runtime_manifest,
+                reply,
+            })
             .await
             .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
         result

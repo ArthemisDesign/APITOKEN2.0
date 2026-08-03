@@ -241,12 +241,15 @@ target остаётся generation 3 до отдельной новой additive
 funding generation или live consumer. Зависимый producer/runtime допускается только после зелёных
 production migration/watchdog exact schema SHA.
 
-Первый зависимый engine producer добавляет PostgreSQL-only `/admin/pricing/v2/*` prepare/read:
-immutable policy/release/recovery link, полный cursor inventory и nullable release head. В нём нет
-activation route и он не публикует v2 runtime-capability claim, поэтому подготовленные rows остаются
-dormant и не могут изменить data-plane. После зелёного `deploy/watchdog` exact producer SHA строгие
-wire-схемы и typed prepare/read methods добавляются в `packages/contracts` и
-`packages/engine-client`; activation method и вызывающий application job по-прежнему отсутствуют.
+Первый зависимый engine producer добавил PostgreSQL-only `/admin/pricing/v2/*` prepare/read:
+immutable policy/release/recovery link, полный cursor inventory и nullable release head. Следующие
+отдельные checkpoints доставили v2 runtime claims, release-v2 reserve/settlement и post-cutover
+assignment extensions, не создавая head. Текущий producer-first checkpoint добавляет единственный
+`POST /admin/pricing/v2/activate`: короткий evidence-gated `SERIALIZABLE` CAS проверяет exact
+target/recovery lineage, inventory/funding/runtime subdigests и owner epochs, затем атомарно пишет
+evidence, audit и одну head row. В этом SHA нет contracts/client/application consumer, поэтому один
+deploy route не активирует data-plane. Typed transport и durable commerce job подключаются только
+после зелёного `deploy/watchdog` exact producer SHA.
 
 Отдельный pre-cutover writer checkpoint подключает migration 0024 только после её зелёного
 production SHA. Его поведение намеренно account-local:
@@ -418,7 +421,12 @@ funding/runtime lineage у target/recovery, полное assignment-покрыт
 проверяет canonical Rust digest без
 потери i64, дважды сканирует OpenKeys, перечитывает текущие commerce/service identities и
 semantic target/recovery assignments, после чего сохраняет schema-v2 identity на 300 секунд.
-Blocked evidence сохраняется с `passed=false`, а отсутствие local release pair не создаёт строку.
+Legacy-format inflight reservation/outbox остаётся только audit count и больше не добавляется в
+engine blockers; format-aware snapshot остаётся обязательным. Blocked evidence сохраняется с
+`passed=false`, а отсутствие local release pair не создаёт строку.
+После exact target CAS engine Stage 8 переключает inventory-проверку на immutable base плюс exact
+paired assignment extensions и их live funding parity. Поэтому новый account не делает fresh
+recovery evidence недостижимым после истечения исходного TTL.
 Stage 9 принимает только fresh persisted `passed=true` identity и повторно проверяет authority.
 `sales_contract_digest` фиксирует ожидаемый `paid_funded_nano` contract, но deployed sales runtime
 доказывается отдельным checkpoint. Producer намеренно остаётся blocked, пока все live engine
@@ -429,7 +437,10 @@ checkpoint, а не обходится ослаблением Stage 8.
 ### Stage 9 — one-head activation
 
 Canary planner удаляется. Единственное apply-действие — CAS active release head для всего
-production inventory. Stage 9 не останавливает сервис и не требует ручной финансовой подписи.
+production inventory. Engine producer уже реализует cutover из absent head, exact lost-ACK replay и
+forward recovery из complete target head. До отдельного commerce consumer route остаётся без
+внутреннего caller и не может активироваться сам. Stage 9 не останавливает сервис и не требует
+ручной финансовой подписи.
 
 ## 9. Контракты UI и API
 

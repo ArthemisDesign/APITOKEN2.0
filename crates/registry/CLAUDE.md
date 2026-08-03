@@ -209,8 +209,9 @@ side effect. `serve` may only perform the read-only schema verification before c
   active main/openkeys graph, classifications и полного actual→shadow покрытия он перечитывает
   prepared target/recovery releases и recovery link, сверяет оба full-inventory assignment set,
   их общий funding identity, live funding heads/lots с aggregate, текущие canonical
-  `engine_inventory_digest`/`funding_digest`, target rule precedence и ноль незавершённого
-  legacy-format inflight. Compile-fixed pricing capability и отдельный release schema version не
+  `engine_inventory_digest`/`funding_digest`, target rule precedence и наблюдаемый audit count
+  незавершённого legacy-format inflight без требования нуля. Compile-fixed pricing capability и
+  отдельный release schema version не
   смешиваются: каждый live `engine_instances` обязан заявить release/funding schema v2 и
   непустой runtime digest; отсутствие хотя бы одного такого claim — blocker до отдельного Stage 9
   runtime checkpoint. `shadow_digest`, `runtime_floor_digest` и весь report получают canonical
@@ -218,6 +219,10 @@ side effect. `serve` may only perform the read-only schema verification before c
   usage/outbox остаются bounded audit counts, но не заменяют обязательные Google actual snapshots
   и shadow evaluations. Subject identities выходят только как SHA-256 digests. Report ничего не
   активирует и не исправляет; любой blocker должен остановить Stage 9.
+  При absent release head inventory означает полный base manifest для cutover. При exact target
+  head тот же endpoint строит fresh recovery evidence по immutable base inventory и принимает
+  post-cutover account только через exact paired target/recovery extension с live funding parity;
+  другой active head является blocker.
 - **Целевой Stage 5/6/9 контракт:** authoritative inventories полностью заменяют ручную assignment
   matrix. Funding normalizes online account-local transactions: exact historical welcome остаётся
   bonus, residual считается paid; новые grants `$5`, reviewer artifact и global money drain не
@@ -274,8 +279,8 @@ side effect. `serve` may only perform the read-only schema verification before c
   процесса через `ON CONFLICT`. Dependent claim writer доставляется только после GREEN migration
   SHA.
 - **Stage 9 zero-drain/provisioning schema checkpoint:** migration `0026` ослабляет только
-  DB-ограничение Stage 8 evidence: `legacy_inflight_count` остаётся обязательным audit count, но
-  будущий producer сможет выдать `passed=true` при нуле реальных blockers, пока запросы старого
+  DB-ограничение Stage 8 evidence: `legacy_inflight_count` остаётся обязательным audit count, а
+  engine report теперь выдаёт `passed=true` при нуле реальных blockers, пока запросы старого
   формата штатно завершаются по своим immutable snapshots. Та же migration создаёт пустую
   append-only `pricing_release_assignment_extensions_v2` для аккаунтов, появившихся после cutover.
   Каждая extension привязана к exact текущему head activation и атомарной active/recovery pair;
@@ -288,11 +293,20 @@ side effect. `serve` may only perform the read-only schema verification before c
   snapshot. SQLite остаётся unavailable; route не создаёт и не двигает head. Real-PG coverage —
   `pg::tests::pricing_release_runtime_v2_postgres_matrix`.
 - **Pricing release v2 producer checkpoint:** `pricing::release_v2` и PostgreSQL persistence
-  добавляют только append-only policy/release/recovery prepare и read-only inventory/head. Release
+  добавляют append-only policy/release/recovery prepare и read-only inventory/head. Release
   prepare проверяет exact full-account coverage (`active` + `disabled`) и готовые funding
   dependencies. Disabled account намеренно остаётся в immutable release, чтобы последующее
-  включение не создавало дыру в policy/funding authority. Ни один метод не создаёт
-  `pricing_release_head_v2`; SQLite возвращает unavailable вместо локальной authority.
+  включение не создавало дыру в policy/funding authority. SQLite возвращает unavailable вместо
+  локальной authority.
+- **Stage 9 activation producer:** `postgres_activate_pricing_release_v2` — единственный writer
+  global head. В одной `SERIALIZABLE` transaction под `PRICING_RELEASE_CONTROL_LOCK_V2` он требует
+  fresh combined evidence, exact absent/target CAS, immutable target/recovery link, current
+  catalog/switch lineage, full base inventory (или exact paired extensions при recovery), funding
+  parity и compile-fixed runtime floor с exact owner-epoch claims. Evidence, activation audit и одна
+  head row commit'ятся вместе; rejection целиком rollback'ится. Exact audit replay возвращает
+  `unchanged`, recovery идёт только вперёд из target. Accounts, balances, lots, reservations,
+  ledger/usage не пишутся. Real-PG coverage —
+  `pg::tests::postgres_stage8_engine_evidence_contract`.
 - **Pricing release v2 runtime foundation:** PostgreSQL resolver читает head, assignment, policy,
   catalog/switch gates и rule precedence `model → provider → global` одним snapshot; service
   `meter_only` обходит product catalog, но сохраняет provider master-switch. Reserve повторно
@@ -305,7 +319,8 @@ side effect. `serve` may only perform the read-only schema verification before c
   разрешён только exact terminal replay без повторной money mutation. Provider adapter передаёт уже
   рассчитанный customer debit; registry проверяет provider, non-negative usage и потолок
   `hold+$1`, но не пересчитывает debit из full official usage (Codex может честно ограничить billed
-  output). Этот runtime не активирует head и до отдельного Stage 9 producer остаётся dormant.
+  output). Runtime сам не вызывает activation producer: до отдельного защищённого commerce consumer
+  head остаётся absent.
 
 **Инварианты:**
 - Токен разрешается из колонки `token` (inline) ИЛИ файла `token_file`. `import_sqlite` refuses a

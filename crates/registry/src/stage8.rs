@@ -373,6 +373,32 @@ pub(crate) fn engine_inventory_digest<C: GenericClient>(client: &mut C) -> Resul
     )
 }
 
+pub(crate) fn release_base_inventory_digest_v2<C: GenericClient>(
+    client: &mut C,
+    release_generation: i64,
+) -> Result<String> {
+    let rows = client.query(
+        "SELECT account.id,account.status,account.mult_bp \
+         FROM pricing_release_assignments assignment \
+         JOIN accounts account ON account.id=assignment.account_id \
+         WHERE assignment.release_generation=$1 \
+         ORDER BY account.id COLLATE \"C\"",
+        &[&release_generation],
+    )?;
+    let identities = rows
+        .iter()
+        .map(|row| EngineInventoryIdentity {
+            account_id: row.get(0),
+            multiplier_bp: row.get(2),
+            status: row.get(1),
+        })
+        .collect::<Vec<_>>();
+    sha256_v2_json(
+        b"pricing-stage5-v2:engine-identity-inventory\n",
+        &identities,
+    )
+}
+
 pub(crate) fn funding_manifest_digest<C: GenericClient>(
     client: &mut C,
     release: Option<&PricingReleaseV2>,
@@ -418,6 +444,79 @@ pub(crate) fn funding_manifest_digest<C: GenericClient>(
             value: identities,
         },
     )
+}
+
+pub(crate) struct RuntimeFloorCheckV2 {
+    pub digest: String,
+    pub live_instances: i64,
+    pub compatible_instances: i64,
+    pub incompatible_instance_ids: Vec<String>,
+}
+
+pub(crate) fn runtime_floor_check_v2<C: GenericClient>(
+    client: &mut C,
+    captured_ts: i64,
+    minimum_runtime_schema_version: i64,
+    runtime_manifest: &PricingRuntimeManifestEvidence,
+) -> Result<RuntimeFloorCheckV2> {
+    let rows = client.query(
+        "SELECT instance_id,pricing_release_schema_version,funding_schema_version, \
+                pricing_release_runtime_digest,owner_epoch,pricing_release_claim_epoch \
+         FROM engine_instances WHERE lease_until >= $1 \
+         ORDER BY instance_id COLLATE \"C\"",
+        &[&captured_ts],
+    )?;
+    let incompatible_instance_ids = rows
+        .iter()
+        .filter_map(|row| {
+            let release_schema = row.get::<_, Option<i64>>(1);
+            let funding_schema = row.get::<_, Option<i64>>(2);
+            let runtime_digest = row.get::<_, Option<String>>(3);
+            let owner_epoch = row.get::<_, i64>(4);
+            let claim_epoch = row.get::<_, Option<i64>>(5);
+            (release_schema.is_none_or(|version| version < minimum_runtime_schema_version)
+                || funding_schema.is_none_or(|version| version < PRICING_RELEASE_SCHEMA_VERSION)
+                || runtime_digest.as_deref()
+                    != Some(crate::pricing::PRICING_RELEASE_RUNTIME_DIGEST_V2)
+                || claim_epoch != Some(owner_epoch))
+            .then(|| row.get::<_, String>(0))
+        })
+        .collect::<Vec<_>>();
+    let runtime_manifest = manifest_evidence(runtime_manifest);
+    let runtime_floor_parts = rows
+        .iter()
+        .map(|row| {
+            format!(
+                "{}\0{}\0{}\0{}\0{}\0{}",
+                row.get::<_, String>(0),
+                row.get::<_, Option<i64>>(1)
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                row.get::<_, Option<i64>>(2)
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                row.get::<_, Option<String>>(3).unwrap_or_default(),
+                row.get::<_, i64>(4),
+                row.get::<_, Option<i64>>(5)
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+            )
+        })
+        .chain(std::iter::once(format!(
+            "manifest\0{}\0{}",
+            runtime_manifest.generation, runtime_manifest.digest
+        )))
+        .collect::<Vec<_>>();
+    let live_instances = rows.len() as i64;
+    Ok(RuntimeFloorCheckV2 {
+        digest: digest_parts(
+            b"claude-api/stage8-v2/runtime-floor\0",
+            runtime_floor_parts.iter(),
+        ),
+        live_instances,
+        compatible_instances: live_instances - incompatible_instance_ids.len() as i64,
+        incompatible_instance_ids,
+    })
 }
 
 fn insufficient_provider_coverage(counts: &BTreeMap<String, i64>, minimum: i64) -> Vec<String> {
@@ -524,8 +623,30 @@ pub(crate) fn postgres_stage8_engine_evidence(
             head_version: row.get(2),
             updated_ts: row.get(3),
         });
-    let current_inventory_digest = engine_inventory_digest(&mut transaction)?;
+    let recovery_evidence_mode = active_release_head.as_ref().is_some_and(|head| {
+        head.active_generation == request.target_generation
+            && target.as_ref().is_some_and(|release| {
+                release.release_kind == PricingReleaseKindV2::Target
+                    && head.active_digest == release.content_digest
+            })
+    });
+    let current_inventory_digest = if recovery_evidence_mode {
+        release_base_inventory_digest_v2(&mut transaction, request.target_generation)?
+    } else {
+        engine_inventory_digest(&mut transaction)?
+    };
     let current_funding_digest = funding_manifest_digest(&mut transaction, target.as_ref())?;
+
+    if active_release_head.is_some() && !recovery_evidence_mode {
+        push_subjects(
+            &mut blockers,
+            "active_release_head_outside_requested_target",
+            vec![active_release_head
+                .as_ref()
+                .map(|head| format!("{}:{}", head.active_generation, head.head_version))
+                .unwrap_or_default()],
+        );
+    }
 
     if target.is_none() {
         push_subjects(
@@ -690,33 +811,95 @@ pub(crate) fn postgres_stage8_engine_evidence(
             &format!("{label}_release_assignment_inventory_drift"),
             "SELECT subject FROM( \
                SELECT 'account:'||account.id subject FROM accounts account \
-               LEFT JOIN pricing_release_assignments assignment \
-                 ON assignment.release_generation=$1 AND assignment.account_id=account.id \
-               WHERE assignment.account_id IS NULL \
+               WHERE NOT EXISTS( \
+                   SELECT 1 FROM pricing_release_assignments assignment \
+                   WHERE assignment.release_generation=$1 AND assignment.account_id=account.id) \
+                 AND NOT($2 AND EXISTS( \
+                   SELECT 1 FROM pricing_release_assignment_extensions_v2 extension \
+                   WHERE extension.release_generation=$1 AND extension.account_id=account.id \
+                     AND extension.provisioning_head_generation=$3 \
+                     AND extension.provisioning_head_digest=$4 \
+                     AND extension.provisioning_head_version=$5 \
+                     AND extension.paired_recovery_generation=$6 \
+                     AND extension.paired_recovery_digest=$7)) \
                UNION ALL \
                SELECT 'assignment:'||assignment.account_id FROM pricing_release_assignments assignment \
                LEFT JOIN accounts account ON account.id=assignment.account_id \
                WHERE assignment.release_generation=$1 AND account.id IS NULL \
              ) drift",
-            &[&generation],
+            &[
+                &generation,
+                &recovery_evidence_mode,
+                &request.target_generation,
+                &target
+                    .as_ref()
+                    .map(|release| release.content_digest.as_str())
+                    .unwrap_or_default(),
+                &active_release_head
+                    .as_ref()
+                    .map(|head| head.head_version)
+                    .unwrap_or(0),
+                &request.recovery_generation,
+                &recovery
+                    .as_ref()
+                    .map(|release| release.content_digest.as_str())
+                    .unwrap_or_default(),
+            ],
         )?;
         query_blocker(
             &mut transaction,
             &mut blockers,
             &format!("{label}_release_funding_head_drift"),
-            "SELECT assignment.account_id FROM pricing_release_assignments assignment \
+            "WITH assignment AS( \
+               SELECT account_id,billing_mode,funding_generation \
+                 FROM pricing_release_assignments WHERE release_generation=$1 \
+               UNION \
+               SELECT account_id,billing_mode,funding_generation \
+                 FROM pricing_release_assignment_extensions_v2 \
+                 WHERE $2 AND release_generation=$1 \
+                   AND provisioning_head_generation=$3 AND provisioning_head_digest=$4 \
+                   AND provisioning_head_version=$5 \
+                   AND paired_recovery_generation=$6 AND paired_recovery_digest=$7 \
+             ) SELECT assignment.account_id FROM assignment \
              LEFT JOIN account_funding_head_v2 head ON head.account_id=assignment.account_id \
-             WHERE assignment.release_generation=$1 AND assignment.billing_mode='balance' \
+             WHERE assignment.billing_mode='balance' \
                AND head.active_generation IS DISTINCT FROM assignment.funding_generation",
-            &[&generation],
+            &[
+                &generation,
+                &recovery_evidence_mode,
+                &request.target_generation,
+                &target
+                    .as_ref()
+                    .map(|release| release.content_digest.as_str())
+                    .unwrap_or_default(),
+                &active_release_head
+                    .as_ref()
+                    .map(|head| head.head_version)
+                    .unwrap_or(0),
+                &request.recovery_generation,
+                &recovery
+                    .as_ref()
+                    .map(|release| release.content_digest.as_str())
+                    .unwrap_or_default(),
+            ],
         )?;
     }
     query_blocker(
         &mut transaction,
         &mut blockers,
         "target_release_funding_v2_aggregate_mismatch",
-        "SELECT assignment.account_id \
-         FROM pricing_release_assignments assignment \
+        "WITH assignment AS( \
+           SELECT account_id,billing_mode,funding_generation \
+             FROM pricing_release_assignments WHERE release_generation=$1 \
+           UNION \
+           SELECT account_id,billing_mode,funding_generation \
+             FROM pricing_release_assignment_extensions_v2 \
+             WHERE $2 AND release_generation=$1 \
+               AND provisioning_head_generation=$1 AND provisioning_head_digest=$3 \
+               AND provisioning_head_version=$4 \
+               AND paired_recovery_generation=$5 AND paired_recovery_digest=$6 \
+         ) SELECT assignment.account_id \
+         FROM assignment \
          JOIN accounts account ON account.id=assignment.account_id \
          LEFT JOIN account_funding_head_v2 head ON head.account_id=assignment.account_id \
          LEFT JOIN account_funding_generations_v2 generation \
@@ -732,7 +915,7 @@ pub(crate) fn postgres_stage8_engine_evidence(
            WHERE lot.account_id=assignment.account_id \
              AND lot.funding_generation=assignment.funding_generation \
          ) lots ON true \
-         WHERE assignment.release_generation=$1 AND assignment.billing_mode='balance' \
+         WHERE assignment.billing_mode='balance' \
            AND( head.active_generation IS DISTINCT FROM assignment.funding_generation \
              OR generation.account_id IS NULL OR lots.lot_count=0 OR lots.paid_count=0 \
              OR generation.balance_nano::numeric<>account.balance_nano::numeric \
@@ -741,7 +924,23 @@ pub(crate) fn postgres_stage8_engine_evidence(
              OR lots.balance_nano<>generation.balance_nano::numeric \
              OR lots.reserved_nano<>generation.reserved_nano::numeric \
              OR lots.spent_nano<>generation.spent_nano::numeric)",
-        &[&request.target_generation],
+        &[
+            &request.target_generation,
+            &recovery_evidence_mode,
+            &target
+                .as_ref()
+                .map(|release| release.content_digest.as_str())
+                .unwrap_or_default(),
+            &active_release_head
+                .as_ref()
+                .map(|head| head.head_version)
+                .unwrap_or(0),
+            &request.recovery_generation,
+            &recovery
+                .as_ref()
+                .map(|release| release.content_digest.as_str())
+                .unwrap_or_default(),
+        ],
     )?;
 
     query_blocker(
@@ -1019,8 +1218,28 @@ pub(crate) fn postgres_stage8_engine_evidence(
         "SELECT evaluation.request_id \
          FROM pricing_shadow_admission_evaluations evaluation \
          JOIN pricing_admission_snapshots snapshot ON snapshot.request_id=evaluation.request_id \
-         LEFT JOIN pricing_release_assignments assignment \
-           ON assignment.release_generation=$3 AND assignment.account_id=evaluation.account_id \
+         LEFT JOIN LATERAL( \
+           SELECT candidate.account_id,candidate.policy_id,candidate.policy_version, \
+                  candidate.billing_mode \
+           FROM( \
+             SELECT assignment.account_id,assignment.policy_id,assignment.policy_version, \
+                    assignment.billing_mode,0 priority \
+             FROM pricing_release_assignments assignment \
+             WHERE assignment.release_generation=$3 \
+               AND assignment.account_id=evaluation.account_id \
+             UNION ALL \
+             SELECT extension.account_id,extension.policy_id,extension.policy_version, \
+                    extension.billing_mode,1 priority \
+             FROM pricing_release_assignment_extensions_v2 extension \
+             WHERE $4 AND extension.release_generation=$3 \
+               AND extension.account_id=evaluation.account_id \
+               AND extension.provisioning_head_generation=$3 \
+               AND extension.provisioning_head_digest=$5 \
+               AND extension.provisioning_head_version=$6 \
+               AND extension.paired_recovery_generation=$7 \
+               AND extension.paired_recovery_digest=$8 \
+           ) candidate ORDER BY candidate.priority LIMIT 1 \
+         ) assignment ON true \
          LEFT JOIN LATERAL( \
            SELECT rule.payable_multiplier_bp \
            FROM pricing_release_policy_rules rule \
@@ -1043,6 +1262,20 @@ pub(crate) fn postgres_stage8_engine_evidence(
             &request.window_start_ts,
             &request.window_end_ts,
             &request.target_generation,
+            &recovery_evidence_mode,
+            &target
+                .as_ref()
+                .map(|release| release.content_digest.as_str())
+                .unwrap_or_default(),
+            &active_release_head
+                .as_ref()
+                .map(|head| head.head_version)
+                .unwrap_or(0),
+            &request.recovery_generation,
+            &recovery
+                .as_ref()
+                .map(|release| release.content_digest.as_str())
+                .unwrap_or_default(),
         ],
     )?;
     query_blocker(
@@ -1208,89 +1441,31 @@ pub(crate) fn postgres_stage8_engine_evidence(
         shadow_evaluation_digests.iter(),
     );
 
-    let live_runtime_rows = transaction.query(
-        "SELECT instance_id,pricing_release_schema_version,funding_schema_version, \
-                pricing_release_runtime_digest,owner_epoch,pricing_release_claim_epoch \
-         FROM engine_instances WHERE lease_until >= $1 \
-         ORDER BY instance_id COLLATE \"C\"",
-        &[&captured_ts],
-    )?;
     let minimum_runtime_schema_version = target
         .as_ref()
         .map(|release| release.minimum_runtime_schema_version)
         .unwrap_or(PRICING_RELEASE_SCHEMA_VERSION);
-    let release_capable_runtime_instances = live_runtime_rows
-        .iter()
-        .filter(|row| {
-            row.get::<_, Option<i64>>(1)
-                .is_some_and(|version| version >= minimum_runtime_schema_version)
-                && row
-                    .get::<_, Option<i64>>(2)
-                    .is_some_and(|version| version >= PRICING_RELEASE_SCHEMA_VERSION)
-                && row.get::<_, Option<String>>(3).as_deref()
-                    == Some(crate::pricing::PRICING_RELEASE_RUNTIME_DIGEST_V2)
-                && row.get::<_, Option<i64>>(5) == Some(row.get::<_, i64>(4))
-        })
-        .count() as i64;
-    if release_capable_runtime_instances != live_runtime_rows.len() as i64 {
-        let incapable = live_runtime_rows
-            .iter()
-            .filter_map(|row| {
-                let release_schema = row.get::<_, Option<i64>>(1);
-                let funding_schema = row.get::<_, Option<i64>>(2);
-                let runtime_digest = row.get::<_, Option<String>>(3);
-                let owner_epoch = row.get::<_, i64>(4);
-                let claim_epoch = row.get::<_, Option<i64>>(5);
-                (release_schema.is_none_or(|version| version < minimum_runtime_schema_version)
-                    || funding_schema
-                        .is_none_or(|version| version < PRICING_RELEASE_SCHEMA_VERSION)
-                    || runtime_digest.as_deref()
-                        != Some(crate::pricing::PRICING_RELEASE_RUNTIME_DIGEST_V2)
-                    || claim_epoch != Some(owner_epoch))
-                .then(|| row.get::<_, String>(0))
-            })
-            .collect();
+    let runtime_floor = runtime_floor_check_v2(
+        &mut transaction,
+        captured_ts,
+        minimum_runtime_schema_version,
+        &request.runtime_manifest,
+    )?;
+    if !runtime_floor.incompatible_instance_ids.is_empty() {
         push_subjects(
             &mut blockers,
             "live_runtime_below_release_v2_floor",
-            incapable,
+            runtime_floor.incompatible_instance_ids.clone(),
         );
     }
-    if live_runtime_rows.is_empty() {
+    if runtime_floor.live_instances == 0 {
         push_subjects(
             &mut blockers,
             "live_runtime_floor_unobserved",
             vec!["engine-instances".to_owned()],
         );
     }
-    let runtime_floor_parts = live_runtime_rows
-        .iter()
-        .map(|row| {
-            format!(
-                "{}\0{}\0{}\0{}\0{}\0{}",
-                row.get::<_, String>(0),
-                row.get::<_, Option<i64>>(1)
-                    .map(|value| value.to_string())
-                    .unwrap_or_default(),
-                row.get::<_, Option<i64>>(2)
-                    .map(|value| value.to_string())
-                    .unwrap_or_default(),
-                row.get::<_, Option<String>>(3).unwrap_or_default(),
-                row.get::<_, i64>(4),
-                row.get::<_, Option<i64>>(5)
-                    .map(|value| value.to_string())
-                    .unwrap_or_default(),
-            )
-        })
-        .chain(std::iter::once(format!(
-            "manifest\0{}\0{}",
-            runtime_manifest.generation, runtime_manifest.digest
-        )))
-        .collect::<Vec<_>>();
-    let runtime_floor_digest = digest_parts(
-        b"claude-api/stage8-v2/runtime-floor\0",
-        runtime_floor_parts.iter(),
-    );
+    let runtime_floor_digest = runtime_floor.digest;
 
     let legacy_inflight_reservations = query_count(
         &mut transaction,
@@ -1309,29 +1484,6 @@ pub(crate) fn postgres_stage8_engine_evidence(
     let legacy_inflight_count = legacy_inflight_reservations
         .checked_add(legacy_inflight_outbox_rows)
         .context("Stage 8 legacy inflight count overflow")?;
-    if legacy_inflight_reservations != 0 {
-        query_blocker(
-            &mut transaction,
-            &mut blockers,
-            "legacy_inflight_reservation",
-            "SELECT reservation.request_id FROM reservations reservation \
-             LEFT JOIN pricing_request_snapshots_v2 snapshot \
-               ON snapshot.request_id=reservation.request_id \
-             WHERE reservation.state NOT IN('settled','canceled') AND snapshot.request_id IS NULL",
-            &[],
-        )?;
-    }
-    if legacy_inflight_outbox_rows != 0 {
-        query_blocker(
-            &mut transaction,
-            &mut blockers,
-            "legacy_inflight_settlement_outbox",
-            "SELECT request_id FROM settlement_outbox \
-             WHERE state<>'done' AND release_schema_version IS NULL",
-            &[],
-        )?;
-    }
-
     blockers.sort_by(|left, right| left.code.cmp(&right.code));
     let total_accounts = query_count(
         &mut transaction,
@@ -1400,8 +1552,8 @@ pub(crate) fn postgres_stage8_engine_evidence(
             policy_divergence_rows: parity.1,
             gemini_usage_rows,
             gemini_outbox_rows,
-            live_runtime_instances: live_runtime_rows.len() as i64,
-            release_capable_runtime_instances,
+            live_runtime_instances: runtime_floor.live_instances,
+            release_capable_runtime_instances: runtime_floor.compatible_instances,
             legacy_inflight_reservations,
             legacy_inflight_outbox_rows,
         },

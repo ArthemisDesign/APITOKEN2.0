@@ -29,11 +29,15 @@ precondition.
 
 ## Apply
 
-Protected control-plane передаёт exact target release digest, combined Stage 8 evidence digest и
-reason. До вызова engine CAS он требует exact immutable commerce row с `passed=true`, проверяет
+Protected control-plane передаёт exact target/recovery engine release digests, combined Stage 8
+evidence identity, source engine capture time/subdigests, complete expected head, operator и reason.
+До вызова engine CAS он требует exact immutable commerce row с `passed=true`, проверяет
 `valid_until` и заново сверяет commerce/service/OpenKeys authority с target/recovery. Engine
 открывает короткую `SERIALIZABLE` transaction под release advisory lock, повторяет engine-side
-freshness/coverage checks и CAS-продвигает одну head row на target generation.
+freshness/coverage checks: immutable pair/link и active catalog/switch lineage, base inventory,
+funding manifest/parity, exact runtime-floor digest и owner-epoch claim каждого live instance. Затем
+он CAS-продвигает одну head row на target generation. Evidence/audit/head либо commit'ятся вместе,
+либо целиком откатываются.
 
 Apply не обновляет account bindings, balances, reservations или ledger rows по одному. После
 commit новый reserve любого аккаунта читает target release. Reservation, созданная до commit,
@@ -43,7 +47,8 @@ settle'ится по сохранённому прежнему snapshot.
 привязанную к exact текущему head и его prepared recovery. Исходный full-inventory manifest не
 переписывается; exact extension pair добавляется одной транзакцией под тем же control-plane lock.
 
-Exact replay возвращает `unchanged`. Stale evidence, inventory drift, неподдержанный runtime или
+Exact replay сверяется с durable activation audit и возвращает `unchanged`, даже если ACK был
+потерян, а исходный TTL затем истёк. Stale evidence, inventory drift, неподдержанный runtime или
 унаследованный от чужого owner epoch claim, неполная funding generation либо CAS mismatch
 отклоняются до mutation. Отказ не требует выключать
 traffic: старый release продолжает обслуживаться.
@@ -53,6 +58,13 @@ traffic: старый release продолжает обслуживаться.
 Recovery release готовится до apply и имеет следующую monotonic generation. При автоматическом
 post-activation blocker выполняется forward CAS на recovery head; это не возврат к старому binary и
 не удаление target artifacts.
+
+Recovery принимает только complete exact target head из cutover receipt. Новые после cutover
+accounts не переписывают base manifest: перед forward CAS engine требует их атомарные
+target/recovery assignment extensions и проверяет их active funding heads. Поэтому recovery
+остаётся одним head write и не превращается в N-account rollback. Fresh engine evidence в этом
+состоянии сохраняет base inventory digest, но считает каждый новый account покрытым только exact
+paired extension; recovery не ограничена TTL исходного cutover evidence.
 
 Recovery trigger'ы включают системный рост pricing/admission failures, funding invariant failures,
 settlement backlog и расхождение active release readback. Единичный provider outage обрабатывается

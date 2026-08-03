@@ -20,10 +20,14 @@ pub use policy::{
 };
 pub(crate) use release_v2::build_pricing_request_snapshot_v2;
 pub use release_v2::{
-    validate_pricing_release_assignment_extension_v2, validate_pricing_release_policy_v2,
-    validate_pricing_release_recovery_link_v2, validate_pricing_release_v2, BillingModeV2,
-    LegacyPricingPathClosedV2, PricingReleaseAssignmentExtensionMemberV2,
-    PricingReleaseAssignmentExtensionV2, PricingReleaseAssignmentV2, PricingReleaseHeadV2,
+    validate_pricing_release_activation_v2, validate_pricing_release_assignment_extension_v2,
+    validate_pricing_release_policy_v2, validate_pricing_release_recovery_link_v2,
+    validate_pricing_release_v2, BillingModeV2, LegacyPricingPathClosedV2,
+    PricingReleaseActivationEvidenceV2, PricingReleaseActivationKindV2,
+    PricingReleaseActivationOutcomeV2, PricingReleaseActivationReceiptV2,
+    PricingReleaseActivationRejectionV2, PricingReleaseActivationRequestV2,
+    PricingReleaseAssignmentExtensionMemberV2, PricingReleaseAssignmentExtensionV2,
+    PricingReleaseAssignmentV2, PricingReleaseHeadExpectationV2, PricingReleaseHeadV2,
     PricingReleaseInventoryAccountV2, PricingReleaseInventoryPageV2, PricingReleaseKindV2,
     PricingReleasePolicyRuleV2, PricingReleasePolicyV2, PricingReleaseQuoteV2,
     PricingReleaseRecoveryLinkV2, PricingReleaseReserveConflictV2, PricingReleaseReserveOutcomeV2,

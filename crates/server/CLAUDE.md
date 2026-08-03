@@ -63,7 +63,9 @@
   Post-cutover `/admin/pricing/v2/assignment-extension/prepare` atomically appends the exact
   current-head active/recovery assignment pair, and
   `GET /admin/pricing/v2/assignment-extension/{head_version}/{account_id}` provides exact readback.
-  Both remain PostgreSQL-only actor calls; they do not issue keys or expose an activation mutation.
+  Both remain PostgreSQL-only actor calls and do not issue keys. Отдельный
+  `POST /admin/pricing/v2/activate` принимает strict fresh-evidence/CAS body и является единственной
+  release-head mutation.
   Key issue/list also carries optional `spend_limit_nano`/`expires_ts` policy metadata. The
   account-scoped `/admin/account/{id}/key-id/{key_id}/policy` endpoint replaces both nullable
   guardrails; validation is at this HTTP boundary while enforcement remains in registry reservation
@@ -199,14 +201,16 @@
   Anthropic exact-capacity/coverage/delivery gauges, а также три execution-not-started series.
   Raw client IDs, prompt content, account IDs, model IDs, credential/group/request identity и
   subscription IDs в Redis/метрики не попадают.
-- Stage 9 runtime delivery не активирует production pricing release. Stage 5/6 materialization и
-  full-inventory Stage 8 evidence должны завершиться до одного global release-head CAS. Ручной
+- Stage 9 runtime delivery сам не активирует production pricing release. Stage 5/6 materialization
+  и full-inventory Stage 8 evidence должны завершиться до одного global release-head CAS. Ручной
   assignment matrix, canary accounts, maintenance window и zero-active-reservations gate не
   используются; authoritative inventories обязаны покрыть все accounts exact.
-- `/admin/pricing/v2/*` пока является producer-first surface: immutable policy/release/recovery,
-  cursor inventory, nullable head и account-local funding normalization. Activation нельзя
-  добавлять до реализации Stage 8 freshness/runtime-floor/provisioning-race проверок и одного
-  global CAS.
+- `/admin/pricing/v2/*` является producer-first surface: immutable policy/release/recovery, cursor
+  inventory, nullable head, account-local funding normalization и один activation CAS. Handler
+  передаёт compile-fixed runtime manifest; registry повторно проверяет evidence TTL,
+  inventory/funding/runtime owner epochs и атомарно пишет evidence/audit/head. Contracts/client и
+  durable commerce caller добавляются только после GREEN exact producer SHA; поэтому deploy route
+  сам по себе не меняет traffic.
 - **loopback-доверие — только явный opt-in** `CLAUDE_API_TRUST_LOOPBACK=1` + реальный loopback-bind
   (иначе за реверс-прокси аноним получил бы админ-доступ).
 - Shutdown OpenAI сначала ждёт detached Codex stream/history/settlement tasks (нативный провайдер

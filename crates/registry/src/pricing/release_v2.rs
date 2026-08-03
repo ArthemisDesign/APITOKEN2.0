@@ -44,6 +44,13 @@ pub enum PricingReleaseKindV2 {
     Recovery,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PricingReleaseActivationKindV2 {
+    Cutover,
+    Recovery,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "scope", deny_unknown_fields)]
 pub enum PricingReleaseRuleScopeV2 {
@@ -163,6 +170,116 @@ pub struct PricingReleaseHeadV2 {
     pub active_digest: String,
     pub head_version: i64,
     pub updated_ts: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PricingReleaseHeadExpectationV2 {
+    Absent,
+    Exact(PricingReleaseHeadV2),
+}
+
+/// Fresh combined Stage 8 identity supplied by the protected commerce control plane.
+///
+/// The combined digest is an audit link to commerce authority; it is not trusted as engine
+/// authority. Activation recomputes the three mutable engine subdigests inside the head CAS
+/// transaction and persists this exact identity only when every comparison succeeds.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingReleaseActivationEvidenceV2 {
+    pub evidence_digest: String,
+    pub target_generation: i64,
+    pub target_digest: String,
+    pub recovery_generation: i64,
+    pub recovery_digest: String,
+    pub engine_inventory_digest: String,
+    pub funding_digest: String,
+    pub shadow_digest: String,
+    pub runtime_floor_digest: String,
+    pub legacy_inflight_count: i64,
+    pub engine_captured_ts: i64,
+    pub observed_ts: i64,
+    pub valid_until_ts: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingReleaseActivationRequestV2 {
+    pub activation_kind: PricingReleaseActivationKindV2,
+    pub expectation: PricingReleaseHeadExpectationV2,
+    pub evidence: PricingReleaseActivationEvidenceV2,
+    pub operator_id: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingReleaseActivationReceiptV2 {
+    pub activation_id: i64,
+    pub activation_kind: PricingReleaseActivationKindV2,
+    pub from_generation: Option<i64>,
+    pub from_digest: Option<String>,
+    pub expected_head_version: i64,
+    pub head: PricingReleaseHeadV2,
+    pub evidence_digest: String,
+    pub operator_id: String,
+    pub reason: String,
+    pub activated_ts: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PricingReleaseActivationRejectionV2 {
+    Invalid {
+        reason: String,
+    },
+    MissingDependency {
+        dependency: String,
+    },
+    CasMismatch {
+        actual: Option<PricingReleaseHeadV2>,
+    },
+    EvidenceStale {
+        now_ts: i64,
+        observed_ts: i64,
+        valid_until_ts: i64,
+    },
+    EvidenceConflict {
+        evidence_digest: String,
+    },
+    ReleaseLineageDrift {
+        reason: String,
+    },
+    InventoryDrift {
+        expected_digest: String,
+        actual_digest: String,
+    },
+    FundingDrift {
+        expected_digest: String,
+        actual_digest: String,
+    },
+    FundingInvariantDrift {
+        account_count: i64,
+    },
+    RuntimeFloorDrift {
+        expected_digest: String,
+        actual_digest: String,
+    },
+    RuntimeIncompatible {
+        live_instances: i64,
+        compatible_instances: i64,
+    },
+    AuthorityDrift {
+        changed_rows: i64,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PricingReleaseActivationOutcomeV2 {
+    Applied(PricingReleaseActivationReceiptV2),
+    Unchanged(PricingReleaseActivationReceiptV2),
+    Rejected(PricingReleaseActivationRejectionV2),
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -557,6 +674,23 @@ impl PricingReleaseKindV2 {
     }
 }
 
+impl PricingReleaseActivationKindV2 {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cutover => "cutover",
+            Self::Recovery => "recovery",
+        }
+    }
+
+    pub(crate) fn from_db(value: &str) -> Result<Self> {
+        match value {
+            "cutover" => Ok(Self::Cutover),
+            "recovery" => Ok(Self::Recovery),
+            _ => bail!("unknown pricing release activation kind {value:?}"),
+        }
+    }
+}
+
 impl PricingReleaseRuleScopeV2 {
     pub(crate) fn db_parts(&self) -> (&'static str, Option<&str>, Option<&str>) {
         match self {
@@ -941,6 +1075,123 @@ pub fn validate_pricing_release_recovery_link_v2(
     require_id("pricing recovery link digest", &link.link_digest)
 }
 
+pub fn validate_pricing_release_activation_v2(
+    request: &PricingReleaseActivationRequestV2,
+) -> Result<()> {
+    let evidence = &request.evidence;
+    for (label, value) in [
+        (
+            "pricing activation evidence digest",
+            evidence.evidence_digest.as_str(),
+        ),
+        (
+            "pricing activation target digest",
+            evidence.target_digest.as_str(),
+        ),
+        (
+            "pricing activation recovery digest",
+            evidence.recovery_digest.as_str(),
+        ),
+        (
+            "pricing activation inventory digest",
+            evidence.engine_inventory_digest.as_str(),
+        ),
+        (
+            "pricing activation funding digest",
+            evidence.funding_digest.as_str(),
+        ),
+        (
+            "pricing activation shadow digest",
+            evidence.shadow_digest.as_str(),
+        ),
+        (
+            "pricing activation runtime floor digest",
+            evidence.runtime_floor_digest.as_str(),
+        ),
+        ("pricing activation operator", request.operator_id.as_str()),
+        ("pricing activation reason", request.reason.as_str()),
+    ] {
+        require_id(label, value)?;
+    }
+    for (label, value) in [
+        (
+            "pricing activation evidence digest",
+            evidence.evidence_digest.as_str(),
+        ),
+        (
+            "pricing activation inventory digest",
+            evidence.engine_inventory_digest.as_str(),
+        ),
+        (
+            "pricing activation funding digest",
+            evidence.funding_digest.as_str(),
+        ),
+        (
+            "pricing activation shadow digest",
+            evidence.shadow_digest.as_str(),
+        ),
+        (
+            "pricing activation runtime floor digest",
+            evidence.runtime_floor_digest.as_str(),
+        ),
+    ] {
+        let Some(hex) = value.strip_prefix("sha256:v2:") else {
+            bail!("{label} must be a canonical sha256:v2 digest");
+        };
+        if hex.len() != 64
+            || !hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            bail!("{label} must be a canonical sha256:v2 digest");
+        }
+    }
+    if request.operator_id.len() > 200 || request.reason.len() > 2_000 {
+        bail!("pricing activation operator or reason exceeds its storage bound");
+    }
+    if request
+        .operator_id
+        .chars()
+        .chain(request.reason.chars())
+        .any(char::is_control)
+    {
+        bail!("pricing activation operator and reason cannot contain control characters");
+    }
+    if evidence.target_generation <= 0
+        || evidence.recovery_generation <= evidence.target_generation
+        || evidence.legacy_inflight_count < 0
+        || evidence.engine_captured_ts <= 0
+        || evidence.observed_ts <= 0
+        || evidence.engine_captured_ts > evidence.observed_ts.saturating_add(5)
+        || evidence
+            .observed_ts
+            .saturating_sub(evidence.engine_captured_ts)
+            > 120
+        || evidence.valid_until_ts <= evidence.observed_ts
+        || evidence.valid_until_ts - evidence.observed_ts > 300
+    {
+        bail!("pricing activation evidence has invalid generations, counts, or TTL");
+    }
+    match (&request.activation_kind, &request.expectation) {
+        (PricingReleaseActivationKindV2::Cutover, PricingReleaseHeadExpectationV2::Absent) => {}
+        (
+            PricingReleaseActivationKindV2::Recovery,
+            PricingReleaseHeadExpectationV2::Exact(head),
+        ) if head.active_generation == evidence.target_generation
+            && head.active_digest == evidence.target_digest
+            && head.head_version > 0
+            && head.head_version < i64::MAX
+            && head.updated_ts > 0 => {}
+        (PricingReleaseActivationKindV2::Cutover, _) => {
+            bail!("pricing cutover requires an absent release head")
+        }
+        (PricingReleaseActivationKindV2::Recovery, _) => {
+            bail!("pricing recovery requires the exact target release head")
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1103,5 +1354,52 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("exact active/recovery pair"));
+    }
+
+    #[test]
+    fn activation_contract_requires_bounded_evidence_and_exact_cas_shape() {
+        let digest = |byte: char| format!("sha256:v2:{}", byte.to_string().repeat(64));
+        let request = PricingReleaseActivationRequestV2 {
+            activation_kind: PricingReleaseActivationKindV2::Cutover,
+            expectation: PricingReleaseHeadExpectationV2::Absent,
+            evidence: PricingReleaseActivationEvidenceV2 {
+                evidence_digest: digest('a'),
+                target_generation: 10,
+                target_digest: "target-release".into(),
+                recovery_generation: 11,
+                recovery_digest: "recovery-release".into(),
+                engine_inventory_digest: digest('b'),
+                funding_digest: digest('c'),
+                shadow_digest: digest('d'),
+                runtime_floor_digest: digest('e'),
+                legacy_inflight_count: 7,
+                engine_captured_ts: 1_000,
+                observed_ts: 1_100,
+                valid_until_ts: 1_400,
+            },
+            operator_id: "pricing-worker".into(),
+            reason: "activate exact target".into(),
+        };
+        validate_pricing_release_activation_v2(&request).unwrap();
+
+        let mut recovery = request.clone();
+        recovery.activation_kind = PricingReleaseActivationKindV2::Recovery;
+        recovery.expectation = PricingReleaseHeadExpectationV2::Exact(PricingReleaseHeadV2 {
+            active_generation: 10,
+            active_digest: "target-release".into(),
+            head_version: 1,
+            updated_ts: 1_200,
+        });
+        validate_pricing_release_activation_v2(&recovery).unwrap();
+
+        let mut malformed = request.clone();
+        malformed.evidence.runtime_floor_digest = "not-canonical".into();
+        assert!(validate_pricing_release_activation_v2(&malformed).is_err());
+        malformed = request.clone();
+        malformed.evidence.valid_until_ts += 1;
+        assert!(validate_pricing_release_activation_v2(&malformed).is_err());
+        malformed = request;
+        malformed.activation_kind = PricingReleaseActivationKindV2::Recovery;
+        assert!(validate_pricing_release_activation_v2(&malformed).is_err());
     }
 }

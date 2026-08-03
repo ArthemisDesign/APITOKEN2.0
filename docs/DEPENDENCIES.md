@@ -26,11 +26,14 @@
 
 Группы эндпоинтов Control API: аккаунты, credit/ledger (идемпотентный credit по
 provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack`), usage, ключи, versioned pricing
-(catalog/switches/policy), и PostgreSQL-only release-v2 prepare/read под `/admin/pricing/v2/*`.
+(catalog/switches/policy), и PostgreSQL-only release-v2 prepare/read/activation под
+`/admin/pricing/v2/*`.
 Release-v2 producer публикует immutable policy/release/recovery prepare, полный engine inventory,
 nullable head, account-local funding normalization plan/apply и append-only assignment extension
-для exact active/recovery pair аккаунта, созданного после cutover; activation mutation намеренно
-пока отсутствует. Funding apply сериализуется с money writers и не требует global drain. После зелёного
+для exact active/recovery pair аккаунта, созданного после cutover. Единственный activation producer
+принимает fresh combined evidence, повторно проверяет engine inventory/funding/runtime owner epochs
+и атомарно пишет audit + singleton head; cutover/recovery не обновляют accounts или money rows.
+Funding apply сериализуется с money writers и не требует global drain. После зелёного
 exact producer SHA `packages/contracts` валидирует strict release/funding wire shape, а
 `packages/engine-client` является единственным typed transport consumer. `apps/worker` через
 `packages/db/src/funding-normalization-jobs.ts` реализует отдельный bounded/resumable Stage 6
@@ -45,7 +48,9 @@ strict body/readback schema в `packages/contracts` → typed prepare/GET в
 `packages/engine-client` → `packages/db/src/pricing-provisioning-v2.ts` → `apps/api` key issuance.
 При ненулевом head writer завершает funding/policy/active+recovery extension и exact readback до
 usable key; postflight drift компенсируется disable выпущенного ключа. При null head путь dormant.
-Прямые вызовы route из `apps/api`/`apps/worker` по-прежнему запрещены; activation method отсутствует.
+Прямые вызовы route из `apps/api`/`apps/worker` по-прежнему запрещены. Activation route пока не имеет
+TS transport/caller: `packages/contracts` → `packages/engine-client` → durable commerce control job
+подключаются producer-first отдельным checkpoint после GREEN engine SHA.
 
 ### Sales feed (коммерция ↔ партнёрка)
 

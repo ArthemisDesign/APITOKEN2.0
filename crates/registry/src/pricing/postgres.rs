@@ -3234,6 +3234,652 @@ pub(crate) fn postgres_pricing_release_head_v2(
         }))
 }
 
+fn reject_pricing_release_activation_v2(
+    transaction: Transaction<'_>,
+    rejection: super::PricingReleaseActivationRejectionV2,
+) -> Result<super::PricingReleaseActivationOutcomeV2> {
+    transaction
+        .rollback()
+        .context("rollback rejected PostgreSQL pricing release activation")?;
+    Ok(super::PricingReleaseActivationOutcomeV2::Rejected(
+        rejection,
+    ))
+}
+
+fn locked_pricing_release_head_v2(
+    transaction: &mut Transaction<'_>,
+) -> Result<Option<super::PricingReleaseHeadV2>> {
+    Ok(transaction
+        .query_opt(
+            "SELECT active_generation,active_digest,head_version,updated_ts \
+             FROM pricing_release_head_v2 WHERE singleton=1 FOR UPDATE",
+            &[],
+        )?
+        .map(|row| super::PricingReleaseHeadV2 {
+            active_generation: row.get(0),
+            active_digest: row.get(1),
+            head_version: row.get(2),
+            updated_ts: row.get(3),
+        }))
+}
+
+fn pricing_release_activation_receipt_v2(
+    transaction: &mut Transaction<'_>,
+    head: &super::PricingReleaseHeadV2,
+) -> Result<Option<super::PricingReleaseActivationReceiptV2>> {
+    let Some(row) = transaction.query_opt(
+        "SELECT id,activation_kind,from_generation,from_digest,expected_head_version, \
+                to_generation,to_digest,evidence_digest,operator_id,reason,activated_ts \
+         FROM pricing_release_activations_v2 WHERE resulting_head_version=$1",
+        &[&head.head_version],
+    )?
+    else {
+        return Ok(None);
+    };
+    if row.get::<_, i64>(5) != head.active_generation
+        || row.get::<_, String>(6) != head.active_digest
+    {
+        bail!("pricing release activation audit disagrees with the active head");
+    }
+    Ok(Some(super::PricingReleaseActivationReceiptV2 {
+        activation_id: row.get(0),
+        activation_kind: super::PricingReleaseActivationKindV2::from_db(&row.get::<_, String>(1))?,
+        from_generation: row.get(2),
+        from_digest: row.get(3),
+        expected_head_version: row.get(4),
+        head: head.clone(),
+        evidence_digest: row.get(7),
+        operator_id: row.get(8),
+        reason: row.get(9),
+        activated_ts: row.get(10),
+    }))
+}
+
+fn activation_request_matches_receipt_v2(
+    request: &super::PricingReleaseActivationRequestV2,
+    receipt: &super::PricingReleaseActivationReceiptV2,
+) -> bool {
+    let expected = match &request.expectation {
+        super::PricingReleaseHeadExpectationV2::Absent => (None, None, 0),
+        super::PricingReleaseHeadExpectationV2::Exact(head) => (
+            Some(head.active_generation),
+            Some(head.active_digest.as_str()),
+            head.head_version,
+        ),
+    };
+    receipt.activation_kind == request.activation_kind
+        && receipt.from_generation == expected.0
+        && receipt.from_digest.as_deref() == expected.1
+        && receipt.expected_head_version == expected.2
+        && receipt.evidence_digest == request.evidence.evidence_digest
+        && receipt.operator_id == request.operator_id
+        && receipt.reason == request.reason
+}
+
+fn release_head_expectation_matches_v2(
+    expectation: &super::PricingReleaseHeadExpectationV2,
+    actual: &Option<super::PricingReleaseHeadV2>,
+) -> bool {
+    match (expectation, actual) {
+        (super::PricingReleaseHeadExpectationV2::Absent, None) => true,
+        (super::PricingReleaseHeadExpectationV2::Exact(expected), Some(actual)) => {
+            expected == actual
+        }
+        _ => false,
+    }
+}
+
+fn pricing_release_activation_evidence_matches_v2(
+    row: &postgres::Row,
+    evidence: &super::PricingReleaseActivationEvidenceV2,
+) -> bool {
+    row.get::<_, i64>(0) == evidence.target_generation
+        && row.get::<_, String>(1) == evidence.target_digest
+        && row.get::<_, i64>(2) == evidence.recovery_generation
+        && row.get::<_, String>(3) == evidence.recovery_digest
+        && row.get::<_, String>(4) == evidence.engine_inventory_digest
+        && row.get::<_, String>(5) == evidence.funding_digest
+        && row.get::<_, String>(6) == evidence.shadow_digest
+        && row.get::<_, String>(7) == evidence.runtime_floor_digest
+        && row.get::<_, i64>(8) == evidence.legacy_inflight_count
+        && row.get::<_, i64>(9) == 0
+        && row.get::<_, bool>(10)
+        && row.get::<_, i64>(11) == evidence.observed_ts
+        && row.get::<_, i64>(12) == evidence.valid_until_ts
+}
+
+/// Atomically activate the first target release or advance that exact target to its recovery.
+///
+/// This is deliberately one short SERIALIZABLE transaction. It takes only the release control
+/// lock, rechecks engine authority, appends evidence/audit and mutates the singleton head. It never
+/// updates accounts, funding lots, reservations, ledger rows or any other per-account state.
+pub(crate) fn postgres_activate_pricing_release_v2(
+    client: &mut Client,
+    request: &super::PricingReleaseActivationRequestV2,
+    runtime_manifest: &super::PricingRuntimeManifestEvidence,
+) -> Result<super::PricingReleaseActivationOutcomeV2> {
+    if let Err(error) = super::validate_pricing_release_activation_v2(request) {
+        return Ok(super::PricingReleaseActivationOutcomeV2::Rejected(
+            super::PricingReleaseActivationRejectionV2::Invalid {
+                reason: error.to_string(),
+            },
+        ));
+    }
+    let mut transaction = client
+        .build_transaction()
+        .isolation_level(IsolationLevel::Serializable)
+        .start()
+        .context("begin PostgreSQL pricing release activation")?;
+    transaction.batch_execute("SET LOCAL statement_timeout='30s'; SET LOCAL lock_timeout='5s'")?;
+    advisory_lock(&mut transaction, PRICING_RELEASE_CONTROL_LOCK_V2)?;
+    let now_ts: i64 = transaction
+        .query_one(
+            "SELECT floor(extract(epoch FROM transaction_timestamp()))::bigint",
+            &[],
+        )?
+        .get(0);
+    let current_head = locked_pricing_release_head_v2(&mut transaction)?;
+    let evidence = &request.evidence;
+    let (to_generation, to_digest) = match request.activation_kind {
+        super::PricingReleaseActivationKindV2::Cutover => {
+            (evidence.target_generation, evidence.target_digest.as_str())
+        }
+        super::PricingReleaseActivationKindV2::Recovery => (
+            evidence.recovery_generation,
+            evidence.recovery_digest.as_str(),
+        ),
+    };
+
+    if current_head.as_ref().is_some_and(|head| {
+        head.active_generation == to_generation && head.active_digest == to_digest
+    }) {
+        let receipt = pricing_release_activation_receipt_v2(
+            &mut transaction,
+            current_head
+                .as_ref()
+                .expect("checked current pricing release head"),
+        )?;
+        if let Some(receipt) =
+            receipt.filter(|receipt| activation_request_matches_receipt_v2(request, receipt))
+        {
+            transaction
+                .rollback()
+                .context("rollback unchanged PostgreSQL pricing release activation")?;
+            return Ok(super::PricingReleaseActivationOutcomeV2::Unchanged(receipt));
+        }
+        return reject_pricing_release_activation_v2(
+            transaction,
+            super::PricingReleaseActivationRejectionV2::CasMismatch {
+                actual: current_head,
+            },
+        );
+    }
+    if !release_head_expectation_matches_v2(&request.expectation, &current_head) {
+        return reject_pricing_release_activation_v2(
+            transaction,
+            super::PricingReleaseActivationRejectionV2::CasMismatch {
+                actual: current_head,
+            },
+        );
+    }
+    if now_ts < evidence.observed_ts || now_ts > evidence.valid_until_ts {
+        return reject_pricing_release_activation_v2(
+            transaction,
+            super::PricingReleaseActivationRejectionV2::EvidenceStale {
+                now_ts,
+                observed_ts: evidence.observed_ts,
+                valid_until_ts: evidence.valid_until_ts,
+            },
+        );
+    }
+
+    let Some(target) =
+        pricing_release_v2_in_transaction(&mut transaction, evidence.target_generation)?
+    else {
+        return reject_pricing_release_activation_v2(
+            transaction,
+            super::PricingReleaseActivationRejectionV2::MissingDependency {
+                dependency: format!("target release {}", evidence.target_generation),
+            },
+        );
+    };
+    let Some(recovery) =
+        pricing_release_v2_in_transaction(&mut transaction, evidence.recovery_generation)?
+    else {
+        return reject_pricing_release_activation_v2(
+            transaction,
+            super::PricingReleaseActivationRejectionV2::MissingDependency {
+                dependency: format!("recovery release {}", evidence.recovery_generation),
+            },
+        );
+    };
+    if target.content_digest != evidence.target_digest
+        || target.release_kind != super::PricingReleaseKindV2::Target
+        || recovery.content_digest != evidence.recovery_digest
+        || recovery.release_kind != super::PricingReleaseKindV2::Recovery
+    {
+        return reject_pricing_release_activation_v2(
+            transaction,
+            super::PricingReleaseActivationRejectionV2::ReleaseLineageDrift {
+                reason: "target or recovery immutable identity differs from activation evidence"
+                    .to_owned(),
+            },
+        );
+    }
+    let recovery_link_matches: bool = transaction
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM pricing_release_recovery_links \
+             WHERE target_generation=$1 AND target_digest=$2 \
+               AND recovery_generation=$3 AND recovery_digest=$4)",
+            &[
+                &evidence.target_generation,
+                &evidence.target_digest,
+                &evidence.recovery_generation,
+                &evidence.recovery_digest,
+            ],
+        )?
+        .get(0);
+    let same_runtime_lineage = target.schema_version == recovery.schema_version
+        && target.capability_generation == recovery.capability_generation
+        && target.capability_digest == recovery.capability_digest
+        && target.main_catalog_generation == recovery.main_catalog_generation
+        && target.main_catalog_digest == recovery.main_catalog_digest
+        && target.openkeys_catalog_generation == recovery.openkeys_catalog_generation
+        && target.openkeys_catalog_digest == recovery.openkeys_catalog_digest
+        && target.switch_generation == recovery.switch_generation
+        && target.switch_digest == recovery.switch_digest
+        && target.inventory_digest == recovery.inventory_digest
+        && target.funding_manifest_digest == recovery.funding_manifest_digest
+        && target.minimum_runtime_schema_version == recovery.minimum_runtime_schema_version;
+    let same_funding_assignments = target
+        .assignments
+        .iter()
+        .map(|assignment| {
+            (
+                assignment.account_id.as_str(),
+                assignment.billing_mode,
+                assignment.funding_generation,
+            )
+        })
+        .eq(recovery.assignments.iter().map(|assignment| {
+            (
+                assignment.account_id.as_str(),
+                assignment.billing_mode,
+                assignment.funding_generation,
+            )
+        }));
+    if !recovery_link_matches || !same_runtime_lineage || !same_funding_assignments {
+        return reject_pricing_release_activation_v2(
+            transaction,
+            super::PricingReleaseActivationRejectionV2::ReleaseLineageDrift {
+                reason: "target and recovery are not one prepared runtime/funding lineage"
+                    .to_owned(),
+            },
+        );
+    }
+    let active_heads_match: bool = transaction
+        .query_one(
+            "SELECT \
+               EXISTS(SELECT 1 FROM pricing_catalog_heads head \
+                 JOIN pricing_catalog_versions version \
+                   ON version.product_id=head.product_id \
+                  AND version.generation=head.active_generation \
+                 WHERE head.product_id='main' AND head.active_generation=$1 \
+                   AND version.content_digest=$2) \
+               AND EXISTS(SELECT 1 FROM pricing_catalog_heads head \
+                 JOIN pricing_catalog_versions version \
+                   ON version.product_id=head.product_id \
+                  AND version.generation=head.active_generation \
+                 WHERE head.product_id='openkeys' AND head.active_generation=$3 \
+                   AND version.content_digest=$4) \
+               AND EXISTS(SELECT 1 FROM provider_switch_head head \
+                 JOIN provider_switch_versions version \
+                   ON version.generation=head.active_generation \
+                 WHERE head.singleton=1 AND head.active_generation=$5 \
+                   AND version.content_digest=$6)",
+            &[
+                &target.main_catalog_generation,
+                &target.main_catalog_digest,
+                &target.openkeys_catalog_generation,
+                &target.openkeys_catalog_digest,
+                &target.switch_generation,
+                &target.switch_digest,
+            ],
+        )?
+        .get(0);
+    if !active_heads_match {
+        return reject_pricing_release_activation_v2(
+            transaction,
+            super::PricingReleaseActivationRejectionV2::ReleaseLineageDrift {
+                reason: "active catalog or provider-switch head moved after release preparation"
+                    .to_owned(),
+            },
+        );
+    }
+
+    // Commerce has already verified the canonical source report and its 120-second age bound. The
+    // exact source capture closes the otherwise ambiguous gap before combined evidence persisted.
+    let authority_cutoff = evidence.engine_captured_ts;
+    let authority_changed_rows: i64 = transaction
+        .query_one(
+            "SELECT COALESCE(SUM(changed),0)::bigint FROM( \
+               SELECT COUNT(*)::bigint changed FROM pricing_catalog_heads WHERE updated_ts >= $1 \
+               UNION ALL SELECT COUNT(*)::bigint FROM provider_switch_head WHERE updated_ts >= $1 \
+               UNION ALL SELECT COUNT(*)::bigint FROM account_policy_bindings binding \
+                 JOIN pricing_release_assignments assignment \
+                   ON assignment.release_generation=$2 AND assignment.account_id=binding.account_id \
+                 WHERE binding.updated_ts >= $1 \
+               UNION ALL SELECT COUNT(*)::bigint FROM account_policy_versions policy \
+                 JOIN pricing_release_assignments assignment \
+                   ON assignment.release_generation=$2 AND assignment.account_id=policy.account_id \
+                 WHERE policy.created_ts >= $1 \
+               UNION ALL SELECT COUNT(*)::bigint FROM pricing_catalog_versions WHERE created_ts >= $1 \
+               UNION ALL SELECT COUNT(*)::bigint FROM provider_switch_versions WHERE created_ts >= $1 \
+             ) changes",
+            &[&authority_cutoff, &evidence.target_generation],
+        )?
+        .get(0);
+    if authority_changed_rows != 0 {
+        return reject_pricing_release_activation_v2(
+            transaction,
+            super::PricingReleaseActivationRejectionV2::AuthorityDrift {
+                changed_rows: authority_changed_rows,
+            },
+        );
+    }
+
+    let inventory_digest = match request.activation_kind {
+        super::PricingReleaseActivationKindV2::Cutover => {
+            crate::stage8::engine_inventory_digest(&mut transaction)?
+        }
+        super::PricingReleaseActivationKindV2::Recovery => {
+            crate::stage8::release_base_inventory_digest_v2(
+                &mut transaction,
+                evidence.target_generation,
+            )?
+        }
+    };
+    if target.inventory_digest != evidence.engine_inventory_digest
+        || recovery.inventory_digest != evidence.engine_inventory_digest
+        || inventory_digest != evidence.engine_inventory_digest
+    {
+        return reject_pricing_release_activation_v2(
+            transaction,
+            super::PricingReleaseActivationRejectionV2::InventoryDrift {
+                expected_digest: evidence.engine_inventory_digest.clone(),
+                actual_digest: inventory_digest,
+            },
+        );
+    }
+    let coverage_drift: i64 = transaction
+        .query_one(
+            "WITH covered AS( \
+               SELECT account.id, \
+                 EXISTS(SELECT 1 FROM pricing_release_assignments assignment \
+                   WHERE assignment.release_generation=$1 AND assignment.account_id=account.id) \
+                 OR ($4 AND EXISTS(SELECT 1 FROM pricing_release_assignment_extensions_v2 extension \
+                   WHERE extension.release_generation=$1 AND extension.account_id=account.id \
+                     AND extension.provisioning_head_generation=$1 \
+                     AND extension.provisioning_head_digest=$2 \
+                     AND extension.provisioning_head_version=$3)) target_covered, \
+                 EXISTS(SELECT 1 FROM pricing_release_assignments assignment \
+                   WHERE assignment.release_generation=$5 AND assignment.account_id=account.id) \
+                 OR ($4 AND EXISTS(SELECT 1 FROM pricing_release_assignment_extensions_v2 extension \
+                   WHERE extension.release_generation=$5 AND extension.account_id=account.id \
+                     AND extension.provisioning_head_generation=$1 \
+                     AND extension.provisioning_head_digest=$2 \
+                     AND extension.provisioning_head_version=$3 \
+                     AND extension.paired_recovery_generation=$5 \
+                     AND extension.paired_recovery_digest=$6)) recovery_covered \
+               FROM accounts account \
+             ) SELECT COUNT(*)::bigint FROM covered \
+               WHERE NOT target_covered OR NOT recovery_covered",
+            &[
+                &evidence.target_generation,
+                &evidence.target_digest,
+                &current_head.as_ref().map(|head| head.head_version).unwrap_or(0),
+                &matches!(
+                    request.activation_kind,
+                    super::PricingReleaseActivationKindV2::Recovery
+                ),
+                &evidence.recovery_generation,
+                &evidence.recovery_digest,
+            ],
+        )?
+        .get(0);
+    if coverage_drift != 0 {
+        return reject_pricing_release_activation_v2(
+            transaction,
+            super::PricingReleaseActivationRejectionV2::InventoryDrift {
+                expected_digest: evidence.engine_inventory_digest.clone(),
+                actual_digest: format!("uncovered_accounts:{coverage_drift}"),
+            },
+        );
+    }
+
+    let funding_digest = crate::stage8::funding_manifest_digest(&mut transaction, Some(&target))?;
+    if target.funding_manifest_digest != evidence.funding_digest
+        || recovery.funding_manifest_digest != evidence.funding_digest
+        || funding_digest != evidence.funding_digest
+    {
+        return reject_pricing_release_activation_v2(
+            transaction,
+            super::PricingReleaseActivationRejectionV2::FundingDrift {
+                expected_digest: evidence.funding_digest.clone(),
+                actual_digest: funding_digest,
+            },
+        );
+    }
+    let funding_invariant_drift: i64 = transaction
+        .query_one(
+            "WITH assignment AS( \
+               SELECT account_id,billing_mode,funding_generation \
+                 FROM pricing_release_assignments WHERE release_generation IN($1,$2) \
+               UNION \
+               SELECT account_id,billing_mode,funding_generation \
+                 FROM pricing_release_assignment_extensions_v2 \
+                 WHERE release_generation IN($1,$2) \
+                   AND provisioning_head_generation=$1 \
+                   AND provisioning_head_digest=$3 \
+                   AND provisioning_head_version=$4 \
+             ), balance_assignment AS( \
+               SELECT DISTINCT account_id,funding_generation FROM assignment \
+               WHERE billing_mode='balance' \
+             ) \
+             SELECT COUNT(*)::bigint FROM balance_assignment assignment \
+             JOIN accounts account ON account.id=assignment.account_id \
+             LEFT JOIN account_funding_head_v2 head ON head.account_id=assignment.account_id \
+             LEFT JOIN account_funding_generations_v2 generation \
+               ON generation.account_id=assignment.account_id \
+              AND generation.generation=assignment.funding_generation \
+             LEFT JOIN LATERAL( \
+               SELECT COUNT(*)::bigint lot_count, \
+                      COUNT(*) FILTER(WHERE lot.source_type='paid')::bigint paid_count, \
+                      COALESCE(SUM(lot.balance_nano::numeric),0) balance_nano, \
+                      COALESCE(SUM(lot.reserved_nano::numeric),0) reserved_nano, \
+                      COALESCE(SUM(lot.spent_nano::numeric),0) spent_nano \
+               FROM funding_lots_v2 lot WHERE lot.account_id=assignment.account_id \
+                 AND lot.funding_generation=assignment.funding_generation \
+             ) lots ON true \
+             WHERE head.active_generation IS DISTINCT FROM assignment.funding_generation \
+                OR generation.account_id IS NULL OR lots.lot_count=0 OR lots.paid_count=0 \
+                OR generation.balance_nano::numeric<>account.balance_nano::numeric \
+                OR generation.reserved_nano::numeric<>account.reserved_nano::numeric \
+                OR generation.spent_nano::numeric<>account.spent_nano::numeric \
+                OR lots.balance_nano<>generation.balance_nano::numeric \
+                OR lots.reserved_nano<>generation.reserved_nano::numeric \
+                OR lots.spent_nano<>generation.spent_nano::numeric",
+            &[
+                &evidence.target_generation,
+                &evidence.recovery_generation,
+                &evidence.target_digest,
+                &current_head
+                    .as_ref()
+                    .map(|head| head.head_version)
+                    .unwrap_or(0),
+            ],
+        )?
+        .get(0);
+    if funding_invariant_drift != 0 {
+        return reject_pricing_release_activation_v2(
+            transaction,
+            super::PricingReleaseActivationRejectionV2::FundingInvariantDrift {
+                account_count: funding_invariant_drift,
+            },
+        );
+    }
+
+    let runtime_floor = crate::stage8::runtime_floor_check_v2(
+        &mut transaction,
+        now_ts,
+        target
+            .minimum_runtime_schema_version
+            .max(recovery.minimum_runtime_schema_version),
+        runtime_manifest,
+    )?;
+    if runtime_floor.live_instances == 0
+        || runtime_floor.live_instances != runtime_floor.compatible_instances
+    {
+        return reject_pricing_release_activation_v2(
+            transaction,
+            super::PricingReleaseActivationRejectionV2::RuntimeIncompatible {
+                live_instances: runtime_floor.live_instances,
+                compatible_instances: runtime_floor.compatible_instances,
+            },
+        );
+    }
+    if runtime_floor.digest != evidence.runtime_floor_digest {
+        return reject_pricing_release_activation_v2(
+            transaction,
+            super::PricingReleaseActivationRejectionV2::RuntimeFloorDrift {
+                expected_digest: evidence.runtime_floor_digest.clone(),
+                actual_digest: runtime_floor.digest,
+            },
+        );
+    }
+
+    if let Some(stored) = transaction.query_opt(
+        "SELECT target_generation,target_digest,recovery_generation,recovery_digest, \
+                inventory_digest,funding_digest,shadow_digest,runtime_floor_digest, \
+                legacy_inflight_count,blocker_count,passed,observed_ts,valid_until_ts \
+         FROM pricing_stage8_evidence_v2 WHERE evidence_digest=$1",
+        &[&evidence.evidence_digest],
+    )? {
+        if !pricing_release_activation_evidence_matches_v2(&stored, evidence) {
+            return reject_pricing_release_activation_v2(
+                transaction,
+                super::PricingReleaseActivationRejectionV2::EvidenceConflict {
+                    evidence_digest: evidence.evidence_digest.clone(),
+                },
+            );
+        }
+    } else {
+        transaction.execute(
+            "INSERT INTO pricing_stage8_evidence_v2( \
+               evidence_digest,target_generation,target_digest,recovery_generation, \
+               recovery_digest,inventory_digest,funding_digest,shadow_digest, \
+               runtime_floor_digest,legacy_inflight_count,blocker_count,passed, \
+               observed_ts,valid_until_ts \
+             ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0,true,$11,$12)",
+            &[
+                &evidence.evidence_digest,
+                &evidence.target_generation,
+                &evidence.target_digest,
+                &evidence.recovery_generation,
+                &evidence.recovery_digest,
+                &evidence.engine_inventory_digest,
+                &evidence.funding_digest,
+                &evidence.shadow_digest,
+                &evidence.runtime_floor_digest,
+                &evidence.legacy_inflight_count,
+                &evidence.observed_ts,
+                &evidence.valid_until_ts,
+            ],
+        )?;
+    }
+
+    let (from_generation, from_digest, expected_head_version) = match &request.expectation {
+        super::PricingReleaseHeadExpectationV2::Absent => (None, None, 0),
+        super::PricingReleaseHeadExpectationV2::Exact(head) => (
+            Some(head.active_generation),
+            Some(head.active_digest.as_str()),
+            head.head_version,
+        ),
+    };
+    let resulting_head_version = expected_head_version + 1;
+    let activation_id: i64 = transaction
+        .query_one(
+            "INSERT INTO pricing_release_activations_v2( \
+               activation_kind,from_generation,from_digest,to_generation,to_digest, \
+               expected_head_version,resulting_head_version,evidence_digest,operator_id, \
+               reason,activated_ts \
+             ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id",
+            &[
+                &request.activation_kind.as_str(),
+                &from_generation,
+                &from_digest,
+                &to_generation,
+                &to_digest,
+                &expected_head_version,
+                &resulting_head_version,
+                &evidence.evidence_digest,
+                &request.operator_id,
+                &request.reason,
+                &now_ts,
+            ],
+        )?
+        .get(0);
+    let changed = match &request.expectation {
+        super::PricingReleaseHeadExpectationV2::Absent => transaction.execute(
+            "INSERT INTO pricing_release_head_v2( \
+               singleton,active_generation,active_digest,head_version,updated_ts \
+             ) VALUES(1,$1,$2,$3,$4)",
+            &[&to_generation, &to_digest, &resulting_head_version, &now_ts],
+        )?,
+        super::PricingReleaseHeadExpectationV2::Exact(expected) => transaction.execute(
+            "UPDATE pricing_release_head_v2 SET active_generation=$1,active_digest=$2, \
+                    head_version=$3,updated_ts=$4 \
+             WHERE singleton=1 AND active_generation=$5 AND active_digest=$6 \
+               AND head_version=$7 AND updated_ts=$8",
+            &[
+                &to_generation,
+                &to_digest,
+                &resulting_head_version,
+                &now_ts,
+                &expected.active_generation,
+                &expected.active_digest,
+                &expected.head_version,
+                &expected.updated_ts,
+            ],
+        )?,
+    };
+    if changed != 1 {
+        bail!("pricing release head CAS changed an unexpected row count");
+    }
+    transaction.batch_execute("SET CONSTRAINTS pricing_release_head_audit_v2 IMMEDIATE")?;
+    let receipt = super::PricingReleaseActivationReceiptV2 {
+        activation_id,
+        activation_kind: request.activation_kind,
+        from_generation,
+        from_digest: from_digest.map(str::to_owned),
+        expected_head_version,
+        head: super::PricingReleaseHeadV2 {
+            active_generation: to_generation,
+            active_digest: to_digest.to_owned(),
+            head_version: resulting_head_version,
+            updated_ts: now_ts,
+        },
+        evidence_digest: evidence.evidence_digest.clone(),
+        operator_id: request.operator_id.clone(),
+        reason: request.reason.clone(),
+        activated_ts: now_ts,
+    };
+    transaction
+        .commit()
+        .context("commit PostgreSQL pricing release activation")?;
+    Ok(super::PricingReleaseActivationOutcomeV2::Applied(receipt))
+}
+
 pub(crate) fn pricing_release_resolution_v2_in_transaction<C: GenericClient>(
     client: &mut C,
     account_id: &str,
