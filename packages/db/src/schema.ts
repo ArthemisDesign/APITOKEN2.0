@@ -163,6 +163,9 @@ export const pricingUsageEvents = pgTable("pricing_usage_events", {
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
   engineAccountId: text("engine_account_id").notNull(),
   ledgerEntryId: bigint("ledger_entry_id", { mode: "bigint" }).notNull(),
+  // Authoritative top-level provider copied from the immutable engine charge ledger. Nullable only
+  // for rows ingested before migration 0036; the worker resolves retained history without model guesses.
+  providerId: text("provider_id"),
   amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
   // Legacy: free-first paid projection. Attributed: exact paid_funded only when commission-eligible;
   // static/ineligible rows store 0 while true paid evidence remains in pricing_usage_attributions.

@@ -151,10 +151,13 @@ terminal evidence; retry разрешён только worker state machine дл
 Верхний ledger показывает lifetime paid total, расход выбранного окна, число активных spenders и
 один пропорциональный rail Claude/GPT/Gemini. Provider-сегменты одновременно служат быстрыми
 фильтрами. Таблица ниже ранжирует клиентов и в одной строке показывает paid total, расход окна и
-точные charged nanoUSD отдельно для Anthropic/OpenAI/Google; legacy/unknown attribution не
-теряется и выводится как `другое`. Все денежные вычисления и CSV сохраняют decimal nanoUSD strings;
-JS `number` используется только для ограниченной доли 0–10000 basis points. Страница опрашивается
-раз в 30 секунд и не выполняет денежных mutation.
+точные charged nanoUSD отдельно для Anthropic/OpenAI/Google. Provider authority берётся из
+immutable pricing-attribution, а для legacy pricing — из сохранённого top-level provider engine
+ledger; worker восстанавливает ещё доступные 30-дневные строки без эвристики по model id.
+Действительно отсутствующая и неизвестная будущая attribution не теряется и выводится как
+`другое`. Все денежные вычисления и CSV сохраняют decimal nanoUSD strings; JS `number`
+используется только для ограниченной доли 0–10000 basis points. Страница опрашивается раз в 30
+секунд и не выполняет денежных mutation.
 
 ## GPT capacity board на странице подписок
 

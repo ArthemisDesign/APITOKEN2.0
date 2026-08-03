@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import type { EngineLedgerEntry } from "@claude-api/contracts";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase, type Database } from "./client.js";
-import { applyPricingLedgerPage, PricingLedgerAttributionError } from "./pricing.js";
+import {
+  applyPricingLedgerPage,
+  applyPricingProviderBackfillPage,
+  completePricingProviderBackfill,
+  getPricingProviderBackfillCursor,
+  PricingLedgerAttributionError,
+} from "./pricing.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 
@@ -261,7 +267,13 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
     };
   }
 
-  function legacyEntry(id: number, kind: "topup" | "charge", amountNano: bigint, ref: string | null) {
+  function legacyEntry(
+    id: number,
+    kind: "topup" | "charge",
+    amountNano: bigint,
+    ref: string | null,
+    provider?: string,
+  ) {
     return {
       id: String(id),
       kind,
@@ -272,6 +284,7 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
       balance_after_nano: null,
       ts: String(Math.floor(now.getTime() / 1000) + id),
       model: null,
+      provider,
     } satisfies EngineLedgerEntry;
   }
 
@@ -480,7 +493,7 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
   it("keeps the unattributed legacy free-first fallback and replay idempotency", async () => {
     const entries = [
       legacyEntry(5, "topup", 50n, `promo:${randomUUID()}`),
-      legacyEntry(6, "charge", 100n, null),
+      { ...legacyEntry(6, "charge", 100n, null), model: "gpt-5" },
     ];
     await applyPricingLedgerPage(database, { userId, engineAccountId }, entries);
     await applyPricingLedgerPage(database, { userId, engineAccountId }, entries);
@@ -490,6 +503,7 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
         (SELECT count(*)::int FROM pricing_usage_events) AS events,
         (SELECT count(*)::int FROM pricing_usage_attributions) AS attributions,
         (SELECT real_funded_nano::text FROM pricing_usage_events) AS real_funded_nano,
+        (SELECT provider_id FROM pricing_usage_events) AS provider_id,
         (SELECT free_balance_nano::text FROM customer_profiles WHERE user_id = $1) AS free_balance_nano,
         (SELECT last_ledger_id::text FROM pricing_usage_cursors WHERE user_id = $1) AS cursor
     `, [userId]);
@@ -497,8 +511,58 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
       events: 1,
       attributions: 0,
       real_funded_nano: "10",
+      provider_id: "unattributed",
       free_balance_nano: "0",
       cursor: "6",
     }]);
+  });
+
+  it("stores and restores exact Claude, GPT, and Gemini provider evidence", async () => {
+    const entries = [
+      legacyEntry(10, "charge", 10n, null, "anthropic"),
+      legacyEntry(11, "charge", 20n, null, "openai"),
+      legacyEntry(12, "charge", 30n, null, "google"),
+    ];
+    await applyPricingLedgerPage(database, { userId, engineAccountId }, entries);
+    await expect(database.pool.query(`
+      SELECT ledger_entry_id::text, provider_id
+      FROM pricing_usage_events
+      ORDER BY ledger_entry_id
+    `)).resolves.toMatchObject({ rows: [
+      { ledger_entry_id: "10", provider_id: "anthropic" },
+      { ledger_entry_id: "11", provider_id: "openai" },
+      { ledger_entry_id: "12", provider_id: "google" },
+    ] });
+
+    await database.pool.query("UPDATE pricing_usage_events SET provider_id = NULL");
+    await expect(getPricingProviderBackfillCursor(
+      database,
+      { userId, engineAccountId },
+      12n,
+    )).resolves.toBe(9n);
+    await expect(applyPricingProviderBackfillPage(
+      database,
+      { userId, engineAccountId },
+      [{ ...entries[0]!, amount_nano: "11" }],
+    )).rejects.toThrow("provider backfill amount differs");
+    await expect(applyPricingProviderBackfillPage(
+      database,
+      { userId, engineAccountId },
+      entries,
+    )).resolves.toBe(3);
+    await expect(completePricingProviderBackfill(
+      database,
+      { userId, engineAccountId },
+      12n,
+    )).resolves.toBe(0);
+    await expect(database.pool.query(`
+      SELECT ledger_entry_id::text, provider_id
+      FROM pricing_usage_events
+      ORDER BY ledger_entry_id
+    `)).resolves.toMatchObject({ rows: [
+      { ledger_entry_id: "10", provider_id: "anthropic" },
+      { ledger_entry_id: "11", provider_id: "openai" },
+      { ledger_entry_id: "12", provider_id: "google" },
+    ] });
   });
 });

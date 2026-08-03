@@ -44,6 +44,9 @@ describe("listAdminPayingUsers", () => {
     expect(queries[0]!.params).toEqual([7, "paid@", "active", "openai", 25, 50]);
     expect(queries[0]!.text).toContain("JOIN paid ON paid.user_id = u.id");
     expect(queries[0]!.text).toContain("pricing_usage_attributions");
+    expect(queries[0]!.text).toContain("COALESCE(a.provider_id, e.provider_id) = 'anthropic'");
+    expect(queries[0]!.text).toContain("COALESCE(a.provider_id, e.provider_id) = 'openai'");
+    expect(queries[0]!.text).toContain("COALESCE(a.provider_id, e.provider_id) = 'google'");
     expect(queries[0]!.text).toContain("ORDER BY paid.paid_nano ASC NULLS LAST, u.id ASC");
     expect(queries[1]!.params).toEqual([7, "paid@", "active", "openai"]);
     expect(queries[2]!.params).toEqual([7]);

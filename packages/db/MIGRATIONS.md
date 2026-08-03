@@ -132,8 +132,7 @@ producer and durable worker consumer may be delivered only after this migration 
 
 Migration `0036_pricing_usage_provider_attribution.sql` adds a nullable `provider_id` to immutable
 commerce `pricing_usage_events`. It performs no backfill and keeps the deployed usage consumer
-compatible: historical rows remain `NULL` until a later consumer copies the authoritative top-level
-provider from the engine ledger, while new code is delivered only after this migration SHA has green
-`deploy/migration` and `deploy/watchdog` in production. The separate consumer checkpoint may use
-the existing exact attribution snapshot as a fallback but must never infer a provider from a model
-name.
+compatible. The separately delivered consumer copies authoritative top-level provider evidence for
+new charge rows and performs bounded resumable recovery pages over the same retained 30-day ledger
+horizon for old rows; exact pricing attribution remains a query fallback. If retained evidence is
+absent, the row is explicitly `unattributed` rather than guessed from a model name.

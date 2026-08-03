@@ -330,8 +330,9 @@ const PAYING_USER_SORT_SQL: Record<AdminPayingUserSort, string> = {
 
 /**
  * Пагинированный список только когда-либо плативших клиентов. Расход берётся из immutable
- * pricing_usage_events за выбранное окно, а провайдер — из exact attribution snapshot. Старые
- * события без attribution и неизвестные будущие provider_id не теряются: они попадают в other.
+ * pricing_usage_events за выбранное окно, а провайдер — из exact attribution snapshot либо
+ * authoritative top-level engine ledger evidence на событии. Неатрибутированные старые события
+ * и неизвестные будущие provider_id не теряются: они попадают в other.
  */
 export async function listAdminPayingUsers(
   database: Database,
@@ -366,11 +367,18 @@ export async function listAdminPayingUsers(
     ), usage AS (
       SELECT e.user_id,
         sum(e.amount_nano) AS spent_nano,
-        COALESCE(sum(e.amount_nano) FILTER (WHERE a.provider_id = 'anthropic'), 0) AS anthropic_nano,
-        COALESCE(sum(e.amount_nano) FILTER (WHERE a.provider_id = 'openai'), 0) AS openai_nano,
-        COALESCE(sum(e.amount_nano) FILTER (WHERE a.provider_id = 'google'), 0) AS google_nano,
         COALESCE(sum(e.amount_nano) FILTER (
-          WHERE a.provider_id IS NULL OR a.provider_id NOT IN ('anthropic', 'openai', 'google')
+          WHERE COALESCE(a.provider_id, e.provider_id) = 'anthropic'
+        ), 0) AS anthropic_nano,
+        COALESCE(sum(e.amount_nano) FILTER (
+          WHERE COALESCE(a.provider_id, e.provider_id) = 'openai'
+        ), 0) AS openai_nano,
+        COALESCE(sum(e.amount_nano) FILTER (
+          WHERE COALESCE(a.provider_id, e.provider_id) = 'google'
+        ), 0) AS google_nano,
+        COALESCE(sum(e.amount_nano) FILTER (
+          WHERE COALESCE(a.provider_id, e.provider_id) IS NULL
+            OR COALESCE(a.provider_id, e.provider_id) NOT IN ('anthropic', 'openai', 'google')
         ), 0) AS other_nano
       FROM pricing_usage_events e
       LEFT JOIN pricing_usage_attributions a ON a.pricing_usage_event_id = e.id
@@ -450,11 +458,18 @@ export async function listAdminPayingUsers(
       ), usage AS (
         SELECT e.user_id,
           sum(e.amount_nano) AS spent_nano,
-          COALESCE(sum(e.amount_nano) FILTER (WHERE a.provider_id = 'anthropic'), 0) AS anthropic_nano,
-          COALESCE(sum(e.amount_nano) FILTER (WHERE a.provider_id = 'openai'), 0) AS openai_nano,
-          COALESCE(sum(e.amount_nano) FILTER (WHERE a.provider_id = 'google'), 0) AS google_nano,
           COALESCE(sum(e.amount_nano) FILTER (
-            WHERE a.provider_id IS NULL OR a.provider_id NOT IN ('anthropic', 'openai', 'google')
+            WHERE COALESCE(a.provider_id, e.provider_id) = 'anthropic'
+          ), 0) AS anthropic_nano,
+          COALESCE(sum(e.amount_nano) FILTER (
+            WHERE COALESCE(a.provider_id, e.provider_id) = 'openai'
+          ), 0) AS openai_nano,
+          COALESCE(sum(e.amount_nano) FILTER (
+            WHERE COALESCE(a.provider_id, e.provider_id) = 'google'
+          ), 0) AS google_nano,
+          COALESCE(sum(e.amount_nano) FILTER (
+            WHERE COALESCE(a.provider_id, e.provider_id) IS NULL
+              OR COALESCE(a.provider_id, e.provider_id) NOT IN ('anthropic', 'openai', 'google')
           ), 0) AS other_nano
         FROM pricing_usage_events e
         LEFT JOIN pricing_usage_attributions a ON a.pricing_usage_event_id = e.id

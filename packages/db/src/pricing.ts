@@ -119,6 +119,8 @@ const HOLD_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const PRICING_LEDGER_PAGE_SIZE = 1000;
 const POSTGRES_INTEGER_MAX = 2_147_483_647n;
 const SUPPORTED_LEDGER_ATTRIBUTION_SCHEMA_VERSION = 1n;
+const PROVIDER_BACKFILL_WINDOW_DAYS = 30;
+const UNATTRIBUTED_PROVIDER_ID = "unattributed";
 
 type LedgerAttribution = NonNullable<EngineLedgerEntry["attribution"]>;
 type LedgerFundingAllocation = NonNullable<EngineLedgerEntry["funding_allocations"]>[number];
@@ -143,6 +145,23 @@ interface ValidatedPolicyFunding {
   paidFundedNano: bigint;
   bonusFundedNano: bigint;
   otherFundedNano: bigint;
+}
+
+function normalizedProviderId(value: string | null | undefined): string | null {
+  if (
+    typeof value !== "string"
+    || value.length === 0
+    || value.length > 200
+    || value.trim() !== value
+    || /[\u0000-\u001f\u007f]/.test(value)
+  ) return null;
+  return value;
+}
+
+function ledgerProviderEvidence(entry: EngineLedgerEntry): string {
+  return normalizedProviderId(entry.provider)
+    ?? normalizedProviderId(entry.attribution?.provider_id)
+    ?? UNATTRIBUTED_PROVIDER_ID;
 }
 
 function requiredLedgerText(value: string | null | undefined, field: string): string {
@@ -1734,6 +1753,175 @@ async function insertPricingUsageAttribution(
   }
 }
 
+/**
+ * Returns the ledger cursor immediately before the oldest recent usage row whose provider cannot
+ * already be proven by either the event itself or its immutable pricing attribution. The engine
+ * retains charge detail for the same 30-day horizon used by the paying-users control room.
+ */
+export async function getPricingProviderBackfillCursor(
+  database: Database,
+  target: PricingSyncTarget,
+  throughLedgerId: bigint,
+): Promise<bigint | null> {
+  if (throughLedgerId < 0n) throw new RangeError("provider backfill cursor must not be negative");
+  const result = await database.pool.query<{ first_ledger_id: string | null }>(`
+    SELECT min(event.ledger_entry_id)::text AS first_ledger_id
+    FROM pricing_usage_events event
+    LEFT JOIN pricing_usage_attributions attribution
+      ON attribution.pricing_usage_event_id = event.id
+    WHERE event.user_id = $1 AND event.engine_account_id = $2
+      AND event.ledger_entry_id <= $3
+      AND event.occurred_at >= now() - make_interval(days => $4)
+      AND event.provider_id IS NULL
+      AND attribution.provider_id IS NULL
+  `, [
+    target.userId,
+    target.engineAccountId,
+    throughLedgerId.toString(),
+    PROVIDER_BACKFILL_WINDOW_DAYS,
+  ]);
+  const firstLedgerId = result.rows[0]?.first_ledger_id;
+  if (firstLedgerId === null || firstLedgerId === undefined) return null;
+  const first = BigInt(firstLedgerId);
+  return first > 0n ? first - 1n : 0n;
+}
+
+/**
+ * Copies provider evidence from a retained engine ledger page onto matching immutable commerce
+ * events. Amount and any existing attribution are locked and compared before the nullable field is
+ * filled; conflicting evidence aborts the page instead of silently relabelling spend.
+ */
+export async function applyPricingProviderBackfillPage(
+  database: Database,
+  target: PricingSyncTarget,
+  entries: readonly EngineLedgerEntry[],
+): Promise<number> {
+  const evidence = new Map<string, { amountNano: string; providerId: string }>();
+  for (const entry of entries) {
+    const amount = BigInt(entry.amount_nano);
+    if (entry.kind !== "charge" || amount <= 0n) continue;
+    const ledgerId = BigInt(entry.id).toString();
+    const candidate = {
+      amountNano: amount.toString(),
+      providerId: ledgerProviderEvidence(entry),
+    };
+    const previous = evidence.get(ledgerId);
+    if (
+      previous !== undefined
+      && (previous.amountNano !== candidate.amountNano || previous.providerId !== candidate.providerId)
+    ) {
+      throw new PricingLedgerAttributionError(
+        `engine provider backfill repeated ledger ${ledgerId} with conflicting evidence`,
+      );
+    }
+    evidence.set(ledgerId, candidate);
+  }
+  if (evidence.size === 0) return 0;
+
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const ledgerIds = [...evidence.keys()];
+    const existing = await client.query<{
+      ledger_entry_id: string;
+      amount_nano: string;
+      provider_id: string | null;
+      attributed_provider_id: string | null;
+    }>(`
+      SELECT event.ledger_entry_id::text, event.amount_nano::text,
+             event.provider_id, attribution.provider_id AS attributed_provider_id
+      FROM pricing_usage_events event
+      LEFT JOIN pricing_usage_attributions attribution
+        ON attribution.pricing_usage_event_id = event.id
+      WHERE event.user_id = $1 AND event.engine_account_id = $2
+        AND event.ledger_entry_id = ANY($3::bigint[])
+      FOR UPDATE OF event
+    `, [target.userId, target.engineAccountId, ledgerIds]);
+
+    const updateLedgerIds: string[] = [];
+    const updateProviderIds: string[] = [];
+    for (const row of existing.rows) {
+      const candidate = evidence.get(row.ledger_entry_id)!;
+      if (row.amount_nano !== candidate.amountNano) {
+        throw new PricingLedgerAttributionError(
+          `engine provider backfill amount differs for ledger ${row.ledger_entry_id}`,
+        );
+      }
+      const exactProviders = [row.provider_id, row.attributed_provider_id]
+        .map(normalizedProviderId)
+        .filter((value): value is string => value !== null && value !== UNATTRIBUTED_PROVIDER_ID);
+      if (
+        candidate.providerId !== UNATTRIBUTED_PROVIDER_ID
+        && exactProviders.some((providerId) => providerId !== candidate.providerId)
+      ) {
+        throw new PricingLedgerAttributionError(
+          `engine provider backfill identity differs for ledger ${row.ledger_entry_id}`,
+        );
+      }
+      if (
+        candidate.providerId === UNATTRIBUTED_PROVIDER_ID
+        && exactProviders.length > 0
+      ) continue;
+      if (
+        row.provider_id === null
+        || (row.provider_id === UNATTRIBUTED_PROVIDER_ID
+          && candidate.providerId !== UNATTRIBUTED_PROVIDER_ID)
+      ) {
+        updateLedgerIds.push(row.ledger_entry_id);
+        updateProviderIds.push(candidate.providerId);
+      }
+    }
+
+    let updated = 0;
+    if (updateLedgerIds.length > 0) {
+      const result = await client.query(`
+        UPDATE pricing_usage_events event
+        SET provider_id = evidence.provider_id
+        FROM unnest($3::bigint[], $4::text[]) AS evidence(ledger_entry_id, provider_id)
+        WHERE event.user_id = $1 AND event.engine_account_id = $2
+          AND event.ledger_entry_id = evidence.ledger_entry_id
+      `, [target.userId, target.engineAccountId, updateLedgerIds, updateProviderIds]);
+      updated = result.rowCount ?? 0;
+    }
+    await client.query("COMMIT");
+    return updated;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Marks recent rows whose retained ledger evidence is unavailable as explicitly unattributed. */
+export async function completePricingProviderBackfill(
+  database: Database,
+  target: PricingSyncTarget,
+  throughLedgerId: bigint,
+): Promise<number> {
+  if (throughLedgerId < 0n) throw new RangeError("provider backfill cursor must not be negative");
+  const result = await database.pool.query(`
+    UPDATE pricing_usage_events event
+    SET provider_id = $4
+    WHERE event.user_id = $1 AND event.engine_account_id = $2
+      AND event.ledger_entry_id <= $3
+      AND event.occurred_at >= now() - make_interval(days => $5)
+      AND event.provider_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM pricing_usage_attributions attribution
+        WHERE attribution.pricing_usage_event_id = event.id
+          AND attribution.provider_id IS NOT NULL
+      )
+  `, [
+    target.userId,
+    target.engineAccountId,
+    throughLedgerId.toString(),
+    UNATTRIBUTED_PROVIDER_ID,
+    PROVIDER_BACKFILL_WINDOW_DAYS,
+  ]);
+  return result.rowCount ?? 0;
+}
+
 export async function applyPricingLedgerPage(
   database: Database,
   target: PricingSyncTarget,
@@ -1816,13 +2004,24 @@ export async function applyPricingLedgerPage(
         ? amount
         : 0n;
       const eventId = randomUUID();
+      const providerId = ledgerProviderEvidence(entry);
       const inserted = await client.query<{ id: string }>(`
         INSERT INTO pricing_usage_events (
-          id, user_id, engine_account_id, ledger_entry_id, amount_nano, real_funded_nano, occurred_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+          id, user_id, engine_account_id, ledger_entry_id, provider_id,
+          amount_nano, real_funded_nano, occurred_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (engine_account_id, ledger_entry_id) DO NOTHING
         RETURNING id
-      `, [eventId, target.userId, target.engineAccountId, ledgerId.toString(), entry.amount_nano, realFunded.toString(), occurredAt]);
+      `, [
+        eventId,
+        target.userId,
+        target.engineAccountId,
+        ledgerId.toString(),
+        providerId,
+        entry.amount_nano,
+        realFunded.toString(),
+        occurredAt,
+      ]);
       if (!inserted.rows[0]) continue; // уже обработано — бесплатный баланс не трогаем повторно
       if (validatedAttribution !== null) {
         await insertPricingUsageAttribution(

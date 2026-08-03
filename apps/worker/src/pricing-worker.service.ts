@@ -2,15 +2,18 @@ import { Inject, Injectable, Logger, OnApplicationShutdown, OnModuleInit } from 
 import { ConfigService } from "@nestjs/config";
 import {
   applyPricingLedgerPage,
+  applyPricingProviderBackfillPage,
   claimNextPricingControlJob,
   claimNextPricingJob,
   claimNextPricingReleaseActivationJobV2,
   closeElapsedTierWindows,
+  completePricingProviderBackfill,
   completePricingUsageSync,
   confirmPricingControlJob,
   confirmPricingJob,
   confirmPricingReleaseActivationJobV2,
   getPricingUsageCursor,
+  getPricingProviderBackfillCursor,
   listPricingSyncTargets,
   reconcileTierLadderMultipliers,
   recoverStalePricingControlJobs,
@@ -40,6 +43,8 @@ import type {
 import { EngineClient, EngineClientError } from "@claude-api/engine-client";
 import type { Environment } from "./config.js";
 import { DATABASE, ENGINE_CLIENT, WORKER_ID } from "./tokens.js";
+
+const PROVIDER_BACKFILL_MAX_PAGES_PER_SYNC = 4;
 
 @Injectable()
 export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown {
@@ -160,13 +165,59 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
         // An empty page is also a completed ledger scan. getPricingUsageCursor invalidates the
         // previous completion marker before network I/O, so restore it only after this response.
         await completePricingUsageSync(this.database, target);
-        return;
+        break;
       }
       await applyPricingLedgerPage(this.database, target, entries);
       cursor = BigInt(entries.at(-1)!.id);
       await this.engine.acknowledgeLedger(target.engineAccountId, cursor);
-      if (entries.length < 1000) return;
+      if (entries.length < 1000) break;
     }
+    const providerRows = await this.backfillTargetProviders(target, cursor);
+    if (providerRows > 0) {
+      this.logger.log(`resolved provider evidence for ${providerRows} usage rows of ${target.userId}`);
+    }
+  }
+
+  private async backfillTargetProviders(
+    target: PricingSyncTarget,
+    throughLedgerId: bigint,
+  ): Promise<number> {
+    const backfillCursor = await getPricingProviderBackfillCursor(
+      this.database,
+      target,
+      throughLedgerId,
+    );
+    if (backfillCursor === null) return 0;
+    let cursor: bigint = backfillCursor;
+
+    let resolved = 0;
+    for (let page = 0; page < PROVIDER_BACKFILL_MAX_PAGES_PER_SYNC; page += 1) {
+      const entries = await this.engine.getLedgerAfter(target.engineAccountId, cursor, 1000);
+      if (entries.length === 0) {
+        return resolved + await completePricingProviderBackfill(
+          this.database,
+          target,
+          throughLedgerId,
+        );
+      }
+      resolved += await applyPricingProviderBackfillPage(this.database, target, entries);
+      const nextCursor = entries.reduce<bigint>((highest, entry) => {
+        const ledgerId = BigInt(entry.id);
+        return ledgerId > highest ? ledgerId : highest;
+      }, cursor);
+      if (nextCursor <= cursor) {
+        throw new Error("engine provider backfill ledger page did not advance");
+      }
+      cursor = nextCursor;
+      const terminal = cursor >= throughLedgerId || entries.length < 1000;
+      resolved += await completePricingProviderBackfill(
+        this.database,
+        target,
+        terminal ? throughLedgerId : cursor,
+      );
+      if (terminal) return resolved;
+    }
+    return resolved;
   }
 
   private async flushPricingControlJobs(): Promise<void> {

@@ -15,6 +15,11 @@ const source = readFileSync(new URL("./pricing-worker.service.ts", import.meta.u
 test("delegates pricing money mutations to the canonical database module", () => {
   assert.match(source, /\bcloseElapsedTierWindows\(this\.database, now, syncedUserIds\)/);
   assert.match(source, /\bcompletePricingUsageSync\(this\.database, target\)/);
+  assert.match(source, /\bgetPricingProviderBackfillCursor\(/);
+  assert.match(source, /\bapplyPricingProviderBackfillPage\(/);
+  assert.match(source, /\bcompletePricingProviderBackfill\(/);
+  assert.match(source, /await this\.backfillTargetProviders\(target, cursor\)/);
+  assert.match(source, /PROVIDER_BACKFILL_MAX_PAGES_PER_SYNC = 4/);
   assert.match(source, /\brefreshTierWindowUsage\(this\.database, syncedUserIds, now\)/);
 
   assert.doesNotMatch(source, /\bB2C_TIER_RULES\b/);
