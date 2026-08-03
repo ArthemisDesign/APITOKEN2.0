@@ -54,6 +54,7 @@ pub const NS_GOOGLE: &str = "google";
 const REASONING_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 const ANTHROPIC_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 const SERVICE_TIERS: &[&str] = &["standard", "priority"];
+const MODALITIES: &[&str] = &["text", "image", "audio"];
 /// Public token limits are consumed as JavaScript numbers by harnesses. A u32
 /// ceiling is far above every reviewed provider context while keeping hostile
 /// catalog values bounded and exactly representable.
@@ -96,6 +97,15 @@ pub struct CatalogEntry {
     pub reasoning_efforts: Option<Vec<String>>,
     /// Ordered execution tiers supported by this model.
     pub service_tiers: Option<Vec<String>>,
+    /// Ordered input/output modalities accepted by the unified OpenAI-compatible adapter.
+    pub input_modalities: Option<Vec<String>>,
+    pub output_modalities: Option<Vec<String>>,
+    /// Adapter-level controls. `None` means that the producer did not publish an authoritative
+    /// answer; it must never be promoted to `true` by a consumer heuristic.
+    pub tool_calling: Option<bool>,
+    pub structured_outputs: Option<bool>,
+    pub reasoning: Option<bool>,
+    pub streaming: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -147,6 +157,24 @@ impl CatalogEntry {
         }
         if let Some(tiers) = &self.service_tiers {
             capabilities.insert("service_tiers".to_string(), serde_json::json!(tiers));
+        }
+        for (name, values) in [
+            ("input_modalities", &self.input_modalities),
+            ("output_modalities", &self.output_modalities),
+        ] {
+            if let Some(values) = values {
+                capabilities.insert(name.to_string(), serde_json::json!(values));
+            }
+        }
+        for (name, value) in [
+            ("tool_calling", self.tool_calling),
+            ("structured_outputs", self.structured_outputs),
+            ("reasoning", self.reasoning),
+            ("streaming", self.streaming),
+        ] {
+            if let Some(value) = value {
+                capabilities.insert(name.to_string(), Value::Bool(value));
+            }
         }
         if !capabilities.is_empty() {
             apitoken.insert("capabilities".to_string(), Value::Object(capabilities));
@@ -475,11 +503,13 @@ fn bounded_model_id(value: Option<&str>) -> Result<Option<String>, ()> {
     let Some(value) = value else {
         return Ok(None);
     };
-    let value = value.trim();
-    if value.is_empty() {
+    if value.trim().is_empty() {
         return Ok(None);
     }
-    if value.len() > MAX_MODEL_STRING_BYTES || value.chars().any(char::is_control) {
+    if value.trim() != value
+        || value.len() > MAX_MODEL_STRING_BYTES
+        || value.chars().any(char::is_control)
+    {
         return Err(());
     }
     Ok(Some(value.to_string()))
@@ -489,6 +519,7 @@ fn bounded_display_name(value: Option<String>) -> Result<Option<String>, ()> {
     match value {
         Some(value)
             if value.is_empty()
+                || value.trim() != value
                 || value.len() > MAX_MODEL_STRING_BYTES
                 || value.chars().any(char::is_control) =>
         {
@@ -537,18 +568,30 @@ fn closed_list(
     Ok(Some(parsed))
 }
 
-fn parse_owned_metadata(
-    model: &serde_json::Map<String, Value>,
-) -> Result<
-    (
-        Option<CatalogLimits>,
-        Option<Vec<String>>,
-        Option<Vec<String>>,
-    ),
-    (),
-> {
+fn optional_bool(object: &serde_json::Map<String, Value>, field: &str) -> Result<Option<bool>, ()> {
+    match object.get(field) {
+        None => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(()),
+    }
+}
+
+#[derive(Default)]
+struct OwnedMetadata {
+    limits: Option<CatalogLimits>,
+    reasoning_efforts: Option<Vec<String>>,
+    service_tiers: Option<Vec<String>>,
+    input_modalities: Option<Vec<String>>,
+    output_modalities: Option<Vec<String>>,
+    tool_calling: Option<bool>,
+    structured_outputs: Option<bool>,
+    reasoning: Option<bool>,
+    streaming: Option<bool>,
+}
+
+fn parse_owned_metadata(model: &serde_json::Map<String, Value>) -> Result<OwnedMetadata, ()> {
     let Some(apitoken) = model.get("apitoken") else {
-        return Ok((None, None, None));
+        return Ok(OwnedMetadata::default());
     };
     let apitoken = apitoken.as_object().ok_or(())?;
     let limits = match apitoken.get("limits") {
@@ -569,17 +612,40 @@ fn parse_owned_metadata(
                 .then_some(limits)
         }
     };
-    let (reasoning_efforts, service_tiers) = match apitoken.get("capabilities") {
-        None => (None, None),
+    let mut metadata = OwnedMetadata {
+        limits,
+        ..OwnedMetadata::default()
+    };
+    match apitoken.get("capabilities") {
+        None => {}
         Some(value) => {
             let value = value.as_object().ok_or(())?;
-            (
-                closed_list(value, "reasoning_efforts", REASONING_EFFORTS)?,
-                closed_list(value, "service_tiers", SERVICE_TIERS)?,
-            )
+            metadata.reasoning_efforts =
+                closed_list(value, "reasoning_efforts", REASONING_EFFORTS)?;
+            metadata.service_tiers = closed_list(value, "service_tiers", SERVICE_TIERS)?;
+            metadata.input_modalities = closed_list(value, "input_modalities", MODALITIES)?;
+            metadata.output_modalities = closed_list(value, "output_modalities", MODALITIES)?;
+            metadata.tool_calling = optional_bool(value, "tool_calling")?;
+            metadata.structured_outputs = optional_bool(value, "structured_outputs")?;
+            let explicit_reasoning = optional_bool(value, "reasoning")?;
+            if explicit_reasoning == Some(false)
+                && metadata
+                    .reasoning_efforts
+                    .as_ref()
+                    .is_some_and(|efforts| efforts.iter().any(|effort| effort != "none"))
+            {
+                return Err(());
+            }
+            metadata.reasoning = explicit_reasoning.or_else(|| {
+                metadata
+                    .reasoning_efforts
+                    .as_ref()
+                    .map(|efforts| efforts.iter().any(|effort| effort != "none"))
+            });
+            metadata.streaming = optional_bool(value, "streaming")?;
         }
-    };
-    Ok((limits, reasoning_efforts, service_tiers))
+    }
+    Ok(metadata)
 }
 
 fn parse_anthropic_efforts(
@@ -614,64 +680,158 @@ fn parse_anthropic_efforts(
     Ok(Some(parsed))
 }
 
+fn anthropic_adapter_efforts(model: &str) -> Vec<String> {
+    let version = [
+        "claude-opus-",
+        "claude-sonnet-",
+        "claude-haiku-",
+        "claude-fable-",
+    ]
+    .into_iter()
+    .find_map(|prefix| model.strip_prefix(prefix));
+    let Some(version) = version else {
+        return Vec::new();
+    };
+    let mut parts = version.split('-');
+    let Some(major) = parts.next().and_then(|part| part.parse::<u16>().ok()) else {
+        return Vec::new();
+    };
+    let efforts = if major > 4 {
+        &["low", "medium", "high", "xhigh", "max"][..]
+    } else if major == 4 {
+        let Some(minor) = parts.next() else {
+            return Vec::new();
+        };
+        // Date-based Claude 4 IDs are not semantic version 4.<date>.
+        if minor.len() > 2 {
+            return Vec::new();
+        }
+        match minor.parse::<u16>() {
+            Ok(6) => &["low", "medium", "high", "max"][..],
+            Ok(7..) => &["low", "medium", "high", "xhigh", "max"][..],
+            _ => &[],
+        }
+    } else {
+        &[]
+    };
+    efforts.iter().map(|value| (*value).to_string()).collect()
+}
+
+fn anthropic_capability_supported(
+    model: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<Option<bool>, ()> {
+    let Some(capabilities) = model.get("capabilities") else {
+        return Ok(None);
+    };
+    let capabilities = capabilities.as_object().ok_or(())?;
+    let Some(capability) = capabilities.get(field) else {
+        return Ok(None);
+    };
+    let capability = capability.as_object().ok_or(())?;
+    capability
+        .get("supported")
+        .and_then(Value::as_bool)
+        .map(Some)
+        .ok_or(())
+}
+
+fn unique_plane_entries(entries: Vec<CatalogEntry>) -> ParseResult {
+    let mut ids = HashSet::with_capacity(entries.len());
+    if entries.iter().all(|entry| ids.insert(entry.id.as_str())) {
+        Ok(entries)
+    } else {
+        Err(())
+    }
+}
+
 fn parse_anthropic(body: &Value) -> ParseResult {
     let models = body.get("data").and_then(Value::as_array).ok_or(())?;
     if models.len() > MAX_MODELS_PER_PLANE {
         return Err(());
     }
-    models
-        .iter()
-        .filter_map(|model| {
-            let model = match model.as_object() {
-                Some(model) => model,
-                None => return Some(Err(())),
-            };
-            let id = match bounded_model_id(model.get("id").and_then(Value::as_str)) {
-                Ok(Some(id)) => id,
-                Ok(None) => return None,
-                Err(()) => return Some(Err(())),
-            };
-            let input = match positive_limit(model, "max_input_tokens") {
-                Ok(value) => value,
-                Err(()) => return Some(Err(())),
-            };
-            let output = match positive_limit(model, "max_tokens") {
-                Ok(value) => value,
-                Err(()) => return Some(Err(())),
-            };
-            let limits = (input.is_some() || output.is_some()).then_some(CatalogLimits {
-                context: input,
-                input,
-                output,
-            });
-            let reasoning_efforts = match parse_anthropic_efforts(model) {
-                Ok(value) => value,
-                Err(()) => return Some(Err(())),
-            };
-            let namespaced_id = match namespaced_id(NS_ANTHROPIC, &id) {
-                Ok(id) => id,
-                Err(()) => return Some(Err(())),
-            };
-            let display_name = match bounded_display_name(
-                model
-                    .get("display_name")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            ) {
-                Ok(name) => name,
-                Err(()) => return Some(Err(())),
-            };
-            Some(Ok(CatalogEntry {
-                id: namespaced_id,
-                native_id: id.clone(),
-                aliases: vec![id],
-                display_name,
-                limits,
-                reasoning_efforts,
-                service_tiers: None,
-            }))
-        })
-        .collect()
+    unique_plane_entries(
+        models
+            .iter()
+            .filter_map(|model| {
+                let model = match model.as_object() {
+                    Some(model) => model,
+                    None => return Some(Err(())),
+                };
+                let id = match bounded_model_id(model.get("id").and_then(Value::as_str)) {
+                    Ok(Some(id)) => id,
+                    Ok(None) => return None,
+                    Err(()) => return Some(Err(())),
+                };
+                let input = match positive_limit(model, "max_input_tokens") {
+                    Ok(value) => value,
+                    Err(()) => return Some(Err(())),
+                };
+                let output = match positive_limit(model, "max_tokens") {
+                    Ok(value) => value,
+                    Err(()) => return Some(Err(())),
+                };
+                let limits = (input.is_some() || output.is_some()).then_some(CatalogLimits {
+                    context: input,
+                    input,
+                    output,
+                });
+                let native_efforts = match parse_anthropic_efforts(model) {
+                    Ok(value) => value,
+                    Err(()) => return Some(Err(())),
+                };
+                let image_input = match anthropic_capability_supported(model, "image_input") {
+                    Ok(value) => value,
+                    Err(()) => return Some(Err(())),
+                };
+                let structured_outputs =
+                    match anthropic_capability_supported(model, "structured_outputs") {
+                        Ok(value) => value,
+                        Err(()) => return Some(Err(())),
+                    };
+                let reasoning = match anthropic_capability_supported(model, "thinking") {
+                    Ok(value) => value,
+                    Err(()) => return Some(Err(())),
+                };
+                let namespaced_id = match namespaced_id(NS_ANTHROPIC, &id) {
+                    Ok(id) => id,
+                    Err(()) => return Some(Err(())),
+                };
+                let display_name = match bounded_display_name(
+                    model
+                        .get("display_name")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                ) {
+                    Ok(name) => name,
+                    Err(()) => return Some(Err(())),
+                };
+                let mut reasoning_efforts = anthropic_adapter_efforts(&id);
+                if let Some(native_efforts) = native_efforts {
+                    reasoning_efforts.retain(|effort| native_efforts.contains(effort));
+                }
+                Some(Ok(CatalogEntry {
+                    id: namespaced_id,
+                    native_id: id.clone(),
+                    aliases: vec![id.clone()],
+                    display_name,
+                    limits,
+                    reasoning_efforts: Some(reasoning_efforts),
+                    service_tiers: Some(vec!["standard".to_string()]),
+                    input_modalities: Some(if image_input == Some(true) {
+                        vec!["text".to_string(), "image".to_string()]
+                    } else {
+                        vec!["text".to_string()]
+                    }),
+                    output_modalities: Some(vec!["text".to_string()]),
+                    tool_calling: Some(true),
+                    structured_outputs,
+                    reasoning,
+                    streaming: Some(true),
+                }))
+            })
+            .collect::<ParseResult>()?,
+    )
 }
 
 fn parse_openai(body: &Value) -> ParseResult {
@@ -721,41 +881,49 @@ where
     if models.len() > MAX_MODELS_PER_PLANE {
         return Err(());
     }
-    models
-        .iter()
-        .filter_map(|model| {
-            let model = match model.as_object() {
-                Some(model) => model,
-                None => return Some(Err(())),
-            };
-            let id = match bounded_model_id(id_of(model).as_deref()) {
-                Ok(Some(id)) => id,
-                Ok(None) => return None,
-                Err(()) => return Some(Err(())),
-            };
-            let (limits, reasoning_efforts, service_tiers) = match parse_owned_metadata(model) {
-                Ok(metadata) => metadata,
-                Err(()) => return Some(Err(())),
-            };
-            let namespaced_id = match namespaced_id(namespace, &id) {
-                Ok(id) => id,
-                Err(()) => return Some(Err(())),
-            };
-            let display_name = match bounded_display_name(display_of(model)) {
-                Ok(name) => name,
-                Err(()) => return Some(Err(())),
-            };
-            Some(Ok(CatalogEntry {
-                id: namespaced_id,
-                native_id: id.clone(),
-                aliases: vec![id],
-                display_name,
-                limits,
-                reasoning_efforts,
-                service_tiers,
-            }))
-        })
-        .collect()
+    unique_plane_entries(
+        models
+            .iter()
+            .filter_map(|model| {
+                let model = match model.as_object() {
+                    Some(model) => model,
+                    None => return Some(Err(())),
+                };
+                let id = match bounded_model_id(id_of(model).as_deref()) {
+                    Ok(Some(id)) => id,
+                    Ok(None) => return None,
+                    Err(()) => return Some(Err(())),
+                };
+                let metadata = match parse_owned_metadata(model) {
+                    Ok(metadata) => metadata,
+                    Err(()) => return Some(Err(())),
+                };
+                let namespaced_id = match namespaced_id(namespace, &id) {
+                    Ok(id) => id,
+                    Err(()) => return Some(Err(())),
+                };
+                let display_name = match bounded_display_name(display_of(model)) {
+                    Ok(name) => name,
+                    Err(()) => return Some(Err(())),
+                };
+                Some(Ok(CatalogEntry {
+                    id: namespaced_id,
+                    native_id: id.clone(),
+                    aliases: vec![id],
+                    display_name,
+                    limits: metadata.limits,
+                    reasoning_efforts: metadata.reasoning_efforts,
+                    service_tiers: metadata.service_tiers,
+                    input_modalities: metadata.input_modalities,
+                    output_modalities: metadata.output_modalities,
+                    tool_calling: metadata.tool_calling,
+                    structured_outputs: metadata.structured_outputs,
+                    reasoning: metadata.reasoning,
+                    streaming: metadata.streaming,
+                }))
+            })
+            .collect::<ParseResult>()?,
+    )
 }
 
 /// Дедупликация по namespaced ID с сохранением порядка.
@@ -834,13 +1002,19 @@ mod tests {
             "data": [
                 {"type": "model", "id": "claude-opus-4-8", "display_name": "Claude Opus 4.8",
                  "max_input_tokens": 1000000, "max_tokens": 128000,
-                 "capabilities": {"effort": {"supported": true,
+                 "capabilities": {"image_input": {"supported": true},
+                    "structured_outputs": {"supported": true},
+                    "thinking": {"supported": true},
+                    "effort": {"supported": true,
                     "low": {"supported": true}, "medium": {"supported": true},
                     "high": {"supported": true}, "xhigh": {"supported": true},
                     "max": {"supported": true}}}},
                 {"type": "model", "id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6",
                  "max_input_tokens": 1000000, "max_tokens": 128000,
-                 "capabilities": {"effort": {"supported": true,
+                 "capabilities": {"image_input": {"supported": true},
+                    "structured_outputs": {"supported": true},
+                    "thinking": {"supported": true},
+                    "effort": {"supported": true,
                     "low": {"supported": true}, "medium": {"supported": true},
                     "high": {"supported": true}, "xhigh": {"supported": false},
                     "max": {"supported": true}}}}
@@ -877,6 +1051,40 @@ mod tests {
                     .as_slice()
             )
         );
+        assert_eq!(
+            entries[0].service_tiers.as_deref(),
+            Some(["standard".to_string()].as_slice())
+        );
+        assert_eq!(
+            entries[0].input_modalities.as_deref(),
+            Some(["text".to_string(), "image".to_string()].as_slice())
+        );
+        assert_eq!(
+            entries[0].output_modalities.as_deref(),
+            Some(["text".to_string()].as_slice())
+        );
+        assert_eq!(entries[0].tool_calling, Some(true));
+        assert_eq!(entries[0].structured_outputs, Some(true));
+        assert_eq!(entries[0].reasoning, Some(true));
+        assert_eq!(entries[0].streaming, Some(true));
+    }
+
+    #[test]
+    fn anthropic_efforts_match_the_unified_adapter_not_the_native_name_alone() {
+        assert!(anthropic_adapter_efforts("claude-opus-4-5-20251101").is_empty());
+        assert_eq!(
+            anthropic_adapter_efforts("claude-sonnet-4-6"),
+            ["low", "medium", "high", "max"].map(String::from)
+        );
+        assert_eq!(
+            anthropic_adapter_efforts("claude-opus-4-7"),
+            ["low", "medium", "high", "xhigh", "max"].map(String::from)
+        );
+        assert_eq!(
+            anthropic_adapter_efforts("claude-opus-5"),
+            ["low", "medium", "high", "xhigh", "max"].map(String::from)
+        );
+        assert!(anthropic_adapter_efforts("claude-opus-4-20250514").is_empty());
     }
 
     #[test]
@@ -885,7 +1093,12 @@ mod tests {
             {"id": "gpt-5.6", "object": "model", "created": 0, "owned_by": "apitoken",
              "apitoken": {"limits": {"context": 400000, "input": 272000, "output": 128000},
                  "capabilities": {"reasoning_efforts": ["none", "low", "max"],
-                                  "service_tiers": ["standard", "priority"]}}},
+                                  "service_tiers": ["standard", "priority"],
+                                  "input_modalities": ["text", "image"],
+                                  "output_modalities": ["text"],
+                                  "tool_calling": true,
+                                  "structured_outputs": true,
+                                  "streaming": true}}},
             {"id": "text-embedding-4", "object": "model", "created": 0, "owned_by": "apitoken"}
         ]});
         let entries = parse_openai(&body).unwrap();
@@ -902,6 +1115,14 @@ mod tests {
             entries[0].service_tiers.as_deref(),
             Some(["standard", "priority"].map(String::from).as_slice())
         );
+        assert_eq!(
+            entries[0].input_modalities.as_deref(),
+            Some(["text".to_string(), "image".to_string()].as_slice())
+        );
+        assert_eq!(entries[0].tool_calling, Some(true));
+        assert_eq!(entries[0].structured_outputs, Some(true));
+        assert_eq!(entries[0].reasoning, Some(true));
+        assert_eq!(entries[0].streaming, Some(true));
         assert_eq!(entries[1].limits, None);
         assert_eq!(entries[1].service_tiers, None);
     }
@@ -913,7 +1134,12 @@ mod tests {
              "supportedGenerationMethods": ["generateContent"],
              "apitoken": {"limits": {"context": 1048576, "input": 1048576, "output": 65536},
                  "capabilities": {"reasoning_efforts": ["low", "medium", "high"],
-                                  "service_tiers": ["standard"]}}},
+                                  "service_tiers": ["standard"],
+                                  "input_modalities": ["text", "image", "audio"],
+                                  "output_modalities": ["text"],
+                                  "tool_calling": true,
+                                  "structured_outputs": true,
+                                  "streaming": true}}},
             {"name": "models/gemini-2.5-flash", "displayName": "Gemini 2.5 Flash"}
         ]});
         let entries = parse_gemini(&body).unwrap();
@@ -926,6 +1152,11 @@ mod tests {
             entries[0].service_tiers.as_deref(),
             Some(["standard"].map(String::from).as_slice())
         );
+        assert_eq!(
+            entries[0].input_modalities.as_deref(),
+            Some(["text".to_string(), "image".to_string(), "audio".to_string()].as_slice())
+        );
+        assert_eq!(entries[0].reasoning, Some(true));
     }
 
     #[test]
@@ -937,7 +1168,9 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].native_id, "claude-haiku-4-5");
         assert_eq!(entries[0].limits, None);
-        assert_eq!(entries[0].reasoning_efforts, None);
+        assert_eq!(entries[0].reasoning_efforts, Some(vec![]));
+        assert_eq!(entries[0].input_modalities, Some(vec!["text".to_string()]));
+        assert_eq!(entries[0].tool_calling, Some(true));
     }
 
     #[test]
@@ -950,12 +1183,29 @@ mod tests {
             serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"limits":{"input":10,"context":9}}}]}),
             serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"reasoning_efforts":["ultra"]}}}]}),
             serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"service_tiers":["standard","standard"]}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"input_modalities":["text","video"]}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"output_modalities":["text","text"]}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"tool_calling":"yes"}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"structured_outputs":1}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"reasoning":"yes"}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"reasoning":false,"reasoning_efforts":["high"]}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"streaming":null}}}]}),
+            serde_json::json!({"data":[{"id":" gpt-x"}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","name":" GPT X"}]}),
+            serde_json::json!({"data":[{"id":"gpt-x"},{"id":"gpt-x"}]}),
         ] {
             assert!(parse_openai(&bad).is_err(), "{bad}");
         }
         let conflicting = serde_json::json!({"data":[{"id":"claude-x","capabilities":{
             "effort":{"supported":false,"low":{"supported":true}}}}]});
         assert!(parse_anthropic(&conflicting).is_err());
+        let malformed_anthropic = serde_json::json!({"data":[{"id":"claude-x","capabilities":{
+            "image_input":{"supported":"yes"}}}]});
+        assert!(parse_anthropic(&malformed_anthropic).is_err());
+        assert!(parse_anthropic(&serde_json::json!({"data":[
+            {"id":"claude-x"},{"id":"claude-x"}
+        ]}))
+        .is_err());
     }
 
     #[test]
@@ -1085,6 +1335,12 @@ mod tests {
                 limits: None,
                 reasoning_efforts: None,
                 service_tiers: None,
+                input_modalities: None,
+                output_modalities: None,
+                tool_calling: None,
+                structured_outputs: None,
+                reasoning: None,
+                streaming: None,
             },
         )
     }
@@ -1148,6 +1404,12 @@ mod tests {
                     .collect(),
             ),
             service_tiers: None,
+            input_modalities: Some(vec!["text".into(), "image".into()]),
+            output_modalities: Some(vec!["text".into()]),
+            tool_calling: Some(true),
+            structured_outputs: Some(true),
+            reasoning: Some(true),
+            streaming: Some(true),
         };
         let json = entry.to_json("anthropic");
         assert_eq!(json["id"], "anthropic/claude-opus-4-8");
@@ -1165,6 +1427,14 @@ mod tests {
             json["apitoken"]["capabilities"]["reasoning_efforts"],
             json["reasoning_efforts"]
         );
+        assert_eq!(
+            json["apitoken"]["capabilities"]["input_modalities"],
+            serde_json::json!(["text", "image"])
+        );
+        assert_eq!(json["apitoken"]["capabilities"]["tool_calling"], true);
+        assert_eq!(json["apitoken"]["capabilities"]["structured_outputs"], true);
+        assert_eq!(json["apitoken"]["capabilities"]["reasoning"], true);
+        assert_eq!(json["apitoken"]["capabilities"]["streaming"], true);
         let bare = CatalogEntry {
             id: "openai/gpt-5.6".into(),
             native_id: "gpt-5.6".into(),
@@ -1173,6 +1443,12 @@ mod tests {
             limits: None,
             reasoning_efforts: None,
             service_tiers: Some(vec!["standard".into(), "priority".into()]),
+            input_modalities: None,
+            output_modalities: None,
+            tool_calling: None,
+            structured_outputs: None,
+            reasoning: None,
+            streaming: None,
         };
         assert!(bare.to_json("openai").get("name").is_none());
         assert_eq!(bare.to_json("openai")["aliases"], serde_json::json!([]));

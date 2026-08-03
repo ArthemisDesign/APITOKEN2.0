@@ -543,19 +543,19 @@ mod tests {
 
     const ANTHROPIC_MODELS: &str = r#"{"data":[
         {"type":"model","id":"claude-opus-4-8","display_name":"Claude Opus 4.8","max_input_tokens":1000000,"max_tokens":128000,
-         "capabilities":{"effort":{"supported":true,"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true},"xhigh":{"supported":true},"max":{"supported":true}}}},
+         "capabilities":{"image_input":{"supported":true},"structured_outputs":{"supported":true},"thinking":{"supported":true},"effort":{"supported":true,"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true},"xhigh":{"supported":true},"max":{"supported":true}}}},
         {"type":"model","id":"claude-haiku-4-5","display_name":"Claude Haiku 4.5","max_input_tokens":200000,"max_tokens":64000,
-         "capabilities":{"effort":{"supported":false,"low":{"supported":false},"medium":{"supported":false},"high":{"supported":false},"xhigh":{"supported":false},"max":{"supported":false}}}}
+         "capabilities":{"image_input":{"supported":true},"structured_outputs":{"supported":true},"thinking":{"supported":true},"effort":{"supported":false,"low":{"supported":false},"medium":{"supported":false},"high":{"supported":false},"xhigh":{"supported":false},"max":{"supported":false}}}}
     ],"has_more":false,"first_id":"claude-opus-4-8","last_id":"claude-haiku-4-5"}"#;
 
     const OPENAI_MODELS: &str = r#"{"object":"list","data":[
-        {"id":"gpt-5.6","object":"model","created":0,"owned_by":"apitoken","apitoken":{"limits":{"context":400000,"input":272000,"output":128000},"capabilities":{"reasoning_efforts":["none","low","medium","high","xhigh","max"],"service_tiers":["standard","priority"]}}},
-        {"id":"gpt-5.5","object":"model","created":0,"owned_by":"apitoken","apitoken":{"limits":{"output":128000},"capabilities":{"reasoning_efforts":["none","low","medium","high","xhigh"],"service_tiers":["standard"]}}}
+        {"id":"gpt-5.6","object":"model","created":0,"owned_by":"apitoken","apitoken":{"limits":{"context":400000,"input":272000,"output":128000},"capabilities":{"reasoning_efforts":["none","low","medium","high","xhigh","max"],"service_tiers":["standard","priority"],"input_modalities":["text","image"],"output_modalities":["text"],"tool_calling":true,"structured_outputs":true,"streaming":true}}},
+        {"id":"gpt-5.5","object":"model","created":0,"owned_by":"apitoken","apitoken":{"limits":{"output":128000},"capabilities":{"reasoning_efforts":["none","low","medium","high","xhigh"],"service_tiers":["standard"],"input_modalities":["text","image"],"output_modalities":["text"],"tool_calling":true,"structured_outputs":true,"streaming":true}}}
     ]}"#;
 
     const GEMINI_MODELS: &str = r#"{"models":[
-        {"name":"models/gemini-2.5-pro","displayName":"Gemini 2.5 Pro","supportedGenerationMethods":["generateContent"],"apitoken":{"limits":{"context":1048576,"input":1048576,"output":65536},"capabilities":{"reasoning_efforts":["low","medium","high"],"service_tiers":["standard"]}}},
-        {"name":"models/gemini-2.5-flash","displayName":"Gemini 2.5 Flash","apitoken":{"limits":{"context":1048576,"input":1048576,"output":65536},"capabilities":{"reasoning_efforts":["low","medium","high"],"service_tiers":["standard"]}}}
+        {"name":"models/gemini-2.5-pro","displayName":"Gemini 2.5 Pro","supportedGenerationMethods":["generateContent"],"apitoken":{"limits":{"context":1048576,"input":1048576,"output":65536},"capabilities":{"reasoning_efforts":["low","medium","high"],"service_tiers":["standard"],"input_modalities":["text","image"],"output_modalities":["text"],"tool_calling":true,"structured_outputs":true,"streaming":true}}},
+        {"name":"models/gemini-2.5-flash","displayName":"Gemini 2.5 Flash","apitoken":{"limits":{"context":1048576,"input":1048576,"output":65536},"capabilities":{"reasoning_efforts":["low","medium","high"],"service_tiers":["standard"],"input_modalities":["text","image"],"output_modalities":["text"],"tool_calling":true,"structured_outputs":true,"streaming":true}}}
     ]}"#;
 
     const ANTHROPIC_ROUTING_MODELS: &str = r#"{"data":[
@@ -3306,7 +3306,7 @@ mod tests {
             json["data"][2]["service_tiers"],
             serde_json::json!(["standard", "priority"])
         );
-        assert!(json["data"][0].get("service_tiers").is_none());
+        assert_eq!(json["data"][0]["service_tiers"], serde_json::json!(["standard"]));
         assert_eq!(json["data"][4]["service_tiers"], serde_json::json!(["standard"]));
         assert_eq!(
             json["data"][0]["apitoken"]["limits"],
@@ -3316,6 +3316,12 @@ mod tests {
             json["data"][2]["apitoken"]["capabilities"]["reasoning_efforts"],
             serde_json::json!(["none", "low", "medium", "high", "xhigh", "max"])
         );
+        assert_eq!(
+            json["data"][0]["apitoken"]["capabilities"]["input_modalities"],
+            serde_json::json!(["text", "image"])
+        );
+        assert_eq!(json["data"][0]["apitoken"]["capabilities"]["reasoning"], true);
+        assert_eq!(json["data"][2]["apitoken"]["capabilities"]["tool_calling"], true);
         assert_eq!(
             json["data"][4]["apitoken"]["limits"],
             serde_json::json!({"context": 1_048_576, "input": 1_048_576, "output": 65_536})

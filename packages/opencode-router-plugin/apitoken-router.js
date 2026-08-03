@@ -12,17 +12,18 @@ import os from "node:os"
 import path from "node:path"
 
 const DEFAULT_BASE = "https://router.apitoken.sale/v1"
-const CACHE_SCHEMA = 1
+const CACHE_SCHEMA = 2
 const CACHE_FRESH_TTL_MS = 15 * 60 * 1000
 const CACHE_MAX_STALE_MS = 7 * 24 * 60 * 60 * 1000
 
-const CACHE_DOMAIN = "apitoken-opencode-capability-cache-v1"
+const CACHE_DOMAIN = "apitoken-opencode-capability-cache-v2"
 const CACHE_ALGORITHM = "aes-256-gcm"
 const CACHE_CLOCK_SKEW_MS = 5 * 60 * 1000
 const PRICING_UNIT = "nano_usd_per_million_tokens"
 const NANO_USD_PER_USD = 1_000_000_000
 const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"])
 const SERVICE_TIERS = new Set(["standard", "priority"])
+const MODALITIES = new Set(["text", "image", "audio"])
 const CACHE_RECORD_KEYS = new Set([
   "id",
   "name",
@@ -30,6 +31,12 @@ const CACHE_RECORD_KEYS = new Set([
   "limits",
   "reasoning_efforts",
   "service_tiers",
+  "input_modalities",
+  "output_modalities",
+  "tool_calling",
+  "structured_outputs",
+  "reasoning",
+  "streaming",
 ])
 const CACHE_ENVELOPE_KEYS = new Set([
   "schema",
@@ -53,7 +60,7 @@ function defaultConfigPath(env = process.env) {
 
 function defaultCachePath(env = process.env) {
   const root = env.XDG_CACHE_HOME || path.join(env.HOME || os.homedir(), ".cache")
-  return path.join(root, "opencode", "apitoken-router", "catalog-v1.json")
+  return path.join(root, "opencode", "apitoken-router", "catalog-v2.json")
 }
 
 function normalizeBase(base) {
@@ -174,6 +181,13 @@ function modelCapability(entry, field, allowed) {
   return [...value]
 }
 
+function modelBooleanCapability(entry, field) {
+  const value = entry.apitoken?.capabilities?.[field]
+  if (value === undefined) return undefined
+  if (typeof value !== "boolean") throw new Error(`invalid ${entry.id} ${field}`)
+  return value
+}
+
 function capabilityRecord(entry) {
   assertPlainObject(entry, "catalog model")
   if (typeof entry.id !== "string" || entry.id.length === 0) throw new Error("catalog model has no id")
@@ -183,13 +197,24 @@ function capabilityRecord(entry) {
   if (entry.name !== undefined && (typeof entry.name !== "string" || entry.name.length === 0)) {
     throw new Error(`invalid ${entry.id} name`)
   }
+  const reasoningEfforts = modelCapability(entry, "reasoning_efforts", REASONING_EFFORTS)
+  const explicitReasoning = modelBooleanCapability(entry, "reasoning")
+  if (explicitReasoning === false && reasoningEfforts?.some((effort) => effort !== "none")) {
+    throw new Error(`contradictory ${entry.id} reasoning capabilities`)
+  }
   return {
     id: entry.id,
     name: entry.name,
     owned_by: entry.owned_by,
     limits: modelLimits(entry),
-    reasoning_efforts: modelCapability(entry, "reasoning_efforts", REASONING_EFFORTS) ?? [],
-    service_tiers: modelCapability(entry, "service_tiers", SERVICE_TIERS) ?? [],
+    reasoning_efforts: reasoningEfforts,
+    service_tiers: modelCapability(entry, "service_tiers", SERVICE_TIERS),
+    input_modalities: modelCapability(entry, "input_modalities", MODALITIES),
+    output_modalities: modelCapability(entry, "output_modalities", MODALITIES),
+    tool_calling: modelBooleanCapability(entry, "tool_calling"),
+    structured_outputs: modelBooleanCapability(entry, "structured_outputs"),
+    reasoning: explicitReasoning ?? reasoningEfforts?.some((effort) => effort !== "none"),
+    streaming: modelBooleanCapability(entry, "streaming"),
   }
 }
 
@@ -210,6 +235,12 @@ function validateRecord(value) {
       capabilities: {
         reasoning_efforts: record.reasoning_efforts,
         service_tiers: record.service_tiers,
+        input_modalities: record.input_modalities,
+        output_modalities: record.output_modalities,
+        tool_calling: record.tool_calling,
+        structured_outputs: record.structured_outputs,
+        reasoning: record.reasoning,
+        streaming: record.streaming,
       },
     },
   }
@@ -218,8 +249,14 @@ function validateRecord(value) {
     name: record.name,
     owned_by: record.owned_by,
     limits: modelLimits(syntheticEntry),
-    reasoning_efforts: modelCapability(syntheticEntry, "reasoning_efforts", REASONING_EFFORTS) ?? [],
-    service_tiers: modelCapability(syntheticEntry, "service_tiers", SERVICE_TIERS) ?? [],
+    reasoning_efforts: modelCapability(syntheticEntry, "reasoning_efforts", REASONING_EFFORTS),
+    service_tiers: modelCapability(syntheticEntry, "service_tiers", SERVICE_TIERS),
+    input_modalities: modelCapability(syntheticEntry, "input_modalities", MODALITIES),
+    output_modalities: modelCapability(syntheticEntry, "output_modalities", MODALITIES),
+    tool_calling: modelBooleanCapability(syntheticEntry, "tool_calling"),
+    structured_outputs: modelBooleanCapability(syntheticEntry, "structured_outputs"),
+    reasoning: modelBooleanCapability(syntheticEntry, "reasoning"),
+    streaming: modelBooleanCapability(syntheticEntry, "streaming"),
   }
 }
 
@@ -230,44 +267,38 @@ function effortVariants(efforts) {
 }
 
 function describe(record, stale = false) {
-  const { id, name, owned_by: ownedBy, limits, reasoning_efforts: efforts } = record
+  const {
+    id,
+    name,
+    owned_by: ownedBy,
+    limits,
+    reasoning_efforts: efforts,
+    input_modalities: inputModalities,
+    output_modalities: outputModalities,
+    tool_calling: toolCalling,
+    structured_outputs: structuredOutputs,
+    reasoning,
+  } = record
   if (ownedBy === "router") return null
   const bare = id.includes("/") ? id.slice(id.indexOf("/") + 1) : id
   const displayName = name ?? bare
+  // The OpenAI-compatible transport used by OpenCode cannot decode generated-image payloads.
+  // Keep every other authoritative modality, but remove image output from this consumer view.
+  const compatibleOutput = outputModalities?.filter((modality) => modality !== "image")
+  if (outputModalities !== undefined && compatibleOutput.length === 0) return null
   const base = {
     name: stale ? `${displayName} [stale metadata; pricing unavailable]` : displayName,
-    tool_call: true,
     ...(limits ? { limit: limits } : {}),
+    ...(toolCalling !== undefined ? { tool_call: toolCalling } : {}),
+    ...(structuredOutputs !== undefined ? { structured_output: structuredOutputs } : {}),
+    ...(inputModalities !== undefined ? { attachment: inputModalities.includes("image") } : {}),
+    ...(reasoning !== undefined ? { reasoning } : {}),
+    ...(reasoning ? { interleaved: { field: "reasoning_content" } } : {}),
+    ...(efforts?.length > 0 ? { variants: effortVariants(efforts) } : {}),
+    ...(inputModalities !== undefined && compatibleOutput !== undefined
+      ? { modalities: { input: inputModalities, output: compatibleOutput } }
+      : {}),
   }
-
-  if (ownedBy === "anthropic" || ownedBy === "openai") {
-    return {
-      ...base,
-      attachment: true,
-      reasoning: true,
-      interleaved: { field: "reasoning_content" },
-      modalities: { input: ["text", "image"], output: ["text"] },
-      ...(efforts.length > 0 ? { variants: effortVariants(efforts) } : {}),
-    }
-  }
-
-  if (ownedBy === "google") {
-    const image = bare.includes("image")
-    return {
-      ...base,
-      attachment: true,
-      reasoning: !image,
-      ...(image || efforts.length === 0
-        ? {}
-        : { interleaved: { field: "reasoning_content" }, variants: effortVariants(efforts) }),
-      // This provider uses @ai-sdk/openai-compatible. OpenCode 1.18.11 validates Chat message
-      // content as string/null and cannot consume Gemini inlineData or OpenRouter message.images.
-      // Advertising image output here makes OpenCode request a modality its transport discards.
-      // Native Gemini generateContent remains the supported generated-image surface.
-      modalities: { input: ["text", "image"], output: ["text"] },
-    }
-  }
-
   return base
 }
 
@@ -306,7 +337,7 @@ function liveModels(entries, records) {
     if (!model) continue
     const pricing = entry.apitoken?.pricing
     models[entry.id] = { ...model, cost: modelCost(pricing, "standard") }
-    if (entry.owned_by === "openai" && record.service_tiers.includes("priority")) {
+    if (record.service_tiers?.includes("priority")) {
       models[`${entry.id}-fast`] = {
         ...model,
         id: entry.id,
@@ -325,7 +356,7 @@ function cachedModels(records) {
     const model = describe(record, true)
     if (!model) continue
     models[record.id] = model
-    if (record.owned_by === "openai" && record.service_tiers.includes("priority")) {
+    if (record.service_tiers?.includes("priority")) {
       models[`${record.id}-fast`] = {
         ...model,
         id: record.id,

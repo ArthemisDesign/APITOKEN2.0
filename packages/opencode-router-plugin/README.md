@@ -2,7 +2,10 @@
 
 Канонический config-plugin для OpenCode. На старте он получает персональный `/v1/models`,
 переводит authoritative limits/capabilities и актуальные цены в штатную model schema OpenCode и
-добавляет GPT Fast entries с исходным model ID.
+добавляет Fast entries с исходным model ID только при опубликованном `priority` tier. Modalities,
+attachments, tool calling, structured output, reasoning и variants берутся из
+`apitoken.capabilities`; эвристик по `owned_by` или подстроке в model ID нет. Router-owned presets
+не добавляются в OpenCode provider list: у них динамическая модель и переменная цена.
 
 Установить plugin можно копированием `apitoken-router.js` в
 `~/.config/opencode/plugin/apitoken-router.js` (или в auto-load каталог
@@ -23,11 +26,13 @@ OpenRouter image metadata в Chat message. Нативная генерация �
 `candidates[].content.parts[].inlineData`.
 
 При временной недоступности каталога plugin может восстановить только capability metadata из
-локального last-good cache. Снимок AES-256-GCM зашифрован и привязан к точным credential/base URL,
+локального last-good cache schema v2 (`catalog-v2.json`). Снимок AES-256-GCM зашифрован и привязан
+к точным credential/base URL,
 имеет режим `0600`, 15-минутный freshness TTL и предельный stale age 7 дней. Cached-модели явно
 помечаются `[stale metadata; pricing unavailable]`; `cost` не кэшируется и до следующего успешного
 live discovery в OpenCode не показывается. Другой ключ, другой URL, истёкший, повреждённый или
-неизвестной версии cache отклоняется.
+неизвестной версии cache отклоняется; старый v1 не переиспользуется, потому что в нём нет
+authoritative modality/control полей.
 
 Проверка:
 

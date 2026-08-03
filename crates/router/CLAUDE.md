@@ -105,7 +105,10 @@
   кэшируются.
 - `presets.rs` + `routing-presets.json` — compiled reviewed presets, integer price/latency
   ranks и проверенный context window. Manifest валидируется при старте; отсутствующие live
-  members пропускаются, полностью пустой preset не исполняется.
+  members пропускаются, полностью пустой preset не исполняется. Public preset metadata строится
+  только из доступных после pricing eligibility live members: `apitoken.routing.members`,
+  `variable_model_pricing:true`, минимальные гарантированные limits и intersection capabilities.
+  Manifest context не подменяет runtime metadata и фиксированная цена preset не публикуется.
 - `metrics.rs` — fixed-cardinality telemetry admission/auth/catalog/pricing/policy/header-timeout/
   balance и compile-bounded `claude_router_fallback_total` (ровно 18 series). Model, credential,
   group и request identity в labels запрещены.
@@ -126,13 +129,16 @@
   успешной или неуспешной in-flight попытки, детерминированно
   скошенный TTL 27/30/33 с, last-good при падении плоскости и маркер деградации
   `x-apitoken-catalog-degraded`. Ответ плоскости ограничен 4 MiB, 1 024 моделями и 256 байтами на
-  ID/display name; hostile metadata не попадает в cache/logs. `main.rs` после той же
+  ID/display name; surrounding whitespace, duplicate ID и hostile metadata fail closed и не
+  попадают в cache/logs. `main.rs` после той же
   aggregate-auth проверки отвечает
   Codex `originator`/User-Agent backend-native overlay `{models:[]}` (CLI объединяет его со
   встроенными metadata), не меняя OpenAI-list для остальных клиентов. Consumer строго
-  нормализует Anthropic native `max_input_tokens`/`max_tokens`/effort matrix и owned
+  нормализует Anthropic native `max_input_tokens`/`max_tokens`/thinking/effort matrix и owned
   OpenAI/Gemini `apitoken.limits/capabilities`; публикует их в `apitoken` и прежних top-level
-  capability mirrors. Missing legacy metadata не угадывается, malformed metadata переводит
+  capability mirrors. Отдельный `reasoning` не выводится из пустого effort: Anthropic берётся из
+  native `thinking.supported`, owned producer — из явного bool либо authoritative effort list.
+  Missing legacy metadata не угадывается, malformed metadata переводит
   плоскость на last-good/degraded. Alias collision снимает alias со всех участников, но
   namespaced ID и отдельный native ID для body rewrite/pricing остаются рабочими. Здесь же — общий для
   universal dispatch'ей `pub(crate) namespace_lane` (прямой выбор плоскости без catalog fetch

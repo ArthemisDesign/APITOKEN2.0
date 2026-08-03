@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-use crate::catalog::{self, CatalogEntry};
+use crate::catalog::{self, CatalogEntry, CatalogLimits};
 
 pub const PRESET_PREFIX: &str = "preset/";
 const SCHEMA_VERSION: u64 = 1;
@@ -56,16 +56,94 @@ impl Preset {
         &self.models
     }
 
-    fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "id": self.id,
-            "object": "model",
-            "created": 0,
-            "owned_by": "router",
-            "aliases": [],
-            "name": self.name,
-        })
+    fn active_members<'a>(&self, entries: &'a [(String, CatalogEntry)]) -> Vec<&'a CatalogEntry> {
+        self.models
+            .iter()
+            .filter_map(|member| catalog::find(entries, member).map(|(_, entry)| entry))
+            .collect()
     }
+
+    fn to_json(&self, entries: &[(String, CatalogEntry)]) -> serde_json::Value {
+        let members = self.active_members(entries);
+        let limits = guaranteed_limits(&members);
+        let entry = CatalogEntry {
+            id: self.id.clone(),
+            native_id: self.id.clone(),
+            aliases: Vec::new(),
+            display_name: Some(self.name.clone()),
+            limits,
+            reasoning_efforts: guaranteed_list(&members, |entry| &entry.reasoning_efforts),
+            service_tiers: guaranteed_list(&members, |entry| &entry.service_tiers),
+            input_modalities: guaranteed_list(&members, |entry| &entry.input_modalities),
+            output_modalities: guaranteed_list(&members, |entry| &entry.output_modalities),
+            tool_calling: guaranteed_bool(&members, |entry| entry.tool_calling),
+            structured_outputs: guaranteed_bool(&members, |entry| entry.structured_outputs),
+            reasoning: guaranteed_bool(&members, |entry| entry.reasoning),
+            streaming: guaranteed_bool(&members, |entry| entry.streaming),
+        };
+        let mut json = entry.to_json("router");
+        json["apitoken"]["routing"] = serde_json::json!({
+            "members": members.iter().map(|entry| &entry.id).collect::<Vec<_>>(),
+            "variable_model_pricing": true,
+        });
+        json
+    }
+}
+
+fn guaranteed_limit(
+    members: &[&CatalogEntry],
+    field: impl Fn(&CatalogLimits) -> Option<u64>,
+) -> Option<u64> {
+    members
+        .iter()
+        .map(|entry| entry.limits.as_ref().and_then(&field))
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .min()
+}
+
+fn guaranteed_limits(members: &[&CatalogEntry]) -> Option<CatalogLimits> {
+    if members.is_empty() {
+        return None;
+    }
+    let limits = CatalogLimits {
+        context: guaranteed_limit(members, |limits| limits.context),
+        input: guaranteed_limit(members, |limits| limits.input),
+        output: guaranteed_limit(members, |limits| limits.output),
+    };
+    (limits.context.is_some() || limits.input.is_some() || limits.output.is_some())
+        .then_some(limits)
+}
+
+fn guaranteed_list(
+    members: &[&CatalogEntry],
+    field: impl Fn(&CatalogEntry) -> &Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    let (first, rest) = members.split_first()?;
+    let mut intersection = field(first).clone()?;
+    for member in rest {
+        let values = field(member).as_ref()?;
+        intersection.retain(|value| values.contains(value));
+    }
+    Some(intersection)
+}
+
+fn guaranteed_bool(
+    members: &[&CatalogEntry],
+    field: impl Fn(&CatalogEntry) -> Option<bool>,
+) -> Option<bool> {
+    if members.is_empty() {
+        return None;
+    }
+    let mut unknown = false;
+    for member in members {
+        match field(member) {
+            Some(false) => return Some(false),
+            Some(true) => {}
+            None => unknown = true,
+        }
+    }
+    (!unknown).then_some(true)
 }
 
 static MANIFEST: OnceLock<RoutingManifest> = OnceLock::new();
@@ -209,7 +287,7 @@ pub fn active_catalog_entries(entries: &[(String, CatalogEntry)]) -> Vec<serde_j
         .presets
         .iter()
         .filter(|preset| is_active(preset, entries))
-        .map(Preset::to_json)
+        .map(|preset| preset.to_json(entries))
         .collect()
 }
 
@@ -219,7 +297,7 @@ pub fn active_catalog_entry(
 ) -> Option<serde_json::Value> {
     find(id)
         .filter(|preset| is_active(preset, entries))
-        .map(Preset::to_json)
+        .map(|preset| preset.to_json(entries))
 }
 
 #[cfg(test)]
@@ -250,6 +328,12 @@ mod tests {
                 limits: None,
                 reasoning_efforts: None,
                 service_tiers: Some(vec!["standard".to_string(), "priority".to_string()]),
+                input_modalities: Some(vec!["text".to_string(), "image".to_string()]),
+                output_modalities: Some(vec!["text".to_string()]),
+                tool_calling: Some(true),
+                structured_outputs: Some(true),
+                reasoning: Some(true),
+                streaming: Some(true),
             },
         )];
         let ids: Vec<_> = active_catalog_entries(&entries)
@@ -258,5 +342,105 @@ mod tests {
             .collect();
         assert_eq!(ids, ["preset/auto", "preset/hermes"]);
         assert!(active_catalog_entry("preset/quality", &entries).is_none());
+        let auto = active_catalog_entry("preset/auto", &entries).unwrap();
+        assert_eq!(
+            auto["apitoken"]["routing"]["members"],
+            serde_json::json!(["openai/gpt-5.6-terra"])
+        );
+        assert_eq!(auto["apitoken"]["routing"]["variable_model_pricing"], true);
+        assert_eq!(
+            auto["service_tiers"],
+            serde_json::json!(["standard", "priority"])
+        );
+    }
+
+    #[test]
+    fn preset_catalog_publishes_only_live_conservative_guarantees() {
+        let make = |id: &str, limits: CatalogLimits, efforts: &[&str], tiers: &[&str]| {
+            (
+                id.split_once('/').unwrap().0.to_string(),
+                CatalogEntry {
+                    id: id.to_string(),
+                    native_id: id.split_once('/').unwrap().1.to_string(),
+                    aliases: Vec::new(),
+                    display_name: None,
+                    limits: Some(limits),
+                    reasoning_efforts: Some(
+                        efforts.iter().map(|value| (*value).to_string()).collect(),
+                    ),
+                    service_tiers: Some(tiers.iter().map(|value| (*value).to_string()).collect()),
+                    input_modalities: Some(vec!["text".to_string(), "image".to_string()]),
+                    output_modalities: Some(vec!["text".to_string()]),
+                    tool_calling: Some(true),
+                    structured_outputs: Some(true),
+                    reasoning: Some(true),
+                    streaming: Some(true),
+                },
+            )
+        };
+        let mut entries = vec![
+            make(
+                "anthropic/claude-sonnet-5",
+                CatalogLimits {
+                    context: Some(1_000_000),
+                    input: Some(1_000_000),
+                    output: Some(128_000),
+                },
+                &["low", "medium", "high", "xhigh", "max"],
+                &["standard"],
+            ),
+            make(
+                "openai/gpt-5.6-terra",
+                CatalogLimits {
+                    context: Some(400_000),
+                    input: Some(272_000),
+                    output: Some(128_000),
+                },
+                &["none", "low", "medium", "high", "xhigh", "max"],
+                &["standard", "priority"],
+            ),
+            make(
+                "google/gemini-3.6-flash",
+                CatalogLimits {
+                    context: Some(1_048_576),
+                    input: Some(1_048_576),
+                    output: Some(65_536),
+                },
+                &["minimal", "low", "medium", "high"],
+                &["standard"],
+            ),
+        ];
+
+        let auto = active_catalog_entry("preset/auto", &entries).unwrap();
+        assert_eq!(
+            auto["apitoken"]["routing"]["members"],
+            serde_json::json!([
+                "anthropic/claude-sonnet-5",
+                "openai/gpt-5.6-terra",
+                "google/gemini-3.6-flash"
+            ])
+        );
+        assert_eq!(
+            auto["apitoken"]["limits"],
+            serde_json::json!({"context": 400_000, "input": 272_000, "output": 65_536})
+        );
+        assert_eq!(
+            auto["reasoning_efforts"],
+            serde_json::json!(["low", "medium", "high"])
+        );
+        assert_eq!(auto["service_tiers"], serde_json::json!(["standard"]));
+        assert_eq!(auto["apitoken"]["capabilities"]["tool_calling"], true);
+
+        entries[2].1.structured_outputs = Some(false);
+        let auto = active_catalog_entry("preset/auto", &entries).unwrap();
+        assert_eq!(
+            auto["apitoken"]["capabilities"]["structured_outputs"],
+            false
+        );
+        entries[2].1.structured_outputs = None;
+        let auto = active_catalog_entry("preset/auto", &entries).unwrap();
+        assert!(auto["apitoken"]["capabilities"]
+            .get("structured_outputs")
+            .is_none());
     }
 }

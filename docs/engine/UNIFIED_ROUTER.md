@@ -418,7 +418,8 @@ Bedrock, Vertex) route planner сможет выбирать между ними
 исполнимыми, а их приватный native ID по-прежнему используется для body rewrite и pricing
 preflight. Поэтому новая модель не может молча перехватить существующий alias по порядку плоскостей.
 Каждый plane response ограничен 4 MiB и 1 024 моделями; ID и display name — 256 байтами без
-control characters. Expired refresh имеет отдельный per-plane singleflight: ожидающие callers
+control characters и surrounding whitespace, duplicate namespaced ID делает весь refresh
+malformed. Expired refresh имеет отдельный per-plane singleflight: ожидающие callers
 используют и успешный, и failed/oversized результат той же in-flight попытки, но следующий
 независимый запрос сразу пробует снова без negative cache/circuit breaker. 30-секундный TTL
 детерминированно скошен до 27/30/33 секунд для Anthropic/OpenAI/Gemini, чтобы один тёплый aggregate
@@ -460,17 +461,33 @@ serving profile снимает гарантию. Опциональный OpenAI
 text/image и явно имеет `tool_calling:false`/`structured_outputs:false`; text routes выдают text и
 поддерживают оба controls; только Gemini 3 Flash Preview дополнительно рекламирует exact PCM WAV
 audio input. Router-consumer принимает token limits только как положительные целые
-до `u32::MAX`, capability booleans — только как JSON bool, modalities — только без повторов из
+до `u32::MAX`, capability booleans (`tool_calling`, `structured_outputs`, `reasoning`,
+`streaming`) — только как JSON bool, modalities — только без повторов из
 `text|image|audio`, а остальные arrays — только без повторов из закрытых множеств
 `none|minimal|low|medium|high|xhigh|max` и `standard|priority`. Anthropic `max_input_tokens`
 становится `limits.context` и `limits.input`, `max_tokens` — `limits.output`, а native
-capabilities нормализуются в те же modalities/control booleans и ordered `reasoning_efforts`.
+capabilities нормализуются в те же modalities/control booleans. `thinking.supported` становится
+отдельным `reasoning`, чтобы наличие reasoning не путалось с наличием переключателя effort:
+pre-4.6 Claude честно имеет reasoning, но adapter принимает только model default и поэтому
+публикует пустой `reasoning_efforts`; Claude 4.6 допускает `low|medium|high|max`, Claude 4.7+ и 5 —
+`low|medium|high|xhigh|max`, после пересечения с текущим native capability catalog. Для
+owned-плоскостей отсутствие отдельного `reasoning` допускает
+точный вывод из authoritative efforts (`none` сам по себе reasoning не включает).
 Отсутствующая legacy metadata опускается без догадок; malformed
 authoritative metadata делает fetch плоскости failed, поэтому router использует её last-good и
 ставит `x-apitoken-catalog-degraded`, либо опускает плоскость, если last-good ещё нет. Pricing
 overlay добавляется в тот же `apitoken` object и не затирает limits/capabilities. Лимиты нельзя
 выводить из model id, pricing threshold или клиентских таблиц; capabilities нельзя угадывать по
 namespace/`owned_by`.
+
+`created:0` означает только «producer не дал общей OpenAI-compatible даты создания». Router не
+подменяет это поле датой релиза из документации или именем модели. Активные `preset/*` записи
+публикуют `apitoken.routing.members` ровно из доступных этому ключу live members и
+`variable_model_pricing:true`: выбранная модель определяется на каждом запросе, поэтому единой
+ставки у preset нет. Их limits — минимум только по значениям, известным у каждого активного
+member; arrays — ordered intersection; boolean capability равна `true` только при unanimous true,
+`false` при любом authoritative false и опускается при смеси true/unknown. Manifest ranks/context
+остаются reviewed routing constraints, но не являются runtime authority для `/v1/models`.
 
 Персональная ценовая проекция использует отдельный producer-first loopback-контракт
 `POST /internal/router/catalog/pricing` на каждой fixed provider plane. Router передаёт туда

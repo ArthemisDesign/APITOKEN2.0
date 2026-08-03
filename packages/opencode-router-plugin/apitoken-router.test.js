@@ -34,7 +34,16 @@ function catalog() {
         owned_by: "anthropic",
         apitoken: {
           limits: { context: 1000000, input: 1000000, output: 128000 },
-          capabilities: { reasoning_efforts: ["low", "medium", "high", "xhigh", "max"] },
+          capabilities: {
+            reasoning_efforts: ["low", "medium", "high", "xhigh", "max"],
+            service_tiers: ["standard"],
+            input_modalities: ["text", "image"],
+            output_modalities: ["text"],
+            tool_calling: true,
+            structured_outputs: true,
+            reasoning: true,
+            streaming: true,
+          },
           pricing: pricing(),
         },
       },
@@ -44,7 +53,16 @@ function catalog() {
         owned_by: "openai",
         apitoken: {
           limits: { context: 400000, input: 272000, output: 128000 },
-          capabilities: { reasoning_efforts: ["low", "medium", "high"], service_tiers: ["standard", "priority"] },
+          capabilities: {
+            reasoning_efforts: ["none", "low", "medium", "high"],
+            service_tiers: ["standard", "priority"],
+            input_modalities: ["text", "image"],
+            output_modalities: ["text"],
+            tool_calling: true,
+            structured_outputs: true,
+            reasoning: true,
+            streaming: true,
+          },
           pricing: pricing(),
         },
       },
@@ -54,7 +72,16 @@ function catalog() {
         owned_by: "google",
         apitoken: {
           limits: { context: 131072, input: 65536, output: 32768 },
-          capabilities: {},
+          capabilities: {
+            reasoning_efforts: [],
+            service_tiers: ["standard"],
+            input_modalities: ["text", "image"],
+            output_modalities: ["text", "image"],
+            tool_calling: false,
+            structured_outputs: false,
+            reasoning: false,
+            streaming: true,
+          },
           pricing: pricing(),
         },
       },
@@ -73,7 +100,7 @@ function failedFetch() {
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "apitoken-opencode-cache-test-"))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
-  return path.join(directory, "catalog-v1.json")
+  return path.join(directory, "catalog-v2.json")
 }
 
 test("module exposes only the OpenCode plugin factory", () => {
@@ -91,6 +118,11 @@ test("same credential uses explicit stale capability-only models after a transie
     ["text"],
     "OpenAI-compatible OpenCode transport must not advertise generated images it cannot consume",
   )
+  assert.equal(live.models["google/gemini-3.1-flash-image"].tool_call, false)
+  assert.equal(live.models["google/gemini-3.1-flash-image"].structured_output, false)
+  assert.equal(live.models["google/gemini-3.1-flash-image"].reasoning, false)
+  assert.equal(live.models["anthropic/claude-opus-5"].structured_output, true)
+  assert.deepEqual(live.models["openai/gpt-5.6"].modalities.input, ["text", "image"])
   assert.equal(fs.statSync(cachePath).mode & 0o777, 0o600)
 
   const warnings = []
@@ -116,6 +148,14 @@ test("same credential uses explicit stale capability-only models after a transie
   const decrypted = readCapabilityCache({ cachePath, key: KEY_A, base: BASE_A, now: NOW + 1 })
   assert.equal(JSON.stringify(decrypted).includes("pricing"), false)
   assert.equal(JSON.stringify(decrypted).includes("cost"), false)
+  assert.deepEqual(
+    decrypted.records.find((record) => record.id === "google/gemini-3.1-flash-image").output_modalities,
+    ["text", "image"],
+  )
+  assert.equal(
+    decrypted.records.find((record) => record.id === "google/gemini-3.1-flash-image").tool_calling,
+    false,
+  )
 })
 
 test("cache is rejected for a different credential or base URL", async (t) => {
@@ -154,7 +194,7 @@ test("tampered, expired, and version-mismatched cache fails closed", async (t) =
     /expired/,
   )
 
-  fs.writeFileSync(cachePath, JSON.stringify({ ...original, schema: 2 }), { mode: 0o600 })
+  fs.writeFileSync(cachePath, JSON.stringify({ ...original, schema: 1 }), { mode: 0o600 })
   assert.throws(
     () => readCapabilityCache({ cachePath, key: KEY_A, base: BASE_A, now: NOW + 1 }),
     /unsupported capability cache version/,
@@ -206,5 +246,23 @@ test("malformed live catalog does not replace a valid last-good cache", async (t
     warn: () => {},
   })
   assert.equal(result.source, "stale")
+  assert.equal(fs.readFileSync(cachePath, "utf8"), before)
+
+  const invalidCapability = catalog()
+  invalidCapability.data[0].apitoken.capabilities.tool_calling = "true"
+  const malformedCapabilityFetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => invalidCapability,
+  })
+  const capabilityResult = await discoverModels({
+    key: KEY_A,
+    base: BASE_A,
+    cachePath,
+    fetchImpl: malformedCapabilityFetch,
+    now: NOW + 2,
+    warn: () => {},
+  })
+  assert.equal(capabilityResult.source, "stale")
   assert.equal(fs.readFileSync(cachePath, "utf8"), before)
 })
