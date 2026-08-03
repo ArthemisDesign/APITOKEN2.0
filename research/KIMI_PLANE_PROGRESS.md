@@ -42,6 +42,7 @@
 | resumable-леджер как общее правило | `SKILL.md`, чеклист | `2645edab` |
 | **всё вышеперечисленное в master, watchdog GREEN** | — | `f3974ac4` |
 | Плоскость: refresh + разбор `/usages` | `crates/forward/src/kimi/client.rs` | ветка |
+| Плоскость: цикл попыток и граница первого байта | `crates/forward/src/kimi/pool.rs` | ветка |
 | Auth Bot: публикация roster | `crates/authbot/src/kimi_roster.rs` | `dc175204` |
 | Auth Bot: обработчик `km_ready` (шов №1 закрыт) | `crates/authbot/src/bot.rs` | `391032bc` |
 | Плоскость: загрузчик roster | `crates/forward/src/kimi/roster.rs` | `d8a37422` |
@@ -58,9 +59,11 @@
 
 ## Следующее действие
 
-**Цикл попыток плоскости** (`crates/forward/src/kimi/pool.rs`): связать `roster` → `selection` →
-`client`, применять `transport::classify_status` к каждому исходу, соблюдать бюджет ротации,
-запрещать ротацию после первого публичного байта. Refresh и разбор `/usages` уже готовы.
+**Durable-калибровка** (`crates/registry`): read/write поверх уже вставших таблиц `0027` —
+вставка immutable turn event и продвижение cumulative subject spend одной транзакцией, CAS для
+состояния estimator'а, чтение истории наблюдений. Estimator и разбор `/usages` уже готовы и ждут
+только персистентности. После этого — поллер, который дренирует turn-FIFO перед каждым опросом
+квоты.
 
 **Процессные заметки (обе уже стоили потерянного мёржа):**
 
