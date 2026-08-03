@@ -222,6 +222,10 @@ Body должен объяснять:
   `docs/product/OPENKEYS.md`.
 - **Админ-панель** (`admin.apitoken.sale`): `apps/admin` — Next.js на `127.0.0.1:3700`, без
   собственной БД и секретов. Описание — `docs/product/ADMIN_PANEL.md`.
+- **OpenCode integration**: `packages/opencode-router-plugin` — standalone config-plugin,
+  потребляющий key-scoped unified `/v1/models`; не является commerce/runtime-сервисом и не
+  деплоится на host. Capability-only last-good cache обязан оставаться зашифрованным,
+  credential/base-bound и без pricing/cost. Контракт — `docs/engine/UNIFIED_ROUTER.md`.
 - **Devbot** (dev-уведомления в Telegram): `apps/devbot` — plain Node-сервис на
   `127.0.0.1:3800` (env `DEVBOT_PORT`), своя watchdog-lane `deploy/devbot` с релизным корнем
   `/opt/apitoken/devbot-releases`; секреты — `/etc/apitoken/devbot.env`, до его provisioning

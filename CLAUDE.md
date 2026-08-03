@@ -66,6 +66,13 @@ Human credentials и domain grants хранятся в commerce PostgreSQL и п
 
 Локальная карта и запуск — `docs/commerce/COMMERCIAL_BACKEND.md`. Проверка: `pnpm build && pnpm typecheck && pnpm test`.
 
+Отдельно от commerce в том же pnpm-workspace живёт клиентская интеграция
+`packages/opencode-router-plugin`: канонический config-plugin OpenCode, который потребляет
+key-scoped unified `/v1/models`. Он не импортирует commerce packages и не деплоится на сервер;
+его capability-only cache не имеет права сохранять pricing/cost. Контракт —
+`docs/engine/UNIFIED_ROUTER.md`, тест —
+`pnpm --filter @claude-api/opencode-router-plugin test`.
+
 ## Архитектура — слои (НЕ нарушать направление зависимостей)
 
 ```

@@ -196,6 +196,14 @@ Control API движка использует только на чтение. С
   дополняет, а не заменяет runtime metadata. Pricing rates, account identity и credential в эту
   связь не входят; неизвестные значения не выводятся из model id или pricing таблиц. Контракт —
   `docs/engine/UNIFIED_ROUTER.md` §«Модели и каталог».
+- **Контракт unified catalog (router → OpenCode integration).** `crates/router` производит
+  аутентифицированный key-scoped `/v1/models`: authoritative runtime metadata дополняется
+  персональной pricing projection без изменения исходных model IDs. Потребитель — канонический
+  `packages/opencode-router-plugin`: live-ответ переводится в model/variant/Fast schema OpenCode,
+  а локальный last-good cache содержит только зашифрованные capability records без `pricing` и
+  `cost`, привязан к exact credential/base URL и ограничен schema/TTL/max-stale guards. Cached
+  fallback всегда явно stale и без стоимости. Других потребителей cache-файла нет. Контракт —
+  `docs/engine/UNIFIED_ROUTER.md` §§«Совместимость с harness-агентами», «Модели и каталог».
 - **Fallback telemetry (router/provider planes → Prometheus, фаза 6.4c).** `crates/router`
   производит unauthenticated loopback `/metrics` на 8798 с ровно 18
   `claude_router_fallback_total{from_namespace,to_namespace,reason}` series; публичный Caddy

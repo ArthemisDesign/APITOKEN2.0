@@ -19,6 +19,8 @@ importers:
         specifier: ^5.8.0
         version: 5.9.3
 
+  packages/opencode-router-plugin: {}
+
   apps/admin:
     dependencies:
       next:

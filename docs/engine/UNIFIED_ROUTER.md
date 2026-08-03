@@ -206,11 +206,25 @@ headless matrix не приписывает роутеру потерянную 
 custom-provider body contract.
 
 OpenCode не выводит произвольные поля OpenAI `/v1/models` напрямую в свой внутренний model schema:
-его provider-конфиг должен один раз преобразовать `data[].apitoken.pricing.standard` в штатный
+канонический config-plugin `packages/opencode-router-plugin/apitoken-router.js` преобразует
+`data[].apitoken.pricing.standard` в штатный
 `model.cost`, разделив exact nanoUSD/M на `1e9` до требуемого OpenCode числа USD/M. Синтетическая
 GPT Fast-модель с исходным API ID использует `pricing.priority`; Standard — `pricing.standard`.
 Такой discovery обязан выполняться синхронно с credential текущего запуска: общий файловый cache
-допустим только для capability metadata без цен, но не для полного key-scoped ответа. После этого
+допустим только для capability metadata без цен, но не для полного key-scoped ответа.
+
+Plugin всегда сначала запрашивает live-каталог. Его last-good fallback сохраняет только строгий
+белый список model ID/name, limits, reasoning efforts и service tiers: AES-256-GCM snapshot
+криптографически привязан к точной паре credential/base URL, записывается атомарно с mode `0600`,
+имеет schema guard, freshness TTL 15 минут и maximum stale age 7 дней. Другой ключ/URL,
+неизвестная версия, неправильные permissions, повреждение и expiry отклоняются fail-closed. При
+fallback каждая модель явно получает suffix `[stale metadata; pricing unavailable]`, warning
+содержит время снимка, а `cost` полностью отсутствует до следующего успешного live discovery.
+Таким образом, краткий catalog outage не оставляет OpenCode без моделей и одновременно не может
+показать ставку другого ключа или устаревшую персональную цену. Контракт и crypto/negative tests
+живут рядом с plugin в `packages/opencode-router-plugin`.
+
+После live discovery
 OpenCode сам считает стоимость сообщения по input/output/reasoning/cache token usage; отдельный
 `usage.cost` от router не требуется. Его custom-provider schema умеет отдельный
 `context_over_200k`, поэтому plugin заполняет его только при exact provider threshold 200000;
