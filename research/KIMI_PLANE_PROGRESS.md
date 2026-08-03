@@ -45,6 +45,7 @@
 | Плоскость: цикл попыток и граница первого байта | `crates/forward/src/kimi/pool.rs` | ветка |
 | Durable-калибровка: типы turn event + валидация | `crates/registry/src/kimi_calibration.rs` | ветка |
 | Durable-калибровка: PostgreSQL read/write + CAS | `crates/registry/src/pg.rs` | ветка |
+| Плоскость: bounded turn-FIFO и порядок settle→quota | `crates/forward/src/kimi/queue.rs` | ветка |
 | Auth Bot: публикация roster | `crates/authbot/src/kimi_roster.rs` | `dc175204` |
 | Auth Bot: обработчик `km_ready` (шов №1 закрыт) | `crates/authbot/src/bot.rs` | `391032bc` |
 | Плоскость: загрузчик roster | `crates/forward/src/kimi/roster.rs` | `d8a37422` |
@@ -61,12 +62,11 @@
 
 ## Следующее действие
 
-**Bounded turn-FIFO и поллер квоты** (`crates/forward`): очередь между stream finalizer и
-authority — head остаётся pending при transient-сбое, semantic conflict карантинится и увеличивает
-dropped, flush происходит перед любым следующим turn'ом и перед каждым бесплатным опросом квоты,
-retire и shutdown делают финальный flush. Публиковать `pending_events`, `dropped_events`,
-`persistence_ok`. Персистентность и estimator готовы; не хватает именно порядка «сначала settle,
-потом quota».
+**`crates/server`: env, wiring плоскости, readiness.** Прочитать `CLAUDE_API_KIMI_*` (roster dir,
+keyring, active kid, base URL, auth scheme) — env читается ТОЛЬКО здесь; собрать плоскость за
+выключенным по умолчанию switch'ем; readiness бить в `/me` или `/messages`, **никогда** в
+`/v1/models` (негейтед, 200 на мёртвый ключ). Все чистые модули плоскости (roster, client,
+selection, transport, pool, queue) готовы и ждут композиции.
 
 **Не забыть:** real-PG матрица для `record_kimi_turn` и `save_kimi_calibration`
 (`CLAUDE_API_TEST_DATABASE_URL=... cargo test -p registry`) — сейчас доказана только компиляция и
@@ -103,6 +103,7 @@ retire и shutdown делают финальный flush. Публиковать
 - **Живая подписка Kimi Code.** Без неё не снимаются 8 `unknown` из §6 манифеста: auth-заголовок
   Anthropic-маршрута, форма terminal usage, реальная инкрементальность SSE, единица `used`,
   различение 401/403, набор планов, поведение месячного потолка, платные tool/search-единицы.
-- **Красный master.** На 2026-08-03 `628b941e` (*observability: Redis pressure / Codex history*,
-  чужая работа) уронил `deploy/watchdog` в фазе `verifying`. Мёржить поверх нельзя; ветка
-  `feat/kimi-plane-completion` ждёт зелёного master.
+- **Красный master (повторяется).** 2026-08-03: сначала `628b941e` уронил `deploy/watchdog` в
+  фазе `verifying` (починено чужим коммитом), затем `5f0f6ad2` — в фазе
+  `installing-infrastructure`, line 2364. Обе поломки чужие. Мёржить поверх красного нельзя:
+  это смешало бы две несвязанные поломки и лишило обе виновника. Ветка ждёт зелёного master.
