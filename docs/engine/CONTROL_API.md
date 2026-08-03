@@ -431,18 +431,24 @@ POST /admin/pricing/v2/release/prepare
 GET  /admin/pricing/v2/release/{generation}
 POST /admin/pricing/v2/recovery-link/prepare
 GET  /admin/pricing/v2/recovery-link/{target_generation}/{recovery_generation}
+POST /admin/pricing/v2/assignment-extension/prepare
+GET  /admin/pricing/v2/assignment-extension/{head_version}/{account_id}
 GET  /admin/pricing/v2/head
 GET  /admin/pricing/v2/inventory?after_account_id=<id>&limit=500
 GET  /admin/pricing/v2/funding/{account_id}/normalization
 POST /admin/pricing/v2/funding/{account_id}/normalization
 ```
 
-There is no activation route in this producer checkpoint. Policy/release/link rows are append-only
-and monotonic by policy version or release generation. Prepare returns the same typed
+There is no activation route in this producer checkpoint. Policy/release/link/assignment-extension
+rows are append-only; policy and release identities are monotonic by policy version or release
+generation. Prepare returns the same typed
 `stored|unchanged|stale|version_conflict|missing_dependency|invalid` result envelope as Stage 3C.
 `GET .../head` returns `{ "head": null }` until the separately reviewed
 Stage 9 producer exists and a fresh full-inventory Stage 8 proof authorizes one global CAS. Therefore
-deploying or calling the routes above cannot change live traffic, admission, prices or balances.
+these routes cannot move the global head, mutate an immutable release manifest or change balances.
+An assignment extension can make one post-cutover account resolvable under an already-active head;
+the provisioning consumer must therefore complete its exact readback before issuing or enabling a
+usable customer key.
 
 `PricingReleasePolicyV2` has the following exact shape (all unknown fields are rejected):
 
@@ -489,6 +495,37 @@ generation and includes non-empty `purpose`/`responsible`. Main/OpenKeys catalog
 policies and all digests must already exist with matching capability lineage. A recovery link binds
 a prepared `target` generation to a strictly newer prepared `recovery` generation.
 
+`PricingReleaseAssignmentExtensionV2` is the post-cutover provisioning shape (all unknown fields
+are rejected):
+
+```text
+provisioning_head_generation, provisioning_head_digest, provisioning_head_version,
+paired_recovery_generation?, paired_recovery_digest?, extension_group_digest,
+members[] = {
+  release_generation,
+  assignment = { account_id, account_class, policy_id, policy_version, policy_digest,
+                 billing_mode, funding_generation?, purpose?, responsible?, assignment_digest },
+  extension_digest
+}
+```
+
+Prepare takes the same pricing-release control-plane advisory lock as future activation and accepts
+only the exact current head. If that target has a prepared recovery link, `members` must contain the
+atomic active/recovery pair; otherwise it contains exactly the active member. Both members must name
+the same account, policy, class, billing mode, funding generation and service metadata while keeping
+their own release generation, assignment digest and extension digest. The account must already
+exist, must be absent from both immutable base assignment manifests, and every policy/funding
+dependency must exist. Balance accounts take the account funding lock and require the assignment
+generation to be the exact active funding head; service accounts remain `meter_only` with no
+funding generation.
+
+An exact replay returns `unchanged`, a different body for the same
+`(provisioning_head_version, account_id)` returns `version_conflict`, and a request for a head that is
+no longer current returns typed `stale` without inserting either member. `GET` performs exact
+readback by that tuple. Runtime resolution reads one coherent base assignment or append-only
+extension for the active release; it never mutates the immutable release manifest. This surface does
+not create or activate a head.
+
 Inventory is ordered by `account_id`, returns at most 500 rows plus `next_after_account_id`, and
 contains status, legacy scalar, integer balance/reserved/spent and nullable funding-v2 head identity.
 It contains no key secret. Consumers must exhaust the cursor and join this engine inventory with the
@@ -519,9 +556,11 @@ Apply берёт тот же account funding lock, что reserve/settlement/top
 lots и initial head. Legacy in-flight блокирует только свой account; writer, ожидавший lock,
 перечитывает новый head и dual-write'ит уже в funding v2. Глобального drain нет.
 
-Поздние checkpoints подключают typed TS consumer, runtime release snapshots, Stage 8 evidence и
-наконец один activation CAS. Account creation/activation и тот future CAS share the same
-control-plane lock; data-plane reserve/settlement never takes it.
+Поздние checkpoints подключают assignment-extension typed TS consumer, provisioning writer, Stage 8
+evidence и наконец один activation CAS. До подключения consumer новый account после cutover нельзя
+считать provisioned только потому, что engine producer уже умеет принять extension. Account
+creation/activation и тот future CAS координируются через release control-plane contract;
+data-plane reserve/settlement этот глобальный lock не берут.
 After each producer SHA reached a green exact-SHA `deploy/watchdog`, `packages/contracts` gained the
 strict release and funding-normalization wire schemas and `packages/engine-client` gained typed
 prepare/read plus account-local normalization plan/apply methods. The client surface still has no

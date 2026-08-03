@@ -322,10 +322,24 @@ release/funding snapshot. Stage 8 учитывает оба legacy count, но �
 
 ### 7.4. Защита provisioning race
 
-Account create/activation и pricing release activation берут общий control-plane advisory lock.
-Пока готовится release, новые аккаунты получают обе совместимые identities до выдачи usable key.
-Финальная транзакция повторно инвентаризирует все active accounts и отказывается переключать head,
-если хотя бы один аккаунт не классифицирован.
+До первого cutover финальная activation-транзакция под control-plane advisory lock повторно
+инвентаризирует все active accounts и отказывается переключать head, если хотя бы один аккаунт не
+классифицирован. Пока release готовится, новый аккаунт обязан попасть в оба immutable
+target/recovery manifests до выдачи usable key.
+
+После появления global head immutable manifests не дописываются. Post-cutover provisioning
+сначала создаёт account без usable key, подготавливает его funding generation (для balance-классов),
+затем атомарно добавляет append-only assignment extension для exact текущих active/recovery
+releases. Extension writer берёт pricing release advisory lock, проверяет exact head, policy,
+active funding head под account funding lock и отсутствие account в base manifests; exact replay
+возвращает `unchanged`. Если release head успел измениться, writer возвращает typed `stale`,
+provisioning перечитывает новую active/recovery pair и повторяет шаг без частичной записи. Только
+после exact GET-readback разрешена выдача/активация ключа.
+
+Engine producer и runtime resolver этого checkpoint уже поддерживают extension. Strict
+`packages/contracts`/`packages/engine-client` и commerce provisioning consumer подключаются
+отдельным producer-first шагом после зелёного engine SHA; один лишь доступный route ещё не делает
+новый account provisioned.
 
 Data-plane reserve/settlement этот глобальный lock не берут. На время CAS может на миллисекунды
 подождать только создание/активация аккаунта, но не клиентский traffic.
@@ -452,7 +466,9 @@ consumer, но новый consumer их не использует; удален�
   generation, cancel/refund, paid overrun, top-up classification, outbox recovery и доказанный
   lock order без reservation-row lock до funding-account lock.
 - In-flight cutover: reserve до activation и settlement после неё используют один snapshot.
-- Provisioning race: новый active account не может отсутствовать в target release.
+- Provisioning race: pre-cutover account покрыт target/recovery manifests; post-cutover account
+  получает atomic exact-head active/recovery extension до usable key; replay/stale/conflict и
+  resolver readback доказаны на real PostgreSQL.
 - Stage 8: 100% inventory/shadow, Gemini, format-aware legacy inflight audit, exact runtime floor.
 - Stage 9: single-head atomicity, no N-account writes, exact replay, stale evidence rejection.
 - Recovery: forward activation recovery generation без старого binary и без traffic stop.

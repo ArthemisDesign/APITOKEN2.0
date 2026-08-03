@@ -105,6 +105,26 @@ pub struct PricingReleaseAssignmentV2 {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct PricingReleaseAssignmentExtensionMemberV2 {
+    pub release_generation: i64,
+    pub assignment: PricingReleaseAssignmentV2,
+    pub extension_digest: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingReleaseAssignmentExtensionV2 {
+    pub provisioning_head_generation: i64,
+    pub provisioning_head_digest: String,
+    pub provisioning_head_version: i64,
+    pub paired_recovery_generation: Option<i64>,
+    pub paired_recovery_digest: Option<String>,
+    pub extension_group_digest: String,
+    pub members: Vec<PricingReleaseAssignmentExtensionMemberV2>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PricingReleaseV2 {
     pub generation: i64,
     pub release_kind: PricingReleaseKindV2,
@@ -595,6 +615,16 @@ pub(crate) fn normalize_pricing_release_v2(release: &PricingReleaseV2) -> Pricin
     normalized
 }
 
+pub(crate) fn normalize_pricing_release_assignment_extension_v2(
+    extension: &PricingReleaseAssignmentExtensionV2,
+) -> PricingReleaseAssignmentExtensionV2 {
+    let mut normalized = extension.clone();
+    normalized
+        .members
+        .sort_by_key(|member| member.release_generation);
+    normalized
+}
+
 fn expected_account_class(owner_type: PolicyOwnerType) -> AccountClass {
     match owner_type {
         PolicyOwnerType::GlobalB2c => AccountClass::B2c,
@@ -755,6 +785,80 @@ fn validate_assignment(assignment: &PricingReleaseAssignmentV2) -> Result<()> {
         || assignment.responsible.is_some()
     {
         bail!("customer assignment requires balance billing and one funding generation");
+    }
+    Ok(())
+}
+
+pub fn validate_pricing_release_assignment_extension_v2(
+    extension: &PricingReleaseAssignmentExtensionV2,
+) -> Result<()> {
+    if extension.provisioning_head_generation <= 0 || extension.provisioning_head_version <= 0 {
+        bail!("pricing assignment extension head identity must be positive");
+    }
+    require_id(
+        "pricing assignment extension head digest",
+        &extension.provisioning_head_digest,
+    )?;
+    require_id(
+        "pricing assignment extension group digest",
+        &extension.extension_group_digest,
+    )?;
+    let paired = match (
+        extension.paired_recovery_generation,
+        extension.paired_recovery_digest.as_deref(),
+    ) {
+        (None, None) => None,
+        (Some(generation), Some(digest)) if generation > extension.provisioning_head_generation => {
+            require_id("pricing assignment extension recovery digest", digest)?;
+            Some(generation)
+        }
+        _ => bail!("pricing assignment extension has an invalid recovery identity"),
+    };
+    let expected_members = usize::from(paired.is_some()) + 1;
+    if extension.members.len() != expected_members {
+        bail!("pricing assignment extension must contain the exact active/recovery pair");
+    }
+
+    let mut release_generations = BTreeSet::new();
+    let mut extension_digests = BTreeSet::new();
+    let mut first: Option<&PricingReleaseAssignmentV2> = None;
+    for member in &extension.members {
+        validate_assignment(&member.assignment)?;
+        require_id(
+            "pricing assignment extension member digest",
+            &member.extension_digest,
+        )?;
+        if !release_generations.insert(member.release_generation)
+            || !extension_digests.insert(member.extension_digest.as_str())
+        {
+            bail!("pricing assignment extension contains duplicate member identity");
+        }
+        if member.release_generation != extension.provisioning_head_generation
+            && Some(member.release_generation) != paired
+        {
+            bail!("pricing assignment extension member is outside the active/recovery pair");
+        }
+        if let Some(first) = first {
+            if member.assignment.account_id != first.account_id
+                || member.assignment.account_class != first.account_class
+                || member.assignment.policy_id != first.policy_id
+                || member.assignment.policy_version != first.policy_version
+                || member.assignment.policy_digest != first.policy_digest
+                || member.assignment.billing_mode != first.billing_mode
+                || member.assignment.funding_generation != first.funding_generation
+                || member.assignment.purpose != first.purpose
+                || member.assignment.responsible != first.responsible
+            {
+                bail!("pricing assignment extension pair has inconsistent assignment semantics");
+            }
+        } else {
+            first = Some(&member.assignment);
+        }
+    }
+    if !release_generations.contains(&extension.provisioning_head_generation)
+        || paired.is_some_and(|generation| !release_generations.contains(&generation))
+    {
+        bail!("pricing assignment extension does not cover the exact active/recovery pair");
     }
     Ok(())
 }
@@ -950,5 +1054,54 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn assignment_extension_requires_one_semantic_active_recovery_pair() {
+        let assignment = |digest: &str| PricingReleaseAssignmentV2 {
+            account_id: "post-cutover-account".into(),
+            account_class: AccountClass::B2c,
+            policy_id: "b2c-global".into(),
+            policy_version: 1,
+            policy_digest: "b2c-policy".into(),
+            billing_mode: BillingModeV2::Balance,
+            funding_generation: Some(1),
+            purpose: None,
+            responsible: None,
+            assignment_digest: digest.into(),
+        };
+        let mut extension = PricingReleaseAssignmentExtensionV2 {
+            provisioning_head_generation: 101,
+            provisioning_head_digest: "target-release".into(),
+            provisioning_head_version: 1,
+            paired_recovery_generation: Some(102),
+            paired_recovery_digest: Some("recovery-release".into()),
+            extension_group_digest: "extension-group".into(),
+            members: vec![
+                PricingReleaseAssignmentExtensionMemberV2 {
+                    release_generation: 101,
+                    assignment: assignment("target-assignment"),
+                    extension_digest: "target-extension".into(),
+                },
+                PricingReleaseAssignmentExtensionMemberV2 {
+                    release_generation: 102,
+                    assignment: assignment("recovery-assignment"),
+                    extension_digest: "recovery-extension".into(),
+                },
+            ],
+        };
+        validate_pricing_release_assignment_extension_v2(&extension).unwrap();
+
+        extension.members[1].assignment.policy_digest = "different-policy".into();
+        assert!(validate_pricing_release_assignment_extension_v2(&extension)
+            .unwrap_err()
+            .to_string()
+            .contains("inconsistent assignment semantics"));
+        extension.members[1].assignment.policy_digest = "b2c-policy".into();
+        extension.members.pop();
+        assert!(validate_pricing_release_assignment_extension_v2(&extension)
+            .unwrap_err()
+            .to_string()
+            .contains("exact active/recovery pair"));
     }
 }

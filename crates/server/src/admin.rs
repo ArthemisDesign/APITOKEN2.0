@@ -13,10 +13,11 @@ use forward::AppState;
 use registry::pricing::{
     validate_account_policy_binding, validate_account_policy_shape, validate_active_expectation,
     validate_policy_active_expectation, validate_pricing_catalog,
-    validate_pricing_release_policy_v2, validate_pricing_release_recovery_link_v2,
-    validate_pricing_release_v2, validate_provider_switches, AccountPolicyActivationSpec,
-    AccountPolicyBindingSpec, AccountPolicySpec, ActiveExpectation, PolicyActiveExpectation,
-    PricingCatalogSpec, PricingMutation, PricingRejection, PricingReleasePolicyV2,
+    validate_pricing_release_assignment_extension_v2, validate_pricing_release_policy_v2,
+    validate_pricing_release_recovery_link_v2, validate_pricing_release_v2,
+    validate_provider_switches, AccountPolicyActivationSpec, AccountPolicyBindingSpec,
+    AccountPolicySpec, ActiveExpectation, PolicyActiveExpectation, PricingCatalogSpec,
+    PricingMutation, PricingRejection, PricingReleaseAssignmentExtensionV2, PricingReleasePolicyV2,
     PricingReleaseRecoveryLinkV2, PricingReleaseV2, ProviderSwitchSpec,
 };
 use registry::{FundingNormalizationApplyRequestV2, FundingNormalizationApplyStatusV2};
@@ -1648,10 +1649,7 @@ pub async fn prepare_pricing_release_recovery_link_v2(
         Ok(billing) => billing,
         Err(response) => return response,
     };
-    match billing
-        .prepare_pricing_release_recovery_link_v2(link)
-        .await
-    {
+    match billing.prepare_pricing_release_recovery_link_v2(link).await {
         Ok(mutation) => pricing_mutation_response(mutation, identity),
         Err(error) => authority_unavailable("pricing release recovery link v2 prepare", error),
     }
@@ -1680,6 +1678,63 @@ pub async fn pricing_release_recovery_link_v2(
         )
             .into_response(),
         Err(error) => authority_unavailable("pricing release recovery link v2 read", error),
+    }
+}
+
+/// POST /admin/pricing/v2/assignment-extension/prepare — atomically append a current-head pair.
+pub async fn prepare_pricing_release_assignment_extension_v2(
+    State(app): State<AppState>,
+    Json(extension): Json<PricingReleaseAssignmentExtensionV2>,
+) -> Response {
+    let account_id = extension
+        .members
+        .first()
+        .map(|member| member.assignment.account_id.clone());
+    let identity = json!({
+        "provisioning_head_generation": extension.provisioning_head_generation,
+        "provisioning_head_version": extension.provisioning_head_version,
+        "account_id": account_id,
+        "extension_group_digest": extension.extension_group_digest,
+    });
+    if let Err(error) = validate_pricing_release_assignment_extension_v2(&extension) {
+        return invalid_pricing_request(error.to_string(), identity);
+    }
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing
+        .prepare_pricing_release_assignment_extension_v2(extension)
+        .await
+    {
+        Ok(mutation) => pricing_mutation_response(mutation, identity),
+        Err(error) => authority_unavailable("pricing assignment extension v2 prepare", error),
+    }
+}
+
+/// GET /admin/pricing/v2/assignment-extension/{head_version}/{account_id} — exact readback.
+pub async fn pricing_release_assignment_extension_v2(
+    State(app): State<AppState>,
+    Path((head_version, account_id)): Path<(i64, String)>,
+) -> Response {
+    if head_version <= 0 || !valid_pricing_id(&account_id) {
+        return invalid_pricing_path("invalid pricing assignment extension identity");
+    }
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing
+        .pricing_release_assignment_extension_v2(head_version, &account_id)
+        .await
+    {
+        Ok(Some(extension)) => Json(json!({"extension": extension})).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown pricing assignment extension"})),
+        )
+            .into_response(),
+        Err(error) => authority_unavailable("pricing assignment extension v2 read", error),
     }
 }
 

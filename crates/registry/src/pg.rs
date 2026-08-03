@@ -6891,6 +6891,28 @@ impl PgStore {
         )
     }
 
+    pub fn prepare_pricing_release_assignment_extension_v2(
+        &mut self,
+        extension: &crate::pricing::PricingReleaseAssignmentExtensionV2,
+    ) -> Result<crate::pricing::PricingMutation> {
+        crate::pricing::postgres::postgres_prepare_pricing_release_assignment_extension_v2(
+            &mut self.client,
+            extension,
+        )
+    }
+
+    pub fn pricing_release_assignment_extension_v2(
+        &mut self,
+        provisioning_head_version: i64,
+        account_id: &str,
+    ) -> Result<Option<crate::pricing::PricingReleaseAssignmentExtensionV2>> {
+        crate::pricing::postgres::postgres_pricing_release_assignment_extension_v2(
+            &mut self.client,
+            provisioning_head_version,
+            account_id,
+        )
+    }
+
     pub fn pricing_release_head_v2(
         &mut self,
     ) -> Result<Option<crate::pricing::PricingReleaseHeadV2>> {
@@ -9661,9 +9683,11 @@ mod tests {
     #[test]
     fn pricing_release_runtime_v2_postgres_matrix() {
         use crate::pricing::{
-            BillingModeV2, PricingMutation, PricingReleaseAssignmentV2, PricingReleaseKindV2,
-            PricingReleasePolicyRuleV2, PricingReleasePolicyV2, PricingReleaseRecoveryLinkV2,
-            PricingReleaseReserveOutcomeV2, PricingReleaseRuleScopeV2, PricingReleaseV2,
+            AccountClass, BillingModeV2, PricingMutation, PricingRejection,
+            PricingReleaseAssignmentExtensionMemberV2, PricingReleaseAssignmentExtensionV2,
+            PricingReleaseAssignmentV2, PricingReleaseKindV2, PricingReleasePolicyRuleV2,
+            PricingReleasePolicyV2, PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2,
+            PricingReleaseRuleScopeV2, PricingReleaseV2,
         };
 
         const TARGET_GENERATION: i64 = 91_001;
@@ -9937,6 +9961,137 @@ mod tests {
                  COMMIT;"
             ))
             .unwrap();
+
+        pg.account_create("release-runtime-post-cutover", None, 5_000)
+            .unwrap();
+        pg.account_topup(
+            "release-runtime-post-cutover",
+            1_200,
+            Some("post-cutover-runtime-seed"),
+        )
+        .unwrap();
+        pg.client
+            .batch_execute(
+                "BEGIN;
+                 INSERT INTO account_funding_generations_v2(
+                     account_id,generation,schema_version,source_state_digest,
+                     normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                     normalized_ts,updated_ts
+                 ) VALUES(
+                     'release-runtime-post-cutover',1,2,'post-cutover-runtime-source',
+                     'post-cutover-runtime-normalization',1200,0,0,1,100,100
+                 );
+                 INSERT INTO funding_lots_v2(
+                     lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts
+                 ) VALUES(
+                     'release-runtime-post-cutover-paid','release-runtime-post-cutover',1,
+                     'paid','post-cutover-runtime-seed',1200,0,0,1,'active',100,100
+                 );
+                 INSERT INTO account_funding_head_v2(
+                     account_id,active_generation,head_version,updated_ts
+                 ) VALUES('release-runtime-post-cutover',1,1,100);
+                 SET CONSTRAINTS ALL IMMEDIATE;
+                 COMMIT;",
+            )
+            .unwrap();
+
+        let post_cutover_assignment = |assignment_digest: &str| PricingReleaseAssignmentV2 {
+            account_id: "release-runtime-post-cutover".into(),
+            account_class: AccountClass::B2c,
+            policy_id: b2c_policy.policy_id.clone(),
+            policy_version: b2c_policy.policy_version,
+            policy_digest: b2c_policy.content_digest.clone(),
+            billing_mode: BillingModeV2::Balance,
+            funding_generation: Some(1),
+            purpose: None,
+            responsible: None,
+            assignment_digest: assignment_digest.into(),
+        };
+        let extension = PricingReleaseAssignmentExtensionV2 {
+            provisioning_head_generation: TARGET_GENERATION,
+            provisioning_head_digest: target.content_digest.clone(),
+            provisioning_head_version: 1,
+            paired_recovery_generation: Some(RECOVERY_GENERATION),
+            paired_recovery_digest: Some(recovery.content_digest.clone()),
+            extension_group_digest: "release-runtime-post-cutover-extension-group".into(),
+            members: vec![
+                PricingReleaseAssignmentExtensionMemberV2 {
+                    release_generation: TARGET_GENERATION,
+                    assignment: post_cutover_assignment(
+                        "release-runtime-post-cutover-target-assignment",
+                    ),
+                    extension_digest: "release-runtime-post-cutover-target-extension".into(),
+                },
+                PricingReleaseAssignmentExtensionMemberV2 {
+                    release_generation: RECOVERY_GENERATION,
+                    assignment: post_cutover_assignment(
+                        "release-runtime-post-cutover-recovery-assignment",
+                    ),
+                    extension_digest: "release-runtime-post-cutover-recovery-extension".into(),
+                },
+            ],
+        };
+        let mut stale_funding_extension = extension.clone();
+        for member in &mut stale_funding_extension.members {
+            member.assignment.funding_generation = Some(2);
+        }
+        assert!(matches!(
+            pg.prepare_pricing_release_assignment_extension_v2(&stale_funding_extension)
+                .unwrap(),
+            PricingMutation::Rejected(PricingRejection::MissingDependency { dependency })
+                if dependency == "funding_head"
+        ));
+        assert_eq!(
+            pg.prepare_pricing_release_assignment_extension_v2(&extension)
+                .unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            pg.prepare_pricing_release_assignment_extension_v2(&extension)
+                .unwrap(),
+            PricingMutation::Unchanged
+        );
+        assert_eq!(
+            pg.pricing_release_assignment_extension_v2(
+                extension.provisioning_head_version,
+                "release-runtime-post-cutover",
+            )
+            .unwrap(),
+            Some(extension.clone())
+        );
+        let post_cutover_resolution = pg
+            .pricing_release_resolution_v2(
+                "release-runtime-post-cutover",
+                crate::PROVIDER_GOOGLE,
+                "gemini-3-flash-preview",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            post_cutover_resolution.assignment.assignment_digest,
+            "release-runtime-post-cutover-target-assignment"
+        );
+        assert_eq!(post_cutover_resolution.payable_multiplier_bp(), Some(5_000));
+
+        let mut stale_extension = extension.clone();
+        stale_extension.provisioning_head_version = 2;
+        stale_extension.extension_group_digest =
+            "release-runtime-post-cutover-stale-extension-group".into();
+        assert!(matches!(
+            pg.prepare_pricing_release_assignment_extension_v2(&stale_extension)
+                .unwrap(),
+            PricingMutation::Rejected(PricingRejection::Stale { .. })
+        ));
+
+        let mut conflicting_replay = extension.clone();
+        conflicting_replay.extension_group_digest =
+            "release-runtime-post-cutover-conflicting-extension-group".into();
+        assert_eq!(
+            pg.prepare_pricing_release_assignment_extension_v2(&conflicting_replay)
+                .unwrap(),
+            PricingMutation::Rejected(PricingRejection::VersionConflict)
+        );
 
         let resolution = pg
             .pricing_release_resolution_v2(

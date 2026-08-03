@@ -334,6 +334,20 @@ define_admin_routes!(
         admin::pricing_release_recovery_link_v2
     ),
     (
+        post,
+        POST,
+        "/admin/pricing/v2/assignment-extension/prepare",
+        "/admin/pricing/v2/assignment-extension/prepare",
+        admin::prepare_pricing_release_assignment_extension_v2
+    ),
+    (
+        get,
+        GET,
+        "/admin/pricing/v2/assignment-extension/{head_version}/{account_id}",
+        "/admin/pricing/v2/assignment-extension/1/test-account",
+        admin::pricing_release_assignment_extension_v2
+    ),
+    (
         get,
         GET,
         "/admin/pricing/v2/head",
@@ -5364,7 +5378,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_admin_route_enforces_the_control_key_lattice() {
-        assert_eq!(ADMIN_ROUTE_CASES.len(), 37);
+        assert_eq!(ADMIN_ROUTE_CASES.len(), 39);
         let service = router(admin_auth_test_app(), Arc::new(AtomicBool::new(true)));
         let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
 
@@ -7332,21 +7346,20 @@ mod tests {
             PricingMutation::Applied
         );
 
-        let rule =
-            |rule_id: &str, scope: PolicyRuleScope, payable_multiplier_bp: i64| {
-                AccountPolicyRuleSpec {
-                    rule_id: rule_id.to_owned(),
-                    rule_digest: format!("{rule_id}-digest"),
-                    scope,
-                    pricing_mode: PricingMode::Discount,
-                    rule_origin: RuleOrigin::Managed,
-                    discount_bps: Some(10_000 - payable_multiplier_bp),
-                    payable_multiplier_bp,
-                    track_eligible: false,
-                    retention_eligible: false,
-                    commission_eligible: false,
-                }
-            };
+        let rule = |rule_id: &str, scope: PolicyRuleScope, payable_multiplier_bp: i64| {
+            AccountPolicyRuleSpec {
+                rule_id: rule_id.to_owned(),
+                rule_digest: format!("{rule_id}-digest"),
+                scope,
+                pricing_mode: PricingMode::Discount,
+                rule_origin: RuleOrigin::Managed,
+                discount_bps: Some(10_000 - payable_multiplier_bp),
+                payable_multiplier_bp,
+                track_eligible: false,
+                retention_eligible: false,
+                commission_eligible: false,
+            }
+        };
         let policy = AccountPolicySpec {
             account_id: "strict-router-account".to_owned(),
             effective_version: 1,

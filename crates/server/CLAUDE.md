@@ -60,6 +60,10 @@
   “cannot backfill”: GET builds a read-only content-addressed plan, POST applies only its exact
   source/target digests under the registry funding lock. It cannot activate a pricing release and
   never performs a global drain.
+  Post-cutover `/admin/pricing/v2/assignment-extension/prepare` atomically appends the exact
+  current-head active/recovery assignment pair, and
+  `GET /admin/pricing/v2/assignment-extension/{head_version}/{account_id}` provides exact readback.
+  Both remain PostgreSQL-only actor calls; they do not issue keys or expose an activation mutation.
   Key issue/list also carries optional `spend_limit_nano`/`expires_ts` policy metadata. The
   account-scoped `/admin/account/{id}/key-id/{key_id}/policy` endpoint replaces both nullable
   guardrails; validation is at this HTTP boundary while enforcement remains in registry reservation

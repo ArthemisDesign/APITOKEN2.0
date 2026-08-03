@@ -28,8 +28,9 @@
 provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack`), usage, ключи, versioned pricing
 (catalog/switches/policy), и PostgreSQL-only release-v2 prepare/read под `/admin/pricing/v2/*`.
 Release-v2 producer публикует immutable policy/release/recovery prepare, полный engine inventory,
-nullable head и account-local funding normalization plan/apply; activation mutation намеренно пока
-отсутствует. Funding apply сериализуется с money writers и не требует global drain. После зелёного
+nullable head, account-local funding normalization plan/apply и append-only assignment extension
+для exact active/recovery pair аккаунта, созданного после cutover; activation mutation намеренно
+пока отсутствует. Funding apply сериализуется с money writers и не требует global drain. После зелёного
 exact producer SHA `packages/contracts` валидирует strict release/funding wire shape, а
 `packages/engine-client` является единственным typed transport consumer. `apps/worker` через
 `packages/db/src/funding-normalization-jobs.ts` реализует отдельный bounded/resumable Stage 6
@@ -39,6 +40,10 @@ account-local POST, full-coverage parent confirmation, одинаковое targ
 digest и доступен через DB package entrypoint только будущему защищённому production control-plane;
 CLI не является разрешением на ручной SSH. Наличие transport-методов или runner без явно staged
 job не запускает backfill, не создаёт Stage 8 evidence и не активирует release.
+Assignment-extension wire этого checkpoint остаётся producer-only до зелёного exact SHA: следующим
+отдельным consumer-коммитом `packages/contracts` и `packages/engine-client` должны получить strict
+body/readback schema и typed methods, а commerce provisioning writer — завершать active/recovery
+extension до выдачи usable key. Прямой вызов нового route из `apps/api`/`apps/worker` запрещён.
 
 ### Sales feed (коммерция ↔ партнёрка)
 

@@ -20,10 +20,11 @@ use registry::pricing::{
     AccountPolicyActivationSpec, AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation,
     LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome, PolicyActiveExpectation,
     PolicyAdmissionSnapshot, PolicyReserveOutcome, PricingCatalogSpec, PricingMutation,
-    PricingReadBundle, PricingReleaseHeadV2, PricingReleaseInventoryPageV2, PricingReleasePolicyV2,
-    PricingReleaseQuoteV2, PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2,
-    PricingReleaseResolutionV2, PricingReleaseV2, PricingShadowAdmissionEvaluationInput,
-    PricingShadowEvaluationWrite, ProviderSwitchSpec, VersionTarget,
+    PricingReadBundle, PricingReleaseAssignmentExtensionV2, PricingReleaseHeadV2,
+    PricingReleaseInventoryPageV2, PricingReleasePolicyV2, PricingReleaseQuoteV2,
+    PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2, PricingReleaseResolutionV2,
+    PricingReleaseV2, PricingShadowAdmissionEvaluationInput, PricingShadowEvaluationWrite,
+    ProviderSwitchSpec, VersionTarget,
 };
 use registry::{
     AccountFundingSnapshot, AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation,
@@ -1319,6 +1320,10 @@ enum WriteCmd {
         link: PricingReleaseRecoveryLinkV2,
         reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
     },
+    PreparePricingReleaseAssignmentExtensionV2 {
+        extension: PricingReleaseAssignmentExtensionV2,
+        reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
+    },
     ApplyFundingNormalizationV2 {
         account_id: String,
         request: FundingNormalizationApplyRequestV2,
@@ -1537,6 +1542,11 @@ enum ReadCmd {
         target_generation: i64,
         recovery_generation: i64,
         reply: oneshot::Sender<anyhow::Result<Option<PricingReleaseRecoveryLinkV2>>>,
+    },
+    PricingReleaseAssignmentExtensionV2 {
+        provisioning_head_version: i64,
+        account_id: String,
+        reply: oneshot::Sender<anyhow::Result<Option<PricingReleaseAssignmentExtensionV2>>>,
     },
     PricingReleaseHeadV2 {
         reply: oneshot::Sender<anyhow::Result<Option<PricingReleaseHeadV2>>>,
@@ -2498,7 +2508,8 @@ impl AsyncBilling {
                     }
                     WriteCmd::PreparePricingReleasePolicyV2 { reply, .. }
                     | WriteCmd::PreparePricingReleaseV2 { reply, .. }
-                    | WriteCmd::PreparePricingReleaseRecoveryLinkV2 { reply, .. } => {
+                    | WriteCmd::PreparePricingReleaseRecoveryLinkV2 { reply, .. }
+                    | WriteCmd::PreparePricingReleaseAssignmentExtensionV2 { reply, .. } => {
                         let _ = reply.send(Err(anyhow::anyhow!(
                             "pricing release v2 authority requires PostgreSQL"
                         )));
@@ -2777,6 +2788,11 @@ impl AsyncBilling {
                                 )));
                             }
                             ReadCmd::PricingReleaseRecoveryLinkV2 { reply, .. } => {
+                                let _ = reply.send(Err(anyhow::anyhow!(
+                                    "pricing release v2 authority requires PostgreSQL"
+                                )));
+                            }
+                            ReadCmd::PricingReleaseAssignmentExtensionV2 { reply, .. } => {
                                 let _ = reply.send(Err(anyhow::anyhow!(
                                     "pricing release v2 authority requires PostgreSQL"
                                 )));
@@ -3367,6 +3383,19 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
+                        WriteCmd::PreparePricingReleaseAssignmentExtensionV2 {
+                            extension,
+                            reply,
+                        } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "pricing assignment extension v2 prepare",
+                                |pg| pg.prepare_pricing_release_assignment_extension_v2(&extension),
+                            );
+                            let _ = reply.send(result);
+                        }
                         WriteCmd::ApplyFundingNormalizationV2 {
                             account_id,
                             request,
@@ -3737,6 +3766,17 @@ impl AsyncBilling {
                                     recovery_generation,
                                 )
                             ),
+                            ReadCmd::PricingReleaseAssignmentExtensionV2 {
+                                provisioning_head_version,
+                                account_id,
+                                reply,
+                            } => answer!(
+                                reply,
+                                pg.pricing_release_assignment_extension_v2(
+                                    provisioning_head_version,
+                                    &account_id,
+                                )
+                            ),
                             ReadCmd::PricingReleaseHeadV2 { reply } => {
                                 answer!(reply, pg.pricing_release_head_v2())
                             }
@@ -4027,6 +4067,20 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
 
+    pub async fn prepare_pricing_release_assignment_extension_v2(
+        &self,
+        extension: PricingReleaseAssignmentExtensionV2,
+    ) -> anyhow::Result<PricingMutation> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::PreparePricingReleaseAssignmentExtensionV2 { extension, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
     pub async fn apply_funding_normalization_v2(
         &self,
         account_id: &str,
@@ -4200,6 +4254,25 @@ impl AsyncBilling {
             .send(ReadCmd::PricingReleaseRecoveryLinkV2 {
                 target_generation,
                 recovery_generation,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn pricing_release_assignment_extension_v2(
+        &self,
+        provisioning_head_version: i64,
+        account_id: &str,
+    ) -> anyhow::Result<Option<PricingReleaseAssignmentExtensionV2>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::PricingReleaseAssignmentExtensionV2 {
+                provisioning_head_version,
+                account_id: account_id.to_owned(),
                 reply,
             })
             .await

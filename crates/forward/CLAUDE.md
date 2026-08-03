@@ -202,6 +202,12 @@ money mutation. `meter_only` пишет usage с нулевым customer debit �
 gate. Этот checkpoint не создаёт и не двигает release head; runtime остаётся dormant до отдельного
 producer-first Stage 9 activation.
 
+Post-cutover provisioning использует тот же `AsyncBilling` ownership split: append-only
+assignment-extension prepare идёт через single writer, exact
+`(provisioning_head_version,account_id)` readback — через bounded reader. Registry resolver
+материализует assignment из immutable base manifest либо exact current-head extension; forward не
+собирает пару и не открывает PostgreSQL напрямую. Этот producer не выдаёт key и не активирует head.
+
 Read-only router policy preflight фазы 6.4a переиспользует публичные `resolve_pricing` и
 `RuntimePricingManifest::from_evidence` через композицию `crates/server`: тот же customer key и один
 coherent bundle фильтруют bounded catalog chain до первой router-attempt. Этот caller не строит

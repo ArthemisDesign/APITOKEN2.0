@@ -279,8 +279,14 @@ side effect. `serve` may only perform the read-only schema verification before c
   формата штатно завершаются по своим immutable snapshots. Та же migration создаёт пустую
   append-only `pricing_release_assignment_extensions_v2` для аккаунтов, появившихся после cutover.
   Каждая extension привязана к exact текущему head activation и атомарной active/recovery pair;
-  manifest assignments не мутируются. Ни resolver, ни provisioning writer не используют таблицу
-  до отдельного dependent runtime SHA после GREEN migration/watchdog.
+  manifest assignments не мутируются. Dependent PostgreSQL producer теперь под общим pricing
+  control lock валидирует exact head/recovery link, отсутствие base assignment и policy; balance
+  assignment дополнительно берёт account funding lock и требует exact active funding head. Writer
+  атомарно пишет пару, возвращает `unchanged` на exact replay и typed
+  `stale|version_conflict` без частичной записи. Exact readback ключуется
+  `(provisioning_head_version, account_id)`, а runtime resolver читает base либо extension в одном
+  snapshot. SQLite остаётся unavailable; route не создаёт и не двигает head. Real-PG coverage —
+  `pg::tests::pricing_release_runtime_v2_postgres_matrix`.
 - **Pricing release v2 producer checkpoint:** `pricing::release_v2` и PostgreSQL persistence
   добавляют только append-only policy/release/recovery prepare и read-only inventory/head. Release
   prepare проверяет exact full-account coverage (`active` + `disabled`) и готовые funding

@@ -2969,6 +2969,254 @@ pub(crate) fn postgres_pricing_release_recovery_link_v2(
         }))
 }
 
+fn pricing_release_assignment_extension_v2_in_transaction<C: GenericClient>(
+    client: &mut C,
+    provisioning_head_version: i64,
+    account_id: &str,
+) -> Result<Option<super::PricingReleaseAssignmentExtensionV2>> {
+    let rows = client.query(
+        "SELECT release_generation,account_class,policy_id,policy_version,policy_digest,
+                billing_mode,funding_generation,purpose,responsible,assignment_digest,
+                provisioning_head_generation,provisioning_head_digest,provisioning_head_version,
+                paired_recovery_generation,paired_recovery_digest,extension_group_digest,
+                extension_digest
+           FROM pricing_release_assignment_extensions_v2
+          WHERE provisioning_head_version=$1 AND account_id=$2
+          ORDER BY release_generation",
+        &[&provisioning_head_version, &account_id],
+    )?;
+    let Some(first) = rows.first() else {
+        return Ok(None);
+    };
+    let provisioning_head_generation = first.get(10);
+    let provisioning_head_digest = first.get(11);
+    let stored_head_version = first.get(12);
+    let paired_recovery_generation = first.get(13);
+    let paired_recovery_digest = first.get(14);
+    let extension_group_digest = first.get(15);
+    let members = rows
+        .into_iter()
+        .map(|row| {
+            Ok(super::PricingReleaseAssignmentExtensionMemberV2 {
+                release_generation: row.get(0),
+                assignment: super::PricingReleaseAssignmentV2 {
+                    account_id: account_id.to_owned(),
+                    account_class: super::AccountClass::from_db(&row.get::<_, String>(1))?,
+                    policy_id: row.get(2),
+                    policy_version: row.get(3),
+                    policy_digest: row.get(4),
+                    billing_mode: super::BillingModeV2::from_db(&row.get::<_, String>(5))?,
+                    funding_generation: row.get(6),
+                    purpose: row.get(7),
+                    responsible: row.get(8),
+                    assignment_digest: row.get(9),
+                },
+                extension_digest: row.get(16),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let extension = super::PricingReleaseAssignmentExtensionV2 {
+        provisioning_head_generation,
+        provisioning_head_digest,
+        provisioning_head_version: stored_head_version,
+        paired_recovery_generation,
+        paired_recovery_digest,
+        extension_group_digest,
+        members,
+    };
+    super::validate_pricing_release_assignment_extension_v2(&extension)
+        .context("validate stored pricing assignment extension")?;
+    Ok(Some(extension))
+}
+
+pub(crate) fn postgres_pricing_release_assignment_extension_v2(
+    client: &mut Client,
+    provisioning_head_version: i64,
+    account_id: &str,
+) -> Result<Option<super::PricingReleaseAssignmentExtensionV2>> {
+    if provisioning_head_version <= 0 {
+        bail!("pricing assignment extension head version must be positive");
+    }
+    require_id("pricing assignment extension account id", account_id)?;
+    pricing_release_assignment_extension_v2_in_transaction(
+        client,
+        provisioning_head_version,
+        account_id,
+    )
+}
+
+pub(crate) fn postgres_prepare_pricing_release_assignment_extension_v2(
+    client: &mut Client,
+    extension: &super::PricingReleaseAssignmentExtensionV2,
+) -> Result<PricingMutation> {
+    if let Err(error) = super::validate_pricing_release_assignment_extension_v2(extension) {
+        return Ok(invalid(error));
+    }
+    let extension = super::release_v2::normalize_pricing_release_assignment_extension_v2(extension);
+    let account_id = &extension.members[0].assignment.account_id;
+    let mut transaction = client
+        .transaction()
+        .context("begin PostgreSQL pricing assignment extension prepare")?;
+    advisory_lock(&mut transaction, PRICING_RELEASE_CONTROL_LOCK_V2)?;
+
+    if let Some(existing) = pricing_release_assignment_extension_v2_in_transaction(
+        &mut transaction,
+        extension.provisioning_head_version,
+        account_id,
+    )? {
+        let outcome = if existing == extension {
+            PricingMutation::Unchanged
+        } else {
+            version_conflict()
+        };
+        return commit_mutation(transaction, outcome, "pricing assignment extension replay");
+    }
+
+    let current_head = transaction.query_opt(
+        "SELECT active_generation,active_digest,head_version
+           FROM pricing_release_head_v2 WHERE singleton=1",
+        &[],
+    )?;
+    let exact_head = current_head.as_ref().is_some_and(|row| {
+        row.get::<_, i64>(0) == extension.provisioning_head_generation
+            && row.get::<_, String>(1) == extension.provisioning_head_digest
+            && row.get::<_, i64>(2) == extension.provisioning_head_version
+    });
+    if !exact_head {
+        let actual =
+            current_head.map(|row| VersionTarget::new(row.get(0), row.get::<_, String>(1)));
+        return commit_mutation(
+            transaction,
+            stale(actual),
+            "pricing assignment extension stale head",
+        );
+    }
+
+    let assignment = &extension.members[0].assignment;
+    if assignment.billing_mode == super::BillingModeV2::Balance {
+        crate::funding_v2::lock_funding_account_v2(&mut transaction, account_id)?;
+        let funding_head = crate::funding_v2::active_funding_head_v2(&mut transaction, account_id)?;
+        if funding_head.as_ref().map(|head| head.generation) != assignment.funding_generation {
+            return commit_mutation(
+                transaction,
+                missing("funding_head"),
+                "pricing assignment extension stale funding head",
+            );
+        }
+    }
+
+    if let Some(recovery_generation) = extension.paired_recovery_generation {
+        let link_exists: bool = transaction
+            .query_one(
+                "SELECT EXISTS(
+                 SELECT 1 FROM pricing_release_recovery_links
+                  WHERE target_generation=$1 AND target_digest=$2
+                    AND recovery_generation=$3 AND recovery_digest=$4
+             )",
+                &[
+                    &extension.provisioning_head_generation,
+                    &extension.provisioning_head_digest,
+                    &recovery_generation,
+                    &extension.paired_recovery_digest,
+                ],
+            )?
+            .get(0);
+        if !link_exists {
+            return commit_mutation(
+                transaction,
+                missing("recovery_link"),
+                "pricing assignment extension missing recovery link",
+            );
+        }
+    }
+
+    for member in &extension.members {
+        let assignment = &member.assignment;
+        let ready: bool = transaction
+            .query_one(
+                "SELECT EXISTS(
+                 SELECT 1
+                   FROM accounts account
+                   JOIN pricing_release_versions release ON release.generation=$2
+                   JOIN pricing_release_policy_versions policy
+                     ON policy.policy_id=$3 AND policy.policy_version=$4
+                    AND policy.content_digest=$5
+                  WHERE account.id=$1
+                    AND policy.account_class=$6 AND policy.billing_mode=$7
+                    AND NOT EXISTS(
+                        SELECT 1 FROM pricing_release_assignments base
+                         WHERE base.release_generation=$2 AND base.account_id=$1
+                    )
+                    AND (
+                        ($7='meter_only' AND $8::bigint IS NULL)
+                        OR ($7='balance' AND EXISTS(
+                            SELECT 1 FROM account_funding_generations_v2 generation
+                             WHERE generation.account_id=$1 AND generation.generation=$8
+                        ))
+                    )
+             )",
+                &[
+                    &assignment.account_id,
+                    &member.release_generation,
+                    &assignment.policy_id,
+                    &assignment.policy_version,
+                    &assignment.policy_digest,
+                    &assignment.account_class.as_str(),
+                    &assignment.billing_mode.as_str(),
+                    &assignment.funding_generation,
+                ],
+            )?
+            .get(0);
+        if !ready {
+            return commit_mutation(
+                transaction,
+                missing(&format!("assignment:{}", member.release_generation)),
+                "pricing assignment extension missing dependency",
+            );
+        }
+    }
+
+    let created_ts = now();
+    for member in &extension.members {
+        let assignment = &member.assignment;
+        transaction.execute(
+            "INSERT INTO pricing_release_assignment_extensions_v2(
+                 release_generation,account_id,account_class,policy_id,policy_version,
+                 policy_digest,billing_mode,funding_generation,purpose,responsible,
+                 assignment_digest,provisioning_head_generation,provisioning_head_digest,
+                 provisioning_head_version,paired_recovery_generation,paired_recovery_digest,
+                 extension_group_digest,extension_digest,created_ts
+             ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)",
+            &[
+                &member.release_generation,
+                &assignment.account_id,
+                &assignment.account_class.as_str(),
+                &assignment.policy_id,
+                &assignment.policy_version,
+                &assignment.policy_digest,
+                &assignment.billing_mode.as_str(),
+                &assignment.funding_generation,
+                &assignment.purpose,
+                &assignment.responsible,
+                &assignment.assignment_digest,
+                &extension.provisioning_head_generation,
+                &extension.provisioning_head_digest,
+                &extension.provisioning_head_version,
+                &extension.paired_recovery_generation,
+                &extension.paired_recovery_digest,
+                &extension.extension_group_digest,
+                &member.extension_digest,
+                &created_ts,
+            ],
+        )?;
+    }
+    commit_mutation(
+        transaction,
+        PricingMutation::Stored,
+        "pricing assignment extension prepare",
+    )
+}
+
 pub(crate) fn postgres_pricing_release_head_v2(
     client: &mut Client,
 ) -> Result<Option<super::PricingReleaseHeadV2>> {
@@ -3017,9 +3265,17 @@ pub(crate) fn pricing_release_resolution_v2_in_transaction<C: GenericClient>(
            JOIN pricing_release_versions release
              ON release.generation=head.active_generation
             AND release.content_digest=head.active_digest
-           JOIN pricing_release_assignments assignment
-             ON assignment.release_generation=release.generation
-            AND assignment.account_id=$1
+           JOIN LATERAL (
+               SELECT account_id,account_class,policy_id,policy_version,policy_digest,
+                      billing_mode,funding_generation,purpose,responsible,assignment_digest
+                 FROM pricing_release_assignments
+                WHERE release_generation=release.generation AND account_id=$1
+               UNION ALL
+               SELECT account_id,account_class,policy_id,policy_version,policy_digest,
+                      billing_mode,funding_generation,purpose,responsible,assignment_digest
+                 FROM pricing_release_assignment_extensions_v2
+                WHERE release_generation=release.generation AND account_id=$1
+           ) assignment ON TRUE
           WHERE head.singleton=1",
         &[&account_id],
     )?
