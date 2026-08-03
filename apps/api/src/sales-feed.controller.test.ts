@@ -49,11 +49,65 @@ describe("sales usage feed controller", () => {
         paidFundedNano: "9007199254740993",
         commissionEligible: true,
         snapshotDigest: "snapshot-44",
+        officialNano: null,
+        chargedNano: null,
+        bonusFundedNano: null,
+        otherFundedNano: null,
+        releaseGeneration: null,
+        releaseDigest: null,
         occurredAt: "2026-08-01T13:00:00.000Z",
       }],
       nextCursor: "45",
     });
     expect(dbMocks.listUsageEventsAfter).toHaveBeenCalledWith({}, 40n, 10);
+  });
+
+  it("serializes release-v2 lineage with a null pricing mode", async () => {
+    const occurredAt = new Date("2026-08-01T14:00:00.000Z");
+    dbMocks.listUsageEventsAfter.mockResolvedValue({
+      items: [{
+        id: 45n,
+        userId: "00000000-0000-4000-8000-000000000045",
+        amountNano: 650n,
+        providerId: "anthropic",
+        accountClass: "b2c",
+        pricingMode: null,
+        paidFundedNano: 650n,
+        commissionEligible: true,
+        snapshotDigest: "release-snapshot-45",
+        officialNano: 1000n,
+        chargedNano: 1000n,
+        bonusFundedNano: 300n,
+        otherFundedNano: 50n,
+        releaseGeneration: 3n,
+        releaseDigest: "release-digest-g3",
+        occurredAt,
+      }],
+      nextCursor: 46n,
+    });
+    const controller = new SalesFeedController({} as never, {} as never);
+
+    await expect(controller.usageEvents()).resolves.toEqual({
+      items: [{
+        id: "45",
+        userId: "00000000-0000-4000-8000-000000000045",
+        amountNano: "650",
+        providerId: "anthropic",
+        accountClass: "b2c",
+        pricingMode: null,
+        paidFundedNano: "650",
+        commissionEligible: true,
+        snapshotDigest: "release-snapshot-45",
+        officialNano: "1000",
+        chargedNano: "1000",
+        bonusFundedNano: "300",
+        otherFundedNano: "50",
+        releaseGeneration: "3",
+        releaseDigest: "release-digest-g3",
+        occurredAt: "2026-08-01T14:00:00.000Z",
+      }],
+      nextCursor: "46",
+    });
   });
 
   it("keeps the all-null legacy shape explicit during rolling compatibility", async () => {

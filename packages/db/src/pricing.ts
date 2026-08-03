@@ -4,6 +4,7 @@ import {
   paymentProviderSchema,
   type EngineLedgerEntry,
   type EngineSettlementFundingEvidence,
+  type EngineSettlementFundingEvidenceV2,
   type PricingPolicyEditorRule,
 } from "@claude-api/contracts";
 import type { PoolClient } from "pg";
@@ -119,7 +120,7 @@ export function tierForTopups(cumulativeNano: bigint): number {
 const HOLD_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const PRICING_LEDGER_PAGE_SIZE = 1000;
 const POSTGRES_INTEGER_MAX = 2_147_483_647n;
-const SUPPORTED_LEDGER_ATTRIBUTION_SCHEMA_VERSION = 1n;
+const SUPPORTED_LEDGER_ATTRIBUTION_SCHEMA_VERSIONS: ReadonlySet<bigint> = new Set([1n, 2n]);
 const PROVIDER_BACKFILL_WINDOW_DAYS = 30;
 const UNATTRIBUTED_PROVIDER_ID = "unattributed";
 const UNAVAILABLE_PROVIDER_ID = "unavailable";
@@ -140,6 +141,9 @@ interface ValidatedLedgerAttribution {
   paidFundedNano: bigint | null;
   nonPaidFundedNano: bigint | null;
   retentionEligible: boolean;
+  // Release-v2 rows carry a NULL engine eligibility and derive the commission authority locally
+  // from the immutable account class plus exact paid funding; other kinds store engine evidence.
+  commissionEligible: boolean;
 }
 
 interface ValidatedPolicyFunding {
@@ -347,6 +351,181 @@ function validatePolicyFundingAllocations(
   };
 }
 
+/**
+ * Validates the immutable release-v2 lot evidence against the declared funding categories. The
+ * v2 path has no normalized bucket rows: raw lot identity stays only in funding_allocation_json,
+ * so exact reconciliation happens entirely here.
+ */
+function validateReleaseV2FundingAllocations(
+  attribution: LedgerAttribution,
+  chargedNano: bigint,
+): { paidFundedNano: bigint; bonusFundedNano: bigint; otherFundedNano: bigint } {
+  if (!Array.isArray(attribution.funding_allocation_json)) {
+    throw new PricingLedgerAttributionError("release-v2 attribution is missing raw funding evidence");
+  }
+  const lotEvidence: EngineSettlementFundingEvidenceV2[] = attribution.funding_allocation_json.map(
+    (allocation, index) => {
+      if (!("lot_id" in allocation)) {
+        throw new PricingLedgerAttributionError(
+          `raw funding allocation ${index} is not release-v2 lot evidence`,
+        );
+      }
+      return allocation;
+    },
+  );
+  let previousOrder: bigint | null = null;
+  let paidFundedNano = 0n;
+  let bonusFundedNano = 0n;
+  let otherFundedNano = 0n;
+  let totalFundedNano = 0n;
+  lotEvidence.forEach((allocation, index) => {
+    requiredLedgerText(allocation.lot_id, `raw funding allocation ${index} lot`);
+    const sourceType = requiredLedgerText(
+      allocation.lot_source_type,
+      `raw funding allocation ${index} lot source type`,
+    );
+    requiredLedgerInteger(allocation.lot_version, `raw funding allocation ${index} lot version`);
+    const amountNano = requiredLedgerInteger(
+      allocation.amount_nano,
+      `raw funding allocation ${index} amount`,
+    );
+    const order = requiredLedgerInteger(
+      allocation.allocation_order,
+      `raw funding allocation ${index} order`,
+      true,
+    );
+    if (allocation.direction !== "debit") {
+      throw new PricingLedgerAttributionError(
+        `raw funding allocation ${index} is not a debit lot allocation`,
+      );
+    }
+    if (previousOrder !== null && order <= previousOrder) {
+      throw new PricingLedgerAttributionError("raw funding allocation order is not strictly increasing");
+    }
+    previousOrder = order;
+    if (sourceType === "paid") paidFundedNano += amountNano;
+    else if (sourceType === "welcome_bonus") bonusFundedNano += amountNano;
+    else otherFundedNano += amountNano;
+    totalFundedNano += amountNano;
+  });
+  if (totalFundedNano !== chargedNano) {
+    throw new PricingLedgerAttributionError(
+      "release-v2 funding allocations do not cover the charged amount",
+    );
+  }
+  return { paidFundedNano, bonusFundedNano, otherFundedNano };
+}
+
+function validateReleaseV2LedgerAttribution(
+  entry: EngineLedgerEntry,
+  attribution: LedgerAttribution,
+  attributionSchemaVersion: bigint,
+  chargedNano: bigint,
+): ValidatedLedgerAttribution {
+  if (attributionSchemaVersion !== 2n) {
+    throw new PricingLedgerAttributionError("release-v2 attribution requires attribution schema version 2");
+  }
+  requiredLedgerText(entry.request_id, "engine request id");
+  const providerId = requiredLedgerText(attribution.provider_id, "provider id");
+  const officialNano = requiredLedgerInteger(attribution.official_nano, "official amount", true);
+  if (entry.provider !== providerId || entry.official_nano === null || entry.official_nano === undefined) {
+    throw new PricingLedgerAttributionError("ledger and attribution provider/official identity differ");
+  }
+  if (BigInt(entry.official_nano) !== officialNano) {
+    throw new PricingLedgerAttributionError("ledger and attribution monetary identity differ");
+  }
+  const accountClass = requiredLedgerText(attribution.account_class, "account class");
+  const releaseSchemaVersion = requiredLedgerInteger(
+    attribution.release_schema_version,
+    "release schema version",
+  );
+  if (releaseSchemaVersion < 2n) {
+    throw new PricingLedgerAttributionError("release-v2 attribution has an unsupported release schema version");
+  }
+  requiredLedgerInteger(attribution.release_generation, "release generation");
+  requiredLedgerText(attribution.release_digest, "release digest");
+  if (attribution.release_billing_mode === null) {
+    throw new PricingLedgerAttributionError("engine ledger attribution is missing release billing mode");
+  }
+  if (attribution.release_billing_mode === "balance") {
+    requiredLedgerInteger(attribution.release_funding_generation, "release funding generation");
+  } else if (attribution.release_funding_generation !== null) {
+    throw new PricingLedgerAttributionError("meter-only release attribution carries a funding generation");
+  }
+  requiredLedgerText(attribution.policy_id, "policy id");
+  requiredLedgerInteger(attribution.policy_version, "policy version");
+  requiredLedgerText(attribution.policy_digest, "policy digest");
+  requiredLedgerText(attribution.tariff_schedule_id, "tariff schedule id");
+  requiredLedgerInteger(attribution.tariff_priced_ts, "tariff priced timestamp", true);
+  if (attribution.official_cost_json === null) {
+    throw new PricingLedgerAttributionError("release-v2 attribution is missing official cost evidence");
+  }
+  // Progressive pricing is gone from the release-v2 contract: any non-NULL legacy eligibility or
+  // pricing-mode field means upstream tampering rather than a compatible transitional row.
+  if (
+    attribution.pricing_mode !== null
+    || attribution.rule_origin !== null
+    || attribution.track_eligible !== null
+    || attribution.retention_eligible !== null
+    || attribution.commission_eligible !== null
+  ) {
+    throw new PricingLedgerAttributionError("release-v2 attribution carries progressive pricing fields");
+  }
+  // The optional rule is an all-or-nothing discount override; a partial rule cannot be audited.
+  const ruleFields = [
+    attribution.rule_id,
+    attribution.rule_digest,
+    attribution.rule_scope,
+    attribution.payable_multiplier_bp,
+    attribution.discount_bps,
+  ];
+  if (!ruleFields.every((field) => field === null)) {
+    requiredLedgerText(attribution.rule_id, "rule id");
+    requiredLedgerText(attribution.rule_digest, "rule digest");
+    if (attribution.rule_scope === null) {
+      throw new PricingLedgerAttributionError("engine ledger attribution is missing rule scope");
+    }
+    if (attribution.payable_multiplier_bp === null) {
+      throw new PricingLedgerAttributionError("release-v2 rule is missing payable multiplier");
+    }
+    if (
+      attribution.discount_bps !== null
+      && attribution.payable_multiplier_bp !== 10_000 - attribution.discount_bps
+    ) {
+      throw new PricingLedgerAttributionError(
+        "release-v2 rule discount does not complement the payable multiplier",
+      );
+    }
+  }
+
+  const paidFundedNano = requiredLedgerInteger(attribution.paid_funded_nano, "paid funding", true);
+  const bonusFundedNano = requiredLedgerInteger(attribution.bonus_funded_nano, "bonus funding", true);
+  const otherFundedNano = requiredLedgerInteger(attribution.other_funded_nano, "other funding", true);
+  if (paidFundedNano + bonusFundedNano + otherFundedNano !== chargedNano) {
+    throw new PricingLedgerAttributionError("funding categories do not cover the charged amount");
+  }
+  const funding = validateReleaseV2FundingAllocations(attribution, chargedNano);
+  if (
+    funding.paidFundedNano !== paidFundedNano
+    || funding.bonusFundedNano !== bonusFundedNano
+    || funding.otherFundedNano !== otherFundedNano
+  ) {
+    throw new PricingLedgerAttributionError(
+      "funding categories do not match immutable lot allocations",
+    );
+  }
+  return {
+    attribution,
+    allocations: [],
+    paidFundedNano,
+    nonPaidFundedNano: bonusFundedNano + otherFundedNano,
+    retentionEligible: false,
+    // Release-v2 commission authority derives from the immutable account class and exact paid
+    // funding only — deliberately independent of any pricing-mode or engine eligibility flag.
+    commissionEligible: accountClass === "b2c" && paidFundedNano > 0n,
+  };
+}
+
 function validateLedgerAttribution(
   entry: EngineLedgerEntry,
   chargedNano: bigint,
@@ -366,10 +545,22 @@ function validateLedgerAttribution(
     attribution.attribution_schema_version,
     "attribution schema version",
   );
-  if (attributionSchemaVersion !== SUPPORTED_LEDGER_ATTRIBUTION_SCHEMA_VERSION) {
+  if (!SUPPORTED_LEDGER_ATTRIBUTION_SCHEMA_VERSIONS.has(attributionSchemaVersion)) {
     throw new PricingLedgerAttributionError("engine ledger attribution schema version is unsupported");
   }
   requiredLedgerText(attribution.snapshot_digest, "snapshot digest");
+
+  if (attribution.snapshot_kind === "release_v2") {
+    return validateReleaseV2LedgerAttribution(
+      entry,
+      attribution,
+      attributionSchemaVersion,
+      chargedNano,
+    );
+  }
+  if (attributionSchemaVersion !== 1n) {
+    throw new PricingLedgerAttributionError("engine ledger attribution schema version is unsupported");
+  }
   const retentionEligible = requiredLedgerBoolean(
     attribution.retention_eligible,
     "retention eligibility",
@@ -401,6 +592,7 @@ function validateLedgerAttribution(
       paidFundedNano: null,
       nonPaidFundedNano: null,
       retentionEligible: false,
+      commissionEligible: false,
     };
   }
   if (attribution.snapshot_kind !== "policy_v1") {
@@ -471,6 +663,7 @@ function validateLedgerAttribution(
     paidFundedNano,
     nonPaidFundedNano: bonusFundedNano + otherFundedNano,
     retentionEligible,
+    commissionEligible,
   };
 }
 
@@ -1669,9 +1862,12 @@ async function insertPricingUsageAttribution(
   const effectivePolicyDigest = attribution.snapshot_kind === "policy_v1"
     ? attribution.policy_digest
     : null;
-  const legacyPolicyDigest = attribution.snapshot_kind === "policy_v1"
+  // policy_v1 stores the source policy digest in the legacy column; release-v2 has a single
+  // policy identity, so its immutable policy_digest lands there directly (its CHECK requires
+  // a non-empty value), while effective/binding columns stay NULL by contract.
+  const storedPolicyDigest = attribution.snapshot_kind === "policy_v1"
     ? attribution.source_policy_digest
-    : null;
+    : attribution.policy_digest;
   const tariffPricedAt = attribution.tariff_priced_ts === null
     ? null
     : epochSecondsDate(attribution.tariff_priced_ts, "tariff priced timestamp");
@@ -1690,12 +1886,14 @@ async function insertPricingUsageAttribution(
       tariff_priced_at, official_nano, charged_nano, official_cost_json,
       paid_funded_nano, bonus_funded_nano, other_funded_nano,
       funding_allocation_json, track_eligible, retention_eligible,
-      commission_eligible, snapshot_digest
+      commission_eligible, snapshot_digest,
+      release_schema_version, release_generation, release_digest,
+      release_billing_mode, release_funding_generation
     ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
       $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,
       $33,$34,$35,$36,$37,$38,$39,$40::jsonb,$41,$42,$43,$44::jsonb,
-      $45,$46,$47,$48
+      $45,$46,$47,$48,$49,$50,$51,$52,$53
     )
   `, [
     eventId,
@@ -1723,7 +1921,7 @@ async function insertPricingUsageAttribution(
     attribution.policy_version,
     attribution.effective_policy_version,
     effectivePolicyDigest,
-    legacyPolicyDigest,
+    storedPolicyDigest,
     attribution.source_policy_digest,
     attribution.catalog_generation,
     attribution.switch_generation,
@@ -1744,10 +1942,17 @@ async function insertPricingUsageAttribution(
     attribution.funding_allocation_json === null
       ? null
       : JSON.stringify(attribution.funding_allocation_json),
-    attribution.track_eligible,
-    attribution.retention_eligible,
-    attribution.commission_eligible,
+    // Release-v2 rows carry NULL engine eligibility by contract; locally they are durable
+    // non-tier rows, and commission authority is the computed class/paid-funding derivation.
+    attribution.track_eligible ?? false,
+    attribution.retention_eligible ?? false,
+    validated.commissionEligible,
     attribution.snapshot_digest,
+    attribution.release_schema_version,
+    attribution.release_generation,
+    attribution.release_digest,
+    attribution.release_billing_mode,
+    attribution.release_funding_generation,
   ]);
   for (const allocation of validated.allocations) {
     await client.query(`
@@ -2010,12 +2215,16 @@ export async function applyPricingLedgerPage(
           "engine policy funding exceeds the local immutable free-credit projection",
         );
       }
+      // Release-v2 funding lives entirely in engine v2 lots; the local legacy free-credit
+      // projection must neither validate nor absorb its bonus/other funding.
       const projectedFreeDebit = validatedAttribution === null
         ? legacyFromFree
-        : attributedNonPaid;
+        : validatedAttribution.attribution.snapshot_kind === "release_v2"
+          ? 0n
+          : attributedNonPaid;
       const realFunded = validatedAttribution === null
         ? amount - legacyFromFree
-        : validatedAttribution.attribution.commission_eligible === true
+        : validatedAttribution.commissionEligible
           ? validatedAttribution.paidFundedNano ?? 0n
           : 0n;
       const retentionSpend = validatedAttribution === null || validatedAttribution.retentionEligible
@@ -2056,14 +2265,18 @@ export async function applyPricingLedgerPage(
         freeBalanceChanged = true;
       }
       insertedCharge = true;
-      const monthStart = utcMonthStart(occurredAt);
-      await client.query(`
-        INSERT INTO pricing_months (
-          id, user_id, month_start, opening_tier, highest_tier, spent_nano
-        ) VALUES ($1, $2, $3, $4, $4, $5)
-        ON CONFLICT (user_id, month_start) DO UPDATE
-        SET spent_nano = pricing_months.spent_nano + EXCLUDED.spent_nano, updated_at = now()
-      `, [randomUUID(), target.userId, monthStart, profile.current_tier, retentionSpend.toString()]);
+      // Release-v2 usage is flat post-tier pricing: no progressive month/retention projection is
+      // ever created for it (tier windows already exclude it via retention_eligible = false).
+      if (validatedAttribution?.attribution.snapshot_kind !== "release_v2") {
+        const monthStart = utcMonthStart(occurredAt);
+        await client.query(`
+          INSERT INTO pricing_months (
+            id, user_id, month_start, opening_tier, highest_tier, spent_nano
+          ) VALUES ($1, $2, $3, $4, $4, $5)
+          ON CONFLICT (user_id, month_start) DO UPDATE
+          SET spent_nano = pricing_months.spent_nano + EXCLUDED.spent_nano, updated_at = now()
+        `, [randomUUID(), target.userId, monthStart, profile.current_tier, retentionSpend.toString()]);
+      }
     }
     if (freeBalanceChanged) {
       await client.query(

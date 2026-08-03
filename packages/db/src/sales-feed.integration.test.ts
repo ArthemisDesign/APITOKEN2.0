@@ -174,6 +174,53 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
     ]);
   }
 
+  async function insertReleaseV2Attribution(input: {
+    eventId: string;
+    accountClass: "b2c" | "b2b" | "openkeys" | "service";
+    paidFundedNano: bigint;
+    bonusFundedNano: bigint;
+    otherFundedNano: bigint;
+    commissionEligible: boolean;
+    snapshotDigest: string;
+    schemaVersion?: bigint;
+  }): Promise<void> {
+    await database.pool.query(`
+      INSERT INTO pricing_usage_attributions (
+        pricing_usage_event_id, attribution_schema_version, snapshot_kind,
+        engine_request_id, provider_id, product_id, account_class, binding_id,
+        requested_model_id, canonical_model_id,
+        rule_id, rule_digest, rule_scope, pricing_mode, rule_origin,
+        discount_bps, payable_multiplier_bp, policy_id, policy_version,
+        effective_policy_version, effective_policy_digest, policy_digest, source_policy_digest,
+        tariff_schedule_id, tariff_priced_at,
+        official_nano, charged_nano, official_cost_json, paid_funded_nano, bonus_funded_nano,
+        other_funded_nano, funding_allocation_json, track_eligible,
+        retention_eligible, commission_eligible, snapshot_digest,
+        release_schema_version, release_generation, release_digest,
+        release_billing_mode, release_funding_generation
+      ) VALUES (
+        $1, $2, 'release_v2', $3, 'anthropic', NULL, $4, NULL,
+        'claude-sonnet-latest', 'claude-sonnet',
+        NULL, NULL, NULL, NULL, NULL,
+        NULL, NULL, 'sales-feed-release-policy', 7,
+        NULL, NULL, 'sales-feed-release-policy-digest', NULL,
+        'sales-feed-tariff-v1', now(),
+        1000, 1000, '{}'::jsonb, $5, $6, $7, '[]'::jsonb, false, false, $8, $9,
+        2, 3, 'sales-feed-release-digest', 'balance', 5
+      )
+    `, [
+      input.eventId,
+      (input.schemaVersion ?? 2n).toString(),
+      `request-${input.snapshotDigest}`,
+      input.accountClass,
+      input.paidFundedNano.toString(),
+      input.bonusFundedNano.toString(),
+      input.otherFundedNano.toString(),
+      input.commissionEligible,
+      input.snapshotDigest,
+    ]);
+  }
+
   async function insertPaidTopup(userId: string, suffix: string, paidAt: Date): Promise<string> {
     const checkoutId = randomUUID();
     const paymentId = randomUUID();
@@ -310,6 +357,105 @@ describe.runIf(Boolean(connectionString))("referral-only sales feeds", () => {
       paidFundedNano: 600n,
       snapshotDigest: "snapshot-eligible",
     });
+  });
+
+  it("emits release-v2 referred B2C paid funding without a pricing mode", async () => {
+    const referred = await insertUser(true);
+    const ordinary = await insertUser(false);
+    const occurredAt = new Date(Date.now() - 60_000);
+
+    const bonusOnlyEvent = await insertUsage(referred, 20, occurredAt, 0n);
+    await insertReleaseV2Attribution({
+      eventId: bonusOnlyEvent,
+      accountClass: "b2c",
+      paidFundedNano: 0n,
+      bonusFundedNano: 1000n,
+      otherFundedNano: 0n,
+      commissionEligible: false,
+      snapshotDigest: "release-bonus-only",
+    });
+    const b2bEvent = await insertUsage(referred, 21, occurredAt, 0n);
+    await insertReleaseV2Attribution({
+      eventId: b2bEvent,
+      accountClass: "b2b",
+      paidFundedNano: 1000n,
+      bonusFundedNano: 0n,
+      otherFundedNano: 0n,
+      commissionEligible: false,
+      snapshotDigest: "release-b2b",
+    });
+    const unreferredEvent = await insertUsage(ordinary, 22, occurredAt, 0n);
+    await insertReleaseV2Attribution({
+      eventId: unreferredEvent,
+      accountClass: "b2c",
+      paidFundedNano: 1000n,
+      bonusFundedNano: 0n,
+      otherFundedNano: 0n,
+      commissionEligible: true,
+      snapshotDigest: "release-unreferred",
+    });
+    const eligibleEvent = await insertUsage(referred, 23, occurredAt, 0n);
+    await insertReleaseV2Attribution({
+      eventId: eligibleEvent,
+      accountClass: "b2c",
+      paidFundedNano: 650n,
+      bonusFundedNano: 300n,
+      otherFundedNano: 50n,
+      commissionEligible: true,
+      snapshotDigest: "release-eligible",
+    });
+
+    const page = await listUsageEventsAfter(database, 0n, 100);
+    expect(page.nextCursor).toBe(4n);
+    expect(page.items).toEqual([{
+      id: 4n,
+      userId: referred,
+      amountNano: 650n,
+      providerId: "anthropic",
+      accountClass: "b2c",
+      pricingMode: null,
+      paidFundedNano: 650n,
+      commissionEligible: true,
+      snapshotDigest: "release-eligible",
+      officialNano: 1000n,
+      chargedNano: 1000n,
+      bonusFundedNano: 300n,
+      otherFundedNano: 50n,
+      releaseGeneration: 3n,
+      releaseDigest: "sales-feed-release-digest",
+      occurredAt,
+    }]);
+
+    let cursor = 0n;
+    for (const expectedCursor of [1n, 2n, 3n]) {
+      const filteredPage = await listUsageEventsAfter(database, cursor, 1);
+      expect(filteredPage.items).toEqual([]);
+      expect(filteredPage.nextCursor).toBe(expectedCursor);
+      cursor = filteredPage.nextCursor;
+    }
+    const eligiblePage = await listUsageEventsAfter(database, cursor, 1);
+    expect(eligiblePage.items).toHaveLength(1);
+    expect(eligiblePage.items[0]).toMatchObject({
+      amountNano: 650n,
+      pricingMode: null,
+      releaseDigest: "sales-feed-release-digest",
+    });
+  });
+
+  it("keeps legacy rows free of the release-v2 fields", async () => {
+    const referred = await insertUser(true);
+    const occurredAt = new Date(Date.now() - 60_000);
+    await insertUsage(referred, 30, occurredAt, 750n);
+
+    const page = await listUsageEventsAfter(database, 0n, 100);
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]).toMatchObject({
+      userId: referred,
+      amountNano: 750n,
+      pricingMode: null,
+    });
+    expect("officialNano" in page.items[0]!).toBe(false);
+    expect("releaseDigest" in page.items[0]!).toBe(false);
   });
 
   it("excludes ordinary customer top-ups while preserving referred top-ups", async () => {

@@ -55,20 +55,30 @@ ledger-фида движка; строки моложе 10 с скрыты (ла
 - `GET /v1/internal/sales/usage-events?after_id&limit` (дефолт 1000, макс 2000) — из
   `pricing_usage_events`; курсор — колонка `feed_seq bigserial` (миграция 0012). Ответ
   `{items:[{id,userId,amountNano,providerId,accountClass,pricingMode,paidFundedNano,
-  commissionEligible,snapshotDigest,occurredAt}], nextCursor}`. Для новой immutable attribution
-  фид допускает только schema v1 `policy_v1`, `accountClass=b2c`, `pricingMode=track`,
-  `commissionEligible=true` и положительный `paidFundedNano`; `amountNano` точно равен этой paid
-  части. Static, B2B/service, неподдержанная schema, zero-paid и расход неатрибутированного юзера
-  не создают item. Исторические строки без attribution временно остаются all-null и используют
+  commissionEligible,snapshotDigest,officialNano,chargedNano,bonusFundedNano,otherFundedNano,
+  releaseGeneration,releaseDigest,occurredAt}], nextCursor}`; денежные поля и `releaseGeneration`
+  — decimal-строки. Поля `officialNano…releaseDigest` — expand-only добавление schema v2: на
+  legacy/all-null и policy_v1 строках они `null`, удаляются только последним контрактным шагом
+  после полного перехода consumer. Для immutable attribution фид допускает две формы:
+  - **schema v1 `policy_v1`** (deployed consumer): `accountClass=b2c`, `pricingMode=track`,
+    `commissionEligible=true` и положительный `paidFundedNano`; `amountNano` точно равен этой
+    paid части. Static, B2B/service, неподдержанная schema, zero-paid и расход
+    неатрибутированного юзера не создают item.
+  - **schema v2 `release_v2`**: eligibility независим от pricing mode — referred B2C authority,
+    `commissionEligible=true` (вычисляется commerce-writer'ом из `account_class='b2c'` + exact
+    `paid_funded_nano>0`) и полный release lineage (`officialNano`, `chargedNano`,
+    `bonusFundedNano`, `otherFundedNano`, `releaseGeneration`, `releaseDigest` не-null);
+    `amountNano` равен exact `paidFundedNano`, `pricingMode` всегда `null` (никакого
+    синтетического `'track'`). Bonus-only (`paidFundedNano=0`), B2B, OpenKeys и service v2
+    строки не эмитятся.
+  Исторические строки без attribution временно остаются all-null и используют
   legacy `real_funded` free-first projection. Лимит применяется к исходным строкам до фильтрации,
   поэтому `nextCursor` движется по watermark всей страницы, включая static/service/unreferred
   хвост, и он не пересканируется бесконечно.
 
-  Это описание текущего schema-v1 consumer. До Stage 9 производитель expand-only добавляет
-  schema v2 без зависимости от `pricingMode`: eligible item определяется referred B2C authority,
-  `commissionEligible=true` и положительным exact `paidFundedNano`. Bonus-funded usage, B2B,
-  OpenKeys и service исключаются. Новый sales consumer сначала принимает обе схемы, затем после
-  зелёного producer SHA переключает расчёт на v2; поле `track` не является target authority.
+  Producer-first переход: producer уже эмитит обе схемы; sales consumer сначала принимает обе,
+  затем после зелёного producer SHA переключает расчёт на v2 — поле `track` не является target
+  authority.
 - `GET /v1/internal/sales/topups?after_id&limit` (дефолт 500, макс 1000) — оплаченные
   `payments`; курсор — микросекунды epoch от `paid_at` (не `feed_seq`: оплата наступает позже
   insert, и просроченный `feed_seq` выпал бы из курсора навсегда). Тоже фильтруется по

@@ -30,6 +30,13 @@ export interface UsageEventFeedRow {
   paidFundedNano: bigint | null;
   commissionEligible: true | null;
   snapshotDigest: string | null;
+  // Release-v2 expand-only fields; set only for schema-v2 emission, absent on legacy rows.
+  officialNano?: bigint;
+  chargedNano?: bigint;
+  bonusFundedNano?: bigint;
+  otherFundedNano?: bigint;
+  releaseGeneration?: bigint;
+  releaseDigest?: string;
   occurredAt: Date;
 }
 
@@ -109,8 +116,14 @@ export async function listUsageEventsAfter(
       accountClass: pricingUsageAttributions.accountClass,
       pricingMode: pricingUsageAttributions.pricingMode,
       paidFundedNano: pricingUsageAttributions.paidFundedNano,
+      bonusFundedNano: pricingUsageAttributions.bonusFundedNano,
+      otherFundedNano: pricingUsageAttributions.otherFundedNano,
       commissionEligible: pricingUsageAttributions.commissionEligible,
       snapshotDigest: pricingUsageAttributions.snapshotDigest,
+      officialNano: pricingUsageAttributions.officialNano,
+      chargedNano: pricingUsageAttributions.chargedNano,
+      releaseGeneration: pricingUsageAttributions.releaseGeneration,
+      releaseDigest: pricingUsageAttributions.releaseDigest,
     })
     .from(pricingUsageEvents)
     // The sales database cannot distinguish a temporarily late attribution from a customer who
@@ -142,6 +155,50 @@ export async function listUsageEventsAfter(
           paidFundedNano: null,
           commissionEligible: null,
           snapshotDigest: null,
+          occurredAt: row.occurredAt,
+        }];
+      }
+
+      // Release-v2 emission: commission eligibility is deliberately independent of any pricing
+      // mode. Only a referred B2C row with computed commission authority, positive exact paid
+      // funding and complete release lineage crosses the sales boundary. B2B/OpenKeys/service
+      // rows and bonus-only (zero-paid) B2C rows are durable source rows but never commission
+      // events. pricingMode is NULL by contract — never a synthesized literal.
+      if (row.snapshotKind === "release_v2") {
+        if (
+          row.attributionSchemaVersion !== 2n
+          || row.providerId === null
+          || row.providerId.length === 0
+          || row.accountClass !== "b2c"
+          || row.paidFundedNano === null
+          || row.paidFundedNano <= 0n
+          || row.commissionEligible !== true
+          || row.snapshotDigest === null
+          || row.snapshotDigest.length === 0
+          || row.officialNano === null
+          || row.chargedNano === null
+          || row.bonusFundedNano === null
+          || row.otherFundedNano === null
+          || row.releaseGeneration === null
+          || row.releaseDigest === null
+          || row.releaseDigest.length === 0
+        ) return [];
+        return [{
+          id: row.id,
+          userId: row.userId,
+          amountNano: row.paidFundedNano,
+          providerId: row.providerId,
+          accountClass: "b2c",
+          pricingMode: null,
+          paidFundedNano: row.paidFundedNano,
+          commissionEligible: true,
+          snapshotDigest: row.snapshotDigest,
+          officialNano: row.officialNano,
+          chargedNano: row.chargedNano,
+          bonusFundedNano: row.bonusFundedNano,
+          otherFundedNano: row.otherFundedNano,
+          releaseGeneration: row.releaseGeneration,
+          releaseDigest: row.releaseDigest,
           occurredAt: row.occurredAt,
         }];
       }

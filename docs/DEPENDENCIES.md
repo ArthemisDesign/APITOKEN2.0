@@ -103,7 +103,7 @@ snapshot и fail-closed stage'ит только explicit cutover/recovery пос
 
 | Производитель | Контракт / канал | Потребители | Документ контракта |
 |---|---|---|---|
-| `apps/api` (`src/sales-feed.controller.ts`, `/v1/internal/sales/*`) | GET-фиды `attributions` / `usage-events` / `topups` (курсоры `after_id`); target usage schema v2 несёт exact referred-B2C `paid_funded_nano` независимо от pricing mode; schema v1/`referral-discount` живут только на producer-first переходе | `apps/sales-api` (`sync.service.ts`, `commerce.service.ts`; `COMMERCE_BASE_URL`) | `docs/sales/SALES_PORTAL.md` |
+| `apps/api` (`src/sales-feed.controller.ts`, `/v1/internal/sales/*`) | GET-фиды `attributions` / `usage-events` / `topups` (курсоры `after_id`); usage-events эмитит schema v1 (policy_v1 track) и schema v2 (release_v2: exact referred-B2C `paid_funded_nano` независимо от pricing mode + `officialNano`/`chargedNano`/`bonusFundedNano`/`otherFundedNano`/`releaseGeneration`/`releaseDigest`, `pricingMode=null`); `referral-discount` живёт только на producer-first переходе | `apps/sales-api` (`sync.service.ts`, `commerce.service.ts`; `COMMERCE_BASE_URL`) | `docs/sales/SALES_PORTAL.md` |
 | `apps/sales-api` (`src/internal.controller.ts`, `/v1/internal/*`) | POST `promo/redeem` сохраняется для credit/attribution; `partners/referral-discount` и discount-поля — legacy compatibility до удаления tier-linked персональной цены | `apps/api` (`promo.service.ts`, `auth.service.ts`; `SALES_API_URL`) | `docs/sales/SALES_PORTAL.md` |
 
 Типы фида продублированы локальными zod-схемами на обеих сторонах; в `packages/contracts`
