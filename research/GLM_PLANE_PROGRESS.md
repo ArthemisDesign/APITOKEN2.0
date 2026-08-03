@@ -24,16 +24,31 @@ backend-only (по образцу KIMI, `docs/engine/KIMI_PROVIDER.md` §0) до
 
 | Шаг | Артефакт | SHA |
 |---|---|---|
-| Скелет capability manifest + ledger | `docs/engine/GLM_PROVIDER.md`, этот файл | _pending first commit_ |
+| Скелет capability manifest + ledger | `docs/engine/GLM_PROVIDER.md`, этот файл | 03cf2582 |
+| Шаблон цепочки + pre-flight в ledger | этот файл | faf8c25a |
+| Полный research + capability manifest | `docs/engine/GLM_PROVIDER.md` | _этот коммит_ |
 
 ## Открытые швы
 
-- Весь research по GLM Coding Plan — только стартовые факты, детали `unknown`.
+- Нет. Research замкнут: все load-bearing факты имеют official/oss-метки, unknowns перечислены
+  в манифесте §6.
+
+Ключевые факты research (дата ревью 2026-08-03): credits-система с 2026-07-30
+(Lite 2000/5ч+10000/нед, Pro 12000/60000, Max 28000/140000); формула кредитов
+`(in×m_in + cached×m_c + out×m_out)/10000` с мультипликаторами 5.2=6.9/1.7/24,
+5-Turbo=5.7/1.5/21, 4.7=4.6/1.2/16, off-peak ×0.5 (пн–пт 14:00–18:00 UTC+8); endpoint'ы
+`api.z.ai/api/anthropic` + `api.z.ai/api/coding/paas/v4` (Bearer); quota endpoint
+`GET /api/monitor/usage/quota/limit` (Authorization без Bearer, HTTP 200 + code:401 =
+невалидный ключ); коды 1308=5ч wall, 1310=weekly wall, 1309=план истёк, 1311=модель не в
+плане, 1313=fair-use; только 3 модели на плане (glm-5.2 1M, glm-5-turbo 200K, glm-4.7 200K);
+reroute glm-5.1/5→5.2 (billing по served); rate card 5.2=$1.40/0.26/4.40,
+5-turbo=$1.20/0.24/4.00, 4.7=$0.60/0.11/2.20; ToS запрещает resale/proxy → backend-only.
 
 ## Следующее действие (ровно одно)
 
-Deep research: официальные страницы Z.ai/bigmodel.cn (pricing, coding plan docs), OSS-клиенты
-(claude-code-router и аналоги), точные эндпоинты/квоты/usage → дописать манифест.
+Metering: `crates/metering/src/glm.rs` — API rate card (nanoUSD) + native credit multipliers
++ off-peak расписание, по образцу `crates/metering/src/kimi.rs`; `cargo test -p metering`
+целиком.
 
 ## Очередь
 
