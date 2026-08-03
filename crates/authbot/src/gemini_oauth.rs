@@ -1537,6 +1537,9 @@ enum Failure {
     UnsupportedPlan,
     AccountMismatch,
     GenerationUnavailable,
+    /// Google admits the login and the paid tier but refuses generation until the Google account
+    /// itself is verified (`PERMISSION_DENIED` / `VALIDATION_REQUIRED`). Retrying cannot change it.
+    AccountValidationRequired,
     StaleHandoff,
     Duplicate,
     DuplicateProxy,
@@ -1555,6 +1558,7 @@ impl Failure {
             Self::UnsupportedPlan => "unsupported_plan",
             Self::AccountMismatch => "account_mismatch",
             Self::GenerationUnavailable => "generation_unavailable",
+            Self::AccountValidationRequired => "account_validation_required",
             Self::StaleHandoff => "stale_handoff",
             Self::Duplicate => "duplicate_account",
             Self::DuplicateProxy => "duplicate_proxy",
@@ -1573,6 +1577,7 @@ impl Failure {
             Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь, что нужный тариф активирован именно на этом аккаунте; прокси сохранён, для новой авторизации отправь <code>повторить</code>.",
             Self::AccountMismatch => "❌ На втором этапе выбран другой Google-аккаунт. Оба согласия должны быть выданы одной подпиской в одном профиле браузера. Профиль не опубликован; отправь <code>повторить</code> и начни заново.",
             Self::GenerationUnavailable => "⚠️ Google подтвердил вход и активный тариф, но реальная тестовая генерация не была подтверждена. Профиль не опубликован и сделка не завершена; прокси сохранён. Подожди немного и отправь <code>повторить</code>.",
+            Self::AccountValidationRequired => "❌ Google подтвердил вход и активный тариф Google AI, но требует подтвердить сам аккаунт: генерация отклонена с «Verify your account to continue». Повтор не поможет, пока проверка не пройдена. В том же профиле антидетект-браузера и с тем же прокси открой <code>gemini.google.com</code> или Antigravity, выполни один запрос и заверши проверку, которую покажет Google (обычно номер телефона или подтверждение возраста). Профиль не опубликован, сделка не завершена, прокси сохранён; после успешной проверки отправь <code>повторить</code>.",
             Self::StaleHandoff => "❌ Эта попытка подключения уже не относится к текущей сделке. Профиль не опубликован; продолжи актуальный шаг в боте.",
             Self::Duplicate => "❌ Эта Google-подписка уже присутствует в пуле.",
             Self::DuplicateProxy => "❌ Этот прокси уже закреплён за другим Gemini-профилем. Для подписки нужен отдельный прокси.",
@@ -1591,6 +1596,7 @@ impl Failure {
             Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь тариф на этом аккаунте и отправь <code>повторить</code>; будет использован закреплённый прокси.",
             Self::AccountMismatch => "❌ На втором этапе выбран другой Google-аккаунт. Оба согласия должны быть выданы одной подпиской в одном профиле браузера. Профиль не опубликован; отправь <code>повторить</code> и начни заново.",
             Self::GenerationUnavailable => "⚠️ Google подтвердил вход и активный тариф, но реальная тестовая генерация не была подтверждена. Профиль не опубликован и сделка не завершена. Подожди немного и отправь <code>повторить</code>; будет использован закреплённый прокси.",
+            Self::AccountValidationRequired => "❌ Google подтвердил вход и активный тариф Google AI, но требует подтвердить сам аккаунт: генерация отклонена с «Verify your account to continue». Повтор не поможет, пока проверка не пройдена. В том же профиле браузера и с закреплённым прокси открой <code>gemini.google.com</code> или Antigravity, выполни один запрос и заверши проверку, которую покажет Google (обычно номер телефона или подтверждение возраста). Затем отправь <code>повторить</code> — будет использован закреплённый прокси.",
             Self::StaleHandoff => "❌ Эта попытка подключения уже не относится к текущей сделке. Профиль не опубликован; продолжи актуальный шаг в боте.",
             _ => self.public_message(),
         }
@@ -1603,6 +1609,7 @@ impl Failure {
                 | Self::TransportUnavailable
                 | Self::Temporary
                 | Self::GenerationUnavailable
+                | Self::AccountValidationRequired
                 | Self::Storage
         )
     }
@@ -1613,6 +1620,7 @@ impl Failure {
             Self::TransportUnavailable => "⚠️ Gemini OAuth transport исчерпал bounded CONNECT/TLS recovery. Проверь только phase и secret-free transport class в journalctl; это ещё не отказ Google account/tier.",
             Self::Temporary => "⚠️ Gemini OAuth получил временный HTTP/malformed control-plane outcome после установленного транспорта. Проверь phase/status diagnostic; не приписывай ошибку прокси без transport-class evidence.",
             Self::GenerationUnavailable => "⚠️ Gemini OAuth и тариф подтверждены, но exact generateContent acceptance не прошёл. Профиль не опубликован и выплата не завершена; проверь phase/status diagnostic без повторной атрибуции прокси.",
+            Self::AccountValidationRequired => "⚠️ Gemini OAuth и тариф подтверждены, но Google требует верификацию аккаунта продавца (PERMISSION_DENIED/VALIDATION_REQUIRED) и отклоняет генерацию на всех surface. Профиль не опубликован и выплата не завершена; это состояние Google-аккаунта, а не прокси и не тарифа.",
             _ => "⚠️ Gemini OAuth publication failed closed. Проверь права AUTH_BOT_GEMINI_DIR, profiles.json и совпадение credential keyring; секреты не логировались.",
         }
     }
@@ -2249,13 +2257,18 @@ async fn generation_probe(
             }
             Err(failure) => {
                 log_generation_failure(chat_id, surface, response.status, &response.body);
-                // A 2xx that fails acceptance already consumed a paid generation, and any other
-                // status is not evidence that a different host would answer differently. Only an
-                // access rejection made before the model ran may try the next reviewed surface.
+                // An account-level rejection is the same on every host, so stop asking. A 2xx that
+                // fails acceptance already consumed a paid generation, and any other status is not
+                // evidence that a different host would answer differently. Only an access rejection
+                // made before the model ran may try the next reviewed surface.
+                let classified = classify_generation_failure(&response.body);
+                if let Some(classified) = classified {
+                    return Err(classified);
+                }
                 if !matches!(response.status, 403 | 404) {
                     return Err(failure);
                 }
-                last = classify_generation_failure(&response.body).unwrap_or(failure);
+                last = failure;
             }
         }
     }
@@ -2295,15 +2308,33 @@ fn log_generation_failure(chat_id: i64, surface: &str, status: u16, body: &[u8])
     }
 }
 
-/// A disabled Cloud Code private API is an operator-actionable state, not an exhausted or missing
-/// subscription; keep telling the seller the truth instead of "try again later".
+/// Classify the account-level states Google reports through a generation rejection. These are
+/// properties of the Google account, not of the surface that answered, so the caller stops probing
+/// instead of asking another host the same question — and the seller gets the real instruction
+/// instead of "try again later", which can never change any of them.
 fn classify_generation_failure(body: &[u8]) -> Option<Failure> {
     let detail = String::from_utf8_lossy(body);
-    matches!(
+    if matches!(
         classify_google_http_failure(403, &detail),
         Failure::CodeAssistApiDisabled
-    )
-    .then_some(Failure::CodeAssistApiDisabled)
+    ) {
+        return Some(Failure::CodeAssistApiDisabled);
+    }
+    let parsed = serde_json::from_slice::<Value>(body).ok();
+    let error = parsed.as_ref().and_then(|value| value.get("error"));
+    let validation_reason = error
+        .and_then(|error| error.get("details"))
+        .and_then(Value::as_array)
+        .is_some_and(|details| {
+            details.iter().any(|detail| {
+                detail.get("reason").and_then(Value::as_str) == Some("VALIDATION_REQUIRED")
+            })
+        });
+    let validation_message = error
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .is_some_and(|message| message.to_ascii_lowercase().contains("verify your account"));
+    (validation_reason || validation_message).then_some(Failure::AccountValidationRequired)
 }
 
 fn generation_probe_body(project_id: &str, session_id: &str, request_id: &str) -> Value {
@@ -3672,6 +3703,45 @@ mod tests {
             classify_generation_failure(&serde_json::to_vec(&plain).unwrap()),
             None,
             "a generic access rejection must not claim the private API is disabled"
+        );
+        // Observed in production on 2026-08-03: an account with a live g1-pro-tier subscription is
+        // refused generation on every surface until Google's own account verification is done.
+        let validation = json!({
+            "error": {
+                "code": 403,
+                "status": "PERMISSION_DENIED",
+                "message": "Verify your account to continue.",
+                "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "VALIDATION_REQUIRED"}],
+            }
+        });
+        assert_eq!(
+            classify_generation_failure(&serde_json::to_vec(&validation).unwrap()),
+            Some(Failure::AccountValidationRequired)
+        );
+        let message_only = json!({
+            "error": {"code": 403, "status": "PERMISSION_DENIED", "message": "Verify your account to continue."}
+        });
+        assert_eq!(
+            classify_generation_failure(&serde_json::to_vec(&message_only).unwrap()),
+            Some(Failure::AccountValidationRequired),
+            "the reason field is not guaranteed; the exact message alone is enough evidence"
+        );
+        for message in [
+            Failure::AccountValidationRequired.public_message(),
+            Failure::AccountValidationRequired.fixed_proxy_message(),
+        ] {
+            assert!(
+                message.contains("повторить"),
+                "the seller still needs the exact command to resume after verifying"
+            );
+            assert!(
+                !message.contains("Подожди немного"),
+                "waiting never clears an account verification requirement"
+            );
+        }
+        assert_eq!(
+            Failure::AccountValidationRequired.code(),
+            "account_validation_required"
         );
         assert_eq!(bounded_label(None), "<none>");
         assert_eq!(bounded_label(Some("")), "<empty>");

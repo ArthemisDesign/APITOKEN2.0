@@ -140,7 +140,11 @@ seller lock освобождается, response становится `cancelled
    другом, а 403 означает, что модель не запускалась и платная генерация не потрачена. 503,
    malformed response, missing usage или ambiguous transport не публикуют credential, не завершают
    выплату и на второй surface НЕ уходят; состоявшаяся paid generation автоматически не
-   повторяется. `countTokens`, quota и `loadCodeAssist` не являются acceptance. В журнал уходят
+   повторяется. Отказ уровня Google-аккаунта одинаков на всех surface, поэтому распознаётся сразу и
+   больше никуда не стучится: `VALIDATION_REQUIRED` / «Verify your account to continue» — это
+   `account_validation_required`, отдельный outcome с инструкцией пройти проверку Google (обычно
+   телефон/возраст) в том же профиле и прокси, а не «подожди и повтори»: ретрай состояние аккаунта
+   не меняет. `countTokens`, quota и `loadCodeAssist` не являются acceptance. В журнал уходят
    только HTTP-статус, surface и enum-поля Google (`error.status`, `error.details[].reason`);
    free-form `error.message` — лишь под `AUTH_BOT_GEMINI_TIER_EVIDENCE=1`, потому что он может
    содержать project и account.

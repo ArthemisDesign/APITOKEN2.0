@@ -152,7 +152,11 @@ the Antigravity checks below remain decisive.
    the other and nothing was generated or billed yet. `503`, malformed JSON,
    missing usage and ambiguous transport return `generation_unavailable` without trying another
    host; a generation that did run is never
-   replayed automatically, no credential is published and seller payout does not complete. The
+   replayed automatically, no credential is published and seller payout does not complete. An
+   account-level rejection is identical on every host and therefore stops the probe immediately:
+   `VALIDATION_REQUIRED` / "Verify your account to continue" becomes `account_validation_required`,
+   whose seller instruction is to finish Google's own account verification (usually phone or age) in
+   the same browser profile and proxy — retrying cannot clear it. The
    journal carries the HTTP status, the surface and Google's enum fields (`error.status`,
    `error.details[].reason`); the free-form `error.message` can name the project or account and is
    printed only under `AUTH_BOT_GEMINI_TIER_EVIDENCE=1`.
@@ -182,12 +186,13 @@ authenticated proxy. The final wire identity is pinned to Antigravity 2.2.1: run
 `google-api-nodejs-client/10.3.0`, and token exchange uses `Go-http-client/2.0`. There is no ambient
 proxy path or arbitrary OAuth client.
 
-Failure attribution is three-way and secret-free: exhausted CONNECT/TLS recovery is
+Failure attribution is four-way and secret-free: exhausted CONNECT/TLS recovery is
 `transport_unavailable`; an established transport followed by temporary HTTP or malformed Google
 control-plane data is `temporary_upstream`; a final generation 503, malformed/missing usage response
-or ambiguous one-shot generation transport is `generation_unavailable`. Only the first class is
+or ambiguous one-shot generation transport is `generation_unavailable`; and a Google account that is
+admitted but held for its own verification is `account_validation_required`. Only the first class is
 evidence about the transport path, and even it does not by itself prove that the proxy allocation is
-dead. Telegram never asks the seller to replace a proxy for the latter two classes.
+dead. Telegram never asks the seller to replace a proxy for the other three classes.
 
 Legacy bootstrap scopes:
 
