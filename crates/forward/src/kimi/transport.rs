@@ -1,6 +1,6 @@
 //! Per-profile transport to the KIMI (Kimi Code) subscription plane.
 //!
-//! Contract: `docs/engine/KIMI_PROVIDER.md` §4 and §4.1. Three provider facts shape this module:
+//! Contract: `docs/engine/KIMI_PROVIDER.md` §4 and §4.2. Three provider facts shape this module:
 //!
 //! * **The subscription serves an Anthropic-compatible endpoint.** The engine's native protocol is
 //!   forwarded unchanged, so there is no translation layer here — only auth, egress and error

@@ -34,8 +34,8 @@ use registry::{
     CodexTurnCalibrationEvent, CodexWindowObservation, FundingNormalizationApplyRequestV2,
     FundingNormalizationApplyResultV2, FundingNormalizationPlanV2, GeminiExactCalibrationRow,
     GeminiExactWindowObservation, KeyActivationPolicyAck, KeyAuth, KeyPolicyUpdate, KeyRow,
-    ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
-    ProviderTurnCalibrationEvent,
+    KimiTurnCalibrationEvent, ProviderCalibrationSubjectSpend,
+    ProviderTurnCalibrationAggregate, ProviderTurnCalibrationEvent,
 };
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -1223,6 +1223,10 @@ enum WriteCmd {
         snapshot: GeminiQuotaSnapshot,
         reply: oneshot::Sender<anyhow::Result<(i64, GeminiExactCalibrationRow)>>,
     },
+    KimiRecordTurn {
+        event: KimiTurnCalibrationEvent,
+        reply: oneshot::Sender<anyhow::Result<bool>>,
+    },
     CodexRecordTurn {
         event: CodexTurnCalibrationEvent,
         reply: oneshot::Sender<anyhow::Result<CodexHomeCalibrationSpend>>,
@@ -2025,6 +2029,25 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
     }
 
+    /// Persist one immutable KIMI turn and advance the subject's exact API replacement spend.
+    ///
+    /// The gateway owns the bounded FIFO because it must gate `/usages` polling on a fully drained
+    /// queue. This command is the single PostgreSQL writer hop for one FIFO head; exact request-id
+    /// replay is a no-op and a different payload is a permanent typed conflict.
+    pub(crate) async fn record_kimi_turn(
+        &self,
+        event: KimiTurnCalibrationEvent,
+    ) -> anyhow::Result<bool> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::KimiRecordTurn { event, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
     /// Persist exact official-price spend for one Codex home and return its durable cumulative
     /// total. This is provider-capacity evidence, independent of whether the customer turn was
     /// billable (admin turns consume the same subscription window).
@@ -2486,6 +2509,11 @@ impl AsyncBilling {
                             Ok((spend.spent_nano, state))
                         })();
                         let _ = reply.send(result);
+                    }
+                    WriteCmd::KimiRecordTurn { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "KIMI calibration authority requires PostgreSQL"
+                        )));
                     }
                     WriteCmd::CodexRecordTurn { event, reply } => {
                         let _ = reply.send(registry::record_codex_turn_calibration_event(
@@ -3208,6 +3236,16 @@ impl AsyncBilling {
                                     },
                                 )
                             });
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::KimiRecordTurn { event, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "KIMI turn calibration event",
+                                |pg| pg.record_kimi_turn(&event),
+                            );
                             let _ = reply.send(result);
                         }
                         WriteCmd::CodexRecordTurn { event, reply } => {
@@ -4948,6 +4986,39 @@ impl AsyncBilling {
             .await
             .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
         rx.await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    /// Await one terminal settlement together with its exact provider-usage attribution.
+    /// Streaming finalizers use this when provider evidence must be ordered before a later quota
+    /// observation; unlike `settle_detached`, completion means the single writer applied both.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn settle_request_with_usage(
+        &self,
+        request_id: &str,
+        account_id: &str,
+        key: &str,
+        hold: i64,
+        actual: i64,
+        reference: Option<&str>,
+        usage: Option<registry::UsageEventInput>,
+    ) -> anyhow::Result<Option<i64>> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::Settle {
+                request_id: request_id.into(),
+                account_id: account_id.into(),
+                key: key.into(),
+                hold,
+                actual,
+                reference: reference.map(str::to_string),
+                usage,
+                reply: Some(reply),
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
     /// Списание/возврат БЕЗ ожидания — для RAII в синхронном контексте (Drop/finalize). `mpsc::send`

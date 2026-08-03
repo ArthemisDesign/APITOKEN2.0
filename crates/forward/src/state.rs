@@ -6,6 +6,7 @@ use crate::breaker::Breaker;
 use crate::codex::CodexGateway;
 use crate::config::ProxyConfig;
 use crate::gemini::GeminiGateway;
+use crate::kimi::KimiGateway;
 use crate::metrics::Metrics;
 use crate::pricing::PricingShadowRuntime;
 use crate::upstream::Clients;
@@ -65,6 +66,9 @@ pub struct AppState {
     pub codex: Option<Arc<CodexGateway>>,
     /// Optional native Gemini surface backed by encrypted paid Code Assist OAuth profiles.
     pub gemini: Option<Arc<GeminiGateway>>,
+    /// Optional backend-only KIMI subscription pool. It dispatches exact KIMI aliases inside the
+    /// Anthropic Messages plane and intentionally has no public provider mode or catalogue.
+    pub kimi: Option<Arc<KimiGateway>>,
     /// Биллинг клиентов (async DB-актор — синхронный SQLite не блокирует воркеры).
     /// `None` → биллинг выключен (только env-ключи/localhost).
     pub billing: Option<Arc<AsyncBilling>>,

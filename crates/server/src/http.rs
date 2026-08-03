@@ -5562,6 +5562,7 @@ mod tests {
             clients,
             codex: None,
             gemini: None,
+            kimi: None,
             billing: None,
             pricing_shadow: None,
             pricing_manifest: Arc::new(forward::builtin_pricing_runtime_manifest()),

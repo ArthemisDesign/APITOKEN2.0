@@ -1225,6 +1225,7 @@ mod tests {
             clients: Arc::new(Clients::new(&cfg)),
             codex: None,
             gemini: None,
+            kimi: None,
             billing: Some(billing),
             pricing_shadow: None,
             pricing_manifest: Arc::new(crate::builtin_pricing_runtime_manifest()),

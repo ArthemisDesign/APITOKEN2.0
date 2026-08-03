@@ -111,6 +111,26 @@ impl std::fmt::Display for KimiEventError {
 
 impl std::error::Error for KimiEventError {}
 
+/// A request id already names a different immutable KIMI turn. This is permanent corruption of
+/// the proposed event, not a transient database failure, so the runtime FIFO quarantines exactly
+/// that row and continues with its tail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KimiTurnReplayConflict;
+
+impl std::fmt::Display for KimiTurnReplayConflict {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("KIMI turn calibration replay conflict for the same request id")
+    }
+}
+
+impl std::error::Error for KimiTurnReplayConflict {}
+
+pub fn is_kimi_turn_replay_conflict(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<KimiTurnReplayConflict>())
+}
+
 impl KimiTurnCalibrationEvent {
     /// Validate before persistence. These mirror the migration's CHECK constraints so a bad event
     /// is refused in Rust with a typed reason rather than as an opaque database error.

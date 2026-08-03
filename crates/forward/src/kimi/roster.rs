@@ -14,12 +14,17 @@
 //!   roster carrying a duplicate subject is refused as a whole rather than silently deduplicated.
 
 use std::collections::HashSet;
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use kimi_credential::{decode_envelope, validate_profile_id, CredentialKeyring, KimiCredential};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
+use kimi_credential::{
+    decode_envelope, encode_envelope, validate_profile_id, CredentialKeyring, KimiCredential,
+};
 use serde::Deserialize;
 
 /// One live subscription profile as the engine sees it.
@@ -32,6 +37,10 @@ pub struct KimiProfile {
     /// Authoritative paid plan, the calibration cohort key.
     pub plan_name: String,
     pub region: String,
+    /// Key that sealed the current envelope. Refresh keeps using it until Auth Bot publishes a
+    /// replacement under a newer active key; this lets old and candidate generations rotate the
+    /// same credential without needing a second environment-owned active-key setting.
+    pub credential_key_id: String,
     /// Sealed material. Held in memory only.
     pub credential: KimiCredential,
 }
@@ -95,6 +104,7 @@ pub fn load_roster(root: &Path, keyring: &CredentialKeyring) -> Result<Vec<KimiP
         }
         let envelope = decode_envelope(&read_private(&recorded)?)
             .context("decode KIMI credential envelope")?;
+        let credential_key_id = envelope.key_id.clone();
         let credential = keyring
             .open(&entry.id, &envelope)
             .context("open KIMI credential envelope")?;
@@ -108,10 +118,65 @@ pub fn load_roster(root: &Path, keyring: &CredentialKeyring) -> Result<Vec<KimiP
             subject_id: credential.subject_id.clone(),
             plan_name: credential.plan_name.clone(),
             region: credential.region.clone(),
+            credential_key_id,
             credential,
         });
     }
     Ok(profiles)
+}
+
+/// Atomically replace one refreshed credential envelope before its in-memory refresh lock opens.
+///
+/// The profile id is revalidated and determines the path; callers cannot redirect a refresh to an
+/// arbitrary file. A private staging file is synced before rename and the directory is synced
+/// afterwards, so a successful return is the shared blue-green authority rather than a process-
+/// local token that disappears on restart.
+pub fn reseal_credential(
+    root: &Path,
+    keyring: &CredentialKeyring,
+    key_id: &str,
+    profile_id: &str,
+    credential: &KimiCredential,
+) -> Result<()> {
+    validate_profile_id(profile_id)?;
+    let path = root
+        .join("credentials")
+        .join(format!("{profile_id}.json"));
+    let parent = path.parent().context("KIMI credential has no parent")?;
+    let metadata = fs::symlink_metadata(parent).context("stat KIMI credential directory")?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!("KIMI credential directory must be a real directory");
+    }
+    let envelope = keyring
+        .seal(key_id, profile_id, credential)
+        .context("seal refreshed KIMI credential")?;
+    let bytes = encode_envelope(&envelope).context("encode refreshed KIMI credential")?;
+    atomic_private_replace(&path, &bytes)
+}
+
+fn atomic_private_replace(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().context("KIMI credential has no parent")?;
+    let mut random = [0u8; 8];
+    getrandom::fill(&mut random).map_err(|_| anyhow::anyhow!("CSPRNG unavailable"))?;
+    let staging = parent.join(format!(
+        ".kimi-runtime.{}.pending",
+        URL_SAFE_NO_PAD.encode(random)
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&staging)
+        .context("create private KIMI refresh file")?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    if let Err(error) = fs::rename(&staging, path) {
+        let _ = fs::remove_file(&staging);
+        return Err(error).context("publish refreshed KIMI credential");
+    }
+    fs::File::open(parent)?.sync_all()?;
+    Ok(())
 }
 
 fn read_private(path: &Path) -> Result<Vec<u8>> {
@@ -226,6 +291,36 @@ mod tests {
         assert_eq!(profiles[0].id, "kimi-01");
         assert_eq!(profiles[0].plan_name, "Moderato");
         assert_eq!(profiles[0].credential.access_token, "access");
+    }
+
+    #[test]
+    fn a_refreshed_credential_is_atomically_resealed_and_reopenable() {
+        let fixture = Fixture::new();
+        let original = credential("u_1", "Moderato");
+        fixture.seal("kimi-01", &original);
+        fixture.write_roster(&[("kimi-01", fixture.canonical("kimi-01"))]);
+
+        let mut refreshed = original;
+        refreshed.access_token = "rotated-access".into();
+        refreshed.refresh_token = "rotated-refresh".into();
+        refreshed.expires_at += 3_600;
+        reseal_credential(&fixture.root, &keyring(), "a1", "kimi-01", &refreshed).unwrap();
+
+        let profiles = load_roster(&fixture.root, &keyring()).unwrap();
+        assert_eq!(profiles[0].credential.access_token, "rotated-access");
+        assert_eq!(profiles[0].credential.refresh_token, "rotated-refresh");
+        let mode = fs::metadata(fixture.root.join("credentials/kimi-01.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0);
+        assert!(fs::read_dir(fixture.root.join("credentials"))
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".pending")));
     }
 
     #[test]

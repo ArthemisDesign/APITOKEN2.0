@@ -248,6 +248,8 @@ pub fn refresh_url() -> String {
 pub fn build_client(proxy: &str, connect_timeout: Duration, read_timeout: Duration) -> Result<wreq::Client> {
     let mut builder = wreq::Client::builder()
         .connect_timeout(connect_timeout)
+        // A redirect must never carry a subscription bearer to another origin.
+        .redirect(wreq::redirect::Policy::none())
         .pool_idle_timeout(Duration::from_secs(90))
         .tcp_keepalive(Duration::from_secs(60))
         .read_timeout(read_timeout);

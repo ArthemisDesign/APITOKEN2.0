@@ -1101,11 +1101,6 @@ fn sub_cmd(op: SubOp) -> Result<()> {
 async fn serve() -> Result<()> {
     let s = Settings::from_env();
     let serves_anthropic = s.provider.serves_anthropic();
-    if s.kimi.is_some() {
-        // This checkpoint validates the operator contract without pretending the next runtime
-        // checkpoint already serves traffic. Never print the config itself: it owns the keyring.
-        eprintln!("KIMI backend preview: configuration validated; generation runtime is dormant");
-    }
     // Мягкий routing/spill threshold (env CLAUDE_API_MAX_INFLIGHT) ставим ДО создания пула.
     // Он балансирует нагрузку, но не является admission cap и никогда не блокирует dispatch.
     if serves_anthropic {
@@ -1114,6 +1109,9 @@ async fn serve() -> Result<()> {
     let authority = authority_config(&s);
     if authority.is_postgres() && !s.billing {
         bail!("PostgreSQL authority requires CLAUDE_API_BILLING=1 because capacity leases share the durable actor");
+    }
+    if s.kimi.is_some() && (!authority.is_postgres() || !s.billing) {
+        bail!("KIMI backend preview requires PostgreSQL billing authority");
     }
     if matches!(
         s.provider,
@@ -1343,6 +1341,42 @@ async fn serve() -> Result<()> {
     } else {
         None
     };
+    let kimi = if let Some(config) = s.kimi.clone() {
+        let calibration_store = billing.clone().context(
+            "KIMI provider requires the durable billing authority for settlement and calibration",
+        )?;
+        match forward::KimiGateway::new_with_calibration(
+            config.clone(),
+            Some(calibration_store.clone()),
+        ) {
+            Ok(gateway) => {
+                let gateway = Arc::new(gateway);
+                let live = gateway.preflight().await;
+                if live > 0 {
+                    eprintln!("KIMI backend preview preflight passed: live_profiles={live}");
+                } else {
+                    // KIMI is an optional backend inside the Anthropic service. Its cold roster or
+                    // outage must not take unrelated Claude traffic out of readiness.
+                    eprintln!("KIMI backend preview has no authenticated profile; exact KIMI aliases fail closed");
+                }
+                Some(gateway)
+            }
+            Err(_) => {
+                // Do not render the error: proxy parsing failures may embed credentialed egress.
+                // Keep the dispatcher present with zero capacity: removing it here would let an
+                // exact KIMI alias fall through into the unrelated Claude pool.
+                eprintln!(
+                    "KIMI backend preview initialization failed; exact KIMI aliases fail closed"
+                );
+                Some(Arc::new(forward::KimiGateway::new_degraded(
+                    config,
+                    Some(calibration_store),
+                )))
+            }
+        }
+    } else {
+        None
+    };
     let metrics = Arc::new(forward::Metrics::new());
     let pricing_shadow = Some(forward::PricingShadowRuntime::start(
         s.proxy.pricing_shadow,
@@ -1380,6 +1414,7 @@ async fn serve() -> Result<()> {
         clients: Arc::new(Clients::new(&s.proxy)),
         codex,
         gemini,
+        kimi,
         billing,
         pricing_shadow,
         pricing_manifest: Arc::new(s.pricing_shadow_manifest.clone()),
@@ -1570,6 +1605,11 @@ async fn serve() -> Result<()> {
         // Detached Gemini streams continue draining to the authoritative final usageMetadata after
         // a client disconnect. Hold the billing FIFO open until those settlements are queued.
         gemini.shutdown_until(shutdown_deadline).await;
+    }
+    if let Some(kimi) = &flush_app.kimi {
+        // A disconnected KIMI stream keeps draining until terminal usage and FIFO delivery. The
+        // billing writer stays open until every such finalizer has crossed this barrier.
+        kimi.shutdown_until(shutdown_deadline).await;
     }
     if let Some(pricing_shadow) = &flush_app.pricing_shadow {
         pricing_shadow.shutdown_until(shutdown_deadline).await;

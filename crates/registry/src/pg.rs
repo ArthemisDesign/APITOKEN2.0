@@ -5300,7 +5300,7 @@ impl PgStore {
                 api_total_nanousd: row.get(18),
             };
             if !event.is_exact_replay_of(&stored) {
-                bail!("KIMI turn calibration replay conflict for the same request id");
+                return Err(crate::KimiTurnReplayConflict.into());
             }
             tx.commit()?;
             return Ok(false);

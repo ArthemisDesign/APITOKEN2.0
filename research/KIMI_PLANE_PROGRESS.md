@@ -48,30 +48,36 @@
 | Плоскость: bounded turn-FIFO и порядок settle→quota | `crates/forward/src/kimi/queue.rs` | `de47a4d4` |
 | Плоскость: конфиг, default-off switch, readiness | `crates/forward/src/kimi/config.rs` | `c233a1b9` |
 | Durable-калибровка: concurrent replay + real-PG CAS/idempotency | `crates/registry/src/pg.rs` | `10443334` |
-| Server: strict default-off env → typed plane config | `crates/server/src/config.rs` | текущий checkpoint |
+| Server: strict default-off env → typed plane config | `crates/server/src/config.rs` | `76893b5f` |
 | Auth Bot: публикация roster | `crates/authbot/src/kimi_roster.rs` | `dc175204` |
 | Auth Bot: обработчик `km_ready` (шов №1 закрыт) | `crates/authbot/src/bot.rs` | `391032bc` |
 | Плоскость: загрузчик roster | `crates/forward/src/kimi/roster.rs` | `d8a37422` |
 | Плоскость: классы ошибок + single-flight refresh | `crates/forward/src/kimi/transport.rs` | `9b61c443` |
 | Плоскость: выбор профиля | `crates/forward/src/kimi/selection.rs` | `9b61c443` |
+| Cleanup daemon: untouched managed worktree больше не считается merged | `deploy/agent-worktree.sh`, regression-suite, runbook | `05810766` |
+| Плоскость: exact Messages gateway, `/me`, refresh/reseal, stream lifecycle и settlement | `crates/forward/src/kimi/gateway.rs`, server composition | текущий checkpoint |
 
 ## Открытые швы (выглядит подключённым, не работает)
 
 1. ~~`km_ready` не обработан.~~ **Закрыт.** Путь продавца проходится целиком: device-код, поллинг
    под generation guard, `/me`, публикация в roster до завершения выплаты.
-2. **Профиль в roster ещё не становится обслуживающей ёмкостью.** Loader, selector, refresh/quota
-   client, pure attempt policy, FIFO и config уже есть в `crates/forward/src/kimi/`, но `server` их
-   не загружает, а generation/stream/settlement orchestration ещё не соединена в живой handler.
-   До закрытия обеих частей этого шва говорить «подписка в пуле» нельзя.
+2. ~~Профиль в roster не становился обслуживающей ёмкостью.~~ **Закрыт на mock-гейтах.** Server
+   загружает roster, `/me` подтверждает identity, exact Kimi aliases идут через selection,
+   pre-byte policy, transparent non-stream/SSE и reserve→delivering→settlement→FIFO. Cold или
+   повреждённый initial roster остаётся отдельным fail-closed Kimi path и не утекает в Claude.
+3. **Roster пока является startup snapshot.** После публикации/замены credential работающий
+   процесс не перечитывает roster; при ошибке последующего чтения ещё нет last-good reload,
+   сохраняющего текущую ёмкость.
+4. **Quota authority не подключена к runtime.** `/usages` parser и FIFO-ordering готовы, но нет
+   poll loop, который сначала полностью доставляет turn evidence, затем пишет quota observation и
+   обновляет estimator CAS. Поэтому пункт 4 терминального состояния ещё не выполнен.
 
 ## Следующее действие
 
-**Живой KIMI gateway в `crates/forward` + server composition:** загрузить last-good roster, создать
-per-profile transport state, выполнить authenticated identity readiness и провести Anthropic
-Messages request через selection/one-byte attempt policy. Успешный turn обязан пройти
-reserve→delivering→terminal usage settlement→bounded FIFO; quota poll разрешён только после drain.
-Пока этого нет, включённый и валидный config намеренно логируется как dormant и не считается
-маршрутизируемой ёмкостью.
+**Last-good roster reload в `crates/forward` + server poller:** периодически полностью прочитать и
+провалидировать roster, атомарно заменить runtime profile snapshot только после полного успеха,
+сохранить существующую ёмкость при любой ошибке и authenticated `/me`-проверкой ввести новые
+профили. Reload не должен обрывать in-flight lease или сбрасывать refresh single-flight.
 
 **Процессные заметки (обе уже стоили потерянного мёржа):**
 
@@ -79,8 +85,10 @@ reserve→delivering→terminal usage settlement→bounded FIFO; quota poll ра
    падает на несобранном срезе.
 2. Новая зависимость крейта — сразу коммить `Cargo.lock`. Гейт идёт с `--locked` и отказывается
    работать с грязным деревом.
-3. После мёржа worktree становится clean+merged и его сносит `DELETE_WORKTREE`. Коммить первый
-   же файл сразу — иначе новая работа исчезнет вместе с деревом (уже случалось трижды).
+3. Cleanup-демон исправлен в `05810766`: managed worktree, чей HEAD ещё равен creation base,
+   классифицируется как unstarted и сохраняется; malformed metadata fail closed. Активный Kimi
+   checkpoint дополнительно держится lifecycle lock. Быстрый первый коммит всё равно полезен как
+   явная граница восстановления, но больше не является страховкой от ошибочного auto-delete.
 4. Красная deployment-полоса бывает транзиентной. Прогон 2026-08-03 дал
    `typescript=0 rust=0 deployment=1 static=0`, но все её тесты
    (`lib`, `codex-homes-migrate`, `sccache-cargo`, `agent-worktree`, `delete-worktree-agent`,
@@ -91,13 +99,14 @@ reserve→delivering→terminal usage settlement→bounded FIFO; quota poll ра
 
 ## Очередь после этого
 
-1. `crates/forward` + `crates/server`: живой generation/stream/settlement handler и readiness
-   через `/me`. **Пробу нельзя вешать на `/v1/models`** — он негейтед и отвечает 200 на мёртвый ключ.
-2. Затем roster reload,
-   поллер `/usages` с дренажом turn-FIFO перед каждым observation и shutdown drain.
-3. `tools/kimi_calibration/run_live.py` — dry-run по умолчанию, целочисленный бюджет, точная
+1. Last-good roster reload без потери in-flight state и с `/me` admission новых profiles.
+2. Поллер `/usages` с полным дренажом turn-FIFO перед каждым observation, immutable quota write,
+   estimator CAS, reset-aware health steering и shutdown drain.
+3. Observability: bounded-cardinality metrics, alerts/runbook и admin-only operational evidence.
+4. Blue-green/deploy wiring с default-off secret/config и rollback gate.
+5. `tools/kimi_calibration/run_live.py` — dry-run по умолчанию, целочисленный бюджет, точная
    атрибуция по immutable request id.
-4. Observability, blue-green, live-матрица.
+6. Live-матрица на owned Kimi Code subscription; без неё generation не запускается.
 
 ## Заблокировано человеком
 

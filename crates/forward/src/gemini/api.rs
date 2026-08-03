@@ -3613,6 +3613,7 @@ mod tests {
             clients: Arc::new(Clients::new(&cfg)),
             codex: None,
             gemini: Some(gateway),
+            kimi: None,
             billing,
             pricing_shadow: None,
             pricing_manifest: Arc::new(crate::builtin_pricing_runtime_manifest()),

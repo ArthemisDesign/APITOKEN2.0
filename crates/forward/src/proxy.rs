@@ -641,7 +641,7 @@ fn local_err(reason: LocalErr, retry_after: Option<i64>) -> Response {
     local_err_for(reason, reason.reason(), retry_after)
 }
 
-fn local_err_for(
+pub(crate) fn local_err_for(
     reason: LocalErr,
     terminal_reason: &'static str,
     retry_after: Option<i64>,
@@ -1180,6 +1180,61 @@ pub async fn forward(
     let mut requested_us_inference = false;
     let mut affinity_input = None;
     let mut parsed = serde_json::from_slice::<Value>(&raw).ok();
+    // KIMI is an internal backend of the Anthropic Messages plane, not a public provider mode.
+    // Dispatch only exact reviewed subscription aliases, after shared authorization/body bounds
+    // and before Claude-specific identity injection, breaker, pricing policy and pool selection.
+    // Every other model follows the byte-stable Claude path below.
+    let kimi_model = parsed
+        .as_ref()
+        .and_then(|value| value.get("model"))
+        .and_then(Value::as_str)
+        .filter(|model| crate::kimi::KimiGateway::model_is_kimi(model))
+        .map(str::to_string);
+    if billable {
+        if let Some(kimi_model) = kimi_model {
+            let Some(gateway) = app.kimi.as_ref() else {
+                // An exact internal alias must never escape to the Claude upstream when the KIMI
+                // plane is disabled or failed before composition.
+                return local_err_for(LocalErr::Overloaded, "kimi_gateway_unavailable", Some(2));
+            };
+            let kimi_body = parsed.take().expect("KIMI model came from parsed body");
+            let kimi_affinity = authz
+                .affinity_scope()
+                .and_then(|scope| app.affinity.infer(scope, &parts.headers, &kimi_body));
+            let billing = match &authz {
+                Authz::Admin { .. } => None,
+                Authz::Metered {
+                    account_id,
+                    key,
+                    mult_bp,
+                    available_nano,
+                    strict_policy,
+                    ..
+                } => Some(crate::kimi::KimiBillingInput {
+                    account_id: account_id.clone(),
+                    key: key.clone(),
+                    mult_bp: *mult_bp,
+                    available_nano: *available_nano,
+                    strict_policy: *strict_policy,
+                }),
+                Authz::Unauthorized | Authz::Unavailable => {
+                    unreachable!("KIMI dispatch runs only after shared authorization")
+                }
+            };
+            return gateway
+                .handle(crate::kimi::KimiRequest {
+                    headers: parts.headers.clone(),
+                    body: kimi_body,
+                    raw_body_len: raw.len(),
+                    model: kimi_model,
+                    execution,
+                    billing,
+                    affinity: kimi_affinity,
+                    affinity_store: app.affinity.clone(),
+                })
+                .await;
+        }
+    }
     let fallback_preeligible = billable
         && matches!(authz, Authz::Metered { .. })
         && operator_target.is_none()
@@ -2991,6 +3046,7 @@ mod tests {
             clients: Arc::new(Clients::new(&cfg)),
             codex: None,
             gemini: None,
+            kimi: None,
             billing: Some(billing),
             pricing_shadow: None,
             pricing_manifest: Arc::new(crate::builtin_pricing_runtime_manifest()),
@@ -3060,6 +3116,68 @@ mod tests {
         assert_eq!(response.status().as_u16(), 529);
         billing.flush().await.unwrap();
         (app, billing, path, response)
+    }
+
+    #[tokio::test]
+    async fn exact_kimi_alias_fails_closed_while_claude_keeps_its_existing_path() {
+        let (app, billing, path, claude_response) =
+            invoke_anthropic_bridge(PricingBridgeConfig::disabled(), None).await;
+        assert_eq!(
+            claude_response
+                .extensions()
+                .get::<TerminalErrorReason>()
+                .map(|reason| reason.0),
+            Some("pool_unavailable")
+        );
+
+        let request = axum::extract::Request::builder()
+            .method(Method::POST)
+            .uri("/v1/messages")
+            .header("x-api-key", "sk-pool-anthropic-bridge")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "model": "kimi-for-coding",
+                    "max_tokens": 10,
+                    "messages": [{"role": "user", "content": "hello"}]
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let response = forward(
+            State(app.clone()),
+            ConnectInfo("127.0.0.1:4242".parse().unwrap()),
+            request,
+        )
+        .await;
+
+        assert_eq!(response.status().as_u16(), 529);
+        assert_eq!(
+            response
+                .extensions()
+                .get::<TerminalErrorReason>()
+                .map(|reason| reason.0),
+            Some("kimi_gateway_unavailable")
+        );
+        let body = axum::body::to_bytes(response.into_body(), BODY_LIMIT)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&body)
+            .to_ascii_lowercase()
+            .contains("kimi"));
+        let account = billing
+            .account("anthropic-bridge-account")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (account.balance_nano, account.reserved_nano),
+            (20_000_000, 0)
+        );
+
+        drop(app);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
     }
 
     fn lim(u5: f64, u7: f64, claim: Option<&str>, r5: i64, r7: i64) -> Limits {
@@ -4053,6 +4171,7 @@ mod tests {
             clients: Arc::new(Clients::new(&cfg)),
             codex: None,
             gemini: None,
+            kimi: None,
             billing: Some(billing),
             pricing_shadow: None,
             pricing_manifest: Arc::new(crate::builtin_pricing_runtime_manifest()),

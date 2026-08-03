@@ -1,6 +1,7 @@
 # KIMI (Moonshot AI) — provider capability manifest
 
-Статус интеграции: **dormant preview implementation**. Дата ревью источников — **2026-08-03**.
+Статус интеграции: **default-off backend preview runtime, mock-verified и ещё не live-verified**.
+Дата ревью источников — **2026-08-03**.
 
 Документ создан по `docs/engine/PROVIDER_ONBOARDING.md` §3.3 и является capability manifest
 плоскости KIMI. Он фиксирует, что доказано, чем именно доказано и что остаётся `unknown`.
@@ -166,8 +167,8 @@ highspeed — «6× скорость, 3× расход квоты». Это по
 
 | Операция | URL | Заголовки | Тело | Framing | Usage | Ошибки |
 |---|---|---|---|---|---|---|
-| Generation (Anthropic) | `POST https://api.kimi.com/coding/v1/messages` | `Authorization: Bearer` (CLI) либо `x-api-key` (Claude Code) | Anthropic Messages | SSE | `unknown` | см. §4.1 |
-| Generation (OpenAI) | `POST https://api.kimi.com/coding/v1/chat/completions` | `Authorization: Bearer` | OpenAI Chat | SSE | `unknown` | см. §4.1 |
+| Generation (Anthropic) | `POST https://api.kimi.com/coding/v1/messages` | `Authorization: Bearer` (CLI) либо `x-api-key` (Claude Code) | Anthropic Messages | SSE | `unknown` | см. §4.2 |
+| Generation (OpenAI) | `POST https://api.kimi.com/coding/v1/chat/completions` | `Authorization: Bearer` | OpenAI Chat | SSE | `unknown` | см. §4.2 |
 | Catalogue | `GET /coding/v1/models` | `Authorization: Bearer` | — | JSON | — | **негейтед** |
 | Identity | `GET /coding/v1/me` | `Authorization: Bearer` | — | JSON | — | 401 |
 | Quota | `GET /coding/v1/usages` | `Authorization: Bearer` | — | JSON | — | 401/404 |
@@ -193,7 +194,34 @@ health по `/models` прямо запрещён.
 `cache_read_input_tokens` / `cache_creation_input_tokens`) не подтверждена. Без authoritative
 usage биллинг fail closed — settlement по консервативному hold.
 
-### 4.1 Классы ошибок
+### 4.1 Реализованный backend gateway
+
+`decision` Точные reviewed Kimi Code aliases диспетчеризуются внутри Anthropic
+`POST /v1/messages` после общей авторизации и bounded-чтения тела, но до Claude-specific identity,
+pricing и pool mutation. Alias никогда не уходит в Claude upstream: выключенная плоскость,
+повреждённый initial roster и cold roster дают fail-closed ответ KIMI-пути, не fallback.
+
+`decision` Реализация в `crates/forward/src/kimi/gateway.rs` mock-доказывает следующие локальные
+инварианты, но не снимает provider-owned `unknown` из §6:
+
+- non-stream response и SSE-байты проходят без протокольной трансляции; usage extractor умеет
+  собирать split SSE frames, но settlement признаёт authoritative только terminal event;
+- retry/rotation разрешены только до первого публичного байта; после него upstream дренируется
+  даже при downstream disconnect, а shutdown ждёт stream finalizer;
+- metered turn проходит customer reserve → durable delivering marker → terminal settlement;
+  actual charge берётся по **served model**, а отсутствие terminal usage сохраняет полный hold;
+- immutable turn evidence доставляется через bounded FIFO; quota polling остаётся выключенным,
+  пока следующий checkpoint не соединит drain с `/usages`;
+- OAuth refresh держит per-profile single-flight, требует новую rotating refresh family и атомарно
+  re-seal'ит envelope до снятия lock; blue-green loser перечитывает shared disk authority;
+- readiness проверяет только authenticated `/me`; первый 401 заставляет один forced refresh/retry;
+- bearer redirect запрещён, неизвестные tool/media surfaces и неподдержанный reasoning fail closed;
+- синтетические ошибки проходят общий Anthropic-compatible sanitizer и не раскрывают клиенту имя
+  внутреннего backend, roster, subscription или provider body;
+- непроверенный plan получает только базовый `kimi-for-coding`; reviewed tier allowlist остаётся
+  authority расширенных aliases.
+
+### 4.2 Классы ошибок
 
 `official` (Kimi Code error-reference):
 
@@ -348,8 +376,9 @@ live-прогоном на принадлежащей нам подписке:
 
 ## 7. Состояние доставки
 
-Текущая цепочка продолжается producer-first checkpoint'ами от `master`. Всё ниже — dormant: ни
-одна публичная поверхность не содержит строки KIMI, а server ещё не вызывает provider runtime.
+Текущая цепочка продолжается producer-first checkpoint'ами от `master`. Плоскость остаётся
+default-off и backend-only: ни одна публичная поверхность не содержит строку KIMI. Server уже
+композирует gateway, но production activation и live-доказательства ещё не заявляются.
 
 | Этап | Артефакт | Состояние |
 |---|---|---|
@@ -361,18 +390,20 @@ live-прогоном на принадлежащей нам подписке:
 | calibration estimator | `crates/forward/src/kimi_calibration.rs` | готово, 18 тестов |
 | Auth Bot: device-code протокол | `crates/authbot/src/kimi_oauth.rs` | готово, 14 тестов |
 | Auth Bot: мастер продавца | `crates/authbot/src/{bot,kimi_roster}.rs` | готово, device flow → atomic roster до выплаты |
-| transport / pool primitives | `crates/forward/src/kimi/**` | готовы roster/client/selection/refresh/error/attempt/FIFO/config; живой generation handler ещё не соединён |
+| transport / pool primitives | `crates/forward/src/kimi/**` | готовы roster/client/selection/refresh/error/attempt/FIFO/config |
 | durable read/write калибровки в PostgreSQL | `crates/registry` | готово; real-PG replay/conflict/CAS/history matrix зелёная |
-| server: env/config | `crates/server/src/config.rs` | готово: strict default-off input → typed config; generation/readiness ещё dormant |
-| server/forward: live gateway + readiness | `crates/{server,forward}` | **не сделано** |
+| server: env/config | `crates/server/src/config.rs` | готово: strict default-off input → typed config |
+| server/forward: gateway + readiness | `crates/{server,forward}` | готово на mock-гейтах: exact internal dispatch, `/me`, refresh, rotation, stream lifecycle, reserve/delivering/settlement/FIFO |
+| roster reload + quota observations | `crates/{server,forward}` | **не сделано**: startup roster snapshot не reload'ится, `/usages` не пишет live observations |
 | observability, alerts, blue-green | `observability/**`, `systemd/**` | **не сделано** |
 | безопасный live-runner | `tools/kimi_calibration/` | **не сделано** |
 | live-матрица на нашей подписке | — | **не сделано, нужна подписка** |
 
-Следующий producer-first шаг — живой generation/stream/settlement gateway: он соединяет готовые
-config/roster/selection/refresh/quota/FIFO primitives и только затем может включить реальную
-readiness. После него следуют live-runner, observability/blue-green и контролируемый живой прогон.
-Публикация не планируется вовсе (см. §0).
+Следующий producer-first шаг — last-good roster reload: валидный новый snapshot атомарно заменяет
+runtime profiles, а ошибочный оставляет предыдущую ёмкость без частичной публикации. После него
+следуют `/usages` poll только после полного FIFO drain, запись quota observations/CAS,
+observability/blue-green, live-runner и контролируемый живой прогон. Публикация не планируется
+вовсе (см. §0).
 
 ## 8. Источники
 

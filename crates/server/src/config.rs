@@ -44,8 +44,8 @@ pub struct Settings {
     pub codex: Option<CodexConfig>,
     /// Native Gemini provider. It is instantiated only by the startup-fixed Gemini service.
     pub gemini: Option<GeminiConfig>,
-    /// Backend-only KIMI plane. The generation runtime consumes this in a later checkpoint; merely
-    /// shipping the binary cannot enable it because the validated switch defaults to off.
+    /// Backend-only KIMI plane. Exact aliases dispatch through its private runtime only when this
+    /// validated, default-off switch is enabled; it is never inferred from the shipped binary.
     pub kimi: Option<KimiPlaneConfig>,
     /// Compile-versioned evaluator capability evidence, assembled by trusted server composition.
     pub pricing_shadow_manifest: registry::pricing::PricingRuntimeManifestEvidence,

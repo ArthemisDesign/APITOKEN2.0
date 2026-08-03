@@ -3679,6 +3679,9 @@ pub const PROVIDER_ANTHROPIC: &str = "anthropic";
 pub const PROVIDER_OPENAI: &str = "openai";
 /// The isolated native Gemini-compatible subscription pool.
 pub const PROVIDER_GOOGLE: &str = "google";
+/// Backend-only Kimi Code subscription pool. It shares the Anthropic public wire but keeps a
+/// distinct settlement attribution so Claude and KIMI economics can never be blended.
+pub const PROVIDER_KIMI: &str = "kimi";
 
 fn default_provider() -> String {
     PROVIDER_ANTHROPIC.to_string()
