@@ -182,6 +182,15 @@ Control API движка использует только на чтение. С
   `data[].apitoken.pricing`, помечает ответ `private, no-store` и fail-closed возвращает 401/503.
   Credential-specific overlay не кэшируется и никогда не попадает в общий catalog TTL-cache.
   Публичные provider vhost'ы `/internal/*` не обслуживают.
+- **Контракт catalog runtime metadata (provider planes → router).** Anthropic производит native
+  `max_input_tokens`/`max_tokens`/`capabilities`; owned OpenAI и Gemini model resources производят
+  expand-only `apitoken.limits`/`apitoken.capabilities`. Codex context — last-good authenticated
+  provider evidence, агрегированное консервативно между serving profiles; output/efforts/Fast и
+  Gemini limits/efforts принадлежат reviewed runtime model contract. Потребитель —
+  `crates/router`: после отдельного producer-first GREEN SHA он строго валидирует и нормализует
+  metadata в unified catalog. Pricing rates, account identity и credential в эту связь не входят;
+  неизвестные значения не выводятся из model id или pricing таблиц. Контракт —
+  `docs/engine/UNIFIED_ROUTER.md` §«Модели и каталог».
 - **Fallback telemetry (router/provider planes → Prometheus, фаза 6.4c).** `crates/router`
   производит unauthenticated loopback `/metrics` на 8798 с ровно 18
   `claude_router_fallback_total{from_namespace,to_namespace,reason}` series; публичный Caddy

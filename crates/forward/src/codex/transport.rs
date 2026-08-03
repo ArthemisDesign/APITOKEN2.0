@@ -117,6 +117,10 @@ pub struct CodexRateLimits {
 pub(crate) struct CodexModelCatalog {
     pub models: HashSet<String>,
     pub fast_models: HashSet<String>,
+    /// Provider-published input ceiling for one model. This is deliberately distinct from the
+    /// locally reviewed output ceiling: `/models` is the authority for live context rollout,
+    /// while the configured model contract remains the authority for output/admission.
+    pub input_token_limits: HashMap<String, u64>,
 }
 
 impl CodexRateLimits {
@@ -701,6 +705,15 @@ fn parse_model_catalog(value: &Value) -> Result<CodexModelCatalog, ProcessError>
             continue;
         };
         catalog.models.insert(id.to_string());
+        if let Some(input_token_limit) = model
+            .get("context_window")
+            .and_then(Value::as_u64)
+            .filter(|limit| *limit > 0)
+        {
+            catalog
+                .input_token_limits
+                .insert(id.to_string(), input_token_limit);
+        }
         let has_fast_tier = ["service_tiers", "additional_speed_tiers"]
             .iter()
             .filter_map(|key| model.get(*key).and_then(Value::as_array))
@@ -1355,6 +1368,7 @@ mod tests {
             "models": [
                 {
                     "slug": "gpt-current",
+                    "context_window": 272000,
                     "service_tiers": [{"id": "priority", "name": "Fast"}],
                     "additional_speed_tiers": []
                 },
@@ -1373,6 +1387,23 @@ mod tests {
         assert!(catalog.fast_models.contains("gpt-legacy"));
         assert!(!catalog.fast_models.contains("gpt-standard"));
         assert!(!catalog.fast_models.contains("gpt-string"));
+        assert_eq!(catalog.input_token_limits["gpt-current"], 272_000);
+        assert!(!catalog.input_token_limits.contains_key("gpt-standard"));
+    }
+
+    #[test]
+    fn model_catalog_omits_non_positive_or_non_integer_context_metadata() {
+        let catalog = parse_model_catalog(&json!({
+            "models": [
+                {"slug": "valid", "context_window": 1},
+                {"slug": "zero", "context_window": 0},
+                {"slug": "negative", "context_window": -1},
+                {"slug": "string", "context_window": "272000"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(catalog.input_token_limits.len(), 1);
+        assert_eq!(catalog.input_token_limits["valid"], 1);
     }
 
     #[test]

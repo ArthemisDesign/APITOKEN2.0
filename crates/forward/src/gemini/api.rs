@@ -519,7 +519,18 @@ fn model_value(model: &GeminiModel) -> Value {
         "temperature": 1.0,
         "topP": 0.95,
         "topK": 64,
-        "maxTemperature": 2.0
+        "maxTemperature": 2.0,
+        "apitoken": {
+            "limits": {
+                "context": model.input_token_limit,
+                "input": model.input_token_limit,
+                "output": model.output_token_limit
+            },
+            "capabilities": {
+                "reasoning_efforts": model.reasoning_efforts(),
+                "service_tiers": ["standard"]
+            }
+        }
     })
 }
 
@@ -3655,6 +3666,17 @@ mod tests {
         assert!(value["topP"].is_number());
         assert!(value["topK"].is_number());
         assert!(value["maxTemperature"].is_number());
+        assert_eq!(
+            value["apitoken"]["limits"],
+            json!({"context": 1_048_576, "input": 1_048_576, "output": 65_536})
+        );
+        assert_eq!(
+            value["apitoken"]["capabilities"],
+            json!({
+                "reasoning_efforts": ["minimal", "low", "medium", "high"],
+                "service_tiers": ["standard"]
+            })
+        );
     }
 
     #[test]

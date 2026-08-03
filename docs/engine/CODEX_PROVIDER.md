@@ -23,6 +23,15 @@ fields, degraded forced `tool_choice`/`strict`, client-side `stop`/`max_tokens` 
 reasoning summaries as `reasoning_content`, heartbeat SSE every 15 s, `x-ratelimit-*` headers on
 non-stream responses) are unchanged.
 
+Model resources carry an expand-only `apitoken` metadata object for unified discovery. The live
+authenticated Codex `/models.context_window` is the input ceiling; the reviewed public model
+contract owns output and accepted reasoning efforts. `limits.context` is their checked sum,
+matching OpenCode's total/input/output schema. Fast-capable models publish `standard,priority`;
+others publish only `standard`. A fleet aggregate uses the smallest input ceiling proved by every
+profile that can serve the model. If any such profile omits or corrupts context metadata, input and
+total context are omitted while the model and known output remain available—no model-name table or
+pricing threshold is used as a fallback.
+
 ## Accepted subscriptions
 
 Sealing requires a **paid ChatGPT plan**: the id-token `chatgpt_plan_type` claim must map to

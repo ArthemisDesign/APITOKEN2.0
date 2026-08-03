@@ -388,13 +388,22 @@ fn requests_codex_models_envelope(headers: &HeaderMap) -> bool {
     })
 }
 
-fn public_model_objects(gateway: &CodexGateway, available: Option<&HashSet<String>>) -> Vec<Value> {
+fn public_model_objects(
+    gateway: &CodexGateway,
+    available: Option<&super::CodexModelCatalog>,
+) -> Vec<Value> {
     gateway
         .config()
         .models
         .iter()
-        .filter(|model| available.map_or(true, |catalog| catalog.contains(&model.upstream)))
-        .map(model_object)
+        .filter(|model| available.map_or(true, |catalog| catalog.models.contains(&model.upstream)))
+        .map(|model| {
+            model_object(
+                model,
+                available
+                    .and_then(|catalog| catalog.input_token_limits.get(&model.upstream).copied()),
+            )
+        })
         .collect()
 }
 
@@ -425,14 +434,21 @@ pub async fn model(
         Ok(available) => available,
         Err(error) => return ApiError::from(error).into_response(),
     };
-    if !available.contains(&model.upstream) {
+    if !available.models.contains(&model.upstream) {
         return ApiError::not_found(
             format!("The model '{model_id}' does not exist or you do not have access to it."),
             Some("model".to_string()),
         )
         .into_response();
     }
-    json_response(StatusCode::OK, model_object(model), &new_id("req"))
+    json_response(
+        StatusCode::OK,
+        model_object(
+            model,
+            available.input_token_limits.get(&model.upstream).copied(),
+        ),
+        &new_id("req"),
+    )
 }
 
 /// Validates the public `resp_*` id shape before any store lookup, so malformed ids get the
@@ -666,16 +682,34 @@ async fn authorize_models(
 
 pub(super) async fn available_upstream_models(
     gateway: &CodexGateway,
-) -> Result<HashSet<String>, ProcessError> {
+) -> Result<super::CodexModelCatalog, ProcessError> {
     gateway.fetch_live_models().await
 }
 
-fn model_object(model: &CodexModel) -> Value {
+fn model_object(model: &CodexModel, input_token_limit: Option<u64>) -> Value {
+    let mut limits = Map::from_iter([("output".to_string(), Value::from(model.max_output_tokens))]);
+    if let Some(input) = input_token_limit {
+        if let Some(context) = input.checked_add(model.max_output_tokens) {
+            limits.insert("context".to_string(), Value::from(context));
+            limits.insert("input".to_string(), Value::from(input));
+        }
+    }
+    let mut service_tiers = vec!["standard"];
+    if model.supports_fast() {
+        service_tiers.push("priority");
+    }
     json!({
         "id": model.id,
         "object": "model",
         "created": model.created,
-        "owned_by": model.owned_by
+        "owned_by": model.owned_by,
+        "apitoken": {
+            "limits": limits,
+            "capabilities": {
+                "reasoning_efforts": model.reasoning_efforts,
+                "service_tiers": service_tiers
+            }
+        }
     })
 }
 
@@ -3492,18 +3526,38 @@ mod tests {
         let data = public_model_objects(&gateway, None);
         assert_eq!(data.len(), 1);
         assert_eq!(data[0]["id"], "gpt-5.6");
+        assert_eq!(data[0]["apitoken"]["limits"], json!({"output": 128000}));
+        assert_eq!(
+            data[0]["apitoken"]["capabilities"]["service_tiers"],
+            json!(["standard", "priority"])
+        );
+        assert_eq!(
+            data[0]["apitoken"]["capabilities"]["reasoning_efforts"],
+            json!(["none", "low", "medium", "high", "xhigh", "max"])
+        );
     }
 
     #[test]
     fn standard_model_list_uses_the_last_good_upstream_intersection() {
         let gateway = gateway();
-        let available = HashSet::from(["different-upstream-model".to_string()]);
+        let available = crate::codex::CodexModelCatalog {
+            models: HashSet::from(["different-upstream-model".to_string()]),
+            ..Default::default()
+        };
         assert!(public_model_objects(&gateway, Some(&available)).is_empty());
 
-        let available = HashSet::from(["gpt-5.6-sol".to_string()]);
+        let available = crate::codex::CodexModelCatalog {
+            models: HashSet::from(["gpt-5.6-sol".to_string()]),
+            input_token_limits: HashMap::from([("gpt-5.6-sol".to_string(), 272_000)]),
+            ..Default::default()
+        };
         let data = public_model_objects(&gateway, Some(&available));
         assert_eq!(data.len(), 1);
         assert_eq!(data[0]["id"], "gpt-5.6");
+        assert_eq!(
+            data[0]["apitoken"]["limits"],
+            json!({"context": 400000, "input": 272000, "output": 128000})
+        );
     }
 
     fn model() -> CodexModel {

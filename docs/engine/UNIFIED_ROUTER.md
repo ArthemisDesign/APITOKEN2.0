@@ -377,6 +377,26 @@ Standard-модель и reasoning variants при этом остаются н�
 catalog (`docs/engine/CONTROL_API.md`, `crates/registry/src/pricing.rs`), а точные provider token
 rates — только `crates/metering`.
 
+Authoritative runtime metadata приходит producer-first от плоскостей. Anthropic уже публикует
+native `max_input_tokens`, `max_tokens` и `capabilities`; owned OpenAI/Gemini model resources
+добавляют закрытый expand-only объект:
+
+```json
+{"apitoken":{
+  "limits":{"context":400000,"input":272000,"output":128000},
+  "capabilities":{"reasoning_efforts":["low","medium","high"],
+                  "service_tiers":["standard","priority"]}
+}}
+```
+
+Поля внутри `limits` независимы: неизвестные input/context опускаются, но известный output
+сохраняется. Codex input берётся из authenticated last-good `/codex/models.context_window`, а при
+несовпадении профилей публикуется минимальная общая гарантия; отсутствие metadata хотя бы у одного
+serving profile снимает гарантию. Gemini публикует configured native limits и точную model-specific
+effort matrix. Router-consumer обязан валидировать bounded positive integers и закрытые capability
+значения, нормализовать Anthropic native shape в тот же публичный `apitoken` object и не выводить
+лимиты из model id, pricing threshold или клиентских таблиц.
+
 Персональная ценовая проекция использует отдельный producer-first loopback-контракт
 `POST /internal/router/catalog/pricing` на каждой fixed provider plane. Router передаёт туда
 customer credential verbatim и bounded список `(opaque catalog id, provider, native model id)`;

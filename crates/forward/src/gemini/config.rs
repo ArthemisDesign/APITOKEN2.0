@@ -50,6 +50,19 @@ impl GeminiModel {
         self.id == "gemini-3.1-flash-image"
     }
 
+    /// Public effort values accepted by every universal Gemini adapter for this exact model.
+    /// The list is provider-owned because private bucket routing is model-specific; clients must
+    /// not infer it from a model-name prefix.
+    pub fn reasoning_efforts(&self) -> &'static [&'static str] {
+        if self.is_image_generation() {
+            &[]
+        } else if self.id == "gemini-3.1-pro-preview" {
+            &["low", "medium", "high"]
+        } else {
+            &["minimal", "low", "medium", "high"]
+        }
+    }
+
     /// Resolve the public Developer API model to the exact private Antigravity quota/generation
     /// bucket. The authenticated Code Assist catalogue encodes Gemini 3 reasoning effort in the
     /// model id; sending the public family id itself returns `INVALID_ARGUMENT`/`UNAVAILABLE`.
@@ -302,7 +315,43 @@ impl GeminiConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{subscription_model_supported, SUBSCRIPTION_MODELS};
+    use super::{subscription_model_supported, GeminiModel, SUBSCRIPTION_MODELS};
+
+    #[test]
+    fn public_reasoning_efforts_are_model_specific() {
+        let model = |id: &str| GeminiModel {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            input_token_limit: 1,
+            output_token_limit: 1,
+            prices: metering::GeminiPrices {
+                input: 0,
+                audio_input: 0,
+                cached_input: 0,
+                cached_audio_input: 0,
+                output: 0,
+                image_output: 0,
+                long_context_threshold: u64::MAX,
+                long_input: 0,
+                long_audio_input: 0,
+                long_cached_input: 0,
+                long_cached_audio_input: 0,
+                long_output: 0,
+                search: metering::GeminiSearchBilling::PerGroundedPrompt { nano: 0 },
+            },
+        };
+        assert_eq!(
+            model("gemini-3.6-flash").reasoning_efforts(),
+            ["minimal", "low", "medium", "high"]
+        );
+        assert_eq!(
+            model("gemini-3.1-pro-preview").reasoning_efforts(),
+            ["low", "medium", "high"]
+        );
+        assert!(model("gemini-3.1-flash-image")
+            .reasoning_efforts()
+            .is_empty());
+    }
 
     #[test]
     fn subscription_catalog_is_exact_and_fail_closed() {

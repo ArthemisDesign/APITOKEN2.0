@@ -1632,6 +1632,44 @@ mod admission_tests {
     use super::*;
 
     #[test]
+    fn aggregate_catalog_keeps_only_a_cross_profile_context_guarantee() {
+        let catalog = |model: &str, limit: Option<u64>| CodexModelCatalog {
+            models: HashSet::from([model.to_string()]),
+            input_token_limits: limit
+                .map(|limit| std::collections::HashMap::from([(model.to_string(), limit)]))
+                .unwrap_or_default(),
+            ..Default::default()
+        };
+
+        let aggregate = aggregate_model_catalogs(
+            [
+                catalog("gpt-shared", Some(400_000)),
+                catalog("gpt-shared", Some(272_000)),
+                catalog("gpt-other", Some(128_000)),
+            ],
+            true,
+        );
+        assert_eq!(aggregate.input_token_limits["gpt-shared"], 272_000);
+        assert_eq!(aggregate.input_token_limits["gpt-other"], 128_000);
+
+        let uncertain = aggregate_model_catalogs(
+            [
+                catalog("gpt-shared", Some(272_000)),
+                catalog("gpt-shared", None),
+                catalog("gpt-shared", Some(400_000)),
+            ],
+            true,
+        );
+        assert!(uncertain.models.contains("gpt-shared"));
+        assert!(!uncertain.input_token_limits.contains_key("gpt-shared"));
+
+        let incomplete =
+            aggregate_model_catalogs([catalog("gpt-shared", Some(272_000))], false);
+        assert!(incomplete.models.contains("gpt-shared"));
+        assert!(incomplete.input_token_limits.is_empty());
+    }
+
+    #[test]
     fn operator_email_hint_never_exposes_the_full_identity() {
         let masked = mask_codex_email("owner.account@example.com");
         assert_eq!(masked, "owne…");
@@ -2671,11 +2709,42 @@ pub struct CodexGateway {
     /// Last successful live model snapshot. The public OpenAI model-list route reads this cache and
     /// never waits on an upstream call; before the first successful refresh it falls back to the
     /// locally configured billing catalog.
-    model_catalog: RwLock<Option<HashSet<String>>>,
+    model_catalog: RwLock<Option<CodexModelCatalog>>,
     /// SIGUSR2 reconciliation and the periodic health loop may overlap. Keep live catalog refresh
     /// single-flight so a transient stall cannot multiply background requests.
     model_catalog_refresh: Mutex<()>,
     history: Arc<HistoryStore>,
+}
+
+fn aggregate_model_catalogs(
+    catalogs: impl IntoIterator<Item = CodexModelCatalog>,
+    all_profiles_observed: bool,
+) -> CodexModelCatalog {
+    let mut aggregate = CodexModelCatalog::default();
+    let mut missing_limit = HashSet::new();
+    for catalog in catalogs {
+        aggregate.fast_models.extend(catalog.fast_models);
+        for model in catalog.models {
+            aggregate.models.insert(model.clone());
+            if missing_limit.contains(&model) {
+                continue;
+            }
+            let Some(limit) = catalog.input_token_limits.get(&model).copied() else {
+                aggregate.input_token_limits.remove(&model);
+                missing_limit.insert(model);
+                continue;
+            };
+            aggregate
+                .input_token_limits
+                .entry(model)
+                .and_modify(|current| *current = (*current).min(limit))
+                .or_insert(limit);
+        }
+    }
+    if !all_profiles_observed {
+        aggregate.input_token_limits.clear();
+    }
+    aggregate
 }
 
 impl CodexGateway {
@@ -2851,7 +2920,7 @@ impl CodexGateway {
         }
     }
 
-    pub(crate) async fn cached_model_catalog(&self) -> Option<HashSet<String>> {
+    pub(crate) async fn cached_model_catalog(&self) -> Option<CodexModelCatalog> {
         self.model_catalog.read().await.clone()
     }
 
@@ -2880,7 +2949,7 @@ impl CodexGateway {
     }
 
     /// A model catalogue read through any usable home, for provider-level discovery.
-    pub(crate) async fn fetch_live_models(&self) -> Result<HashSet<String>, ProcessError> {
+    pub(crate) async fn fetch_live_models(&self) -> Result<CodexModelCatalog, ProcessError> {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err(ProcessError::Closed);
         }
@@ -2901,14 +2970,19 @@ impl CodexGateway {
                 Ok(catalog) => {
                     // The public list is the union of last-good account snapshots: a model rolled
                     // out to only part of the fleet remains usable, while selection keeps its
-                    // per-profile capability evidence for Fast placement.
-                    let mut models = catalog.models;
+                    // per-profile capability evidence for Fast placement. Context metadata is a
+                    // guarantee rather than a routing hint, so profiles which can serve the same
+                    // model are merged at their smallest proved input ceiling. Missing metadata
+                    // on any serving profile withdraws the guarantee instead of guessing it.
+                    let mut catalogs = vec![catalog];
+                    let mut all_profiles_observed = true;
                     for candidate in &pool_homes {
-                        if let Some(snapshot) = candidate.cached_profile_catalog() {
-                            models.extend(snapshot.models);
+                        match candidate.cached_profile_catalog() {
+                            Some(snapshot) => catalogs.push(snapshot),
+                            None => all_profiles_observed = false,
                         }
                     }
-                    return Ok(models);
+                    return Ok(aggregate_model_catalogs(catalogs, all_profiles_observed));
                 }
                 Err(error) => {
                     home.note_transport_error(&error);

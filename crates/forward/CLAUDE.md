@@ -534,6 +534,16 @@ spill-ит на менее загруженную подписку и fail-open 
 Provider quota/cooling по-прежнему честно дают native `429 + Retry-After`; retry/rotation разрешены
 только до первого публичного байта, после него повторный upstream запуск запрещён.
 
+**Producer-контракт model metadata:** native Anthropic `/v1/models` остаётся authority своих
+`max_input_tokens`/`max_tokens`/`capabilities`. Owned OpenAI и Gemini catalog builders дополнительно
+публикуют expand-only `apitoken.limits` и `apitoken.capabilities`. Codex берёт input из last-good
+authenticated `/codex/models.context_window`, output/efforts из reviewed admission config и Fast
+из model contract; при нескольких профилях гарантируется только минимальный доказанный input, а
+отсутствие metadata на любом serving profile снимает input/context поля. Gemini публикует точные
+configured token limits и model-specific effort matrix. Неизвестное значение опускается — model id,
+pricing threshold или family default не являются основанием его угадывать. Consumer-контракт и
+нормализация трёх native shapes описаны в `docs/engine/UNIFIED_ROUTER.md`.
+
 **RAII-гарды на отмену запроса (критично):** клиент рвёт соединение → future хендлера дропается на
 `await`; без гардов `mark_used(+1)` и `reserve(hold)` НЕ откатывались бы (утечка ёмкости персоны +
 денег клиента навсегда). `InflightGuard` (Drop → `mark_done`) закрывает слот на любом не-стриминговом
