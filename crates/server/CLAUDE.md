@@ -168,11 +168,13 @@
   `pool::QuotaSnapshot`: exact fixed-point utilization от response/count-tokens probe остаётся
   полезным, даже если provider не прислал reset. Такой снимок живёт только в runtime, протухает через
   900с и никогда не становится estimator/history evidence; horizon availability остаётся `null` без
-  реального reset. Для `cooling=true` уже известные provider deadlines продолжают выходить в
-  `reset5h_in`/`reset7d_in` после этих 900с: quota-exhausted home намеренно не probe-ится до reset,
-  поэтому countdown не должен исчезать. Это не делает stale snapshot свежим и не возвращает
-  remaining/saleable money. `calibration_delivery` раскрывает только bounded queue counts/integrity,
-  без identity.
+  реального reset. До точного будущего provider deadline последний snapshot routable-idle или
+  quota-cooling home остаётся отдельным display-state: fraction/reset и
+  `last_known_remaining_nano` видны оператору, но `snapshot_fresh=false`, canonical remaining и
+  saleable fleet/horizon money остаются `null`. Новый snapshot заменяет его, а прошедший reset
+  удаляет его, чтобы старое значение не переехало в новое окно. Pending/degraded delivery этот
+  display-state не публикует. `calibration_delivery` раскрывает только bounded queue
+  counts/integrity, без identity.
   `/capacity` также отдаёт newest-first `calibration_recent_turns` максимум из 512 immutable
   Anthropic events: opaque request ID, masked email и полный token/cost vector без prompt/credential.
   Это backend evidence операторского runner; aggregate `calibration_evidence` остаётся статистикой.

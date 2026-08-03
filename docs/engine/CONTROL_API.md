@@ -82,11 +82,16 @@ pending event или degraded integrity. `calibration_delivery` публикуе
 `dropped_events`, `persistence_ok` и `queue_limit`; нормальное состояние — `0/0/true`. Failed head
 переживает transient authority outage в памяти и повторяется раньше более поздних events/snapshots;
 immutable replay идемпотентен, semantic conflict изолируется и увеличивает dropped diagnostic.
-Исключение только диагностическое: когда `cooling=true`, top-level `reset5h_in`/`reset7d_in`
-продолжают считать уже известный provider deadline даже после истечения 900-секундной freshness.
-Quota-exhausted подписка намеренно не probe-ится повторно до этого reset, а оператору нужен весь
-countdown. `windows[].snapshot_fresh` при этом остаётся `false`, remaining/horizon и продаваемая
-ёмкость остаются `null`; countdown нельзя трактовать как свежую денежную capacity.
+Последний точный provider snapshot остаётся доступен только как диагностический display-state до
+его будущего reset: `windows[].used_fraction_units`, `resets_at`, `last_known_quota_source` и
+`last_known_remaining_nano` сохраняют прежнее значение, а top-level `reset5h_in`/`reset7d_in`
+продолжают countdown. Это покрывает как простаивающую routable-подписку, так и quota-cooling,
+когда новый probe намеренно откладывается до reset. Новый snapshot заменяет display-state сразу;
+после provider deadline старые fraction/reset/last-known remaining становятся `null` и не
+переносятся в новое окно. `windows[].snapshot_fresh` всё это время остаётся `false`, canonical
+`remaining_nano`, fleet remaining и horizon остаются `null`: `last_known_remaining_nano` нельзя
+трактовать как текущую продаваемую capacity. Pending/degraded calibration delivery также не
+публикует этот display-state.
 `calibration_evidence` — агрегаты реальных запросов по masked email/model/tier/geo/tariff со всеми
 token/cost legs, отсортировать их для UI можно по `api_total_nanousd`.
 `calibration_recent_turns` — bounded newest-first окно до 512 отдельных immutable Anthropic events.

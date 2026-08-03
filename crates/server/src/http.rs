@@ -2435,6 +2435,45 @@ fn claude_current_quota(
     }
 }
 
+fn claude_last_known_quota(
+    cap: &pool::Cap,
+    row: Option<&registry::AnthropicCalibrationRow>,
+    window_kind: &str,
+    now: i64,
+) -> Option<ClaudeCurrentQuota> {
+    let not_from_future = |observed_at: i64| observed_at <= now.saturating_add(30);
+    let durable = row
+        .filter(|row| not_from_future(row.observed_at))
+        .map(|row| ClaudeCurrentQuota {
+            used_fraction_units: row.used_fraction_units,
+            measurement_resolution_fraction_units: row.measurement_resolution_fraction_units,
+            observed_at: row.observed_at,
+            resets_at: Some(row.resets_at),
+            source: "durable_calibration_snapshot",
+        });
+    let runtime = match window_kind {
+        "5h" => cap.quota5h,
+        "7d" => cap.quota7d,
+        _ => None,
+    }
+    .filter(|snapshot| not_from_future(snapshot.observed_at))
+    .map(|snapshot| ClaudeCurrentQuota {
+        used_fraction_units: snapshot.used_fraction_units,
+        measurement_resolution_fraction_units: snapshot.measurement_resolution_fraction_units,
+        observed_at: snapshot.observed_at,
+        resets_at: snapshot.resets_at,
+        source: "runtime_quota_snapshot",
+    });
+    match (durable, runtime) {
+        (Some(durable), Some(runtime)) if durable.observed_at > runtime.observed_at => {
+            Some(durable)
+        }
+        (_, Some(runtime)) => Some(runtime),
+        (Some(durable), None) => Some(durable),
+        (None, None) => None,
+    }
+}
+
 fn claude_last_known_reset(
     cap: &pool::Cap,
     row: Option<&registry::AnthropicCalibrationRow>,
@@ -2965,6 +3004,19 @@ pub(crate) fn capacity_value(
                 let current = delivery_ready
                     .then(|| claude_current_quota(cap, row, window_kind, now))
                     .flatten();
+                let last_known = delivery_ready
+                    .then(|| claude_last_known_quota(cap, row, window_kind, now))
+                    .flatten();
+                let retained_reset = current.is_none().then(|| {
+                    claude_last_known_reset(cap, row, window_kind)
+                        .filter(|resets_at| *resets_at > now)
+                }).flatten();
+                let retained = current
+                    .is_none()
+                    .then_some(last_known)
+                    .flatten()
+                    .filter(|_| retained_reset.is_some());
+                let displayed = current.or(retained);
                 let cohort = cohorts.get(&(cap.plan.clone(), duration));
                 let estimate = cohort.map(claude_cohort_estimate).unwrap_or_default();
                 let remaining = current.and_then(|current| {
@@ -2989,6 +3041,16 @@ pub(crate) fn capacity_value(
                         })
                     })
                 };
+                let last_known_remaining = retained.and_then(|last_known| {
+                    estimate.capacity_per_sub_nano.and_then(|capacity| {
+                        capacity
+                            .checked_mul(i128::from(100_000_000i64.saturating_sub(
+                                last_known.used_fraction_units.clamp(0, 100_000_000),
+                            )))
+                            .and_then(|value| value.checked_add(CLAUDE_FRACTION_SCALE / 2))
+                            .and_then(|value| value.checked_div(CLAUDE_FRACTION_SCALE))
+                    })
+                });
                 let missing_reason = if report.is_none() {
                     Some("calibration_authority_unavailable")
                 } else if estimate.capacity_per_sub_nano.is_none() {
@@ -3009,19 +3071,19 @@ pub(crate) fn capacity_value(
                 json!({
                     "window_kind": window_kind,
                     "window_minutes": duration,
-                    "resets_at": current.and_then(|current| current.resets_at),
-                    "observed_at": current.map(|current| current.observed_at).or_else(|| row.map(|row| row.observed_at)),
-                    "data_age_seconds": current
-                        .map(|current| now.saturating_sub(current.observed_at).max(0))
+                    "resets_at": current.and_then(|current| current.resets_at).or(retained_reset),
+                    "observed_at": displayed.map(|quota| quota.observed_at).or_else(|| row.map(|row| row.observed_at)),
+                    "data_age_seconds": displayed
+                        .map(|quota| now.saturating_sub(quota.observed_at).max(0))
                         .or_else(|| row.map(|row| now.saturating_sub(row.observed_at).max(0))),
                     "snapshot_fresh": current.is_some(),
-                    "used_fraction_units": current.map(|current| current.used_fraction_units).or_else(|| row.map(|row| row.used_fraction_units)),
-                    "measurement_resolution_fraction_units": current
-                        .map(|current| current.measurement_resolution_fraction_units)
-                        .or_else(|| row.map(|row| row.measurement_resolution_fraction_units)),
+                    "used_fraction_units": displayed.map(|quota| quota.used_fraction_units),
+                    "measurement_resolution_fraction_units": displayed.map(|quota| quota.measurement_resolution_fraction_units),
                     "current_quota_source": current.map(|current| current.source),
+                    "last_known_quota_source": retained.map(|quota| quota.source),
                     "capacity_nano": nano_string(estimate.capacity_per_sub_nano),
                     "remaining_nano": nano_string(remaining),
+                    "last_known_remaining_nano": nano_string(last_known_remaining),
                     "low_nano": nano_string(estimate.low_per_sub_nano),
                     "high_nano": nano_string(estimate.high_per_sub_nano),
                     "remaining_low_nano": nano_string(remaining_bound(estimate.low_per_sub_nano)),
@@ -3056,28 +3118,10 @@ pub(crate) fn capacity_value(
                     .as_i64()
                     .map_or(fallback, |units| units as f64 / 100_000_000.0)
             };
-            let reset_in = |value: &Value, window_kind: &str| {
+            let reset_in = |value: &Value| {
                 value["resets_at"]
                     .as_i64()
                     .map(|resets_at| resets_at.saturating_sub(now).max(0))
-                    // A quota-exhausted home is intentionally not probed again before its
-                    // provider reset, so the ordinary 900-second current-supply freshness expires.
-                    // Keep the newest already-authoritative provider deadline visible for operator
-                    // countdowns without reopening remaining money or marking the stale snapshot
-                    // fresh. Do not use pool::Cap's nominal no-header reset fallback here.
-                    .or_else(|| {
-                        cap.cooling
-                            .then(|| {
-                                claude_last_known_reset(
-                                    cap,
-                                    claude_row(rows, &cap.email, &cap.plan, window_kind),
-                                    window_kind,
-                                )
-                            })
-                            .flatten()
-                            .filter(|resets_at| *resets_at > now)
-                            .map(|resets_at| resets_at.saturating_sub(now))
-                    })
             };
             let sub_available = horizons.map(|horizon| {
                 claude_sub_horizon_available(cap, rows, &cohorts, now, horizon)
@@ -3090,8 +3134,8 @@ pub(crate) fn capacity_value(
                 "routable": cap.routable,
                 "util5h": fraction(&five, cap.util5h),
                 "util7d": fraction(&weekly, cap.util7d),
-                "reset5h_in": reset_in(&five, "5h"),
-                "reset7d_in": reset_in(&weekly, "7d"),
+                "reset5h_in": reset_in(&five),
+                "reset7d_in": reset_in(&weekly),
                 "cap5h_nano": five_capacity,
                 "cap7d_nano": weekly_capacity,
                 "rem5h_nano": five_remaining,
@@ -6345,7 +6389,7 @@ mod tests {
             used_fraction_units: 25_000_000,
             measurement_resolution_fraction_units: 100_000,
             observed_at: now - CLAUDE_SNAPSHOT_MAX_AGE_SECS - 1,
-            resets_at: None,
+            resets_at: Some(now + 1_800),
         });
         let report = (
             vec![claude_calibration(
@@ -6359,13 +6403,36 @@ mod tests {
             Vec::new(),
         );
 
-        let value = capacity_value(&[cap], Some(&report), claude_delivery(0), now);
+        let value = capacity_value(
+            std::slice::from_ref(&cap),
+            Some(&report),
+            claude_delivery(0),
+            now,
+        );
         let five = &value["per_sub"][0]["windows"][0];
         assert!(five["remaining_nano"].is_null());
         assert_eq!(five["snapshot_fresh"], false);
+        assert_eq!(five["used_fraction_units"], 25_000_000);
+        assert_eq!(five["resets_at"], now + 1_800);
+        assert_eq!(five["last_known_remaining_nano"], "7500000000");
+        assert_eq!(five["last_known_quota_source"], "runtime_quota_snapshot");
         assert!(five["current_quota_source"].is_null());
         assert_eq!(five["missing_reason"], "stale_current_quota_snapshot");
+        assert_eq!(value["per_sub"][0]["reset5h_in"], 1_800);
         assert!(value["window_totals"][0]["remaining_nano"].is_null());
+
+        let after_reset = capacity_value(
+            std::slice::from_ref(&cap),
+            Some(&report),
+            claude_delivery(0),
+            now + 1_801,
+        );
+        let expired = &after_reset["per_sub"][0]["windows"][0];
+        assert!(expired["used_fraction_units"].is_null());
+        assert!(expired["resets_at"].is_null());
+        assert!(expired["last_known_remaining_nano"].is_null());
+        assert!(expired["last_known_quota_source"].is_null());
+        assert!(after_reset["per_sub"][0]["reset5h_in"].is_null());
     }
 
     #[test]
@@ -6404,7 +6471,9 @@ mod tests {
         let five = &value["per_sub"][0]["windows"][0];
         assert_eq!(five["snapshot_fresh"], false);
         assert!(five["remaining_nano"].is_null());
-        assert!(five["resets_at"].is_null());
+        assert_eq!(five["resets_at"], now + 1_800);
+        assert_eq!(five["last_known_remaining_nano"], "0");
+        assert_eq!(five["last_known_quota_source"], "runtime_quota_snapshot");
         assert_eq!(value["per_sub"][0]["cooling"], true);
         assert_eq!(value["per_sub"][0]["routable"], false);
         assert_eq!(value["per_sub"][0]["reset5h_in"], 1_800);
