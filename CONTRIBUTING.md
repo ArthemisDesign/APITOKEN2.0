@@ -98,6 +98,9 @@ explicit clean worktree whose non-protected branch is already contained in fresh
 then deletes the unchanged local branch ref. `doctor` and `gc` report repository-wide residue; `gc`
 is dry-run unless an operator or scheduled maintenance process explicitly passes `--apply`, and it
 never removes dirty, unmerged, locked, detached, current, primary, `master`, or `comp/*` worktrees.
+On macOS, the optional persistent `DELETE_WORKTREE` LaunchAgent provides a fail-closed recovery net
+for missed cleanup; it does not replace the contributor's explicit `finish` obligation. See
+[`docs/ops/DELETE_WORKTREE.md`](docs/ops/DELETE_WORKTREE.md).
 
 Do not trigger a second deployment to repair a red one. Fix the failure on a new branch and merge a
 new commit. An operator may retry the same SHA only when the failure was proven transient and the

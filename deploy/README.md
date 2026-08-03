@@ -37,6 +37,15 @@ with a new commit on a new branch. The full contributor workflow is in
   already merged into `origin/master`. `master`, `main`, `comp/*`, dirty, unmerged, detached,
   current, primary, and locked worktrees remain untouched.
 
+`DELETE_WORKTREE.sh` installs the per-user macOS LaunchAgent
+`sale.apitoken.DELETE_WORKTREE`. It polls fresh repository state every 15 seconds and reclaims a
+clean merged worktree after two identical idle observations over 30 seconds. It requires `lsof` to
+show no open path below the candidate and delegates the final mutation to `agent-worktree.sh
+finish`, preserving all lifecycle locks and exact-ref checks. Standalone same-origin clones are
+handled only through an explicit allow-list and stricter clean/stash/all-local-refs-in-master proof.
+Installation, logs, recovery behavior, and clone registration are documented in
+[`../docs/ops/DELETE_WORKTREE.md`](../docs/ops/DELETE_WORKTREE.md).
+
 The manager deliberately does not delete the retired clone-wide Cargo build directory. Existing
 cache data remains an explicit one-time operator cleanup; deploying this change never removes local
 files. Going forward, `sccache-cargo.sh` shares only the checksum-pinned binary and bounded 10 GiB

@@ -72,7 +72,8 @@ git push -u origin HEAD
 `deploy/agent-worktree.sh finish <путь>`. Скрипт сам проверяет clean+merged, делает допустимый
 ff-only локального `master` и убирает только выбранные worktree/ветку. Чужие worktree не трогать:
 для глобального состояния используются безопасный `doctor` и dry-run `gc`, а `gc --apply` оставлен
-оператору или плановому maintenance-процессу.
+оператору или плановому maintenance-процессу. На macOS пропущенную уборку может безопасно
+подхватить постоянный LaunchAgent `DELETE_WORKTREE` (`docs/ops/DELETE_WORKTREE.md`).
 
 ## Создание веток (первичная настройка)
 

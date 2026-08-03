@@ -441,6 +441,8 @@ grep -Fq 'deploy/sccache-cargo.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not test serialized sccache startup'
 grep -Fq 'deploy/agent-worktree.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not test managed worktree lifecycle safety'
+grep -Fq 'deploy/delete-worktree-agent.test.sh' "$ROOT/deploy/agent-merge.sh" \
+  || wd_die 'the merge gate does not test persistent worktree cleanup safety'
 grep -Fq 'deploy/next-cache.test.sh' "$ROOT/deploy/agent-merge.sh" \
   || wd_die 'the merge gate does not run the persistent Next.js cache suite'
 grep -Fq 'deploy/typescript-build-contexts.test.sh' "$ROOT/deploy/agent-merge.sh" \
@@ -505,6 +507,8 @@ grep -Fq 'agent-merge.suite.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the merge-path suite'
 grep -Fq 'agent-worktree.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the managed worktree lifecycle suite'
+grep -Fq 'delete-worktree-agent.test.sh' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the production gate does not run the persistent worktree cleanup suite'
 grep -Fq 'deploy/lib.test.sh' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the production gate does not run the activation-journal suite'
 grep -Fq 'deploy/codex-homes-migrate.test.sh' "$ROOT/deploy/watchdog.sh" \

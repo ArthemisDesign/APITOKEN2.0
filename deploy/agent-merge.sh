@@ -126,6 +126,7 @@ am_gate_deployment() (
   bash "$ROOT/deploy/codex-homes-migrate.test.sh"
   bash "$ROOT/deploy/sccache-cargo.test.sh"
   bash "$ROOT/deploy/agent-worktree.test.sh"
+  bash "$ROOT/deploy/delete-worktree-agent.test.sh"
   bash "$ROOT/deploy/next-cache.test.sh"
   bash "$ROOT/deploy/typescript-scope.test.sh"
   bash "$ROOT/deploy/typescript-build-contexts.test.sh"

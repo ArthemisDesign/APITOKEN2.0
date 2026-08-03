@@ -720,7 +720,7 @@ wd_path_requires_infrastructure_install() {
   case "$1" in
     deploy/*.md|deploy/*.test.sh|deploy/agent-merge.sh|deploy/agent-merge.suite.sh|\
     deploy/test-stage2-e2e.sh|deploy/sccache-cargo.sh|deploy/agent-worktree.sh|\
-    deploy/prune-merged.sh|deploy/next-cache.sh|\
+    deploy/DELETE_WORKTREE.sh|deploy/prune-merged.sh|deploy/next-cache.sh|\
     deploy/typescript-scope.mjs|deploy/typescript-build-contexts.sh|\
     deploy/typescript-test-groups.sh|compose.yaml)
       return 1

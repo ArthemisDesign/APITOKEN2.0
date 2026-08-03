@@ -810,6 +810,7 @@ for validation_only_path in \
   deploy/test-stage2-e2e.sh \
   deploy/sccache-cargo.sh \
   deploy/agent-worktree.sh \
+  deploy/DELETE_WORKTREE.sh \
   deploy/prune-merged.sh \
   deploy/next-cache.sh \
   deploy/typescript-scope.mjs \
@@ -2158,6 +2159,7 @@ gate_contract=(
   'run_as_ci bash "$candidate/deploy/monitoring-config.test.sh"'
   'run_as_ci bash "$candidate/deploy/sccache-cargo.test.sh"'
   'run_as_ci bash "$candidate/deploy/agent-worktree.test.sh"'
+  'run_as_ci bash "$candidate/deploy/delete-worktree-agent.test.sh"'
   'run_as_ci bash "$candidate/deploy/next-cache.test.sh"'
   'run_as_ci bash "$candidate/deploy/typescript-scope.test.sh"'
   'run_as_ci bash "$candidate/deploy/typescript-build-contexts.test.sh"'

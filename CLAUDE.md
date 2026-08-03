@@ -154,6 +154,8 @@ Smoke без живых подписок — мок-апстрим (`CLAUDE_API_
 `origin/master`, держи `cargo build` зелёным и обновляй документацию в том же коммите; мёрж —
 только `git push -u origin HEAD` + `./deploy/agent-merge.sh`; после зелёного `deploy/watchdog` —
 `deploy/agent-worktree.sh finish` для своего дерева. `doctor` и dry-run `gc` диагностируют хвосты,
-а глобальный `gc --apply` остаётся операторской maintenance-командой. Дисциплину частично страхует
+а глобальный `gc --apply` остаётся операторской maintenance-командой. На macOS постоянный
+`DELETE_WORKTREE` подбирает пропущенную clean+merged уборку по fail-closed контракту из
+`docs/ops/DELETE_WORKTREE.md`. Дисциплину частично страхует
 хук `.claude/hooks/guard-git.sh` (только в Claude Code). Внутреннее устройство gate, lifecycle и
 кэшей — `deploy/README.md`; workflow контрибьютора — `CONTRIBUTING.md`.
