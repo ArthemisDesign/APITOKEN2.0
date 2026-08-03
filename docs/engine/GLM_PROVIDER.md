@@ -344,7 +344,7 @@ cumulative ledgers и завершает immutable observation/CAS до публ
 | Этап | Артефакт | Состояние |
 |---|---|---|
 | research / capability manifest | этот файл | готово |
-| официальный rate card + credit multipliers | `crates/metering/src/glm.rs` | **в работе** |
+| официальный rate card + credit multipliers | `crates/metering/src/glm.rs` | готово, 24 теста |
 | calibration authority (schema 0029) | `crates/registry/migrations_pg/0029_glm_window_calibration.sql` | не начато |
 | типы наблюдений | `crates/registry/src/glm_calibration.rs` | не начато |
 | credential | `crates/glm-credential` | не начато |

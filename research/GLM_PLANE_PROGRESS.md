@@ -26,7 +26,8 @@ backend-only (по образцу KIMI, `docs/engine/KIMI_PROVIDER.md` §0) до
 |---|---|---|
 | Скелет capability manifest + ledger | `docs/engine/GLM_PROVIDER.md`, этот файл | 03cf2582 |
 | Шаблон цепочки + pre-flight в ledger | этот файл | faf8c25a |
-| Полный research + capability manifest | `docs/engine/GLM_PROVIDER.md` | _этот коммит_ |
+| Полный research + capability manifest | `docs/engine/GLM_PROVIDER.md` | 2938d61e |
+| Metering: API rate card + credit schedule | `crates/metering/src/glm.rs` | _этот коммит_ |
 
 ## Открытые швы
 
@@ -46,9 +47,9 @@ reroute glm-5.1/5→5.2 (billing по served); rate card 5.2=$1.40/0.26/4.40,
 
 ## Следующее действие (ровно одно)
 
-Metering: `crates/metering/src/glm.rs` — API rate card (nanoUSD) + native credit multipliers
-+ off-peak расписание, по образцу `crates/metering/src/kimi.rs`; `cargo test -p metering`
-целиком.
+Миграция: `crates/registry/migrations_pg/0029_glm_window_calibration.sql` + типы
+`src/glm_calibration.rs` + регистрация в `pg.rs` (schema version 28→29) — код готов,
+тесты зелёные (170/170 incl. real-PG matrix в scratch-БД), коммит отдельным изменением.
 
 ## Очередь
 
