@@ -21,6 +21,7 @@ mod execution;
 pub mod gemini;
 mod gemini_schema;
 mod gemini_stream;
+mod kimi_calibration;
 mod meter;
 mod metrics;
 pub mod nodetls;

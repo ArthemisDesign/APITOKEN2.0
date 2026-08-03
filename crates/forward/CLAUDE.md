@@ -872,6 +872,33 @@ pricing threshold или family default не являются основание
    disconnect drain+settlement и shutdown deadline barrier.
 
 
+**KIMI capacity calibration (`kimi_calibration.rs`) — dormant, потребителя пока нет:** чистый
+estimator одного окна подписки Kimi Code. Контракт и факты — `docs/engine/KIMI_PROVIDER.md`,
+схема — миграция `0027_kimi_window_calibration.sql`, типы наблюдений — `registry::kimi_calibration`.
+
+Два отличия от Claude/Codex, которые нельзя «унифицировать»:
+
+1. **Квота приходит целыми `used`/`limit`, а не долей.** Оба сырых числа — authority; доля и
+   `measurement_resolution` из них выводятся (`registry::kimi_fraction_from_native`), поэтому
+   разрешение задаёт реальный `limit`: при `limit=1000` это 0.1 % против целого процента у Claude.
+   Узкий envelope позволяет доказать конечный high там, где whole-percent даёт только `null`.
+2. **Нативную ёмкость окна оценивать не нужно — она опубликована.** `limit` и есть окно в нативных
+   единицах, `limit − used` — точный нативный остаток. Per-turn нативного ledger НЕТ: провайдер
+   отдаёт нативный расход только агрегатом окна, и синтезировать его делением API-долларов на цену
+   токена запрещено. Оценивается ровно одно — сколько official API replacement cost помещается в
+   окно: `capacity_nano = 100_000_000 × ΣΔspend_nano / ΣΔused_fraction_units`.
+
+Identity строки — `subject + exact paid plan + exact native duration в секундах`. Окна 5ч и 7д
+независимы; наблюдение чужой длительности отвергается, а не сворачивается в соседнее. Длительность
+приходит от провайдера динамически (5-часовое окно — это `duration:300, TIME_UNIT_MINUTE`), поэтому
+неизвестная единица времени fail closed: неверная длительность слила бы два независимых окна в одно.
+Первый snapshot — anchor; quota-only движение один раз ждёт settlement, повтор становится
+`unattributed`; rollback к старому high-water не является новым расходом; смена estimator version
+перестраивает состояние из immutable history. Prior/EMA/WLS/float money нет.
+
+Модуль пока не подключён к транспорту, пулу и биллингу: провайдер backend-only, за выключенным
+switch'ем, без публичного каталога и router namespace.
+
 **Тюнинг под живой Anthropic** (identity/beta/UA/version) — через поля `ProxyConfig`, которые
 `server` берёт из env. Значения по умолчанию — в `config.rs`.
 

@@ -13,10 +13,12 @@ pub mod funding_normalization_v2;
 mod funding_v2;
 pub mod pg;
 pub mod pricing;
+mod kimi_calibration;
 mod provider_calibration;
 pub mod stage8;
 
 pub use funding_normalization_v2::*;
+pub use kimi_calibration::*;
 pub use provider_calibration::*;
 
 use anyhow::{bail, Context, Result};
