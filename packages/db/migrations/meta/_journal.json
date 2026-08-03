@@ -218,6 +218,13 @@
       "when": 1785709541445,
       "tag": "0030_pricing_stage8_zero_drain",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1785722621131,
+      "tag": "0031_pricing_activation_evidence_capture",
+      "breakpoints": true
     }
   ]
 }

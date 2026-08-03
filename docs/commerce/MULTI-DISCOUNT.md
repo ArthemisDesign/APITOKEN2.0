@@ -222,7 +222,9 @@ Engine хранит prepared releases и один active release head. Подг�
   live funding state и release identity: source/policy/assignment plan создаётся первым, funding и
   engine release identities финализируются позже под DB guards; commerce migration
   `0030_pricing_stage8_zero_drain.sql` совместимо разрешает passed combined evidence при ненулевом
-  наблюдаемом legacy inflight count;
+  наблюдаемом legacy inflight count; `0031_pricing_activation_evidence_capture.sql` dormant и
+  добавляет nullable-хранение exact source engine evidence, immutable activation request и полного
+  validated receipt для безопасного replay после потери ACK;
 - sales migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` добавляет
   отдельные immutable usage/commission v2 tables без pricing-mode поля.
 
@@ -440,7 +442,9 @@ Canary planner удаляется. Единственное apply-действи
 production inventory. Engine producer уже реализует cutover из absent head, exact lost-ACK replay и
 forward recovery из complete target head. До отдельного commerce consumer route остаётся без
 внутреннего caller и не может активироваться сам. Stage 9 не останавливает сервис и не требует
-ручной финансовой подписи.
+ручной финансовой подписи. Expand-only commerce schema заранее хранит exact source evidence,
+неизменяемый request и полный engine ACK, но сама миграция не создаёт job и не вызывает CAS;
+consumer подключается только после GREEN schema SHA.
 
 ## 9. Контракты UI и API
 

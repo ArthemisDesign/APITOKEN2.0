@@ -85,3 +85,10 @@ evidence, but a passed row now depends on zero blockers rather than an impossibl
 pre-head traffic. The deployed Stage 8 consumer preserves both format-specific counts in the
 canonical engine and combined digests while allowing `passed=true` when they are nonzero; it never
 waits for, drains or stops traffic. Older consumers writing the stricter subset remain valid.
+
+Migration `0031_pricing_activation_evidence_capture.sql` adds four nullable, dormant capture fields
+needed for safe activation recovery: the source engine evidence digest and exact capture timestamp,
+the immutable activation request, and the complete validated engine receipt. It performs no
+backfill, creates no control job and cannot move the release head. Existing API/worker versions
+ignore the columns. The dependent durable activation consumer may be delivered only after this
+migration SHA has green `deploy/migration` and `deploy/watchdog` in production.

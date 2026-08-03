@@ -3,6 +3,13 @@
 Stage 9 переводит всех клиентов одновременно без canary и без остановки production. Единственная
 live mutation — compare-and-set одного global active pricing release head.
 
+Commerce migration `0031_pricing_activation_evidence_capture.sql` — отдельный expand-only
+checkpoint до consumer-кода. Она добавляет nullable-хранение source engine evidence digest/exact
+capture time, immutable activation request и полного validated engine receipt. Миграция не делает
+backfill, не создаёт activation job и не вызывает engine CAS; старый runtime продолжает работать,
+а dependent consumer доставляется только после GREEN `deploy/migration` и `deploy/watchdog` этого
+schema SHA.
+
 ## Preconditions
 
 - deployed runtime на обоих blue-green слотах поддерживает target и recovery release schema, а

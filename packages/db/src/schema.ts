@@ -2353,6 +2353,8 @@ export const pricingFundingNormalizationsV2 = pgTable("pricing_funding_normaliza
 
 export const pricingStage8EvidenceV2 = pgTable("pricing_stage8_evidence_v2", {
   evidenceDigest: text("evidence_digest").primaryKey(),
+  engineEvidenceDigest: text("engine_evidence_digest"),
+  engineCapturedAt: timestamp("engine_captured_at", { withTimezone: true }),
   targetGeneration: bigint("target_generation", { mode: "bigint" }).notNull(),
   targetDigest: text("target_digest").notNull(),
   recoveryGeneration: bigint("recovery_generation", { mode: "bigint" }).notNull(),
@@ -2406,6 +2408,7 @@ export const pricingReleaseControlJobsV2 = pgTable("pricing_release_control_jobs
   payloadDigest: text("payload_digest").notNull(),
   expectedHeadVersion: bigint("expected_head_version", { mode: "bigint" }),
   stage8EvidenceDigest: text("stage8_evidence_digest"),
+  activationPayload: jsonb("activation_payload"),
   status: text("status").notNull().default("pending"),
   attempts: integer("attempts").notNull().default(0),
   nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
@@ -2463,6 +2466,7 @@ export const pricingReleaseActivationReceiptsV2 = pgTable("pricing_release_activ
   evidenceDigest: text("evidence_digest").notNull(),
   headVersion: bigint("head_version", { mode: "bigint" }).notNull(),
   receiptDigest: text("receipt_digest").notNull().unique(),
+  receiptPayload: jsonb("receipt_payload"),
   activatedAt: timestamp("activated_at", { withTimezone: true }).notNull(),
   createdAt,
 }, (table) => [

@@ -632,4 +632,55 @@ describe("migration configuration", () => {
     ) as { id: string };
     expect(snapshot.prevId).toBe(previousSnapshot.id);
   });
+
+  it("adds dormant nullable activation evidence, request, and receipt capture", () => {
+    const migrationName = "0031_pricing_activation_evidence_capture.sql";
+    const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, migrationName), "utf8");
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
+    const previousEntry = journal.entries.find((entry) => entry.idx === 30);
+    const currentEntry = journal.entries.find((entry) => entry.idx === 31);
+
+    expect(currentEntry).toMatchObject({
+      idx: 31,
+      version: "7",
+      tag: "0031_pricing_activation_evidence_capture",
+      breakpoints: true,
+    });
+    expect(currentEntry!.when).toBeGreaterThan(previousEntry!.when);
+    expect(migrationSql).not.toMatch(/^(?:CREATE|DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
+    expect(migrationSql).not.toMatch(/\b(?:SET NOT NULL|DEFAULT)\b/i);
+
+    const expectedStatements = [
+      'ALTER TABLE "pricing_release_activation_receipts_v2" ADD COLUMN "receipt_payload" jsonb;',
+      'ALTER TABLE "pricing_release_control_jobs_v2" ADD COLUMN "activation_payload" jsonb;',
+      'ALTER TABLE "pricing_stage8_evidence_v2" ADD COLUMN "engine_evidence_digest" text;',
+      'ALTER TABLE "pricing_stage8_evidence_v2" ADD COLUMN "engine_captured_at" timestamp with time zone;',
+    ];
+    const statements = migrationSql
+      .split("--> statement-breakpoint")
+      .map((statement) => statement.trim())
+      .filter(Boolean);
+    expect(statements).toEqual(expectedStatements);
+
+    const snapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0031_snapshot.json"), "utf8"),
+    ) as {
+      prevId: string;
+      tables: Record<string, { columns: Record<string, { notNull: boolean; type: string }> }>;
+    };
+    const previousSnapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0030_snapshot.json"), "utf8"),
+    ) as { id: string };
+    expect(snapshot.prevId).toBe(previousSnapshot.id);
+    expect(snapshot.tables["public.pricing_stage8_evidence_v2"]!.columns.engine_evidence_digest)
+      .toMatchObject({ notNull: false, type: "text" });
+    expect(snapshot.tables["public.pricing_stage8_evidence_v2"]!.columns.engine_captured_at)
+      .toMatchObject({ notNull: false, type: "timestamp with time zone" });
+    expect(snapshot.tables["public.pricing_release_control_jobs_v2"]!.columns.activation_payload)
+      .toMatchObject({ notNull: false, type: "jsonb" });
+    expect(snapshot.tables["public.pricing_release_activation_receipts_v2"]!.columns.receipt_payload)
+      .toMatchObject({ notNull: false, type: "jsonb" });
+  });
 });
