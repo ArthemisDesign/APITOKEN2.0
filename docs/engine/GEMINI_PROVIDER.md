@@ -66,11 +66,15 @@ Gemini CLI repository at commit
 [`f47d6c6f7a1308d81f9f57acf7d279f0928c5249`](https://github.com/google-gemini/gemini-cli/commit/f47d6c6f7a1308d81f9f57acf7d279f0928c5249):
 `packages/core/src/code_assist/setup.ts` selects `paidTier.id ?? currentTier.id` independently from
 `paidTier.name ?? currentTier.name`, while `types.ts` defines `UserTierId` as an open string union.
-Therefore this gateway treats only its exact reviewed IDs as stable authority, uses exact names as
-additional conflict/legacy evidence, and never promotes an unknown tier from a `Pro`/`Ultra`
-substring. Exact standalone legacy names remain accepted for already compatible sealed credentials;
-they are not substring inference. This source explains client behavior; live generation remains
-the publication gate.
+Therefore this gateway treats its exact reviewed IDs as the stable authority and the paid tier as
+the entitlement that wins a disagreement, uses exact names only where the ID carries no reviewed
+meaning, and never promotes an unknown tier from a `Pro`/`Ultra` substring. Exact reviewed names
+(including the Google One and post-rename spellings) remain accepted evidence; they are not
+substring inference. This source explains client behavior; live generation remains
+the publication gate. On 2026-08-03 a live seller with a real subscription was rejected as
+`conflicting_paid_and_current_tiers` (`project=present paid=known_id_name_match
+current=known_id_name_drift`), which is the production evidence behind the ID/paid-tier authority
+above.
 
 ## OAuth and publication flow
 
@@ -110,17 +114,24 @@ the Antigravity checks below remain decisive.
    failure cleanup is detached before its bounded `4xx`/`503` page is returned as well. Closing the
    browser cannot cancel exchange, failure cleanup or the eventual Telegram result.
 5. After the Antigravity consent, paid-plan admission uses the actual tier/project and reviewed
-   tier evidence. A stable reviewed
-   tier ID is authoritative even when Google changes its display name; an exact known name that
-   points to another plan conflicts and fails closed. When Google returns both `paidTier` and
-   `currentTier`, a reviewed mapping from either field is accepted, while contradictory reviewed
-   mappings, unknown IDs without exact legacy-name evidence and substring-only matches are rejected.
+   tier evidence. A stable reviewed tier ID is the single authority: Google rewrites display names
+   (Google One branding, Antigravity wording) without touching the ID, so a name that maps to
+   another reviewed plan is treated as drift and journalled, not as a second entitlement. When
+   Google returns both `paidTier` and `currentTier` and their reviewed mappings disagree, the paid
+   entitlement wins — this mirrors the official client's `paidTier.id ?? currentTier.id` — because
+   Antigravity onboarding routinely leaves `currentTier` on a different tier and rejecting the pair
+   told sellers with a real subscription that no subscription exists. An unreviewed ID still falls
+   back to an exact reviewed name; substring-only matches and evidence that is unreviewed in both
+   fields are rejected.
    Before issuing the Antigravity consent, Auth Bot scans the encrypted roster: an existing
    Antigravity subject is reported as an already connected duplicate while its live refresh token
    is still safe; a legacy profile may continue only through its exact subject, canonical proxy and
    IPRoyal identity. Every final `unsupported_plan` branch emits
    only structural diagnostics (project and tier-field presence/classes plus allowed-tier count),
-   never raw tier, project or identity.
+   never raw tier, project or identity. `AUTH_BOT_GEMINI_TIER_EVIDENCE=1` is an opt-in operator
+   switch that additionally journals bounded raw tier IDs/names of the final `loadCodeAssist`
+   response, so a genuinely new Google tier can be identified without shipping a build; it stays off
+   by default.
 6. A successful bootstrap is atomically replaced in SQLite by a fresh Antigravity `state`/PKCE
    phase and a rotated exact seller-job generation. Only the legacy Google subject and same proxy
    are carried forward, inside the new state-bound AEAD. Restart, replay, pause or job replacement

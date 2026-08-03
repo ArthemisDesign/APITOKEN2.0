@@ -268,8 +268,14 @@ pub fn supported_plan_for_tier_name(tier_name: &str) -> Option<&'static str> {
         .join(" ")
         .to_ascii_lowercase();
     match tier_name.as_str() {
-        "gemini code assist in google one ai pro" | "google ai pro" => Some("google_ai_pro"),
-        "gemini code assist in google one ai ultra" | "google ai ultra" => Some("google_ai_ultra"),
+        "gemini code assist in google one ai pro"
+        | "gemini code assist in google ai pro"
+        | "google one ai pro"
+        | "google ai pro" => Some("google_ai_pro"),
+        "gemini code assist in google one ai ultra"
+        | "gemini code assist in google ai ultra"
+        | "google one ai ultra"
+        | "google ai ultra" => Some("google_ai_ultra"),
         "standard" | "code assist standard" => Some("code_assist_standard"),
         "enterprise" | "code assist enterprise" => Some("code_assist_enterprise"),
         "workspace ai ultra" | "google workspace ai ultra" => Some("workspace_ai_ultra"),
@@ -277,38 +283,14 @@ pub fn supported_plan_for_tier_name(tier_name: &str) -> Option<&'static str> {
     }
 }
 
-/// Map only reviewed Code Assist tier evidence to the internal billing plan. A known id is the
-/// authority even when its display name is new. An exact known name that contradicts that id fails
-/// closed. Name-only compatibility remains exact (never substring based): an omitted id may use
-/// any reviewed name, while older opaque ids may use only the short standalone labels that were
-/// already accepted in sealed credentials.
+/// Map reviewed Code Assist tier evidence to the internal billing plan. The tier id is the single
+/// authority whenever it is reviewed: Google's own client treats the display name as free-form
+/// marketing copy and rewrites it (Google One branding, Antigravity wording) while the id stays
+/// stable, so a name that contradicts a reviewed id is display drift, not evidence of a different
+/// entitlement. Only when the id carries no reviewed meaning does an exact reviewed name admit the
+/// account; matching stays exact and never substring based.
 pub fn supported_plan_for_tier(tier_id: &str, tier_name: &str) -> Option<&'static str> {
-    let id_plan = supported_plan_for_tier_id(tier_id);
-    let name_plan = supported_plan_for_tier_name(tier_name);
-    match (id_plan, name_plan) {
-        (Some(id_plan), Some(name_plan)) if id_plan != name_plan => None,
-        (Some(id_plan), _) => Some(id_plan),
-        (None, Some(name_plan))
-            if tier_id.is_empty()
-                || matches!(
-                    tier_name
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                        .to_ascii_lowercase()
-                        .as_str(),
-                    "google ai pro"
-                        | "google ai ultra"
-                        | "code assist standard"
-                        | "code assist enterprise"
-                        | "workspace ai ultra"
-                        | "google workspace ai ultra"
-                ) =>
-        {
-            Some(name_plan)
-        }
-        _ => None,
-    }
+    supported_plan_for_tier_id(tier_id).or_else(|| supported_plan_for_tier_name(tier_name))
 }
 
 pub fn plan_matches_tier(plan: &str, tier_id: &str, tier_name: &str) -> bool {
@@ -655,13 +637,19 @@ mod tests {
             supported_plan_for_tier("g1-pro-tier", "Renamed paid plan display"),
             Some("google_ai_pro")
         );
+        // The reviewed id is the contract; a display name pointing at another product is drift.
         assert_eq!(
             supported_plan_for_tier("g1-pro-tier", "Google AI Ultra"),
-            None
+            Some("google_ai_pro")
         );
+        // An unreviewed id falls back to the exact reviewed name, in any of its reviewed spellings.
         assert_eq!(
             supported_plan_for_tier("future-pro-tier", "Gemini Code Assist in Google One AI Pro"),
-            None
+            Some("google_ai_pro")
+        );
+        assert_eq!(
+            supported_plan_for_tier("future-pro-tier", "Gemini Code Assist in Google AI Pro"),
+            Some("google_ai_pro")
         );
         assert_eq!(
             supported_plan_for_tier("future-pro-tier", "Future Pro Trial"),
@@ -701,12 +689,21 @@ mod tests {
         candidate.tier_name = "Future Pro Trial".into();
         assert!(candidate.validate().is_ok());
 
+        // Display-name drift toward another product does not unseal a credential whose reviewed
+        // tier id still names its plan.
         let mut candidate = credential();
         candidate.tier_name = "Google AI Ultra".into();
-        assert!(candidate.validate().is_err());
+        assert!(candidate.validate().is_ok());
 
+        // An unreviewed id is still carried by the exact reviewed name.
         let mut candidate = credential();
         candidate.tier_id = "future-pro-tier".into();
+        assert!(candidate.validate().is_ok());
+
+        // Neither field reviewed: the sealed plan has no evidence behind it and must fail closed.
+        let mut candidate = credential();
+        candidate.tier_id = "future-pro-tier".into();
+        candidate.tier_name = "Future Pro Trial".into();
         assert!(candidate.validate().is_err());
     }
 

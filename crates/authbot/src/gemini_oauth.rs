@@ -2184,6 +2184,7 @@ async fn resolve_antigravity_account(
         loaded = load_code_assist(client, access_token).await?;
     }
     let diagnostic = CodeAssistDiagnostic::from_response(&loaded);
+    log_tier_evidence_if_enabled(&loaded);
     let Some(project_id) = project_from_value(loaded.cloudaicompanion_project.as_ref()) else {
         log_unsupported_plan("antigravity_missing_project", diagnostic);
         return Err(Failure::UnsupportedPlan);
@@ -2571,6 +2572,61 @@ fn log_unsupported_plan(reason: &'static str, diagnostic: CodeAssistDiagnostic) 
     );
 }
 
+/// Opt-in operator diagnostic. Tier ids and display names are product labels, not identity or
+/// secrets, but the default journal deliberately carries only bounded shape classes. Without this
+/// escape hatch a genuinely new Google tier can only be identified by shipping a build, so the
+/// operator may enable it deliberately, per host, while investigating.
+fn log_tier_evidence_if_enabled(loaded: &LoadCodeAssistResponse) {
+    if std::env::var("AUTH_BOT_GEMINI_TIER_EVIDENCE").as_deref() != Ok("1") {
+        return;
+    }
+    let render = |label: &str, tier: Option<&Tier>| match tier {
+        Some(tier) => format!(
+            "{label}={{id={} name={}}}",
+            bounded_label(tier.id.as_deref()),
+            bounded_label(tier.name.as_deref())
+        ),
+        None => format!("{label}=absent"),
+    };
+    let allowed = loaded
+        .allowed_tiers
+        .iter()
+        .map(|tier| {
+            format!(
+                "{{id={} name={} default={}}}",
+                bounded_label(tier.id.as_deref()),
+                bounded_label(tier.name.as_deref()),
+                tier.is_default
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    eprintln!(
+        "[gemini-oauth] raw tier evidence: {} {} allowed=[{}]",
+        render("paid", loaded.paid_tier.as_ref()),
+        render("current", loaded.current_tier.as_ref()),
+        allowed
+    );
+}
+
+/// Keep an operator label printable and bounded: an upstream string is untrusted input, and a
+/// control character or an unbounded blob in the journal is a log-injection primitive.
+fn bounded_label(value: Option<&str>) -> String {
+    let Some(value) = value else {
+        return "<none>".into();
+    };
+    let cleaned: String = value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(96)
+        .collect();
+    if cleaned.is_empty() {
+        "<empty>".into()
+    } else {
+        cleaned
+    }
+}
+
 fn classify_plan(tier_id: &str, tier_name: &str, explicitly_paid: bool) -> String {
     if let Some(plan) = gemini_credential::supported_plan_for_tier(tier_id, tier_name) {
         return plan.into();
@@ -2595,10 +2651,11 @@ fn classify_plan(tier_id: &str, tier_name: &str, explicitly_paid: bool) -> Strin
     }
 }
 
-/// Google can expose both `paidTier` and `currentTier`, and their display shapes do not always
-/// change in lock-step. A reviewed id is authoritative through display-name drift, while exact
-/// known-name conflicts and contradictory field mappings fail closed. No familiar substring can
-/// promote an unknown future tier.
+/// Google can expose both `paidTier` and `currentTier`, and their shapes do not change in lock-step:
+/// display names drift with marketing, and Antigravity onboarding can leave `currentTier` on a
+/// different tier than the purchased `paidTier`. A reviewed tier id is authoritative through both,
+/// and the paid entitlement wins when the two reviewed fields disagree. Admission still fails closed
+/// when no reviewed evidence exists at all: no familiar substring can promote an unknown future tier.
 fn resolve_reported_tier(
     loaded: &LoadCodeAssistResponse,
 ) -> Result<(String, String, String), Failure> {
@@ -2609,8 +2666,14 @@ fn resolve_reported_tier(
             TierEvidenceClass::KnownIdNameConflict
         )
     {
-        log_unsupported_plan("conflicting_tier_id_and_name", diagnostic);
-        return Err(Failure::UnsupportedPlan);
+        // Display names are marketing copy that Google rewrites without touching the tier id, so a
+        // name that contradicts a reviewed id is drift, not a second entitlement. Resolution below
+        // follows the id; the shape is journalled because it is the signal that our reviewed name
+        // list has aged.
+        eprintln!(
+            "[gemini-oauth] reviewed tier id kept over drifted display name: {}",
+            diagnostic.sanitized()
+        );
     }
     let paid = loaded.paid_tier.as_ref();
     let current = loaded.current_tier.as_ref();
@@ -2628,8 +2691,19 @@ fn resolve_reported_tier(
     });
     let (tier, plan) = match (paid_plan, current_plan) {
         (Some(paid_plan), Some(current_plan)) if paid_plan != current_plan => {
-            log_unsupported_plan("conflicting_paid_and_current_tiers", diagnostic);
-            return Err(Failure::UnsupportedPlan);
+            // `paidTier` is the purchased entitlement; `currentTier` is whatever tier the account
+            // is onboarded to for this IDE surface, and Antigravity onboarding routinely reports a
+            // different one. Rejecting the pair told a seller with a real subscription that no
+            // subscription exists, so the paid entitlement wins and the disagreement is journalled.
+            eprintln!(
+                "[gemini-oauth] paid tier kept over disagreeing current tier: {}",
+                diagnostic.sanitized()
+            );
+            let Some(tier) = paid else {
+                log_unsupported_plan("missing_paid_tier_after_resolution", diagnostic);
+                return Err(Failure::UnsupportedPlan);
+            };
+            (tier, paid_plan.to_string())
         }
         (Some(plan), _) => {
             let Some(tier) = paid else {
@@ -3607,20 +3681,22 @@ mod tests {
             classify_plan("future-pro", "Future Pro Trial", true),
             "unknown_paid_unsupported"
         );
+        // An unreviewed id no longer suppresses an exact reviewed display name: Google introduces
+        // new tier ids for the same product, and rejecting the pair blocked live subscriptions.
         assert_eq!(
             classify_plan(
                 "future-pro-tier",
                 "Gemini Code Assist in Google One AI Pro",
                 true
             ),
-            "unknown_paid_unsupported"
+            "google_ai_pro"
         );
         assert!(!supported_paid_plan("google_ai_plus_unsupported"));
         assert!(!supported_paid_plan("unknown_paid_unsupported"));
     }
 
     #[test]
-    fn reported_tier_uses_only_exact_reviewed_fields_and_rejects_conflicts() {
+    fn reported_tier_prefers_reviewed_ids_and_the_paid_entitlement() {
         let pro = Tier {
             id: Some("g1-pro-tier".into()),
             name: Some("Gemini Code Assist in Google One AI Pro".into()),
@@ -3658,34 +3734,39 @@ mod tests {
         assert_eq!(resolved.0, "g1-pro-tier");
         assert_eq!(resolved.2, "google_ai_pro");
 
+        // A reviewed id survives a display name that maps to another reviewed product: the name is
+        // marketing copy, the id is the stable contract.
         let conflicting_name = Tier {
             id: Some("g1-pro-tier".into()),
             name: Some("Google AI Ultra".into()),
             is_default: false,
         };
-        assert_eq!(
-            resolve_reported_tier(&LoadCodeAssistResponse {
-                paid_tier: Some(conflicting_name),
-                ..LoadCodeAssistResponse::default()
-            }),
-            Err(Failure::UnsupportedPlan)
-        );
+        let resolved = resolve_reported_tier(&LoadCodeAssistResponse {
+            paid_tier: Some(conflicting_name),
+            ..LoadCodeAssistResponse::default()
+        })
+        .unwrap();
+        assert_eq!(resolved.2, "google_ai_pro");
 
-        assert_eq!(
-            resolve_reported_tier(&LoadCodeAssistResponse {
-                current_tier: Some(ultra),
-                paid_tier: Some(pro),
-                ..LoadCodeAssistResponse::default()
-            }),
-            Err(Failure::UnsupportedPlan)
-        );
+        // Antigravity onboarding can leave `currentTier` on another product while the account
+        // really carries the paid one; the purchased entitlement decides.
+        let resolved = resolve_reported_tier(&LoadCodeAssistResponse {
+            current_tier: Some(ultra),
+            paid_tier: Some(pro),
+            ..LoadCodeAssistResponse::default()
+        })
+        .unwrap();
+        assert_eq!(resolved.0, "g1-pro-tier");
+        assert_eq!(resolved.2, "google_ai_pro");
 
+        // Nothing reviewed anywhere still fails closed.
         let unsupported = resolve_reported_tier(&LoadCodeAssistResponse {
             paid_tier: Some(drifted_paid),
             ..LoadCodeAssistResponse::default()
         })
         .unwrap();
         assert_eq!(unsupported.2, "unknown_paid_unsupported");
+        assert!(!supported_paid_plan(&unsupported.2));
     }
 
     #[test]

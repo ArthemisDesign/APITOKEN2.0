@@ -151,13 +151,20 @@ seller lock освобождается, response становится `cancelled
    залогиненный аккаунт без экрана выбора, и продавец, делающий позиции batch подряд в одном
    профиле браузера, молча переподтверждает предыдущий аккаунт и убивает его токен. Email, subject,
    project, tier, OAuth secret/token и authenticated proxy живут только внутри AEAD.
-   Если Google одновременно возвращает `paidTier` и `currentTier`, принимается exact reviewed
-   соответствие из любого поля. Точный reviewed tier ID — authority и переживает изменение display
-   name; exact имя другого известного плана конфликтует и fail-closed. Неизвестный ID сам по себе и
-   знакомые подстроки не дают доступ; exact standalone name остаётся legacy evidence. Два
-   противоречащих известных тарифа тоже fail-closed. Перед каждым `unsupported_plan` журнал получает
+   Если Google одновременно возвращает `paidTier` и `currentTier`, exact reviewed tier ID —
+   единственный authority: display name Google переписывает (Google One → без «One», формулировки
+   Antigravity) не трогая ID, поэтому имя другого известного плана считается drift и журналируется,
+   а не блокирует доступ. При расхождении reviewed-планов `paidTier` и `currentTier` выигрывает
+   `paidTier` (так же выбирает официальный клиент: `paidTier.id ?? currentTier.id`), потому что
+   Antigravity-онбординг штатно оставляет `currentTier` на другом тарифе, и старый fail-closed
+   говорил продавцу с живой подпиской «подписка не найдена». Неизвестный ID падает обратно на exact
+   reviewed name; знакомые подстроки доступ не дают, и evidence, не reviewed ни в одном поле, —
+   fail-closed. Перед каждым `unsupported_plan` журнал получает
    только bounded shape-классы: наличие project/paid/current, число allowed tiers и
-   `known_id`/`known_name`/`name_drift` без raw tier, project или identity.
+   `known_id`/`known_name`/`name_drift` без raw tier, project или identity. Отдельный opt-in
+   `AUTH_BOT_GEMINI_TIER_EVIDENCE=1` (по умолчанию выключен) дополнительно печатает bounded сырые
+   tier id/name финального `loadCodeAssist` — иначе новый тариф Google опознаётся только новым
+   деплоем.
 6. Credential envelopes и `profiles.json` — `0600`, каталоги — `0700`, symlink/alternate path
    запрещены. Новая публикация пишет сначала envelope, затем atomic roster rename+fsync. Миграция
    сохраняет opaque profile id, roster и существующий IPRoyal lifecycle, атомарно заменяя только
@@ -227,6 +234,8 @@ seller lock освобождается, response становится `cancelled
   совместимости env; Google получает фиксированный localhost redirect Antigravity.
 - `AUTH_BOT_GEMINI_CREDENTIAL_KEYS`, `AUTH_BOT_GEMINI_CREDENTIAL_ACTIVE_KID` — общий с runtime
   AEAD keyring и активный ключ публикации/rotation.
+- `AUTH_BOT_GEMINI_TIER_EVIDENCE` — `1` включает bounded raw tier id/name в журнале Gemini-
+  admission (диагностика нового тарифа Google). По умолчанию выключено.
 - `AUTH_BOT_IPROYAL_KEY` — авто-выпуск прокси (пусто = ручной ввод).
 
 Фоновый lifecycle-контроль обновляет срок прокси и при необходимости продлевает тот же IPRoyal
