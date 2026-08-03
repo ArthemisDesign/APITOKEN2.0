@@ -31,6 +31,37 @@ request, mock test, merged runtime, or visually plausible capacity number.
 If a named path moved, find its current replacement with `rg`; never reconstruct behavior from an
 old commit or this skill alone.
 
+## Do not hand back a half-built provider
+
+The deliverable is a provider that works end to end, not a set of green tests. A merged commit, a
+passing suite, a sealed credential or an operator button is progress, never completion. Keep going
+until the terminal state is reached: an operator can acquire a subscription through the Auth Bot,
+the resulting profile becomes routable capacity, traffic is billed against the official rate card,
+and calibration records evidence from real quota movement. If a live subscription is missing, build
+and prove everything that does not need one, then report exactly which live gate is blocked and what
+the human must do — that is the only acceptable stopping point short of the terminal state.
+
+Concretely, before writing any code, write down the whole chain to that terminal state and keep it
+visible: research, metering, migration, credential, estimator, Auth Bot protocol, Auth Bot wizard,
+transport/pool, durable calibration, server wiring, observability, live runner. Then work it without
+waiting to be asked for the next link. Finishing one link and handing back is the failure mode this
+section exists to prevent.
+
+**This does not mean one giant merge.** Schema and dependent code must never travel together: the
+migration lands alone and its `deploy/migration` plus `deploy/watchdog` must be GREEN before
+anything reads or writes those tables. Producer-first ordering and small reviewable commits are what
+make an unattended chain safe to land — chain the merges autonomously, do not collapse them. An
+agent that merges a schema together with its first reader has not been fast, it has removed the
+rollback path.
+
+Two failure modes to name explicitly, because both look like success:
+
+- **Stopping at the seam.** Product buttons without the handler that completes the deal, or a sealed
+  profile with no plane that reads the roster, leave a provider that appears wired and serves
+  nothing. If a change creates such a seam, say so in the commit body and close it in the next one.
+- **Declaring done from green tests.** Mock coverage proves guards, never the provider contract.
+  State preview versus GA explicitly, and list every unknown that still blocks its own live gate.
+
 ## Plan to a terminal outcome
 
 Track explicit phases: research/capability manifest, credential and Auth Bot, transport/pool,
