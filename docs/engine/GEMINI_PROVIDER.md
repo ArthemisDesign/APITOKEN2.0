@@ -592,7 +592,7 @@ text-generation check. A quota row by itself is never admission evidence.
 
 | Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
 |---|---|---|---|
-| `gemini-3-flash-preview` | dormant mapping → `gemini-3-flash`; quota admission joins `gemini-3-flash` + `gemini-3-flash-agent`; configured Antigravity origin, 2.2.1 UA, minimal headers; bounded inline PCM WAV fallback uses exact integral `duration × 32` AUDIO tokens and fails closed on ambiguous cache | previous exact SHA on owned Pro+Ultra: minimal/low/medium/high, public identity/output/terminal usage, two-frame SSE and cache write/read passed. Pro audio generation returned real output but zero audio token class; free Pro+Ultra audio `countTokens` omitted modality details and disagreed with generation total. The new request-matched fallback is Rust-tested but has not yet passed a fresh controlled exact-SHA gate | previous withdrawal remains effective; dormant accounting fix pending fresh Pro+Ultra live gate, absent from production defaults and public catalog |
+| `gemini-3-flash-preview` | dormant mapping → `gemini-3-flash`; quota admission joins `gemini-3-flash` + `gemini-3-flash-agent`; configured Antigravity origin, 2.2.1 UA, minimal headers; bounded inline PCM WAV fallback uses exact integral `duration × 32` AUDIO tokens and fails closed on ambiguous cache | accounting SHA `4b0c6443…` passed Pro+Ultra minimal/low/medium/high and two-frame SSE, then its controlled run failed on the Ultra cache-write turn: terminal response had no visible output, response/event usage parity was false, and a nominal first write already reported cache-read tokens after the Pro leg used the same lineage. No audio/tool leg was dispatched. The follow-up runner isolates cache lineage per profile and raises cache/audio output ceilings, but needs a wholly new exact-SHA matrix | withdrawal remains effective; absent from production defaults and public catalog until a later complete GREEN run |
 | `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
 | `gemini-3.5-flash` | minimal → `gemini-3.5-flash-extra-low`; low/medium/high/default → `gemini-3.5-flash-low`, with the requested native thinking level preserved | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; default and `alt=json` JSON streams 200; canonical modelVersion and non-zero usage verified on Google AI Pro on 2026-07-31 | published |
 | `gemini-3.1-pro-preview` | low → `gemini-3.1-pro-low`; medium/high/default → `gemini-pro-agent` with the requested native thinking level preserved | default/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
@@ -689,7 +689,14 @@ Gemini 3 Flash Preview implementation evidence reviewed on 2026-08-02 and 2026-0
   uncached, fully cached, or an explicit cached AUDIO detail. Compressed/file audio, fractional
   token duration and partial cache without modality detail fail before money can be guessed. This
   implementation evidence does not publish the model; it must pass the complete Pro+Ultra matrix
-  on its own exact SHA.
+  on its own exact SHA;
+- accounting SHA `4b0c6443b55eb1839bdd9ccbe1cc8e5bb1cc8214` passed all thinking levels and
+  incremental SSE on both plans, but its fresh run stopped at Ultra cache-write. The terminal turn
+  had no visible non-thought output, immutable output was zero, response/event usage parity failed,
+  and the nominal write already observed cache-read tokens after the Pro write reused the same
+  run/model cache key. That paid turn is not replayable and does not authorize publication. The
+  next dormant runner candidate derives an opaque per-profile cache scope and gives cache/audio
+  512 output tokens; it requires a new run id and a full exact-SHA matrix from the beginning.
 
 The reproducible source/plan/rate/wire dossiers are
 [`research/GEMINI_3_FLASH_PREVIEW.md`](../../research/GEMINI_3_FLASH_PREVIEW.md) and
@@ -698,6 +705,8 @@ exact-SHA withdrawal record is
 [`research/GEMINI_3_FLASH_PRIVATE_ROUTE_LIVE_WITHDRAWAL.md`](../../research/GEMINI_3_FLASH_PRIVATE_ROUTE_LIVE_WITHDRAWAL.md);
 the bounded accounting proof and new candidate contract are
 [`research/GEMINI_3_FLASH_AUDIO_ACCOUNTING.md`](../../research/GEMINI_3_FLASH_AUDIO_ACCOUNTING.md).
+The failed accounting-candidate gate is preserved in
+[`research/GEMINI_3_FLASH_AUDIO_ACCOUNTING_LIVE_WITHDRAWAL.md`](../../research/GEMINI_3_FLASH_AUDIO_ACCOUNTING_LIVE_WITHDRAWAL.md).
 
 ## Failure and stream safety
 

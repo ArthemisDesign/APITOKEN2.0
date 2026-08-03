@@ -674,15 +674,48 @@ def build_coverage_legs(
         # frame. 256 proved enough for a genuinely incremental two-frame Flash response in the
         # owned route probe and remains inside the runner's exact aggregate bound.
         legs.append(Leg(f"sse:{model}", model, "fresh", stream=True, max_output_tokens=256))
+        # A 128-token cache turn on Flash Preview exhausted its dynamic-thinking budget without
+        # visible output, and the earlier audio probe used 119/128 output tokens. Keep both replay
+        # pairs at 512 so the required visible answer is not a harness ceiling artifact; the full
+        # input-context reserve still keeps the complete two-plan matrix below the approved cap.
+        replay_output_tokens = 512 if model == "gemini-3-flash-preview" else 128
         cache_key = f"{run_id}:{model}:text-cache"
         legs.extend((
-            Leg(f"cache-write:{model}", model, "cache", cache_key=cache_key, cache_phase="write"),
-            Leg(f"cache-read:{model}", model, "cache", cache_key=cache_key, cache_phase="read"),
+            Leg(
+                f"cache-write:{model}",
+                model,
+                "cache",
+                cache_key=cache_key,
+                cache_phase="write",
+                max_output_tokens=replay_output_tokens,
+            ),
+            Leg(
+                f"cache-read:{model}",
+                model,
+                "cache",
+                cache_key=cache_key,
+                cache_phase="read",
+                max_output_tokens=replay_output_tokens,
+            ),
         ))
         audio_key = f"{run_id}:{model}:audio-cache"
         legs.extend((
-            Leg(f"audio-fresh:{model}", model, "audio", cache_key=audio_key, cache_phase="write"),
-            Leg(f"audio-replay:{model}", model, "audio", cache_key=audio_key, cache_phase="read"),
+            Leg(
+                f"audio-fresh:{model}",
+                model,
+                "audio",
+                cache_key=audio_key,
+                cache_phase="write",
+                max_output_tokens=replay_output_tokens,
+            ),
+            Leg(
+                f"audio-replay:{model}",
+                model,
+                "audio",
+                cache_key=audio_key,
+                cache_phase="read",
+                max_output_tokens=replay_output_tokens,
+            ),
         ))
         legs.append(Leg(f"tool-prompt:{model}", model, "tool", max_output_tokens=256))
         legs.append(Leg(f"search:{model}", model, "search", max_output_tokens=256))
@@ -704,8 +737,21 @@ def silent_wav_base64() -> str:
     return base64.b64encode(header + pcm).decode()
 
 
-def body_for_leg(leg: Leg, run_id: str) -> dict[str, Any]:
+def profile_cache_scopes(profiles: Iterable[str]) -> dict[str, str]:
+    return {
+        profile_id: f"profile-{index}"
+        for index, profile_id in enumerate(profiles, start=1)
+    }
+
+
+def body_for_leg(
+    leg: Leg,
+    run_id: str,
+    cache_scope: str | None = None,
+) -> dict[str, Any]:
     shared = leg.cache_key or f"{run_id}:{leg.name}"
+    if leg.cache_key and cache_scope:
+        shared = f"{shared}:{cache_scope}"
     text = f"Calibration {shared}. Reply with exactly CALIBRATION_OK."
     parts: list[dict[str, Any]] = [{"text": text}]
     if leg.kind == "cache":
@@ -1283,7 +1329,7 @@ class CapacityReader:
 
 class Runner:
     def __init__(self, api: Any, capacity: CapacityReader, rates: dict[str, ModelRates], budget: Budget,
-                 timeout: int, delay: float, run_id: str) -> None:
+                 timeout: int, delay: float, run_id: str, cache_scopes: dict[str, str]) -> None:
         self.api = api
         self.capacity = capacity
         self.rates = rates
@@ -1291,6 +1337,7 @@ class Runner:
         self.timeout = timeout
         self.delay = delay
         self.run_id = run_id
+        self.cache_scopes = cache_scopes
         self.records: list[dict[str, Any]] = []
 
     def execute_leg(self, leg: Leg, profile_id: str) -> dict[str, Any]:
@@ -1300,8 +1347,15 @@ class Runner:
         state = states.get(profile_id)
         if not state or not state["authenticated"] or state["cooling_until"] > int(time.time()):
             raise CalibrationError(f"target Gemini profile became unavailable: {profile_id}")
+        cache_scope = self.cache_scopes.get(profile_id)
+        if not cache_scope:
+            raise CalibrationError("target Gemini profile has no stable cache scope")
         before_ids = set(recent_turn_events(before))
-        body = body_for_leg(leg, self.run_id)
+        body = body_for_leg(
+            leg,
+            self.run_id,
+            cache_scope,
+        )
         model_path = urllib.parse.quote(leg.model, safe="-._")
         counted = self.api.request(
             f"/v1beta/models/{model_path}:countTokens", "POST", count_body(body), profile_id
@@ -1629,7 +1683,16 @@ def main(argv: list[str] | None = None) -> int:
         resume.spent_nano if resume else 0,
         defaultdict(int, resume.spent_by_profile if resume else {}),
     )
-    runner = Runner(api, capacity, rates, budget, args.evidence_timeout, args.profile_delay, run_id)
+    runner = Runner(
+        api,
+        capacity,
+        rates,
+        budget,
+        args.evidence_timeout,
+        args.profile_delay,
+        run_id,
+        profile_cache_scopes(profiles),
+    )
     runner.records = list(resume.records) if resume else []
     unavailable: list[dict[str, Any]] = list(resume.unavailable) if resume else []
     stopped: dict[str, str] = {

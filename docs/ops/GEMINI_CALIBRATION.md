@@ -77,8 +77,12 @@ Backend estimator остаётся workload-dependent: он оценивает A
   only a total. Dormant Flash Preview is the sole bounded exception: strict integral-duration PCM
   WAV generation may use its reviewed 32-token/second fallback, but every ambiguous format/cache
   split remains blocking rather than pricing the higher audio SKU as text or guessing.
-- Cache payload содержит уникальный `run_id`; write/read пары байт-в-байт одинаковы, но другой запуск
-  не может принять старую cache warmth за свою.
+- Cache payload содержит уникальный `run_id` и стабильный порядковый profile scope; write/read пары
+  одного профиля байт-в-байт одинаковы, но другой профиль или запуск не может принять чужую cache
+  warmth за свою. Scope не содержит raw profile id или provider identity. Cache/audio legs Flash
+  Preview используют bounded `maxOutputTokens=512`: модель уже исчерпывала 128-token
+  dynamic-thinking budget без видимого ответа, а прежний audio turn использовал 119/128 токенов.
+  Полный two-plan worst-case matrix остаётся внутри `$21` (`20,999,168,000 nanoUSD`).
 - После durable settlement exact-target turn немедленно будит бесплатный provider quota/health
   probe; обычный customer traffic сохраняет фоновую cadence. Runner всё равно выдерживает минимум
   16 секунд как независимый guard на provider snapshot propagation и затем опрашивает backend до

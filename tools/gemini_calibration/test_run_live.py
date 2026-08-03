@@ -244,6 +244,16 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         self.assertTrue(any(leg.kind == "cache" and leg.cache_phase == "read" for leg in legs))
         self.assertTrue(any(leg.kind == "audio" and leg.cache_phase == "write" for leg in legs))
         self.assertTrue(any(leg.kind == "audio" and leg.cache_phase == "read" for leg in legs))
+        self.assertTrue(all(
+            leg.max_output_tokens == 512
+            for leg in legs
+            if leg.model == "gemini-3-flash-preview" and leg.kind in {"cache", "audio"}
+        ))
+        self.assertTrue(all(
+            leg.max_output_tokens == 128
+            for leg in legs
+            if leg.model != "gemini-3-flash-preview" and leg.kind in {"cache", "audio"}
+        ))
         self.assertTrue(any(leg.kind == "tool" for leg in legs))
         self.assertTrue(any(leg.kind == "search" for leg in legs))
         self.assertTrue(any(leg.kind == "long" for leg in legs))
@@ -252,12 +262,57 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             {"1K", "2K", "4K"},
         )
 
-    def test_cache_and_audio_replays_use_byte_identical_provider_content(self):
+    def test_cache_and_audio_replays_are_identical_per_profile_but_isolated_between_profiles(self):
         legs = run_live.build_coverage_legs(["gemini-2.5-flash"], "run")
         cache = [leg for leg in legs if leg.kind == "cache"]
         audio = [leg for leg in legs if leg.kind == "audio"]
-        self.assertEqual(run_live.body_for_leg(cache[0], "run"), run_live.body_for_leg(cache[1], "run"))
-        self.assertEqual(run_live.body_for_leg(audio[0], "run"), run_live.body_for_leg(audio[1], "run"))
+        scopes = run_live.profile_cache_scopes(["profile-a", "profile-b"])
+        scope_a = scopes["profile-a"]
+        scope_b = scopes["profile-b"]
+        cache_a = run_live.body_for_leg(cache[0], "run", scope_a)
+        audio_a = run_live.body_for_leg(audio[0], "run", scope_a)
+        self.assertEqual(cache_a, run_live.body_for_leg(cache[1], "run", scope_a))
+        self.assertEqual(audio_a, run_live.body_for_leg(audio[1], "run", scope_a))
+        self.assertNotEqual(cache_a, run_live.body_for_leg(cache[0], "run", scope_b))
+        self.assertNotEqual(audio_a, run_live.body_for_leg(audio[0], "run", scope_b))
+        self.assertNotIn("profile-a", json.dumps(cache_a))
+        self.assertNotIn("profile-a", json.dumps(audio_a))
+
+    def test_flash_preview_two_plan_matrix_stays_inside_the_approved_twenty_one_dollar_cap(self):
+        rates = run_live.ModelRates(
+            tariff_schedule_id="google/gemini-developer-api/2026-08-02",
+            input_token_limit=1_048_576,
+            input=500,
+            audio_input=1_000,
+            cached_input=50,
+            cached_audio_input=100,
+            output=3_000,
+            image_output=0,
+            long_threshold=(1 << 64) - 1,
+            long_input=500,
+            long_audio_input=1_000,
+            long_cached_input=50,
+            long_cached_audio_input=100,
+            long_output=3_000,
+            search_unit="query",
+            search=14_000_000,
+            max_output_tokens=65_536,
+        )
+        dispatchable = [
+            leg
+            for leg in run_live.build_coverage_legs(
+                ["gemini-3-flash-preview"],
+                "run",
+                {"gemini-3-flash-preview": rates},
+            )
+            if leg.kind != "search"
+        ]
+        aggregate = 2 * sum(
+            rates.upper_bound(1, leg.max_output_tokens, leg.kind, leg.image_size)
+            for leg in dispatchable
+        )
+        self.assertEqual(aggregate, 20_999_168_000)
+        self.assertLessEqual(aggregate, 21 * run_live.NANO_PER_USD)
 
     def test_tool_leg_forces_the_declared_function_instead_of_accepting_plain_text(self):
         leg = run_live.Leg("tool", "gemini-3-flash-preview", "tool")
@@ -1221,6 +1276,7 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
             timeout=1,
             delay=0,
             run_id="run",
+            cache_scopes={"profile-a": "profile-1"},
         )
         with mock.patch.object(run_live.time, "sleep", return_value=None):
             record = runner.execute_leg(
