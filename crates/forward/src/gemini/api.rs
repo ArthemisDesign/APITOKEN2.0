@@ -19,6 +19,7 @@ use gemini_credential::OAuthKind;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::convert::Infallible;
+use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -706,7 +707,12 @@ fn retry_info_delay(value: &Value) -> Option<i64> {
         .then(|| (delay.ceil() as i64).clamp(1, 86_400))
 }
 
-fn generation_controls(body: &Value, model: &GeminiModel, overhead: u64) -> (u64, u64, u64, bool) {
+fn generation_controls(
+    body: &Value,
+    model: &GeminiModel,
+    overhead: u64,
+    audio_hint: AudioUsageHint,
+) -> (u64, u64, u64, bool) {
     let output = body
         .pointer("/generationConfig/maxOutputTokens")
         .and_then(Value::as_u64)
@@ -727,6 +733,12 @@ fn generation_controls(body: &Value, model: &GeminiModel, overhead: u64) -> (u64
     // their encoded payload length avoids rejecting an affordable edit solely because its JPEG is
     // large. Authoritative usageMetadata still decides settlement.
     let mut estimate = (body.to_string().len() as u64).saturating_add(overhead);
+    // Inline audio base64 is transport rather than model input. Flash Preview's exact request-side
+    // hint replaces those encoded characters with the official 32-token/second media count; the
+    // reservation still prices every estimated input token at the most expensive input SKU.
+    estimate = estimate
+        .saturating_sub(audio_hint.encoded_data_bytes)
+        .saturating_add(audio_hint.tokens);
     if model.is_image_generation() {
         for inline in inline_image_data(body) {
             if let Some(data) = inline.get("data").and_then(Value::as_str) {
@@ -867,6 +879,137 @@ fn inline_image_data(body: &Value) -> impl Iterator<Item = &Value> {
                 .flatten()
         })
         .filter_map(|part| part.get("inlineData"))
+}
+
+fn request_parts(body: &Value) -> impl Iterator<Item = &Value> {
+    body.get("contents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(body.get("systemInstruction"))
+        .flat_map(|content| {
+            content
+                .get("parts")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct AudioUsageHint {
+    tokens: u64,
+    encoded_data_bytes: u64,
+}
+
+fn is_audio_mime_type(mime_type: &str) -> bool {
+    mime_type
+        .get(..6)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("audio/"))
+}
+
+/// The private Flash Preview route currently omits the public per-modality usage split. Google
+/// documents audio as exactly 32 tokens per second, but does not document fractional-duration
+/// rounding. Keep the request-derived fallback exact by accepting only inline PCM WAV media whose
+/// frame duration produces an integral token count. Hound is used for strict RIFF/PCM validation;
+/// no media is fetched over the network.
+fn flash_preview_audio_usage_hint(body: &Value) -> Result<AudioUsageHint, ApiError> {
+    let mut hint = AudioUsageHint::default();
+    for part in request_parts(body) {
+        if let Some(file_data) = part.get("fileData") {
+            let file_data = file_data
+                .as_object()
+                .ok_or_else(|| ApiError::invalid("The fileData field must be a JSON object."))?;
+            let mime_type = file_data
+                .get("mimeType")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ApiError::invalid("The fileData mimeType must be a string."))?;
+            if is_audio_mime_type(mime_type) {
+                return Err(ApiError::invalid(
+                    "Gemini 3 Flash Preview audio currently requires inline PCM WAV data.",
+                ));
+            }
+        }
+
+        let Some(inline_data) = part.get("inlineData") else {
+            continue;
+        };
+        let inline_data = inline_data
+            .as_object()
+            .ok_or_else(|| ApiError::invalid("The inlineData field must be a JSON object."))?;
+        let mime_type = inline_data
+            .get("mimeType")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiError::invalid("The inlineData mimeType must be a string."))?;
+        if !is_audio_mime_type(mime_type) {
+            continue;
+        }
+        if !mime_type.eq_ignore_ascii_case("audio/wav") {
+            return Err(ApiError::invalid(
+                "Gemini 3 Flash Preview audio currently requires inline PCM WAV data.",
+            ));
+        }
+        let data = inline_data
+            .get("data")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiError::invalid("The inline audio data must be a base64 string."))?;
+        let tokens = exact_pcm_wav_audio_tokens(data)?;
+        hint.tokens = hint
+            .tokens
+            .checked_add(tokens)
+            .ok_or_else(|| ApiError::invalid("The inline audio duration is too large."))?;
+        hint.encoded_data_bytes = hint
+            .encoded_data_bytes
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| ApiError::invalid("The inline audio data is too large."))?;
+    }
+    Ok(hint)
+}
+
+fn exact_pcm_wav_audio_tokens(data: &str) -> Result<u64, ApiError> {
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|_| ApiError::invalid("The inline audio data is not valid base64."))?;
+    if decoded.is_empty() {
+        return Err(ApiError::invalid(
+            "The inline audio data must not be empty.",
+        ));
+    }
+    let declared_len = hound::read_wave_header(&mut Cursor::new(&decoded))
+        .map_err(|_| ApiError::invalid("The inline audio data is not a valid PCM WAV file."))?;
+    if declared_len != decoded.len() as u64 {
+        return Err(ApiError::invalid(
+            "The inline audio data is not a complete PCM WAV file.",
+        ));
+    }
+    let mut reader = hound::WavReader::new(Cursor::new(decoded))
+        .map_err(|_| ApiError::invalid("The inline audio data is not a valid PCM WAV file."))?;
+    let spec = reader.spec();
+    let frames = u64::from(reader.duration());
+    if frames == 0 || spec.sample_rate == 0 {
+        return Err(ApiError::invalid(
+            "The inline audio data must contain at least one PCM frame.",
+        ));
+    }
+    let samples_are_complete = match spec.sample_format {
+        hound::SampleFormat::Int => reader.samples::<i32>().all(|sample| sample.is_ok()),
+        hound::SampleFormat::Float => reader.samples::<f32>().all(|sample| sample.is_ok()),
+    };
+    if !samples_are_complete {
+        return Err(ApiError::invalid(
+            "The inline audio data is not a complete PCM WAV file.",
+        ));
+    }
+    let token_numerator = frames
+        .checked_mul(32)
+        .ok_or_else(|| ApiError::invalid("The inline audio duration is too large."))?;
+    let sample_rate = u64::from(spec.sample_rate);
+    if token_numerator % sample_rate != 0 {
+        return Err(ApiError::invalid(
+            "Gemini 3 Flash Preview audio duration must be an exact multiple of 1/32 second.",
+        ));
+    }
+    Ok(token_numerator / sample_rate)
 }
 
 fn validate_image_generation_request(body: &Value, model: &GeminiModel) -> Result<(), ApiError> {
@@ -1306,15 +1449,29 @@ fn wrap_code_assist_request(
         .map_err(|_| ApiError::invalid("The request body is not valid JSON."))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResponseDecodeError {
+    Malformed,
+    AudioUsage,
+}
+
+impl From<()> for ResponseDecodeError {
+    fn from(_: ()) -> Self {
+        Self::Malformed
+    }
+}
+
 fn unwrap_code_assist_response(
     operation: Operation,
     bytes: &[u8],
     public_model: &str,
-) -> Result<Bytes, ()> {
-    let mut value: Value = serde_json::from_slice(bytes).map_err(|_| ())?;
+    audio_hint: AudioUsageHint,
+) -> Result<Bytes, ResponseDecodeError> {
+    let mut value: Value =
+        serde_json::from_slice(bytes).map_err(|_| ResponseDecodeError::Malformed)?;
     if operation == Operation::CountTokens {
         if !value.is_object() || !value.get("totalTokens").is_some_and(Value::is_number) {
-            return Err(());
+            return Err(ResponseDecodeError::Malformed);
         }
         retain_public_fields(
             &mut value,
@@ -1325,17 +1482,19 @@ fn unwrap_code_assist_response(
                 "cacheTokensDetails",
             ],
         )?;
-        return serde_json::to_vec(&value).map(Bytes::from).map_err(|_| ());
+        return serde_json::to_vec(&value)
+            .map(Bytes::from)
+            .map_err(|_| ResponseDecodeError::Malformed);
     }
     if !value.is_object() {
-        return Err(());
+        return Err(ResponseDecodeError::Malformed);
     }
     let mut native = match value
         .as_object_mut()
         .and_then(|object| object.remove("response"))
     {
         Some(native) if native.is_object() => native,
-        Some(_) | None => return Err(()),
+        Some(_) | None => return Err(ResponseDecodeError::Malformed),
     };
     // The Code Assist wrapper can gain account, project, credit or trace fields without notice.
     // Reconstruct the documented native response instead of trusting the private envelope. In
@@ -1350,6 +1509,8 @@ fn unwrap_code_assist_response(
             "modelVersion",
         ],
     )?;
+    apply_audio_usage_fallback(&mut native, audio_hint)
+        .map_err(|_| ResponseDecodeError::AudioUsage)?;
     // Real generateContent responses always carry a responseId. Synthesize a native-shaped one
     // rather than exposing the correlatable Code Assist wrapper traceId.
     if let Some(object) = native.as_object_mut() {
@@ -1359,7 +1520,9 @@ fn unwrap_code_assist_response(
         }
         object.insert("responseId".to_string(), json!(fresh_response_id()));
     }
-    serde_json::to_vec(&native).map(Bytes::from).map_err(|_| ())
+    serde_json::to_vec(&native)
+        .map(Bytes::from)
+        .map_err(|_| ResponseDecodeError::Malformed)
 }
 
 /// Canonical google.rpc.Code status strings. Used to echo an upstream stream error's status only
@@ -1457,6 +1620,148 @@ fn apply_image_usage_fallback(
     usage.image_output_tokens = image_output_tokens;
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AudioUsageFallbackError {
+    InvalidMetadata,
+    AmbiguousCache,
+}
+
+fn modality_tokens_if_present(
+    metadata: &Value,
+    field: &str,
+    modality: &str,
+) -> Result<Option<u64>, AudioUsageFallbackError> {
+    let Some(details) = metadata.get(field) else {
+        return Ok(None);
+    };
+    let details = details
+        .as_array()
+        .ok_or(AudioUsageFallbackError::InvalidMetadata)?;
+    let mut present = false;
+    let mut total = 0u64;
+    for detail in details {
+        if !detail
+            .get("modality")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case(modality))
+        {
+            continue;
+        }
+        present = true;
+        total = total
+            .checked_add(
+                detail
+                    .get("tokenCount")
+                    .and_then(Value::as_u64)
+                    .ok_or(AudioUsageFallbackError::InvalidMetadata)?,
+            )
+            .ok_or(AudioUsageFallbackError::InvalidMetadata)?;
+    }
+    Ok(present.then_some(total))
+}
+
+fn modality_tokens_total(metadata: &Value, field: &str) -> Result<u64, AudioUsageFallbackError> {
+    let Some(details) = metadata.get(field) else {
+        return Ok(0);
+    };
+    details
+        .as_array()
+        .ok_or(AudioUsageFallbackError::InvalidMetadata)?
+        .iter()
+        .try_fold(0u64, |total, detail| {
+            total
+                .checked_add(
+                    detail
+                        .get("tokenCount")
+                        .and_then(Value::as_u64)
+                        .ok_or(AudioUsageFallbackError::InvalidMetadata)?,
+                )
+                .ok_or(AudioUsageFallbackError::InvalidMetadata)
+        })
+}
+
+fn append_modality_tokens(
+    metadata: &mut Value,
+    field: &str,
+    modality: &str,
+    token_count: u64,
+) -> Result<(), AudioUsageFallbackError> {
+    let metadata = metadata
+        .as_object_mut()
+        .ok_or(AudioUsageFallbackError::InvalidMetadata)?;
+    let details = metadata
+        .entry(field.to_string())
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .ok_or(AudioUsageFallbackError::InvalidMetadata)?;
+    details.push(json!({"modality": modality, "tokenCount": token_count}));
+    Ok(())
+}
+
+/// Reconstruct the public AUDIO usage class only when the request gives an exact integral media
+/// token count and the provider omitted that modality entirely. Provider-supplied AUDIO details
+/// always win. A zero cache count proves all audio is fresh; a full-prompt cache proves all audio
+/// is cached; an explicit cache AUDIO row proves the split. Any other partial cache is ambiguous
+/// and must fail closed because Flash Preview has different text/audio cache rates.
+fn apply_audio_usage_fallback(
+    value: &mut Value,
+    audio_hint: AudioUsageHint,
+) -> Result<(), AudioUsageFallbackError> {
+    if audio_hint.tokens == 0 {
+        return Ok(());
+    }
+    let Some(metadata) = value.get_mut("usageMetadata") else {
+        // The normal required-usage gate handles a response with no metadata at all.
+        return Ok(());
+    };
+    if modality_tokens_if_present(metadata, "promptTokensDetails", "AUDIO")?.is_some() {
+        return Ok(());
+    }
+    let prompt = metadata
+        .get("promptTokenCount")
+        .and_then(Value::as_u64)
+        .ok_or(AudioUsageFallbackError::InvalidMetadata)?;
+    if audio_hint.tokens > prompt {
+        return Err(AudioUsageFallbackError::InvalidMetadata);
+    }
+    let cached = metadata
+        .get("cachedContentTokenCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if cached > prompt {
+        return Err(AudioUsageFallbackError::InvalidMetadata);
+    }
+    let explicit_cached_audio =
+        modality_tokens_if_present(metadata, "cacheTokensDetails", "AUDIO")?;
+    let cached_audio = match explicit_cached_audio {
+        Some(tokens) if tokens <= cached && tokens <= audio_hint.tokens => tokens,
+        Some(_) => return Err(AudioUsageFallbackError::InvalidMetadata),
+        None if cached == 0 => 0,
+        None if cached == prompt => audio_hint.tokens,
+        None => return Err(AudioUsageFallbackError::AmbiguousCache),
+    };
+
+    let prompt_detail_total = modality_tokens_total(metadata, "promptTokensDetails")?;
+    if prompt_detail_total.saturating_add(audio_hint.tokens) > prompt {
+        return Err(AudioUsageFallbackError::InvalidMetadata);
+    }
+    let cache_detail_total = modality_tokens_total(metadata, "cacheTokensDetails")?;
+    let inferred_cached_audio = if explicit_cached_audio.is_none() {
+        cached_audio
+    } else {
+        0
+    };
+    if cache_detail_total.saturating_add(inferred_cached_audio) > cached {
+        return Err(AudioUsageFallbackError::InvalidMetadata);
+    }
+
+    append_modality_tokens(metadata, "promptTokensDetails", "AUDIO", audio_hint.tokens)?;
+    if explicit_cached_audio.is_none() && cached_audio > 0 {
+        append_modality_tokens(metadata, "cacheTokensDetails", "AUDIO", cached_audio)?;
+    }
+    Ok(())
+}
+
 fn settlement_usage_from_response(
     value: &Value,
     image_output_tokens: u64,
@@ -1481,6 +1786,8 @@ struct SseTranslator {
     started: bool,
     image_output_tokens: u64,
     image_delivered: bool,
+    audio_usage_hint: AudioUsageHint,
+    audio_usage_failed: bool,
 }
 
 impl SseTranslator {
@@ -1488,6 +1795,7 @@ impl SseTranslator {
         framing: StreamFraming,
         public_model: &str,
         image_output_tokens: u64,
+        audio_usage_hint: AudioUsageHint,
     ) -> Self {
         Self {
             pending: Vec::new(),
@@ -1500,6 +1808,8 @@ impl SseTranslator {
             started: false,
             image_output_tokens,
             image_delivered: false,
+            audio_usage_hint,
+            audio_usage_failed: false,
         }
     }
 
@@ -1592,6 +1902,10 @@ impl SseTranslator {
                 "modelVersion",
             ],
         )?;
+        if apply_audio_usage_fallback(&mut native, self.audio_usage_hint).is_err() {
+            self.audio_usage_failed = true;
+            return Err(());
+        }
         if native.as_object().is_none_or(serde_json::Map::is_empty) {
             // Unknown/private response-only events have no public representation.
             return Ok(None);
@@ -1787,7 +2101,7 @@ async fn stream_response(
                         Ok(translated) => translated,
                         Err(()) => {
                             clean_eof = false;
-                            malformed = true;
+                            malformed = !translator.audio_usage_failed;
                             break;
                         }
                     };
@@ -1845,7 +2159,7 @@ async fn stream_response(
                 }
                 Err(()) => {
                     clean_eof = false;
-                    malformed = true;
+                    malformed = !translator.audio_usage_failed;
                 }
             }
         }
@@ -1886,6 +2200,10 @@ async fn stream_response(
                 }
                 Some(_) if clean_eof => profile.mark_model_success(&wire_model_id),
                 None if clean_eof => profile.mark_model_success(&wire_model_id),
+                _ if translator.audio_usage_failed => {
+                    Metrics::inc(&metrics.gemini_usage_missing);
+                    profile.mark_model_failure(&wire_model_id, "usage_metadata", gateway.config());
+                }
                 _ if malformed => {
                     Metrics::inc(&metrics.upstream_5xx);
                     Metrics::inc(&metrics.gemini_malformed_responses);
@@ -1894,7 +2212,8 @@ async fn stream_response(
                 _ => {}
             }
         }
-        let usage = (!translator.usage.is_zero()).then_some(&translator.usage);
+        let usage = (!translator.audio_usage_failed && !translator.usage.is_zero())
+            .then_some(&translator.usage);
         if usage.is_none() && admission.requires_usage() {
             Metrics::inc(&metrics.gemini_usage_missing);
             if !aborted && !malformed && translator.provider_error.is_none() {
@@ -2137,6 +2456,11 @@ async fn api_inner(
     } else {
         0
     };
+    let requested_audio_usage = if generation && model.id == "gemini-3-flash-preview" {
+        flash_preview_audio_usage_hint(&value)?
+    } else {
+        AudioUsageHint::default()
+    };
     let upstream_session_id = (generation && !model.is_image_generation()).then(|| {
         affinity_input
             .as_ref()
@@ -2159,8 +2483,14 @@ async fn api_inner(
     // Routing precedes customer reserve, but local in-flight depth never waits or rejects. Every
     // eligible request gets an immediate profile lease; the normal reserve/delivery/settlement
     // lifecycle still runs exactly once across all pre-byte profile retries.
-    let generation_budget = generation
-        .then(|| generation_controls(&value, &model, gateway.config().reserve_overhead_tokens));
+    let generation_budget = generation.then(|| {
+        generation_controls(
+            &value,
+            &model,
+            gateway.config().reserve_overhead_tokens,
+            requested_audio_usage,
+        )
+    });
     let mut pending = Some(pending);
     let mut admission: Option<GeminiAdmission> = None;
 
@@ -2356,6 +2686,7 @@ async fn api_inner(
                 framing,
                 &model.id,
                 requested_image_output_tokens,
+                requested_audio_usage,
             );
             let (stream_start_max_bytes, stream_start_max_chunks) = if model.is_image_generation() {
                 (GEMINI_BODY_LIMIT, IMAGE_STREAM_START_MAX_CHUNKS)
@@ -2398,6 +2729,11 @@ async fn api_inner(
             .await;
             let initial = match startup {
                 Ok(Ok(initial)) => initial,
+                Ok(Err(())) if translator.audio_usage_failed => {
+                    Metrics::inc(&app.metrics.gemini_usage_missing);
+                    profile.mark_model_failure(&wire_model_id, "usage_metadata", gateway.config());
+                    return Err(ApiError::unavailable("gemini_audio_usage_metadata_missing"));
+                }
                 Ok(Err(())) | Err(_) => {
                     Metrics::inc(&app.metrics.upstream_5xx);
                     Metrics::inc(&app.metrics.gemini_stream_start_failures);
@@ -2564,28 +2900,41 @@ async fn api_inner(
                 continue;
             }
             _ if status.is_success() => {
-                let native_body =
-                    match unwrap_code_assist_response(route.operation, &response_body, &model.id) {
-                        Ok(body) => body,
-                        Err(()) => {
-                            Metrics::inc(&app.metrics.upstream_5xx);
-                            Metrics::inc(&app.metrics.gemini_malformed_responses);
-                            excluded.insert(profile.id().to_string());
-                            if generation {
-                                profile.mark_model_failure(
-                                    &wire_model_id,
-                                    "malformed",
-                                    gateway.config(),
-                                );
-                            }
-                            saw_backend = true;
-                            retry_failures += 1;
-                            if retry_failures > gateway.config().max_transport_retries {
-                                return Err(ApiError::unavailable("gemini_malformed_response"));
-                            }
-                            continue;
+                let native_body = match unwrap_code_assist_response(
+                    route.operation,
+                    &response_body,
+                    &model.id,
+                    requested_audio_usage,
+                ) {
+                    Ok(body) => body,
+                    Err(ResponseDecodeError::AudioUsage) => {
+                        Metrics::inc(&app.metrics.gemini_usage_missing);
+                        profile.mark_model_failure(
+                            &wire_model_id,
+                            "usage_metadata",
+                            gateway.config(),
+                        );
+                        return Err(ApiError::unavailable("gemini_audio_usage_metadata_missing"));
+                    }
+                    Err(ResponseDecodeError::Malformed) => {
+                        Metrics::inc(&app.metrics.upstream_5xx);
+                        Metrics::inc(&app.metrics.gemini_malformed_responses);
+                        excluded.insert(profile.id().to_string());
+                        if generation {
+                            profile.mark_model_failure(
+                                &wire_model_id,
+                                "malformed",
+                                gateway.config(),
+                            );
                         }
-                    };
+                        saw_backend = true;
+                        retry_failures += 1;
+                        if retry_failures > gateway.config().max_transport_retries {
+                            return Err(ApiError::unavailable("gemini_malformed_response"));
+                        }
+                        continue;
+                    }
+                };
                 if generation {
                     profile.mark_model_success(&wire_model_id);
                 } else {
@@ -2681,6 +3030,28 @@ mod tests {
     const ACCOUNT_ID: &str = "gemini-integration-account";
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    fn pcm16_wav_base64(sample_rate: u32, frames: u32, channels: u16) -> String {
+        let data_len = frames
+            .checked_mul(u32::from(channels))
+            .and_then(|samples| samples.checked_mul(2))
+            .unwrap();
+        let mut wav = Vec::with_capacity(44 + data_len as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&channels.to_le_bytes());
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&(sample_rate * u32::from(channels) * 2).to_le_bytes());
+        wav.extend_from_slice(&(channels * 2).to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        wav.resize(44 + data_len as usize, 0);
+        base64::engine::general_purpose::STANDARD.encode(wav)
+    }
 
     #[derive(Clone)]
     enum MockChunk {
@@ -3422,6 +3793,219 @@ mod tests {
     }
 
     #[test]
+    fn flash_preview_audio_hint_uses_exact_duration_and_ignores_channel_count() {
+        let mono = pcm16_wav_base64(8_000, 2_000, 1);
+        let stereo = pcm16_wav_base64(8_000, 2_000, 2);
+        let body = json!({
+            "contents": [{
+                "parts": [
+                    {"inlineData": {"mimeType": "audio/wav", "data": mono}},
+                    {"inlineData": {"mimeType": "Audio/WAV", "data": stereo}},
+                    {"text": "two quarter-second clips"}
+                ]
+            }]
+        });
+        let hint = flash_preview_audio_usage_hint(&body).unwrap();
+        assert_eq!(hint.tokens, 16);
+        assert_eq!(
+            hint.encoded_data_bytes,
+            body.pointer("/contents/0/parts/0/inlineData/data")
+                .and_then(Value::as_str)
+                .unwrap()
+                .len() as u64
+                + body
+                    .pointer("/contents/0/parts/1/inlineData/data")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .len() as u64
+        );
+
+        let model = catalog_model("gemini-3-flash-preview");
+        let (estimated_input, _, _, _) = generation_controls(&body, &model, 10, hint);
+        assert_eq!(
+            estimated_input,
+            body.to_string().len() as u64 - hint.encoded_data_bytes + hint.tokens + 10
+        );
+    }
+
+    #[test]
+    fn flash_preview_audio_hint_rejects_unprovable_duration_format_and_location() {
+        let fractional = json!({
+            "contents": [{"parts": [{
+                "inlineData": {
+                    "mimeType": "audio/wav",
+                    "data": pcm16_wav_base64(8_000, 2_001, 1)
+                }
+            }]}]
+        });
+        assert!(flash_preview_audio_usage_hint(&fractional).is_err());
+
+        let compressed = json!({
+            "contents": [{"parts": [{
+                "inlineData": {"mimeType": "audio/mp3", "data": "AA=="}
+            }]}]
+        });
+        assert!(flash_preview_audio_usage_hint(&compressed).is_err());
+
+        let remote = json!({
+            "contents": [{"parts": [{
+                "fileData": {"mimeType": "audio/wav", "fileUri": "files/private"}
+            }]}]
+        });
+        assert!(flash_preview_audio_usage_hint(&remote).is_err());
+
+        let malformed = json!({
+            "contents": [{"parts": [{
+                "inlineData": {"mimeType": "audio/wav", "data": "bm90LXdhdg=="}
+            }]}]
+        });
+        assert!(flash_preview_audio_usage_hint(&malformed).is_err());
+    }
+
+    #[test]
+    fn flash_preview_audio_fallback_reconstructs_only_provable_cache_splits() {
+        let hint = AudioUsageHint {
+            tokens: 8,
+            encoded_data_bytes: 0,
+        };
+        let mut fresh = json!({
+            "usageMetadata": {
+                "promptTokenCount": 55,
+                "candidatesTokenCount": 1,
+                "thoughtsTokenCount": 118
+            }
+        });
+        apply_audio_usage_fallback(&mut fresh, hint).unwrap();
+        assert_eq!(
+            fresh["usageMetadata"]["promptTokensDetails"],
+            json!([{"modality": "AUDIO", "tokenCount": 8}])
+        );
+        let usage = metering::gemini::usage_from_response_value(&fresh).unwrap();
+        assert_eq!(usage.input_tokens, 47);
+        assert_eq!(usage.audio_input_tokens, 8);
+
+        let mut fully_cached = json!({
+            "usageMetadata": {
+                "promptTokenCount": 55,
+                "cachedContentTokenCount": 55,
+                "candidatesTokenCount": 1
+            }
+        });
+        apply_audio_usage_fallback(&mut fully_cached, hint).unwrap();
+        let usage = metering::gemini::usage_from_response_value(&fully_cached).unwrap();
+        assert_eq!(usage.cached_input_tokens, 47);
+        assert_eq!(usage.cached_audio_input_tokens, 8);
+
+        let mut explicit_partial_cache = json!({
+            "usageMetadata": {
+                "promptTokenCount": 55,
+                "cachedContentTokenCount": 20,
+                "cacheTokensDetails": [
+                    {"modality": "TEXT", "tokenCount": 17},
+                    {"modality": "AUDIO", "tokenCount": 3}
+                ],
+                "candidatesTokenCount": 1
+            }
+        });
+        apply_audio_usage_fallback(&mut explicit_partial_cache, hint).unwrap();
+        let usage = metering::gemini::usage_from_response_value(&explicit_partial_cache).unwrap();
+        assert_eq!(usage.input_tokens, 30);
+        assert_eq!(usage.audio_input_tokens, 5);
+        assert_eq!(usage.cached_input_tokens, 17);
+        assert_eq!(usage.cached_audio_input_tokens, 3);
+
+        let mut ambiguous_partial_cache = json!({
+            "usageMetadata": {
+                "promptTokenCount": 55,
+                "cachedContentTokenCount": 20,
+                "candidatesTokenCount": 1
+            }
+        });
+        assert_eq!(
+            apply_audio_usage_fallback(&mut ambiguous_partial_cache, hint),
+            Err(AudioUsageFallbackError::AmbiguousCache)
+        );
+
+        let mut impossible_cache_total = json!({
+            "usageMetadata": {
+                "promptTokenCount": 55,
+                "cachedContentTokenCount": 56,
+                "candidatesTokenCount": 1
+            }
+        });
+        assert_eq!(
+            apply_audio_usage_fallback(&mut impossible_cache_total, hint),
+            Err(AudioUsageFallbackError::InvalidMetadata)
+        );
+    }
+
+    #[test]
+    fn provider_audio_usage_wins_and_reconstructed_usage_is_public_in_json_and_sse() {
+        let hint = AudioUsageHint {
+            tokens: 8,
+            encoded_data_bytes: 0,
+        };
+        let mut authoritative = json!({
+            "usageMetadata": {
+                "promptTokenCount": 55,
+                "cachedContentTokenCount": 20,
+                "promptTokensDetails": [{"modality": "audio", "tokenCount": 0}]
+            }
+        });
+        apply_audio_usage_fallback(&mut authoritative, hint).unwrap();
+        assert_eq!(
+            authoritative["usageMetadata"]["promptTokensDetails"],
+            json!([{"modality": "audio", "tokenCount": 0}])
+        );
+
+        let response = serde_json::to_vec(&json!({
+            "response": {
+                "candidates": [],
+                "usageMetadata": {"promptTokenCount": 55, "candidatesTokenCount": 1},
+                "modelVersion": "gemini-3-flash"
+            }
+        }))
+        .unwrap();
+        let native = unwrap_code_assist_response(
+            Operation::Generate,
+            &response,
+            "gemini-3-flash-preview",
+            hint,
+        )
+        .unwrap();
+        let native: Value = serde_json::from_slice(&native).unwrap();
+        assert_eq!(
+            native["usageMetadata"]["promptTokensDetails"],
+            json!([{"modality": "AUDIO", "tokenCount": 8}])
+        );
+
+        let mut stream = SseTranslator::new_with_image_usage(
+            StreamFraming::Sse,
+            "gemini-3-flash-preview",
+            0,
+            hint,
+        );
+        let chunks = stream
+            .push(
+                b"data: {\"response\":{\"candidates\":[],\"usageMetadata\":{\"promptTokenCount\":55,\"candidatesTokenCount\":1},\"modelVersion\":\"gemini-3-flash\"}}\n\n",
+            )
+            .unwrap();
+        let streamed: Value = serde_json::from_slice(
+            chunks[0]
+                .strip_prefix(b"data: ")
+                .unwrap()
+                .strip_suffix(b"\n\n")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            streamed["usageMetadata"]["promptTokensDetails"],
+            json!([{"modality": "AUDIO", "tokenCount": 8}])
+        );
+        assert_eq!(stream.usage.audio_input_tokens, 8);
+    }
+
+    #[test]
     fn private_model_versions_are_rewritten_to_the_public_model() {
         let response = serde_json::to_vec(&json!({
             "response": {
@@ -3431,15 +4015,23 @@ mod tests {
             "traceId": "private-trace"
         }))
         .unwrap();
-        let native =
-            unwrap_code_assist_response(Operation::Generate, &response, "gemini-3.6-flash")
-                .unwrap();
+        let native = unwrap_code_assist_response(
+            Operation::Generate,
+            &response,
+            "gemini-3.6-flash",
+            AudioUsageHint::default(),
+        )
+        .unwrap();
         let native: Value = serde_json::from_slice(&native).unwrap();
         assert_eq!(native["modelVersion"], "gemini-3.6-flash");
         assert!(native.get("traceId").is_none());
 
-        let mut stream =
-            SseTranslator::new_with_image_usage(StreamFraming::Sse, "gemini-3.6-flash", 0);
+        let mut stream = SseTranslator::new_with_image_usage(
+            StreamFraming::Sse,
+            "gemini-3.6-flash",
+            0,
+            AudioUsageHint::default(),
+        );
         let chunks = stream
             .push(
                 b"data: {\"response\":{\"candidates\":[],\"modelVersion\":\"gemini-3.6-flash-high\"}}\n\n",
@@ -3539,7 +4131,8 @@ mod tests {
         canonicalize_native_request(&mut native);
         validate_native_request(Operation::Generate, &native, &model).unwrap();
         assert_eq!(image_output_tokens(&native), 2_520);
-        let (estimated_input, _, image_output, _) = generation_controls(&native, &model, 0);
+        let (estimated_input, _, image_output, _) =
+            generation_controls(&native, &model, 0, AudioUsageHint::default());
         assert_eq!(image_output, 2_520);
         assert!(estimated_input < native.to_string().len() as u64 + 2_240);
 
@@ -3730,6 +4323,7 @@ mod tests {
             StreamFraming::JsonArray,
             "gemini-integration-model",
             0,
+            AudioUsageHint::default(),
         );
         let first = translator.frame(&json!({"a": 1})).unwrap();
         let second = translator.frame(&json!({"b": 2})).unwrap();
@@ -3742,11 +4336,16 @@ mod tests {
             StreamFraming::JsonArray,
             "gemini-integration-model",
             0,
+            AudioUsageHint::default(),
         );
         assert_eq!(empty.finish_stream().unwrap().as_ref(), b"[]");
         // SSE framing has no terminator and keeps the data: envelope.
-        let mut sse =
-            SseTranslator::new_with_image_usage(StreamFraming::Sse, "gemini-integration-model", 0);
+        let mut sse = SseTranslator::new_with_image_usage(
+            StreamFraming::Sse,
+            "gemini-integration-model",
+            0,
+            AudioUsageHint::default(),
+        );
         let frame = sse.frame(&json!({"a": 1})).unwrap();
         assert!(frame.starts_with(b"data: "));
         assert!(sse.finish_stream().is_none());
@@ -4565,6 +5164,169 @@ mod tests {
                 .unwrap();
             assert_eq!(wire.trim_start_matches("models/"), "gemini-3-flash");
         }
+    }
+
+    #[tokio::test]
+    async fn flash_preview_pcm_wav_usage_is_reconstructed_before_public_delivery() {
+        let (stream, _drained) = MockReply::stream(vec![MockChunk::Data(Bytes::from_static(
+            b"data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"silent\"}]}}],\"usageMetadata\":{\"promptTokenCount\":55,\"candidatesTokenCount\":1,\"thoughtsTokenCount\":7},\"modelVersion\":\"gemini-3-flash\"}}\n\n",
+        ))]);
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![
+                MockReply::json(
+                    StatusCode::OK,
+                    json!({
+                        "response": {
+                            "candidates": [{"content": {"parts": [{"text": "silent"}]}}],
+                            "usageMetadata": {
+                                "promptTokenCount": 55,
+                                "candidatesTokenCount": 1,
+                                "thoughtsTokenCount": 7
+                            },
+                            "modelVersion": "gemini-3-flash"
+                        }
+                    }),
+                ),
+                stream,
+            ],
+        )]))
+        .await;
+        let fixture = gateway_fixture_with_models(
+            &server.upstream,
+            &[None],
+            1,
+            None,
+            OAuthKind::Antigravity,
+            128,
+            &["gemini-3-flash-preview"],
+        );
+        let audio = pcm16_wav_base64(8_000, 2_000, 1);
+        let app = app_state(fixture.gateway.clone(), None);
+        let response = invoke_uri(
+            app.clone(),
+            "/v1beta/models/gemini-3-flash-preview:generateContent",
+            json!({
+                "contents": [{"parts": [
+                    {"inlineData": {"mimeType": "audio/wav", "data": audio.clone()}},
+                    {"text": "Is this silent?"}
+                ]}],
+                "generationConfig": {"maxOutputTokens": 64}
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = response_json(response).await;
+        assert_eq!(
+            response["usageMetadata"]["promptTokensDetails"],
+            json!([{"modality": "AUDIO", "tokenCount": 8}])
+        );
+        assert_eq!(response["modelVersion"], "gemini-3-flash-preview");
+
+        let stream_response = invoke_uri(
+            app,
+            "/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse",
+            json!({
+                "contents": [{"parts": [
+                    {"inlineData": {"mimeType": "audio/wav", "data": audio.clone()}},
+                    {"text": "Is this silent?"}
+                ]}],
+                "generationConfig": {"maxOutputTokens": 64}
+            }),
+        )
+        .await;
+        assert_eq!(stream_response.status(), StatusCode::OK);
+        let stream_body = to_bytes(stream_response.into_body(), GEMINI_BODY_LIMIT)
+            .await
+            .unwrap();
+        let stream_text = std::str::from_utf8(&stream_body).unwrap();
+        assert!(stream_text.contains(
+            "\"promptTokensDetails\":[{\"modality\":\"AUDIO\",\"tokenCount\":8}]"
+        ));
+        assert!(stream_text.contains("\"modelVersion\":\"gemini-3-flash-preview\""));
+
+        let seen = server.state.seen();
+        assert_eq!(seen.len(), 2);
+        for request in seen {
+            let wire: Value = serde_json::from_slice(&request.body).unwrap();
+            assert_eq!(wire["model"], "gemini-3-flash");
+            assert_eq!(
+                wire["request"]["contents"][0]["parts"][0]["inlineData"]["data"],
+                audio
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn flash_preview_ambiguous_audio_cache_usage_is_not_delivered() {
+        let server = start_mock(MockState::with_replies([(
+            PROFILE_A_KEY,
+            vec![MockReply::json(
+                StatusCode::OK,
+                json!({
+                    "response": {
+                        "candidates": [{"content": {"parts": [{"text": "silent"}]}}],
+                        "usageMetadata": {
+                            "promptTokenCount": 55,
+                            "cachedContentTokenCount": 20,
+                            "candidatesTokenCount": 1
+                        },
+                        "modelVersion": "gemini-3-flash"
+                    }
+                }),
+            )],
+        )]))
+        .await;
+        let fixture = gateway_fixture_with_models(
+            &server.upstream,
+            &[None],
+            1,
+            None,
+            OAuthKind::Antigravity,
+            128,
+            &["gemini-3-flash-preview"],
+        );
+        let response = invoke_uri(
+            app_state(fixture.gateway.clone(), None),
+            "/v1beta/models/gemini-3-flash-preview:generateContent",
+            json!({
+                "contents": [{"parts": [{
+                    "inlineData": {
+                        "mimeType": "audio/wav",
+                        "data": pcm16_wav_base64(8_000, 2_000, 1)
+                    }
+                }]}]
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(server.state.seen().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn flash_preview_unprovable_audio_is_rejected_before_upstream_and_reserve() {
+        let server = start_mock(MockState::default()).await;
+        let fixture = gateway_fixture_with_models(
+            &server.upstream,
+            &[None],
+            1,
+            None,
+            OAuthKind::Antigravity,
+            128,
+            &["gemini-3-flash-preview"],
+        );
+        let response = invoke_uri(
+            app_state(fixture.gateway.clone(), None),
+            "/v1beta/models/gemini-3-flash-preview:generateContent",
+            json!({
+                "contents": [{"parts": [{
+                    "inlineData": {"mimeType": "audio/mp3", "data": "AA=="}
+                }]}]
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(server.state.seen().is_empty());
     }
 
     #[tokio::test]
@@ -5899,8 +6661,12 @@ mod tests {
 
     #[test]
     fn incremental_sse_tracker_keeps_last_usage_across_chunk_boundaries() {
-        let mut tracker =
-            SseTranslator::new_with_image_usage(StreamFraming::Sse, "gemini-integration-model", 0);
+        let mut tracker = SseTranslator::new_with_image_usage(
+            StreamFraming::Sse,
+            "gemini-integration-model",
+            0,
+            AudioUsageHint::default(),
+        );
         tracker
             .push(b"data: {\"response\":{\"usageMetadata\":{\"promptToken")
             .unwrap();
@@ -5979,8 +6745,12 @@ mod tests {
 
     #[test]
     fn image_stream_fallback_survives_separate_media_and_usage_frames() {
-        let mut tracker =
-            SseTranslator::new_with_image_usage(StreamFraming::Sse, "image-model", 747);
+        let mut tracker = SseTranslator::new_with_image_usage(
+            StreamFraming::Sse,
+            "image-model",
+            747,
+            AudioUsageHint::default(),
+        );
         tracker
             .push(
                 b"data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/jpeg\",\"data\":\"AQID\"}}]}}]}}\n\n",

@@ -9,7 +9,9 @@
 
 **Границы (жёстко):**
 - Зависит от `pool`, `registry`, `metering`, `axum`, `wreq`, `redis`, `serde_json`, `futures-util`,
-  `bytes`, `tokio`[sync,rt] + `anyhow` (для DB-актора биллинга).
+  `bytes`, `tokio`[sync,rt] + `anyhow` (для DB-актора биллинга). `hound` используется только для
+  строгой локальной проверки PCM WAV в bounded Gemini 3 Flash Preview audio-accounting fallback;
+  сетевого media fetch и общего codec stack в крейте нет.
 - НЕ читает env и НЕ содержит CLI/управляющих роутов (`/health`, `/pool`, `/balance`) — это `server`.
 - Конфиг получает готовым: [`ProxyConfig`] наполняет `server::config`; биллинг — async DB-актор `Option<Arc<AsyncBilling>>` в `AppState` (1 writer + N readers).
 
@@ -740,8 +742,12 @@ pricing threshold или family default не являются основание
    `Client-Metadata`/`x-goog-api-client`: именно этот минимальный tuple дал owned generation 2xx на
    private wire `gemini-3-flash`. Exact-SHA gate 2026-08-03 прошёл thinking/SSE/cache на Pro+Ultra,
    но остановился на audio generation без authoritative audio token class; free `countTokens` тоже
-   не дал modality breakdown. Поэтому publication withdrawn и production/public allowlist модель
-   не содержит. Остальные модели и background quota/health сохраняют полный live-проверенный tuple.
+   не дал modality breakdown. Следующий dormant candidate устраняет именно этот blocker только для
+   inline PCM WAV: официальный exact rate 32 tokens/second применяется лишь при длительности,
+   кратной 1/32 секунды, а неоднозначный partial-cache split fail-closed. Это ещё не live evidence:
+   publication по-прежнему withdrawn, production/public allowlist модель не содержит до нового
+   полного GREEN exact-SHA gate. Остальные модели и background quota/health сохраняют полный
+   live-проверенный tuple.
    Старые Gemini CLI credentials сохраняют прежний wire до миграции.
    OAuth userinfo использует отдельный global-fetch/Undici профиль того же SHA-pinned Node. Никакой
    approximate BoringSSL impersonation или ambient proxy/env.
@@ -785,8 +791,11 @@ pricing threshold или family default не являются основание
    3 Flash Preview отображает public `gemini-3-flash-preview` в live-проверенный private wire
    `gemini-3-flash`, а quota admission консервативно связывает обе наблюдаемые строки
    `gemini-3-flash`/`gemini-3-flash-agent` до точной атрибуции debit. Production allowlist не
-   публикует route: exact-SHA gate уже дал blocking miss на audio token attribution; нужен новый
-   полный GREEN gate после новых upstream evidence. 3.6 Flash выбирает
+   публикует route: прошлый exact-SHA gate дал blocking miss на audio token attribution. Dormant
+   fallback принимает только inline PCM WAV с интегральным `duration × 32`, сохраняет любой
+   provider `promptTokensDetails[AUDIO]` как authority и достраивает отсутствующий split только при
+   доказуемом cache-разделении (`cached=0`, `cached=prompt` либо explicit cached AUDIO). Нужен новый
+   полный GREEN gate на exact fix SHA. 3.6 Flash выбирает
    `gemini-3.6-flash-{low,medium,high}`, 3.1 Pro Preview —
    `gemini-3.1-pro-low`/`gemini-pro-agent`.
    Thinking level выбирается до admission; quota/cooling ключуются private bucket, а affinity,
@@ -821,9 +830,12 @@ pricing threshold или family default не являются основание
    бесплатно. Image response с explicit `candidatesTokensDetails[IMAGE]` использует provider split;
    если private Antigravity отдаёт только aggregate candidates, реально доставленный `inlineData`
    выделяет официальный fixed token SKU requested size, а остаток остаётся text/thinking. Refusal
-   без image не получает media charge. Metered non-stream без authoritative usage не доставляется и
-   refund-ится; stream после первого байта без final usage списывает conservative hold без fake usage
-   event. Public synthetic errors только native Google-shaped и без profile/project/key/upstream.
+   без image не получает media charge. Аналогичный Flash Preview audio fallback не угадывает
+   fractional duration, compressed/file audio или partial cache: такие запросы/usage отклоняются,
+   а реконструированный exact AUDIO row попадает и в public usageMetadata, и в тот же Rust metering.
+   Metered non-stream без authoritative usage не доставляется и refund-ится; stream после первого
+   байта без final usage списывает conservative hold без fake usage event. Public synthetic errors
+   только native Google-shaped и без profile/project/key/upstream.
 7. Gemini capacity не выводится из цены подписки или дневного request-count. Antigravity
    `retrieveUserQuotaSummary` принимается только для exact `gemini-5h`/`gemini-weekly`; `3p-*`
    исключены. Каждый successful generation с terminal usage (billed или admin) строит immutable
