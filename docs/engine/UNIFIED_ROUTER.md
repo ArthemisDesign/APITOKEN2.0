@@ -792,7 +792,14 @@ request получает `400 invalid_request`, неизвестный/неак�
    моделей каталога: text, images, tools, reasoning, usage, streaming. Реализуется по решениям
    1–5 раздела «Решения universal lanes»: адаптеры в плоскостях, router — только model-based
    routing, stored responses — только `openai/*` (для остальных явный
-   `400 documented_limitation`). Подпакеты: **4.1** — router dispatch + адаптер Anthropic
+   `400 documented_limitation`). Потоковый wire-контракт одинаков для native OpenAI,
+   Anthropic и Gemini planes: каждый JSON object в `data:` содержит совпадающий с SSE
+   `event:` поле `type` и строго возрастающий без пропусков `sequence_number`; lifecycle
+   events `response.created|in_progress|completed|failed` несут Response object в поле
+   `response`. Поэтому штатные OpenAI SDK распознают события без клиентских обёрток.
+   Терминальный сбой выдаёт `error` event (`code`, `message`, `param`), затем
+   `response.failed` с полным failed Response object; comment keepalive sequence не потребляет.
+   Подпакеты: **4.1** — router dispatch + адаптер Anthropic
    plane (ядро: текст, usage, stream; tools в запросе и function_call в ответе) —
    **РЕАЛИЗОВАН**: `POST /v1/responses` в router (`crates/router/src/responses.rs`) повторяет
    chat-диспатч этапа 3.1 — буферизуется только тело запроса (32 MiB), извлекается `model`,
@@ -832,7 +839,7 @@ request получает `400 invalid_request`, неизвестный/неак�
    `content_part.added` / `output_text.delta|done` / `function_call_arguments.delta|done` /
    `output_item.done` → `response.completed` с полным объектом и usage; ping → `: ping`
    comment-кадр; malformed known event/order, mid-stream `event: error` и преждевременный EOF →
-   `response.failed`; неизвестные именованные события игнорируются;
+   `error` → `response.failed`; неизвестные именованные события игнорируются;
    output_index — плотный собственный счётчик, thinking-блоки позицию не занимают).
    Ошибки — общий с chat-адаптером OpenAI-конверт с сохранением статуса (402 LowBalance
    тоже) и `Retry-After`. Временные ограничения 4.1: `function_call`/
@@ -912,7 +919,7 @@ request получает `400 invalid_request`, неизвестный/неак�
    закрывается done-событиями и эмитится `response.completed` (отличие от
    Anthropic-зеркала, где обязателен полный lifecycle до `message_stop`); malformed
    provider frame, EOF без terminal evidence, mid-stream error-кадр
-   `{error:{code,message,status}}` и транспортный сбой → `response.failed`
+   `{error:{code,message,status}}` и транспортный сбой → `error` → `response.failed`
    (error.code — google.rpc status). Ошибки — общий с chat-адаптером
    `convert_error_response` (Google-конверт → OpenAI-конверт, нативный
    `400 API_KEY_INVALID` → `401 authentication_error`, 402 и `Retry-After`

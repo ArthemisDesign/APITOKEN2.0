@@ -24,6 +24,7 @@ mod gemini_stream;
 mod meter;
 mod metrics;
 pub mod nodetls;
+mod openai_responses_stream;
 mod pricing;
 mod proxy;
 mod state;

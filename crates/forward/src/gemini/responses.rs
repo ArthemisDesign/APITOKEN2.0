@@ -116,16 +116,19 @@
 //! - смена типа контента закрывает открытый item (done-события) — text и
 //!   thought вперемешку дают серию items в порядке апстрима; output_index —
 //!   плотный собственный счётчик, content_index всегда 0, item-scoped
-//!   события несут `item_id`, `sequence_number` не выставляется;
+//!   события несут `item_id`; каждый data object несёт `type` и монотонный
+//!   `sequence_number`, lifecycle events оборачивают Response object в
+//!   поле `response`;
 //! - нормальное завершение Gemini-стрима — finishReason/blockReason + чистый EOF
 //!   (message_stop на wire нет): открытый item закрывается и эмитится `response.completed` с полным
 //!   Response object (status по сохранённому finishReason/blockReason, usage
 //!   из последнего usageMetadata — в Responses include-флага нет, usage
 //!   всегда в completed). EOF без terminal evidence → `response.failed`;
 //! - mid-stream error-кадр плоскости `{error:{code,message,status}}` и
-//!   транспортный сбой → `response.failed` (status "failed", error {code:
-//!   google.rpc status, message}) и завершение стрима; malformed known provider
-//!   shape → `response.failed`, неизвестные дополнительные поля допускаются.
+//!   транспортный сбой → OpenAI `error` event, затем `response.failed`
+//!   (status "failed", error {code: google.rpc status, message}) и завершение
+//!   стрима; malformed known provider shape проходит тот же failure lifecycle,
+//!   неизвестные дополнительные поля допускаются.
 //!
 //! Все ответы этого пути — OpenAI-совместимый конверт, включая ошибки:
 //! синтетические ошибки плоскости и пасsthrough-ошибки апстрима переводятся
@@ -155,6 +158,7 @@ use super::chat::{
 };
 use super::gemini_api;
 use crate::codex::new_id;
+use crate::openai_responses_stream::ResponsesEventEncoder;
 use crate::proxy::{read_body_limited, without_not_started, BodyReadError};
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
@@ -991,7 +995,7 @@ fn message_item(text: &str, status: &str) -> Value {
         "id": new_id("msg"),
         "status": status,
         "role": "assistant",
-        "content": [{"type": "output_text", "text": text, "annotations": []}],
+        "content": [{"type": "output_text", "text": text, "annotations": [], "logprobs": []}],
     })
 }
 
@@ -1207,6 +1211,7 @@ struct GeminiResponsesSseTranslator {
     inner: ByteStream,
     buf: BytesMut,
     out: VecDeque<Bytes>,
+    events: ResponsesEventEncoder,
     id: String,
     created: i64,
     /// Запрошенная (native) модель — фолбэк, пока/если кадры не сообщили
@@ -1242,6 +1247,7 @@ impl GeminiResponsesSseTranslator {
             inner,
             buf: BytesMut::new(),
             out: VecDeque::new(),
+            events: ResponsesEventEncoder::default(),
             id: new_id("resp"),
             created: pool::now(),
             requested_model,
@@ -1262,20 +1268,12 @@ impl GeminiResponsesSseTranslator {
         self.served_model.as_deref().unwrap_or(&self.requested_model)
     }
 
-    /// SSE-кадр события Responses: `event:` + `data:` (у Responses события
-    /// типизированы именем — как у Anthropic-зеркала).
-    fn frame(event: &str, value: Value) -> Bytes {
-        let mut frame = String::with_capacity(256);
-        frame.push_str("event: ");
-        frame.push_str(event);
-        frame.push_str("\ndata: ");
-        frame.push_str(&value.to_string());
-        frame.push_str("\n\n");
-        Bytes::from(frame)
+    fn push_event(&mut self, event: &'static str, value: Value) {
+        self.out.push_back(self.events.event(event, value));
     }
 
-    fn push_event(&mut self, event: &str, value: Value) {
-        self.out.push_back(Self::frame(event, value));
+    fn push_response_event(&mut self, event: &'static str, response: Value) {
+        self.out.push_back(self.events.response(event, response));
     }
 
     /// Response shell для created/in_progress: status in_progress, output [],
@@ -1300,8 +1298,8 @@ impl GeminiResponsesSseTranslator {
         if !self.started {
             self.started = true;
             let shell = self.shell();
-            self.push_event("response.created", shell.clone());
-            self.push_event("response.in_progress", shell);
+            self.push_response_event("response.created", shell.clone());
+            self.push_response_event("response.in_progress", shell);
         }
     }
 
@@ -1324,7 +1322,11 @@ impl GeminiResponsesSseTranslator {
             "error": {"code": code, "message": message},
             "incomplete_details": Value::Null,
         });
-        self.push_event("response.failed", response);
+        self.push_event(
+            "error",
+            json!({"code": code, "message": message, "param": Value::Null}),
+        );
+        self.push_response_event("response.failed", response);
         self.finished = true;
     }
 
@@ -1357,7 +1359,7 @@ impl GeminiResponsesSseTranslator {
                 "item_id": item_id,
                 "content_index": 0,
                 "part": {"type": "output_text", "text": "",
-                    "annotations": []},
+                    "annotations": [], "logprobs": []},
             }),
         );
         self.open = Some(OpenItem::Text {
@@ -1419,6 +1421,7 @@ impl GeminiResponsesSseTranslator {
                         "item_id": item_id,
                         "content_index": 0,
                         "text": text,
+                        "logprobs": [],
                     }),
                 );
                 self.push_event(
@@ -1428,14 +1431,14 @@ impl GeminiResponsesSseTranslator {
                         "item_id": item_id,
                         "content_index": 0,
                         "part": {"type": "output_text", "text": text,
-                            "annotations": []},
+                            "annotations": [], "logprobs": []},
                     }),
                 );
                 let item = json!({
                     "type": "message", "id": item_id, "status": "completed",
                     "role": "assistant",
                     "content": [{"type": "output_text", "text": text,
-                        "annotations": []}],
+                        "annotations": [], "logprobs": []}],
                 });
                 self.push_event(
                     "response.output_item.done",
@@ -1552,7 +1555,7 @@ impl GeminiResponsesSseTranslator {
             "error": Value::Null,
             "incomplete_details": incomplete_details,
         });
-        self.push_event("response.completed", response);
+        self.push_response_event("response.completed", response);
         self.finished = true;
     }
 
@@ -1658,6 +1661,7 @@ impl GeminiResponsesSseTranslator {
                             "item_id": item_id,
                             "content_index": 0,
                             "delta": segment,
+                            "logprobs": [],
                         }),
                     );
                     continue;
@@ -1800,9 +1804,12 @@ mod tests {
         out
     }
 
-    /// (event, data) каждого SSE-кадра ответа — тот же разбор, что в
-    /// contract-тестах Anthropic-зеркала.
+    /// (event, payload) каждого SSE-кадра ответа. Заодно проверяет публичный
+    /// wire-контракт: data.type совпадает с SSE event, sequence_number идёт
+    /// строго без пропусков. Для lifecycle events возвращает вложенный
+    /// Response object, чтобы assertions ниже читались так же, как раньше.
     fn event_frames(output: &str) -> Vec<(String, Value)> {
+        let mut expected_sequence = 0_u64;
         output
             .split("\n\n")
             .filter(|frame| !frame.trim().is_empty())
@@ -1816,7 +1823,25 @@ mod tests {
                         data = value.trim_start().to_string();
                     }
                 }
-                (event, serde_json::from_str(&data).expect("data is JSON"))
+                let data: Value = serde_json::from_str(&data).expect("data is JSON");
+                assert_eq!(data["type"], event, "event type mismatch in {frame}");
+                assert_eq!(
+                    data["sequence_number"], expected_sequence,
+                    "event sequence mismatch in {frame}"
+                );
+                expected_sequence += 1;
+                let payload = if matches!(
+                    event.as_str(),
+                    "response.created"
+                        | "response.in_progress"
+                        | "response.completed"
+                        | "response.failed"
+                ) {
+                    data["response"].clone()
+                } else {
+                    data
+                };
+                (event, payload)
             })
             .collect()
     }
@@ -2759,7 +2784,7 @@ mod tests {
         assert_eq!(item["role"], "assistant");
         assert_eq!(
             item["content"],
-            json!([{"type": "output_text", "text": "Hello, world", "annotations": []}])
+            json!([{"type": "output_text", "text": "Hello, world", "annotations": [], "logprobs": []}])
         );
         assert_eq!(body["usage"]["input_tokens"], 16);
         assert_eq!(body["usage"]["output_tokens"], 5);
@@ -3000,9 +3025,10 @@ data: {"candidates":[{"content":{"role":"model","parts":[{"text":", world"}]},"f
         assert_eq!(frames[3].1["content_index"], 0);
         assert_eq!(
             frames[3].1["part"],
-            json!({"type": "output_text", "text": "", "annotations": []})
+            json!({"type": "output_text", "text": "", "annotations": [], "logprobs": []})
         );
         assert_eq!(frames[4].1["delta"], "Hello");
+        assert_eq!(frames[4].1["logprobs"], json!([]));
         assert_eq!(frames[5].1["delta"], ", world");
         assert_eq!(frames[6].1["text"], "Hello, world");
         assert_eq!(frames[7].1["part"]["text"], "Hello, world");
@@ -3287,12 +3313,19 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         let frames = event_frames(&output);
         assert_eq!(
             event_names(&frames),
-            ["response.created", "response.in_progress", "response.failed"],
+            [
+                "response.created",
+                "response.in_progress",
+                "error",
+                "response.failed"
+            ],
             "{output}"
         );
-        assert_eq!(frames[2].1["status"], "failed");
-        assert_eq!(frames[2].1["output"], json!([]));
-        assert_eq!(frames[2].1["error"]["code"], "protocol_error");
+        assert_eq!(frames[2].1["code"], "protocol_error");
+        assert_eq!(frames[2].1["param"], Value::Null);
+        assert_eq!(frames[3].1["status"], "failed");
+        assert_eq!(frames[3].1["output"], json!([]));
+        assert_eq!(frames[3].1["error"]["code"], "protocol_error");
     }
 
     #[tokio::test]

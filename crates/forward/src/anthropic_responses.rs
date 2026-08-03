@@ -92,17 +92,18 @@
 //!   stop_reason — как non-stream);
 //! - `event: ping` → SSE comment-кадр `: ping` (heartbeat без событийной
 //!   семантики);
-//! - mid-stream `event: error` → `response.failed` (status "failed", error
-//!   {code, message} из санитизированной ошибки апстрима — как error frame
-//!   chat-адаптера, только в событийной форме) и завершение стрима; чистый
-//!   EOF до `message_stop` и транспортный сбой — тоже `response.failed`,
-//!   клиент не висит. Malformed known event/type/order → `response.failed`;
+//! - mid-stream `event: error` → OpenAI `error` event, затем
+//!   `response.failed` (status "failed", error {code, message} из
+//!   санитизированной ошибки апстрима — как error frame chat-адаптера) и
+//!   завершение стрима; чистый EOF до `message_stop`, транспортный сбой и
+//!   malformed known event/type/order проходят тот же failure lifecycle;
 //!   неизвестные именованные события игнорируются для forward compatibility;
 //! - output_index — плотный собственный счётчик: text/thinking/tool_use
 //!   блоки Messages позицию занимают, redacted_thinking и неизвестные —
 //!   пропускаются без позиции (решение 4); content_index всегда 0 (один
 //!   output_text part на message item). Item-scoped события несут `item_id`;
-//!   `sequence_number` не выставляется.
+//!   каждый data object несёт `type` и монотонный `sequence_number`, а
+//!   lifecycle events оборачивают Response object в поле `response`.
 //! usage всегда в `response.completed` (include-флага в Responses нет).
 //!
 //! Все ответы этого пути — OpenAI-совместимый конверт, включая ошибки:
@@ -130,6 +131,7 @@ use crate::anthropic::{
 };
 use crate::anthropic_stream::AnthropicStreamState;
 use crate::codex::new_id;
+use crate::openai_responses_stream::ResponsesEventEncoder;
 use crate::proxy::{forward, read_body_limited, without_not_started, BodyReadError};
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
@@ -943,7 +945,7 @@ fn message_item(text: &str, status: &str) -> Value {
         "id": new_id("msg"),
         "status": status,
         "role": "assistant",
-        "content": [{"type": "output_text", "text": text, "annotations": []}],
+        "content": [{"type": "output_text", "text": text, "annotations": [], "logprobs": []}],
     })
 }
 
@@ -1141,6 +1143,7 @@ struct ResponsesSseTranslator {
     inner: ByteStream,
     buf: BytesMut,
     out: VecDeque<Bytes>,
+    events: ResponsesEventEncoder,
     id: String,
     created: i64,
     /// Запрошенная (native) модель — фолбэк, пока/если `message_start` не
@@ -1174,6 +1177,7 @@ impl ResponsesSseTranslator {
             inner,
             buf: BytesMut::new(),
             out: VecDeque::new(),
+            events: ResponsesEventEncoder::default(),
             id: new_id("resp"),
             created: pool::now(),
             requested_model,
@@ -1195,20 +1199,12 @@ impl ResponsesSseTranslator {
         self.served_model.as_deref().unwrap_or(&self.requested_model)
     }
 
-    /// SSE-кадр события Responses: `event:` + `data:` (в отличие от
-    /// chat-адаптера, у Responses события типизированы именем).
-    fn frame(event: &str, value: Value) -> Bytes {
-        let mut frame = String::with_capacity(256);
-        frame.push_str("event: ");
-        frame.push_str(event);
-        frame.push_str("\ndata: ");
-        frame.push_str(&value.to_string());
-        frame.push_str("\n\n");
-        Bytes::from(frame)
+    fn push_event(&mut self, event: &'static str, value: Value) {
+        self.out.push_back(self.events.event(event, value));
     }
 
-    fn push_event(&mut self, event: &str, value: Value) {
-        self.out.push_back(Self::frame(event, value));
+    fn push_response_event(&mut self, event: &'static str, response: Value) {
+        self.out.push_back(self.events.response(event, response));
     }
 
     /// Response shell для created/in_progress: status in_progress, output [],
@@ -1233,8 +1229,8 @@ impl ResponsesSseTranslator {
         if !self.started {
             self.started = true;
             let shell = self.shell();
-            self.push_event("response.created", shell.clone());
-            self.push_event("response.in_progress", shell);
+            self.push_response_event("response.created", shell.clone());
+            self.push_response_event("response.in_progress", shell);
         }
     }
 
@@ -1257,7 +1253,11 @@ impl ResponsesSseTranslator {
             "error": {"code": code, "message": message},
             "incomplete_details": Value::Null,
         });
-        self.push_event("response.failed", response);
+        self.push_event(
+            "error",
+            json!({"code": code, "message": message, "param": Value::Null}),
+        );
+        self.push_response_event("response.failed", response);
         self.finished = true;
     }
 
@@ -1300,7 +1300,7 @@ impl ResponsesSseTranslator {
                                 "item_id": item_id,
                                 "content_index": 0,
                                 "part": {"type": "output_text", "text": "",
-                                    "annotations": []},
+                                    "annotations": [], "logprobs": []},
                             }),
                         );
                         self.blocks.insert(
@@ -1405,6 +1405,7 @@ impl ResponsesSseTranslator {
                                     "item_id": item_id,
                                     "content_index": 0,
                                     "delta": segment,
+                                    "logprobs": [],
                                 }),
                             );
                         }
@@ -1482,6 +1483,7 @@ impl ResponsesSseTranslator {
                                 "item_id": item_id,
                                 "content_index": 0,
                                 "text": text,
+                                "logprobs": [],
                             }),
                         );
                         self.push_event(
@@ -1491,14 +1493,14 @@ impl ResponsesSseTranslator {
                                 "item_id": item_id,
                                 "content_index": 0,
                                 "part": {"type": "output_text", "text": text,
-                                    "annotations": []},
+                                    "annotations": [], "logprobs": []},
                             }),
                         );
                         let item = json!({
                             "type": "message", "id": item_id, "status": "completed",
                             "role": "assistant",
                             "content": [{"type": "output_text", "text": text,
-                                "annotations": []}],
+                                "annotations": [], "logprobs": []}],
                         });
                         self.push_event(
                             "response.output_item.done",
@@ -1610,7 +1612,7 @@ impl ResponsesSseTranslator {
                     "error": Value::Null,
                     "incomplete_details": incomplete_details,
                 });
-                self.push_event("response.completed", response);
+                self.push_response_event("response.completed", response);
                 self.finished = true;
             }
             "ping" => {
@@ -1750,9 +1752,13 @@ mod tests {
         out
     }
 
-    /// (event, data) каждого SSE-кадра ответа; comment-кадр (`: ping`) —
-    /// ("comment", Null).
+    /// (event, payload) каждого SSE-кадра ответа. Заодно проверяет публичный
+    /// wire-контракт: data.type совпадает с SSE event, sequence_number идёт
+    /// строго без пропусков. Для lifecycle events возвращает вложенный
+    /// Response object, чтобы assertions ниже читались так же, как раньше;
+    /// comment-кадр (`: ping`) sequence не потребляет.
     fn event_frames(output: &str) -> Vec<(String, Value)> {
+        let mut expected_sequence = 0_u64;
         output
             .split("\n\n")
             .filter(|frame| !frame.trim().is_empty())
@@ -1769,7 +1775,25 @@ mod tests {
                         data = value.trim_start().to_string();
                     }
                 }
-                (event, serde_json::from_str(&data).expect("data is JSON"))
+                let data: Value = serde_json::from_str(&data).expect("data is JSON");
+                assert_eq!(data["type"], event, "event type mismatch in {frame}");
+                assert_eq!(
+                    data["sequence_number"], expected_sequence,
+                    "event sequence mismatch in {frame}"
+                );
+                expected_sequence += 1;
+                let payload = if matches!(
+                    event.as_str(),
+                    "response.created"
+                        | "response.in_progress"
+                        | "response.completed"
+                        | "response.failed"
+                ) {
+                    data["response"].clone()
+                } else {
+                    data
+                };
+                (event, payload)
             })
             .collect()
     }
@@ -2709,7 +2733,7 @@ mod tests {
         assert_eq!(
             item["content"],
             serde_json::json!([{"type": "output_text", "text": "Hello, world",
-                "annotations": []}])
+                "annotations": [], "logprobs": []}])
         );
         // input = 12 + cache_read 4; cached_tokens отражён в details.
         assert_eq!(json["usage"]["input_tokens"], 16);
@@ -2928,8 +2952,9 @@ data: {"type":"message_stop"}"#;
         assert!(item_id.as_str().unwrap().starts_with("msg_"));
         assert_eq!(frames[3].1["item_id"], item_id);
         assert_eq!(frames[3].1["content_index"], 0);
-        assert_eq!(frames[3].1["part"], serde_json::json!({"type": "output_text", "text": "", "annotations": []}));
+        assert_eq!(frames[3].1["part"], serde_json::json!({"type": "output_text", "text": "", "annotations": [], "logprobs": []}));
         assert_eq!(frames[4].1["delta"], "Hello");
+        assert_eq!(frames[4].1["logprobs"], serde_json::json!([]));
         assert_eq!(frames[5].1["delta"], ", world");
         assert_eq!(frames[6].1["text"], "Hello, world");
         assert_eq!(frames[7].1["part"]["text"], "Hello, world");
@@ -3227,10 +3252,18 @@ data: {"type":"message_stop"}"#;
         let frames = event_frames(&output);
         assert_eq!(
             event_names(&frames),
-            ["response.created", "response.in_progress", "response.failed"],
+            [
+                "response.created",
+                "response.in_progress",
+                "error",
+                "response.failed"
+            ],
             "{output}"
         );
-        let failed = &frames[2].1;
+        assert_eq!(frames[2].1["code"], "overloaded_error");
+        assert_eq!(frames[2].1["message"], "Overloaded");
+        assert_eq!(frames[2].1["param"], Value::Null);
+        let failed = &frames[3].1;
         assert_eq!(failed["status"], "failed");
         assert_eq!(failed["error"]["code"], "overloaded_error");
         assert_eq!(failed["error"]["message"], "Overloaded");
