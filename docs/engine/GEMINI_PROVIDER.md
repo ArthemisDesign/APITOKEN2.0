@@ -33,9 +33,14 @@ immutable generation 4 adds `gemini-3-flash-preview` without mutating generation
 gate on the old public wire failed with 404 and no usage, so generation 4 is a rejected dormant
 artifact: keep its digest for historical verification, but never materialize or activate a
 catalog/release on it. The later live-proven private-wire implementation remains dormant and does
-not rewrite that artifact. Its 2026-08-03 exact-SHA gate subsequently failed on authoritative audio
-token attribution, so publication is withdrawn again; any future attempt requires new provider
-evidence, a fresh GREEN exact-SHA matrix and a later additive capability generation.
+not rewrite that artifact. Successive 2026-08-03 exact-SHA gates fixed authoritative PCM audio
+accounting and an optional tool-subset harness error, then proved both owned plans through every
+thinking level and incremental SSE. The latest terminal run nevertheless returned the first
+profile's byte-identical cache replay entirely as fresh input after the runner had interposed the
+other profile's write and evidence wait. Publication therefore remains withdrawn. The dormant
+runner now keeps each profile-isolated write/read pair adjacent, but a fresh GREEN exact-SHA matrix
+must still observe the cache class and every later control before a new additive capability
+generation or any public/default surface is allowed.
 The Stage 5 main catalog must opt in explicitly to a live-proven capability, while the
 contemporaneous OpenKeys catalog deliberately remains Anthropic/OpenAI until a separate reviewed
 1:1 OpenKeys generation enables Gemini.

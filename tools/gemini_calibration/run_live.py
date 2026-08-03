@@ -744,6 +744,38 @@ def profile_cache_scopes(profiles: Iterable[str]) -> dict[str, str]:
     }
 
 
+def coverage_schedule(legs: Iterable[Leg], profiles: Iterable[str]) -> list[tuple[str, Leg]]:
+    ordered_legs = list(legs)
+    ordered_profiles = list(profiles)
+    schedule: list[tuple[str, Leg]] = []
+    index = 0
+    while index < len(ordered_legs):
+        write = ordered_legs[index]
+        read = ordered_legs[index + 1] if index + 1 < len(ordered_legs) else None
+        is_replay_pair = (
+            read is not None
+            and write.cache_key is not None
+            and write.cache_key == read.cache_key
+            and write.model == read.model
+            and write.kind == read.kind
+            and write.cache_phase == "write"
+            and read.cache_phase == "read"
+        )
+        if is_replay_pair:
+            # Implicit provider cache admission is time-sensitive. Keep the byte-identical replay
+            # immediately behind its own profile's write instead of interposing another profile's
+            # generation plus the mandatory immutable-evidence propagation wait. A missing cache
+            # class on this adjacent read still fails closed; this changes ordering, not proof.
+            for profile in ordered_profiles:
+                schedule.append((profile, write))
+                schedule.append((profile, read))
+            index += 2
+            continue
+        schedule.extend((profile, write) for profile in ordered_profiles)
+        index += 1
+    return schedule
+
+
 def body_for_leg(
     leg: Leg,
     run_id: str,
@@ -1720,57 +1752,56 @@ def main(argv: list[str] | None = None) -> int:
         )
     failure: str | None = None
     try:
-        for leg in legs:
-            for profile in profiles:
-                key = (profile, leg.name)
-                if profile in stopped or key in completed:
-                    continue
-                try:
-                    record = runner.execute_leg(leg, profile)
-                    completed.add(key)
-                    if record["coverage_error"]:
-                        unavailable.append({
-                            "profile_id": profile,
-                            "model": leg.model,
-                            "capability": leg.name,
-                            "reason": record["coverage_error"],
-                            "blocking": True,
-                        })
-                        completed.add(key)
-                        raise CalibrationError(
-                            f"{profile}/{leg.name}: paid response proof failed: "
-                            f"{record['coverage_error']}"
-                        )
-                except UnboundedCostError as error:
+        for profile, leg in coverage_schedule(legs, profiles):
+            key = (profile, leg.name)
+            if profile in stopped or key in completed:
+                continue
+            try:
+                record = runner.execute_leg(leg, profile)
+                completed.add(key)
+                if record["coverage_error"]:
                     unavailable.append({
                         "profile_id": profile,
                         "model": leg.model,
                         "capability": leg.name,
-                        "reason": str(error),
-                        "blocking": False,
-                        "skipped_before_dispatch": True,
+                        "reason": record["coverage_error"],
+                        "blocking": True,
                     })
                     completed.add(key)
+                    raise CalibrationError(
+                        f"{profile}/{leg.name}: paid response proof failed: "
+                        f"{record['coverage_error']}"
+                    )
+            except UnboundedCostError as error:
+                unavailable.append({
+                    "profile_id": profile,
+                    "model": leg.model,
+                    "capability": leg.name,
+                    "reason": str(error),
+                    "blocking": False,
+                    "skipped_before_dispatch": True,
+                })
+                completed.add(key)
+                continue
+            except HttpCalibrationError as error:
+                if error.status in {400, 403, 404}:
+                    unavailable.append({
+                        "profile_id": profile,
+                        "model": leg.model,
+                        "capability": leg.name,
+                        "http_status": error.status,
+                        "reason": error.detail[:300],
+                        "blocking": True,
+                    })
+                    completed.add(key)
+                    raise CalibrationError(
+                        f"{profile}/{leg.name}: required generation capability returned "
+                        f"HTTP {error.status}"
+                    )
+                if is_explicit_transient_stop(error):
+                    stopped[profile] = str(error)
                     continue
-                except HttpCalibrationError as error:
-                    if error.status in {400, 403, 404}:
-                        unavailable.append({
-                            "profile_id": profile,
-                            "model": leg.model,
-                            "capability": leg.name,
-                            "http_status": error.status,
-                            "reason": error.detail[:300],
-                            "blocking": True,
-                        })
-                        completed.add(key)
-                        raise CalibrationError(
-                            f"{profile}/{leg.name}: required generation capability returned "
-                            f"HTTP {error.status}"
-                        )
-                    if is_explicit_transient_stop(error):
-                        stopped[profile] = str(error)
-                        continue
-                    raise
+                raise
     except (CalibrationError, subprocess.TimeoutExpired) as error:
         failure = str(error)
     try:

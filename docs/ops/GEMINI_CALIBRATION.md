@@ -86,10 +86,14 @@ Backend estimator остаётся workload-dependent: он оценивает A
   split remains blocking rather than pricing the higher audio SKU as text or guessing.
 - Cache payload содержит уникальный `run_id` и стабильный порядковый profile scope; write/read пары
   одного профиля байт-в-байт одинаковы, но другой профиль или запуск не может принять чужую cache
-  warmth за свою. Scope не содержит raw profile id или provider identity. Cache/audio legs Flash
-  Preview используют bounded `maxOutputTokens=512`: модель уже исчерпывала 128-token
-  dynamic-thinking budget без видимого ответа, а прежний audio turn использовал 119/128 токенов.
-  Полный two-plan worst-case matrix остаётся внутри `$21` (`20,999,168,000 nanoUSD`).
+  warmth за свою. Scope не содержит raw profile id или provider identity. Каждая replay-пара
+  исполняется подряд внутри одного профиля (`write → read`) до перехода к следующему профилю:
+  между ней больше нет чужого generation и обязательного ожидания immutable evidence. Это только
+  минимизирует управляемый cache-liveness gap; отсутствие cache token class на соседнем read всё
+  равно остаётся terminal miss и не повторяется. Cache/audio legs Flash Preview используют bounded
+  `maxOutputTokens=512`: модель уже исчерпывала 128-token dynamic-thinking budget без видимого
+  ответа, а прежний audio turn использовал 119/128 токенов. Полный two-plan worst-case matrix
+  остаётся внутри `$21` (`20,999,168,000 nanoUSD`).
 - После durable settlement exact-target turn немедленно будит бесплатный provider quota/health
   probe; обычный customer traffic сохраняет фоновую cadence. Runner всё равно выдерживает минимум
   16 секунд как независимый guard на provider snapshot propagation и затем опрашивает backend до

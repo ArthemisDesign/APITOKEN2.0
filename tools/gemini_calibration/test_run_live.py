@@ -278,6 +278,43 @@ class GeminiLiveCalibrationTests(unittest.TestCase):
         self.assertNotIn("profile-a", json.dumps(cache_a))
         self.assertNotIn("profile-a", json.dumps(audio_a))
 
+    def test_replay_pairs_are_profile_local_and_adjacent_in_the_execution_schedule(self):
+        legs = run_live.build_coverage_legs(["gemini-3-flash-preview"], "run")
+        schedule = run_live.coverage_schedule(legs, ["profile-a", "profile-b"])
+        cache = [
+            (profile, leg.cache_phase)
+            for profile, leg in schedule
+            if leg.kind == "cache"
+        ]
+        audio = [
+            (profile, leg.cache_phase)
+            for profile, leg in schedule
+            if leg.kind == "audio"
+        ]
+        self.assertEqual(cache, [
+            ("profile-a", "write"),
+            ("profile-a", "read"),
+            ("profile-b", "write"),
+            ("profile-b", "read"),
+        ])
+        self.assertEqual(audio, [
+            ("profile-a", "write"),
+            ("profile-a", "read"),
+            ("profile-b", "write"),
+            ("profile-b", "read"),
+        ])
+        thinking = [
+            (profile, leg.thinking_level)
+            for profile, leg in schedule
+            if leg.kind == "thinking"
+        ]
+        self.assertEqual(thinking[:4], [
+            ("profile-a", "minimal"),
+            ("profile-b", "minimal"),
+            ("profile-a", "low"),
+            ("profile-b", "low"),
+        ])
+
     def test_flash_preview_two_plan_matrix_stays_inside_the_approved_twenty_one_dollar_cap(self):
         rates = run_live.ModelRates(
             tariff_schedule_id="google/gemini-developer-api/2026-08-02",
