@@ -31,7 +31,8 @@ backend-only (по образцу KIMI, `docs/engine/KIMI_PROVIDER.md` §0) до
 | Migration 0029 + registry observation types | `crates/registry/{migrations_pg/0029_glm_window_calibration.sql,src/glm_calibration.rs,src/pg.rs}` | 40b6d866 |
 | **Мёрж в master, deploy/watchdog GREEN** | master `e9810ef9c6e2a000edb8fac9ad8997d04c8dad9b` (trusted host validation GREEN) | e9810ef9 |
 | Credential crate | `crates/glm-credential` (+ корневой Cargo.toml/lock) | 0363581a |
-| Calibration estimator | `crates/forward/src/glm_calibration.rs` | _этот коммит_ |
+| Calibration estimator | `crates/forward/src/glm_calibration.rs` | 3825be3b |
+| Auth Bot: протокол + roster (dormant) | `crates/authbot/src/{glm_key,glm_roster}.rs`, `main.rs`, CLAUDE.md | _этот коммит_ |
 
 ## Рамка от владельца (2026-08-04)
 
@@ -68,9 +69,11 @@ reroute glm-5.1/5→5.2 (billing по served); rate card 5.2=$1.40/0.26/4.40,
 
 ## Следующее действие (ровно одно)
 
-Auth Bot: `crates/authbot/src/glm_key.rs` (quota-probe + минимальная generation-валидация
-ключа), `glm_roster.rs` (atomic publish, dedup по ключу), интеграция в `bot.rs`
-(HandoffKind::Glm, шаги glm_proxy/glm_ready/glm_wait, тексты, exhaustive menu-тесты).
+Auth Bot мастер продавца в `bot.rs`: `HandoffKind::Glm` ПЕРВЫМ (компилятор покажет все
+места), правило handoff_kind() выше соседних, tier_name/product_kb/admin keyboards,
+тексты (GLM_OFFER_GUIDE/ACCOUNT_SETUP/PROXY_PROMPT), шаги glm_proxy → glm_ready →
+glm_wait, ввод ключа текстом на glm_wait, валидация через glm_key → glm_roster::publish
+→ выплата; exhaustive menu-тесты (счётчик labels, закрытый matches!).
 
 ## Очередь
 

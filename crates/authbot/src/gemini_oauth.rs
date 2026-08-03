@@ -3482,6 +3482,7 @@ mod tests {
             .unwrap();
         let bot_config = Arc::new(BotConfig {
             kimi_roster: None,
+            glm_roster: None,
             admins_id: HashSet::new(),
             admins_name: HashSet::new(),
             claude_bin: String::new(),

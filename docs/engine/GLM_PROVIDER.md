@@ -349,7 +349,8 @@ cumulative ledgers и завершает immutable observation/CAS до публ
 | типы наблюдений | `crates/registry/src/glm_calibration.rs` | готово, 20 тестов |
 | credential | `crates/glm-credential` | готово, 18 тестов |
 | calibration estimator | `crates/forward/src/glm_calibration.rs` | готово, 27 тестов |
-| Auth Bot: протокол + мастер | `crates/authbot/src/{glm_oauth,glm_roster}.rs`, `bot.rs` | не начато |
+| Auth Bot: протокол валидации + roster | `crates/authbot/src/{glm_key,glm_roster}.rs` | готово, dormant (без мастера), 26 тестов |
+| Auth Bot: мастер продавца | `crates/authbot/src/bot.rs` | не начато (следующее изменение, §7) |
 | transport / pool / gateway | `crates/forward/src/glm/**` | не начато |
 | server: env/config + композиция | `crates/server/src/{config,main,poller}.rs` | не начато |
 | observability, admin projection | `observability/**`, `apps/admin` | не начато |

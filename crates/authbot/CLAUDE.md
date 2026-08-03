@@ -340,3 +340,61 @@ state-машины продавца в одном diff. Факты и метки
 которого пришлось бы выбросить.
 
 Проверка: `cargo test -p authbot kimi`.
+
+## GLM (Zhipu AI / Z.ai Coding Plan) — статический API-ключ, пока dormant
+
+`glm_key.rs` — чистый протокольный модуль валидации ключа GLM Coding Plan. Он НЕ владеет
+Telegram-состоянием, seller job, выплатой и публикацией roster: **мастер продавца приезжает
+следующим зависимым изменением**, до которого ветка dormant (оба модуля под
+`#![allow(dead_code)]`, из `bot.rs` не вызываются). Факты и метки evidence —
+`docs/engine/GLM_PROVIDER.md` §2 (credential/identity), §4 (wire), §7 (acquisition flow).
+
+- **Credential — статический ключ из консоли**, OAuth device flow нет. Продавец покупает exact
+  individual credits-план (Lite/Pro/Max по продукту оффера) на своём аккаунте и присылает ключ
+  боту текстом; пароль, 2FA и cookie бот никогда не запрашивает — ключ единственный
+  credential-артефакт, как `sk-ant-oat01-…` у Claude.
+- **Quota-probe бесплатный и read-only**: `GET {base}/api/monitor/usage/quota/limit` с
+  заголовком `Authorization: <key>` БЕЗ Bearer-префикса. Ловушка протокола: невалидный ключ
+  отвечает **HTTP 200 с `code: 401` в теле**, поэтому парсер смотрит business code, а не HTTP
+  status. Поля лимитов (`unit/number/usage/currentValue/remaining/…`) сохраняются сырыми —
+  семантика единиц не доказана (`oss-hypothesis`, манифест §6), интерпретации нет.
+- **План корроборируется квотой**: наблюдённый лимит 5-часового окна (наименьшее TIME_LIMIT
+  окно, `number` либо `currentValue+usage`) обязан совпасть с официальными кредитами
+  declared-плана (2 000/12 000/28 000 за 5ч). Противоречие — `PlanMismatch`; legacy
+  prompts-форма, Team tokens (`TOKENS_LIMIT` без `TIME_LIMIT`) и неоднозначные окна —
+  `UnsupportedPlanShape`, fail closed без угадывания.
+- **Admission — одна минимальная платная generation** (`POST {base}/api/anthropic/v1/messages`,
+  `Authorization: Bearer`, `glm-4.7`, `max_tokens=1`). Успех — 2xx с непустым `usage`
+  (`input_tokens`/`output_tokens`). Классы ошибок — typed `KeyVerdict`, никаких bool:
+  1000–1005/1309/1311/1313/1315/1113 — невалидный ключ (с typed reason для безопасной
+  подсказки продавцу), 1308/1310 — валидный ключ с нулевой квотой (`QuotaExhausted`, это НЕ
+  невалидный ключ), 1316–1321 — Team/legacy форма. Прочие коды и ответы без business code —
+  transport. Платная generation НИКОГДА не повторяется автоматически после ambiguous
+  transport; read-only probe повторяется с bounded backoff (1с → 30с cap), дедлайн одной
+  валидации — 60 секунд.
+- **Печать конверта — только ДО завершения выплаты**: неудачный, просроченный или wrong-plan
+  flow не оставляет ни файла credential, ни строки roster.
+
+`glm_roster.rs` — файловый контракт публикации, зеркало `kimi_roster.rs`.
+
+- **Порядок — конверт, затем roster**, оба atomic + fsync родителя (файлы 0600, каталоги
+  0700): движок никогда не читает строку roster, чей credential-файл ещё не существует.
+- **Ключ — quota identity.** Machine-readable `/me` у GLM нет, поэтому subject-дедуп идёт по
+  самому API-ключу: сравнение выполняется на открытых конвертах внутри безопасной зоны, raw
+  ключ наружу не уходит. Повторная публикация того же ключа **заменяет** профиль на месте,
+  сохраняя profile id (affinity, health и история калибровки переживают замену); новый ключ с
+  уже занятым profile id отклоняется.
+- **Fail closed:** строка roster обязана указывать ровно на канонический путь своего id;
+  symlink, world-readable файл и нечитаемый конверт останавливают публикацию, а не выкидывают
+  профиль; невалидный credential roster не трогает вообще. В roster лежат только opaque id и
+  путь — ни ключа, ни плана, ни прокси.
+
+**Env:** `AUTH_BOT_GLM_DIR` (корень `credentials/` + `profiles.json`, деф
+`/srv/claude-api/data/glm`), `AUTH_BOT_GLM_CREDENTIAL_KEYS`,
+`AUTH_BOT_GLM_CREDENTIAL_ACTIVE_KID`. Без keyring ветка не публикует ничего — как и у KIMI,
+intake гейтится только на AEAD keyring.
+
+**Мастер продавца — следующим изменением** (шаги `glm_proxy → glm_ready → glm_wait`, кнопка
+`glm:ready` по `docs/engine/GLM_PROVIDER.md` §7); этот diff намеренно не трогает `bot.rs`.
+
+Проверка: `cargo test -p authbot glm`.
