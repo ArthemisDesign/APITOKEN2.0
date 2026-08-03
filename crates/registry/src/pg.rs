@@ -174,9 +174,11 @@ const MIGRATION_0026: &str =
     include_str!("../migrations_pg/0026_pricing_release_zero_drain_extensions.sql");
 const MIGRATION_0027: &str =
     include_str!("../migrations_pg/0027_kimi_window_calibration.sql");
+const MIGRATION_0028: &str =
+    include_str!("../migrations_pg/0028_pricing_ledger_release_v2_attribution.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 27;
+pub const CURRENT_SCHEMA_VERSION: i64 = 28;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -207,6 +209,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (25, MIGRATION_0025),
     (26, MIGRATION_0026),
     (27, MIGRATION_0027),
+    (28, MIGRATION_0028),
 ];
 
 #[cfg(test)]
@@ -10160,13 +10163,47 @@ mod tests {
     }
 
     #[test]
-    fn kimi_migration_is_registered_at_the_current_schema_version() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 27);
+    fn pricing_ledger_release_v2_attribution_migration_only_widens_ledger_shape() {
+        let ddl = MIGRATION_0028
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let normalized = ddl.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        // The legacy ranges constraint is swapped for a superset: policy_v1 and legacy_scalar
+        // keep the exact same expression, release_v2 is only added to the closed kind set.
+        assert!(normalized.contains("DROP CONSTRAINT ledger_multi_discount_ranges"));
+        assert!(normalized.contains("ADD CONSTRAINT ledger_multi_discount_ranges"));
+        assert!(normalized.contains("snapshot_kind IN ('policy_v1', 'legacy_scalar', 'release_v2')"));
+        assert!(normalized.contains("VALIDATE CONSTRAINT ledger_multi_discount_ranges"));
+
+        // The dedicated release_v2 shape is a separate additive constraint, valid for every
+        // pre-existing row because none of them carries snapshot_kind='release_v2'.
+        assert!(normalized.contains("ADD CONSTRAINT ledger_release_v2_attribution_shape"));
+        assert!(normalized.contains("snapshot_kind IS DISTINCT FROM 'release_v2'"));
+        assert!(normalized.contains("attribution_schema_version >= 2"));
+        assert!(normalized.contains("account_class IN ('b2c', 'b2b', 'openkeys', 'service')"));
+        assert!(normalized.contains("commission_eligible IS NULL"));
+        assert!(normalized.contains("VALIDATE CONSTRAINT ledger_release_v2_attribution_shape"));
+
+        // Expand-only: no data is rewritten and nothing else is dropped.
+        assert!(!normalized.contains(" DROP TABLE "));
+        assert!(!normalized.contains(" TRUNCATE "));
+        assert!(!normalized.contains(" UPDATE "));
+        assert!(!normalized.contains(" DELETE "));
+
+        assert!(normalized.contains("INSERT INTO engine_schema_migrations(version) VALUES (28)"));
+    }
+
+    #[test]
+    fn pricing_ledger_release_v2_migration_is_registered_at_the_current_schema_version() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 28);
         let registered = ENGINE_MIGRATIONS
             .iter()
-            .find(|(version, _)| *version == 27)
+            .find(|(version, _)| *version == 28)
             .map(|(_, sql)| *sql);
-        assert_eq!(registered, Some(MIGRATION_0027));
+        assert_eq!(registered, Some(MIGRATION_0028));
     }
 
     /// Real PostgreSQL proof for immutable turn replay, cumulative spend, observation history and

@@ -259,8 +259,16 @@ side effect. `serve` may only perform the read-only schema verification before c
   snapshot остаётся authority цены, а новый snapshot закрепляет только active funding generation,
   bonus-first lot order и paid-only overdraft. Deferred coverage запрещает новую незавершённую
   reservation нормализованного аккаунта без ровно одного compatible funding snapshot. Runtime
-  writers подключаются только отдельным SHA после зелёного migration/watchdog; funding head после
-  первой normalization не удаляется и двигается только monotonic generation/version step.
+   writers подключаются только отдельным SHA после зелёного migration/watchdog; funding head после
+   первой normalization не удаляется и двигается только monotonic generation/version step.
+- **Release-v2 ledger attribution checkpoint:** PostgreSQL migration `0028` metadata-only заменяет
+  `ledger_multi_discount_ranges` на superset (`snapshot_kind` теперь допускает `release_v2`) и
+  добавляет отдельный `ledger_release_v2_attribution_shape`: release-v2 charge обязан нести
+  attribution schema >= 2, release lineage, account class, exact paid/bonus/other split и
+  snapshot digest, а legacy pricing-mode/eligibility поля остаются NULL. Существующие
+  policy_v1/legacy_scalar строки удовлетворяют прежнему выражению, данных миграция не переписывает
+  (NOT VALID + VALIDATE). Никакой writer ещё не создаёт release-v2 attribution: dependent producer
+  доставляется отдельным SHA после зелёного migration/watchdog этого checkpoint.
 - **Pre-cutover funding dual writers:** все три PostgreSQL reserve-пути (scalar,
   legacy-snapshot и strict-policy), settlement outbox и `account_topup` сериализуются в порядке
   `request advisory → funding account advisory → reread head → row locks/money writes` (у top-up
