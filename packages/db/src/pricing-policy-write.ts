@@ -467,8 +467,12 @@ async function materializeBinding(
     content_digest: stage5Digest("effective-policy", base),
   });
   const binding = accountPolicyBindingSchema.parse({
-    policy_enforcement: bindingRow.reconciliation_state === "verified"
-      ? "strict"
+    // Before the global release head exists, the scalar path remains authoritative and a
+    // prepared account policy is shadow-only. Reconciliation evidence by itself must never
+    // manufacture the invalid strict-policy + legacy-funding combination: strictness advances
+    // only through the atomic release-v2 binding after funding has advanced with it.
+    policy_enforcement: bindingRow.policy_enforcement === "legacy_scalar"
+      ? "shadow"
       : bindingRow.policy_enforcement,
     funding_enforcement: bindingRow.funding_enforcement,
     reconciliation_state: bindingRow.reconciliation_state,

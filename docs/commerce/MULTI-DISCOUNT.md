@@ -344,6 +344,12 @@ release/funding snapshot. Stage 8 учитывает оба legacy count, но �
 классифицирован. Пока release готовится, новый аккаунт обязан попасть в оба immutable
 target/recovery manifests до выдачи usable key.
 
+Пока global head отсутствует, новый account продолжает жить на authoritative legacy scalar, а
+подготовленный versioned policy подтверждается только в `shadow` с `legacy_single` funding.
+`reconciliation_state=verified` сам по себе не повышает policy до `strict`: strict policy и strict
+funding включаются только одной атомарной release-v2 binding. Это не даёт provisioning создать
+недопустимую пару `strict + legacy_single` и застрять в terminal delivery job перед cutover.
+
 После появления global head immutable manifests не дописываются. Post-cutover provisioning
 сначала создаёт account без usable key, подготавливает его funding generation (для balance-классов),
 затем атомарно добавляет append-only assignment extension для exact текущих active/recovery

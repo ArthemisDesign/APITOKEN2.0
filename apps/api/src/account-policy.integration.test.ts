@@ -397,6 +397,11 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
           identity: { switches: job.spec, expectation: "absent" },
         });
       } else {
+        expect(job.binding).toEqual({
+          policy_enforcement: "shadow",
+          funding_enforcement: "legacy_single",
+          reconciliation_state: "verified",
+        });
         await confirmPricingControlJob(database, job, {
           result: "applied",
           identity: {
@@ -419,7 +424,7 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
       JOIN account_policy_bindings binding ON binding.user_id = account.user_id
       WHERE account.user_id = $1
     `, [registration.user.id]);
-    expect(afterAck.rows[0]).toEqual({ status: "active", policy_enforcement: "strict", sync_state: "confirmed" });
+    expect(afterAck.rows[0]).toEqual({ status: "active", policy_enforcement: "shadow", sync_state: "confirmed" });
     await expect(account.createApiKey(registration.user.id, { label: "after-ack" }))
       .resolves.toMatchObject({ key: rawKey, status: "active" });
     expect(issuedKeys).toBe(1);
