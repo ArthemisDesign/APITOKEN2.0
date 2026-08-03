@@ -683,4 +683,67 @@ describe("migration configuration", () => {
     expect(snapshot.tables["public.pricing_release_activation_receipts_v2"]!.columns.receipt_payload)
       .toMatchObject({ notNull: false, type: "jsonb" });
   });
+
+  it("adds dormant managed Stage 8 capture jobs with append-only raw artifacts", () => {
+    const migrationName = "0033_pricing_stage8_managed_capture.sql";
+    const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, migrationName), "utf8");
+    const journal = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
+    const previousEntry = journal.entries.find((entry) => entry.idx === 32);
+    const currentEntry = journal.entries.find((entry) => entry.idx === 33);
+
+    expect(currentEntry).toMatchObject({
+      idx: 33,
+      version: "7",
+      tag: "0033_pricing_stage8_managed_capture",
+      breakpoints: true,
+    });
+    expect(currentEntry!.when).toBeGreaterThan(previousEntry!.when);
+    expect(migrationSql).not.toMatch(/^(?:DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
+    expect(migrationSql).not.toMatch(/\b(?:track|tier|retention)\b/i);
+    expect(
+      [...migrationSql.matchAll(/^CREATE TABLE "([^"]+)"/gm)].map((match) => match[1]).sort(),
+    ).toEqual([
+      "pricing_stage8_capture_artifacts_v2",
+      "pricing_stage8_capture_jobs_v2",
+    ]);
+    expect(migrationSql).toContain("'pending', 'processing', 'retry', 'passed', 'blocked', 'dead'");
+    expect(migrationSql).toContain('"engine_payload_json" text NOT NULL');
+    expect(migrationSql).toContain('"combined_payload_json" text');
+    expect(migrationSql).toContain("'stored', 'unchanged', 'not_persisted'");
+    expect(migrationSql).toContain('CONSTRAINT "pricing_stage8_capture_artifacts_v2_job_fk"');
+
+    const databaseObjectNames = [
+      ...migrationSql.matchAll(/^CREATE TABLE "([^"]+)"/gm),
+      ...migrationSql.matchAll(/CONSTRAINT "([^"]+)"/g),
+      ...migrationSql.matchAll(/^CREATE (?:UNIQUE )?INDEX "([^"]+)"/gm),
+    ].map((match) => match[1]).filter((name): name is string => name !== undefined);
+    expect(databaseObjectNames.filter((name) => Buffer.byteLength(name, "utf8") > 63)).toEqual([]);
+
+    const snapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0033_snapshot.json"), "utf8"),
+    ) as {
+      prevId: string;
+      tables: Record<string, {
+        columns: Record<string, { notNull: boolean; type: string }>;
+        foreignKeys: Record<string, unknown>;
+        indexes: Record<string, unknown>;
+      }>;
+    };
+    const previousSnapshot = JSON.parse(
+      readFileSync(join(MIGRATIONS_FOLDER, "meta", "0032_snapshot.json"), "utf8"),
+    ) as { id: string };
+    expect(snapshot.prevId).toBe(previousSnapshot.id);
+    expect(snapshot.tables["public.pricing_stage8_capture_jobs_v2"]!.columns.request_digest)
+      .toMatchObject({ notNull: true, type: "text" });
+    expect(snapshot.tables["public.pricing_stage8_capture_artifacts_v2"]!.columns.engine_payload_json)
+      .toMatchObject({ notNull: true, type: "text" });
+    expect(snapshot.tables["public.pricing_stage8_capture_artifacts_v2"]!.columns.combined_payload_json)
+      .toMatchObject({ notNull: false, type: "text" });
+    expect(snapshot.tables["public.pricing_stage8_capture_artifacts_v2"]!.foreignKeys)
+      .toHaveProperty("pricing_stage8_capture_artifacts_v2_job_fk");
+    expect(snapshot.tables["public.pricing_stage8_capture_jobs_v2"]!.indexes)
+      .toHaveProperty("pricing_stage8_capture_jobs_v2_claim_idx");
+  });
 });

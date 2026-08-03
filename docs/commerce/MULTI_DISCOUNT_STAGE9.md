@@ -17,6 +17,13 @@ checkpoint. Она добавляет nullable service-inventory digest, не д
 этим persisted digest. Так post-cutover service account не может появиться между evidence и
 recovery CAS незамеченным.
 
+Commerce migration `0033_pricing_stage8_managed_capture.sql` — отдельный expand-only checkpoint
+для штатного production capture без SSH и файлового handoff. Она создаёт только пустую очередь и
+append-only хранилище исходного engine JSON/combined JSON по попыткам. Миграция не создаёт job, не
+вызывает engine, не собирает Stage 8 и не активирует release. После GREEN schema SHA сначала
+доставляется защищённый read-only engine producer, а только после его GREEN — commerce worker/API
+consumer и затем admin UI. Ни один из этих шагов не останавливает traffic или money writers.
+
 После GREEN schema SHA durable consumer добавляет strict contracts, единственный typed engine
 transport и worker lifecycle `pending → processing → retry|dead|confirmed`. Explicit staging
 сохраняет immutable request до сети и принимает только persisted `passed=true`/zero-blocker

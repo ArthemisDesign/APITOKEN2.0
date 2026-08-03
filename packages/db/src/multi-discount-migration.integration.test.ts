@@ -82,6 +82,11 @@ const PRICING_STAGE5_EVIDENCE_TABLES = [
   "pricing_stage5_runs_v2",
 ] as const;
 
+const PRICING_STAGE8_CAPTURE_TABLES = [
+  "pricing_stage8_capture_artifacts_v2",
+  "pricing_stage8_capture_jobs_v2",
+] as const;
+
 const LEGACY_STATE_TABLES = [
   "business_invites",
   "customer_profiles",
@@ -290,6 +295,7 @@ async function expectExpandedTablesEmpty(client: Client): Promise<void> {
     ...MULTI_DISCOUNT_TABLES,
     ...PRICING_RELEASE_V2_TABLES,
     ...PRICING_STAGE5_EVIDENCE_TABLES,
+    ...PRICING_STAGE8_CAPTURE_TABLES,
   ];
   const existing = await client.query<{ table_name: string }>(`
     SELECT table_name
@@ -799,18 +805,94 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         const before = await captureLegacyState(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(33);
+        expect(await migrationCount(client)).toBe(34);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(33);
+        expect(await migrationCount(client)).toBe(34);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
       });
     } finally {
       await rm(legacyMigrationsFolder, { recursive: true, force: true });
     }
+  }, TEST_TIMEOUT_MS);
+
+  it("keeps managed Stage 8 source artifacts durable and terminal states complete", async () => {
+    await withTemporaryDatabase("stage8-managed-capture", async (client) => {
+      await applyMigrations(client, MIGRATIONS_FOLDER);
+      const digest = (character: string) => `sha256:v2:${character.repeat(64)}`;
+      const inserted = await client.query<{ id: string }>(`
+        INSERT INTO pricing_stage8_capture_jobs_v2 (
+          idempotency_key, request_digest, target_generation, recovery_generation,
+          window_start_at, window_end_at, min_samples_per_provider,
+          financial_sample_size, gemini_client_admissions, operator_id, reason
+        ) VALUES (
+          'stage8-managed-test', $1, 10, 11,
+          '2026-08-02T00:00:00Z', '2026-08-02T01:00:00Z', 1,
+          1000, 0, 'integration-test', 'verify durable managed capture schema'
+        ) RETURNING id
+      `, [digest("1")]);
+      const jobId = inserted.rows[0]!.id;
+
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          UPDATE pricing_stage8_capture_jobs_v2
+          SET status = 'passed', completed_at = now(), result_passed = true
+          WHERE id = $1
+        `, [jobId]);
+      }, { code: "23514", constraint: "pricing_stage8_capture_jobs_v2_shape_check" });
+
+      const enginePayload = `{"schema_version":2,"captured_ts":9223372036854775807,"evidence_digest":"${digest("2")}"}`;
+      await client.query(`
+        INSERT INTO pricing_stage8_capture_artifacts_v2 (
+          job_id, attempt, engine_evidence_digest, engine_captured_at, engine_payload_json
+        ) VALUES ($1, 1, $2, '2026-08-02T01:00:01Z', $3)
+      `, [jobId, digest("2"), enginePayload]);
+
+      await expectDatabaseFailure(client, async () => {
+        await client.query(`
+          UPDATE pricing_stage8_capture_artifacts_v2
+          SET combined_evidence_digest = $2
+          WHERE job_id = $1 AND attempt = 1
+        `, [jobId, digest("3")]);
+      }, { code: "23514", constraint: "pricing_stage8_capture_artifacts_v2_shape_check" });
+
+      const combinedPayload = `{"schema_version":2,"passed":true,"evidence_digest":"${digest("3")}"}`;
+      await client.query(`
+        UPDATE pricing_stage8_capture_artifacts_v2
+        SET combined_evidence_digest = $2, combined_payload_json = $3,
+            combined_passed = true, combined_write_result = 'stored', completed_at = now()
+        WHERE job_id = $1 AND attempt = 1
+      `, [jobId, digest("3"), combinedPayload]);
+      await client.query(`
+        UPDATE pricing_stage8_capture_jobs_v2
+        SET status = 'passed', result_engine_evidence_digest = $2,
+            result_combined_evidence_digest = $3, result_passed = true,
+            completed_at = now(), updated_at = now()
+        WHERE id = $1
+      `, [jobId, digest("2"), digest("3")]);
+
+      const stored = await client.query<{
+        status: string;
+        result_passed: boolean;
+        engine_payload_json: string;
+        combined_payload_json: string;
+      }>(`
+        SELECT job.status, job.result_passed,
+               artifact.engine_payload_json, artifact.combined_payload_json
+        FROM pricing_stage8_capture_jobs_v2 job
+        JOIN pricing_stage8_capture_artifacts_v2 artifact ON artifact.job_id = job.id
+        WHERE job.id = $1
+      `, [jobId]);
+      expect(stored.rows).toEqual([{
+        status: "passed",
+        result_passed: true,
+        engine_payload_json: enginePayload,
+        combined_payload_json: combinedPayload,
+      }]);
+    });
   }, TEST_TIMEOUT_MS);
 
   it("preserves pre-expand blocker rows and accepts exact blocked plans without target identity", async () => {
@@ -839,7 +921,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         `);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(33);
+        expect(await migrationCount(client)).toBe(34);
         const legacy = await client.query(`
           SELECT funding_generation::text, target_funding_digest,
                  normalization_source, blockers, status

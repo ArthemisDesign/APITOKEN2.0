@@ -227,7 +227,10 @@ Engine хранит prepared releases и один active release head. Подг�
   validated receipt для безопасного replay после потери ACK;
   `0032_pricing_activation_service_evidence.sql` отдельно добавляет nullable service inventory
   digest, чтобы новый collector связал recovery evidence и first-delivery revalidation с одной
-  exact service authority без backfill старых строк;
+  exact service authority без backfill старых строк; `0033_pricing_stage8_managed_capture.sql`
+  создаёт пустую durable очередь и append-only raw/combined artifacts для будущего protected
+  Stage 8 workflow без SSH/file handoff, но сама не создаёт job, не вызывает engine и не двигает
+  release head;
 - sales migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` добавляет
   отдельные immutable usage/commission v2 tables без pricing-mode поля.
 

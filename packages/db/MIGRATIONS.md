@@ -103,3 +103,11 @@ evidence row; activation staging rejects historical rows where it remains `NULL`
 delivery requires a fresh service-authority digest match. This proves that post-cutover
 service-account authority did not change between fresh recovery evidence and the single global
 CAS.
+
+Migration `0033_pricing_stage8_managed_capture.sql` adds empty durable job and append-only artifact
+tables for a protected managed Stage 8 capture lane. One job freezes exact target/recovery,
+observation-window and sampling inputs; every attempt can retain the original integer-preserving
+engine JSON before attaching the combined commerce result. The schema is dormant: it stages no
+job, performs no engine request, changes no evidence/head/account/money row and does not replace the
+manual collector until the protected engine producer and commerce worker consumer have each passed
+their producer-first delivery checkpoints.

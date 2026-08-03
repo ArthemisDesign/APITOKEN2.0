@@ -2400,6 +2400,136 @@ export const pricingStage8EvidenceV2 = pgTable("pricing_stage8_evidence_v2", {
   `),
 ]);
 
+export const pricingStage8CaptureJobsV2 = pgTable("pricing_stage8_capture_jobs_v2", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  requestDigest: text("request_digest").notNull(),
+  targetGeneration: bigint("target_generation", { mode: "bigint" }).notNull(),
+  recoveryGeneration: bigint("recovery_generation", { mode: "bigint" }).notNull(),
+  windowStartAt: timestamp("window_start_at", { withTimezone: true }).notNull(),
+  windowEndAt: timestamp("window_end_at", { withTimezone: true }).notNull(),
+  minSamplesPerProvider: bigint("min_samples_per_provider", { mode: "bigint" }).notNull(),
+  financialSampleSize: integer("financial_sample_size").notNull(),
+  geminiClientAdmissions: bigint("gemini_client_admissions", { mode: "bigint" }).notNull(),
+  operatorId: text("operator_id").notNull(),
+  reason: text("reason").notNull(),
+  status: text("status").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  lockedAt: timestamp("locked_at", { withTimezone: true }),
+  lockedBy: text("locked_by"),
+  lastError: text("last_error"),
+  resultEngineEvidenceDigest: text("result_engine_evidence_digest"),
+  resultCombinedEvidenceDigest: text("result_combined_evidence_digest"),
+  resultPassed: boolean("result_passed"),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  index("pricing_stage8_capture_jobs_v2_claim_idx")
+    .on(table.status, table.nextAttemptAt, table.createdAt)
+    .where(sql`${table.status} IN ('pending', 'retry')`),
+  check("pricing_stage8_capture_jobs_v2_shape_check", sql`
+    ${table.idempotencyKey} <> ''
+    AND ${table.requestDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.targetGeneration} > 0
+    AND ${table.recoveryGeneration} > ${table.targetGeneration}
+    AND ${table.windowEndAt} > ${table.windowStartAt}
+    AND ${table.minSamplesPerProvider} BETWEEN 1 AND 1000000
+    AND ${table.financialSampleSize} BETWEEN 1 AND 1000
+    AND ${table.geminiClientAdmissions} >= 0
+    AND ${table.operatorId} <> ''
+    AND ${table.reason} <> ''
+    AND ${table.attempts} >= 0
+    AND ${table.status} IN ('pending', 'processing', 'retry', 'passed', 'blocked', 'dead')
+    AND (
+      (
+        ${table.resultEngineEvidenceDigest} IS NULL
+        AND ${table.resultCombinedEvidenceDigest} IS NULL
+        AND ${table.resultPassed} IS NULL
+      )
+      OR (
+        ${table.resultEngineEvidenceDigest} IS NOT NULL
+        AND ${table.resultEngineEvidenceDigest} <> ''
+        AND ${table.resultCombinedEvidenceDigest} IS NOT NULL
+        AND ${table.resultCombinedEvidenceDigest} <> ''
+        AND ${table.resultPassed} IS NOT NULL
+      )
+    )
+    AND (
+      (
+        ${table.status} IN ('pending', 'processing', 'retry')
+        AND ${table.completedAt} IS NULL
+        AND ${table.resultEngineEvidenceDigest} IS NULL
+      )
+      OR (
+        ${table.status} = 'passed'
+        AND ${table.completedAt} IS NOT NULL
+        AND ${table.resultPassed} = true
+      )
+      OR (
+        ${table.status} = 'blocked'
+        AND ${table.completedAt} IS NOT NULL
+        AND ${table.resultPassed} = false
+      )
+      OR (
+        ${table.status} = 'dead'
+        AND ${table.completedAt} IS NOT NULL
+        AND ${table.lastError} IS NOT NULL
+      )
+    )
+  `),
+]);
+
+export const pricingStage8CaptureArtifactsV2 = pgTable("pricing_stage8_capture_artifacts_v2", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobId: uuid("job_id").notNull(),
+  attempt: integer("attempt").notNull(),
+  engineEvidenceDigest: text("engine_evidence_digest").notNull(),
+  engineCapturedAt: timestamp("engine_captured_at", { withTimezone: true }).notNull(),
+  enginePayloadJson: text("engine_payload_json").notNull(),
+  combinedEvidenceDigest: text("combined_evidence_digest"),
+  combinedPayloadJson: text("combined_payload_json"),
+  combinedPassed: boolean("combined_passed"),
+  combinedWriteResult: text("combined_write_result"),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt,
+}, (table) => [
+  foreignKey({
+    columns: [table.jobId],
+    foreignColumns: [pricingStage8CaptureJobsV2.id],
+    name: "pricing_stage8_capture_artifacts_v2_job_fk",
+  }).onDelete("restrict"),
+  unique("pricing_stage8_capture_artifacts_v2_job_attempt_unique")
+    .on(table.jobId, table.attempt),
+  index("pricing_stage8_capture_artifacts_v2_job_idx")
+    .on(table.jobId, table.createdAt),
+  check("pricing_stage8_capture_artifacts_v2_shape_check", sql`
+    ${table.attempt} > 0
+    AND ${table.engineEvidenceDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+    AND ${table.enginePayloadJson} <> ''
+    AND (
+      (
+        ${table.combinedEvidenceDigest} IS NULL
+        AND ${table.combinedPayloadJson} IS NULL
+        AND ${table.combinedPassed} IS NULL
+        AND ${table.combinedWriteResult} IS NULL
+        AND ${table.completedAt} IS NULL
+      )
+      OR (
+        ${table.combinedEvidenceDigest} IS NOT NULL
+        AND ${table.combinedEvidenceDigest} ~ '^sha256:v2:[0-9a-f]{64}$'
+        AND ${table.combinedPayloadJson} IS NOT NULL
+        AND ${table.combinedPayloadJson} <> ''
+        AND ${table.combinedPassed} IS NOT NULL
+        AND ${table.combinedWriteResult} IS NOT NULL
+        AND ${table.combinedWriteResult} IN ('stored', 'unchanged', 'not_persisted')
+        AND ${table.completedAt} IS NOT NULL
+      )
+    )
+  `),
+]);
+
 export const pricingReleaseControlJobsV2 = pgTable("pricing_release_control_jobs_v2", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   jobKind: text("job_kind").notNull(),

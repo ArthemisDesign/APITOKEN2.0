@@ -331,6 +331,13 @@ is written. The command never changes a release head, account, balance, policy, 
 writer. Store the engine input and combined output together in the protected release evidence
 location; Stage 9 accepts only the exact, unexpired combined row with `passed=true`.
 
+Commerce migration `0033_pricing_stage8_managed_capture.sql` reserves protected durable storage for
+the managed replacement of this file handoff: immutable job inputs plus append-only original engine
+and combined JSON per attempt. The migration is storage-only and does not authorize running the
+workflow. Until the engine producer and then commerce/admin consumers are delivered as separate
+GREEN checkpoints, the commands above remain the only active collector path; no service may infer a
+capture job from startup, migration or an activation request.
+
 `sales_contract_digest` binds the intended B2C `paid_funded_nano`/no-welcome-bonus commission
 contract. It is a contract identity, not proof that the sales runtime consumer is deployed; exact
 sales v2 runtime evidence remains a separate pre-cutover requirement.
