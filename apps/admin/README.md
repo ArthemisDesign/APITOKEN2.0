@@ -51,6 +51,8 @@ Next.js 16 / React 19 (App Router), порт 3700. Замена однофайл
   `{spendStatsModal}` — в конец страницы. Типы `SpendStatsResponse`, `SpendPeriod`
   и хелпер `isOpenkeys` экспортированы.
 - `src/app/page.tsx` — Сводка (эталонная страница; портируйте остальные по ней).
+- `src/app/paying-users/page.tsx` — отдельный read-only control room только для платящих клиентов:
+  fleet-wide paid/spend summary, provider rail Claude/GPT/Gemini и серверно-пагинированная таблица.
 - `src/app/subscriptions/codex-capacity-board.tsx` — компактная GPT-сводка shared-plan capacity,
   native-credit/API-$ окон и masked-email homes. Raw calibration, token-capacity и profitability
   matrices намеренно не выводятся в операторский UI.
@@ -83,6 +85,9 @@ Next.js 16 / React 19 (App Router), порт 3700. Замена однофайл
    из `useSpendStatsModal()` + `title="Разбивка: сутки / 7 дней / 30 дней"`.
 8. Экспорт таблиц — `downloadCsv(filename, header, rows)`, имя файла с датой
    через `csvDate()` (например `users-2026-07-31.csv`).
+9. Страница `/paying-users` использует только exact nanoUSD-поля
+   `/admin/finance/paying-users`; суммы провайдеров нельзя восстанавливать из float USD или
+   top-50 `/spend-stats`.
 
 ## Команды
 

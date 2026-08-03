@@ -140,6 +140,22 @@ terminal evidence; retry разрешён только worker state machine дл
 остаётся отдельной секцией и отдельным explicit подтверждением ниже, поэтому успешный capture сам
 по себе не переводит клиентов.
 
+## Платящие клиенты
+
+Страница `/paying-users` — отдельный компактный read-only control room, не фильтр общей таблицы
+`/users`. Она получает expand-only snapshot из commerce
+`GET /admin/finance/paying-users?days=1|7|30`: в выборку входят только пользователи с хотя бы одним
+`payments.status='paid'`, а поиск, provider/status filters, сортировка и пагинация остаются на
+сервере и поэтому не деградируют при росте клиентской базы.
+
+Верхний ledger показывает lifetime paid total, расход выбранного окна, число активных spenders и
+один пропорциональный rail Claude/GPT/Gemini. Provider-сегменты одновременно служат быстрыми
+фильтрами. Таблица ниже ранжирует клиентов и в одной строке показывает paid total, расход окна и
+точные charged nanoUSD отдельно для Anthropic/OpenAI/Google; legacy/unknown attribution не
+теряется и выводится как `другое`. Все денежные вычисления и CSV сохраняют decimal nanoUSD strings;
+JS `number` используется только для ограниченной доли 0–10000 basis points. Страница опрашивается
+раз в 30 секунд и не выполняет денежных mutation.
+
 ## GPT capacity board на странице подписок
 
 GPT-блок `/subscriptions` — компактная операторская сводка, полностью рассчитанная из backend

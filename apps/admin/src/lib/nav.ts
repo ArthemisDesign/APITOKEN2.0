@@ -20,6 +20,7 @@ export const NAV: NavGroup[] = [
     group: "Клиенты",
     items: [
       { href: "/users", label: "Пользователи", icon: "◉" },
+      { href: "/paying-users", label: "Платящие", icon: "◒" },
       { href: "/accounts", label: "Аккаунты", icon: "▤" },
       { href: "/partners", label: "Партнёры", icon: "◆" },
       { href: "/openkeys", label: "OpenKeys", icon: "◈" },

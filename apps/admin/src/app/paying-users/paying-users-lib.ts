@@ -1,0 +1,160 @@
+export const PAYING_USER_SORTS = [
+  ["spent", "расход за окно"],
+  ["paid", "оплачено всего"],
+  ["last_paid", "последняя оплата"],
+  ["last_seen", "активность"],
+] as const;
+
+export type PayingUserSort = (typeof PAYING_USER_SORTS)[number][0];
+export type PayingUserProvider = "anthropic" | "openai" | "google" | "other";
+export type PayingUserDays = 1 | 7 | 30;
+
+export interface ProviderSpend {
+  anthropic_nano?: string;
+  openai_nano?: string;
+  google_nano?: string;
+  other_nano?: string;
+}
+
+export interface PayingUserRow {
+  user_id?: string;
+  email?: string;
+  display_name?: string;
+  status?: "active" | "disabled";
+  customer_type?: "b2c" | "b2b" | null;
+  tier?: number | null;
+  multiplier_bp?: number | null;
+  paid_nano?: string;
+  payments_count?: number;
+  last_paid_at?: string | null;
+  spent_nano?: string;
+  provider_spend?: ProviderSpend;
+  active_api_keys?: number;
+  last_seen_at?: string | null;
+  created_at?: string;
+}
+
+export interface PayingUsersSummary {
+  paying_users?: number;
+  active_spenders?: number;
+  paid_nano?: string;
+  spent_nano?: string;
+  provider_spend?: ProviderSpend;
+  provider_users?: Partial<Record<PayingUserProvider, number>>;
+}
+
+export interface PayingUsersResponse {
+  generated_at?: string;
+  days?: PayingUserDays;
+  total?: number;
+  limit?: number;
+  offset?: number;
+  summary?: PayingUsersSummary;
+  rows?: PayingUserRow[];
+}
+
+export interface PayingUsersPageState {
+  days: PayingUserDays;
+  limit: number;
+  offset: number;
+  q: string;
+  status: "" | "active" | "disabled";
+  provider: "" | PayingUserProvider;
+  sort: PayingUserSort;
+  dir: "asc" | "desc";
+}
+
+export const INITIAL_PAYING_USERS_PAGE: PayingUsersPageState = {
+  days: 30,
+  limit: 50,
+  offset: 0,
+  q: "",
+  status: "",
+  provider: "",
+  sort: "spent",
+  dir: "desc",
+};
+
+export function payingUsersQuery(state: PayingUsersPageState): string {
+  const params = new URLSearchParams({
+    days: String(state.days),
+    limit: String(state.limit),
+    offset: String(state.offset),
+    sort: state.sort,
+    dir: state.dir,
+  });
+  if (state.q) params.set("q", state.q);
+  if (state.status) params.set("status", state.status);
+  if (state.provider) params.set("provider", state.provider);
+  return params.toString();
+}
+
+export function providerNano(spend: ProviderSpend | undefined, provider: PayingUserProvider): string {
+  return spend?.[`${provider}_nano`] ?? "0";
+}
+
+export function isPositiveNano(value: string | null | undefined): boolean {
+  try {
+    return BigInt(value ?? "0") > 0n;
+  } catch {
+    return false;
+  }
+}
+
+/** Доля 0..10000 basis points, вычисленная без преобразования денежных сумм в Number. */
+export function providerShareBp(amount: string | null | undefined, total: string | null | undefined): number {
+  try {
+    const amountNano = BigInt(amount ?? "0");
+    const totalNano = BigInt(total ?? "0");
+    if (amountNano <= 0n || totalNano <= 0n) return 0;
+    const basisPoints = (amountNano * 10_000n) / totalNano;
+    return Number(basisPoints > 10_000n ? 10_000n : basisPoints);
+  } catch {
+    return 0;
+  }
+}
+
+export function payingTierLabel(row: Pick<PayingUserRow, "customer_type" | "tier">): string {
+  if (row.customer_type === "b2b") return "B2B";
+  return row.tier != null ? (["Starter", "Builder", "Pro", "Studio", "Scale"][row.tier] ?? "—") : "—";
+}
+
+export function spendWindowLabel(days: PayingUserDays): string {
+  return days === 1 ? "24 часа" : `${days} дней`;
+}
+
+export const PAYING_USERS_CSV_HEADER = [
+  "email",
+  "имя",
+  "статус",
+  "тариф",
+  "оплачено_nanoUSD",
+  "платежей",
+  "расход_окна_nanoUSD",
+  "claude_nanoUSD",
+  "gpt_nanoUSD",
+  "gemini_nanoUSD",
+  "другое_nanoUSD",
+  "последняя_оплата",
+  "последняя_активность",
+  "активные_ключи",
+];
+
+export function buildPayingUsersCsvRows(rows: PayingUserRow[]): unknown[][] {
+  return rows.map((row) => [
+    row.email ?? "",
+    row.display_name ?? "",
+    row.status ?? "",
+    payingTierLabel(row),
+    row.paid_nano ?? "0",
+    row.payments_count ?? 0,
+    row.spent_nano ?? "0",
+    providerNano(row.provider_spend, "anthropic"),
+    providerNano(row.provider_spend, "openai"),
+    providerNano(row.provider_spend, "google"),
+    providerNano(row.provider_spend, "other"),
+    row.last_paid_at ?? "",
+    row.last_seen_at ?? "",
+    row.active_api_keys ?? 0,
+  ]);
+}

@@ -33,6 +33,7 @@ describe("NAV", () => {
 
   it("navLabelForPath возвращает подпись активного раздела", () => {
     expect(navLabelForPath("/subscriptions")).toBe("Подписки");
+    expect(navLabelForPath("/paying-users")).toBe("Платящие");
     expect(navLabelForPath("/sales/calculator")).toBe("Калькулятор");
     expect(navLabelForPath("/")).toBe("Сводка");
     expect(navLabelForPath("/no-such-page")).toBe("Сводка");

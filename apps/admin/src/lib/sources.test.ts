@@ -10,6 +10,7 @@ describe("sourceName", () => {
 
   it("query-строка отрезается", () => {
     expect(sourceName("/admin/users?limit=50&offset=0")).toBe("Пользователи");
+    expect(sourceName("/admin/finance/paying-users?days=30")).toBe("Платящие клиенты");
   });
 
   it("неизвестный путь возвращается как есть (без query)", () => {
