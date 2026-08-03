@@ -6919,6 +6919,14 @@ impl PgStore {
         crate::pricing::postgres::postgres_pricing_release_head_v2(&mut self.client)
     }
 
+    pub fn pricing_release_provisioning_context_v2(
+        &mut self,
+    ) -> Result<Option<crate::pricing::PricingReleaseProvisioningContextV2>> {
+        crate::pricing::postgres::postgres_pricing_release_provisioning_context_v2(
+            &mut self.client,
+        )
+    }
+
     pub fn activate_pricing_release_v2(
         &mut self,
         request: &crate::pricing::PricingReleaseActivationRequestV2,
@@ -10207,9 +10215,10 @@ mod tests {
     fn pricing_release_runtime_v2_postgres_matrix() {
         use crate::pricing::{
             AccountClass, BillingModeV2, PricingMutation, PricingRejection,
-            PricingReleaseAssignmentExtensionMemberV2, PricingReleaseAssignmentExtensionV2,
-            PricingReleaseAssignmentV2, PricingReleaseKindV2, PricingReleasePolicyRuleV2,
-            PricingReleasePolicyV2, PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2,
+            PricingReleaseActivationKindV2, PricingReleaseAssignmentExtensionMemberV2,
+            PricingReleaseAssignmentExtensionV2, PricingReleaseAssignmentV2,
+            PricingReleaseKindV2, PricingReleasePolicyRuleV2, PricingReleasePolicyV2,
+            PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2,
             PricingReleaseRuleScopeV2, PricingReleaseV2,
         };
 
@@ -10442,6 +10451,7 @@ mod tests {
             .unwrap(),
             PricingMutation::Stored
         );
+        assert_eq!(pg.pricing_release_provisioning_context_v2().unwrap(), None);
 
         let activated_ts = now();
         pg.client
@@ -10484,6 +10494,27 @@ mod tests {
                  COMMIT;"
             ))
             .unwrap();
+        let cutover_context = pg
+            .pricing_release_provisioning_context_v2()
+            .unwrap()
+            .expect("cutover head has a coherent provisioning context");
+        assert_eq!(cutover_context.head.active_generation, TARGET_GENERATION);
+        assert_eq!(
+            cutover_context.activation.activation_kind,
+            PricingReleaseActivationKindV2::Cutover
+        );
+        assert_eq!(
+            cutover_context.active_release.release_kind,
+            PricingReleaseKindV2::Target
+        );
+        let cutover_recovery = cutover_context
+            .paired_recovery
+            .expect("active target exposes its evidence-paired recovery");
+        assert_eq!(cutover_recovery.release.generation, RECOVERY_GENERATION);
+        assert_eq!(
+            cutover_recovery.recovery_link.link_digest,
+            "release-runtime-recovery-link"
+        );
 
         pg.account_create("release-runtime-post-cutover", None, 5_000)
             .unwrap();
@@ -10555,6 +10586,18 @@ mod tests {
                 },
             ],
         };
+        let mut unpaired_extension = extension.clone();
+        unpaired_extension.paired_recovery_generation = None;
+        unpaired_extension.paired_recovery_digest = None;
+        unpaired_extension.members.truncate(1);
+        unpaired_extension.extension_group_digest =
+            "release-runtime-post-cutover-unpaired-extension-group".into();
+        assert!(matches!(
+            pg.prepare_pricing_release_assignment_extension_v2(&unpaired_extension)
+                .unwrap(),
+            PricingMutation::Rejected(PricingRejection::MissingDependency { dependency })
+                if dependency == "recovery_link"
+        ));
         let mut stale_funding_extension = extension.clone();
         for member in &mut stale_funding_extension.members {
             member.assignment.funding_generation = Some(2);
@@ -10842,6 +10885,44 @@ mod tests {
         assert!(legacy_error
             .downcast_ref::<crate::pricing::LegacyPricingPathClosedV2>()
             .is_some());
+
+        let recovery_activated_ts = activated_ts.saturating_add(1);
+        pg.client
+            .batch_execute(&format!(
+                "BEGIN;
+                 INSERT INTO pricing_release_activations_v2(
+                     activation_kind,from_generation,from_digest,to_generation,to_digest,
+                     expected_head_version,resulting_head_version,evidence_digest,operator_id,
+                     reason,activated_ts
+                 ) VALUES(
+                     'recovery',{TARGET_GENERATION},'release-runtime-target',
+                     {RECOVERY_GENERATION},'release-runtime-recovery',1,2,
+                     'release-runtime-evidence','runtime-test','runtime recovery',
+                     {recovery_activated_ts}
+                 );
+                 UPDATE pricing_release_head_v2
+                    SET active_generation={RECOVERY_GENERATION},
+                        active_digest='release-runtime-recovery',head_version=2,
+                        updated_ts={recovery_activated_ts}
+                  WHERE singleton=1;
+                 SET CONSTRAINTS ALL IMMEDIATE;
+                 COMMIT;"
+            ))
+            .unwrap();
+        let recovery_context = pg
+            .pricing_release_provisioning_context_v2()
+            .unwrap()
+            .expect("recovery head has a coherent provisioning context");
+        assert_eq!(recovery_context.head.active_generation, RECOVERY_GENERATION);
+        assert_eq!(
+            recovery_context.activation.activation_kind,
+            PricingReleaseActivationKindV2::Recovery
+        );
+        assert_eq!(
+            recovery_context.active_release.release_kind,
+            PricingReleaseKindV2::Recovery
+        );
+        assert!(recovery_context.paired_recovery.is_none());
 
         pg.client
             .batch_execute(

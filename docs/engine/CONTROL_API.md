@@ -436,6 +436,7 @@ POST /admin/pricing/v2/assignment-extension/prepare
 GET  /admin/pricing/v2/assignment-extension/{head_version}/{account_id}
 POST /admin/pricing/v2/activate
 GET  /admin/pricing/v2/head
+GET  /admin/pricing/v2/provisioning-context
 GET  /admin/pricing/v2/inventory?after_account_id=<id>&limit=500
 GET  /admin/pricing/v2/funding/{account_id}/normalization
 POST /admin/pricing/v2/funding/{account_id}/normalization
@@ -450,6 +451,34 @@ release manifest or change balances.
 An assignment extension can make one post-cutover account resolvable under an already-active head;
 the provisioning consumer must therefore complete its exact readback before issuing or enabling a
 usable customer key.
+
+`GET /admin/pricing/v2/provisioning-context` is the post-cutover discovery authority for account
+provisioning outside the commerce database. It returns `{ "context": null }` before cutover. After
+cutover, `context` is materialized in one PostgreSQL `REPEATABLE READ READ ONLY` snapshot:
+
+```text
+head = { active_generation, active_digest, head_version, updated_ts }
+activation = { activation_id, activation_kind=cutover|recovery,
+               evidence_digest, activated_ts }
+active_release = {
+  generation, release_kind, schema_version,
+  capability_generation, capability_digest,
+  main_catalog_generation, main_catalog_digest,
+  openkeys_catalog_generation, openkeys_catalog_digest,
+  switch_generation, switch_digest,
+  inventory_digest, funding_manifest_digest,
+  minimum_runtime_schema_version, content_digest
+}
+paired_recovery? = { release=<same projection>, recovery_link=<exact immutable link> }
+```
+
+The producer joins the exact head-version activation audit to its persisted passed Stage 8
+evidence, verifies target/recovery identities, immutable runtime/funding lineage, base funding
+assignment parity and the evidence-selected recovery link. Any disagreement returns authority
+unavailable; it never falls back to an arbitrary prepared link. An active target has exactly one
+`paired_recovery`; an active recovery has `paired_recovery=null` because no later pair has been
+confirmed by that head transition. The projection deliberately omits full base assignments: the
+account-specific extension remains the sole post-cutover write contract.
 
 `PricingReleasePolicyV2` has the following exact shape (all unknown fields are rejected):
 
@@ -511,8 +540,10 @@ members[] = {
 ```
 
 Prepare takes the same pricing-release control-plane advisory lock as future activation and accepts
-only the exact current head. If that target has a prepared recovery link, `members` must contain the
-atomic active/recovery pair; otherwise it contains exactly the active member. Both members must name
+only the exact current head. If that active target's activation evidence selected a recovery link,
+`members` must contain that exact atomic active/recovery pair; another prepared link or an omitted
+pair returns typed `missing_dependency`. An active recovery contains exactly the active member.
+Both members must name
 the same account, policy, class, billing mode, funding generation and service metadata while keeping
 their own release generation, assignment digest and extension digest. The account must already
 exist, must be absent from both immutable base assignment manifests, and every policy/funding

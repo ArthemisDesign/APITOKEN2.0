@@ -1841,6 +1841,18 @@ pub async fn pricing_release_head_v2(State(app): State<AppState>) -> Response {
     }
 }
 
+/// GET /admin/pricing/v2/provisioning-context — one coherent post-cutover release snapshot.
+pub async fn pricing_release_provisioning_context_v2(State(app): State<AppState>) -> Response {
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing.pricing_release_provisioning_context_v2().await {
+        Ok(context) => Json(json!({"context": context})).into_response(),
+        Err(error) => authority_unavailable("pricing provisioning context v2 read", error),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PricingReleaseInventoryQueryV2 {

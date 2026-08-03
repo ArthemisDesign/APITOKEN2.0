@@ -30,7 +30,11 @@ provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack`), usag
 `/admin/pricing/v2/*`.
 Release-v2 producer публикует immutable policy/release/recovery prepare, полный engine inventory,
 nullable head, account-local funding normalization plan/apply и append-only assignment extension
-для exact active/recovery pair аккаунта, созданного после cutover. Единственный activation producer
+для exact active/recovery pair аккаунта, созданного после cutover. Read-only
+`GET /admin/pricing/v2/provisioning-context` одним snapshot публикует exact head/audit/evidence,
+active release lineage и только evidence-selected recovery; до cutover возвращает `null`, а при
+расхождении authority fail closed. Это producer для независимого provisioning OpenKeys/service и
+замены commerce-local pair discovery после отдельного consumer GREEN. Единственный activation producer
 принимает fresh combined evidence, повторно проверяет engine inventory/funding/runtime owner epochs
 и атомарно пишет audit + singleton head; cutover/recovery не обновляют accounts или money rows.
 Funding apply сериализуется с money writers и не требует global drain. После зелёного

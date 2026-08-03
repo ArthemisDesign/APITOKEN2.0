@@ -22,9 +22,9 @@ use registry::pricing::{
     PolicyAdmissionSnapshot, PolicyReserveOutcome, PricingCatalogSpec, PricingMutation,
     PricingReadBundle, PricingReleaseActivationOutcomeV2, PricingReleaseActivationRequestV2,
     PricingReleaseAssignmentExtensionV2, PricingReleaseHeadV2, PricingReleaseInventoryPageV2,
-    PricingReleasePolicyV2, PricingReleaseQuoteV2, PricingReleaseRecoveryLinkV2,
-    PricingReleaseReserveOutcomeV2, PricingReleaseResolutionV2, PricingReleaseV2,
-    PricingRuntimeManifestEvidence, PricingShadowAdmissionEvaluationInput,
+    PricingReleasePolicyV2, PricingReleaseProvisioningContextV2, PricingReleaseQuoteV2,
+    PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2, PricingReleaseResolutionV2,
+    PricingReleaseV2, PricingRuntimeManifestEvidence, PricingShadowAdmissionEvaluationInput,
     PricingShadowEvaluationWrite, ProviderSwitchSpec, VersionTarget,
 };
 use registry::{
@@ -1557,6 +1557,9 @@ enum ReadCmd {
     PricingReleaseHeadV2 {
         reply: oneshot::Sender<anyhow::Result<Option<PricingReleaseHeadV2>>>,
     },
+    PricingReleaseProvisioningContextV2 {
+        reply: oneshot::Sender<anyhow::Result<Option<PricingReleaseProvisioningContextV2>>>,
+    },
     PricingReleaseResolutionV2 {
         account_id: String,
         provider_id: String,
@@ -2813,6 +2816,11 @@ impl AsyncBilling {
                                     "pricing release v2 authority requires PostgreSQL"
                                 )));
                             }
+                            ReadCmd::PricingReleaseProvisioningContextV2 { reply } => {
+                                let _ = reply.send(Err(anyhow::anyhow!(
+                                    "pricing release v2 authority requires PostgreSQL"
+                                )));
+                            }
                             ReadCmd::PricingReleaseResolutionV2 { reply, .. } => {
                                 // SQLite cannot own a release head. Runtime resolution therefore
                                 // preserves the legacy path while producer/head reads stay closed.
@@ -3807,6 +3815,9 @@ impl AsyncBilling {
                             ReadCmd::PricingReleaseHeadV2 { reply } => {
                                 answer!(reply, pg.pricing_release_head_v2())
                             }
+                            ReadCmd::PricingReleaseProvisioningContextV2 { reply } => {
+                                answer!(reply, pg.pricing_release_provisioning_context_v2())
+                            }
                             ReadCmd::PricingReleaseResolutionV2 {
                                 account_id,
                                 provider_id,
@@ -4332,6 +4343,19 @@ impl AsyncBilling {
         let (reply, result) = oneshot::channel();
         self.reader()
             .send(ReadCmd::PricingReleaseHeadV2 { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn pricing_release_provisioning_context_v2(
+        &self,
+    ) -> anyhow::Result<Option<PricingReleaseProvisioningContextV2>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::PricingReleaseProvisioningContextV2 { reply })
             .await
             .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
         result

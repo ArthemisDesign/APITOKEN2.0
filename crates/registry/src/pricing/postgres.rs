@@ -3092,6 +3092,29 @@ pub(crate) fn postgres_prepare_pricing_release_assignment_extension_v2(
         );
     }
 
+    let provisioning_context =
+        pricing_release_provisioning_context_v2_in_transaction(&mut transaction)?
+            .context("active pricing release lacks a coherent provisioning context")?;
+    let expected_recovery = provisioning_context
+        .paired_recovery
+        .as_ref()
+        .map(|paired| {
+            (
+                paired.recovery_link.recovery_generation,
+                paired.recovery_link.recovery_digest.as_str(),
+            )
+        });
+    let supplied_recovery = extension
+        .paired_recovery_generation
+        .zip(extension.paired_recovery_digest.as_deref());
+    if supplied_recovery != expected_recovery {
+        return commit_mutation(
+            transaction,
+            missing("recovery_link"),
+            "pricing assignment extension activation pair mismatch",
+        );
+    }
+
     let assignment = &extension.members[0].assignment;
     if assignment.billing_mode == super::BillingModeV2::Balance {
         crate::funding_v2::lock_funding_account_v2(&mut transaction, account_id)?;
@@ -3232,6 +3255,235 @@ pub(crate) fn postgres_pricing_release_head_v2(
             head_version: row.get(2),
             updated_ts: row.get(3),
         }))
+}
+
+fn pricing_release_provisioning_release_v2_in_transaction<C: GenericClient>(
+    client: &mut C,
+    generation: i64,
+) -> Result<Option<super::PricingReleaseProvisioningReleaseV2>> {
+    let Some(row) = client.query_opt(
+        "SELECT generation,release_kind,schema_version,capability_generation, \
+                capability_digest,main_catalog_generation,main_catalog_digest, \
+                openkeys_catalog_generation,openkeys_catalog_digest,switch_generation, \
+                switch_digest,inventory_digest,funding_manifest_digest, \
+                minimum_runtime_schema_version,content_digest \
+           FROM pricing_release_versions WHERE generation=$1",
+        &[&generation],
+    )? else {
+        return Ok(None);
+    };
+    Ok(Some(super::PricingReleaseProvisioningReleaseV2 {
+        generation: row.get(0),
+        release_kind: super::PricingReleaseKindV2::from_db(&row.get::<_, String>(1))?,
+        schema_version: row.get(2),
+        capability_generation: row.get(3),
+        capability_digest: row.get(4),
+        main_catalog_generation: row.get(5),
+        main_catalog_digest: row.get(6),
+        openkeys_catalog_generation: row.get(7),
+        openkeys_catalog_digest: row.get(8),
+        switch_generation: row.get(9),
+        switch_digest: row.get(10),
+        inventory_digest: row.get(11),
+        funding_manifest_digest: row.get(12),
+        minimum_runtime_schema_version: row.get(13),
+        content_digest: row.get(14),
+    }))
+}
+
+fn same_pricing_release_provisioning_lineage_v2(
+    target: &super::PricingReleaseProvisioningReleaseV2,
+    recovery: &super::PricingReleaseProvisioningReleaseV2,
+) -> bool {
+    target.schema_version == recovery.schema_version
+        && target.capability_generation == recovery.capability_generation
+        && target.capability_digest == recovery.capability_digest
+        && target.main_catalog_generation == recovery.main_catalog_generation
+        && target.main_catalog_digest == recovery.main_catalog_digest
+        && target.openkeys_catalog_generation == recovery.openkeys_catalog_generation
+        && target.openkeys_catalog_digest == recovery.openkeys_catalog_digest
+        && target.switch_generation == recovery.switch_generation
+        && target.switch_digest == recovery.switch_digest
+        && target.inventory_digest == recovery.inventory_digest
+        && target.funding_manifest_digest == recovery.funding_manifest_digest
+        && target.minimum_runtime_schema_version == recovery.minimum_runtime_schema_version
+}
+
+fn pricing_release_provisioning_context_v2_in_transaction<C: GenericClient>(
+    client: &mut C,
+) -> Result<Option<super::PricingReleaseProvisioningContextV2>> {
+    let Some(head_row) = client.query_opt(
+        "SELECT active_generation,active_digest,head_version,updated_ts \
+           FROM pricing_release_head_v2 WHERE singleton=1",
+        &[],
+    )? else {
+        return Ok(None);
+    };
+    let head = super::PricingReleaseHeadV2 {
+        active_generation: head_row.get(0),
+        active_digest: head_row.get(1),
+        head_version: head_row.get(2),
+        updated_ts: head_row.get(3),
+    };
+    let audit = client
+        .query_opt(
+            "SELECT activation.id,activation.activation_kind,activation.from_generation, \
+                    activation.from_digest,activation.to_generation,activation.to_digest, \
+                    activation.expected_head_version,activation.evidence_digest, \
+                    activation.activated_ts,evidence.target_generation,evidence.target_digest, \
+                    evidence.recovery_generation,evidence.recovery_digest,evidence.passed, \
+                    evidence.blocker_count \
+               FROM pricing_release_activations_v2 activation \
+               JOIN pricing_stage8_evidence_v2 evidence \
+                 ON evidence.evidence_digest=activation.evidence_digest \
+              WHERE activation.resulting_head_version=$1",
+            &[&head.head_version],
+        )?
+        .context("active pricing release head lacks activation evidence")?;
+    let activation_kind =
+        super::PricingReleaseActivationKindV2::from_db(&audit.get::<_, String>(1))?;
+    let from_generation: Option<i64> = audit.get(2);
+    let from_digest: Option<String> = audit.get(3);
+    let to_generation: i64 = audit.get(4);
+    let to_digest: String = audit.get(5);
+    let expected_head_version: i64 = audit.get(6);
+    let evidence_digest: String = audit.get(7);
+    let activated_ts: i64 = audit.get(8);
+    let target_generation: i64 = audit.get(9);
+    let target_digest: String = audit.get(10);
+    let recovery_generation: i64 = audit.get(11);
+    let recovery_digest: String = audit.get(12);
+    let evidence_passed: bool = audit.get(13);
+    let blocker_count: i64 = audit.get(14);
+
+    let head_matches_audit = to_generation == head.active_generation
+        && to_digest == head.active_digest
+        && expected_head_version.checked_add(1) == Some(head.head_version)
+        && activated_ts == head.updated_ts;
+    let activation_matches_evidence = match activation_kind {
+        super::PricingReleaseActivationKindV2::Cutover => {
+            from_generation.is_none()
+                && from_digest.is_none()
+                && expected_head_version == 0
+                && to_generation == target_generation
+                && to_digest == target_digest
+        }
+        super::PricingReleaseActivationKindV2::Recovery => {
+            from_generation == Some(target_generation)
+                && from_digest.as_deref() == Some(target_digest.as_str())
+                && expected_head_version > 0
+                && to_generation == recovery_generation
+                && to_digest == recovery_digest
+        }
+    };
+    if !head_matches_audit
+        || !activation_matches_evidence
+        || !evidence_passed
+        || blocker_count != 0
+        || target_generation <= 0
+        || recovery_generation <= target_generation
+    {
+        bail!("active pricing release head, activation audit, or Stage 8 evidence disagree");
+    }
+
+    let target = pricing_release_provisioning_release_v2_in_transaction(
+        client,
+        target_generation,
+    )?
+    .context("pricing provisioning target release is missing")?;
+    let recovery = pricing_release_provisioning_release_v2_in_transaction(
+        client,
+        recovery_generation,
+    )?
+    .context("pricing provisioning recovery release is missing")?;
+    if target.release_kind != super::PricingReleaseKindV2::Target
+        || target.content_digest != target_digest
+        || recovery.release_kind != super::PricingReleaseKindV2::Recovery
+        || recovery.content_digest != recovery_digest
+        || !same_pricing_release_provisioning_lineage_v2(&target, &recovery)
+    {
+        bail!("pricing provisioning releases disagree with activation evidence");
+    }
+    let same_base_funding_assignments: bool = client
+        .query_one(
+            "SELECT NOT EXISTS( \
+                 (SELECT account_id,billing_mode,funding_generation \
+                    FROM pricing_release_assignments WHERE release_generation=$1 \
+                  EXCEPT \
+                  SELECT account_id,billing_mode,funding_generation \
+                    FROM pricing_release_assignments WHERE release_generation=$2) \
+                 UNION ALL \
+                 (SELECT account_id,billing_mode,funding_generation \
+                    FROM pricing_release_assignments WHERE release_generation=$2 \
+                  EXCEPT \
+                  SELECT account_id,billing_mode,funding_generation \
+                    FROM pricing_release_assignments WHERE release_generation=$1) \
+             )",
+            &[&target_generation, &recovery_generation],
+        )?
+        .get(0);
+    if !same_base_funding_assignments {
+        bail!("pricing provisioning target/recovery funding assignments disagree");
+    }
+    let recovery_link = client
+        .query_opt(
+            "SELECT target_generation,target_digest,recovery_generation,recovery_digest, \
+                    link_digest \
+               FROM pricing_release_recovery_links \
+              WHERE target_generation=$1 AND target_digest=$2 \
+                AND recovery_generation=$3 AND recovery_digest=$4",
+            &[
+                &target_generation,
+                &target_digest,
+                &recovery_generation,
+                &recovery_digest,
+            ],
+        )?
+        .map(|row| super::PricingReleaseRecoveryLinkV2 {
+            target_generation: row.get(0),
+            target_digest: row.get(1),
+            recovery_generation: row.get(2),
+            recovery_digest: row.get(3),
+            link_digest: row.get(4),
+        })
+        .context("pricing provisioning activation pair lacks its recovery link")?;
+
+    let (active_release, paired_recovery) = match activation_kind {
+        super::PricingReleaseActivationKindV2::Cutover => (
+            target,
+            Some(super::PricingReleaseProvisioningRecoveryV2 {
+                release: recovery,
+                recovery_link,
+            }),
+        ),
+        super::PricingReleaseActivationKindV2::Recovery => (recovery, None),
+    };
+    Ok(Some(super::PricingReleaseProvisioningContextV2 {
+        head,
+        activation: super::PricingReleaseProvisioningActivationV2 {
+            activation_id: audit.get(0),
+            activation_kind,
+            evidence_digest,
+            activated_ts,
+        },
+        active_release,
+        paired_recovery,
+    }))
+}
+
+pub(crate) fn postgres_pricing_release_provisioning_context_v2(
+    client: &mut Client,
+) -> Result<Option<super::PricingReleaseProvisioningContextV2>> {
+    let mut transaction = client
+        .build_transaction()
+        .isolation_level(IsolationLevel::RepeatableRead)
+        .read_only(true)
+        .start()
+        .context("begin PostgreSQL pricing provisioning context v2")?;
+    transaction.batch_execute("SET LOCAL statement_timeout='30s'; SET LOCAL lock_timeout='5s'")?;
+    let context = pricing_release_provisioning_context_v2_in_transaction(&mut transaction)?;
+    transaction.commit()?;
+    Ok(context)
 }
 
 fn reject_pricing_release_activation_v2(

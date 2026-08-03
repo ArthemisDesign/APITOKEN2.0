@@ -172,6 +172,60 @@ pub struct PricingReleaseHeadV2 {
     pub updated_ts: i64,
 }
 
+/// Immutable release lineage needed to provision an account after the global cutover.
+///
+/// Assignment manifests are intentionally omitted: a provisioning caller only needs the exact
+/// capability/catalog/switch lineage for a new policy and the immutable release identity for its
+/// assignment extension. Existing accounts remain represented by the release's full inventory.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingReleaseProvisioningReleaseV2 {
+    pub generation: i64,
+    pub release_kind: PricingReleaseKindV2,
+    pub schema_version: i64,
+    pub capability_generation: i64,
+    pub capability_digest: String,
+    pub main_catalog_generation: i64,
+    pub main_catalog_digest: String,
+    pub openkeys_catalog_generation: i64,
+    pub openkeys_catalog_digest: String,
+    pub switch_generation: i64,
+    pub switch_digest: String,
+    pub inventory_digest: String,
+    pub funding_manifest_digest: String,
+    pub minimum_runtime_schema_version: i64,
+    pub content_digest: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingReleaseProvisioningActivationV2 {
+    pub activation_id: i64,
+    pub activation_kind: PricingReleaseActivationKindV2,
+    pub evidence_digest: String,
+    pub activated_ts: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingReleaseProvisioningRecoveryV2 {
+    pub release: PricingReleaseProvisioningReleaseV2,
+    pub recovery_link: PricingReleaseRecoveryLinkV2,
+}
+
+/// One coherent post-cutover provisioning snapshot.
+///
+/// An active target carries the exact recovery selected by its activation evidence. An active
+/// recovery has no further confirmed pair, so `paired_recovery` is absent.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingReleaseProvisioningContextV2 {
+    pub head: PricingReleaseHeadV2,
+    pub activation: PricingReleaseProvisioningActivationV2,
+    pub active_release: PricingReleaseProvisioningReleaseV2,
+    pub paired_recovery: Option<PricingReleaseProvisioningRecoveryV2>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PricingReleaseHeadExpectationV2 {
