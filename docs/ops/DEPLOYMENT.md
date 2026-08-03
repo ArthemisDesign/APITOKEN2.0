@@ -622,7 +622,10 @@ only after the exact implementation SHA is watchdog-green and the authorization/
 host secret-provisioning path; never place it in Git, a command line, chat transcript, fixture or
 deploy log. Keep that file mode `0600`. The non-secret
 `CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=1` switch belongs to the Anthropic/Combined runtime config;
-enabled-without-key and enabling on OpenAI/Gemini fail startup.
+enabled-without-key and enabling on OpenAI/Gemini fail startup. Because `server.env` is shared,
+the OpenAI and Gemini singleton/template units pin the switch to `0` in `ExecStart`; do not remove
+those argv-level overrides or replace them with an `Environment=` line that `EnvironmentFile` can
+supersede.
 
 Use the normal watchdog-controlled engine cycle so a fresh inactive slot reads both values, then
 run the bounded authenticated smoke from the provider document. Confirm one attempt/settlement and

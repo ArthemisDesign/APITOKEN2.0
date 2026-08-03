@@ -1430,10 +1430,15 @@ grep -Fq 'CLAUDE_API_PROVIDER=anthropic CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_H
 ! grep -Fq 'CLAUDE_API_PROVIDER=' "$ROOT/systemd/claude-api@.service"
 ! grep -Fq 'CLAUDE_API_PROVIDER=' "$ROOT/systemd/claude-api.service"
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-openai.service"
-grep -Fq 'CLAUDE_API_PROVIDER=openai CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8793' \
+grep -Fq 'CLAUDE_API_PROVIDER=openai CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8793' \
   "$ROOT/systemd/claude-api-openai.service"
 grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:openai' "$ROOT/systemd/claude-api-openai.service"
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-openai@.service"
+for non_anthropic_unit in claude-api-openai.service claude-api-openai@.service \
+  claude-api-gemini.service claude-api-gemini@.service; do
+  grep -Fq 'CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0' "$ROOT/systemd/$non_anthropic_unit" \
+    || wd_die "$non_anthropic_unit can inherit the Anthropic-only ClaudeStore switch"
+done
 ! grep -Fq 'CLAUDE_API_CODEX_TRANSPORT' "$ROOT/systemd/claude-api-openai@.service" \
   || wd_die 'OpenAI blue-green slots still pin the removed app-server transport'
 ! grep -Fq 'claude-api-codex-app-servers' "$ROOT/systemd/claude-api-openai@.service" \
@@ -1452,7 +1457,7 @@ for removed_unit in systemd/claude-api-codex-app-server@.service \
     || wd_die "app-server unit still exists: $removed_unit"
 done
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-gemini.service"
-grep -Fq 'CLAUDE_API_PROVIDER=gemini CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8795' \
+grep -Fq 'CLAUDE_API_PROVIDER=gemini CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8795' \
   "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:gemini' "$ROOT/systemd/claude-api-gemini.service"
 grep -Fq 'CLAUDE_API_GEMINI_MODELS=gemini-3.1-flash-image,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.1-pro-preview,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite' \
@@ -1469,7 +1474,7 @@ grep -Fq 'CLAUDE_API_GEMINI_UPSTREAM=https://daily-cloudcode-pa.sandbox.googleap
 grep -Fxq 'ReadOnlyPaths=/srv/claude-api/data/gemini' \
   "$ROOT/systemd/claude-api-gemini.service"
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-gemini@.service"
-grep -Fq 'CLAUDE_API_PROVIDER=gemini CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i' \
+grep -Fq 'CLAUDE_API_PROVIDER=gemini CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i' \
   "$ROOT/systemd/claude-api-gemini@.service" \
   || wd_die 'Gemini slot template does not pin fixed provider mode and its instance port'
 grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:gemini:%i' \
