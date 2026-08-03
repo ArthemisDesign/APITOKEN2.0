@@ -18,6 +18,26 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=deploy/watchdog-lib.sh
 source "$ROOT/deploy/watchdog-lib.sh"
 
+# Every transaction that can start the Redis containers must provision their data directories
+# first. Docker creates a missing bind-mount target as root, and redis:7.4-alpine runs as the
+# image's fixed redis uid/gid (999:1000); the container would then lose write access to its own
+# /data and enter MISCONF after the next persistence cycle while PING still answered. Kept out of
+# activate_redis_definition because watchdog-lib.test.sh evaluates that function directly with
+# stubbed systemctl/docker to prove the activation fence.
+provision_redis_data_dirs() {
+  # Re-applying root ownership while the container remains up makes the live process lose write
+  # access to its bind-mounted /data; Redis then enters MISCONF after the next persistence cycle
+  # even though PING remains healthy.
+  [[ ! -L /var/lib/apitoken/affinity-redis ]] \
+    || { echo '/var/lib/apitoken/affinity-redis must not be a symlink' >&2; exit 1; }
+  install -d -o 999 -g 1000 -m 0700 /var/lib/apitoken/affinity-redis
+  # Second instance for cache affinity. The historical directory name above now belongs to response
+  # history, because renaming it would mean abandoning the conversations it already holds.
+  [[ ! -L /var/lib/apitoken/affinity-redis-l2 ]] \
+    || { echo '/var/lib/apitoken/affinity-redis-l2 must not be a symlink' >&2; exit 1; }
+  install -d -o 999 -g 1000 -m 0700 /var/lib/apitoken/affinity-redis-l2
+}
+
 activate_redis_definition() {
   systemctl enable apitoken-affinity-redis.service
   if (( REDIS_RESTART_REQUIRED )); then
@@ -182,6 +202,7 @@ case "$INSTALL_MODE" in
     ;;
   systemd)
     install_systemd_definitions
+    provision_redis_data_dirs
     activate_redis_definition
     echo 'production systemd definitions installed'
     exit 0
@@ -284,17 +305,9 @@ if ! grep -Eq '^CLAUDE_API_AFFINITY_REDIS_URL=.+$' "$server_env"; then
   printf 'CLAUDE_API_AFFINITY_REDIS_URL=redis://default:%s@127.0.0.1:6380/0\n' "$redis_password" \
     >>"$server_env"
 fi
-# redis:7.4-alpine runs as the image's fixed redis uid/gid (999:1000). Re-applying root ownership
-# while the container remains up makes the live process lose write access to its bind-mounted /data;
-# Redis then enters MISCONF after the next persistence cycle even though PING remains healthy.
-[[ ! -L /var/lib/apitoken/affinity-redis ]] \
-  || { echo '/var/lib/apitoken/affinity-redis must not be a symlink' >&2; exit 1; }
-install -d -o 999 -g 1000 -m 0700 /var/lib/apitoken/affinity-redis
-# Second instance for cache affinity. The historical directory name above now belongs to response
-# history, because renaming it would mean abandoning the conversations it already holds.
-[[ ! -L /var/lib/apitoken/affinity-redis-l2 ]] \
-  || { echo '/var/lib/apitoken/affinity-redis-l2 must not be a symlink' >&2; exit 1; }
-install -d -o 999 -g 1000 -m 0700 /var/lib/apitoken/affinity-redis-l2
+# The data directories live in provision_redis_data_dirs so every transaction that can start the
+# containers provisions them first — including the narrow --systemd-only path.
+provision_redis_data_dirs
 install -d -o root -g deploy -m 0775 /run/lock
 for lock in apitoken-watchdog apitoken-candidate-validator apitoken-source-fetch \
   apitoken-deploy apitoken-db-migrate; do

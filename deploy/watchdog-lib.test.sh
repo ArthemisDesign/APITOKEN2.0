@@ -1386,6 +1386,24 @@ grep -Fq 'install -d -o 999 -g 1000 -m 0700 /var/lib/apitoken/affinity-redis-l2'
   || wd_die 'the second Redis data directory is not provisioned for the image uid/gid'
 grep -Fq "[[ ! -L /var/lib/apitoken/affinity-redis-l2 ]]" "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'the second Redis data directory is not symlink-fenced'
+# Both provisioning blocks must live inside provision_redis_data_dirs, and every transaction that
+# activates Redis must call it first. The narrow --systemd-only path also starts the containers,
+# and Docker would create a missing bind-mount target as root — costing the redis uid write access
+# to its own /data (MISCONF) while PING still answered.
+provision_fn=$(sed -n '/^provision_redis_data_dirs()/,/^}/p' "$ROOT/deploy/install-watchdog.sh")
+grep -Fq 'install -d -o 999 -g 1000 -m 0700 /var/lib/apitoken/affinity-redis' <<<"$provision_fn" \
+  || wd_die 'the history Redis data directory provisioning is not in the shared function'
+grep -Fq 'install -d -o 999 -g 1000 -m 0700 /var/lib/apitoken/affinity-redis-l2' \
+  <<<"$provision_fn" \
+  || wd_die 'the affinity Redis data directory provisioning is not in the shared function'
+[[ $(grep -Ec '^[[:space:]]*provision_redis_data_dirs$' "$ROOT/deploy/install-watchdog.sh") -eq 2 ]] \
+  || wd_die 'a path that starts Redis does not provision its data directories'
+while read -r redis_start_line; do
+  awk -v target="$redis_start_line" 'NR < target && /^[[:space:]]*provision_redis_data_dirs$/ { found = 1 }
+    END { exit !found }' "$ROOT/deploy/install-watchdog.sh" \
+    || wd_die 'Redis is started before its data directories are provisioned'
+done < <(grep -n '^[[:space:]]*activate_redis_definition$' "$ROOT/deploy/install-watchdog.sh" \
+  | cut -d: -f1)
 grep -Fq 'CLAUDE_API_AFFINITY_REDIS_URL=redis://default:%s@127.0.0.1:6380/0' \
   "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'the affinity Redis URL is not provisioned for the second instance'
