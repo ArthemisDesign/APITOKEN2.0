@@ -348,7 +348,7 @@ cumulative ledgers и завершает immutable observation/CAS до публ
 | calibration authority (schema 0029) | `crates/registry/migrations_pg/0029_glm_window_calibration.sql` | готово, expand-only, real-PG matrix зелёная |
 | типы наблюдений | `crates/registry/src/glm_calibration.rs` | готово, 20 тестов |
 | credential | `crates/glm-credential` | готово, 18 тестов |
-| calibration estimator | `crates/forward/src/glm_calibration.rs` | не начато |
+| calibration estimator | `crates/forward/src/glm_calibration.rs` | готово, 27 тестов |
 | Auth Bot: протокол + мастер | `crates/authbot/src/{glm_oauth,glm_roster}.rs`, `bot.rs` | не начато |
 | transport / pool / gateway | `crates/forward/src/glm/**` | не начато |
 | server: env/config + композиция | `crates/server/src/{config,main,poller}.rs` | не начато |

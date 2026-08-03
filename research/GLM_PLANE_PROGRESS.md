@@ -30,7 +30,8 @@ backend-only (по образцу KIMI, `docs/engine/KIMI_PROVIDER.md` §0) до
 | Metering: API rate card + credit schedule | `crates/metering/src/glm.rs` | 9cc4a955 |
 | Migration 0029 + registry observation types | `crates/registry/{migrations_pg/0029_glm_window_calibration.sql,src/glm_calibration.rs,src/pg.rs}` | 40b6d866 |
 | **Мёрж в master, deploy/watchdog GREEN** | master `e9810ef9c6e2a000edb8fac9ad8997d04c8dad9b` (trusted host validation GREEN) | e9810ef9 |
-| Credential crate | `crates/glm-credential` (+ корневой Cargo.toml/lock) | _этот коммит_ |
+| Credential crate | `crates/glm-credential` (+ корневой Cargo.toml/lock) | 0363581a |
+| Calibration estimator | `crates/forward/src/glm_calibration.rs` | _этот коммит_ |
 
 ## Рамка от владельца (2026-08-04)
 
@@ -67,10 +68,9 @@ reroute glm-5.1/5→5.2 (billing по served); rate card 5.2=$1.40/0.26/4.40,
 
 ## Следующее действие (ровно одно)
 
-Коммит credential (это действие), затем коммит estimator
-(`crates/forward/src/glm_calibration.rs`, 27 тестов) и Auth Bot:
-`crates/authbot/src/glm_key.rs` (quota-probe + минимальная generation-валидация),
-`glm_roster.rs`, интеграция в `bot.rs` (HandoffKind::Glm, шаги glm_proxy/glm_ready/glm_wait).
+Auth Bot: `crates/authbot/src/glm_key.rs` (quota-probe + минимальная generation-валидация
+ключа), `glm_roster.rs` (atomic publish, dedup по ключу), интеграция в `bot.rs`
+(HandoffKind::Glm, шаги glm_proxy/glm_ready/glm_wait, тексты, exhaustive menu-тесты).
 
 ## Очередь
 
