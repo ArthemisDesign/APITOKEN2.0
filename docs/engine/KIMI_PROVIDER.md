@@ -1,6 +1,6 @@
 # KIMI (Moonshot AI) — provider capability manifest
 
-Статус интеграции: **research**. Дата ревью источников — **2026-08-03**.
+Статус интеграции: **dormant preview implementation**. Дата ревью источников — **2026-08-03**.
 
 Документ создан по `docs/engine/PROVIDER_ONBOARDING.md` §3.3 и является capability manifest
 плоскости KIMI. Он фиксирует, что доказано, чем именно доказано и что остаётся `unknown`.
@@ -348,8 +348,8 @@ live-прогоном на принадлежащей нам подписке:
 
 ## 7. Состояние доставки
 
-Ветка `feat/kimi-provider-onboarding`. Всё ниже — dormant: ни одна публичная поверхность не
-содержит строки KIMI, ни один потребитель эти модули не вызывает.
+Текущая цепочка продолжается в `feat/kimi-plane-http`. Всё ниже — dormant: ни одна публичная
+поверхность не содержит строки KIMI, а server ещё не вызывает provider runtime.
 
 | Этап | Артефакт | Состояние |
 |---|---|---|
@@ -360,17 +360,17 @@ live-прогоном на принадлежащей нам подписке:
 | credential | `crates/kimi-credential` | готово, 18 тестов |
 | calibration estimator | `crates/forward/src/kimi_calibration.rs` | готово, 18 тестов |
 | Auth Bot: device-code протокол | `crates/authbot/src/kimi_oauth.rs` | готово, 14 тестов |
-| Auth Bot: мастер продавца | `crates/authbot/src/{bot,db}.rs` | **не сделано** |
-| transport / pool / streaming / billing | `crates/forward/src/kimi/**` | **не сделано** |
-| durable read/write калибровки в PostgreSQL | `crates/registry` | **не сделано** |
+| Auth Bot: мастер продавца | `crates/authbot/src/{bot,kimi_roster}.rs` | готово, device flow → atomic roster до выплаты |
+| transport / pool primitives | `crates/forward/src/kimi/**` | готовы roster/client/selection/refresh/error/attempt/FIFO/config; живой generation handler ещё не соединён |
+| durable read/write калибровки в PostgreSQL | `crates/registry` | готово; real-PG replay/conflict/CAS/history matrix зелёная |
 | server: env, plane wiring, readiness | `crates/server` | **не сделано** |
 | observability, alerts, blue-green | `observability/**`, `systemd/**` | **не сделано** |
 | безопасный live-runner | `tools/kimi_calibration/` | **не сделано** |
 | live-матрица на нашей подписке | — | **не сделано, нужна подписка** |
 
-Порядок оставшихся работ задан §5: сначала durable read/write поверх уже вставшей схемы, затем
-транспорт и пул, затем мастер Auth Bot, затем live-runner, и только потом контролируемый живой
-прогон. Публикация не планируется вовсе (см. §0).
+Следующий producer-first шаг — server env/config wiring. После него живой generation/stream/
+settlement orchestration соединяет уже готовые primitives, затем следуют live-runner,
+observability/blue-green и контролируемый живой прогон. Публикация не планируется вовсе (см. §0).
 
 ## 8. Источники
 

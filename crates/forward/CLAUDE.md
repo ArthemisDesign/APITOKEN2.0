@@ -876,9 +876,13 @@ Consumer-контракт и нормализация трёх native shapes о�
    disconnect drain+settlement и shutdown deadline barrier.
 
 
-**KIMI capacity calibration (`kimi_calibration.rs`) — dormant, потребителя пока нет:** чистый
-estimator одного окна подписки Kimi Code. Контракт и факты — `docs/engine/KIMI_PROVIDER.md`,
-схема — миграция `0027_kimi_window_calibration.sql`, типы наблюдений — `registry::kimi_calibration`.
+**KIMI provider foundation — dormant, server/handler пока не подключены:**
+`kimi_calibration.rs` содержит чистый estimator одного окна подписки Kimi Code, а `kimi/` —
+строгий loader encrypted roster, refresh/quota client, unlimited-parallel selector, provider fault
+classification, one-byte attempt policy, bounded turn FIFO и default-off typed config. Контракт и
+факты — `docs/engine/KIMI_PROVIDER.md`, схема — миграция
+`0027_kimi_window_calibration.sql`, типы и PostgreSQL authority —
+`registry::kimi_calibration`/`PgStore::{record_kimi_turn,save_kimi_calibration}`.
 
 Два отличия от Claude/Codex, которые нельзя «унифицировать»:
 
@@ -900,7 +904,9 @@ Identity строки — `subject + exact paid plan + exact native duration в 
 `unattributed`; rollback к старому high-water не является новым расходом; смена estimator version
 перестраивает состояние из immutable history. Prior/EMA/WLS/float money нет.
 
-Модуль пока не подключён к транспорту, пулу и биллингу: провайдер backend-only, за выключенным
+Foundation пока не является живой плоскостью: `server` не читает её env/config, generation/SSE не
+соединены с reserve→delivering→settlement, roster reload и quota poll не запущены. Поэтому наличие
+профиля в roster ещё не означает маршрутизируемую ёмкость. Провайдер backend-only, за выключенным
 switch'ем, без публичного каталога и router namespace.
 
 **Тюнинг под живой Anthropic** (identity/beta/UA/version) — через поля `ProxyConfig`, которые

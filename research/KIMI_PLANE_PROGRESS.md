@@ -41,12 +41,13 @@
 | правило завершённости в скилле и карте | `SKILL.md`, чеклист | `bef32d75` |
 | resumable-леджер как общее правило | `SKILL.md`, чеклист | `2645edab` |
 | **всё вышеперечисленное в master, watchdog GREEN** | — | `f3974ac4` |
-| Плоскость: refresh + разбор `/usages` | `crates/forward/src/kimi/client.rs` | ветка |
-| Плоскость: цикл попыток и граница первого байта | `crates/forward/src/kimi/pool.rs` | ветка |
-| Durable-калибровка: типы turn event + валидация | `crates/registry/src/kimi_calibration.rs` | ветка |
-| Durable-калибровка: PostgreSQL read/write + CAS | `crates/registry/src/pg.rs` | ветка |
-| Плоскость: bounded turn-FIFO и порядок settle→quota | `crates/forward/src/kimi/queue.rs` | ветка |
-| Плоскость: конфиг, default-off switch, readiness | `crates/forward/src/kimi/config.rs` | ветка |
+| Плоскость: refresh + разбор `/usages` | `crates/forward/src/kimi/client.rs` | `c2117d2e` |
+| Плоскость: цикл попыток и граница первого байта | `crates/forward/src/kimi/pool.rs` | `4a4e3ae0` |
+| Durable-калибровка: типы turn event + валидация | `crates/registry/src/kimi_calibration.rs` | `07df7519` |
+| Durable-калибровка: PostgreSQL read/write + CAS | `crates/registry/src/pg.rs` | `34380519` |
+| Плоскость: bounded turn-FIFO и порядок settle→quota | `crates/forward/src/kimi/queue.rs` | `de47a4d4` |
+| Плоскость: конфиг, default-off switch, readiness | `crates/forward/src/kimi/config.rs` | `c233a1b9` |
+| Durable-калибровка: concurrent replay + real-PG CAS/idempotency | `crates/registry/src/pg.rs` | текущий checkpoint |
 | Auth Bot: публикация roster | `crates/authbot/src/kimi_roster.rs` | `dc175204` |
 | Auth Bot: обработчик `km_ready` (шов №1 закрыт) | `crates/authbot/src/bot.rs` | `391032bc` |
 | Плоскость: загрузчик roster | `crates/forward/src/kimi/roster.rs` | `d8a37422` |
@@ -57,9 +58,10 @@
 
 1. ~~`km_ready` не обработан.~~ **Закрыт.** Путь продавца проходится целиком: device-код, поллинг
    под generation guard, `/me`, публикация в roster до завершения выплаты.
-2. **Профиль в roster не читается никем.** Плоскости `crates/forward/src/kimi/` нет, поэтому
-   опубликованная подписка не становится ёмкостью и трафик по ней не идёт. Это единственный
-   оставшийся шов, и до его закрытия говорить «подписка в пуле» нельзя.
+2. **Профиль в roster ещё не становится обслуживающей ёмкостью.** Loader, selector, refresh/quota
+   client, pure attempt policy, FIFO и config уже есть в `crates/forward/src/kimi/`, но `server` их
+   не загружает, а generation/stream/settlement orchestration ещё не соединена в живой handler.
+   До закрытия обеих частей этого шва говорить «подписка в пуле» нельзя.
 
 ## Следующее действие
 
@@ -69,9 +71,10 @@
 `CLAUDE_API_KIMI_ROSTER_DIR`, `CLAUDE_API_KIMI_CREDENTIAL_KEYS`, `CLAUDE_API_KIMI_BASE_URL`,
 `CLAUDE_API_KIMI_AUTH_SCHEME`, `CLAUDE_API_KIMI_QUOTA_POLL_SECS`.
 
-**Не забыть:** real-PG матрица для `record_kimi_turn` и `save_kimi_calibration`
-(`CLAUDE_API_TEST_DATABASE_URL=... cargo test -p registry`) — сейчас доказана только компиляция и
-инварианты в Rust, но не поведение CAS и idempotency против настоящей базы.
+**Закрыто в текущем checkpoint:** real-PG матрица для `record_kimi_turn` и
+`save_kimi_calibration` доказала concurrent exact replay, semantic conflict без второго spend,
+out-of-order cumulative timestamps, CAS loser rollback и oldest-first immutable history против
+настоящей PostgreSQL.
 
 **Процессные заметки (обе уже стоили потерянного мёржа):**
 
@@ -91,10 +94,10 @@
 
 ## Очередь после этого
 
-1. Durable-калибровка: read/write поверх таблиц `0027` + поллер `/usages`, дренаж turn-FIFO перед
-   каждым опросом квоты.
-2. `crates/server`: env, wiring плоскости, readiness. **Пробу нельзя вешать на `/v1/models`** —
+1. `crates/server`: env, config wiring плоскости, readiness. **Пробу нельзя вешать на `/v1/models`** —
    он негейтед и отвечает 200 на мёртвый ключ; бить в `/messages` или `/me`.
+2. `crates/forward` + `crates/server`: живой generation/stream/settlement handler, roster reload,
+   поллер `/usages` с дренажом turn-FIFO перед каждым observation и shutdown drain.
 3. `tools/kimi_calibration/run_live.py` — dry-run по умолчанию, целочисленный бюджет, точная
    атрибуция по immutable request id.
 4. Observability, blue-green, live-матрица.

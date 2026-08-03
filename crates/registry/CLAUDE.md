@@ -102,6 +102,13 @@ side effect. `serve` may only perform the read-only schema verification before c
   replay, reset jitter, one-snapshot lag, plan pooling и delivery retry принадлежат `forward`/`server`.
   PostgreSQL initial CAS insert обязан явно типизировать version placeholder как `bigint`: выражение
   с untyped integer literal иначе выводит параметр как `int4` и блокирует durable FIFO до recovery.
+- KIMI calibration migration 0027 хранит отдельную plan+duration authority с requested/served model
+  и raw `used/limit` quota evidence. `record_kimi_turn` делает immutable insert и cumulative
+  subject spend одной transaction: concurrent exact replay сериализуется через
+  `ON CONFLICT(request_id)`, другой payload конфликтует, а tracking/update timestamps сохраняют
+  earliest/latest даже при out-of-order finalizers. `save_kimi_calibration` вставляет observation и
+  двигает derived state одним version CAS; проигравший CAS rollback'ит observation, history читается
+  oldest-first. Real-PostgreSQL gate — `pg::tests::kimi_calibration_postgres_matrix`.
 - **Execution-group fencing runtime (phase 6.3):** migration 0021 expand-only добавила к
   `reservations` nullable `group_id`, positive one-based `attempt` и insert-first-wins
   `execution_group_winner`. `group_id IS NULL` означает effective group `request_id`; все reserve

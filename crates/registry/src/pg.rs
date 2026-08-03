@@ -5234,15 +5234,49 @@ impl PgStore {
     pub fn record_kimi_turn(&mut self, event: &KimiTurnCalibrationEvent) -> Result<bool> {
         event.validate()?;
         let mut tx = self.client.transaction()?;
-        let existing = tx.query_opt(
-            "SELECT subject_id,plan,requested_model,served_model,context_mode,reasoning_effort,\
-             tariff_schedule_id,priced_ts,completed_at,input_tokens,cache_read_tokens,\
-             cache_write_tokens,output_tokens,reasoning_output_tokens,api_input_nanousd,\
-             api_cache_read_nanousd,api_cache_write_nanousd,api_output_nanousd,api_total_nanousd \
-             FROM kimi_turn_calibration_events WHERE request_id=$1 FOR UPDATE",
-            &[&event.request_id],
-        )?;
-        if let Some(row) = existing {
+        let inserted = tx.execute(
+            "INSERT INTO kimi_turn_calibration_events(request_id,subject_id,plan,requested_model,\
+             served_model,context_mode,reasoning_effort,tariff_schedule_id,priced_ts,completed_at,\
+             input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,\
+             reasoning_output_tokens,api_input_nanousd,api_cache_read_nanousd,\
+             api_cache_write_nanousd,api_output_nanousd,api_total_nanousd) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) \
+             ON CONFLICT(request_id) DO NOTHING",
+            &[
+                &event.request_id,
+                &event.subject_id,
+                &event.plan,
+                &event.requested_model,
+                &event.served_model,
+                &event.context_mode,
+                &event.reasoning_effort,
+                &event.tariff_schedule_id,
+                &event.priced_ts,
+                &event.completed_at,
+                &event.input_tokens,
+                &event.cache_read_tokens,
+                &event.cache_write_tokens,
+                &event.output_tokens,
+                &event.reasoning_output_tokens,
+                &event.api_input_nanousd,
+                &event.api_cache_read_nanousd,
+                &event.api_cache_write_nanousd,
+                &event.api_output_nanousd,
+                &event.api_total_nanousd,
+            ],
+        )? == 1;
+        if !inserted {
+            // `ON CONFLICT` serializes two simultaneous ambiguous replies on the immutable key.
+            // Once the winner commits, the loser reads its row and can distinguish an exact
+            // replay from a semantic conflict without ever advancing spend twice.
+            let row = tx.query_one(
+                "SELECT subject_id,plan,requested_model,served_model,context_mode,reasoning_effort,\
+                 tariff_schedule_id,priced_ts,completed_at,input_tokens,cache_read_tokens,\
+                 cache_write_tokens,output_tokens,reasoning_output_tokens,api_input_nanousd,\
+                 api_cache_read_nanousd,api_cache_write_nanousd,api_output_nanousd,api_total_nanousd \
+                 FROM kimi_turn_calibration_events WHERE request_id=$1",
+                &[&event.request_id],
+            )?;
             let stored = KimiTurnCalibrationEvent {
                 request_id: event.request_id.clone(),
                 subject_id: row.get(0),
@@ -5273,41 +5307,14 @@ impl PgStore {
         }
 
         tx.execute(
-            "INSERT INTO kimi_turn_calibration_events(request_id,subject_id,plan,requested_model,\
-             served_model,context_mode,reasoning_effort,tariff_schedule_id,priced_ts,completed_at,\
-             input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,\
-             reasoning_output_tokens,api_input_nanousd,api_cache_read_nanousd,\
-             api_cache_write_nanousd,api_output_nanousd,api_total_nanousd) \
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)",
-            &[
-                &event.request_id,
-                &event.subject_id,
-                &event.plan,
-                &event.requested_model,
-                &event.served_model,
-                &event.context_mode,
-                &event.reasoning_effort,
-                &event.tariff_schedule_id,
-                &event.priced_ts,
-                &event.completed_at,
-                &event.input_tokens,
-                &event.cache_read_tokens,
-                &event.cache_write_tokens,
-                &event.output_tokens,
-                &event.reasoning_output_tokens,
-                &event.api_input_nanousd,
-                &event.api_cache_read_nanousd,
-                &event.api_cache_write_nanousd,
-                &event.api_output_nanousd,
-                &event.api_total_nanousd,
-            ],
-        )?;
-        tx.execute(
             "INSERT INTO kimi_calibration_subject_spend(subject_id,spent_nano,\
              tracking_started_ts,updated_ts) VALUES($1,$2,$3,$3) \
              ON CONFLICT(subject_id) DO UPDATE SET \
              spent_nano=kimi_calibration_subject_spend.spent_nano+EXCLUDED.spent_nano, \
-             updated_ts=EXCLUDED.updated_ts",
+             tracking_started_ts=LEAST(\
+                 kimi_calibration_subject_spend.tracking_started_ts,EXCLUDED.tracking_started_ts), \
+             updated_ts=GREATEST(\
+                 kimi_calibration_subject_spend.updated_ts,EXCLUDED.updated_ts)",
             &[
                 &event.subject_id,
                 &event.api_total_nanousd,
@@ -5363,7 +5370,10 @@ impl PgStore {
                 &state.estimator_version,
             ],
         )?;
-        let next_version = state.version + 1;
+        let next_version = state
+            .version
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("KIMI calibration version overflow"))?;
         let updated = tx.execute(
             "INSERT INTO kimi_window_calibrations(subject_id,plan,window_duration_secs,\
              window_name,resets_at,anchor_used_fraction_units,anchor_resolution_fraction_units,\
@@ -10147,6 +10157,237 @@ mod tests {
             .find(|(version, _)| *version == 27)
             .map(|(_, sql)| *sql);
         assert_eq!(registered, Some(MIGRATION_0027));
+    }
+
+    /// Real PostgreSQL proof for immutable turn replay, cumulative spend, observation history and
+    /// estimator-state CAS. Skipped unless the dedicated destructive test database is supplied:
+    /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+    /// pg::tests::kimi_calibration_postgres_matrix`
+    #[test]
+    fn kimi_calibration_postgres_matrix() {
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!("skipping KIMI PostgreSQL calibration matrix: test URL is unset");
+            return;
+        };
+        let mut lock_holder = PgStore::connect(&url).unwrap();
+        lock_holder
+            .client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        lock_holder
+            .client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        lock_holder
+            .client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+            .unwrap();
+
+        let mut pg = PgStore::connect(&url).unwrap();
+        pg.migrate().unwrap();
+        pg.client
+            .batch_execute(
+                "TRUNCATE kimi_window_calibrations,kimi_window_observations,\
+                 kimi_calibration_subject_spend,kimi_turn_calibration_events \
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+
+        let event = KimiTurnCalibrationEvent {
+            request_id: "kimi-pg-replay".into(),
+            subject_id: "kimi-pg-subject".into(),
+            plan: "Moderato".into(),
+            requested_model: "kimi-for-coding".into(),
+            served_model: "kimi-k2.7-code".into(),
+            context_mode: "256k".into(),
+            reasoning_effort: "high".into(),
+            tariff_schedule_id: "moonshot/kimi/2026-08-03/v1".into(),
+            priced_ts: 190,
+            completed_at: 200,
+            input_tokens: 100,
+            cache_read_tokens: 20,
+            cache_write_tokens: 0,
+            output_tokens: 10,
+            reasoning_output_tokens: 4,
+            api_input_nanousd: 600,
+            api_cache_read_nanousd: 100,
+            api_cache_write_nanousd: 0,
+            api_output_nanousd: 300,
+            api_total_nanousd: 1_000,
+        };
+
+        // Two ambiguous replies may race from active and candidate blue-green generations. The
+        // immutable key must pick one insert while the loser observes an exact replay, not a
+        // unique-violation and never a second spend advance.
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let url = url.clone();
+            let event = event.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let mut pg = PgStore::connect(&url).unwrap();
+                barrier.wait();
+                pg.record_kimi_turn(&event).unwrap()
+            }));
+        }
+        let mut insert_outcomes = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        insert_outcomes.sort_unstable();
+        assert_eq!(insert_outcomes, vec![false, true]);
+        assert_eq!(pg.kimi_subject_spend(&event.subject_id).unwrap(), 1_000);
+
+        let mut conflict = event.clone();
+        conflict.requested_model = "k3".into();
+        let error = pg.record_kimi_turn(&conflict).unwrap_err().to_string();
+        assert!(
+            error.contains("replay conflict"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(pg.kimi_subject_spend(&event.subject_id).unwrap(), 1_000);
+
+        // Out-of-order finalizers still retain the earliest tracking start and latest update.
+        let older = KimiTurnCalibrationEvent {
+            request_id: "kimi-pg-older".into(),
+            priced_ts: 90,
+            completed_at: 100,
+            api_input_nanousd: 300,
+            api_cache_read_nanousd: 50,
+            api_output_nanousd: 150,
+            api_total_nanousd: 500,
+            ..event.clone()
+        };
+        assert!(pg.record_kimi_turn(&older).unwrap());
+        assert_eq!(pg.kimi_subject_spend(&event.subject_id).unwrap(), 1_500);
+        let spend_times = pg
+            .client
+            .query_one(
+                "SELECT tracking_started_ts,updated_ts FROM kimi_calibration_subject_spend \
+                 WHERE subject_id=$1",
+                &[&event.subject_id],
+            )
+            .unwrap();
+        assert_eq!(
+            (spend_times.get::<_, i64>(0), spend_times.get::<_, i64>(1)),
+            (100, 200)
+        );
+
+        let fraction = crate::kimi_fraction_from_native(100, 1_000).unwrap();
+        let observation = KimiWindowObservation {
+            subject_id: event.subject_id.clone(),
+            plan: event.plan.clone(),
+            window_duration_secs: crate::KIMI_ROLLING_WINDOW_SECS,
+            window_name: Some("rolling".into()),
+            resets_at: 10_000,
+            observed_at: 300,
+            native_used_units: 100,
+            native_limit_units: 1_000,
+            used_fraction_units: fraction.used_fraction_units,
+            measurement_resolution_fraction_units: fraction.measurement_resolution_fraction_units,
+            cumulative_api_spend_nano: 1_500,
+        };
+        let state = KimiCalibrationRow {
+            subject_id: observation.subject_id.clone(),
+            plan: observation.plan.clone(),
+            window_duration_secs: observation.window_duration_secs,
+            window_name: observation.window_name.clone(),
+            resets_at: observation.resets_at,
+            anchor_used_fraction_units: observation.used_fraction_units,
+            anchor_resolution_fraction_units: observation.measurement_resolution_fraction_units,
+            anchor_spend_nano: observation.cumulative_api_spend_nano,
+            used_fraction_units: observation.used_fraction_units,
+            measurement_resolution_fraction_units: observation
+                .measurement_resolution_fraction_units,
+            observed_at: observation.observed_at,
+            native_limit_units: observation.native_limit_units,
+            native_used_units: observation.native_used_units,
+            observed_fraction_units: 0,
+            observed_spend_nano: 0,
+            samples: 0,
+            unattributed_fraction_units: 0,
+            current_capacity_nano: None,
+            current_low_nano: None,
+            current_high_nano: None,
+            current_confidence_bp: 0,
+            last_measured_at: None,
+            estimator_version: 1,
+            version: 0,
+            updated_ts: observation.observed_at,
+        };
+        assert_eq!(
+            pg.save_kimi_calibration(&state, &observation).unwrap(),
+            Some(1)
+        );
+
+        let mut second_observation = observation.clone();
+        let second_fraction = crate::kimi_fraction_from_native(101, 1_000).unwrap();
+        second_observation.observed_at = 301;
+        second_observation.native_used_units = 101;
+        second_observation.used_fraction_units = second_fraction.used_fraction_units;
+        second_observation.measurement_resolution_fraction_units =
+            second_fraction.measurement_resolution_fraction_units;
+        let mut second_state = pg
+            .load_kimi_calibration(&state.subject_id, &state.plan, state.window_duration_secs)
+            .unwrap()
+            .unwrap();
+        second_state.observed_at = second_observation.observed_at;
+        second_state.native_used_units = second_observation.native_used_units;
+        second_state.used_fraction_units = second_observation.used_fraction_units;
+        second_state.measurement_resolution_fraction_units =
+            second_observation.measurement_resolution_fraction_units;
+        second_state.updated_ts = second_observation.observed_at;
+        assert_eq!(
+            pg.save_kimi_calibration(&second_state, &second_observation)
+                .unwrap(),
+            Some(2)
+        );
+
+        // A stale writer loses the CAS and rolls its observation back. Raw history remains exact,
+        // oldest-first and contains only the two winning transitions.
+        assert_eq!(
+            pg.save_kimi_calibration(&state, &observation).unwrap(),
+            None
+        );
+        let history = pg
+            .load_kimi_window_observations(
+                &state.subject_id,
+                &state.plan,
+                state.window_duration_secs,
+            )
+            .unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .map(|row| row.observed_at)
+                .collect::<Vec<_>>(),
+            vec![300, 301]
+        );
+        let stored = pg
+            .load_kimi_calibration(&state.subject_id, &state.plan, state.window_duration_secs)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.version, 2);
+        assert_eq!(stored.native_used_units, 101);
+
+        pg.client
+            .batch_execute(
+                "TRUNCATE kimi_window_calibrations,kimi_window_observations,\
+                 kimi_calibration_subject_spend,kimi_turn_calibration_events \
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        lock_holder
+            .client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
     }
 
     #[test]
