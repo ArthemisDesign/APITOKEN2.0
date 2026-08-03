@@ -244,8 +244,10 @@ mod tests {
             "openai".to_string(),
             CatalogEntry {
                 id: "openai/gpt-5.6-terra".to_string(),
-                alias: "gpt-5.6-terra".to_string(),
+                native_id: "gpt-5.6-terra".to_string(),
+                aliases: vec!["gpt-5.6-terra".to_string()],
                 display_name: None,
+                limits: None,
                 reasoning_efforts: None,
                 service_tiers: Some(vec!["standard".to_string(), "priority".to_string()]),
             },

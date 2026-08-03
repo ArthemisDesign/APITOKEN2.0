@@ -16,6 +16,7 @@
 //! 401/403 плоскости пробрасывается клиенту как единый 401: ключ проверяет
 //! общий billing authority, «частично валидного» ключа не бывает.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -42,49 +43,13 @@ pub const NS_ANTHROPIC: &str = "anthropic";
 pub const NS_OPENAI: &str = "openai";
 pub const NS_GOOGLE: &str = "google";
 
-const ANTHROPIC_EFFORTS_4_6: &[&str] = &["low", "medium", "high", "max"];
-const ANTHROPIC_EFFORTS_FULL: &[&str] = &["low", "medium", "high", "xhigh", "max"];
-const OPENAI_SERVICE_TIERS: &[&str] = &["standard", "priority"];
-
-/// Router-owned discovery metadata for the OpenAI-compatible surface. The
-/// native Anthropic model list has no effort capability field, so the unified
-/// catalog publishes the live-verified model boundary explicitly: 4.6 has
-/// `max` but no `xhigh`, while 4.7+ and 5 have both. Older/unknown ids publish
-/// an authoritative empty list rather than inviting clients to guess.
-fn anthropic_reasoning_efforts(model: &str) -> &'static [&'static str] {
-    let version = [
-        "claude-opus-",
-        "claude-sonnet-",
-        "claude-haiku-",
-        "claude-fable-",
-    ]
-    .into_iter()
-    .find_map(|prefix| model.strip_prefix(prefix));
-    let Some(version) = version else {
-        return &[];
-    };
-    let mut parts = version.split('-');
-    let Some(major) = parts.next().and_then(|part| part.parse::<u16>().ok()) else {
-        return &[];
-    };
-    if major > 4 {
-        return ANTHROPIC_EFFORTS_FULL;
-    }
-    if major < 4 {
-        return &[];
-    }
-    let Some(minor) = parts.next() else {
-        return &[];
-    };
-    if minor.len() > 2 {
-        return &[];
-    }
-    match minor.parse::<u16>() {
-        Ok(6) => ANTHROPIC_EFFORTS_4_6,
-        Ok(7..) => ANTHROPIC_EFFORTS_FULL,
-        _ => &[],
-    }
-}
+const REASONING_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const ANTHROPIC_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+const SERVICE_TIERS: &[&str] = &["standard", "priority"];
+/// Public token limits are consumed as JavaScript numbers by harnesses. A u32
+/// ceiling is far above every reviewed provider context while keeping hostile
+/// catalog values bounded and exactly representable.
+const MAX_TOKEN_LIMIT: u64 = u32::MAX as u64;
 
 /// Плоскость по явному namespace-префиксу модели — общая для обоих universal
 /// dispatch'ей (`chat.rs`, `responses.rs`; их dispatch-правила обязаны
@@ -109,16 +74,27 @@ pub(crate) fn namespace_lane(model: &str) -> Option<Lane> {
 pub struct CatalogEntry {
     /// Namespaced ID (`anthropic/claude-opus-4-8`).
     pub id: String,
-    /// Нативный ID плоскости (`claude-opus-4-8`) — однозначный alias.
-    pub alias: String,
+    /// Нативный ID плоскости. Он нужен для body rewrite и pricing preflight
+    /// даже если совпадающий публичный alias снят из-за коллизии.
+    pub native_id: String,
+    /// Только глобально однозначные публичные aliases. Коллизия снимает alias
+    /// со всех записей, но не затрагивает namespaced ID и native_id.
+    pub aliases: Vec<String>,
     pub display_name: Option<String>,
+    /// Authoritative normalized token limits from the provider plane.
+    pub limits: Option<CatalogLimits>,
     /// Ordered OpenAI-compatible reasoning variants. `Some([])` is an
-    /// authoritative statement that this Anthropic model has no GA adaptive
-    /// effort; `None` means this catalog parser does not own such metadata.
+    /// authoritative statement that the model has no supported effort.
     pub reasoning_efforts: Option<Vec<String>>,
-    /// Ordered execution tiers supported by this model. The OpenAI plane owns
-    /// Standard/Priority execution; other catalog parsers leave this absent.
+    /// Ordered execution tiers supported by this model.
     pub service_tiers: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CatalogLimits {
+    pub context: Option<u64>,
+    pub input: Option<u64>,
+    pub output: Option<u64>,
 }
 
 impl CatalogEntry {
@@ -130,7 +106,7 @@ impl CatalogEntry {
             "object": "model",
             "created": 0,
             "owned_by": owned_by,
-            "aliases": [self.alias],
+            "aliases": self.aliases,
         });
         if let Some(name) = &self.display_name {
             obj["name"] = Value::String(name.clone());
@@ -140,6 +116,35 @@ impl CatalogEntry {
         }
         if let Some(tiers) = &self.service_tiers {
             obj["service_tiers"] = serde_json::json!(tiers);
+        }
+        let mut apitoken = serde_json::Map::new();
+        if let Some(limits) = &self.limits {
+            let mut normalized = serde_json::Map::new();
+            for (name, value) in [
+                ("context", limits.context),
+                ("input", limits.input),
+                ("output", limits.output),
+            ] {
+                if let Some(value) = value {
+                    normalized.insert(name.to_string(), Value::from(value));
+                }
+            }
+            if !normalized.is_empty() {
+                apitoken.insert("limits".to_string(), Value::Object(normalized));
+            }
+        }
+        let mut capabilities = serde_json::Map::new();
+        if let Some(efforts) = &self.reasoning_efforts {
+            capabilities.insert("reasoning_efforts".to_string(), serde_json::json!(efforts));
+        }
+        if let Some(tiers) = &self.service_tiers {
+            capabilities.insert("service_tiers".to_string(), serde_json::json!(tiers));
+        }
+        if !capabilities.is_empty() {
+            apitoken.insert("capabilities".to_string(), Value::Object(capabilities));
+        }
+        if !apitoken.is_empty() {
+            obj["apitoken"] = Value::Object(apitoken);
         }
         obj
     }
@@ -217,12 +222,17 @@ impl Catalog {
     }
 
     fn read(&self, lane: Lane) -> Option<PlaneCache> {
-        self.cache(lane).lock().expect("catalog cache poisoned").clone()
+        self.cache(lane)
+            .lock()
+            .expect("catalog cache poisoned")
+            .clone()
     }
 
     fn write(&self, lane: Lane, entries: Vec<CatalogEntry>) {
-        *self.cache(lane).lock().expect("catalog cache poisoned") =
-            Some(PlaneCache { entries, fetched_at: Instant::now() });
+        *self.cache(lane).lock().expect("catalog cache poisoned") = Some(PlaneCache {
+            entries,
+            fetched_at: Instant::now(),
+        });
     }
 
     /// Опрос одной плоскости: сначала свежий кэш, затем живой fetch с
@@ -264,7 +274,11 @@ impl Catalog {
             self.plane_entries(client, origins.openai, Lane::OpenAi, auth),
             self.plane_entries(client, origins.gemini, Lane::Gemini, auth),
         );
-        let mut aggregate = Aggregate { entries: Vec::new(), degraded: Vec::new(), auth_rejected: false };
+        let mut aggregate = Aggregate {
+            entries: Vec::new(),
+            degraded: Vec::new(),
+            auth_rejected: false,
+        };
         for (namespace, outcome) in [
             (NS_ANTHROPIC, anthropic),
             (NS_OPENAI, openai),
@@ -272,7 +286,9 @@ impl Catalog {
         ] {
             match &outcome {
                 PlaneOutcome::AuthRejected => aggregate.auth_rejected = true,
-                PlaneOutcome::Stale(_) | PlaneOutcome::Missing => aggregate.degraded.push(namespace),
+                PlaneOutcome::Stale(_) | PlaneOutcome::Missing => {
+                    aggregate.degraded.push(namespace)
+                }
                 PlaneOutcome::Fresh(_) => {}
             }
             if let Some(entries) = outcome.entries() {
@@ -336,6 +352,9 @@ async fn fetch_plane(
         Lane::OpenAi => parse_openai(&body),
         Lane::Gemini => parse_gemini(&body),
     };
+    let Ok(entries) = entries else {
+        return FetchResult::Failed;
+    };
     if entries.is_empty() {
         // Пустой каталог от живой плоскости — аномалия конфигурации; не
         // закрепляем его в кэше, чтобы не опустошать единый каталог.
@@ -344,98 +363,257 @@ async fn fetch_plane(
     FetchResult::Entries(entries)
 }
 
-fn parse_anthropic(body: &Value) -> Vec<CatalogEntry> {
-    body["data"]
-        .as_array()
-        .map(|models| {
-            models
-                .iter()
-                .filter_map(|m| {
-                    let id = m["id"].as_str()?.trim().to_string();
-                    if id.is_empty() {
-                        return None;
-                    }
-                    Some(CatalogEntry {
-                        id: format!("{NS_ANTHROPIC}/{id}"),
-                        reasoning_efforts: Some(
-                            anthropic_reasoning_efforts(&id)
-                                .iter()
-                                .map(|effort| (*effort).to_string())
-                                .collect(),
-                        ),
-                        alias: id,
-                        display_name: m["display_name"].as_str().map(str::to_string),
-                        service_tiers: None,
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+type ParseResult = Result<Vec<CatalogEntry>, ()>;
+
+fn positive_limit(object: &serde_json::Map<String, Value>, field: &str) -> Result<Option<u64>, ()> {
+    let Some(value) = object.get(field) else {
+        return Ok(None);
+    };
+    match value.as_u64() {
+        Some(value) if (1..=MAX_TOKEN_LIMIT).contains(&value) => Ok(Some(value)),
+        _ => Err(()),
+    }
 }
 
-fn parse_openai(body: &Value) -> Vec<CatalogEntry> {
-    body["data"]
-        .as_array()
-        .map(|models| {
-            models
-                .iter()
-                .filter_map(|m| {
-                    let id = m["id"].as_str()?.trim().to_string();
-                    if id.is_empty() {
-                        return None;
-                    }
-                    let service_tiers = id.starts_with("gpt-").then(|| {
-                        OPENAI_SERVICE_TIERS
-                            .iter()
-                            .map(|tier| (*tier).to_string())
-                            .collect()
-                    });
-                    Some(CatalogEntry {
-                        id: format!("{NS_OPENAI}/{id}"),
-                        alias: id,
-                        display_name: None,
-                        reasoning_efforts: None,
-                        service_tiers,
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+fn closed_list(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+    allowed: &[&str],
+) -> Result<Option<Vec<String>>, ()> {
+    let Some(value) = object.get(field) else {
+        return Ok(None);
+    };
+    let values = value.as_array().ok_or(())?;
+    if values.len() > allowed.len() {
+        return Err(());
+    }
+    let mut seen = HashSet::new();
+    let mut parsed = Vec::with_capacity(values.len());
+    for value in values {
+        let value = value.as_str().ok_or(())?;
+        if !allowed.contains(&value) || !seen.insert(value) {
+            return Err(());
+        }
+        parsed.push(value.to_string());
+    }
+    Ok(Some(parsed))
 }
 
-fn parse_gemini(body: &Value) -> Vec<CatalogEntry> {
-    body["models"]
-        .as_array()
-        .map(|models| {
-            models
-                .iter()
-                .filter_map(|m| {
-                    let name = m["name"].as_str()?;
-                    let id = name.strip_prefix("models/").unwrap_or(name).trim().to_string();
-                    if id.is_empty() {
-                        return None;
-                    }
-                    Some(CatalogEntry {
-                        id: format!("{NS_GOOGLE}/{id}"),
-                        alias: id,
-                        display_name: m["displayName"].as_str().map(str::to_string),
-                        reasoning_efforts: None,
-                        service_tiers: None,
-                    })
-                })
-                .collect()
+fn parse_owned_metadata(
+    model: &serde_json::Map<String, Value>,
+) -> Result<
+    (
+        Option<CatalogLimits>,
+        Option<Vec<String>>,
+        Option<Vec<String>>,
+    ),
+    (),
+> {
+    let Some(apitoken) = model.get("apitoken") else {
+        return Ok((None, None, None));
+    };
+    let apitoken = apitoken.as_object().ok_or(())?;
+    let limits = match apitoken.get("limits") {
+        None => None,
+        Some(value) => {
+            let value = value.as_object().ok_or(())?;
+            let limits = CatalogLimits {
+                context: positive_limit(value, "context")?,
+                input: positive_limit(value, "input")?,
+                output: positive_limit(value, "output")?,
+            };
+            if let (Some(context), Some(input)) = (limits.context, limits.input) {
+                if context < input {
+                    return Err(());
+                }
+            }
+            (limits.context.is_some() || limits.input.is_some() || limits.output.is_some())
+                .then_some(limits)
+        }
+    };
+    let (reasoning_efforts, service_tiers) = match apitoken.get("capabilities") {
+        None => (None, None),
+        Some(value) => {
+            let value = value.as_object().ok_or(())?;
+            (
+                closed_list(value, "reasoning_efforts", REASONING_EFFORTS)?,
+                closed_list(value, "service_tiers", SERVICE_TIERS)?,
+            )
+        }
+    };
+    Ok((limits, reasoning_efforts, service_tiers))
+}
+
+fn parse_anthropic_efforts(
+    model: &serde_json::Map<String, Value>,
+) -> Result<Option<Vec<String>>, ()> {
+    let Some(capabilities) = model.get("capabilities") else {
+        return Ok(None);
+    };
+    let capabilities = capabilities.as_object().ok_or(())?;
+    let Some(effort) = capabilities.get("effort") else {
+        return Ok(None);
+    };
+    let effort = effort.as_object().ok_or(())?;
+    let supported = effort.get("supported").and_then(Value::as_bool).ok_or(())?;
+    let mut parsed = Vec::new();
+    for level in ANTHROPIC_EFFORTS {
+        let Some(value) = effort.get(*level) else {
+            continue;
+        };
+        let level_supported = value
+            .as_object()
+            .and_then(|value| value.get("supported"))
+            .and_then(Value::as_bool)
+            .ok_or(())?;
+        if level_supported {
+            if !supported {
+                return Err(());
+            }
+            parsed.push((*level).to_string());
+        }
+    }
+    Ok(Some(parsed))
+}
+
+fn parse_anthropic(body: &Value) -> ParseResult {
+    let models = body.get("data").and_then(Value::as_array).ok_or(())?;
+    models
+        .iter()
+        .filter_map(|model| {
+            let model = match model.as_object() {
+                Some(model) => model,
+                None => return Some(Err(())),
+            };
+            let id = match model.get("id").and_then(Value::as_str) {
+                Some(id) if !id.trim().is_empty() => id.trim().to_string(),
+                Some(_) | None => return None,
+            };
+            let input = match positive_limit(model, "max_input_tokens") {
+                Ok(value) => value,
+                Err(()) => return Some(Err(())),
+            };
+            let output = match positive_limit(model, "max_tokens") {
+                Ok(value) => value,
+                Err(()) => return Some(Err(())),
+            };
+            let limits = (input.is_some() || output.is_some()).then_some(CatalogLimits {
+                context: input,
+                input,
+                output,
+            });
+            let reasoning_efforts = match parse_anthropic_efforts(model) {
+                Ok(value) => value,
+                Err(()) => return Some(Err(())),
+            };
+            Some(Ok(CatalogEntry {
+                id: format!("{NS_ANTHROPIC}/{id}"),
+                native_id: id.clone(),
+                aliases: vec![id],
+                display_name: model
+                    .get("display_name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                limits,
+                reasoning_efforts,
+                service_tiers: None,
+            }))
         })
-        .unwrap_or_default()
+        .collect()
+}
+
+fn parse_openai(body: &Value) -> ParseResult {
+    parse_owned_models(
+        body.get("data").and_then(Value::as_array),
+        NS_OPENAI,
+        |model| model.get("id").and_then(Value::as_str).map(str::to_string),
+        |model| {
+            model
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        },
+    )
+}
+
+fn parse_gemini(body: &Value) -> ParseResult {
+    parse_owned_models(
+        body.get("models").and_then(Value::as_array),
+        NS_GOOGLE,
+        |model| {
+            model
+                .get("name")
+                .and_then(Value::as_str)
+                .map(|name| name.strip_prefix("models/").unwrap_or(name).to_string())
+        },
+        |model| {
+            model
+                .get("displayName")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        },
+    )
+}
+
+fn parse_owned_models<Id, Display>(
+    models: Option<&Vec<Value>>,
+    namespace: &str,
+    id_of: Id,
+    display_of: Display,
+) -> ParseResult
+where
+    Id: Fn(&serde_json::Map<String, Value>) -> Option<String>,
+    Display: Fn(&serde_json::Map<String, Value>) -> Option<String>,
+{
+    let models = models.ok_or(())?;
+    models
+        .iter()
+        .filter_map(|model| {
+            let model = match model.as_object() {
+                Some(model) => model,
+                None => return Some(Err(())),
+            };
+            let id = match id_of(model) {
+                Some(id) if !id.trim().is_empty() => id.trim().to_string(),
+                Some(_) | None => return None,
+            };
+            let (limits, reasoning_efforts, service_tiers) = match parse_owned_metadata(model) {
+                Ok(metadata) => metadata,
+                Err(()) => return Some(Err(())),
+            };
+            Some(Ok(CatalogEntry {
+                id: format!("{namespace}/{id}"),
+                native_id: id.clone(),
+                aliases: vec![id],
+                display_name: display_of(model),
+                limits,
+                reasoning_efforts,
+                service_tiers,
+            }))
+        })
+        .collect()
 }
 
 /// Дедупликация по namespaced ID с сохранением порядка.
 pub fn dedup(entries: Vec<(String, CatalogEntry)>) -> Vec<(String, CatalogEntry)> {
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
         if seen.insert(entry.1.id.clone()) {
             out.push(entry);
         }
+    }
+    let namespaced: HashSet<_> = out.iter().map(|(_, entry)| entry.id.clone()).collect();
+    let mut alias_counts = HashMap::<String, usize>::new();
+    for (_, entry) in &out {
+        for alias in &entry.aliases {
+            *alias_counts.entry(alias.clone()).or_default() += 1;
+        }
+    }
+    for (_, entry) in &mut out {
+        entry
+            .aliases
+            .retain(|alias| alias_counts.get(alias) == Some(&1) && !namespaced.contains(alias));
     }
     out
 }
@@ -445,10 +623,11 @@ pub fn find<'a>(
     entries: &'a [(String, CatalogEntry)],
     requested: &str,
 ) -> Option<&'a (String, CatalogEntry)> {
-    entries
-        .iter()
-        .find(|(_, e)| e.id == requested)
-        .or_else(|| entries.iter().find(|(_, e)| e.alias == requested))
+    entries.iter().find(|(_, e)| e.id == requested).or_else(|| {
+        entries
+            .iter()
+            .find(|(_, e)| e.aliases.iter().any(|alias| alias == requested))
+    })
 }
 
 #[cfg(test)]
@@ -457,7 +636,10 @@ mod tests {
 
     #[test]
     fn namespace_lane_maps_known_prefixes() {
-        assert_eq!(namespace_lane("anthropic/claude-opus-4-8"), Some(Lane::Anthropic));
+        assert_eq!(
+            namespace_lane("anthropic/claude-opus-4-8"),
+            Some(Lane::Anthropic)
+        );
         assert_eq!(namespace_lane("openai/gpt-5.6"), Some(Lane::OpenAi));
         assert_eq!(namespace_lane("google/gemini-2.5-pro"), Some(Lane::Gemini));
     }
@@ -479,18 +661,34 @@ mod tests {
         let body = serde_json::json!({
             "data": [
                 {"type": "model", "id": "claude-opus-4-8", "display_name": "Claude Opus 4.8",
-                 "created_at": "2026-01-01T00:00:00Z"},
-                {"type": "model", "id": "claude-sonnet-5", "display_name": "Claude Sonnet 5",
-                 "created_at": "2026-02-01T00:00:00Z"}
+                 "max_input_tokens": 1000000, "max_tokens": 128000,
+                 "capabilities": {"effort": {"supported": true,
+                    "low": {"supported": true}, "medium": {"supported": true},
+                    "high": {"supported": true}, "xhigh": {"supported": true},
+                    "max": {"supported": true}}}},
+                {"type": "model", "id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6",
+                 "max_input_tokens": 1000000, "max_tokens": 128000,
+                 "capabilities": {"effort": {"supported": true,
+                    "low": {"supported": true}, "medium": {"supported": true},
+                    "high": {"supported": true}, "xhigh": {"supported": false},
+                    "max": {"supported": true}}}}
             ],
-            "has_more": false, "first_id": "claude-opus-4-8", "last_id": "claude-sonnet-5"
+            "has_more": false
         });
-        let entries = parse_anthropic(&body);
+        let entries = parse_anthropic(&body).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].id, "anthropic/claude-opus-4-8");
-        assert_eq!(entries[0].alias, "claude-opus-4-8");
+        assert_eq!(entries[0].native_id, "claude-opus-4-8");
+        assert_eq!(entries[0].aliases, ["claude-opus-4-8"]);
         assert_eq!(entries[0].display_name.as_deref(), Some("Claude Opus 4.8"));
-        assert_eq!(entries[0].service_tiers, None);
+        assert_eq!(
+            entries[0].limits,
+            Some(CatalogLimits {
+                context: Some(1_000_000),
+                input: Some(1_000_000),
+                output: Some(128_000),
+            })
+        );
         assert_eq!(
             entries[0].reasoning_efforts.as_deref(),
             Some(
@@ -499,97 +697,143 @@ mod tests {
                     .as_slice()
             )
         );
-        assert_eq!(entries[1].id, "anthropic/claude-sonnet-5");
-    }
-
-    #[test]
-    fn anthropic_reasoning_efforts_preserve_the_4_6_boundary() {
         assert_eq!(
-            anthropic_reasoning_efforts("claude-opus-5"),
-            ["low", "medium", "high", "xhigh", "max"]
+            entries[1].reasoning_efforts.as_deref(),
+            Some(
+                ["low", "medium", "high", "max"]
+                    .map(String::from)
+                    .as_slice()
+            )
         );
-        assert_eq!(
-            anthropic_reasoning_efforts("claude-sonnet-4-6"),
-            ["low", "medium", "high", "max"]
-        );
-        for model in [
-            "claude-haiku-4-5-20251001",
-            "claude-opus-4-20250514",
-            "unknown-model",
-        ] {
-            assert!(anthropic_reasoning_efforts(model).is_empty(), "{model}");
-        }
     }
 
     #[test]
     fn openai_envelope_maps_to_namespaced_entries() {
         let body = serde_json::json!({"object": "list", "data": [
-            {"id": "gpt-5.6", "object": "model", "created": 0, "owned_by": "apitoken"},
-            {"id": "gpt-5.5", "object": "model", "created": 0, "owned_by": "apitoken"},
+            {"id": "gpt-5.6", "object": "model", "created": 0, "owned_by": "apitoken",
+             "apitoken": {"limits": {"context": 400000, "input": 272000, "output": 128000},
+                 "capabilities": {"reasoning_efforts": ["none", "low", "max"],
+                                  "service_tiers": ["standard", "priority"]}}},
             {"id": "text-embedding-4", "object": "model", "created": 0, "owned_by": "apitoken"}
         ]});
-        let entries = parse_openai(&body);
-        assert_eq!(entries.len(), 3);
+        let entries = parse_openai(&body).unwrap();
+        assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].id, "openai/gpt-5.6");
-        assert_eq!(entries[0].alias, "gpt-5.6");
+        assert_eq!(entries[0].native_id, "gpt-5.6");
         assert_eq!(entries[0].display_name, None);
+        assert_eq!(entries[0].limits.as_ref().unwrap().input, Some(272_000));
+        assert_eq!(
+            entries[0].reasoning_efforts.as_deref(),
+            Some(["none", "low", "max"].map(String::from).as_slice())
+        );
         assert_eq!(
             entries[0].service_tiers.as_deref(),
             Some(["standard", "priority"].map(String::from).as_slice())
         );
-        assert_eq!(entries[2].service_tiers, None);
+        assert_eq!(entries[1].limits, None);
+        assert_eq!(entries[1].service_tiers, None);
     }
 
     #[test]
     fn gemini_envelope_strips_models_prefix() {
         let body = serde_json::json!({"models": [
             {"name": "models/gemini-2.5-pro", "displayName": "Gemini 2.5 Pro",
-             "supportedGenerationMethods": ["generateContent"]},
+             "supportedGenerationMethods": ["generateContent"],
+             "apitoken": {"limits": {"context": 1048576, "input": 1048576, "output": 65536},
+                 "capabilities": {"reasoning_efforts": ["low", "medium", "high"],
+                                  "service_tiers": ["standard"]}}},
             {"name": "models/gemini-2.5-flash", "displayName": "Gemini 2.5 Flash"}
         ]});
-        let entries = parse_gemini(&body);
+        let entries = parse_gemini(&body).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].id, "google/gemini-2.5-pro");
-        assert_eq!(entries[0].alias, "gemini-2.5-pro");
+        assert_eq!(entries[0].native_id, "gemini-2.5-pro");
         assert_eq!(entries[0].display_name.as_deref(), Some("Gemini 2.5 Pro"));
-        assert_eq!(entries[0].service_tiers, None);
+        assert_eq!(entries[0].limits.as_ref().unwrap().output, Some(65_536));
+        assert_eq!(
+            entries[0].service_tiers.as_deref(),
+            Some(["standard"].map(String::from).as_slice())
+        );
     }
 
     #[test]
-    fn parsers_skip_malformed_items_and_bad_shapes() {
-        assert!(parse_anthropic(&serde_json::json!({"unexpected": true})).is_empty());
-        assert!(parse_openai(&serde_json::json!({"data": "not-an-array"})).is_empty());
-        assert!(parse_gemini(&serde_json::json!({"models": [{"noName": 1}]})).is_empty());
+    fn parsers_accept_missing_legacy_metadata_without_guessing() {
         let mixed = serde_json::json!({"data": [
             {"id": ""}, {"id": "  "}, {"id": "claude-haiku-4-5"}, {"no_id": true}
         ]});
-        let entries = parse_anthropic(&mixed);
+        let entries = parse_anthropic(&mixed).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].alias, "claude-haiku-4-5");
+        assert_eq!(entries[0].native_id, "claude-haiku-4-5");
+        assert_eq!(entries[0].limits, None);
+        assert_eq!(entries[0].reasoning_efforts, None);
+    }
+
+    #[test]
+    fn malformed_authoritative_metadata_fails_the_plane_closed() {
+        assert!(parse_anthropic(&serde_json::json!({"unexpected": true})).is_err());
+        assert!(parse_openai(&serde_json::json!({"data": "not-an-array"})).is_err());
+        assert!(parse_gemini(&serde_json::json!({"models": [1]})).is_err());
+        for bad in [
+            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"limits":{"context":0}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"limits":{"input":10,"context":9}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"reasoning_efforts":["ultra"]}}}]}),
+            serde_json::json!({"data":[{"id":"gpt-x","apitoken":{"capabilities":{"service_tiers":["standard","standard"]}}}]}),
+        ] {
+            assert!(parse_openai(&bad).is_err(), "{bad}");
+        }
+        let conflicting = serde_json::json!({"data":[{"id":"claude-x","capabilities":{
+            "effort":{"supported":false,"low":{"supported":true}}}}]});
+        assert!(parse_anthropic(&conflicting).is_err());
+    }
+
+    fn entry(id: &str, alias: &str) -> (String, CatalogEntry) {
+        let namespace = id.split_once('/').unwrap().0.to_string();
+        (
+            namespace,
+            CatalogEntry {
+                id: id.into(),
+                native_id: alias.into(),
+                aliases: vec![alias.into()],
+                display_name: None,
+                limits: None,
+                reasoning_efforts: None,
+                service_tiers: None,
+            },
+        )
     }
 
     #[test]
     fn dedup_keeps_first_occurrence_order() {
-        let e = |id: &str| ("anthropic".to_string(), CatalogEntry {
-            id: id.into(), alias: "a".into(), display_name: None,
-            reasoning_efforts: None, service_tiers: None });
-        let deduped = dedup(vec![e("x/1"), e("x/2"), e("x/1"), e("x/3")]);
+        let deduped = dedup(vec![
+            entry("x/1", "a"),
+            entry("x/2", "b"),
+            entry("x/1", "a"),
+            entry("x/3", "c"),
+        ]);
         let ids: Vec<_> = deduped.iter().map(|(_, e)| e.id.as_str()).collect();
         assert_eq!(ids, ["x/1", "x/2", "x/3"]);
     }
 
     #[test]
+    fn ambiguous_alias_is_removed_from_every_entry() {
+        let entries = dedup(vec![
+            entry("anthropic/shared", "shared"),
+            entry("openai/shared", "shared"),
+            entry("google/unique", "unique"),
+        ]);
+        assert!(entries[0].1.aliases.is_empty());
+        assert!(entries[1].1.aliases.is_empty());
+        assert_eq!(entries[2].1.aliases, ["unique"]);
+        assert!(find(&entries, "shared").is_none());
+        assert_eq!(find(&entries, "anthropic/shared").unwrap().0, "anthropic");
+        assert_eq!(find(&entries, "openai/shared").unwrap().0, "openai");
+    }
+
+    #[test]
     fn find_resolves_namespaced_id_and_native_alias() {
         let entries = vec![
-            ("anthropic".to_string(), CatalogEntry {
-                id: "anthropic/claude-opus-4-8".into(),
-                alias: "claude-opus-4-8".into(), display_name: None,
-                reasoning_efforts: None, service_tiers: None }),
-            ("openai".to_string(), CatalogEntry {
-                id: "openai/gpt-5.6".into(), alias: "gpt-5.6".into(), display_name: None,
-                reasoning_efforts: None,
-                service_tiers: Some(vec!["standard".into(), "priority".into()]),
-            }),
+            entry("anthropic/claude-opus-4-8", "claude-opus-4-8"),
+            entry("openai/gpt-5.6", "gpt-5.6"),
         ];
         assert!(find(&entries, "anthropic/claude-opus-4-8").is_some());
         assert!(find(&entries, "claude-opus-4-8").is_some());
@@ -602,8 +846,14 @@ mod tests {
     fn entry_json_shape_is_openai_compatible() {
         let entry = CatalogEntry {
             id: "anthropic/claude-opus-4-8".into(),
-            alias: "claude-opus-4-8".into(),
+            native_id: "claude-opus-4-8".into(),
+            aliases: vec!["claude-opus-4-8".into()],
             display_name: Some("Claude Opus 4.8".into()),
+            limits: Some(CatalogLimits {
+                context: Some(1_000_000),
+                input: Some(1_000_000),
+                output: Some(128_000),
+            }),
             reasoning_efforts: Some(
                 ["low", "medium", "high", "xhigh", "max"]
                     .into_iter()
@@ -623,14 +873,22 @@ mod tests {
             json["reasoning_efforts"],
             serde_json::json!(["low", "medium", "high", "xhigh", "max"])
         );
+        assert_eq!(json["apitoken"]["limits"]["context"], 1_000_000);
+        assert_eq!(
+            json["apitoken"]["capabilities"]["reasoning_efforts"],
+            json["reasoning_efforts"]
+        );
         let bare = CatalogEntry {
             id: "openai/gpt-5.6".into(),
-            alias: "gpt-5.6".into(),
+            native_id: "gpt-5.6".into(),
+            aliases: vec![],
             display_name: None,
+            limits: None,
             reasoning_efforts: None,
             service_tiers: Some(vec!["standard".into(), "priority".into()]),
         };
         assert!(bare.to_json("openai").get("name").is_none());
+        assert_eq!(bare.to_json("openai")["aliases"], serde_json::json!([]));
         assert_eq!(
             bare.to_json("openai")["service_tiers"],
             serde_json::json!(["standard", "priority"])

@@ -190,8 +190,11 @@ Control API движка использует только на чтение. С
   provider evidence, агрегированное консервативно между serving profiles; output/efforts/Fast и
   Gemini limits/efforts принадлежат reviewed runtime model contract. Потребитель —
   `crates/router`: после отдельного producer-first GREEN SHA он строго валидирует и нормализует
-  metadata в unified catalog. Pricing rates, account identity и credential в эту связь не входят;
-  неизвестные значения не выводятся из model id или pricing таблиц. Контракт —
+  metadata в unified `apitoken`, сохраняет top-level capability mirrors, а malformed metadata
+  переводит плоскость на last-good/degraded. Он также снимает глобально конфликтующие aliases,
+  сохраняя исполнимость namespaced IDs и приватный native ID для rewrite/preflight. Pricing overlay
+  дополняет, а не заменяет runtime metadata. Pricing rates, account identity и credential в эту
+  связь не входят; неизвестные значения не выводятся из model id или pricing таблиц. Контракт —
   `docs/engine/UNIFIED_ROUTER.md` §«Модели и каталог».
 - **Fallback telemetry (router/provider planes → Prometheus, фаза 6.4c).** `crates/router`
   производит unauthenticated loopback `/metrics` на 8798 с ровно 18

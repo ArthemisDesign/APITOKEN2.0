@@ -250,7 +250,7 @@ async fn catalog_pricing(
         .map(|(provider_id, entry)| pricing::PricingCandidate {
             id: &entry.id,
             provider_id,
-            model_id: &entry.alias,
+            model_id: &entry.native_id,
         })
         .collect();
     pricing::fetch(&state.client, &origins(state), auth, &candidates)
@@ -270,7 +270,12 @@ fn model_json_with_pricing(
     let rate = pricing
         .entry(&entry.id)
         .expect("eligible catalog entry has pricing");
-    model["apitoken"] = serde_json::json!({"pricing": rate.public_json()});
+    let apitoken = model
+        .as_object_mut()
+        .expect("catalog model is an object")
+        .entry("apitoken")
+        .or_insert_with(|| serde_json::json!({}));
+    apitoken["pricing"] = rate.public_json();
     model
 }
 
@@ -476,18 +481,20 @@ mod tests {
     }
 
     const ANTHROPIC_MODELS: &str = r#"{"data":[
-        {"type":"model","id":"claude-opus-4-8","display_name":"Claude Opus 4.8","created_at":"2026-01-01T00:00:00Z"},
-        {"type":"model","id":"claude-haiku-4-5","display_name":"Claude Haiku 4.5","created_at":"2026-01-02T00:00:00Z"}
+        {"type":"model","id":"claude-opus-4-8","display_name":"Claude Opus 4.8","max_input_tokens":1000000,"max_tokens":128000,
+         "capabilities":{"effort":{"supported":true,"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true},"xhigh":{"supported":true},"max":{"supported":true}}}},
+        {"type":"model","id":"claude-haiku-4-5","display_name":"Claude Haiku 4.5","max_input_tokens":200000,"max_tokens":64000,
+         "capabilities":{"effort":{"supported":false,"low":{"supported":false},"medium":{"supported":false},"high":{"supported":false},"xhigh":{"supported":false},"max":{"supported":false}}}}
     ],"has_more":false,"first_id":"claude-opus-4-8","last_id":"claude-haiku-4-5"}"#;
 
     const OPENAI_MODELS: &str = r#"{"object":"list","data":[
-        {"id":"gpt-5.6","object":"model","created":0,"owned_by":"apitoken"},
-        {"id":"gpt-5.5","object":"model","created":0,"owned_by":"apitoken"}
+        {"id":"gpt-5.6","object":"model","created":0,"owned_by":"apitoken","apitoken":{"limits":{"context":400000,"input":272000,"output":128000},"capabilities":{"reasoning_efforts":["none","low","medium","high","xhigh","max"],"service_tiers":["standard","priority"]}}},
+        {"id":"gpt-5.5","object":"model","created":0,"owned_by":"apitoken","apitoken":{"limits":{"output":128000},"capabilities":{"reasoning_efforts":["none","low","medium","high","xhigh"],"service_tiers":["standard"]}}}
     ]}"#;
 
     const GEMINI_MODELS: &str = r#"{"models":[
-        {"name":"models/gemini-2.5-pro","displayName":"Gemini 2.5 Pro","supportedGenerationMethods":["generateContent"]},
-        {"name":"models/gemini-2.5-flash","displayName":"Gemini 2.5 Flash"}
+        {"name":"models/gemini-2.5-pro","displayName":"Gemini 2.5 Pro","supportedGenerationMethods":["generateContent"],"apitoken":{"limits":{"context":1048576,"input":1048576,"output":65536},"capabilities":{"reasoning_efforts":["low","medium","high"],"service_tiers":["standard"]}}},
+        {"name":"models/gemini-2.5-flash","displayName":"Gemini 2.5 Flash","apitoken":{"limits":{"context":1048576,"input":1048576,"output":65536},"capabilities":{"reasoning_efforts":["low","medium","high"],"service_tiers":["standard"]}}}
     ]}"#;
 
     const ANTHROPIC_ROUTING_MODELS: &str = r#"{"data":[
@@ -3079,13 +3086,28 @@ mod tests {
             serde_json::json!(["low", "medium", "high", "xhigh", "max"])
         );
         assert_eq!(json["data"][1]["reasoning_efforts"], serde_json::json!([]));
-        assert!(json["data"][2].get("reasoning_efforts").is_none());
+        assert_eq!(
+            json["data"][2]["reasoning_efforts"],
+            serde_json::json!(["none", "low", "medium", "high", "xhigh", "max"])
+        );
         assert_eq!(
             json["data"][2]["service_tiers"],
             serde_json::json!(["standard", "priority"])
         );
         assert!(json["data"][0].get("service_tiers").is_none());
-        assert!(json["data"][4].get("service_tiers").is_none());
+        assert_eq!(json["data"][4]["service_tiers"], serde_json::json!(["standard"]));
+        assert_eq!(
+            json["data"][0]["apitoken"]["limits"],
+            serde_json::json!({"context": 1_000_000, "input": 1_000_000, "output": 128_000})
+        );
+        assert_eq!(
+            json["data"][2]["apitoken"]["capabilities"]["reasoning_efforts"],
+            serde_json::json!(["none", "low", "medium", "high", "xhigh", "max"])
+        );
+        assert_eq!(
+            json["data"][4]["apitoken"]["limits"],
+            serde_json::json!({"context": 1_048_576, "input": 1_048_576, "output": 65_536})
+        );
         assert_eq!(
             json["data"][0]["apitoken"]["pricing"]["unit"],
             "nano_usd_per_million_tokens"
@@ -3157,6 +3179,72 @@ mod tests {
         let ids: Vec<&str> = json["data"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
         assert_eq!(ids.len(), 4);
         assert!(!ids.iter().any(|id| id.starts_with("google/")));
+    }
+
+    #[tokio::test]
+    async fn catalog_treats_malformed_authoritative_metadata_as_a_degraded_plane() {
+        const MALFORMED_OPENAI: &str = r#"{"object":"list","data":[
+            {"id":"gpt-bad","apitoken":{"limits":{"context":0}}}
+        ]}"#;
+        let (a, _, g, _, _, _) = three_catalog_planes().await;
+        let (o, _) = catalog_plane(MALFORMED_OPENAI, "/v1/models", "ok").await;
+        let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+
+        let response = reqwest::Client::new()
+            .get(format!("{router}/v1/models"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get(catalog::DEGRADED_HEADER).unwrap(), "openai");
+        let json: serde_json::Value = response.json().await.unwrap();
+        assert!(json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|model| !model["id"].as_str().unwrap().starts_with("openai/")));
+    }
+
+    #[tokio::test]
+    async fn catalog_removes_cross_plane_alias_collisions_without_hiding_namespaced_models() {
+        const ANTHROPIC_COLLISION: &str =
+            r#"{"data":[{"id":"shared","display_name":"Anthropic Shared"}]}"#;
+        const OPENAI_COLLISION: &str =
+            r#"{"object":"list","data":[{"id":"shared","object":"model","owned_by":"apitoken"}]}"#;
+        let (a, _) = catalog_plane(ANTHROPIC_COLLISION, "/v1/models", "ok").await;
+        let (o, _) = catalog_plane(OPENAI_COLLISION, "/v1/models", "ok").await;
+        let (g, _) = catalog_plane(GEMINI_MODELS, "/v1beta/models", "ok").await;
+        let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+        let client = reqwest::Client::new();
+
+        let response = client.get(format!("{router}/v1/models")).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json: serde_json::Value = response.json().await.unwrap();
+        let models = json["data"].as_array().unwrap();
+        for id in ["anthropic/shared", "openai/shared"] {
+            let model = models.iter().find(|model| model["id"] == id).unwrap();
+            assert_eq!(model["aliases"], serde_json::json!([]));
+        }
+
+        let response = client.get(format!("{router}/v1/models/shared")).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let response = client
+            .post(format!("{router}/v1/chat/completions"))
+            .header("content-type", "application/json")
+            .body(r#"{"model":"shared","messages":[{"role":"user","content":"hi"}]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        for id in ["anthropic/shared", "openai/shared"] {
+            let response = client
+                .get(format!("{router}/v1/models/{id}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{id}");
+            assert_eq!(response.json::<serde_json::Value>().await.unwrap()["id"], id);
+        }
     }
 
     #[tokio::test]

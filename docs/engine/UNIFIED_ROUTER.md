@@ -367,15 +367,20 @@ schema-v1 success. Success не кэшируется между запросам
 Единый каталог публикует namespaced ID: `anthropic/claude-*`, `openai/gpt-*`,
 `google/gemini-*`. Namespace означает семейство модели, не обязательно единственного
 исполнителя: при появлении альтернативных backends одной модели (Anthropic direct,
-Bedrock, Vertex) route planner сможет выбирать между ними. Текущие нативные ID остаются
-однозначными aliases. GPT-записи дополнительно публикуют expand-only capability
-`service_tiers: ["standard","priority"]`. Клиенты с model-level options (в частности,
-OpenCode/Kilo) могут на его основе показать отдельную Fast-модель, сохранив исходный API model ID
-и добавив canonical `service_tier:"priority"` либо совместимый `serviceTier:"priority"`;
-Standard-модель и reasoning variants при этом остаются независимыми. У Anthropic/Gemini поле
-отсутствует. Product/model eligibility принадлежит существующему versioned multi-provider pricing
-catalog (`docs/engine/CONTROL_API.md`, `crates/registry/src/pricing.rs`), а точные provider token
-rates — только `crates/metering`.
+Bedrock, Vertex) route planner сможет выбирать между ними. Нативный ID рекламируется как alias
+только пока он глобально однозначен. Если две плоскости публикуют один alias, router снимает его
+со всех конфликтующих записей и alias lookup возвращает 404; namespaced ID обеих моделей остаются
+исполнимыми, а их приватный native ID по-прежнему используется для body rewrite и pricing
+preflight. Поэтому новая модель не может молча перехватить существующий alias по порядку плоскостей.
+
+Нормализованные `reasoning_efforts` и `service_tiers` публикуются одновременно в
+`apitoken.capabilities` и как прежние top-level mirrors для совместимости клиентов. Клиенты с
+model-level options (в частности, OpenCode/Kilo) могут по `service_tiers` показать отдельную
+Fast-модель, сохранив исходный API model ID и добавив canonical `service_tier:"priority"` либо
+совместимый `serviceTier:"priority"`; Standard-модель и reasoning variants при этом остаются
+независимыми. Product/model eligibility принадлежит существующему versioned multi-provider
+pricing catalog (`docs/engine/CONTROL_API.md`, `crates/registry/src/pricing.rs`), а точные provider
+token rates — только `crates/metering`.
 
 Authoritative runtime metadata приходит producer-first от плоскостей. Anthropic уже публикует
 native `max_input_tokens`, `max_tokens` и `capabilities`; owned OpenAI/Gemini model resources
@@ -393,9 +398,15 @@ native `max_input_tokens`, `max_tokens` и `capabilities`; owned OpenAI/Gemini m
 сохраняется. Codex input берётся из authenticated last-good `/codex/models.context_window`, а при
 несовпадении профилей публикуется минимальная общая гарантия; отсутствие metadata хотя бы у одного
 serving profile снимает гарантию. Gemini публикует configured native limits и точную model-specific
-effort matrix. Router-consumer обязан валидировать bounded positive integers и закрытые capability
-значения, нормализовать Anthropic native shape в тот же публичный `apitoken` object и не выводить
-лимиты из model id, pricing threshold или клиентских таблиц.
+effort matrix. Router-consumer принимает token limits только как положительные целые до `u32::MAX`,
+а capability arrays — только без повторов из закрытых множеств `none|minimal|low|medium|high|xhigh|max`
+и `standard|priority`. Anthropic `max_input_tokens` становится `limits.context` и `limits.input`,
+`max_tokens` — `limits.output`, а `capabilities.effort.*.supported` — ordered
+`reasoning_efforts`. Отсутствующая legacy metadata опускается без догадок; malformed
+authoritative metadata делает fetch плоскости failed, поэтому router использует её last-good и
+ставит `x-apitoken-catalog-degraded`, либо опускает плоскость, если last-good ещё нет. Pricing
+overlay добавляется в тот же `apitoken` object и не затирает limits/capabilities. Лимиты нельзя
+выводить из model id, pricing threshold или клиентских таблиц.
 
 Персональная ценовая проекция использует отдельный producer-first loopback-контракт
 `POST /internal/router/catalog/pricing` на каждой fixed provider plane. Router передаёт туда
@@ -577,15 +588,12 @@ request получает `400 invalid_request`, неизвестный/неак�
    singleton `claude-router.service`): байт-в-байт proxy трёх плоскостей без native retries и без
    общего таймаута (стримы не обрезаются), hop-by-hop заголовки снимаются, ошибки шейпятся
    под lane пути. Единый `/v1/models` агрегирует каталоги плоскостей конкурентно: namespaced
-   ID (`anthropic/…`, `openai/…`, `google/…`) + aliases, TTL-кэш 30 с + last-good без TTL.
-   Anthropic-записи дополнительно получают expand-only `reasoning_efforts`: 4.6 публикует
-   `["low","medium","high","max"]`, 4.7+/5 —
-   `["low","medium","high","xhigh","max"]`, legacy/unknown — `[]`; это authority для
-   клиентских variant UI вместо хардкода. Поле отсутствует у записей других провайдеров.
-   GPT-записи OpenAI-плоскости аналогично получают expand-only
-   `service_tiers:["standard","priority"]`:
-   это authority для model-level Fast UI без provider-wide заголовка или request rewrite;
-   у Anthropic/Gemini поле отсутствует.
+   ID (`anthropic/…`, `openai/…`, `google/…`) + только глобально однозначные aliases, TTL-кэш
+   30 с + last-good без TTL. Router строго нормализует producer-owned limits/capabilities в
+   `apitoken` и совместимые top-level mirrors: Anthropic native model resource, owned OpenAI
+   `apitoken` metadata и owned Gemini `apitoken` metadata являются authority вместо model-name
+   таблиц router/client. Межплоскостная коллизия снимает alias со всех конфликтующих записей;
+   namespaced ID остаются доступными.
    Упавшая плоскость опускается с маркировкой `x-apitoken-catalog-degraded`, пустой каталог
    плоскости считается сбоем, 401/403 плоскости → единый 401, все плоскости без кэша → 503.
    Auth passthrough без изменений; `/health`, `/live`, `/ready` — router-local. Деплой: третий

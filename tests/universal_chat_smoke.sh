@@ -332,6 +332,10 @@ models = {item["id"]: item for item in json.load(open(sys.argv[1]))["data"]}
 assert models["anthropic/claude-opus-5"]["reasoning_efforts"] == ["low", "medium", "high", "xhigh", "max"]
 assert models["anthropic/claude-sonnet-4-6"]["reasoning_efforts"] == ["low", "medium", "high", "max"]
 assert models["anthropic/claude-haiku-4-5"]["reasoning_efforts"] == []
+assert models["anthropic/claude-opus-5"]["apitoken"]["limits"] == {
+    "context": 1000000, "input": 1000000, "output": 128000}
+assert models["anthropic/claude-opus-5"]["apitoken"]["capabilities"]["reasoning_efforts"] == [
+    "low", "medium", "high", "xhigh", "max"]
 PY
 }
 

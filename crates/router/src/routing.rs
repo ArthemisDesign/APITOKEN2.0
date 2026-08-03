@@ -343,7 +343,7 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
             body_model_value: candidate.body_model_value,
             catalog_id: entry.id.clone(),
             provider,
-            canonical_model_id: entry.alias.clone(),
+            canonical_model_id: entry.native_id.clone(),
             lane: provider.lane(),
         });
     }

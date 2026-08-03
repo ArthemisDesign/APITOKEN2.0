@@ -115,20 +115,21 @@
   `.../input_items`) dispatch не используют — они остаются native OpenAI lane
   (stored responses только `openai/*`, решение 5).
 - `catalog.rs` — единый `/v1/models`: агрегация трёх плоскостей, namespaced ID
-  + aliases, TTL-кэш 30 с, last-good при падении плоскости, маркер деградации
+  + только глобально однозначные aliases, TTL-кэш 30 с, last-good при падении плоскости, маркер деградации
   `x-apitoken-catalog-degraded`. `main.rs` после той же aggregate-auth проверки отвечает
   Codex `originator`/User-Agent backend-native overlay `{models:[]}` (CLI объединяет его со
-  встроенными metadata), не меняя OpenAI-list для остальных клиентов. Для Anthropic-записей
-  router-owned expand-only поле `reasoning_efforts` публикует точную discovery-матрицу:
-  Claude 4.6 — low|medium|high|max, Claude 4.7+/5 — low|medium|high|xhigh|max, legacy/unknown —
-  пустой authoritative список. GPT-записи OpenAI-плоскости получают expand-only
-  `service_tiers:["standard","priority"]`, чтобы клиенты строили model-level Fast UI с
-  исходным API model ID; у Anthropic/Gemini это поле отсутствует. Здесь же — общий для
+  встроенными metadata), не меняя OpenAI-list для остальных клиентов. Consumer строго
+  нормализует Anthropic native `max_input_tokens`/`max_tokens`/effort matrix и owned
+  OpenAI/Gemini `apitoken.limits/capabilities`; публикует их в `apitoken` и прежних top-level
+  capability mirrors. Missing legacy metadata не угадывается, malformed metadata переводит
+  плоскость на last-good/degraded. Alias collision снимает alias со всех участников, но
+  namespaced ID и отдельный native ID для body rewrite/pricing остаются рабочими. Здесь же — общий для
   universal dispatch'ей `pub(crate) namespace_lane` (прямой выбор плоскости без catalog fetch
   для запросов без fallback). `main.rs` добавляет только активные `preset/*` записи — если
   aggregate snapshot содержит хотя бы один member соответствующего preset. Затем `main.rs`
   отдельно получает key-scoped pricing ordered subset, фильтрует недоступные модели, публикует
-  exact nanoUSD/M strings в `apitoken.pricing` и ставит `Cache-Control: private, no-store`;
+  exact nanoUSD/M strings в `apitoken.pricing`, не затирая runtime metadata, и ставит
+  `Cache-Control: private, no-store`;
   ошибка pricing authority даёт 503 без zero/stale fallback.
 - `error.rs` — синтетические ошибки router'а в конверте соответствующего
   провайдера (ошибки плоскостей проксируются байт-в-байт, сюда не попадают).
@@ -148,7 +149,8 @@ cargo build && bash tests/router_fallback_smoke.sh  # concurrent 6.4c mock-load 
 покрывают: early auth до незавершённого большого body, terminal 401 и mixed-version failover,
 weighted 64 MiB overload без очереди, release permit при parse error и после SSE headers,
 pre-header deadline без retry, passthrough тела/заголовков, небуферизованный SSE, транзитивный
-disconnect, агрегацию/деградацию/stale capability-каталога, uncached key-scoped pricing для двух
+disconnect, строгую нормализацию/деградацию/stale capability-каталога, снятие конфликтующих aliases,
+uncached key-scoped pricing для двух
 ключей при одном shared cache, terminal pricing 401/503, canonical wire validation, alias-
 разрешение моделей, 404/405, model-based dispatch chat-, responses- и
 messages- и messages/count_tokens-запросов (namespaced без catalog fetch,

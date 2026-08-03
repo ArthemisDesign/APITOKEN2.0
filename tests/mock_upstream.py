@@ -196,13 +196,29 @@ class H(BaseHTTPRequestHandler):
             # universal chat). Прочие GET (detect_plan) — прежний 403.
             body = json.dumps({"data": [
                 {"type": "model", "id": "claude-haiku-4-5", "display_name": "Claude Haiku 4.5",
-                 "created_at": "2026-01-02T00:00:00Z"},
+                 "max_input_tokens": 200000, "max_tokens": 64000,
+                 "capabilities": {"effort": {"supported": False,
+                    "low": {"supported": False}, "medium": {"supported": False},
+                    "high": {"supported": False}, "xhigh": {"supported": False},
+                    "max": {"supported": False}}}},
                 {"type": "model", "id": "claude-opus-4-8", "display_name": "Claude Opus 4.8",
-                 "created_at": "2026-01-01T00:00:00Z"},
+                 "max_input_tokens": 1000000, "max_tokens": 128000,
+                 "capabilities": {"effort": {"supported": True,
+                    "low": {"supported": True}, "medium": {"supported": True},
+                    "high": {"supported": True}, "xhigh": {"supported": True},
+                    "max": {"supported": True}}}},
                 {"type": "model", "id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6",
-                 "created_at": "2026-01-03T00:00:00Z"},
+                 "max_input_tokens": 1000000, "max_tokens": 128000,
+                 "capabilities": {"effort": {"supported": True,
+                    "low": {"supported": True}, "medium": {"supported": True},
+                    "high": {"supported": True}, "xhigh": {"supported": False},
+                    "max": {"supported": True}}}},
                 {"type": "model", "id": "claude-opus-5", "display_name": "Claude Opus 5",
-                 "created_at": "2026-01-04T00:00:00Z"},
+                 "max_input_tokens": 1000000, "max_tokens": 128000,
+                 "capabilities": {"effort": {"supported": True,
+                    "low": {"supported": True}, "medium": {"supported": True},
+                    "high": {"supported": True}, "xhigh": {"supported": True},
+                    "max": {"supported": True}}}},
             ], "has_more": False, "first_id": "claude-haiku-4-5", "last_id": "claude-opus-5"}).encode()
             self.send_response(200)
             self.send_header("content-type", "application/json")
