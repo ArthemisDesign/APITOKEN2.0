@@ -2362,6 +2362,7 @@ export const pricingStage8EvidenceV2 = pgTable("pricing_stage8_evidence_v2", {
   commerceInventoryDigest: text("commerce_inventory_digest").notNull(),
   engineInventoryDigest: text("engine_inventory_digest").notNull(),
   openkeysInventoryDigest: text("openkeys_inventory_digest").notNull(),
+  serviceInventoryDigest: text("service_inventory_digest"),
   salesContractDigest: text("sales_contract_digest").notNull(),
   fundingDigest: text("funding_digest").notNull(),
   shadowDigest: text("shadow_digest").notNull(),
