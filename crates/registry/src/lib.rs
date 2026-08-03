@@ -6358,8 +6358,24 @@ fn parse_ledger_json(raw: Option<String>, field: &str) -> Result<Option<serde_js
     .transpose()
 }
 
+pub(crate) fn resolve_ledger_provider(
+    ledger_provider: Option<String>,
+    usage_provider: Option<String>,
+) -> Result<Option<String>> {
+    match (ledger_provider, usage_provider) {
+        (Some(ledger), Some(usage)) if ledger != usage => {
+            anyhow::bail!("ledger provider differs from immutable usage provider")
+        }
+        (Some(ledger), _) => Ok(Some(ledger)),
+        (None, usage) => Ok(usage),
+    }
+}
+
 fn sqlite_ledger_row(row: &rusqlite::Row<'_>) -> Result<LedgerRow> {
-    let provider = row.get::<_, Option<String>>(9)?;
+    let provider = resolve_ledger_provider(
+        row.get::<_, Option<String>>(9)?,
+        row.get::<_, Option<String>>(52)?,
+    )?;
     let official_nano = row.get::<_, Option<i64>>(10)?;
     let attribution_schema_version = row.get::<_, Option<i64>>(11)?;
     let attribution = attribution_schema_version
@@ -6452,7 +6468,7 @@ const SQLITE_LEDGER_READ_COLUMNS: &str = "
     ledger.snapshot_digest,ledger.source_policy_digest,ledger.admission_catalog_generation,
     ledger.admission_catalog_digest,ledger.admission_switch_generation,
     ledger.admission_switch_digest,ledger.runtime_manifest_generation,
-    ledger.runtime_manifest_digest";
+    ledger.runtime_manifest_digest,NULLIF(usage_events.provider,'')";
 
 fn sqlite_ledger_allocations(
     conn: &Connection,
@@ -6519,7 +6535,13 @@ fn sqlite_ledger_page(
     } else {
         "ledger.account_id=?1 ORDER BY ledger.id DESC LIMIT ?2"
     };
-    let sql = format!("SELECT {SQLITE_LEDGER_READ_COLUMNS} FROM ledger WHERE {predicate}");
+    let sql = format!(
+        "SELECT {SQLITE_LEDGER_READ_COLUMNS} FROM ledger
+         LEFT JOIN usage_events
+           ON usage_events.request_id=ledger.request_id
+          AND usage_events.account_id=ledger.account_id
+         WHERE {predicate}"
+    );
     let tx = conn.unchecked_transaction()?;
     let mut statement = tx.prepare(&sql)?;
     let mut query = match after_id {
@@ -11634,6 +11656,36 @@ mod tests {
         assert_eq!(funding.unattributed_spent_nano, 50_000_000);
         assert_eq!(account_set_mult_bp(&c, "acct", 3500).unwrap(), 1);
         assert_eq!(account_get(&c, "acct").unwrap().unwrap().mult_bp, 3500);
+    }
+
+    #[test]
+    fn ledger_reads_recover_exact_provider_from_matching_usage() {
+        let c = db();
+        account_create(&c, "provider-account", None, 10_000).unwrap();
+        c.execute_batch(
+            "INSERT INTO ledger(
+                 account_id,kind,request_id,amount_nano,balance_after_nano,ts,model,provider
+             ) VALUES(
+                 'provider-account','charge','provider-request',250,9750,100,'gpt-test',NULL
+             );
+             INSERT INTO usage_events(
+                 request_id,account_id,model,real_nano,charge_nano,ts,provider
+             ) VALUES(
+                 'provider-request','provider-account','gpt-test',500,250,100,'openai'
+             );",
+        )
+        .unwrap();
+
+        let rows = ledger_after(&c, "provider-account", 0, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].provider.as_deref(), Some(PROVIDER_OPENAI));
+
+        c.execute(
+            "UPDATE ledger SET provider='anthropic' WHERE request_id='provider-request'",
+            [],
+        )
+        .unwrap();
+        assert!(ledger_after(&c, "provider-account", 0, 10).is_err());
     }
 
     #[test]

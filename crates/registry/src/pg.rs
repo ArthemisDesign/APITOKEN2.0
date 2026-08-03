@@ -256,7 +256,10 @@ fn key_row(row: &Row) -> KeyRow {
 }
 
 fn ledger_row(row: &Row) -> Result<LedgerRow> {
-    let provider = row.get::<_, Option<String>>(9);
+    let provider = crate::resolve_ledger_provider(
+        row.get::<_, Option<String>>(9),
+        row.get::<_, Option<String>>(57),
+    )?;
     let official_nano = row.get::<_, Option<i64>>(10);
     let attribution = row
         .get::<_, Option<i64>>(11)
@@ -350,7 +353,8 @@ const POSTGRES_LEDGER_READ_COLUMNS: &str = "
     ledger.admission_catalog_digest,ledger.admission_switch_generation,
     ledger.admission_switch_digest,ledger.runtime_manifest_generation,
     ledger.runtime_manifest_digest,ledger.release_schema_version,ledger.release_generation,
-    ledger.release_digest,ledger.release_billing_mode,ledger.release_funding_generation";
+    ledger.release_digest,ledger.release_billing_mode,ledger.release_funding_generation,
+    NULLIF(usage_events.provider,'')";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Owner {
@@ -4423,7 +4427,13 @@ impl PgStore {
         } else {
             "ledger.account_id=$1 ORDER BY ledger.id DESC LIMIT $2"
         };
-        let sql = format!("SELECT {POSTGRES_LEDGER_READ_COLUMNS} FROM ledger WHERE {predicate}");
+        let sql = format!(
+            "SELECT {POSTGRES_LEDGER_READ_COLUMNS} FROM ledger
+             LEFT JOIN usage_events
+               ON usage_events.request_id=ledger.request_id
+              AND usage_events.account_id=ledger.account_id
+             WHERE {predicate}"
+        );
         let mut tx = self
             .client
             .build_transaction()
@@ -15548,7 +15558,20 @@ mod tests {
                      ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
                      direction,amount_nano
                  ) SELECT id,'read-account','read-bonus','welcome_track_bonus',1,'debit',300
-                     FROM ledger WHERE request_id='read-request';",
+                     FROM ledger WHERE request_id='read-request';
+                 INSERT INTO ledger(
+                     account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model,
+                     provider
+                 ) VALUES(
+                     'read-account','read-key','charge','read-provider-recovery',25,
+                     'provider:recovery',875,3,'gpt-read',NULL
+                 );
+                 INSERT INTO usage_events(
+                     request_id,account_id,key,model,real_nano,charge_nano,ts,provider
+                 ) VALUES(
+                     'read-provider-recovery','read-account','read-key','gpt-read',50,25,3,
+                     'openai'
+                 );",
             )
             .unwrap();
 
@@ -15587,11 +15610,19 @@ mod tests {
         );
         let recent = pg.ledger_recent("read-account", 10).unwrap();
         let after = pg.ledger_after("read-account", 0, 10).unwrap();
-        assert_eq!(recent.len(), 1);
-        assert_eq!(after.len(), 1);
-        assert_eq!(recent[0].id, after[0].id);
-        assert_eq!(recent[0].request_id.as_deref(), Some("read-request"));
-        let attribution = recent[0].attribution.as_ref().unwrap();
+        assert_eq!(recent.len(), 2);
+        assert_eq!(after.len(), 2);
+        let attributed = recent
+            .iter()
+            .find(|row| row.request_id.as_deref() == Some("read-request"))
+            .unwrap();
+        let recovered = recent
+            .iter()
+            .find(|row| row.request_id.as_deref() == Some("read-provider-recovery"))
+            .unwrap();
+        assert_eq!(recovered.provider.as_deref(), Some(crate::PROVIDER_OPENAI));
+        assert_eq!(attributed.request_id.as_deref(), Some("read-request"));
+        let attribution = attributed.attribution.as_ref().unwrap();
         assert_eq!(attribution.snapshot_kind.as_deref(), Some("policy_v1"));
         assert_eq!(
             (
@@ -15608,7 +15639,7 @@ mod tests {
             )
         );
         assert_eq!(
-            recent[0].funding_allocations,
+            attributed.funding_allocations,
             vec![LedgerFundingAllocation {
                 bucket_id: "read-bonus".into(),
                 source_type: "welcome_track_bonus".into(),

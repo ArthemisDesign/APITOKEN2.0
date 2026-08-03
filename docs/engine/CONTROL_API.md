@@ -295,6 +295,9 @@ immutable paid-only funding snapshot, не меняя сохранённую pri
 welcome reserve остаётся typed blocker.
 
 Новая ledger row сохраняет expand-совместимые top-level `request_id`, `provider` и `official_nano`.
+Для pre-column charge с `ledger.provider IS NULL` reader возвращает только exact provider
+immutable `usage_events` с теми же `account_id + request_id`; расхождение двух сохранённых provider
+идентичностей закрывает read ошибкой. Модельное имя для восстановления не используется.
 `attribution` равен `null` для исторической строки без `attribution_schema_version`; иначе он
 переносит сохранённые snapshot/policy/rule/catalog/switch/tariff/eligibility/runtime-manifest поля,
 `official_cost_json`, категориальные funding totals и исходный `funding_allocation_json` без
