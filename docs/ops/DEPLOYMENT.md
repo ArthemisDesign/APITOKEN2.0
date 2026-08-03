@@ -274,46 +274,43 @@ require a traffic freeze, but any update changes the source generation and makes
 stale. Keep bridge and target shadow at 100% coverage, observe at least one complete peak interval,
 and choose its exclusive `window_end_ts`. Traffic, top-ups and v2 reservations continue normally.
 
-Run the engine report first, from the exact deployed application with the normal protected engine
-environment. Every argument is explicit; `gemini-client-admissions` is a bounded independently
-aggregated client-edge audit count for the same half-open window and must never contain identities.
-It is recorded in the report but does not satisfy Google provider coverage:
+Production capture uses the managed commerce queue; do not create a file handoff or run either CLI
+over SSH. First read the AdminGuard-protected
+`GET /v1/admin/pricing-stage8-capture-v2` snapshot. Then stage exactly one immutable request through
+`POST /v1/admin/pricing-stage8-capture-v2/stage` with a new UUID idempotency key, verified
+`x-admin-actor`, explicit reason and this strict body:
 
-```bash
-claude-api db stage8-evidence \
-  --target-generation <exact-prepared-target-generation> \
-  --recovery-generation <exact-newer-recovery-generation> \
-  --window-start-ts <inclusive-epoch-seconds> \
-  --window-end-ts <exclusive-epoch-seconds> \
-  --min-samples-per-provider <required-minimum> \
-  --financial-sample-size <bounded-size-1-to-1000> \
-  --gemini-client-admissions <aggregate-count> \
-  > stage8-engine-evidence.json
+```json
+{
+  "idempotency_key": "<uuid>",
+  "target_generation": 41,
+  "recovery_generation": 42,
+  "window_start_ts": 1785700000,
+  "window_end_ts": 1785700300,
+  "min_samples_per_provider": 100,
+  "financial_sample_size": 100,
+  "gemini_client_admissions": 27,
+  "reason": "capture reviewed full-inventory Stage 8 window"
+}
 ```
 
-The additive machine producer is
-`POST /admin/pricing/v2/stage8-evidence/capture` on the protected Combined/Anthropic Control API.
-It accepts the same seven explicit values as JSON, attaches the deployed compile-fixed runtime
-manifest server-side and returns the unwrapped schema-v2 report with HTTP 200 even when
-`passed=false`. The route uses only a bounded PostgreSQL reader and cannot stage a capture or
-activation job, move a head or touch accounts/money. Its dependent `packages/engine-client` and
-worker are a later producer-first checkpoint; until that exact producer SHA is GREEN and those
-consumers are separately delivered, the CLI/file command above remains the only wired capture
-workflow. The future TypeScript transport must read raw response text and parse with `json-bigint`,
-never `response.json()`, because the artifact contains signed-i64 nanoUSD JSON numbers.
+The window must already be closed according to commerce database time. `gemini_client_admissions`
+is a bounded independently aggregated client-edge audit count for the same half-open window and
+must never contain identities; it does not substitute for Google provider coverage. Exact replay of
+the same idempotency key and body returns the original job, while any conflicting reuse fails
+closed. The POST writes only the durable job and attributed audit event; it does not call the engine
+inline.
 
-Immediately consume that exact JSON with the deployed commerce checkpoint. Inject
-`DATABASE_URL`, `ENGINE_CONTROL_KEY` and, when distinct, `OPENKEYS_CONTROL_KEY` through the normal
-protected environment. `ENGINE_BASE_URL` and `OPENKEYS_INTERNAL_BASE_URL` default to their stable
-loopback origins; OpenKeys authentication may fall back to `ENGINE_CONTROL_KEY`. Do not put
-credentials in arguments:
+`apps/worker` claims at most one Stage 8 capture globally and calls the protected
+`POST /admin/pricing/v2/stage8-evidence/capture` producer with the seven explicit capture values.
+The engine attaches the deployed compile-fixed runtime manifest server-side and returns the
+unwrapped schema-v2 report with HTTP 200 even when `passed=false`. The typed client reads bounded raw
+text and parses with `json-bigint`, never `response.json()`, because the artifact contains signed-i64
+nanoUSD JSON numbers. Before any local collection the worker stores those exact response bytes and
+their verified digest in the append-only attempt artifact. It then immediately runs the combined
+collector and atomically stores the combined bytes plus terminal `passed|blocked` job state.
 
-```bash
-pnpm --filter @claude-api/db pricing:stage8-evidence stage8-engine-evidence.json \
-  > stage8-combined-evidence.json
-```
-
-The consumer parses nanoUSD as signed-i64-preserving integers, verifies the canonical Rust
+The collector verifies the canonical Rust
 `sha256:v2` length-prefixed engine digest, rejects an engine source older than 120 seconds and
 exhausts both engine and OpenKeys cursors twice around one commerce `SERIALIZABLE` snapshot. It
 recomputes commerce/service identities and verifies exact ownership/status, B2B scalar parity,
@@ -337,18 +334,28 @@ with `passed=false`; if either local release is absent it returns `write_result=
 `legacy_inflight_reservations` and `legacy_inflight_outbox_rows` remain exact audit evidence and
 contribute to `legacy_inflight_count`, but a nonzero count is not a blocker: do not pause traffic,
 drain writers or wait for zero before collecting Stage 8.
-Blockers produce JSON and exit code 2, while malformed/tampered engine evidence fails before a row
-is written. The command never changes a release head, account, balance, policy, traffic or money
-writer. Store the engine input and combined output together in the protected release evidence
-location; Stage 9 accepts only the exact, unexpired combined row with `passed=true`.
+Blockers are terminal captured evidence (`status=blocked`), while malformed/tampered evidence fails
+closed (`dead`). Uncertain transport/authority failures retry with bounded delay, lease and attempt
+count; expired leases below the limit return to `retry`, and an expired final attempt becomes
+`dead`. Poll the paired GET until the requested job is terminal and review its engine/combined
+digests, freshness and sanitized blocker source/code/count/digests. The response exposes the exact
+total plus at most 100 blocker details and a truncation flag. Stage 9 accepts only the exact,
+unexpired persisted combined row with
+`passed=true`.
 
-Commerce migration `0033_pricing_stage8_managed_capture.sql` reserves protected durable storage for
-the managed replacement of this file handoff: immutable job inputs plus append-only original engine
-and combined JSON per attempt. The migration is storage-only and does not authorize running the
-workflow. The engine producer is the read-only Control API route above; its deployment still creates
-no caller or job. Until the later commerce/admin consumers are delivered as separate GREEN
-checkpoints, the commands above remain the only active collector path; no service may infer a
-capture job from startup, migration or an activation request.
+Worker bounds are validated at startup: `STAGE8_CAPTURE_POLL_MS=5000` (`1000..60000`),
+`STAGE8_CAPTURE_LEASE_MS=300000` (`30000..3600000`),
+`STAGE8_CAPTURE_RETRY_MS=15000` (`1000..3600000`) and
+`STAGE8_CAPTURE_MAX_ATTEMPTS=10` (`1..100`). Defaults are production-safe; changing them is a
+separate observed worker configuration change, not part of staging a capture.
+
+Migration `0033_pricing_stage8_managed_capture.sql` supplies the immutable job inputs and
+append-only original engine/combined JSON per attempt. It is storage-only: migration, worker
+startup, polling, activation staging and read-only status never create a capture job. Capture never
+creates an activation job, changes a release head, account, balance, policy, traffic or money
+writer. The legacy `claude-api db stage8-evidence` and
+`pnpm --filter @claude-api/db pricing:stage8-evidence` commands remain parity/diagnostic tools for
+controlled non-production tests, not the production control-plane.
 
 `sales_contract_digest` binds the intended B2C `paid_funded_nano`/no-welcome-bonus commission
 contract. It is a contract identity, not proof that the sales runtime consumer is deployed; exact

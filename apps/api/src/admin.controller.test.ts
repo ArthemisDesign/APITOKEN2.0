@@ -2,6 +2,7 @@ import { BadRequestException, HttpException, NotFoundException } from "@nestjs/c
 import {
   PricingPolicyWriteError,
   PricingReleaseActivationJobV2Error,
+  PricingStage8CaptureJobV2Error,
   ServiceAccountInventoryV2Error,
 } from "@claude-api/db";
 import { describe, expect, it, vi } from "vitest";
@@ -230,6 +231,77 @@ describe("managed pricing HTTP contract", () => {
     await expect(conflict.stagePricingReleaseActivationV2(body, "operator"))
       .rejects.toMatchObject({ status: 409 });
     await expect(unavailable.stagePricingReleaseActivationV2(body, "operator"))
+      .rejects.toMatchObject({ status: 503 });
+  });
+
+  it("exposes and explicitly stages managed Stage 8 capture without staging activation", async () => {
+    const getPricingStage8CaptureControlV2 = vi.fn().mockResolvedValue({
+      database_observed_at: "2026-08-03T00:00:00.000Z",
+      counts_by_status: { pending: 0, processing: 0, retry: 0, passed: 0, blocked: 0, dead: 0 },
+      jobs: [],
+      artifacts: [],
+    });
+    const stagePricingStage8CaptureV2 = vi.fn().mockResolvedValue({
+      job_id: "4f53639f-ced1-472f-998e-50e426bd5734",
+      request_digest: `sha256:v2:${"a".repeat(64)}`,
+      status: "accepted",
+    });
+    const stagePricingReleaseActivationV2 = vi.fn();
+    const controller = new AdminController({
+      getPricingStage8CaptureControlV2,
+      stagePricingStage8CaptureV2,
+      stagePricingReleaseActivationV2,
+    } as unknown as AdminService);
+    const body = {
+      idempotency_key: "2d20f96d-0f2b-4cff-9fa0-7c4b7fe1a6c5",
+      target_generation: 41,
+      recovery_generation: 42,
+      window_start_ts: 1_785_700_000,
+      window_end_ts: 1_785_700_300,
+      min_samples_per_provider: 100,
+      financial_sample_size: 100,
+      gemini_client_admissions: 27,
+      reason: "capture the reviewed full-inventory Stage 8 window",
+    };
+
+    await expect(controller.getPricingStage8CaptureControlV2())
+      .resolves.toMatchObject({ jobs: [], artifacts: [] });
+    await expect(controller.stagePricingStage8CaptureV2(body, "operator@example.test"))
+      .resolves.toMatchObject({ status: "accepted" });
+    expect(stagePricingStage8CaptureV2).toHaveBeenCalledWith(body, "operator@example.test");
+    expect(stagePricingReleaseActivationV2).not.toHaveBeenCalled();
+    await expect(controller.stagePricingStage8CaptureV2(body))
+      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.stagePricingStage8CaptureV2({ ...body, extra: true }, "operator"))
+      .rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("maps managed Stage 8 capture conflicts to 409 and transient staging failures to 503", async () => {
+    const body = {
+      idempotency_key: "2d20f96d-0f2b-4cff-9fa0-7c4b7fe1a6c5",
+      target_generation: 41,
+      recovery_generation: 42,
+      window_start_ts: 1_785_700_000,
+      window_end_ts: 1_785_700_300,
+      min_samples_per_provider: 100,
+      financial_sample_size: 100,
+      gemini_client_admissions: 27,
+      reason: "capture the reviewed full-inventory Stage 8 window",
+    };
+    const conflict = new AdminController({
+      stagePricingStage8CaptureV2: vi.fn().mockRejectedValue(
+        new PricingStage8CaptureJobV2Error("idempotency conflict", true),
+      ),
+    } as unknown as AdminService);
+    const unavailable = new AdminController({
+      stagePricingStage8CaptureV2: vi.fn().mockRejectedValue(
+        new PricingStage8CaptureJobV2Error("database unavailable", false),
+      ),
+    } as unknown as AdminService);
+
+    await expect(conflict.stagePricingStage8CaptureV2(body, "operator"))
+      .rejects.toMatchObject({ status: 409 });
+    await expect(unavailable.stagePricingStage8CaptureV2(body, "operator"))
       .rejects.toMatchObject({ status: 503 });
   });
 

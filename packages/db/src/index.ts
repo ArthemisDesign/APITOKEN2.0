@@ -26,6 +26,7 @@ export * from "./pricing-stage5-materializer-v2-store.js";
 export * from "./multi-discount-backfill.js";
 export * from "./multi-discount-catalog-gen2.js";
 export * from "./multi-discount-stage8-evidence.js";
+export * from "./pricing-stage8-capture-jobs-v2.js";
 export * from "./totp.js";
 export * from "./sales-feed.js";
 export * from "./content-studio.js";

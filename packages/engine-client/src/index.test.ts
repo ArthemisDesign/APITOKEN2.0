@@ -968,6 +968,155 @@ describe("EngineClient", () => {
       .rejects.toThrow("malformed pricing response");
   });
 
+  it("captures Stage 8 as raw integer-preserving JSON and keeps blocked evidence successful", async () => {
+    const digestV2 = `sha256:v2:${"2".repeat(64)}`;
+    const digestV1 = `sha256:v1:${"1".repeat(64)}`;
+    const raw = JSON.stringify({
+      schema_version: 2,
+      captured_ts: 2_000,
+      window_start_ts: 1_000,
+      window_end_ts: 1_900,
+      min_samples_per_provider: 1,
+      gemini_client_admissions: 7,
+      passed: false,
+      release: {
+        target_generation: 41,
+        target_digest: digestV2,
+        recovery_generation: 42,
+        recovery_digest: digestV2,
+        recovery_link_digest: digestV2,
+        inventory_digest: digestV2,
+        funding_digest: digestV2,
+        target_assignment_count: 1,
+        recovery_assignment_count: 1,
+        active_head: null,
+      },
+      runtime_manifest: {
+        generation: 3,
+        digest: digestV2,
+        capabilities: [{ schema_version: 2, generation: 3, digest: digestV2 }],
+      },
+      catalogs: [],
+      switches: null,
+      counts: {
+        total_accounts: 1,
+        active_accounts: 1,
+        account_classes: { b2c: 1 },
+        reconciled_accounts: 1,
+        snapshots_by_provider: { anthropic: 1, google: 1, openai: 1 },
+        evaluations_by_outcome: { resolved: 3 },
+        comparisons: { different: 3 },
+        scalar_parity_rows: 0,
+        policy_divergence_rows: 3,
+        gemini_usage_rows: 1,
+        gemini_outbox_rows: 1,
+        live_runtime_instances: 2,
+        release_capable_runtime_instances: 1,
+        legacy_inflight_reservations: 3,
+        legacy_inflight_outbox_rows: 2,
+      },
+      financial_samples: [{
+        subject_digest: digestV1,
+        evaluation_digest: digestV2,
+        provider_id: "google",
+        account_class: "b2c",
+        authorized_multiplier_bp: 10_000,
+        payable_multiplier_bp: 5_000,
+        official_hold_nano: "9223372036854775807",
+        legacy_hold_nano: "9223372036854775807",
+        policy_hold_nano: "4611686018427387904",
+        comparison_result: "different",
+      }],
+      engine_inventory_digest: digestV2,
+      funding_digest: digestV2,
+      shadow_digest: digestV2,
+      runtime_floor_digest: digestV2,
+      legacy_inflight_count: 5,
+      blockers: [{
+        code: "live_runtime_below_release_v2_floor",
+        count: 1,
+        subject_digests: [digestV1],
+      }],
+      evidence_digest: digestV2,
+    })
+      .replace('"9223372036854775807"', "9223372036854775807")
+      .replace('"9223372036854775807"', "9223372036854775807")
+      .replace('"4611686018427387904"', "4611686018427387904");
+    let request: { url: string; body: unknown } | undefined;
+    let jsonCalled = false;
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async (input, init) => {
+        request = { url: String(input), body: JSON.parse(String(init?.body)) };
+        const response = new Response(raw);
+        Object.defineProperty(response, "json", {
+          value: () => {
+            jsonCalled = true;
+            throw new Error("response.json must not be used for Stage 8 evidence");
+          },
+        });
+        return response;
+      },
+    });
+    const capture = {
+      target_generation: 41,
+      recovery_generation: 42,
+      window_start_ts: 1_000,
+      window_end_ts: 1_900,
+      min_samples_per_provider: 1,
+      financial_sample_size: 100,
+      gemini_client_admissions: 7,
+    };
+
+    await expect(client.capturePricingStage8EvidenceV2(capture)).resolves.toMatchObject({
+      raw,
+      evidence: {
+        passed: false,
+        legacy_inflight_count: "5",
+        financial_samples: [{ official_hold_nano: "9223372036854775807" }],
+      },
+    });
+    expect(jsonCalled).toBe(false);
+    expect(request).toEqual({
+      url: "http://engine.test/admin/pricing/v2/stage8-evidence/capture",
+      body: capture,
+    });
+  });
+
+  it("stops reading Stage 8 evidence at the raw response bound", async () => {
+    const chunk = new Uint8Array(1024 * 1024);
+    let emitted = 0;
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (emitted === 17) {
+            controller.close();
+            return;
+          }
+          emitted += 1;
+          controller.enqueue(chunk);
+        },
+      })),
+    });
+
+    await expect(client.capturePricingStage8EvidenceV2({
+      target_generation: 41,
+      recovery_generation: 42,
+      window_start_ts: 1_000,
+      window_end_ts: 1_900,
+      min_samples_per_provider: 1,
+      financial_sample_size: 100,
+      gemini_client_admissions: 7,
+    })).rejects.toMatchObject({
+      message: "engine Stage 8 evidence exceeds the bounded response size",
+      retryable: false,
+    });
+    expect(emitted).toBe(17);
+  });
+
   it("validates the exact pricing release activation request, receipt, and rejection", async () => {
     const digest = (value: string): string => `sha256:v2:${value.repeat(64)}`;
     const request: PricingReleaseActivationRequestV2 = {

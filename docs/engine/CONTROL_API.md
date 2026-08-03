@@ -540,7 +540,7 @@ members[] = {
 }
 ```
 
-Prepare takes the same pricing-release control-plane advisory lock as future activation and accepts
+Prepare takes the same pricing-release control-plane advisory lock as activation and accepts
 only the exact current head. If that active target's activation evidence selected a recovery link,
 `members` must contain that exact atomic active/recovery pair; another prepared link or an omitted
 pair returns typed `missing_dependency`. An active recovery contains exactly the active member.
@@ -585,13 +585,27 @@ funding bucket, balance, reservation, ledger, activation evidence or traffic sta
 
 A successfully captured report is the unwrapped schema-v2 JSON object with HTTP `200` regardless
 of its `passed` value. In particular, `passed=false` plus `blockers[]` is valid durable evidence and
-must be persisted by the future consumer rather than translated into a transport failure.
+must be persisted by the consumer rather than translated into a transport failure.
 Malformed bounds are `400`, a shape/type/unknown-field error is `422`, missing control auth is
 `401`, and non-PostgreSQL or unavailable authority is `503`. The report contains signed-i64
 nanoUSD JSON numbers. TypeScript consumers must read the response as raw text and parse it with
 `json-bigint`; `response.json()` is forbidden because it can round those integers before evidence
-digest verification. No engine client/worker may call this expand-only producer until its exact
-producer SHA has a green `deploy/watchdog`.
+digest verification.
+
+After the exact producer SHA reached green `deploy/watchdog`, the commerce consumer was connected
+through the strict `packages/contracts` schema and the sole
+`EngineClient.capturePricingStage8EvidenceV2` transport. The client bounds the response to 16 MiB,
+verifies the canonical integer-preserving shape and explicit request identity, and returns both the
+parsed report and its exact raw bytes. `apps/worker` may call the producer only for a durable capture
+job explicitly staged through the AdminGuard-protected commerce route
+`POST /v1/admin/pricing-stage8-capture-v2/stage`; the paired GET is read-only status with bounded
+freshness and sanitized blocker metadata, never raw subject identities. The worker
+persists the untouched engine bytes before running the combined commerce/OpenKeys/service
+collector, then atomically stores the combined bytes and terminal `passed|blocked` result. An
+engine `passed=false` report is therefore a successful capture input. Retry/dead transitions are
+bounded, stale leases are recovered, and at most one capture job is processing globally. Migration,
+startup, polling and activation staging cannot infer or create a capture job; capture completion
+cannot create an activation job or move the release head.
 
 `POST /admin/pricing/v2/activate` is the only global live mutation. All unknown fields are rejected.
 The initial cutover request has this exact shape:

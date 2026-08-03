@@ -18,6 +18,7 @@ import {
   createBusinessInviteSchema,
   pricingReleaseActivationOperatorV2Schema,
   pricingReleaseActivationStageRequestV2Schema,
+  pricingStage8CaptureStageRequestV2Schema,
   providerSwitchEditorMutationSchema,
   pricingPolicyMutationSchema,
   serviceAccountInventoryMutationV2Schema,
@@ -30,6 +31,7 @@ import {
   BusinessInvitationNotFoundError,
   PricingPolicyWriteError,
   PricingReleaseActivationJobV2Error,
+  PricingStage8CaptureJobV2Error,
   ServiceAccountInventoryV2Error,
 } from "@claude-api/db";
 import { z } from "zod";
@@ -230,6 +232,32 @@ export class AdminController {
   @Header("Cache-Control", "no-store")
   getPricingReleaseActivationControlV2(): Promise<unknown> {
     return this.admin.getPricingReleaseActivationControlV2();
+  }
+
+  @Get("pricing-stage8-capture-v2")
+  @Header("Cache-Control", "no-store")
+  getPricingStage8CaptureControlV2(): Promise<unknown> {
+    return this.admin.getPricingStage8CaptureControlV2();
+  }
+
+  @Post("pricing-stage8-capture-v2/stage")
+  @Header("Cache-Control", "no-store")
+  async stagePricingStage8CaptureV2(
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    const input = pricingStage8CaptureStageRequestV2Schema.safeParse(body);
+    const actor = pricingReleaseActivationOperatorV2Schema.safeParse(actorHeader?.trim());
+    if (!input.success) throw new BadRequestException(input.error.flatten());
+    if (!actor.success) throw new BadRequestException("verified admin actor is required");
+    try {
+      return await this.admin.stagePricingStage8CaptureV2(input.data, actor.data);
+    } catch (error) {
+      if (error instanceof PricingStage8CaptureJobV2Error) {
+        throw new HttpException(error.message, error.permanent ? 409 : 503);
+      }
+      throw error;
+    }
   }
 
   @Post("pricing-release-activation-v2/stage")

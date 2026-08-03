@@ -21,8 +21,8 @@
 |---|---|---|---|
 | `crates/server` (`src/http.rs`, `src/admin.rs`) | HTTP `/admin/*` под `x-api-key: CLAUDE_API_CONTROL_KEY`; роуты только в режимах Combined/Anthropic | `packages/engine-client` — единственный клиент; прямые обращения к `/admin/*` вне него запрещены | `docs/engine/CONTROL_API.md` |
 | `packages/engine-client` | TS-клиент `EngineClient`, strict zod-валидация из `@claude-api/contracts`, деньги — `json-bigint` строками; pricing v2 provisioning-context/cursor/prepare/readback и единый canonical Stage 5 policy/assignment digest builder | `apps/api`, `apps/worker`, `apps/openkeys`; `packages/db` Stage 5 materializer, Stage 8 collector и pre-delivery activation authority (env `ENGINE_BASE_URL` + `ENGINE_CONTROL_KEY` только у runtime-потребителей) | `docs/engine/CONTROL_API.md`, `docs/commerce/MULTI_DISCOUNT_STAGE5.md`, `docs/commerce/MULTI_DISCOUNT_STAGE7.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md`, `docs/product/OPENKEYS.md` |
-| `claude-api db stage8-evidence` (`crates/registry`, `crates/server`) | protected schema-v2 JSON artifact with signed-i64 nanoUSD and canonical Rust `sha256:v2` evidence digest; exact target/recovery, full engine inventory/funding/shadow/runtime floor | `packages/db` Stage 8 consumer reads the explicit file path, verifies shape/digest/age and combines it with commerce/service plus two exhaustive OpenKeys scans; connected only after GREEN producer SHA | `docs/ops/DEPLOYMENT.md`, `docs/commerce/MULTI-DISCOUNT.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md` |
-| `crates/server` + `crates/forward` Stage 8 capture producer | protected `POST /admin/pricing/v2/stage8-evidence/capture`; strict explicit inputs, server-owned compile-fixed manifest, unwrapped schema-v2 report including `passed=false`; PostgreSQL bounded reader only | future `packages/engine-client` raw-text/`json-bigint` transport and `apps/worker` durable managed capture consumer, connected only in a separate checkpoint after GREEN exact producer SHA; this producer alone has no caller/job side effect | `docs/engine/CONTROL_API.md`, `docs/ops/DEPLOYMENT.md`, `docs/commerce/MULTI-DISCOUNT_STAGE9.md` |
+| `claude-api db stage8-evidence` (`crates/registry`, `crates/server`) | protected schema-v2 JSON artifact with signed-i64 nanoUSD and canonical Rust `sha256:v2` evidence digest; exact target/recovery, full engine inventory/funding/shadow/runtime floor | parity/diagnostic non-production input for `packages/db`; production no longer uses an SSH/file handoff | `docs/ops/DEPLOYMENT.md`, `docs/commerce/MULTI-DISCOUNT.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md` |
+| `crates/server` + `crates/forward` Stage 8 capture producer | protected `POST /admin/pricing/v2/stage8-evidence/capture`; strict explicit inputs, server-owned compile-fixed manifest, unwrapped schema-v2 report including `passed=false`; PostgreSQL bounded reader only | after GREEN exact producer SHA: strict `packages/contracts` → raw-text/`json-bigint` `packages/engine-client` → `apps/worker`; exact raw engine bytes are durable before `packages/db` combines commerce/service and two exhaustive OpenKeys scans | `docs/engine/CONTROL_API.md`, `docs/ops/DEPLOYMENT.md`, `docs/commerce/MULTI-DISCOUNT_STAGE9.md` |
 | `crates/server` operator-роуты | read-only `/overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health` (→ 8790), `/codex-subs` (→ 8792), `/gemini-subs` (→ 8794) через Caddy `admin.apitoken.sale`, ключ подставляет прокси (`ADMIN_CONTROL_KEY`); Claude `/capacity`, `/overview` supply и Prometheus используют одну exact turn+quota authority, не pool prior/EMA | `apps/admin` (без engine-client и без своих секретов); `/metrics` также скрейпит Prometheus напрямую по loopback, минуя Caddy (`observability/prometheus/prometheus.yml`) | `docs/product/ADMIN_PANEL.md`, `docs/engine/CONTROL_API.md` |
 
 Группы эндпоинтов Control API: аккаунты, credit/ledger (идемпотентный credit по
@@ -57,6 +57,16 @@ admin CAS используют общий external-owner builder напряму�
 завершают funding/policy/active+recovery extension, service writer — rule-free `meter_only`
 policy/extension, и все требуют exact readback плюс свежий context до usable результата. При null
 context release-v2 path dormant.
+Managed Stage 8 capture подключён цепочкой strict `packages/contracts` → raw-text
+`packages/engine-client` → `packages/db/src/pricing-stage8-capture-jobs-v2.ts` → `apps/worker`.
+Единственный job producer — AdminGuard-protected
+`POST /v1/admin/pricing-stage8-capture-v2/stage` в `apps/api` с UUID idempotency key, verified actor,
+reason и exact capture bounds; paired GET возвращает bounded local job/artifact snapshot. Worker
+сохраняет exact engine bytes до combined collector и атомарно завершает combined artifact/job;
+GET раскрывает только freshness и sanitized blocker source/code/count с hashed subjects.
+Startup, migration, polling и activation request не создают capture job; capture не создаёт
+activation job и не двигает head. `apps/admin` operator UI для этих additive endpoints подключается
+отдельным consumer checkpoint после GREEN commerce producer SHA.
 Activation подключён только через цепочку strict `packages/contracts` → единственный transport
 `packages/engine-client` → `packages/db/src/pricing-release-activation-jobs.ts` → `apps/worker`.
 DB consumer строит request из persisted passed evidence и engine release digests, хранит body до

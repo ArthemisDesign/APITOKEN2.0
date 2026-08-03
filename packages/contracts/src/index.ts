@@ -1011,6 +1011,249 @@ export const pricingReleaseActivationStageResponseV2Schema = z.object({
 export type PricingReleaseActivationStageResponseV2 =
   z.infer<typeof pricingReleaseActivationStageResponseV2Schema>;
 
+/**
+ * Read-only Stage 8 capture producer and its explicit managed-commerce handoff. Integer fields in
+ * the engine response are normalized to decimal strings because json-bigint may return either a
+ * safe number or a string depending on magnitude. The request itself stays bounded safe integers
+ * so JSON.stringify emits the numeric wire shape required by the Rust producer.
+ */
+const pricingStage8CaptureRequestV2ObjectSchema = z.object({
+  target_generation: z.number().int().safe().positive(),
+  recovery_generation: z.number().int().safe().positive(),
+  window_start_ts: z.number().int().safe().positive(),
+  window_end_ts: z.number().int().safe().positive(),
+  min_samples_per_provider: z.number().int().safe().min(1).max(1_000_000),
+  financial_sample_size: z.number().int().safe().min(1).max(1_000),
+  gemini_client_admissions: z.number().int().safe().nonnegative(),
+}).strict();
+
+function refinePricingStage8CaptureRequestV2(
+  request: z.infer<typeof pricingStage8CaptureRequestV2ObjectSchema>,
+  context: z.RefinementCtx,
+): void {
+  if (request.recovery_generation <= request.target_generation) {
+    context.addIssue({ code: "custom", message: "recovery generation must be newer than target generation" });
+  }
+  if (request.window_end_ts <= request.window_start_ts) {
+    context.addIssue({ code: "custom", message: "capture window must be non-empty" });
+  }
+}
+
+export const pricingStage8CaptureRequestV2Schema = pricingStage8CaptureRequestV2ObjectSchema
+  .superRefine(refinePricingStage8CaptureRequestV2);
+export type PricingStage8CaptureRequestV2 =
+  z.infer<typeof pricingStage8CaptureRequestV2Schema>;
+
+const pricingStage8PositiveIntegerV2Schema = nonNegativeIntegerSchema.refine(
+  (value) => BigInt(value) > 0n,
+  "value must be positive",
+);
+const pricingStage8Sha256V1Schema = z.string().regex(/^sha256:v1:[0-9a-f]{64}$/);
+const pricingStage8NonEmptyStringSchema = z.string().min(1);
+const pricingStage8BasisPointsV2Schema = nonNegativeIntegerSchema.refine(
+  (value) => BigInt(value) <= 10_000n,
+  "basis points must be at most 10000",
+);
+const pricingStage8BlockerV2Schema = z.object({
+  code: pricingStage8NonEmptyStringSchema,
+  count: pricingStage8PositiveIntegerV2Schema,
+  subject_digests: z.array(pricingStage8Sha256V1Schema).max(20),
+}).strict();
+const pricingStage8CatalogV2Schema = z.object({
+  product_id: pricingStage8NonEmptyStringSchema,
+  generation: pricingStage8PositiveIntegerV2Schema,
+  schema_version: pricingStage8PositiveIntegerV2Schema,
+  capability_generation: pricingStage8PositiveIntegerV2Schema,
+  capability_digest: pricingStage8NonEmptyStringSchema,
+  content_digest: pricingStage8NonEmptyStringSchema,
+  enabled_entries: nonNegativeIntegerSchema,
+}).strict();
+const pricingStage8SwitchV2Schema = z.object({
+  generation: pricingStage8PositiveIntegerV2Schema,
+  schema_version: pricingStage8PositiveIntegerV2Schema,
+  capability_generation: pricingStage8PositiveIntegerV2Schema,
+  capability_digest: pricingStage8NonEmptyStringSchema,
+  content_digest: pricingStage8NonEmptyStringSchema,
+  entries: nonNegativeIntegerSchema,
+}).strict();
+const pricingStage8RuntimeCapabilityV2Schema = z.object({
+  schema_version: pricingStage8PositiveIntegerV2Schema,
+  generation: pricingStage8PositiveIntegerV2Schema,
+  digest: pricingStage8NonEmptyStringSchema,
+}).strict();
+const pricingStage8RuntimeManifestV2Schema = z.object({
+  generation: pricingStage8PositiveIntegerV2Schema,
+  digest: pricingStage8NonEmptyStringSchema,
+  capabilities: z.array(pricingStage8RuntimeCapabilityV2Schema).min(1),
+}).strict();
+const pricingStage8ReleaseHeadV2Schema = z.object({
+  active_generation: pricingStage8PositiveIntegerV2Schema,
+  active_digest: pricingStage8NonEmptyStringSchema,
+  head_version: pricingStage8PositiveIntegerV2Schema,
+  updated_ts: pricingStage8PositiveIntegerV2Schema,
+}).strict();
+const pricingStage8ReleasePairV2Schema = z.object({
+  target_generation: pricingStage8PositiveIntegerV2Schema,
+  target_digest: canonicalSha256V2Schema.nullable(),
+  recovery_generation: pricingStage8PositiveIntegerV2Schema,
+  recovery_digest: canonicalSha256V2Schema.nullable(),
+  recovery_link_digest: canonicalSha256V2Schema.nullable(),
+  inventory_digest: canonicalSha256V2Schema.nullable(),
+  funding_digest: canonicalSha256V2Schema.nullable(),
+  target_assignment_count: nonNegativeIntegerSchema,
+  recovery_assignment_count: nonNegativeIntegerSchema,
+  active_head: pricingStage8ReleaseHeadV2Schema.nullable(),
+}).strict();
+const pricingStage8FinancialSampleV2Schema = z.object({
+  subject_digest: pricingStage8Sha256V1Schema,
+  evaluation_digest: pricingStage8NonEmptyStringSchema,
+  provider_id: z.enum(["anthropic", "openai", "google"]),
+  account_class: z.enum(["b2c", "b2b", "openkeys", "service"]),
+  authorized_multiplier_bp: pricingStage8BasisPointsV2Schema,
+  payable_multiplier_bp: pricingStage8BasisPointsV2Schema,
+  official_hold_nano: nonNegativeIntegerSchema,
+  legacy_hold_nano: nonNegativeIntegerSchema,
+  policy_hold_nano: nonNegativeIntegerSchema,
+  comparison_result: z.enum(["equal", "different"]),
+}).strict();
+const pricingStage8CountRecordV2Schema = z.record(z.string().min(1), nonNegativeIntegerSchema);
+const pricingStage8CountsV2Schema = z.object({
+  total_accounts: nonNegativeIntegerSchema,
+  active_accounts: nonNegativeIntegerSchema,
+  account_classes: pricingStage8CountRecordV2Schema,
+  reconciled_accounts: nonNegativeIntegerSchema,
+  snapshots_by_provider: pricingStage8CountRecordV2Schema,
+  evaluations_by_outcome: pricingStage8CountRecordV2Schema,
+  comparisons: pricingStage8CountRecordV2Schema,
+  scalar_parity_rows: nonNegativeIntegerSchema,
+  policy_divergence_rows: nonNegativeIntegerSchema,
+  gemini_usage_rows: nonNegativeIntegerSchema,
+  gemini_outbox_rows: nonNegativeIntegerSchema,
+  live_runtime_instances: nonNegativeIntegerSchema,
+  release_capable_runtime_instances: nonNegativeIntegerSchema,
+  legacy_inflight_reservations: nonNegativeIntegerSchema,
+  legacy_inflight_outbox_rows: nonNegativeIntegerSchema,
+}).strict();
+
+export const pricingStage8EngineEvidenceV2Schema = z.object({
+  schema_version: nonNegativeIntegerSchema.refine((value) => value === "2", "schema_version must be 2"),
+  captured_ts: pricingStage8PositiveIntegerV2Schema,
+  window_start_ts: pricingStage8PositiveIntegerV2Schema,
+  window_end_ts: pricingStage8PositiveIntegerV2Schema,
+  min_samples_per_provider: pricingStage8PositiveIntegerV2Schema,
+  gemini_client_admissions: nonNegativeIntegerSchema,
+  passed: z.boolean(),
+  release: pricingStage8ReleasePairV2Schema,
+  runtime_manifest: pricingStage8RuntimeManifestV2Schema,
+  catalogs: z.array(pricingStage8CatalogV2Schema),
+  switches: pricingStage8SwitchV2Schema.nullable(),
+  counts: pricingStage8CountsV2Schema,
+  financial_samples: z.array(pricingStage8FinancialSampleV2Schema).max(1_000),
+  engine_inventory_digest: canonicalSha256V2Schema,
+  funding_digest: canonicalSha256V2Schema,
+  shadow_digest: canonicalSha256V2Schema,
+  runtime_floor_digest: canonicalSha256V2Schema,
+  legacy_inflight_count: nonNegativeIntegerSchema,
+  blockers: z.array(pricingStage8BlockerV2Schema),
+  evidence_digest: canonicalSha256V2Schema,
+}).strict().superRefine((report, context) => {
+  if (BigInt(report.window_end_ts) <= BigInt(report.window_start_ts)
+      || BigInt(report.window_end_ts) > BigInt(report.captured_ts)) {
+    context.addIssue({ code: "custom", message: "invalid Stage 8 evidence window" });
+  }
+  if (BigInt(report.release.recovery_generation) <= BigInt(report.release.target_generation)) {
+    context.addIssue({ code: "custom", message: "invalid target/recovery order" });
+  }
+  const legacyInflight = BigInt(report.counts.legacy_inflight_reservations)
+    + BigInt(report.counts.legacy_inflight_outbox_rows);
+  if (legacyInflight !== BigInt(report.legacy_inflight_count)) {
+    context.addIssue({ code: "custom", message: "legacy inflight count mismatch" });
+  }
+  if (report.passed !== (report.blockers.length === 0)) {
+    context.addIssue({ code: "custom", message: "passed/blocker state mismatch" });
+  }
+});
+export type PricingStage8EngineEvidenceV2 =
+  z.infer<typeof pricingStage8EngineEvidenceV2Schema>;
+
+export const pricingStage8CaptureStageRequestV2Schema = pricingStage8CaptureRequestV2ObjectSchema.extend({
+  idempotency_key: z.string().uuid(),
+  reason: pricingReleaseActivationReasonV2Schema,
+}).strict().superRefine(refinePricingStage8CaptureRequestV2);
+export type PricingStage8CaptureStageRequestV2 =
+  z.infer<typeof pricingStage8CaptureStageRequestV2Schema>;
+
+export const pricingStage8CaptureStageResponseV2Schema = z.object({
+  job_id: z.string().uuid(),
+  request_digest: canonicalSha256V2Schema,
+  status: z.literal("accepted"),
+}).strict();
+export type PricingStage8CaptureStageResponseV2 =
+  z.infer<typeof pricingStage8CaptureStageResponseV2Schema>;
+
+export const pricingStage8CaptureJobStatusV2Schema = z.enum([
+  "pending",
+  "processing",
+  "retry",
+  "passed",
+  "blocked",
+  "dead",
+]);
+export const pricingStage8CaptureControlV2Schema = z.object({
+  database_observed_at: z.string().datetime({ offset: true }),
+  counts_by_status: z.record(pricingStage8CaptureJobStatusV2Schema, z.number().int().safe().nonnegative()),
+  jobs: z.array(z.object({
+    id: z.string().uuid(),
+    idempotency_key: z.string().min(1),
+    request_digest: canonicalSha256V2Schema,
+    target_generation: pricingStage8PositiveIntegerV2Schema,
+    recovery_generation: pricingStage8PositiveIntegerV2Schema,
+    window_start_at: z.string().datetime({ offset: true }),
+    window_end_at: z.string().datetime({ offset: true }),
+    min_samples_per_provider: pricingStage8PositiveIntegerV2Schema,
+    financial_sample_size: z.number().int().safe().min(1).max(1_000),
+    gemini_client_admissions: nonNegativeIntegerSchema,
+    operator_id: pricingReleaseActivationOperatorV2Schema,
+    reason: pricingReleaseActivationReasonV2Schema,
+    status: pricingStage8CaptureJobStatusV2Schema,
+    attempts: z.number().int().safe().nonnegative(),
+    next_attempt_at: z.string().datetime({ offset: true }),
+    locked_at: z.string().datetime({ offset: true }).nullable(),
+    locked_by: z.string().nullable(),
+    last_error: z.string().nullable(),
+    result_engine_evidence_digest: canonicalSha256V2Schema.nullable(),
+    result_combined_evidence_digest: canonicalSha256V2Schema.nullable(),
+    result_passed: z.boolean().nullable(),
+    completed_at: z.string().datetime({ offset: true }).nullable(),
+    created_at: z.string().datetime({ offset: true }),
+    updated_at: z.string().datetime({ offset: true }),
+  }).strict()).max(100),
+  artifacts: z.array(z.object({
+    id: z.string().uuid(),
+    job_id: z.string().uuid(),
+    attempt: z.number().int().safe().positive(),
+    engine_evidence_digest: canonicalSha256V2Schema,
+    engine_captured_at: z.string().datetime({ offset: true }),
+    combined_evidence_digest: canonicalSha256V2Schema.nullable(),
+    combined_passed: z.boolean().nullable(),
+    combined_write_result: z.enum(["stored", "unchanged", "not_persisted"]).nullable(),
+    combined_observed_at: z.string().datetime({ offset: true }).nullable(),
+    combined_valid_until: z.string().datetime({ offset: true }).nullable(),
+    combined_blocker_count: nonNegativeIntegerSchema.nullable(),
+    combined_blockers: z.array(z.object({
+      source: z.enum(["commerce", "engine"]),
+      code: z.string().min(1),
+      count: pricingStage8PositiveIntegerV2Schema,
+      subject_digests: z.array(pricingStage8Sha256V1Schema).max(20),
+    }).strict()).max(100).nullable(),
+    combined_blockers_truncated: z.boolean().nullable(),
+    completed_at: z.string().datetime({ offset: true }).nullable(),
+    created_at: z.string().datetime({ offset: true }),
+  }).strict()).max(100),
+}).strict();
+export type PricingStage8CaptureControlV2 =
+  z.infer<typeof pricingStage8CaptureControlV2Schema>;
+
 export const pricingReleaseActivationEvidenceV2Schema = z.object({
   evidence_digest: canonicalSha256V2Schema,
   target_generation: pricingVersionSchema,

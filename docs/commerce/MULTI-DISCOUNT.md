@@ -230,10 +230,13 @@ Engine хранит prepared releases и один active release head. Подг�
   exact service authority без backfill старых строк; `0033_pricing_stage8_managed_capture.sql`
   создаёт пустую durable очередь и append-only raw/combined artifacts для protected Stage 8
   workflow без SSH/file handoff, но сама не создаёт job, не вызывает engine и не двигает release
-  head. Следующий за schema producer-first checkpoint добавляет защищённый read-only
+  head. Следующий за schema producer-first checkpoint добавил защищённый read-only
   `POST /admin/pricing/v2/stage8-evidence/capture`: server присоединяет compile-fixed manifest,
-  bounded PostgreSQL reader возвращает schema-v2 report также при `passed=false`, а consumer/job
-  подключается только отдельным checkpoint после GREEN producer SHA;
+  bounded PostgreSQL reader возвращает schema-v2 report также при `passed=false`. После GREEN exact
+  producer SHA отдельный commerce checkpoint подключает strict contracts/raw-text client,
+  explicit AdminGuard staging, durable worker и bounded status reader. Worker сохраняет exact raw
+  engine bytes до combined scan, затем атомарно завершает append-only combined artifact и
+  `passed|blocked` job; ни один capture path не создаёт activation job;
 - sales migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` добавляет
   отдельные immutable usage/commission v2 tables без pricing-mode поля.
 
@@ -436,12 +439,18 @@ target funding manifest, shadow evaluation set и live runtime floor. Он тр�
 funding/runtime lineage у target/recovery, полное assignment-покрытие active и disabled accounts,
 паритет funding heads/lots с aggregate, соответствие каждого shadow result exact target rule и
 наблюдаемые legacy-format inflight counts без требования traffic drain. Commerce consumer
-проверяет canonical Rust digest без
-потери i64, дважды сканирует OpenKeys, перечитывает текущие commerce/service identities и
-semantic target/recovery assignments, после чего сохраняет schema-v2 identity на 300 секунд.
+запускается только из явно staged immutable job с UUID idempotency key, actor/reason и exact
+capture bounds. Он получает engine artifact через единственный typed transport, сохраняет исходные
+raw bytes до любых зависимых чтений, проверяет canonical Rust digest без потери i64, дважды сканирует
+OpenKeys, перечитывает текущие commerce/service identities и semantic target/recovery assignments,
+после чего сохраняет schema-v2 identity на 300 секунд и завершает job/artifact одной транзакцией.
 Legacy-format inflight reservation/outbox остаётся только audit count и больше не добавляется в
 engine blockers; format-aware snapshot остаётся обязательным. Blocked evidence сохраняется с
-`passed=false`, а отсутствие local release pair не создаёт строку.
+`passed=false` и terminal job status `blocked`, а отсутствие local release pair не создаёт строку.
+Uncertain failures используют bounded retry/lease/attempt state machine; protocol conflict и
+последняя попытка fail closed в `dead`. Global claim fence не допускает двух одновременных capture.
+Startup, migration, polling и activation request не stage'ят capture, а capture completion не
+stage'ит activation и не двигает global head.
 После exact target CAS engine Stage 8 переключает inventory-проверку на immutable base плюс exact
 paired assignment extensions и их live funding parity. Поэтому новый account не делает fresh
 recovery evidence недостижимым после истечения исходного TTL.

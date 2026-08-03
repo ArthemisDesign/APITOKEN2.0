@@ -162,9 +162,24 @@ GET       /admin/service-policies
 GET/PATCH /admin/service-policies/{id}?product_id=...
 GET       /admin/service-account-inventory
 PUT       /admin/service-account-inventory/{service_id}
+GET       /admin/pricing-stage8-capture-v2
+POST      /admin/pricing-stage8-capture-v2/stage
 GET       /admin/pricing-release-activation-v2
 POST      /admin/pricing-release-activation-v2/stage
 ```
+
+The Stage 8 capture GET returns a bounded read-only view of durable job/artifact identities,
+status counts, freshness and sanitized combined blockers (`source/code/count` plus already-hashed
+subject digests; never raw account/request identity). It caps the newest artifacts and the first 100
+blockers per artifact, exposes the exact total count and marks a truncated summary. Its POST requires
+a strict UUID idempotency key, exact target/recovery generations,
+past capture window, provider/sample/Gemini bounds, verified `x-admin-actor` and explicit reason.
+It only inserts or idempotently finds the immutable capture job and audit row. The worker performs
+engine capture, persists exact raw engine JSON before any local collection, immediately combines
+commerce/service and two exhaustive OpenKeys scans, and commits combined artifact plus terminal
+`passed|blocked` state atomically. Transport/authority uncertainty retries within bounded leases and
+attempts; malformed or conflicting evidence fails closed. Startup, polling and activation requests
+never create capture work, and capture never creates an activation job or moves the engine head.
 
 The activation GET is a bounded read-only snapshot of exact local release/evidence/job/receipt
 identities plus separately timestamped live engine head availability. The POST accepts only strict
@@ -244,22 +259,19 @@ The entrypoint must be invoked by the protected production control-plane, not th
 until that operation records a confirmed production job, Stage 6 is not complete.
 
 Stage 8 consumes the canonical schema-v2 engine report and emits one combined synchronization
-identity. Generate `stage8-engine-evidence.json` first with the exact deployed `claude-api` binary
-as described in `docs/ops/DEPLOYMENT.md`, then run:
-
-```bash
-pnpm --filter @claude-api/db pricing:stage8-evidence stage8-engine-evidence.json
-```
-
-The consumer preserves signed-i64 JSON money, independently recomputes the Rust evidence digest,
-requires an engine source no older than 120 seconds, exhausts engine and OpenKeys twice and observes
+identity through the managed durable workflow described in `docs/ops/DEPLOYMENT.md`. Production
+capture is staged only by the protected explicit admin POST; it is not a manual CLI/file handoff.
+The worker preserves the exact source bytes and signed-i64 JSON money, independently recomputes the
+Rust evidence digest, requires an engine source no older than 120 seconds, exhausts engine and
+OpenKeys twice and observes
 commerce and service authority in one `SERIALIZABLE` snapshot. It binds exact prepared target/recovery
 generations, semantic assignments, funding/release lineage, current inventories, runtime/shadow
 evidence and the absence of pending or failed control jobs. A combined identity expires after 300
 seconds. Existing target/recovery plans allow both passed and blocked reports to be persisted
 immutably in `pricing_stage8_evidence_v2`; missing plans return `not_persisted`. Account and binding
-subjects are emitted only as SHA-256 digests, blockers exit non-zero, and the command never seeds a
-policy, retries a job or advances a head. Runtime credentials come only from `DATABASE_URL`,
+subjects are emitted only as SHA-256 digests. The capture job records `blocked` as terminal evidence;
+protocol corruption becomes `dead`, while bounded uncertain failures become `retry`. Neither path
+seeds a policy or advances a head. Runtime credentials come only from `DATABASE_URL`,
 required `ENGINE_CONTROL_KEY`, optional `ENGINE_BASE_URL`/`OPENKEYS_INTERNAL_BASE_URL`, and optional
 dedicated `OPENKEYS_CONTROL_KEY` (otherwise OpenKeys uses the shared engine key).
 

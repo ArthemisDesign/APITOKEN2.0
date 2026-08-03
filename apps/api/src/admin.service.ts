@@ -5,7 +5,10 @@ import { ConfigService } from "@nestjs/config";
 import {
   multiplierForDiscount,
   pricingReleaseActivationStageResponseV2Schema,
+  pricingStage8CaptureControlV2Schema,
+  pricingStage8CaptureStageResponseV2Schema,
   type PricingReleaseActivationStageRequestV2,
+  type PricingStage8CaptureStageRequestV2,
   type PricingReleaseInventoryAccountV2,
   type PricingPolicyEditorRule,
   type ProviderSwitchEditorMutation,
@@ -30,10 +33,12 @@ import {
   recordAdminCredit,
   readServiceAccountInventoryV2,
   readPricingReleaseActivationControlV2,
+  readPricingStage8CaptureControlV2,
   revokeBusinessInvite,
   rotateBusinessInvite,
   setBusinessPricing,
   stagePricingReleaseActivationJobV2,
+  stagePricingStage8CaptureJobV2,
   updateManagedPricingPolicy,
   updateManagedProviderSwitches,
   upsertServiceAccountInventoryV2,
@@ -41,6 +46,7 @@ import {
   type AdminUserOverviewQuery,
   type Database,
   type PricingReleaseActivationControlV2,
+  type PricingStage8CaptureControlV2,
 } from "@claude-api/db";
 import {
   EngineClient,
@@ -243,6 +249,37 @@ export class AdminService {
       job_id: jobId,
       activation_kind: input.activation_kind,
       evidence_digest: input.evidence_digest,
+      status: "accepted",
+    });
+  }
+
+  async getPricingStage8CaptureControlV2(): Promise<Record<string, unknown>> {
+    return serializePricingStage8CaptureControlV2(
+      await readPricingStage8CaptureControlV2(this.database),
+    );
+  }
+
+  async stagePricingStage8CaptureV2(
+    input: PricingStage8CaptureStageRequestV2,
+    actorId: string,
+  ): Promise<Record<string, unknown>> {
+    const staged = await stagePricingStage8CaptureJobV2(this.database, {
+      idempotencyKey: input.idempotency_key,
+      request: {
+        target_generation: input.target_generation,
+        recovery_generation: input.recovery_generation,
+        window_start_ts: input.window_start_ts,
+        window_end_ts: input.window_end_ts,
+        min_samples_per_provider: input.min_samples_per_provider,
+        financial_sample_size: input.financial_sample_size,
+        gemini_client_admissions: input.gemini_client_admissions,
+      },
+      operatorId: actorId,
+      reason: input.reason,
+    });
+    return pricingStage8CaptureStageResponseV2Schema.parse({
+      job_id: staged.jobId,
+      request_digest: staged.requestDigest,
       status: "accepted",
     });
   }
@@ -640,6 +677,58 @@ function serializePricingReleaseActivationControlV2(
       created_at: receipt.createdAt.toISOString(),
     })),
   };
+}
+
+function serializePricingStage8CaptureControlV2(
+  control: PricingStage8CaptureControlV2,
+): Record<string, unknown> {
+  return pricingStage8CaptureControlV2Schema.parse({
+    database_observed_at: control.databaseObservedAt.toISOString(),
+    counts_by_status: control.countsByStatus,
+    jobs: control.jobs.map((job) => ({
+      id: job.id,
+      idempotency_key: job.idempotencyKey,
+      request_digest: job.requestDigest,
+      target_generation: job.targetGeneration,
+      recovery_generation: job.recoveryGeneration,
+      window_start_at: job.windowStartAt.toISOString(),
+      window_end_at: job.windowEndAt.toISOString(),
+      min_samples_per_provider: job.minSamplesPerProvider,
+      financial_sample_size: job.financialSampleSize,
+      gemini_client_admissions: job.geminiClientAdmissions,
+      operator_id: job.operatorId,
+      reason: job.reason,
+      status: job.status,
+      attempts: job.attempts,
+      next_attempt_at: job.nextAttemptAt.toISOString(),
+      locked_at: job.lockedAt?.toISOString() ?? null,
+      locked_by: job.lockedBy,
+      last_error: job.lastError,
+      result_engine_evidence_digest: job.resultEngineEvidenceDigest,
+      result_combined_evidence_digest: job.resultCombinedEvidenceDigest,
+      result_passed: job.resultPassed,
+      completed_at: job.completedAt?.toISOString() ?? null,
+      created_at: job.createdAt.toISOString(),
+      updated_at: job.updatedAt.toISOString(),
+    })),
+    artifacts: control.artifacts.map((artifact) => ({
+      id: artifact.id,
+      job_id: artifact.jobId,
+      attempt: artifact.attempt,
+      engine_evidence_digest: artifact.engineEvidenceDigest,
+      engine_captured_at: artifact.engineCapturedAt.toISOString(),
+      combined_evidence_digest: artifact.combinedEvidenceDigest,
+      combined_passed: artifact.combinedPassed,
+      combined_write_result: artifact.combinedWriteResult,
+      combined_observed_at: artifact.combinedObservedAt?.toISOString() ?? null,
+      combined_valid_until: artifact.combinedValidUntil?.toISOString() ?? null,
+      combined_blocker_count: artifact.combinedBlockerCount,
+      combined_blockers: artifact.combinedBlockers,
+      combined_blockers_truncated: artifact.combinedBlockersTruncated,
+      completed_at: artifact.completedAt?.toISOString() ?? null,
+      created_at: artifact.createdAt.toISOString(),
+    })),
+  });
 }
 
 /** nano-USD (строка целого) → десятичная USD-строка с 4 знаками; без float. */

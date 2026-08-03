@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import JSONbigFactory from "json-bigint";
 import {
   accountPolicyBindingSchema,
@@ -27,6 +28,8 @@ import {
   pricingReleaseProvisioningContextEnvelopeV2Schema,
   pricingReleaseRecoveryLinkV2Schema,
   pricingReleaseV2Schema,
+  pricingStage8CaptureRequestV2Schema,
+  pricingStage8EngineEvidenceV2Schema,
   providerSwitchSpecSchema,
   type AccountPolicyBinding,
   type AccountPolicySpec,
@@ -55,6 +58,8 @@ import {
   type PricingReleaseProvisioningContextV2,
   type PricingReleaseRecoveryLinkV2,
   type PricingReleaseV2,
+  type PricingStage8CaptureRequestV2,
+  type PricingStage8EngineEvidenceV2,
   type ProviderSwitchSpec,
 } from "@claude-api/contracts";
 import { z } from "zod";
@@ -165,6 +170,7 @@ const releaseRecoveryLinkV2PrepareIdentitySchema = pricingReleaseRecoveryLinkV2S
 });
 const releaseInventoryLimitV2Schema = z.number().int().min(1).max(500);
 const fundingNormalizationAccountIdV2Schema = z.string().startsWith("acct_").max(200);
+const stage8EvidenceMaxResponseBytes = 16 * 1024 * 1024;
 
 export class EngineClient {
   private readonly baseUrl: string;
@@ -793,6 +799,42 @@ export class EngineClient {
     ).context;
   }
 
+  /**
+   * Captures one read-only engine Stage 8 artifact. The exact raw response is returned alongside
+   * the strict normalized view so the commerce worker can durably preserve and independently
+   * verify the canonical integer-preserving evidence digest.
+   */
+  async capturePricingStage8EvidenceV2(
+    input: PricingStage8CaptureRequestV2,
+  ): Promise<{ evidence: PricingStage8EngineEvidenceV2; raw: string }> {
+    const request = pricingStage8CaptureRequestV2Schema.parse(input);
+    const { response, payload, rawText } = await this.request(
+      "/admin/pricing/v2/stage8-evidence/capture",
+      {
+        method: "POST",
+        body: JSON.stringify(request),
+        maxResponseBytes: stage8EvidenceMaxResponseBytes,
+      },
+    );
+    const evidence = this.parsePricingResponse(pricingStage8EngineEvidenceV2Schema, payload, response);
+    if (
+      evidence.release.target_generation !== String(request.target_generation)
+      || evidence.release.recovery_generation !== String(request.recovery_generation)
+      || evidence.window_start_ts !== String(request.window_start_ts)
+      || evidence.window_end_ts !== String(request.window_end_ts)
+      || evidence.min_samples_per_provider !== String(request.min_samples_per_provider)
+      || evidence.gemini_client_admissions !== String(request.gemini_client_admissions)
+      || evidence.financial_samples.length > request.financial_sample_size
+    ) {
+      throw new EngineClientError(
+        "engine Stage 8 evidence does not match the explicit capture request",
+        response.status,
+        false,
+      );
+    }
+    return { evidence, raw: rawText };
+  }
+
   async activatePricingReleaseV2(
     input: PricingReleaseActivationRequestV2,
   ): Promise<PricingReleaseActivationAckV2> {
@@ -899,8 +941,9 @@ export class EngineClient {
       body?: string;
       authenticated?: boolean;
       acceptedStatuses?: readonly number[];
+      maxResponseBytes?: number;
     } = {},
-  ): Promise<{ response: Response; payload: unknown }> {
+  ): Promise<{ response: Response; payload: unknown; rawText: string }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     const headers: Record<string, string> = { accept: "application/json" };
@@ -915,8 +958,12 @@ export class EngineClient {
       };
       if (options.body !== undefined) request.body = options.body;
       response = await this.fetchImpl(`${this.baseUrl}${path}`, request);
-      const text = await response.text();
-      return { response, payload: this.parse(response, text, options.acceptedStatuses ?? []) };
+      const text = await this.readResponseText(response, options.maxResponseBytes);
+      return {
+        response,
+        payload: this.parse(response, text, options.acceptedStatuses ?? []),
+        rawText: text,
+      };
     } catch (error) {
       if (error instanceof EngineClientError) throw error;
       const timedOut = controller.signal.aborted || (error instanceof Error && error.name === "AbortError");
@@ -929,6 +976,36 @@ export class EngineClient {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private async readResponseText(response: Response, maxBytes?: number): Promise<string> {
+    if (maxBytes === undefined) return response.text();
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+      throw new RangeError("maxResponseBytes must be a positive safe integer");
+    }
+    if (response.body === null) return "";
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        bytes += chunk.value.byteLength;
+        if (bytes > maxBytes) {
+          await reader.cancel("bounded engine response exceeded");
+          throw new EngineClientError(
+            "engine Stage 8 evidence exceeds the bounded response size",
+            response.status,
+            false,
+          );
+        }
+        chunks.push(Buffer.from(chunk.value));
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    return Buffer.concat(chunks, bytes).toString("utf8");
   }
 
   private async pricingMutation<Identity>(
