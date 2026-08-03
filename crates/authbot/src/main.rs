@@ -13,6 +13,7 @@ mod gemini_oauth;
 mod gemini_transport;
 mod iproyal;
 mod kimi_oauth;
+mod kimi_roster;
 mod setup_token;
 mod tg;
 
