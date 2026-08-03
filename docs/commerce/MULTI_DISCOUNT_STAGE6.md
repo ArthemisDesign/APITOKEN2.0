@@ -123,7 +123,15 @@ Apply идёт bounded batches. Каждая account-local `SERIALIZABLE` transa
 4. вычисляет точный неиспользованный welcome остаток;
 5. относит residual balance/reserved/spent к paid;
 6. проверяет суммы и overflow;
-7. атомарно пишет lots и funding generation.
+7. если active legacy reservations имеют единственную доказанную paid-only attribution, атомарно
+   создаёт для них immutable funding snapshots/allocations на paid lot; старый pricing snapshot
+   остаётся неизменным;
+8. атомарно пишет lots, funding generation и head.
+
+Paid-only adoption разрешена только когда active holds исчерпывают точный account reserved
+aggregate, ни один welcome lot не владеет reserve, а ledger-replay без legacy buckets дополнительно
+доказывает полностью исчерпанный welcome остаток. Любая живая bonus/paid неоднозначность остаётся
+`active_legacy_reservation`; post-reserve attribution не угадывается.
 
 Другие аккаунты не блокируются. Запрос текущего аккаунта может кратко ждать его money lock, после
 чего целиком выполняется по состоянию до или после normalization.
@@ -157,10 +165,12 @@ already-finalized или изменившийся Stage 5 run отклоняет
    GET, и POST получает только exact digests из этого ответа;
 6. делает финальный полный inventory scan и повторную coverage-проверку перед confirmation.
 
-`active_legacy_reservation` возвращает только свой account в `retry`. Остальные typed blockers
-сохраняются как `blocker` с exact `source`, `source_state_digest` и `blockers[]`; `conflict` также
-остаётся fail closed. `stale` перепланируется. `normalized`, `stored` и `unchanged` фиксируются как
-`ready`. Expired leases не теряют plan identity, а bounded retry не откатывает уже ready accounts.
+`active_legacy_reservation` возвращает только свой account в `retry`, когда funding attribution
+остаётся неоднозначной. Доказанный paid-only active reserve нормализуется без ожидания idle gap и
+без остановки новых запросов. Остальные typed blockers сохраняются как `blocker` с exact `source`,
+`source_state_digest` и `blockers[]`; `conflict` также остаётся fail closed. `stale`
+перепланируется. `normalized`, `stored` и `unchanged` фиксируются как `ready`. Expired leases не
+теряют plan identity, а bounded retry не откатывает уже ready accounts.
 
 Parent становится `confirmed` только при одновременном выполнении всех условий:
 
@@ -221,6 +231,12 @@ dual-compatible runtime, продолжают естественно завер�
 reserve-time identity. Новые запросы продолжают поступать и уже несут v2 snapshot; оба формата
 пересекают Stage 9 без пересчёта цены или funding allocation.
 
+Hot account также не обязан случайно попасть в idle gap: когда welcome полностью исчерпан или
+другая exact authority уже доказывает paid-only reserve, Stage 6 под общим account lock добавляет
+только funding identity к незавершённым legacy reservations. Их immutable pricing identity и
+клиентский stream не меняются. Если хотя бы часть reserve может принадлежать welcome, account ждёт
+естественного terminal state и остаётся fail-closed.
+
 ## Blockers
 
 Ручной финансовой ревизии нет, но автоматическая арифметика остаётся fail closed. Stage 6 не может
@@ -231,7 +247,8 @@ reserve-time identity. Новые запросы продолжают посту
   retained `signup-bonus:*` того же subject;
 - negative/overflow, нарушающем money invariants;
 - конфликтующем idempotency reference;
-- незавершённой legacy reservation, для которой нет честного snapshot;
+- незавершённой legacy reservation, для которой нет честной paid-only attribution и поэтому нельзя
+  атомарно создать funding snapshot без угадывания;
 - изменении account state после построения expected digest.
 
 Такой blocker исправляется кодом или повторным планом на свежем state; production traffic ради него

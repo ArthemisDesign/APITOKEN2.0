@@ -344,6 +344,131 @@ pub(crate) fn validate_terminal_reservation_funding_v2(
     )
 }
 
+/// Attach an exact paid-only funding identity to legacy-format reservations while the account is
+/// normalized under the shared funding lock.
+///
+/// This is deliberately narrower than a general reservation backfill: every active reservation
+/// must still lack a funding snapshot, their holds must equal the complete account reserved
+/// aggregate, and the newly materialized paid lot must carry that exact reserved amount. Callers
+/// may use it only after proving that no welcome lot owns any of the active reserve. The existing
+/// pricing snapshot remains untouched and continues to price settlement.
+pub(crate) fn adopt_paid_only_legacy_reservations_v2(
+    tx: &mut Transaction<'_>,
+    account_id: &str,
+    generation: i64,
+    head_version: i64,
+    paid_lot_id: &str,
+    paid_lot_version: i64,
+    expected_reserved_nano: i64,
+    timestamp: i64,
+) -> Result<()> {
+    if account_id.trim().is_empty()
+        || generation <= 0
+        || head_version <= 0
+        || paid_lot_id.trim().is_empty()
+        || paid_lot_version < 0
+        || expected_reserved_nano < 0
+        || timestamp <= 0
+    {
+        bail!("paid-only legacy reservation adoption parameters are invalid");
+    }
+    let paid_reserved: i64 = tx
+        .query_opt(
+            "SELECT reserved_nano
+               FROM funding_lots_v2
+              WHERE lot_id=$1 AND account_id=$2 AND funding_generation=$3
+                AND source_type='paid' AND version=$4",
+            &[&paid_lot_id, &account_id, &generation, &paid_lot_version],
+        )?
+        .context("paid-only legacy reservation adoption lacks its exact paid lot")?
+        .get(0);
+    if paid_reserved != expected_reserved_nano {
+        bail!("paid-only legacy reservation adoption does not match the paid lot reserve");
+    }
+
+    let reservations: Vec<(String, i64, bool)> = tx
+        .query(
+            "SELECT reservation.request_id,reservation.hold_nano,
+                    snapshot.request_id IS NOT NULL
+               FROM reservations reservation
+               LEFT JOIN funding_reservation_snapshots_v2 snapshot
+                 ON snapshot.request_id=reservation.request_id
+              WHERE reservation.account_id=$1
+                AND reservation.state IN ('reserved','delivering','settlement_pending')
+              ORDER BY reservation.request_id
+              FOR SHARE OF reservation",
+            &[&account_id],
+        )?
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2)))
+        .collect();
+    if reservations
+        .iter()
+        .any(|(_, _, has_snapshot)| *has_snapshot)
+    {
+        bail!("paid-only legacy reservation adoption found a mixed snapshot state");
+    }
+    let reserved_total = reservations.iter().try_fold(0_i64, |total, (_, hold, _)| {
+        total
+            .checked_add(*hold)
+            .context("paid-only legacy reservation adoption reserve overflow")
+    })?;
+    if reserved_total != expected_reserved_nano {
+        bail!("paid-only legacy reservation adoption does not cover the account reserve");
+    }
+
+    for (request_id, hold_nano, _) in reservations {
+        let allocations = [ReservationAllocationV2 {
+            allocation_order: 1,
+            lot_id: paid_lot_id.to_owned(),
+            lot_source_type: "paid".to_owned(),
+            lot_version: paid_lot_version,
+            reserved_nano: hold_nano,
+            charged_nano: None,
+            released_nano: None,
+        }];
+        let snapshot_digest = funding_snapshot_digest_v2(
+            &request_id,
+            account_id,
+            generation,
+            head_version,
+            hold_nano,
+            &allocations,
+        );
+        tx.execute(
+            "INSERT INTO funding_reservation_snapshots_v2(
+                 request_id,account_id,funding_schema_version,funding_generation,
+                 funding_head_version,hold_nano,snapshot_digest,created_ts)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+            &[
+                &request_id,
+                &account_id,
+                &FUNDING_SCHEMA_VERSION_V2,
+                &generation,
+                &head_version,
+                &hold_nano,
+                &snapshot_digest,
+                &timestamp,
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO funding_reservation_allocations_v2(
+                 request_id,account_id,funding_generation,allocation_order,lot_id,
+                 lot_source_type,lot_version,reserved_nano)
+             VALUES($1,$2,$3,1,$4,'paid',$5,$6)",
+            &[
+                &request_id,
+                &account_id,
+                &generation,
+                &paid_lot_id,
+                &paid_lot_version,
+                &hold_nano,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) fn reserve_funding_v2(
     tx: &mut Transaction<'_>,
     head: &ActiveFundingHeadV2,

@@ -265,12 +265,16 @@ side effect. `serve` may only perform the read-only schema verification before c
 - **Online account-local funding normalization:** `funding_normalization_v2` строит read-only
   content-addressed `sha256:v2` plan и применяет только exact source/target identity в одной
   `SERIALIZABLE` PostgreSQL transaction под тем же funding-account advisory lock. Legacy active
-  reservation блокирует только свой account; stale state перепланируется, exact replay возвращает
-  `unchanged`. Exact старый welcome bucket переносится в `welcome_bonus`, иначе остаток
+  reservation с неоднозначной bonus/paid attribution блокирует только свой account. Если exact
+  buckets или ledger доказывают, что весь active reserve принадлежит `paid` (включая полностью
+  исчерпанный welcome), apply в той же transaction создаёт generation/lots/head и immutable
+  paid-only funding snapshots/allocations для каждого такого запроса; pricing snapshot не
+  переписывается. Stale state перепланируется, exact replay возвращает `unchanged`. Exact старый
+  welcome bucket переносится в `welcome_bonus`, иначе остаток
   восстанавливается по `signup-bonus:*` и immutable balance gaps; exact same-subject/full-amount
   `bonus-revoke:*` удаляет entitlement и делает весь current aggregate `paid`, а partial/mismatched/
   duplicate/mixed evidence блокируется. Весь прочий residual — `paid`, включая обязательный zero
-  paid anchor. Apply атомарно создаёт generation/lots/head и не двигает pricing release. Real-PG gate:
+  paid anchor. Apply не двигает pricing release. Real-PG gate:
   `funding_normalization_v2::tests::postgres_online_funding_normalization_v2_matrix`.
 - **Stage 9 runtime-claim fence:** migration `0025` expand-only добавляет nullable
   `engine_instances.pricing_release_claim_epoch`. Пока global release head отсутствует, старый

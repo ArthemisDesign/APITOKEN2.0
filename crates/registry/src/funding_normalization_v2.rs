@@ -2,8 +2,9 @@
 //!
 //! Planning is read-only and content-addressed. Apply serializes with every PostgreSQL money
 //! writer through the same account advisory lock, rebuilds the plan, and inserts the generation,
-//! lots, and head in one transaction. A legacy in-flight reservation blocks only its own account;
-//! no global drain or maintenance window is part of this contract.
+//! lots, and head in one transaction. An ambiguous legacy in-flight reservation blocks only its
+//! own account; a proven paid-only reserve is adopted atomically into the new generation. No
+//! global drain or maintenance window is part of this contract.
 
 use anyhow::{bail, Context, Result};
 use postgres::{Client, GenericClient, IsolationLevel};
@@ -600,8 +601,14 @@ fn target_from_ledger(state: &AccountState) -> Result<Vec<FundingNormalizationLo
     }
 
     if let Some(previous_after) = previous_after {
-        let final_gap = state
+        // Active legacy holds already left the available balance but have not become spend. Add
+        // them back only for historical spend reconstruction; the materialized lot balances below
+        // still use the exact post-reserve account aggregate.
+        let reconstruction_balance = state
             .balance_nano
+            .checked_add(state.reserved_nano)
+            .context("funding reconstruction balance overflow")?;
+        let final_gap = reconstruction_balance
             .checked_sub(previous_after)
             .context("final ledger balance gap overflow")?;
         if final_gap < 0 {
@@ -659,6 +666,56 @@ fn target_from_ledger(state: &AccountState) -> Result<Vec<FundingNormalizationLo
         paid_spent,
     ));
     Ok(lots)
+}
+
+fn prepare_paid_only_legacy_reserve(
+    state: &AccountState,
+    source: FundingNormalizationSourceV2,
+    lots: &mut [FundingNormalizationLotV2],
+) -> Result<bool> {
+    let legacy_count = state
+        .active_reservations
+        .iter()
+        .filter(|reservation| !reservation.has_funding_snapshot_v2)
+        .count();
+    if legacy_count == 0 {
+        return Ok(true);
+    }
+    if legacy_count != state.active_reservations.len() {
+        return Ok(false);
+    }
+    let Some(paid_index) = lots.iter().position(|lot| lot.source_type == "paid") else {
+        return Ok(false);
+    };
+    if lots
+        .iter()
+        .enumerate()
+        .any(|(index, lot)| index != paid_index && lot.reserved_nano != 0)
+    {
+        return Ok(false);
+    }
+    let lot_reserved = lots.iter().try_fold(0_i64, |total, lot| {
+        total
+            .checked_add(lot.reserved_nano)
+            .context("normalization lot reserve overflow")
+    })?;
+    if lot_reserved == state.reserved_nano {
+        return Ok(true);
+    }
+    // Ledger replay has no historical per-reservation allocation. It becomes exact only when all
+    // welcome entitlement is already exhausted, making the complete active reserve necessarily
+    // paid. Legacy buckets and revoked/aggregate-paid plans already carry their exact reserve and
+    // therefore never enter this branch.
+    if source != FundingNormalizationSourceV2::LedgerReplay
+        || lot_reserved != 0
+        || lots.iter().any(|lot| {
+            lot.source_type == "welcome_bonus" && (lot.balance_nano != 0 || lot.reserved_nano != 0)
+        })
+    {
+        return Ok(false);
+    }
+    lots[paid_index].reserved_nano = state.reserved_nano;
+    Ok(true)
 }
 
 fn load_account_state<C: GenericClient>(
@@ -916,23 +973,11 @@ fn build_plan<C: GenericClient>(
             "account has a funding v2 generation without its active head",
         ));
     }
-    if state
+    let active_legacy_reservations = state
         .active_reservations
         .iter()
-        .any(|reservation| !reservation.has_funding_snapshot_v2)
-    {
-        blockers.push(blocker(
-            FundingNormalizationBlockerCodeV2::ActiveLegacyReservation,
-            format!(
-                "{} active legacy reservation(s) must terminalize for this account",
-                state
-                    .active_reservations
-                    .iter()
-                    .filter(|reservation| !reservation.has_funding_snapshot_v2)
-                    .count()
-            ),
-        ));
-    }
+        .filter(|reservation| !reservation.has_funding_snapshot_v2)
+        .count();
     let active_reserved_nano =
         state
             .active_reservations
@@ -1006,6 +1051,19 @@ fn build_plan<C: GenericClient>(
                 };
                 blockers.push(blocker(code, message));
             }
+        }
+    }
+    if active_legacy_reservations != 0 {
+        let adoptable =
+            blockers.is_empty() && prepare_paid_only_legacy_reserve(&state, source, &mut lots)?;
+        if !adoptable {
+            blockers.push(blocker(
+                FundingNormalizationBlockerCodeV2::ActiveLegacyReservation,
+                format!(
+                    "{active_legacy_reservations} active legacy reservation(s) require ambiguous funding attribution"
+                ),
+            ));
+            lots.clear();
         }
     }
 
@@ -1161,6 +1219,41 @@ pub fn postgres_apply_funding_normalization_v2(
             &timestamp,
         ],
     )?;
+    if plan.reserved_nano != 0
+        || transaction
+            .query_one(
+                "SELECT EXISTS(
+                     SELECT 1 FROM reservations
+                      WHERE account_id=$1
+                        AND state IN ('reserved','delivering','settlement_pending'))",
+                &[&account_id],
+            )?
+            .get::<_, bool>(0)
+    {
+        let paid_lot = plan
+            .lots
+            .iter()
+            .find(|lot| lot.source_type == "paid")
+            .context("ready normalization lacks its paid anchor")?;
+        if plan
+            .lots
+            .iter()
+            .any(|lot| lot.source_type != "paid" && lot.reserved_nano != 0)
+            || paid_lot.reserved_nano != plan.reserved_nano
+        {
+            bail!("ready normalization cannot adopt an ambiguous active reserve");
+        }
+        crate::funding_v2::adopt_paid_only_legacy_reservations_v2(
+            &mut transaction,
+            account_id,
+            INITIAL_FUNDING_GENERATION_V2,
+            INITIAL_FUNDING_HEAD_VERSION_V2,
+            &paid_lot.lot_id,
+            paid_lot.version,
+            plan.reserved_nano,
+            timestamp,
+        )?;
+    }
     transaction.commit()?;
 
     let stored = postgres_funding_normalization_plan_v2(client, account_id)?
@@ -1401,6 +1494,137 @@ mod tests {
             FundingNormalizationApplyStatusV2::Stored
         );
 
+        // A hot account whose welcome entitlement is already exhausted has one exact funding
+        // interpretation: every active legacy hold is paid. Normalize and attach those snapshots
+        // in the same transaction, then prove normal settlement consumes the adopted allocation.
+        pg.account_create("normalize-hot-paid", None, 10_000)
+            .unwrap();
+        pg.account_topup("normalize-hot-paid", 4, Some("signup-bonus:hot-paid"))
+            .unwrap();
+        pg.account_topup("normalize-hot-paid", 20, Some("platega:hot-paid"))
+            .unwrap();
+        pg.client
+            .batch_execute(
+                "UPDATE accounts SET balance_nano=20,spent_nano=4
+                   WHERE id='normalize-hot-paid';
+                 INSERT INTO ledger(account_id,kind,amount_nano,balance_after_nano,ts)
+                 VALUES('normalize-hot-paid','charge',4,20,10);",
+            )
+            .unwrap();
+        pg.key_issue("normalize-hot-paid-key", "normalize-hot-paid", None)
+            .unwrap();
+        pg.client
+            .batch_execute(
+                "UPDATE accounts SET balance_nano=15,reserved_nano=5
+                   WHERE id='normalize-hot-paid';
+                 UPDATE api_keys SET reserved_nano=5
+                   WHERE key='normalize-hot-paid-key';
+                 INSERT INTO reservations(
+                     request_id,account_id,key,hold_nano,balance_after_reserve_nano,
+                     owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts,
+                     group_id,attempt)
+                 VALUES('normalize-hot-paid-request','normalize-hot-paid',
+                        'normalize-hot-paid-key',5,15,'normalizer-test',1,9999999999,
+                        'delivering',20,20,NULL,1);",
+            )
+            .unwrap();
+        let hot_paid = pg
+            .funding_normalization_plan_v2("normalize-hot-paid")
+            .unwrap()
+            .unwrap();
+        assert_eq!(hot_paid.status, FundingNormalizationPlanStatusV2::Ready);
+        assert_eq!(
+            hot_paid
+                .lots
+                .iter()
+                .map(|lot| format!(
+                    "{}:{}:{}:{}",
+                    lot.source_type, lot.balance_nano, lot.reserved_nano, lot.spent_nano
+                ))
+                .collect::<Vec<_>>(),
+            vec!["welcome_bonus:0:0:4", "paid:15:5:0"]
+        );
+        let hot_paid_result = pg
+            .apply_funding_normalization_v2(
+                "normalize-hot-paid",
+                &FundingNormalizationApplyRequestV2 {
+                    expected_source_state_digest: hot_paid.source_state_digest,
+                    expected_normalization_digest: hot_paid.normalization_digest.unwrap(),
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            hot_paid_result.status,
+            FundingNormalizationApplyStatusV2::Stored
+        );
+        pg.settle_request("normalize-hot-paid-request", 3, None, None)
+            .unwrap();
+        let hot_paid_settlement: (i64, i64, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT account.reserved_nano,generation.reserved_nano,
+                            allocation.amount_nano
+                       FROM accounts account
+                       JOIN account_funding_generations_v2 generation
+                         ON generation.account_id=account.id AND generation.generation=1
+                       JOIN ledger ON ledger.account_id=account.id
+                         AND ledger.request_id='normalize-hot-paid-request'
+                       JOIN funding_ledger_allocations_v2 allocation
+                         ON allocation.ledger_id=ledger.id
+                      WHERE account.id='normalize-hot-paid'
+                        AND allocation.lot_source_type='paid'",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2))
+        };
+        assert_eq!(hot_paid_settlement, (0, 0, 3));
+
+        // When welcome money is still live, the legacy request does not prove whether its hold
+        // belongs to bonus or paid. That account remains fail-closed until the request terminalizes.
+        pg.account_create("normalize-hot-ambiguous", None, 10_000)
+            .unwrap();
+        pg.account_topup(
+            "normalize-hot-ambiguous",
+            4,
+            Some("signup-bonus:hot-ambiguous"),
+        )
+        .unwrap();
+        pg.key_issue(
+            "normalize-hot-ambiguous-key",
+            "normalize-hot-ambiguous",
+            None,
+        )
+        .unwrap();
+        pg.client
+            .batch_execute(
+                "UPDATE accounts SET balance_nano=3,reserved_nano=1
+                   WHERE id='normalize-hot-ambiguous';
+                 UPDATE api_keys SET reserved_nano=1
+                   WHERE key='normalize-hot-ambiguous-key';
+                 INSERT INTO reservations(
+                     request_id,account_id,key,hold_nano,balance_after_reserve_nano,
+                     owner_instance,owner_epoch,lease_until,state,created_ts,updated_ts,
+                     group_id,attempt)
+                 VALUES('normalize-hot-ambiguous-request','normalize-hot-ambiguous',
+                        'normalize-hot-ambiguous-key',1,3,'normalizer-test',1,9999999999,
+                        'delivering',20,20,NULL,1);",
+            )
+            .unwrap();
+        let hot_ambiguous = pg
+            .funding_normalization_plan_v2("normalize-hot-ambiguous")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            hot_ambiguous.status,
+            FundingNormalizationPlanStatusV2::Blocked
+        );
+        assert!(hot_ambiguous.blockers.iter().any(|blocker| {
+            blocker.code == FundingNormalizationBlockerCodeV2::ActiveLegacyReservation
+        }));
+
         // The charge row is removed to model normal ledger retention. The next immutable top-up
         // balance still makes the post-welcome spend gap exact.
         pg.account_create("normalize-ledger", None, 10_000).unwrap();
@@ -1447,23 +1671,9 @@ mod tests {
             )
             .unwrap();
 
-        let blocked = pg
-            .funding_normalization_plan_v2("normalize-ledger")
-            .unwrap()
-            .unwrap();
-        assert_eq!(blocked.status, FundingNormalizationPlanStatusV2::Blocked);
-        assert!(blocked.blockers.iter().any(|blocker| {
-            blocker.code == FundingNormalizationBlockerCodeV2::ActiveLegacyReservation
-        }));
-        pg.client
-            .execute(
-                "UPDATE reservations
-                    SET state='canceled',actual_nano=0,settled_ts=21,updated_ts=21
-                  WHERE request_id='normalize-legacy-inflight'",
-                &[],
-            )
-            .unwrap();
-
+        // This legacy reservation has a zero hold after the retained ledger proves that welcome
+        // funding is exhausted. Normalization can therefore attach the mandatory paid anchor
+        // atomically instead of waiting for an idle gap on a hot account.
         let stale_plan = pg
             .funding_normalization_plan_v2("normalize-ledger")
             .unwrap()
@@ -1509,6 +1719,22 @@ mod tests {
             .unwrap();
         assert_eq!(stored.status, FundingNormalizationApplyStatusV2::Stored);
         assert_eq!(stored.normalization.funding_generation, Some(1));
+        let adopted: (i64, i64, String, i64) = {
+            let row = pg
+                .client
+                .query_one(
+                    "SELECT snapshot.hold_nano,allocation.reserved_nano,
+                            allocation.lot_source_type,allocation.allocation_order
+                       FROM funding_reservation_snapshots_v2 snapshot
+                       JOIN funding_reservation_allocations_v2 allocation
+                         ON allocation.request_id=snapshot.request_id
+                      WHERE snapshot.request_id='normalize-legacy-inflight'",
+                    &[],
+                )
+                .unwrap();
+            (row.get(0), row.get(1), row.get(2), row.get(3))
+        };
+        assert_eq!(adopted, (0, 0, "paid".to_owned(), 1));
 
         // A writer immediately following normalization must reread the new head and update both
         // the legacy aggregate and funding-v2 generation in the same transaction.

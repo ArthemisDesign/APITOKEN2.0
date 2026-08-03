@@ -279,7 +279,10 @@ the target contract.
 `welcome_track_bonus`; target writers создают provider-independent `welcome_bonus`, доступный любой
 B2C-модели. `paid` означает durable paid funding. Online Stage 6 классифицирует exact welcome
 остаток, а весь прочий legacy residual — paid по утверждённому контракту; ручной reviewer artifact
-не используется.
+не используется. Active legacy reservation не требует idle gap, если exact source state доказывает
+полностью paid reserve: normalization transaction одновременно создаёт generation/head и её
+immutable paid-only funding snapshot, не меняя сохранённую pricing identity. Неоднозначный живой
+welcome reserve остаётся typed blocker.
 
 Новая ledger row сохраняет expand-совместимые top-level `request_id`, `provider` и `official_nano`.
 `attribution` равен `null` для исторической строки без `attribution_schema_version`; иначе он
