@@ -47,6 +47,16 @@ transport/pool, durable calibration, server wiring, observability, live runner. 
 waiting to be asked for the next link. Finishing one link and handing back is the failure mode this
 section exists to prevent.
 
+**Keep that chain on disk, not in context.** A long onboarding outlives any single context window,
+and a plan that exists only in conversation is lost the moment the window resets — which is the
+mechanical reason agents stop mid-chain and hand back a half-provider. Maintain
+`research/<PROVIDER>_PLANE_PROGRESS.md` as a resumable ledger and read it FIRST after any reset,
+before re-deriving anything from memory. It must carry: the terminal state, a done table where every
+row cites the SHA that landed it, the open seams stated plainly, exactly one concrete next action,
+the remaining queue, and what is blocked on a human. Update it in the same commit as the step it
+records — a separate progress commit is already stale when written, and an unsourced "done" row is
+not verifiable.
+
 **This does not mean one giant merge.** Schema and dependent code must never travel together: the
 migration lands alone and its `deploy/migration` plus `deploy/watchdog` must be GREEN before
 anything reads or writes those tables. Producer-first ordering and small reviewable commits are what

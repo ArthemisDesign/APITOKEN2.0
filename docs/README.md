@@ -80,4 +80,5 @@ context'ов. Правила размещения и обновления — в
 - `crates/<name>/CLAUDE.md` — локальные границы крейтов.
 - `packages/db/MIGRATIONS.md` — правила миграций коммерции.
 - `deploy/README.md`, `deploy/RELEASES.md` — контроллер доставки и релизы.
-- `research/` — исследования и журналы (не инструкции).
+- `research/` — исследования и журналы (не инструкции), включая resumable-журналы прогресса
+  подключения провайдеров (`research/<PROVIDER>_PLANE_PROGRESS.md`).
