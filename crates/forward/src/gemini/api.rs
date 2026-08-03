@@ -904,6 +904,10 @@ struct AudioUsageHint {
 
 fn is_audio_mime_type(mime_type: &str) -> bool {
     mime_type
+        .split(';')
+        .next()
+        .unwrap_or(mime_type)
+        .trim()
         .get(..6)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("audio/"))
 }
@@ -1010,6 +1014,33 @@ fn exact_pcm_wav_audio_tokens(data: &str) -> Result<u64, ApiError> {
         ));
     }
     Ok(token_numerator / sample_rate)
+}
+
+fn content_has_inline_audio_data(content: &Value) -> bool {
+    let contents = match content {
+        Value::Array(contents) => contents.as_slice(),
+        content => std::slice::from_ref(content),
+    };
+    contents
+        .iter()
+        .flat_map(|content| {
+            content
+                .get("parts")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|part| part.get("inlineData"))
+        .filter_map(|inline| inline.get("mimeType"))
+        .filter_map(Value::as_str)
+        .any(is_audio_mime_type)
+}
+
+fn has_inline_audio_data(body: &Value) -> bool {
+    ["contents", "systemInstruction"]
+        .into_iter()
+        .filter_map(|field| body.get(field))
+        .any(content_has_inline_audio_data)
 }
 
 fn validate_image_generation_request(body: &Value, model: &GeminiModel) -> Result<(), ApiError> {
@@ -1195,7 +1226,15 @@ fn validate_image_generation_request(body: &Value, model: &GeminiModel) -> Resul
     Ok(())
 }
 
-fn validate_generation_request(body: &Value) -> Result<(), ApiError> {
+fn validate_generation_request(body: &Value, model: &GeminiModel) -> Result<(), ApiError> {
+    if model.id != "gemini-3-flash-preview" && has_inline_audio_data(body) {
+        // Current published subscription routes collapse audio into generic prompt tokens and
+        // omit promptTokensDetails[AUDIO]. Only the dormant Flash Preview route has a bounded
+        // exact PCM WAV fallback; every other model must reject audio before provider dispatch.
+        return Err(ApiError::invalid(
+            "Audio input is not available through this subscription gateway.",
+        ));
+    }
     if body.get("serviceTier").is_some() {
         // Priority/flex tiers have distinct provider admission and billing semantics. The private
         // subscription surface cannot prove or settle either, so silently degrading to standard
@@ -1262,7 +1301,7 @@ fn validate_native_request(
     model: &GeminiModel,
 ) -> Result<(), ApiError> {
     if operation != Operation::CountTokens {
-        validate_generation_request(body)?;
+        validate_generation_request(body, model)?;
         return if model.is_image_generation() {
             validate_image_generation_request(body, model)
         } else {
@@ -1280,7 +1319,7 @@ fn validate_native_request(
     }
     match nested {
         Some(request) if request.is_object() => {
-            validate_generation_request(request)?;
+            validate_generation_request(request, model)?;
             if model.is_image_generation() {
                 validate_image_generation_request(request, model)
             } else {
@@ -1291,7 +1330,7 @@ fn validate_native_request(
             "The generateContentRequest field must be a JSON object.",
         )),
         None => {
-            validate_generation_request(body)?;
+            validate_generation_request(body, model)?;
             if model.is_image_generation() {
                 validate_image_generation_request(body, model)
             } else {
@@ -3704,7 +3743,11 @@ mod tests {
         assert!(tool.get("googleSearch").is_some());
         assert!(tool.get("google_search").is_none());
         // The normalized tool must pass validation just like its camelCase form.
-        assert!(validate_generation_request(&value).is_ok());
+        assert!(validate_generation_request(
+            &value,
+            &catalog_model("gemini-2.5-flash-lite")
+        )
+        .is_ok());
     }
 
     #[test]
@@ -4599,6 +4642,41 @@ mod tests {
                 crate::proxy::EXECUTION_STATE_NOT_STARTED
             );
         }
+    }
+
+    #[tokio::test]
+    async fn inline_audio_is_rejected_before_provider_dispatch() {
+        let server = start_mock(MockState::default()).await;
+        let fixture = gateway_fixture(&server.upstream, &[None], 1);
+        let response = invoke(
+            app_state(fixture.gateway.clone(), None),
+            json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [{
+                        "inlineData": {
+                            "mimeType": "audio/wav",
+                            "data": "UklGRg=="
+                        }
+                    }]
+                }]
+            }),
+            false,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response
+                .headers()
+                .get(crate::proxy::EXECUTION_STATE_HEADER)
+                .unwrap(),
+            crate::proxy::EXECUTION_STATE_NOT_STARTED
+        );
+        assert!(
+            server.state.seen().is_empty(),
+            "inline audio must fail before any provider request"
+        );
     }
 
     #[tokio::test]
@@ -6634,13 +6712,14 @@ mod tests {
 
     #[test]
     fn independently_billed_or_unknown_server_tools_fail_closed() {
+        let model = catalog_model("gemini-2.5-flash-lite");
         for body in [
             json!({"tools": [{"googleMaps": {}}]}),
             json!({"tools": [{"fileSearch": {"fileSearchStoreNames": ["stores/a"]}}]}),
             json!({"tools": [{"futurePaidTool": {}}]}),
             json!({"cachedContent": "cachedContents/customer-selected-resource"}),
         ] {
-            assert!(validate_generation_request(&body).is_err());
+            assert!(validate_generation_request(&body, &model).is_err());
         }
         for body in [
             json!({"tools": [{"googleSearch": {}}]}),
@@ -6648,8 +6727,68 @@ mod tests {
             json!({"tools": [{"codeExecution": {}}]}),
             json!({"tools": [{"functionDeclarations": []}]}),
         ] {
-            validate_generation_request(&body).unwrap();
+            validate_generation_request(&body, &model).unwrap();
         }
+    }
+
+    #[test]
+    fn audio_input_fails_closed_until_usage_reports_authoritative_modality_tokens() {
+        let model = catalog_model("gemini-2.5-flash-lite");
+        let audio = json!({
+            "contents": [{
+                "parts": [{
+                    "inlineData": {
+                        "mimeType": "audio/wav; codecs=pcm",
+                        "data": "UklGRg=="
+                    }
+                }]
+            }]
+        });
+        assert!(validate_native_request(Operation::Generate, &audio, &model).is_err());
+        assert!(validate_native_request(Operation::CountTokens, &audio, &model).is_err());
+        assert!(validate_native_request(
+            Operation::CountTokens,
+            &json!({"generateContentRequest": audio}),
+            &model,
+        )
+        .is_err());
+
+        let mut snake_case_audio = json!({
+            "contents": [{
+                "parts": [{
+                    "inline_data": {"mime_type": "Audio/MP3", "data": "SUQz"}
+                }]
+            }]
+        });
+        canonicalize_native_request(&mut snake_case_audio);
+        assert!(validate_native_request(Operation::Generate, &snake_case_audio, &model).is_err());
+
+        assert!(validate_native_request(
+            Operation::Generate,
+            &json!({
+                "systemInstruction": {
+                    "parts": [{
+                        "inlineData": {"mimeType": "audio/wav", "data": "UklGRg=="}
+                    }]
+                },
+                "contents": []
+            }),
+            &model,
+        )
+        .is_err());
+
+        validate_native_request(
+            Operation::Generate,
+            &json!({
+                "contents": [{
+                    "parts": [{
+                        "inlineData": {"mimeType": "image/png", "data": "iVBORw0KGgo="}
+                    }]
+                }]
+            }),
+            &model,
+        )
+        .expect("same-priced inline image input remains available");
     }
 
     #[test]

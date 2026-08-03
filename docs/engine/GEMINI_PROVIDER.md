@@ -427,7 +427,10 @@ For every request the runtime:
 - surfaces a mid-stream upstream error as a sanitized native error element rather than a clean
   truncation;
 - caps documented inline-media requests at 20 MiB and generated-image response bodies/pending
-  stream frames at 64 MiB;
+  stream frames at 64 MiB. Published models reject inline audio before both generation and
+  `countTokens`: their generic Antigravity prompt total cannot distinguish the higher official
+  audio-input rate. The dormant Flash Preview candidate is the only exception, and only its strict
+  integral-duration PCM WAV generation fallback may reconstruct a missing AUDIO row;
 - periodically calls Antigravity `v1internal:fetchAvailableModels`, keeps a sanitized per-model
   `remainingFraction`/`resetTime` catalogue, and cools only the exhausted model/profile pair until
   Google's reset time;

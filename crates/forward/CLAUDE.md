@@ -827,10 +827,14 @@ pricing threshold или family default не являются основание
    консервативный hold доступного баланса. Цена только из `metering::gemini`, ledger provider только
    `registry::PROVIDER_GOOGLE`. Search metered отдельно. Google Maps/File Search и неизвестные future
    server tools fail-closed до появления authoritative ledger dimensions; нельзя proxy-ить paid SKU
-   бесплатно. Image response с explicit `candidatesTokensDetails[IMAGE]` использует provider split;
+   бесплатно. На опубликованных моделях inline audio fail-closed до upstream и для generation, и
+   для `countTokens`: текущий Antigravity terminal usage сворачивает его в generic prompt tokens
+   без authoritative `promptTokensDetails[AUDIO]`, а общий результат бесплатного token counter не
+   позволяет честно восстановить более дорогой audio split. Image response с explicit
+   `candidatesTokensDetails[IMAGE]` использует provider split;
    если private Antigravity отдаёт только aggregate candidates, реально доставленный `inlineData`
    выделяет официальный fixed token SKU requested size, а остаток остаётся text/thinking. Refusal
-   без image не получает media charge. Аналогичный Flash Preview audio fallback не угадывает
+   без image не получает media charge. Dormant Flash Preview audio fallback не угадывает
    fractional duration, compressed/file audio или partial cache: такие запросы/usage отклоняются,
    а реконструированный exact AUDIO row попадает и в public usageMetadata, и в тот же Rust metering.
    Metered non-stream без authoritative usage не доставляется и refund-ится; stream после первого
