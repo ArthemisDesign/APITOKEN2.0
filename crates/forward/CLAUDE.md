@@ -738,9 +738,10 @@ pricing threshold или family default не являются основание
    `Client-Metadata`/`x-goog-api-client`; caller values вырезаются. Dormant route
    `gemini-3-flash-preview` использует тот же 2.2.1 UA, но без старых IDE
    `Client-Metadata`/`x-goog-api-client`: именно этот минимальный tuple дал owned generation 2xx на
-   private wire `gemini-3-flash`. Полный exact-SHA capability gate ещё не пройден, поэтому
-   production/public allowlist модель не содержит. Остальные модели и background quota/health
-   сохраняют полный live-проверенный tuple.
+   private wire `gemini-3-flash`. Exact-SHA gate 2026-08-03 прошёл thinking/SSE/cache на Pro+Ultra,
+   но остановился на audio generation без authoritative audio token class; free `countTokens` тоже
+   не дал modality breakdown. Поэтому publication withdrawn и production/public allowlist модель
+   не содержит. Остальные модели и background quota/health сохраняют полный live-проверенный tuple.
    Старые Gemini CLI credentials сохраняют прежний wire до миграции.
    OAuth userinfo использует отдельный global-fetch/Undici профиль того же SHA-pinned Node. Никакой
    approximate BoringSSL impersonation или ambient proxy/env.
@@ -784,7 +785,8 @@ pricing threshold или family default не являются основание
    3 Flash Preview отображает public `gemini-3-flash-preview` в live-проверенный private wire
    `gemini-3-flash`, а quota admission консервативно связывает обе наблюдаемые строки
    `gemini-3-flash`/`gemini-3-flash-agent` до точной атрибуции debit. Production allowlist не
-   публикует route до полного exact-SHA gate. 3.6 Flash выбирает
+   публикует route: exact-SHA gate уже дал blocking miss на audio token attribution; нужен новый
+   полный GREEN gate после новых upstream evidence. 3.6 Flash выбирает
    `gemini-3.6-flash-{low,medium,high}`, 3.1 Pro Preview —
    `gemini-3.1-pro-low`/`gemini-pro-agent`.
    Thinking level выбирается до admission; quota/cooling ключуются private bucket, а affinity,

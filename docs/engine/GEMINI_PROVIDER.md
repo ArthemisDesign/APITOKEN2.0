@@ -33,8 +33,9 @@ immutable generation 4 adds `gemini-3-flash-preview` without mutating generation
 gate on the old public wire failed with 404 and no usage, so generation 4 is a rejected dormant
 artifact: keep its digest for historical verification, but never materialize or activate a
 catalog/release on it. The later live-proven private-wire implementation remains dormant and does
-not rewrite that artifact; publication requires GREEN exact-SHA evidence and a later additive
-capability generation.
+not rewrite that artifact. Its 2026-08-03 exact-SHA gate subsequently failed on authoritative audio
+token attribution, so publication is withdrawn again; any future attempt requires new provider
+evidence, a fresh GREEN exact-SHA matrix and a later additive capability generation.
 The Stage 5 main catalog must opt in explicitly to a live-proven capability, while the
 contemporaneous OpenKeys catalog deliberately remains Anthropic/OpenAI until a separate reviewed
 1:1 OpenKeys generation enables Gemini.
@@ -493,8 +494,10 @@ Google AI Pro profile on 2026-07-31:
 `gemini-3.1-flash-image`, `gemini-3.6-flash`, `gemini-3.5-flash`,
 `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-2.5-flash`, and
 `gemini-2.5-flash-lite`. `gemini-3-flash-preview` remains deliberately unpublished: its 2026-08-02
-public-wire matrix returned 404, and the later working private route has only raw owned Ultra
-evidence rather than the required exact implementation SHA, full controls and claimed-plan matrix.
+public-wire matrix returned 404. The later private route passed thinking/SSE/cache on Pro and Ultra
+through the exact implementation SHA, but its successful audio turn omitted the authoritative audio
+token class while the free token counter omitted all modality details. That blocking accounting
+miss withdrew publication before the remaining controls.
 `gemini-2.5-pro` is also deliberately not published: it is absent from the
 official Antigravity reasoning-model table, and its residual quota bucket does not produce a
 working generation route. Private tier ids are never public model names, while
@@ -584,7 +587,7 @@ text-generation check. A quota row by itself is never admission evidence.
 
 | Public Developer API model | Private Antigravity wire id | Production evidence | Decision |
 |---|---|---|---|
-| `gemini-3-flash-preview` | dormant mapping → `gemini-3-flash`; quota admission joins `gemini-3-flash` + `gemini-3-flash-agent`; configured Antigravity origin, 2.2.1 UA, minimal headers | raw owned Ultra probe: generate 200 with real output, terminal usage and canonical echo; incremental SSE 200; default/low/high work. Exact implementation SHA, minimal/medium, tools/cache/audio/Search/long-context and broader plan coverage remain unproven | dormant pending full exact-SHA gate; absent from production defaults and public catalog |
+| `gemini-3-flash-preview` | dormant mapping → `gemini-3-flash`; quota admission joins `gemini-3-flash` + `gemini-3-flash-agent`; configured Antigravity origin, 2.2.1 UA, minimal headers | exact SHA on owned Pro+Ultra: minimal/low/medium/high, public identity/output/terminal usage, two-frame SSE and cache write/read passed. Pro audio generation returned real output but zero audio token class; free Pro+Ultra audio `countTokens` omitted modality details and disagreed with generation total. Tool/audio replay/Search were not dispatched after the blocking miss | withdrawn after failed exact-SHA gate; dormant mapping retained, absent from production defaults and public catalog |
 | `gemini-3.6-flash` | low → `gemini-3.6-flash-low`; medium/default → `gemini-3.6-flash-medium`; high → `gemini-3.6-flash-high` | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
 | `gemini-3.5-flash` | minimal → `gemini-3.5-flash-extra-low`; low/medium/high/default → `gemini-3.5-flash-low`, with the requested native thinking level preserved | default/minimal/low/medium/high: generate 200, incremental SSE 200, countTokens 200; default and `alt=json` JSON streams 200; canonical modelVersion and non-zero usage verified on Google AI Pro on 2026-07-31 | published |
 | `gemini-3.1-pro-preview` | low → `gemini-3.1-pro-low`; medium/high/default → `gemini-pro-agent` with the requested native thinking level preserved | default/low/medium/high: generate 200, incremental SSE 200, countTokens 200; canonical modelVersion and non-zero usage verified on 2026-07-31 | published |
@@ -669,12 +672,18 @@ Gemini 3 Flash Preview implementation evidence reviewed on 2026-08-02 and 2026-0
   `gemini-3-flash-agent` also served but echoed the weaker `gemini-default` alias identity;
 - the dormant gateway therefore maps public `gemini-3-flash-preview` to `gemini-3-flash`, rewrites
   native and SSE `modelVersion` back to the public id, and conservatively joins both observed quota
-  rows. This is not publication evidence: the raw probe covered one Ultra account and omitted
-  minimal/medium, tools, cache, audio, Search, long context and exact-SHA engine execution.
+  rows;
+- the 2026-08-03 exact-SHA Pro+Ultra gate passed all four thinking levels, incremental SSE and
+  cache write/read, then stopped on a successful audio response whose terminal usage exposed 55
+  generic prompt tokens but zero audio tokens. Free `countTokens` on the same body returned 4091
+  tokens and no modality details on either plan, so it cannot repair settlement. The model is
+  withdrawn from publication rather than guessing the official audio-rate split.
 
 The reproducible source/plan/rate/wire dossiers are
 [`research/GEMINI_3_FLASH_PREVIEW.md`](../../research/GEMINI_3_FLASH_PREVIEW.md) and
-[`research/GEMINI_3_FLASH_PRIVATE_ROUTE.md`](../../research/GEMINI_3_FLASH_PRIVATE_ROUTE.md).
+[`research/GEMINI_3_FLASH_PRIVATE_ROUTE.md`](../../research/GEMINI_3_FLASH_PRIVATE_ROUTE.md). The
+exact-SHA withdrawal record is
+[`research/GEMINI_3_FLASH_PRIVATE_ROUTE_LIVE_WITHDRAWAL.md`](../../research/GEMINI_3_FLASH_PRIVATE_ROUTE_LIVE_WITHDRAWAL.md).
 
 ## Failure and stream safety
 

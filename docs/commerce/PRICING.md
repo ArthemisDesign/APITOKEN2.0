@@ -50,10 +50,12 @@ fail closed; scalar fallback запрещён.
 `$0.05/M`, cached audio `$0.10/M`, output вместе с thinking `$3/M` и Search `$14/1000 queries`.
 Эта запись сохраняет официальный тариф как research/metering authority, но не делает модель
 продаваемой: controlled Google AI Pro generation вернул 404 без output/usage, поэтому модель снята
-из production allowlist, public catalog, router presets и сайта. Immutable capability generation 4
-с этим ID остаётся dormant/rejected и не должна активироваться. Будущая публикация возможна только
-через новую additive capability после полного live gate; в OpenKeys модель автоматически не
-появляется.
+из production allowlist, public catalog, router presets и сайта. Позднейший private wire прошёл
+exact-SHA thinking/SSE/cache на Pro и Ultra, но успешный audio turn не содержал authoritative audio
+token class, а `countTokens` не вернул modality breakdown. Поэтому публикация снова withdrawn:
+immutable capability generation 4 с этим ID остаётся dormant/rejected и не должна активироваться.
+Будущая публикация возможна только через новую additive capability после нового полного live gate;
+в OpenKeys модель автоматически не появляется.
 
 Policy versions immutable, content-addressed и доставляются catalog → switches → policy. Все
 аккаунты переключаются одним active release head, а не последовательным обновлением bindings.
