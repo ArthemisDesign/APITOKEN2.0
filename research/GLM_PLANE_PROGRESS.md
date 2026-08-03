@@ -28,13 +28,31 @@ backend-only (по образцу KIMI, `docs/engine/KIMI_PROVIDER.md` §0) до
 | Шаблон цепочки + pre-flight в ledger | этот файл | faf8c25a |
 | Полный research + capability manifest | `docs/engine/GLM_PROVIDER.md` | 2938d61e |
 | Metering: API rate card + credit schedule | `crates/metering/src/glm.rs` | 9cc4a955 |
-| Migration 0029 + registry observation types | `crates/registry/{migrations_pg/0029_glm_window_calibration.sql,src/glm_calibration.rs,src/pg.rs}` | _этот коммит_ |
+| Migration 0029 + registry observation types | `crates/registry/{migrations_pg/0029_glm_window_calibration.sql,src/glm_calibration.rs,src/pg.rs}` | 40b6d866 |
+| **Мёрж в master, deploy/watchdog GREEN** | master `e9810ef9c6e2a000edb8fac9ad8997d04c8dad9b` (trusted host validation GREEN) | e9810ef9 |
+| Credential crate | `crates/glm-credential` (+ корневой Cargo.toml/lock) | _этот коммит_ |
+
+## Рамка от владельца (2026-08-04)
+
+**Только backend, тестовый режим.** НИКАКИХ изменений сайта (`apps/web`), публичных
+docs/док-портала, фронта (`apps/admin`, `apps/openkeys`), каталога роутера и любых
+публичных поверхностей. Внутренние инженерные доки репо (манифест, CLAUDE.md крейтов,
+ledger) — рабочий журнал, не публикация. Совпадает с backend-only решением манифеста §0.
+
+## Инцидент и восстановление (2026-08-04)
+
+После мёржа `feat/glm-provider` в master LaunchAgent DELETE_WORKTREE снёс worktree как
+clean+merged (штатный критерий) вместе с локальной веткой. Восстановлено: worktree
+пересоздан на remote-ветке (== e9810ef9) и залочен (`git worktree lock`; снять lock
+перед финальным `agent-worktree.sh finish`). Estimator был построен в scratch-дереве
+`~/wt/glm-forward-calibration` (от master) и перенесён сюда; scratch-дерево убирается
+через `agent-worktree.sh finish`. Урок: после промежуточного мёржа держать на ветке
+новый коммит (или lock), чтобы reaper не считал дерево завершённым.
 
 ## Открытые швы
 
-- Нет. Authority запечатана expand-only миграцией 0029 (schema 28→29), стоит рядом с 0019
-  и 0027, ничего чужого не трогает. Зависимый код (credential/estimator/runtime) мёржится
-  только после зелёных deploy/migration + deploy/watchdog на SHA миграции.
+- Нет. Authority и metering в master с зелёным watchdog; credential (18 тестов) и
+  estimator (27 тестов) — код в этом дереве, гейты зелёные.
 
 Ключевые факты research (дата ревью 2026-08-03): credits-система с 2026-07-30
 (Lite 2000/5ч+10000/нед, Pro 12000/60000, Max 28000/140000); формула кредитов
@@ -49,9 +67,10 @@ reroute glm-5.1/5→5.2 (billing по served); rate card 5.2=$1.40/0.26/4.40,
 
 ## Следующее действие (ровно одно)
 
-Мёрж metering + migration через `git push -u origin HEAD && ./deploy/agent-merge.sh`;
-дождаться зелёного deploy/watchdog (в т.ч. deploy/migration на SHA миграции). Затем
-credential crate `crates/glm-credential` по образцу `crates/kimi-credential`.
+Коммит credential (это действие), затем коммит estimator
+(`crates/forward/src/glm_calibration.rs`, 27 тестов) и Auth Bot:
+`crates/authbot/src/glm_key.rs` (quota-probe + минимальная generation-валидация),
+`glm_roster.rs`, интеграция в `bot.rs` (HandoffKind::Glm, шаги glm_proxy/glm_ready/glm_wait).
 
 ## Очередь
 
