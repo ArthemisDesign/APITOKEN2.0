@@ -193,6 +193,7 @@ dependencies = [
  "codex-credential",
  "gemini-credential",
  "getrandom 0.3.4",
+ "kimi-credential",
  "portable-pty",
  "registry",
  "reqwest",
@@ -1489,6 +1490,20 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kimi-credential"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "chacha20poly1305",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "url",
+ "zeroize",
 ]
 
 [[package]]
