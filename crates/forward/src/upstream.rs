@@ -227,8 +227,10 @@ fn pow10(exponent: usize) -> Option<i128> {
     (0..exponent).try_fold(1i128, |value, _| value.checked_mul(10))
 }
 
-/// Anthropic currently sends fractions (`0.22` = 22%). Values above one retain the historical
-/// percent fallback, but both paths are parsed as decimal integers without an `f64` round-trip.
+/// Anthropic currently sends fractions (`0.22` = 22%). A decimal spelling is therefore always a
+/// native fraction, including the observed exhausted-window overshoot `1.02` (= 102%, clamped to
+/// full). Only an integer above one retains the historical whole-percent fallback (`22` = 22%).
+/// Both paths are parsed as decimal integers without an `f64` round-trip.
 fn parse_quota_fraction(raw: &str) -> Option<QuotaFraction> {
     let raw = raw.trim();
     if raw.is_empty() || raw.starts_with('-') || raw.contains('e') || raw.contains('E') {
@@ -246,15 +248,14 @@ fn parse_quota_fraction(raw: &str) -> Option<QuotaFraction> {
         return None;
     }
     let whole = whole_text.parse::<i128>().ok()?;
-    let fraction_is_zero = fraction_text.bytes().all(|byte| byte == b'0');
-    let is_native_fraction = whole < 1 || (whole == 1 && fraction_is_zero);
+    let is_native_fraction = raw.contains('.') || whole <= 1;
     let (unit_scale, max_decimals, max_whole) = if is_native_fraction {
         (i128::from(FRACTION_SCALE), 8usize, 1i128)
     } else {
         // One percentage point is 1e6 full-window fraction units.
         (i128::from(FRACTION_SCALE / 100), 6usize, 100i128)
     };
-    if whole > max_whole || (whole == max_whole && !fraction_is_zero) {
+    if whole > max_whole {
         return None;
     }
 
@@ -620,7 +621,23 @@ mod tests {
                 measurement_resolution_fraction_units: 1,
             })
         );
+        assert_eq!(
+            parse_quota_fraction("1.02"),
+            Some(QuotaFraction {
+                used_fraction_units: 100_000_000,
+                measurement_resolution_fraction_units: 1_000_000,
+            }),
+            "decimal values above one are native fraction overshoot, not historical percent",
+        );
+        assert_eq!(
+            parse_quota_fraction("1.00000001"),
+            Some(QuotaFraction {
+                used_fraction_units: 100_000_000,
+                measurement_resolution_fraction_units: 1,
+            })
+        );
         assert!(parse_quota_fraction("1.1e-2").is_none());
+        assert!(parse_quota_fraction("2.0").is_none());
         assert!(parse_quota_fraction("101").is_none());
         assert!(parse_quota_fraction("0.123456789").is_none());
     }
