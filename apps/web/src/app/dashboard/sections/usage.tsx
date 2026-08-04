@@ -12,7 +12,7 @@ import type {
 } from "@/lib/api";
 import { useI18n } from "@/components/i18n-provider";
 import type { DashboardCopy } from "@/lib/dashboard-copy";
-import { buildUtcUsageSeries, usageWindowDays } from "@/lib/usage-series";
+import { buildUtcProviderUsageSeries, usageWindowDays } from "@/lib/usage-series";
 import { modelLabel } from "@/lib/model-label";
 import { DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
 import {
@@ -62,6 +62,11 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
   const { language } = useI18n();
   const localPolicyCopy = policyCopy[language];
   const locale = language === "ru" ? "ru-RU" : "en-US";
+  const providerRegistry = new Map(DASHBOARD_PROVIDERS.map((provider) => [provider.id, provider]));
+  const providerMetadata = (id: string) => providerRegistry.get(id) ?? fallbackProvider(
+    id,
+    id === "unattributed" ? localPolicyCopy.providerUnattributed : id,
+  );
   const models = usage.models;
   const modelOfficialTotal = models.reduce((sum, model) => sum + BigInt(model.officialNano), 0n);
   const policy = account.pricingPolicies?.[0] ?? null;
@@ -96,11 +101,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
     ...providerAgg.keys(),
   ]);
   const providerCards = [...providerIds].sort().map((id) => {
-    const registered = DASHBOARD_PROVIDERS.find((provider) => provider.id === id);
-    const metadata = registered ?? fallbackProvider(
-      id,
-      id === "unattributed" ? localPolicyCopy.providerUnattributed : id,
-    );
+    const metadata = providerMetadata(id);
     return {
       ...metadata,
       agg: providerAgg.get(id),
@@ -115,12 +116,53 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
     window.setTimeout(() => setCopiedProvider((current) => (current === id ? null : current)), 1_200);
   }
 
-  const series = buildUtcUsageSeries(usage.sinceTs, usage.untilTs, usage.daily).map((point) => ({
+  const series = buildUtcProviderUsageSeries(
+    usage.sinceTs,
+    usage.untilTs,
+    usage.daily,
+    usage.dailyProviders ?? [],
+  ).map((point) => ({
     day: point.dayTs * 1_000,
     requests: point.requests,
     value: BigInt(point.officialNano),
     charged: BigInt(point.chargedNano),
+    providers: point.providers.map((provider) => ({
+      ...provider,
+      officialNano: BigInt(provider.officialNano),
+      chargedNano: BigInt(provider.chargedNano),
+    })),
+    unattributed: BigInt(point.unattributedOfficialNano),
   }));
+  const providerOrder = new Map(DASHBOARD_PROVIDERS.map((provider, index) => [provider.id, index]));
+  const chartProviders = [...new Set(series.flatMap((point) => point.providers
+    .filter((provider) => provider.officialNano > 0n)
+    .map((provider) => provider.provider)))]
+    .sort((left, right) => {
+      const leftRank = providerOrder.get(left) ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = providerOrder.get(right) ?? Number.MAX_SAFE_INTEGER;
+      return leftRank - rightRank || left.localeCompare(right);
+    })
+    .map(providerMetadata);
+  const showUnattributed = series.some((point) => point.unattributed > 0n);
+  const unattributedProvider = providerMetadata("unattributed");
+  const chartDayAriaLabel = (point: (typeof series)[number]) => {
+    const providerLabels = chartProviders.flatMap((provider) => {
+      const segment = point.providers.find((candidate) => candidate.provider === provider.id);
+      return segment && segment.officialNano > 0n
+        ? [`${provider.name}: ${formatNanoUsdSmart(segment.officialNano, locale)}`]
+        : [];
+    });
+    if (point.unattributed > 0n) {
+      providerLabels.push(`${unattributedProvider.name}: ${formatNanoUsdSmart(point.unattributed, locale)}`);
+    }
+    return [
+      interpolate(copy.chartDayLabel, {
+        date: fmtUtcDay(point.day, locale),
+        value: formatNanoUsdSmart(point.value, locale),
+      }),
+      ...providerLabels,
+    ].join(". ");
+  };
   const maxValue = series.reduce((max, point) => bigintMax(max, point.value), 0n);
   const scale = niceNanoScale(maxValue);
   const gridTicks = Array.from({ length: scale.divisions + 1 }, (_, index) => scale.max - BigInt(index) * scale.step);
@@ -220,16 +262,35 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
 
     <div className="usage-graph">
       <div className="uchart">
-        <div className="uchart-head"><b>{copy.usageOverTime}</b><span>{copy.chartWindowLabel}</span></div>
+        <div className="uchart-head">
+          <b>{copy.usageOverTime}</b>
+          <div className="uchart-head-meta">
+            <span className="uchart-window">{copy.chartWindowLabel}</span>
+            <div className="usage-chart-legend" aria-label={copy.usageProviders}>
+              {chartProviders.map((provider) => <span key={provider.id}>
+                <i style={{ background: provider.color }} />{provider.name}
+              </span>)}
+              {showUnattributed && <span>
+                <i style={{ background: unattributedProvider.color }} />{unattributedProvider.name}
+              </span>}
+            </div>
+          </div>
+        </div>
         {maxValue === 0n ? <div className="uchart-empty">{copy.noChargesPeriod}</div> : <>
           <div className="uchart-grid">
             <div className="uchart-yaxis">{gridTicks.map((tick, i) => <span key={i}>{formatAxisNanoUsd(tick, locale)}</span>)}</div>
             <div className="uchart-plotwrap">
               <div className="uchart-lines">{gridTicks.map((_, i) => <i key={i} />)}</div>
               <div className="uchart-plot" onMouseLeave={(event) => { if (!event.currentTarget.contains(document.activeElement)) setHoverDay(null); }}>
-                {series.map((point, index) => <button type="button" key={point.day} className={`uchart-col${hoverDay === index ? " is-hover" : ""}`} aria-label={interpolate(copy.chartDayLabel, { date: fmtUtcDay(point.day, locale), value: formatNanoUsdSmart(point.value, locale) })} onMouseEnter={() => setHoverDay(index)} onFocus={() => setHoverDay(index)} onBlur={() => setHoverDay((current) => current === index ? null : current)} onClick={() => setHoverDay((current) => current === index ? null : index)} onKeyDown={(event) => { if (event.key === "Escape") { setHoverDay(null); event.currentTarget.blur(); } }}>
+                {series.map((point, index) => <button type="button" key={point.day} className={`uchart-col${hoverDay === index ? " is-hover" : ""}`} aria-label={chartDayAriaLabel(point)} onMouseEnter={() => setHoverDay(index)} onFocus={() => setHoverDay(index)} onBlur={() => setHoverDay((current) => current === index ? null : current)} onClick={() => setHoverDay((current) => current === index ? null : index)} onKeyDown={(event) => { if (event.key === "Escape") { setHoverDay(null); event.currentTarget.blur(); } }}>
                   <div className="uchart-col-fill">
-                    {point.value > 0n && <div className="uchart-seg" style={{ height: `${boundedPercent(point.value, scale.max)}%`, background: MODEL_COLORS[0] }} />}
+                    {chartProviders.map((provider) => {
+                      const segment = point.providers.find((candidate) => candidate.provider === provider.id);
+                      return segment && segment.officialNano > 0n
+                        ? <div key={provider.id} className="uchart-seg" style={{ height: `${boundedPercent(segment.officialNano, scale.max)}%`, background: provider.color }} />
+                        : null;
+                    })}
+                    {point.unattributed > 0n && <div className="uchart-seg" style={{ height: `${boundedPercent(point.unattributed, scale.max)}%`, background: unattributedProvider.color }} />}
                   </div>
                 </button>)}
                 {hoverDay !== null && series[hoverDay] && series[hoverDay]!.value > 0n && (() => {
@@ -237,7 +298,14 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
                   const leftPct = Math.min(92, Math.max(8, (hoverDay + 0.5) / series.length * 100));
                   return <div className="chart-tip" role="tooltip" style={{ left: `${leftPct}%`, bottom: `${boundedPercent(point.value, scale.max)}%` }}>
                     <div className="chart-tip-h">{fmtUtcDay(point.day, locale)}</div>
-                    <div className="chart-tip-row"><span className="chart-tip-dot" style={{ background: MODEL_COLORS[0] }} /><span className="chart-tip-nm">{copy.officialValueCol}</span><b>{formatNanoUsdSmart(point.value, locale)}</b></div>
+                    {chartProviders.map((provider) => {
+                      const segment = point.providers.find((candidate) => candidate.provider === provider.id);
+                      return segment && segment.officialNano > 0n
+                        ? <div className="chart-tip-row" key={provider.id}><span className="chart-tip-dot" style={{ background: provider.color }} /><span className="chart-tip-nm">{provider.name}</span><b>{formatNanoUsdSmart(segment.officialNano, locale)}</b></div>
+                        : null;
+                    })}
+                    {point.unattributed > 0n && <div className="chart-tip-row"><span className="chart-tip-dot" style={{ background: unattributedProvider.color }} /><span className="chart-tip-nm">{unattributedProvider.name}</span><b>{formatNanoUsdSmart(point.unattributed, locale)}</b></div>}
+                    <div className="chart-tip-total"><span>{copy.officialValueCol}</span><b>{formatNanoUsdSmart(point.value, locale)}</b></div>
                     <div className="chart-tip-total"><span>{copy.chargedCol}</span><b>{formatNanoUsdSmart(point.charged, locale)}</b></div>
                     <div className="chart-tip-total"><span>{copy.billedEvents}</span><b>{point.requests.toLocaleString(locale)}</b></div>
                   </div>;

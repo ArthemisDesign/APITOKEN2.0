@@ -249,8 +249,14 @@ function usage(window: string): UsageView {
       { dayTs: todayUtc, requests: 22, officialNano: "7679893050", chargedNano: "3071957220" },
     ],
     dailyProviders: [
-      { dayTs: todayUtc, provider: "anthropic", requests: 18, officialNano: "6000000000", chargedNano: "2400000000" },
-      { dayTs: todayUtc, provider: "openai", requests: 4, officialNano: "1679893050", chargedNano: "671957220" },
+      { dayTs: todayUtc - 3 * DAY_S, provider: "anthropic", requests: 16, officialNano: "7000000000", chargedNano: "2800000000" },
+      { dayTs: todayUtc - 3 * DAY_S, provider: "openai", requests: 4, officialNano: "1000000000", chargedNano: "400000000" },
+      { dayTs: todayUtc - 2 * DAY_S, provider: "anthropic", requests: 13, officialNano: "5000000000", chargedNano: "2000000000" },
+      { dayTs: todayUtc - 2 * DAY_S, provider: "openai", requests: 3, officialNano: "1000000000", chargedNano: "400000000" },
+      { dayTs: todayUtc - DAY_S, provider: "anthropic", requests: 10, officialNano: "4000000000", chargedNano: "1600000000" },
+      { dayTs: todayUtc - DAY_S, provider: "openai", requests: 3, officialNano: "1000000000", chargedNano: "400000000" },
+      { dayTs: todayUtc, provider: "anthropic", requests: 20, officialNano: "6984893050", chargedNano: "2793957220" },
+      { dayTs: todayUtc, provider: "openai", requests: 2, officialNano: "695000000", chargedNano: "278000000" },
     ],
     keys: [
       { keyMasked: "sk-pool-a5b5••••••••eeb", requests: 45, officialNano: "18000000000", chargedNano: "7200000000" },

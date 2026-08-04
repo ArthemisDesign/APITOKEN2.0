@@ -322,17 +322,27 @@ const dashboardFixtureScript = `(() => {
       unattributedLegacy: { officialNano: "2750000000" },
     },
     models: [
-      { model: "claude-opus-4-8", requests: 27, inputTokens: 1890211, outputTokens: 5100, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "15219567500", chargedNano: "6087827000" },
-      { model: "claude-sonnet-5", requests: 27, inputTokens: 1890954, outputTokens: 5072, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "7483549500", chargedNano: "2993419800" },
-      { model: "gpt-5.6-sol", requests: 8, inputTokens: 420000, outputTokens: 60000, cacheReadTokens: 150000, cacheWrite5mTokens: 0, cacheWrite1hTokens: 40000, webSearchRequests: 0, officialNano: "3475000000", chargedNano: "1390000000" },
-      { model: "claude-haiku-4-5-20251001", requests: 5, inputTokens: 104, outputTokens: 4996, cacheReadTokens: 354058, cacheWrite5mTokens: 177029, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "281776050", chargedNano: "112710420" },
-      { model: "gpt-5.6-luna", requests: 4, inputTokens: 100000, outputTokens: 20000, cacheReadTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "220000000", chargedNano: "88000000" },
+      { model: "claude-opus-4-8", provider: "anthropic", requests: 27, inputTokens: 1890211, outputTokens: 5100, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "15219567500", chargedNano: "6087827000" },
+      { model: "claude-sonnet-5", provider: "anthropic", requests: 27, inputTokens: 1890954, outputTokens: 5072, cacheReadTokens: 2256400, cacheWrite5mTokens: 282050, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "7483549500", chargedNano: "2993419800" },
+      { model: "gpt-5.6-sol", provider: "openai", requests: 8, inputTokens: 420000, outputTokens: 60000, cacheReadTokens: 150000, cacheWrite5mTokens: 0, cacheWrite1hTokens: 40000, webSearchRequests: 0, officialNano: "3475000000", chargedNano: "1390000000" },
+      { model: "claude-haiku-4-5-20251001", provider: "anthropic", requests: 5, inputTokens: 104, outputTokens: 4996, cacheReadTokens: 354058, cacheWrite5mTokens: 177029, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "281776050", chargedNano: "112710420" },
+      { model: "gpt-5.6-luna", provider: "openai", requests: 4, inputTokens: 100000, outputTokens: 20000, cacheReadTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "220000000", chargedNano: "88000000" },
     ],
     daily: [
       { dayTs: todayUtc - 3 * DAY, requests: 20, officialNano: "8000000000", chargedNano: "3200000000" },
       { dayTs: todayUtc - 2 * DAY, requests: 16, officialNano: "6000000000", chargedNano: "2400000000" },
       { dayTs: todayUtc - DAY, requests: 13, officialNano: "5000000000", chargedNano: "2000000000" },
       { dayTs: todayUtc, requests: 22, officialNano: "7679893050", chargedNano: "3071957220" },
+    ],
+    dailyProviders: [
+      { dayTs: todayUtc - 3 * DAY, provider: "anthropic", requests: 16, officialNano: "7000000000", chargedNano: "2800000000" },
+      { dayTs: todayUtc - 3 * DAY, provider: "openai", requests: 4, officialNano: "1000000000", chargedNano: "400000000" },
+      { dayTs: todayUtc - 2 * DAY, provider: "anthropic", requests: 13, officialNano: "5000000000", chargedNano: "2000000000" },
+      { dayTs: todayUtc - 2 * DAY, provider: "openai", requests: 3, officialNano: "1000000000", chargedNano: "400000000" },
+      { dayTs: todayUtc - DAY, provider: "anthropic", requests: 10, officialNano: "4000000000", chargedNano: "1600000000" },
+      { dayTs: todayUtc - DAY, provider: "openai", requests: 3, officialNano: "1000000000", chargedNano: "400000000" },
+      { dayTs: todayUtc, provider: "anthropic", requests: 20, officialNano: "6984893050", chargedNano: "2793957220" },
+      { dayTs: todayUtc, provider: "openai", requests: 2, officialNano: "695000000", chargedNano: "278000000" },
     ],
     keys: [
       { keyMasked: "sk-pool-a5b5••••••••eeb", requests: 45, officialNano: "18000000000", chargedNano: "7200000000" },
@@ -1078,7 +1088,11 @@ async function verifyUsageByKeyTable(client) {
         masked: Boolean(row.cells[0]?.querySelector('code')),
         cells: row.cells.length,
       }));
-      return JSON.stringify({ headers, rows, text: table.textContent });
+      const legend = [...document.querySelectorAll('.usage-chart-legend span')].map((item) => item.textContent.trim());
+      const activeColumns = [...document.querySelectorAll('.uchart-col')]
+        .map((column) => ({ segments: column.querySelectorAll('.uchart-seg').length, label: column.getAttribute('aria-label') }))
+        .filter((column) => column.segments > 0);
+      return JSON.stringify({ headers, rows, text: table.textContent, legend, activeColumns });
     })()`,
     returnByValue: true,
   });
@@ -1087,10 +1101,13 @@ async function verifyUsageByKeyTable(client) {
       state.rows.length !== 2 || state.rows.some((row) => row.cells !== 4) ||
       state.rows[0].label !== "Production" || state.rows[0].masked ||
       state.rows[1].label !== "sk-pool-f367••••••••94ea" || !state.rows[1].masked ||
+      state.legend.join("|") !== "Claude|GPT" ||
+      state.activeColumns.length !== 4 || state.activeColumns.some((column) =>
+        column.segments !== 2 || !column.label.includes("Claude") || !column.label.includes("GPT")) ||
       state.text.includes("Effective discount") || state.text.includes("Effective value")) {
     throw new Error(`Usage-by-key semantics failed: ${JSON.stringify(state)}`);
   }
-  process.stdout.write("Verified named-key labels, masked fallback, and key-specific usage columns\n");
+  process.stdout.write("Verified provider-stacked usage, accessible labels, named-key labels, and key-specific columns\n");
 }
 
 async function verifyApiKeysLayout(client) {

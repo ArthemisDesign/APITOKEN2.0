@@ -101,9 +101,13 @@
 /* Usage — real ledger-derived chart + per-key breakdown */
 .usage-graph{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:16px;margin:24px 0 20px}
 .uchart{background:var(--bg-card);border:1px solid var(--line);border-radius:10px;padding:20px 22px;display:flex;flex-direction:column;min-width:0}
-.uchart-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:18px}
+.uchart-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:18px}
 .uchart-head b{font-family:var(--font-mono);font-size:14px;color:var(--txt);font-weight:700}
 .uchart-head span{font-family:var(--font-mono);font-size:11px;color:var(--txt-4)}
+.uchart-head-meta{display:flex;min-width:0;flex-direction:column;align-items:flex-end;gap:7px}
+.usage-chart-legend{display:flex;align-items:center;justify-content:flex-end;gap:7px 13px;flex-wrap:wrap}
+.uchart-head .usage-chart-legend span{display:inline-flex;align-items:center;gap:6px;color:var(--txt-3);font-size:9px;white-space:nowrap}
+.usage-chart-legend i{width:7px;height:7px;border-radius:2px;flex:none}
 .uchart-grid{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px}
 .uchart-yaxis{display:flex;flex-direction:column;justify-content:space-between;height:180px;padding-top:8px;font-family:var(--font-mono);font-size:10px;color:var(--txt-4);font-variant-numeric:tabular-nums;text-align:right}
 .uchart-plotwrap{position:relative;min-width:0}
@@ -145,7 +149,7 @@
 .ubreak-sum .dlabel{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt-4)}
 .ubreak-sum>div>b{font-family:var(--font-mono);font-size:20px;color:var(--txt);font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 .usage-key-table .usage-key-label{font-weight:700;color:var(--txt)}
-@media(max-width:820px){.usage-graph{grid-template-columns:1fr}.ubreak-sum{grid-template-columns:repeat(2,minmax(0,1fr))}.table-scroll .mtable{min-width:640px}.table-scroll .usage-key-table{min-width:520px}}
+@media(max-width:820px){.usage-graph{grid-template-columns:1fr}.uchart-head{flex-direction:column}.uchart-head-meta{align-items:flex-start}.usage-chart-legend{justify-content:flex-start}.ubreak-sum{grid-template-columns:repeat(2,minmax(0,1fr))}.table-scroll .mtable{min-width:640px}.table-scroll .usage-key-table{min-width:520px}}
 .usage-graph-summary-only{grid-template-columns:minmax(240px,420px)}
 
 /* Usage — token buckets + per-model distribution */

@@ -65,6 +65,7 @@ To regression-test a hard-reloaded dashboard subview returning directly to Overv
 - email/password registration, verification, resend, login, logout, forgot/reset password;
 - Google and GitHub OAuth when the backend reports those providers enabled;
 - authoritative balance, reserved amount, spend, flat B2C pricing and B2B pricing;
+- rolling usage split by provider, model, token bucket and API key, with provider-stacked UTC-day bars;
 - API-key listing, one-time secret issuance, and revocation;
 - engine ledger;
 - arbitrary positive whole-USD Cryptomus checkout creation.
