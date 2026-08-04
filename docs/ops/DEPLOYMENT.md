@@ -204,7 +204,9 @@ The Stage 3B1c.3 application release is safe to deploy with the producer disable
 binary is not authorization to activate it: production activation is a separate observed config
 checkpoint after the default-off SHA has a green exact-SHA `deploy/watchdog`. The producer may run
 only on a PostgreSQL-backed fixed Anthropic, OpenAI or Gemini plane with billing enabled; live
-SQLite composition remains unsupported. The durable provider identity of the Gemini plane is
+SQLite composition remains unsupported. Because the fleet env file is shared by every plane,
+enabling the shadow env leaves non-pricing planes (KIMI) inert with an explicit startup notice
+instead of failing their boot. The durable provider identity of the Gemini plane is
 `google`, never `gemini`. Each plane keeps an independent default-off config and must complete the
 same observed rollout ladder after the producer SHA is green.
 

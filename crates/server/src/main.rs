@@ -1220,22 +1220,27 @@ async fn serve() -> Result<()> {
     }
     let n = subs.len();
 
-    if s.proxy.pricing_shadow.enabled() {
+    let pricing_shadow_plane = matches!(
+        s.provider,
+        forward::ProviderMode::Anthropic
+            | forward::ProviderMode::OpenAi
+            | forward::ProviderMode::Gemini
+    );
+    let pricing_shadow_active = s.proxy.pricing_shadow.enabled() && pricing_shadow_plane;
+    if s.proxy.pricing_shadow.enabled() && !pricing_shadow_plane {
+        // The fleet env file is shared by every plane; shadow pricing only exists on the three
+        // pricing planes, so a non-pricing plane (KIMI) must stay inert instead of failing
+        // closed on a config it cannot act on.
+        eprintln!(
+            "pricing shadow: env enabled, but this provider plane has no pricing shadow producer; staying inert"
+        );
+    }
+    if pricing_shadow_active {
         if !authority.is_postgres() {
             bail!("pricing shadow producer requires PostgreSQL authority");
         }
         if !s.billing {
             bail!("pricing shadow producer requires billing to be enabled");
-        }
-        if !matches!(
-            s.provider,
-            forward::ProviderMode::Anthropic
-                | forward::ProviderMode::OpenAi
-                | forward::ProviderMode::Gemini
-        ) {
-            bail!(
-                "pricing shadow producer requires a fixed Anthropic, OpenAI, or Gemini provider plane"
-            );
         }
     }
 
@@ -1256,7 +1261,7 @@ async fn serve() -> Result<()> {
         // атомарно, а кэш чистится при смене статуса ключа/аккаунта.
         let billing_authority = authority.clone();
         let billing_owner = owner.clone();
-        let pricing_shadow_readers = if s.proxy.pricing_shadow.enabled() {
+        let pricing_shadow_readers = if pricing_shadow_active {
             s.proxy.pricing_shadow.db_read_connections()
         } else {
             0
@@ -1427,12 +1432,16 @@ async fn serve() -> Result<()> {
         None
     };
     let pricing_shadow = Some(forward::PricingShadowRuntime::start(
-        s.proxy.pricing_shadow,
+        if pricing_shadow_active {
+            s.proxy.pricing_shadow
+        } else {
+            forward::PricingShadowConfig::default()
+        },
         s.pricing_shadow_manifest.clone(),
         billing.clone(),
         metrics.clone(),
     )?);
-    if s.proxy.pricing_shadow.enabled() {
+    if pricing_shadow_active {
         eprintln!(
             "pricing shadow: enabled sample={}bp queue={} workers={} timeout={}ms max_age={}s rate={}/s burst={} db_readers={}",
             s.proxy.pricing_shadow.sample_bp(),

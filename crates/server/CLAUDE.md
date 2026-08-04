@@ -173,7 +173,9 @@
 - Pricing shadow config читается только здесь под `CLAUDE_API_PRICING_SHADOW_*`. Default —
   disabled/0 bp; queue 256, workers 2, timeout 750ms, max age 300s, field 512 B, item 16 KiB,
   rate 20/s burst 40, PostgreSQL readers 2. Все значения strict-validated; max age всегда `<24h`.
-  Enabled требует billing + PostgreSQL + fixed Anthropic/OpenAI/Gemini plane. Server собирает fixed
+  Enabled требует billing + PostgreSQL и активен только на fixed Anthropic/OpenAI/Gemini plane;
+  на не-pricing plane (KIMI) тот же shared env не останавливает startup — producer остаётся inert
+  с явным notice, потому что fleet env файл общий для всех plane. Server собирает fixed
   versioned runtime manifest, запускает отдельные read actors/worker и дренирует worker до billing
   FIFO flush. Это разрешает Google legacy-snapshot shadow evidence, но не включает strict Gemini
   или Stage 9 release activation.
