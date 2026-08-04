@@ -18,6 +18,14 @@ const undici = require('internal/deps/undici/undici');
 const PROTOCOL = 1;
 const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
 const MAX_LINE_CHARS = 48 * 1024 * 1024;
+// Liveness comes from TCP probes, not from a wall-clock deadline. A rebooted proxy, a dead peer or
+// an expired NAT mapping is indistinguishable from a model that is still thinking if the only
+// signal we watch is silence on the socket — which is exactly why the read timeout had to double
+// as a client-facing limit. Probes answer that question directly: a dead peer resets within about
+// a minute, while a healthy long request keeps answering them for as long as it needs. 60s matches
+// every other plane (upstream.rs, glm/client.rs, kimi/client.rs). Behind a CONNECT proxy the probes
+// travel only between us and the proxy, so the provider never observes them.
+const KEEPALIVE_MS = 60000;
 let configured = false;
 let proxyAgent;
 let connectTimeoutMs = 30000;
@@ -361,6 +369,10 @@ function startRequest(frame) {
       });
     });
     active.set(id, request);
+    // The socket may already be assigned when the agent had one to hand out, in which case the
+    // 'socket' event has nothing left to deliver.
+    if (request.socket) request.socket.setKeepAlive(true, KEEPALIVE_MS);
+    else request.once('socket', socket => socket.setKeepAlive(true, KEEPALIVE_MS));
     request.setTimeout(readTimeoutMs, () => request.destroy(new Error('timeout')));
     request.once('error', error => {
       if (!active.delete(id)) return;
