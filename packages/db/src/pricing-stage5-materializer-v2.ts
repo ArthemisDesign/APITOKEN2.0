@@ -71,6 +71,12 @@ export interface Stage5V2BusinessInvitation {
   expires_at: string;
 }
 
+export interface Stage5V2ExistingReleasePolicy {
+  policy_id: string;
+  policy_version: number;
+  content_digest: string;
+}
+
 export interface Stage5V2CommerceSnapshot {
   accounts: Stage5V2CommerceAccount[];
   invitations: Stage5V2BusinessInvitation[];
@@ -622,6 +628,18 @@ function policyForB2b(
   });
 }
 
+function resolveReleasePolicyVersion(
+  policy: PricingReleasePolicyV2,
+  existing: readonly Stage5V2ExistingReleasePolicy[],
+): PricingReleasePolicyV2 {
+  if (policy.policy_version !== STAGE5_V2_POLICY_VERSION) return policy;
+  const rows = existing.filter((row) => row.policy_id === policy.policy_id);
+  const baseline = rows.find((row) => row.policy_version === STAGE5_V2_POLICY_VERSION);
+  if (!baseline || baseline.content_digest === policy.content_digest) return policy;
+  const next = rows.reduce((maximum, row) => Math.max(maximum, row.policy_version), STAGE5_V2_POLICY_VERSION) + 1;
+  return buildPolicy({ ...policy, policy_version: next });
+}
+
 function blocker(
   blockerCode: string,
   blockerContext: Stage5V2BlockerContext,
@@ -696,6 +714,7 @@ function validMultiplier(value: number): boolean {
 export function buildStage5V2Plan(input: {
   commerce: Stage5V2CommerceSnapshot;
   service: ServiceAccountInventoryV2;
+  existing_release_policies?: Stage5V2ExistingReleasePolicy[];
   engine_first: Stage5V2EngineScan;
   engine_second: Stage5V2EngineScan;
   openkeys_first: Stage5V2OpenKeysScan;
@@ -841,7 +860,10 @@ export function buildStage5V2Plan(input: {
   }
 
   const policies: PricingReleasePolicyV2[] = [];
-  const b2cPolicy = buildPolicy({
+  const existingPolicies = input.existing_release_policies ?? [];
+  const resolvePolicy = (policy: PricingReleasePolicyV2): PricingReleasePolicyV2 =>
+    resolveReleasePolicyVersion(policy, existingPolicies);
+  const b2cPolicy = resolvePolicy(buildPolicy({
     policy_id: "release-v2:b2c:global",
     policy_version: STAGE5_V2_POLICY_VERSION,
     owner_type: "global_b2c",
@@ -854,9 +876,9 @@ export function buildStage5V2Plan(input: {
       scope: { scope: "global" },
       discount_bps: 5_000,
     })],
-  });
+  }));
   policies.push(b2cPolicy);
-  const openkeysPolicy = buildPolicy({
+  const openkeysPolicy = resolvePolicy(buildPolicy({
     policy_id: "release-v2:openkeys:global",
     policy_version: STAGE5_V2_POLICY_VERSION,
     owner_type: "open_keys",
@@ -869,7 +891,7 @@ export function buildStage5V2Plan(input: {
       scope: { scope: "global" },
       discount_bps: 0,
     })],
-  });
+  }));
   policies.push(openkeysPolicy);
 
   const policyByAccount = new Map<string, PricingReleasePolicyV2>();
@@ -940,14 +962,18 @@ export function buildStage5V2Plan(input: {
         continue;
       }
     }
-    const policy = policyForB2b(
+    const baselineHead = headRules && headRules.length === 1
+      && headRules[0]!.scope_type === "provider"
+      && headRules[0]!.provider_id === "anthropic"
+      && headRules[0]!.payable_multiplier_bp === account.commerce_multiplier_bp;
+    const policy = resolvePolicy(policyForB2b(
       `release-v2:b2b:${account.engine_account_id}`,
       account.user_id,
       account.commerce_multiplier_bp,
       mainCatalog,
       switches,
-      headRules,
-    );
+      baselineHead ? null : headRules,
+    ));
     policies.push(policy);
     policyByAccount.set(account.engine_account_id, policy);
   }
@@ -963,13 +989,13 @@ export function buildStage5V2Plan(input: {
       ));
       continue;
     }
-    const policy = policyForB2b(
+    const policy = resolvePolicy(policyForB2b(
       `release-v2:b2b-invite:${invitation.invite_id}`,
       `invite:${invitation.invite_id}`,
       invitation.multiplier_bp,
       mainCatalog,
       switches,
-    );
+    ));
     policies.push(policy);
     const snapshotBase = {
       invite_id: invitation.invite_id,
@@ -995,7 +1021,7 @@ export function buildStage5V2Plan(input: {
         `service authority status ${service.status} differs from engine ${engine.status}`,
       ));
     }
-    const policy = buildPolicy({
+    const policy = resolvePolicy(buildPolicy({
       policy_id: `release-v2:service:${service.service_id}`,
       policy_version: STAGE5_V2_POLICY_VERSION,
       owner_type: "service",
@@ -1011,7 +1037,7 @@ export function buildStage5V2Plan(input: {
       switch_generation: null,
       switch_digest: null,
       rules: [],
-    });
+    }));
     policies.push(policy);
     policyByAccount.set(service.engine_account_id, policy);
   }

@@ -22,6 +22,7 @@ import {
   type Stage5V2B2bPolicyHeadRule,
   type Stage5V2Blocker,
   type Stage5V2CommerceSnapshot,
+  type Stage5V2ExistingReleasePolicy,
   type Stage5V2OpenKeysReader,
   type Stage5V2Plan,
   type Stage5V2PlannedAssignment,
@@ -113,6 +114,7 @@ export async function readStage5V2CommerceAndServiceSnapshot(
 ): Promise<{
   commerce: Stage5V2CommerceSnapshot;
   service: ReturnType<typeof buildStage5ServiceInventoryV2>;
+  release_policies: Stage5V2ExistingReleasePolicy[];
 }> {
   const accounts = await client.query<{
     user_id: string;
@@ -194,6 +196,16 @@ export async function readStage5V2CommerceAndServiceSnapshot(
     FROM service_account_inventory_v2
     ORDER BY service_id COLLATE "C"
   `);
+  const releasePolicyRows = await client.query<{
+    policy_id: string;
+    policy_version: string;
+    content_digest: string;
+  }>(`
+    SELECT policy_id, policy_version::text, content_digest
+    FROM pricing_policy_documents_v2
+    WHERE policy_id LIKE 'release-v2:%'
+    ORDER BY policy_id COLLATE "C", policy_version
+  `);
   const serviceAccounts: ServiceAccountInventoryEntryV2[] = services.rows.map((row) => ({
     service_id: row.service_id,
     engine_account_id: row.engine_account_id,
@@ -201,6 +213,11 @@ export async function readStage5V2CommerceAndServiceSnapshot(
     responsible: row.responsible,
     status: row.status,
     source_version: positiveSafeNumber(row.source_version, "service source version"),
+    content_digest: row.content_digest,
+  }));
+  const releasePolicies: Stage5V2ExistingReleasePolicy[] = releasePolicyRows.rows.map((row) => ({
+    policy_id: row.policy_id,
+    policy_version: positiveSafeNumber(row.policy_version, "release policy version"),
     content_digest: row.content_digest,
   }));
   return {
@@ -213,6 +230,7 @@ export async function readStage5V2CommerceAndServiceSnapshot(
       })),
     },
     service: buildStage5ServiceInventoryV2(serviceAccounts),
+    release_policies: releasePolicies,
   };
 }
 
@@ -295,6 +313,7 @@ export async function collectStage5V2Plan(
   return buildStage5V2Plan({
     commerce: snapshot.commerce,
     service: snapshot.service,
+    existing_release_policies: snapshot.release_policies,
     engine_first: engineFirst,
     engine_second: engineSecond,
     openkeys_first: openkeysFirst,

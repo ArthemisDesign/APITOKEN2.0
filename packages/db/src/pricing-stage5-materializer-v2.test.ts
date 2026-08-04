@@ -312,6 +312,75 @@ describe("pricing Stage 5 v2 planner", () => {
     }));
   });
 
+  it("keeps the baseline policy identity for an anthropic-only B2B head", () => {
+    const withHead = completePlanInput();
+    withHead.commerce.accounts[1]!.policy_rules = [{
+      scope_type: "provider",
+      provider_id: "anthropic",
+      canonical_model_id: null,
+      pricing_mode: "discount",
+      payable_multiplier_bp: 7_000,
+    }];
+    const withoutHead = completePlanInput();
+    const headPlan = buildStage5V2Plan(withHead);
+    const basePlan = buildStage5V2Plan(withoutHead);
+
+    expect(headPlan.blockers).toEqual([]);
+    const headPolicy = headPlan.policies.find((policy) => policy.policy_id === "release-v2:b2b:acct_b2b")!;
+    const basePolicy = basePlan.policies.find((policy) => policy.policy_id === "release-v2:b2b:acct_b2b")!;
+    expect(headPolicy).toEqual(basePolicy);
+    expect(headPlan.target.assignments.find((item) => item.engine_account_id === "acct_b2b"))
+      .toEqual(basePlan.target.assignments.find((item) => item.engine_account_id === "acct_b2b"));
+  });
+
+  it("bumps the release policy version when persisted content changes", () => {
+    const baseline = buildStage5V2Plan(completePlanInput());
+    const baselinePolicy = baseline.policies
+      .find((policy) => policy.policy_id === "release-v2:b2b:acct_b2b")!;
+
+    const unchanged = completePlanInput();
+    unchanged.existing_release_policies = [{
+      policy_id: baselinePolicy.policy_id,
+      policy_version: baselinePolicy.policy_version,
+      content_digest: baselinePolicy.content_digest,
+    }];
+    const unchangedPlan = buildStage5V2Plan(unchanged);
+    expect(unchangedPlan.policies.find((policy) => policy.policy_id === baselinePolicy.policy_id))
+      .toEqual(baselinePolicy);
+
+    const extended = completePlanInput();
+    extended.existing_release_policies = [{
+      policy_id: baselinePolicy.policy_id,
+      policy_version: baselinePolicy.policy_version,
+      content_digest: baselinePolicy.content_digest,
+    }];
+    extended.commerce.accounts[1]!.policy_rules = [
+      {
+        scope_type: "provider",
+        provider_id: "anthropic",
+        canonical_model_id: null,
+        pricing_mode: "discount",
+        payable_multiplier_bp: 7_000,
+      },
+      {
+        scope_type: "provider",
+        provider_id: "google",
+        canonical_model_id: null,
+        pricing_mode: "discount",
+        payable_multiplier_bp: 7_000,
+      },
+    ];
+    const extendedPlan = buildStage5V2Plan(extended);
+    expect(extendedPlan.blockers).toEqual([]);
+    const bumped = extendedPlan.policies
+      .find((policy) => policy.policy_id === baselinePolicy.policy_id)!;
+    expect(bumped.policy_version).toBe(baselinePolicy.policy_version + 1);
+    expect(bumped.rules).toHaveLength(2);
+    expect(extendedPlan.target.assignments
+      .find((item) => item.engine_account_id === "acct_b2b")!.policy_version)
+      .toBe(bumped.policy_version);
+  });
+
   it("shares the exact Stage 5 policy identity with post-cutover external-owner writers", () => {
     const plan = buildStage5V2Plan(completePlanInput());
     const mainCatalog = plan.catalogs.find((catalog) => catalog.product_id === "main")!;

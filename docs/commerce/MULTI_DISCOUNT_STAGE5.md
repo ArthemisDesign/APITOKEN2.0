@@ -86,7 +86,10 @@ the correct policy.
   reprices or closes already granted live traffic. The head must keep one `provider:anthropic`
   rule equal to the live scalar (`b2b_policy_anthropic_rule_mismatch` otherwise), and any rule the
   release-v2 policy cannot express, such as a legacy `track` mode, is the typed blocker
-  `b2b_policy_rule_unsupported`.
+  `b2b_policy_rule_unsupported`. An anthropic-only head equal to the scalar canonicalizes to the
+  baseline policy identity. Release policy documents are immutable per `(policy_id, policy_version)`:
+  when the planned content differs from the already persisted baseline version, the planner assigns
+  the next free policy version instead of rewriting it, and assignments reference that version.
 - B2B invitations: an independent immutable full-policy snapshot; redemption copies the exact
   snapshot.
 - OpenKeys: one canonical 1:1 contract (`discount_bps=0`) for all existing and new accounts.
