@@ -36,7 +36,9 @@ backend-only (по образцу KIMI, `docs/engine/KIMI_PROVIDER.md` §0) до
 | Auth Bot: мастер продавца | `crates/authbot/src/{bot,db,main}.rs`, CLAUDE.md | 093c05c2 |
 | Runtime примитивы | `crates/forward/src/glm/{config,transport,roster,client,selection,pool,queue,mod}.rs` | 9ce68f55 |
 | Gateway + dispatch + billing writer | `crates/forward/src/glm/gateway.rs`, `proxy.rs`, `state.rs`, `billing.rs` | 884b8869 |
-| Server wiring | `crates/server/src/{config,main,poller}.rs`, server CLAUDE.md | _этот коммит_ |
+| Server wiring | `crates/server/src/{config,main,poller}.rs`, server CLAUDE.md | 08baad97 |
+| Docs: причины отложенных строк §8 | `docs/engine/GLM_PROVIDER.md` | 0869040a |
+| **Мёрж runtime-цепочки в master, deploy/watchdog GREEN** | master `1c8b7fc1eda45025bc1e04dc917a0cf7087aba45` (trusted host validation GREEN, deployment 5736492612; ребейз на 54fb2220: landed SHAs bc4c23ce, 1d279145, d42e916b, 2525973b, b4eab375, edb126f2, 36dc9a5d, 1c8b7fc1) | 1c8b7fc1 |
 
 ## Рамка от владельца (2026-08-04)
 
@@ -65,10 +67,15 @@ clean+merged (штатный критерий) вместе с локально�
 
 ## Следующее действие (ровно одно)
 
-Полные гейты (cargo test --locked --workspace, bash -n deploy/*.sh, git diff --check,
-docs-check) и мёрж цепочки (7 коммитов: credential → estimator → authbot×2 → примитивы →
-gateway → server) через `git push -u origin HEAD && ./deploy/agent-merge.sh`, затем
-финальный отчёт preview.
+Backend-цепочка полностью в master с зелёным deploy/watchdog (`1c8b7fc1`). Дальше — только
+человек/оператор: (1) provision host env движка `CLAUDE_API_GLM_ENABLED=true`,
+`CLAUDE_API_GLM_ROSTER_DIR=/srv/claude-api/data/glm`, `CLAUDE_API_GLM_CREDENTIAL_KEYS`,
+`CLAUDE_API_GLM_CREDENTIAL_ACTIVE_KID` (опционально `CLAUDE_API_GLM_AUTH_SCHEME=bearer`,
+`CLAUDE_API_GLM_QUOTA_POLL_SECS=300`) и симметрично `AUTH_BOT_GLM_*` для authbot;
+(2) первая живая GLM Coding Plan подписка через Auth Bot → live-гейты из манифеста §6
+(usage-форма, SSE-инкрементальность, единицы quota endpoint, quota wall на живом аккаунте)
+→ live-runner `tools/glm_calibration/` → observability/admin projection (отложено по
+рамке «только backend») → verified preview report.
 
 Ключевые факты research (дата ревью 2026-08-03): credits-система с 2026-07-30
 (Lite 2000/5ч+10000/нед, Pro 12000/60000, Max 28000/140000); формула кредитов
