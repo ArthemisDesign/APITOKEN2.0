@@ -1587,6 +1587,7 @@ grep -Fq 'CLAUDE_API_PROVIDER=kimi CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLA
   "$ROOT/systemd/claude-api-kimi.service"
 grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:kimi' "$ROOT/systemd/claude-api-kimi.service"
 grep -Fxq 'ReadOnlyPaths=/srv/claude-api/data/kimi' "$ROOT/systemd/claude-api-kimi.service"
+grep -Fxq 'ReadWritePaths=/srv/claude-api/data/kimi/credentials' "$ROOT/systemd/claude-api-kimi.service"
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-kimi@.service"
 grep -Fq 'CLAUDE_API_PROVIDER=kimi CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i' \
   "$ROOT/systemd/claude-api-kimi@.service" \
@@ -1603,6 +1604,11 @@ grep -Fq 'ExecCondition=/usr/bin/grep -Fxq kimi-bluegreen-v1' \
 grep -Fxq 'ReadOnlyPaths=/srv/claude-api/data/kimi' \
   "$ROOT/systemd/claude-api-kimi@.service" \
   || wd_die 'KIMI slots can mutate Auth Bot roster state'
+# The rotating refresh family legally reseals envelopes at runtime, so credentials/ must stay
+# writable inside the read-only roster dir, or every token expiry reads as an auth death.
+grep -Fxq 'ReadWritePaths=/srv/claude-api/data/kimi/credentials' \
+  "$ROOT/systemd/claude-api-kimi@.service" \
+  || wd_die 'KIMI slots cannot reseal rotated credential envelopes'
 # The enablement pin must be argv-level in both incarnations: the plane's on/off state lives only
 # in these reviewed units, never in a shared config.env value.
 for kimi_unit in claude-api-kimi.service claude-api-kimi@.service; do

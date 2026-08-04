@@ -47,8 +47,11 @@ ReadWritePaths=/srv/claude-api/data
 # Sealed roster generations and encrypted credential envelopes are atomically provisioned by Auth
 # Bot; the gateway only decrypts them in memory and never exposes account identity. Provisioning
 # creates this layout before runtime start. Absence fails the unit closed; otherwise an optional
-# bind skipped at startup could become writable when the directory appears.
+# bind skipped at startup could become writable when the directory appears. The roster directory
+# stays read-only EXCEPT credentials/: the rotating refresh family legally requires the runtime to
+# atomically reseal the envelope after a won refresh, or every token expiry reads as auth death.
 ReadOnlyPaths=/srv/claude-api/data/kimi
+ReadWritePaths=/srv/claude-api/data/kimi/credentials
 MemoryMax=2G
 
 [Install]

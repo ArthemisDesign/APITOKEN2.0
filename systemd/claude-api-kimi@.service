@@ -48,7 +48,12 @@ RestrictSUIDSGID=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 ReadWritePaths=/srv/claude-api/data
+# The roster directory is read-only except credentials/: KIMI's rotating refresh family legally
+# requires the runtime to atomically reseal the credential envelope after a won refresh, so the
+# envelope directory must stay writable or every token expiry reads as an auth death. The roster
+# file itself (profiles.json) remains Auth Bot's alone — the runtime never writes it.
 ReadOnlyPaths=/srv/claude-api/data/kimi
+ReadWritePaths=/srv/claude-api/data/kimi/credentials
 MemoryMax=2G
 
 [Install]

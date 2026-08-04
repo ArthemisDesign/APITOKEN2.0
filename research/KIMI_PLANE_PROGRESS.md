@@ -66,7 +66,7 @@
 | Точная атрибуция: admin calibration headers, pinned profile + immutable request id, bounded recent-turns read, поля `/kimi-subs` | `crates/{forward,server,registry}` | `fbc000fc` |
 | Безопасный live-runner: `run_live.py` + 43 offline теста + ops runbook | `tools/kimi_calibration/`, `docs/ops/KIMI_CALIBRATION.md` | `a8b69c6d` |
 | Pool parity 2: warm-home placement + early claim + cooling hints, per-model failure axis, barriered burst-доказательство | `crates/forward/src/kimi/**` | `beb98be4` |
-| Включение плоскости: reviewed argv-пин `CLAUDE_API_KIMI_ENABLED=1` после live evidence 2026-08-04 | `systemd/claude-api-kimi{,@}.service` | текущий checkpoint |
+| Включение плоскости: reviewed argv-пин `CLAUDE_API_KIMI_ENABLED=1` после live evidence 2026-08-04. Первый деплой `4efa3186` ушёл RED: unit-сandbox (`ReadOnlyPaths` на весь roster-каталог) не давал runtime перезапечатать конверт после обязательного refresh, и истёкший access token читался как auth-смерть. Фикс — read-only roster + writable `credentials/` | `systemd/claude-api-kimi{,@}.service`, `deploy/watchdog-lib.test.sh` | текущий checkpoint |
 
 ## Открытые швы (выглядит подключённым, не работает)
 
