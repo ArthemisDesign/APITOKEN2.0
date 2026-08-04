@@ -136,6 +136,8 @@ pub fn persona_ccbuild(email: &str) -> String {
 pub struct Clients {
     map: Mutex<ClientCache>,
     connect_timeout: u64,
+    read_timeout: u64,
+    nonstream_read_timeout: u64,
     user_agent: String,
 }
 
@@ -153,8 +155,17 @@ impl Clients {
                 entries: HashMap::new(),
             }),
             connect_timeout: cfg.connect_timeout,
+            read_timeout: cfg.read_timeout,
+            nonstream_read_timeout: cfg.nonstream_read_timeout,
             user_agent: cfg.user_agent.clone(),
         }
+    }
+
+    /// Пауза между чтениями для НЕ-стриминговых запросов. Отдельная величина, потому что там
+    /// апстрим молчит до конца генерации и «молчит» не означает «умер»: длинный ответ иначе
+    /// уничтожался бы на середине единственным сигналом, который не умеет их различать.
+    pub fn nonstream_read_timeout(&self) -> Duration {
+        Duration::from_secs(self.nonstream_read_timeout)
     }
 
     /// Клиент для данного прокси ("" = напрямую). Без общего request-timeout — иначе рвал бы стримы.
@@ -181,7 +192,9 @@ impl Clients {
             .tcp_keepalive(Duration::from_secs(60))
             // Idle между чтениями: ловит «подключился, но молчит» до первого байта и зависший
             // посреди стрима. Сбрасывается на каждом чтении, поэтому живой SSE с ping-ами не рвёт.
-            .read_timeout(Duration::from_secs(120));
+            // Это значение — стриминговое; не-стриминговый запрос переопределяет его на свой,
+            // потому что там тишина до конца генерации штатна и по времени неотличима от смерти.
+            .read_timeout(Duration::from_secs(self.read_timeout));
         if !proxy.is_empty() {
             b = b.proxy(wreq::Proxy::all(proxy)?);
         }

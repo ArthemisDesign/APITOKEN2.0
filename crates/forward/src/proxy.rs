@@ -2369,6 +2369,15 @@ pub async fn forward(
             // per-persona UA: стабильный для подписки, но различный между подписками (антифингерпринт
             // флота). Клиентский user-agent НЕ пробрасываем (см. skip_req_header) — отпечаток наш.
             let ua = crate::upstream::persona_ua(&app.cfg, &sub.email);
+            // Клиент, не просивший стрим, ждёт единственный JSON и до его готовности апстрим не
+            // шлёт ни байта. Тишина там штатна, поэтому стриминговая граница простоя её убивала бы
+            // на длинном ответе; живость на этом пути держит TCP keep-alive. Неразобранное тело
+            // трактуем как не-стрим: ошибиться в сторону терпения безопаснее, чем оборвать ответ.
+            let client_streams = parsed
+                .as_ref()
+                .and_then(|body| body.get("stream"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let mut rb = client
                 .request(method.clone(), &url)
                 .header("authorization", format!("Bearer {}", sub.token))
@@ -2382,6 +2391,9 @@ pub async fn forward(
                 )
                 // x-client-request-id — случайный per-request uuid (реальный CC шлёт на каждый запрос).
                 .header("x-client-request-id", &engine_request_id);
+            if !client_streams {
+                rb = rb.read_timeout(app.clients.nonstream_read_timeout());
+            }
             if !beta.is_empty() {
                 rb = rb.header("anthropic-beta", &beta);
             }
@@ -3091,6 +3103,8 @@ mod tests {
             ua_spread: 0,
             anthropic_version: "2023-06-01".to_string(),
             connect_timeout: 1,
+            read_timeout: 120,
+            nonstream_read_timeout: 1800,
             x_app: String::new(),
             stainless_lang: String::new(),
             stainless_runtime: String::new(),

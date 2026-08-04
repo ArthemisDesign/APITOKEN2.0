@@ -1201,6 +1201,8 @@ mod tests {
             ua_spread: 0,
             anthropic_version: String::new(),
             connect_timeout: 1,
+            read_timeout: 120,
+            nonstream_read_timeout: 1800,
             x_app: String::new(),
             stainless_lang: String::new(),
             stainless_runtime: String::new(),

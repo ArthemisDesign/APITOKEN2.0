@@ -1284,6 +1284,18 @@ impl Settings {
                 ua_spread: bounded_usize("CLAUDE_API_UA_SPREAD", 8, 1, 100) as u32,
                 anthropic_version: ev_or("CLAUDE_API_ANTHROPIC_VERSION", "2023-06-01"),
                 connect_timeout: bounded_u64("CLAUDE_API_CONNECT_TIMEOUT", 30, 1, 120),
+                // Стриминговая граница простоя: Anthropic шлёт SSE-ping, поэтому живой поток её
+                // не встречает, а зависший ловится за две минуты.
+                read_timeout: bounded_u64("CLAUDE_API_READ_TIMEOUT", 120, 15, 600),
+                // Не-стриминговая: там апстрим молчит до конца генерации, и по времени эта тишина
+                // неотличима от смерти. Живость держит TCP keep-alive, а эта величина остаётся
+                // страховкой от утёкшего слота — клиент её встречать не должен.
+                nonstream_read_timeout: bounded_u64(
+                    "CLAUDE_API_NONSTREAM_READ_TIMEOUT",
+                    1_800,
+                    30,
+                    3_600,
+                ),
                 // Отпечаток Stainless-SDK клиента Claude Code. Дефолты — правдоподобные; ТОЧНЫЕ значения
                 // снимаются с живого claude (refresh-fingerprint.sh) и кладутся в config.env. Флот-константны.
                 x_app: ev_or("CLAUDE_API_X_APP", "cli"),
