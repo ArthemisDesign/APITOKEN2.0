@@ -1423,6 +1423,9 @@ async fn serve() -> Result<()> {
         codex,
         gemini,
         kimi,
+        // GLM server composition (env/config, maintenance loop, admin projection) is a separate
+        // delivery step; the runtime plane stays unwired behind its off switch here.
+        glm: None,
         billing,
         pricing_shadow,
         pricing_manifest: Arc::new(s.pricing_shadow_manifest.clone()),

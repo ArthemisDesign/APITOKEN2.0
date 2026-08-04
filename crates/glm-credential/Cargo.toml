@@ -7,6 +7,9 @@ description = "Encrypted, identity-bound GLM Coding Plan (Zhipu AI / Z.ai) crede
 [lib]
 path = "src/lib.rs"
 
+[features]
+test-loopback-base-url = []
+
 [dependencies]
 anyhow = "1"
 base64 = "0.22"

@@ -43,7 +43,10 @@ credential — `docs/engine/PROVIDER_WIRING_CHECKLIST.md` §6; факты о GLM
    `https://open.bigmodel.cn`), хранится в канонической форме без trailing slash; ключи
    int/CN несовместимы между площадками. Чужой хост, непустой путь, query, fragment или
    credentials в URL — отказ при `seal`/`open`. Вызов `normalize_base_url` на входе —
-   обязанность вызывающего.
+   обязанность вызывающего. Единственное исключение — cargo-фича
+   `test-loopback-base-url`: plain-HTTP на `127.0.0.1`/`localhost`/`[::1]` для mock-апстримов
+   в тестах потребителей. Она включается только через dev-dependencies (`forward`), в
+   production-бинарях allowlist остаётся строгим.
 5. **План декларируется оффером** и нормализуется к `lite|pro|max` (`GlmPlan::parse`);
    Team и legacy prompts-планы fail closed. Наблюдённый quota window-limit, противоречащий
    заявленному плану, — забота runtime (профиль вне ротации), не этого крейта.

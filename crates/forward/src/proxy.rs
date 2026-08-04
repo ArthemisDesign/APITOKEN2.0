@@ -1235,6 +1235,61 @@ pub async fn forward(
                 .await;
         }
     }
+    // GLM is the second internal backend of the Anthropic Messages plane (static API key,
+    // dual-ledger calibration). Same dispatch contract as KIMI: exact reviewed aliases only,
+    // after shared authorization/body bounds, before Claude-specific identity/pricing/pool —
+    // and never a silent fall-through to the Claude upstream when the plane is unavailable.
+    let glm_model = parsed
+        .as_ref()
+        .and_then(|value| value.get("model"))
+        .and_then(Value::as_str)
+        .filter(|model| crate::glm::GlmGateway::model_is_glm(model))
+        .map(str::to_string);
+    if billable {
+        if let Some(glm_model) = glm_model {
+            let Some(gateway) = app.glm.as_ref() else {
+                // A disabled plane, a corrupted initial roster and a cold roster all produce
+                // this fail-closed GLM answer — never a fallback into the Claude pool.
+                return local_err_for(LocalErr::Overloaded, "glm_gateway_unavailable", Some(2));
+            };
+            let glm_body = parsed.take().expect("GLM model came from parsed body");
+            let glm_affinity = authz
+                .affinity_scope()
+                .and_then(|scope| app.affinity.infer(scope, &parts.headers, &glm_body));
+            let billing = match &authz {
+                Authz::Admin { .. } => None,
+                Authz::Metered {
+                    account_id,
+                    key,
+                    mult_bp,
+                    available_nano,
+                    strict_policy,
+                    ..
+                } => Some(crate::glm::GlmBillingInput {
+                    account_id: account_id.clone(),
+                    key: key.clone(),
+                    mult_bp: *mult_bp,
+                    available_nano: *available_nano,
+                    strict_policy: *strict_policy,
+                }),
+                Authz::Unauthorized | Authz::Unavailable => {
+                    unreachable!("GLM dispatch runs only after shared authorization")
+                }
+            };
+            return gateway
+                .handle(crate::glm::GlmRequest {
+                    headers: parts.headers.clone(),
+                    body: glm_body,
+                    raw_body_len: raw.len(),
+                    model: glm_model,
+                    execution,
+                    billing,
+                    affinity: glm_affinity,
+                    affinity_store: app.affinity.clone(),
+                })
+                .await;
+        }
+    }
     let fallback_preeligible = billable
         && matches!(authz, Authz::Metered { .. })
         && operator_target.is_none()
@@ -3047,6 +3102,7 @@ mod tests {
             codex: None,
             gemini: None,
             kimi: None,
+            glm: None,
             billing: Some(billing),
             pricing_shadow: None,
             pricing_manifest: Arc::new(crate::builtin_pricing_runtime_manifest()),
@@ -3173,6 +3229,104 @@ mod tests {
         assert_eq!(
             (account.balance_nano, account.reserved_nano),
             (20_000_000, 0)
+        );
+
+        drop(app);
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn exact_glm_alias_fails_closed_while_claude_keeps_its_existing_path() {
+        let (app, billing, path, claude_response) =
+            invoke_anthropic_bridge(PricingBridgeConfig::disabled(), None).await;
+        assert_eq!(
+            claude_response
+                .extensions()
+                .get::<TerminalErrorReason>()
+                .map(|reason| reason.0),
+            Some("pool_unavailable")
+        );
+
+        for model in ["glm-5.2", "glm-5.2[1m]", "glm-5-turbo", "glm-4.7"] {
+            let request = axum::extract::Request::builder()
+                .method(Method::POST)
+                .uri("/v1/messages")
+                .header("x-api-key", "sk-pool-anthropic-bridge")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "model": model,
+                        "max_tokens": 10,
+                        "messages": [{"role": "user", "content": "hello"}]
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap();
+            let response = forward(
+                State(app.clone()),
+                ConnectInfo("127.0.0.1:4242".parse().unwrap()),
+                request,
+            )
+            .await;
+
+            // The plane is unwired in this app, and an exact GLM alias must never escape to the
+            // Claude upstream: the answer is the fail-closed GLM path, not a fallback.
+            assert_eq!(response.status().as_u16(), 529, "{model}");
+            assert_eq!(
+                response
+                    .extensions()
+                    .get::<TerminalErrorReason>()
+                    .map(|reason| reason.0),
+                Some("glm_gateway_unavailable"),
+                "{model}"
+            );
+            let body = axum::body::to_bytes(response.into_body(), BODY_LIMIT)
+                .await
+                .unwrap();
+            let lowered = String::from_utf8_lossy(&body).to_ascii_lowercase();
+            for private in ["glm", "zhipu", "z.ai"] {
+                assert!(!lowered.contains(private), "{model} leaked {private}");
+            }
+        }
+        // Every reviewed alias failed closed before any reserve: the account is untouched.
+        let account = billing
+            .account("anthropic-bridge-account")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (account.balance_nano, account.reserved_nano),
+            (20_000_000, 0)
+        );
+        // An echoed historical id is NOT a reviewed alias: it follows the ordinary Claude path
+        // (whatever that path does with an unknown model is its own pre-existing contract).
+        let request = axum::extract::Request::builder()
+            .method(Method::POST)
+            .uri("/v1/messages")
+            .header("x-api-key", "sk-pool-anthropic-bridge")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "model": "glm-5",
+                    "max_tokens": 10,
+                    "messages": [{"role": "user", "content": "hello"}]
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let response = forward(
+            State(app.clone()),
+            ConnectInfo("127.0.0.1:4242".parse().unwrap()),
+            request,
+        )
+        .await;
+        assert_eq!(
+            response
+                .extensions()
+                .get::<TerminalErrorReason>()
+                .map(|reason| reason.0),
+            Some("pool_unavailable")
         );
 
         drop(app);
@@ -4172,6 +4326,7 @@ mod tests {
             codex: None,
             gemini: None,
             kimi: None,
+            glm: None,
             billing: Some(billing),
             pricing_shadow: None,
             pricing_manifest: Arc::new(crate::builtin_pricing_runtime_manifest()),

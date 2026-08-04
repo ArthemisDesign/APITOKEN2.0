@@ -33,7 +33,8 @@ use registry::{
     BillingTotals, CodexCalibrationRow, CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate,
     CodexTurnCalibrationEvent, CodexWindowObservation, FundingNormalizationApplyRequestV2,
     FundingNormalizationApplyResultV2, FundingNormalizationPlanV2, GeminiExactCalibrationRow,
-    GeminiExactWindowObservation, KeyActivationPolicyAck, KeyAuth, KeyPolicyUpdate, KeyRow,
+    GeminiExactWindowObservation, GlmCalibrationRow, GlmSubjectSpend, GlmTurnCalibrationEvent,
+    GlmWindowObservation, KeyActivationPolicyAck, KeyAuth, KeyPolicyUpdate, KeyRow,
     KimiCalibrationRow, KimiTurnCalibrationEvent, KimiWindowObservation,
     ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
     ProviderTurnCalibrationEvent,
@@ -130,6 +131,27 @@ pub(crate) struct KimiQuotaSnapshot {
     pub native_limit_units: i64,
     pub used_fraction_units: i64,
     pub measurement_resolution_fraction_units: i64,
+}
+
+/// One parsed GLM quota-endpoint window before the writer pairs it with the subject's durable
+/// cumulative dual-ledger spend (same single-writer hop as KIMI). Every provider-side value
+/// stays raw and optional: the endpoint's counter units are unproven
+/// (`docs/engine/GLM_PROVIDER.md` §6.3), so unknown is `None`, never `0`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GlmQuotaSnapshot {
+    pub window_duration_secs: i64,
+    /// `nextResetTime` when the provider supplied it; a rolling window may not name one.
+    pub resets_at: Option<i64>,
+    pub observed_at: i64,
+    pub native_used_units: Option<i64>,
+    pub native_limit_units: Option<i64>,
+    pub native_remaining_units: Option<i64>,
+    /// The provider's own percentage display value at whole-percent granularity. Raw evidence
+    /// only — the estimator fraction derives from the used/limit counters, never from this.
+    pub percentage_raw: Option<i64>,
+    /// Derived fraction pair, present only for the documented credits form.
+    pub used_fraction_units: Option<i64>,
+    pub measurement_resolution_fraction_units: Option<i64>,
 }
 
 type GeminiTurnPersistenceResult = (
@@ -1270,6 +1292,101 @@ fn observe_kimi_postgres(
     }
 }
 
+/// Build the immutable GLM observation for one window: provider-side raw counters from the
+/// snapshot plus the subject's exact durable cumulative dual ledgers, which only this serial
+/// writer may read. API nanoUSD and native microcredits stay two independent totals — one is
+/// never derived from the other (`docs/engine/GLM_PROVIDER.md` §5.3).
+fn glm_observation(
+    subject_id: &str,
+    plan: &str,
+    snapshot: &GlmQuotaSnapshot,
+    spend: GlmSubjectSpend,
+    source: &str,
+    source_request_id: Option<&str>,
+) -> GlmWindowObservation {
+    GlmWindowObservation {
+        subject_id: subject_id.to_owned(),
+        plan: plan.to_owned(),
+        window_duration_secs: snapshot.window_duration_secs,
+        reset_at: snapshot.resets_at,
+        observed_at: snapshot.observed_at,
+        native_used_units: snapshot.native_used_units,
+        native_limit_units: snapshot.native_limit_units,
+        native_remaining_units: snapshot.native_remaining_units,
+        percentage_raw: snapshot.percentage_raw,
+        used_fraction_units: snapshot.used_fraction_units,
+        measurement_resolution_fraction_units: snapshot.measurement_resolution_fraction_units,
+        cumulative_api_nanousd: spend.spent_api_nanousd,
+        cumulative_native_microcredits: spend.spent_native_microcredits,
+        observation_source: source.to_owned(),
+        source_request_id: source_request_id.map(str::to_owned),
+    }
+}
+
+fn glm_observation_is_stale_or_duplicate(
+    row: &GlmCalibrationRow,
+    observation: &GlmWindowObservation,
+) -> bool {
+    observation.observed_at < row.observed_at
+        || (observation.observed_at == row.observed_at
+            && observation.reset_at == row.reset_at
+            && observation.used_fraction_units == row.used_fraction_units
+            && observation.measurement_resolution_fraction_units
+                == row.measurement_resolution_fraction_units
+            // A quota point can be observed before the matching turn reaches durable spend.
+            // An equal-second retry with higher spend on EITHER ledger is settlement
+            // catch-up, not a duplicate — the two ledgers advance together per turn.
+            // (Option-ordered `>` would call `Some(x) > None` true, so the fraction
+            // comparison is explicit: it only counts when both halves exist.)
+            && !(matches!(
+                (row.used_fraction_units, row.anchor_used_fraction_units),
+                (Some(used), Some(anchor)) if used > anchor
+            ) && (observation.cumulative_api_nanousd > row.anchor_spend_api_nanousd
+                || observation.cumulative_native_microcredits
+                    > row.anchor_spend_native_microcredits)))
+}
+
+fn observe_glm_postgres(
+    pg: &mut registry::pg::PgStore,
+    observation: &GlmWindowObservation,
+) -> anyhow::Result<GlmCalibrationRow> {
+    loop {
+        let existing = pg.load_glm_calibration(
+            &observation.subject_id,
+            &observation.plan,
+            observation.window_duration_secs,
+        )?;
+        if let Some(existing) = existing.as_ref().filter(|row| {
+            row.estimator_version == crate::glm_calibration::ESTIMATOR_VERSION
+                && glm_observation_is_stale_or_duplicate(row, observation)
+        }) {
+            return Ok(existing.clone());
+        }
+        let history = if existing
+            .as_ref()
+            .is_some_and(|row| row.estimator_version != crate::glm_calibration::ESTIMATOR_VERSION)
+        {
+            pg.load_glm_window_observations(
+                &observation.subject_id,
+                &observation.plan,
+                observation.window_duration_secs,
+            )?
+        } else {
+            Vec::new()
+        };
+        let mut state = crate::glm_calibration::apply_observation_with_history(
+            existing,
+            &history,
+            observation,
+        )?;
+        // The save validates the state/observation pair and applies the estimator CAS.
+        if let Some(version) = pg.save_glm_calibration(&state, observation)? {
+            state.version = version;
+            return Ok(state);
+        }
+    }
+}
+
 fn persist_gemini_turn_postgres(
     pg: &mut registry::pg::PgStore,
     url: &str,
@@ -1327,6 +1444,16 @@ enum WriteCmd {
         plan: String,
         snapshots: Vec<KimiQuotaSnapshot>,
         reply: oneshot::Sender<anyhow::Result<Vec<KimiCalibrationRow>>>,
+    },
+    GlmRecordTurn {
+        event: GlmTurnCalibrationEvent,
+        reply: oneshot::Sender<anyhow::Result<bool>>,
+    },
+    GlmObserveWindows {
+        subject_id: String,
+        plan: String,
+        snapshots: Vec<GlmQuotaSnapshot>,
+        reply: oneshot::Sender<anyhow::Result<Vec<GlmCalibrationRow>>>,
     },
     CodexRecordTurn {
         event: CodexTurnCalibrationEvent,
@@ -2199,6 +2326,57 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
     }
 
+    /// Persist one immutable GLM turn and advance the subject's exact dual ledgers (official
+    /// API nanoUSD AND native microcredits) in the same transaction.
+    ///
+    /// The gateway owns the bounded FIFO because it must gate quota polling on a fully drained
+    /// queue. This command is the single PostgreSQL writer hop for one FIFO head; exact
+    /// request-id replay is a no-op and a different payload is a permanent typed conflict.
+    pub(crate) async fn record_glm_turn(
+        &self,
+        event: GlmTurnCalibrationEvent,
+    ) -> anyhow::Result<bool> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::GlmRecordTurn { event, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    /// Pair one whole GLM quota snapshot with exact durable subject dual-ledger spend and
+    /// advance every independent window (5h and weekly) through immutable observation +
+    /// estimator CAS.
+    ///
+    /// The caller has already drained the gateway's bounded turn FIFO and keeps that drain
+    /// barrier held until this command returns. The writer still owns the spend read so no
+    /// async caller can accidentally construct an observation from a stale total.
+    pub(crate) async fn observe_glm_windows(
+        &self,
+        subject_id: &str,
+        plan: &str,
+        snapshots: Vec<GlmQuotaSnapshot>,
+    ) -> anyhow::Result<Vec<GlmCalibrationRow>> {
+        if subject_id.is_empty() || plan.is_empty() || snapshots.is_empty() {
+            anyhow::bail!("invalid GLM quota observation command");
+        }
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::GlmObserveWindows {
+                subject_id: subject_id.to_owned(),
+                plan: plan.to_owned(),
+                snapshots,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
     /// Persist exact official-price spend for one Codex home and return its durable cumulative
     /// total. This is provider-capacity evidence, independent of whether the customer turn was
     /// billable (admin turns consume the same subscription window).
@@ -2669,6 +2847,16 @@ impl AsyncBilling {
                     WriteCmd::KimiObserveWindows { reply, .. } => {
                         let _ = reply.send(Err(anyhow::anyhow!(
                             "KIMI calibration authority requires PostgreSQL"
+                        )));
+                    }
+                    WriteCmd::GlmRecordTurn { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "GLM calibration authority requires PostgreSQL"
+                        )));
+                    }
+                    WriteCmd::GlmObserveWindows { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "GLM calibration authority requires PostgreSQL"
                         )));
                     }
                     WriteCmd::CodexRecordTurn { event, reply } => {
@@ -3431,6 +3619,50 @@ impl AsyncBilling {
                                             spend,
                                         );
                                         states.push(observe_kimi_postgres(pg, &observation)?);
+                                    }
+                                    Ok(states)
+                                },
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::GlmRecordTurn { event, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "GLM turn calibration event",
+                                |pg| pg.record_glm_turn(&event),
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::GlmObserveWindows {
+                            subject_id,
+                            plan,
+                            snapshots,
+                            reply,
+                        } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "GLM window observations",
+                                |pg| {
+                                    // Durable dual-ledger spend is read FIRST; only then may a
+                                    // window observation/CAS pair itself with it. Reversing the
+                                    // order would let an observation see a window total that an
+                                    // earlier turn has not yet reached.
+                                    let spend = pg.glm_subject_spend(&subject_id)?;
+                                    let mut states = Vec::with_capacity(snapshots.len());
+                                    for snapshot in &snapshots {
+                                        let observation = glm_observation(
+                                            &subject_id,
+                                            &plan,
+                                            snapshot,
+                                            spend,
+                                            "poll",
+                                            None,
+                                        );
+                                        states.push(observe_glm_postgres(pg, &observation)?);
                                     }
                                     Ok(states)
                                 },
@@ -7713,6 +7945,218 @@ mod tests {
             .record_kimi_turn(kimi_event("kimi-sqlite-turn", 1, 1))
             .await
             .is_err());
+    }
+
+    fn glm_event(
+        request_id: &str,
+        api_total_nanousd: i64,
+        native_total_microcredits: i64,
+        completed_at: i64,
+    ) -> GlmTurnCalibrationEvent {
+        GlmTurnCalibrationEvent {
+            request_id: request_id.into(),
+            subject_id: "glm-subject-a".into(),
+            plan: "Pro".into(),
+            requested_model: "glm-5.2".into(),
+            served_model: "glm-5.2".into(),
+            context_mode: "200k".into(),
+            reasoning_effort: Some("high".into()),
+            api_tariff_schedule_id: "zhipu/zai-open-platform/2026-08-03".into(),
+            credit_schedule_id: "zhipu/glm-coding-plan-credits/2026-08-03".into(),
+            priced_ts: completed_at,
+            completed_at,
+            fresh_input_tokens: 1,
+            cached_input_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 1,
+            reasoning_tokens: 0,
+            api_fresh_input_nanousd: api_total_nanousd / 2,
+            api_cached_input_nanousd: 0,
+            api_output_nanousd: api_total_nanousd - api_total_nanousd / 2,
+            api_total_nanousd,
+            native_fresh_input_microcredits: native_total_microcredits / 2,
+            native_cached_input_microcredits: 0,
+            native_output_microcredits: native_total_microcredits
+                - native_total_microcredits / 2,
+            native_total_microcredits,
+            off_peak: false,
+        }
+    }
+
+    fn glm_snapshot(
+        duration_secs: i64,
+        used: i64,
+        limit: i64,
+        observed_at: i64,
+    ) -> GlmQuotaSnapshot {
+        let fraction = registry::glm_fraction_from_native(used, limit).unwrap();
+        GlmQuotaSnapshot {
+            window_duration_secs: duration_secs,
+            resets_at: Some(observed_at + duration_secs),
+            observed_at,
+            native_used_units: Some(used),
+            native_limit_units: Some(limit),
+            native_remaining_units: Some(limit - used),
+            percentage_raw: None,
+            used_fraction_units: Some(fraction.used_fraction_units),
+            measurement_resolution_fraction_units: Some(
+                fraction.measurement_resolution_fraction_units,
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn glm_calibration_commands_refuse_a_sqlite_authority() {
+        let billing = AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::new(":memory:".to_owned(), None),
+            None,
+            1,
+            0,
+        )
+        .unwrap();
+        // GLM calibration is PostgreSQL-only, like KIMI: evidence commands refuse the SQLite
+        // authority rather than writing provider evidence somewhere it cannot be paired.
+        assert!(billing
+            .record_glm_turn(glm_event("glm-sqlite-turn", 2, 2, 1))
+            .await
+            .is_err());
+        assert!(billing
+            .observe_glm_windows(
+                "glm-subject-a",
+                "Pro",
+                vec![glm_snapshot(registry::GLM_5H_WINDOW_SECS, 100, 1_000, 100)],
+            )
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn glm_postgres_actor_pairs_dual_spend_before_independent_window_cas() {
+        const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_441;
+
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!(
+                "skipping GLM PostgreSQL actor matrix: CLAUDE_API_TEST_DATABASE_URL is unset"
+            );
+            return;
+        };
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let instance_id = format!("glm-actor-{}-{unique}", std::process::id());
+        let mut lock_holder = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        lock_holder
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+        pg.migrate().unwrap();
+        lock_holder
+            .batch_execute(
+                "TRUNCATE glm_window_calibrations,glm_window_observations,\
+                 glm_calibration_subject_spend,glm_turn_calibration_events \
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        let owner = pg.claim_instance(&instance_id, 60).unwrap();
+        drop(pg);
+
+        let billing = AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+            Some(owner),
+            1,
+            0,
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let first = vec![
+                glm_snapshot(registry::GLM_5H_WINDOW_SECS, 100, 1_000, 100),
+                glm_snapshot(registry::GLM_WEEKLY_WINDOW_SECS, 200, 1_000, 100),
+            ];
+            let anchored = billing
+                .observe_glm_windows("glm-subject-a", "Pro", first)
+                .await
+                .unwrap();
+            assert_eq!(anchored.len(), 2);
+            assert!(anchored
+                .iter()
+                .all(|row| row.samples == 0 && row.version == 1));
+
+            assert!(billing
+                .record_glm_turn(glm_event("glm-actor-turn", 1_000_000_000, 500_000_000, 101))
+                .await
+                .unwrap());
+            let second = vec![
+                glm_snapshot(registry::GLM_5H_WINDOW_SECS, 110, 1_000, 102),
+                glm_snapshot(registry::GLM_WEEKLY_WINDOW_SECS, 230, 1_000, 102),
+            ];
+            let measured = billing
+                .observe_glm_windows("glm-subject-a", "Pro", second.clone())
+                .await
+                .unwrap();
+            assert_eq!(measured.len(), 2);
+            assert!(measured.iter().all(|row| {
+                row.samples == 1
+                    && row.observed_spend_api_nanousd == 1_000_000_000
+                    && row.observed_spend_native_microcredits == 500_000_000
+                    && row.current_capacity_nanousd.is_some()
+                    && row.version == 2
+            }));
+
+            // Exact replay is idempotent: no extra immutable row, sample or CAS version.
+            let replay = billing
+                .observe_glm_windows("glm-subject-a", "Pro", second)
+                .await
+                .unwrap();
+            assert!(replay
+                .iter()
+                .all(|row| row.samples == 1 && row.version == 2));
+            billing.flush().await.unwrap();
+        });
+        drop(billing);
+
+        let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+        // The two ledgers advanced independently and exactly; one is never the other rescaled.
+        assert_eq!(
+            pg.glm_subject_spend("glm-subject-a").unwrap(),
+            GlmSubjectSpend {
+                spent_api_nanousd: 1_000_000_000,
+                spent_native_microcredits: 500_000_000,
+            }
+        );
+        for duration in [
+            registry::GLM_5H_WINDOW_SECS,
+            registry::GLM_WEEKLY_WINDOW_SECS,
+        ] {
+            let history = pg
+                .load_glm_window_observations("glm-subject-a", "Pro", duration)
+                .unwrap();
+            assert_eq!(history.len(), 2);
+            assert_eq!(history[0].cumulative_api_nanousd, 0);
+            assert_eq!(history[0].cumulative_native_microcredits, 0);
+            assert_eq!(history[1].cumulative_api_nanousd, 1_000_000_000);
+            assert_eq!(history[1].cumulative_native_microcredits, 500_000_000);
+        }
+        lock_holder
+            .batch_execute(
+                "TRUNCATE glm_window_calibrations,glm_window_observations,\
+                 glm_calibration_subject_spend,glm_turn_calibration_events \
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        lock_holder
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
     }
 
     #[test]

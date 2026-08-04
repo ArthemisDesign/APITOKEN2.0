@@ -43,4 +43,5 @@ zeroize = "1"
 [dev-dependencies]
 gemini-credential = { path = "../gemini-credential", features = ["test-loopback-token-uri"] }
 codex-credential = { path = "../codex-credential", features = ["test-loopback-token-uri"] }
+glm-credential = { path = "../glm-credential", features = ["test-loopback-base-url"] }
 postgres = "0.19"

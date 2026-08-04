@@ -1128,6 +1128,7 @@ mod tests {
             codex: None,
             gemini: None,
             kimi: None,
+            glm: None,
             billing: Some(billing),
             pricing_shadow: None,
             pricing_manifest: Arc::new(crate::builtin_pricing_runtime_manifest()),

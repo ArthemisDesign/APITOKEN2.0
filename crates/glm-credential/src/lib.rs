@@ -237,7 +237,7 @@ impl GlmCredential {
 /// are refused, because a key is only ever valid against the console that issued it.
 pub fn normalize_base_url(base_url: &str) -> anyhow::Result<String> {
     let parsed = url::Url::parse(base_url).context("parse GLM base url")?;
-    if parsed.scheme() != "https" {
+    if parsed.scheme() != "https" && !is_test_loopback(&parsed) {
         bail!("GLM base url must use https");
     }
     if !parsed.username().is_empty() || parsed.password().is_some() {
@@ -253,8 +253,26 @@ pub fn normalize_base_url(base_url: &str) -> anyhow::Result<String> {
     let origin = origin.trim_end_matches('/');
     match origin {
         GLM_BASE_URL_INTERNATIONAL | GLM_BASE_URL_CHINA => Ok(origin.to_string()),
+        _ if is_test_loopback(&parsed) => Ok(origin.to_string()),
         _ => bail!("GLM base url host is not an official console origin"),
     }
+}
+
+/// Test-only escape hatch: mock upstreams serve plain HTTP on loopback. The feature is enabled
+/// exclusively through consumer dev-dependencies, so production binaries keep the strict
+/// two-origin https allowlist above.
+#[cfg(feature = "test-loopback-base-url")]
+fn is_test_loopback(parsed: &url::Url) -> bool {
+    parsed.scheme() == "http"
+        && matches!(
+            parsed.host_str(),
+            Some("127.0.0.1") | Some("localhost") | Some("[::1]")
+        )
+}
+
+#[cfg(not(feature = "test-loopback-base-url"))]
+fn is_test_loopback(_parsed: &url::Url) -> bool {
+    false
 }
 
 /// Normalize and bound an egress proxy URL. Credentials embedding one must not be able to

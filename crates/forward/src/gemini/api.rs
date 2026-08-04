@@ -3614,6 +3614,7 @@ mod tests {
             codex: None,
             gemini: Some(gateway),
             kimi: None,
+            glm: None,
             billing,
             pricing_shadow: None,
             pricing_manifest: Arc::new(crate::builtin_pricing_runtime_manifest()),

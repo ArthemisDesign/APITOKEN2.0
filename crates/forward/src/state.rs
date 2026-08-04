@@ -6,6 +6,7 @@ use crate::breaker::Breaker;
 use crate::codex::CodexGateway;
 use crate::config::ProxyConfig;
 use crate::gemini::GeminiGateway;
+use crate::glm::GlmGateway;
 use crate::kimi::KimiGateway;
 use crate::metrics::Metrics;
 use crate::pricing::PricingShadowRuntime;
@@ -69,6 +70,10 @@ pub struct AppState {
     /// Optional backend-only KIMI subscription pool. It dispatches exact KIMI aliases inside the
     /// Anthropic Messages plane and intentionally has no public provider mode or catalogue.
     pub kimi: Option<Arc<KimiGateway>>,
+    /// Optional backend-only GLM (Z.ai Coding Plan) subscription pool. Same shape as KIMI:
+    /// exact reviewed GLM aliases dispatch inside the Anthropic Messages plane; the credential
+    /// is a static API key with a dual-ledger (API nanoUSD + native microcredits) calibration.
+    pub glm: Option<Arc<GlmGateway>>,
     /// Биллинг клиентов (async DB-актор — синхронный SQLite не блокирует воркеры).
     /// `None` → биллинг выключен (только env-ключи/localhost).
     pub billing: Option<Arc<AsyncBilling>>,

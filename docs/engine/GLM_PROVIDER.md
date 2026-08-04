@@ -1,6 +1,7 @@
 # GLM (Zhipu AI / Z.ai) — provider capability manifest
 
-Статус интеграции: **default-off backend preview, research завершён, runtime не реализован**.
+Статус интеграции: **default-off backend preview, research завершён, runtime в `forward`
+реализован (gateway + диспетч + billing writer), server-композиция и live-гейты впереди**.
 Дата ревью источников — **2026-08-03**.
 
 Документ создан по `docs/engine/PROVIDER_ONBOARDING.md` §3.3 и является capability manifest
@@ -352,7 +353,7 @@ cumulative ledgers и завершает immutable observation/CAS до публ
 | Auth Bot: протокол валидации + roster | `crates/authbot/src/{glm_key,glm_roster}.rs` | готово, 26 тестов |
 | Auth Bot: мастер продавца | `crates/authbot/src/bot.rs` (+`db.rs` `hregion`/recovery, `main.rs`) | готово, 21 тест (мастер, меню, регион, restart-восстановление) |
 | runtime-примитивы: config / transport / roster / client / selection / pool / queue | `crates/forward/src/glm/` | готово, 71 тест |
-| gateway | `crates/forward/src/glm/gateway.rs` | не начато |
+| gateway (+ диспетч `proxy.rs`, `AppState.glm`, billing writer, test-loopback фича credential) | `crates/forward/src/glm/gateway.rs` | готово, 35 mock-тестов + real-PG гейт в `billing.rs` |
 | server: env/config + композиция | `crates/server/src/{config,main,poller}.rs` | не начато |
 | observability, admin projection | `observability/**`, `apps/admin` | не начато |
 | безопасный live-runner | `tools/glm_calibration/` | не начато |

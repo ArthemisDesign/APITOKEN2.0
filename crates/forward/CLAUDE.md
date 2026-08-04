@@ -978,6 +978,63 @@ calibration rows (`AsyncBilling::kimi_calibration_report` поверх PostgreSQ
 `PgStore::list_kimi_calibrations`, на SQLite authority — пустой отчёт) join-ятся к opaque id
 только через `profile_id_for_subject`, и чужой subject наружу не сериализуется.
 
+**GLM backend preview runtime — default-off, без публичного каталога:**
+`glm_calibration.rs` содержит чистый dual-ledger estimator одного окна подписки GLM Coding
+Plan (Zhipu AI / Z.ai), а `glm/` — строгий loader encrypted roster, last-good atomic reload,
+quota client, unlimited-parallel selector, двухслойную (HTTP + business code) provider fault
+classification, one-byte attempt policy без auth-retry, bounded turn FIFO и exact Anthropic
+Messages gateway. Контракт и факты — `docs/engine/GLM_PROVIDER.md`, схема — миграция
+`0029_glm_window_calibration.sql`, типы и PostgreSQL authority —
+`registry::glm_calibration`/`PgStore::{record_glm_turn,save_glm_calibration}`.
+
+Три отличия от KIMI, которые нельзя «унифицировать»:
+
+1. **Credential — статический API-ключ, refresh-семьи нет вообще.** Ни single-flight refresh,
+   ни reseal-on-rotation, ни same-profile retry после 401: бизнес-код 401 (включая ловушку
+   quota-endpoint'а — HTTP 200 с `code: 401` в теле) или истёкший план (1309) означают
+   durable `account_dead` до атомарной републикации ключа Auth Bot'ом. Reload поэтому не
+   держит refresh-locks; snapshot race с peer blue-green поколением закрывает финальное
+   перечитывание roster перед публикацией поколения.
+2. **Каждый turn тарифицируется дважды и независимо.** Official API replacement cost (nanoUSD,
+   rate card Open Platform) и native credits (microcredits из опубликованной формулы
+   мультипликаторов с off-peak ×0.5 по расписанию UTC+8 на момент completion) — два disjoint
+   ledger на одном immutable event; один никогда не восстанавливается из другого, и оба
+   schedule id лежат в событии. Cache-write денежной ноги у провайдера нет («Limited-time
+   Free»): write платится по miss-ставке и в событии сворачивается в fresh-input leg, чтобы
+   три disjoint legs сходились в total.
+3. **Ошибки двухслойные: business code в теле побеждает HTTP-класс.** Классификация читает
+   bounded error body до `decide` (429 с кодом 1308 — quota wall, а не rate limit); из
+   тела 1308/1310 парсится exact reset для cooling, иначе bounded fallback до ближайшего
+   idle poll. Quota probe аутентифицируется сырым ключом БЕЗ Bearer-префикса; generation —
+   Bearer + Claude-Code-compatible identity-набор из конфига (risk-control Z.ai банит
+   SDK-подобный трафик). Единиц измерения счётчиков quota-endpoint'а live не доказаны, поэтому
+   raw counters и derived fraction хранятся optional: unknown — `None`, никогда не `0`.
+
+Identity строки — `subject (keyed-BLAKE3 digest ключа) + declared paid plan (Lite/Pro/Max,
+капитализированная cohort-форма; lowercase serde-спеллинг конверта мапится при adopt) + exact
+native duration (5ч rolling/7д weekly)`. Served-модель решает деньги: requested хранится
+отдельно, а served вне допустимого множества (нет dollar-карты ИЛИ нет опубликованных credit-
+мультипликаторов, как у эхо-идов glm-5/glm-5.1) — billing fail closed: консервативный hold,
+typed operational counter, immutable event не создаётся. Missing terminal usage после delivery —
+тот же documented hold со своим counter; synthetic usage не создаётся никогда. Tools/web
+search/MCP/vision/highspeed в v1 `unavailable` и fail closed до reserve.
+
+Dispatch exact reviewed aliases (`glm-5.2`, `glm-5.2[1m]`, `glm-5-turbo`, `glm-4.7`) внутри
+Anthropic `/v1/messages` — после общей авторизации и bounded body, до Claude-specific
+identity/pricing/pool (`AppState.glm`); выключенная плоскость, cold или сломанный roster дают
+fail-closed `glm_gateway_unavailable`/`glm_capacity_exhausted`, никогда не fallback в Claude.
+Quota preflight карантинирует только профиль с мёртвым ключом, не весь gateway. Roster
+discovery идёт каждые 15 секунд: неизменённый profile переиспользует тот же `Arc`, новый/
+изменённый credential проходит free quota-probe ДО whole-generation swap, любая ошибка
+read/decrypt/client/probe и исчезнувший файл сохраняют last-good, валидный пустой roster —
+единственный способ снять флот; старый in-flight lease доживает на своём `Arc`. Quota poll —
+тот же turn-before-quota порядок, что у KIMI: drain FIFO → GET → epoch re-check → второй drain
+под FIFO-барьером → serial writer сам читает cumulative DUAL spend → immutable observation +
+estimator CAS по каждому независимому окну → publish steering только после durable успеха всех
+окон; transient failure сохраняет last-good quota. Server-композиция (env/config, maintenance
+loop, admin projection, observability) — отдельный следующий шаг: здесь плоскость собрана
+только внутри `forward` и остаётся выключенной.
+
 **Тюнинг под живой Anthropic** (identity/beta/UA/version) — через поля `ProxyConfig`, которые
 `server` берёт из env. Значения по умолчанию — в `config.rs`.
 
