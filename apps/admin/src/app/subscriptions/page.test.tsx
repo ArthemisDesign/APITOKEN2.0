@@ -17,6 +17,7 @@ import { ClaudeCapacityBoard } from "./claude-capacity-board";
 import { CodexCapacityBoard } from "./codex-capacity-board";
 import { FleetCapacityOverview } from "./fleet-capacity-overview";
 import { GeminiCapacityBoard } from "./gemini-capacity-board";
+import { KimiCapacityBoard } from "./kimi-capacity-board";
 import {
   barFromPercent,
   barFromRemaining,
@@ -24,9 +25,16 @@ import {
   deadLabel,
   geminiProfileStatus,
   homeStatus,
+  kimiFleetUsedPercent,
+  kimiFleetWindowMoney,
+  kimiMeasuredCoverage,
+  kimiProfileStatus,
+  kimiUsedPercent,
+  kimiWindowLabel,
   resolveBanner,
   stripProxyPort,
 } from "./logic";
+import type { KimiProfile, KimiSubsResponse } from "./types";
 
 const OK_BANNER = {
   dead: 0,
@@ -40,9 +48,13 @@ const OK_BANNER = {
   geminiAuthBad: 0,
   geminiUnavailable: false,
   geminiMissing: 0,
+  kimiDown: false,
+  kimiEmpty: false,
+  kimiUnavailable: false,
   claudeCount: 3,
   gptSummary: 2,
   geminiSummary: 1,
+  kimiSummary: 1,
   updatedAt: "31.07.2026, 19:00",
 };
 
@@ -1096,6 +1108,446 @@ describe("таблицы флотов (smoke render с данными)", () => {
   });
 });
 
+// Детерминированные фикстуры KIMI — точная форма wire contract GET /kimi-subs.
+const KIMI_NOW = 1_785_820_912;
+
+const KIMI_PROFILE: KimiProfile = {
+  id: "kimi-1beecf16c84925f0",
+  plan: "unreviewed",
+  live: true,
+  inflight: 0,
+  cooling: { auth_until: null, transport_until: null, quota_until: null },
+  quota_observed_at: KIMI_NOW - 29,
+  quota: [
+    {
+      duration_secs: 18_000,
+      used_units: "25",
+      limit_units: "100",
+      used_fraction_units: 25_000_000,
+      measurement_resolution_fraction_units: 1_000_000,
+      resets_at: KIMI_NOW + 5_593,
+      observed_at: KIMI_NOW - 29,
+    },
+    {
+      duration_secs: 604_800,
+      used_units: "120",
+      limit_units: "1000",
+      used_fraction_units: 12_000_000,
+      measurement_resolution_fraction_units: 1_000_000,
+      resets_at: KIMI_NOW + 600_000,
+      observed_at: KIMI_NOW - 29,
+    },
+  ],
+  calibration: [
+    {
+      duration_secs: 18_000,
+      samples: 4,
+      confidence_bp: 8_000,
+      capacity: { current_nano: "60000000000", low_nano: "55000000000", high_nano: "65000000000" },
+      remaining: { native_units: 75, api_nano: "45000000000" },
+      observed_spend_nano: "15000000000",
+      unattributed_fraction_units: 0,
+      last_measured_at: KIMI_NOW - 60,
+      estimator_version: 1,
+    },
+    {
+      duration_secs: 604_800,
+      samples: 9,
+      confidence_bp: 9_000,
+      capacity: { current_nano: "200000000000", low_nano: "190000000000", high_nano: "210000000000" },
+      remaining: { native_units: 880, api_nano: "176000000000" },
+      observed_spend_nano: "24000000000",
+      unattributed_fraction_units: 0,
+      last_measured_at: KIMI_NOW - 60,
+      estimator_version: 1,
+    },
+  ],
+};
+
+const kimiResponse = (overrides: Partial<KimiSubsResponse> = {}): KimiSubsResponse => ({
+  now: KIMI_NOW,
+  enabled: true,
+  delivery: { pending_events: 0, dropped_events: 0, persistence_ok: true },
+  fleet: {
+    profiles: 1,
+    live_profiles: 1,
+    available_profiles: 1,
+    inflight_requests: 0,
+    auth_quarantined_profiles: 0,
+    transport_cooling_profiles: 0,
+    quota_cooling_profiles: 0,
+  },
+  profiles: [KIMI_PROFILE],
+  ...overrides,
+});
+
+describe("KIMI capacity board (wire contract /kimi-subs)", () => {
+  it("KimiCapacityBoard: реальные окна из duration_secs, exact деньги и проценты, одна строка на профиль", () => {
+    const html = renderToString(<KimiCapacityBoard nowMs={KIMI_NOW * 1000} response={kimiResponse()} />);
+    const text = plain(html);
+    expect(text).toContain("Окна по аккаунтам");
+    expect(text).toContain("kimi-1beecf16c84925f0");
+    expect(text).toContain("unreviewed");
+    expect(text).toContain(">active</span>");
+    // Окна подписаны реальной длительностью: 18000 → 5ч, 604800 → 7д.
+    expect(text).toContain("Quota 5ч / reset");
+    expect(text).toContain("Доступно $ · 5ч");
+    expect(text).toContain("Quota 7д / reset");
+    expect(text).toContain("Доступно $ · 7д");
+    // Exact remaining/full API-$ из decimal nano strings.
+    expect(text).toContain('provider-usd-ink provider-five-hour-money"><b>$45.00</b><small>из $60.00</small>');
+    expect(text).toContain("$176.00");
+    expect(text).toContain("из $200.00");
+    // Used share из used_fraction_units (1e-8): 25_000_000 → 25%, 12_000_000 → 12%.
+    expect(text).toContain("25%");
+    expect(text).toContain("12%");
+    expect(text).toContain("сброс 1ч 33м");
+    expect(text).toContain("сброс 6д 22ч");
+    // Summary strip: те же exact значения и measured coverage.
+    expect(text).toContain("5ч · доступно");
+    expect(text).toContain("7д · доступно");
+    expect(text).toContain("Профили в ротации");
+    expect(text).toContain("1/1");
+    expect(text).toContain("1/1 измерено");
+    expect(html.match(/provider-quota-meter/g)).toHaveLength(2);
+    // Одна identity = одна строка независимо от количества окон: header + 1 профиль.
+    expect(html.match(/<tr/g)).toHaveLength(2);
+    // Privacy: никакого subject/email-shaped контента — только opaque roster id.
+    expect(html).not.toMatch(/@/);
+    expect(html).not.toContain("subject");
+    expect(html).not.toContain("email");
+    expect(html).not.toContain("Почта");
+    // Удалённой аналитики нет.
+    expect(html).not.toContain("Выгодность по убыванию");
+    expect(html).not.toContain("Сколько токенов доступно");
+    expect(html).not.toContain("estimator_version");
+  });
+
+  it("KimiCapacityBoard: null-деньги → «ждём данные», никогда не $0", () => {
+    const html = renderToString(
+      <KimiCapacityBoard
+        nowMs={KIMI_NOW * 1000}
+        response={kimiResponse({
+          profiles: [{
+            ...KIMI_PROFILE,
+            calibration: [{
+              duration_secs: 18_000,
+              samples: 0,
+              confidence_bp: 0,
+              capacity: { current_nano: null, low_nano: null, high_nano: null },
+              remaining: { native_units: 100, api_nano: null },
+              observed_spend_nano: "0",
+              unattributed_fraction_units: 0,
+              last_measured_at: null,
+              estimator_version: 1,
+            }],
+          }],
+        })}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("ждём данные");
+    expect(text).toContain("ещё не измерено");
+    expect(text).toContain("0/1 измерено");
+    // Свежая provider quota остаётся видна даже без calibrated денег.
+    expect(text).toContain("25%");
+    expect(text).not.toContain("$0.00");
+    expect(text).not.toContain("$45.00");
+  });
+
+  it("KimiCapacityBoard: pending delivery скрывает saleable деньги за «сохраняется»", () => {
+    const html = renderToString(
+      <KimiCapacityBoard
+        nowMs={KIMI_NOW * 1000}
+        response={kimiResponse({ delivery: { pending_events: 2, dropped_events: 0, persistence_ok: true } })}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("сохраняется");
+    expect(text).not.toContain("$45.00");
+    expect(text).not.toContain("$176.00");
+    // Quota — live provider fact и не скрывается.
+    expect(text).toContain("25%");
+    expect(text).toContain("quota уже доступна");
+  });
+
+  it("KimiCapacityBoard: dropped/persistence-сбой скрывает stale API-$ за «обновляем»", () => {
+    const html = renderToString(
+      <KimiCapacityBoard
+        nowMs={KIMI_NOW * 1000}
+        response={kimiResponse({ delivery: { pending_events: 0, dropped_events: 1, persistence_ok: false } })}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("обновляем");
+    expect(text).not.toContain("$45.00");
+    expect(text).not.toContain("$176.00");
+    expect(text).toContain("25%");
+  });
+
+  it("KimiCapacityBoard: dead и cooling профили — «вне ротации» без saleable денег", () => {
+    const dead = renderToString(
+      <KimiCapacityBoard
+        nowMs={KIMI_NOW * 1000}
+        response={kimiResponse({
+          fleet: { ...kimiResponse().fleet, live_profiles: 0, available_profiles: 0 },
+          profiles: [{ ...KIMI_PROFILE, live: false }],
+        })}
+      />,
+    );
+    const deadText = plain(dead);
+    expect(deadText).toContain("вне ротации");
+    expect(deadText).toContain("не входит в ёмкость");
+    expect(deadText).not.toContain("$45.00");
+    // Quota остаётся диагностикой, как у Gemini.
+    expect(deadText).toContain("25%");
+
+    const cooling = renderToString(
+      <KimiCapacityBoard
+        nowMs={KIMI_NOW * 1000}
+        response={kimiResponse({
+          fleet: { ...kimiResponse().fleet, available_profiles: 0, quota_cooling_profiles: 1 },
+          profiles: [{
+            ...KIMI_PROFILE,
+            cooling: { auth_until: null, transport_until: null, quota_until: KIMI_NOW + 300 },
+          }],
+        })}
+      />,
+    );
+    const coolingText = plain(cooling);
+    expect(coolingText).toContain("cooling quota 5м");
+    expect(coolingText).toContain("вне ротации");
+    expect(coolingText).not.toContain("$45.00");
+  });
+
+  it("KimiCapacityBoard: протухший snapshot → «обновляем» и без денег", () => {
+    const stale = KIMI_NOW - 1_200;
+    const html = renderToString(
+      <KimiCapacityBoard
+        nowMs={KIMI_NOW * 1000}
+        response={kimiResponse({
+          profiles: [{
+            ...KIMI_PROFILE,
+            quota_observed_at: stale,
+            quota: KIMI_PROFILE.quota?.map((window) => ({ ...window, observed_at: stale })),
+            calibration: KIMI_PROFILE.calibration?.map((row) => ({ ...row, last_measured_at: stale })),
+          }],
+        })}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain(">обновляем</span>");
+    expect(text).toContain("ждём свежую квоту");
+    expect(text).not.toContain("$45.00");
+    expect(text).toContain("25%");
+  });
+
+  it("KimiCapacityBoard: несколько окон не плодят строки; нестандартное окно подписано честно", () => {
+    const html = renderToString(
+      <KimiCapacityBoard
+        nowMs={KIMI_NOW * 1000}
+        response={kimiResponse({
+          profiles: [{
+            ...KIMI_PROFILE,
+            quota: [
+              ...(KIMI_PROFILE.quota ?? []),
+              {
+                duration_secs: 3_600,
+                used_units: "5",
+                limit_units: "20",
+                used_fraction_units: 25_000_000,
+                measurement_resolution_fraction_units: 1_000_000,
+                resets_at: KIMI_NOW + 900,
+                observed_at: KIMI_NOW - 29,
+              },
+            ],
+          }],
+        })}
+      />,
+    );
+    const text = plain(html);
+    // 3600 секунд — это «1ч», а не фиктивный 5ч-эквивалент.
+    expect(text).toContain("Quota 1ч / reset");
+    expect(text).toContain("Доступно $ · 1ч");
+    expect(text).toContain("сброс 15м");
+    // header + ровно одна строка профиля при трёх окнах.
+    expect(html.match(/<tr/g)).toHaveLength(2);
+    expect(html.match(/provider-quota-meter/g)).toHaveLength(3);
+    // У окна без calibration — «ждём данные», у измеренных — exact деньги.
+    expect(text).toContain("ждём данные");
+    expect(text).toContain("$45.00");
+  });
+
+  it("KimiCapacityBoard: BigInt-суммы пула и limit-взвешенная used-доля в strip", () => {
+    const second: KimiProfile = {
+      ...KIMI_PROFILE,
+      id: "kimi-aa20ff0011223344",
+      plan: "kimi_for_coding",
+      quota: [{
+        duration_secs: 18_000,
+        used_units: "150",
+        limit_units: "300",
+        used_fraction_units: 50_000_000,
+        measurement_resolution_fraction_units: 1_000_000,
+        resets_at: KIMI_NOW + 3_000,
+        observed_at: KIMI_NOW - 10,
+      }],
+      calibration: [{
+        duration_secs: 18_000,
+        samples: 2,
+        confidence_bp: 7_000,
+        capacity: { current_nano: "40000000000", low_nano: null, high_nano: null },
+        remaining: { native_units: 150, api_nano: "15000000000" },
+        observed_spend_nano: "25000000000",
+        unattributed_fraction_units: 0,
+        last_measured_at: KIMI_NOW - 30,
+        estimator_version: 1,
+      }],
+    };
+    const first: KimiProfile = { ...KIMI_PROFILE, quota: [KIMI_PROFILE.quota![0]], calibration: [KIMI_PROFILE.calibration![0]] };
+    const html = renderToString(
+      <KimiCapacityBoard
+        nowMs={KIMI_NOW * 1000}
+        response={kimiResponse({
+          fleet: { ...kimiResponse().fleet, profiles: 2, live_profiles: 2, available_profiles: 2 },
+          profiles: [first, second],
+        })}
+      />,
+    );
+    const text = plain(html);
+    // 45e9 + 15e9 = $60.00 из 60e9 + 40e9 = $100.00 — никакой float-математики.
+    expect(text).toContain("$60.00");
+    expect(text).toContain("из $100.00");
+    // (25e6·100 + 50e6·300) / 400 = 43_750_000 → 43.8%.
+    expect(text).toContain("43.8%");
+    expect(text).toContain("2/2");
+    expect(text).toContain("2/2 измерено");
+    // header + две identity.
+    expect(html.match(/<tr/g)).toHaveLength(3);
+  });
+
+  it("FleetCapacityOverview: KIMI-карточка с реальными окнами рядом с остальными флотами", () => {
+    const html = renderToString(
+      <FleetCapacityOverview
+        claude={{
+          calibrated: true,
+          per_sub: [{ routable: true }],
+          window_totals: [
+            { window_minutes: 300, capacity_nano: "60000000000", remaining_nano: "45000000000", routable_subs: 1, calibrated_subs: 1 },
+            { window_minutes: 10_080, capacity_nano: "200000000000", remaining_nano: "120000000000" },
+          ],
+        }}
+        gpt={{
+          enabled: true,
+          available: 1,
+          homes: [{ process_live: true, admitted: true }],
+          window_totals: [
+            { window_minutes: 300, capacity_nano: "80000000000", remaining_nano: "40000000000", measured_homes: 1, observed_homes: 1 },
+            { window_minutes: 10_080, capacity_nano: "300000000000", remaining_nano: "210000000000" },
+          ],
+        }}
+        gemini={{
+          enabled: true,
+          available: 1,
+          calibration_authority_available: true,
+          calibration_delivery: { pending_events: 0, dropped_events: 0, persistence_ok: true },
+          profiles: [{ authenticated: true }],
+          window_totals: [
+            { window_minutes: 300, capacity_nano: "50000000000", remaining_nano: "30000000000", measured_profiles: 1, observed_profiles: 1 },
+            { window_minutes: 10_080, capacity_nano: "250000000000", remaining_nano: "150000000000" },
+          ],
+        }}
+        kimi={kimiResponse()}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("KIMI");
+    expect(html).toContain("fleet-kimi");
+    // 4 флота × 2 rail: KIMI показывает свои реальные 5ч/7д из duration_secs.
+    expect(html.match(/fleet-window-rail/g)).toHaveLength(8);
+    expect(text).toContain("/ $60.00");
+    expect(text).toContain("/ $200.00");
+    expect(text).toContain("1/1 измерено");
+    expect(html).toContain("fleet-state ok");
+  });
+
+  it("FleetCapacityOverview: KIMI без калибровки — «ждём данные» вместо $0, quota-доля видна", () => {
+    const html = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        kimi={kimiResponse({
+          profiles: [{
+            ...KIMI_PROFILE,
+            calibration: [{
+              duration_secs: 18_000,
+              samples: 0,
+              confidence_bp: 0,
+              capacity: { current_nano: null, low_nano: null, high_nano: null },
+              remaining: { native_units: 100, api_nano: null },
+              observed_spend_nano: "0",
+              unattributed_fraction_units: 0,
+              last_measured_at: null,
+              estimator_version: 1,
+            }],
+          }],
+        })}
+      />,
+    );
+    const text = plain(html);
+    expect(text).toContain("ждём данные");
+    expect(text).not.toContain("$0.00");
+    expect(text).not.toContain("$45.00");
+    expect(text).toContain("25%");
+    expect(text).toContain("0/1 измерено");
+    expect(html).toContain("fleet-state warn");
+  });
+
+  it("FleetCapacityOverview: очередь и потеря KIMI delivery скрывают деньги флота", () => {
+    const pending = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        kimi={kimiResponse({ delivery: { pending_events: 2, dropped_events: 0, persistence_ok: true } })}
+      />,
+    );
+    expect(plain(pending)).toContain("2 сохраняется");
+    expect(plain(pending)).not.toContain("$45.00");
+
+    const dropped = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        kimi={kimiResponse({ delivery: { pending_events: 0, dropped_events: 1, persistence_ok: false } })}
+      />,
+    );
+    expect(plain(dropped)).toContain("1 потеряно");
+    expect(plain(dropped)).not.toContain("$45.00");
+    expect(dropped).toContain("fleet-state bad");
+  });
+
+  it("FleetCapacityOverview: disabled envelope и недоступный KIMI — честные состояния", () => {
+    const off = renderToString(
+      <FleetCapacityOverview
+        claude={null}
+        gpt={null}
+        gemini={null}
+        kimi={{ now: KIMI_NOW, enabled: false, profiles: [] }}
+      />,
+    );
+    expect(plain(off)).toContain("выключен");
+    expect(off).toContain("fleet-kimi");
+    expect(off).toContain("fleet-state bad");
+
+    const down = renderToString(<FleetCapacityOverview claude={null} gpt={null} gemini={null} kimi={null} />);
+    expect(plain(down)).toContain("нет связи");
+    expect(down).toContain("fleet-kimi");
+  });
+});
+
 describe("Подписки (subs page)", () => {
   it("рендерится без падения: начальное состояние — скелетон загрузки", () => {
     // fetch на всякий случай замокан: при SSR-рендере эффекты не исполняются,
@@ -1229,12 +1681,113 @@ describe("geminiProfileStatus (профиль подписки)", () => {
   });
 });
 
+describe("kimiWindowLabel (окна подписаны реальной длительностью)", () => {
+  it("18000 → 5ч, 604800 → 7д, остальные — по фактической длительности", () => {
+    expect(kimiWindowLabel(18_000)).toBe("5ч");
+    expect(kimiWindowLabel(604_800)).toBe("7д");
+    expect(kimiWindowLabel(3_600)).toBe("1ч");
+    expect(kimiWindowLabel(900)).toBe("15м");
+    expect(kimiWindowLabel(45)).toBe("45с");
+    expect(kimiWindowLabel(0)).toBe("окно");
+    expect(kimiWindowLabel(undefined)).toBe("окно");
+  });
+});
+
+describe("kimiProfileStatus (dead / cooling-оси / stale / пусто / active)", () => {
+  const now = KIMI_NOW;
+
+  it("dead профиль — «вне ротации» bad", () => {
+    expect(kimiProfileStatus({ live: false }, now)).toEqual({ label: "вне ротации", kind: "bad" });
+  });
+
+  it("cooling-оси показывают имя оси и отсчёт до последнего until", () => {
+    expect(
+      kimiProfileStatus({ live: true, cooling: { quota_until: now + 300 } }, now),
+    ).toEqual({ label: "cooling quota 5м", kind: "warn" });
+    expect(
+      kimiProfileStatus({ live: true, cooling: { auth_until: now + 600, quota_until: now + 300 } }, now).label,
+    ).toBe("cooling auth+quota 10м");
+    expect(
+      kimiProfileStatus({ live: true, cooling: { transport_until: now + 90 } }, now).label,
+    ).toBe("cooling транспорт 1м");
+  });
+
+  it("без наблюдений — «ждём данные», протухшие — «обновляем», свежие — active", () => {
+    expect(kimiProfileStatus({ live: true }, now)).toEqual({ label: "ждём данные", kind: "warn" });
+    expect(kimiProfileStatus({ live: true, quota_observed_at: now - 601 }, now)).toEqual({
+      label: "обновляем",
+      kind: "warn",
+    });
+    expect(kimiProfileStatus({ live: true, quota_observed_at: now - 30 }, now)).toEqual({ label: "active", kind: "ok" });
+  });
+});
+
+describe("kimiUsedPercent / kimiFleetUsedPercent (BigInt, без float)", () => {
+  it("exact процент с шагом 0.1 и clamp к 0..100", () => {
+    expect(kimiUsedPercent(25_000_000)).toEqual({ value: 25, label: "25%" });
+    expect(kimiUsedPercent(33_333_333)).toEqual({ value: 33.3, label: "33.3%" });
+    expect(kimiUsedPercent(100_000_000)).toEqual({ value: 100, label: "100%" });
+    expect(kimiUsedPercent(150_000_000)).toEqual({ value: 100, label: "100%" });
+    expect(kimiUsedPercent(null)).toEqual({ value: null, label: "—" });
+  });
+
+  it("fleet-доля взвешивается по limit_units окон", () => {
+    const profiles: KimiProfile[] = [
+      { live: true, quota: [{ duration_secs: 18_000, used_fraction_units: 25_000_000, limit_units: "100" }] },
+      { live: true, quota: [{ duration_secs: 18_000, used_fraction_units: 50_000_000, limit_units: "300" }] },
+    ];
+    // (25e6·100 + 50e6·300) / 400 = 43_750_000 → 43.8%.
+    expect(kimiFleetUsedPercent(profiles, 18_000)).toEqual({ value: 43.8, label: "43.8%" });
+    expect(kimiFleetUsedPercent(profiles, 604_800)).toEqual({ value: null, label: "—" });
+  });
+});
+
+describe("kimiFleetWindowMoney (fail-closed суммы)", () => {
+  it("суммирует decimal strings по live-профилям", () => {
+    const profiles: KimiProfile[] = [
+      { live: true, calibration: [{ duration_secs: 18_000, capacity: { current_nano: "60000000000" }, remaining: { api_nano: "45000000000" } }] },
+      { live: true, calibration: [{ duration_secs: 18_000, capacity: { current_nano: "40000000000" }, remaining: { api_nano: "15000000000" } }] },
+    ];
+    expect(kimiFleetWindowMoney(profiles, 18_000, KIMI_NOW)).toEqual({ capacity: "100000000000", remaining: "60000000000" });
+  });
+
+  it("null у любого live-профиля делает итог неизвестным, dead не участвуют", () => {
+    const profiles: KimiProfile[] = [
+      { live: true, calibration: [{ duration_secs: 18_000, capacity: { current_nano: "60000000000" }, remaining: { api_nano: "45000000000" } }] },
+      { live: true, calibration: [{ duration_secs: 18_000, capacity: { current_nano: null }, remaining: { api_nano: null } }] },
+      { live: false, calibration: [{ duration_secs: 18_000, capacity: { current_nano: "99000000000" }, remaining: { api_nano: "99000000000" } }] },
+    ];
+    expect(kimiFleetWindowMoney(profiles, 18_000, KIMI_NOW)).toEqual({ capacity: null, remaining: null });
+    expect(kimiFleetWindowMoney([], 18_000, KIMI_NOW)).toEqual({ capacity: null, remaining: null });
+  });
+
+  it("cooling и stale профили не продаются: их деньги не входят во fleet-итог", () => {
+    const profiles: KimiProfile[] = [
+      { live: true, cooling: { quota_until: KIMI_NOW + 300 }, quota_observed_at: KIMI_NOW - 10, calibration: [{ duration_secs: 18_000, capacity: { current_nano: "60000000000" }, remaining: { api_nano: "45000000000" } }] },
+      { live: true, quota_observed_at: KIMI_NOW - 1_200, calibration: [{ duration_secs: 18_000, capacity: { current_nano: "40000000000" }, remaining: { api_nano: "15000000000" } }] },
+    ];
+    expect(kimiFleetWindowMoney(profiles, 18_000, KIMI_NOW)).toEqual({ capacity: null, remaining: null });
+  });
+});
+
+describe("kimiMeasuredCoverage", () => {
+  it("считает только профили с samples > 0 в конкретном окне", () => {
+    const profiles: KimiProfile[] = [
+      { live: true, calibration: [{ duration_secs: 18_000, samples: 4 }] },
+      { live: true, calibration: [{ duration_secs: 18_000, samples: 0 }, { duration_secs: 604_800, samples: 1 }] },
+    ];
+    expect(kimiMeasuredCoverage(profiles, 18_000)).toEqual({ measured: 1, observed: 2 });
+    expect(kimiMeasuredCoverage(profiles, 604_800)).toEqual({ measured: 1, observed: 2 });
+    expect(kimiMeasuredCoverage([], 18_000)).toEqual({ measured: 0, observed: 0 });
+  });
+});
+
 describe("resolveBanner (приоритеты баннера флота)", () => {
   it("всё здорово → ok-баннер со сводкой флота", () => {
     expect(resolveBanner(OK_BANNER)).toEqual({
       kind: "ok",
-      title: "Все три флота подписок в ротации",
-      sub: "Claude 3 · GPT 2 · Gemini 1 · обновлено 31.07.2026, 19:00",
+      title: "Все четыре флота подписок в ротации",
+      sub: "Claude 3 · GPT 2 · Gemini 1 · KIMI 1 · обновлено 31.07.2026, 19:00",
     });
   });
 
@@ -1245,15 +1798,26 @@ describe("resolveBanner (приоритеты баннера флота)", () =>
     expect(banner.sub).toContain("1 под наблюдением");
   });
 
-  it("падения источников идут в порядке Claude → GPT → Gemini", () => {
+  it("падения источников идут в порядке Claude → GPT → Gemini → KIMI", () => {
     expect(resolveBanner({ ...OK_BANNER, subsDown: true, gptDown: true }).title).toBe(
       "Claude lifecycle-источник недоступен",
     );
     expect(resolveBanner({ ...OK_BANNER, gptDown: true, geminiDown: true }).title).toBe(
       "GPT-контур (OpenAI Codex) не отвечает",
     );
-    expect(resolveBanner({ ...OK_BANNER, geminiDown: true }).title).toBe("Gemini-контур не отвечает");
+    expect(resolveBanner({ ...OK_BANNER, geminiDown: true, kimiDown: true }).title).toBe("Gemini-контур не отвечает");
     expect(resolveBanner({ ...OK_BANNER, geminiEmpty: true }).title).toBe("В Gemini-пуле нет профилей");
+    expect(resolveBanner({ ...OK_BANNER, kimiDown: true }).title).toBe("KIMI-контур не отвечает");
+    expect(resolveBanner({ ...OK_BANNER, kimiEmpty: true }).title).toBe("В KIMI-пуле нет профилей");
+  });
+
+  it("KIMI-сбои: недоступность пула идёт после диагностики Gemini и до suspect", () => {
+    const banner = resolveBanner({ ...OK_BANNER, kimiUnavailable: true });
+    expect(banner.kind).toBe("warn");
+    expect(banner.title).toBe("KIMI: нет доступных профилей");
+    expect(resolveBanner({ ...OK_BANNER, kimiUnavailable: true, suspect: 1 }).title).toBe(
+      "KIMI: нет доступных профилей",
+    );
   });
 
   it("GPT-сбои: auth и процессы склеиваются через « · »", () => {

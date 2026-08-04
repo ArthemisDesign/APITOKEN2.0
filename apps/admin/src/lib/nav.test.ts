@@ -6,7 +6,7 @@ import { NAV, isNavItemActive, navLabelForPath } from "./nav";
 // префиксы других backend'ов. Роут страницы приложения НЕ может совпасть
 // с ними — запрос уйдёт в backend раньше Next.js (регрессия: страница
 // «Подписки» жила на /subs и отдавала сырой JSON движка).
-const RESERVED_EXACT = ["/overview", "/capacity", "/metrics", "/subs", "/spend-stats", "/codex-subs", "/gemini-subs"];
+const RESERVED_EXACT = ["/overview", "/capacity", "/metrics", "/subs", "/spend-stats", "/codex-subs", "/gemini-subs", "/kimi-subs"];
 const RESERVED_PREFIXES = ["/admin/", "/openkeys-admin/", "/partner-admin/"];
 
 describe("NAV", () => {

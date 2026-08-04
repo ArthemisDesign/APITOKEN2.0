@@ -1,4 +1,4 @@
-// Типы payload'ов флотов подписок: GET /subs, /capacity, /codex-subs, /gemini-subs.
+// Типы payload'ов флотов подписок: GET /subs, /capacity, /codex-subs, /gemini-subs, /kimi-subs.
 // Все поля опциональны — панель деградирует молча, как admin-panel.js.
 // Для Codex canonical money — *_nano строки; legacy *_usd только отображаются. Остальные старые
 // payload'ы страницы пока остаются presentation USD и не участвуют в money arithmetic.
@@ -563,4 +563,84 @@ export interface GeminiSubsResponse {
   transport?: GeminiTransport;
   affinity?: GeminiAffinity;
   failures?: GeminiFailures;
+}
+
+// GET /kimi-subs — KIMI-профили (backend-only плоскость внутри Anthropic runtime).
+// Деньги — decimal nano strings (BigInt); неизвестное — null, никогда не 0.
+// Идентичность окна — exact duration_secs (18000 = rolling 5ч, 604800 = weekly);
+// длительности — данные, а не фиксированные 5ч/7д слоты. Email/subject не
+// сериализуются никогда: идентичность — opaque roster id + bounded plan label.
+export interface KimiQuotaWindow {
+  duration_secs?: number;
+  /** Provider authority: used/limit — decimal native-unit строки. */
+  used_units?: string;
+  limit_units?: string;
+  /** Доля использования в единицах 1e-8 (100% = 100_000_000), как у остальных флотов. */
+  used_fraction_units?: number;
+  measurement_resolution_fraction_units?: number;
+  resets_at?: number | null;
+  observed_at?: number | null;
+}
+
+export interface KimiCalibrationWindow {
+  duration_secs?: number;
+  samples?: number;
+  confidence_bp?: number;
+  capacity?: {
+    current_nano?: string | null;
+    low_nano?: string | null;
+    high_nano?: string | null;
+  } | null;
+  /** null целиком, когда неизвестны и native, и API-значение. */
+  remaining?: {
+    native_units?: number | null;
+    api_nano?: string | null;
+  } | null;
+  observed_spend_nano?: string;
+  unattributed_fraction_units?: number;
+  last_measured_at?: number | null;
+  estimator_version?: number;
+}
+
+export interface KimiProfile {
+  /** Opaque roster id; subject/email/phone не покидают runtime. */
+  id?: string;
+  /** Reviewed bounded label тарифа либо "unreviewed". */
+  plan?: string;
+  live?: boolean;
+  inflight?: number;
+  /** Три оси cooling; epoch-секунды окончания либо null. */
+  cooling?: {
+    auth_until?: number | null;
+    transport_until?: number | null;
+    quota_until?: number | null;
+  } | null;
+  quota_observed_at?: number | null;
+  quota?: KimiQuotaWindow[];
+  calibration?: KimiCalibrationWindow[];
+}
+
+export interface KimiDelivery {
+  pending_events?: number;
+  dropped_events?: number;
+  persistence_ok?: boolean;
+}
+
+export interface KimiFleet {
+  profiles?: number;
+  live_profiles?: number;
+  available_profiles?: number;
+  inflight_requests?: number;
+  auth_quarantined_profiles?: number;
+  transport_cooling_profiles?: number;
+  quota_cooling_profiles?: number;
+}
+
+export interface KimiSubsResponse {
+  /** epoch-секунды «сейчас» по часам runtime (сбросы считаются от него). */
+  now?: number;
+  enabled?: boolean;
+  delivery?: KimiDelivery | null;
+  fleet?: KimiFleet | null;
+  profiles?: KimiProfile[];
 }

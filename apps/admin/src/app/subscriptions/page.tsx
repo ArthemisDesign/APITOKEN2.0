@@ -1,9 +1,9 @@
 "use client";
 
 // Подписки — порт 1:1 функции subscriptions() из crates/server/src/admin-panel.js.
-// Три флота на одной странице: Claude OAuth (/subs + live-ёмкость /capacity),
-// GPT/Codex homes (/codex-subs) и Gemini-профили (/gemini-subs). Опрос 10 с,
-// как в легаси (scheduleRefresh: tab==='subs' → 10000).
+// Четыре флота на одной странице: Claude OAuth (/subs + live-ёмкость /capacity),
+// GPT/Codex homes (/codex-subs), Gemini-профили (/gemini-subs) и KIMI-профили
+// (/kimi-subs). Опрос 10 с, как в легаси (scheduleRefresh: tab==='subs' → 10000).
 import { useMemo } from "react";
 import { api } from "@/lib/api";
 import { usePoll } from "@/lib/usePoll";
@@ -13,11 +13,13 @@ import { ClaudeCapacityBoard } from "./claude-capacity-board";
 import { CodexCapacityBoard } from "./codex-capacity-board";
 import { FleetCapacityOverview } from "./fleet-capacity-overview";
 import { GeminiCapacityBoard } from "./gemini-capacity-board";
+import { KimiCapacityBoard } from "./kimi-capacity-board";
 import { resolveBanner } from "./logic";
 import type {
   CapacityResponse,
   CodexSubsResponse,
   GeminiSubsResponse,
+  KimiSubsResponse,
   SubsResponse,
 } from "./types";
 
@@ -28,20 +30,22 @@ interface SubsData {
   capacity: CapacityResponse | null;
   codex: CodexSubsResponse | null;
   gemini: GeminiSubsResponse | null;
+  kimi: KimiSubsResponse | null;
   /** Момент снимка (мс): все отсчёты «до сброса» считаются от него — чистый рендер. */
   nowMs: number;
 }
 
-// Все четыре источника параллельно; падение любого → null, остальные флоты
+// Все пять источников параллельно; падение любого → null, остальные флоты
 // продолжают рендериться независимо (конвенция деградации admin-panel.js).
 async function loadSubs(): Promise<SubsData> {
-  const [subs, capacity, codex, gemini] = await Promise.all([
+  const [subs, capacity, codex, gemini, kimi] = await Promise.all([
     api<SubsResponse>("/subs").catch(() => null),
     api<CapacityResponse>("/capacity").catch(() => null),
     api<CodexSubsResponse>("/codex-subs").catch(() => null),
     api<GeminiSubsResponse>("/gemini-subs").catch(() => null),
+    api<KimiSubsResponse>("/kimi-subs").catch(() => null),
   ]);
-  return { subs, capacity, codex, gemini, nowMs: Date.now() };
+  return { subs, capacity, codex, gemini, kimi, nowMs: Date.now() };
 }
 
 export default function SubsPage() {
@@ -50,7 +54,7 @@ export default function SubsPage() {
   // Все производные флотов пересчитываются только при смене снимка данных.
   const derived = useMemo(() => {
     if (!result) return null;
-    const { subs, capacity, codex, gemini } = result;
+    const { subs, capacity, codex, gemini, kimi } = result;
     const list = subs?.subs ?? [];
     const dead = list.filter((item) => item.auth_state === "dead").length;
     const suspect = list.filter((item) => item.auth_state === "suspect").length;
@@ -80,12 +84,24 @@ export default function SubsPage() {
     const geminiCalibrationStorageBad = gemini?.calibration_authority_available === false
       || gemini?.calibration_delivery?.persistence_ok === false;
 
-    const fleetTotal = list.length + (gptOff ? 0 : homes.length) + (geminiOff ? 0 : geminiProfiles.length);
+    const kimiDown = kimi === null;
+    const kimiOff = Boolean(kimi && kimi.enabled === false);
+    const kimiProfiles = kimi?.profiles ?? [];
+    const kimiEmpty = !kimiDown && !kimiOff && !kimiProfiles.length;
+    const kimiUnavailable =
+      !kimiDown && !kimiOff && kimiProfiles.length > 0 && Number(kimi?.fleet?.available_profiles ?? 0) === 0;
+    const kimiDeliveryPending = Number(kimi?.delivery?.pending_events ?? 0);
+    const kimiDeliveryDropped = Number(kimi?.delivery?.dropped_events ?? 0);
+    const kimiDeliveryBad = kimi?.delivery?.persistence_ok === false;
+
+    const fleetTotal = list.length + (gptOff ? 0 : homes.length) + (geminiOff ? 0 : geminiProfiles.length)
+      + (kimiOff ? 0 : kimiProfiles.length);
     const fleetWarn = Boolean(
       dead || claudeCapacityDown || claudeCalibrationPending || claudeCalibrationDropped
         || claudeCalibrationStorageBad || gptDown || geminiDown || geminiEmpty
         || geminiUnavailable || geminiAuthBad || geminiMissing || geminiCalibrationPending
-        || geminiCalibrationDropped || geminiCalibrationStorageBad,
+        || geminiCalibrationDropped || geminiCalibrationStorageBad || kimiDown || kimiEmpty
+        || kimiUnavailable || kimiDeliveryPending || kimiDeliveryDropped || kimiDeliveryBad,
     );
 
     return {
@@ -116,6 +132,15 @@ export default function SubsPage() {
       geminiCalibrationPending,
       geminiCalibrationDropped,
       geminiCalibrationStorageBad,
+      kimi,
+      kimiDown,
+      kimiOff,
+      kimiProfiles,
+      kimiEmpty,
+      kimiUnavailable,
+      kimiDeliveryPending,
+      kimiDeliveryDropped,
+      kimiDeliveryBad,
       fleetTotal,
       fleetWarn,
     };
@@ -142,9 +167,13 @@ export default function SubsPage() {
     geminiAuthBad: derived.geminiAuthBad,
     geminiUnavailable: derived.geminiUnavailable,
     geminiMissing: derived.geminiMissing,
+    kimiDown: derived.kimiDown,
+    kimiEmpty: derived.kimiEmpty,
+    kimiUnavailable: derived.kimiUnavailable,
     claudeCount: derived.list.length,
     gptSummary: derived.gptOff ? "выкл." : derived.homes.length,
     geminiSummary: derived.geminiOff ? "выкл." : derived.geminiProfiles.length,
+    kimiSummary: derived.kimiOff ? "выкл." : derived.kimiProfiles.length,
     updatedAt: formatDate(result.nowMs, true),
   });
 
@@ -152,7 +181,7 @@ export default function SubsPage() {
     <>
       <PageHead
         title="Подписки"
-        sub="остаток API-$, окна и экономика трёх пулов"
+        sub="остаток API-$, окна и экономика четырёх пулов"
         badge={
           <Pill kind={derived.fleetWarn ? "warn" : "ok"}>
             {count(derived.fleetTotal, "подписка", "подписки", "подписок")}
@@ -164,6 +193,8 @@ export default function SubsPage() {
         claude={derived.capacity}
         gpt={derived.codex}
         gemini={derived.gemini}
+        kimi={derived.kimi}
+        nowMs={result.nowMs}
       />
 
       {banner.kind === "ok" ? null : (
@@ -214,6 +245,22 @@ export default function SubsPage() {
             </div>
           ) : (
             <GeminiCapacityBoard response={derived.gemini!} nowMs={result.nowMs} showSummary={false} />
+          )}
+        </section>
+
+        <section className="subscription-provider-group provider-group-kimi">
+          <header className="subscription-provider-head">
+            <div><span>04 · KIMI</span><h2>Аккаунты и окна</h2></div>
+            <b>API-$ · quota · окна</b>
+          </header>
+          {derived.kimiDown || derived.kimiOff ? (
+            <div className="tcard">
+              <div className="empty">
+                {derived.kimiDown ? "KIMI runtime не отвечает" : "KIMI-контур выключен"}
+              </div>
+            </div>
+          ) : (
+            <KimiCapacityBoard response={derived.kimi!} nowMs={result.nowMs} showSummary={false} />
           )}
         </section>
       </div>

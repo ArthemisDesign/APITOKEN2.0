@@ -1,9 +1,10 @@
 // Чистая логика страницы «Подписки» — порт вычислений из subscriptions()
-// (crates/server/src/admin-panel.js): баннер флота, статусы Claude/GPT/Gemini,
+// (crates/server/src/admin-panel.js): баннер флота, статусы Claude/GPT/Gemini/KIMI,
 // пороговые бары. Вынесена из JSX ради юнит-тестов.
 import { count, duration } from "@/lib/format";
 import type { Tone } from "@/components/ui";
-import type { CodexHome, GeminiProfile } from "./types";
+import { providerInteger } from "./provider-calibration";
+import type { CodexHome, GeminiProfile, KimiProfile } from "./types";
 
 // deadLabel: причина смерти Claude-токена → русская подпись пилюли.
 export function deadLabel(reason: string | null | undefined): string {
@@ -107,6 +108,178 @@ export function geminiProfileStatus(profile: GeminiProfile, nowSec: number): Sta
   return { label: "active", kind: "ok" };
 }
 
+/* ── KIMI ─────────────────────────────────────────────── */
+
+// used_fraction_units во всех флотах — доля в единицах 1e-8.
+const FRACTION_SCALE = 100_000_000n;
+
+// Возраст evidence, после которого snapshot считается протухшим (как snapshot_age_secs у GPT).
+const KIMI_STALE_SECS = 600;
+
+// kimiWindowLabel: exact duration_secs → короткая подпись окна. 18000 → "5ч",
+// 604800 → "7д"; любая другая длительность подписывается своим реальным
+// размером — фиктивных 5ч/7д эквивалентов не существует.
+export function kimiWindowLabel(durationSecs: number | null | undefined): string {
+  const secs = Number(durationSecs) || 0;
+  if (secs <= 0) return "окно";
+  if (secs % 86_400 === 0) return `${secs / 86_400}д`;
+  if (secs % 3_600 === 0) return `${secs / 3_600}ч`;
+  if (secs % 60 === 0) return `${secs / 60}м`;
+  return `${secs}с`;
+}
+
+// kimiWindowDurations: отсортированный набор реальных окон флота — union
+// duration_secs из quota и calibration записей всех профилей.
+export function kimiWindowDurations(profiles: KimiProfile[]): number[] {
+  const found = new Set<number>();
+  for (const profile of profiles) {
+    for (const window of profile.quota ?? []) {
+      const secs = Number(window.duration_secs);
+      if (secs > 0) found.add(secs);
+    }
+    for (const row of profile.calibration ?? []) {
+      const secs = Number(row.duration_secs);
+      if (secs > 0) found.add(secs);
+    }
+  }
+  return [...found].sort((a, b) => a - b);
+}
+
+export interface KimiCoolingAxis {
+  name: string;
+  until: number;
+}
+
+// kimiActiveCoolingAxes: активные оси cooling (auth/transport/quota) с их until.
+export function kimiActiveCoolingAxes(profile: KimiProfile, nowSec: number): KimiCoolingAxis[] {
+  const cooling = profile.cooling;
+  return [
+    { name: "auth", until: Number(cooling?.auth_until ?? 0) },
+    { name: "транспорт", until: Number(cooling?.transport_until ?? 0) },
+    { name: "quota", until: Number(cooling?.quota_until ?? 0) },
+  ].filter((axis) => axis.until > nowSec);
+}
+
+// kimiLastObservedAt: свежайшая метка evidence профиля (quota snapshot или замер
+// калибровки); null — наблюдений ещё не было.
+export function kimiLastObservedAt(profile: KimiProfile): number | null {
+  const stamps = [
+    Number(profile.quota_observed_at ?? 0),
+    ...(profile.quota ?? []).map((window) => Number(window.observed_at ?? 0)),
+    ...(profile.calibration ?? []).map((row) => Number(row.last_measured_at ?? 0)),
+  ].filter((value) => value > 0);
+  return stamps.length ? Math.max(...stamps) : null;
+}
+
+export type KimiEvidenceState = "fresh" | "stale" | "empty";
+
+export function kimiEvidenceState(profile: KimiProfile, nowSec: number): KimiEvidenceState {
+  const observed = kimiLastObservedAt(profile);
+  if (observed == null) return "empty";
+  return nowSec - observed > KIMI_STALE_SECS ? "stale" : "fresh";
+}
+
+// kimiProfileStatus: состояние профиля целиком. Dead → «вне ротации»; активные
+// cooling-оси — с отсчётом до последнего until; протухшие данные → «обновляем»;
+// полное отсутствие наблюдений → «ждём данные» (null не превращается в 0).
+export function kimiProfileStatus(profile: KimiProfile, nowSec: number): StatusPill {
+  if (profile.live !== true) return { label: "вне ротации", kind: "bad" };
+  const axes = kimiActiveCoolingAxes(profile, nowSec);
+  if (axes.length > 0) {
+    const last = Math.max(...axes.map((axis) => axis.until));
+    const names = axes.map((axis) => axis.name).join("+");
+    return { label: `cooling ${names} ${duration(last - nowSec)}`, kind: "warn" };
+  }
+  const evidence = kimiEvidenceState(profile, nowSec);
+  if (evidence === "empty") return { label: "ждём данные", kind: "warn" };
+  if (evidence === "stale") return { label: "обновляем", kind: "warn" };
+  return { label: "active", kind: "ok" };
+}
+
+// kimiUsedPercent: used_fraction_units → точный процент с шагом 0.1 (BigInt,
+// округление half-up, как usedPercentFromNano у остальных флотов).
+export function kimiUsedPercent(
+  unitsValue: number | string | bigint | null | undefined,
+): { value: number | null; label: string } {
+  const units = providerInteger(unitsValue);
+  if (units == null) return { value: null, label: "—" };
+  const bounded = units < 0n ? 0n : units > FRACTION_SCALE ? FRACTION_SCALE : units;
+  const tenths = (bounded * 1_000n + FRACTION_SCALE / 2n) / FRACTION_SCALE;
+  return {
+    value: Number(tenths) / 10,
+    label: `${tenths / 10n}${tenths % 10n ? `.${tenths % 10n}` : ""}%`,
+  };
+}
+
+// kimiFleetUsedPercent: использованная доля окна по флоту — used_fraction_units
+// профилей, взвешенные по limit_units их окон (BigInt); без лимитов — среднее.
+export function kimiFleetUsedPercent(
+  profiles: KimiProfile[],
+  durationSecs: number,
+): { value: number | null; label: string } {
+  let weighted = 0n;
+  let limits = 0n;
+  let sum = 0n;
+  let seen = 0n;
+  for (const profile of profiles) {
+    const window = (profile.quota ?? []).find((item) => Number(item.duration_secs) === durationSecs);
+    const units = providerInteger(window?.used_fraction_units ?? null);
+    if (units == null) continue;
+    const limit = providerInteger(window?.limit_units ?? null);
+    if (limit != null && limit > 0n) {
+      weighted += units * limit;
+      limits += limit;
+    }
+    sum += units;
+    seen += 1n;
+  }
+  const combined = limits > 0n ? (weighted + limits / 2n) / limits : seen > 0n ? sum / seen : null;
+  return kimiUsedPercent(combined);
+}
+
+// kimiFleetWindowMoney: сумма calibrated remaining/capacity окна только по
+// профилям, чьи деньги продаваемы прямо сейчас (live, без активной cooling-оси,
+// без протухшего snapshot) — ровно тем, чья строка показывает реальные API-$.
+// Fail-closed: пустой набор или null у любого такого профиля делает итог
+// неизвестным — никогда не частичная сумма и никогда не $0 вместо неизвестного.
+export function kimiFleetWindowMoney(
+  profiles: KimiProfile[],
+  durationSecs: number,
+  nowSec: number,
+): { capacity: string | null; remaining: string | null } {
+  const contributing = profiles.filter(
+    (profile) =>
+      profile.live === true
+      && kimiActiveCoolingAxes(profile, nowSec).length === 0
+      && kimiEvidenceState(profile, nowSec) !== "stale",
+  );
+  if (!contributing.length) return { capacity: null, remaining: null };
+  let capacity = 0n;
+  let remaining = 0n;
+  for (const profile of contributing) {
+    const row = (profile.calibration ?? []).find((item) => Number(item.duration_secs) === durationSecs);
+    const current = providerInteger(row?.capacity?.current_nano ?? null);
+    const api = providerInteger(row?.remaining?.api_nano ?? null);
+    if (current == null || api == null) return { capacity: null, remaining: null };
+    capacity += current;
+    remaining += api;
+  }
+  return { capacity: capacity.toString(), remaining: remaining.toString() };
+}
+
+// kimiMeasuredCoverage: доля профилей с реальными замерами (samples > 0) в окне.
+export function kimiMeasuredCoverage(
+  profiles: KimiProfile[],
+  durationSecs: number,
+): { measured: number; observed: number } {
+  const measured = profiles.filter((profile) =>
+    (profile.calibration ?? []).some(
+      (row) => Number(row.duration_secs) === durationSecs && Number(row.samples ?? 0) > 0,
+    ),
+  ).length;
+  return { measured, observed: profiles.length };
+}
+
 export interface FleetBanner {
   kind: "ok" | "warn" | "bad";
   title: string;
@@ -125,11 +298,16 @@ export interface FleetBannerInput {
   geminiAuthBad: number;
   geminiUnavailable: boolean;
   geminiMissing: number;
+  kimiDown: boolean;
+  kimiEmpty: boolean;
+  kimiUnavailable: boolean;
   claudeCount: number;
   /** homes.length или «выкл.» при отключённом контуре. */
   gptSummary: number | string;
   /** profiles.length или «выкл.». */
   geminiSummary: number | string;
+  /** profiles.length или «выкл.». */
+  kimiSummary: number | string;
   /** Уже отформатированная метка обновления (formatDate(Date.now(), true)). */
   updatedAt: string;
 }
@@ -200,6 +378,24 @@ export function resolveBanner(input: FleetBannerInput): FleetBanner {
             : ""),
       sub: "Gemini: auth-профили исключаются из ротации; поток без финального usage списывает только консервативный hold",
     };
+  if (input.kimiDown)
+    return {
+      kind: "warn",
+      title: "KIMI-контур не отвечает",
+      sub: "/kimi-subs недоступен — проверьте Anthropic runtime: KIMI-плоскость живёт в нём",
+    };
+  if (input.kimiEmpty)
+    return {
+      kind: "warn",
+      title: "В KIMI-пуле нет профилей",
+      sub: "плоскость включена, но roster ещё пуст — ни одной подписки не опубликовано",
+    };
+  if (input.kimiUnavailable)
+    return {
+      kind: "warn",
+      title: "KIMI: нет доступных профилей",
+      sub: "все профили cooling по одной из осей или вне ротации — ёмкость временно не продаётся",
+    };
   if (input.suspect)
     return {
       kind: "warn",
@@ -210,7 +406,7 @@ export function resolveBanner(input: FleetBannerInput): FleetBanner {
     };
   return {
     kind: "ok",
-    title: "Все три флота подписок в ротации",
-    sub: `Claude ${input.claudeCount} · GPT ${input.gptSummary} · Gemini ${input.geminiSummary} · обновлено ${input.updatedAt}`,
+    title: "Все четыре флота подписок в ротации",
+    sub: `Claude ${input.claudeCount} · GPT ${input.gptSummary} · Gemini ${input.geminiSummary} · KIMI ${input.kimiSummary} · обновлено ${input.updatedAt}`,
   };
 }

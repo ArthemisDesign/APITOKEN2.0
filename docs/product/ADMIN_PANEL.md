@@ -75,9 +75,11 @@ systemctl enable apitoken-admin.service
 
 `admin.apitoken.sale` обслуживает `apps/admin` на `127.0.0.1:3700` и целиком закрыт
 `managed_admin_auth`: логин/пароль проверяет commerce internal auth с domain grants. Caddy
-same-origin проксирует обезличенные `/capacity`, `/codex-subs`, `/gemini-subs` в три
-provider runtime и добавляет серверные ключи; браузер не получает control keys, полный email,
-OAuth, Google project или proxy. Защита относится ко всем страницам, включая `/sales/calculator`.
+same-origin проксирует обезличенные `/capacity`, `/codex-subs`, `/gemini-subs` и `/kimi-subs`
+в три provider runtime (KIMI — backend-only плоскость внутри Anthropic runtime, отдельного
+origin нет) и добавляет серверные ключи; браузер не получает control keys, полный email,
+OAuth, Google project, KIMI subject или proxy. Защита относится ко всем страницам, включая
+`/sales/calculator`.
 
 ## Pricing configurators и B2B policies
 
@@ -182,7 +184,7 @@ GPT-блок `/subscriptions` — компактная операторская 
 - provider placeholder с неположительным окном игнорируется. До появления положительного движения
   quota UI показывает короткое `ждём Δquota`, не подставляя ноль или прайор.
 
-## Claude и Gemini capacity boards
+## Claude, Gemini и KIMI capacity boards
 
 Claude-блок `/subscriptions` намеренно оставляет только одну компактную таблицу аккаунтов: bounded
 email hint, routing/auth state, quota+reset и exact доступные/полные API-$ отдельно для 5ч и 7д.
@@ -191,17 +193,19 @@ Workload evidence, token-only capacity, model profitability и локальны�
 Claude нужны только окна конкретных подписок. Gemini также оставляет только таблицу окон по
 профилям; отдельный локальный summary strip, model-quota и profitability таблицы удалены.
 Старые StatCard-наборы, proxy/transport details и длинные calibration explanations в основном экране
-не выводятся. Во всех трёх пулах аккаунт слева обозначается только bounded email hint — первые четыре
-символа local-part без домена.
+не выводятся. Во всех пулах identity слева bounded: у Claude/GPT/Gemini — email hint (первые четыре
+символа local-part без домена), у KIMI — opaque roster id (email/subject в wire отсутствуют вовсе).
 
-Над деталями расположен единый control-room из трёх карточек Claude/GPT/Gemini. В каждой только
-два одинаково читаемых rail: `5ч` и `7д`, current remaining / full-window API-$, использованная доля,
-число routable identities и coverage. Это главный экран сравнения продаваемой ёмкости; подробности
-по аккаунтам идут ниже без дополнительных cache/model/token-матриц. Claude-карточка вместо ложных денег немедленно показывает
-`N сохраняется`, `N потеряно` или ошибку authority из `calibration_delivery`. Gemini применяет тот
-же fail-closed контракт и не показывает stale API-$ при pending/degraded exact authority. Его
-свежие provider quota/reset при этом остаются видны, а денежная ячейка компактно говорит
-`обновляем`: сбой dollar-evidence не должен ослеплять оператора по реальному quota wall.
+Над деталями расположен единый control-room из четырёх карточек Claude/GPT/Gemini/KIMI. В каждой
+только два одинаково читаемых rail: `5ч` и `7д` (KIMI подписывает rail'ы реальными `duration_secs`:
+18000 → `5ч`, 604800 → `7д`, без фиктивных эквивалентов), current remaining / full-window API-$,
+использованная доля, число routable identities и coverage. Это главный экран сравнения продаваемой
+ёмкости; подробности по аккаунтам идут ниже без дополнительных cache/model/token-матриц.
+Claude-карточка вместо ложных денег немедленно показывает `N сохраняется`, `N потеряно` или ошибку
+authority из `calibration_delivery`. Gemini применяет тот же fail-closed контракт и не показывает
+stale API-$ при pending/degraded exact authority. Его свежие provider quota/reset при этом остаются
+видны, а денежная ячейка компактно говорит `обновляем`: сбой dollar-evidence не должен ослеплять
+оператора по реальному quota wall. KIMI держит тот же контракт на своей delivery FIFO.
 
 Claude строится из `/capacity`:
 
@@ -241,3 +245,16 @@ Gemini строится из `/gemini-subs` и сохраняет provider-speci
 - `conversion_models`, official quotas и их integer amounts продолжают приходить с backend как
   audit/calculation contract. UI не делит workload-$ на цену токена и не выдумывает Gemini token
   capacity из одной только fraction.
+
+KIMI строится из `/kimi-subs` (конверт `enabled:false` показывается как «KIMI-контур выключен») и
+повторяет тот же компактный контракт с двумя особенностями источника. Идентичность профиля —
+только opaque roster id и bounded plan label (`unreviewed` до review тарифа); subject, email и
+credential path не сериализуются и не выводятся никогда. Оконные `window_totals` не публикуются:
+fleet rail'ы и столбцы таблицы строятся из реальных `duration_secs` per-profile quota/calibration.
+Used share — exact provider `used_fraction_units`; API-$ — только calibrated `api_nano`/`current_nano`
+decimal strings, вся арифметика BigInt. Неизвестное остаётся `ждём данные` и никогда не `$0`;
+pending/dropped delivery и ошибка persistence показывают `сохраняется`/`обновляем` и скрывают
+saleable деньги, свежие quota/reset при этом остаются видны. Dead (`live:false`), cooling по любой
+из трёх осей (auth/transport/quota) и протухший snapshot (>10 минут) говорят `вне ротации`/
+`обновляем` и не входят во fleet API-$: fleet-суммы считаются только по профилям, чья строка
+показывает реальные деньги, и null у любого из них делает итог неизвестным, а не частичной суммой.
