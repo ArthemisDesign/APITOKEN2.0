@@ -27,13 +27,14 @@ import { buildUtcUsageSeries } from "@/lib/usage-series";
 import { aggregateUsageProviders, usageProviderOf } from "@/lib/usage-providers";
 import { UNIVERSAL_CONNECTIONS } from "@/lib/universal-key";
 import { PROVIDER_COLORS, PROVIDER_REGISTRY, type ProviderDescriptor } from "@/lib/providers";
+import { KEY_PROFILE_POLL_INTERVAL_MS } from "@/lib/usage-refresh-timing";
 
 const copy = {
   en: {
     titleBar: "Key usage", eyebrow: "CLAUDE + GPT + GEMINI · SHARED BALANCE", title: "Universal API key",
     lead: "One key and one balance work across the Claude, GPT/OpenAI-compatible, and Google Gemini APIs. Usage is combined below, while every request keeps the official price of the model that served it.",
     offline: "Offline — waiting for connection", syncing: "Syncing", updated: "Updated", loaded: "Data loaded",
-    automatic: "automatically every 6 seconds", refresh: "Refresh usage now", copy: "Copy", copied: "Copied",
+    automatic: "live balance every 6 seconds · detailed usage on the next report refresh", refresh: "Refresh data", copy: "Copy", copied: "Copied",
     balance: "Key balance", faceValue: "face value", remainingCompleted: "Remaining after completed requests",
     spent: "Actually spent", reserved: "Temporarily reserved", available: "Available for new requests",
     reserveNote: "After the response, the hold is replaced by the exact charge — it is not spent in full. The unused amount returns to available balance automatically.",
@@ -58,7 +59,7 @@ const copy = {
     titleBar: "Расход ключа", eyebrow: "CLAUDE + GPT + GEMINI · ОБЩИЙ БАЛАНС", title: "Универсальный API-ключ",
     lead: "Один ключ и один баланс работают на Claude, GPT/OpenAI-совместимом и Google Gemini API. Расход объединён, а каждый запрос сохраняет официальный прайс модели, которая его обработала.",
     offline: "Нет сети — ждём подключения", syncing: "Синхронизация", updated: "Обновлено", loaded: "Данные загружены",
-    automatic: "автоматически каждые 6 секунд", refresh: "Обновить расход сейчас", copy: "Скопировать", copied: "Скопировано",
+    automatic: "живой баланс каждые 6 секунд · детализация при следующем обновлении отчёта", refresh: "Обновить данные", copy: "Скопировать", copied: "Скопировано",
     balance: "Баланс ключа", faceValue: "номинал", remainingCompleted: "Остаток после завершённых запросов",
     spent: "Фактически потрачено", reserved: "Временно в обработке", available: "Доступно новым запросам",
     reserveNote: "После ответа резерв заменится точной стоимостью, а не спишется целиком. Неиспользованная часть автоматически вернётся в доступный баланс.",
@@ -146,7 +147,7 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
     const refreshWhenVisible = () => {
       if (document.visibilityState === "visible") refreshUsage();
     };
-    const interval = window.setInterval(refreshUsage, 6_000);
+    const interval = window.setInterval(refreshUsage, KEY_PROFILE_POLL_INTERVAL_MS);
     setIsOnline(navigator.onLine);
     window.addEventListener("online", syncNetworkState);
     window.addEventListener("offline", syncNetworkState);

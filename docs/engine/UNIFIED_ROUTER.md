@@ -398,13 +398,20 @@ does not read pricing policy, and returns only:
 - `503 auth_unavailable` when the billing authority is unavailable.
 
 Public provider vhosts do not route `/internal/*`; the router talks only to stable
-loopback origins. The consumer fires three two-second probes concurrently: the first
-exact schema-v1 success or a terminal 401 ends the race, while
-transport/404/5xx/malformed responses are inconclusive. This way a live
-OpenAI/Gemini authority does not wait on a hung first origin; neither success nor the
-credential is cached between requests. Contradictory 200/401 mean a violation of the
-shared authority; on the wire the first conclusive outcome received wins, and the
-actual provider-plane admission re-checks the credential before reserve anyway.
+loopback origins. The consumer keeps a two-second timeout per probe and uses fixed hedged
+order Anthropic → OpenAI → Gemini. Anthropic starts immediately; OpenAI starts after
+50 ms without a conclusive result and Gemini after another 50 ms, while an inconclusive
+response that leaves no useful active probe launches the next origin immediately. The
+first exact schema-v1 success or terminal 401 wins; transport/404/5xx/malformed
+responses are inconclusive. Thus a healthy fast Anthropic authority normally avoids
+secondary authority work, while a hung origin cannot impose its full timeout before a
+healthy later authority is tried. Neither success nor the credential is cached between
+requests. Outstanding request futures are dropped after a conclusive result, but this
+does not guarantee cancellation of provider DB work already accepted. Contradictory
+200/401 mean a violation of the shared authority; on the wire the first conclusive
+outcome received wins, and actual provider-plane admission re-checks the credential
+before reserve anyway. The deployment-only startup probe remains an eager concurrent
+probe of all three origins.
 
 After auth the consumer makes a fail-fast reservation against the 64 MiB budget in
 1 MiB steps. A valid `Content-Length` is rounded up; a chunked/unknown size first

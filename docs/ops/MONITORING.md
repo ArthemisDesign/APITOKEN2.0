@@ -426,9 +426,17 @@ retries immediately, so a plane outage must not create a serialized refresh conv
 router-owned circuit breaker.
 
 Auth latency is the rate of `claude_router_auth_preflight_duration_seconds_sum` divided by the rate
-of `claude_router_auth_preflight_total` for the same outcome. The three probes race concurrently;
-a sustained rise means the winning authority itself is slow, not three serialized two-second
-timeouts. Personalized pricing and policy remain uncached and fail closed.
+of `claude_router_auth_preflight_total` for the same outcome. Customer auth no longer starts all
+three authorities together: Anthropic starts immediately, OpenAI is hedged after 50 ms without a
+conclusive result, and Gemini after another 50 ms; an inconclusive response with no useful active
+probe advances immediately. A healthy fast Anthropic path should therefore stay below the first
+hedge and avoid secondary authority work. Latency clustering just above 50 ms or 100 ms points to
+an earlier authority being slow or inconclusive while a later one wins. Latency approaching the
+two-second per-probe bound together with `outcome="unavailable"` means all started authorities
+failed to return a conclusive schema-v1 success or terminal 401; test 8790, 8792 and 8794
+individually and compare their provider-slot and PostgreSQL authority health. The aggregate metric
+has no origin label, so do not infer which plane failed from it alone. Personalized pricing and
+policy remain uncached and fail closed.
 
 ## RouterResponseHeaderTimeout
 

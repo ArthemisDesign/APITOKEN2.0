@@ -29,6 +29,7 @@ import {
   resolveOpenKeysPricingAuthority,
 } from "./openkeys-pricing";
 import { openSecret, sealSecret } from "./secret-box";
+import { USAGE_REPORT_CACHE_TTL_MS } from "./usage-refresh-timing";
 
 export const MAX_BATCH_QUANTITY = 100;
 
@@ -302,29 +303,39 @@ export interface KeyUsageView {
  * что и дашборд, поэтому цифры совпадают до нанодоллара. bigint приводим к строкам:
  * server component не может передать bigint в client component.
  */
-const usageLoads = new Map<string, { expiresAt: number; promise: Promise<KeyUsageView | null> }>();
+const usageLoads = new Map<string, { expiresAt: number | null; promise: Promise<EngineUsage> }>();
+
+function loadUsageReport(
+  engine: ReturnType<typeof getEngineClient>,
+  engineAccountId: string,
+  window: string,
+): Promise<EngineUsage> {
+  const cacheKey = `${engineAccountId}:${window}`;
+  const cached = usageLoads.get(cacheKey);
+  if (cached && (cached.expiresAt === null || cached.expiresAt > Date.now())) return cached.promise;
+  if (cached) usageLoads.delete(cacheKey);
+  if (usageLoads.size >= 1_000) usageLoads.delete(usageLoads.keys().next().value as string);
+
+  const promise = engine.getUsage(engineAccountId, window).then(
+    (usage) => {
+      const entry = usageLoads.get(cacheKey);
+      if (entry?.promise === promise) entry.expiresAt = Date.now() + USAGE_REPORT_CACHE_TTL_MS;
+      return usage;
+    },
+    (error) => {
+      if (usageLoads.get(cacheKey)?.promise === promise) usageLoads.delete(cacheKey);
+      throw error;
+    },
+  );
+  usageLoads.set(cacheKey, { expiresAt: null, promise });
+  return promise;
+}
 
 export async function loadUsageByViewToken(
   viewToken: string,
   window = "30d",
 ): Promise<KeyUsageView | null> {
   if (!/^[A-Za-z0-9_-]{22}$/.test(viewToken)) return null;
-  const cacheKey = `${viewToken}:${window}`;
-  const now = Date.now();
-  const cached = usageLoads.get(cacheKey);
-  if (cached && cached.expiresAt > now) return cached.promise;
-  if (cached) usageLoads.delete(cacheKey);
-  if (usageLoads.size >= 1_000) usageLoads.delete(usageLoads.keys().next().value as string);
-
-  const promise = loadUsageUncached(viewToken, window).catch((error) => {
-    usageLoads.delete(cacheKey);
-    throw error;
-  });
-  usageLoads.set(cacheKey, { expiresAt: now + 5_000, promise });
-  return promise;
-}
-
-async function loadUsageUncached(viewToken: string, window: string): Promise<KeyUsageView | null> {
   const { db } = getDatabase();
   const [result] = await db
     .select({ key: openkeysKeys, apiType: openkeysBatches.apiType })
@@ -346,7 +357,7 @@ async function loadUsageUncached(viewToken: string, window: string): Promise<Key
   // а не ошибка: показываем пустой расход вместо страницы с ошибкой.
   let usage: EngineUsage | null = null;
   try {
-    usage = await engine.getUsage(row.engineAccountId, window);
+    usage = await loadUsageReport(engine, row.engineAccountId, window);
   } catch {
     usage = null;
   }

@@ -280,9 +280,14 @@ is only what is needed to walk the relationships when making changes:
   credential through the same `authed`/`AsyncBilling` resolver as live admission, and
   returns only a closed success marker or 401/503 without reserve, pricing/policy read,
   or identity. The consumer is `crates/router`: before materializing the 32 MiB universal
-  body it concurrently launches three bounded probes, accepts the first exact schema-v1
-  success or a terminal 401, and treats mixed-version/transport/5xx as inconclusive. The
-  fail-fast 64 MiB budget with a 1 MiB step grows dynamically with the actual chunked
+  body it uses bounded hedged Anthropic → OpenAI → Gemini probes. The first starts
+  immediately, later origins start at fixed 50 ms intervals without a conclusive result,
+  and an inconclusive response with no useful active probe advances immediately. The first
+  exact schema-v1 success or terminal 401 wins; mixed-version/transport/5xx remain
+  inconclusive, and no credential/result is cached. Dropping outstanding request futures
+  does not guarantee cancellation of provider DB work already accepted. The deployment
+  startup probe remains concurrent across all three origins. The fail-fast 64 MiB budget
+  with a 1 MiB step grows dynamically with the actual chunked
   bytes, has a 15-second idle and a 5-minute absolute body deadline, and does not create
   an execution queue.
   Contract —

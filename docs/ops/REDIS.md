@@ -53,25 +53,26 @@ These are not style preferences. A proposal that violates one of them is rejecte
 
 Ordered by impact divided by effort. Every claim below is anchored to code.
 
-### 1. Collapse the router's duplicated preflight — no Redis required
+### 1. Reduce the router's duplicated preflight — resolved without Redis
 
-One customer request currently executes the `key_account` query **five times**. That query is a
-five-table join over `api_keys → accounts → account_policy_bindings → account_policy_versions`
-plus two correlated `SUM()` subqueries over `funding_buckets` under strict funding enforcement
+A normal customer request previously could execute the `key_account` query **five times**. That
+query is a five-table join over
+`api_keys → accounts → account_policy_bindings → account_policy_versions` plus two correlated
+`SUM()` subqueries over `funding_buckets` under strict funding enforcement
 (`crates/registry/src/pg.rs:4198-4229`).
 
-The amplification comes from two places. `crates/router/src/auth.rs:59-62` races a preflight
-against all three planes concurrently and returns on the first conclusive answer without
-cancelling the losers, so three engine processes each run the join. Then
-`crates/router/src/routing.rs:461` runs a second, separate policy preflight
-(`crates/server/src/router_policy.rs:131-153`), and the proxied request runs the join a fifth time
-(`crates/forward/src/proxy.rs:429-430`).
+The first amplification source is now resolved in `crates/router/src/auth.rs`: customer early auth
+uses fixed hedged Anthropic → OpenAI → Gemini order. Anthropic starts immediately, a healthy fast
+answer contacts no secondary origin, later origins start after fixed 50 ms hedges, and an
+inconclusive response with no useful active probe advances immediately. The two-second per-probe
+timeout and first conclusive success/401 semantics remain unchanged. Outstanding request futures
+are dropped after a conclusive result, but provider DB work already accepted is not guaranteed to
+be cancelled.
 
-Making the auth preflight sequential with a short deadline, or having the policy preflight return
-the auth verdict so the two collapse into one, removes roughly three of the five joins with no
-caching and therefore no staleness risk at all.
-
-**This is the first thing to do, and it needs no new infrastructure.**
+The remaining duplication is deliberate for now: `crates/router/src/routing.rs` runs a separate
+policy preflight (`crates/server/src/router_policy.rs`), and the proxied request re-checks admission
+in `crates/forward/src/proxy.rs`. Collapsing those authority checks would require a separate
+contract design; this resolved step adds no cache and therefore no auth staleness risk.
 
 ### 2. Cache the pricing read bundle — self-invalidating, low risk
 
@@ -111,20 +112,25 @@ For an account that is already `active` — the overwhelmingly common case, earl
 Only the `active` status may be cached positively. Any other status must take the slow path, so a
 disabled account can never be served from cache.
 
-### 4. Fix the OpenKeys poll/cache mismatch, then consider caching the usage report
+### 4. OpenKeys usage polling — resolved with a process cache
 
-`crates/registry/src/pg.rs:4601-4790` runs five separate `GROUP BY` aggregations over
-`usage_events` inside one read-only snapshot transaction, over a default 30-day window
-(`apps/api/src/account.controller.ts:52-58`).
+`crates/registry/src/pg.rs:4601-4689` runs four grouped aggregations over `usage_events` — by
+model/provider, day, day/provider, and key — inside one repeatable-read, read-only transaction.
+The Control API defaults a missing or invalid window to `30d`
+(`crates/server/src/admin.rs:870-893`), and OpenKeys requests `30d` by default
+(`apps/openkeys/src/lib/keys.ts`).
 
-`apps/openkeys/src/components/key-profile.tsx:149` polls it every 6s against a dedup cache with a
-5s TTL (`apps/openkeys/src/lib/keys.ts:312-324`), so the cache essentially never hits. **Fix the
-interval mismatch first — it costs nothing and may remove the problem entirely.** Only if load
-remains is a `claude-api:usage:v1:<account_id>:<window>` entry with a 10s TTL worth adding, in the
-Control API handler in `crates/server`.
+The buyer profile still refreshes every 6s. Every refresh repeats the OpenKeys database lookup and
+`engine.getAccount`, so account status and live balance, reservation, and spend fields bypass the
+cache. Only `engine.getUsage(account_id, window)` uses a process-local, usage-only 10s single-flight
+cache keyed by engine account and window and bounded to 1,000 entries. A pending load remains
+single-flight regardless of elapsed wall time; the 10s result TTL starts when it settles. Rejected
+loads are evicted so the next refresh retries, while usage failure remains a nullable reporting
+result rather than making account data stale or unavailable.
 
-This is spend *reporting*, not billing authority. The same relaxation must never be extended to
-the account balance.
+Do not add Redis for this path unless post-rollout measurements show that usage aggregation load or
+latency remains material. Any later shared cache must stay limited to usage reporting; it must not
+include or substitute for account status, balance, reservations, or authoritative spend fields.
 
 ### 5. Shared rate limiting — a correctness gap, not a speed win
 

@@ -65,10 +65,14 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
 
 - `config.rs` — the only place env is read (`CLAUDE_ROUTER_*`), including
   the strict off-by-default flag `CLAUDE_ROUTER_FALLBACK_ENABLED` (`0|1|false|true`).
-- `auth.rs` — uncached bodyless early-auth client: before reading the universal body it concurrently polls
-  the fixed origins, accepts the first exact schema-v1 success or a terminal 401, and
-  treats mixed-version/transport/5xx as inconclusive. Also here: the exact unauthenticated probe for
-  the loopback-only `/startup`, with which blue-green verifies the real provider data path.
+- `auth.rs` — uncached bodyless early-auth client: before reading the universal body it probes fixed
+  origins in hedged Anthropic → OpenAI → Gemini order. Anthropic starts immediately; each later
+  origin starts after a 50 ms hedge only without a conclusive result, or immediately when an
+  inconclusive response leaves no useful active probe. The first exact schema-v1 success or terminal
+  401 wins; mixed-version/transport/5xx remain inconclusive. Dropping outstanding client futures does
+  not claim cancellation of provider DB work already accepted. Also here: the exact unauthenticated
+  probe for loopback-only `/startup`, which still probes all three origins concurrently for blue-green
+  verification of the real provider data path.
 - `proxy.rs` — byte-for-byte proxying of native lanes, auth passthrough and classification of
   a single attempt down to the public headers: exact `not_started` / source-chain
   `ConnectionRefused`. The data plane has no router-owned deadline either before response headers or after
@@ -166,7 +170,7 @@ cargo build && bash tests/router_fallback_smoke.sh  # concurrent 6.4c mock-load 
 ```
 
 The integration tests bring up mock planes on real loopback sockets and
-cover: concurrent early auth ahead of an unfinished large body, terminal 401 and mixed-version,
+cover: bodyless early auth ahead of an unfinished large body, terminal 401 and mixed-version,
 dynamic weighted 64 MiB overload without a queue, the slow-body deadline, permit release on parse error,
 outbound EOF with an open SSE,
 absence of a data-plane pre-header deadline and a bounded `/balance` deadline without retry, passthrough
