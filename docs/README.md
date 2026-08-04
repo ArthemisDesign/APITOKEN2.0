@@ -59,6 +59,7 @@ document, update this index.
 - [DEPLOYMENT.md](ops/DEPLOYMENT.md) — production deployment runbook (operator-facing).
 - [INFRASTRUCTURE.md](ops/INFRASTRUCTURE.md) — production infrastructure and hosts.
 - [MONITORING.md](ops/MONITORING.md) — monitoring and alert runbook anchors (`docs/ops/MONITORING.md#<alert>`).
+- [REDIS.md](ops/REDIS.md) — Redis topology (both instances), standing rules for new consumers, and the ranked map of where Redis pays off next.
 - [DELETE_WORKTREE.md](ops/DELETE_WORKTREE.md) — permanent fail-closed cleanup of merged worktrees and explicitly registered clones on macOS.
 - [CLAUDE_CALIBRATION.md](ops/CLAUDE_CALIBRATION.md) — bounded live calibration run of Claude: models, token classes, sticky subscriptions, and a hard nanoUSD budget.
 - [GEMINI_CALIBRATION.md](ops/GEMINI_CALIBRATION.md) — exact-profile live calibration run of Gemini: immutable backend evidence, capability matrix, and a shared $40 limit.
