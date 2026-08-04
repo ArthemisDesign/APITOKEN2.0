@@ -65,7 +65,8 @@
 | Pool parity: pre-byte rotation holes, pinned CLI UA, Retry-After cooling | `crates/forward/src/kimi/**`, `crates/kimi-credential` | `9ad22a58` |
 | Точная атрибуция: admin calibration headers, pinned profile + immutable request id, bounded recent-turns read, поля `/kimi-subs` | `crates/{forward,server,registry}` | `fbc000fc` |
 | Безопасный live-runner: `run_live.py` + 43 offline теста + ops runbook | `tools/kimi_calibration/`, `docs/ops/KIMI_CALIBRATION.md` | `a8b69c6d` |
-| Pool parity 2: warm-home placement + early claim + cooling hints, per-model failure axis, barriered burst-доказательство | `crates/forward/src/kimi/**` | текущий checkpoint |
+| Pool parity 2: warm-home placement + early claim + cooling hints, per-model failure axis, barriered burst-доказательство | `crates/forward/src/kimi/**` | `beb98be4` |
+| Включение плоскости: reviewed argv-пин `CLAUDE_API_KIMI_ENABLED=1` после live evidence 2026-08-04 | `systemd/claude-api-kimi{,@}.service` | текущий checkpoint |
 
 ## Открытые швы (выглядит подключённым, не работает)
 
@@ -89,9 +90,9 @@
 
 ## Следующее действие
 
-**Включить KIMI на выделенной плоскости** reviewed unit change (`CLAUDE_API_KIMI_ENABLED=1` в
-`systemd/claude-api-kimi{,@}.service`) и провести dry-run live-runner'а против production origin
-8803; платная калибровка — только после явного бюджетного разрешения человека.
+**Контролируемый живой прогон live-матрицы** на подключённой подписке Vivace: dry-run runner'а
+против origin 8803, затем paid legs только с явного бюджетного разрешения человека и после ресета
+недельной квоты подписки (на подключении израсходовано 98/100).
 
 **Процессные заметки (обе уже стоили потерянного мёржа):**
 

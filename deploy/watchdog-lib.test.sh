@@ -1603,18 +1603,18 @@ grep -Fq 'ExecCondition=/usr/bin/grep -Fxq kimi-bluegreen-v1' \
 grep -Fxq 'ReadOnlyPaths=/srv/claude-api/data/kimi' \
   "$ROOT/systemd/claude-api-kimi@.service" \
   || wd_die 'KIMI slots can mutate Auth Bot roster state'
-# The default-off pin must be argv-level in both incarnations: a shared config.env can never
-# silently enable the plane; deliberate enablement is a later reviewed unit change.
+# The enablement pin must be argv-level in both incarnations: the plane's on/off state lives only
+# in these reviewed units, never in a shared config.env value.
 for kimi_unit in claude-api-kimi.service claude-api-kimi@.service; do
-  grep -Fq 'CLAUDE_API_KIMI_ENABLED=0' "$ROOT/systemd/$kimi_unit" \
-    || wd_die "$kimi_unit lost the argv-level default-off KIMI pin"
+  grep -Fq 'CLAUDE_API_KIMI_ENABLED=1' "$ROOT/systemd/$kimi_unit" \
+    || wd_die "$kimi_unit lost the argv-level KIMI enablement pin"
 done
 legacy_kimi_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-kimi.service" \
   | sed -e 's/CLAUDE_API_PORT=8804/CLAUDE_API_PORT=%i/' \
     -e 's/CLAUDE_API_INSTANCE_ID=%H:engine:kimi /CLAUDE_API_INSTANCE_ID=%H:engine:kimi:%i /')
 slot_kimi_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-kimi@.service")
 [[ $slot_kimi_exec == "$legacy_kimi_exec" ]] \
-  || wd_die 'KIMI slots drifted from the reviewed default-off provider pins'
+  || wd_die 'KIMI slots drifted from the reviewed provider pins'
 grep -Fq 'systemctl_command kill --kill-whom=main -s SIGUSR1 "$KIMI_ACTIVE_UNIT"' \
   "$ROOT/deploy/engine-bluegreen.sh" \
   || wd_die 'KIMI blue-green cannot pre-drain its old slot'

@@ -15,13 +15,14 @@ Environment=SUB_CFG_DIR=/srv/claude-api/data
 EnvironmentFile=-/srv/claude-api/data/config.env
 EnvironmentFile=-/srv/claude-api/data/server.env
 EnvironmentFile=/srv/claude-api/data/engine-postgres.env
-# Argv-level assignments cannot be overridden by a shared EnvironmentFile. CLAUDE_API_KIMI_ENABLED=0
-# is pinned here on purpose: this plane ships default-off, so a shared config.env can never
-# silently enable the provider. Deliberate enablement is a later reviewed unit change made only
-# after live evidence (docs/engine/KIMI_PROVIDER.md), and the Anthropic plane keeps KIMI off so
-# exactly one process ever runs the maintenance writer. Both ClaudeStore switches belong to other
-# provider planes and must remain disabled here.
-ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=kimi CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8804 CLAUDE_API_INSTANCE_ID=%H:engine:kimi CLAUDE_API_KIMI_ENABLED=0 /srv/claude-api/releases/current/claude-api serve
+# Argv-level assignments cannot be overridden by a shared EnvironmentFile. CLAUDE_API_KIMI_ENABLED=1
+# is pinned here on purpose: the plane's on/off state lives only in this reviewed unit, never in a
+# shared config.env value. This enablement followed the live evidence of 2026-08-04 (owned Vivace
+# subscription connected through Auth Bot; /me, /usages and an exactly metered generation proven —
+# docs/engine/KIMI_PROVIDER.md). Disablement is the reverse reviewed unit change. The Anthropic
+# plane keeps KIMI off so exactly one process ever runs the maintenance writer. Both ClaudeStore
+# switches belong to other provider planes and must remain disabled here.
+ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=kimi CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8804 CLAUDE_API_INSTANCE_ID=%H:engine:kimi CLAUDE_API_KIMI_ENABLED=1 /srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM

@@ -378,7 +378,7 @@ Stable provider origins 8790/8792/8794/8803 синтезируют внутре�
 ### systemd (`systemd/`) — сервис → приложение
 
 `claude-api-anthropic@` → Anthropic-слоты 8787/8788 (текущий юнит; `claude-api@` — legacy) ·
-`claude-api-openai@` → 8793/8797 · `claude-api-gemini@` → 8795/8799 · `claude-api-kimi@` → 8804/8805 (`claude-api-kimi` → 8804, legacy/anchor singleton; stable origin 8803; plane default-off по argv-пину `CLAUDE_API_KIMI_ENABLED=0`) · `claude-router@` → 8800/8801 (`claude-router` → 8798 только legacy handoff) ·
+`claude-api-openai@` → 8793/8797 · `claude-api-gemini@` → 8795/8799 · `claude-api-kimi@` → 8804/8805 (`claude-api-kimi` → 8804, legacy/anchor singleton; stable origin 8803; плоскость включена argv-пином `CLAUDE_API_KIMI_ENABLED=1` в reviewed юнитах) · `claude-router@` → 8800/8801 (`claude-router` → 8798 только legacy handoff) ·
 `claude-authbot` → authbot ·
 `apitoken-api[@]` → `apps/api` 3000/3001 · `apitoken-worker` → `apps/worker` ·
 `apitoken-admin` → 3700 · `apitoken-content-studio` → 3500 · `apitoken-openkeys` → 3410 ·

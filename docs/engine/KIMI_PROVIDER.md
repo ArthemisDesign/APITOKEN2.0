@@ -442,12 +442,12 @@ default-off и backend-only: ни одна публичная поверхнос
 | last-good roster reload | `crates/{server,forward}` | готово на mock-гейтах: 15-секундное discovery, whole-generation validation, `/me` admission, exact-Arc reuse, refresh-race verification, safe removal |
 | quota observations | `crates/{server,forward}` | готово на mock/real-PG гейтах: idle `/usages`, generation-epoch rejection, turn-before-quota drain, exact spend read, independent-window immutable write/CAS, publish-after-durable и bounded shutdown |
 | observability, alerts, admin projection | `crates/{forward,server}`, `observability/**`, `docs/ops/MONITORING.md` | готово: extended operational status, admin-only `GET /kimi-subs`, fixed-cardinality aggregate метрики, `kimi-provider` алерты с runbook и consistency-тест |
-| blue-green | `systemd/claude-api-kimi{,@}.service`, `deploy/**`, `observability/prometheus/prometheus.yml` | готово: два slot-юнита 8804/8805 + stable loopback origin 8803, capability-marker default-off (argv-пин `CLAUDE_API_KIMI_ENABLED=0`), rollback-ветка останавливает все incarnation, scrape target `provider: kimi`, `ProviderMode::Kimi` с fail-closed `/v1/messages` |
+| blue-green | `systemd/claude-api-kimi{,@}.service`, `deploy/**`, `observability/prometheus/prometheus.yml` | готово: два slot-юнита 8804/8805 + stable loopback origin 8803, capability-marker, rollback-ветка останавливает все incarnation, scrape target `provider: kimi`, `ProviderMode::Kimi` с fail-closed `/v1/messages`; плоскость **включена** reviewed argv-пином `CLAUDE_API_KIMI_ENABLED=1` после live evidence 2026-08-04 |
 | безопасный live-runner | `tools/kimi_calibration/`, `docs/ops/KIMI_CALIBRATION.md` | готово офлайн: dry-run по умолчанию, aggregate-потолок $0.0001, exact request-id атрибуция через admin-only заголовки, 43 offline теста; платный запуск — только с явным разрешением |
 | live-матрица на нашей подписке | — | подписка Vivace подключена 2026-08-04; smoke (`/me`, `/usages`, одна минимальная генерация с exact metering) прошёл; полная матрица ждёт бюджетного разрешения и ресета недельной квоты |
 
-Следующий producer-first шаг — включение KIMI на выделенной плоскости reviewed unit change
-(`CLAUDE_API_KIMI_ENABLED=1`) и затем контролируемый живой прогон по live-матрице. Публикация не
+Следующий producer-first шаг — контролируемый живой прогон по live-матрице на подключённой
+подписке Vivace (после ресета её недельной квоты и бюджетного разрешения). Публикация не
 планируется вовсе (см. §0).
 
 ## 8. Источники

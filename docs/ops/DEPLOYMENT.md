@@ -521,9 +521,8 @@ with `SIGUSR1`, and fully stops its cgroup. It then health-gates the inactive Op
 releases carrying `.gemini-bluegreen-v1`, the inactive Gemini slot, proving the same selected binary
 in each startup-fixed provider mode before draining the predecessor. Releases carrying
 `.kimi-bluegreen-v1` then health-gate the inactive KIMI slot (8804/8805) the same way; the KIMI
-plane ships default-off — its slots serve the stable disabled envelope behind loopback origin 8803
-until a reviewed unit change pins `CLAUDE_API_KIMI_ENABLED=1`, so the cutover itself never changes
-KIMI behavior.
+plane is enabled by the reviewed argv pin `CLAUDE_API_KIMI_ENABLED=1` in its units, so the cutover
+itself never changes KIMI behavior.
 On the first split, this order guarantees the old combined process releases every Codex home before
 OpenAI starts; Gemini and KIMI remain separate subscription-pool failure domains throughout.
 

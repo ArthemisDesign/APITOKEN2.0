@@ -84,8 +84,8 @@ subscriptions — как AEAD-encrypted profiles. Стоит ПЕРЕД `registr
   `claude-api-gemini@8795/8799` через `gemini.api.apitoken.sale`. Backend-only KIMI plane —
   четвёртая fixed-плоскость: active/passive слоты `claude-api-kimi@8804/8805` за стабильным
   loopback origin `127.0.0.1:8803` (singleton `claude-api-kimi` на 8804 — только rollback/anchor),
-  без публичного vhost, router namespace и каталога; плоскость поставляется default-off —
-  argv-пин `CLAUDE_API_KIMI_ENABLED=0` держит её тёмной до reviewed изменения юнита. Все используют один fenced
+  без публичного vhost, router namespace и каталога; плоскость включена argv-пином
+  `CLAUDE_API_KIMI_ENABLED=1` в reviewed юнитах (выключение — обратное reviewed изменение). Все используют один fenced
   PostgreSQL billing authority, но не общий
   HTTP process, router, credential pool или health state. Gemini profiles — отдельные encrypted
   Google OAuth identities с Cloud Code project, собственным proxy/refresh/cooling; private

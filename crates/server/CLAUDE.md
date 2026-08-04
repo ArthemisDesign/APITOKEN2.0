@@ -137,8 +137,8 @@
   `ProviderMode::Kimi` (`CLAUDE_API_PROVIDER=kimi`) — выделенная delivery-плоскость: production
   юниты `systemd/claude-api-kimi@.service` (active/passive слоты 8804/8805 за stable loopback
   origin 127.0.0.1:8803) и legacy/anchor singleton `systemd/claude-api-kimi.service` (8804).
-  Оба юнита argv-level пинят `CLAUDE_API_KIMI_ENABLED=0`: общий config.env не может молча включить
-  плоскость, deliberate enablement — отдельное reviewed изменение юнита после live evidence.
+  Оба юнита argv-level пинят `CLAUDE_API_KIMI_ENABLED=1`: состояние плоскости живёт только в
+  reviewed юнитах; выключение — обратное reviewed изменение.
   Anthropic-плоскость держит KIMI выключенным, чтобы ровно один процесс вёл maintenance writer.
   В kimi-режиме роутер монтирует только common-роуты, `/kimi-subs` и `/v1/messages`, который
   диспатчит exact KIMI aliases через тот же `KimiGateway::handle`, что Anthropic-путь, а любая
