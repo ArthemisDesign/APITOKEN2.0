@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { useLanguage } from "@/components/chrome";
@@ -37,7 +36,6 @@ const copy = {
 export function KeyLogin() {
   const { language } = useLanguage();
   const t = copy[language];
-  const router = useRouter();
   const [key, setKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -49,6 +47,8 @@ export function KeyLogin() {
     try {
       const response = await fetch("/api/usage/lookup", {
         method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ key: key.trim() }),
       });
@@ -56,7 +56,10 @@ export function KeyLogin() {
         setError(t.missing);
         return;
       }
-      router.refresh();
+      // The session cookie is changed by a Route Handler, outside a Server Action. A document-level
+      // navigation guarantees that every browser renders /profile from the new cookie instead of
+      // reusing an App Router payload that was created for the previous session.
+      window.location.replace("/profile");
     } catch {
       setError(t.unavailable);
     } finally {

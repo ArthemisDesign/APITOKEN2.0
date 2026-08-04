@@ -38,7 +38,7 @@ const copy = {
     spent: "Actually spent", reserved: "Temporarily reserved", available: "Available for new requests",
     reserveNote: "After the response, the hold is replaced by the exact charge — it is not spent in full. The unused amount returns to available balance automatically.",
     key: "Key", active: "active", disabled: "disabled", issued: "issued", connectClaude: "Connect Claude",
-    connectGpt: "Connect GPT", connectGemini: "Connect Gemini", signOut: "Sign out", connections: "Three connections", oneKey: "one key", yourKey: "Your key",
+    connectGpt: "Connect GPT", connectGemini: "Connect Gemini", signOut: "Sign out", signingOut: "Signing out…", signOutRetry: "Sign out failed — retry", connections: "Three connections", oneKey: "one key", yourKey: "Your key",
     providersTitle: "Connected providers", providersDesc: "All three APIs run on this one key — point each tool at its endpoint and every request shows up here.",
     statusReady: "ready", guide: "Setup guide", noUsageYet: "No usage yet — connect it to start",
     officialCost: "Official cost", officialPrices: "at official prices of the models used", chargedKey: "Charged to key",
@@ -63,7 +63,7 @@ const copy = {
     spent: "Фактически потрачено", reserved: "Временно в обработке", available: "Доступно новым запросам",
     reserveNote: "После ответа резерв заменится точной стоимостью, а не спишется целиком. Неиспользованная часть автоматически вернётся в доступный баланс.",
     key: "Ключ", active: "активен", disabled: "отключён", issued: "выпущен", connectClaude: "Подключить Claude",
-    connectGpt: "Подключить GPT", connectGemini: "Подключить Gemini", signOut: "Выйти", connections: "Три подключения", oneKey: "один ключ", yourKey: "Ваш ключ",
+    connectGpt: "Подключить GPT", connectGemini: "Подключить Gemini", signOut: "Выйти", signingOut: "Выходим…", signOutRetry: "Не вышло — повторить", connections: "Три подключения", oneKey: "один ключ", yourKey: "Ваш ключ",
     providersTitle: "Подключённые провайдеры", providersDesc: "Все три API работают на этом ключе — направьте каждый инструмент на его адрес, и каждый запрос появится здесь.",
     statusReady: "готов", guide: "Инструкция", noUsageYet: "Пока нет расхода — подключите, чтобы начать",
     officialCost: "Официальная стоимость", officialPrices: "по официальным прайсам использованных моделей", chargedKey: "Списано с ключа",
@@ -107,8 +107,27 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
   const [mdistHover, setMdistHover] = useState<number | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const [isOnline, setIsOnline] = useState(true);
+  const [signOutState, setSignOutState] = useState<"idle" | "busy" | "failed">("idle");
   const [isRefreshing, startRefresh] = useTransition();
   const router = useRouter();
+
+  async function signOut() {
+    setSignOutState("busy");
+    try {
+      const response = await fetch("/api/usage/logout", {
+        method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        setSignOutState("failed");
+        return;
+      }
+      window.location.replace("/profile");
+    } catch {
+      setSignOutState("failed");
+    }
+  }
 
   const refreshUsage = useCallback(() => {
     if (document.visibilityState !== "visible" || !navigator.onLine || isRefreshing) return;
@@ -371,13 +390,14 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
                     <button
                       type="button"
                       className="btn btn-ghost btn-sm"
-                      onClick={() => {
-                        void fetch("/api/usage/logout", { method: "POST" }).then(() => {
-                          window.location.assign("/profile");
-                        });
-                      }}
+                      disabled={signOutState === "busy"}
+                      onClick={() => void signOut()}
                     >
-                      {t.signOut}
+                      {signOutState === "busy"
+                        ? t.signingOut
+                        : signOutState === "failed"
+                          ? t.signOutRetry
+                          : t.signOut}
                     </button>
                   ) : null}
                 </div>

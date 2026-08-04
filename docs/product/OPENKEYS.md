@@ -42,6 +42,11 @@ Anthropic gets the `Claude` prefix, GPT stays GPT, Gemini — Gemini, and unknow
 families are shown neutrally. The fallback has no right to attribute `Claude` to another
 provider.
 
+Key login at `/profile` keeps only a signed `__Host-` session cookie. A successful login
+atomically replaces the previous profile session, logout removes that same host-only cookie,
+and both transitions perform a document-level navigation. This makes a second login render
+from the new cookie instead of depending on a browser's cached Next.js router payload.
+
 A new issuance always has `pricing_contract=official_1_to_1`, `mult_bp=10000`: a key with
 a $50 face value receives exactly $50 of engine balance, and $1 of the model's full
 official cost charges $1. Until the global Stage 9 cutover, historical
