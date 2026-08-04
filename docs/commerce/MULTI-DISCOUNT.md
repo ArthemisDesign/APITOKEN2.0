@@ -101,7 +101,11 @@ scope = provider:anthropic
 ```
 
 The migration does not grant B2B access to OpenAI or Gemini. After the cutover an operator may
-explicitly add their provider/model rules via a full CAS replacement of the policy.
+explicitly add their provider/model rules via a full CAS replacement of the policy. The commerce
+policy CAS propagates to the live release-v2 authority through an append-only assignment
+extension: a strictly newer version of the account's release policy is prepared and pinned for the
+exact current head and its paired recovery, and the runtime resolver prefers the extension over the
+immutable base assignment. The base manifest is never rewritten.
 
 ### OpenKeys
 

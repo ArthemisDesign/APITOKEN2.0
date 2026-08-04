@@ -177,9 +177,11 @@ const MIGRATION_0027: &str = include_str!("../migrations_pg/0027_kimi_window_cal
 const MIGRATION_0028: &str =
     include_str!("../migrations_pg/0028_pricing_ledger_release_v2_attribution.sql");
 const MIGRATION_0029: &str = include_str!("../migrations_pg/0029_glm_window_calibration.sql");
+const MIGRATION_0030: &str =
+    include_str!("../migrations_pg/0030_pricing_release_policy_override_extensions.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 29;
+pub const CURRENT_SCHEMA_VERSION: i64 = 30;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -212,6 +214,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (27, MIGRATION_0027),
     (28, MIGRATION_0028),
     (29, MIGRATION_0029),
+    (30, MIGRATION_0030),
 ];
 
 #[cfg(test)]
@@ -11396,7 +11399,7 @@ mod tests {
 
     #[test]
     fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 29);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 30);
         let registered = ENGINE_MIGRATIONS
             .iter()
             .find(|(version, _)| *version == 29)
@@ -13022,6 +13025,100 @@ mod tests {
         assert!(legacy_error
             .downcast_ref::<crate::pricing::LegacyPricingPathClosedV2>()
             .is_some());
+
+        let b2c_policy_override = PricingReleasePolicyV2 {
+            policy_version: 2,
+            content_digest: "release-runtime-b2c-policy-v2-digest".into(),
+            rules: vec![
+                PricingReleasePolicyRuleV2 {
+                    rule_id: "release-runtime-override-google".into(),
+                    rule_digest: "release-runtime-override-google-digest".into(),
+                    scope: PricingReleaseRuleScopeV2::Provider {
+                        provider_id: crate::PROVIDER_GOOGLE.into(),
+                    },
+                    discount_bps: 6_000,
+                    payable_multiplier_bp: 4_000,
+                },
+                PricingReleasePolicyRuleV2 {
+                    rule_id: "release-runtime-global-50".into(),
+                    rule_digest: "release-runtime-global-50-digest".into(),
+                    scope: PricingReleaseRuleScopeV2::Global,
+                    discount_bps: 5_000,
+                    payable_multiplier_bp: 5_000,
+                },
+            ],
+            ..b2c_policy.clone()
+        };
+        assert_eq!(
+            pg.prepare_pricing_release_policy_v2(&b2c_policy_override)
+                .unwrap(),
+            PricingMutation::Stored
+        );
+        let override_assignment = |assignment_digest: &str| PricingReleaseAssignmentV2 {
+            account_id: "release-runtime-b2c".into(),
+            account_class: AccountClass::B2c,
+            policy_id: b2c_policy_override.policy_id.clone(),
+            policy_version: b2c_policy_override.policy_version,
+            policy_digest: b2c_policy_override.content_digest.clone(),
+            billing_mode: BillingModeV2::Balance,
+            funding_generation: Some(1),
+            purpose: None,
+            responsible: None,
+            assignment_digest: assignment_digest.into(),
+        };
+        let override_extension = PricingReleaseAssignmentExtensionV2 {
+            provisioning_head_generation: TARGET_GENERATION,
+            provisioning_head_digest: target.content_digest.clone(),
+            provisioning_head_version: 1,
+            paired_recovery_generation: Some(RECOVERY_GENERATION),
+            paired_recovery_digest: Some(recovery.content_digest.clone()),
+            extension_group_digest: "release-runtime-override-extension-group".into(),
+            members: vec![
+                PricingReleaseAssignmentExtensionMemberV2 {
+                    release_generation: TARGET_GENERATION,
+                    assignment: override_assignment("release-runtime-override-target-assignment"),
+                    extension_digest: "release-runtime-override-target-extension".into(),
+                },
+                PricingReleaseAssignmentExtensionMemberV2 {
+                    release_generation: RECOVERY_GENERATION,
+                    assignment: override_assignment("release-runtime-override-recovery-assignment"),
+                    extension_digest: "release-runtime-override-recovery-extension".into(),
+                },
+            ],
+        };
+        let mut downgrade_extension = override_extension.clone();
+        for member in &mut downgrade_extension.members {
+            member.assignment.policy_version = b2c_policy.policy_version;
+            member.assignment.policy_digest = b2c_policy.content_digest.clone();
+        }
+        downgrade_extension.extension_group_digest =
+            "release-runtime-override-downgrade-group".into();
+        assert!(matches!(
+            pg.prepare_pricing_release_assignment_extension_v2(&downgrade_extension)
+                .unwrap(),
+            PricingMutation::Rejected(PricingRejection::MissingDependency { dependency })
+                if dependency.starts_with("assignment:")
+        ));
+        assert_eq!(
+            pg.prepare_pricing_release_assignment_extension_v2(&override_extension)
+                .unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            pg.prepare_pricing_release_assignment_extension_v2(&override_extension)
+                .unwrap(),
+            PricingMutation::Unchanged
+        );
+        let overridden = pg
+            .pricing_release_resolution_v2(
+                "release-runtime-b2c",
+                crate::PROVIDER_GOOGLE,
+                "gemini-3-flash-preview",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(overridden.assignment.policy_version, 2);
+        assert_eq!(overridden.payable_multiplier_bp(), Some(4_000));
 
         let recovery_activated_ts = activated_ts.saturating_add(1);
         pg.client

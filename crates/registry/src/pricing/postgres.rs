@@ -3352,9 +3352,20 @@ pub(crate) fn postgres_prepare_pricing_release_assignment_extension_v2(
                     AND policy.content_digest=$5
                   WHERE account.id=$1
                     AND policy.account_class=$6 AND policy.billing_mode=$7
-                    AND NOT EXISTS(
-                        SELECT 1 FROM pricing_release_assignments base
-                         WHERE base.release_generation=$2 AND base.account_id=$1
+                    AND (
+                        NOT EXISTS(
+                            SELECT 1 FROM pricing_release_assignments base
+                             WHERE base.release_generation=$2 AND base.account_id=$1
+                        )
+                        OR EXISTS(
+                            SELECT 1 FROM pricing_release_assignments base
+                             WHERE base.release_generation=$2 AND base.account_id=$1
+                               AND base.account_class=$6 AND base.billing_mode=$7
+                               AND base.policy_id=$3 AND base.policy_version<$4
+                               AND base.funding_generation IS NOT DISTINCT FROM $8
+                               AND base.purpose IS NOT DISTINCT FROM $9
+                               AND base.responsible IS NOT DISTINCT FROM $10
+                        )
                     )
                     AND (
                         ($7='meter_only' AND $8::bigint IS NULL)
@@ -3373,6 +3384,8 @@ pub(crate) fn postgres_prepare_pricing_release_assignment_extension_v2(
                     &assignment.account_class.as_str(),
                     &assignment.billing_mode.as_str(),
                     &assignment.funding_generation,
+                    &assignment.purpose,
+                    &assignment.responsible,
                 ],
             )?
             .get(0);
@@ -4348,14 +4361,18 @@ pub(crate) fn pricing_release_resolution_v2_in_transaction<C: GenericClient>(
             AND release.content_digest=head.active_digest
            JOIN LATERAL (
                SELECT account_id,account_class,policy_id,policy_version,policy_digest,
-                      billing_mode,funding_generation,purpose,responsible,assignment_digest
+                      billing_mode,funding_generation,purpose,responsible,assignment_digest,
+                      0 priority
                  FROM pricing_release_assignments
                 WHERE release_generation=release.generation AND account_id=$1
                UNION ALL
                SELECT account_id,account_class,policy_id,policy_version,policy_digest,
-                      billing_mode,funding_generation,purpose,responsible,assignment_digest
+                      billing_mode,funding_generation,purpose,responsible,assignment_digest,
+                      1 priority
                  FROM pricing_release_assignment_extensions_v2
                 WHERE release_generation=release.generation AND account_id=$1
+                ORDER BY priority DESC
+                LIMIT 1
            ) assignment ON TRUE
           WHERE head.singleton=1",
         &[&account_id],

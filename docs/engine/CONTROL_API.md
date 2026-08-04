@@ -728,8 +728,12 @@ pair returns typed `missing_dependency`. An active recovery contains exactly the
 Both members must name
 the same account, policy, class, billing mode, funding generation and service metadata while keeping
 their own release generation, assignment digest and extension digest. The account must already
-exist, must be absent from both immutable base assignment manifests, and every policy/funding
-dependency must exist. Balance accounts take the account funding lock and require the assignment
+exist. For an account absent from both immutable base assignment manifests, every policy/funding
+dependency must exist. An account that is present in the base manifest is accepted only as an
+exact policy-version override: the extension must reference the same policy identity at a strictly
+newer version with identical account class, billing mode, funding generation and service metadata,
+so the immutable base is never rewritten.
+Balance accounts take the account funding lock and require the assignment
 generation to be the exact active funding head; service accounts remain `meter_only` with no
 funding generation.
 
@@ -737,7 +741,8 @@ An exact replay returns `unchanged`, a different body for the same
 `(provisioning_head_version, account_id)` returns `version_conflict`, and a request for a head that is
 no longer current returns typed `stale` without inserting either member. `GET` performs exact
 readback by that tuple. Runtime resolution reads one coherent base assignment or append-only
-extension for the active release; it never mutates the immutable release manifest. This surface does
+extension for the active release, preferring the extension when both exist; it never mutates the
+immutable release manifest. This surface does
 not create or activate a head.
 
 `POST /admin/pricing/v2/stage8-evidence/capture` is the producer-first machine transport for the
