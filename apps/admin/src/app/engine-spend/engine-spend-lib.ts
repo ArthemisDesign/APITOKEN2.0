@@ -45,6 +45,23 @@ export interface EngineSpendResponse {
   by_class?: Record<EngineSpendClass, EngineSpendClassTotals>;
 }
 
+export type EngineSpendFilter = "" | EngineSpendClass;
+
+/** Фильтр по классу аккаунта: посмотреть только OpenKeys — или, наоборот, убрать их из выборки. */
+export const ENGINE_SPEND_FILTERS: Array<[EngineSpendFilter, string]> = [
+  ["", "все аккаунты"],
+  ["client", "только клиенты"],
+  ["openkeys", "только OpenKeys"],
+  ["internal", "только внутренние"],
+];
+
+export function filterEngineSpendAccounts(
+  rows: EngineSpendAccountRow[],
+  filter: EngineSpendFilter,
+): EngineSpendAccountRow[] {
+  return filter === "" ? rows : rows.filter((row) => (row.account_class ?? "internal") === filter);
+}
+
 export const ENGINE_SPEND_WINDOWS: Array<{ days: EngineSpendDays; label: string }> = [
   { days: 1, label: "24 часа" },
   { days: 7, label: "7 дней" },
@@ -79,6 +96,28 @@ export function accountTitle(row: EngineSpendAccountRow): string {
 
 export function isClientAccount(row: EngineSpendAccountRow): boolean {
   return row.account_class === "client";
+}
+
+export const ENGINE_SPEND_ACCOUNTS_CSV_HEADER = [
+  "аккаунт",
+  "класс",
+  "handle",
+  "engine_account_id",
+  "запросы",
+  "списано_usd",
+  "real_api_usd",
+];
+
+export function buildEngineSpendAccountsCsvRows(rows: EngineSpendAccountRow[]): unknown[][] {
+  return rows.map((row) => [
+    accountTitle(row),
+    accountClassLabel(row.account_class),
+    row.handle ?? "",
+    row.account ?? "",
+    row.requests ?? 0,
+    row.charge_usd ?? 0,
+    row.real_usd ?? 0,
+  ]);
 }
 
 export const ENGINE_SPEND_CSV_HEADER = [

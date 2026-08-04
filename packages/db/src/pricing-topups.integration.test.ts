@@ -139,6 +139,48 @@ describe.runIf(Boolean(connectionString))("engine top-ups recorded for reporting
     expect(page.summary.manualPaidNano).toBe("1000");
   });
 
+  it("фильтр источника денег делит когорту и сужает сводку", async () => {
+    // Клиент A: только ручное начисление. Клиент B: подтверждённый платёж.
+    await applyPricingLedgerPage(db, { userId, engineAccountId }, [
+      entry(1, "topup", 900n, "admin-credit:granted"),
+      entry(2, "charge", 90n, null),
+    ]);
+    const payerId = randomUUID();
+    const payerAccount = "acct_payer";
+    await db.pool.query("INSERT INTO users (id, email, display_name) VALUES ($1, $2, 'P')", [
+      payerId, `${payerId}@t.invalid`,
+    ]);
+    await db.pool.query(
+      "INSERT INTO engine_accounts (id, user_id, engine_account_id, status) VALUES ($1, $2, $3, 'active')",
+      [randomUUID(), payerId, payerAccount],
+    );
+    const checkoutId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO checkout_sessions (id, user_id, engine_account_id, provider, amount_usd, amount_nano, status)
+       VALUES ($1, $2, $3, 'platega', 1, 1000000000, 'paid')`,
+      [checkoutId, payerId, payerAccount],
+    );
+    await db.pool.query(
+      `INSERT INTO payments (id, user_id, provider, provider_payment_id, amount_minor, currency,
+        amount_nano, status, paid_at, checkout_id)
+       VALUES ($1, $2, 'platega', 'pay-real', 100, 'USD', 700, 'paid', now(), $3)`,
+      [randomUUID(), payerId, checkoutId],
+    );
+
+    const all = await listAdminPayingUsers(db, { days: 30 });
+    expect(all.summary.payingUsers).toBe(2);
+
+    const payments = await listAdminPayingUsers(db, { days: 30, funding: "payments" });
+    expect(payments.rows.map((row) => row.userId)).toEqual([payerId]);
+    expect(payments.summary.payingUsers).toBe(1);
+    expect(payments.summary.paidNano).toBe("700");
+    expect(payments.summary.manualPaidNano).toBe("0");
+
+    const manual = await listAdminPayingUsers(db, { days: 30, funding: "manual" });
+    expect(manual.rows.map((row) => row.userId)).toEqual([userId]);
+    expect(manual.summary.paidNano).toBe("900");
+  });
+
   it("клиент без единого платежа, но с ручным пополнением, считается платящим", async () => {
     await applyPricingLedgerPage(db, { userId, engineAccountId }, [
       entry(1, "topup", 5000n, "admin-credit:offline-deal"),

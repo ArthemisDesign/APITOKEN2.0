@@ -65,7 +65,7 @@ type PeriodKey = (typeof PERIODS)[number][0] | "custom";
 // грузится лениво один раз за сессию вкладки; если портал недоступен — строки
 // остаются без подписи. Порт okDirectory() из admin-panel.js.
 let okDirPromise: Promise<Map<string, OkDirectoryRow>> | null = null;
-function okDirectory(): Promise<Map<string, OkDirectoryRow>> {
+export function okDirectory(): Promise<Map<string, OkDirectoryRow>> {
   okDirPromise ??= api<{ rows?: OkDirectoryRow[] }>("/openkeys-admin/lookup")
     .then((data) => new Map((data.rows ?? []).map((row) => [String(row.engineAccountId ?? ""), row])))
     .catch(() => {
@@ -81,9 +81,9 @@ const discount = (charge: number, real: number): string =>
 const providerLabel = (name: string | undefined): string =>
   name === "openai" ? "OpenAI (Codex)" : name === "anthropic" ? "Claude (подписки)" : name || "—";
 
-const okTypeLabel = (type: string | undefined): string => (type === "openai" ? "OpenAI" : "Claude");
+export const okTypeLabel = (type: string | undefined): string => (type === "openai" ? "OpenAI" : "Claude");
 
-function OkInfo({ meta }: { meta: OkDirectoryRow | undefined }): ReactElement | null {
+export function OkInfo({ meta }: { meta: OkDirectoryRow | undefined }): ReactElement | null {
   if (!meta) return null;
   return (
     <div className="sub">

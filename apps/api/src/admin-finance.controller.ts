@@ -27,6 +27,7 @@ const payingUsersSchema = z.object({  days: z.enum(["1", "7", "30"]).default("30
   q: z.string().trim().max(200).optional(),
   status: z.enum(["active", "disabled"]).optional(),
   provider: z.enum(["anthropic", "openai", "google", "other"]).optional(),
+  funding: z.enum(["payments", "manual"]).optional(),
   sort: z.enum(["spent", "paid", "last_paid", "last_seen"]).default("spent"),
   dir: z.enum(["asc", "desc"]).default("desc"),
 });
@@ -77,8 +78,9 @@ export class AdminFinanceController {
     @Query("provider") provider?: string,
     @Query("sort") sort?: string,
     @Query("dir") dir?: string,
+    @Query("funding") funding?: string,
   ): Promise<Record<string, unknown>> {
-    const parsed = payingUsersSchema.safeParse({ days, limit, offset, q, status, provider, sort, dir });
+    const parsed = payingUsersSchema.safeParse({ days, limit, offset, q, status, provider, sort, dir, funding });
     if (!parsed.success) throw new BadRequestException("invalid paying users filters");
     return this.finance.payingUsers({
       days: parsed.data.days,
@@ -89,6 +91,7 @@ export class AdminFinanceController {
       ...(parsed.data.q === undefined ? {} : { q: parsed.data.q }),
       ...(parsed.data.status === undefined ? {} : { status: parsed.data.status }),
       ...(parsed.data.provider === undefined ? {} : { provider: parsed.data.provider }),
+      ...(parsed.data.funding === undefined ? {} : { funding: parsed.data.funding }),
     });
   }
 

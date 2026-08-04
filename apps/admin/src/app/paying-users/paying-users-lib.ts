@@ -7,6 +7,14 @@ export const PAYING_USER_SORTS = [
 
 export type PayingUserSort = (typeof PAYING_USER_SORTS)[number][0];
 export type PayingUserProvider = "anthropic" | "openai" | "google" | "other";
+export type PayingUserFunding = "" | "payments" | "manual";
+
+/** Источник денег клиента: подписи для селектора когорты. */
+export const PAYING_USER_FUNDINGS: Array<[PayingUserFunding, string]> = [
+  ["", "любой источник денег"],
+  ["payments", "только реальные пополнения"],
+  ["manual", "только начисленные админом"],
+];
 export type PayingUserDays = 1 | 7 | 30;
 
 export interface ProviderSpend {
@@ -63,6 +71,7 @@ export interface PayingUsersPageState {
   q: string;
   status: "" | "active" | "disabled";
   provider: "" | PayingUserProvider;
+  funding: PayingUserFunding;
   sort: PayingUserSort;
   dir: "asc" | "desc";
 }
@@ -74,6 +83,7 @@ export const INITIAL_PAYING_USERS_PAGE: PayingUsersPageState = {
   q: "",
   status: "",
   provider: "",
+  funding: "",
   sort: "spent",
   dir: "desc",
 };
@@ -89,6 +99,7 @@ export function payingUsersQuery(state: PayingUsersPageState): string {
   if (state.q) params.set("q", state.q);
   if (state.status) params.set("status", state.status);
   if (state.provider) params.set("provider", state.provider);
+  if (state.funding) params.set("funding", state.funding);
   return params.toString();
 }
 

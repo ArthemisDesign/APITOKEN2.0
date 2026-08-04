@@ -85,6 +85,8 @@ export interface AdminFinanceChurnRow {
 export type AdminPayingUserProvider = "anthropic" | "openai" | "google" | "other";
 export type AdminPayingUserSort = "spent" | "paid" | "last_paid" | "last_seen";
 
+export type AdminPayingUserFunding = "payments" | "manual";
+
 export interface AdminPayingUsersQuery {
   days: 1 | 7 | 30;
   limit?: number;
@@ -92,6 +94,13 @@ export interface AdminPayingUsersQuery {
   q?: string;
   status?: "active" | "disabled";
   provider?: AdminPayingUserProvider;
+  /**
+   * Когорта по ИСТОЧНИКУ денег: "" — все платящие, `payments` — только клиенты с подтверждённым
+   * платежом (админские зачисления из выборки уходят), `manual` — только те, чей баланс целиком
+   * начислен вручную/админом. В отличие от остальных фильтров сужает и сводку: это определение
+   * когорты, а не подсветка строк.
+   */
+  funding?: AdminPayingUserFunding;
   sort?: AdminPayingUserSort;
   dir?: "asc" | "desc";
 }
@@ -349,6 +358,7 @@ export async function listAdminPayingUsers(
   const q = query.q?.trim() ?? "";
   const status = query.status ?? "";
   const provider = query.provider ?? "";
+  const funding = query.funding ?? "";
   const sort = query.sort ?? "spent";
   const dir = query.dir ?? "desc";
   const sortExpr = PAYING_USER_SORT_SQL[sort];
@@ -359,6 +369,9 @@ export async function listAdminPayingUsers(
   }
   if (status && status !== "active" && status !== "disabled") {
     throw new Error(`unsupported paying users status: ${String(query.status)}`);
+  }
+  if (funding && funding !== "payments" && funding !== "manual") {
+    throw new Error(`unsupported paying users funding: ${String(query.funding)}`);
   }
 
   // «Оплачено» = подтверждённые платежи + РУЧНЫЕ пополнения баланса движка (admin-credit и
@@ -389,6 +402,9 @@ export async function listAdminPayingUsers(
         GROUP BY user_id
       ) sources
       GROUP BY user_id
+      HAVING ($5::text = ''
+        OR ($5 = 'payments' AND sum(payments_count) > 0)
+        OR ($5 = 'manual' AND sum(manual_count) > 0 AND sum(payments_count) = 0))
     ), usage AS (
       SELECT e.user_id,
         sum(e.amount_nano) AS spent_nano,
@@ -460,8 +476,8 @@ export async function listAdminPayingUsers(
       LEFT JOIN api_keys ON api_keys.user_id = u.id
       WHERE ${filters}
       ORDER BY ${sortExpr} ${dir === "asc" ? "ASC" : "DESC"} NULLS LAST, u.id ASC
-      LIMIT $5 OFFSET $6
-    `, [days, q, status, provider, limit, offset]),
+      LIMIT $6 OFFSET $7
+    `, [days, q, status, provider, funding, limit, offset]),
     database.pool.query<{ total: string }>(`
       /* admin-finance:paying-users-count */
       ${commonCtes}
@@ -470,7 +486,7 @@ export async function listAdminPayingUsers(
       JOIN paid ON paid.user_id = u.id
       LEFT JOIN usage ON usage.user_id = u.id
       WHERE ${filters}
-    `, [days, q, status, provider]),
+    `, [days, q, status, provider, funding]),
     database.pool.query<{
       paying_users: string; active_spenders: string; paid_nano: string; manual_paid_nano: string;
       spent_nano: string;
@@ -481,13 +497,17 @@ export async function listAdminPayingUsers(
       WITH paid AS (
         SELECT user_id, sum(paid_nano) AS paid_nano, sum(manual_nano) AS manual_nano
         FROM (
-          SELECT user_id, sum(amount_nano) AS paid_nano, 0::numeric AS manual_nano
+          SELECT user_id, sum(amount_nano) AS paid_nano, 0::numeric AS manual_nano,
+                 count(*) AS payments_count, 0::bigint AS manual_count
           FROM payments WHERE status = 'paid' GROUP BY user_id
           UNION ALL
-          SELECT user_id, sum(amount_nano), sum(amount_nano)
+          SELECT user_id, sum(amount_nano), sum(amount_nano), 0::bigint, count(*)
           FROM pricing_usage_topups WHERE source = 'manual' GROUP BY user_id
         ) sources
         GROUP BY user_id
+        HAVING ($2::text = ''
+          OR ($2 = 'payments' AND sum(payments_count) > 0)
+          OR ($2 = 'manual' AND sum(manual_count) > 0 AND sum(payments_count) = 0))
       ), usage AS (
         SELECT e.user_id,
           sum(e.amount_nano) AS spent_nano,
@@ -524,7 +544,7 @@ export async function listAdminPayingUsers(
         count(*) FILTER (WHERE COALESCE(usage.other_nano, 0) > 0)::text AS other_users
       FROM paid
       LEFT JOIN usage ON usage.user_id = paid.user_id
-    `, [days]),
+    `, [days, funding]),
   ]);
 
   const summary = summaryResult.rows[0] ?? {

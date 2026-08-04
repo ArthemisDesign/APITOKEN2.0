@@ -18,6 +18,7 @@ import {
   buildPayingUsersCsvRows,
   INITIAL_PAYING_USERS_PAGE,
   isPositiveNano,
+  PAYING_USER_FUNDINGS,
   PAYING_USER_SORTS,
   PAYING_USERS_CSV_HEADER,
   payingTierLabel,
@@ -222,7 +223,7 @@ export default function PayingUsersPage() {
     <div className="paying-page">
       <PageHead
         title="Платящие"
-        sub="клиенты с подтверждённой оплатой или ручным пополнением движка · точный расход Claude, GPT и Gemini"
+        sub="клиенты с подтверждённой оплатой или ручным пополнением движка · фильтр источника денег · точный расход Claude, GPT и Gemini"
         badge={<Pill kind="ok">{count(payingTotal, "клиент", "клиента", "клиентов")}</Pill>}
       />
 
@@ -270,6 +271,15 @@ export default function PayingUsersPage() {
           <option value="openai">GPT</option>
           <option value="google">Gemini</option>
           <option value="other">другое / legacy</option>
+        </select>
+        <label className="sr-only" htmlFor="paying-funding">Источник денег</label>
+        <select
+          id="paying-funding"
+          value={page.funding}
+          title="«Реальные пополнения» — есть подтверждённый платёж; «начисленные админом» — баланс выдан вручную"
+          onChange={(event) => patchPage({ funding: event.target.value as PayingUsersPageState["funding"] })}
+        >
+          {PAYING_USER_FUNDINGS.map(([value, label]) => <option key={value || "any"} value={value}>{label}</option>)}
         </select>
         <label className="sr-only" htmlFor="paying-sort">Сортировка</label>
         <select id="paying-sort" value={page.sort} onChange={(event) => patchPage({ sort: event.target.value as PayingUsersPageState["sort"] })}>

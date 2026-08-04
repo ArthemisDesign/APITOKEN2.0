@@ -6,26 +6,40 @@
 // коммерции. Источник — /admin/finance/engine-spend (движковый /spend-stats,
 // склеенный со справочником владельцев engine-аккаунтов).
 
-import { startTransition, useState, type ReactElement } from "react";
+import { startTransition, useEffect, useState, type ReactElement } from "react";
 import { api } from "@/lib/api";
 import { csvDate, downloadCsv } from "@/lib/csv";
 import { ago, count, money } from "@/lib/format";
 import { usePoll } from "@/lib/usePoll";
 import { CardGrid, EmptyRow, LoadingGrid, PageHead, Pill, SectionHeader, StatCard, TableCard } from "@/components/ui";
+import { OkInfo, okDirectory, type OkDirectoryRow } from "@/components/spend-stats-modal";
 import {
   accountClassLabel,
   accountTitle,
+  buildEngineSpendAccountsCsvRows,
   buildEngineSpendCsvRows,
   discountLabel,
+  ENGINE_SPEND_ACCOUNTS_CSV_HEADER,
   ENGINE_SPEND_CSV_HEADER,
+  ENGINE_SPEND_FILTERS,
   ENGINE_SPEND_WINDOWS,
+  filterEngineSpendAccounts,
   providerLabel,
   type EngineSpendAccountRow,
   type EngineSpendDays,
+  type EngineSpendFilter,
   type EngineSpendResponse,
 } from "./engine-spend-lib";
 
-function AccountsTable({ rows, empty }: { rows: EngineSpendAccountRow[]; empty: string }): ReactElement {
+function AccountsTable({
+  rows,
+  empty,
+  okDir,
+}: {
+  rows: EngineSpendAccountRow[];
+  empty: string;
+  okDir: Map<string, OkDirectoryRow> | null;
+}): ReactElement {
   return (
     <TableCard>
       <table>
@@ -45,12 +59,18 @@ function AccountsTable({ rows, empty }: { rows: EngineSpendAccountRow[]; empty: 
               <tr key={row.account ?? index}>
                 <td className="left">
                   <b>{accountTitle(row)}</b>
+                  {row.account_class === "openkeys" ? (
+                    <span className="okb" title="Выпущен через OpenKeys">OpenKeys</span>
+                  ) : null}
                   <div className="sub mono">
                     {accountClassLabel(row.account_class)}
                     {row.owner?.customer_type ? ` · ${row.owner.customer_type.toUpperCase()}` : ""}
                     {" · "}
                     {row.handle || row.account || "—"}
                   </div>
+                  {/* Метка партии, номинал, продавец и профиль ключа — иначе openkeys-аккаунт
+                      виден только как безымянный handle. */}
+                  <OkInfo meta={okDir?.get(String(row.account ?? ""))} />
                 </td>
                 <td>{row.requests ?? 0}</td>
                 <td><b>{money(row.charge_usd)}</b></td>
@@ -70,8 +90,22 @@ function AccountsTable({ rows, empty }: { rows: EngineSpendAccountRow[]; empty: 
 
 export default function EngineSpendPage(): ReactElement {
   const [days, setDays] = useState<EngineSpendDays>(1);
+  const [filter, setFilter] = useState<EngineSpendFilter>("");
+  const [okDir, setOkDir] = useState<Map<string, OkDirectoryRow> | null>(null);
   const path = `/admin/finance/engine-spend?days=${days}`;
   const { data } = usePoll(path, () => api<EngineSpendResponse>(path), { interval: 60_000 });
+
+  // Справочник ключей OpenKeys грузится один раз за вкладку; если портал недоступен —
+  // строки просто остаются без метки партии, страница продолжает работать.
+  useEffect(() => {
+    let cancelled = false;
+    okDirectory().then((directory) => {
+      if (!cancelled) setOkDir(directory);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   if (!data) {
     return (
@@ -84,7 +118,7 @@ export default function EngineSpendPage(): ReactElement {
 
   const models = data.models ?? [];
   const providers = data.providers ?? [];
-  const accounts = data.accounts ?? [];
+  const accounts = filterEngineSpendAccounts(data.accounts ?? [], filter);
   const clients = accounts.filter((row) => row.account_class === "client");
   const others = accounts.filter((row) => row.account_class !== "client");
   const byClass = data.by_class;
@@ -204,14 +238,41 @@ export default function EngineSpendPage(): ReactElement {
         </table>
       </TableCard>
 
+      <SectionHeader title="Аккаунты" sub="фильтр применяется к обеим таблицам ниже" />
+      <div className="toolbar" style={{ margin: "0 0 12px" }}>
+        <label className="sr-only" htmlFor="engine-spend-filter">Класс аккаунта</label>
+        <select
+          id="engine-spend-filter"
+          value={filter}
+          title="Показать только ключи OpenKeys — или, наоборот, убрать их из выборки"
+          onChange={(event) => startTransition(() => setFilter(event.target.value as EngineSpendFilter))}
+        >
+          {ENGINE_SPEND_FILTERS.map(([value, label]) => (
+            <option key={value || "any"} value={value}>{label}</option>
+          ))}
+        </select>
+        <button
+          className="btn ghost"
+          type="button"
+          title="Выгрузить аккаунты текущего фильтра в CSV"
+          onClick={() => downloadCsv(
+            `engine-accounts-${days}d-${csvDate()}.csv`,
+            ENGINE_SPEND_ACCOUNTS_CSV_HEADER,
+            buildEngineSpendAccountsCsvRows(accounts),
+          )}
+        >
+          CSV
+        </button>
+      </div>
+
       <SectionHeader title="Клиенты коммерции" sub="engine-аккаунты, у которых есть пользователь сайта" />
-      <AccountsTable rows={clients} empty="клиентских списаний за это окно нет" />
+      <AccountsTable rows={clients} okDir={okDir} empty="клиентских списаний за это окно нет" />
 
       <SectionHeader
         title="Прочие аккаунты движка"
-        sub="OpenKeys и внутренние — их расхода нет в коммерческих отчётах"
+        sub="OpenKeys (с меткой партии, номиналом и продавцом) и внутренние — их расхода нет в коммерческих отчётах"
       />
-      <AccountsTable rows={others} empty="прочих аккаунтов за это окно нет" />
+      <AccountsTable rows={others} okDir={okDir} empty="прочих аккаунтов за это окно нет" />
 
       <footer>
         Источник — движковый /spend-stats (top-50 аккаунтов и top-20 моделей за окно).

@@ -178,7 +178,7 @@ GET       /admin/pricing-stage8-capture-v2
 POST      /admin/pricing-stage8-capture-v2/stage
 GET       /admin/pricing-release-activation-v2
 POST      /admin/pricing-release-activation-v2/stage
-GET       /admin/finance/paying-users?days=1|7|30&limit=...&offset=...
+GET       /admin/finance/paying-users?days=1|7|30&limit=...&offset=...&funding=payments|manual
 GET       /admin/finance/engine-spend?days=1|7|30
 ```
 
@@ -201,6 +201,11 @@ would double the same deposit. Bonus top-ups (welcome/promo) are never money. Ro
 expose `manual_paid_nano`/`manual_topups_count` next to the payment counters.
 `pricing_usage_topups` is an immutable reporting copy of engine top-ups; it is not a balance and
 never drives one. Commission classification keeps using the stricter `isFreeCreditRef` whitelist.
+
+`funding` selects the cohort by money origin: `payments` keeps only customers with a confirmed
+provider payment (admin-granted balances leave the report entirely), `manual` keeps only customers
+whose balance was granted by hand. Unlike the row filters it narrows the summary as well, because it
+redefines who is counted rather than which rows are listed.
 server, and returns lifetime paid totals plus the selected-window charged spend split into
 `anthropic`, `openai`, `google`, and `other`. All money is a decimal nanoUSD string; `other` keeps
 legacy usage without an attribution and unknown future provider IDs visible instead of silently

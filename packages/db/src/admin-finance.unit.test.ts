@@ -41,15 +41,15 @@ describe("listAdminPayingUsers", () => {
     });
 
     expect(queries).toHaveLength(3);
-    expect(queries[0]!.params).toEqual([7, "paid@", "active", "openai", 25, 50]);
+    expect(queries[0]!.params).toEqual([7, "paid@", "active", "openai", "", 25, 50]);
     expect(queries[0]!.text).toContain("JOIN paid ON paid.user_id = u.id");
     expect(queries[0]!.text).toContain("pricing_usage_attributions");
     expect(queries[0]!.text).toContain("COALESCE(a.provider_id, e.provider_id) = 'anthropic'");
     expect(queries[0]!.text).toContain("COALESCE(a.provider_id, e.provider_id) = 'openai'");
     expect(queries[0]!.text).toContain("COALESCE(a.provider_id, e.provider_id) = 'google'");
     expect(queries[0]!.text).toContain("ORDER BY paid.paid_nano ASC NULLS LAST, u.id ASC");
-    expect(queries[1]!.params).toEqual([7, "paid@", "active", "openai"]);
-    expect(queries[2]!.params).toEqual([7]);
+    expect(queries[1]!.params).toEqual([7, "paid@", "active", "openai", ""]);
+    expect(queries[2]!.params).toEqual([7, ""]);
     expect(page).toMatchObject({
       total: 3,
       days: 7,
@@ -70,6 +70,16 @@ describe("listAdminPayingUsers", () => {
     });
   });
 
+  it("сужает и страницу, и сводку, когда задана когорта источника денег", async () => {
+    const { database, queries } = fakeDatabase();
+    await listAdminPayingUsers(database, { days: 30, funding: "payments" });
+    // Когорта уходит параметром во ВСЕ три запроса: иначе сводка осталась бы по всем платящим,
+    // и «убрать админские начисления» не меняло бы итоговых сумм на плитках.
+    for (const query of queries) expect(query.params).toContain("payments");
+    expect(queries[0]!.text).toContain("$5 = 'payments' AND sum(payments_count) > 0");
+    expect(queries[2]!.text).toContain("$2 = 'manual' AND sum(manual_count) > 0 AND sum(payments_count) = 0");
+  });
+
   it("rejects sort, direction, provider and window values outside closed enums", async () => {
     const { database, queries } = fakeDatabase();
     await expect(listAdminPayingUsers(database, { days: 30, sort: "DROP TABLE users" as never }))
@@ -80,6 +90,8 @@ describe("listAdminPayingUsers", () => {
       .rejects.toThrow(/unsupported paying users provider/);
     await expect(listAdminPayingUsers(database, { days: 365 as never }))
       .rejects.toThrow(/unsupported paying users window/);
+    await expect(listAdminPayingUsers(database, { days: 30, funding: "gift" as never }))
+      .rejects.toThrow(/unsupported paying users funding/);
     expect(queries).toHaveLength(0);
   });
 });
