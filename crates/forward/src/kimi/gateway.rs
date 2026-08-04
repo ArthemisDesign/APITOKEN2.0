@@ -3376,6 +3376,7 @@ mod tests {
             body,
             model: "kimi-for-coding".into(),
             execution: ExecutionAttempt::direct(),
+            calibration: None,
             billing: None,
             affinity: None,
             affinity_store: affinity(),
