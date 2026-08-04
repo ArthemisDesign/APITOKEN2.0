@@ -1,8 +1,9 @@
-import { UnauthorizedException } from "@nestjs/common";
+import { ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 import type { AuthUserView } from "@claude-api/contracts";
+import { EngineClientError } from "@claude-api/engine-client";
 import { AccountController } from "./account.controller.js";
-import type { AccountService } from "./account.service.js";
+import { AccountService, EngineAccountUnavailableError } from "./account.service.js";
 import type { RequestAuth } from "./auth.guard.js";
 import type { TotpService } from "./totp.service.js";
 
@@ -46,5 +47,48 @@ describe("API key policy controller", () => {
       ...policy,
       totpCode: "222222",
     });
+  });
+});
+
+describe("engine failure mapping", () => {
+  function controllerWithWarning(accounts: unknown) {
+    const controller = new AccountController(
+      accounts as AccountService,
+      { verify: vi.fn() } as unknown as TotpService,
+    );
+    const logger = (controller as unknown as { logger: { warn: (message: string) => void } }).logger;
+    const warn = vi.spyOn(logger, "warn");
+    return { controller, warn };
+  }
+
+  it("keeps the public 503 text for a retryable engine error and logs the original failure", async () => {
+    const failure = new EngineClientError("engine returned HTTP 503", 503, true);
+    const { controller, warn } = controllerWithWarning({ getAccount: vi.fn().mockRejectedValue(failure) });
+
+    const caught = await controller.getAccount(currentAuth()).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(caught).toBeInstanceOf(ServiceUnavailableException);
+    expect((caught as ServiceUnavailableException).message).toBe("engine is temporarily unavailable");
+    expect(warn).toHaveBeenCalledTimes(1);
+    const logged = warn.mock.calls[0]?.[0] ?? "";
+    expect(logged).toContain("engine returned HTTP 503");
+    expect(logged).toContain("status: 503");
+    expect(logged).toContain("retryable: true");
+  });
+
+  it("logs the provisioning cause behind an EngineAccountUnavailableError", async () => {
+    const cause = new EngineClientError("engine request timed out", undefined, true);
+    const failure = new EngineAccountUnavailableError("engine account is temporarily unavailable", { cause });
+    const { controller, warn } = controllerWithWarning({ getAccount: vi.fn().mockRejectedValue(failure) });
+
+    await expect(controller.getAccount(currentAuth())).rejects.toMatchObject({
+      message: "engine is temporarily unavailable",
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    const logged = warn.mock.calls[0]?.[0] ?? "";
+    expect(logged).toContain("engine account is temporarily unavailable");
+    expect(logged).toContain("engine request timed out");
   });
 });

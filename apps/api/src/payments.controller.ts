@@ -7,6 +7,7 @@ import {
   Header,
   Headers,
   HttpCode,
+  Logger,
   NotFoundException,
   Param,
   Post,
@@ -20,12 +21,14 @@ import { CryptomusError, PlategaError } from "@claude-api/payments";
 import { z } from "zod";
 import { CurrentAuth, type RequestAuth, SessionAuthGuard } from "./auth.guard.js";
 import { CheckoutAmountError, CheckoutService, PlategaWebhookAuthError } from "./checkout.service.js";
-import { AccountService, isRetryableEngineFailure } from "./account.service.js";
+import { AccountService, describeEngineFailure, isRetryableEngineFailure } from "./account.service.js";
 
 const uuidSchema = z.string().uuid();
 
 @Controller()
 export class PaymentsController {
+  private readonly logger = new Logger(PaymentsController.name);
+
   constructor(
     private readonly checkouts: CheckoutService,
     private readonly accounts: AccountService,
@@ -47,7 +50,11 @@ export class PaymentsController {
       if (error instanceof Error && error.message.includes("unsupported payment provider")) {
         throw new ServiceUnavailableException("payment provider is not configured");
       }
-      if (isRetryableEngineFailure(error)) throw new ServiceUnavailableException("engine is temporarily unavailable");
+      if (isRetryableEngineFailure(error)) {
+        // Same contract as AccountController: generic public 503, original failure in logs.
+        this.logger.warn(`engine request failed, responding 503: ${describeEngineFailure(error)}`);
+        throw new ServiceUnavailableException("engine is temporarily unavailable");
+      }
       throw error;
     }
   }

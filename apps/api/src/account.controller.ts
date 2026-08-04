@@ -7,6 +7,7 @@ import {
   Get,
   Header,
   HttpCode,
+  Logger,
   NotFoundException,
   Param,
   Patch,
@@ -19,7 +20,7 @@ import {
 import { createApiKeySchema, renameApiKeySchema, updateApiKeyPolicySchema } from "@claude-api/contracts";
 import { EngineClientError } from "@claude-api/engine-client";
 import { z } from "zod";
-import { AccountService, isRetryableEngineFailure } from "./account.service.js";
+import { AccountService, describeEngineFailure, isRetryableEngineFailure } from "./account.service.js";
 import { CurrentAuth, type RequestAuth, SessionAuthGuard } from "./auth.guard.js";
 import { TotpService } from "./totp.service.js";
 
@@ -30,6 +31,8 @@ const usageWindowSchema = z.string().regex(/^(all|\d+[dh])$/).default("30d");
 @Controller()
 @UseGuards(SessionAuthGuard)
 export class AccountController {
+  private readonly logger = new Logger(AccountController.name);
+
   constructor(private readonly accounts: AccountService, private readonly totp: TotpService) {}
 
   @Get("account")
@@ -118,7 +121,12 @@ export class AccountController {
     try {
       return await action();
     } catch (error) {
-      if (isRetryableEngineFailure(error)) throw new ServiceUnavailableException("engine is temporarily unavailable");
+      if (isRetryableEngineFailure(error)) {
+        // The public 503 text stays generic; the original engine failure must stay
+        // diagnosable from logs (blue-green slot cutovers cause transient bursts).
+        this.logger.warn(`engine request failed, responding 503: ${describeEngineFailure(error)}`);
+        throw new ServiceUnavailableException("engine is temporarily unavailable");
+      }
       if (error instanceof EngineClientError || error instanceof z.ZodError ||
           (error instanceof Error && error.message.includes("invalid"))) {
         throw new BadGatewayException("engine returned an invalid response");

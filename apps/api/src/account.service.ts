@@ -637,6 +637,22 @@ export function isRetryableEngineFailure(error: unknown): boolean {
     (error instanceof EngineClientError && (error.retryable || error.status === 404));
 }
 
+// One-line diagnostic for the 503 mapping in the account/payments controllers: keeps the
+// original engine failure recoverable from logs without exposing the control key or request
+// bodies (EngineClientError messages are plain classifications like "engine request timed out").
+export function describeEngineFailure(error: unknown): string {
+  if (error instanceof EngineAccountUnavailableError) {
+    const cause = error.cause instanceof Error
+      ? `${error.cause.name}: ${error.cause.message}`
+      : String(error.cause ?? "none");
+    return `${error.message} (cause: ${cause})`;
+  }
+  if (error instanceof EngineClientError) {
+    return `${error.message} (status: ${error.status ?? "none"}, retryable: ${error.retryable})`;
+  }
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
 function isMissingEngineAccount(error: unknown): boolean {
   return error instanceof EngineClientError && (
     error.status === 404 || (error.status === 400 && error.message.includes("unknown account"))
