@@ -1,45 +1,44 @@
 # apiToken.sale OpenCode router plugin
 
-Канонический config-plugin для OpenCode. На старте он получает персональный `/v1/models`,
-переводит authoritative limits/capabilities и актуальные цены в штатную model schema OpenCode и
-добавляет Fast entries с исходным model ID только при опубликованном `priority` tier. Modalities,
-attachments, tool calling, structured output, reasoning и variants берутся из
-`apitoken.capabilities`; эвристик по `owned_by` или подстроке в model ID нет. Router-owned presets
-не добавляются в OpenCode provider list: у них динамическая модель и переменная цена.
+The canonical config plugin for OpenCode. On startup it fetches the personal `/v1/models`,
+translates the authoritative limits/capabilities and current prices into OpenCode's native model schema, and
+adds Fast entries with the original model ID only when the `priority` tier is published. Modalities,
+attachments, tool calling, structured output, reasoning, and variants come from
+`apitoken.capabilities`; there are no heuristics based on `owned_by` or a substring in the model ID. Router-owned presets
+are not added to the OpenCode provider list: they have a dynamic model and a variable price.
 
-Установить plugin можно копированием `apitoken-router.js` в
-`~/.config/opencode/plugin/apitoken-router.js` (или в auto-load каталог
-`~/.config/opencode/plugins/`). Клиентам сайт предлагает one-click installer
+You can install the plugin by copying `apitoken-router.js` to
+`~/.config/opencode/plugin/apitoken-router.js` (or into the auto-load directory
+`~/.config/opencode/plugins/`). For clients, the site offers a one-click installer
 `https://raw.githubusercontent.com/apitokensale-admin/apitoken.sale/main/opencode/install.sh`,
-который скачивает опубликованную копию этого файла из репозитория
-`apitokensale-admin/apitoken.sale` (`opencode/apitoken-router.js`) и добавляет provider
-`apitoken` в `~/.config/opencode/opencode.jsonc`. При изменении плагина опубликованную
-копию нужно обновить в том же релизе. Provider `apitoken` в `opencode.jsonc` должен
-использовать `@ai-sdk/openai-compatible`, `https://router.apitoken.sale/v1` и literal
-`sk-pool-…` key либо стандартный OpenCode placeholder `{env:NAME}`.
+which downloads the published copy of this file from the
+`apitokensale-admin/apitoken.sale` repository (`opencode/apitoken-router.js`) and adds the
+`apitoken` provider to `~/.config/opencode/opencode.jsonc`. When the plugin changes, the published
+copy must be updated in the same release. The `apitoken` provider in `opencode.jsonc` must
+use `@ai-sdk/openai-compatible`, `https://router.apitoken.sale/v1`, and a literal
+`sk-pool-…` key or the standard OpenCode placeholder `{env:NAME}`.
 
-Plugin рекламирует всем моделям только text output. Это намеренное ограничение OpenCode 1.18.11:
-его `@ai-sdk/openai-compatible` 2.0.41 не декодирует нативный Gemini `inlineData` и не принимает
-OpenRouter image metadata в Chat message. Нативная генерация картинок в gateway не отключена —
-`google/gemini-3.1-flash-image` нужно вызывать через Gemini
-`generateContent`/`streamGenerateContent`, где изображение возвращается в
+The plugin advertises only text output for all models. This is a deliberate OpenCode 1.18.11 limitation:
+its `@ai-sdk/openai-compatible` 2.0.41 does not decode native Gemini `inlineData` and does not accept
+OpenRouter image metadata in a Chat message. Native image generation in the gateway is not disabled —
+`google/gemini-3.1-flash-image` must be called through the Gemini
+`generateContent`/`streamGenerateContent`, where the image is returned in
 `candidates[].content.parts[].inlineData`.
 
-При временной недоступности каталога plugin может восстановить только capability metadata из
-локального last-good cache schema v2 (`catalog-v2.json`). Снимок AES-256-GCM зашифрован и привязан
-к точным credential/base URL,
-имеет режим `0600`, 15-минутный freshness TTL и предельный stale age 7 дней. Cached-модели явно
-помечаются `[stale metadata; pricing unavailable]`; `cost` не кэшируется и до следующего успешного
-live discovery в OpenCode не показывается. Другой ключ, другой URL, истёкший, повреждённый или
-неизвестной версии cache отклоняется; старый v1 не переиспользуется, потому что в нём нет
-authoritative modality/control полей.
+During a temporary catalog outage the plugin can restore only capability metadata from the
+local last-good cache schema v2 (`catalog-v2.json`). The snapshot is AES-256-GCM encrypted and bound
+to the exact credential/base URL,
+has mode `0600`, a 15-minute freshness TTL, and a maximum stale age of 7 days. Cached models are explicitly
+marked `[stale metadata; pricing unavailable]`; `cost` is not cached and is not shown in OpenCode until the next successful
+live discovery. A different key, a different URL, an expired, corrupted, or unknown-version cache is rejected; the old v1 is not reused because it lacks
+authoritative modality/control fields.
 
-Проверка:
+Check:
 
 ```bash
 pnpm --filter @claude-api/opencode-router-plugin test
 ```
 
-Plugin-файл намеренно имеет ровно один ESM export — default factory. OpenCode 1.18.11 пытается
-загрузить каждый export модуля как plugin factory, поэтому даже test-only named export ломает весь
-provider на старте; export shape закреплён unit-тестом и реальным `opencode models apitoken` smoke.
+The plugin file intentionally has exactly one ESM export — a default factory. OpenCode 1.18.11 tries to
+load every export of the module as a plugin factory, so even a test-only named export breaks the whole
+provider at startup; the export shape is pinned by a unit test and a real `opencode models apitoken` smoke.

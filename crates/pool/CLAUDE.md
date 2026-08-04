@@ -1,121 +1,121 @@
 # crates/pool — CLAUDE.md
 
-**Роль:** пул подписок + логика ротации (пункт 2). Чистая in-memory логика.
+**Role:** subscription pool + rotation logic (item 2). Pure in-memory logic.
 
-**Владелец-ветка:** `comp/pool`.
+**Owner branch:** `comp/pool`.
 
-**Границы (жёстко):**
-- Зависит только от `registry` (тип `Sub`). НИКАКОЙ сети, HTTP, БД, чтения env.
-- Опрос лимитов (сеть) и форвардинг — НЕ здесь, это `forward`. Сюда приходят уже готовые
-  значения утилизации через `set_util(...)`.
+**Boundaries (hard):**
+- Depends only on `registry` (the `Sub` type). NO network, HTTP, DB, or env reading.
+- Limit polling (network) and forwarding are NOT here — that is `forward`. Ready-made
+  utilization values arrive here via `set_util(...)`.
 
-**Что внутри:** `Pool` (RwLock-состояние: subs/live/legacy **bindings** + прайоры ёмкости), `Live` (util/reset/
-status/cooling/inflight + калибровка), `route_affinity`/legacy `route`, `pick` (ротация/
-спилл), `mark_used`/`mark_ok`/`mark_healthy`/`end_stream`/`mark_cooling`/`cool`, `set_util`,
-`set_quota_snapshots`, `record_spend`, `capacity`, `snapshot`. Общие предикаты — `select_best`
-(ротация) и `place_best`
-(capacity-weighted placement) как свободные функции над `Inner`.
+**What lives inside:** `Pool` (RwLock state: subs/live/legacy **bindings** + capacity priors), `Live` (util/reset/
+status/cooling/inflight + calibration), `route_affinity`/legacy `route`, `pick` (rotation/
+spill), `mark_used`/`mark_ok`/`mark_healthy`/`end_stream`/`mark_cooling`/`cool`, `set_util`,
+`set_quota_snapshots`, `record_spend`, `capacity`, `snapshot`. Shared predicates — `select_best`
+(rotation) and `place_best`
+(capacity-weighted placement) as free functions over `Inner`.
 
-**Cache-first планировщик (lineage → персона):** shared binding принадлежит `forward::AffinityStore`;
-pool не знает Redis/секретов и получает только opaque preferred home. `peek_affinity_home` даёт
-read-only hint до distributed claim; `route_affinity` повторно валидирует его и атомарно занимает слот:
-- **пин** — свежая привязка к здоровому дому → та же подписка (кэш тёплый, паттерн одного юзера);
-- **спилл** — дом «ещё наш» (кэш не остыл, не глубокий бан, под потолком), но временно занят
-  (бёрст-cooling < `REBIND_AFTER` или `inflight ≥ MAX_INFLIGHT`) → запрос немедленно уходит на менее
-  загруженный профиль через `select_best`, **привязка сохраняется**; если здоровый home единственный,
-  load-threshold fail-open оставляет запрос на нём без ожидания/отказа;
-- **(пере)привязка** — дома нет / дом dead, ≥100% hard cap или глубоко недоступен →
-  `place_best`: capacity-weighted placement (макс свободной USD-ёмкости), где `MAX_INFLIGHT` — лишь
-  мягкий routing threshold; если весь флот выше него, выбор продолжается по минимальному in-flight.
+**Cache-first scheduler (lineage → persona):** the shared binding belongs to `forward::AffinityStore`;
+the pool knows no Redis/secrets and receives only an opaque preferred home. `peek_affinity_home` gives a
+read-only hint before the distributed claim; `route_affinity` revalidates it and atomically occupies the slot:
+- **pin** — a fresh binding to a healthy home → the same subscription (cache is warm, single-user pattern);
+- **spill** — the home is "still ours" (cache not cold, no deep ban, under the cap) but temporarily busy
+  (burst-cooling < `REBIND_AFTER` or `inflight ≥ MAX_INFLIGHT`) → the request immediately goes to a less
+  loaded profile via `select_best`, **the binding is preserved**; if the healthy home is the only one,
+  load-threshold fail-open keeps the request on it with no waiting/rejection;
+- **(re)binding** — no home / home is dead, at ≥100% hard cap or deeply unavailable →
+  `place_best`: capacity-weighted placement (max free USD capacity), where `MAX_INFLIGHT` is only
+  a soft routing threshold; if the whole fleet is above it, selection continues by minimum in-flight.
 
-Shared cache-root НЕ lineage: `peek_affinity_home_with_warm` получает несколько opaque warm homes,
-прогревает минимум два конкурентных дома (если второй имеет ≥70% лучшей свободной ёмкости), затем
-предпочитает лучший тёплый. Сильно более свободная холодная персона побеждает и сама становится тёплой
-после успешного ответа. Это soft hint; все обычные health/reserve/inflight проверки остаются теми же.
+A shared cache-root is NOT a lineage: `peek_affinity_home_with_warm` receives several opaque warm homes,
+warms at least two competing homes (if the second has ≥70% of the best's free capacity), then
+prefers the best warm one. A much freer cold persona wins and itself becomes warm
+after a successful response. This is a soft hint; all the usual health/reserve/inflight checks stay the same.
 
-`route_operator_target` — узкий pure-memory путь для forwarding-admin live-калибровки: caller
-передаёт bounded opaque/profile hint и идентификатор-функцию, collision возвращает `None`. Путь
-обходит только мягкий new-placement `Reserve`, но не hard 100% cap, cooling или durable auth-dead;
-он никогда не spill/rebind-ится. HTTP/auth/header остаются ответственностью `forward`.
+`route_operator_target` is a narrow pure-memory path for forwarding-admin live calibration: the caller
+passes a bounded opaque/profile hint and an identifier function, a collision returns `None`. The path
+bypasses only the soft new-placement `Reserve`, but not the hard 100% cap, cooling or durable auth-dead;
+it is never spilled/rebound. HTTP/auth/headers remain the responsibility of `forward`.
 
-Continuation использует hard 100% provider cap, а новый placement — мягкий `Reserve`; busy home
-spill-ится немедленно, без локального ожидания. Legacy `route(u64)` и bounded `bindings`
-оставлены для совместимости тестов/внутренних callers. Сетей, env и persistence в pool нет.
+Continuation uses the hard 100% provider cap, while a new placement uses the soft `Reserve`; a busy home
+spills immediately, with no local waiting. Legacy `route(u64)` and bounded `bindings`
+are kept for compatibility with tests/internal callers. The pool has no network, env or persistence.
 
-**Персист (переживание рестарта):** `export_state`/`import_state` (через `registry::PoolStateRow`)
-переносят durable-состояние — cooling (бан на дни не забывается при деплое), калибровку ёмкости,
-spent/util/reset. `import_state` восстанавливает cooling только если ещё в будущем, засеивает якоря
-калибровки восстановленной точкой. Write-through триггер — хук `set_on_change` (opaque `Fn`, БЕЗ
-tokio/БД — чистота слоя): зовётся на cooling-переходах (`mark_cooling`/`cool`), server вешает на него
-poke персиста. Калибровка хук НЕ дёргает (частая) — едет на cooling-флашах + safety-flush сервера.
+**Persistence (surviving a restart):** `export_state`/`import_state` (via `registry::PoolStateRow`)
+carry the durable state — cooling (a multi-day ban is not forgotten on deploy), capacity calibration,
+spent/util/reset. `import_state` restores cooling only if it is still in the future, and seeds the
+calibration anchors with the restored point. The write-through trigger is the `set_on_change` hook (opaque `Fn`, WITHOUT
+tokio/DB — layer purity): it is called on cooling transitions (`mark_cooling`/`cool`); the server hangs a
+persistence poke on it. Calibration does NOT trigger the hook (too frequent) — it rides on cooling flushes plus the server's safety flush.
 
-**Запас окна на подписку (`Reserve`, headroom + антифингерпринт):** не роутим сверх `1 − base`
-(деф 5h=10%, 7d=3%) — оставляем буфер, чтобы не доводить окно до 100% (меньше 429, не выглядим как
-автомат, максящий квоту под ноль). Порог отсечения **джиттерится детерминированно по email**
-(`Reserve::caps`) → весь флот НЕ режется на одном проценте (это само было бы отличительным знаком),
-стабилен во времени для подписки. `select_best`/`place_best`/`route` сравнивают eff_util с per-window
-per-email потолком; ослабление «не зависать» использует `Reserve::FULL` (под пиком дотянем до 100%,
-чем 429 клиенту). Тюн env `CLAUDE_API_RESERVE_5H/7D/JITTER`; в тестах — jitter=0 для детерминизма.
+**Per-subscription window reserve (`Reserve`, headroom + anti-fingerprint):** we do not route above `1 − base`
+(defaults: 5h=10%, 7d=3%) — we leave a buffer so the window never reaches 100% (fewer 429s, and we don't
+look like a bot maxing the quota to zero). The cutoff threshold is **jittered deterministically by email**
+(`Reserve::caps`) → the whole fleet does NOT cut off at the same percent (that itself would be a
+distinguishing mark), and stays stable over time per subscription. `select_best`/`place_best`/`route` compare eff_util against the per-window
+per-email ceiling; the "don't stall" relaxation uses `Reserve::FULL` (under peak we'd rather reach 100%
+than hand the client a 429). Tuned via env `CLAUDE_API_RESERVE_5H/7D/JITTER`; in tests — jitter=0 for determinism.
 
-**In-flight = наблюдаемый счётчик на всю жизнь стрима:** `mark_used` (+1 на pick) → на успехе
-`mark_healthy` (снять cooling, in-flight НЕ трогать) → `end_stream` (−1) из tee-метеринга forward на
-завершении/обрыве стрима. 4xx → `mark_ok` (−1 сразу). Так `place_best`/`select_best` видят реальную
-параллельную нагрузку персоны (а не «0 сразу после заголовков») → не наваливают лишние стримы на
-один аккаунт (и лимит-риск, и аномалия). Это не admission cap: все candidates выше мягкого порога
-выбираются fail-open и продолжают параллельно.
+**In-flight = an observed counter for the whole life of a stream:** `mark_used` (+1 on pick) → on success
+`mark_healthy` (clear cooling, do NOT touch in-flight) → `end_stream` (−1) from forward's tee metering on
+stream completion/abort. 4xx → `mark_ok` (−1 immediately). This way `place_best`/`select_best` see the persona's real
+parallel load (not "0 right after the headers") → they don't pile extra streams onto
+one account (both a limit risk and an anomaly). This is not an admission cap: all candidates above the soft
+threshold are selected fail-open and continue in parallel.
 
-**Durable auth-health (детект забаненного токена — Claude банит подписки):** `AuthState`
-(`Healthy`→`Suspect`→`Dead`) на `Live`, персист в `subs.auth_state` (переживает рестарт/blue-green —
-в отличие от старого эфемерного `auth_dead`-бита, который поллер терял на каждый деплой). Машина —
-чистая `apply_probe(l, http, fp, now)` (детерминирована по `now` → тестируема): один 401/403 НЕ
-приговор (мог быть битый запрос клиента / транзиент), нужна серия `DEAD_STREAK`(2) чистых probe за
-≥`DEAD_MIN_SECS`(5мин) — «2 звонка за 5 минут» (чистый probe без клиентского ввода → 401 однозначен).
-`Dead` ИСКЛЮЧАЕТСЯ из `route`/`pick`/`place_best` (гарантированный 401 клиенту
-хуже прозрачного Overloaded из forward). Публичное: `record_probe` (зовёт поллер; возвращает
-`registry::SubHealth` ТОЛЬКО при изменении → server персистит owner-fenced), `import_health` (старт из
-БД), `revive`/`kill` (оператор), `is_auth_dead`, `token_fp`. Авто-ревайв: смена токена (`token_fp`
-изменился → `replace_subs`/`apply_probe` сбрасывают вердикт) или успешный медленный resurrection-probe.
-`replace_subs` одновременно удаляет token-scoped ephemeral quota snapshots, чтобы новый credential
-не наследовал current utilization старого.
-`403`→`permission_error` (бан), `401`→`authentication_error` (re-auth) в `dead_reason`. Живой 2xx-трафик
-через `mark_healthy` снимает подозрение В ПАМЯТИ (durable чинит ближайший чистый probe). Вердикт о
-живости выносит ТОЛЬКО поллер чистым probe — forward на живом 401/403 лишь `request_probe`, НЕ убивает.
+**Durable auth-health (detecting a banned token — Claude bans subscriptions):** `AuthState`
+(`Healthy`→`Suspect`→`Dead`) on `Live`, persisted in `subs.auth_state` (survives restart/blue-green —
+unlike the old ephemeral `auth_dead` bit, which the poller lost on every deploy). The machine is
+the pure `apply_probe(l, http, fp, now)` (deterministic in `now` → testable): a single 401/403 is NOT
+a verdict (could be a client's broken request / a transient), it takes a streak of `DEAD_STREAK`(2) clean probes over
+≥`DEAD_MIN_SECS`(5min) — "2 calls in 5 minutes" (a clean probe without client input → 401 is unambiguous).
+`Dead` is EXCLUDED from `route`/`pick`/`place_best` (a guaranteed 401 to the client
+is worse than a transparent Overloaded from forward). Public API: `record_probe` (called by the poller; returns
+`registry::SubHealth` ONLY on change → the server persists it owner-fenced), `import_health` (start from
+the DB), `revive`/`kill` (operator), `is_auth_dead`, `token_fp`. Auto-revive: token change (`token_fp`
+changed → `replace_subs`/`apply_probe` reset the verdict) or a successful slow resurrection probe.
+`replace_subs` simultaneously removes token-scoped ephemeral quota snapshots so the new credential
+does not inherit the old one's current utilization.
+`403`→`permission_error` (ban), `401`→`authentication_error` (re-auth) in `dead_reason`. Live 2xx traffic
+via `mark_healthy` clears suspicion IN MEMORY (the nearest clean probe fixes the durable state). The liveness
+verdict is issued ONLY by the poller with a clean probe — forward on a live 401/403 merely `request_probe`s, it does NOT kill.
 
-**Калибровка ёмкости (USD real-API) и доступность:**
-- Anthropic НЕ даёт абсолютный размер окна — только долю (util) и reset. Абсолют вычисляем:
-  `record_spend` копит монотонный реальный расход; `set_util` на каждом заголовке калибрует
-  `cap = ΔUSD/Δutil` (EMA) — якоря на окно двигаются, только когда Δutil перерос порог (мелкие
-  шаги накапливаются, ничего не теряется). До первой калибровки — прайор под Max 20x (env-tunable).
-  Response headers приходят раньше settlement стрима, поэтому при `inflight > 1` observation только
-  пере-якоряет окно и НЕ калибрует. Любой sample обязан быть правдоподобен относительно тарифного
-  прайора и объясняться нашим расходом; первый принятый sample тоже входит в EMA поверх прайора, а не
-  заменяет его целиком. На старте implausible legacy-cap карантинится в `0` (значит снова использовать
-  прайор), `calib_n` сбрасывается, и server немедленно персистит repair owner-fenced CAS-записью.
-- **Прайор по тарифу:** до первой калибровки прайор ёмкости масштабируется по `Sub.plan`
-  (`plan_scale`: max20=1.0, max5=0.25, pro=0.05) — иначе Pro/Max5-подписки переоценивались бы как
-  Max20 и переливались трафиком → 429-штормы. Калибровка из реального расхода дальше уточняет.
-- `capacity()` — чистая математика: «живая» util = заголовок + расход_с_тех_пор/cap (rollover
-  после reset); остаток окна = cap·(1−util); доступность на горизонте H (квота, не rate — окно
-  наливается заново): `min(rem5h + n5·cap5h, rem7d + n7·cap7d)`, n = число сбросов в (now, now+H].
-  Суммируется по флоту для любого числа подписок. `calibrated` флаг = была ли реальная калибровка;
-  per-sub `Cap` несёт тот же безопасный `plan`, что и исходный `Sub`, чтобы защищённые отчёты
-  группировали измерение без неоднозначного join по маскированному email.
-- `set_quota_snapshots` хранит отдельно exact fixed-point 5h/7d fraction, resolution, observed time
-  и optional reset от response/count-tokens. Это ephemeral current-supply evidence для server:
-  отсутствие reset не мешает посчитать текущий остаток через durable cohort capacity, но такой
-  снимок не калибрует legacy estimator, не персистится и не доказывает будущие horizon resets.
+**Capacity calibration (USD real-API) and availability:**
+- Anthropic does NOT give the absolute window size — only the share (util) and reset. We compute the absolute:
+  `record_spend` accumulates monotone real spend; `set_util` on each header calibrates
+  `cap = ΔUSD/Δutil` (EMA) — the window anchors move only when Δutil has outgrown the threshold (small
+  steps accumulate, nothing is lost). Before the first calibration — a prior matching Max 20x (env-tunable).
+  Response headers arrive before the stream settlement, so at `inflight > 1` an observation only
+  re-anchors the window and does NOT calibrate. Any sample must be plausible relative to the tariff
+  prior and explained by our spend; the first accepted sample also enters the EMA on top of the prior
+  rather than replacing it entirely. At startup an implausible legacy cap is quarantined to `0` (meaning: use the
+  prior again), `calib_n` is reset, and the server immediately persists the repair with an owner-fenced CAS write.
+- **Prior by plan:** before the first calibration the capacity prior is scaled by `Sub.plan`
+  (`plan_scale`: max20=1.0, max5=0.25, pro=0.05) — otherwise Pro/Max5 subscriptions would be overrated as
+  Max20 and overfilled with traffic → 429 storms. Calibration from real spend then refines it.
+- `capacity()` is pure math: "live" util = header + spend_since_then/cap (rollover
+  after reset); window remainder = cap·(1−util); availability over horizon H (quota, not rate — the window
+  refills): `min(rem5h + n5·cap5h, rem7d + n7·cap7d)`, n = number of resets in (now, now+H].
+  Summed over the fleet for any number of subscriptions. The `calibrated` flag = whether a real calibration
+  has happened; per-sub `Cap` carries the same safe `plan` as the source `Sub`, so protected reports
+  group the measurement without an ambiguous join on masked email.
+- `set_quota_snapshots` separately stores the exact fixed-point 5h/7d fraction, resolution, observed time
+  and optional reset from response/count-tokens. This is ephemeral current-supply evidence for the server:
+  a missing reset does not prevent computing the current remainder via durable cohort capacity, but such a
+  snapshot does not calibrate the legacy estimator, is not persisted, and does not prove future horizon resets.
 
-**Инварианты логики выбора:**
-- Окна лимитов — источник истины Anthropic (unified-заголовки). Разные точки отсчёта 5h/7d НЕ
-  вычисляем: каждая подписка сама сообщает свои util+reset. Мы их только потребляем.
-- **Rollover:** в `pick` эффективная утилизация = 0, если `now ≥ reset` (окно уже сброшено),
-  даже если поллер ещё не обновил число. Фильтр/сортировка идут по `eff5/eff7`, не по сырым util.
-- `pick`: сначала не-остывающие, затем под потолком `util_cap`; сортировка
-  **eff7 → eff5 → warn(allowed<warning) → inflight → LRU**. Стратегия: беречь недельный (7d)
-  бюджет, размазывать 5h.
-- Фильтры ослабляются постепенно (если пусто — берём наименее горячую), пул НИКОГДА не «зависает».
-- `mark_used` = +1 in-flight (веер параллельных); `mark_ok`/`mark_cooling` = −1 (клампится в 0).
-  `cool` — cooling БЕЗ трогания in-flight (для фонового поллера, он не делал `mark_used`).
-- `now()` — единый источник времени для крейта.
+**Selection-logic invariants:**
+- Limit windows are Anthropic's source of truth (unified headers). We do NOT compute different 5h/7d
+  reference points: each subscription reports its own util+reset. We only consume them.
+- **Rollover:** in `pick` the effective utilization = 0 if `now ≥ reset` (the window has already reset),
+  even if the poller hasn't refreshed the number yet. Filtering/sorting go by `eff5/eff7`, not raw util.
+- `pick`: non-cooling first, then those under the `util_cap` ceiling; sorting
+  **eff7 → eff5 → warn(allowed<warning) → inflight → LRU**. Strategy: protect the weekly (7d)
+  budget, spread out the 5h one.
+- Filters relax gradually (if empty — take the least hot one); the pool NEVER "stalls".
+- `mark_used` = +1 in-flight (fan of parallel streams); `mark_ok`/`mark_cooling` = −1 (clamped at 0).
+  `cool` — cooling WITHOUT touching in-flight (for the background poller, which did not call `mark_used`).
+- `now()` — the single time source for the crate.
 
-**Проверка:** `cargo build -p pool`.
+**Verification:** `cargo build -p pool`.

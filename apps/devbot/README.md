@@ -1,38 +1,38 @@
 # @claude-api/devbot
 
-Dev-бот Telegram: доставляет события жизненного цикла проекта (алерты Alertmanager,
-вехи деплой-пайплайна из GitHub, ручные вмешательства из journald) в топики
-forum-группы и отвечает на команды о состоянии систем. Дизайн и карта источников —
+Telegram dev bot: delivers project lifecycle events (Alertmanager alerts,
+deploy pipeline milestones from GitHub, manual interventions from journald) into the topics of a
+forum group and answers commands about system state. Design and source map —
 [docs/ops/DEVBOT.md](../../docs/ops/DEVBOT.md).
 
-Plain TypeScript-сервис (Node 24, без NestJS и telegram-фреймворков): тонкий клиент
-Bot API на встроенном `fetch` по образцу `crates/authbot/src/tg.rs`, state — один
-JSON-файл, БД нет.
+Plain TypeScript service (Node 24, no NestJS and no telegram frameworks): a thin
+Bot API client on the built-in `fetch`, modeled after `crates/authbot/src/tg.rs`; state is a single
+JSON file, no database.
 
-## Локальный запуск
+## Local run
 
 ```bash
-cp .env.example .env          # заполнить DEVBOT_* значениями
+cp .env.example .env          # fill in the DEVBOT_* values
 set -a && . ./.env && set +a
 pnpm build
-node dist/main.js             # или: pnpm start
+node dist/main.js             # or: pnpm start
 ```
 
-Без `DEVBOT_GITHUB_TOKEN` работает всё, кроме github-поллера и `/deploys`;
-без `DEVBOT_ENGINE_*` команды `/pool` и `/settlement` отвечают «не настроено».
+Without `DEVBOT_GITHUB_TOKEN` everything works except the github poller and `/deploys`;
+without `DEVBOT_ENGINE_*` the `/pool` and `/settlement` commands reply "not configured".
 
-## Провижининг топиков
+## Topic provisioning
 
-Группа должна быть forum-группой (topics включены), бот — админом с правом
-управления топиками. Один раз:
+The group must be a forum group (topics enabled), and the bot must be an admin with the right
+to manage topics. One time only:
 
 ```bash
 DEVBOT_TELEGRAM_TOKEN=... DEVBOT_CHAT_ID=-100... node scripts/provision-topics.mjs
 ```
 
-Скрипт создаёт 5 топиков и печатает готовые строки `DEVBOT_TOPIC_*` для env-файла.
+The script creates 5 topics and prints ready-made `DEVBOT_TOPIC_*` lines for the env file.
 
-## Проверки
+## Checks
 
 ```bash
 pnpm --filter @claude-api/devbot build
@@ -40,9 +40,9 @@ pnpm --filter @claude-api/devbot typecheck
 pnpm --filter @claude-api/devbot test
 ```
 
-## Эндпоинты (bind 127.0.0.1:DEVBOT_PORT)
+## Endpoints (bind 127.0.0.1:DEVBOT_PORT)
 
-- `POST /alerts/{DEVBOT_AM_SECRET}` — webhook Alertmanager v4 (grouped notifications).
-- `GET /health` — health-gate деплоя (`{"ok":true}`).
+- `POST /alerts/{DEVBOT_AM_SECRET}` — Alertmanager v4 webhook (grouped notifications).
+- `GET /health` — deploy health gate (`{"ok":true}`).
 - `GET /metrics` — `devbot_heartbeat_timestamp_seconds`, `devbot_events_total{topic,kind}`,
   `devbot_telegram_send_failures_total`.

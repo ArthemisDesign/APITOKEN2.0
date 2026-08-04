@@ -1,174 +1,179 @@
-# CLAUDE.md — системные правила проекта claude-api
+# CLAUDE.md — project-wide rules for claude-api
 
-> Это обязательные инструкции для ЛЮБОГО агента, работающего в этом репозитории.
-> Они важнее удобства и привычек: **соблюдай архитектуру и модель веток ниже всегда.**
-> У основных крейтов (`registry`, `pool`, `forward`, `server`, `metering`, `authbot`, `router`)
-> есть свой вложенный `crates/<name>/CLAUDE.md` с локальными границами —
-> Claude Code читает их автоматически, когда работает в подкаталоге.
+> These are mandatory instructions for ANY agent working in this repository.
+> They take precedence over convenience and habits: **always follow the architecture and branch model below.**
+> The main crates (`registry`, `pool`, `forward`, `server`, `metering`, `authbot`, `router`)
+> each have their own nested `crates/<name>/CLAUDE.md` with local boundaries —
+> Claude Code reads them automatically when working in a subdirectory.
 >
-> Этот файл и `AGENTS.md` — единый контракт: прочитай ОБА файла целиком до начала работы.
-> `AGENTS.md` содержит практические правила изоляции (worktree), коммитов, мёрджа и карту
-> репозитория, на которые этот документ опирается.
+> This file and `AGENTS.md` form a single contract: read BOTH files in full before starting work.
+> `AGENTS.md` contains the practical isolation rules (worktree), commit and merge rules, and the
+> repository map that this document builds on.
 
-## Язык ответа
+## Reply language
 
-ВСЕГДА отвечай на языке текущего запроса пользователя. Язык предыдущих сообщений не переопределяет
-язык нового запроса. Если запрос смешивает несколько языков, используй преобладающий; переходи на
-другой язык только по явной просьбе пользователя.
+ALWAYS reply in the language of the user's current request. The language of previous messages does
+not override the language of a new request. If a request mixes several languages, use the dominant
+one; switch to another language only at the user's explicit request.
 
-## Что это
+## What this is
 
-Пул обычных Claude-подписок (Max/Pro) отдаётся по сети как **API, неотличимый от
-`api.anthropic.com`**. Клиент наводит любой Anthropic-совместимый инструмент на наш сервер —
-запрос уходит на квоте подписки из пула, с ротацией по лимитам. Полное описание — `README.md`,
-карта модулей — `docs/engine/ARCHITECTURE.md`, модель веток — `BRANCHES.md`, production runbook —
-`docs/ops/DEPLOYMENT.md`, authority/fencing Stage 2 — `docs/engine/STAGE2_POSTGRES_AUTHORITY.md`.
-Обязательный workflow для contributor/AI и автоматическая доставка — `CONTRIBUTING.md`.
+A pool of ordinary Claude subscriptions (Max/Pro) is served over the network as **an API
+indistinguishable from `api.anthropic.com`**. A client points any Anthropic-compatible tool at our
+server — the request is spent against the quota of a subscription from the pool, with rotation across
+limits. Full description — `README.md`, module map — `docs/engine/ARCHITECTURE.md`, branch model —
+`BRANCHES.md`, production runbook — `docs/ops/DEPLOYMENT.md`, Stage 2 authority/fencing —
+`docs/engine/STAGE2_POSTGRES_AUTHORITY.md`. Mandatory contributor/AI workflow and automated delivery —
+`CONTRIBUTING.md`.
 
-## Инфраструктура и прод-сервер
+## Infrastructure and production server
 
-Любая информация о проде — топология, хосты, порты, systemd-юниты, расположение секретов,
-доступ к серверу — берётся ТОЛЬКО из инфра-доков: в первую очередь `docs/ops/INFRASTRUCTURE.md`,
-затем `docs/ops/DEPLOYMENT.md` и `docs/ops/MONITORING.md`. Не угадывай адреса, порты и пути
-по памяти и не выдумывай способы доступа: если в инфра-доках этого нет, доступа у агента нет.
-Ручной SSH-деплой и ручные миграции запрещены — их выполняет только host-watchdog.
+Any information about production — topology, hosts, ports, systemd units, secret locations, server
+access — comes ONLY from the infra docs: first and foremost `docs/ops/INFRASTRUCTURE.md`, then
+`docs/ops/DEPLOYMENT.md` and `docs/ops/MONITORING.md`. Do not guess addresses, ports, and paths
+from memory and do not invent ways to gain access: if it is not in the infra docs, the agent has no
+access. Manual SSH deployment and manual migrations are forbidden — only the host watchdog performs
+them.
 
-## CRM & Parsing — ВЫНЕСЕНО в отдельный репозиторий
+## CRM & Parsing — MOVED to a separate repository
 
-Внутренняя AI-CRM и парсинг (`crm.apitoken.sale`) больше НЕ живут в этом монорепо — они
-переехали в самостоятельный продукт **`github.com/Q666Q666Q/CRM-Parcing`** (пакеты `@crm/*`).
-Здесь остаётся только ИНФРА-роутинг под общий прод-сервер: `crm.apitoken.sale` и общий
-`managed_admin_auth` в `deploy/Caddyfile`, а также юниты `systemd/apitoken-crm-*.service`.
-Human credentials и domain grants хранятся в commerce PostgreSQL и проверяются внутренним
-`apps/api` auth endpoint; CRM ingest по-прежнему обходит human auth и проверяет свой ingest key.
-Этот роутинг держим тут, потому что Caddy и watchdog на сервере централизованы в этом репозитории;
-НЕ удалять (снесёт прод-роут CRM).
-Код/доки/парсеры CRM правим в новом репозитории, деплой CRM — ручной (его `deploy/DEPLOY.md`),
-вне watchdog монорепо. Аккаунт движка `crm-parsing` и ключ «CRM & Parsing» — общие (виден в панели).
+The internal AI CRM and parsing (`crm.apitoken.sale`) no longer live in this monorepo — they
+moved into a standalone product **`github.com/Q666Q666Q/CRM-Parcing`** (`@crm/*` packages).
+Only the INFRA routing for the shared production server stays here: `crm.apitoken.sale` and the
+shared `managed_admin_auth` in `deploy/Caddyfile`, plus the `systemd/apitoken-crm-*.service` units.
+Human credentials and domain grants are stored in commerce PostgreSQL and verified by the internal
+`apps/api` auth endpoint; CRM ingest still bypasses human auth and checks its own ingest key.
+We keep this routing here because Caddy and the watchdog on the server are centralized in this
+repository; DO NOT remove it (doing so will take down the production CRM route).
+CRM code/docs/parsers are edited in the new repository; CRM deployment is manual (its
+`deploy/DEPLOY.md`), outside the monorepo watchdog. The engine account `crm-parsing` and the
+"CRM & Parsing" key are shared (visible in the panel).
 
-## Commercial workspace (TypeScript, отдельный bounded context)
+## Commercial workspace (TypeScript, separate bounded context)
 
-В этом же репозитории находится коммерческий pnpm-workspace: `apps/api`, `apps/worker` и общие
-`packages/*`. Он отвечает за будущих пользователей, платежи, вебхуки и связь user→engine account.
-Он **не входит** в Rust-цепочку `registry ← pool ← forward ← server` и не импортирует Rust-крейты.
+This same repository also holds the commercial pnpm workspace: `apps/api`, `apps/worker`, and the
+shared `packages/*`. It is responsible for future users, payments, webhooks, and the user→engine
+account linkage. It is **not part of** the Rust chain `registry ← pool ← forward ← server` and does
+not import Rust crates.
 
-- Коммерческий код не открывает engine PostgreSQL/SQLite и не пишет баланс напрямую.
-- Единственная граница коммерция→движок — HTTP Control API из `docs/engine/CONTROL_API.md`.
-- `apps/api` и `apps/worker` независимо деплоятся; общую логику кладём в `packages/*`.
-- Коммерческая PostgreSQL хранит людей/платежи/доставку событий, но НЕ авторитетный live-баланс.
-- CONTROL_KEY существует только в server-side env; браузеру, ответам и логам его не отдавать.
-- Суммы провайдера и движка — только integer (`bigint`/decimal string), без JavaScript `number`.
-- Пополнение — произвольное целое число USD, введённое пользователем строкой цифр. Каталога
-  фиксированных продуктов нет; точки, дроби, float, знаки и ведущие нули запрещены.
-- Browser API никогда не принимает `user_id` как доказательство личности. Владельца берём только
-  из проверенной server-side сессии; приватные SQL-запросы дополнительно фильтруют по `user_id`.
-- Полный клиентский `sk-pool-…` возвращается браузеру только при выпуске и не хранится в commerce
-  PostgreSQL; листинг/отзыв используют маску и не-секретный engine `key_id`.
+- Commercial code never opens the engine PostgreSQL/SQLite and never writes balances directly.
+- The only commerce→engine boundary is the HTTP Control API from `docs/engine/CONTROL_API.md`.
+- `apps/api` and `apps/worker` are deployed independently; shared logic goes into `packages/*`.
+- Commerce PostgreSQL stores people/payments/event delivery, but NOT the authoritative live balance.
+- CONTROL_KEY exists only in server-side env; never expose it to the browser, responses, or logs.
+- Provider and engine money amounts are integer only (`bigint`/decimal string), no JavaScript `number`.
+- Top-ups are an arbitrary whole number of USD, entered by the user as a string of digits. There is no
+  catalog of fixed products; dots, fractions, floats, signs, and leading zeros are forbidden.
+- The browser API never accepts `user_id` as proof of identity. The owner is taken only from the
+  verified server-side session; private SQL queries additionally filter by `user_id`.
+- The full client `sk-pool-…` key is returned to the browser only at issuance and is not stored in
+  commerce PostgreSQL; listing/revocation use a mask and the non-secret engine `key_id`.
 - Password users may receive a session without email verification only while
   `EMAIL_VERIFICATION_REQUIRED=false`; they never receive the welcome bonus. Google/GitHub require a
   provider-verified email, key identities on provider subject, and are the only bonus-eligible methods.
 - Auth tokens are stored hashed. The email outbox may contain only AES-GCM-encrypted raw tokens;
   neither tokens nor verification/reset URLs may be logged.
-- Публичный production API коммерческого слоя: `https://backend.apitoken.sale`; клиентский домен:
-  `https://apitoken.sale`.
+- The public production API of the commercial layer: `https://backend.apitoken.sale`; the client
+  domain: `https://apitoken.sale`.
 - B2C target pricing is a global 50% discount with provider/model overrides; progressive tiers,
   retention and `track` are being removed under `docs/commerce/MULTI-DISCOUNT.md`. B2B
   invite/manual policies live in commerce PostgreSQL and do not inherit B2C. Pricing changes use
   durable versioned jobs and the final rollout switches one global release head without downtime.
 
-Локальная карта и запуск — `docs/commerce/COMMERCIAL_BACKEND.md`. Проверка: `pnpm build && pnpm typecheck && pnpm test`.
+Local map and launch — `docs/commerce/COMMERCIAL_BACKEND.md`. Verification: `pnpm build && pnpm typecheck && pnpm test`.
 
-Отдельно от commerce в том же pnpm-workspace живёт клиентская интеграция
-`packages/opencode-router-plugin`: канонический config-plugin OpenCode, который потребляет
-key-scoped unified `/v1/models`. Он не импортирует commerce packages и не деплоится на сервер;
-его capability-only cache не имеет права сохранять pricing/cost. Workspace gate относит пакет к
-Vercel/web validation-контексту, но не включает его в host commerce deployment. Контракт —
-`docs/engine/UNIFIED_ROUTER.md`, тест —
+Separate from commerce, the same pnpm workspace also hosts the client integration
+`packages/opencode-router-plugin`: the canonical OpenCode config-plugin, which consumes the
+key-scoped unified `/v1/models`. It does not import commerce packages and is not deployed to the
+server; its capability-only cache is not permitted to persist pricing/cost. The workspace gate
+assigns the package to the Vercel/web validation context but does not include it in the host
+commerce deployment. Contract — `docs/engine/UNIFIED_ROUTER.md`, test —
 `pnpm --filter @claude-api/opencode-router-plugin test`.
 
-## Архитектура — слои (НЕ нарушать направление зависимостей)
+## Architecture — layers (do NOT violate the dependency direction)
 
 ```
 registry  ←  pool  ←  forward  ←  server(bin)
 ```
 
-| Крейт | Отвечает за | МОЖЕТ зависеть от | НЕ ДЕЛАЕТ |
+| Crate | Responsible for | MAY depend on | DOES NOT do |
 |---|---|---|---|
-| `crates/registry` | engine PostgreSQL authority + SQLite importer | postgres, rusqlite, anyhow | HTTP, env, логика пула |
-| `crates/pool` | пул + ротация (in-memory) | registry | сеть, HTTP, БД, env |
-| `crates/forward` | прозрачный форвардинг /v1/*, поллер лимитов | pool, registry, axum, reqwest | чтение env, CLI, управляющие роуты |
-| `crates/server` | КОМПОЗИЦИЯ: env-конфиг, CLI, роутер, фоновые циклы | forward, pool, registry | бизнес-логику форвардинга (она в forward) |
+| `crates/registry` | engine PostgreSQL authority + SQLite importer | postgres, rusqlite, anyhow | HTTP, env, pool logic |
+| `crates/pool` | pool + rotation (in-memory) | registry | network, HTTP, DB, env |
+| `crates/forward` | transparent forwarding of /v1/*, limits poller | pool, registry, axum, reqwest | reading env, CLI, control routes |
+| `crates/server` | COMPOSITION: env config, CLI, router, background loops | forward, pool, registry | forwarding business logic (it lives in forward) |
 
-**Пополнение пула — `crates/authbot` (ВНЕ слоёв API).** Отдельный Rust-компонент-ПРОИЗВОДИТЕЛЬ
-доступа: Telegram-бот покупает Claude/ChatGPT/Gemini, пишет Claude-токены через
-`registry::authority`, Codex-профили публикует отдельными `CODEX_HOME`, а проверенные Gemini
-Code Assist OAuth subscriptions — AEAD-конвертами в атомарном roster. Он не участвует в слоях
-`registry←…←server` и не импортирует `pool`/`forward`/`server`. Владелец-ветка `comp/authbot`,
-локальные правила — `crates/authbot/CLAUDE.md`.
+**Pool replenishment — `crates/authbot` (OUTSIDE the API layers).** A separate Rust PRODUCER
+component for access: a Telegram bot purchases Claude/ChatGPT/Gemini, writes Claude tokens via
+`registry::authority`, publishes Codex profiles as separate `CODEX_HOME`s, and publishes verified
+Gemini Code Assist OAuth subscriptions as AEAD envelopes in an atomic roster. It does not take part
+in the `registry←…←server` layers and does not import `pool`/`forward`/`server`. Owner branch
+`comp/authbot`, local rules — `crates/authbot/CLAUDE.md`.
 
-**Новый subscription-провайдер или полная переделка provider calibration** начинается с repo-skill
-`.claude/skills/provider-onboarding/SKILL.md`, канонического
-`docs/engine/PROVIDER_ONBOARDING.md` и механической карты
-`docs/engine/PROVIDER_WIRING_CHECKLIST.md` (точные файлы, символы, порядок, ловушки). Они задают terminal GA gate, Claude/GPT-grade immutable
-calibration, безопасный live-runner и компактный admin control-room; один успешный запрос или
-правдоподобное число в UI этим gate не заменяются.
+**A new subscription provider or a full rework of provider calibration** starts with the repo skill
+`.claude/skills/provider-onboarding/SKILL.md`, the canonical
+`docs/engine/PROVIDER_ONBOARDING.md`, and the mechanical map
+`docs/engine/PROVIDER_WIRING_CHECKLIST.md` (exact files, symbols, order, pitfalls). They define the terminal GA gate, Claude/GPT-grade immutable
+calibration, a safe live runner, and a compact admin control-room; a single successful request or a
+plausible number in the UI does not substitute for that gate.
 
-**Инварианты (проверяй перед коммитом):**
-1. **Прозрачность.** Для клиента протокол = чистый Anthropic API (тело/ответ/стрим/ошибки).
-   Единственное, что делаем под капотом — инжект Claude Code identity + oauth-заголовки
-   (иначе токен подписки не пускают). Не ломать эту прозрачность.
-2. **Направление зависимостей** строго по таблице. pool — без сети и без HTTP.
-   registry — без HTTP и внешней сети, но владеет PostgreSQL-подключениями движка
-   (authority Stage 2): DB-I/O внутри registry — норма, а не нарушение.
-3. **env читается ТОЛЬКО** в `crates/server/src/config.rs`. Ниже по стеку — принимают готовый
-   конфиг (`forward::ProxyConfig`), а не лезут в окружение.
-4. **Секреты не коммитим:** токены, `subscriptions.db`, прокси с паролями, `*.env`, `target/`
-   (см. `.gitignore`). В коде и логах не печатать токены.
-5. **Куда класть новый код** — по зоне ответственности из таблицы. Меняешь работу с БД →
-   `registry`; выбор/ротацию → `pool`; транспорт форвардинга → `forward`; проводку/CLI/env →
-   `server`. Если тянет добавить сеть в pool или env в forward — это сигнал, что слой выбран не тот.
+**Invariants (check before committing):**
+1. **Transparency.** For the client the protocol = pure Anthropic API (body/response/stream/errors).
+   The only thing we do under the hood is inject the Claude Code identity + oauth headers
+   (otherwise the subscription token is not accepted). Do not break this transparency.
+2. **Dependency direction** strictly per the table. pool — no network and no HTTP.
+   registry — no HTTP and no external network, but it owns the engine's PostgreSQL connections
+   (Stage 2 authority): DB I/O inside registry is the norm, not a violation.
+3. **env is read ONLY** in `crates/server/src/config.rs`. Lower layers accept a ready-made
+   config (`forward::ProxyConfig`) instead of reaching into the environment.
+4. **Never commit secrets:** tokens, `subscriptions.db`, proxies with passwords, `*.env`, `target/`
+   (see `.gitignore`). Never print tokens in code or logs.
+5. **Where new code goes** — by the zone of responsibility from the table. Changing DB work →
+   `registry`; selection/rotation → `pool`; forwarding transport → `forward`; wiring/CLI/env →
+   `server`. If you feel tempted to add networking to pool or env access to forward — that is a
+   signal you picked the wrong layer.
 
-## Модель веток (trunk + ветка-владелец на компонент)
+## Branch model (trunk + one owner branch per component)
 
-Подробно — `BRANCHES.md`. Кратко:
+Details — `BRANCHES.md`. In short:
 
-- **`master`** — интеграция и production trigger, ВСЕГДА собирается (`cargo build` зелёный).
-  Изменения попадают в него только через `deploy/agent-merge.sh`; прямые коммиты запрещены.
-- **`comp/registry`, `comp/pool`, `comp/forward`, `comp/server`, `comp/authbot`** — долгоживущие
-  ветки-владельцы. На каждой — свой `BRANCH.md` (назначение, границы, как тестировать).
-- Правило: повседневная работа агента — **task-ветка от `origin/master`** в отдельном worktree
-  и мёрж через `deploy/agent-merge.sh` (канон процесса — `AGENTS.md`). `comp/*` остаются
-  ветками-владельцами для накопительной работы; их синхронизация с `master` — отдельная
-  операция вне типового цикла агента. Кросс-компонентную задачу разбивай по владельцам
-  последовательными мёржами или веди одной task-веткой с явным обоснованием в коммите.
-- Перед началом: `git branch` — пойми, где ты. Ветка сама себя объясняет через `BRANCH.md`.
+- **`master`** — integration and production trigger, ALWAYS builds (`cargo build` is green).
+  Changes land in it only via `deploy/agent-merge.sh`; direct commits are forbidden.
+- **`comp/registry`, `comp/pool`, `comp/forward`, `comp/server`, `comp/authbot`** — long-lived
+  owner branches. Each carries its own `BRANCH.md` (purpose, boundaries, how to test).
+- The rule: an agent's everyday work happens on a **task branch off `origin/master`** in a separate
+  worktree and is merged via `deploy/agent-merge.sh` (the process canon — `AGENTS.md`). `comp/*`
+  remain owner branches for cumulative work; synchronizing them with `master` is a separate
+  operation outside the typical agent cycle. Split a cross-component task by owners with sequential
+  merges, or drive it on a single task branch with an explicit justification in the commit.
+- Before starting: `git branch` — figure out where you are. A branch explains itself via `BRANCH.md`.
 
-## Как собрать/проверить
+## How to build/verify
 
 ```bash
-cargo build                      # весь workspace (должен быть зелёным до коммита)
-cargo build -p forward           # отдельный крейт
-cargo run -p claude-api -- serve # поднять сервер (env см. crates/server/src/config.rs)
+cargo build                      # entire workspace (must be green before committing)
+cargo build -p forward           # a single crate
+cargo run -p claude-api -- serve # start the server (env see crates/server/src/config.rs)
 cargo run -p claude-api -- sub list
 ```
 
-Smoke без живых подписок — мок-апстрим (`CLAUDE_API_UPSTREAM=http://127.0.0.1:PORT`): проверяет
-форвардинг, инжект identity, ротацию при 429, стрим. Готовые сценарии —
-`tests/rotation_fanout_smoke.sh` и `tests/universal_chat_smoke.sh`.
+Smoke without live subscriptions — a mock upstream (`CLAUDE_API_UPSTREAM=http://127.0.0.1:PORT`):
+it verifies forwarding, identity injection, rotation on 429, and streaming. Ready-made scenarios —
+`tests/rotation_fanout_smoke.sh` and `tests/universal_chat_smoke.sh`.
 
-## Жизненный цикл агента: изоляция → работа → мёрж
+## Agent lifecycle: isolation → work → merge
 
-Канон процесса — корневой `AGENTS.md`: worktree-изоляция, запрещённые команды, атрибуция,
-обязательные сообщения коммитов, «живой контракт» документации и чеклисты кросс-функциональных
-изменений (`docs/CHANGE_CHECKLISTS.md`), карта связей (`docs/DEPENDENCIES.md`), expand-only
-миграции и контракты, мёрж одной командой, синхронизация master и уборка. Он обязателен
-полностью и здесь не дублируется — две версии процесса неизбежно разъезжаются. Краткая суть:
-создавай worktree только через `deploy/agent-worktree.sh create`, работай в нём от
-`origin/master`, держи `cargo build` зелёным и обновляй документацию в том же коммите; мёрж —
-только `git push -u origin HEAD` + `./deploy/agent-merge.sh`; после зелёного `deploy/watchdog` —
-`deploy/agent-worktree.sh finish` для своего дерева. `doctor` и dry-run `gc` диагностируют хвосты,
-а глобальный `gc --apply` остаётся операторской maintenance-командой. На macOS постоянный
-`DELETE_WORKTREE` подбирает пропущенную clean+merged уборку по fail-closed контракту из
-`docs/ops/DELETE_WORKTREE.md`. Дисциплину частично страхует
-хук `.claude/hooks/guard-git.sh` (только в Claude Code). Внутреннее устройство gate, lifecycle и
-кэшей — `deploy/README.md`; workflow контрибьютора — `CONTRIBUTING.md`.
+The process canon is the root `AGENTS.md`: worktree isolation, forbidden commands, attribution,
+mandatory commit messages, the "living contract" of documentation, and cross-functional change
+checklists (`docs/CHANGE_CHECKLISTS.md`), the dependency map (`docs/DEPENDENCIES.md`), expand-only
+migrations and contracts, one-command merge, master synchronization, and cleanup. It is mandatory
+in full and is not duplicated here — two versions of the process inevitably drift apart. The short
+gist: create a worktree only via `deploy/agent-worktree.sh create`, work in it off
+`origin/master`, keep `cargo build` green, and update documentation in the same commit; merge —
+only `git push -u origin HEAD` + `./deploy/agent-merge.sh`; after a green `deploy/watchdog` —
+`deploy/agent-worktree.sh finish` for your own tree. `doctor` and dry-run `gc` diagnose leftovers,
+while global `gc --apply` remains an operator maintenance command. On macOS the permanent
+`DELETE_WORKTREE` LaunchAgent picks up missed clean+merged cleanup under the fail-closed contract
+from `docs/ops/DELETE_WORKTREE.md`. The discipline is partially guarded by the
+`.claude/hooks/guard-git.sh` hook (only in Claude Code). The internals of the gate, lifecycle, and
+caches — `deploy/README.md`; the contributor workflow — `CONTRIBUTING.md`.

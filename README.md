@@ -1,105 +1,111 @@
-# claude-api — подписки Claude как прозрачный `/v1` API
+# claude-api — Claude subscriptions as a transparent `/v1` API
 
-Пул обычных подписок Claude (Max/Pro) отдаётся по сети как **API, неотличимый от
-`api.anthropic.com`**. Наводишь любой Anthropic-клиент (SDK, `curl`, стороннее приложение) на
-этот сервер — а под капотом запрос идёт **на квоте подписки из пула**, с ротацией по лимитам.
-Никакого платного Anthropic API. Тот же бинарь запускается отдельными provider-процессами для
-OpenAI/Codex и native paid Gemini API. У них общий engine-owned PostgreSQL authority, но независимые
-домены, роутеры, credential pools и failure domains.
+A pool of ordinary Claude subscriptions (Max/Pro) is served over the network as **an API
+indistinguishable from `api.anthropic.com`**. Point any Anthropic client (SDK, `curl`, a
+third-party app) at this server — and under the hood the request is spent **against the quota of a
+subscription from the pool**, with rotation across limits. No paid Anthropic API involved. The same
+binary also runs as separate provider processes for OpenAI/Codex and the native paid Gemini API.
+They share an engine-owned PostgreSQL authority but have independent domains, routers, credential
+pools, and failure domains.
 
 ```
-   Клиент (Anthropic SDK / curl)                POST /v1/messages  (наш api-key)
-        │  base_url = наш сервер
+   Client (Anthropic SDK / curl)                POST /v1/messages  (our api-key)
+        │  base_url = our server
         ▼
-   claude-api (этот проект)
-        │  1. авторизует клиента по нашему ключу (x-api-key)
-        │  2. автоматически держит продолжение диалога на тёплой подписке; новые балансирует
-        │  3. под капотом: Bearer подписки + Claude Code identity + oauth-beta + её прокси
-        │  4. при 429/5xx/протухшем токене — cooling и ротация на следующую
+   claude-api (this project)
+        │  1. authorizes the client by our key (x-api-key)
+        │  2. automatically keeps the conversation going on a warm subscription; balances new ones
+        │  3. under the hood: subscription Bearer + Claude Code identity + oauth-beta + its proxy
+        │  4. on 429/5xx/expired token — cooling and rotation to the next one
         ▼
-   api.anthropic.com   →   ответ (в т.ч. SSE-стрим) отдаётся клиенту БАЙТ-В-БАЙТ
+   api.anthropic.com   →   the response (incl. SSE stream) is relayed to the client BYTE-FOR-BYTE
 ```
 
-Для клиента протокол ровно такой же, как у настоящего API (запрос/ответ/стриминг/ошибки).
-Инжект «Claude Code identity» в `system` — единственное, что делается под капотом: без него
-Anthropic не пускает OAuth-токены подписок на `/v1/messages`. Это невидимо для клиента.
+For the client the protocol is exactly the same as the real API's (request/response/streaming/errors).
+Injecting the "Claude Code identity" into `system` is the only thing done under the hood: without it
+Anthropic does not let subscription OAuth tokens onto `/v1/messages`. It is invisible to the client.
 
-Session ID передавать не нужно. Claude Code/harness распознаётся по уже существующему native header;
-обычный SDK/curl/собственный продукт — по keyed-хэшам канонических префиксов растущей истории.
-Привязка namespace-ится по аккаунту клиента, поэтому несколько его API-ключей разделяют тёплый кэш.
-Local L1 работает без зависимостей, Redis делится привязками между engine slots и fail-open: его
-отказ снижает только cache-hit, а деньги и capacity по-прежнему решает PostgreSQL.
+No session ID needs to be passed. Claude Code/harness is recognized via its already-existing native
+header; a plain SDK/curl/your own product — via keyed hashes of canonical prefixes of the growing
+history. Affinity is namespaced by the client's account, so several of their API keys share the warm
+cache. Local L1 works with no dependencies; Redis shares affinities between engine slots and is
+fail-open: its failure only reduces the cache hit rate, while money and capacity decisions are still
+made by PostgreSQL.
 
 ---
 
-## Из чего состоит (Cargo workspace)
+## What it consists of (Cargo workspace)
 
-Слои — только вниз: `registry ← pool ← forward ← server`. Карта — [`docs/engine/ARCHITECTURE.md`](docs/engine/ARCHITECTURE.md),
-правила для агентов — [`CLAUDE.md`](CLAUDE.md), модель веток — [`BRANCHES.md`](BRANCHES.md),
-production-хосты и эксплуатация — [`docs/ops/INFRASTRUCTURE.md`](docs/ops/INFRASTRUCTURE.md).
-Операторский deploy/rollback — [`docs/ops/DEPLOYMENT.md`](docs/ops/DEPLOYMENT.md), модель PostgreSQL authority и
-fencing Stage 2 — [`docs/engine/STAGE2_POSTGRES_AUTHORITY.md`](docs/engine/STAGE2_POSTGRES_AUTHORITY.md).
-Contributor/AI workflow и автоматическая доставка `master` — [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Layers — strictly downward: `registry ← pool ← forward ← server`. Map — [`docs/engine/ARCHITECTURE.md`](docs/engine/ARCHITECTURE.md),
+agent rules — [`CLAUDE.md`](CLAUDE.md), branch model — [`BRANCHES.md`](BRANCHES.md),
+production hosts and operations — [`docs/ops/INFRASTRUCTURE.md`](docs/ops/INFRASTRUCTURE.md).
+Operator deploy/rollback — [`docs/ops/DEPLOYMENT.md`](docs/ops/DEPLOYMENT.md), the PostgreSQL authority model and
+Stage 2 fencing — [`docs/engine/STAGE2_POSTGRES_AUTHORITY.md`](docs/engine/STAGE2_POSTGRES_AUTHORITY.md).
+Contributor/AI workflow and automated `master` delivery — [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-| Крейт | Роль | Ветка-владелец |
+| Crate | Role | Owner branch |
 |---|---|---|
 | `crates/registry` | **PostgreSQL authority**: subscriptions, money reservations/outbox, capacity leases, epochs | `comp/registry` |
-| `crates/pool` | **Пул + ротация**: выбор наименее загруженной, cooling при 429, состояние лимитов | `comp/pool` |
-| `crates/forward` | **Прозрачный форвардинг** `/v1/*`: auto-affinity L1/Redis, identity, ротация, стрим | `comp/forward` |
-| `crates/server` | **Композиция** (bin `claude-api`): env-конфиг, CLI, роутер `/health`+`/pool`, фоновые циклы | `comp/server` |
+| `crates/pool` | **Pool + rotation**: least-loaded selection, cooling on 429, limits state | `comp/pool` |
+| `crates/forward` | **Transparent forwarding** of `/v1/*`: auto-affinity L1/Redis, identity, rotation, stream | `comp/forward` |
+| `crates/server` | **Composition** (bin `claude-api`): env config, CLI, router `/health`+`/pool`, background loops | `comp/server` |
 
-У каждого крейта — свой `CLAUDE.md` с локальными границами (Claude Code читает их автоматически).
+Each crate has its own `CLAUDE.md` with local boundaries (Claude Code reads them automatically).
 
 ---
 
-## Сборка
+## Build
 
 ```bash
 cargo build --release          # → target/release/claude-api
 ```
 
-## Реестр подписок (пункт 1)
+## Subscription registry (item 1)
 
-Идентификатор — email. Подписке нужны только **OAuth-токен + прокси** (свой IP на аккаунт).
+The identifier is the email. A subscription needs only an **OAuth token + a proxy** (a dedicated IP
+per account).
 
 ```bash
 export SUB_CFG_DIR=/srv/claude-api/data      # local config/SQLite migration snapshot
 export CLAUDE_API_DATABASE_URL=postgresql://.../claude_engine
 
-# секреты читаются только из mode-0600 файлов, не из argv:
+# secrets are read only from mode-0600 files, never from argv:
 claude-api sub add-file account-a@example.com --token-file ~/.claude-b/oauth_token --proxy-file ~/.claude-b/proxy_url --fleet prod
 
-claude-api sub list                          # список (тариф в колонке plan, без утечки токена)
+claude-api sub list                          # list (plan shown in the plan column, no token leak)
 claude-api sub status account-a@example.com paused   # active|paused|disabled
 claude-api sub proxy  account-a@example.com --proxy-file ~/.claude-b/new_proxy_url
-claude-api sub fleet  account-a@example.com dev       # сменить флот
+claude-api sub fleet  account-a@example.com dev       # change the fleet
 claude-api sub rm     account-a@example.com
 ```
 
-**Тариф подписки (pro / max5 / max20).** Определяется автоматически при `add`/`add-file` —
-запросом `GET /api/oauth/profile` токеном подписки (как это делает Claude Code). Команды:
+**Subscription plan (pro / max5 / max20).** Detected automatically on `add`/`add-file` — via a
+`GET /api/oauth/profile` request with the subscription token (the same way Claude Code does it).
+Commands:
 
 ```bash
-claude-api sub detect-plan [account-a@example.com]   # определить тариф (без email — все без тарифа)
-claude-api sub set-plan account-a@example.com max20  # задать вручную (фолбэк)
+claude-api sub detect-plan [account-a@example.com]   # detect the plan (without email — all that lack one)
+claude-api sub set-plan account-a@example.com max20  # set manually (fallback)
 ```
 
-> ⚠️ Токены от `claude setup-token` (их выпускает бот покупки) бывают со scope только
-> `user:inference` — тогда профиль отвечает `403` и авто-детект даёт `noscope`. Тариф в этом
-> случае ставится вручную (`set-plan`) или подтянется после перелогина токена (scope `user:profile`).
+> ⚠️ Tokens from `claude setup-token` (issued by the purchase bot) may come with only the
+> `user:inference` scope — then the profile answers `403` and auto-detection yields `noscope`. In
+> that case the plan is set manually (`set-plan`) or picked up after the token is re-logged in
+> (scope `user:profile`).
 
-Историческая `subscriptions.db` импортируется guarded-командой Stage 2; active money authority —
-role-isolated PostgreSQL. Import refuses anonymous in-flight holds and verifies balance aggregates.
+The historical `subscriptions.db` is imported by a guarded Stage 2 command; the active money
+authority is role-isolated PostgreSQL. Import refuses anonymous in-flight holds and verifies balance
+aggregates.
 
-## Запуск сервера
+## Starting the server
 
 ```bash
 export SUB_CFG_DIR=/srv/claude-api/data
-export CLAUDE_API_KEYS="длинный-случайный-ключ"   # ПУСТО = принимать только с 127.0.0.1
-claude-api serve                                   # http://0.0.0.0:8787
+export CLAUDE_API_KEYS="long-random-key"       # EMPTY = accept requests only from 127.0.0.1
+claude-api serve                               # http://0.0.0.0:8787
 ```
 
-Использование клиентом — как обычный Anthropic API, только `base_url` и ключ свои:
+Client usage — like the ordinary Anthropic API, only `base_url` and the key are your own:
 
 ```bash
 curl -s http://SERVER:8787/v1/messages \
@@ -111,53 +117,53 @@ curl -s http://SERVER:8787/v1/messages \
 ```
 
 ```python
-# Anthropic SDK — просто переопредели base_url:
+# Anthropic SDK — just override base_url:
 from anthropic import Anthropic
-client = Anthropic(base_url="http://SERVER:8787", api_key="длинный-случайный-ключ")
+client = Anthropic(base_url="http://SERVER:8787", api_key="long-random-key")
 client.messages.create(model="claude-opus-4-8", max_tokens=256,
                        messages=[{"role":"user","content":"2+2?"}])
 ```
 
-Служебные эндпоинты: `GET /live` (процесс жив), `GET /ready` (можно направлять новый трафик),
-`GET /health` (совместимый health), `GET /pool` (статус пула, util/cooling). Во время drain
-`/ready` возвращает 503 раньше закрытия listener; `/live` и `/health` остаются доступны.
+Service endpoints: `GET /live` (process is alive), `GET /ready` (new traffic may be routed),
+`GET /health` (compatible health), `GET /pool` (pool status, util/cooling). During drain
+`/ready` returns 503 before the listener closes; `/live` and `/health` remain available.
 
-## Конфигурация
+## Configuration
 
-Все переменные — в [`config.env.example`](config.env.example) (пул/порт/апстрим) и секреты в
-[`server.env.example`](server.env.example) (ключи API). Production Anthropic PostgreSQL-слоты
-запускает [`systemd/claude-api-anthropic@.service`](systemd/claude-api-anthropic@.service), OpenAI —
-через [`systemd/claude-api-openai@.service`](systemd/claude-api-openai@.service), а native Gemini
-project pool — через [`systemd/claude-api-gemini@.service`](systemd/claude-api-gemini@.service) и
-отдельный домен `https://gemini.api.apitoken.sale`. Legacy singleton units сохраняются только для
-rollback на выпуски до slot-safe markers; untemplated
-[`systemd/claude-api.service`](systemd/claude-api.service) оставлен только как one-time bridge.
-Watchdog автоматически создаёт Redis/affinity secrets и управляет локальным
+All variables are in [`config.env.example`](config.env.example) (pool/port/upstream) and secrets in
+[`server.env.example`](server.env.example) (API keys). Production Anthropic PostgreSQL slots are
+started by [`systemd/claude-api-anthropic@.service`](systemd/claude-api-anthropic@.service), OpenAI —
+via [`systemd/claude-api-openai@.service`](systemd/claude-api-openai@.service), and the native Gemini
+project pool — via [`systemd/claude-api-gemini@.service`](systemd/claude-api-gemini@.service) and a
+separate domain `https://gemini.api.apitoken.sale`. Legacy singleton units are kept only for
+rollback to releases before slot-safe markers; the untemplated
+[`systemd/claude-api.service`](systemd/claude-api.service) is left only as a one-time bridge.
+The watchdog automatically creates Redis/affinity secrets and manages the local
 [`apitoken-affinity-redis.service`](systemd/apitoken-affinity-redis.service).
-Инстанс делят два потребителя с разным радиусом поражения: affinity (fail-open, теряется только
-prompt-cache hit) и Codex response history (потеря записи возвращается клиенту как 400). Поскольку
-`maxmemory` и `maxmemory-policy` в Redis задаются на инстанс, они разведены на два: history —
-`127.0.0.1:6379` (`allkeys-lru`, 512 MiB), affinity — `127.0.0.1:6380` (`allkeys-lru`, 128 MiB).
-Первый split rollout сохраняет прежнюю Compose identity и конфигурацию history-контейнера, поэтому
-добавление 6380 не останавливает и не пересоздаёт контейнер с уже оплаченными разговорами.
-Память и eviction каждого сняты своим `redis_exporter` (`9121`/`9122`) с алертами `AffinityRedis*` —
-см. [`docs/ops/MONITORING.md`](docs/ops/MONITORING.md).
+The instances are shared by two consumers with different blast radii: affinity (fail-open, only the
+prompt-cache hit is lost) and Codex response history (a lost write is returned to the client as a
+400). Since `maxmemory` and `maxmemory-policy` in Redis are set per instance, they are split in two:
+history — `127.0.0.1:6379` (`allkeys-lru`, 512 MiB), affinity — `127.0.0.1:6380` (`allkeys-lru`, 128 MiB).
+The first split rollout preserves the previous Compose identity and configuration of the history
+container, so adding 6380 neither stops nor recreates the container holding already-paid-for
+conversations. Memory and eviction of each are scraped by their own `redis_exporter` (`9121`/`9122`)
+with `AffinityRedis*` alerts — see [`docs/ops/MONITORING.md`](docs/ops/MONITORING.md).
 
-Опциональный native Codex-транспорт для строгого OpenAI-compatible text subset (пул sealed
-ChatGPT OAuth-профилей, как у Gemini) доступен только через
-`https://openai.api.apitoken.sale/v1` и описан в
-[`docs/engine/CODEX_PROVIDER.md`](docs/engine/CODEX_PROVIDER.md). Он выключен по умолчанию и не изменяет
-существующий Claude-маршрут на `https://api.apitoken.sale`.
+An optional native Codex transport for the strict OpenAI-compatible text subset (a pool of sealed
+ChatGPT OAuth profiles, as with Gemini) is available only via
+`https://openai.api.apitoken.sale/v1` and is described in
+[`docs/engine/CODEX_PROVIDER.md`](docs/engine/CODEX_PROVIDER.md). It is off by default and does not
+change the existing Claude route at `https://api.apitoken.sale`.
 
-Gemini использует отдельный пул платных Google-подписок, авторизованных через Antigravity OAuth с
-PKCE. Runtime преобразует native `/v1beta` запросы во внутренний Cloud Code protocol, сохраняет
-sticky affinity и вращает аккаунты при исчерпании квоты; Developer API key из подписки не извлекается.
-Provisioning, legacy-миграция, ротация, metering и runbook описаны в
-[`docs/engine/GEMINI_PROVIDER.md`](docs/engine/GEMINI_PROVIDER.md).
+Gemini uses a separate pool of paid Google subscriptions authorized via Antigravity OAuth with
+PKCE. The runtime converts native `/v1beta` requests into the internal Cloud Code protocol,
+preserves sticky affinity, and rotates accounts when the quota is exhausted; the Developer API key
+is not extractable from a subscription. Provisioning, legacy migration, rotation, metering, and the
+runbook are described in [`docs/engine/GEMINI_PROVIDER.md`](docs/engine/GEMINI_PROVIDER.md).
 
-## Безопасность
+## Security
 
-В репозиторий **не попадают**: `subscriptions.db`, токены, прокси с паролями, `*.env`, `target/`
-(см. `.gitignore`). Каждый аккаунт логинится и работает **с одного IP** (свой прокси) — чтобы не
-триггерить анти-абьюз Claude. Ключи нашего API держим в `server.env` (вне репо); без ключей
-сервер отвечает только на `127.0.0.1`.
+The repository must **never contain**: `subscriptions.db`, tokens, proxies with passwords, `*.env`,
+`target/` (see `.gitignore`). Each account logs in and operates **from a single IP** (its own
+proxy) — so as not to trip Claude's anti-abuse. Our API keys live in `server.env` (outside the
+repo); without keys the server answers only on `127.0.0.1`.

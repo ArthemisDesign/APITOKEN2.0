@@ -1,202 +1,202 @@
-# ROUTING_FENCING.md — детальный дизайн этапа 6 UNIFIED_ROUTER (routing + attempt fencing)
+# ROUTING_FENCING.md — detailed design of UNIFIED_ROUTER stage 6 (routing + attempt fencing)
 
-Статус: фазы 6.1–6.3, policy/presets consumer 6.4b и telemetry/mock-load часть 6.4c
-реализованы; контракт фазы 6.4 зафиксирован 2026-08-02. Serial fallback остаётся выключенным по
-умолчанию: впереди post-deploy live canary на точном GREEN SHA и отдельный production unit-флаг.
-Реализация следует этому документу; отклонение требует его пересмотра.
+Status: phases 6.1–6.3, the policy/presets consumer 6.4b and the telemetry/mock-load part of 6.4c
+are implemented; the phase 6.4 contract was fixed on 2026-08-02. Serial fallback remains off by
+default: ahead are a post-deploy live canary on the exact GREEN SHA and a separate production unit flag.
+The implementation follows this document; any deviation requires revising it.
 
-Дата фактбазы: 2026-08-02 (повторный аудит production после фаз 6.1–6.3).
-Ссылки вида `proxy.rs:1880` — `crates/forward/src/proxy.rs`, если не указано иное.
+Fact-base date: 2026-08-02 (re-audit of production after phases 6.1–6.3).
+References like `proxy.rs:1880` mean `crates/forward/src/proxy.rs` unless stated otherwise.
 
-## 1. Scope этапа 6
+## 1. Stage 6 scope
 
-По `UNIFIED_ROUTER.md` п. 6: OpenRouter-grade routing — provider preferences, явные
-fallback-списки моделей, attempt fencing (execution group / единственный billable winner),
-per-account policy, телеметрия, presets. НЕ входит: кворумные/параллельные попытки (race
-нескольких моделей), кросс-провайдерное хранилище ответов, изменение universal-словарей
-этапов 3–5.
+Per `UNIFIED_ROUTER.md` item 6: OpenRouter-grade routing — provider preferences, explicit
+model fallback lists, attempt fencing (execution group / single billable winner),
+per-account policy, telemetry, presets. NOT included: quorum/parallel attempts (racing
+multiple models), cross-provider response storage, changes to the universal dictionaries
+of stages 3–5.
 
-## 2. Фактбаза (аудит 2026-08-01)
+## 2. Fact base (audit 2026-08-01)
 
-### 2.1. Двойного биллинга внутри плоскости НЕТ — конструктивно
+### 2.1. There is NO double billing inside a plane — by construction
 
-Один `engine_request_id` (UUIDv4, CSPRNG) создаётся ДО первой попытки ротации и делится всеми
-in-plane ретраями: Anthropic `proxy.rs:955`, Codex `codex/billing.rs:98`, Gemini
-`gemini/api.rs:2180`. Exactly-once денег: `UNIQUE INDEX ledger_request_once ON
+One `engine_request_id` (UUIDv4, CSPRNG) is created BEFORE the first rotation attempt and is
+shared by all in-plane retries: Anthropic `proxy.rs:955`, Codex `codex/billing.rs:98`, Gemini
+`gemini/api.rs:2180`. Exactly-once for money: `UNIQUE INDEX ledger_request_once ON
 ledger(kind, request_id)` + outbox PK + reservation PK (`registry/src/lib.rs:1517-1520`);
-повторный settle с другим actual — hard error, не тихий дубль (`pg.rs:1907`).
+a repeated settle with a different actual is a hard error, not a silent duplicate (`pg.rs:1907`).
 
-### 2.2. Дыра — строго на границе плоскостей/моделей
+### 2.2. The hole is strictly at the plane/model boundary
 
-Любой retry НАД плоскостью (router fallback на другую модель/плоскость) создаёт НОВЫЙ
-request_id и НОВЫЙ reserve: если первая плоскость реально исполнила запрос (а router увидел
-timeout/5xx/обрыв), обе попытки billable. Router сегодня stateless и не МОЖЕТ безопасно
-ретраить: извне плоскости недоступно никакое состояние попытки (`router/src/proxy.rs:66-114`
-— один send, ноль ретраев, connect-timeout 2 с, 5xx плоскости транзитом). Единственный
-безопасный сигнал без нового контракта — TCP connect-refused (запрос физически не ушёл).
+Any retry ABOVE the plane (router fallback to another model/plane) creates a NEW
+request_id and a NEW reserve: if the first plane actually executed the request (and the router saw
+timeout/5xx/disconnect), both attempts are billable. The router today is stateless and CANNOT safely
+retry: no attempt state is available from outside the plane (`router/src/proxy.rs:66-114`
+— one send, zero retries, 2 s connect timeout, plane 5xx passed through). The only
+safe signal without a new contract is TCP connect-refused (the request physically never left).
 
-### 2.3. Граница «started» сегодня разная на четырёх ветках
+### 2.3. The "started" boundary differs across the four lanes today
 
-| Ветка | Durable «started» | Что видит router при отказе ДО started |
+| Lane | Durable "started" | What the router sees on failure BEFORE started |
 |---|---|---|
-| Anthropic | upstream 2xx headers → `mark_delivering` ДО первого байта клиенту (`proxy.rs:1880`) | не-2xx (плоскость отдала внутренний 5xx/429 после исчерпания ротаций) |
-| Codex stream | флаг `emitted` — первая дельта в клиентский канал (`runner.rs:360-363`); `mark_delivering` стоит ДО попытки (`api.rs:302`), refund pre-delta через `HoldGuard` settle(hold,0) | не-2xx, либо 200 с error-событием внутри стрима |
-| Codex non-stream | после полного turn (`api.rs:321`) | не-2xx |
-| Gemini stream | первый переведённый публичный event (`api.rs:1728`, bounded-прелюдия :2305-2365) | не-2xx |
-| Gemini non-stream | после успеха (`api.rs:2579`) | не-2xx |
+| Anthropic | upstream 2xx headers → `mark_delivering` BEFORE the first byte to the client (`proxy.rs:1880`) | non-2xx (plane returned an internal 5xx/429 after exhausting rotations) |
+| Codex stream | `emitted` flag — first delta into the client channel (`runner.rs:360-363`); `mark_delivering` is set BEFORE the attempt (`api.rs:302`), pre-delta refund via `HoldGuard` settle(hold,0) | non-2xx, or 200 with an error event inside the stream |
+| Codex non-stream | after the full turn (`api.rs:321`) | non-2xx |
+| Gemini stream | first translated public event (`api.rs:1728`, bounded prelude :2305-2365) | non-2xx |
+| Gemini non-stream | after success (`api.rs:2579`) | non-2xx |
 
-Вывод: не-2xx от плоскости СЕГОДНЯ почти всегда означает «не доставлено, деньги возвращены» —
-но это наблюдаемое поведение, а не контракт: ни одна ветка не гарантирует его явно, и для
-Codex stream даже 200 не означает billable. Без явного сигнала router не может отличить
-«не начала» от «начала и упала» (fact #4: plane-level 5xx до доставки = refund,
-200 + mid-stream `event: error` = billable delivering — различие только внутри плоскости).
+Conclusion: a non-2xx from a plane TODAY almost always means "not delivered, money refunded" —
+but that is observed behavior, not a contract: no lane guarantees it explicitly, and for
+Codex stream even 200 does not mean billable. Without an explicit signal the router cannot tell
+"never started" from "started and failed" (fact #4: plane-level 5xx before delivery = refund,
+200 + mid-stream `event: error` = billable delivering — the distinction exists only inside the plane).
 
-### 2.4. Существующие субстраты (расширяем, не строим заново)
+### 2.4. Existing substrates (we extend them, we do not rebuild)
 
-- Состояние резерва per-request: `reserved → delivering → [settlement_pending] →
-  settled/canceled` + lease + reconcile; `reserved` reconcile отменяет без списания —
-  де-факто сегодняшний «not_started» (`lib.rs:4824-4835`).
-- «delivering ⇒ billable» покрыто crash-recovery: истёкший lease в `delivering` → charge
-  полного hold, только при доказуемо мёртвом owner epoch (`pg.rs:2162-2191`).
-- Прецедент fail-closed fencing: неудачный durable `mark_delivering` → нет «бесплатного»
-  usage (полный hold с reference `delivery-marker-failed`, клиенту 503, `proxy.rs:1880-1905`).
-- Зачаток (group, attempt)-идентичности в capacity plane: `capacity_lease_id =
-  "{request_id}:{attempt}"` (`proxy.rs:1632`), PG `capacity_leases` с exact-replay
-  семантикой (`pg.rs:2201-2233`).
-- Стабильные per-turn ID, переживающие ротацию: Codex `cal_*` (`runner.rs:272-274`), Gemini
+- Per-request reservation state: `reserved → delivering → [settlement_pending] →
+  settled/canceled` + lease + reconcile; reconcile cancels `reserved` without charging —
+  de facto today's "not_started" (`lib.rs:4824-4835`).
+- "delivering ⇒ billable" is covered by crash recovery: an expired lease in `delivering` → charge
+  the full hold, only when the owner epoch is provably dead (`pg.rs:2162-2191`).
+- Fail-closed fencing precedent: a failed durable `mark_delivering` → no "free"
+  usage (full hold with reference `delivery-marker-failed`, 503 to the client, `proxy.rs:1880-1905`).
+- An embryo of (group, attempt) identity in the capacity plane: `capacity_lease_id =
+  "{request_id}:{attempt}"` (`proxy.rs:1632`), PG `capacity_leases` with exact-replay
+  semantics (`pg.rs:2201-2233`).
+- Stable per-turn IDs that survive rotation: Codex `cal_*` (`runner.rs:272-274`), Gemini
   `upstream_request_id` (`api.rs:2133-2136`), Anthropic `engine_request_id`.
-- Телеметрия: `apitoken_balance_divergence_nano` (прямой детектор лишних списаний),
-  `apitoken_engine_settlement_pending` + алерты `EngineSettlementBacklog`,
-  `EngineExpiredLeasePresent`, per-plane счётчики `upstream_{429,auth,5xx}`,
-  `gemini_stream_start_failures_total` (pre-byte фейлы).
+- Telemetry: `apitoken_balance_divergence_nano` (a direct detector of excess charges),
+  `apitoken_engine_settlement_pending` + alerts `EngineSettlementBacklog`,
+  `EngineExpiredLeasePresent`, per-plane counters `upstream_{429,auth,5xx}`,
+  `gemini_stream_start_failures_total` (pre-byte failures).
 
-## 3. Контракт `execution_state=not_started` (MVP fallback, фаза 6.1)
+## 3. The `execution_state=not_started` contract (MVP fallback, phase 6.1)
 
-### 3.1. Семантика
+### 3.1. Semantics
 
-Плоскость выставляет HTTP-заголовок `x-apitoken-execution-state: not_started` на ответе,
-когда выполнены ВСЕ условия:
+A plane sets the HTTP header `x-apitoken-execution-state: not_started` on a response
+when ALL of these conditions hold:
 
-1. Ни один байт публичного ответа не ушёл клиенту (тот же критерий, что in-plane retry
-   boundary: Anthropic — до upstream 2xx headers; Codex — до `emitted`; Gemini — до первого
-   переведённого public event).
-2. Reserve по этому request_id НЕ БУДЕТ тарифицирован: durable зафиксирован refund
-   (settle(hold, 0) / cancel reserve), либо reserve гарантированно отменится reconcile как
-   `reserved` без charge.
-3. Ответ не-2xx. На 2xx заголовок НЕ выставляется никогда: 2xx — всегда конец обсуждения
-   (mid-stream error event — ambiguous, решение клиента, `UNIFIED_ROUTER.md` «Семантика
-   fallback»: автоматического повтора на другой модели нет).
+1. Not a single byte of the public response has gone to the client (the same criterion as the in-plane retry
+   boundary: Anthropic — before upstream 2xx headers; Codex — before `emitted`; Gemini — before the first
+   translated public event).
+2. The reserve for this request_id WILL NOT be metered: a refund has been durably recorded
+   (settle(hold, 0) / cancel reserve), or the reserve is guaranteed to be cancelled by reconcile as
+   `reserved` without a charge.
+3. The response is non-2xx. On 2xx the header is NEVER set: 2xx is always the end of the discussion
+   (a mid-stream error event is ambiguous, the client's decision, `UNIFIED_ROUTER.md` "Fallback
+   semantics": no automatic retry on another model).
 
-Заголовок — внутренний контракт router↔plane: router ОБЯЗАН снимать его перед отдачей ответа
-клиенту (клиенты не должны зависеть от внутреннего состояния движка).
+The header is an internal router↔plane contract: the router MUST strip it before handing the response
+to the client (clients must not depend on internal engine state).
 
-### 3.2. Обязанности плоскостей (per-plane точки выставления)
+### 3.2. Plane obligations (per-plane emission points)
 
-- **Anthropic** (`proxy.rs`): исчерпание бюджетов ротации → итоговые не-2xx ответы
-  (429/5xx/503 exhausted, network-fail исходы) — все они до `mark_delivering`, reserve ещё в
-  `reserved`: header ставится при условии, что settle этой ветки — refund/cancel. Ответы
-  ПОСЛЕ `mark_delivering` (включая SseErrorTail внутри 200) — без заголовка.
-- **Codex** (`api.rs` + `runner.rs`): pre-delta отказы с `HoldGuard` refund (stream) и
-  не-успех non-stream до turn end — header; любой ответ после `emitted` — без.
-- **Gemini** (`api.rs`): отказы в bounded-прелюдии (provider_error до первого public event),
-  non-stream не-успех — header; после первого public event — без.
-- Единый unit-контракт на плоскость: «ответ с header ⇒ ledger не содержит и не будет
-  содержать charge по request_id» (проверяется на уровне settle-итогов в тестах ветки).
-- Universal Chat/Responses-адаптеры (`anthropic.rs`/`anthropic_responses.rs`,
-  `gemini/chat.rs`/`gemini/responses.rs`) покрыты с 2026-08-02: локальные pre-request
-  отказы получают `not_started`, пересборка не-2xx сохраняет только точный авторитетный
-  сигнал плоскости, а ошибки разбора/сборки после 2xx явно снимают его, потому что charge
-  уже возможен. Gemini Messages skin (`gemini/skin.rs`) следует тому же правилу для своей
-  поверхности. Отсутствующий либо неизвестный сигнал остаётся fail-closed: retry запрещён
+- **Anthropic** (`proxy.rs`): rotation budget exhaustion → final non-2xx responses
+  (429/5xx/503 exhausted, network-fail outcomes) — all of them before `mark_delivering`, the reserve still in
+  `reserved`: the header is set provided that this lane's settle is refund/cancel. Responses
+  AFTER `mark_delivering` (including SseErrorTail inside 200) — without the header.
+- **Codex** (`api.rs` + `runner.rs`): pre-delta failures with `HoldGuard` refund (stream) and
+  non-stream failure before turn end — header; any response after `emitted` — without it.
+- **Gemini** (`api.rs`): failures in the bounded prelude (provider_error before the first public event),
+  non-stream failure — header; after the first public event — without it.
+- A single per-plane unit contract: "a response with the header ⇒ the ledger does not and will not
+  contain a charge for the request_id" (verified at the settle-outcome level in lane tests).
+- Universal Chat/Responses adapters (`anthropic.rs`/`anthropic_responses.rs`,
+  `gemini/chat.rs`/`gemini/responses.rs`) are covered since 2026-08-02: local pre-request
+  failures receive `not_started`, a rebuilt non-2xx preserves only the exact authoritative
+  plane signal, and parse/assembly errors after 2xx explicitly strip it, because a charge
+  is already possible. The Gemini Messages skin (`gemini/skin.rs`) follows the same rule for its own
+  surface. A missing or unknown signal remains fail-closed: retry is forbidden
   (§3.3).
-- **Stable Caddy origins** (8790/8792/8794) синтезируют тот же exact `not_started` только когда
-  сам reverse-proxy handler возвращает `503 no healthy upstream`: ни один health-gated runtime не
-  принял запрос. Runtime-produced HTTP 503 не входит в `handle_errors` и не получает сигнал.
-  Внешние provider-vhost'ы снимают header на outer hop; router видит его только по loopback.
+- **Stable Caddy origins** (8790/8792/8794) synthesize the same exact `not_started` only when
+  the reverse-proxy handler itself returns `503 no healthy upstream`: no health-gated runtime
+  accepted the request. Runtime-produced HTTP 503 does not enter `handle_errors` and receives no signal.
+  External provider vhosts strip the header on the outer hop; the router sees it only over loopback.
 
-### 3.3. Обязанности router (фаза 6.2)
+### 3.3. Router obligations (phase 6.2)
 
-Retry на следующую модель fallback-списка разрешён РОВНО в двух случаях:
+A retry on the next model of the fallback list is permitted in EXACTLY two cases:
 
-1. Ответ плоскости не-2xx С заголовком `x-apitoken-execution-state: not_started` (header
-   снимается, клиенту уходит ответ последней попытки). Router логирует только bounded
-   metadata попытки; headers и тела запросов/ответов в лог не попадают.
-2. TCP connect-refused к плоскости (запрос физически не ушёл).
+1. The plane response is non-2xx WITH the `x-apitoken-execution-state: not_started` header (the header
+   is stripped; the client receives the response of the last attempt). The router logs only bounded
+   attempt metadata; request/response headers and bodies never enter the log.
+2. TCP connect-refused to the plane (the request physically never left).
 
-Запрещено: retry на timeout, на 5xx БЕЗ заголовка, на обрыв после заголовков, на 402
-(баланс аккаунта — повтор на другой модели той же учётки бессмысленен), на 4xx клиента.
-Исключение внутри диапазона 4xx — `429` с точным `not_started`: это capacity-отказ
-плоскости, а не исправимая клиентом ошибка. Exact означает одно значение `not_started`;
-другой регистр, несколько значений и неизвестное значение fail closed.
+Forbidden: retry on timeout, on 5xx WITHOUT the header, on a disconnect after headers, on 402
+(account balance — retrying on another model of the same account is pointless), on client 4xx.
+The exception inside the 4xx range is `429` with the exact `not_started`: that is a plane
+capacity refusal, not a client-fixable error. Exact means the single value `not_started`;
+different case, multiple values, and unknown values fail closed.
 
-## 4. Execution group / attempt identity (зрелая версия, фаза 6.3)
+## 4. Execution group / attempt identity (mature version, phase 6.3)
 
-MVP-контракт §3 закрывает гонку «вторая попытка стартовала, пока первая billable» только при
-исправном сигнале. Durable-гарантия против бага/рассинхрона — group identity:
+The §3 MVP contract closes the race "the second attempt started while the first is billable" only when
+the signal works. The durable guarantee against a bug/desync is group identity:
 
-- **Router генерирует** `group_id` (UUIDv4) на логический запрос с fallback-списком и шлёт
-  плоскости `x-apitoken-execution-group: <group_id>` + `x-apitoken-attempt: <N>` (N = 1,2,…
-  по порядку обхода списка). Без fallback-списка заголовки не выставляются — плоскость
-  работает как сегодня (group = request_id).
-- **Граница доверия:** Caddy удаляет оба заголовка на публичных provider-vhost'ах и на
-  `router.apitoken.sale`. Router дополнительно удаляет клиентские копии перед каждой попыткой и
-  только затем инжектирует собственную CSPRNG UUIDv4/порядковый attempt. Плоскость принимает либо
-  полностью отсутствующую пару, либо ровно по одному каноническому значению; partial, duplicate,
-  не-lowercase/non-v4 UUID и неканонический positive decimal fail closed до reserve.
-- **Registry (expand-only миграция):** `reservations` получает nullable `group_id TEXT` и
-  `attempt INTEGER NOT NULL DEFAULT 1`. PostgreSQL default не может ссылаться на другую колонку,
-  поэтому `group_id IS NULL` — явное совместимое представление старой/прямой попытки, а effective
-  group в runtime определяется как `COALESCE(group_id, request_id)`. Новая таблица
+- **The router generates** a `group_id` (UUIDv4) per logical request with a fallback list and sends
+  the plane `x-apitoken-execution-group: <group_id>` + `x-apitoken-attempt: <N>` (N = 1,2,…
+  in list traversal order). Without a fallback list the headers are not set — the plane
+  works as today (group = request_id).
+- **Trust boundary:** Caddy strips both headers on public provider vhosts and on
+  `router.apitoken.sale`. The router additionally removes client-supplied copies before each attempt and
+  only then injects its own CSPRNG UUIDv4/ordinal attempt. The plane accepts either a fully absent
+  pair or exactly one canonical value of each; partial, duplicate,
+  non-lowercase/non-v4 UUID, and non-canonical positive decimal fail closed before reserve.
+- **Registry (expand-only migration):** `reservations` gains a nullable `group_id TEXT` and
+  `attempt INTEGER NOT NULL DEFAULT 1`. A PostgreSQL default cannot reference another column,
+  so `group_id IS NULL` is the explicit compatible representation of an old/direct attempt, and the effective
+  group at runtime is determined as `COALESCE(group_id, request_id)`. The new table
   `execution_group_winner(group_id TEXT PRIMARY KEY, winner_request_id TEXT NOT NULL,
-  decided_at BIGINT NOT NULL)` хранит одну insert-first-wins строку на effective group.
-- **Settle path:** nonzero settle (charge > 0) атомарно (в той же БД-транзакции) делает
-  `INSERT INTO execution_group_winner … ON CONFLICT DO NOTHING` и читает победителя:
-  - winner == мой request_id → обычный settle;
-  - winner != мой request_id → двойное исполнение обнаружено durable: charge принудительно
-    0 (refund), фатальный structured event `execution_group_double_winner` + метрика
-    (должна быть 0 всегда; >0 = баг контракта §3, инцидент).
-  Refund-settle (charge == 0) winner не назначает.
-- **Strict-policy loser:** исходный outbox payload (`actual`, usage, disposition) остаётся
-  неизменным для аудита exact replay, но money-обработка выполняется как внутренний `cancel` с
-  effective actual 0 и без usage/charge rows. Reservation и funding allocations фиксируют нулевой
-  charge и полный release. Exact replay выводит effective actual из durable winner row.
-- **Retention:** winner удаляется только после bounded terminal-prune последней reservation с тем
-  же effective group. Пока существует хотя бы одна reservation/replay-свидетельство группы,
-  winner сохраняется, даже если reservation победителя уже стала eligible для удаления.
-- **Инвариант exactly-once не ослабляется:** существующий `UNIQUE ledger(kind, request_id)`
-  остаётся per-attempt; winner-правило добавляет «ровно один nonzero winner на группу».
-- Миграции — expand-only, двумя коммитами по `AGENTS.md`: сначала совместимая со старым writer
-  схема (nullable group identity, attempt с default, новая таблица), код — после зелёных
+  decided_at BIGINT NOT NULL)` stores one insert-first-wins row per effective group.
+- **Settle path:** a nonzero settle (charge > 0) atomically (in the same DB transaction) performs
+  `INSERT INTO execution_group_winner … ON CONFLICT DO NOTHING` and reads the winner:
+  - winner == my request_id → normal settle;
+  - winner != my request_id → double execution detected durably: the charge is forced to
+    0 (refund), a fatal structured event `execution_group_double_winner` + metric
+    (must be 0 always; >0 = §3 contract bug, incident).
+  A refund-settle (charge == 0) does not assign a winner.
+- **Strict-policy loser:** the original outbox payload (`actual`, usage, disposition) remains
+  unchanged for exact-replay audit, but money processing is performed as an internal `cancel` with
+  effective actual 0 and without usage/charge rows. The reservation and funding allocations record a zero
+  charge and full release. Exact replay derives the effective actual from the durable winner row.
+- **Retention:** the winner is deleted only after the bounded terminal-prune of the last reservation with the
+  same effective group. As long as at least one reservation/replay record of the group
+  exists, the winner is retained, even if the winner's own reservation has already become eligible for deletion.
+- **The exactly-once invariant is not weakened:** the existing `UNIQUE ledger(kind, request_id)`
+  remains per-attempt; the winner rule adds "exactly one nonzero winner per group".
+- Migrations are expand-only, in two commits per `AGENTS.md`: first a schema compatible with the old
+  writer (nullable group identity, attempt with default, new table); code only after green
   `deploy/migration` + `deploy/watchdog`.
 
-## 5. Routing-интерфейс router (фаза 6.2)
+## 5. Router routing interface (phase 6.2)
 
-- Новое необязательное поле запроса `models: [<catalog id>, …]` (OpenRouter-совместимое
-  соглашение; expand-only контракта universal endpoint — старые клиенты не затронуты).
-  `model` остаётся обязательным и трактуется как первый элемент цепочки; `models` задаёт
-  продолжение. Пустой список/дубликаты/неизвестные id → `400` в конверте lane входного пути.
-  Флаг `CLAUDE_ROUTER_FALLBACK_ENABLED` строгий (`0|1|false|true`) и по умолчанию false;
-  при выключенном флаге само присутствие `models` даёт `400` до любого network вызова.
-- Запрос без `models` сохраняет прежний контракт: исходные body bytes не меняются,
-  namespaced ID выбирает плоскость напрямую даже при недоступном каталоге, alias использует
-  кэшированный aggregate catalog. Явная fallback-цепочка целиком валидируется по одному
-  aggregate snapshot ДО первой попытки; alias и namespaced ID одной catalog entry считаются
-  дубликатом. Затем `models` удаляется, а `model` заменяется для каждой попытки.
-- Router буферизует только тело запроса (как сегодня, 32 MiB), выбирает плоскость каждой
-  попытки независимо (namespace/alias — существующий `catalog::namespace_lane`); retry —
-  только по правилам §3.3; ответ клиенту — последней попытки (успех или её ошибка),
-  in-flight ответ НЕ буферизуется (инвариант byte-passthrough не затрагивается: retry
-  возможен только до первого байта).
-- `provider` preferences-объект (order/allow/sort по цене-латентности) — НЕ в этой фазе;
-  отдельный пакет после живой телеметрии fallback.
-- Per-account policy: существующий substrate `crates/registry/src/pricing.rs` (provider
-  switches, account policy) будет фильтровать fallback-цепочку ДО первой попытки в фазе
-  6.4; фаза 6.2 policy не читает.
+- A new optional request field `models: [<catalog id>, …]` (an OpenRouter-compatible
+  convention; an expand-only change to the universal endpoint contract — old clients unaffected).
+  `model` remains required and is treated as the first element of the chain; `models` defines
+  the continuation. An empty list/duplicates/unknown ids → `400` in the ingress-path lane envelope.
+  The `CLAUDE_ROUTER_FALLBACK_ENABLED` flag is strict (`0|1|false|true`) and defaults to false;
+  with the flag off, the mere presence of `models` yields `400` before any network call.
+- A request without `models` keeps the previous contract: original body bytes are unchanged,
+  a namespaced ID selects the plane directly even with an unavailable catalog, an alias uses
+  the cached aggregate catalog. An explicit fallback chain is fully validated against a single
+  aggregate snapshot BEFORE the first attempt; an alias and a namespaced ID of the same catalog entry count as
+  a duplicate. Then `models` is removed and `model` is replaced for each attempt.
+- The router buffers only the request body (as today, 32 MiB), selects the plane for each
+  attempt independently (namespace/alias — the existing `catalog::namespace_lane`); retry —
+  only per the §3.3 rules; the client gets the last attempt's response (its success or its error);
+  the in-flight response is NOT buffered (the byte-passthrough invariant is untouched: retry
+  is possible only before the first byte).
+- A `provider` preferences object (order/allow/sort by price-latency) — NOT in this phase;
+  a separate package after live fallback telemetry.
+- Per-account policy: the existing substrate `crates/registry/src/pricing.rs` (provider
+  switches, account policy) will filter the fallback chain BEFORE the first attempt in phase
+  6.4; phase 6.2 does not read policy.
 
-### 5.1. Policy preflight (контракт 6.4a)
+### 5.1. Policy preflight (6.4a contract)
 
-Policy остаётся собственностью engine и не переносится в stateless router. Каждая fixed
-provider-плоскость добавляет одинаковый внутренний `POST /internal/router/policy/preflight`:
+Policy remains engine-owned and is not moved into the stateless router. Every fixed
+provider plane adds the same internal `POST /internal/router/policy/preflight`:
 
 ```json
 {
@@ -211,76 +211,76 @@ provider-плоскость добавляет одинаковый внутре
 }
 ```
 
-Ответ содержит только версию, режим `unrestricted|strict` и ordered subset входных `id` в
-поле `allowed`; account ID, policy/rule/digest, цены и причины запрета наружу не выходят.
-Тело ограничено 64 KiB, список — 32 уникальными кандидатами, идентификаторы — 256 байтами;
-неизвестные поля и неизвестные provider ID отклоняются. Credential передаётся теми же auth-заголовками, что и
-исполняемый запрос. Env-admin получает `unrestricted`; невалидный credential — `401`, ошибка
-authority — `503`.
+The response contains only the version, the mode `unrestricted|strict`, and an ordered subset of the input `id`s in
+the `allowed` field; account ID, policy/rule/digest, prices, and refusal reasons never leave the plane.
+The body is limited to 64 KiB, the list to 32 unique candidates, identifiers to 256 bytes;
+unknown fields and unknown provider IDs are rejected. The credential is passed with the same auth headers as the
+executed request. Env-admin gets `unrestricted`; an invalid credential gets `401`, an authority
+error gets `503`.
 
-Для активного strict binding handler читает `KeyAuth` и один когерентный
-`PricingReadBundle`, строит runtime manifest только через
-`RuntimePricingManifest::from_evidence` и вызывает существующий `resolve_pricing` для каждого
-кандидата. `Resolved` допускается, любой typed rejection запрещает модель. Google-кандидаты
-для strict account запрещены, пока Gemini plane сама fail-closed отклоняет strict admission;
-preflight не имеет права обещать исполнимость, которой нет на денежном пути. Unbound,
-legacy-scalar и shadow bindings остаются `unrestricted`: их live admission не меняется.
+For an active strict binding the handler reads `KeyAuth` and one coherent
+`PricingReadBundle`, builds the runtime manifest only via
+`RuntimePricingManifest::from_evidence`, and calls the existing `resolve_pricing` for each
+candidate. `Resolved` admits; any typed rejection forbids the model. Google candidates
+for a strict account are forbidden as long as the Gemini plane itself fail-closed rejects strict admission;
+preflight has no right to promise executability that does not exist on the money path. Unbound,
+legacy-scalar, and shadow bindings remain `unrestricted`: their live admission does not change.
 
-Router делает ровно один preflight на логическую цепочку после catalog/preset/preferences
-валидации, но до attempt 1. Он пробует stable origins последовательно без привязки authority к
-одному провайдеру; `404/405`, transport/`5xx` и malformed response позволяют попробовать
-следующую плоскость, но отсутствие хотя бы одного валидного ответа заканчивается lane-shaped
-`503` без исполнения. `401` терминален. Решения не кэшируются и не индексируются по ключу:
-policy mutable, а credential не должен попадать в память дольше запроса. Ответ обязан быть
-точным subset исходного списка без дубликатов; иное — producer-contract failure и `503`.
-Пустой strict subset → lane-shaped `403 policy_restricted` до первой попытки.
+The router performs exactly one preflight per logical chain after catalog/preset/preferences
+validation but before attempt 1. It tries stable origins sequentially without binding authority to
+one provider; `404/405`, transport/`5xx`, and malformed responses allow trying the
+next plane, but the absence of at least one valid response ends in a lane-shaped
+`503` without execution. `401` is terminal. Decisions are neither cached nor indexed by key:
+policy is mutable, and the credential must not linger in memory beyond the request. The response must be an
+exact subset of the original list without duplicates; anything else is a producer-contract failure and `503`.
+An empty strict subset → lane-shaped `403 policy_restricted` before the first attempt.
 
-Producer endpoint реализован 2026-08-02 в `crates/server/src/router_policy.rs` и зарегистрирован
-на всех runtime modes до provider-specific route composition. Публичные Caddy allowlists не
-пропускают `/internal/*`; router обращается к нему только через stable loopback origins. Endpoint
-выкатывается и проходит `deploy/watchdog` раньше consumer router. Такой порядок делает expand-only
-rollout безопасным; consumer всё равно понимает mixed-version окно и fail-closed перебирает
-плоскости вместо зависимости от Anthropic origin.
+The producer endpoint was implemented on 2026-08-02 in `crates/server/src/router_policy.rs` and registered
+on all runtime modes before provider-specific route composition. Public Caddy allowlists do not
+pass `/internal/*`; the router reaches it only through stable loopback origins. The endpoint
+rolls out and passes `deploy/watchdog` before the consumer router. This ordering makes the expand-only
+rollout safe; the consumer still understands the mixed-version window and fail-closed iterates
+planes instead of depending on the Anthropic origin.
 
-Consumer реализован в `crates/router/src/policy.rs`: после построения эффективной цепочки router
-сначала пробует origin первой candidate lane, затем остальные candidate/fixed origins без
-повторов; запрос и ответ ограничены 64 KiB. Все значения `x-api-key`, `x-goog-api-key` и
-`authorization` сохраняются (OR-семантика engine auth), но прочие headers не копируются. Для
-`unrestricted` принимается только полный исходный список, для `strict` — точный ordered subset;
-unknown/duplicate/out-of-order ID, неизвестное поле/режим/версия или oversized body считаются
-producer-contract failure. Интеграционная TCP-матрица покрывает `404`, `5xx`, malformed и
-transport failover, terminal `401`, strict filter до attempt 1 и пустой `403` без исполнения.
+The consumer is implemented in `crates/router/src/policy.rs`: after building the effective chain the router
+first tries the origin of the first candidate lane, then the remaining candidate/fixed origins without
+repeats; request and response are limited to 64 KiB. All `x-api-key`, `x-goog-api-key`, and
+`authorization` values are preserved (engine auth OR-semantics), but no other headers are copied. For
+`unrestricted` only the full original list is accepted; for `strict` — an exact ordered subset;
+unknown/duplicate/out-of-order ID, unknown field/mode/version, or an oversized body count as
+producer-contract failure. The TCP integration matrix covers `404`, `5xx`, malformed and
+transport failover, terminal `401`, strict filtering before attempt 1, and empty `403` without execution.
 
-### 5.2. Provider preferences и presets (контракт 6.4b)
+### 5.2. Provider preferences and presets (6.4b contract)
 
-Реализовано 2026-08-02 в `crates/router/src/routing.rs`, `policy.rs`, `presets.rs` и compiled
-`crates/router/routing-presets.json`; rollout остаётся default-off до 6.4c.
+Implemented on 2026-08-02 in `crates/router/src/routing.rs`, `policy.rs`, `presets.rs` and the compiled
+`crates/router/routing-presets.json`; rollout remains default-off until 6.4c.
 
-Universal body принимает optional OpenRouter-shaped объект `provider` только с полями:
+The universal body accepts an optional OpenRouter-shaped `provider` object with only these fields:
 
-- `order`, `only`, `ignore`: массивы уникальных namespace `anthropic|openai|google`;
-- `allow_fallbacks`: boolean; `false` сохраняет только первый разрешённый кандидат после
-  фильтров/сортировки;
-- `sort`: `price|latency`; deterministic rank берётся из version-controlled router routing
-  manifest, а не из непроверенного client input или плавающей telemetry.
+- `order`, `only`, `ignore`: arrays of unique namespaces `anthropic|openai|google`;
+- `allow_fallbacks`: boolean; `false` keeps only the first permitted candidate after
+  filters/sorting;
+- `sort`: `price|latency`; the deterministic rank is taken from the version-controlled router routing
+  manifest, not from unverified client input or floating telemetry.
 
-Неизвестное поле/значение, дубликат, пересечение `only` и `ignore`, отсутствующий rank для
-`sort` или пустая цепочка после фильтра → lane-shaped `400`. Порядок преобразований строгий:
-expand preset → один aggregate catalog snapshot → canonical dedup → `only`/`ignore` →
-explicit `order` (неперечисленные namespaces сохраняют относительный порядок следом) →
-`sort` как primary rank с request order как stable tie-break → `allow_fallbacks` → policy
-preflight. Поле `provider`, как и `models`, удаляется перед отправкой в плоскость.
+An unknown field/value, a duplicate, an intersection of `only` and `ignore`, a missing rank for
+`sort`, or an empty chain after filtering → lane-shaped `400`. The transformation order is strict:
+expand preset → one aggregate catalog snapshot → canonical dedup → `only`/`ignore` →
+explicit `order` (unlisted namespaces keep their relative order afterwards) →
+`sort` as primary rank with request order as stable tie-break → `allow_fallbacks` → policy
+preflight. The `provider` field, like `models`, is removed before sending to the plane.
 
-Reserved catalog IDs `preset/auto`, `preset/quality`, `preset/fast`, `preset/hermes` описаны
-reviewed manifest'ом рядом с `crates/router`; manifest содержит ordered model IDs и integer
-price/latency ranks. Preset разворачивается до policy preflight и никогда не доезжает до
-плоскости. Недоступный member пропускается; preset публикуется в `/v1/models` только если
-aggregate snapshot содержит хотя бы один его member, а пустое раскрытие → `503
-catalog_unavailable`. `preset/hermes` содержит только явно проверенные модели с контекстом не
-меньше 64K. Изменение модели/rank — обычное reviewed изменение manifest + документации и
-пересборка router, поэтому устаревшая модель не зашивается в недоступный host config.
+The reserved catalog IDs `preset/auto`, `preset/quality`, `preset/fast`, `preset/hermes` are described by a
+reviewed manifest next to `crates/router`; the manifest contains ordered model IDs and integer
+price/latency ranks. A preset is expanded before policy preflight and never reaches
+the plane. An unavailable member is skipped; a preset is published in `/v1/models` only if the
+aggregate snapshot contains at least one of its members, and an empty expansion → `503
+catalog_unavailable`. `preset/hermes` contains only explicitly verified models with a context of no
+less than 64K. Changing a model/rank is a normal reviewed manifest + documentation change plus a
+router rebuild, so a stale model never gets baked into an inaccessible host config.
 
-Текущие reviewed цепочки (первый live member — primary):
+Current reviewed chains (first live member is primary):
 
 | Preset | Ordered members |
 |---|---|
@@ -289,106 +289,106 @@ catalog_unavailable`. `preset/hermes` содержит только явно п�
 | `preset/fast` | `openai/gpt-5.6-luna` → `google/gemini-3.1-flash-lite` → `anthropic/claude-haiku-4-5-20251001` |
 | `preset/hermes` | `anthropic/claude-sonnet-5` → `openai/gpt-5.6-terra` → `google/gemini-3.6-flash` |
 
-Manifest содержит positive integer `price_rank`/`latency_rank` и проверенный
-`context_tokens` для всех 22 опубликованных на дату реализации catalog ID. Меньший rank
-предпочтительнее; это reviewed ordinal, а не вычисление цены конкретного запроса и не live
-telemetry. Поэтому новая catalog model без явного rank продолжает работать в обычном порядке,
-но `provider.sort` с ней fail closed получает `400` до policy/attempt. Startup-валидация требует
-ровно четыре reserved preset, уникальные ranked members и context ≥64K у каждого Hermes member.
+The manifest contains positive integer `price_rank`/`latency_rank` and a verified
+`context_tokens` for all 22 catalog IDs published as of the implementation date. A lower rank
+is preferred; this is a reviewed ordinal, not a per-request price computation and not live
+telemetry. Therefore a new catalog model without an explicit rank keeps working normally,
+but `provider.sort` with it fails closed with `400` before policy/attempt. Startup validation requires
+exactly four reserved presets, unique ranked members, and context ≥64K for every Hermes member.
 
-Любое присутствие `models`, `provider` или `preset/*` подчиняется одному rollout-флагу. Пока
-`CLAUDE_ROUTER_FALLBACK_ENABLED=false`, запрос отклоняется до catalog/policy/network work;
-single-model запросы без этих полей сохраняют byte-identical поведение фаз 1–5.
+Any presence of `models`, `provider`, or `preset/*` is governed by the single rollout flag. While
+`CLAUDE_ROUTER_FALLBACK_ENABLED=false`, the request is rejected before catalog/policy/network work;
+single-model requests without these fields keep the byte-identical behavior of phases 1–5.
 
-### 5.3. GA rollout (контракт 6.4c)
+### 5.3. GA rollout (6.4c contract)
 
-Telemetry и reproducible harness реализованы default-off: router/plane counters, loopback scrape,
-recording/alert rules с runbooks, concurrent mock-load и stdin-only live-canary runner. Сам live
-canary выполняется только после выката этого пакета; его результат и production flag не
-предвосхищаются документацией.
+Telemetry and a reproducible harness are implemented default-off: router/plane counters, loopback scrape,
+recording/alert rules with runbooks, concurrent mock-load, and a stdin-only live-canary runner. The live
+canary itself runs only after this package is deployed; neither its result nor the production flag is
+anticipated by documentation.
 
-Router экспортирует `/metrics` без авторизации на loopback. Fallback continuation увеличивает
-`claude_router_fallback_total{from_namespace,to_namespace,reason}` ровно один раз перед
-следующим attempt; множества labels compile-fixed (3×3 namespaces, два reason). Плоскость
-увеличивает `claude_api_execution_not_started_total{plane}` ровно для фактически возвращённого
-наружу exact `not_started` на non-2xx. Те же fixed dimensions покрывают active body units,
+The router exports `/metrics` without authorization on loopback. A fallback continuation increments
+`claude_router_fallback_total{from_namespace,to_namespace,reason}` exactly once before
+the next attempt; label sets are compile-fixed (3×3 namespaces, two reasons). The plane
+increments `claude_api_execution_not_started_total{plane}` exactly for the exact `not_started` actually
+returned externally on a non-2xx. The same fixed dimensions cover active body units,
 overload/read timeout, auth outcomes/latency, catalog refresh/degradation, pricing/policy failure,
-response-header timeout и read-only `/balance` failover. Credential/model/group/request IDs в
-metrics запрещены; `RouterAdmissionFailures`, `RouterAuthorityFailures` и
-`RouterResponseHeaderTimeout` замыкаются на одноимённые runbook-секции.
+response-header timeout, and read-only `/balance` failover. Credential/model/group/request IDs are
+forbidden in metrics; `RouterAdmissionFailures`, `RouterAuthorityFailures`, and
+`RouterResponseHeaderTimeout` map to the eponymous runbook sections.
 
-Порядок включения: producer 6.4a → consumer 6.4b при default-off → telemetry/Prometheus 6.4c
-при default-off → mock-load и live canary отдельным router-процессом → unit-флаг в production.
-Canary обязан доказать policy filtering до attempt 1, serial continuation, отсутствие retry на
-ambiguous outcome, нулевой рост double-winner и balance divergence, приемлемый settlement
-backlog. Production-флаг включается только последним reviewed коммитом; rollback — возврат
-флага в false новым коммитом, без удаления expand-only contract.
+Activation order: producer 6.4a → consumer 6.4b at default-off → telemetry/Prometheus 6.4c
+at default-off → mock-load and live canary in a separate router process → unit flag in production.
+The canary must prove policy filtering before attempt 1, serial continuation, no retry on
+ambiguous outcomes, zero growth of double-winner and balance divergence, and an acceptable settlement
+backlog. The production flag is enabled only by the final reviewed commit; rollback is returning the
+flag to false in a new commit, without removing the expand-only contract.
 
-## 6. Телеметрия и верификация
+## 6. Telemetry and verification
 
-- Фаза 6.2 пишет bounded attempt-log: surface, порядковый номер/размер цепочки, публичный
-  canonical catalog ID, lane, HTTP status и reason (`not_started`/`connect_refused`/none).
-  URL/query, auth headers, credentials и request/response bodies запрещены.
-- Счётчики фазы 6.4: `claude_router_fallback_total{from_namespace,to_namespace,reason}`
+- Phase 6.2 writes a bounded attempt log: surface, ordinal/chain size, public
+  canonical catalog ID, lane, HTTP status, and reason (`not_started`/`connect_refused`/none).
+  URL/query, auth headers, credentials, and request/response bodies are forbidden.
+- Phase 6.4 counters: `claude_router_fallback_total{from_namespace,to_namespace,reason}`
   (reason: `not_started`/`connect_refused`), `claude_api_execution_not_started_total{plane}`,
-  fixed-cardinality admission/auth/catalog/pricing/policy/balance-header-timeout ряды, а фаза 6.3
-  уже экспортирует `claude_api_execution_group_double_winner_total`. Критический
-  `ExecutionGroupDoubleWinner` срабатывает на любом росте за 5 минут; runbook —
-  `docs/ops/MONITORING.md#executiongroupdoublewinner`. `RouterMetricsDown` закрывает потерю
-  отдельного scrape, `RouterFallbackRateHigh` — устойчивую скорость >1 continuation/s, а
-  `RouterConnectionRefusedFallback` — любой transport-proof за 5 минут. Recording rules
-  `claude_router:fallback_rate5m` и `claude_api:execution_not_started_rate5m` оставляют только
+  fixed-cardinality admission/auth/catalog/pricing/policy/balance-header-timeout series, and phase 6.3
+  already exports `claude_api_execution_group_double_winner_total`. The critical
+  `ExecutionGroupDoubleWinner` fires on any growth over 5 minutes; runbook —
+  `docs/ops/MONITORING.md#executiongroupdoublewinner`. `RouterMetricsDown` covers the loss of
+  a single scrape, `RouterFallbackRateHigh` — a sustained rate >1 continuation/s, and
+  `RouterConnectionRefusedFallback` — any transport proof over 5 minutes. The recording rules
+  `claude_router:fallback_rate5m` and `claude_api:execution_not_started_rate5m` keep only
   bounded namespace/plane dimensions.
-- Групповые лейблы на существующих денежных рядах НЕ добавляются (кардинальность); после
-  фазы 6.3 group_id допустим только в structured-логах попыток, не в metric labels.
-- Детекторы регрессий: `apitoken_balance_divergence_nano` (существующий),
-  `EngineSettlementBacklog`, `EngineExpiredLeasePresent` — проходят нагрузочный период с
-  включённым fallback до GA.
-- Флаг rollout: fallback выключен по умолчанию (`CLAUDE_ROUTER_FALLBACK_ENABLED=false`), включается
-  config-флагом на canary; `deploy`-чеклист — измерение доли ambiguous-исходов (timeouts без
-  заголовка) до и после включения.
-- Верификация 6.2: TCP integration router с двумя mock-плоскостями доказывает serial
-  not_started/ConnectionRefused retry и fail-closed ambiguous outcomes; per-plane тесты 6.1
-  доказывают refund сигнальной попытки. Фаза 6.3 покрыта SQLite и real-PostgreSQL matrix:
-  reverse settlement order, zero-settlement, exact loser replay, strict funding refund и ровно
-  один charge на group; forward-тесты отдельно проверяют durable group/attempt для всех плоскостей.
-- Верификация 6.4c: `tests/router_fallback_smoke.sh` даёт concurrent exact-signal load, strict и
-  provider filtering до execution, unsigned-terminal и cached-catalog ConnectionRefused cases с
-  точными counter deltas. `tests/router_fallback_live_canary.sh` запускает ровно deployed router
-  binary отдельным процессом, использует только существующий stdin-delivered key и повторяет matrix
-  на реальных secondary attempts; GA-флаг запрещён до чистых double-winner/divergence/backlog
-  доказательств.
+- Group labels are NOT added to existing money series (cardinality); after phase 6.3 group_id is
+  allowed only in structured attempt logs, not in metric labels.
+- Regression detectors: `apitoken_balance_divergence_nano` (existing),
+  `EngineSettlementBacklog`, `EngineExpiredLeasePresent` — must pass a load period with
+  fallback enabled before GA.
+- Rollout flag: fallback is off by default (`CLAUDE_ROUTER_FALLBACK_ENABLED=false`), enabled by a
+  config flag on canary; the `deploy` checklist includes measuring the share of ambiguous outcomes
+  (timeouts without the header) before and after enabling.
+- Phase 6.2 verification: a TCP integration router with two mock planes proves serial
+  not_started/ConnectionRefused retry and fail-closed ambiguous outcomes; per-plane phase 6.1
+  tests prove refund of the signaling attempt. Phase 6.3 is covered by a SQLite and real-PostgreSQL matrix:
+  reverse settlement order, zero settlement, exact loser replay, strict funding refund, and exactly
+  one charge per group; forward tests separately verify durable group/attempt for all planes.
+- Phase 6.4c verification: `tests/router_fallback_smoke.sh` provides concurrent exact-signal load, strict and
+  provider filtering before execution, unsigned-terminal and cached-catalog ConnectionRefused cases with
+  exact counter deltas. `tests/router_fallback_live_canary.sh` runs exactly the deployed router
+  binary as a separate process, uses only the existing stdin-delivered key, and repeats the matrix
+  on real secondary attempts; the GA flag is forbidden until clean double-winner/divergence/backlog
+  evidence exists.
 
-## 7. Фазировка (каждая фаза — отдельный пакет через merge-конвейер)
+## 7. Phasing (each phase is a separate package through the merge pipeline)
 
-1. **6.1 — контракт `not_started` в плоскостях — РЕАЛИЗОВАН 2026-08-01** (header-strip в
-   router для транзитных ответов даже без fallback, unit/contract-тесты веток с реальным
-   reserve, документация `crates/forward/CLAUDE.md` + `crates/router/CLAUDE.md`). Выкат
-   при выключенном fallback безопасен: клиент заголовок не видит. Gemini Messages skin
-   и четыре universal Chat/Responses adapter-поверхности покрыты правилами §3.2; signal-
-   propagation зазор закрыт до включения fallback в 6.2.
-2. **6.2 — router fallback engine — РЕАЛИЗОВАН 2026-08-02:** поле `models`, единый
-   preflight/rewrite engine для Chat/Responses/Messages/count_tokens, retry matrix §3.3,
-   безопасное логирование attempts, feature-flag off-by-default; TCP mock-тесты двух
-   плоскостей покрывают exact signal, 429, unsigned 5xx, 400/402, ConnectionRefused,
-   timeout, malformed/duplicate/unknown models и снятие внутреннего header.
-3. **6.3 — group identity в registry/billing — РЕАЛИЗОВАН 2026-08-02:** migration-first
+1. **6.1 — `not_started` contract in the planes — IMPLEMENTED 2026-08-01** (header-strip in the
+   router for transit responses even without fallback, unit/contract lane tests with a real
+   reserve, documentation `crates/forward/CLAUDE.md` + `crates/router/CLAUDE.md`). Rollout
+   with fallback disabled is safe: the client never sees the header. The Gemini Messages skin
+   and the four universal Chat/Responses adapter surfaces are covered by the §3.2 rules; the
+   signal-propagation gap is closed before enabling fallback in 6.2.
+2. **6.2 — router fallback engine — IMPLEMENTED 2026-08-02:** the `models` field, a single
+   preflight/rewrite engine for Chat/Responses/Messages/count_tokens, the §3.3 retry matrix,
+   safe attempt logging, feature-flag off-by-default; two-plane TCP mock tests cover the
+   exact signal, 429, unsigned 5xx, 400/402, ConnectionRefused,
+   timeout, malformed/duplicate/unknown models, and internal header stripping.
+3. **6.3 — group identity in registry/billing — IMPLEMENTED 2026-08-02:** migration-first
    schema 0021, trusted router headers, group-aware scalar/legacy/strict reserve, transactional
-   insert-first-wins settle в SQLite/PostgreSQL, safe retention, fault-matrix и always-zero alert.
-4. **6.4 — policies/presets + telemetry GA — 6.4a–6.4b И TELEMETRY/MOCK-LOAD 6.4c
-   РЕАЛИЗОВАНЫ 2026-08-02:**
-   producer-first policy preflight одинаково доступен на всех fixed planes и покрыт bounded
-   validation, auth-lattice и real-SQLite strict-policy тестами; router consumer применяет
-   preferences/presets и точный policy subset до attempt 1. Counters, Prometheus alerts/runbooks,
-   mock-load и credential-safe live runner готовы. Остаются post-deploy live canary и отдельное
-   включение production-флага; до них fallback остаётся default-off.
+   insert-first-wins settle in SQLite/PostgreSQL, safe retention, fault matrix, and an always-zero alert.
+4. **6.4 — policies/presets + telemetry GA — 6.4a–6.4b AND THE TELEMETRY/MOCK-LOAD PART OF 6.4c
+   IMPLEMENTED 2026-08-02:**
+   the producer-first policy preflight is uniformly available on all fixed planes and covered by bounded
+   validation, auth-lattice, and real-SQLite strict-policy tests; the router consumer applies
+   preferences/presets and the exact policy subset before attempt 1. Counters, Prometheus alerts/runbooks,
+   mock-load, and a credential-safe live runner are ready. Remaining: the post-deploy live canary and a
+   separate production flag enablement; until then fallback remains default-off.
 
-## 8. Отвергнутые варианты
+## 8. Rejected alternatives
 
-- **Retry на timeout/5xx без сигнала плоскости** — прямой путь к двойному списанию
-  (`UNIFIED_ROUTER.md`: «молчаливый retry на timeout — путь к двойному списанию»).
-- **Буферизация ответа в router для самостоятельного определения started** — нарушает
-  инвариант byte-passthrough и раздувает router до второго движка (решение 1).
-- **Единый request_id сквозь плоскости (одна попытка перезаписывает резерв другой)** —
-  ломает exactly-once ledger и аудит попыток; group/attempt модель строго надстройка.
-- **Кворум/hedged requests** — вне scope (§1): расходует capacity и баланс на каждый запрос.
+- **Retry on timeout/5xx without a plane signal** — a direct path to double charging
+  (`UNIFIED_ROUTER.md`: "a silent retry on timeout is a path to double charging").
+- **Buffering the response in the router to determine started independently** — violates
+  the byte-passthrough invariant and inflates the router into a second engine (decision 1).
+- **A single request_id across planes (one attempt overwrites another's reservation)** —
+  breaks the exactly-once ledger and attempt audit; the group/attempt model is strictly a superstructure.
+- **Quorum/hedged requests** — out of scope (§1): consumes capacity and balance on every request.

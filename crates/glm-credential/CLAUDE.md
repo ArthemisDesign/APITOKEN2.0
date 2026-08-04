@@ -1,70 +1,69 @@
 # CLAUDE.md — crates/glm-credential
 
-Локальные границы крейта. Общие правила — корневые `AGENTS.md` и `CLAUDE.md`; контракт
-credential — `docs/engine/PROVIDER_WIRING_CHECKLIST.md` §6; факты о GLM —
+Local crate boundaries. General rules — the root `AGENTS.md` and `CLAUDE.md`; the credential
+contract — `docs/engine/PROVIDER_WIRING_CHECKLIST.md` §6; GLM facts —
 `docs/engine/GLM_PROVIDER.md`.
 
-## Что это
+## What this is
 
-Запечатанные AEAD-конверты статических API-ключей GLM Coding Plan (Zhipu AI / Z.ai).
-Крейт **чистый**: XChaCha20-Poly1305, валидация, нормализация — и всё. Он стоит ВНЕ слоёв
-`registry ← pool ← forward ← server`, как `kimi-credential`, `gemini-credential` и
-`codex-credential`.
+Sealed AEAD envelopes of static GLM Coding Plan (Zhipu AI / Z.ai) API keys.
+The crate is **pure**: XChaCha20-Poly1305, validation, normalization — and nothing else. It stands
+OUTSIDE the layers `registry ← pool ← forward ← server`, like `kimi-credential`, `gemini-credential`
+and `codex-credential`.
 
-## Границы — не нарушать
+## Boundaries — do not violate
 
-- **Никакой сети и HTTP.** Крейт не ходит в `api.z.ai`/`open.bigmodel.cn` и не опрашивает
-  quota endpoint. Он умеет только `seal`/`open`/`validate` над уже полученным материалом.
-  Валидацию ключа probe'ом делает `crates/authbot`, runtime — `crates/forward`.
-- **Никакого файлового I/O.** Права `0600`/`0700`, atomic rename, fsync и публикация
-  roster — ответственность вызывающего производителя, а не этого крейта.
-- **Никакого env.** Keyring приходит строкой `kid:hex[,kid:hex]` из
+- **No network and no HTTP.** The crate does not call `api.z.ai`/`open.bigmodel.cn` and does not poll
+  the quota endpoint. It can only `seal`/`open`/`validate` over already-obtained material.
+  Probing the key is done by `crates/authbot`, the runtime — by `crates/forward`.
+- **No file I/O.** `0600`/`0700` permissions, atomic rename, fsync and roster publication are the
+  responsibility of the calling producer, not of this crate.
+- **No env.** The keyring arrives as a `kid:hex[,kid:hex]` string from
   `crates/server/src/config.rs`.
-- **Никакого digest'а ключа.** Machine-readable subject у GLM нет (`/me` не существует);
-  dedup-единица — сам ключ. Сравнение выполняет вызывающий (authbot) на открытых
-  конвертах; хеширующую зависимость (blake3 и т.п.) в крейт не добавлять.
-- **Зависимости минимальны.** Добавление чего-либо тяжелее текущего набора требует
-  обоснования в коммите.
+- **No key digest.** GLM has no machine-readable subject (`/me` does not exist);
+  the dedup unit is the key itself. Comparison is performed by the caller (authbot) on open
+  envelopes; do not add a hashing dependency (blake3 or similar) to the crate.
+- **Dependencies are minimal.** Adding anything heavier than the current set requires
+  justification in the commit.
 
-## Инварианты
+## Invariants
 
-1. **Секреты не печатаются.** `Debug` у `GlmCredential` и `CredentialKeyring` написан
-   вручную и отдаёт `REDACTED` для ключа и прокси. Тест `debug_never_prints_secrets`
-   фиксирует, что секреты не утекают ни в `Debug`, ни в `Display` ошибок. Производный
-   `Debug` у `GlmCredential` запрещён.
-2. **AAD связывает конверт с profile id И с видом credential.** Конверт нельзя перенести
-   на соседний профиль; cleartext-поле `kind` — AEAD-вход и после расшифровки
-   перепроверяется против содержимого. Вид один (`PlanKey`), но инвариант сохраняется для
-   любых будущих видов.
-3. **Ключ статический.** Refresh-семьи, expiry и `rotate()` нет и не появляется: ротация —
-   это перевыпуск ключа в консоли и повторный `seal` через Auth Bot. Не добавлять
-   refresh-поверхность «на будущее».
-4. **Base URL — allowlist ровно двух origin'ов** (`https://api.z.ai`,
-   `https://open.bigmodel.cn`), хранится в канонической форме без trailing slash; ключи
-   int/CN несовместимы между площадками. Чужой хост, непустой путь, query, fragment или
-   credentials в URL — отказ при `seal`/`open`. Вызов `normalize_base_url` на входе —
-   обязанность вызывающего. Единственное исключение — cargo-фича
-   `test-loopback-base-url`: plain-HTTP на `127.0.0.1`/`localhost`/`[::1]` для mock-апстримов
-   в тестах потребителей. Она включается только через dev-dependencies (`forward`), в
-   production-бинарях allowlist остаётся строгим.
-5. **План декларируется оффером** и нормализуется к `lite|pro|max` (`GlmPlan::parse`);
-   Team и legacy prompts-планы fail closed. Наблюдённый quota window-limit, противоречащий
-   заявленному плану, — забота runtime (профиль вне ротации), не этого крейта.
-6. **Window credits официально опубликованы** (docs.z.ai/devpack/overview, ревью
-   2026-08-03): lite 2000/5ч + 10000/7д, pro 12000 + 60000, max 28000 + 140000 — поэтому
-   `GLM_REVIEWED_PLANS`, в отличие от KIMI, не пуст. Rate-limit/concurrency различия тиров
-   НЕ кодируются: они динамические и недокументированы (`unknown`). Все три модели
-   (`GLM_PLAN_MODELS`) доступны на всех планах — тоже official.
+1. **Secrets are never printed.** `Debug` for `GlmCredential` and `CredentialKeyring` is written
+   by hand and returns `REDACTED` for the key and the proxy. The `debug_never_prints_secrets` test
+   pins that secrets leak neither into `Debug` nor into error `Display`. A derived
+   `Debug` on `GlmCredential` is forbidden.
+2. **AAD binds the envelope to the profile id AND to the credential kind.** The envelope cannot be
+   moved to a neighboring profile; the cleartext `kind` field is an AEAD input and after decryption
+   is re-checked against the contents. There is one kind (`PlanKey`), but the invariant is kept for
+   any future kinds.
+3. **The key is static.** There is no refresh family, no expiry and no `rotate()`, and none will
+   appear: rotation means reissuing the key in the console and re-running `seal` via Auth Bot. Do not
+   add a refresh surface "for the future".
+4. **Base URL — an allowlist of exactly two origins** (`https://api.z.ai`,
+   `https://open.bigmodel.cn`), stored in canonical form without a trailing slash; int/CN keys
+   are incompatible between the sites. A foreign host, a non-empty path, a query, a fragment or
+   credentials in the URL — rejection at `seal`/`open`. Calling `normalize_base_url` on input is the
+   caller's duty. The only exception is the cargo feature
+   `test-loopback-base-url`: plain HTTP on `127.0.0.1`/`localhost`/`[::1]` for mock upstreams
+   in consumer tests. It is enabled only via dev-dependencies (`forward`); in
+   production binaries the allowlist stays strict.
+5. **The plan is declared by the offer** and normalized to `lite|pro|max` (`GlmPlan::parse`);
+   Team and legacy prompts plans fail closed. An observed quota window-limit contradicting the
+   declared plan is the runtime's concern (profile out of rotation), not this crate's.
+6. **Window credits are officially published** (docs.z.ai/devpack/overview, reviewed
+   2026-08-03): lite 2000/5h + 10000/7d, pro 12000 + 60000, max 28000 + 140000 — which is why
+   `GLM_REVIEWED_PLANS`, unlike KIMI's, is not empty. Rate-limit/concurrency differences between
+   tiers are NOT encoded: they are dynamic and undocumented (`unknown`). All three models
+   (`GLM_PLAN_MODELS`) are available on all plans — also official.
 
-## Как проверять
+## How to verify
 
 ```bash
 cargo test -p glm-credential
 ```
 
-Тесты обязаны покрывать: roundtrip, перенос конверта на чужой профиль, подмену `kind`,
-чтение старым ключом при онлайн-ротации keyring, неизвестный `kid`, порчу ciphertext,
-allowlist base_url (оба origin'а; чужой хост/путь/credentials — отказ; каноническая форма
-обязательна), нормализацию и неизвестный план, официальные window credits, границы
-profile id и proxy, реконструкцию прокси-userinfo, отсутствие секретов в `Debug` и в
-`Display` ошибок.
+Tests must cover: roundtrip, moving an envelope to a foreign profile, `kind` substitution,
+reading with the old key during online keyring rotation, unknown `kid`, ciphertext corruption,
+the base_url allowlist (both origins; foreign host/path/credentials — rejection; canonical form
+mandatory), normalization and unknown plan, official window credits, profile id and proxy
+boundaries, proxy userinfo reconstruction, absence of secrets in `Debug` and in error `Display`.

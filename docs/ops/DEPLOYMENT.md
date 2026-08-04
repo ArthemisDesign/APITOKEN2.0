@@ -377,10 +377,11 @@ The collector verifies the canonical Rust
 exhausts both engine and OpenKeys cursors twice around one commerce `SERIALIZABLE` snapshot. It
 recomputes commerce/service identities and verifies exact ownership/status, B2B scalar parity,
 OpenKeys 1:1 in the prepared target policy, the prepared target/recovery generations, semantic assignment lineage, engine
-release/funding identities and control-job backlog. После cutover immutable base manifest не
-переписывается: каждый новый account обязан иметь exact target/recovery assignment extension,
-matching policy и active funding generation/head/aggregates. Live balances не входят в стабильный
-engine identity digest и потому normal traffic/money writes не создают ложный inventory drift.
+release/funding identities and control-job backlog. After cutover the immutable base manifest is
+not rewritten: every new account must have an exact target/recovery assignment extension, a
+matching policy and active funding generation/head/aggregates. Live balances are not part of the
+stable engine identity digest and therefore normal traffic/money writes do not create false
+inventory drift.
 Account/request/binding subjects are emitted only as digests; neither command prints a database
 DSN.
 
@@ -391,11 +392,11 @@ same release-v2 proof replaces legacy binding `reconciliation_state=verified` an
 `funding_buckets` projection: a valid shadow binding may remain `pending`, while exact target
 assignment coverage and funding generation/head/lot parity stay mandatory.
 
-Новая evidence row обязана хранить тот же service-inventory digest в
-`pricing_stage8_evidence_v2.service_inventory_digest`. Legacy row с `NULL` не допускается к
-activation staging; непосредственно перед первой delivery worker повторно вычисляет digest и
-сравнивает его с persisted evidence. Это отдельная проверка от immutable target plan identity и
-закрывает post-cutover service-account drift.
+A new evidence row must store the same service-inventory digest in
+`pricing_stage8_evidence_v2.service_inventory_digest`. A legacy row with `NULL` is not admitted to
+activation staging; immediately before the first delivery the worker recomputes the digest and
+compares it with the persisted evidence. This is a separate check from the immutable target plan
+identity and closes post-cutover service-account drift.
 
 The combined schema-v2 report is valid for 300 seconds. When both local release plans exist, the
 consumer stores its identity immutably in `pricing_stage8_evidence_v2`, including blocked reports
@@ -465,8 +466,8 @@ Required target evidence includes:
 - global B2C 50% plus exact provider/model override vectors;
 - every B2B policy, canonical OpenKeys 1:1 and service `meter_only` assignment;
 - Stage 6 funding generation for every account;
-- exact format-aware counts for unfinished legacy reservations/outbox rows; nonzero legacy и
-  active-v2 work допускаются и продолжают settlement по immutable reserve-time snapshots;
+- exact format-aware counts for unfinished legacy reservations/outbox rows; nonzero legacy and
+  active-v2 work is permitted and continues settlement against immutable reserve-time snapshots;
 - 100% shadow coverage, exact nanoUSD parity and no unresolved outcome;
 - exact prepared target/recovery release and recovery-link digests, with equal runtime/funding
   lineage and one assignment for every active or disabled engine account;
@@ -489,10 +490,10 @@ the current runtime claim writer does not yet populate the release-v2/funding-v2
 live slots. Do not weaken this blocker and do not treat a producer-only report as completed Stage 8.
 
 Immediately before Stage 9, regenerate the engine input and combined report and require a fresh,
-persisted `passed=true` combined identity. Первый claim activation job повторяет full authority
-capture непосредственно перед network delivery. Если delivery могла состояться, expired lease
-повторяет exact durable request без новой TTL/authority проверки, чтобы безопасно получить
-`unchanged` после lost ACK. Stage 9
+persisted `passed=true` combined identity. The first claim activation job repeats the full
+authority capture immediately before network delivery. If delivery may have occurred, an expired
+lease repeats the exact durable request without a new TTL/authority check, so that it can safely
+receive `unchanged` after a lost ACK. Stage 9
 changes one global active release head; it does not select a canary list and does not require a
 maintenance window or zero active v2 reservations. The complete apply/recovery procedure is
 `docs/commerce/MULTI_DISCOUNT_STAGE9.md`.

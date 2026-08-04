@@ -534,7 +534,7 @@ gateway normally steers away at its jittered soft reserve. Under peak it may rel
 live verification showed that `usedPercent=100` with `allowed:true` can still serve, so a numeric
 100 alone does not hard-exclude the home. Only an explicit provider reached verdict or returned
 usage-limit response does; then `claude_api_codex_home_limit_reached=1`, the panel shows
-«лимит достигнут», and customers receive `429 + Retry-After` for the reset. Confirm other homes
+«лимит достигнут» ("limit reached"), and customers receive `429 + Retry-After` for the reset. Confirm other homes
 can absorb load; add an authenticated home if measured remaining API-dollar capacity is
 insufficient.
 
@@ -542,7 +542,7 @@ insufficient.
 
 The provider returned an explicit limit verdict (`limit_reached`/`allowed: false`), so the
 gateway took the home out of rotation until that window resets; the panel shows «лимит достигнут»
-and `/codex-subs` reports `limit_reached`. This is expected, not a fault. A window merely reading
+("limit reached") and `/codex-subs` reports `limit_reached`. This is expected, not a fault. A window merely reading
 100% does NOT fire this alert — the provider can report full while still serving, so the gateway
 only acts on the provider's own verdict. Check that the remaining homes cover
 the load (`claude_api_codex_homes_available`, the panel's remaining API-dollar column) and add an

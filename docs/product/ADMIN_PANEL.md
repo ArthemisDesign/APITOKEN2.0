@@ -1,282 +1,319 @@
-# Admin panel — внутренняя админка (admin.apitoken.sale)
+# Admin panel — internal admin console (admin.apitoken.sale)
 
-Next.js-приложение `apps/admin` (`@claude-api/admin`). UI извлечён из встроенной админ-панели
-Rust-движка (`crates/server/src/admin-panel.html`) в отдельный bounded context с собственным
-жизненным циклом релизов — как у sales (`apps/sales-web`) и OpenKeys (`apps/openkeys`).
+Next.js application `apps/admin` (`@claude-api/admin`). The UI was extracted from the
+Rust engine's built-in admin panel (`crates/server/src/admin-panel.html`) into a separate
+bounded context with its own release lifecycle — like sales (`apps/sales-web`) and
+OpenKeys (`apps/openkeys`).
 
-Закрытый sales-калькулятор доступен по `https://admin.apitoken.sale/sales/calculator`. Он сравнивает
-Claude Pro/Max, paid ChatGPT и paid Gemini планы по живой калибровке 5ч/7д, выводит устойчивый
-30-дневный API-dollar equivalent и считает скидку, недоиспользованную квоту, экономию клиента,
-упущенную выручку и валовую разницу. Денежная арифметика страницы — integer nanoUSD. Холодные
-якоря и Claude priors не считаются измерением. Если сам тариф ещё не калиброван, но у провайдера
-есть другой измеренный тариф, калькулятор масштабирует его API-ёмкость по официальному соотношению
-квот и явно помечает результат знаком `≈` и статусом «расчёт». Собственное измерение всегда
-приоритетнее и автоматически заменяет расчётное значение.
+The closed sales calculator is available at `https://admin.apitoken.sale/sales/calculator`.
+It compares Claude Pro/Max, paid ChatGPT and paid Gemini plans using live 5h/7d calibration,
+produces a stable 30-day API-dollar equivalent and computes the discount, unused quota,
+customer savings, foregone revenue and the gross difference. The page's money arithmetic is
+integer nanoUSD. Cold anchors and Claude priors do not count as a measurement. If the plan
+itself is not yet calibrated but the provider has another measured plan, the calculator
+scales its API capacity by the official quota ratio and explicitly marks the result with a
+`≈` sign and the status "calculated". An own measurement always takes priority and
+automatically replaces the calculated value.
 
-Расчётные коэффициенты и их authority:
+Calculation coefficients and their authority:
 
-- Claude: Pro / Max 5× / Max 20× = `1:5:20` по [Anthropic pricing](https://www.anthropic.com/pricing).
-- ChatGPT: Plus / Pro 5× / Pro 20× = `1:5:20`, Business имеет ту же опубликованную 5-часовую
-  квоту, что Plus, по [OpenAI pricing](https://learn.chatgpt.com/docs/pricing). Runtime-plan
-  `chatgpt_pro` — покупаемая Authbot подписка за $200, то есть Pro 20×; Pro 5× пока существует
-  в калькуляторе как расчётная линия `chatgpt_pro_5x` за $100.
-- Google AI: в коммерческой матрице присутствуют только используемые пулом планы Pro и Ultra.
-  Google публикует для Ultra до `20×` больше лимитов Gemini относительно Pro, поэтому расчётный
-  коэффициент Pro / Ultra = `1:20` по [Google AI plans](https://one.google.com/about/google-ai-plans/).
-  Code Assist Standard/Enterprise и Workspace Ultra в калькулятор не выводятся.
+- Claude: Pro / Max 5× / Max 20× = `1:5:20` per [Anthropic pricing](https://www.anthropic.com/pricing).
+- ChatGPT: Plus / Pro 5× / Pro 20× = `1:5:20`; Business has the same published 5-hour
+  quota as Plus, per [OpenAI pricing](https://learn.chatgpt.com/docs/pricing). The runtime
+  plan `chatgpt_pro` is the Authbot-purchased $200 subscription, i.e. Pro 20×; Pro 5×
+  currently exists in the calculator only as the calculated line `chatgpt_pro_5x` at $100.
+- Google AI: only the Pro and Ultra plans actually used by the pool are present in the
+  commerce matrix. Google publishes for Ultra up to `20×` higher Gemini limits relative to
+  Pro, so the calculated Pro / Ultra coefficient is `1:20` per
+  [Google AI plans](https://one.google.com/about/google-ai-plans/). Code Assist
+  Standard/Enterprise and Workspace Ultra are not surfaced in the calculator.
 
-Масштабирование выполняется отдельно для 5ч, 7д и 30д только через integer BigInt. Источниками
-служат исключительно прямые измерения тарифов того же провайдера; уже рассчитанные значения не
-используются рекурсивно. Если прямых опор несколько, берётся среднее нормализованных значений.
-Опубликованные коэффициенты описывают 5-часовые Claude/OpenAI лимиты и верхнюю границу Google AI
-Ultra; дополнительные недельные ограничения и workload-зависимое потребление могут отличаться,
-поэтому расчёт 7д/30д не считается калибровкой до собственного live-измерения тарифа.
+Scaling is performed separately for 5h, 7d and 30d exclusively through integer BigInt. The
+only sources are direct measurements of plans from the same provider; already-calculated
+values are never used recursively. If there are several direct anchors, the average of the
+normalized values is taken. The published coefficients describe the 5-hour Claude/OpenAI
+limits and the upper bound of Google AI Ultra; additional weekly limits and
+workload-dependent consumption may differ, so the 7d/30d calculation does not count as a
+calibration until the plan has its own live measurement.
 
-## Состав
+## Composition
 
-- Приложение: `apps/admin`, Next.js, слушает `127.0.0.1:3700`.
-- Собственной БД и секретов нет: ни миграций, ни env-файла (в отличие от sales/OpenKeys).
-- Workspace-зависимостей, кроме Next/React, нет — в TypeScript-контекстах это отдельный
-  контекст `admin` с корнем `apps/admin` (как `web` → `apps/web`).
+- Application: `apps/admin`, Next.js, listens on `127.0.0.1:3700`.
+- No database or secrets of its own: neither migrations nor an env file (unlike
+  sales/OpenKeys).
+- No workspace dependencies besides Next/React — in TypeScript contexts this is a separate
+  `admin` context with root `apps/admin` (like `web` → `apps/web`).
 - Health endpoint: `GET /api/health` → 200 `{"ok":true}`.
 
-Страница `/system` получает supply из `/overview`, который использует ту же exact Claude authority,
-что `/capacity`. Если canonical remaining недоступен, UI показывает `—` и warning, а не `$0` и не
-старый pool prior/EMA; отдельный дублирующий browser-запрос `/capacity` удалён.
+The `/system` page obtains supply from `/overview`, which uses the same exact Claude
+authority as `/capacity`. If canonical remaining is unavailable, the UI shows `—` and a
+warning rather than `$0` or an old pool prior/EMA; the separate duplicate browser request
+to `/capacity` has been removed.
 
-## Релизный цикл (watchdog lane `admin`)
+## Release cycle (watchdog lane `admin`)
 
-- Классификация путей: `wd_path_is_admin` в `deploy/watchdog-lib.sh` (`apps/admin/**` плюс общие
-  build-файлы — бамп зависимостей пере-собирает релиз). Backend-лейн `apps/admin` не захватывает.
-- Baseline: `/var/lib/apitoken/watchdog/admin.sha`. Пока файла нет, первый запуск watchdog
-  деплоит контекст безусловно (как OpenKeys).
-- Релизный корень: `/opt/apitoken/admin-releases/<sha>`, атомарный симлинк `current`.
-- Deploy-скрипт: `deploy/admin-deploy.sh <sha>` — промоушен протестированного кандидата,
-  атомарный симлинк, `systemctl restart apitoken-admin.service`, health-gate на
-  `http://127.0.0.1:3700/api/health`, откат симлинка при неуспехе. Миграций нет.
-- Юнит: `systemd/apitoken-admin.service` (`User=deploy`, `next start -H 127.0.0.1 -p 3700`,
-  харденинг как у `apitoken-openkeys.service`, включая `AF_NETLINK`; без `EnvironmentFile`).
-- GitHub: статус-контекст `deploy/admin`, deployment environment `production-admin`.
+- Path classification: `wd_path_is_admin` in `deploy/watchdog-lib.sh` (`apps/admin/**`
+  plus shared build files — a dependency bump rebuilds the release). The backend lane does
+  not capture `apps/admin`.
+- Baseline: `/var/lib/apitoken/watchdog/admin.sha`. Until the file exists, the first
+  watchdog run deploys the context unconditionally (like OpenKeys).
+- Release root: `/opt/apitoken/admin-releases/<sha>`, atomic `current` symlink.
+- Deploy script: `deploy/admin-deploy.sh <sha>` — promotion of the tested candidate,
+  atomic symlink, `systemctl restart apitoken-admin.service`, health gate on
+  `http://127.0.0.1:3700/api/health`, symlink rollback on failure. No migrations.
+- Unit: `systemd/apitoken-admin.service` (`User=deploy`, `next start -H 127.0.0.1 -p 3700`,
+  hardening like `apitoken-openkeys.service`, including `AF_NETLINK`; no `EnvironmentFile`).
+- GitHub: status context `deploy/admin`, deployment environment `production-admin`.
 
-## Первый запуск на сервере
+## First launch on the server
 
 ```bash
-# 1. Раскатить обновлённые юниты, sudoers и контроллеры (root)
+# 1. Roll out the updated units, sudoers and controllers (root)
 deploy/install-watchdog.sh
 
-# 2. Включить юнит один раз
+# 2. Enable the unit once
 systemctl enable apitoken-admin.service
 
-# 3. Дальше выкат автоматический: watchdog увидит изменения в apps/admin
-#    и вызовет admin-deploy.sh
+# 3. From then on rollout is automatic: the watchdog will see changes in apps/admin
+#    and call admin-deploy.sh
 ```
 
-## Домен
+## Domain
 
-`admin.apitoken.sale` обслуживает `apps/admin` на `127.0.0.1:3700` и целиком закрыт
-`managed_admin_auth`: логин/пароль проверяет commerce internal auth с domain grants. Caddy
-same-origin проксирует обезличенные `/capacity`, `/codex-subs`, `/gemini-subs`, `/kimi-subs`
-и `/glm-subs` в три provider runtime (KIMI и GLM — backend-only плоскости внутри Anthropic
-runtime, отдельного origin нет) и добавляет серверные ключи; браузер не получает control keys,
-полный email, OAuth, Google project, KIMI/GLM subject, ключи или proxy. Защита относится ко всем
-страницам, включая `/sales/calculator`.
+`admin.apitoken.sale` is served by `apps/admin` on `127.0.0.1:3700` and is entirely closed
+behind `managed_admin_auth`: login/password is verified by commerce internal auth with
+domain grants. Caddy same-origin proxies the depersonalized `/capacity`, `/codex-subs`,
+`/gemini-subs`, `/kimi-subs` and `/glm-subs` to the three provider runtimes (KIMI and GLM
+are backend-only planes inside the Anthropic runtime, there is no separate origin) and adds
+the server keys; the browser never receives control keys, full email, OAuth, Google
+project, KIMI/GLM subject, keys or proxy. The protection applies to all pages, including
+`/sales/calculator`.
 
-## Pricing configurators и B2B policies
+## Pricing configurators and B2B policies
 
-Страница `/pricing` — операторская поверхность versioned multi-discount authority:
+The `/pricing` page is the operator surface of the versioned multi-discount authority:
 
-- Global B2C редактируется полным CAS replacement-набором: default 50%, provider overrides и exact
-  model overrides. Exact model rule имеет приоритет над provider, provider — над global default;
-- provider switches показывают master, product, B2C и B2B gates. Master визуально отделён, а его
-  изменение и любое выключение gate требуют отдельного browser confirmation. Сохранённые policy
-  rules при выключении не удаляются;
-- provider rule не включает будущие модели автоматически. Редактор предлагает только модели из
-  активного product catalog; Gemini не появляется без явной catalog entry;
-- backend admin API публикует canonical service inventory и exact-CAS mutation под
-  `/admin/service-account-inventory`; он показывает `purpose`, `responsible`, last verified engine
-  status, all-runtime-model access и `billing_mode=meter_only`. Текущий UI не классифицирует неизвестные
-  accounts автоматически: до отдельной формы оператор использует тот же защищённый admin-контракт.
-  Service не редактирует product discounts и не зависит от balance;
-- каждое сохранение показывает новую source version и не объявляется применённым, пока targets не
-  имеют совпадающие desired/applied versions и exact ACK. В UI видны job state, последняя ошибка,
-  actor, reason и время версии.
+- Global B2C is edited as a full CAS replacement set: default 50%, provider overrides and
+  exact model overrides. An exact model rule takes priority over provider, provider — over
+  the global default;
+- provider switches show the master, product, B2C and B2B gates. Master is visually
+  separated, and changing it or disabling any gate requires a separate browser
+  confirmation. Saved policy rules are not deleted when a gate is disabled;
+- a provider rule does not automatically include future models. The editor offers only
+  models from the active product catalog; Gemini does not appear without an explicit
+  catalog entry;
+- the backend admin API publishes the canonical service inventory and exact-CAS mutation
+  under `/admin/service-account-inventory`; it shows `purpose`, `responsible`, last
+  verified engine status, all-runtime-model access and `billing_mode=meter_only`. The
+  current UI does not automatically classify unknown accounts: until a separate form
+  exists, the operator uses the same protected admin contract. Service does not edit
+  product discounts and does not depend on balance;
+- every save shows the new source version and is not declared applied until targets have
+  matching desired/applied versions and an exact ACK. The UI shows job state, last error,
+  actor, reason and the version time.
 
-Страница `/business` использует тот же policy editor для существующих B2B clients и активных
-invitations. Новая invitation создаётся сразу с полной provider/model policy; scalar discount editor
-в активном UI отсутствует. Непогашенная invitation редактируется CAS replacement-версиями, resend
-получает независимую exact snapshot, а после redemption изменение invitation уже не меняет client
-policy. Preview/email/registration описывают provider/model доступ и account остаётся pending до
-engine ACK; usable key до подтверждения policy не выдаётся.
+The `/business` page uses the same policy editor for existing B2B clients and active
+invitations. A new invitation is created immediately with a full provider/model policy; a
+scalar discount editor does not exist in the active UI. An unredeemed invitation is edited
+with CAS replacement versions, resend gets an independent exact snapshot, and after
+redemption changing the invitation no longer changes the client policy.
+Preview/email/registration describe the provider/model access and the account stays
+pending until engine ACK; no usable key is issued until the policy is confirmed.
 
-Админка не выполняет Stage 5 assignment/backfill сама и не выводит назначения B2B/service/OpenKeys
-из имён. Commerce producer даёт защищённый bounded snapshot prepared target/recovery,
-freshness/source completeness Stage 8, durable activation jobs/receipts и отдельно timestamped
-engine head через `GET /admin/pricing-release-activation-v2`. Страница `/pricing` опрашивает этот
-snapshot отдельно каждые 5 секунд и показывает release pair, inventory identities, evidence
-freshness/blockers, engine head, jobs и validated receipts. Stale/ошибочный refresh сохраняется
-только для диагностики и fail-closed отключает mutations.
+The admin panel does not perform Stage 5 assignment/backfill itself and does not derive
+B2B/service/OpenKeys assignments from names. The commerce producer provides a protected
+bounded snapshot of prepared target/recovery, Stage 8 freshness/source completeness,
+durable activation jobs/receipts and separately a timestamped engine head via
+`GET /admin/pricing-release-activation-v2`. The `/pricing` page polls this snapshot
+separately every 5 seconds and shows the release pair, inventory identities, evidence
+freshness/blockers, engine head, jobs and validated receipts. A stale/erroneous refresh is
+kept only for diagnostics and fail-closed disables mutations.
 
-Единственный mutation endpoint — explicit `POST .../stage` с verified actor/reason и canonical
-evidence digest. Для cutover и recovery оператор вводит содержательную причину и точную фразу,
-связанную с kind, generation и suffix evidence digest. Перед POST браузер заново читает control
-snapshot и требует available engine, fresh passed/source-complete evidence без local blockers,
-нулевой pricing backlog и правильное состояние global head; recovery дополнительно требует exact
-target head и durable cutover receipt. Backend остаётся окончательной authority и повторяет
-проверки атомарно. `accepted` означает durable job, а не dry-run: worker может выполнить глобальный
-CAS сразу после fresh first-delivery revalidation. Per-account canary и maintenance-mode controls
-отсутствуют и запрещены.
+The only mutation endpoint is the explicit `POST .../stage` with a verified actor/reason
+and a canonical evidence digest. For cutover and recovery the operator enters a meaningful
+reason and the exact phrase tied to the kind, generation and the suffix of the evidence
+digest. Before the POST the browser re-reads the control snapshot and requires an
+available engine, fresh passed/source-complete evidence without local blockers, a zero
+pricing backlog and the correct global head state; recovery additionally requires the
+exact target head and a durable cutover receipt. The backend remains the final authority
+and repeats the checks atomically. `accepted` means a durable job, not a dry-run: the
+worker may execute the global CAS immediately after fresh first-delivery revalidation.
+Per-account canary and maintenance-mode controls do not exist and are forbidden.
 
-Перед activation на той же странице расположен отдельный `Managed Stage 8 capture` control. Он
-каждые пять секунд читает bounded `/admin/pricing-stage8-capture-v2`, показывает queue counts,
-immutable request identities, попытки, exact engine/combined digests, freshness и только sanitized
-blocker summary. Raw engine/combined JSON и исходные account/request identities в браузер не
-передаются. Новый capture stage'ится только из явной формы с новым UUID, target/recovery,
-закрытым epoch-window, provider/financial/Gemini bounds и содержательной причиной. Браузер
-сверяет window с commerce database time, требует точную confirmation phrase, повторяет fresh GET
-перед POST и fail-closed запрещает второй job, пока `pending|processing|retry` не стал terminal.
-Backend остаётся authority для strict shape, времени и idempotency conflict.
+Before activation, the same page hosts a separate `Managed Stage 8 capture` control. Every
+five seconds it reads the bounded `/admin/pricing-stage8-capture-v2`, shows queue counts,
+immutable request identities, attempts, exact engine/combined digests, freshness and only
+a sanitized blocker summary. Raw engine/combined JSON and the original account/request
+identities are never delivered to the browser. A new capture is staged only from an
+explicit form with a new UUID, target/recovery, a closed epoch window,
+provider/financial/Gemini bounds and a meaningful reason. The browser cross-checks the
+window against commerce database time, requires the exact confirmation phrase, repeats a
+fresh GET before POST and fail-closed forbids a second job while `pending|processing|retry`
+has not become terminal. The backend remains the authority for strict shape, time and
+idempotency conflict.
 
-Capture — read-only evidence workflow: он не создаёт activation job, не двигает head, не меняет
-accounts/balances/policies и не требует traffic/money-writer drain. `blocked` отображается как
-terminal evidence; retry разрешён только worker state machine для uncertain failures. Activation
-остаётся отдельной секцией и отдельным explicit подтверждением ниже, поэтому успешный capture сам
-по себе не переводит клиентов.
+Capture is a read-only evidence workflow: it does not create an activation job, does not
+move the head, does not change accounts/balances/policies and does not require a
+traffic/money-writer drain. `blocked` is displayed as terminal evidence; retry is allowed
+only by the worker state machine for uncertain failures. Activation remains a separate
+section with a separate explicit confirmation below, so a successful capture by itself
+does not switch clients over.
 
-## Платящие клиенты
+## Paying customers
 
-Страница `/paying-users` — отдельный компактный read-only control room, не фильтр общей таблицы
-`/users`. Она получает expand-only snapshot из commerce
-`GET /admin/finance/paying-users?days=1|7|30`: в выборку входят только пользователи с хотя бы одним
-`payments.status='paid'`, а поиск, provider/status filters, сортировка и пагинация остаются на
-сервере и поэтому не деградируют при росте клиентской базы.
+The `/paying-users` page is a separate compact read-only control room, not a filter of the
+general `/users` table. It receives an expand-only snapshot from commerce
+`GET /admin/finance/paying-users?days=1|7|30`: the selection includes only users with at
+least one `payments.status='paid'`, and search, provider/status filters, sorting and
+pagination stay on the server and therefore do not degrade as the customer base grows.
 
-Верхний ledger показывает lifetime paid total, расход выбранного окна, число активных spenders и
-один пропорциональный rail Claude/GPT/Gemini. Provider-сегменты одновременно служат быстрыми
-фильтрами. Таблица ниже ранжирует клиентов и в одной строке показывает paid total, расход окна и
-точные charged nanoUSD отдельно для Anthropic/OpenAI/Google. Provider authority берётся из
-immutable pricing-attribution, а для legacy pricing — из сохранённого top-level provider engine
-ledger; worker повторно обрабатывает и ранее provisional `unattributed` строки после появления
-producer evidence. Versioned recovery v2 также повторно выбирает старые `unavailable`, созданные
-слабым request-ID-only алгоритмом, восстанавливает ещё доступные 30-дневные строки по строгому
-settlement fingerprint и помечает каждый exact/exhausted результат версией `2`. Model ID не
-преобразуется в provider; оставшаяся неоднозначность не теряется и выводится как `другое`. Все
-денежные вычисления и CSV сохраняют decimal nanoUSD strings; JS `number`
-используется только для ограниченной доли 0–10000 basis points. Страница опрашивается раз в 30
-секунд и не выполняет денежных mutation.
+The top ledger shows the lifetime paid total, the spend of the selected window, the number
+of active spenders and a single proportional Claude/GPT/Gemini rail. The provider segments
+simultaneously serve as quick filters. The table below ranks customers and in one row
+shows the paid total, window spend and exact charged nanoUSD separately for
+Anthropic/OpenAI/Google. Provider authority is taken from the immutable
+pricing-attribution, and for legacy pricing — from the stored top-level provider engine
+ledger; the worker also reprocesses previously provisional `unattributed` rows after
+producer evidence appears. Versioned recovery v2 also re-selects old `unavailable` rows
+created by the weak request-ID-only algorithm, recovers still-available 30-day rows by the
+strict settlement fingerprint and marks each exact/exhausted result with version `2`. A
+model ID is never converted into a provider; remaining ambiguity is not lost and is shown
+as `другое` ("other"). All money computations and CSV exports keep decimal nanoUSD
+strings; JS `number` is used only for the bounded 0–10000 basis-points fraction. The page
+polls every 30 seconds and performs no money mutations.
 
-## GPT capacity board на странице подписок
+## GPT capacity board on the subscriptions page
 
-GPT-блок `/subscriptions` — компактная операторская сводка, полностью рассчитанная из backend
-`/codex-subs` без собственной денежной authority:
+The GPT block of `/subscriptions` is a compact operator summary computed entirely from the
+backend `/codex-subs` without any money authority of its own:
 
-- главный strip суммирует `fleet_capacity_nanocredits`/`fleet_remaining_nanocredits` всех plan cohorts самого длинного
-  доступного положительного окна, показывает использованную долю, обычный Standard API-equivalent
-  и максимальный тарифный API-equivalent; оба сценария подписаны моделью/tier/context/token kind.
-  Если хотя бы одна cohort ещё не измерена, общий номинал остаётся неизвестным, а не превращается
-  в заниженную частичную сумму;
-- home-таблица показывает только bounded masked email, runtime/integrity state, quota с progress-bar
-  и reset, shared-cohort remaining credits и обычный/максимальный API-equivalent. Для разных paid
-  plans каждая почта получает pooled capacity только своей cohort. Opaque UUID, raw immutable ledger,
-  schedules и индивидуальная noisy capacity в основной UI не выводятся;
-- `conversion_models` используется локально только для двух API-equivalent значений в strip и
-  home-таблице. Token-capacity и profitability-матрицы в основной UI не разворачиваются; backend
-  продолжает публиковать тарифный каталог как расчётный/audit-контракт;
-- provider placeholder с неположительным окном игнорируется. До появления положительного движения
-  quota UI показывает короткое `ждём Δquota`, не подставляя ноль или прайор.
+- the main strip sums `fleet_capacity_nanocredits`/`fleet_remaining_nanocredits` of all
+  plan cohorts of the longest available positive window, shows the used share, the regular
+  Standard API-equivalent and the maximum plan API-equivalent; both scenarios are labelled
+  with the model/tier/context/token kind. If at least one cohort is not yet measured, the
+  total nominal stays unknown rather than turning into an understated partial sum;
+- the home table shows only the bounded masked email, runtime/integrity state, quota with
+  a progress bar and reset, shared-cohort remaining credits and the regular/maximum
+  API-equivalent. For different paid plans each email gets pooled capacity only of its own
+  cohort. Opaque UUIDs, the raw immutable ledger, schedules and individual noisy capacity
+  are not surfaced in the main UI;
+- `conversion_models` is used locally only for the two API-equivalent values in the strip
+  and the home table. Token-capacity and profitability matrices are not expanded in the
+  main UI; the backend keeps publishing the plan catalog as a calculation/audit contract;
+- a provider placeholder with a non-positive window is ignored. Until positive quota
+  movement appears the UI shows the short `ждём Δquota` ("waiting for Δquota"), never
+  substituting zero or a prior.
 
-## Claude, Gemini, KIMI и GLM capacity boards
+## Claude, Gemini, KIMI and GLM capacity boards
 
-Claude-блок `/subscriptions` намеренно оставляет только одну компактную таблицу аккаунтов: bounded
-email hint, routing/auth state, quota+reset и exact доступные/полные API-$ отдельно для 5ч и 7д.
-Workload evidence, token-only capacity, model profitability и локальный summary strip в Claude-блоке
-не выводятся: главные fleet totals уже находятся в едином control-room выше, а оператору внутри
-Claude нужны только окна конкретных подписок. Gemini также оставляет только таблицу окон по
-профилям; отдельный локальный summary strip, model-quota и profitability таблицы удалены.
-Старые StatCard-наборы, proxy/transport details и длинные calibration explanations в основном экране
-не выводятся. Во всех пулах identity слева bounded: у Claude/GPT/Gemini — email hint (первые четыре
-символа local-part без домена), у KIMI и GLM — opaque roster id (email/subject/ключ в wire
-отсутствуют вовсе).
+The Claude block of `/subscriptions` deliberately keeps only one compact accounts table:
+bounded email hint, routing/auth state, quota+reset and exact available/full API-$
+separately for 5h and 7d. Workload evidence, token-only capacity, model profitability and
+a local summary strip are not surfaced in the Claude block: the main fleet totals already
+live in the unified control room above, and inside Claude the operator needs only the
+windows of specific subscriptions. Gemini likewise keeps only the per-profile windows
+table; the separate local summary strip, model-quota and profitability tables have been
+removed. The old StatCard sets, proxy/transport details and long calibration explanations
+are not surfaced on the main screen. In all pools the identity on the left is bounded: for
+Claude/GPT/Gemini — an email hint (first four characters of the local part without the
+domain), for KIMI and GLM — an opaque roster id (email/subject/key are absent from the
+wire entirely).
 
-Над деталями расположен единый control-room из пяти карточек Claude/GPT/Gemini/KIMI/GLM. В каждой
-только два одинаково читаемых rail: `5ч` и `7д` (KIMI и GLM подписывают rail'ы реальными
-`duration_secs`: 18000 → `5ч`, 604800 → `7д`, без фиктивных эквивалентов), current remaining /
-full-window API-$, использованная доля, число routable identities и coverage. Это главный экран
-сравнения продаваемой ёмкости; подробности по аккаунтам идут ниже без дополнительных
-cache/model/token-матриц. Claude-карточка вместо ложных денег немедленно показывает
-`N сохраняется`, `N потеряно` или ошибку authority из `calibration_delivery`. Gemini применяет тот
-же fail-closed контракт и не показывает stale API-$ при pending/degraded exact authority. Его
-свежие provider quota/reset при этом остаются видны, а денежная ячейка компактно говорит
-`обновляем`: сбой dollar-evidence не должен ослеплять оператора по реальному quota wall. KIMI и
-GLM держат тот же контракт на своих delivery FIFO.
+Above the details sits a unified control room of five Claude/GPT/Gemini/KIMI/GLM cards.
+Each has only two equally readable rails: `5ч` ("5h") and `7д` ("7d") (KIMI and GLM label
+the rails with the real `duration_secs`: 18000 → `5ч`, 604800 → `7д`, without fictitious
+equivalents), current remaining / full-window API-$, used share, the number of routable
+identities and coverage. This is the main screen for comparing the capacity being sold;
+per-account details follow below without additional cache/model/token matrices. Instead of
+false money the Claude card immediately shows `N сохраняется` ("N being saved"), `N
+потеряно` ("N lost") or an authority error from `calibration_delivery`. Gemini applies the
+same fail-closed contract and does not show stale API-$ under pending/degraded exact
+authority. Its fresh provider quota/reset remains visible, while the money cell compactly
+says `обновляем` ("refreshing"): a dollar-evidence failure must not blind the operator to
+the real quota wall. KIMI and GLM hold the same contract on their delivery FIFOs.
 
-Claude строится из `/capacity`:
+Claude is built from `/capacity`:
 
-- `window_totals` и `available_nano` — decimal nanoUSD strings для общего control-room;
-  `conversion_models` остаётся backend-каталогом authoritative Standard/Fast ставок metering;
-- 5ч API-dollar remaining — акцентный столбец каждой подписки рядом с 5ч quota/reset; полная
-  ёмкость окна выводится компактной строкой `из $…`.
-  7д remaining/ёмкость остаются соседним сравнительным столбцом. Таблица также оставляет masked
-  email/plan и routing state. Никакой prior не подставляется: до exact evidence выводится
-  `ждём данные`. Свежая exact quota fraction из runtime даёт current remaining даже когда Anthropic
-  не прислал reset — тогда UI пишет `сброс уточняется`, а не ложное `0м`. Если current snapshot
-  протух из-за отсутствия запросов, но его точный provider reset ещё впереди, строка продолжает
-  показывать последний процент, countdown и muted API-$ с пометкой `последнее`; новый snapshot
-  заменяет их сразу. Эти деньги диагностические и не входят во fleet saleable capacity. После
-  deadline старое значение исчезает и до следующего probe выводится `обновляем`, поэтому оно не
-  переносится в новое окно. Missing reset и pending/degraded FIFO также показывают `обновляем`.
-  Исчерпанное окно не скрывается общим runtime-cooling: строка показывает точные `100%` и countdown
-  до provider reset отдельно для 5ч/7д, а статус — `лимит … исчерпан` без внутреннего термина
-  `cooling`. До reset деньги остаются `вне ротации`; после deadline runtime автоматически возвращает
-  подписку в routing, и следующий poll панели показывает её активной. Dead и другие non-routable
-  аккаунты по-прежнему не выглядят продаваемой supply;
-- `calibration_evidence` и `conversion_models` продолжают приходить с backend как audit/calculation
-  contract, но основной Claude UI их не разворачивает в дополнительные таблицы.
+- `window_totals` and `available_nano` are decimal nanoUSD strings for the shared control
+  room; `conversion_models` remains the backend catalog of the authoritative Standard/Fast
+  metering rates;
+- 5h API-dollar remaining is the accent column of each subscription next to the 5h
+  quota/reset; the full window capacity is shown as a compact line `из $…` ("of $…").
+  7d remaining/capacity stays as the adjacent comparison column. The table also keeps the
+  masked email/plan and routing state. No prior is ever substituted: until exact evidence
+  exists the UI shows `ждём данные` ("waiting for data"). A fresh exact quota fraction from
+  the runtime gives the current remaining even when Anthropic has not sent a reset — then
+  the UI writes `сброс уточняется` ("reset being clarified") rather than a false `0м`. If
+  the current snapshot has gone stale due to a lack of requests but its exact provider
+  reset is still ahead, the row keeps showing the last percentage, countdown and muted
+  API-$ with the label `последнее` ("last known"); a new snapshot replaces them
+  immediately. These dollars are diagnostic and do not enter the fleet saleable capacity.
+  After the deadline the old value disappears and until the next probe the UI shows
+  `обновляем` ("refreshing"), so it is not carried over into the new window. A missing
+  reset and a pending/degraded FIFO also show `обновляем`. An exhausted window is not
+  hidden by the general runtime-cooling: the row shows the exact `100%` and the countdown
+  to the provider reset separately for 5h/7d, and the status is `лимит … исчерпан` ("limit
+  … exhausted") without the internal term `cooling`. Until the reset the money stays `вне
+  ротации` ("out of rotation"); after the deadline the runtime automatically returns the
+  subscription to routing, and the panel's next poll shows it active. Dead and other
+  non-routable accounts still do not look like sellable supply;
+- `calibration_evidence` and `conversion_models` keep arriving from the backend as an
+  audit/calculation contract, but the main Claude UI does not expand them into additional
+  tables.
 
-Gemini строится из `/gemini-subs` и сохраняет provider-specific семантику:
+Gemini is built from `/gemini-subs` and preserves provider-specific semantics:
 
-- workload 5ч/weekly API-$ — realized blend наблюдённой смеси, не фиксированный номинал Google AI
-  подписки. Fleet totals имеют canonical `*_nano` strings; float-поля остаются только display
-  compatibility. В strip 5ч workload-$ стоит первым, а per-profile таблица показывает отдельные
-  5ч и 7д workload-dollar remaining и полную ёмкость (`из $…`) рядом с соответствующими
-  quota/reset;
-- таблица профилей показывает bounded email, auth state, quota/reset для 5ч и 7д, доступные/полные
-  workload-$ и число доступных моделей. Private quota bucket ids, `remaining_amount`, токеновые
-  ставки, Search и profitability в основной UI не выводятся. Неавторизованный, account-cooling
-  или полностью model-cooling профиль сохраняет quota для диагностики, но показывает
-  `вне ротации` вместо денег и не входит во fleet API-$;
-- `conversion_models`, official quotas и их integer amounts продолжают приходить с backend как
-  audit/calculation contract. UI не делит workload-$ на цену токена и не выдумывает Gemini token
-  capacity из одной только fraction.
+- workload 5h/weekly API-$ is the realized blend of the observed mixture, not a fixed
+  nominal of a Google AI subscription. Fleet totals have canonical `*_nano` strings; float
+  fields remain only for display compatibility. In the strip the 5h workload-$ comes
+  first, and the per-profile table shows separate 5h and 7d workload-dollar remaining and
+  full capacity (`из $…` — "of $…") next to the corresponding quota/reset;
+- the profiles table shows the bounded email, auth state, quota/reset for 5h and 7d,
+  available/full workload-$ and the number of available models. Private quota bucket ids,
+  `remaining_amount`, token rates, Search and profitability are not surfaced in the main
+  UI. An unauthorized, account-cooling or fully model-cooling profile keeps its quota for
+  diagnostics but shows `вне ротации` ("out of rotation") instead of money and does not
+  enter the fleet API-$;
+- `conversion_models`, official quotas and their integer amounts keep arriving from the
+  backend as an audit/calculation contract. The UI does not divide workload-$ by a token
+  price and does not invent Gemini token capacity from a fraction alone.
 
-KIMI строится из `/kimi-subs` (конверт `enabled:false` показывается как «KIMI-контур выключен») и
-повторяет тот же компактный контракт с двумя особенностями источника. Идентичность профиля —
-только opaque roster id и bounded plan label (`unreviewed` до review тарифа); subject, email и
-credential path не сериализуются и не выводятся никогда. Оконные `window_totals` не публикуются:
-fleet rail'ы и столбцы таблицы строятся из реальных `duration_secs` per-profile quota/calibration.
-Used share — exact provider `used_fraction_units`; API-$ — только calibrated `api_nano`/`current_nano`
-decimal strings, вся арифметика BigInt. Неизвестное остаётся `ждём данные` и никогда не `$0`;
-pending/dropped delivery и ошибка persistence показывают `сохраняется`/`обновляем` и скрывают
-saleable деньги, свежие quota/reset при этом остаются видны. Dead (`live:false`), cooling по любой
-из трёх осей (auth/transport/quota) и протухший snapshot (>10 минут) говорят `вне ротации`/
-`обновляем` и не входят во fleet API-$: fleet-суммы считаются только по профилям, чья строка
-показывает реальные деньги, и null у любого из них делает итог неизвестным, а не частичной суммой.
+KIMI is built from `/kimi-subs` (an `enabled:false` envelope is shown as "KIMI-контур
+выключен" — "KIMI plane disabled") and repeats the same compact contract with two
+source-specific features. The profile identity is only an opaque roster id and a bounded
+plan label (`unreviewed` until the plan is reviewed); subject, email and credential path
+are never serialized or displayed. Per-window `window_totals` are not published: fleet
+rails and table columns are built from the real `duration_secs` of per-profile
+quota/calibration. Used share is the exact provider `used_fraction_units`; API-$ is only
+the calibrated `api_nano`/`current_nano` decimal strings, all arithmetic in BigInt. The
+unknown stays `ждём данные` ("waiting for data") and never `$0`; pending/dropped delivery
+and a persistence error show `сохраняется`/`обновляем` ("saving"/"refreshing") and hide
+saleable money, while fresh quota/reset remains visible. Dead (`live:false`), cooling on
+any of the three axes (auth/transport/quota) and a stale snapshot (>10 minutes) say `вне
+ротации`/`обновляем` ("out of rotation"/"refreshing") and do not enter the fleet API-$:
+fleet sums are computed only over profiles whose row shows real money, and null on any of
+them makes the total unknown rather than a partial sum.
 
-GLM строится из `/glm-subs` (конверт `enabled:false` показывается как «GLM-контур выключен») и
-повторяет тот же компактный контракт с особенностями источника. Идентичность профиля — только
-opaque roster id и bounded plan label (Lite/Pro/Max либо `unreviewed`); subject (digest ключа),
-сам ключ, proxy, base_url и credential path не сериализуются и не выводятся никогда. В отличие от
-KIMI, backend публикует fleet `window_totals` для двух канонических окон (300/10080 минут —
-проекция exact `duration_secs` 18000/604800) fail-closed суммами: null у любого профиля делает
-всё окно неизвестным, поэтому rail говорит `ждём данные`, а не `$0`, а без `window_totals`
-карточка деградирует в coverage-only, как у KIMI. Столбцы таблицы строятся из реальных
-`duration_secs` per-profile quota/calibration. Used share — exact provider `used_fraction_units`;
-API-$ — только calibrated `api_nano`/`current_nano` decimal strings, вся арифметика BigInt;
-native остаток (microcredits) показан отдельной компактной колонкой exact integer'ами, null
-остаётся `—`. Auth-оси GLM — durable флаги `account_dead`/`account_suspect`, а не timed
-quarantine: dead говорит `вне ротации` до замены ключа Auth Bot'ом, suspect — `под наблюдением`
-до свежего quota-probe, а ключ без прошедшего probe (`live:false`) — `ждём данные`; timed
-cooling оси — только transport/quota. Pending/dropped delivery и ошибка persistence показывают
-`сохраняется`/`обновляем` и скрывают saleable деньги, свежие quota/reset и native counters при
-этом остаются видны. Протухший snapshot (>10 минут) говорит `обновляем`; fleet-суммы в strip
-считаются только по профилям, чья строка показывает реальные деньги, и null у любого из них
-делает итог неизвестным, а не частичной суммой.
+GLM is built from `/glm-subs` (an `enabled:false` envelope is shown as "GLM-контур
+выключен" — "GLM plane disabled") and repeats the same compact contract with
+source-specific features. The profile identity is only an opaque roster id and a bounded
+plan label (Lite/Pro/Max or `unreviewed`); subject (key digest), the key itself, proxy,
+base_url and credential path are never serialized or displayed. Unlike KIMI, the backend
+publishes fleet `window_totals` for the two canonical windows (300/10080 minutes — a
+projection of the exact `duration_secs` 18000/604800) as fail-closed sums: null on any
+profile makes the whole window unknown, so the rail says `ждём данные` ("waiting for
+data") rather than `$0`, and without `window_totals` the card degrades to coverage-only,
+like KIMI. Table columns are built from the real `duration_secs` of per-profile
+quota/calibration. Used share is the exact provider `used_fraction_units`; API-$ is only
+the calibrated `api_nano`/`current_nano` decimal strings, all arithmetic in BigInt; the
+native remainder (microcredits) is shown in a separate compact column as exact integers,
+null stays `—`. GLM's auth axes are durable `account_dead`/`account_suspect` flags rather
+than a timed quarantine: dead says `вне ротации` ("out of rotation") until the key is
+replaced by the Auth Bot, suspect — `под наблюдением` ("under observation") until a fresh
+quota probe, and a key without a passed probe (`live:false`) — `ждём данные` ("waiting for
+data"); the timed cooling axes are only transport/quota. Pending/dropped delivery and a
+persistence error show `сохраняется`/`обновляем` ("saving"/"refreshing") and hide saleable
+money, while fresh quota/reset and native counters remain visible. A stale snapshot (>10
+minutes) says `обновляем` ("refreshing"); fleet sums in the strip are computed only over
+profiles whose row shows real money, and null on any of them makes the total unknown
+rather than a partial sum.

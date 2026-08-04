@@ -1,59 +1,62 @@
-# Контракт мультипровайдерных скидок и online-cutover
+# Multi-provider discount contract and online cutover
 
-Статус документа: утверждённый целевой контракт от 2026-08-02. Код и production-данные считаются
-переведёнными на него только после прохождения Definition of Done ниже. Этот документ заменяет
-предыдущий дизайн прогрессивных тарифов: активного режима `track`, tier ladder и 30-дневного
-retention в целевой системе нет.
+Document status: approved target contract dated 2026-08-02. Code and production data are
+considered migrated to it only after the Definition of Done below is met. This document supersedes
+the previous progressive-tariff design: the target system has no active `track` mode, no tier
+ladder, and no 30-day retention.
 
-## 1. Принятые продуктовые решения
+## 1. Accepted product decisions
 
-1. Gemini — полноценный продуктовый провайдер вместе с Anthropic и OpenAI.
-2. Обычный B2C-клиент получает глобальную скидку `50%` на каждую модель, включённую в основной
-   продуктовый каталог.
-3. Для B2C можно задать отдельную процентную скидку на провайдера и более точную скидку на модель.
-4. B2B не наследует глобальную B2C-скидку. У каждого B2B-клиента собственная policy. Текущий
-   скалярный процент при миграции становится provider-rule для внутреннего provider ID
-   `anthropic`; OpenAI/Gemini не добавляются существующему B2B автоматически.
-5. Все существующие и новые OpenKeys списываются `1:1` по официальной цене модели
+1. Gemini is a full product provider alongside Anthropic and OpenAI.
+2. A regular B2C customer gets a global `50%` discount on every model included in the main
+   product catalog.
+3. B2C can have a separate percentage discount per provider and a more specific discount per model.
+4. B2B does not inherit the global B2C discount. Every B2B customer has its own policy. The current
+   scalar percentage becomes a provider-rule for the internal provider ID
+   `anthropic` at migration; OpenAI/Gemini are not added to an existing B2B automatically.
+5. All existing and new OpenKeys are charged `1:1` at the model's official price
    (`discount_bps=0`, `payable_multiplier_bp=10000`).
-6. Service-аккаунты имеют доступ ко всем моделям, поддержанным runtime, независимо от продуктовых
-   B2C/B2B/OpenKeys-каталогов. Код домена решает, какие модели фактически использовать. Аварийный
-   master-switch и техническая недоступность провайдера по-прежнему действуют.
-7. Потребление service-аккаунтов полностью измеряется и сохраняется, но запросы не резервируют и
-   не списывают клиентский баланс. Для этого используется отдельный billing mode `meter_only`, а
-   не нулевой multiplier и не бесконечный искусственный баланс.
-8. Welcome bonus сохраняется. Новая выдача — ровно `$5.000000000`; ранее выданные `$4` не
-   увеличиваются задним числом. Бонус доступен для любой разрешённой B2C-модели и провайдера.
-9. Реферальные комиссии сохраняются. Их eligibility определяется B2C-атрибуцией и реферальной
-   связью, а не режимом цены. Комиссия начисляется только на фактически списанную paid-funded
-   часть; расход welcome bonus не комиссионируется.
-10. Перевод production выполняется для всего инвентаря одним глобальным переключением. Canary и
-    поаккаунтное включение клиентов запрещены.
-11. Production нельзя останавливать ради pricing/funding cutover. Не допускаются глобальный drain,
-    maintenance mode, остановка money writers или ожидание нуля всех активных reservations.
-12. Ручная финансовая классификация Stage 6 не требуется. Известный неиспользованный welcome
-    credit сохраняется как bonus; весь остальной существующий остаток по явному решению владельца
-    считается paid. Суммы всё равно проходят автоматические структурные инварианты.
+6. Service accounts have access to all models supported by the runtime, regardless of the product
+   B2C/B2B/OpenKeys catalogs. The domain code decides which models to actually use. The emergency
+   master-switch and technical provider unavailability still apply.
+7. Service-account consumption is fully metered and persisted, but requests neither reserve nor
+   debit the customer balance. This uses a dedicated billing mode `meter_only`, not a zero
+   multiplier and not an infinite artificial balance.
+8. The welcome bonus is kept. New issuance is exactly `$5.000000000`; previously issued `$4`
+   bonuses are not retroactively increased. The bonus is usable for any allowed B2C model and
+   provider.
+9. Referral commissions are kept. Their eligibility is determined by B2C attribution and the
+   referral link, not by the pricing mode. Commission accrues only on the actually charged
+   paid-funded portion; welcome-bonus spend is not commissioned.
+10. The production migration is performed for the entire inventory in a single global switch.
+    Canary and per-account customer enablement are forbidden.
+11. Production must not be stopped for the pricing/funding cutover. A global drain, maintenance
+    mode, stopping money writers, or waiting for all active reservations to reach zero are not
+    allowed.
+12. Manual financial classification in Stage 6 is not required. Known unused welcome credit is
+    preserved as bonus; all other existing balance is, by explicit owner decision, considered paid.
+    The amounts still pass the automatic structural invariants.
 
-`fixed discount` в этом контракте означает статический процент в basis points. Literal fixed
-tariff вроде «эта модель всегда стоит $0.01» не входит в контракт.
+`fixed discount` in this contract means a static percentage in basis points. A literal fixed
+tariff such as "this model always costs $0.01" is not part of the contract.
 
-## 2. Экономика по классам аккаунтов
+## 2. Economics by account class
 
-| Класс | Цена | Доступ | Зависимость от баланса | Referral |
+| Class | Price | Access | Balance dependency | Referral |
 |---|---|---|---|---|
-| B2C | global `5000 bps`, затем provider/model override | основной product catalog | да | paid-funded usage |
-| B2B | индивидуальные provider/model rules | только явно разрешённые policy модели | да | нет, пока отдельный B2B-контракт не утверждён |
-| OpenKeys | `0 bps` скидки, строго 1:1 | OpenKeys product catalog | да | нет |
-| Service | customer charge не вычисляется; official cost сохраняется | все runtime-capable модели | нет (`meter_only`) | нет |
+| B2C | global `5000 bps`, then provider/model override | main product catalog | yes | paid-funded usage |
+| B2B | individual provider/model rules | only models explicitly allowed by the policy | yes | no, until a separate B2B contract is approved |
+| OpenKeys | `0 bps` discount, strictly 1:1 | OpenKeys product catalog | yes | no |
+| Service | customer charge is not computed; official cost is persisted | all runtime-capable models | no (`meter_only`) | no |
 
-Pricing и admission — разные решения. Скидка не включает модель, а наличие модели в каталоге не
-задаёт её цену. Исключение service относится только к продуктовым gates; capability manifest,
-безопасность транспорта и master-switch продолжают закрывать реально недоступный provider.
+Pricing and admission are different decisions. A discount does not enable a model, and a model's
+presence in the catalog does not set its price. The service exception applies only to product
+gates; the capability manifest, transport security, and master-switch continue to close a
+genuinely unavailable provider.
 
-## 3. Разрешение B2C-скидки
+## 3. B2C discount resolution
 
-Все проценты хранятся целым `discount_bps`:
+All percentages are stored as an integer `discount_bps`:
 
 ```text
 10000 bps = 100.00%
@@ -61,14 +64,14 @@ payable_multiplier_bp = 10000 - discount_bps
 charged_nano = floor(official_nano * payable_multiplier_bp / 10000)
 ```
 
-Разрешение выполняется в строгом порядке:
+Resolution happens in strict order:
 
 1. exact `(provider_id, canonical_model_id)` model-rule;
 2. provider-rule;
 3. global B2C default `discount_bps=5000`;
-4. отсутствие любого применимого правила — fail closed, а не legacy scalar fallback.
+4. no applicable rule at all — fail closed, not a legacy scalar fallback.
 
-Пример:
+Example:
 
 ```text
 global B2C       = 50%
@@ -76,57 +79,57 @@ provider Gemini = 60%
 Gemini image     = 55%
 ```
 
-Обычная Gemini-модель получает скидку 60%, а image-модель — 55%. Model-rule заменяет provider-rule
-целиком; проценты не складываются.
+A regular Gemini model gets a 60% discount, and an image model gets 55%. A model-rule replaces the
+provider-rule entirely; percentages do not stack.
 
-Официальная стоимость сначала вычисляется `crates/metering` в integer nanoUSD с immutable tariff
-identity. Policy применяется к готовой official-стоимости. Float/JavaScript `number` для денег
-запрещены.
+The official cost is first computed by `crates/metering` in integer nanoUSD with an immutable
+tariff identity. The policy is applied to the finished official cost. Float/JavaScript `number`
+for money is forbidden.
 
-## 4. B2B, OpenKeys и service
+## 4. B2B, OpenKeys, and service
 
 ### B2B
 
-Policy принадлежит конкретному B2B owner и содержит provider/model rules с тем же приоритетом
-model → provider. Global B2C policy на B2B никогда не распространяется.
+The policy belongs to a specific B2B owner and contains provider/model rules with the same
+model → provider priority. The global B2C policy never applies to B2B.
 
-При backfill существующий `mult_bp` преобразуется так:
+At backfill, the existing `mult_bp` is converted as follows:
 
 ```text
 discount_bps = 10000 - mult_bp
 scope = provider:anthropic
 ```
 
-Миграция не выдаёт B2B доступ к OpenAI или Gemini. После cutover оператор может явно добавить их
-provider/model rules через полную CAS-замену policy.
+The migration does not grant B2B access to OpenAI or Gemini. After the cutover an operator may
+explicitly add their provider/model rules via a full CAS replacement of the policy.
 
 ### OpenKeys
 
-Все OpenKeys, включая ранее считавшиеся legacy, получают canonical immutable 1:1 policy. История
-прошлых списаний не переписывается, но после глобального cutover любой новый reserve использует
-`payable_multiplier_bp=10000`. В API выпуска нет multiplier/discount override.
+All OpenKeys, including ones previously considered legacy, receive a canonical immutable 1:1
+policy. The history of past charges is not rewritten, but after the global cutover every new
+reserve uses `payable_multiplier_bp=10000`. The issuance API has no multiplier/discount override.
 
-Новая модель становится доступной OpenKeys только через явную новую generation OpenKeys product
-catalog. Это не меняет правило 1:1.
+A new model becomes available to OpenKeys only through an explicit new generation of the OpenKeys
+product catalog. This does not change the 1:1 rule.
 
 ### Service
 
-Service policy содержит purpose/responsible metadata и `billing_mode=meter_only`; она не содержит
-продуктовую скидку как способ обойти balance gate. Каждый завершённый запрос сохраняет:
+The service policy contains purpose/responsible metadata and `billing_mode=meter_only`; it does not
+contain a product discount as a way to bypass the balance gate. Every completed request persists:
 
 - account/key/request identity;
-- provider и canonical model;
-- tariff identity и official cost components;
-- фактический upstream usage;
+- provider and canonical model;
+- tariff identity and official cost components;
+- actual upstream usage;
 - runtime/release lineage.
 
-Customer debit, balance reserve и `402 insufficient balance` для service не выполняются. Ошибка
-записи usage/settlement остаётся fail-closed по обычному durable outbox-контракту: «не зависит от
-баланса» не означает «можно потерять учёт».
+Customer debit, balance reserve, and `402 insufficient balance` are not performed for service. A
+usage/settlement write failure remains fail-closed under the normal durable outbox contract: "does
+not depend on the balance" does not mean "accounting may be lost".
 
-## 5. Welcome bonus и funding
+## 5. Welcome bonus and funding
 
-Новая eligible Google/GitHub B2C-регистрация получает идемпотентный credit:
+A new eligible Google/GitHub B2C registration receives an idempotent credit:
 
 ```text
 amount_nano = 5000000000
@@ -135,444 +138,473 @@ source_type = welcome_bonus
 eligibility = any_b2c_model
 ```
 
-Password, B2B, OpenKeys и service аккаунты бонус не получают. Смена цены не меняет номинал уже
-зачисленного бонуса.
+Password, B2B, OpenKeys, and service accounts do not receive the bonus. A price change does not
+change the face value of an already credited bonus.
 
-Funding lots нужны для честного paid/bonus attribution, но не ограничивают bonus конкретным
-pricing-mode. Reserve расходует welcome bonus первым, затем paid; settlement и refund используют
-точную allocation, сохранённую при reserve. Поэтому referral получает только paid-funded часть.
+Funding lots are needed for honest paid/bonus attribution but do not restrict the bonus to a
+specific pricing mode. Reserve spends the welcome bonus first, then paid; settlement and refund use
+the exact allocation saved at reserve. Therefore referral receives only the paid-funded portion.
 
-Для существующего аккаунта online-backfill выполняется под тем же account row/advisory lock, что и
+For an existing account the online backfill runs under the same account row/advisory lock as the
 money writers:
 
-1. прочитать актуальный aggregate balance, ledger и уже нормализованные lots;
-2. восстановить остаток точных `signup-bonus:*` credits;
-3. записать его как `welcome_bonus`;
-4. классифицировать весь прочий остаток как `paid` и материализовать нулевой paid anchor, если
-   residual равен нулю;
-5. проверить `sum(bucket balance/reserved/spent) == account balance/reserved/spent`;
-6. атомарно отметить funding generation готовой.
+1. read the current aggregate balance, ledger, and already normalized lots;
+2. reconstruct the remainder of exact `signup-bonus:*` credits;
+3. record it as `welcome_bonus`;
+4. classify all other remainder as `paid` and materialize a zero paid anchor if the residual is
+   zero;
+5. verify `sum(bucket balance/reserved/spent) == account balance/reserved/spent`;
+6. atomically mark the funding generation ready.
 
-Ручного reviewer artifact и ручного разбора отдельных аккаунтов нет. Несходящаяся арифметика,
-negative overflow, конфликт replay или неизвестная незавершённая legacy reservation — технический
-blocker, а не повод угадать значение.
+There is no manual reviewer artifact and no manual per-account analysis. Arithmetic that does not
+reconcile, negative overflow, a replay conflict, or an unknown unfinished legacy reservation is a
+technical blocker, not a reason to guess a value.
 
-## 6. Удаление прогрессивной модели
+## 6. Removal of the progressive model
 
-В целевом runtime, API, UI и новых durable records отсутствуют:
+The target runtime, API, UI, and new durable records do not contain:
 
 - pricing mode `track`;
-- tier ladder и Starter/следующие tiers;
+- tier ladder and Starter/subsequent tiers;
 - 30-day retention spend/retention eligibility;
-- track eligibility и track-only funding;
-- зависимость commission eligibility от pricing mode;
-- фоновые tier reconciliation/month-close jobs;
-- публичные обещания прогрессивной скидки.
+- track eligibility and track-only funding;
+- commission eligibility's dependency on pricing mode;
+- background tier reconciliation/month-close jobs;
+- public promises of a progressive discount.
 
-Существующие append-only миграции и immutable исторические ledger/snapshot rows не переписываются:
-они могут содержать старые строки для аудита. Новый код не создаёт их и не использует для текущего
-admission, цены, funding или комиссии. Это сохранение истории, а не compatibility path.
+Existing append-only migrations and immutable historical ledger/snapshot rows are not rewritten:
+they may contain old rows for audit. New code does not create them and does not use them for
+current admission, pricing, funding, or commissions. This is history preservation, not a
+compatibility path.
 
-Физическое удаление старых mutable commerce columns/tables возможно только отдельным поздним
-изменением после доказанного отсутствия readers/writers. Продуктовая семантика удаляется до этого и
-не ждёт schema cleanup.
+Physical removal of old mutable commerce columns/tables is possible only as a separate late change
+after the proven absence of readers/writers. The product semantics are removed before that and do
+not wait for schema cleanup.
 
 ## 7. Zero-downtime rollout
 
-### 7.1. Почему нельзя переключать аккаунты по одному
+### 7.1. Why accounts cannot be switched one by one
 
-Последовательный перевод bindings создаёт смешанное production-состояние и требует canary/ручного
-учёта. Вместо этого вводится immutable pricing release:
+Sequential migration of bindings creates a mixed production state and requires canary/manual
+accounting. Instead, an immutable pricing release is introduced:
 
-- release содержит exact capability/catalog/switch identities;
-- global B2C policy identity;
-- все B2B, OpenKeys и service assignments;
-- funding generation;
-- minimum runtime capability;
-- canonical digest всего manifest.
+- the release contains exact capability/catalog/switch identities;
+- the global B2C policy identity;
+- all B2B, OpenKeys, and service assignments;
+- the funding generation;
+- the minimum runtime capability;
+- a canonical digest of the entire manifest.
 
-Engine хранит prepared releases и один active release head. Подготовка release не меняет traffic.
-Все запросы читают active head и связанные immutable данные в одном PostgreSQL snapshot.
+The engine stores prepared releases and one active release head. Preparing a release does not
+change traffic. All requests read the active head and the associated immutable data in a single
+PostgreSQL snapshot.
 
-### 7.2. Expand и dual-compatible runtime
+### 7.2. Expand and dual-compatible runtime
 
-Сначала отдельными migration-first коммитами добавляются только новые структуры. Затем blue-green
-выкатывается runtime, который:
+First, only the new structures are added in separate migration-first commits. Then a runtime is
+rolled out blue-green that:
 
-- engine migration `crates/registry/migrations_pg/0023_pricing_release_funding_v2.sql` добавляет
-  release/funding authority, request snapshots, deferred aggregate/allocation invariants и nullable
-  v2 lineage старых writer surfaces;
+- engine migration `crates/registry/migrations_pg/0023_pricing_release_funding_v2.sql` adds the
+  release/funding authority, request snapshots, deferred aggregate/allocation invariants, and a
+  nullable v2 lineage of old writer surfaces;
 - engine migration `crates/registry/migrations_pg/0024_pre_cutover_funding_snapshots_v2.sql`
-  добавляет независимый от prepared release immutable funding snapshot для запросов переходного
-  периода. Он разрывает цикл «release assignment требует funding generation, а normalized writer
-  требует allocation snapshot» и не создаёт release head, policy либо новый pricing path;
+  adds an immutable funding snapshot for transitional-period requests, independent of the prepared
+  release. It breaks the cycle "release assignment requires a funding generation, while the
+  normalized writer requires an allocation snapshot" and does not create a release head, policy, or
+  new pricing path;
 - engine migration `crates/registry/migrations_pg/0025_pricing_release_runtime_epoch_fence.sql`
-  добавляет nullable owner-epoch identity для release-v2 claim. До первого head старые binaries
-  остаются совместимыми; после head каждый claim/heartbeat обязан подтвердить v2 runtime и
-  привязать это подтверждение к свежему owner epoch, а не унаследовать его от предыдущего процесса;
+  adds a nullable owner-epoch identity for the release-v2 claim. Before the first head, old binaries
+  remain compatible; after the head, every claim/heartbeat must confirm the v2 runtime and bind
+  that confirmation to a fresh owner epoch rather than inheriting it from the previous process;
 - engine migration `crates/registry/migrations_pg/0026_pricing_release_zero_drain_extensions.sql`
-  оставляет legacy inflight наблюдаемым, но снимает DB-требование traffic drain для passed Stage 8
-  evidence, и добавляет пустую append-only authority для post-cutover assignment extensions;
-- commerce migration `packages/db/migrations/0026_pricing_release_expand.sql` добавляет policy,
-  inventory, target/recovery plan, resumable Stage 6/control job, Stage 8 evidence и activation
+  keeps legacy inflight observable but removes the DB traffic-drain requirement for passed Stage 8
+  evidence, and adds an empty append-only authority for post-cutover assignment extensions;
+- commerce migration `packages/db/migrations/0026_pricing_release_expand.sql` adds the policy,
+  inventory, target/recovery plan, resumable Stage 6/control job, Stage 8 evidence, and activation
   receipt authority;
-- commerce migrations `0027_funding_normalization_blockers.sql` и
-  `0028_pricing_stage5_evidence.sql` добавляют честные nullable blocker plans и immutable Stage 5
-  inventory/prepare evidence; `0029_pricing_release_two_phase_finalize.sql` разрывает цикл между
-  live funding state и release identity: source/policy/assignment plan создаётся первым, funding и
-  engine release identities финализируются позже под DB guards; commerce migration
-  `0030_pricing_stage8_zero_drain.sql` совместимо разрешает passed combined evidence при ненулевом
-  наблюдаемом legacy inflight count; `0031_pricing_activation_evidence_capture.sql` dormant и
-  добавляет nullable-хранение exact source engine evidence, immutable activation request и полного
-  validated receipt для безопасного replay после потери ACK;
-  `0032_pricing_activation_service_evidence.sql` отдельно добавляет nullable service inventory
-  digest, чтобы новый collector связал recovery evidence и first-delivery revalidation с одной
-  exact service authority без backfill старых строк; `0033_pricing_stage8_managed_capture.sql`
-  создаёт пустую durable очередь и append-only raw/combined artifacts для protected Stage 8
-  workflow без SSH/file handoff, но сама не создаёт job, не вызывает engine и не двигает release
-  head; `0035_pricing_shadow_rollout_jobs.sql` добавляет пустые parent/child таблицы для
-  generation-3 shadow alignment OpenKeys-инвентаря. Parent связывает exact prepared target/recovery
-  releases с catalog/switch/inventory manifests, child хранит неизменяемый policy/binding/CAS
-  request и terminal ACK каждого OpenKeys account. Commerce/service lineages выравниваются их
-  managed policy writers, а не этим lane: engine не принимает другой policy identity на
-  существующей lineage, а service `meter_only` не выражается v1 shadow policy. Эта migration не создаёт
-  rollout/job, не активирует legacy policy и не меняет release head. После GREEN exact engine
-  producer SHA отдельный consumer checkpoint подключает полный durable lane: strict contracts и
-  typed client (включая locked-openkeys-transition), `packages/db` staging/lifecycle store,
-  bounded `apps/worker` delivery и AdminGuard staging/read endpoints в `apps/api`
-  (`docs/commerce/MULTI_DISCOUNT_STAGE7.md`). Следующий за schema
-  producer-first checkpoint добавил защищённый read-only
-  `POST /admin/pricing/v2/stage8-evidence/capture`: server присоединяет compile-fixed manifest,
-  bounded PostgreSQL reader возвращает schema-v2 report также при `passed=false`. После GREEN exact
-  producer SHA отдельный commerce checkpoint подключает strict contracts/raw-text client,
-  explicit AdminGuard staging, durable worker и bounded status reader. Worker сохраняет exact raw
-  engine bytes до combined scan, затем атомарно завершает append-only combined artifact и
-  `passed|blocked` job; ни один capture path не создаёт activation job;
-- sales migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` добавляет
-  отдельные immutable usage/commission v2 tables без pricing-mode поля.
+- commerce migrations `0027_funding_normalization_blockers.sql` and
+  `0028_pricing_stage5_evidence.sql` add honest nullable blocker plans and immutable Stage 5
+  inventory/prepare evidence; `0029_pricing_release_two_phase_finalize.sql` breaks the cycle between
+  the live funding state and the release identity: the source/policy/assignment plan is created
+  first, and the funding and engine release identities are finalized later under DB guards;
+  commerce migration `0030_pricing_stage8_zero_drain.sql` compatibly allows passed combined
+  evidence with a nonzero observable legacy inflight count;
+  `0031_pricing_activation_evidence_capture.sql` is dormant and adds nullable storage of the exact
+  source engine evidence, the immutable activation request, and the full validated receipt for safe
+  replay after a lost ACK; `0032_pricing_activation_service_evidence.sql` separately adds a
+  nullable service inventory digest so the new collector binds recovery evidence and
+  first-delivery revalidation to one exact service authority without backfilling old rows;
+  `0033_pricing_stage8_managed_capture.sql` creates an empty durable queue and append-only
+  raw/combined artifacts for the protected Stage 8 workflow without SSH/file handoff, but itself
+  creates no job, does not call the engine, and does not move the release head;
+  `0035_pricing_shadow_rollout_jobs.sql` adds empty parent/child tables for generation-3 shadow
+  alignment of the OpenKeys inventory. The parent binds exact prepared target/recovery releases to
+  catalog/switch/inventory manifests; the child stores the immutable policy/binding/CAS request and
+  the terminal ACK of each OpenKeys account. Commerce/service lineages are aligned by their managed
+  policy writers, not by this lane: the engine does not accept a different policy identity on an
+  existing lineage, and service `meter_only` is not expressible in a v1 shadow policy. This
+  migration creates no rollout/job, activates no legacy policy, and does not change the release
+  head. After a GREEN exact engine producer SHA, a separate consumer checkpoint connects the full
+  durable lane: strict contracts and typed client (including locked-openkeys-transition),
+  `packages/db` staging/lifecycle store, bounded `apps/worker` delivery, and AdminGuard
+  staging/read endpoints in `apps/api` (`docs/commerce/MULTI_DISCOUNT_STAGE7.md`). The next
+  schema-following producer-first checkpoint added the protected read-only
+  `POST /admin/pricing/v2/stage8-evidence/capture`: the server attaches the compile-fixed manifest,
+  and the bounded PostgreSQL reader returns the schema-v2 report even when `passed=false`. After a
+  GREEN exact producer SHA, a separate commerce checkpoint connects strict contracts/raw-text
+  client, explicit AdminGuard staging, durable worker, and bounded status reader. The worker
+  persists the exact raw engine bytes before the combined scan, then atomically completes the
+  append-only combined artifact and the `passed|blocked` job; no capture path creates an activation
+  job;
+- sales migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` adds separate
+  immutable usage/commission v2 tables without a pricing-mode field.
 
-Compile-fixed pricing runtime manifest принимает frozen capability generations 3 и 4, а также
-admitted generation 5. Generation 4 исторически добавила `gemini-3-flash-preview`, но её старый
-public-wire live gate вернул 404 без usage: digest сохраняется для воспроизводимости, а catalog,
-policy и release на generation 4 нельзя materialize или activate. После полного fresh Pro+Ultra
-gate generation 5 повторяет точный reviewed Anthropic/OpenAI/Gemini model set под новым digest.
-Stage 5 materializer использует capability, main catalog и switches generation 5 и policy version
-2; это подготавливает новые immutable identities, но само по себе не двигает release head.
-Внутренний provider ID Gemini в pricing authority — `google`; продуктовые документы продолжают
-называть провайдера Gemini. OpenKeys catalog generation 5 сохраняет явный Anthropic/OpenAI subset.
+The compile-fixed pricing runtime manifest accepts frozen capability generations 3 and 4, as well
+as admitted generation 5. Generation 4 historically added `gemini-3-flash-preview`, but its old
+public-wire live gate returned 404 without usage: the digest is kept for reproducibility, while the
+catalog, policy, and release of generation 4 must not be materialized or activated. After a full
+fresh Pro+Ultra gate, generation 5 repeats the exact reviewed Anthropic/OpenAI/Gemini model set
+under a new digest. The Stage 5 materializer uses the capability, main catalog, and switches of
+generation 5 and policy version 2; this prepares new immutable identities but by itself does not
+move the release head. The internal provider ID of Gemini in the pricing authority is `google`;
+product documents continue to call the provider Gemini. The OpenKeys catalog generation 5 keeps an
+explicit Anthropic/OpenAI subset.
 
-Все три migration surfaces пусты и dormant: наличие таблиц не создаёт policy, release head,
-funding generation или live consumer. Зависимый producer/runtime допускается только после зелёных
-production migration/watchdog exact schema SHA.
+All three migration surfaces are empty and dormant: the presence of the tables creates no policy,
+release head, funding generation, or live consumer. The dependent producer/runtime is allowed only
+after green production migration/watchdog on the exact schema SHA.
 
-Первый зависимый engine producer добавил PostgreSQL-only `/admin/pricing/v2/*` prepare/read:
-immutable policy/release/recovery link, полный cursor inventory и nullable release head. Следующие
-отдельные checkpoints доставили v2 runtime claims, release-v2 reserve/settlement и post-cutover
-assignment extensions, не создавая head. Текущий producer-first checkpoint добавляет единственный
-`POST /admin/pricing/v2/activate`: короткий evidence-gated `SERIALIZABLE` CAS проверяет exact
-target/recovery lineage, inventory/funding/runtime subdigests и owner epochs, затем атомарно пишет
-evidence, audit и одну head row. В этом SHA нет contracts/client/application consumer, поэтому один
-deploy route не активирует data-plane. Typed transport и durable commerce job подключаются только
-после зелёного `deploy/watchdog` exact producer SHA.
+The first dependent engine producer added PostgreSQL-only `/admin/pricing/v2/*` prepare/read:
+immutable policy/release/recovery link, full cursor inventory, and a nullable release head. Later
+separate checkpoints delivered v2 runtime claims, release-v2 reserve/settlement, and post-cutover
+assignment extensions without creating a head. The current producer-first checkpoint adds the
+single `POST /admin/pricing/v2/activate`: a short evidence-gated `SERIALIZABLE` CAS verifies the
+exact target/recovery lineage, inventory/funding/runtime subdigests, and owner epochs, then
+atomically writes the evidence, audit, and one head row. This SHA has no
+contracts/client/application consumer, so a single deploy route does not activate the data-plane.
+Typed transport and the durable commerce job are connected only after a green `deploy/watchdog` on
+the exact producer SHA.
 
-Отдельный pre-cutover writer checkpoint подключает migration 0024 только после её зелёного
-production SHA. Его поведение намеренно account-local:
+A separate pre-cutover writer checkpoint connects migration 0024 only after its green production
+SHA. Its behavior is intentionally account-local:
 
-- reserve берёт request lock, затем funding-account lock, повторно читает head и только после этого
-  блокирует/меняет money rows;
-- пока head отсутствует, legacy aggregate остаётся единственным writer path; после появления head
-  aggregate, active generation, bonus-first lots и immutable allocation меняются одной transaction;
-- top-up/bonus/negative adjust используют тот же funding-account lock и dual-write после head;
-- cancel/settlement завершают сохранённые reserve-time allocations, а charge ledger получает exact
-  `funding_ledger_allocations_v2`, достаточные для будущего `paid_funded_nano` consumer;
-- terminal replay только проверяет snapshot и не повторяет money mutation; monotonic переход head
-  на следующее поколение не инвалидирует уже terminal snapshot;
-- paid overrun ограничен существующим `$1` account floor и может лечь только в последнюю paid
-  allocation. Для bonus-only/zero hold normalized generation содержит zero paid lot, а reserve
-  заранее сохраняет его как zero allocation anchor.
+- reserve takes the request lock, then the funding-account lock, re-reads the head, and only then
+  locks/modifies money rows;
+- while the head is absent, the legacy aggregate remains the only writer path; after the head
+  appears, the aggregate, active generation, bonus-first lots, and immutable allocation change in
+  one transaction;
+- top-up/bonus/negative adjust use the same funding-account lock and dual-write after the head;
+- cancel/settlement complete the reserve-time allocations saved earlier, and the charge ledger
+  receives exact `funding_ledger_allocations_v2` sufficient for a future `paid_funded_nano`
+  consumer;
+- terminal replay only verifies the snapshot and does not repeat the money mutation; a monotonic
+  head transition to the next generation does not invalidate an already terminal snapshot;
+- paid overrun is limited by the existing `$1` account floor and may land only in the last paid
+  allocation. For a bonus-only/zero hold, the normalized generation contains a zero paid lot, and
+  reserve saves it in advance as a zero allocation anchor.
 
-Checkpoint не создаёт release head, не меняет активную цену и ещё не включает release-v2 либо
-`meter_only` data-plane. Эти consumer stages остаются отдельными producer-first релизами.
+The checkpoint does not create a release head, does not change the active price, and does not yet
+enable the release-v2 or `meter_only` data-plane. Those consumer stages remain separate
+producer-first releases.
 
-До запуска full-inventory normalization последующие producer-first checkpoints должны довести
-runtime до полного состояния, которое:
+Before launching full-inventory normalization, subsequent producer-first checkpoints must bring
+the runtime to the full state that:
 
-- продолжает обслуживать текущий active legacy release;
-- умеет читать новый release schema;
-- сохраняет immutable pricing/funding snapshot в каждой новой reservation;
-- dual-writes новые topup/bonus/reserve/settlement данные в aggregate и новые funding lots;
-- поддерживает `meter_only` service settlement;
-- не создаёт новых tier/track records.
+- continues serving the current active legacy release;
+- can read the new release schema;
+- persists an immutable pricing/funding snapshot in every new reservation;
+- dual-writes new topup/bonus/reserve/settlement data to the aggregate and the new funding lots;
+- supports `meter_only` service settlement;
+- does not create new tier/track records.
 
-Новый release остаётся dormant. Поэтому deploy runtime сам по себе не меняет ни цену, ни доступ.
+The new release remains dormant. Therefore the runtime deploy by itself changes neither the price
+nor access.
 
-Release-v2 runtime checkpoint подключает этот dormant schema ко всем трём provider billing paths,
-но не добавляет activation writer. До head admission остаётся на текущем scalar/bridge/strict
-формате. После head новый reserve атомарно фиксирует exact release/policy/rule/tariff и funding
-allocations; старые request IDs сначала replay'ятся в своём исходном формате. Settlement определяет
-формат только по reserve-time snapshot, поэтому legacy и release-v2 outbox rows могут завершаться
-одновременно без drain. Release-v2 balance settlement использует pinned funding generation через
-global release-head cutover; account funding head нельзя продвинуть поверх незавершённых
-allocations. После monotonic funding-head advance допустим exact terminal replay без повторного
-money write. Service `meter_only` сохраняет полный official usage при нулевом customer debit.
-Provider adapter остаётся authority customer debit: это важно для Codex, где upstream может
-сообщить output сверх requested cap, а клиент оплачивает capped output.
+The release-v2 runtime checkpoint connects this dormant schema to all three provider billing paths
+but does not add an activation writer. Before the head, admission stays on the current
+scalar/bridge/strict format. After the head, a new reserve atomically pins the exact
+release/policy/rule/tariff and funding allocations; old request IDs first replay in their original
+format. Settlement determines the format solely from the reserve-time snapshot, so legacy and
+release-v2 outbox rows can complete simultaneously without a drain. Release-v2 balance settlement
+uses the pinned funding generation through the global release-head cutover; an account funding
+head cannot be advanced over unfinished allocations. After the monotonic funding-head advance, an
+exact terminal replay without a repeated money write is allowed. Service `meter_only` persists the
+full official usage with a zero customer debit. The provider adapter remains the authority for the
+customer debit: this matters for Codex, where the upstream may report output beyond the requested
+cap, while the customer pays for the capped output.
 
-До появления global release head точная pricing identity остаётся в существующем immutable
-`pricing_admission_snapshots`, а funding generation/bonus-first allocations — в отдельном
-`funding_reservation_{snapshots,allocations}_v2`. После активации release новые requests используют
-связанные `pricing_request_{snapshots,funding_allocations}_v2`. Оба формата закрепляют reserve-time
-решение и позволяют старому запросу завершиться после cutover; один request не может иметь оба
-funding snapshot одновременно.
+Until the global release head appears, the exact pricing identity stays in the existing immutable
+`pricing_admission_snapshots`, and the funding generation/bonus-first allocations stay in the
+separate `funding_reservation_{snapshots,allocations}_v2`. After release activation, new requests
+use the linked `pricing_request_{snapshots,funding_allocations}_v2`. Both formats pin the
+reserve-time decision and let an old request finish after the cutover; one request cannot have both
+funding snapshots at the same time.
 
-### 7.3. Online backfill без остановки writers
+### 7.3. Online backfill without stopping writers
 
-Backfill идёт аккаунт за аккаунтом короткими транзакциями. Он берёт только account-local lock.
-Запрос этого аккаунта может кратко ждать его транзакцию; остальные аккаунты продолжают работать.
+The backfill proceeds account by account in short transactions. It takes only an account-local
+lock. A request of that account may briefly wait for its transaction; the other accounts keep
+working.
 
-Stage 5 не предвычисляет funding manifest из движущихся `balance/reserved/spent/lots`. Он сохраняет
-immutable target/recovery generations и full assignment skeleton с nullable balance funding.
-Stage 6 после exact full-inventory normalization одной `SERIALIZABLE` confirmation transaction
-фиксирует каждый assignment только `NULL → positive` и canonical funding manifest. Затем engine
-prepare/readback создаёт final target/recovery digests; только это состояние может стать
-`prepared`. Замена finalized identities и mutation assignments после `prepared` запрещены в
-commerce PostgreSQL, а release head всё это время остаётся прежним.
+Stage 5 does not precompute the funding manifest from the moving `balance/reserved/spent/lots`. It
+persists immutable target/recovery generations and a full assignment skeleton with nullable balance
+funding. After exact full-inventory normalization, Stage 6 fixes every assignment only
+`NULL → positive` and the canonical funding manifest in one `SERIALIZABLE` confirmation
+transaction. Then the engine prepare/readback creates the final target/recovery digests; only this
+state may become `prepared`. Replacing finalized identities and mutating assignments after
+`prepared` are forbidden in commerce PostgreSQL, and the release head stays unchanged the whole
+time.
 
-Новые writers используют тот же lock и повторно читают funding generation после ожидания. Поэтому
-они либо полностью проходят по legacy+dual-write пути до backfill, либо полностью по новому пути
-после него; потерянного промежуточного write нет.
+New writers use the same lock and re-read the funding generation after waiting. Therefore they
+either go fully down the legacy+dual-write path before the backfill, or fully down the new path
+after it; there is no lost intermediate write.
 
-Legacy-format reservations и outbox rows естественно завершаются на работающей системе, в том числе
-после head CAS, по своей сохранённой format-aware identity. Новые reservations уже несут
-release/funding snapshot. Stage 8 учитывает оба legacy count, но не ждёт их нуля и не останавливает
-новый traffic.
+Legacy-format reservations and outbox rows naturally complete on the running system, including
+after the head CAS, via their saved format-aware identity. New reservations already carry the
+release/funding snapshot. Stage 8 accounts for both legacy counts but does not wait for them to
+reach zero and does not stop new traffic.
 
-### 7.4. Защита provisioning race
+### 7.4. Provisioning race protection
 
-До первого cutover финальная activation-транзакция под control-plane advisory lock повторно
-инвентаризирует все active accounts и отказывается переключать head, если хотя бы один аккаунт не
-классифицирован. Пока release готовится, новый аккаунт обязан попасть в оба immutable
-target/recovery manifests до выдачи usable key.
+Before the first cutover, the final activation transaction under the control-plane advisory lock
+re-inventories all active accounts and refuses to switch the head if even one account is not
+classified. While the release is being prepared, a new account must land in both immutable
+target/recovery manifests before a usable key is issued.
 
-Пока global head отсутствует, новый account продолжает жить на authoritative legacy scalar, а
-подготовленный versioned policy подтверждается только в `shadow` с `legacy_single` funding.
-`reconciliation_state=verified` сам по себе не повышает policy до `strict`: strict policy и strict
-funding включаются только одной атомарной release-v2 binding. Это не даёт provisioning создать
-недопустимую пару `strict + legacy_single` и застрять в terminal delivery job перед cutover.
+While the global head is absent, a new account keeps living on the authoritative legacy scalar, and
+the prepared versioned policy is confirmed only in `shadow` with `legacy_single` funding.
+`reconciliation_state=verified` by itself does not promote the policy to `strict`: strict policy
+and strict funding are enabled only by one atomic release-v2 binding. This prevents provisioning
+from creating the invalid pair `strict + legacy_single` and getting stuck in the terminal delivery
+job before the cutover.
 
-После появления global head immutable manifests не дописываются. Post-cutover provisioning
-сначала создаёт account без usable key, подготавливает его funding generation (для balance-классов),
-затем атомарно добавляет append-only assignment extension для exact текущих active/recovery
-releases. Extension writer берёт pricing release advisory lock, проверяет exact head, policy,
-active funding head под account funding lock и отсутствие account в base manifests; exact replay
-возвращает `unchanged`. Если release head успел измениться, writer возвращает typed `stale`,
-provisioning перечитывает новую active/recovery pair и повторяет шаг без частичной записи. Только
-после exact GET-readback разрешена выдача/активация ключа.
+After the global head appears, the immutable manifests are not appended to. Post-cutover
+provisioning first creates the account without a usable key, prepares its funding generation (for
+balance classes), then atomically adds an append-only assignment extension for the exact current
+active/recovery releases. The extension writer takes the pricing release advisory lock, verifies
+the exact head, the policy, the active funding head under the account funding lock, and the
+account's absence from the base manifests; an exact replay returns `unchanged`. If the release head
+changed in the meantime, the writer returns a typed `stale`, provisioning re-reads the new
+active/recovery pair and repeats the step without a partial write. Only after an exact GET-readback
+is key issuance/activation allowed.
 
-После зелёного engine producer SHA подключён отдельный consumer checkpoint: `packages/contracts`
-проверяет strict body/readback и одинаковую account/policy/funding-семантику active/recovery pair,
-`packages/engine-client` предоставляет typed prepare/GET, а `packages/db/src/pricing-provisioning-v2.ts`
-ведёт account-local orchestration. При `head=null` он сохраняет pre-cutover path. После появления
-head он принимает только base assignment либо выполняет funding normalization, готовит exact
-release-v2 policy, пишет extension и сверяет полный GET-readback. `apps/api` выполняет эту проверку
-до remote issue и повторно до возврата raw key; ошибка postflight отключает только что выпущенный
-ключ. Наличие consumer не активирует release и не создаёт account заранее: до Stage 9 он dormant.
+After the green engine producer SHA, a separate consumer checkpoint is connected:
+`packages/contracts` verifies the strict body/readback and the identical
+account/policy/funding semantics of the active/recovery pair, `packages/engine-client` provides
+typed prepare/GET, and `packages/db/src/pricing-provisioning-v2.ts` runs the account-local
+orchestration. At `head=null` it keeps the pre-cutover path. After the head appears, it accepts
+only a base assignment or performs funding normalization, prepares the exact release-v2 policy,
+writes the extension, and reconciles the full GET-readback. `apps/api` performs this check before
+remote issue and again before returning the raw key; a postflight error disables the just-issued
+key. The consumer's presence does not activate the release and does not create the account in
+advance: until Stage 9 it is dormant.
 
-Data-plane reserve/settlement этот глобальный lock не берут. На время CAS может на миллисекунды
-подождать только создание/активация аккаунта, но не клиентский traffic.
+Data-plane reserve/settlement does not take this global lock. During the CAS, only account
+creation/activation may wait for milliseconds, but never customer traffic.
 
-### 7.5. Full shadow вместо canary
+### 7.5. Full shadow instead of canary
 
-До cutover новый resolver вычисляется в shadow для 100% поддержанных запросов Anthropic, OpenAI и
-Gemini. Durable pricing provider ID для Gemini — `google`. Shadow ничего не резервирует и не
-списывает второй раз: actual snapshot сохраняется атомарно с единственным legacy reserve, а
-evaluation сравнивает admission, official cost, resolved discount, funding availability и release
-lineage с ожидаемым target.
+Before the cutover, the new resolver is computed in shadow for 100% of supported Anthropic,
+OpenAI, and Gemini requests. The durable pricing provider ID for Gemini is `google`. Shadow
+neither reserves nor debits a second time: the actual snapshot is persisted atomically with the
+single legacy reserve, and evaluation compares admission, official cost, resolved discount, funding
+availability, and release lineage against the expected target.
 
-Canary-account list не создаётся. Stage 8 принимает только полное покрытие инвентаря и отсутствие
-необъяснённых расхождений. Внешние Gemini usage/admission counters — только audit context; без
-реальных Google actual snapshots и shadow evaluations provider coverage не считается выполненным.
-Само наличие Google legacy shadow producer не включает strict Gemini или Stage 9 runtime.
+No canary-account list is created. Stage 8 accepts only full inventory coverage and the absence of
+unexplained discrepancies. External Gemini usage/admission counters are audit context only; without
+real Google actual snapshots and shadow evaluations, provider coverage is not considered complete.
+The mere presence of a Google legacy shadow producer does not enable strict Gemini or the Stage 9
+runtime.
 
-### 7.6. Атомарный массовый cutover
+### 7.6. Atomic mass cutover
 
-Stage 9 выполняет одну короткую `SERIALIZABLE` транзакцию под pricing-release advisory lock:
+Stage 9 executes one short `SERIALIZABLE` transaction under the pricing-release advisory lock:
 
-1. перечитывает exact Stage 8 evidence и prepared release digest; перед первой network delivery
-   consumer заново делает два полных engine/OpenKeys scan вокруг commerce/service snapshot,
-   проверяет ownership/status, B2B/OpenKeys authority и post-cutover extensions/funding;
-2. проверяет minimum runtime capability на обоих blue-green слотах и rollback floor;
-3. проверяет все active accounts/funding generations и format-aware settlement readiness для
-   наблюдаемого legacy inflight;
-4. проверяет отсутствие pending/retry/dead control jobs и policy ACK drift;
-5. CAS-переводит единственный active release head на target generation;
-6. фиксирует operator/reason/time и evidence digests в activation record.
+1. re-reads the exact Stage 8 evidence and the prepared release digest; before the first network
+   delivery the consumer again performs two full engine/OpenKeys scans around the commerce/service
+   snapshot, checking ownership/status, B2B/OpenKeys authority, and post-cutover
+   extensions/funding;
+2. verifies the minimum runtime capability on both blue-green slots and the rollback floor;
+3. verifies all active accounts/funding generations and format-aware settlement readiness for the
+   observable legacy inflight;
+4. verifies the absence of pending/retry/dead control jobs and policy ACK drift;
+5. CAS-switches the single active release head to the target generation;
+6. records the operator/reason/time and evidence digests in the activation record.
 
-Транзакция не изменяет балансы и не обновляет N account rows. После commit следующий reserve любого
-клиента видит новый release. Уже начатый запрос завершается по immutable snapshot, сохранённому при
-его reserve. Поэтому traffic не останавливается и один запрос не смешивает старую цену с новой.
+The transaction does not change balances and does not update N account rows. After the commit, the
+next reserve of any customer sees the new release. An already started request finishes against the
+immutable snapshot saved at its reserve. Therefore traffic is not stopped and one request does not
+mix the old price with the new one.
 
-Activation request сохраняется до сети. Первый delivery требует fresh TTL и mutable-authority
-preflight; после него timeout/crash считается возможным lost ACK, поэтому retry не строит новый
-request и не повторяет изменчивый preflight, а отправляет exact durable body. Applied CAS тогда
-идемпотентно возвращает `unchanged`. Ни один blocker не публикует raw account/owner identity.
+The activation request is persisted before the network. The first delivery requires a fresh TTL and
+a mutable-authority preflight; after it, a timeout/crash is treated as a possible lost ACK, so a
+retry does not build a new request and does not repeat the mutable preflight — it sends the exact
+durable body. An applied CAS then idempotently returns `unchanged`. No blocker publishes raw
+account/owner identity.
 
-### 7.7. Recovery без остановки
+### 7.7. Recovery without downtime
 
-Перед cutover готовится recovery release следующей monotonic generation с v2-compatible
-семантикой предыдущей production-цены. Если post-activation automation обнаруживает системную
-ошибку, она активирует recovery generation тем же single-head CAS. Возврат старого binary, который
-не понимает новый release/funding schema, запрещён.
+Before the cutover, a recovery release of the next monotonic generation is prepared with
+v2-compatible semantics of the previous production price. If post-activation automation detects a
+systemic error, it activates the recovery generation via the same single-head CAS. Rolling back to
+an old binary that does not understand the new release/funding schema is forbidden.
 
-Rollback не удаляет immutable policies, funding lots или snapshots и не откатывает завершённые
-списания. Exact replay activation возвращает `unchanged`.
+Rollback does not delete immutable policies, funding lots, or snapshots and does not revert
+completed charges. An exact replay of activation returns `unchanged`.
 
-## 8. Переразмеченные этапы
+## 8. Re-scoped stages
 
 ### Stage 5 — target materialization
 
-Planner строит B2C 50%, B2B Anthropic migration, canonical OpenKeys 1:1 и service `meter_only`
-assignments. Отдельной ручной assignment matrix нет: authoritative inventories обязаны полностью и
-однозначно покрыть active engine accounts; любой collision/missing owner блокирует apply.
+The planner builds B2C 50%, B2B Anthropic migration, canonical OpenKeys 1:1, and service
+`meter_only` assignments. There is no separate manual assignment matrix: the authoritative
+inventories must fully and unambiguously cover the active engine accounts; any collision/missing
+owner blocks apply.
 
 ### Stage 6 — online funding normalization
 
-Stage 6 становится resumable online-backfill с owner-approved правилом «точный остаток welcome,
-всё остальное paid». Он не требует maintenance window, reviewer artifact или zero reservations.
+Stage 6 becomes a resumable online backfill with the owner-approved rule "exact remainder welcome,
+everything else paid". It requires no maintenance window, reviewer artifact, or zero reservations.
 
 ### Stage 7 — OpenKeys
 
-OpenKeys issuance заранее переходит на canonical 1:1 policy. Existing inventory также готовится к
-1:1 target release; live цена меняется только вместе со всеми аккаунтами на Stage 9.
-Replacement-locked legacy bindings не обходятся generic prepare/activate и не переписываются
-поаккаунтно несколькими вызовами. Отдельный engine producer
-`POST /admin/pricing/policy/{account_id}/locked-openkeys-transition` атомарно вставляет только
-точный следующий managed provider-only 1:1 successor и CAS-переводит exact legacy binding в
-`shadow + legacy_single + verified`. Catalog/switch target уже обязан быть active, identity
-сохраняется, обе версии увеличиваются ровно на один, exact replay возвращает `unchanged`, а
-discount/model/track/retention/commission rules запрещены. Этот pre-Stage-8 шаг не меняет live
-цену, funding authority или global release head; protected commerce rollout подключён после GREEN
-producer SHA как durable shadow-rollout lane (migration 0035): AdminGuard staging endpoint,
-`packages/db` store и bounded `apps/worker` consumer покрывают весь exact Stage 5 inventory,
-включая OpenKeys и service. Протокол — `docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
+OpenKeys issuance moves to the canonical 1:1 policy in advance. The existing inventory is also
+prepared for the 1:1 target release; the live price changes only together with all accounts at
+Stage 9. Replacement-locked legacy bindings are not bypassed via generic prepare/activate and are
+not rewritten account-by-account in multiple calls. A dedicated engine producer
+`POST /admin/pricing/policy/{account_id}/locked-openkeys-transition` atomically inserts only the
+exact next managed provider-only 1:1 successor and CAS-switches the exact legacy binding to
+`shadow + legacy_single + verified`. The catalog/switch target must already be active, the identity
+is preserved, both versions increase by exactly one, an exact replay returns `unchanged`, and
+discount/model/track/retention/commission rules are forbidden. This pre-Stage-8 step does not
+change the live price, funding authority, or global release head; the protected commerce rollout is
+connected after a GREEN producer SHA as a durable shadow-rollout lane (migration 0035): the
+AdminGuard staging endpoint, the `packages/db` store, and the bounded `apps/worker` consumer cover
+the entire exact Stage 5 inventory, including OpenKeys and service. The protocol is
+`docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
 
 ### Stage 8 — full-inventory evidence
 
-Read-only engine evidence и immutable combined commerce evidence связывают exact
-commerce/engine/OpenKeys/service inventories, все policy ACK, funding generation, 100% shadow,
-runtime capability и prepared/recovery release digests. Engine report v2
-принимает exact target/recovery generations и в одном snapshot хеширует текущий engine inventory,
-target funding manifest, shadow evaluation set и live runtime floor. Он требует одинаковую
-funding/runtime lineage у target/recovery, полное assignment-покрытие active и disabled accounts,
-паритет funding heads/lots с aggregate, соответствие каждого shadow result exact target rule и
-наблюдаемые legacy-format inflight counts без требования traffic drain. Commerce consumer
-запускается только из явно staged immutable job с UUID idempotency key, actor/reason и exact
-capture bounds. Он получает engine artifact через единственный typed transport, сохраняет исходные
-raw bytes до любых зависимых чтений, проверяет canonical Rust digest без потери i64, дважды сканирует
-OpenKeys, перечитывает текущие commerce/service identities и semantic target/recovery assignments,
-после чего сохраняет schema-v2 identity на 300 секунд и завершает job/artifact одной транзакцией.
-Legacy-format inflight reservation/outbox остаётся только audit count и больше не добавляется в
-engine blockers; format-aware snapshot остаётся обязательным. Blocked evidence сохраняется с
-`passed=false` и terminal job status `blocked`, а отсутствие local release pair не создаёт строку.
-Uncertain failures используют bounded retry/lease/attempt state machine; protocol conflict и
-последняя попытка fail closed в `dead`. Global claim fence не допускает двух одновременных capture.
-Startup, migration, polling и activation request не stage'ят capture, а capture completion не
-stage'ит activation и не двигает global head.
-Release-v2 assignment/funding authority является единственным cutover proof: legacy shadow binding
-может оставаться `reconciliation_state=pending`, а пустая после Stage 6 таблица `funding_buckets`
-не создаёт второй blocker. Для OpenKeys preflight проверяет canonical 1:1 policy в prepared target
-release; текущие source/engine scalars не меняются заранее и перестают быть pricing authority
-только вместе со всеми клиентами при одном Stage 9 CAS.
-После exact target CAS engine Stage 8 переключает inventory-проверку на immutable base плюс exact
-paired assignment extensions и их live funding parity. Поэтому новый account не делает fresh
-recovery evidence недостижимым после истечения исходного TTL.
-Stage 9 принимает только fresh persisted `passed=true` identity и повторно проверяет authority.
-`sales_contract_digest` фиксирует ожидаемый `paid_funded_nano` contract, но deployed sales runtime
-доказывается отдельным checkpoint. Producer намеренно остаётся blocked, пока все live engine
-instances не
-публикуют release/funding schema v2 claims; этот claim writer доставляется Stage 9 runtime
-checkpoint, а не обходится ослаблением Stage 8.
+Read-only engine evidence and immutable combined commerce evidence bind the exact
+commerce/engine/OpenKeys/service inventories, all policy ACKs, funding generations, 100% shadow,
+runtime capability, and the prepared/recovery release digests. The engine report v2
+accepts exact target/recovery generations and in one snapshot hashes the current engine inventory,
+the target funding manifest, the shadow evaluation set, and the live runtime floor. It requires
+identical funding/runtime lineage of target/recovery, full assignment coverage of active and
+disabled accounts, parity of funding heads/lots with the aggregate, each shadow result matching the
+exact target rule, and observable legacy-format inflight counts without a traffic-drain
+requirement. The commerce consumer starts only from an explicitly staged immutable job with a UUID
+idempotency key, actor/reason, and exact capture bounds. It receives the engine artifact through a
+single typed transport, persists the original raw bytes before any dependent reads, verifies the
+canonical Rust digest without i64 loss, scans OpenKeys twice, re-reads the current commerce/service
+identities and semantic target/recovery assignments, then persists the schema-v2 identity for 300
+seconds and completes the job/artifact in one transaction. Legacy-format inflight reservation/outbox
+remains only an audit count and is no longer added to engine blockers; the format-aware snapshot
+remains mandatory. Blocked evidence is persisted with `passed=false` and terminal job status
+`blocked`, and the absence of a local release pair does not create a row. Uncertain failures use a
+bounded retry/lease/attempt state machine; a protocol conflict and the last attempt fail closed
+into `dead`. The global claim fence does not allow two simultaneous captures. Startup, migration,
+polling, and the activation request do not stage a capture, and capture completion does not stage
+activation and does not move the global head.
+The release-v2 assignment/funding authority is the only cutover proof: a legacy shadow binding may
+remain `reconciliation_state=pending`, and the `funding_buckets` table empty after Stage 6 does not
+create a second blocker. For OpenKeys, preflight verifies the canonical 1:1 policy in the prepared
+target release; the current source/engine scalars are not changed in advance and stop being the
+pricing authority only together with all customers in the single Stage 9 CAS.
+After the exact target CAS, engine Stage 8 switches the inventory check to the immutable base plus
+the exact paired assignment extensions and their live funding parity. Therefore a new account does
+not make fresh recovery evidence unreachable after the original TTL expires.
+Stage 9 accepts only a fresh persisted `passed=true` identity and re-verifies the authority.
+`sales_contract_digest` pins the expected `paid_funded_nano` contract, but the deployed sales
+runtime is proven by a separate checkpoint. The producer intentionally stays blocked until all live
+engine instances publish release/funding schema v2 claims; this claim writer is delivered by the
+Stage 9 runtime checkpoint, not bypassed by weakening Stage 8.
 
 ### Stage 9 — one-head activation
 
-Canary planner удаляется. Единственное apply-действие — CAS active release head для всего
-production inventory. Engine producer уже реализует cutover из absent head, exact lost-ACK replay и
-forward recovery из complete target head. Durable commerce consumer подключён после GREEN schema
-SHA: strict request сохраняется до сети, lost ACK повторяет exact body, complete ACK и canonical
-request/receipt digest коммитятся до `confirmed`, а recovery expectation берётся только из cutover
-receipt. Он не активируется сам: migration, startup, Stage 8 и read-only API не создают job.
-Единственный producer — намеренный authenticated Admin API staging call с canonical evidence
-digest, verified actor и reason; read endpoint сам ничего не stage'ит. Source engine и service
-identities уже сохраняются новым collector checkpoint и legacy `NULL` rows fail closed. Stage 9
-не останавливает сервис и не требует ручной финансовой подписи.
+The canary planner is removed. The only apply action is a CAS of the active release head for the
+entire production inventory. The engine producer already implements cutover from an absent head,
+exact lost-ACK replay, and forward recovery from a complete target head. The durable commerce
+consumer is connected after a GREEN schema SHA: the strict request is persisted before the network,
+a lost ACK repeats the exact body, a complete ACK and the canonical request/receipt digest are
+committed before `confirmed`, and the recovery expectation is taken only from the cutover receipt.
+It does not activate itself: migration, startup, Stage 8, and the read-only API create no job. The
+only producer is an intentional authenticated Admin API staging call with the canonical evidence
+digest, verified actor, and reason; the read endpoint stages nothing by itself. Source engine and
+service identities are already persisted by the new collector checkpoint, and legacy `NULL` rows
+fail closed. Stage 9 does not stop the service and requires no manual financial sign-off.
 
-## 9. Контракты UI и API
+## 9. UI and API contracts
 
-Клиентский B2C pricing view показывает effective discount и источник правила:
+The customer B2C pricing view shows the effective discount and the rule source:
 
 ```text
 global_default | provider_override | model_override
 ```
 
-Он не показывает tier, retention progress или внутренние release digests. B2B видит только свою
-policy. OpenKeys показывает 1:1. Service usage доступен операторам как official cost без balance.
+It does not show the tier, retention progress, or internal release digests. B2B sees only its own
+policy. OpenKeys shows 1:1. Service usage is available to operators as official cost without a
+balance.
 
-Admin pricing editor обязан:
+The admin pricing editor must:
 
-- редактировать global B2C default, provider и model rules;
-- показывать effective preview и приоритет exact model;
-- не предлагать `track`/tier controls;
-- не применять B2C rules к B2B/OpenKeys/service;
-- управлять B2B полной policy;
-- показывать service как all-model `meter_only`;
-- показывать prepared/active/recovery release и Stage 8 freshness.
+- edit the global B2C default, provider, and model rules;
+- show the effective preview and the exact-model priority;
+- not offer `track`/tier controls;
+- not apply B2C rules to B2B/OpenKeys/service;
+- manage the B2B full policy;
+- show service as all-model `meter_only`;
+- show the prepared/active/recovery release and Stage 8 freshness.
 
-Sales feed после expand-only producer-first перехода получает `commission_eligible` независимо от
-pricing mode и exact `paid_funded_nano`. Старые поля могут временно присутствовать для deployed
-consumer, но новый consumer их не использует; удаление — последним контрактным шагом.
+The sales feed, after the expand-only producer-first transition, receives `commission_eligible`
+regardless of pricing mode and the exact `paid_funded_nano`. The old fields may temporarily remain
+for the deployed consumer, but the new consumer does not use them; removal is the last contract
+step.
 
-## 10. Обязательные тесты
+## 10. Mandatory tests
 
 - B2C: global 50%, provider override, model override, model-over-provider precedence.
-- B2B: scalar migration только в `anthropic`; отсутствие B2C inheritance.
-- OpenKeys: existing/new 1:1; любой discount override отклоняется.
-- Service: все runtime models доступны; нулевой баланс не даёт 402; official usage durable.
-- Welcome: новая выдача $5, exact idempotency, старые $4 не увеличиваются, все B2C providers
-  разрешены, bonus-funded usage не комиссионируется.
-- Referral: paid-funded commission сохраняется без pricing-mode eligibility.
+- B2B: scalar migration only into `anthropic`; no B2C inheritance.
+- OpenKeys: existing/new 1:1; any discount override is rejected.
+- Service: all runtime models are available; a zero balance does not produce a 402; official usage
+  is durable.
+- Welcome: new issuance of $5, exact idempotency, old $4 not increased, all B2C providers allowed,
+  bonus-funded usage is not commissioned.
+- Referral: paid-funded commission is preserved without pricing-mode eligibility.
 - Funding backfill: concurrent topup/reserve/settle, account-local lock, exact replay, bucket sums.
-- Pre-cutover writers: real PostgreSQL bonus-first reserve, terminal replay после advance funding
-  generation, cancel/refund, paid overrun, top-up classification, outbox recovery и доказанный
-  lock order без reservation-row lock до funding-account lock.
-- In-flight cutover: reserve до activation и settlement после неё используют один snapshot.
-- Provisioning race: pre-cutover account покрыт target/recovery manifests; post-cutover account
-  получает atomic exact-head active/recovery extension до usable key; replay/stale/conflict и
-  resolver readback доказаны на real PostgreSQL.
+- Pre-cutover writers: real PostgreSQL bonus-first reserve, terminal replay after a funding
+  generation advance, cancel/refund, paid overrun, top-up classification, outbox recovery, and a
+  proven lock order with no reservation-row lock before the funding-account lock.
+- In-flight cutover: a reserve before activation and a settlement after it use one snapshot.
+- Provisioning race: a pre-cutover account is covered by the target/recovery manifests; a
+  post-cutover account gets an atomic exact-head active/recovery extension before a usable key;
+  replay/stale/conflict and resolver readback are proven on real PostgreSQL.
 - Stage 8: 100% inventory/shadow, Gemini, format-aware legacy inflight audit, exact runtime floor.
 - Stage 9: single-head atomicity, no N-account writes, exact replay, stale evidence rejection.
-- Recovery: forward activation recovery generation без старого binary и без traffic stop.
-- Cleanup: active code/API/UI не создают и не читают tier/retention/track semantics.
+- Recovery: forward activation of the recovery generation without an old binary and without a
+  traffic stop.
+- Cleanup: active code/API/UI neither creates nor reads tier/retention/track semantics.
 
 ## 11. Definition of Done
 
-Работа завершена только когда одновременно выполнено следующее:
+The work is complete only when all of the following hold simultaneously:
 
-1. Все expand migrations доставлены раньше зависимого кода.
-2. Ни один новый writer не создаёт прогрессивные pricing records.
-3. Все active accounts однозначно классифицированы B2C/B2B/OpenKeys/service.
-4. Gemini присутствует в main catalog; product-specific OpenKeys enablement задан явно.
-5. B2C global/provider/model resolution соответствует контракту.
-6. B2B мигрирован только в Anthropic rule; OpenKeys target строго 1:1.
-7. Service работает при нулевом балансе и полностью учитывает official usage.
-8. Новый welcome bonus равен $5; referral paid-funded math зелёная.
-9. Online funding backfill завершён без глобальной остановки.
-10. Stage 8 green на полном инвентаре и 100% shadow.
-11. Prepared target и recovery releases exact и поддерживаются текущим runtime floor.
-12. Stage 9 одним CAS переключил весь production inventory; canary не использовался.
-13. Post-activation smoke и monetary invariants зелёные на exact deployed SHA.
-14. Public/admin/customer/sales документы и UI больше не обещают tiers или track-only bonus.
-15. `deploy/watchdog` зелёный на финальном SHA.
+1. All expand migrations are delivered before the dependent code.
+2. No new writer creates progressive pricing records.
+3. All active accounts are unambiguously classified as B2C/B2B/OpenKeys/service.
+4. Gemini is present in the main catalog; product-specific OpenKeys enablement is set explicitly.
+5. B2C global/provider/model resolution matches the contract.
+6. B2B is migrated only into the Anthropic rule; the OpenKeys target is strictly 1:1.
+7. Service works with a zero balance and fully accounts for official usage.
+8. The new welcome bonus equals $5; the referral paid-funded math is green.
+9. The online funding backfill is finished without a global stop.
+10. Stage 8 is green on the full inventory and 100% shadow.
+11. The prepared target and recovery releases are exact and supported by the current runtime floor.
+12. Stage 9 switched the entire production inventory in one CAS; no canary was used.
+13. Post-activation smoke and monetary invariants are green on the exact deployed SHA.
+14. Public/admin/customer/sales documents and UI no longer promise tiers or a track-only bonus.
+15. `deploy/watchdog` is green on the final SHA.
 
-Production mutation не должна выполняться из исследовательской или документационной задачи.
-Применение Stage 6/8/9 выполняется только после реализации, тестов и штатной доставки каждого
-expand-only producer step.
+Production mutation must not be performed from a research or documentation task. Applying Stage
+6/8/9 happens only after the implementation, tests, and standard delivery of each expand-only
+producer step.

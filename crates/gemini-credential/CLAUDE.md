@@ -1,23 +1,23 @@
-# `gemini-credential` — локальный контракт
+# `gemini-credential` — local contract
 
-Этот крейт владеет только форматом и проверкой зашифрованных Gemini OAuth-конвертов, pending
-secret-конвертов и канонизацией прокси. Здесь нет HTTP, внешней сети, env, БД, roster-I/O или
-логики Auth Bot/runtime; производитель и потребители передают готовые значения.
+This crate owns only the format and verification of encrypted Gemini OAuth envelopes, pending
+secret envelopes, and proxy canonicalization. There is no HTTP, external network, env, DB, roster I/O or
+Auth Bot/runtime logic here; the producer and consumers pass in ready-made values.
 
-Критические инварианты:
+Critical invariants:
 
-1. Google identity, email, project, OAuth material и authenticated proxy существуют только внутри
-   XChaCha20-Poly1305 envelope. `Debug`, ошибки и тестовые snapshots не раскрывают plaintext.
-2. Version, `kid`, profile/context id в AAD, pinned OAuth identity/token endpoint, bounded fields,
-   key rotation и zeroization остаются fail-closed. Изменение wire-формата требует явной версии.
-3. План принимается только по reviewed tier evidence. Точный известный tier ID — authority и
-   переживает изменение display name; точное известное имя другого плана конфликтует и отклоняется.
-   Неизвестный ID или знакомая подстрока (`Pro`, `Ultra`) сами по себе доступ не дают; exact
-   standalone name остаётся legacy evidence для уже совместимых sealed credentials.
-4. Прокси канонизируется обратимо: percent-encoded userinfo декодируется один раз и кодируется в
-   unreserved-набор. Нельзя логировать, возвращать в ошибке или ослаблять проверку origin/path.
-5. Файловую атомарность, permissions, symlink/path guards и roster publication реализуют владельцы
-   I/O (`authbot`/runtime); этот крейт предоставляет чистые encode/decode/validate primitives.
+1. Google identity, email, project, OAuth material and the authenticated proxy exist only inside an
+   XChaCha20-Poly1305 envelope. `Debug`, errors and test snapshots must not reveal plaintext.
+2. Version, `kid`, profile/context id in AAD, pinned OAuth identity/token endpoint, bounded fields,
+   key rotation and zeroization remain fail-closed. Changing the wire format requires an explicit version.
+3. A plan is accepted only on reviewed tier evidence. An exact known tier ID is authoritative and
+   survives a display-name change; an exact known name of a different plan conflicts and is rejected.
+   An unknown ID or a familiar substring (`Pro`, `Ultra`) alone grants no access; an exact
+   standalone name remains legacy evidence for already-compatible sealed credentials.
+4. The proxy is canonicalized reversibly: percent-encoded userinfo is decoded once and encoded into
+   the unreserved set. Never log it, return it in an error, or weaken the origin/path check.
+5. File atomicity, permissions, symlink/path guards and roster publication are implemented by the I/O
+   owners (`authbot`/runtime); this crate provides pure encode/decode/validate primitives.
 
-Проверка: `cargo test -p gemini-credential`. При изменении plan/tier validation обязательно также
-запустить `cargo test -p authbot`, потому что Auth Bot использует этот allowlist до публикации.
+Verification: `cargo test -p gemini-credential`. When plan/tier validation changes, you must also
+run `cargo test -p authbot`, because Auth Bot uses this allowlist before publication.

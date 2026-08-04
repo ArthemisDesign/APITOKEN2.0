@@ -1,126 +1,126 @@
-# Интеграция платежей Platega
+# Platega payments integration
 
-Platega — дефолтный платёжный провайдер коммерческого контура. Клиентский фронт
-(`apps/web/src/lib/api.ts`) шлёт только `provider: "platega"`, а в `createCheckoutSchema`
-(`packages/contracts/src/index.ts`) поле `provider` имеет `default("platega")`.
+Platega is the default payment provider of the commerce perimeter. The client frontend
+(`apps/web/src/lib/api.ts`) sends only `provider: "platega"`, and in `createCheckoutSchema`
+(`packages/contracts/src/index.ts`) the `provider` field has `default("platega")`.
 
-Адаптер — `packages/payments/src/platega.ts` (`PlategaProvider`), подключение и env —
-`apps/api/src/payments.module.ts`, вебхук — `apps/api/src/payments.controller.ts`,
-обработка — `apps/api/src/checkout.service.ts`, safety-net — `apps/worker/src/platega-reconcile.service.ts`.
+Adapter — `packages/payments/src/platega.ts` (`PlategaProvider`), wiring and env —
+`apps/api/src/payments.module.ts`, webhook — `apps/api/src/payments.controller.ts`,
+processing — `apps/api/src/checkout.service.ts`, safety net — `apps/worker/src/platega-reconcile.service.ts`.
 
-## Выбранный флоу
+## Selected flow
 
-Platega принимает оплату в RUB (СБП / ERIP / карта) и в USD (крипта). Баланс клиента
-тарифицируется в целых USD, поэтому конвертация USD → RUB нужна только чтобы решить,
-сколько взыскать с покупателя. Кредит движка — всегда записанный в чекауте USD
-(инвариант на уровне БД), никогда не фактически оплаченные рубли.
+Platega accepts payment in RUB (SBP / ERIP / card) and in USD (crypto). The client's balance
+is metered in whole USD, so USD → RUB conversion is needed only to decide
+how much to charge the buyer. The engine credit is always the USD recorded in the checkout
+(a database-level invariant), never the actually paid rubles.
 
 ```text
-аутентифицированный клиент шлёт целые USD-цифры, например "37"
+an authenticated client sends whole-USD digits, e.g. "37"
   → POST /v1/checkouts {"amountUsd":"37","provider":"platega","paymentMethod":2}
-  → коммерческий API сохраняет чекаут: пользователь, 37 USD (bigint)
-  → адаптер конвертирует USD → RUB по курсу Rapira USDT/RUB + маржа
-     (для крипто-метода 13 — взыскание сразу в USD)
+  → the commerce API stores the checkout: user, 37 USD (bigint)
+  → the adapter converts USD → RUB at the Rapira USDT/RUB rate + margin
+     (for crypto method 13 — charged directly in USD)
   → Platega POST /transaction/process, payload = checkoutId (UUID)
-  → браузер редиректится на возвращённый pay-URL Platega
-  → Platega POSTит смену статуса на
+  → the browser is redirected to the returned Platega pay URL
+  → Platega POSTs the status change to
      https://backend.apitoken.sale/v1/payments/platega/webhook
-  → бэкенд проверяет заголовки X-Secret / X-MerchantId
-  → бэкенд независимо перепроверяет транзакцию через GET /transaction/{id}
-  → бэкенд сверяет checkoutId из payload с локальным чекаутом
-  → оплаченный платёж и одна задача engine-credit сохраняются атомарно
+  → the backend verifies the X-Secret / X-MerchantId headers
+  → the backend independently re-verifies the transaction via GET /transaction/{id}
+  → the backend cross-checks the checkoutId from the payload against the local checkout
+  → the paid payment and one engine-credit job are stored atomically
 ```
 
-## Создание чекаута
+## Checkout creation
 
-Эндпоинт: `POST /v1/checkouts` под серверной сессией. Тело валидируется
+Endpoint: `POST /v1/checkouts` under a server session. The body is validated by
 `createCheckoutSchema` (`packages/contracts/src/index.ts`):
 
-- `amountUsd` — `wholeUsdSchema`: только цифры положительных целых USD
-  (JSON-числа, десятичная точка, знаки и ведущие нули отклоняются);
-- `provider` — `z.enum(["cryptomus", "platega"])`, по умолчанию `"platega"`;
-- `paymentMethod` — необязательный id метода Platega (2 СБП, 3 ERIP, 11 карта,
-  12 international, 13 крипта); другие провайдеры игнорируют поле.
+- `amountUsd` — `wholeUsdSchema`: only digits of positive whole USD
+  (JSON numbers, decimal points, signs, and leading zeros are rejected);
+- `provider` — `z.enum(["cryptomus", "platega"])`, defaults to `"platega"`;
+- `paymentMethod` — optional Platega method id (2 SBP, 3 ERIP, 11 card,
+  12 international, 13 crypto); other providers ignore the field.
 
-Лимиты `MIN_TOPUP_USD` / `MAX_TOPUP_USD` проверяет `CheckoutService.create`
-до обращения к провайдеру. Если `paymentMethod` не передан, адаптер берёт
-`PLATEGA_DEFAULT_PAYMENT_METHOD` (по умолчанию 2 — СБП). В `apps/web` на проде
-доступны только реально включённые на нашем мерчанте методы (СБП + крипта).
+The `MIN_TOPUP_USD` / `MAX_TOPUP_USD` limits are checked by `CheckoutService.create`
+before calling the provider. If `paymentMethod` is not passed, the adapter uses
+`PLATEGA_DEFAULT_PAYMENT_METHOD` (defaults to 2 — SBP). In `apps/web` in production,
+only the methods actually enabled on our merchant account are available (SBP + crypto).
 
-Адаптер вызывает `POST {PLATEGA_API_BASE_URL}/transaction/process` с заголовками
-`X-MerchantId` / `X-Secret` и телом: `paymentMethod`, `paymentDetails` (сумма и валюта
-взыскания), `description`, `return`/`failedUrl` (страницы `/dashboard?view=credits`
-с `paymentReturn=success|cancel` и `checkoutId`), `payload = checkoutId`. Ответ даёт
-`transactionId` (становится `providerPaymentId` чекаута) и `redirect` (URL оплаты).
-`expiresIn` приходит как длительность `"HH:MM:SS"` от момента создания и переводится
-в абсолютный `expiresAt`.
+The adapter calls `POST {PLATEGA_API_BASE_URL}/transaction/process` with
+`X-MerchantId` / `X-Secret` headers and a body containing: `paymentMethod`, `paymentDetails` (charge
+amount and currency), `description`, `return`/`failedUrl` (the `/dashboard?view=credits` pages
+with `paymentReturn=success|cancel` and `checkoutId`), `payload = checkoutId`. The response provides
+`transactionId` (becomes the checkout's `providerPaymentId`) and `redirect` (payment URL).
+`expiresIn` arrives as a `"HH:MM:SS"` duration from the moment of creation and is converted
+into an absolute `expiresAt`.
 
-## Конвертация USD → RUB
+## USD → RUB conversion
 
-Для всех методов, кроме `usdMethods` (по умолчанию `[13]` — крипта), сумма взыскания
-считается по публичному курсу Rapira (`PLATEGA_RATE_URL`,
-`https://api.rapira.net/open/market/rates`): берётся `askPrice` (fallback — `close`)
-пары USDT/RUB, сверху добавляется `PLATEGA_FX_MARGIN_BPS` (базисные пункты, 0–5000,
-покрывает комиссию Platega и дрейф курса), результат округляется вверх до целого RUB.
-Крипто-метод тарифицируется сразу в USD, чтобы покупатель видел доллары. В обоих
-случаях кредит движка — записанный в чекауте целый USD.
+For all methods except `usdMethods` (defaults to `[13]` — crypto), the charge amount
+is computed from the public Rapira rate (`PLATEGA_RATE_URL`,
+`https://api.rapira.net/open/market/rates`): the `askPrice` (fallback — `close`)
+of the USDT/RUB pair is taken, `PLATEGA_FX_MARGIN_BPS` (basis points, 0–5000,
+covering the Platega fee and rate drift) is added on top, and the result is rounded up
+to a whole RUB. The crypto method is metered directly in USD so the buyer sees
+dollars. In both cases the engine credit is the whole USD recorded in the checkout.
 
-## Вебхук и его авторизация
+## Webhook and its authorization
 
-`POST /v1/payments/platega/webhook` — публичный маршрут, исключённый из origin-гарда
-(`apps/api/src/origin.guard.ts`). Авторизация — только заголовками: `X-Secret` и
-`X-MerchantId` (в NestJS нормализуется в `x-merchantid`, без дефиса) сравниваются
-в константном времени с `PLATEGA_SECRET` и `PLATEGA_MERCHANT_ID`; HMAC-подписи у
-Platega нет. Невалидные заголовки — `PlategaWebhookAuthError` → 401, до любой
-другой работы. Если обе переменные не заданы, обработчик отвечает как для
-несконфигурированного провайдера.
+`POST /v1/payments/platega/webhook` is a public route excluded from the origin guard
+(`apps/api/src/origin.guard.ts`). Authorization is header-only: `X-Secret` and
+`X-MerchantId` (normalized in NestJS to `x-merchantid`, without the hyphen) are compared
+in constant time against `PLATEGA_SECRET` and `PLATEGA_MERCHANT_ID`; Platega has no
+HMAC signature. Invalid headers — `PlategaWebhookAuthError` → 401, before any
+other work. If both variables are unset, the handler responds as for an
+unconfigured provider.
 
-Тело колбека (`id`, `amount`, `currency`, `status`, `paymentMethod`, `payload`)
-валидируется zod-схемой, но сам колбек — только сигнал пробуждения: начисление требует
-независимого `GET /transaction/{id}`. Дальше `processPlategaWebhook` проверяет:
+The callback body (`id`, `amount`, `currency`, `status`, `paymentMethod`, `payload`)
+is validated by a zod schema, but the callback itself is only a wake-up signal: crediting requires
+an independent `GET /transaction/{id}`. Then `processPlategaWebhook` checks:
 
-- `id` транзакции из колбека совпадает с перепроверенным;
-- `payload` (checkoutId) присутствует и совпадает с чекаутом, найденным по
-  `providerPaymentId` в локальной БД.
+- the transaction `id` from the callback matches the re-verified one;
+- the `payload` (checkoutId) is present and matches the checkout found by
+  `providerPaymentId` in the local database.
 
-Сумма берётся из локального чекаута (`checkout.amountUsd`), а не из тела колбека и не
-из ответа Platega. Идентичность события — `{id}:{STATUS}` (статус в верхнем регистре);
-дедупликация по `webhook_events` в `applyVerifiedCheckoutPaymentEvent` (`packages/db`)
-делает повторную доставку идемпотентной.
+The amount is taken from the local checkout (`checkout.amountUsd`), not from the callback body and not
+from the Platega response. Event identity is `{id}:{STATUS}` (status in uppercase);
+deduplication via `webhook_events` in `applyVerifiedCheckoutPaymentEvent` (`packages/db`)
+makes repeat delivery idempotent.
 
-Callback-URL собирается из `PUBLIC_API_BASE_URL` (`/v1/payments/platega/webhook`) и
-передаётся в конструктор адаптера, но в запросах к Platega API адаптер его не шлёт:
-адрес вебхука должен быть настроен в кабинете мерчанта Platega.
+The callback URL is built from `PUBLIC_API_BASE_URL` (`/v1/payments/platega/webhook`) and
+passed to the adapter constructor, but the adapter does not send it in requests to the Platega API:
+the webhook address must be configured in the Platega merchant dashboard.
 
-## Политика статусов
+## Status policy
 
-| Статус Platega | Нормализованное состояние | Действие по кредиту |
+| Platega status | Normalized state | Credit action |
 |---|---|---|
-| `CONFIRMED` | paid | допустим после всех локальных проверок |
-| `PENDING` и прочие | pending | нет |
-| `CANCELED`, `CANCELLED` | canceled | нет |
-| `CHARGEBACKED` | refunded | никогда не добавлять положительный кредит |
+| `CONFIRMED` | paid | allowed after all local checks |
+| `PENDING` and others | pending | none |
+| `CANCELED`, `CANCELLED` | canceled | none |
+| `CHARGEBACKED` | refunded | never add a positive credit |
 
-## Reconcile-поллинг в worker
+## Reconcile polling in the worker
 
-`apps/worker/src/platega-reconcile.service.ts` — страховка на случай недоставленного
-вебхука. Поллер стартует только при заданных `PLATEGA_MERCHANT_ID` и `PLATEGA_SECRET`
-и циклом `PLATEGA_RECONCILE_MS` (по умолчанию 30 с, минимум 5 с) выбирает
-pending-чекауты Platega батчами по 50: не моложе `PLATEGA_RECONCILE_MIN_AGE_S`
-(по умолчанию 15 с) и не старше 2 суток. Каждый чекаут перепроверяется через
-`verifyPayment`; статус `pending` пропускается, расхождение `payload` с чекаутом
-логируется и пропускается, остальное применяется тем же
-`applyVerifiedCheckoutPaymentEvent`. Двойное начисление невозможно: идентификатор
-события `id:STATUS` дедуплицируется по `webhook_events` совместно с вебхуком.
+`apps/worker/src/platega-reconcile.service.ts` is the safety net for an undelivered
+webhook. The poller starts only when `PLATEGA_MERCHANT_ID` and `PLATEGA_SECRET` are set,
+and on a `PLATEGA_RECONCILE_MS` cycle (defaults to 30 s, minimum 5 s) selects
+pending Platega checkouts in batches of 50: no younger than `PLATEGA_RECONCILE_MIN_AGE_S`
+(defaults to 15 s) and no older than 2 days. Each checkout is re-verified via
+`verifyPayment`; the `pending` status is skipped, a `payload` mismatch with the checkout
+is logged and skipped, and everything else is applied via the same
+`applyVerifiedCheckoutPaymentEvent`. Double crediting is impossible: the
+`id:STATUS` event identifier is deduplicated via `webhook_events` together with the webhook.
 
-## Конфигурация
+## Configuration
 
 ```text
 PUBLIC_API_BASE_URL=https://backend.apitoken.sale
-PLATEGA_MERCHANT_ID=<merchant UUID из кабинета Platega>
-PLATEGA_SECRET=<X-Secret из кабинета Platega>
-PLATEGA_FX_MARGIN_BPS=0            # маржа в bps поверх курса Rapira (0–5000)
-PLATEGA_DEFAULT_PAYMENT_METHOD=2   # метод по умолчанию: 2 СБП
+PLATEGA_MERCHANT_ID=<merchant UUID from the Platega dashboard>
+PLATEGA_SECRET=<X-Secret from the Platega dashboard>
+PLATEGA_FX_MARGIN_BPS=0            # margin in bps on top of the Rapira rate (0–5000)
+PLATEGA_DEFAULT_PAYMENT_METHOD=2   # default method: 2 SBP
 PLATEGA_RATE_URL=https://api.rapira.net/open/market/rates
 # worker:
 PLATEGA_API_BASE_URL=https://app.platega.io
@@ -128,21 +128,21 @@ PLATEGA_RECONCILE_MS=30000
 PLATEGA_RECONCILE_MIN_AGE_S=15
 ```
 
-`PLATEGA_MERCHANT_ID` и `PLATEGA_SECRET` задаются только вместе: ровно одна из двух —
-ошибка конфигурации (`apps/api/src/config.ts`). Без пары адаптер не регистрируется,
-создание чекаутов Platega отвечает 503, а reconcile-поллер молча выключен.
-Секреты — только в окружении деплоя, никогда в репозитории или браузере.
+`PLATEGA_MERCHANT_ID` and `PLATEGA_SECRET` must be set only together: exactly one of the two is
+a configuration error (`apps/api/src/config.ts`). Without the pair the adapter is not registered,
+Platega checkout creation responds with 503, and the reconcile poller is silently disabled.
+Secrets belong only in the deployment environment, never in the repository or the browser.
 
-## Реализованный HTTP-контракт
+## Implemented HTTP contract
 
 ```text
 POST /v1/checkouts                    {"amountUsd":"37","provider":"platega","paymentMethod":2}
 GET  /v1/checkouts/{checkout UUID}
-POST /v1/payments/platega/webhook     raw JSON Platega + заголовки X-Secret / X-MerchantId
+POST /v1/payments/platega/webhook     raw Platega JSON + X-Secret / X-MerchantId headers
 ```
 
-Создание и статус чекаута требуют валидной серверной сессии; идентичность
-пользователя никогда не принимается из тела, URL или кастомного заголовка. Обработка
-вебхука публична, авторизована заголовками, независимо перепроверена через
-`GET /transaction/{id}`, сверена с локальным чекаутом и идемпотентна. Оплаченный
-чекаут ставит в очередь ровно `amountUsd * 1_000_000_000` nanoUSD.
+Checkout creation and status require a valid server session; user
+identity is never accepted from the body, URL, or a custom header. Webhook
+processing is public, header-authorized, independently re-verified via
+`GET /transaction/{id}`, cross-checked against the local checkout, and idempotent. A paid
+checkout enqueues exactly `amountUsd * 1_000_000_000` nanoUSD.

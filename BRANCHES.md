@@ -1,85 +1,87 @@
-# Модель веток claude-api
+# claude-api branch model
 
-**Trunk + ветка-владелец на компонент.** `master` интегрирует всё и всегда собирается; у каждого
-компонента — своя долгоживущая ветка, где идёт сфокусированная работа над ним. Так и человек, и
-нейросеть сразу видят, «где что делается».
+**Trunk + one owner branch per component.** `master` integrates everything and always builds; each
+component has its own long-lived branch where focused work on it happens. This way both a human and
+a neural network can immediately see "where what is being done".
 
-## Ветки
+## Branches
 
-| Ветка | Владеет | Назначение | Куда мёржится |
+| Branch | Owns | Purpose | Merged into |
 |---|---|---|---|
-| `master` | — | Интеграция и production trigger. Всегда зелёная (`cargo build`). Изменения попадают только через `deploy/agent-merge.sh`; прямых коммитов нет. | — |
-| `comp/registry` | `crates/registry` | Реестр подписок (БД, схема, CRUD, миграции). | `master` |
-| `comp/pool` | `crates/pool` | Пул и ротация (выбор, cooling, состояние лимитов). | `master` |
-| `comp/forward` | `crates/forward` | Форвардинг /v1/*, инжект identity, поллер, стрим. | `master` |
-| `comp/server` | `crates/server` | Композиция: env-конфиг, CLI, роутер, фоновые циклы. | `master` |
-| `comp/authbot` | `crates/authbot` | Пополнение пула: Telegram-бот покупки Claude/ChatGPT-подписок. | `master` |
+| `master` | — | Integration and production trigger. Always green (`cargo build`). Changes land only via `deploy/agent-merge.sh`; no direct commits. | — |
+| `comp/registry` | `crates/registry` | Subscription registry (DB, schema, CRUD, migrations). | `master` |
+| `comp/pool` | `crates/pool` | Pool and rotation (selection, cooling, limits state). | `master` |
+| `comp/forward` | `crates/forward` | Forwarding /v1/*, identity injection, poller, stream. | `master` |
+| `comp/server` | `crates/server` | Composition: env config, CLI, router, background loops. | `master` |
+| `comp/authbot` | `crates/authbot` | Pool replenishment: Telegram bot for purchasing Claude/ChatGPT subscriptions. | `master` |
 
-На каждой `comp/*`-ветке лежит **`BRANCH.md`** — что она делает, границы, как собрать/проверить.
-Checkout ветки → сразу видно её назначение.
+Each `comp/*` branch carries a **`BRANCH.md`** — what it does, its boundaries, how to build/verify.
+Check out the branch → its purpose is immediately visible.
 
-## Правила
+## Rules
 
-1. **Изменение компонента → task-ветка от `origin/master`** в отдельном worktree (канон
-   процесса — корневой `AGENTS.md`). `comp/*` — долгоживущие ветки-владельцы для накопительной
-   работы над компонентом; их синхронизация с `master` — отдельная операция вне типового цикла.
-   Ветку берут в **отдельный управляемый worktree** (`deploy/agent-worktree.sh create`), а не
-   переключением текущего каталога: в одном каталоге может работать другой агент, а сырой
-   `git worktree add` не оставляет lifecycle-метаданных для безопасной аварийной уборки.
-2. **Границы крейта соблюдаются** (см. корневой `CLAUDE.md` и `crates/<x>/CLAUDE.md`). Ветка
-   `comp/pool` не должна тащить сеть; `comp/forward` — не читать env; и т.д.
-3. **`master` = production trigger.** Мёрж только через `deploy/agent-merge.sh` и только когда
-   изменение полностью готово к production. До gate скрипт отклоняет красный target и ребейзит
-   ветку на последний закоммиченный `master`, затем параллельно запускает fail-closed локальный
-   path-aware gate и trusted host-validation точного feature SHA, переиспользуя credential из
-   `git credential` и не перекладывая токен/доказательство на человека. Локальные shell/whitespace
-   проверки выполняются всегда; language/deployment lanes выбираются по diff, а неизвестный путь
-   или изменение gate включает их все. Обычный TypeScript diff проверяется по dependency-aware
-   workspace closure; shared inputs и удаления включают полный workspace, а Next.js cache
-   переиспользуется между кандидатами. Pending target может перекрываться с этими
-   проверками, но push разрешён только после зелёной повторной проверки под lock. Оба результата
-   действуют только для неизменившегося SHA. Скрипт сериализует мёржи машинным локом, поэтому два
-   production-кандидата никогда не деплоятся друг поверх друга. Тот же замороженный host-кандидат
-   переиспользуется после push в `master`; затем watchdog выполняет migration-before-app и
-   blue-green deploy, а итог виден в `deploy/watchdog`.
-4. **Кросс-компонентная задача** (например, поменяли контракт `Sub` в registry и его потребителей):
-   разбей по владельцам последовательными мёржами ИЛИ веди одной task-веткой от `origin/master`
-   с явным описанием в коммите. Прямые коммиты в `master` запрещены — мёрж только через
-   `deploy/agent-merge.sh`.
-5. **Синхронизация:** перед работой `git fetch`. Ветки синхронизирует человек; агент не вливает
-   `master` в свою ветку сам — `deploy/agent-merge.sh` ребейзит его ветку в момент мёржа.
-6. **Миграция сначала:** новый append-only expand migration добавляется до зависящего от неё кода;
-   историю миграций не редактировать. Полный contributor/AI workflow — `CONTRIBUTING.md`.
+1. **A change to a component → a task branch off `origin/master`** in a separate worktree (the
+   process canon — the root `AGENTS.md`). `comp/*` are long-lived owner branches for cumulative
+   work on a component; synchronizing them with `master` is a separate operation outside the
+   typical cycle. Take the branch into a **separate managed worktree** (`deploy/agent-worktree.sh
+   create`), not by switching the current directory: another agent may be working in the same
+   directory, and a raw `git worktree add` leaves no lifecycle metadata for safe emergency cleanup.
+2. **Crate boundaries are respected** (see the root `CLAUDE.md` and `crates/<x>/CLAUDE.md`). The
+   `comp/pool` branch must not pull in networking; `comp/forward` must not read env; and so on.
+3. **`master` = production trigger.** Merge only via `deploy/agent-merge.sh` and only when the
+   change is fully production-ready. Before the gate, the script rejects a red target and rebases
+   the branch onto the latest committed `master`, then runs in parallel a fail-closed local
+   path-aware gate and trusted host-validation of the exact feature SHA, reusing the credential
+   from `git credential` and never offloading the token/proof onto a human. Local shell/whitespace
+   checks always run; language/deployment lanes are selected by the diff, and an unknown path or a
+   change to the gate enables them all. An ordinary TypeScript diff is verified over the
+   dependency-aware workspace closure; shared inputs and deletions enable the full workspace, and
+   the Next.js cache is reused between candidates. A pending target may overlap with these checks,
+   but push is allowed only after a green re-verification under the lock. Both results are valid
+   only for the unchanged SHA. The script serializes merges with a machine lock, so two production
+   candidates never deploy on top of each other. The same frozen host candidate is reused after the
+   push to `master`; the watchdog then performs the migration-before-app and blue-green deploy, and
+   the outcome is visible in `deploy/watchdog`.
+4. **A cross-component task** (for example, you changed the `Sub` contract in registry and its
+   consumers): split it by owners with sequential merges OR drive it on a single task branch off
+   `origin/master` with an explicit description in the commit. Direct commits to `master` are
+   forbidden — merge only via `deploy/agent-merge.sh`.
+5. **Synchronization:** `git fetch` before starting work. Branches are synchronized by a human; an
+   agent does not merge `master` into its own branch itself — `deploy/agent-merge.sh` rebases its
+   branch at merge time.
+6. **Migration first:** a new append-only expand migration is added before the code that depends on
+   it; never edit migration history. Full contributor/AI workflow — `CONTRIBUTING.md`.
 
-## Типовой цикл
+## Typical cycle
 
-Ветка не изолирует — изолирует worktree. Над репозиторием параллельно работает несколько агентов,
-поэтому переключение веток в общем каталоге запрещено: оно переписывает файлы под соседом и
-переносит его незакоммиченные правки на твою ветку.
+A branch does not isolate — a worktree isolates. Several agents work on the repository in parallel,
+so switching branches in a shared directory is forbidden: it rewrites files underneath your
+neighbor and carries their uncommitted changes onto your branch.
 
 ```bash
 worktree=$(./deploy/agent-worktree.sh create feat/forward-<task> forward-<task>)
-cd "$worktree"                      # дальше работаем только здесь
-# … правки строго в crates/forward …
-cargo build                          # зелёно
-git add crates/forward               # только свои пути, никогда git add -A
-git commit                           # Conventional-заголовок + подробный body (см. AGENTS.md)
+cd "$worktree"                      # work only here from now on
+# … edits strictly in crates/forward …
+cargo build                          # green
+git add crates/forward               # only your own paths, never git add -A
+git commit                           # Conventional header + detailed body (see AGENTS.md)
 git push -u origin HEAD
-./deploy/agent-merge.sh              # сериализованный мёрж в master; вручную — нельзя
+./deploy/agent-merge.sh              # serialized merge into master; never manually
 ```
 
-Закончил задачу — после зелёного `deploy/watchdog` агент из основного клона запускает
-`deploy/agent-worktree.sh finish <путь>`. Скрипт сам проверяет clean+merged, делает допустимый
-ff-only локального `master` и убирает только выбранные worktree/ветку. Чужие worktree не трогать:
-для глобального состояния используются безопасный `doctor` и dry-run `gc`, а `gc --apply` оставлен
-оператору или плановому maintenance-процессу. На macOS пропущенную уборку может безопасно
-подхватить постоянный LaunchAgent `DELETE_WORKTREE` (`docs/ops/DELETE_WORKTREE.md`).
+Task finished — after a green `deploy/watchdog`, the agent runs `deploy/agent-worktree.sh finish
+<path>` from the primary clone. The script itself verifies clean+merged, performs the permissible
+ff-only fast-forward of the local `master`, and removes only the selected worktree/branch. Never
+touch other agents' worktrees: for global state use the safe `doctor` and dry-run `gc`, while
+`gc --apply` is left to the operator or the scheduled maintenance process. On macOS, missed cleanup
+can be safely picked up by the permanent LaunchAgent `DELETE_WORKTREE`
+(`docs/ops/DELETE_WORKTREE.md`).
 
-## Создание веток (первичная настройка)
+## Creating the branches (initial setup)
 
 ```bash
 for c in registry pool forward server authbot; do
-  git branch comp/$c master         # ответвить от master
+  git branch comp/$c master         # branch off master
 done
-# затем на каждой добавить свой BRANCH.md (см. историю коммитов)
+# then add a BRANCH.md on each (see commit history)
 ```

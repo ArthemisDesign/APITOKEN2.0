@@ -1,86 +1,86 @@
-# dev.to cross-post — инструкция и журнал
+# dev.to cross-post — instructions and log
 
-> Канал off-page SEO/GEO: репаблиш статей learn-кластера на dev.to (DR ~90) с
-> `canonical_url` на оригинал. Стратегический контекст — `research/GEO_GITHUB_STRATEGY.md`
-> (упоминания бренда коррелируют с AI-видимостью 0.664; comparative-контент даёт 2.4×
-> брендовых упоминаний). Этот файл — операционка: как публиковать и что уже опубликовано.
-> **Журнал внизу обновляй при каждой публикации.**
+> An off-page SEO/GEO channel: republishing articles from the learn cluster on dev.to (DR ~90) with
+> a `canonical_url` pointing at the original. Strategic context — `research/GEO_GITHUB_STRATEGY.md`
+> (brand mentions correlate with AI visibility at 0.664; comparative content yields 2.4×
+> brand mentions). This file is the operational side: how to publish and what is already published.
+> **Update the log at the bottom on every publication.**
 
-## Как это работает
+## How it works
 
-- Скрипт `devto-crosspost.mjs` берёт контент с живого markdown-гейтвея
-  `https://apitoken.sale/md/docs/learn/<slug>` — публикуется ровно то, что в проде.
-- Срезает YAML front matter и H1 (dev.to сам рендерит заголовок), абсолютизирует
-  относительные ссылки (`/models` → `https://apitoken.sale/models`), добавляет футер
-  «Originally published at …».
-- Ставит `canonical_url` на оригинал: дубль-контент штрафа нет, поисковый вес
-  консолидируется на apitoken.sale, dev.to показывает «Originally published at» под шапкой.
-- Публикация через Forem API v1 (`POST https://dev.to/api/articles`), ретрай на 429.
+- The `devto-crosspost.mjs` script pulls content from the live markdown gateway
+  `https://apitoken.sale/md/docs/learn/<slug>` — exactly what is in production gets published.
+- It strips the YAML front matter and the H1 (dev.to renders the title itself), makes
+  relative links absolute (`/models` → `https://apitoken.sale/models`), and appends an
+  "Originally published at …" footer.
+- It sets `canonical_url` to the original: no duplicate-content penalty, search weight
+  consolidates on apitoken.sale, and dev.to shows "Originally published at" under the header.
+- Publication goes through the Forem API v1 (`POST https://dev.to/api/articles`), with retry on 429.
 
-## Публикация
+## Publishing
 
 ```bash
 cd apps/web
 node scripts/devto-crosspost.mjs <slug> [<slug>...] [--dry-run]
 ```
 
-- Ключ: env `DEVTO_API_KEY` или `~/.config/apitoken/devto.env` (лежит на маке юзера).
-  Аккаунт: `api_token_46fac5c7112fe23`. Перевыпуск ключа: dev.to Settings → Extensions.
-- Слаги — из `apps/web/src/lib/learn.ts` (EN-версии; локализованные не постим).
-- Сначала `--dry-run`, глазами проверить title/description/начало body.
-- После публикации открыть URL и проверить: таблицы отрендерены, ссылки ведут на
-  apitoken.sale, есть «Originally published at».
+- Key: env `DEVTO_API_KEY` or `~/.config/apitoken/devto.env` (lives on the user's Mac).
+  Account: `api_token_46fac5c7112fe23`. Key reissue: dev.to Settings → Extensions.
+- Slugs come from `apps/web/src/lib/learn.ts` (EN versions; we do not post localized ones).
+- Run `--dry-run` first and eyeball the title/description/start of the body.
+- After publishing, open the URL and check: tables are rendered, links point to
+  apitoken.sale, and "Originally published at" is present.
 
-## Правила канала
+## Channel rules
 
-1. **Каденция 2–3 статьи в неделю, максимум.** Весь кластер разом — спам-сигнал для
-   dev.to и Google. Rate limit dev.to: ~1 пост / 5 мин (скрипт ретраит сам).
-2. **Что постить в первую очередь** (по убыванию SEO/GEO-ценности):
-   - comparative (`apitoken-vs-*`, `*-vs-*`) — 2.4× брендовых упоминаний в LLM;
-   - статьи с цифрами/таблицами цен — «статистика» (+31% GEO-видимости, Принстон KDD'24);
-   - интеграционные с копируемым конфигом (`claude-api-key-for-cursor`, `claude-api-aider`,
-     `claude-api-litellm`) — разработчик копирует пример вместе с base_url.
-3. **Теги**: ровно 4, lowercase, без дефисов. Карта per-slug — в `TAGS` внутри скрипта;
-   для нового слага добавь запись туда (дефолт `ai, claude, api, llm`).
-4. **Не редактировать текст под dev.to вручную** — источник правды только гейтвей.
-   Правки контента делаются в `learn.ts` (и попадают и на сайт, и в будущие кросс-посты).
-5. Механику пула/подписок/ротации в постах и комментариях НЕ упоминать — публично мы
-   «Anthropic-compatible API provider» (риск-рамка из GEO_GITHUB_STRATEGY.md §3).
+1. **Cadence of 2–3 articles per week, maximum.** The whole cluster at once is a spam signal for
+   dev.to and Google. dev.to rate limit: ~1 post / 5 min (the script retries on its own).
+2. **What to post first** (in descending SEO/GEO value):
+   - comparative (`apitoken-vs-*`, `*-vs-*`) — 2.4× brand mentions in LLMs;
+   - articles with price figures/tables — "statistics" (+31% GEO visibility, Princeton KDD'24);
+   - integration articles with a copyable config (`claude-api-key-for-cursor`, `claude-api-aider`,
+     `claude-api-litellm`) — the developer copies the example together with the base_url.
+3. **Tags**: exactly 4, lowercase, no hyphens. The per-slug map is in `TAGS` inside the script;
+   for a new slug add an entry there (default `ai, claude, api, llm`).
+4. **Do not edit the text for dev.to by hand** — the gateway is the only source of truth.
+   Content edits are made in `learn.ts` (and reach both the site and future cross-posts).
+5. Do NOT mention the pool/subscription/rotation mechanics in posts or comments — publicly we are
+   an "Anthropic-compatible API provider" (risk framing from GEO_GITHUB_STRATEGY.md §3).
 
-## Что это даёт (честно) и что замерять
+## What this actually gives (honestly) and what to measure
 
-Canonical — это не классический бэклинк, а сигнал атрибуции; ссылки в теле поста на
-dev.to — nofollow. Ценность канала в другом: индексируемая поверхность на DR90-домене,
-который активно цитируют AI-движки; брендовые упоминания (главный коррелят AI-видимости);
-шанс dev.to-версии ранжироваться по long-tail запросам, где наш домен пока слаб.
-Эффект накопительный — работает регулярность, а не разовый вброс.
+A canonical is not a classic backlink but an attribution signal; in-body links on
+dev.to are nofollow. The channel's value lies elsewhere: an indexable surface on a DR90 domain
+that AI engines actively cite; brand mentions (the top correlate of AI visibility);
+a chance for the dev.to version to rank for long-tail queries where our domain is still weak.
+The effect is cumulative — consistency works, not a one-off dump.
 
-Замер раз в 2 недели: referral с dev.to в аналитике сайта; позиции dev.to-постов по своим
-запросам; ручные вопросы к ChatGPT/Perplexity («cheapest claude api», «openrouter
-alternative for claude») — попали ли наши посты в цитаты.
+Measure once every 2 weeks: referral traffic from dev.to in the site analytics; positions of the
+dev.to posts for their own queries; manual questions to ChatGPT/Perplexity ("cheapest claude api",
+"openrouter alternative for claude") — whether our posts made it into the citations.
 
-## Смежный канал: Дзен (авто через RSS)
+## Adjacent channel: Zen (automatic via RSS)
 
-Лента `https://apitoken.sale/zen.xml` (роут `src/app/zen.xml/route.ts`) отдаёт RU-версии
-всех learn-статей в нативном формате Дзена. Подключение разовое, руками владельца:
-канал в Дзене → Студия → «Сайт» → объединить сайт и канал → указать URL ленты.
-После подключения публикация полностью автоматическая (новые/обновлённые статьи из
-`learn.ts`/`learn-ru.ts` попадают сами). Копии стоят `noindex`, чтобы не каннибализировать
-наши /ru-страницы в Яндексе (переключается в `ZEN_CATEGORIES` в роуте). RSS-обновления
-материала работают 7 дней после загрузки; ручная правка в Студии отключает их.
+The feed `https://apitoken.sale/zen.xml` (route `src/app/zen.xml/route.ts`) serves the RU versions
+of all learn articles in Zen's native format. Hookup is one-time, done by hand by the owner:
+Zen channel → Studio → "Website" → merge the site and the channel → provide the feed URL.
+Once connected, publication is fully automatic (new/updated articles from
+`learn.ts`/`learn-ru.ts` flow in on their own). The copies carry `noindex` so they do not cannibalize
+our /ru pages in Yandex (toggled in `ZEN_CATEGORIES` in the route). RSS updates
+of a piece work for 7 days after upload; manual editing in Studio disables them.
 
-vc.ru: официального API НЕТ (только внутреннее, автопостинг нестабилен и банится) —
-туда полу-руками: агент готовит адаптацию в нативном тоне (кейс/гайд, не реклама),
-человек вставляет в редактор. Каденция ≤1/нед.
+vc.ru: there is NO official API (only an internal one; auto-posting is unstable and gets banned) —
+so semi-manually: the agent prepares an adaptation in a native tone (a case study/guide, not an ad),
+a human pastes it into the editor. Cadence ≤1/week.
 
-## Журнал публикаций
+## Publication log
 
-| Дата | Slug | dev.to URL |
+| Date | Slug | dev.to URL |
 |---|---|---|
 | 2026-07-28 | cheapest-claude-api | https://dev.to/api_token_46fac5c7112fe23/cheapest-claude-api-up-to-80-discount-2ne8 |
 | 2026-07-28 | apitoken-vs-openrouter | https://dev.to/api_token_46fac5c7112fe23/apitokensale-vs-openrouter-for-claude-3gmj |
 | 2026-07-28 | claude-code-without-subscription | https://dev.to/api_token_46fac5c7112fe23/use-claude-code-without-a-subscription-1i6h |
 
-Очередь кандидатов: `claude-api-key-for-cursor`, `apitoken-vs-anthropic-direct`,
+Candidate queue: `claude-api-key-for-cursor`, `apitoken-vs-anthropic-direct`,
 `claude-api-prompt-caching`, `claude-api-litellm`, `claude-api-aider`,
 `claude-code-api-key`, `claude-api-pricing-explained`.

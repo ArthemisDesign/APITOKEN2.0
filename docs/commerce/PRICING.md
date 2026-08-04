@@ -1,120 +1,125 @@
 # Customer pricing
 
-Целевой контракт утверждён 2026-08-02. До атомарного Stage 9 cutover production может продолжать
-исполнять старый scalar/progressive путь, но его нельзя расширять: implementation обязана прийти к
-контракту ниже по zero-downtime плану `docs/commerce/MULTI-DISCOUNT.md`.
+The target contract was approved on 2026-08-02. Until the atomic Stage 9 cutover, production may
+continue executing the old scalar/progressive path, but it must not be extended: the implementation
+must arrive at the contract below following the zero-downtime plan in
+`docs/commerce/MULTI-DISCOUNT.md`.
 
 ## B2C
 
-Обычный B2C платит 50% официальной стоимости любой модели из main product catalog:
+A regular B2C customer pays 50% of the official cost of any model in the main product catalog:
 
 ```text
 global discount_bps = 5000
 global payable_multiplier_bp = 5000
 ```
 
-Прогрессивных tiers, порогов top-up, 30-day retention и month-close pricing behavior в целевой
-системе нет. Пополнение увеличивает только баланс и не меняет процент скидки.
+The target system has no progressive tiers, top-up thresholds, 30-day retention or month-close
+pricing behavior. A top-up only increases the balance and does not change the discount percentage.
 
-Оператор может задать B2C provider/model override. Приоритет всегда:
+An operator may set a B2C provider/model override. The priority is always:
 
 1. exact model rule;
 2. provider rule;
 3. global 50%.
 
-Например, Gemini 60% и отдельная Gemini image model 55% дают 55% именно image-модели и 60% всем
-остальным Gemini-моделям. Скидки не суммируются.
+For example, Gemini 60% plus a separate Gemini image model at 55% yields 55% for exactly the image
+model and 60% for all other Gemini models. Discounts do not stack.
 
-Официальная стоимость вычисляется `crates/metering` по immutable effective-dated tariff и только
-затем умножается на integer `payable_multiplier_bp`. Все суммы — nanoUSD/decimal strings; float и
-JavaScript `number` для денег запрещены.
+The official cost is computed by `crates/metering` from the immutable effective-dated tariff and
+only then multiplied by the integer `payable_multiplier_bp`. All amounts are nanoUSD/decimal
+strings; float and JavaScript `number` are forbidden for money.
 
 ## Welcome bonus
 
-Новая eligible Google/GitHub B2C-регистрация получает ровно `$5.000000000` с
-идемпотентным `signup-bonus:<commercial-user-id>`. Password, invited B2B, OpenKeys и service
-аккаунты бонус не получают. Ранее выданные `$4` сохраняются без ретроактивного увеличения.
+A new eligible Google/GitHub B2C registration receives exactly `$5.000000000` with the idempotent
+`signup-bonus:<commercial-user-id>`. Password, invited B2B, OpenKeys and service accounts do not
+receive the bonus. Previously issued `$4` grants are retained without retroactive increase.
 
-Антифрод-профиль и флаги записываются при OAuth-входе всегда, а клейм происходит только против
-engine-аккаунта, подтверждённого `active` свежим чтением из БД. При managed pricing аккаунт
-активируется worker'ом асинхронно после регистрации — тогда клейм откладывается и повторяется
-из двух точек: следующего OAuth-входа и `AccountService.ensureEngineAccount` (первое обращение
-к аккаунту: дашборд, ключи). Клейм атомарен (частичные unique-индексы), зачисление
-идемпотентно по ref, поэтому повторные попытки безопасны и не двоят бонус.
+The anti-fraud profile and flags are always recorded at OAuth sign-in, while the claim happens only
+against an engine account confirmed `active` by a fresh database read. Under managed pricing the
+account is activated by the worker asynchronously after registration — in that case the claim is
+deferred and retried from two points: the next OAuth sign-in and
+`AccountService.ensureEngineAccount` (the first account access: dashboard, keys). The claim is
+atomic (partial unique indexes) and the credit is idempotent by reference, so retries are safe and
+do not double the bonus.
 
-Welcome bonus может оплачивать любую разрешённую B2C-модель Anthropic/OpenAI/Gemini. Funding
-расходуется bonus-first, затем paid. Номинал показывается как денежный баланс, без маркетингового
-пересчёта в «официальный usage».
+The welcome bonus can pay for any B2C-allowed Anthropic/OpenAI/Gemini model. Funding is spent
+bonus-first, then paid. The nominal is shown as a money balance, without a marketing conversion
+into "official usage".
 
 ## Provider/model pricing authority
 
-Pricing policy и model admission независимы. Catalog включает модель в продукт, switch может
-аварийно закрыть provider, policy задаёт процент. Отсутствующий applicable rule после Stage 9 —
-fail closed; scalar fallback запрещён.
+Pricing policy and model admission are independent. The catalog includes a model in the product, a
+switch can emergency-close a provider, and the policy sets the percentage. A missing applicable rule
+after Stage 9 fails closed; scalar fallback is forbidden.
 
-Текущий Gemini tariff schedule `google/gemini-developer-api/2026-08-02` включает
+The current Gemini tariff schedule `google/gemini-developer-api/2026-08-02` includes
 `gemini-3-flash-preview`: text/image/video input `$0.50/M`, audio input `$1/M`, cached text
-`$0.05/M`, cached audio `$0.10/M`, output вместе с thinking `$3/M` и Search `$14/1000 queries`.
-Первый controlled public-wire gate вернул 404 без output/usage, поэтому immutable capability
-generation 4 остаётся rejected и никогда не материализуется. Свежий private-wire gate на exact
-implementation затем завершил 22 paid turns на Google AI Pro и Ultra: все thinking levels,
-incremental SSE, cache, exact PCM audio и forced tools с terminal authoritative usage. Публикация
-идёт через новую capability/catalog generation 5 и production/public allowlists. OpenKeys модель
-автоматически не получает: его generation 5 catalog сохраняет явный Anthropic/OpenAI set.
+`$0.05/M`, cached audio `$0.10/M`, output including thinking `$3/M` and Search `$14/1000 queries`.
+The first controlled public-wire gate returned 404 with no output/usage, so immutable capability
+generation 4 remains rejected and is never materialized. A fresh private-wire gate against the exact
+implementation then completed 22 paid turns on Google AI Pro and Ultra: all thinking levels,
+incremental SSE, cache, exact PCM audio and forced tools with terminal authoritative usage.
+Publication proceeds through a new capability/catalog generation 5 and the production/public
+allowlists. OpenKeys does not receive the model automatically: its generation 5 catalog keeps the
+explicit Anthropic/OpenAI set.
 
-Policy versions immutable, content-addressed и доставляются catalog → switches → policy. Все
-аккаунты переключаются одним active release head, а не последовательным обновлением bindings.
+Policy versions are immutable, content-addressed and delivered catalog → switches → policy. All
+accounts switch via a single active release head, not a sequential update of bindings.
 
 ## B2B
 
-B2B не наследует global B2C и её provider/model overrides. У клиента собственная immutable policy,
-которая копируется из invitation snapshot и далее редактируется полным CAS replacement.
+B2B does not inherit the global B2C policy or its provider/model overrides. The client has its own
+immutable policy, copied from the invitation snapshot and thereafter edited by full CAS replacement.
 
-Существующий scalar `mult_bp` при миграции становится только Anthropic provider-rule:
+The existing scalar `mult_bp` becomes only an Anthropic provider rule at migration:
 
 ```text
 provider_id = anthropic
 discount_bps = 10000 - mult_bp
 ```
 
-OpenAI/Gemini не появляются у существующего B2B автоматически. Их добавляет оператор явными
+OpenAI/Gemini do not appear for an existing B2B automatically. The operator adds them via explicit
 provider/model rules.
 
 ## OpenKeys
 
-Все существующие и новые OpenKeys работают 1:1: `discount_bps=0`,
-`payable_multiplier_bp=10000`. Они не наследуют B2C/B2B скидки и не участвуют в referral
-commission. Новая модель требует явного OpenKeys catalog enablement.
+All existing and new OpenKeys operate 1:1: `discount_bps=0`,
+`payable_multiplier_bp=10000`. They do not inherit B2C/B2B discounts and do not participate in
+referral commission. A new model requires explicit OpenKeys catalog enablement.
 
 ## Service
 
-Service accounts имеют `billing_mode=meter_only`: все runtime-capable модели доступны, official
-usage и tariff lineage сохраняются, но reserve/debit баланса не выполняется и нулевой баланс не
-даёт 402. Ограничения конкретного домена находятся в коде этого домена, не в pricing policy.
+Service accounts have `billing_mode=meter_only`: all runtime-capable models are available, official
+usage and tariff lineage are preserved, but no balance reserve/debit is performed and a zero balance
+does not produce a 402. Restrictions of a specific domain live in that domain's code, not in the
+pricing policy.
 
 ## Referral commission
 
-Referral eligibility больше не зависит от pricing mode. Для referred B2C settlement commerce
-передаёт exact `paid_funded_nano`; bonus-funded часть, B2B, OpenKeys и service исключены. Sales
-применяет существующие `commission_bps`/`sub_commission_bps` к этой integer базе.
+Referral eligibility no longer depends on the pricing mode. For referred B2C settlement, commerce
+passes the exact `paid_funded_nano`; the bonus-funded portion, B2B, OpenKeys and service are
+excluded. Sales applies the existing `commission_bps`/`sub_commission_bps` to this integer base.
 
-Immutable ledger attribution должна содержать pricing release/policy/rule/tariff identities,
-official и charged cost, ordered funding allocations и exact paid/bonus totals. Commerce валидирует
-evidence и cursor в одной transaction; sales feed получает только подтверждённое событие.
+Immutable ledger attribution must contain pricing release/policy/rule/tariff identities, official
+and charged cost, ordered funding allocations and exact paid/bonus totals. Commerce validates the
+evidence and cursor in one transaction; the sales feed receives only the confirmed event.
 
 ## Zero-downtime activation
 
-Новая policy не активируется по аккаунтам. Dual-compatible runtime и funding writers сначала
-выкатываются dormant, funding нормализуется online account-local transactions, а full-inventory
-shadow работает на 100% traffic. Затем Stage 9 одним CAS меняет global active release head.
+A new policy is not activated per account. Dual-compatible runtime and funding writers are first
+rolled out dormant, funding is normalized online by account-local transactions, and the
+full-inventory shadow runs on 100% of traffic. Stage 9 then changes the global active release head
+with a single CAS.
 
-Активные v2 reservations могут пересекать cutover и settle'ятся по immutable reserve snapshot.
-Глобальный drain, maintenance window и canary-account rollout запрещены. Полный runbook —
+Active v2 reservations may cross the cutover and settle against the immutable reserve snapshot. A
+global drain, maintenance window and canary-account rollout are forbidden. The full runbook is
 `docs/commerce/MULTI_DISCOUNT_STAGE9.md`.
 
-## Известный временный разрыв
+## Known temporary gap
 
-До завершения rollout старый код/схема могут содержать tier, retention, `track`, `$4` grant и
-scalar jobs. Это migration source, а не целевой контракт. Новый код не должен добавлять к ним
-функциональность. После переключения readers/writers удаляются; immutable history и уже применённые
-append-only migrations не переписываются.
+Until the rollout completes, the old code/schema may still contain tiers, retention, `track`, the
+`$4` grant and scalar jobs. This is the migration source, not the target contract. New code must not
+add functionality to them. After the switchover the readers/writers are removed; immutable history
+and already-applied append-only migrations are not rewritten.

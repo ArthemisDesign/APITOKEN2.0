@@ -1,302 +1,302 @@
-# Интеграционный гайд движка (для бэкенда сайта + оплаты)
+# Engine integration guide (for the website backend + payments)
 
-Этот документ — всё, что нужно, чтобы написать **сайт с оплатой** поверх нашего движка, **не трогая Rust**.
-Ты пишешь: сайт (регистрация/личный кабинет), приём оплаты, свою БД пользователей. Движок берёт на
-себя: раздачу Claude API, ротацию подписок, **точный учёт денег** (резерв/списание до нанодоллара).
-Твой бэкенд командует движком по HTTP через **Control API** (`/admin/*`).
+This document is everything you need to build a **paid website** on top of our engine **without touching Rust**.
+You write: the website (registration/account dashboard), payment acceptance, your own user database. The engine
+takes care of: serving the Claude API, subscription rotation, and **exact money accounting** (reserve/charge down to the nanodollar).
+Your backend commands the engine over HTTP via the **Control API** (`/admin/*`).
 
 ---
 
-## 1. Роли: кто что делает
+## 1. Roles: who does what
 
-| | **Движок** (готов, не трогаешь) | **Твой сервис** (пишешь ты) |
+| | **Engine** (ready-made, you don't touch it) | **Your service** (you write it) |
 |---|---|---|
-| Раздача `POST /v1/messages` клиентам | ✅ | — |
-| Ротация подписок, лимиты, устойчивость | ✅ | — |
-| **Авторитетный баланс** аккаунта, резерв/списание | ✅ | — |
-| Аккаунты/ключи/журнал в engine-owned PostgreSQL | ✅ | — |
-| Сайт, регистрация, личный кабинет | — | ✅ |
-| Приём платежей (Stripe/крипта/…) + вебхуки | — | ✅ |
-| Своя БД: юзеры, пароли, связь юзер→account_id, история платежей | — | ✅ |
-| Вызовы Control API движка | — | ✅ |
+| Serving `POST /v1/messages` to clients | ✅ | — |
+| Subscription rotation, limits, resilience | ✅ | — |
+| **Authoritative account balance**, reserve/charge | ✅ | — |
+| Accounts/keys/journal in engine-owned PostgreSQL | ✅ | — |
+| Website, registration, account dashboard | — | ✅ |
+| Payment acceptance (Stripe/crypto/…) + webhooks | — | ✅ |
+| Your own DB: users, passwords, user→account_id mapping, payment history | — | ✅ |
+| Engine Control API calls | — | ✅ |
 
-**Модель:** движок — источник истины по деньгам. Твой сервис хранит ЛЮДЕЙ и ПЛАТЕЖИ, а деньги
-кредитует и читает у движка. Один `account` в движке = один клиент (или команда) у тебя.
+**Model:** the engine is the source of truth for money. Your service stores PEOPLE and PAYMENTS, and credits
+and reads money at the engine. One `account` in the engine = one client (or team) on your side.
 
 ---
 
-## 2. Доступ
+## 2. Access
 
-- **Production-база для API/worker на том же host:** `http://127.0.0.1:8790`. Это явно
-  loopback-bound Caddy origin, который health-route-ит активный engine slot 8787/8788. Никогда не
-  закрепляй commerce consumer за конкретным slot-портом. Для другого host Control API должен идти
-  только по аутентифицированной приватной сети/TLS; публичный engine-домен admin routes не экспонирует.
-- **Твой ключ:** `CONTROL_KEY` (выдан отдельно). Шли в заголовке **`x-api-key: <CONTROL_KEY>`** на все
-  `/admin/*`. Этим же ключом **нельзя** раздавать `/v1` — он только для управления (компрометация
-  бэкенда ≠ бесплатный инференс).
-- Все тела — **JSON**. Все суммы — целые **нанодоллары**: `1 USD = 1 000 000 000 nano`. Никаких float
-  в деньгах — работай в nano, дели на 1e9 только для показа.
+- **Production base for the API/worker on the same host:** `http://127.0.0.1:8790`. This is an explicitly
+  loopback-bound Caddy origin that health-routes the active engine slot 8787/8788. Never pin a
+  commerce consumer to a specific slot port. From another host the Control API must go only over an
+  authenticated private network/TLS; the public engine domain does not expose admin routes.
+- **Your key:** `CONTROL_KEY` (issued separately). Send it in the header **`x-api-key: <CONTROL_KEY>`** on every
+  `/admin/*` request. The same key **cannot** serve `/v1` — it is management-only (a compromised
+  backend ≠ free inference).
+- All bodies are **JSON**. All money amounts are integer **nanodollars**: `1 USD = 1 000 000 000 nano`. No floats
+  in money — work in nano and divide by 1e9 only for display.
 
-### Operator telemetry подписок
+### Operator telemetry of subscriptions
 
-Same-origin админка дополнительно читает `GET /capacity`, `GET /codex-subs`, `GET /gemini-subs`,
-`GET /kimi-subs` и `GET /glm-subs`.
-Эти маршруты защищены server-side control/panel auth; браузер получает их только через закрытый
-`admin.apitoken.sale`, а ключи ему не выдаются.
+The same-origin admin panel additionally reads `GET /capacity`, `GET /codex-subs`, `GET /gemini-subs`,
+`GET /kimi-subs` and `GET /glm-subs`.
+These routes are protected by server-side control/panel auth; the browser reaches them only through the closed
+`admin.apitoken.sale`, and no keys are issued to it.
 
-`GET /capacity` дополнительно публикует Claude `window_totals`, horizon `available_nano` и
-`conversion_models`. Денежные поля для расчётов — decimal nanoUSD strings. Каталог берётся из
-`metering` и разделяет Standard/Fast input, cache-read, cache-write 5м/1ч и output; Web Search имеет
-отдельную per-request ставку. Per-sub `rem5h_nano`/`rem7d_nano` и email mask позволяют панели
-рисовать компактные окна без float money и без раскрытия аккаунта.
+`GET /capacity` additionally publishes Claude `window_totals`, horizon `available_nano` and
+`conversion_models`. Money fields for calculations are decimal nanoUSD strings. The catalog comes from
+`metering` and separates Standard/Fast input, cache-read, cache-write 5m/1h and output; Web Search has
+a separate per-request rate. Per-sub `rem5h_nano`/`rem7d_nano` and email mask let the panel
+draw compact windows without float money and without exposing the account.
 
-Claude capacity — exact realized API-dollar equivalent фактически обслуженной смеси, а не цена
-Max/Pro и не обещание фиксированного числа токенов. Каждый успешный turn (customer или admin)
-сохраняет immutable model/tier/geo/tariff event с отдельными token и API nanoUSD legs; бесплатный
-poll сохраняет только quota observation. После authoritative usage backend сам ставит spend event
-в durable FIFO и будит бесплатный post-turn count-tokens probe обслужившей подписки; открытие
-админки и следующий пользовательский запрос для накопления evidence не нужны. Forced probe
-дебаунсится до одного раза за 15 секунд на подписку, а poll observation всегда дренирует pending
-turn FIFO раньше чтения cumulative spend. Пустой plan backend probe восстанавливает через официальный
-OAuth profile endpoint; inference-only token с 403 может унаследовать только единогласный известный
-paid plan (`pro|max5|max20`) текущего fleet. Mixed/unknown fleet остаётся fail-closed. Найденный plan
-durable записывается в registry и применяется к live roster до quota observation;
-открывать админку или вручную править cohort не требуется. Если response и post-turn poll попали в
-одну секунду, изменившаяся quota всё равно принимается в FIFO-порядке; только точный endpoint-дубль
-игнорируется. Для каждого exact plan и окна независимо:
+Claude capacity is the exact realized API-dollar equivalent of the actually served mixture, not the
+Max/Pro price and not a promise of a fixed number of tokens. Every successful turn (customer or admin)
+persists an immutable model/tier/geo/tariff event with separate token and API nanoUSD legs; a free
+poll persists only a quota observation. After authoritative usage the backend itself enqueues the spend event
+into a durable FIFO and wakes a free post-turn count-tokens probe of the serving subscription; opening
+the admin panel and a follow-up user request are not needed to accumulate evidence. A forced probe
+is debounced to once per 15 seconds per subscription, and a poll observation always drains the pending
+turn FIFO before reading cumulative spend. An empty plan is restored by the backend probe via the official
+OAuth profile endpoint; an inference-only token with a 403 can only inherit the unanimously known
+paid plan (`pro|max5|max20`) of the current fleet. A mixed/unknown fleet stays fail-closed. The discovered plan
+is durably recorded in the registry and applied to the live roster before the quota observation;
+opening the admin panel or manually editing the cohort is not required. If the response and the post-turn poll land in
+the same second, the changed quota is still accepted in FIFO order; only an exact endpoint duplicate
+is ignored. For each exact plan and window independently:
 
 ```text
 capacity_per_subscription_nano =
   100_000_000 × Σobserved_spend_nano / Σobserved_fraction_units
 ```
 
-5h (`300` минут) и 7d (`10080` минут) не делят anchor/history. `plan_cohorts` объединяет evidence
-только одинакового `plan + window_minutes`, поэтому все routable подписки одного плана получают
-одну pooled оценку; `window_totals` суммирует её по routable fleet. Другой план без собственного
-положительного evidence делает fleet total `null`, а не частичной суммой. Номинал подписки,
-configured prior, EMA/WLS и float money в authority не участвуют.
+The 5h (`300` minutes) and 7d (`10080` minutes) windows do not share anchor/history. `plan_cohorts` pools evidence
+only of the same `plan + window_minutes`, so all routable subscriptions of one plan get
+one pooled estimate; `window_totals` sums it across the routable fleet. Another plan without its own
+positive evidence makes the fleet total `null`, not a partial sum. The subscription face value,
+configured prior, EMA/WLS and float money do not participate in the authority.
 
-Текущий remaining требует quota snapshot не старше 900 секунд. Историческая full-window capacity
-может оставаться известной при stale/missing snapshot, но remaining/horizon тогда `null` с точным
-`missing_reason`. То же fail-closed правило действует, пока FIFO-доставка exact turn evidence имеет
-pending event или degraded integrity. `calibration_delivery` публикует `pending_events`,
-`dropped_events`, `persistence_ok` и `queue_limit`; нормальное состояние — `0/0/true`. Failed head
-переживает transient authority outage в памяти и повторяется раньше более поздних events/snapshots;
-immutable replay идемпотентен, semantic conflict изолируется и увеличивает dropped diagnostic.
-Последний точный provider snapshot остаётся доступен только как диагностический display-state до
-его будущего reset: `windows[].used_fraction_units`, `resets_at`, `last_known_quota_source` и
-`last_known_remaining_nano` сохраняют прежнее значение, а top-level `reset5h_in`/`reset7d_in`
-продолжают countdown. Это покрывает как простаивающую routable-подписку, так и quota-cooling,
-когда новый probe намеренно откладывается до reset. Новый snapshot заменяет display-state сразу;
-после provider deadline старые fraction/reset/last-known remaining становятся `null` и не
-переносятся в новое окно. `windows[].snapshot_fresh` всё это время остаётся `false`, canonical
-`remaining_nano`, fleet remaining и horizon остаются `null`: `last_known_remaining_nano` нельзя
-трактовать как текущую продаваемую capacity. Pending/degraded calibration delivery также не
-публикует этот display-state.
-`calibration_evidence` — агрегаты реальных запросов по masked email/model/tier/geo/tariff со всеми
-token/cost legs, отсортировать их для UI можно по `api_total_nanousd`.
-`calibration_recent_turns` — bounded newest-first окно до 512 отдельных immutable Anthropic events.
-Каждая строка содержит opaque внутренний `request_id`, тот же masked email, полную model/tier/geo/
-tariff identity и все token/cost legs; prompt, полный email и credential не публикуются.
-`calibration_recent_turn_limit=512` фиксирует серверную границу. Это окно предназначено для точной
-операторской атрибуции live-теста через разность request-id sets; агрегаты для этого использовать
-нельзя, потому что параллельный customer traffic законно меняет ту же строку.
+The current remaining requires a quota snapshot no older than 900 seconds. Historical full-window capacity
+may remain known with a stale/missing snapshot, but remaining/horizon are then `null` with an exact
+`missing_reason`. The same fail-closed rule applies while FIFO delivery of exact turn evidence has a
+pending event or degraded integrity. `calibration_delivery` publishes `pending_events`,
+`dropped_events`, `persistence_ok` and `queue_limit`; the normal state is `0/0/true`. A failed head
+survives a transient authority outage in memory and is retried ahead of later events/snapshots;
+immutable replay is idempotent, and a semantic conflict is isolated and increments the dropped diagnostic.
+The last exact provider snapshot remains available only as a diagnostic display-state until
+its future reset: `windows[].used_fraction_units`, `resets_at`, `last_known_quota_source` and
+`last_known_remaining_nano` keep their previous value, while the top-level `reset5h_in`/`reset7d_in`
+keep counting down. This covers both an idle routable subscription and quota-cooling,
+when a new probe is deliberately deferred until reset. A new snapshot replaces the display-state immediately;
+after the provider deadline the old fraction/reset/last-known remaining become `null` and are not
+carried into the new window. `windows[].snapshot_fresh` stays `false` all this time, and the canonical
+`remaining_nano`, fleet remaining and horizon stay `null`: `last_known_remaining_nano` must not be
+treated as currently sellable capacity. Pending/degraded calibration delivery also does not
+publish this display-state.
+`calibration_evidence` contains aggregates of real requests by masked email/model/tier/geo/tariff with all
+token/cost legs; for the UI they can be sorted by `api_total_nanousd`.
+`calibration_recent_turns` is a bounded newest-first window of up to 512 individual immutable Anthropic events.
+Each row contains an opaque internal `request_id`, the same masked email, the full model/tier/geo/
+tariff identity and all token/cost legs; the prompt, full email and credential are not published.
+`calibration_recent_turn_limit=512` fixes the server-side bound. This window is meant for exact
+operator attribution of a live test via request-id set difference; aggregates must not be used
+for that, because parallel customer traffic legitimately changes the same row.
 
-Bounded production-прогон и правила интерпретации model-level quota deltas описаны в
-`docs/ops/CLAUDE_CALIBRATION.md`; runner использует только этот backend contract и не зависит от UI.
+The bounded production run and the rules for interpreting model-level quota deltas are described in
+`docs/ops/CLAUDE_CALIBRATION.md`; the runner uses only this backend contract and does not depend on the UI.
 
-`GET /overview` сохраняет прежние округлённые `supply.*_usd` display-поля для панели, но их источник
-теперь тот же exact report. Канонические значения находятся рядом в `supply.avail_nano`,
-`cap_nano`, `consumed_nano`; `supply.legacy_pool_prior_authoritative=false`. При отсутствии exact
-evidence capacity-facing поля fail-closed в `null`, а не возвращаются из старого pool prior/EMA.
+`GET /overview` keeps the previous rounded `supply.*_usd` display fields for the panel, but their source
+is now the same exact report. The canonical values live next to them in `supply.avail_nano`,
+`cap_nano`, `consumed_nano`; `supply.legacy_pool_prior_authoritative=false`. Without exact
+evidence, capacity-facing fields fail closed to `null` instead of falling back to the old pool prior/EMA.
 
-`GET /codex-subs` разделяет два разных понятия:
+`GET /codex-subs` separates two different notions:
 
-- `*_nanocredits` — native расход и capacity ChatGPT-подписки; именно в credits сравниваются
-  одинаковые планы;
-- `*_nano` / `*_nanousd` — официальный public API replacement cost фактической или выбранной
-  нагрузки. Он меняется от модели, Standard/Fast, cache mix, output и long context и не является
-  фиксированным номиналом подписки.
+- `*_nanocredits` — native spend and capacity of the ChatGPT subscription; identical plans are compared
+  in credits;
+- `*_nano` / `*_nanousd` — the official public API replacement cost of the actual or selected
+  workload. It varies with the model, Standard/Fast, cache mix, output and long context, and is not
+  a fixed subscription face value.
 
-У каждого home `calibration_evidence` содержит immutable aggregates по model/effective tier/
+On every home, `calibration_evidence` contains immutable aggregates by model/effective tier/
 provider-reported tier/tariff schedules: turns, fresh-derived total input, cached input,
-cache-write, output/reasoning, все API legs и все ChatGPT-credit legs. Эта evidence появляется
-после первого успешного turn и не ждёт движения quota. `capacity_nanocredits` остаётся `null`, пока
-не появится подтверждённое положительное `Δquota`; `null` не означает ноль. Integrity поля
-`calibration_pending_events`/`calibration_dropped_events` должны быть `0/0`.
+cache-write, output/reasoning, all API legs and all ChatGPT-credit legs. This evidence appears
+after the first successful turn and does not wait for quota movement. `capacity_nanocredits` stays `null` until
+a confirmed positive `Δquota` appears; `null` does not mean zero. The integrity fields
+`calibration_pending_events`/`calibration_dropped_events` must be `0/0`.
 
-`measurement_resolution_fraction_units` у окна сообщает реальную числовую разрешающую способность
-quota snapshot: для типичного целого `40%` это `1_000_000`, а не `1`. Low/high estimator v10
-учитывают половину разрешения обоих endpoints; если движение quota не больше этой погрешности,
-верхняя граница честно остаётся `null`.
+`measurement_resolution_fraction_units` on a window reports the real numeric resolution of the
+quota snapshot: for a typical whole `40%` it is `1_000_000`, not `1`. The low/high estimator v10
+accounts for half the resolution of both endpoints; if the quota movement is no larger than this
+tolerance, the upper bound honestly stays `null`.
 
-Для коммерческого ответа по одинаковым подпискам используй корневой `plan_cohorts`, сгруппированный
-по exact `plan + window_minutes`. `capacity_per_home_nanocredits` — одна общая pooled-оценка для
-каждого home этой когорты, а `fleet_capacity_*`/`fleet_remaining_*` — её размер и текущий остаток
-по всему cohort. Формула point estimate:
+For the commercial answer on identical subscriptions, use the root `plan_cohorts`, grouped
+by exact `plan + window_minutes`. `capacity_per_home_nanocredits` is one shared pooled estimate for
+each home of that cohort, and `fleet_capacity_*`/`fleet_remaining_*` are its size and current remainder
+across the whole cohort. The point estimate formula:
 
 ```text
 capacity_per_home_nanocredits =
   100_000_000 × Σobserved_spend_nanocredits / Σobserved_fraction_units
 ```
 
-`measured_homes` показывает число contributors, `homes_total` — размер когорты. Low/high —
-консервативный общий envelope; если хотя бы один contributor не даёт конечную верхнюю границу,
-cohort high тоже `null`. Per-home `capacity_nanocredits` не перезаписывается и остаётся raw audit
-evidence, поэтому его разброс при whole-percent quota ожидаем. `window_totals` также остаётся суммой
-individual estimates. API USD нельзя брать из `plan_cohorts`: он зависит от workload и считается
-через conversion formula ниже.
+`measured_homes` shows the number of contributors, `homes_total` — the cohort size. Low/high is a
+conservative shared envelope; if at least one contributor does not yield a finite upper bound,
+the cohort high is also `null`. Per-home `capacity_nanocredits` is not overwritten and remains raw audit
+evidence, so its spread with whole-percent quota is expected. `window_totals` also remains the sum of
+individual estimates. API USD must not be taken from `plan_cohorts`: it depends on the workload and is computed
+via the conversion formula below.
 
-Корень ответа также публикует `conversion_models`: versioned API/credit rates, независимые Fast
-multipliers и long-context modifiers. Все деньги и credits сериализуются decimal strings; токены,
-проценты, timestamps и counters — числа. Email — только bounded mask без домена. UI обязан считать
-workload conversion через BigInt:
+The response root also publishes `conversion_models`: versioned API/credit rates, independent Fast
+multipliers and long-context modifiers. All money and credits are serialized as decimal strings; tokens,
+percentages, timestamps and counters are numbers. Email is only a bounded mask without a domain. The UI must compute
+workload conversion via BigInt:
 
 ```text
 API equivalent nanoUSD = capacity_nanocredits × workload_api_nanousd / workload_nanocredits
 ```
 
-Reasoning — diagnostic subset output и не прибавляется второй раз. Cache-write имеет отдельную API
-ставку, но в credit card входит во fresh input.
+Reasoning is a diagnostic subset of output and is not added a second time. Cache-write has its own API
+rate but is included in fresh input on the credit card.
 
-`GET /gemini-subs` публикует canonical `capacity_nano`/`remaining_nano` fleet totals,
-`conversion_models` из `metering::gemini` и `quota_model_ids` для join публичной модели с её
-Antigravity effort buckets. `remaining_amount` сериализуется decimal string; если Google отдаёт
-только `remaining_fraction`, количество токенов/units остаётся неизвестным и не выводится из
-workload-dollar blend. Профиль содержит только bounded email hint (четыре символа local-part без
-домена); full email, subject, project, private tier, proxy и OAuth не сериализуются.
+`GET /gemini-subs` publishes canonical `capacity_nano`/`remaining_nano` fleet totals,
+`conversion_models` from `metering::gemini` and `quota_model_ids` for joining a public model with its
+Antigravity effort buckets. `remaining_amount` is serialized as a decimal string; if Google returns
+only `remaining_fraction`, the token/unit quantity remains unknown and is not derived from a
+workload-dollar blend. The profile contains only a bounded email hint (four characters of the local part without
+the domain); full email, subject, project, private tier, proxy and OAuth are not serialized.
 
-`GET /kimi-subs` — read-only operational projection backend-only KIMI плоскости. Production
-обслуживает её выделенная default-off KIMI plane через стабильный loopback origin 8803
-(`claude-api-kimi@8804/8805`); встроенный в Anthropic runtime gateway остаётся dev/test-only.
-Гейт — control key
-(`control_authed`, как `/codex-subs`; panel key не подходит). На процессе без плоскости ответ —
-disabled envelope `{"now": <unix>, "enabled": false, "profiles": []}`. Enabled envelope публикует
+`GET /kimi-subs` is a read-only operational projection of the backend-only KIMI plane. Production
+is served by a dedicated default-off KIMI plane via the stable loopback origin 8803
+(`claude-api-kimi@8804/8805`); the gateway built into the Anthropic runtime remains dev/test-only.
+The gate is the control key
+(`control_authed`, like `/codex-subs`; the panel key does not qualify). On a process without the plane, the response is a
+disabled envelope `{"now": <unix>, "enabled": false, "profiles": []}`. An enabled envelope publishes
 `delivery` (pending/dropped/persistence bounded FIFO), fleet counts (total/live/available
-profiles, inflight, три оси cooling) и per-profile объекты с cooling-until timestamps, последним
-quota snapshot по каждому окну (`used`/`limit` — provider authority, доля и реальная measurement
-resolution рядом) и per-window calibration из durable PostgreSQL evidence (samples, confidence,
-capacity/remaining как decimal nano strings, estimator version). Для безопасного live-runner'а
-конверт дополнительно публикует `calibration_authority_available`,
-`calibration_recent_turn_limit` и `calibration_recent_turns` — immutable turn events
-(engine request id, opaque profile id, bounded plan label, served/requested модель, полный usage
-и exact nano-legs как decimal strings) — плюс `conversion_models` с официальным rate card для
-worst-case bounds. Контракт редакции: сериализуются
-только opaque profile ids и reviewed bounded plan labels; subject, email, phone, token, proxy,
-credential path, customer/request id и raw provider errors никогда не сериализуются; неизвестное
-— `null`, а не 0. Плоскость default-off: пока KIMI не включён, envelope всегда disabled.
+profiles, inflight, three cooling axes) and per-profile objects with cooling-until timestamps, the last
+quota snapshot per window (`used`/`limit` — provider authority, with the fraction and the real measurement
+resolution alongside) and per-window calibration from durable PostgreSQL evidence (samples, confidence,
+capacity/remaining as decimal nano strings, estimator version). For a safe live runner
+the envelope additionally publishes `calibration_authority_available`,
+`calibration_recent_turn_limit` and `calibration_recent_turns` — immutable turn events
+(engine request id, opaque profile id, bounded plan label, served/requested model, full usage
+and exact nano-legs as decimal strings) — plus `conversion_models` with the official rate card for
+worst-case bounds. Redaction contract: only
+opaque profile ids and reviewed bounded plan labels are serialized; subject, email, phone, token, proxy,
+credential path, customer/request id and raw provider errors are never serialized; the unknown is
+`null`, not 0. The plane is default-off: while KIMI is not enabled, the envelope is always disabled.
 
-Точная атрибуция runner'а поддерживается на dispatch: admin-only заголовки
-`x-apitoken-calibration-profile` (полный opaque id, 1..128) и
-`x-apitoken-calibration-request-id` (UUIDv4) идут парой, только под admin-ключом и никогда не
-уходят upstream; полупара, не-admin или мусорное значение отклоняются 400. Закреплённый turn
-использует переданный immutable id и выполняется ровно на указанном профиле: cooling/wall — это
-стена, а не повод для rebind на соседний профиль.
+Exact runner attribution is supported at dispatch: the admin-only headers
+`x-apitoken-calibration-profile` (full opaque id, 1..128) and
+`x-apitoken-calibration-request-id` (UUIDv4) come as a pair, only under the admin key, and never
+go upstream; a half-pair, a non-admin key or a garbage value is rejected with 400. A pinned turn
+uses the passed immutable id and executes on exactly the specified profile: cooling/wall is
+a wall, not a reason to rebind to a neighboring profile.
 
-`GET /glm-subs` — read-only operational projection backend-only GLM (Z.ai Coding Plan)
-плоскости, которая живёт внутри Anthropic runtime (тот же origin 8790, отдельного процесса
-нет). Гейт — control key (`control_authed`, как `/codex-subs` и `/kimi-subs`; panel key не
-подходит). На процессе без плоскости ответ — disabled envelope `{"now": <unix>,
-"enabled": false, "profiles": []}`. Enabled envelope публикует `delivery` (pending/dropped/
-persistence bounded FIFO), fleet counts (total/live/available profiles, inflight, durable оси
-account-dead/account-suspect и две timed оси cooling), `window_totals` (fleet-агрегация двух
-canonical окон 5ч/7д: `window_minutes` 300/10080 — проекция exact `duration_secs`; capacity и
-remaining как decimal nanoUSD strings, агрегат `null`, пока хотя бы один профиль флота не назвал
-значение для окна — частичная сумма никогда не публикуется) и per-profile объекты с durable
-account flags, cooling-until timestamps, последним quota snapshot по каждому окну (raw counters
-`null`, пока их unit semantics недоказаны) и per-window calibration из durable PostgreSQL
-evidence (samples, confidence, capacity/remaining как decimal nano strings + exact native
-microcredits, estimator version). Контракт редакции: сериализуются только opaque profile ids и
-bounded plan labels (roster и так ограничен тремя reviewed individual plans); subject-digest
-ключа, сам ключ, proxy, base_url, credential path, customer/request id и raw provider errors
-никогда не сериализуются; неизвестное — `null`, а не 0. Плоскость default-off: пока GLM не
-включён, envelope всегда disabled.
-
----
-
-## 3. Денежная модель (обязательно понять)
-
-У аккаунта три «корзины», инвариант держит движок:
-```
-свободный_баланс + зарезервировано + потрачено = внесено   (всегда, до нанодоллара)
-```
-- **balance_nano** — свободные деньги, доступные тратить прямо сейчас.
-- **reserved_nano** — временно удержано под запросы «в полёте» (движок резервирует потолок перед
-  запросом и возвращает разницу после). Ты это не трогаешь — просто знай, что «в моменте» баланс
-  может быть чуть меньше на сумму летящих запросов.
-- **spent_nano** — суммарно потрачено (монотонно растёт).
-- **mult_bp** — текущий legacy scalar в basis points: `2000 = ×0.20`. После Stage 9 клиентская
-  цена берётся из immutable release/policy rule; scalar остаётся migration/audit source и не
-  является fallback. Service использует отдельный `meter_only`, а не `mult_bp=0`.
-
-B2C/B2B/OpenKeys физически не могут уйти в минус: если денег не хватит, движок урежет ответ под
-баланс или вернёт `402`. Service — явное исключение: official usage учитывается durable, но баланс
-не резервируется и не дебетуется.
+`GET /glm-subs` is a read-only operational projection of the backend-only GLM (Z.ai Coding Plan)
+plane, which lives inside the Anthropic runtime (the same origin 8790, no separate
+process). The gate is the control key (`control_authed`, like `/codex-subs` and `/kimi-subs`; the panel key
+does not qualify). On a process without the plane, the response is a disabled envelope `{"now": <unix>,
+"enabled": false, "profiles": []}`. An enabled envelope publishes `delivery` (pending/dropped/
+persistence bounded FIFO), fleet counts (total/live/available profiles, inflight, the durable
+account-dead/account-suspect axes and two timed cooling axes), `window_totals` (fleet aggregation of the two
+canonical windows 5h/7d: `window_minutes` 300/10080 — a projection of the exact `duration_secs`; capacity and
+remaining as decimal nanoUSD strings, the aggregate `null` until at least one fleet profile names
+a value for the window — a partial sum is never published) and per-profile objects with durable
+account flags, cooling-until timestamps, the last quota snapshot per window (raw counters
+`null` while their unit semantics are unproven) and per-window calibration from durable PostgreSQL
+evidence (samples, confidence, capacity/remaining as decimal nano strings + exact native
+microcredits, estimator version). Redaction contract: only opaque profile ids and
+bounded plan labels are serialized (the roster is limited to three reviewed individual plans anyway); the key's
+subject-digest, the key itself, proxy, base_url, credential path, customer/request id and raw provider errors
+are never serialized; the unknown is `null`, not 0. The plane is default-off: while GLM is not
+enabled, the envelope is always disabled.
 
 ---
 
-## 4. Канонические сценарии
+## 3. Money model (mandatory to understand)
 
-### A. Регистрация клиента
-1. Юзер регистрируется у тебя на сайте → ты создаёшь запись в СВОЕЙ БД.
-2. `POST /admin/account` → движок вернёт `account_id` (`acct_…`). Сохрани его у себя рядом с юзером.
-   Повтор с тем же непустым `handle` вернёт тот же аккаунт, поэтому восстановление регистрации
-   идемпотентно и не создаёт осиротевшие аккаунты.
-3. `POST /admin/key` c этим `account_id` → движок вернёт **`sk-pool-…`**. Для strict-аккаунта
-   запрос обязан включать exact `activation_policy_ack` из применённой active policy. Покажи ключ
-   юзеру **один раз** (это его API-ключ, секрет). У аккаунта может быть много ключей.
+An account has three "buckets"; the engine maintains the invariant:
+```
+free_balance + reserved + spent = credited   (always, down to the nanodollar)
+```
+- **balance_nano** — free money available to spend right now.
+- **reserved_nano** — temporarily held for "in-flight" requests (the engine reserves a ceiling before
+  the request and returns the difference after). You don't touch this — just know that "in the moment" the balance
+  may be slightly lower by the amount of in-flight requests.
+- **spent_nano** — total spent (monotonically increasing).
+- **mult_bp** — the current legacy scalar in basis points: `2000 = ×0.20`. After Stage 9 the client
+  price comes from the immutable release/policy rule; the scalar remains a migration/audit source and
+  is not a fallback. Service uses the separate `meter_only`, not `mult_bp=0`.
 
-### B. Оплата → зачисление (ИДЕМПОТЕНТНО!)
-1. Юзер платит → твой платёжный провайдер шлёт тебе **вебхук**.
-2. Ты валидируешь вебхук и зовёшь `POST /admin/account/{id}/credit` с `amount_nano` (строка) и
-   `ref` = **provider-qualified id транзакции** вида `<provider>:<transaction-id>`
-   (например, `stripe:pi_123`).
-3. Движок зачислит **идемпотентно по `ref`**: если провайдер доставит вебхук дважды — второй раз
-   **НЕ задвоит** (вернёт тот же баланс). Положительное зачисление БЕЗ provider-qualified `ref`
-   отклоняется с `400` — это гарантия, что одинаковые transaction id разных провайдеров не
-   столкнутся в глобальном UNIQUE-индексе.
+B2C/B2B/OpenKeys physically cannot go negative: if money runs short, the engine will trim the response to
+the balance or return `402`. Service is an explicit exception: official usage is accounted durably, but the
+balance is neither reserved nor debited.
 
-### C. Личный кабинет (баланс/ключи/история)
-- Баланс/траты: `GET /admin/account/{id}` → `balance_nano`, `spent_nano`, `reserved_nano`.
-- Список ключей юзера: `GET /admin/account/{id}/keys` (не-секретный `key_id`, маска,
-  label/status/расход).
-- История платежей/трат: `GET /admin/account/{id}/ledger?limit=50` (топапы/списания сверху).
-- Разбивка расхода по моделям/токенам: `GET /admin/account/{id}/usage?window=30d` (для дашборда).
+---
 
-### D. Как клиент ПОЛЬЗУЕТСЯ (что показать ему в доке)
-Клиент наводит любой Anthropic-совместимый инструмент на нашу базу и свой `sk-pool-` ключ:
+## 4. Canonical scenarios
+
+### A. Client registration
+1. A user registers on your website → you create a record in YOUR OWN DB.
+2. `POST /admin/account` → the engine returns `account_id` (`acct_…`). Store it next to the user.
+   A retry with the same non-empty `handle` returns the same account, so registration recovery
+   is idempotent and does not create orphaned accounts.
+3. `POST /admin/key` with this `account_id` → the engine returns **`sk-pool-…`**. For a strict account
+   the request must include the exact `activation_policy_ack` from the applied active policy. Show the key
+   to the user **once** (it is their API key, a secret). An account can have many keys.
+
+### B. Payment → credit (IDEMPOTENT!)
+1. The user pays → your payment provider sends you a **webhook**.
+2. You validate the webhook and call `POST /admin/account/{id}/credit` with `amount_nano` (string) and
+   `ref` = **provider-qualified transaction id** of the form `<provider>:<transaction-id>`
+   (for example, `stripe:pi_123`).
+3. The engine credits **idempotently by `ref`**: if the provider delivers the webhook twice — the second time
+   will **NOT double** the credit (it returns the same balance). A positive credit WITHOUT a provider-qualified `ref`
+   is rejected with `400` — this guarantees that identical transaction ids from different providers
+   cannot collide in the global UNIQUE index.
+
+### C. Account dashboard (balance/keys/history)
+- Balance/spend: `GET /admin/account/{id}` → `balance_nano`, `spent_nano`, `reserved_nano`.
+- User's key list: `GET /admin/account/{id}/keys` (non-secret `key_id`, mask,
+  label/status/spend).
+- Payment/spend history: `GET /admin/account/{id}/ledger?limit=50` (top-ups/charges, newest first).
+- Spend breakdown by models/tokens: `GET /admin/account/{id}/usage?window=30d` (for the dashboard).
+
+### D. How the client USES the API (what to show them in your docs)
+The client points any Anthropic-compatible tool at our base and their `sk-pool-` key:
 ```bash
-curl https://<база>/v1/messages \
+curl https://<base>/v1/messages \
   -H "x-api-key: sk-pool-…" -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
   -d '{"model":"claude-opus-4-8","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}'
 ```
-Свой остаток клиент смотрит сам: `GET /v1` → нет; **`GET /balance`** со своим `sk-pool-` ключом
-(`x-api-key`) → JSON с балансом/расходом. Всё остальное — чистый Anthropic API (стрим, tools, count_tokens).
+The client checks their own balance: `GET /v1` → no; **`GET /balance`** with their own `sk-pool-` key
+(`x-api-key`) → JSON with balance/spend. Everything else is the pure Anthropic API (streaming, tools, count_tokens).
 
 ---
 
-## 5. Справочник Control API (`x-api-key: <CONTROL_KEY>`)
+## 5. Control API reference (`x-api-key: <CONTROL_KEY>`)
 
-### Аккаунты
+### Accounts
 ```
 POST /admin/account                     {"handle"?, "mult_bp"?}      → 200 {account, mult_bp, handle}
 POST /admin/accounts/query              {"account_ids":["acct_…"]}   → 200 {accounts:[{account,
                                                                             balance_nano,spent_nano,
                                                                             reserved_nano,balance,mult_bp,
                                                                             status,handle}]} (1..500 id;
-                                                                            400 при пустом/невалидном списке)
+                                                                            400 on an empty/invalid list)
 GET  /admin/account/{id}                                             → 200 {account, balance_nano, spent_nano,
                                                                             reserved_nano, balance, mult_bp, status, handle,
                                                                             funding:{...}} | 404
 POST /admin/account/{id}/credit         {"amount_nano": "25000000000",
                                          "ref": "<provider>:<tx>"}   → 200 {account, balance_nano, balance} | 400 | 404 | 409
-                                        (только amount_nano — десятичная строка i64 в nano;
-                                         неизвестные поля отклоняются 422. Идемпотентно по ref;
-                                         для положительной суммы ref ОБЯЗАТЕЛЕН в формате
-                                         <provider>:<transaction-id>; сумма < 0 = debit/коррекция,
-                                         ref для неё необязателен; 409 — ref уже использован
-                                         другим платежом)
+                                        (amount_nano only — a decimal i64 string in nano;
+                                         unknown fields are rejected with 422. Idempotent by ref;
+                                         for a positive amount ref is REQUIRED in the format
+                                         <provider>:<transaction-id>; amount < 0 = debit/correction,
+                                         ref optional for it; 409 — ref already used
+                                         by another payment)
 POST /admin/account/{id}/status         {"status":"active"|"disabled"}  → 200 {account,status,updated} | 404
 POST /admin/account/{id}/pricing        {"mult_bp":0..10000}             → 200 {account,mult_bp,updated} | 404
 GET  /admin/account/{id}/keys                                        → 200 {keys:[{key_id,key_masked,label,status,
@@ -309,9 +309,9 @@ GET  /admin/account/{id}/ledger?limit=N[&after_id=ID]                 → 200 {e
                                                                             funding_allocations,...}]}
 POST /admin/account/{id}/ledger/ack     {"last_id": "12345"}          → 200 {account, consumer:"pricing",
                                                                             last_id} | 400
-                                        (durable watermark для consumer="pricing": десятичная строка
-                                         неотрицательного integer; retention удаляет старую
-                                         charge-детализацию только ниже watermark'а)
+                                        (durable watermark for consumer="pricing": a decimal string
+                                         of a non-negative integer; retention deletes old
+                                         charge detail only below the watermark)
 GET  /admin/account/{id}/usage?window=30d                            → 200 {account, window, since_ts,
                                                                             until_ts, requests,
                                                                             total_official_nano,
@@ -320,8 +320,8 @@ GET  /admin/account/{id}/usage?window=30d                            → 200 {ac
                                                                             daily:[...],
                                                                             daily_providers:[...],
                                                                             keys:[...]} | 404
-                                        (window = <n>d | <n>h | all; по умолчанию и при
-                                         нераспознанном значении — 30d)
+                                        (window = <n>d | <n>h | all; by default and on an
+                                         unrecognized value — 30d)
 ```
 
 Without `after_id`, ledger entries are the newest bounded history. With `after_id`, entries are
@@ -329,57 +329,57 @@ returned oldest-first with `id > after_id`; this is the durable worker cursor fo
 funding validation and referral commission. It is no longer a tier/progressive-pricing authority in
 the target contract.
 
-`funding` читается вместе со scalar account aggregates из одного snapshot. Он содержит
-`account_class`, `funding_enforcement`, `reconciliation_state`, `bucket_count` и для
-`balance/reserved/spent` отдельные `paid_*_nano`, `bonus_*_nano`, `other_*_nano` и
-`unattributed_*_nano`. В текущем schema `bonus` может ссылаться на исторический
-`welcome_track_bonus`; target writers создают provider-independent `welcome_bonus`, доступный любой
-B2C-модели. `paid` означает durable paid funding. Online Stage 6 классифицирует exact welcome
-остаток, а весь прочий legacy residual — paid по утверждённому контракту; ручной reviewer artifact
-не используется. Active legacy reservation не требует idle gap, если exact source state доказывает
-полностью paid reserve: normalization transaction одновременно создаёт generation/head и её
-immutable paid-only funding snapshot, не меняя сохранённую pricing identity. Неоднозначный живой
-welcome reserve остаётся typed blocker.
+`funding` is read together with the scalar account aggregates from one snapshot. It contains
+`account_class`, `funding_enforcement`, `reconciliation_state`, `bucket_count` and, for
+`balance/reserved/spent`, separate `paid_*_nano`, `bonus_*_nano`, `other_*_nano` and
+`unattributed_*_nano`. In the current schema `bonus` may reference the historical
+`welcome_track_bonus`; target writers create the provider-independent `welcome_bonus`, available to any
+B2C model. `paid` means durable paid funding. Online Stage 6 classifies the exact welcome
+remainder, and all other legacy residual as paid per the approved contract; the manual reviewer artifact
+is not used. An active legacy reservation does not require an idle gap if the exact source state proves a
+fully paid reserve: the normalization transaction simultaneously creates the generation/head and its
+immutable paid-only funding snapshot without changing the persisted pricing identity. An ambiguous live
+welcome reserve remains a typed blocker.
 
-Новая ledger row сохраняет expand-совместимые top-level `request_id`, `provider` и `official_nano`.
-Для pre-column charge с `ledger.provider IS NULL` reader сначала ищет immutable `usage_events` по
-точным `account_id + request_id`. Для более старой пары, где оба `request_id IS NULL`, допускается
-только полный settlement fingerprint: тот же account, null-safe key/ref/model, точный
-`charge_nano = amount_nano` и разница timestamp не больше одной секунды. Provider возвращается,
-только если все кандидаты содержат одно и то же непустое значение; неоднозначность остаётся `null`,
-а расхождение восстановленного значения с сохранённым ledger provider закрывает read ошибкой.
-Модель участвует лишь в полном отпечатке и никогда не преобразуется в provider.
-`attribution` равен `null` для исторической строки без `attribution_schema_version`; иначе он
-переносит сохранённые snapshot/policy/rule/catalog/switch/tariff/eligibility/runtime-manifest поля,
-`official_cost_json`, категориальные funding totals и исходный `funding_allocation_json` без
-повторного resolve. `funding_allocations` всегда является массивом нормализованных durable
+A new ledger row persists the expand-compatible top-level `request_id`, `provider` and `official_nano`.
+For a pre-column charge with `ledger.provider IS NULL`, the reader first looks up immutable `usage_events` by the
+exact `account_id + request_id`. For an older pair where both `request_id IS NULL`, only
+the full settlement fingerprint is allowed: the same account, null-safe key/ref/model, exact
+`charge_nano = amount_nano` and a timestamp difference of no more than one second. The provider is returned
+only if all candidates contain the same non-empty value; ambiguity stays `null`,
+and a disagreement between the recovered value and the persisted ledger provider closes the read with an error.
+The model participates only in the full fingerprint and is never converted into a provider.
+`attribution` is `null` for a historical row without `attribution_schema_version`; otherwise it
+carries the persisted snapshot/policy/rule/catalog/switch/tariff/eligibility/runtime-manifest fields,
+`official_cost_json`, categorical funding totals and the original `funding_allocation_json` without
+re-resolving. `funding_allocations` is always an array of normalized durable
 allocations (`bucket_id`, `source_type`, `source_ref`, `bucket_version`, `direction`, `amount_nano`,
-optional `allocation_order`); старые строки честно возвращают пустой массив. Все `*_nano`, ledger
-IDs и generations остаются integer JSON values; `packages/contracts` нормализует их в decimal
-strings до попадания в JavaScript business logic.
+optional `allocation_order`); old rows honestly return an empty array. All `*_nano`, ledger
+IDs and generations remain integer JSON values; `packages/contracts` normalizes them into decimal
+strings before they reach JavaScript business logic.
 
-После Stage 9 charge-строки release-v2 settlement несут `attribution` со
-`snapshot_kind="release_v2"` и `attribution_schema_version=2`: release lineage
+After Stage 9, release-v2 settlement charge rows carry `attribution` with
+`snapshot_kind="release_v2"` and `attribution_schema_version=2`: release lineage
 (`release_schema_version`, `release_generation`, `release_digest`, `release_billing_mode`,
-`release_funding_generation`), `account_class`, exact `paid_funded_nano`/`bonus_funded_nano`/
-`other_funded_nano` split фактического charge (их сумма всегда равна `amount_nano`),
-`snapshot_digest` reserve-time snapshot и `funding_allocation_json` с v2 lot identity
-(`lot_id`, `lot_source_type`, `lot_version`, `direction`, `amount_nano`, `allocation_order`), зеркалирующий
-durable `funding_ledger_allocations_v2`. Legacy-поля `pricing_mode`, `rule_origin` и
-`*_eligible` у таких строк остаются `null`: commission eligibility для release-v2 consumer
-вычисляет сам из `account_class` + `paid_funded_nano`, а не из pricing mode. `meter_only`
-(service) settlement не создаёт charge-строку вовсе.
+`release_funding_generation`), `account_class`, the exact `paid_funded_nano`/`bonus_funded_nano`/
+`other_funded_nano` split of the actual charge (their sum always equals `amount_nano`),
+the `snapshot_digest` of the reserve-time snapshot and `funding_allocation_json` with the v2 lot identity
+(`lot_id`, `lot_source_type`, `lot_version`, `direction`, `amount_nano`, `allocation_order`), mirroring the
+durable `funding_ledger_allocations_v2`. The legacy fields `pricing_mode`, `rule_origin` and
+`*_eligible` on such rows remain `null`: commission eligibility for the release-v2 consumer
+is computed by the consumer itself from `account_class` + `paid_funded_nano`, not from the pricing mode. A `meter_only`
+(service) settlement does not create a charge row at all.
 
-`GET /admin/account/{id}/usage` агрегирует сохранённые immutable компоненты settlement за
-фиксированный полуинтервал `[since_ts, until_ts)` — это НЕ пересчёт по текущему прайсу. Все
-`*_nano` в ответе — decimal strings; токены, requests и timestamps — числа. `buckets` раскладывает
-official-стоимость на `input`, `output`, `cache_read`, `cache_write`, `web_search`; строки, которые
-нельзя честно разнести по компонентам (legacy), попадают в `unattributed_legacy`, и сумма всех
-buckets всегда равна `total_official_nano`. `total_charged_nano` — сколько фактически списано с
-аккаунта после мультипликатора. `models`, `daily`, `daily_providers` и `keys` дают ту же разбивку
-по моделям, дням, провайдерам и маскированным ключам.
+`GET /admin/account/{id}/usage` aggregates the persisted immutable settlement components over
+a fixed half-open interval `[since_ts, until_ts)` — it is NOT a recompute against the current price list. All
+`*_nano` in the response are decimal strings; tokens, requests and timestamps are numbers. `buckets` splits the
+official cost into `input`, `output`, `cache_read`, `cache_write`, `web_search`; rows that
+cannot be honestly attributed to components (legacy) land in `unattributed_legacy`, and the sum of all
+buckets always equals `total_official_nano`. `total_charged_nano` is how much was actually charged to the
+account after the multiplier. `models`, `daily`, `daily_providers` and `keys` give the same breakdown
+by models, days, providers and masked keys.
 
-### Ключи доступа
+### Access keys
 ```
 POST /admin/key                         {"account_id", "label"?,
                                          "spend_limit_nano"?, "expires_ts"?,
@@ -389,14 +389,14 @@ POST /admin/key                         {"account_id", "label"?,
                                          }}
                                                                      → 200 {key:"sk-pool-…", key_id:"key_…", account,
                                                                             label,spend_limit_nano,expires_ts}
-                                                                       | 400 | 409  (key виден 1 раз!)
+                                                                       | 400 | 409  (key is visible 1 time!)
 POST /admin/key-id/{key_id}/status      {"status":"active"|"disabled",
                                          "activation_policy_ack"?: {
                                            "effective_policy_version": integer,
                                            "policy_digest": string
-                                         }} → 200 {key_id,status,updated} | 400 | 404 | 409 (рекомендуется)
+                                         }} → 200 {key_id,status,updated} | 400 | 404 | 409 (recommended)
 POST /admin/key-id/{key_id}/label       {"label":"…"}                → 200 {key_id,label,updated} | 400 | 404
-                                        (1..64 символа после trim)
+                                        (1..64 characters after trim)
 POST /admin/account/{id}/key-id/{key_id}/policy
                                         {"spend_limit_nano":string|null,
                                          "expires_ts":integer|null}
@@ -404,16 +404,16 @@ POST /admin/account/{id}/key-id/{key_id}/policy
                                                                             expires_ts,updated} | 404 | 409
 ```
 
-`key_id` не даёт доступа к `/v1` и безопасен для хранения в коммерческой PostgreSQL. Новый backend
-должен отзывать ключ по `key_id`, чтобы никогда не сохранять пригодный к использованию `sk-pool-…`.
-Полный ключ никогда помещается в URL; legacy endpoint удалён.
+`key_id` gives no access to `/v1` and is safe to store in the commerce PostgreSQL. The new backend
+must revoke keys by `key_id`, so that a usable `sk-pool-…` is never persisted.
+The full key never appears in a URL; the legacy endpoint has been removed.
 
-Для strict-аккаунта выпуск нового ключа и перевод disabled-ключа обратно в `active` требуют ACK,
-который дословно совпадает с `effective_version` и `content_digest` текущей active policy.
-Отсутствующий, устаревший или неверный ACK возвращает `409`; синтаксически допустимый, но
-невалидный identity (неположительная версия, пустой/необрезанный digest) — `400`. Отключение ключа
-не требует ACK. Для legacy/shadow-аккаунта поле необязательно, но если оно передано, движок всё
-равно проверяет exact match и не принимает двусмысленное подтверждение.
+For a strict account, issuing a new key and moving a disabled key back to `active` require an ACK
+that matches the current active policy's `effective_version` and `content_digest` verbatim.
+A missing, stale or incorrect ACK returns `409`; a syntactically valid but invalid identity
+(non-positive version, empty/untrimmed digest) returns `400`. Disabling a key
+does not require an ACK. For a legacy/shadow account the field is optional, but if it is passed, the engine
+still checks the exact match and does not accept an ambiguous confirmation.
 
 `spend_limit_nano` is an optional positive decimal string and caps lifetime charged platform spend
 for that key. `expires_ts` is an optional future Unix timestamp in seconds. The engine enforces both
@@ -893,36 +893,36 @@ normalization = {
 }
 ```
 
-`POST` принимает strict body
-`{expected_source_state_digest, expected_normalization_digest}`. Успешный ответ имеет
-`result.status=stored|unchanged`; `stale|blocked|conflict` возвращают HTTP 409 вместе с заново
-построенным `result.normalization`, неизвестный account — 404, malformed digest/body — 400/422.
-Apply берёт тот же account funding lock, что reserve/settlement/top-up, и атомарно пишет generation,
-lots и initial head. Legacy in-flight блокирует только свой account; writer, ожидавший lock,
-перечитывает новый head и dual-write'ит уже в funding v2. Глобального drain нет.
-Неотозванный `signup-bonus:<subject>` остаётся `welcome_bonus`, но exact полный отрицательный
-`bonus-revoke:<subject>` того же subject превращает весь текущий aggregate в `paid`: entitlement
-отозван и historical pre-revoke gaps не восстанавливают его заново. Partial, mismatched, duplicate
-или mixed active/revoked evidence возвращает `invalid_ledger_evidence`, а не guessed plan.
+`POST` accepts a strict body
+`{expected_source_state_digest, expected_normalization_digest}`. A successful response has
+`result.status=stored|unchanged`; `stale|blocked|conflict` return HTTP 409 together with a freshly
+rebuilt `result.normalization`; an unknown account returns 404; a malformed digest/body returns 400/422.
+Apply takes the same account funding lock as reserve/settlement/top-up and atomically writes the generation,
+lots and initial head. A legacy in-flight request blocks only its own account; a writer that waited for the lock
+re-reads the new head and dual-writes into funding v2. There is no global drain.
+An unrevoked `signup-bonus:<subject>` remains `welcome_bonus`, but an exact full negative
+`bonus-revoke:<subject>` for the same subject converts the entire current aggregate to `paid`: the entitlement
+is revoked and historical pre-revoke gaps do not restore it. Partial, mismatched, duplicate
+or mixed active/revoked evidence returns `invalid_ledger_evidence`, not a guessed plan.
 
-Assignment-extension typed TS consumers подключены только после зелёного exact producer SHA.
-`packages/contracts` strict-валидирует nullable provisioning context и exact active/recovery pair;
-`packages/engine-client` является единственным typed transport и владельцем canonical Stage 5 v2
-policy/assignment digest builder. При ненулевом context commerce, OpenKeys и service writers
-завершают нужную account-local цепочку, exact policy/extension prepare+GET readback и свежую
-финальную context-проверку до выдачи usable key или объявления service account доступным.
-OpenKeys сначала кредитует номинал, затем normalizes funding и сохраняет глобальную 1:1 policy;
-service policy rule-free, `meter_only`, без funding/catalog/switch pins и с обязательными
-purpose/responsible. Активный target получает только evidence-selected recovery member, активный
-recovery — один member. `apps/api` дополнительно повторяет commerce key-проверку после remote issue;
-если head или authority изменились, ключ отключается до возврата raw secret. При `context=null`
-consumer сохраняет pre-cutover путь и ничего release-v2 не materialize'ит, поэтому deploy сам не
-запускает cutover.
-Stage 8 evidence уже поддерживает zero-drain audit counts, а activation producer выполняет один
-CAS. Strict contracts/client/durable worker consumer подключены producer-first: request хранится до
-сети, complete ACK сохраняется до `confirmed`, timeout повторяет только exact body. Consumer не
-создаёт job сам; до отдельного Stage 8 source-capture/control-plane checkpoint staging fail-closed
-на nullable source fields. Data-plane reserve/settlement release control-plane lock не берут.
+Assignment-extension typed TS consumers are connected only after the green exact producer SHA.
+`packages/contracts` strictly validates the nullable provisioning context and the exact active/recovery pair;
+`packages/engine-client` is the sole typed transport and the owner of the canonical Stage 5 v2
+policy/assignment digest builder. With a non-null context, the commerce, OpenKeys and service writers
+complete the required account-local chain, the exact policy/extension prepare+GET readback and a fresh
+final context check before issuing a usable key or declaring a service account available.
+OpenKeys first credits the face value, then normalizes funding and persists the global 1:1 policy;
+the service policy is rule-free, `meter_only`, without funding/catalog/switch pins and with mandatory
+purpose/responsible. An active target gets only the evidence-selected recovery member; an active
+recovery gets one member. `apps/api` additionally repeats the commerce key check after the remote issue;
+if the head or authority changed, the key is disabled before the raw secret is returned. With `context=null`
+the consumer keeps the pre-cutover path and materializes nothing release-v2, so a deploy by itself does not
+start the cutover.
+Stage 8 evidence already supports zero-drain audit counts, and the activation producer performs one
+CAS. The strict contracts/client/durable worker consumer is connected producer-first: the request is persisted before
+the network, the complete ACK is persisted before `confirmed`, and a timeout retries only the exact body. The consumer does not
+create the job itself; until a separate Stage 8 source-capture/control-plane checkpoint, staging fails closed
+on nullable source fields. Data-plane reserve/settlement do not take the release control-plane lock.
 After each producer SHA reached a green exact-SHA `deploy/watchdog`, `packages/contracts` gained the
 strict release, funding-normalization, assignment-extension and activation wire schemas, while
 `packages/engine-client` gained typed prepare/read, account-local normalization/extension and the
@@ -933,39 +933,39 @@ The activation lane likewise runs only for an explicitly staged immutable reques
 full receipt. Merely having a typed client or a deployed worker does not materialize an account or
 move the release head.
 
-### Коды ошибок
-`400` неверное тело (явная валидация handler'а) · `401` нет/неверный control-ключ · `404`
-аккаунт/ключ/версия не найдены · `409` CAS/версионный конфликт или лимит ниже уже
-списанного+зарезервированного · `422` JSON синтаксически валиден, но не соответствует схеме тела
-(неизвестное поле под `deny_unknown_fields`, неверный тип) · `423` immutable
-pricing policy locked · `503` биллинг выключен или billing authority недоступен.
-На клиентском `/v1`: `402` баланс ≤ 0.
+### Error codes
+`400` invalid body (explicit handler validation) · `401` missing/incorrect control key · `404`
+account/key/version not found · `409` CAS/version conflict or a limit below what has already been
+charged+reserved · `422` JSON is syntactically valid but does not match the body schema
+(unknown field under `deny_unknown_fields`, wrong type) · `423` immutable
+pricing policy locked · `503` billing is disabled or the billing authority is unavailable.
+On the client `/v1`: `402` balance ≤ 0.
 
-### Пример: полный цикл (bash)
+### Example: full cycle (bash)
 ```bash
 CTL=<CONTROL_KEY>; B=http://127.0.0.1:8790
 AID=$(curl -s -XPOST $B/admin/account -H "x-api-key: $CTL" -H 'content-type: application/json' \
       -d '{"handle":"acme","mult_bp":2000}' | jq -r .account)
 curl -s -XPOST $B/admin/account/$AID/credit -H "x-api-key: $CTL" -H 'content-type: application/json' \
-     -d '{"amount_nano":"25000000000","ref":"stripe:pi_123"}'        # зачислить $25 (идемпотентно)
+     -d '{"amount_nano":"25000000000","ref":"stripe:pi_123"}'        # credit $25 (idempotent)
 KEY=$(curl -s -XPOST $B/admin/key -H "x-api-key: $CTL" -H 'content-type: application/json' \
-      -d "{\"account_id\":\"$AID\",\"label\":\"prod\"}" | jq -r .key)   # выдать клиенту
-curl -s $B/admin/account/$AID -H "x-api-key: $CTL"               # баланс для кабинета
-curl -s $B/admin/account/$AID/ledger -H "x-api-key: $CTL"        # история
+      -d "{\"account_id\":\"$AID\",\"label\":\"prod\"}" | jq -r .key)   # issue to the client
+curl -s $B/admin/account/$AID -H "x-api-key: $CTL"               # balance for the dashboard
+curl -s $B/admin/account/$AID/ledger -H "x-api-key: $CTL"        # history
 ```
 
 ---
 
-## 6. Чего пока НЕТ (не блокирует старт)
+## 6. What's NOT there yet (doesn't block the start)
 
-- **Push-поток usage** движок→твой сервис отсутствует. Коммерческий worker опрашивает cursor-based
-  `GET /admin/account/{id}/ledger?after_id=...` и подтверждает обработанный курсор через
-  `POST /admin/account/{id}/ledger/ack`; доставка при этом идемпотентна.
-- **Cross-host TLS/private networking** остаётся частью Фазы 3. Текущий HTTP Control origin доступен
-  только через loopback на том же host и не публикуется Caddy наружу.
-- Ротация `CONTROL_KEY` требует согласованно обновить engine, API и worker env, затем провести
-  обычный engine/API blue-green и stop/start worker по `docs/ops/DEPLOYMENT.md`; одиночный ручной restart
-  создаст окно с несовпадающими ключами.
+- **Push stream of usage** engine→your service is absent. The commerce worker polls the cursor-based
+  `GET /admin/account/{id}/ledger?after_id=...` and acknowledges the processed cursor via
+  `POST /admin/account/{id}/ledger/ack`; delivery is idempotent.
+- **Cross-host TLS/private networking** remains part of Phase 3. The current HTTP Control origin is reachable
+  only via loopback on the same host and is not published by Caddy to the outside.
+- Rotating `CONTROL_KEY` requires updating the engine, API and worker env consistently, then performing
+  the regular engine/API blue-green and worker stop/start per `docs/ops/DEPLOYMENT.md`; a lone manual restart
+  will create a window with mismatched keys.
 
-Вопросы по контракту — они все закрываются этим движком; если чего-то не хватает для сайта,
-допилим на нашей стороне.
+Questions about the contract — they are all covered by this engine; if something is missing for the website,
+we'll build it on our side.

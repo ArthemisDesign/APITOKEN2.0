@@ -1,95 +1,96 @@
-# @claude-api/admin — операционная админ-панель apiToken.sale
+# @claude-api/admin — apiToken.sale operations admin panel
 
-Next.js 16 / React 19 (App Router), порт 3700. Замена однофайловой панели
-`crates/server/src/admin-panel.html` + `admin-panel.js` — тот же визуальный стиль,
-те же эндпоинты, те же русские подписи.
+Next.js 16 / React 19 (App Router), port 3700. Replacement for the single-file panel
+`crates/server/src/admin-panel.html` + `admin-panel.js` — same visual style,
+same endpoints, same Russian labels.
 
-## Модель безопасности
+## Security model
 
-Секретов нет и не будет: браузер ходит по same-origin относительным путям
-(`/overview`, `/admin/*`, `/openkeys-admin/*`, `/partner-admin/*`), аутентификацию
-(forward_auth) и серверные ключи внедряет Caddy. Никаких env-файлов и
-`NEXT_PUBLIC_*` ключей. Вся загрузка данных — в client-компонентах.
+No secrets, and there never will be: the browser uses same-origin relative paths
+(`/overview`, `/admin/*`, `/openkeys-admin/*`, `/partner-admin/*`); authentication
+(forward_auth) and server-side keys are injected by Caddy. No env files and no
+`NEXT_PUBLIC_*` keys. All data loading happens in client components.
 
-## Структура
+## Structure
 
 - `src/lib/api.ts` — `api<T>(path, opts)` / `send<T>(path, method, body)`: typed fetch
-  для same-origin JSON, `ApiError` со статусом и сообщением из тела.
-- `src/lib/usePoll.ts` — `usePoll(key, fetcher, { interval })`: SWR-подобный опрос
-  (дедупликация по key, пауза на скрытой вкладке, ревалидация на фокусе,
-  stale-while-revalidate). `revalidateAll()` — кнопка ↻ в сайдбаре.
-  Реестр ошибок источников: `subscribeErrors(listener)` / `getErrors()`
+  for same-origin JSON, `ApiError` with the status and the message from the body.
+- `src/lib/usePoll.ts` — `usePoll(key, fetcher, { interval })`: SWR-like polling
+  (deduplication by key, pause on a hidden tab, revalidation on focus,
+  stale-while-revalidate). `revalidateAll()` — the ↻ button in the sidebar.
+  Source error registry: `subscribeErrors(listener)` / `getErrors()`
   (`PollError { key, message, dismissed }`), `dismissError(key)`,
-  `refreshPoller(key)` — падает/снимается сам по итогу каждого fetch.
-- `src/lib/toast.ts` — `toast(message, kind?)` (`kind: "ok" | "bad"`, по умолчанию
-  `"ok"`; bad живёт 9 с и имеет ×, ok — 5 с) + `<Toaster/>` (смонтирован в layout).
+  `refreshPoller(key)` — appears/clears itself based on the outcome of each fetch.
+- `src/lib/toast.ts` — `toast(message, kind?)` (`kind: "ok" | "bad"`, defaults to
+  `"ok"`; bad lives 9 s and has a ×, ok — 5 s) + `<Toaster/>` (mounted in the layout).
 - `src/lib/dialog.tsx` — `dialog(options): Promise<Record<string,string> | null>`,
-  промис-замена prompt/confirm; `options: { title, message?, fields?: [{ name,
-  label, type?, value? }], confirmLabel?, danger? }`. null — отмена (Esc/оверлей/
-  «Отмена»), Enter сабмитит. `<DialogHost/>` смонтирован в layout.
+  a promise-based replacement for prompt/confirm; `options: { title, message?, fields?: [{ name,
+  label, type?, value? }], confirmLabel?, danger? }`. null means cancelled (Esc/overlay/
+  "Отмена" — Cancel button), Enter submits. `<DialogHost/>` is mounted in the layout.
 - `src/lib/csv.ts` — `downloadCsv(filename, header, rows)` (`;`, RFC 4180, BOM),
-  `buildCsv`/`csvCell` для тестов, `csvDate()` → `YYYY-MM-DD` для имени файла.
-- `src/lib/sources.ts` — `sourceName(path)`: путь API → русская подпись источника
-  (карта из admin-panel.js; query отрезается, неизвестный путь — как есть).
-- `src/lib/format.ts` — форматтеры 1:1 из `admin-panel.js`: `nanoMoney` (целочисленные
-  nanoUSD-строки через BigInt — единственный способ показывать деньги), `money`
-  (легаси-поля коммерции в долларах, только отображение), `formatDate`, `ago`,
+  `buildCsv`/`csvCell` for tests, `csvDate()` → `YYYY-MM-DD` for the file name.
+- `src/lib/sources.ts` — `sourceName(path)`: API path → Russian source label
+  (map from admin-panel.js; query is stripped, unknown path returned as-is).
+- `src/lib/format.ts` — formatters 1:1 from `admin-panel.js`: `nanoMoney` (integer
+  nanoUSD strings via BigInt — the only way to display money), `money`
+  (commerce legacy fields in dollars, display only), `formatDate`, `ago`,
   `duration`, `ageText`, `ratio`, `plural`, `count`, `windowLabel`.
-- `src/lib/nav.ts` — `NAV` (источник правды сайдбара), `isNavItemActive`.
+- `src/lib/nav.ts` — `NAV` (sidebar source of truth), `isNavItemActive`.
 - `src/lib/theme.ts` — `THEME_STORAGE_KEY` (`apitoken-admin-theme:v1`), `toggleTheme`.
-- `src/lib/types.ts` — типы payload'ов бэкендов (все поля опциональны).
+- `src/lib/types.ts` — backend payload types (all fields optional).
 - `src/components/ui.tsx` — `PageHead`, `SectionHeader`, `CardGrid`, `StatCard`,
   `Banner`, `Dot`, `Pill`, `TableCard`, `EmptyRow`, `LoadingGrid`, `Modal`
-  (Esc/оверлей закрывают, Tab-трап, возврат фокуса; `wide` для широких).
-- `src/components/sidebar.tsx` — сайдбар с навигацией, обновлением и темой.
-- `src/components/error-center.tsx` — `<ErrorCenter/>` (смонтирован в layout):
-  красные карточки падающих источников с ↻/×, читает реестр ошибок usePoll.
-- `src/components/spend-stats-modal.tsx` — модалка «Кто тратит» (`/spend-stats`,
-  окна 24ч/7д/30д + произвольный диапазон, сводка charged vs real-API и OpenKeys).
-  Подключение: `const { openSpendStats, spendStatsModal } = useSpendStatsModal()`,
-  `openSpendStats` — в `StatCard.onClick`/`onClick` заголовка «потрачено»,
-  `{spendStatsModal}` — в конец страницы. Типы `SpendStatsResponse`, `SpendPeriod`
-  и хелпер `isOpenkeys` экспортированы.
-- `src/app/page.tsx` — Сводка (эталонная страница; портируйте остальные по ней).
-- `src/app/paying-users/page.tsx` — отдельный read-only control room только для платящих клиентов:
-  fleet-wide paid/spend summary, provider rail Claude/GPT/Gemini и серверно-пагинированная таблица.
-- `src/app/subscriptions/codex-capacity-board.tsx` — компактная GPT-сводка shared-plan capacity,
-  native-credit/API-$ окон и masked-email homes. Raw calibration, token-capacity и profitability
-  matrices намеренно не выводятся в операторский UI.
-- `src/app/subscriptions/claude-capacity-board.tsx` — только masked-email окна подписок: состояние,
-  quota/reset и exact API-$ для 5ч/7д. Backend evidence и тарифный каталог не дублируются в таблицах.
-- `src/app/subscriptions/gemini-capacity-board.tsx` — masked-email профили с provider quota/reset и
-  exact workload API-$ для 5ч/7д. При degraded authority quota остаётся видна, saleable money
-  показывает `обновляем`; профили вне ротации не входят в fleet total.
-- `src/app/pricing/activation-control.tsx` — отдельный 5-секундный fail-closed poller bounded
-  activation snapshot: release pair, Stage 8 freshness/blockers, engine head, jobs/receipts и
-  explicit cutover/recovery staging. Mutation требует reason + точную phrase и повторный fresh GET;
-  canary/maintenance controls здесь запрещены.
-- `src/app/api/health/route.ts` — `GET /api/health` → `{"ok":true}` для watchdog.
+  (Esc/overlay close, Tab trap, focus restore; `wide` for wide modals).
+- `src/components/sidebar.tsx` — sidebar with navigation, refresh, and theme.
+- `src/components/error-center.tsx` — `<ErrorCenter/>` (mounted in the layout):
+  red cards for failing sources with ↻/×, reads the usePoll error registry.
+- `src/components/spend-stats-modal.tsx` — the "Кто тратит" ("Who is spending") modal (`/spend-stats`,
+  24h/7d/30d windows + arbitrary range, charged vs real-API and OpenKeys summary).
+  Wiring: `const { openSpendStats, spendStatsModal } = useSpendStatsModal()`,
+  `openSpendStats` — into `StatCard.onClick`/`onClick` of the "потрачено" ("spent") header,
+  `{spendStatsModal}` — at the end of the page. The `SpendStatsResponse`, `SpendPeriod`
+  types and the `isOpenkeys` helper are exported.
+- `src/app/page.tsx` — Overview (the reference page; port the others following it).
+- `src/app/paying-users/page.tsx` — a separate read-only control room for paying customers only:
+  fleet-wide paid/spend summary, Claude/GPT/Gemini provider rail, and a server-paginated table.
+- `src/app/subscriptions/codex-capacity-board.tsx` — compact GPT summary of shared-plan capacity,
+  native-credit/API-$ windows, and masked-email homes. Raw calibration, token-capacity, and
+  profitability matrices are intentionally not surfaced in the operator UI.
+- `src/app/subscriptions/claude-capacity-board.tsx` — masked-email subscription windows only: state,
+  quota/reset, and exact API-$ for 5h/7d. Backend evidence and the tariff catalog are not duplicated
+  in the tables.
+- `src/app/subscriptions/gemini-capacity-board.tsx` — masked-email profiles with provider quota/reset and
+  exact workload API-$ for 5h/7d. Under degraded authority the quota stays visible, saleable money
+  shows `обновляем` ("updating"); profiles outside rotation are excluded from the fleet total.
+- `src/app/pricing/activation-control.tsx` — a separate 5-second fail-closed poller of the bounded
+  activation snapshot: release pair, Stage 8 freshness/blockers, engine head, jobs/receipts, and
+  explicit cutover/recovery staging. Mutation requires a reason + the exact phrase and a repeated fresh GET;
+  canary/maintenance controls are forbidden here.
+- `src/app/api/health/route.ts` — `GET /api/health` → `{"ok":true}` for the watchdog.
 
-## Конвенции страниц
+## Page conventions
 
-1. Страница — `'use client'`, данные через `usePoll("page-key", load, { interval })`;
-   все источники — одним `Promise.all` с `.catch(() => null)` на источник
-   (деградация молчит, блоки показывают «—» / «источник недоступен»).
-   Интервалы как в `admin-panel.js`: Сводка — 30 с, Подписки и Система — 10 с,
-   остальные — без автоматического опроса (только фокус/кнопка ↻).
-2. Русские подписи — дословно из `admin-panel.js`.
-3. Деньги — только `nanoMoney` над integer-строками; JS number для сумм запрещён.
-4. Пока данных нет (`data === undefined`) — `PageHead` + `LoadingGrid`.
-5. Тяжёлые таблицы мемоизируйте (`React.memo`/`useMemo`); статичный JSX выносите
-   из компонентов страниц.
-6. Ошибки действий показывайте через `toast(..., "bad")`, успех — `toast(...)`;
-   подтверждения и ввод — через `dialog()` (не `window.confirm/prompt`).
-7. «Потрачено» в таблицах аккаунтов — кликабельно: `onClick={openSpendStats}`
-   из `useSpendStatsModal()` + `title="Разбивка: сутки / 7 дней / 30 дней"`.
-8. Экспорт таблиц — `downloadCsv(filename, header, rows)`, имя файла с датой
-   через `csvDate()` (например `users-2026-07-31.csv`).
-9. Страница `/paying-users` использует только exact nanoUSD-поля
-   `/admin/finance/paying-users`; суммы провайдеров нельзя восстанавливать из float USD или
-   top-50 `/spend-stats`.
+1. A page is `'use client'`, data via `usePoll("page-key", load, { interval })`;
+   all sources in a single `Promise.all` with `.catch(() => null)` per source
+   (degradation is silent, blocks show "—" / "источник недоступен" ("source unavailable")).
+   Intervals as in `admin-panel.js`: Overview — 30 s, Subscriptions and System — 10 s,
+   the rest — no automatic polling (focus/↻ button only).
+2. Russian labels — verbatim from `admin-panel.js`.
+3. Money — only `nanoMoney` over integer strings; JS number for amounts is forbidden.
+4. While there is no data (`data === undefined`) — `PageHead` + `LoadingGrid`.
+5. Memoize heavy tables (`React.memo`/`useMemo`); hoist static JSX out of
+   page components.
+6. Show action errors via `toast(..., "bad")`, success via `toast(...)`;
+   confirmations and input — via `dialog()` (not `window.confirm/prompt`).
+7. "Потрачено" ("Spent") in account tables is clickable: `onClick={openSpendStats}`
+   from `useSpendStatsModal()` + `title="Разбивка: сутки / 7 дней / 30 дней"`.
+8. Table export — `downloadCsv(filename, header, rows)`, file name with a date
+   via `csvDate()` (e.g. `users-2026-07-31.csv`).
+9. The `/paying-users` page uses only the exact nanoUSD fields of
+   `/admin/finance/paying-users`; provider amounts must not be reconstructed from float USD or
+   the top-50 `/spend-stats`.
 
-## Команды
+## Commands
 
 ```bash
 pnpm dev          # next dev -p 3700

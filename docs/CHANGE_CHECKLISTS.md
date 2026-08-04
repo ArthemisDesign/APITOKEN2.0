@@ -1,162 +1,166 @@
-# CHANGE_CHECKLISTS.md — чеклисты кросс-функциональных изменений
+# CHANGE_CHECKLISTS.md — checklists for cross-functional changes
 
-Типовые изменения, которые невозможно сделать в одном месте: у каждого есть зеркала и
-зависимые участки в других контекстах. Карта самих связей — `docs/DEPENDENCIES.md`; правила
-изменения контрактов — раздел «Контракты между контекстами» в корневом `AGENTS.md`.
+Typical changes that cannot be made in a single place: each one has mirrors and dependent
+areas in other contexts. The map of the relationships themselves is `docs/DEPENDENCIES.md`;
+the rules for changing contracts are the "Contracts between contexts" section of the root
+`AGENTS.md`.
 
-**Как пользоваться.** Если твоё изменение подпадает под один из типов ниже — пройди чеклист
-ЦЕЛИКОМ до коммита и укажи в body коммита, какой чеклист применён (например: «Чеклист: новая
-модель — все пункты пройдены» или «пункт OpenKeys неприменим, модель Anthropic-only»).
-Пункт нельзя молча пропустить: либо выполнен, либо явно помечен неприменимым с причиной.
-Чеклист — минимум, а не потолок: если по `docs/DEPENDENCIES.md` у изменения есть ещё
-потребители, они тоже входят в diff или в отчёт.
+**How to use.** If your change falls under one of the types below — walk the checklist
+IN FULL before committing, and state in the commit body which checklist was applied (for
+example: "Checklist: new model — all items completed" or "OpenKeys item not applicable,
+model is Anthropic-only"). An item must never be silently skipped: it is either completed
+or explicitly marked not applicable with a reason. The checklist is a floor, not a
+ceiling: if `docs/DEPENDENCIES.md` shows the change has additional consumers, they belong
+in the diff or in the report too.
 
-## Новая модель (в существующем провайдере)
+## New model (in an existing provider)
 
-Публикация двухэтапная. Implementation/research мёржится первым и остаётся dormant: на этом шаге
-запрещено добавлять модель в production defaults/systemd, публичный model catalog, router presets,
-сайт и публичные docs. После GREEN exact implementation SHA выполняется controlled production live
-на owned credential. Бесплатный `countTokens` идёт первым, затем минимальный generation; aggregate
-admission budget по умолчанию не больше `$0.0001` (0,01 цента). Quota/catalog row и `countTokens`
-не доказывают generation. Публикационный gate требует одновременно generation 2xx, реальный output,
-terminal authoritative usage, incremental SSE и все заявленные controls. Только после этого
-отдельный publication-коммит проходит публичную половину чеклиста. Любой failed generation означает
-withdrawal: публичные поверхности снимаются, а immutable/dormant artifacts не переписываются.
+Publication is two-stage. The implementation/research merge lands first and stays dormant:
+at this step it is forbidden to add the model to production defaults/systemd, the public
+model catalog, router presets, the website, or public docs. After GREEN on the exact
+implementation SHA, a controlled production live run is performed on an owned credential.
+The free `countTokens` goes first, then a minimal generation; the default aggregate
+admission budget is no more than `$0.0001` (0.01 of a cent). A quota/catalog row and
+`countTokens` do not prove generation. The publication gate requires simultaneously:
+generation 2xx, real output, terminal authoritative usage, incremental SSE, and every
+claimed control. Only after that does a separate publication commit walk the public half
+of the checklist. Any failed generation means withdrawal: public surfaces are taken down,
+and immutable/dormant artifacts are not rewritten.
 
-- [ ] Research/implementation commit: официальный model/price/control contract, точный private wire
-      mapping и controlled canary path; runtime implementation по умолчанию dormant.
-- [ ] `crates/metering/src/{lib,codex,gemini}.rs` — тарифная таблица (authority цен, nanoUSD).
-- [ ] `packages/contracts` — `CURRENT_*_CANONICAL_MODELS` и/или pricing-схемы.
-- [ ] GREEN exact implementation SHA + live gate: generation/output/usage/SSE/controls подтверждены
-      на каждой заявленной subscription plan/model tier; sanitized evidence записано в provider doc.
-- [ ] Publication commit не смешан с implementation commit; при failed live вместо него выполнен
-      withdrawal из всех ошибочно затронутых public/default поверхностей.
-- [ ] `apps/web/src/lib/models.ts` — SEO-каталог (шапка файла требует синхронизации с
-      `crates/metering`); выполняется только в publication commit.
-- [ ] `apps/web/src/app/docs/` — docs-портал: `integration-builder-data.ts` и, если модель
-      видна в справке, `api-reference-data.ts` / `docs-portal.tsx`; только после live gate.
-- [ ] Production defaults/systemd и `crates/router/routing-presets.json` — только после live gate.
-- [ ] `docs/engine/<провайдер>.md` — список моделей провайдера.
-- [ ] `docs/commerce/MULTI-DISCOUNT.md` §7 — новая модель НЕ включается автоматически:
-      нужна явная catalog generation (каталоги/свитчи/политики в `crates/registry/src/pricing/`
-      через versioned pricing-протокол Control API).
-- [ ] `apps/openkeys` — `assertOpenKeysCatalog()` сверяется с `CURRENT_PRODUCT_CATALOG_ENTRIES`
-      из `packages/contracts`: без обновления каталога OpenKeys fail closed.
-- [ ] `docs/commerce/PRICING.md` — если модель меняет клиентский прайсинг.
-- [ ] `apps/admin` — если модель видна в квотах/калькуляторе (`subscriptions`,
+- [ ] Research/implementation commit: official model/price/control contract, exact private wire
+      mapping, and a controlled canary path; runtime implementation is dormant by default.
+- [ ] `crates/metering/src/{lib,codex,gemini}.rs` — tariff table (price authority, nanoUSD).
+- [ ] `packages/contracts` — `CURRENT_*_CANONICAL_MODELS` and/or pricing schemas.
+- [ ] GREEN exact implementation SHA + live gate: generation/output/usage/SSE/controls confirmed
+      on every claimed subscription plan/model tier; sanitized evidence recorded in the provider doc.
+- [ ] Publication commit is not mixed with the implementation commit; on failed live, a
+      withdrawal from every mistakenly touched public/default surface was performed instead.
+- [ ] `apps/web/src/lib/models.ts` — SEO catalog (the file header requires synchronization with
+      `crates/metering`); done only in the publication commit.
+- [ ] `apps/web/src/app/docs/` — docs portal: `integration-builder-data.ts` and, if the model
+      appears in the reference, `api-reference-data.ts` / `docs-portal.tsx`; only after the live gate.
+- [ ] Production defaults/systemd and `crates/router/routing-presets.json` — only after the live gate.
+- [ ] `docs/engine/<provider>.md` — provider's model list.
+- [ ] `docs/commerce/MULTI-DISCOUNT.md` §7 — a new model is NOT included automatically:
+      an explicit catalog generation is required (catalogs/switches/policies in
+      `crates/registry/src/pricing/` via the versioned pricing protocol of the Control API).
+- [ ] `apps/openkeys` — `assertOpenKeysCatalog()` is checked against `CURRENT_PRODUCT_CATALOG_ENTRIES`
+      from `packages/contracts`: without a catalog update OpenKeys fails closed.
+- [ ] `docs/commerce/PRICING.md` — if the model changes customer pricing.
+- [ ] `apps/admin` — if the model is visible in quotas/calculator (`subscriptions`,
       `sales/calculator/calculation.ts`).
 
-## Изменение цены или мультипликатора
+## Price or multiplier change
 
-- [ ] `crates/metering` — authority-таблица (официальные цены провайдера), ревьюимый коммит.
-- [ ] Engine multiplier меняется только durable jobs — не разовыми вызовами (инвариант из
-      `CLAUDE.md`); протокол — versioned pricing в `docs/engine/CONTROL_API.md`. Машинерия:
+- [ ] `crates/metering` — authority table (official provider prices), reviewable commit.
+- [ ] Engine multiplier changes only through durable jobs — never one-off calls (invariant from
+      `CLAUDE.md`); the protocol is versioned pricing in `docs/engine/CONTROL_API.md`. Machinery:
       `packages/db/src/pricing-control-jobs.ts`, `apps/worker/src/pricing-worker.service.ts`,
-      `packages/engine-client` (ledger/ack), исполнение в `crates/forward/src/**/billing.rs`.
-- [ ] `packages/contracts` — global/provider/model discount и pricing release schemas;
-      `packages/db/src/pricing.ts`. `B2C_PRICING_TIERS` не сохранять как target authority.
-- [ ] `apps/web` — витринные числа: удалить зависимости от `src/lib/pricing-tiers.ts`, проверить
-      `src/lib/models.ts` и всю
-      витринная копия (`src/components/marketing-pages.tsx`, `src/components/cost-calculator.tsx`,
+      `packages/engine-client` (ledger/ack), execution in `crates/forward/src/**/billing.rs`.
+- [ ] `packages/contracts` — global/provider/model discount and pricing release schemas;
+      `packages/db/src/pricing.ts`. Do not keep `B2C_PRICING_TIERS` as a target authority.
+- [ ] `apps/web` — storefront figures: remove dependencies on `src/lib/pricing-tiers.ts`, check
+      `src/lib/models.ts` and all
+      storefront copy (`src/components/marketing-pages.tsx`, `src/components/cost-calculator.tsx`,
       `src/lib/md-pages.ts`, `src/lib/messages.json`, `src/lib/llms.ts`, `src/lib/learn-*.ts`).
-      Радиус проверять grep'ом по старому числу, а не по памяти.
-- [ ] `docs/commerce/PRICING.md` — global/provider/model pricing, B2B/OpenKeys/service и bonus.
+      Determine the radius by grepping for the old figure, not from memory.
+- [ ] `docs/commerce/PRICING.md` — global/provider/model pricing, B2B/OpenKeys/service, and bonus.
 - [ ] `docs/commerce/MULTI-DISCOUNT.md` + Stage 5/6/8/9 — target/recovery release, full inventory,
-      100% shadow и one-head activation; per-account canary/maintenance rollout не добавлять.
-- [ ] Production Stage 5/6 запускается только защищённым AdminGuard producer API: verified actor,
-      fresh exact plan digest, meaningful mutation reason, attributed audit и strict status;
-      package CLI/ручной SSH не считать operator surface. UI consumer подключать отдельным
-      коммитом только после GREEN producer SHA.
-- [ ] Terminal pre-cutover `strict + legacy_single` delivery восстанавливается только exact-CAS
-      `/v1/admin/pricing-policy-delivery-repairs`: старый payload не переписывать, generic dead job
-      не ретраить и commerce rows вручную не исправлять.
-- [ ] B2B current discount остаётся independent Anthropic rule; OpenKeys остаётся 1:1; service
-      остаётся `meter_only` и all-model. Явно отметить неприменимые классы.
-- [ ] Партнёрские расчёты: `docs/sales/SALES_PAYOUT_PERIODS.md`, логика `apps/sales-api` —
-      если цена входит в базу выплат.
-- [ ] Sales feed/commission: exact `paid_funded_nano` не должен зависеть от pricing mode; welcome
-      bonus исключается. При изменении wire schema пройти отдельный чеклист sales feed.
+      100% shadow, and one-head activation; do not add per-account canary/maintenance rollout.
+- [ ] Production Stage 5/6 runs only through the protected AdminGuard producer API: verified actor,
+      fresh exact plan digest, meaningful mutation reason, attributed audit, and strict status;
+      package CLI/manual SSH does not count as an operator surface. Wire the UI consumer in a
+      separate commit only after GREEN producer SHA.
+- [ ] A terminal pre-cutover `strict + legacy_single` delivery is recovered only through exact-CAS
+      `/v1/admin/pricing-policy-delivery-repairs`: never rewrite the old payload, never retry a
+      generic dead job, and never fix commerce rows by hand.
+- [ ] B2B current discount stays an independent Anthropic rule; OpenKeys stays 1:1; service
+      stays `meter_only` and all-model. Explicitly mark the classes that do not apply.
+- [ ] Partner calculations: `docs/sales/SALES_PAYOUT_PERIODS.md`, `apps/sales-api` logic —
+      if the price feeds the payout base.
+- [ ] Sales feed/commission: exact `paid_funded_nano` must not depend on pricing mode; the welcome
+      bonus is excluded. If the wire schema changes, walk the separate sales feed checklist.
 - [ ] `apps/admin/src/app/sales/calculator/calculation.ts` — `PRODUCT_CATALOG`.
 
-## Новый провайдер подписки
+## New subscription provider
 
-Полный порядок research → credential/Auth Bot → runtime → money/calibration → admin → blue-green →
-live GA: `docs/engine/PROVIDER_ONBOARDING.md`. Чеклист ниже — индекс обязательного радиуса, а не
-замена phase gates и Definition of GA из playbook.
+Full order research → credential/Auth Bot → runtime → money/calibration → admin → blue-green →
+live GA: `docs/engine/PROVIDER_ONBOARDING.md`. The checklist below is an index of the mandatory
+radius, not a replacement for the phase gates and Definition of GA from the playbook.
 
-- [ ] Credential-крейт `crates/<provider>-credential` (шифрованные OAuth-конверты, без сети)
-      + `crates/<name>/CLAUDE.md` по правилам «живого контракта».
-- [ ] `crates/metering/src/<provider>.rs` — тарифная таблица.
-- [ ] Runtime движка: транспорт/пул/биллинг провайдера в `crates/forward` (основной объём кода),
-      режим в `crates/server`, слоты/порты в `deploy/Caddyfile`, systemd-юниты.
-- [ ] Пополнение пула: OAuth-provisioning в `crates/authbot` (если провайдер подписочный).
-- [ ] Sticky/unlimited-parallel runtime: нет локальной очереди/semaphore/reject; retry только до
-      первого public byte; disconnect drain сохраняет terminal usage и settlement.
-- [ ] Durable reserve/delivering/settlement + exact immutable turn evidence; official API nanoUSD и
-      native subscription credits ведутся раздельно.
-- [ ] Калибровка каждого native window по Codex fixed-point/raw-evidence контракту; exact plan +
-      duration cohorts, null до evidence, без nominal/prior/EMA.
-- [ ] Exact turn delivery имеет bounded FIFO, idempotent replay, conflict quarantine, pending/drop
-      diagnostics и shutdown drain; quota snapshot не может обогнать failed spend event.
-- [ ] Доставка: `config.env.example`, deploy-скрипты (`watchdog.sh`, `watchdog-lib*.sh`,
-      `engine-bluegreen.sh`, `sudoers.d`) — новые порты, юниты и секреты провайдера.
-- [ ] Observability: метрики и алерты в `observability/prometheus/rules/*`, дашборды Grafana,
-      runbook-секции в `docs/ops/MONITORING.md` (см. чеклист «Новый алерт или метрика»).
-- [ ] `docs/engine/<PROVIDER>_PROVIDER.md` — новый документ + строка в `docs/README.md`.
-- [ ] `docs/commerce/MULTI-DISCOUNT.md` — каталоги, рубильник провайдера (§8), политики.
-- [ ] `packages/contracts` — canonical models, продуктовые каталоги.
-- [ ] `apps/web` (витрина), `apps/openkeys`, `apps/admin` — отображение и продажа.
-- [ ] `apps/admin` добавляет провайдера в единый компактный fleet control-room и одну account-table:
-      реальные provider windows, exact remaining/full API-$, used rail, readiness/coverage и masked
-      identity. Raw token/profitability/cache/quota-bucket matrices остаются backend/report evidence,
-      а pending/degraded authority скрывает saleable money вместо показа stale `$`.
-- [ ] Controlled live matrix каждого опубликованного plan/model/tier + public post-deploy smoke;
-      exact landed SHA имеет `deploy/watchdog` GREEN.
-- [ ] Строка в `docs/DEPENDENCIES.md`.
+- [ ] Credential crate `crates/<provider>-credential` (encrypted OAuth envelopes, no network)
+      + `crates/<name>/CLAUDE.md` per the "living contract" rules.
+- [ ] `crates/metering/src/<provider>.rs` — tariff table.
+- [ ] Engine runtime: provider transport/pool/billing in `crates/forward` (the bulk of the code),
+      mode in `crates/server`, slots/ports in `deploy/Caddyfile`, systemd units.
+- [ ] Pool replenishment: OAuth provisioning in `crates/authbot` (if the provider is subscription-based).
+- [ ] Sticky/unlimited-parallel runtime: no local queue/semaphore/reject; retry only before
+      the first public byte; disconnect drain preserves terminal usage and settlement.
+- [ ] Durable reserve/delivering/settlement + exact immutable turn evidence; official API nanoUSD and
+      native subscription credits are tracked separately.
+- [ ] Calibration of every native window per the Codex fixed-point/raw-evidence contract; exact plan +
+      duration cohorts, null until evidence, no nominal/prior/EMA.
+- [ ] Exact turn delivery has bounded FIFO, idempotent replay, conflict quarantine, pending/drop
+      diagnostics, and shutdown drain; a quota snapshot can never overtake a failed spend event.
+- [ ] Delivery: `config.env.example`, deploy scripts (`watchdog.sh`, `watchdog-lib*.sh`,
+      `engine-bluegreen.sh`, `sudoers.d`) — the provider's new ports, units, and secrets.
+- [ ] Observability: metrics and alerts in `observability/prometheus/rules/*`, Grafana dashboards,
+      runbook sections in `docs/ops/MONITORING.md` (see the "New alert or metric" checklist).
+- [ ] `docs/engine/<PROVIDER>_PROVIDER.md` — new document + a line in `docs/README.md`.
+- [ ] `docs/commerce/MULTI-DISCOUNT.md` — catalogs, provider switch (§8), policies.
+- [ ] `packages/contracts` — canonical models, product catalogs.
+- [ ] `apps/web` (storefront), `apps/openkeys`, `apps/admin` — display and sale.
+- [ ] `apps/admin` adds the provider to the single compact fleet control-room and one account-table:
+      real provider windows, exact remaining/full API-$, used rail, readiness/coverage, and masked
+      identity. Raw token/profitability/cache/quota-bucket matrices stay backend/report evidence,
+      and pending/degraded authority hides saleable money instead of showing stale `$`.
+- [ ] Controlled live matrix of every published plan/model/tier + public post-deploy smoke;
+      the exact landed SHA has `deploy/watchdog` GREEN.
+- [ ] A line in `docs/DEPENDENCIES.md`.
 
-## Изменение Control API (движок ↔ коммерция/OpenKeys)
+## Control API change (engine ↔ commerce/OpenKeys)
 
-Контракт expand-only — см. протокол в `AGENTS.md`. Порядок: сначала производитель (движок),
-потребители — после зелёного `deploy/watchdog` на SHA производителя.
+The contract is expand-only — see the protocol in `AGENTS.md`. Order: the producer (engine)
+first, consumers after a green `deploy/watchdog` on the producer SHA.
 
-- [ ] `crates/server/src/http.rs` + `src/admin.rs` — роуты/хендлеры.
-- [ ] `docs/engine/CONTROL_API.md` — В ТОМ ЖЕ коммите, что и код движка.
-- [ ] `packages/contracts` — zod-схемы новых/расширенных сообщений.
-- [ ] `packages/engine-client` — методы клиента (отдельным шагом после деплоя движка).
-- [ ] Потребители по `docs/DEPENDENCIES.md`: `apps/api`, `apps/worker`, `apps/openkeys`
-      (после деплоя движка). `apps/admin` идёт через Caddy-прокси — отдельно проверить
-      operator-роуты.
+- [ ] `crates/server/src/http.rs` + `src/admin.rs` — routes/handlers.
+- [ ] `docs/engine/CONTROL_API.md` — IN THE SAME commit as the engine code.
+- [ ] `packages/contracts` — zod schemas for new/extended messages.
+- [ ] `packages/engine-client` — client methods (a separate step after the engine deploy).
+- [ ] Consumers per `docs/DEPENDENCIES.md`: `apps/api`, `apps/worker`, `apps/openkeys`
+      (after the engine deploy). `apps/admin` goes through the Caddy proxy — verify the
+      operator routes separately.
 
-## Изменение sales feed (коммерция ↔ партнёрка)
+## Sales feed change (commerce ↔ sales)
 
-Контракт expand-only; типы продублированы локальными zod-схемами на ОБЕИХ сторонах — правятся
-обе.
+The contract is expand-only; the types are duplicated as local zod schemas on BOTH sides —
+both are edited.
 
-- [ ] Производитель `apps/api/src/sales-feed.controller.ts` (или `apps/sales-api/src/internal.controller.ts`
-      для обратного направления) — первым, по протоколу контрактов.
-- [ ] Потребитель `apps/sales-api` (`sync.service.ts`, `commerce.service.ts`) или `apps/api`
-      (`promo.service.ts`, `auth.service.ts`) — после деплоя производителя.
-- [ ] `apps/sales-web` — партнёрский фронтенд (`referrals`, `partner-analytics`, `lib/api.ts`),
-      если изменение фида видно партнёру.
-- [ ] `docs/sales/SALES_PORTAL.md` — раздел «Граница sales ↔ commerce» в том же коммите.
-- [ ] Строка sales feed в `docs/DEPENDENCIES.md` — если меняется состав эндпоинтов.
+- [ ] Producer `apps/api/src/sales-feed.controller.ts` (or `apps/sales-api/src/internal.controller.ts`
+      for the reverse direction) — first, per the contract protocol.
+- [ ] Consumer `apps/sales-api` (`sync.service.ts`, `commerce.service.ts`) or `apps/api`
+      (`promo.service.ts`, `auth.service.ts`) — after the producer deploy.
+- [ ] `apps/sales-web` — partner frontend (`referrals`, `partner-analytics`, `lib/api.ts`),
+      if the feed change is visible to the partner.
+- [ ] `docs/sales/SALES_PORTAL.md` — the "The sales ↔ commerce boundary" section in the same commit.
+- [ ] The sales feed line in `docs/DEPENDENCIES.md` — if the set of endpoints changes.
 
-## Новый способ оплаты
+## New payment method
 
-- [ ] `packages/payments/src/<provider>.ts` — адаптер + регистрация в реестре
-      (`apps/api/src/payments.module.ts`, env-фабрика).
-- [ ] `PaymentProviderCode` и чекаут-схемы: `apps/api/src/checkout.service.ts`,
+- [ ] `packages/payments/src/<provider>.ts` — adapter + registration in the registry
+      (`apps/api/src/payments.module.ts`, env factory).
+- [ ] `PaymentProviderCode` and checkout schemas: `apps/api/src/checkout.service.ts`,
       `packages/contracts`.
-- [ ] Вебхук в `apps/api/src/payments.controller.ts` (+ исключение из origin-гарда) и/или
-      reconcile-поллинг в `apps/worker`.
-- [ ] `docs/commerce/<PROVIDER>_INTEGRATION.md` — новый документ + строка в `docs/README.md`.
-- [ ] `apps/web` — выбор провайдера на чекауте; `apps/admin` — финансовые витрины.
-- [ ] Строка в `docs/DEPENDENCIES.md`.
+- [ ] Webhook in `apps/api/src/payments.controller.ts` (+ exclusion from the origin guard) and/or
+      reconcile polling in `apps/worker`.
+- [ ] `docs/commerce/<PROVIDER>_INTEGRATION.md` — new document + a line in `docs/README.md`.
+- [ ] `apps/web` — provider selection at checkout; `apps/admin` — finance storefronts.
+- [ ] A line in `docs/DEPENDENCIES.md`.
 
-## Новый алерт или метрика
+## New alert or metric
 
-- [ ] `observability/prometheus/rules/{application,operations}.yml` — алерт с аннотацией
+- [ ] `observability/prometheus/rules/{application,operations}.yml` — alert with the annotation
       `runbook: 'docs/ops/MONITORING.md#<alert>'`.
-- [ ] `docs/ops/MONITORING.md` — секция `## <Alert>` В ТОМ ЖЕ коммите (без неё не пройдёт
-      `deploy/monitoring-config.test.sh`).
-- [ ] Если метрика новая — коллектор должен её экспортировать (проверяет тот же скрипт).
+- [ ] `docs/ops/MONITORING.md` — a `## <Alert>` section IN THE SAME commit (without it
+      `deploy/monitoring-config.test.sh` will not pass).
+- [ ] If the metric is new — the collector must export it (checked by the same script).

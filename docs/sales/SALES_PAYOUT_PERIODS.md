@@ -1,130 +1,133 @@
-# SALES_PAYOUT_PERIODS.md — периоды и выплаты партнёрской программы
+# SALES_PAYOUT_PERIODS.md — partner program periods and payouts
 
-Как устроены начисления и выплаты сейлзам по полумесячным периодам: как считать заработок,
-когда он «замораживается», когда уходит на кошелёк и как работает ролловер. Модель специально
-сделана так, чтобы **все расчёты выводились из уже существующих данных** (`commission_entries` +
-`commission_entries_v2` — dual-schema UNION, события не пересекаются — и `payouts`) без
-отдельного «начисляющего» процесса — период определяется временем, а суммы
-считаются запросом на лету.
+How accruals and payouts to salespeople work over half-month periods: how to compute earnings,
+when they get "frozen", when they are sent to the wallet, and how rollover works. The model is
+deliberately built so that **all calculations are derived from already existing data**
+(`commission_entries` + `commission_entries_v2` — a dual-schema UNION, the events do not overlap —
+and `payouts`) without a separate "accruing" process — the period is defined by time and the
+amounts are computed by a query on the fly.
 
-Код: `packages/sales-db/src/periods.ts` (чистая математика периодов, покрыта тестами
-`periods.test.ts`) и `packages/sales-db/src/payout-periods.ts` (запросы состояния/истории/списка).
-API — `apps/sales-api` (`GET /v1/partner/periods`, `GET /v1/admin/payout-list`). UI — вкладка
-Payouts в кабинете и вкладка «Payout list» в админке.
+Code: `packages/sales-db/src/periods.ts` (pure period math, covered by tests
+`periods.test.ts`) and `packages/sales-db/src/payout-periods.ts` (state/history/list queries).
+API — `apps/sales-api` (`GET /v1/partner/periods`, `GET /v1/admin/payout-list`). UI — the Payouts
+tab in the dashboard and the "Payout list" tab in the admin panel.
 
-## 1. Периоды (полумесячные, UTC)
+## 1. Periods (half-month, UTC)
 
-**Два периода в каждом месяце → 2 выплаты в месяц:**
+**Two periods in every month → 2 payouts per month:**
 
-| Период | Дни (включительно) | Примеры |
+| Period | Days (inclusive) | Examples |
 |---|---|---|
-| **P1** | **1 – 15** | всегда 1–15 |
-| **P2** | **16 – последний день месяца** | июль 16–**31**, апрель 16–**30**, февраль 16–**28/29** |
+| **P1** | **1 – 15** | always 1–15 |
+| **P2** | **16 – last day of the month** | July 16–**31**, April 16–**30**, February 16–**28/29** |
 
-Всё считается в **UTC** (детерминированно; часовой пояс можно вынести в конфиг позже). Ключ
-периода — `YYYY-MM-P1` / `YYYY-MM-P2` (например `2026-07-P2`).
+Everything is computed in **UTC** (deterministic; the time zone can be moved into config later).
+The period key is `YYYY-MM-P1` / `YYYY-MM-P2` (e.g. `2026-07-P2`).
 
-Технически внутри кода границы хранятся как полуинтервалы `[начало, конец)` с **эксклюзивным**
-концом: P1 = `[1-е 00:00, 16-е 00:00)`, P2 = `[16-е 00:00, 1-е следующего месяца 00:00)`. Это тот
-же самый диапазон — 1-е число следующего месяца в период **не входит**, оно уже начало следующего
-P1. Декабрь P2 → январь P1 следующего года обрабатывается корректно; последний день месяца
-(28/29/30/31) всегда попадает в P2.
+Technically, inside the code, boundaries are stored as half-open intervals `[start, end)` with an
+**exclusive** end: P1 = `[1st 00:00, 16th 00:00)`, P2 = `[16th 00:00, 1st of next month 00:00)`.
+This is the very same range — the 1st of the next month does **not** belong to the period, it is
+already the start of the next P1. December P2 → January P1 of the next year is handled correctly;
+the last day of the month (28/29/30/31) always falls into P2.
 
-## 2. Жизненный цикл периода
+## 2. Period lifecycle
 
-Каждый период проходит 4 фазы (функция `phaseOf(period, now)`):
+Every period goes through 4 phases (the `phaseOf(period, now)` function):
 
-| Фаза | Когда | Что значит |
+| Phase | When | What it means |
 |---|---|---|
-| `accruing` | `now < конец` | Идёт накопление: новые комиссии падают в этот период. |
-| `locked` | `конец ≤ now < конец+7д` | **Лок 7 дней**: заработок финализируется (буфер под возвраты/сверку). Выплата ещё не идёт. |
-| `payable` | `конец+7д ≤ now < конец+10д` | **Окно выплат 3 дня**: формируется список «к выплате», деньги уходят на кошелёк. |
-| `closed` | `now ≥ конец+10д` | Окно прошло. Если что-то не выплатили — оно **не теряется**, а попадёт в следующее окно (ролловер). |
+| `accruing` | `now < end` | Accrual is underway: new commissions fall into this period. |
+| `locked` | `end ≤ now < end+7d` | **7-day lock**: earnings are finalized (a buffer for refunds/reconciliation). No payout yet. |
+| `payable` | `end+7d ≤ now < end+10d` | **3-day payout window**: the "to be paid" list is formed, money goes to the wallet. |
+| `closed` | `now ≥ end+10d` | The window has passed. If anything was not paid — it is **not lost**, it rolls into the next window (rollover). |
 
-Константы: лок `LOCK_DAYS = 7`, окно `WINDOW_DAYS = 3`.
+Constants: lock `LOCK_DAYS = 7`, window `WINDOW_DAYS = 3`.
 
-### Таймлайн на примере P1 (июль), заканчивается 16 июля 00:00 UTC
+### Timeline using P1 (July) as an example, ends July 16 00:00 UTC
 
 ```
-1 июл ─ accruing ─ 16 июл ─── lock 7д ─── 23 июл ── window 3д ── 26 июл ─ closed
-                    (конец)              (открытие          (закрытие
-                                          выплат)            окна)
+Jul 1 ─ accruing ─ Jul 16 ─── lock 7d ─── Jul 23 ── window 3d ── Jul 26 ─ closed
+                   (end)               (payouts            (window
+                                         open)              closes)
 ```
 
-Соответственно P2 июля (16–31, конец = 1 авг) → лок 1–8 авг → окно 8–11 авг. Итого выплаты
-происходят **дважды в месяц**, примерно на 8–11-й день после закрытия периода.
+Accordingly, July P2 (16–31, end = Aug 1) → lock Aug 1–8 → window Aug 8–11. In total, payouts
+happen **twice a month**, roughly on the 8th–11th day after the period closes.
 
-## 3. Сколько к выплате: формула и ролловер
+## 3. How much is payable: the formula and rollover
 
-Главный инвариант, который делает всё простым и автоматически даёт ролловер:
+The main invariant that makes everything simple and gives rollover automatically:
 
-> **К выплате партнёру в окне периода P** = `SUM(commission_entries + commission_entries_v2,
-> created_at < конец P)` −
-> `SUM(payouts со статусом paid)`.
+> **Payable to a partner in period P's window** = `SUM(commission_entries + commission_entries_v2,
+> created_at < end of P)` −
+> `SUM(payouts with status paid)`.
 
-Почему это корректно и удобно:
+Why this is correct and convenient:
 
-- **Лок соблюдается сам собой.** Платим только на `конец P + 7д`, а в сумму входят лишь комиссии
-  с `created_at < конец P` — то есть всё, что уже пролежало ≥ 7 дней. Ничего «моложе лока» в
-  выплату не попадает.
-- **Ролловер автоматический.** Если в прошлом окне партнёру не выплатили (не привязан кошелёк),
-  `SUM(paid)` не увеличился, и в следующем окне `конец` уже больше — поэтому в сумму войдут
-  **оба периода сразу** («в следующий раз придёт за 2 периода»).
-- **Нет отдельной таблицы начислений.** Заработок = сами комиссионные строки (`commission_entries`
-  для v1-событий и `commission_entries_v2` для release-v2, по одной строке на
-  usage-событие, с `created_at`), выплаченное = `payouts.paid`. Состояние периодов не хранится —
-  выводится из времени.
+- **The lock is obeyed by itself.** We pay only at `end of P + 7d`, and the sum includes only
+  commissions with `created_at < end of P` — i.e. everything that has already sat for ≥ 7 days.
+  Nothing "younger than the lock" makes it into a payout.
+- **Rollover is automatic.** If a partner was not paid in the last window (no wallet bound),
+  `SUM(paid)` did not grow, and in the next window the `end` is already later — so the sum will
+  include **both periods at once** ("next time it will arrive covering 2 periods").
+- **No separate accruals table.** Earnings = the commission rows themselves (`commission_entries`
+  for v1 events and `commission_entries_v2` for release-v2, one row per
+  usage event, with `created_at`); paid = `payouts.paid`. Period state is not stored —
+  it is derived from time.
 
-### Условие выплаты
+### Payout condition
 
-Выплачивается **любая сумма больше нуля** — минимального порога нет. Партнёр попадает в список
-«к выплате» (`eligible`), если:
+**Any amount above zero** is paid out — there is no minimum threshold. A partner makes it into the
+"to be paid" list (`eligible`) if:
 
-1. `payable > 0` (есть незакрытый заработок), и
-2. привязан валидный **BSC-кошелёк** (USDT BEP-20, адрес `0x…40 hex`).
+1. `payable > 0` (there is outstanding earnings), and
+2. a valid **BSC wallet** is bound (USDT BEP-20, address `0x…40 hex`).
 
-Иначе (`reason` = `no_wallet` / `zero`) сумма **держится и роллится** в следующее окно. Конфиг
-`SALES_MIN_PAYOUT_USD` существует как knob на будущее, по умолчанию `0` (порога нет); в интерфейсе
-про минимум ничего не пишется.
+Otherwise (`reason` = `no_wallet` / `zero`) the amount is **held and rolled** into the next window.
+The `SALES_MIN_PAYOUT_USD` config exists as a knob for the future, default `0` (no threshold);
+the interface says nothing about a minimum.
 
-## 4. Что видит партнёр (`GET /v1/partner/periods`)
+## 4. What the partner sees (`GET /v1/partner/periods`)
 
-- **This period** — сколько накоплено в текущем (открытом) периоде.
-- **Locked** — заработок только что закончившегося периода на 7-дневном локе + дата разморозки.
-- **Next payout** — дата ближайшего окна и оценка суммы, которая уйдёт.
-- **Unpaid total / paid to date** — весь незакрытый заработок и сколько уже выплачено.
-- **Period history** — по каждому полумесячному периоду: заработок, фаза, дата выплаты.
-- Плюс карточка-объяснение «How payouts work» и привязка кошелька.
+- **This period** — how much has accrued in the current (open) period.
+- **Locked** — earnings of the period that just ended, on the 7-day lock + unfreeze date.
+- **Next payout** — the date of the nearest window and an estimate of the amount that will go out.
+- **Unpaid total / paid to date** — all outstanding earnings and how much has already been paid.
+- **Period history** — for each half-month period: earnings, phase, payout date.
+- Plus a "How payouts work" explanation card and wallet binding.
 
-Ручного «запросить вывод» нет — выплаты идут по расписанию.
+There is no manual "request withdrawal" — payouts follow the schedule.
 
-## 5. Что видит админ (`GET /v1/admin/payout-list`)
+## 5. What the admin sees (`GET /v1/admin/payout-list`)
 
-Авто-список за окно текущего/последнего периода:
+The auto-generated list for the current/last period's window:
 
-- **Ready to pay** — сумма и число партнёров, готовых к выплате (кошелёк + профит ≥ минимума).
-- **Held (rolls over)** — сумма и партнёры, кто пока не проходит (нет кошелька/ниже минимума).
-- **Total unpaid** — весь незакрытый долг по всем партнёрам.
-- Таблица: партнёр, `payable`, кошелёк (маска), статус (`Ready` / `No wallet` / `Below minimum`).
+- **Ready to pay** — the amount and number of partners ready for payout (wallet + profit ≥ minimum).
+- **Held (rolls over)** — the amount and the partners who do not yet qualify (no wallet/below the
+  minimum).
+- **Total unpaid** — the entire outstanding debt across all partners.
+- Table: partner, `payable`, wallet (masked), status (`Ready` / `No wallet` / `Below minimum`).
 
-## 6. Конфиг
+## 6. Config
 
-| Env | Дефолт | Смысл |
+| Env | Default | Meaning |
 |---|---|---|
-| `SALES_MIN_PAYOUT_USD` | `0` | Минимальный порог. `0` = платим любую сумму > 0 (текущее решение). Knob на будущее; UI про него не упоминает. |
+| `SALES_MIN_PAYOUT_USD` | `0` | Minimum threshold. `0` = we pay any amount > 0 (the current decision). Knob for the future; the UI does not mention it. |
 
-Лок (7д) и окно (3д) сейчас константы в `periods.ts`; при необходимости легко вынести в конфиг.
+The lock (7d) and window (3d) are currently constants in `periods.ts`; they can easily be moved
+into config if needed.
 
-## 7. Что НЕ входит в эту систему (делается отдельно)
+## 7. What is NOT part of this system (done separately)
 
-**Отправка выплат (execution).** Сейчас список «к выплате» — это read-model; фактическая
-on-chain отправка USDT BEP-20 и отметка `paid` делается вручную оператором, а автоматический
-payout-провайдер (кошелёк-отправитель, газ, подписи, сверка, отметка `payouts.paid`) — отдельная
-предстоящая система. Когда она появится, она просто будет вычитать выплаченное из `payable` через
-тот же инвариант — модель периодов менять не потребуется.
+**Payout sending (execution).** Currently the "to be paid" list is a read model; the actual
+on-chain USDT BEP-20 transfer and the `paid` mark are done manually by the operator, and the
+automatic payout provider (sender wallet, gas, signatures, reconciliation, the `payouts.paid`
+mark) is a separate upcoming system. When it arrives, it will simply subtract what was paid from
+`payable` through the same invariant — the periods model will not need to change.
 
-## 8. Часовой пояс
+## 8. Time zone
 
-Все границы — **UTC**. Это делает расчёты детерминированными и одинаковыми на сервере и в тестах.
-Если бизнесу нужен московский календарь (1–15 по МСК), это точечное изменение в `periods.ts`
-(конструирование дат в нужной зоне) + повторная генерация тестов; на инвариант выплат не влияет.
+All boundaries are **UTC**. This makes the calculations deterministic and identical on the server
+and in tests. If the business needs a Moscow calendar (1–15 in MSK), it is a point change in
+`periods.ts` (constructing dates in the desired zone) + regeneration of the tests; it does not
+affect the payout invariant.

@@ -1,87 +1,88 @@
 # KIMI (Moonshot AI) — provider capability manifest
 
-Статус интеграции: **default-off backend preview runtime, mock-verified и ещё не live-verified**.
-Дата ревью источников — **2026-08-03**.
+Integration status: **default-off backend preview runtime, mock-verified and not yet live-verified**.
+Source review date — **2026-08-03**.
 
-Документ создан по `docs/engine/PROVIDER_ONBOARDING.md` §3.3 и является capability manifest
-плоскости KIMI. Он фиксирует, что доказано, чем именно доказано и что остаётся `unknown`.
-Каждое утверждение ниже помечено по иерархии evidence из §3.1: `official`, `live`,
+This document was created per `docs/engine/PROVIDER_ONBOARDING.md` §3.3 and is the capability manifest
+of the KIMI plane. It records what is proven, by what exactly it is proven, and what remains `unknown`.
+Every claim below is labeled per the evidence hierarchy from §3.1: `official`, `live`,
 `oss-hypothesis`, `decision`, `unknown`, `not-applicable`.
 
-## 0. Область и намеренные ограничения
+## 0. Scope and intentional limitations
 
-Плоскость KIMI строится **только как backend**: engine runtime, метеринг, калибровка, Auth Bot
-и внутренний live-runner. Провайдер **не публикуется** в публичный каталог, в `/v1/models`
-роутера, в commerce/OpenKeys прайсинг, на сайт и в клиентскую документацию. Это осознанное
-решение владельца продукта: интеграция нужна для внутренних тестов и калибровочных прогонов,
-а не для продажи.
+The KIMI plane is built **backend-only**: engine runtime, metering, calibration, Auth Bot,
+and the internal live-runner. The provider is **not published** to the public catalog, to the router's
+`/v1/models`, to commerce/OpenKeys pricing, to the site, or to client documentation. This is a
+deliberate product-owner decision: the integration is needed for internal tests and calibration
+runs, not for sale.
 
-- `decision` Провайдер остаётся за выключенным switch'ем; ни одна публичная поверхность не
-  получает строку KIMI. `docs/CHANGE_CHECKLISTS.md` чеклист «новый провайдер» применяется
-  частично, публикационные пункты помечены неприменимыми с этой причиной.
-- `decision` Этот файл — внутренняя инженерная инструкция (обязательна по `AGENTS.md`,
-  «Документация — живой контракт»), а не публичная витрина.
+- `decision` The provider stays behind a disabled switch; no public surface receives a KIMI row.
+  The `docs/CHANGE_CHECKLISTS.md` "new provider" checklist is applied partially, with the
+  publication items marked not applicable for this reason.
+- `decision` This file is an internal engineering instruction (required by `AGENTS.md`,
+  "Documentation is a living contract"), not a public storefront.
 
-Пока публикации нет, GA-критерий §1 `PROVIDER_ONBOARDING.md` **не заявляется**. Терминальное
-состояние этой работы — verified **preview**: runtime и калибровка доказаны на mock-гейтах,
-живые гейты выполняются отдельно на принадлежащей нам подписке.
+Until publication happens, the GA criterion of §1 `PROVIDER_ONBOARDING.md` is **not claimed**. The
+terminal state of this work is a verified **preview**: runtime and calibration are proven on mock
+gates; live gates are executed separately on our own subscription.
 
 ## 1. Product / plan
 
-`official` Kimi разводит три независимые системы доступа; ключи и base URL между ними
-не взаимозаменяемы (Kimi Code docs, error-reference).
+`official` Kimi separates three independent access systems; keys and base URLs are not
+interchangeable between them (Kimi Code docs, error-reference).
 
-| Плоскость | Назначение | Base URL | Биллинг |
+| Plane | Purpose | Base URL | Billing |
 |---|---|---|---|
-| Kimi Open Platform | pay-per-token developer API | `https://api.moonshot.ai/v1` (int.), `https://api.moonshot.cn/v1` (CN) | по токенам |
-| Kimi Code (подписка) | subscription coding plan | `https://api.kimi.com/coding/v1` (OpenAI), `https://api.kimi.com/coding/` (Anthropic) | из квоты подписки |
-| Kimi web/app chat | потребительский чат | — | подписка, **API не даёт** |
+| Kimi Open Platform | pay-per-token developer API | `https://api.moonshot.ai/v1` (int.), `https://api.moonshot.cn/v1` (CN) | per token |
+| Kimi Code (subscription) | subscription coding plan | `https://api.kimi.com/coding/v1` (OpenAI), `https://api.kimi.com/coding/` (Anthropic) | from subscription quota |
+| Kimi web/app chat | consumer chat | — | subscription, **provides no API** |
 
-`decision` Наш провайдер — **только Kimi Code**. Open Platform используется исключительно как
-authority официального прайсинга (replacement cost), но не как источник ёмкости.
+`decision` Our provider is **Kimi Code only**. Open Platform is used exclusively as the
+authority for official pricing (replacement cost), not as a source of capacity.
 
-### 1.1 Тарифные планы
+### 1.1 Pricing plans
 
-`unknown` **Точный набор и цены планов не зафиксированы.** Источники противоречат друг другу:
-help-центр Kimi перечисляет CNY-лестницу (Adagio ¥0, Andante ¥49, Moderato ¥99, Allegretto ¥199,
-Allegro ¥699), международные страницы — USD-лестницу (Adagio free, Moderato $19, Allegretto $39,
-Allegro $99, Vivace $199), а с 2026-07-20 сообщается о разделении общего членства и отдельного
-Coding Plan с другими именами тиров. Ни одно из этих чисел не подтверждено provider-owned
-страницей в момент ревью.
+`unknown` **The exact set and prices of plans are not pinned down.** Sources contradict each other:
+the Kimi help center lists a CNY ladder (Adagio ¥0, Andante ¥49, Moderato ¥99, Allegretto ¥199,
+Allegro ¥699), the international pages list a USD ladder (Adagio free, Moderato $19, Allegretto $39,
+Allegro $99, Vivace $199), and as of 2026-07-20 a split between general membership and a separate
+Coding Plan with different tier names is reported. None of these numbers is confirmed by a
+provider-owned page at review time.
 
-`decision` Цена подписки **не участвует** в расчётах: калибровка отвечает на вопрос «сколько
-official API replacement cost помещается в окно», а не «сколько стоила подписка»
-(`PROVIDER_ONBOARDING.md` §10). Поэтому неизвестная цена **не блокирует** интеграцию.
+`decision` The subscription price **does not participate** in calculations: calibration answers the
+question "how much official API replacement cost fits into the window", not "how much the
+subscription cost" (`PROVIDER_ONBOARDING.md` §10). Therefore the unknown price **does not block**
+the integration.
 
-`official` Что зафиксировано твёрдо — **имя плана является машиночитаемым**: эндпоинт `/me`
-возвращает `user_level` (int) и `user_level_name` (строка, напр. `"Vivace"`). Это и есть
-authoritative paid plan identity для когорт калибровки. Маркетинговая цена для этого не нужна.
+`official` What is pinned firmly — **the plan name is machine-readable**: the `/me`
+endpoint returns `user_level` (int) and `user_level_name` (string, e.g. `"Vivace"`). This is the
+authoritative paid plan identity for calibration cohorts. The marketing price is not needed for this.
 
-`official` Гейтинг возможностей по тирам (Kimi Code docs, models):
+`official` Capability gating by tiers (Kimi Code docs, models):
 
-| Возможность | Требуемый тир |
+| Capability | Required tier |
 |---|---|
-| `kimi-for-coding` (256K) | любой член |
-| `k3`, `k3-256k` (256K) | Moderato и выше |
-| `k3` полный 1M контекст | Allegretto и выше |
-| `kimi-for-coding-highspeed` | Allegretto и выше |
+| `kimi-for-coding` (256K) | any member |
+| `k3`, `k3-256k` (256K) | Moderato and above |
+| `k3` full 1M context | Allegretto and above |
+| `kimi-for-coding-highspeed` | Allegretto and above |
 
-`official` Запрос возможности выше плана возвращает `401` (models docs) либо `403`
-(error-reference). Расхождение источников — `unknown`; обработчик обязан классифицировать
-оба как «capability не разрешена планом», не как auth-смерть.
+`official` Requesting a capability above the plan returns `401` (models docs) or `403`
+(error-reference). The source discrepancy is `unknown`; the handler must classify both as
+"capability not permitted by plan", not as auth death.
 
-`official` **Community Guidelines ограничивают подписку «personal interactive use only».**
+`official` **Community Guidelines restrict the subscription to "personal interactive use only".**
 
-> `decision` Это ограничение — реальный compliance-риск для перепродажи ёмкости. Именно оно
-> дополнительно обосновывает backend-only режим без публикации. Любое расширение до продажи
-> требует отдельного юридического ревью и в этой работе не выполняется.
+> `decision` This restriction is a real compliance risk for reselling capacity. It is precisely
+> this that additionally justifies the backend-only mode without publication. Any expansion to
+> resale requires a separate legal review and is not performed in this work.
 
 ## 2. Credential
 
-`official` + `oss-hypothesis` Официальный CLI `github.com/MoonshotAI/kimi-code`, MIT,
+`official` + `oss-hypothesis` Official CLI `github.com/MoonshotAI/kimi-code`, MIT,
 pinned SHA `75395f6abb17f83f30d16b51f4e060a639f43622` (2026-08-03), `packages/oauth/src`.
 
-| Поле | Значение | Метка |
+| Field | Value | Label |
 |---|---|---|
 | Grant | OAuth 2.0 Device Authorization Grant (RFC 8628) | `oss-hypothesis` |
 | OAuth host | `https://auth.kimi.com` | `oss-hypothesis` |
@@ -91,208 +92,214 @@ pinned SHA `75395f6abb17f83f30d16b51f4e060a639f43622` (2026-08-03), `packages/oa
 | Refresh grant type | `refresh_token` | `oss-hypothesis` |
 | Official client id | `17e5f671-d194-4dfb-9706-5516cb48c098` | `oss-hypothesis` |
 | PKCE | `not-applicable` (device flow) | `decision` |
-| Scopes | ответ содержит `scope`, конкретные значения не задокументированы | `unknown` |
-| Refresh rotation | **ротирующая семья**: `refresh_token` обязателен в ответе refresh | `oss-hypothesis` |
-| Alt-credential | статический API key из Kimi Code Console | `official` |
+| Scopes | response contains `scope`, concrete values not documented | `unknown` |
+| Refresh rotation | **rotating family**: `refresh_token` is mandatory in the refresh response | `oss-hypothesis` |
+| Alt-credential | static API key from Kimi Code Console | `official` |
 
-`decision` Ротирующая семья refresh-токенов означает обязательный per-profile single-flight
-re-seal по `PROVIDER_ONBOARDING.md` §6: победитель атомарно перезапечатывает конверт до снятия
-lock, проигравший один раз перечитывает конверт. Бесконтрольный reuse старого refresh-токена
-убивает подписку.
+`decision` The rotating refresh-token family means a mandatory per-profile single-flight
+re-seal per `PROVIDER_ONBOARDING.md` §6: the winner atomically re-seals the envelope before
+releasing the lock; the loser re-reads the envelope once. Uncontrolled reuse of an old refresh
+token kills the subscription.
 
-`decision` Device flow идеально ложится на Auth Bot: продавец получает `user_code` и
-`verification_uri_complete`, подтверждает в браузере, бот поллит `/api/oauth/token`. Продавец
-никогда не передаёт пароль, 2FA или сам токен.
+`decision` The device flow maps perfectly onto the Auth Bot: the seller receives a `user_code` and
+`verification_uri_complete`, confirms in the browser, and the bot polls `/api/oauth/token`. The
+seller never hands over a password, 2FA, or the token itself.
 
 ### 2.1 Identity — `GET {base}/me`
 
-`oss-hypothesis` Заголовок `Authorization: Bearer <access_token>`. Payload:
+`oss-hypothesis` Header `Authorization: Bearer <access_token>`. Payload:
 
-| Поле | Роль |
+| Field | Role |
 |---|---|
-| `user_id` | **stable provider subject** — authority квоты и dedup |
-| `user_level`, `user_level_name` | **authoritative paid plan identity** для когорт |
-| `status` (`USER_STATUS_NORMAL`) | состояние аккаунта |
+| `user_id` | **stable provider subject** — quota and dedup authority |
+| `user_level`, `user_level_name` | **authoritative paid plan identity** for cohorts |
+| `status` (`USER_STATUS_NORMAL`) | account state |
 | `region` (`REGION_CN`) | inference geography |
-| `email`, `phone`, `nickname`, `avatar` | **PII — запечатывается, наружу не публикуется** |
+| `email`, `phone`, `nickname`, `avatar` | **PII — sealed, never published outward** |
 
-`decision` Наружу (admin projection, метрики, логи) отдаётся только opaque id, производный от
-`user_id`, и `user_level_name`. `email`/`phone`/`nickname` не покидают конверт — §12 запрещает
-full email и external account id в projection.
+`decision` Only an opaque id derived from `user_id`, plus `user_level_name`, is exposed outward
+(admin projection, metrics, logs). `email`/`phone`/`nickname` never leave the envelope — §12 forbids
+full email and external account id in the projection.
 
 ## 3. Model admission
 
-`official` Подписочные id (Kimi Code docs, models) и их соответствие официальному прайс-листу
-Open Platform (`platform.kimi.ai/docs/pricing/*`).
+`official` Subscription ids (Kimi Code docs, models) and their mapping to the official
+Open Platform rate card (`platform.kimi.ai/docs/pricing/*`).
 
-| Подписочная модель | Официальная модель (rate card) | Контекст | Тир | Non-stream | Incremental stream | Usage | Quota | Решение |
+| Subscription model | Official model (rate card) | Context | Tier | Non-stream | Incremental stream | Usage | Quota | Decision |
 |---|---|---|---|---|---|---|---|---|
-| `kimi-for-coding` | `kimi-k2.7-code` | 262 144 | все | `unknown` | `unknown` | `unknown` | `official` | preview, за switch |
-| `kimi-for-coding-highspeed` | `kimi-k2.7-code-highspeed` | 262 144 | Allegretto+ | `unknown` | `unknown` | `unknown` | `official` | preview, за switch |
-| `k3-256k` | `kimi-k3` | 262 144 | Moderato+ | `unknown` | `unknown` | `unknown` | `official` | preview, за switch |
-| `k3` | `kimi-k3` | до 1 048 576 | Moderato+ (1M — Allegretto+) | `unknown` | `unknown` | `unknown` | `official` | preview, за switch |
+| `kimi-for-coding` | `kimi-k2.7-code` | 262 144 | all | `unknown` | `unknown` | `unknown` | `official` | preview, behind switch |
+| `kimi-for-coding-highspeed` | `kimi-k2.7-code-highspeed` | 262 144 | Allegretto+ | `unknown` | `unknown` | `unknown` | `official` | preview, behind switch |
+| `k3-256k` | `kimi-k3` | 262 144 | Moderato+ | `unknown` | `unknown` | `unknown` | `official` | preview, behind switch |
+| `k3` | `kimi-k3` | up to 1 048 576 | Moderato+ (1M — Allegretto+) | `unknown` | `unknown` | `unknown` | `official` | preview, behind switch |
 
-`official` `k3[1m]` — это **не отдельная модель**, а Claude-Code-специфичная форма записи,
-включающая 1M-окно. В обычных API-вызовах используется `k3`. Наш канонический id — `k3`
-с явным context mode; скобочная форма принимается как алиас.
+`official` `k3[1m]` is **not a separate model**, but a Claude-Code-specific notation
+that enables the 1M window. Ordinary API calls use `k3`. Our canonical id is `k3`
+with an explicit context mode; the bracket form is accepted as an alias.
 
-`official` **Reasoning-контролы различаются по семействам:**
+`official` **Reasoning controls differ by family:**
 
-- `k3`: всегда рассуждает, `reasoning_effort` ∈ {`low`, `high`, `max`}, default `high`.
-  Нормализация алиасов: `null`/`undefined`→`high`, `ultra`/`max`/`xhigh`→`max`,
+- `k3`: always reasons, `reasoning_effort` ∈ {`low`, `high`, `max`}, default `high`.
+  Alias normalization: `null`/`undefined`→`high`, `ultra`/`max`/`xhigh`→`max`,
   `high`/`medium`→`high`, `low`/`minimum`/`light`→`low`, `none`→thinking off,
-  прочее → HTTP 400.
+  anything else → HTTP 400.
 - `kimi-for-coding` / `-highspeed`: `Thinking: ON`.
 
-`official` **Критично для денег: отключение thinking маршрутизирует запрос на K2.6.**
-«Disabling thinking routes both K3 and K2.7 Code to K2.6.» То есть **served model ≠ requested
-model**, и у K2.6 другой rate card (cache hit $0.16 против $0.30 у K3).
+`official` **Critical for money: disabling thinking routes the request to K2.6.**
+"Disabling thinking routes both K3 and K2.7 Code to K2.6." That is, **served model ≠ requested
+model**, and K2.6 has a different rate card (cache hit $0.16 vs $0.30 for K3).
 
-> `decision` Поэтому immutable turn event обязан хранить requested и served model **раздельно**
-> (`PROVIDER_ONBOARDING.md` §10.2), а тарификация идёт по **served** модели, взятой из ответа
-> провайдера, а не по запрошенной. Если провайдер не вернул served model, а thinking выключен —
-> модель считается неизвестной и биллинг fail closed до reserve.
+> `decision` Therefore the immutable turn event must store the requested and served models
+> **separately** (`PROVIDER_ONBOARDING.md` §10.2), and metering runs against the **served** model
+> taken from the provider's response, not the requested one. If the provider did not return a
+> served model and thinking is off — the model is treated as unknown and billing fails closed at reserve.
 
-`official` `kimi-for-coding-highspeed` при опечатке молча деградирует до `kimi-for-coding`
-без ошибки. `decision` → served model всегда берётся из ответа, никогда из запроса.
+`official` `kimi-for-coding-highspeed` silently degrades to `kimi-for-coding`
+on a typo, without an error. `decision` → the served model is always taken from the response,
+never from the request.
 
-`official` `k3` на 1M «потребляет примерно вдвое больше квоты», чем `k3-256k`;
-highspeed — «6× скорость, 3× расход квоты». Это подтверждает, что нативная квота —
-**взвешенный кредит**, а не счётчик запросов.
+`official` `k3` at 1M "consumes roughly twice as much quota" as `k3-256k`;
+highspeed — "6× speed, 3× quota consumption". This confirms that the native quota is a
+**weighted credit**, not a request counter.
 
-`unknown` Точные веса квоты (2×, 3×) не являются публичным нормативным контрактом с единицей
-измерения. Их семантика доказывается только live-прогоном.
+`unknown` The exact quota weights (2×, 3×) are not a public normative contract with a unit of
+measurement. Their semantics can only be proven by a live run.
 
 ## 4. Wire
 
-| Операция | URL | Заголовки | Тело | Framing | Usage | Ошибки |
+| Operation | URL | Headers | Body | Framing | Usage | Errors |
 |---|---|---|---|---|---|---|
-| Generation (Anthropic) | `POST https://api.kimi.com/coding/v1/messages` | `Authorization: Bearer` (CLI) либо `x-api-key` (Claude Code) | Anthropic Messages | SSE | `unknown` | см. §4.2 |
-| Generation (OpenAI) | `POST https://api.kimi.com/coding/v1/chat/completions` | `Authorization: Bearer` | OpenAI Chat | SSE | `unknown` | см. §4.2 |
-| Catalogue | `GET /coding/v1/models` | `Authorization: Bearer` | — | JSON | — | **негейтед** |
+| Generation (Anthropic) | `POST https://api.kimi.com/coding/v1/messages` | `Authorization: Bearer` (CLI) or `x-api-key` (Claude Code) | Anthropic Messages | SSE | `unknown` | see §4.2 |
+| Generation (OpenAI) | `POST https://api.kimi.com/coding/v1/chat/completions` | `Authorization: Bearer` | OpenAI Chat | SSE | `unknown` | see §4.2 |
+| Catalogue | `GET /coding/v1/models` | `Authorization: Bearer` | — | JSON | — | **ungated** |
 | Identity | `GET /coding/v1/me` | `Authorization: Bearer` | — | JSON | — | 401 |
 | Quota | `GET /coding/v1/usages` | `Authorization: Bearer` | — | JSON | — | 401/404 |
 
-`decision` **Anthropic-совместимый транспорт — решающее архитектурное преимущество.** Нативный
-протокол движка уже Anthropic (`CLAUDE.md`, инвариант «Прозрачность»). Плоскость KIMI поэтому не
-нуждается в трансляции протокола масштаба `crates/forward/src/gemini/` (schema/stream/skin —
-около 10 000 строк); она переиспользует существующий Anthropic-путь и добавляет только
-credential, транспорт, пул, метеринг и калибровку.
+`decision` **The Anthropic-compatible transport is the decisive architectural advantage.** The
+engine's native protocol is already Anthropic (`CLAUDE.md`, "Transparency" invariant). The KIMI
+plane therefore needs no protocol translation on the scale of `crates/forward/src/gemini/`
+(schema/stream/skin — about 10,000 lines); it reuses the existing Anthropic path and adds only
+credential, transport, pool, metering, and calibration.
 
-`official` `GET /v1/models` **не проверяет авторизацию** — он отвечает 200 на невалидный ключ,
-а последующий generation даёт 403. `decision` → readiness-проба плоскости обязана бить в
-`/messages` минимальным запросом либо в `/me`, но **никогда** в `/models`. Ложноположительный
-health по `/models` прямо запрещён.
+`official` `GET /v1/models` **does not verify authorization** — it answers 200 to an invalid key,
+while a subsequent generation returns 403. `decision` → the plane's readiness probe must hit
+`/messages` with a minimal request or `/me`, but **never** `/models`. A false-positive health
+check via `/models` is expressly forbidden.
 
-`unknown` Точный auth-заголовок Anthropic-маршрута (`Authorization: Bearer` против `x-api-key`)
-не подтверждён нормативной страницей. Официальный CLI использует Bearer для `/me`, `/usages` и
-чата; документация Claude Code задаёт `ANTHROPIC_API_KEY`, что даёт `x-api-key`.
+`unknown` The exact auth header of the Anthropic route (`Authorization: Bearer` vs `x-api-key`)
+is not confirmed by a normative page. The official CLI uses Bearer for `/me`, `/usages`, and
+chat; the Claude Code documentation sets `ANTHROPIC_API_KEY`, which yields `x-api-key`.
 
-`oss-hypothesis` Официальный CLI идентифицирует себя строкой `kimi-code-cli/<version>` (changelog:
-User-Agent отправляется, чтобы реестры могли определить версию клиента). Движок пинит
-`kimi_credential::KIMI_CODE_CLI_USER_AGENT` к версии `apps/kimi-code/package.json` из pinned
-research SHA — голый HTTP-клиент без UA рискует выглядеть для подписочного endpoint чужим ботом.
-`decision` → реализуем Bearer как проверенный источником вариант, `x-api-key` — как
-конфигурируемую альтернативу; выбор фиксируется первым же live-прогоном.
+`oss-hypothesis` The official CLI identifies itself with the string `kimi-code-cli/<version>`
+(changelog: the User-Agent is sent so registries can determine the client version). The engine pins
+`kimi_credential::KIMI_CODE_CLI_USER_AGENT` to the version of `apps/kimi-code/package.json` from the
+pinned research SHA — a bare HTTP client without a UA risks looking like a foreign bot to the
+subscription endpoint.
+`decision` → we implement Bearer as the source-verified variant, `x-api-key` as a
+configurable alternative; the choice is pinned by the very first live run.
 
-`unknown` Форма terminal usage на Anthropic-маршруте (поля `usage`, наличие
-`cache_read_input_tokens` / `cache_creation_input_tokens`) не подтверждена. Без authoritative
-usage биллинг fail closed — settlement по консервативному hold.
+`unknown` The form of terminal usage on the Anthropic route (the `usage` fields, presence of
+`cache_read_input_tokens` / `cache_creation_input_tokens`) is not confirmed. Without authoritative
+usage, billing fails closed — settlement against the conservative hold.
 
-### 4.1 Реализованный backend gateway
+### 4.1 Implemented backend gateway
 
-`decision` Точные reviewed Kimi Code aliases диспетчеризуются внутри Anthropic
-`POST /v1/messages` после общей авторизации и bounded-чтения тела, но до Claude-specific identity,
-pricing и pool mutation. Alias никогда не уходит в Claude upstream: выключенная плоскость,
-повреждённый initial roster и cold roster дают fail-closed ответ KIMI-пути, не fallback.
+`decision` Exact reviewed Kimi Code aliases are dispatched inside the Anthropic
+`POST /v1/messages` after common authorization and bounded body reading, but before
+Claude-specific identity, pricing, and pool mutation. An alias never goes to the Claude upstream:
+a disabled plane, a corrupted initial roster, and a cold roster produce the KIMI path's
+fail-closed response, not a fallback.
 
-`decision` Реализация в `crates/forward/src/kimi/gateway.rs` mock-доказывает следующие локальные
-инварианты, но не снимает provider-owned `unknown` из §6:
+`decision` The implementation in `crates/forward/src/kimi/gateway.rs` proves the following local
+invariants on mocks, but does not clear the provider-owned `unknown`s of §6:
 
-- non-stream response и SSE-байты проходят без протокольной трансляции; usage extractor умеет
-  собирать split SSE frames, но settlement признаёт authoritative только terminal event;
-- retry/rotation разрешены только до первого публичного байта; после него upstream дренируется
-  даже при downstream disconnect, а shutdown ждёт stream finalizer;
-- metered turn проходит customer reserve → durable delivering marker → terminal settlement;
-  actual charge берётся по **served model**, а отсутствие terminal usage сохраняет полный hold;
-- immutable turn evidence доставляется через bounded FIFO; `/usages` не выполняется при pending
-  head, а после HTTP-снимка writer повторно дренирует FIFO, читает durable cumulative spend и
-  завершает immutable observation/CAS до публикации quota steering;
-- poll берёт только idle profile snapshot и не вводит customer semaphore: generation, начавшаяся
-  во время HTTP, меняет monotonic epoch и целиком инвалидирует снимок. После финальной epoch-check
-  новый turn может идти параллельно, но его enqueue удерживается FIFO-барьером до записи более
-  раннего quota snapshot;
-- OAuth refresh держит per-profile single-flight, требует новую rotating refresh family и атомарно
-  re-seal'ит envelope до снятия lock; blue-green loser перечитывает shared disk authority;
-- readiness проверяет только authenticated `/me`; первый 401 заставляет один forced refresh/retry;
-- server каждые 15 секунд ищет новую атомарную публикацию roster; неизменённый profile сохраняет
-  тот же runtime `Arc` с health/client/in-flight state, а новый или изменённый credential проходит
-  `/me` до публикации всей generation;
-- malformed/decrypt/client/probe failure и исчезнувший `profiles.json` сохраняют last-good
-  capacity. Намеренное удаление флота выражается только валидным пустым roster; удалённый profile
-  сразу закрыт для новых запросов, но уже выданный in-flight lease живёт до своего natural drop;
-- перед atomic swap gateway берёт affected refresh locks и повторно читает roster: snapshot,
-  устаревший из-за параллельной rotating refresh/re-seal, не может стать новой in-memory authority;
-- bearer redirect запрещён, неизвестные tool/media surfaces и неподдержанный reasoning fail closed;
-- синтетические ошибки проходят общий Anthropic-compatible sanitizer и не раскрывают клиенту имя
-  внутреннего backend, roster, subscription или provider body;
-- непроверенный plan получает только базовый `kimi-for-coding`; reviewed tier allowlist остаётся
-  authority расширенных aliases.
+- non-stream responses and SSE bytes pass through with no protocol translation; the usage extractor
+  can assemble split SSE frames, but settlement accepts only the terminal event as authoritative;
+- retry/rotation are permitted only before the first public byte; after it, the upstream is drained
+  even on downstream disconnect, and shutdown waits for the stream finalizer;
+- a metered turn passes customer reserve → durable delivering marker → terminal settlement;
+  the actual charge is taken by **served model**, and missing terminal usage preserves the full hold;
+- immutable turn evidence is delivered through a bounded FIFO; `/usages` is not executed with a pending
+  head, and after the HTTP snapshot the writer drains the FIFO again, reads the durable cumulative
+  spend, and completes the immutable observation/CAS before publishing quota steering;
+- the poll takes only an idle profile snapshot and introduces no customer semaphore: a generation
+  that starts during the HTTP changes the monotonic epoch and invalidates the snapshot entirely.
+  After the final epoch check a new turn may proceed in parallel, but its enqueue is held by the
+  FIFO barrier until the earlier quota snapshot is written;
+- OAuth refresh holds a per-profile single-flight, requires a new rotating refresh family, and
+  atomically re-seals the envelope before releasing the lock; the blue-green loser re-reads the
+  shared disk authority;
+- readiness checks only authenticated `/me`; the first 401 forces one forced refresh/retry;
+- the server looks for a new atomic roster publication every 15 seconds; an unchanged profile keeps
+  the same runtime `Arc` with its health/client/in-flight state, while a new or changed credential
+  passes `/me` before the entire generation is published;
+- malformed/decrypt/client/probe failure and a missing `profiles.json` preserve last-good
+  capacity. Intentional fleet removal is expressed only by a valid empty roster; a removed profile
+  is immediately closed to new requests, but an already issued in-flight lease lives until its
+  natural drop;
+- before the atomic swap the gateway takes the affected refresh locks and re-reads the roster: a
+  snapshot made stale by a parallel rotating refresh/re-seal cannot become the new in-memory authority;
+- bearer redirect is forbidden; unknown tool/media surfaces and unsupported reasoning fail closed;
+- synthetic errors pass through the common Anthropic-compatible sanitizer and do not disclose the
+  internal backend name, roster, subscription, or provider body to the client;
+- an unverified plan receives only the base `kimi-for-coding`; the reviewed tier allowlist remains
+  the authority for extended aliases.
 
-### 4.2 Классы ошибок
+### 4.2 Error classes
 
 `official` (Kimi Code error-reference):
 
-| Статус | Смысл | Наша реакция |
+| Status | Meaning | Our reaction |
 |---|---|---|
-| 401 | auth не прошла, либо возможность выше плана | refresh + retry на том же профиле; повтор → auth quarantine |
-| 402 | «unable to verify your membership benefits», обычно временная | transport-класс, bounded rotation |
-| 403 | identity верна, но: тир не даёт возможность / аккаунт закрыт / **квота исчерпана** | quota wall → cooling до reset, без transport-бюджета |
-| 429/5xx | перегрузка инференса — «retry directly» | bounded transport rotation |
+| 401 | auth failed, or capability above plan | refresh + retry on the same profile; repeat → auth quarantine |
+| 402 | "unable to verify your membership benefits", usually temporary | transport class, bounded rotation |
+| 403 | identity is valid, but: tier does not grant the capability / account closed / **quota exhausted** | quota wall → cooling until reset, no transport budget |
+| 429/5xx | inference overload — "retry directly" | bounded transport rotation |
 
-`official` Провайдер сам разделяет «перегрузка движка (повтор осмысленен)» и «квота аккаунта
-(повтор бесполезен)». `decision` → это ровно разделение осей §8.4: quota bucket отдельно от
-transport health.
+`official` The provider itself separates "engine overload (retry makes sense)" and "account
+quota (retry is useless)". `decision` → this is exactly the axis separation of §8.4: quota bucket
+separate from transport health.
 
-`unknown` 403 совмещает исчерпание квоты и отсутствие возможности у плана. Различение возможно
-только по телу ошибки; до live-подтверждения обработчик fail closed классифицирует
-неразличимый 403 как quota wall (консервативно — профиль выводится из ротации до reset,
-а не помечается мёртвым).
+`unknown` 403 combines quota exhaustion and missing plan capability. They can be distinguished
+only from the error body; until live confirmation the handler fails closed by classifying an
+indistinguishable 403 as a quota wall (conservatively — the profile is taken out of rotation
+until reset rather than marked dead).
 
 ## 5. Money / quota
 
-### 5.1 Официальный rate card (replacement cost)
+### 5.1 Official rate card (replacement cost)
 
-`official` `platform.kimi.ai/docs/pricing/*`, ревью 2026-08-03, USD, до налогов,
-«1M = 1 000 000». Тарифных ступеней по длине контекста нет — ставка плоская на всём окне.
+`official` `platform.kimi.ai/docs/pricing/*`, reviewed 2026-08-03, USD, before taxes,
+"1M = 1 000 000". There are no pricing steps by context length — the rate is flat across the
+entire window.
 
-| Официальная модель | Cache hit / 1M | Cache miss / 1M | Output / 1M | Контекст |
+| Official model | Cache hit / 1M | Cache miss / 1M | Output / 1M | Context |
 |---|---|---|---|---|
 | `kimi-k3` | $0.30 | $3.00 | $15.00 | 1 048 576 |
 | `kimi-k2.7-code` | $0.19 | $0.95 | $4.00 | 262 144 |
 | `kimi-k2.7-code-highspeed` | $0.38 | $1.90 | $8.00 | 262 144 |
 | `kimi-k2.6` | $0.16 | $0.95 | $4.00 | 262 144 |
 
-`official` Отдельной цены cache **write**/storage не публикуется — только hit и miss. Кеширование
-описано как автоматическое. `decision` → leg cache-write отсутствует, а не считается нулём
-молча; ноль здесь — задокументированный факт отсутствия платного leg'а.
+`official` No separate cache **write**/storage price is published — only hit and miss. Caching is
+described as automatic. `decision` → the cache-write leg is absent, rather than silently counted
+as zero; the zero here is a documented fact of a missing paid leg.
 
-`official` Reasoning-токены тарифицируются по output-ставке (K3: «reasoning output consumes
-tokens billed at the output rate»). `decision` → reasoning — **subset output**, отдельным leg'ом
-не тарифицируется; двойного счёта нет.
+`official` Reasoning tokens are billed at the output rate (K3: "reasoning output consumes
+tokens billed at the output rate"). `decision` → reasoning is a **subset of output**, not billed
+as a separate leg; there is no double counting.
 
-`official` Web search на платформе «currently being updated», использовать не рекомендуется,
-документация устарела. `decision` → **capability записывается как unavailable, бюджет не
-тратится** (`SKILL.md`: платный tool/search диспатчится только когда доказан конечный per-request
-ceiling). Отдельной per-call цены в актуальных прайс-страницах нет.
+`official` Web search on the platform is "currently being updated", its use is not recommended,
+and the documentation is outdated. `decision` → **the capability is recorded as unavailable, and
+no budget is spent** (`SKILL.md`: a paid tool/search is dispatched only when a bounded per-request
+ceiling is proven). The current pricing pages contain no separate per-call price.
 
-`official` Устаревшие/снятые: серия `kimi-k2-*` снята 2026-05-25, `kimi-latest` — 2026-01-28,
-`kimi-thinking-preview` — 2025-11-11, `moonshot-v1-*` и `kimi-k2.5` — sunset 31 августа.
-`decision` → в rate card не вносятся: подписка их не отдаёт.
+`official` Deprecated/removed: the `kimi-k2-*` series was removed 2026-05-25, `kimi-latest` —
+2026-01-28, `kimi-thinking-preview` — 2025-11-11, `moonshot-v1-*` and `kimi-k2.5` — sunset
+August 31. `decision` → they are not entered into the rate card: the subscription does not serve them.
 
-### 5.2 Нативная квота — `GET /coding/v1/usages`
+### 5.2 Native quota — `GET /coding/v1/usages`
 
-`oss-hypothesis` Схема (официальный CLI, `packages/oauth/src/managed-usage.ts`):
+`oss-hypothesis` Schema (official CLI, `packages/oauth/src/managed-usage.ts`):
 
 ```json
 {
@@ -311,148 +318,153 @@ ceiling). Отдельной per-call цены в актуальных прай�
 }
 ```
 
-Существенные свойства:
+Material properties:
 
-- `used`/`limit` — **целые десятичные строки**, не проценты. `decision` → парсим в integer,
-  не через float; доля считается как `used * FRACTION_SCALE / limit`.
-- **Resolution окна = `FRACTION_SCALE / limit`.** Это принципиально лучше, чем whole-percent у
-  Claude: при `limit=1000` разрешение равно 0.1 %. `decision` → resolution вычисляется из
-  фактического `limit` каждого окна и хранится вместе с наблюдением (§10.3), а не задаётся
-  константой.
-- `usage` — **недельное** окно; backend не присылает `window`, CLI синтезирует `1 week`.
-  `decision` → мы **не синтезируем** окно молча: недельная семантика подтверждается
-  `official` («refreshes automatically every 7 days»), и это фиксируется как явный маппинг
-  с указанием источника.
-- `limits[]` — окна с явной длительностью; 5-часовое приходит как `duration: 300`,
-  `TIME_UNIT_MINUTE`. `decision` → длительность нормализуется в секунды и хранится точно;
-  окна 5ч и 7д живут **независимо** (§10.3).
-- `resetTime` — RFC3339, прямое reset evidence для машины состояний интервала.
-  `decision` → отсутствующий, невозможный или нестрогий timestamp отклоняет весь snapshot;
-  нормализация в Unix seconds выполняется до durable write, без локального `now + duration`.
-- `boosterWallet` — Extra Usage, реальные деньги в fixed-point (делитель 1 000 000 → центы),
-  с валютой USD/CNY. `decision` → это **третий, отдельный** ledger: он не смешивается ни с
-  нативной квотой, ни с API-долларами.
+- `used`/`limit` are **integer decimal strings**, not percentages. `decision` → we parse them into
+  integers, not through float; the fraction is computed as `used * FRACTION_SCALE / limit`.
+- **Window resolution = `FRACTION_SCALE / limit`.** This is fundamentally better than Claude's
+  whole-percent: at `limit=1000` the resolution is 0.1 %. `decision` → the resolution is computed
+  from the actual `limit` of each window and stored together with the observation (§10.3), rather
+  than set by a constant.
+- `usage` is a **weekly** window; the backend does not send a `window`, the CLI synthesizes
+  `1 week`. `decision` → we **do not** silently synthesize the window: the weekly semantics are
+  confirmed `official` ("refreshes automatically every 7 days"), and this is recorded as an
+  explicit mapping with the source cited.
+- `limits[]` — windows with explicit duration; the 5-hour one arrives as `duration: 300`,
+  `TIME_UNIT_MINUTE`. `decision` → the duration is normalized to seconds and stored exactly;
+  the 5h and 7d windows live **independently** (§10.3).
+- `resetTime` — RFC3339, direct reset evidence for the interval state machine.
+  `decision` → a missing, impossible, or non-strict timestamp rejects the entire snapshot;
+  normalization to Unix seconds happens before the durable write, with no local `now + duration`.
+- `boosterWallet` — Extra Usage, real money in fixed-point (divisor 1 000 000 → cents),
+  with currency USD/CNY. `decision` → this is a **third, separate** ledger: it is mixed with
+  neither the native quota nor API dollars.
 
-`unknown` **Единица `used` не доказана.** Косвенно она взвешенная (K3@1M ≈ 2× к `k3-256k`,
-highspeed = 3×), но нормативного определения нет: это может быть кредит, токеновый эквивалент
-или взвешенный запрос. По `SKILL.md` («provider buckets publish amounts with unclear semantics»)
-величина сохраняется как **raw quota evidence** до live-доказательства и **не делится** на
-токеновую цену ради выдумывания ёмкости.
+`unknown` **The unit of `used` is not proven.** Indirectly it is weighted (K3@1M ≈ 2× relative to
+`k3-256k`, highspeed = 3×), but there is no normative definition: it may be a credit, a token
+equivalent, or a weighted request. Per `SKILL.md` ("provider buckets publish amounts with unclear
+semantics"), the value is preserved as **raw quota evidence** until live proof and is **not
+divided** by a token price to invent capacity.
 
-`official` Монтхли-потолок членства общий: «PPT, Agent Cluster, Kimi Code и т.д. делят общий
-месячный лимит», при его исчерпании Kimi Code заморожен даже при остатке недельной квоты.
-`decision` → это третье, **внешнее** окно; исчерпание видно как 403 при непустой недельной
-квоте. Обработчик обязан не считать такой профиль здоровым только потому, что недельная доля < 1.
+`official` The membership monthly ceiling is shared: "PPT, Agent Cluster, Kimi Code etc. share a
+common monthly limit"; when it is exhausted, Kimi Code is frozen even with weekly quota remaining.
+`decision` → this is a third, **external** window; its exhaustion shows up as a 403 with a non-empty
+weekly quota. The handler must not consider such a profile healthy merely because the weekly
+fraction < 1.
 
-`official` Квота общая для всех устройств и API-ключей аккаунта. `decision` → authority квоты —
-`user_id`, а не ключ; несколько ключей одной подписки — один subject.
+`official` The quota is shared across all devices and API keys of the account. `decision` → the
+quota authority is `user_id`, not the key; multiple keys of one subscription are one subject.
 
-### 5.3 Выбор ledger-модели
+### 5.3 Choosing the ledger model
 
-`decision` По §10.1 KIMI **не является** GPT-подобным dual-ledger провайдером, несмотря на
-наличие нативных единиц. Решающее различие: GPT публикует нативное списание **на каждый turn**,
-а KIMI отдаёт нативный расход **только агрегатом окна** в `/usages`. Построить независимый
-per-turn нативный ledger не из чего, и выводить его делением API-долларов на цену токена прямо
-запрещено.
+`decision` Per §10.1, KIMI is **not** a GPT-like dual-ledger provider, despite having native
+units. The decisive difference: GPT publishes the native charge **per turn**, while KIMI delivers
+the native consumption **only as a window aggregate** in `/usages`. There is nothing from which to
+build an independent per-turn native ledger, and deriving it by dividing API dollars by a token
+price is expressly forbidden.
 
-Отсюда фактическая модель — **Claude-подобная по форме, но с гораздо лучшим разрешением**:
+Hence the actual model — **Claude-like in shape, but with far better resolution**:
 
-1. **API-nanoUSD ledger** — точный, per-turn, из официального rate card §5.1 по **served**
-   модели. Кумулятивная сумма по subject.
-2. **Нативная доля окна** — `used/limit` из `/usages`, играет роль claude-подобной quota
-   fraction, но приходит целыми числами с разрешением `FRACTION_SCALE / limit` вместо
-   целых процентов.
-3. **Booster wallet** — реальные деньги (центы), отдельный третий ledger, ни с чем не смешивается.
+1. **API-nanoUSD ledger** — exact, per-turn, from the official rate card §5.1 by **served**
+   model. Cumulative per subject.
+2. **Native window fraction** — `used/limit` from `/usages`, playing the role of the Claude-like
+   quota fraction, but arriving as integers with resolution `FRACTION_SCALE / limit` instead of
+   whole percents.
+3. **Booster wallet** — real money (cents), a separate third ledger, mixed with nothing.
 
-`decision` **Нативную ёмкость окна оценивать не нужно — она опубликована.** `limit` и есть полный
-размер окна в нативных единицах, а `limit - used` — точный нативный остаток. Оценке подлежит
-только одно: сколько official API replacement cost помещается в окно при наблюдённой нагрузке.
-Поэтому в схеме нет ни оценки нативной ёмкости, ни per-turn нативного leg'а — есть точный
-`native_limit_units` и обычная формула §10.5 для `capacity_nanoUSD`.
+`decision` **There is no need to estimate the native window capacity — it is published.** `limit`
+is the full window size in native units, and `limit - used` is the exact native remainder. Only one
+thing is subject to estimation: how much official API replacement cost fits into the window at the
+observed load. Therefore the scheme contains neither a native-capacity estimate nor a per-turn
+native leg — it has the exact `native_limit_units` and the ordinary §10.5 formula for
+`capacity_nanoUSD`.
 
-`unknown` Единица `used` по-прежнему не доказана. Это не мешает считать долю (доля безразмерна),
-но означает, что нативный остаток нельзя переводить в токены или деньги до live-доказательства.
+`unknown` The unit of `used` remains unproven. This does not prevent computing the fraction (the
+fraction is dimensionless), but it means the native remainder cannot be converted into tokens or
+money until live proof.
 
-`decision` Когорты (§10.6) объединяются только по точному `user_level_name` + точной
-длительности окна. `unknown` план блокирует агрегацию когорты — в отличие от Claude, здесь план
-машиночитаем, поэтому блокировка ожидается редкой.
+`decision` Cohorts (§10.6) are merged only by exact `user_level_name` + exact window
+duration. An `unknown` plan blocks cohort aggregation — unlike Claude, here the plan is
+machine-readable, so blocking is expected to be rare.
 
 ### 5.4 Runtime ordering
 
-`decision` Server запускает первый бесплатный `/usages` anchor сразу после `/me` preflight, затем
-повторяет его с `CLAUDE_API_KIMI_QUOTA_POLL_SECS`; roster discovery остаётся независимым
-15-секундным tick. Poll идёт последовательно по snapshot текущей whole-generation roster и не
-возвращает удалённый profile обратно в generation.
+`decision` The server starts the first free `/usages` anchor immediately after the `/me` preflight,
+then repeats it at `CLAUDE_API_KIMI_QUOTA_POLL_SECS`; roster discovery remains an independent
+15-second tick. The poll proceeds sequentially over a snapshot of the current whole-generation
+roster and does not return a removed profile back into the generation.
 
-Для каждого subject порядок load-bearing:
+For each subject the ordering is load-bearing:
 
-1. профиль должен быть idle; poll запоминает monotonic generation-start epoch;
-2. известный bounded turn FIFO полностью дренируется, иначе HTTP вообще не выполняется;
-3. после `/usages` epoch и in-flight проверяются снова; любой turn, стартовавший во время GET,
-   инвалидирует весь snapshot без локальной очереди или ограничения customer concurrency;
-4. под FIFO-барьером выполняется ещё один drain, serial PostgreSQL writer читает cumulative
-   official API spend и для каждого независимого окна делает immutable observation + estimator
-   CAS; conflict одного turn quarantines только этот event, transient head удерживается;
-5. runtime публикует tightest used fraction и full-window cooling до exact reset только после
-   durable успеха **всех** окон. DB/CAS/parser/upstream failure сохраняет last-good quota.
+1. the profile must be idle; the poll records the monotonic generation-start epoch;
+2. the known bounded turn FIFO is fully drained, otherwise no HTTP is executed at all;
+3. after `/usages` the epoch and in-flight are checked again; any turn that started during the GET
+   invalidates the entire snapshot, with no local queue and no customer-concurrency limiting;
+4. under the FIFO barrier another drain is performed; the serial PostgreSQL writer reads the
+   cumulative official API spend and, for each independent window, performs the immutable
+   observation + estimator CAS; a single-turn conflict quarantines only that event, and the
+   transient head is held;
+5. the runtime publishes the tightest used fraction and full-window cooling until the exact reset
+   only after durable success of **all** windows. A DB/CAS/parser/upstream failure preserves the
+   last-good quota.
 
-Shutdown закрывает admission и steady maintenance, ждёт stream finalizers, затем повторяет тот же
-turn-before-quota порядок. Финальный provider read ограничен уже существующим process deadline;
-его отмена не позволяет старому maintenance task записывать данные после общего billing flush.
-Под deadline не начинается rotating OAuth refresh: финальный poll использует только ещё валидный
-access token, а refresh/reseal остаётся неделимой steady-state операцией.
+Shutdown closes admission and steady maintenance, waits for the stream finalizers, then repeats the
+same turn-before-quota ordering. The final provider read is bounded by the already-existing process
+deadline; its cancellation does not allow the old maintenance task to write data after the common
+billing flush. No rotating OAuth refresh is started under the deadline: the final poll uses only a
+still-valid access token, while refresh/reseal remains an indivisible steady-state operation.
 
-## 6. Что остаётся недоказанным
+## 6. What remains unproven
 
-Ниже — полный список `unknown`, каждый из которых fail closed и снимается только контролируемым
-live-прогоном на принадлежащей нам подписке:
+Below is the complete list of `unknown`s, each of which fails closed and is cleared only by a
+controlled live run on our own subscription:
 
-1. Точный auth-заголовок Anthropic-маршрута.
-2. Форма terminal usage и наличие cache-legs в ответе.
-3. Реальная инкрементальность SSE (буферизованный единственный кадр ≠ stream).
-4. Единица измерения `used` в `/usages`.
-5. Различение 401/403 для «возможность выше плана» и «квота исчерпана».
-6. Набор и цены тарифных планов.
-7. Поведение при исчерпании общего месячного потолка членства.
-8. Существование и стоимость платных tool/search-единиц на подписочном маршруте.
+1. The exact auth header of the Anthropic route.
+2. The form of terminal usage and the presence of cache legs in the response.
+3. Real SSE incrementality (a buffered single frame ≠ stream).
+4. The unit of measurement of `used` in `/usages`.
+5. Distinguishing 401/403 for "capability above plan" and "quota exhausted".
+6. The set and prices of pricing plans.
+7. Behavior when the shared monthly membership ceiling is exhausted.
+8. The existence and cost of paid tool/search units on the subscription route.
 
-Ни один из них не блокирует сборку runtime, метеринга, credential и калибровочной схемы —
-блокируются только соответствующие live-гейты (`PROVIDER_ONBOARDING.md` §2).
+None of them blocks building the runtime, metering, credential, and calibration scheme —
+only the corresponding live gates are blocked (`PROVIDER_ONBOARDING.md` §2).
 
-## 7. Состояние доставки
+## 7. Delivery status
 
-Текущая цепочка продолжается producer-first checkpoint'ами от `master`. Плоскость остаётся
-default-off и backend-only: ни одна публичная поверхность не содержит строку KIMI. Server уже
-композирует gateway, но production activation и live-доказательства ещё не заявляются.
+The current chain continues from `master` with producer-first checkpoints. The plane remains
+default-off and backend-only: no public surface contains a KIMI row. The server already composes
+the gateway, but production activation and live proofs are not yet claimed.
 
-| Этап | Артефакт | Состояние |
+| Stage | Artifact | Status |
 |---|---|---|
-| research / capability manifest | этот файл | готово |
-| официальный rate card | `crates/metering/src/kimi.rs` | готово, 18 тестов |
-| calibration authority (schema) | `crates/registry/migrations_pg/0027_kimi_window_calibration.sql` | готово, expand-only, 2 теста |
-| типы наблюдений | `crates/registry/src/kimi_calibration.rs` | готово, 10 тестов |
-| credential | `crates/kimi-credential` | готово, 18 тестов |
-| calibration estimator | `crates/forward/src/kimi_calibration.rs` | готово, 19 тестов |
-| Auth Bot: device-code протокол | `crates/authbot/src/kimi_oauth.rs` | готово, 14 тестов |
-| Auth Bot: мастер продавца | `crates/authbot/src/{bot,kimi_roster}.rs` | готово: ввод прокси текстом на `km_proxy`, device flow → atomic roster до выплаты |
-| transport / pool primitives | `crates/forward/src/kimi/**` | готовы roster/client/selection/refresh/error/attempt/FIFO/config |
-| durable read/write калибровки в PostgreSQL | `crates/registry` | готово; real-PG replay/conflict/CAS/history matrix зелёная |
-| server: env/config | `crates/server/src/config.rs` | готово: strict default-off input → typed config |
-| server/forward: gateway + readiness | `crates/{server,forward}` | готово на mock-гейтах: exact internal dispatch, `/me`, refresh, rotation, stream lifecycle, reserve/delivering/settlement/FIFO |
-| last-good roster reload | `crates/{server,forward}` | готово на mock-гейтах: 15-секундное discovery, whole-generation validation, `/me` admission, exact-Arc reuse, refresh-race verification, safe removal |
-| quota observations | `crates/{server,forward}` | готово на mock/real-PG гейтах: idle `/usages`, generation-epoch rejection, turn-before-quota drain, exact spend read, independent-window immutable write/CAS, publish-after-durable и bounded shutdown |
-| observability, alerts, admin projection | `crates/{forward,server}`, `observability/**`, `docs/ops/MONITORING.md` | готово: extended operational status, admin-only `GET /kimi-subs`, fixed-cardinality aggregate метрики, `kimi-provider` алерты с runbook и consistency-тест |
-| blue-green | `systemd/claude-api-kimi{,@}.service`, `deploy/**`, `observability/prometheus/prometheus.yml` | готово: два slot-юнита 8804/8805 + stable loopback origin 8803, capability-marker, rollback-ветка останавливает все incarnation, scrape target `provider: kimi`, `ProviderMode::Kimi` с fail-closed `/v1/messages`; плоскость **включена** reviewed argv-пином `CLAUDE_API_KIMI_ENABLED=1` после live evidence 2026-08-04 |
-| безопасный live-runner | `tools/kimi_calibration/`, `docs/ops/KIMI_CALIBRATION.md` | готово офлайн: dry-run по умолчанию, aggregate-потолок $0.0001, exact request-id атрибуция через admin-only заголовки, 43 offline теста; платный запуск — только с явным разрешением |
-| live-матрица на нашей подписке | — | подписка Vivace подключена 2026-08-04; smoke (`/me`, `/usages`, одна минимальная генерация с exact metering) прошёл; полная матрица ждёт бюджетного разрешения и ресета недельной квоты |
+| research / capability manifest | this file | done |
+| official rate card | `crates/metering/src/kimi.rs` | done, 18 tests |
+| calibration authority (schema) | `crates/registry/migrations_pg/0027_kimi_window_calibration.sql` | done, expand-only, 2 tests |
+| observation types | `crates/registry/src/kimi_calibration.rs` | done, 10 tests |
+| credential | `crates/kimi-credential` | done, 18 tests |
+| calibration estimator | `crates/forward/src/kimi_calibration.rs` | done, 19 tests |
+| Auth Bot: device-code protocol | `crates/authbot/src/kimi_oauth.rs` | done, 14 tests |
+| Auth Bot: seller wizard | `crates/authbot/src/{bot,kimi_roster}.rs` | done: text proxy input on `km_proxy`, device flow → atomic roster before payout |
+| transport / pool primitives | `crates/forward/src/kimi/**` | roster/client/selection/refresh/error/attempt/FIFO/config done |
+| durable calibration read/write in PostgreSQL | `crates/registry` | done; real-PG replay/conflict/CAS/history matrix is green |
+| server: env/config | `crates/server/src/config.rs` | done: strict default-off input → typed config |
+| server/forward: gateway + readiness | `crates/{server,forward}` | done on mock gates: exact internal dispatch, `/me`, refresh, rotation, stream lifecycle, reserve/delivering/settlement/FIFO |
+| last-good roster reload | `crates/{server,forward}` | done on mock gates: 15-second discovery, whole-generation validation, `/me` admission, exact-Arc reuse, refresh-race verification, safe removal |
+| quota observations | `crates/{server,forward}` | done on mock/real-PG gates: idle `/usages`, generation-epoch rejection, turn-before-quota drain, exact spend read, independent-window immutable write/CAS, publish-after-durable and bounded shutdown |
+| observability, alerts, admin projection | `crates/{forward,server}`, `observability/**`, `docs/ops/MONITORING.md` | done: extended operational status, admin-only `GET /kimi-subs`, fixed-cardinality aggregate metrics, `kimi-provider` alerts with runbook and consistency test |
+| blue-green | `systemd/claude-api-kimi{,@}.service`, `deploy/**`, `observability/prometheus/prometheus.yml` | done: two slot units 8804/8805 + stable loopback origin 8803, capability marker, rollback branch stops all incarnations, scrape target `provider: kimi`, `ProviderMode::Kimi` with fail-closed `/v1/messages`; plane **enabled** by the reviewed argv pin `CLAUDE_API_KIMI_ENABLED=1` after live evidence 2026-08-04 |
+| safe live-runner | `tools/kimi_calibration/`, `docs/ops/KIMI_CALIBRATION.md` | done offline: dry-run by default, aggregate ceiling $0.0001, exact request-id attribution via admin-only headers, 43 offline tests; paid runs only with explicit permission |
+| live matrix on our subscription | — | Vivace subscription connected 2026-08-04; smoke (`/me`, `/usages`, one minimal generation with exact metering) passed; full matrix awaits budget permission and the weekly quota reset |
 
-Следующий producer-first шаг — контролируемый живой прогон по live-матрице на подключённой
-подписке Vivace (после ресета её недельной квоты и бюджетного разрешения). Публикация не
-планируется вовсе (см. §0).
+The next producer-first step is a controlled live run through the live matrix on the connected
+Vivace subscription (after its weekly quota resets and budget permission). Publication is not
+planned at all (see §0).
 
-## 8. Источники
+## 8. Sources
 
-Все ссылки просмотрены 2026-08-03.
+All links reviewed 2026-08-03.
 
 - `https://platform.kimi.ai/docs/pricing/chat`, `.../chat-k3`, `.../chat-k27-code`, `.../chat-k26`
 - `https://platform.kimi.ai/docs/models`
@@ -462,4 +474,4 @@ default-off и backend-only: ни одна публичная поверхнос
 - `https://www.kimi.com/code/docs/en/third-party-tools/claude-code.html`
 - `https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/providers.html`
 - `github.com/MoonshotAI/kimi-code` @ `75395f6abb17f83f30d16b51f4e060a639f43622`, MIT
-  (только чтение; временный клон удалён после исследования)
+  (read-only; the temporary clone was deleted after the research)

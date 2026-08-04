@@ -1,446 +1,477 @@
 # crates/authbot — CLAUDE.md
 
-**Роль:** пополнение пула — Telegram-бот покупки подписок. Компонент-ПРОИЗВОДИТЕЛЬ: стоит ВНЕ
-слоёв API (`registry←pool←forward←server`), ПЕРЕД реестром. Покупает у продавцов доступ и передаёт
-его движку.
+**Role:** pool replenishment — the Telegram bot for purchasing subscriptions. PRODUCER component:
+sits OUTSIDE the API layers (`registry←pool←forward←server`), BEFORE the registry. It buys access
+from sellers and hands it to the engine.
 
-**Границы (жёстко):**
-- Зависит от `registry` (только `authority` — запись подписки) + `tokio`, `portable_pty`, `rusqlite`,
-  `reqwest` (URL validation/прочие bot API) и `serde`; Gemini Google HTTPS выполняет общий exact
-  Node helper, а не reqwest/rustls.
-  НЕ импортирует `pool`/`forward`/`server` и не лезет в их внутренности.
-- Пополняет ИСКЛЮЧИТЕЛЬНО пул этого проекта: свой bot-токен, свой `AUTH_BOT_FLEET`.
-- Своё состояние (юзеры/офферы) — в отдельной SQLite бота, НЕ в реестре движка.
-- Реестр подписок — ТОЛЬКО engine PostgreSQL из root-owned `engine-postgres.env`. SQLite допустим
-  только для собственного workflow-state бота; fallback реестра запрещён, без DSN бот не стартует.
+**Boundaries (hard):**
+- Depends on `registry` (only `authority` — subscription registration) + `tokio`, `portable_pty`,
+  `rusqlite`, `reqwest` (URL validation/other bot APIs) and `serde`; Gemini Google HTTPS is
+  performed by the shared exact Node helper, not reqwest/rustls.
+  It does NOT import `pool`/`forward`/`server` and does not reach into their internals.
+- Replenishes EXCLUSIVELY this project's pool: its own bot token, its own `AUTH_BOT_FLEET`.
+- Its own state (users/offers) lives in the bot's separate SQLite, NOT in the engine registry.
+- The subscription registry is ONLY the engine PostgreSQL from the root-owned
+  `engine-postgres.env`. SQLite is allowed only for the bot's own workflow state; a registry
+  fallback is forbidden — without a DSN the bot does not start.
 
-**Три принципиально разных сценария передачи доступа** (`handoff_kind` выбирает ветку по продукту
-оффера — это единственное место, где они расходятся):
+**Three fundamentally different access-handoff scenarios** (`handoff_kind` selects the branch by
+offer product — this is the only place where they diverge):
 
 | | Claude | ChatGPT (Codex) | Gemini via Antigravity OAuth |
 |---|---|---|---|
-| Результат | `sk-ant-oat01-…` | ничего, что нам можно читать | refresh/access token + Google subject/project/tier |
-| Чем становится покупка | строка в реестре | каталог `CODEX_HOME` | AEAD envelope + opaque запись в `profiles.json` |
-| Модуль | `setup_token.rs` | `codex_login.rs` | `gemini_oauth.rs` |
-| Шаги продавца | прокси → email → `code#state` | прокси → email → одноразовый код | прокси → Gemini CLI OAuth/code → Antigravity OAuth/localhost URL |
-| Шаг назад | `ho_code→ho_email→ho_proxy` | `cx_wait→cx_email→cx_proxy` | `gm_wait→gm_ready→gm_gproxy` |
-| Как движок узнаёт | reload реестра | скан homes | atomic roster refresh на health-loop |
+| Result | `sk-ant-oat01-…` | nothing we are allowed to read | refresh/access token + Google subject/project/tier |
+| What the purchase becomes | a row in the registry | a `CODEX_HOME` directory | AEAD envelope + opaque entry in `profiles.json` |
+| Module | `setup_token.rs` | `codex_login.rs` | `gemini_oauth.rs` |
+| Seller steps | proxy → email → `code#state` | proxy → email → one-time code | proxy → Gemini CLI OAuth/code → Antigravity OAuth/localhost URL |
+| Step back | `ho_code→ho_email→ho_proxy` | `cx_wait→cx_email→cx_proxy` | `gm_wait→gm_ready→gm_gproxy` |
+| How the engine learns | registry reload | homes scan | atomic roster refresh on the health loop |
 
-Каждый Claude/ChatGPT/Gemini-оффер сразу объясняет новичку весь будущий путь. После выплаты бот
-выдаёт отдельный прокси и подробно проводит через новый профиль антидетект-браузера,
-самостоятельную регистрацию и активацию нужного тарифа, затем через соответствующую авторизацию.
-Gemini ждёт отдельного подтверждения «Аккаунт готов» и только после него показывает ссылки. На всех шагах подчёркнуто:
-до прокси аккаунт не открывать, профиль/IP не менять, пароли, cookie и платёжные данные не присылать.
-Если автоматическая выдача недоступна, продуктовый fallback отдельно запрашивает и проверяет прокси,
-не отправляя новичка дальше с неполной инструкцией.
-На любом шаге продавец может вернуться **ровно на один шаг назад** кнопкой `↩️` или словом `назад`.
-Для Claude/Codex `/cancel` использует тот же механизм. Для Gemini `/cancel` намеренно сильнее:
-атомарно гасит pending/processing OAuth-capability, ротирует seller-job generation, останавливает
-локальный worker и сразу начинает обе OAuth-фазы заново с новым state+PKCE на том же egress.
-Старый callback после этого не может опубликовать credential или изменить новую попытку. Возврат
-обычной кнопкой с шага, где одноразовая ссылка или код уже выданы, требует явного подтверждения и
-гасит старую capability. Прокси покупателя и живой IPRoyal lease заменить так нельзя: у них шага
-«ввод прокси» в истории продавца нет, и `hproxy_order` ни на одном пути отката не обнуляется.
-В быстрой админской клавиатуре доступны Claude, ChatGPT Plus/Pro и выбранные Google AI планы.
+Every Claude/ChatGPT/Gemini offer immediately explains the entire upcoming path to a newcomer.
+After the payout the bot issues a dedicated proxy and walks the seller in detail through a new
+anti-detect browser profile, self-registration and activation of the required plan, then through
+the corresponding authorization. Gemini waits for a separate "Аккаунт готов" ("Account ready")
+confirmation and only then shows the links. Every step emphasizes: do not open the account before
+the proxy, do not change the profile/IP, do not send passwords, cookies or payment data.
+If automatic proxy issuance is unavailable, the product fallback separately requests and verifies
+a proxy, never sending a newcomer onward with an incomplete instruction.
+At any step the seller can go back **exactly one step** with the `↩️` button or the word `назад`
+("back"). For Claude/Codex `/cancel` uses the same mechanism. For Gemini `/cancel` is deliberately
+stronger: it atomically extinguishes the pending/processing OAuth capability, rotates the
+seller-job generation, stops the local worker and immediately restarts both OAuth phases with a
+fresh state+PKCE on the same egress. An old callback after this cannot publish a credential or
+alter the new attempt. Going back with the regular button from a step where a one-time link or
+code has already been issued requires explicit confirmation and extinguishes the old capability.
+The buyer proxy and a live IPRoyal lease cannot be replaced this way: they have no "enter proxy"
+step in the seller history, and `hproxy_order` is never zeroed on any rollback path.
+The quick admin keyboard offers Claude, ChatGPT Plus/Pro and selected Google AI plans.
 
-**Batch-покупки:** команда `/batch` или кнопка `🧺 Batch-покупка` запускает покупку от 2 до 100
-одинаковых подписок с одной общей выплатой. Для каждой позиции хранится отдельный прокси, а
-продавец получает позиции строго последовательно: следующая открывается только после успешной
-передачи предыдущей. Перед созданием batch админ выбирает источник прокси — свои прокси (по одному
-на позицию) или прокси продавца. Этот выбор одинаково разводит Claude, ChatGPT и Google AI/Gemini
-handoff; состояние batch и незавершённый мастер переживают рестарт authbot.
+**Batch purchases:** the `/batch` command or the `🧺 Batch-покупка` ("Batch purchase") button
+starts a purchase of 2 to 100 identical subscriptions with a single shared payout. Each position
+keeps its own proxy, and the seller receives positions strictly in sequence: the next one opens
+only after the previous one is successfully handed over. Before creating a batch the admin chooses
+the proxy source — own proxies (one per position) or the seller's proxies. This choice splits
+Claude, ChatGPT and Google AI/Gemini handoff identically; batch state and an unfinished wizard
+survive an authbot restart.
 
-`/jobs` доступна администратору и одобренному продавцу. Карточка batch показывает выполненные,
-оставшиеся и текущую позицию. Processing-batch можно немедленно поставить на паузу: завершённые
-позиции сохраняются, текущая незавершённая возвращается в `pending`, все её OAuth/device
-capability инвалидируются, а seller lock освобождается для одного single-offer. Новый batch при
-наличии paused-batch запрещён. Resume разрешён только после завершения single и создаёт новую exact
-generation для той же позиции. Админ может двухшагово удалить batch из рабочей очереди; это
-soft-delete в статус `cancelled`, поэтому tx/progress остаются в SQLite для аудита. Batch в
-неопределённой фазе `paying` удалить нельзя до payment review.
+`/jobs` is available to the admin and to an approved seller. The batch card shows completed,
+remaining and current positions. A processing batch can be paused immediately: completed positions
+are preserved, the current unfinished one returns to `pending`, all its OAuth/device capabilities
+are invalidated, and the seller lock is released for a single single-offer. Creating a new batch
+while a paused batch exists is forbidden. Resume is allowed only after the single completes and
+creates a new exact generation for the same position. The admin can two-step delete a batch from
+the work queue; this is a soft-delete into the `cancelled` status, so tx/progress remain in SQLite
+for audit. A batch in the indeterminate `paying` phase cannot be deleted before payment review.
 
-**Изоляция сделок продавца:** `seller_jobs` хранит ровно одну активную работу на продавца — либо
-конкретный single-offer, либо конкретные `batch_id + item_no`. Контекст резервируется атомарно уже
-при принятии сделки, до blockchain-вызова, и привязывается к Claude/ChatGPT/Gemini handoff (Gemini
-также сохраняет его в PKCE-сессии). Каждая активация позиции получает одноразовый generation token:
-успешная авторизация может завершить только exact source/id/item/generation с совпадающим типом
-продукта; наличие рядом другого активного batch само по себе никогда не двигает его курсор. Пока
-работа не завершена, принять или оплатить конкурирующую single-/batch-сделку нельзя. Админ видит
-очередь через `/jobs` или `📋 Активные сделки`; для исправления ошибочной отметки старой версии у
-текущего batch есть двухшаговая кнопка возврата ровно на предыдущую позицию. Продавцовский аналог —
-шаг назад внутри передачи доступа: он идёт через тот же generation guard, ротирует токен (поэтому
-любой поздний callback проваливается fail-closed) и по условию `phase='processing'` не может
-тронуть работу в фазе `paying`. Предикат исходного шага живёт в том же SQL-statement, что и guard,
-поэтому двойное нажатие уводит ровно на один шаг, а не на два. Неопределённые single-
-и batch-выплаты остаются locked до явного admin review после проверки chain. В `/jobs` админ может
-двухшагово удалить exact single-offer поколения accepted/processing: текущий handoff отменяется,
-seller lock освобождается, response становится `cancelled`, а исходные response/job-фазы и автор
-удаления сохраняются в `offer_archive_events`. Фаза `paying` удалению не подлежит.
+**Seller deal isolation:** `seller_jobs` holds exactly one active job per seller — either a
+specific single-offer or a specific `batch_id + item_no`. The context is reserved atomically at
+deal acceptance, before the blockchain call, and bound to the Claude/ChatGPT/Gemini handoff
+(Gemini also stores it in the PKCE session). Each position activation gets a one-time generation
+token: a successful authorization can complete only the exact source/id/item/generation with a
+matching product type; the mere presence of another active batch nearby never advances its cursor.
+While the job is unfinished, no competing single/batch deal can be accepted or paid. The admin
+sees the queue via `/jobs` or `📋 Активные сделки` ("Active deals"); to fix a mistaken mark from
+an old version, the current batch has a two-step button that returns exactly to the previous
+position. The seller-side analogue is the step back inside the access handoff: it goes through
+the same generation guard, rotates the token (so any late callback fails closed) and, by the
+`phase='processing'` condition, cannot touch a job in the `paying` phase. The originating step's
+predicate lives in the same SQL statement as the guard, so a double press moves exactly one step
+back, not two. Indeterminate single and batch payouts stay locked until explicit admin review
+after chain verification. In `/jobs` the admin can two-step delete the exact single-offer of the
+accepted/processing generation: the current handoff is cancelled, the seller lock is released,
+the response becomes `cancelled`, and the original response/job phases plus the deletion author
+are preserved in `offer_archive_events`. The `paying` phase is not subject to deletion.
 
-**Инварианты Codex-ветки (критично):**
-1. **Логин — только официальный клиент в PTY; секреты не логируем и не пересылаем.** Бот никогда
-   не видит пароль и второй фактор. После device-флоу бот ОДИН РАЗ читает `auth.json` staging-
-   каталога, запечатывает OAuth-материал в AEAD envelope (`codex-credential`) в roster движка и
-   полностью удаляет staging — открытого токена больше нигде нет. Тип аккаунта до этого проверяется
-   строкой `codex login status`, план — claim `chatgpt_plan_type` id_token (free отклоняется).
-2. **Незавершённая покупка не оставляет следов.** Истёк код, отказ, не тот тип аккаунта → staging
-   удаляется; в roster профиль попадает только после успешного seal. Шаг назад с `cx_wait` тоже
-   сносит staging вместе с дочерним процессом. Ожидание device-флоу — явное состояние `cx_wait`, а
-   не пустой `want`: после рестарта оно восстанавливается в `cx_email`, потому что дочерний процесс
-   рестарт не переживает, а его одноразовый код истекает без присмотра.
-3. **Логин уходит через тот же прокси, что и будущий трафик аккаунта** — иначе покупка и
-   эксплуатация выглядят как два разных пользователя.
-4. **Прокси — секрет:** существует только внутри envelope, никогда не печатается ни в лог, ни в чат.
-5. **Roster публикуется атомарно** (tmp+rename, credential 0600, каталог 0700): движок никогда не
-   читает половину файла и подхватывает профиль ближайшим health-тиком без рестарта.
-6. Бот НЕ правит `config.env`, не рестартит движок и не ходит под root: `AUTH_BOT_CODEX_ROSTER_DIR`
-   + keyring — вся его часть контракта.
+**Codex branch invariants (critical):**
+1. **Login — only the official client in a PTY; secrets are never logged or forwarded.** The bot
+   never sees the password or the second factor. After the device flow the bot reads the staging
+   directory's `auth.json` EXACTLY ONCE, seals the OAuth material into an AEAD envelope
+   (`codex-credential`) in the engine roster and fully deletes the staging — no plaintext token
+   remains anywhere. Before that, the account type is checked with the `codex login status` line,
+   the plan via the `chatgpt_plan_type` id_token claim (free is rejected).
+2. **An unfinished purchase leaves no traces.** Expired code, refusal, wrong account type →
+   staging is deleted; a profile enters the roster only after a successful seal. Stepping back
+   from `cx_wait` also wipes staging together with the child process. Waiting for the device flow
+   is an explicit `cx_wait` state, not an empty `want`: after a restart it is restored into
+   `cx_email`, because the child process does not survive a restart and its one-time code expires
+   unattended.
+3. **The login goes through the same proxy as the account's future traffic** — otherwise the
+   purchase and the usage look like two different users.
+4. **The proxy is a secret:** it exists only inside the envelope, never printed to any log or chat.
+5. **The roster is published atomically** (tmp+rename, credential 0600, directory 0700): the
+   engine never reads half a file and picks up the profile on the next health tick without a
+   restart.
+6. The bot does NOT edit `config.env`, does NOT restart the engine and does NOT act as root:
+   `AUTH_BOT_CODEX_ROSTER_DIR` + keyring is its entire part of the contract.
 
-**Инварианты Gemini-ветки (критично):**
-1. Новый handoff — две отдельные client-bound OAuth-транзакции, а не конвертация токена. Сначала
-   публичный installed-app client официального Gemini CLI с redirect
-   `https://codeassist.google.com/authcode` подтверждает verified Google identity; его токены
-   никогда не публикуются и его изменчивый Code Assist ответ не используется для admission. Затем
-   новый `state` + PKCE S256 использует
-   публичный Antigravity client и фиксированный redirect
-   `http://localhost:51121/oauth-callback`. Google subject, canonical proxy и seller-job generation
-   обязаны совпасть; legacy proof переносится только внутри state-bound AEAD второй фазы. Продавец
-   не создаёт OAuth client и не включает private API в своём проекте.
-2. Token exchange, userinfo, Antigravity `loadCodeAssist` и onboarding идут через тот же source
-   `node_transport.cjs`, что runtime: SHA-pinned `/usr/bin/node` v24.18.0 Linux/x64, per-account
-   authenticated CONNECT и `env_clear`. Legacy-фаза сохраняет client-bound form-order
-   `google-auth-library` 10.9.0 и token/userinfo identity; финальная identity pinned к Antigravity
-   2.2.1: control plane
-   использует `antigravity/hub/2.2.1 darwin/arm64`, onboarding добавляет
-   `google-api-nodejs-client/10.3.0`, token exchange — `Go-http-client/2.0`; userinfo идёт через
-   attested Node-internal Undici
-   dispatcher (его headers, pooling и ClientHello нельзя подменять gaxios-профилем). Proxy/bearer/form
-   существуют в zeroizing IPC buffers; Rust TLS и ambient proxy не участвуют. `loadCodeAssist`
-   передаёт `ideType=ANTIGRAVITY`, а onboarding — Antigravity ide name/version metadata.
-3. OAuth codes/tokens никогда не идут через Telegram. На legacy-фазе продавец копирует показанный
-   Google одноразовый Gemini CLI code в no-store HTTPS-форму. На Antigravity-фазе localhost может
-   не открыться; продавец копирует полный URL из адресной строки в отдельную форму. Parser проверяет
-   exact HTTP localhost:51121 path, callback state и отсутствие credentials/fragment/OAuth error.
-   Короткоживущий
-   proxy в SQLite только как XChaCha20-Poly1305 envelope, привязанный AAD к одноразовому state;
-   form/callback claim одноразовый.
-4. Legacy-фаза проверяет verified userinfo и до второго consent выполняет duplicate/proxy
-   preflight. Отсутствие проекта/tier на legacy Code Assist surface не доказывает ни совместимость,
-   ни несовместимость аккаунта, поэтому authoritative tier/project admission выполняется только
-   после свежего Antigravity consent. Принимаются только известные
-   Google AI Pro/Ultra, Code Assist Standard/Enterprise и Workspace AI Ultra. Free, Plus,
-   несовместимые Workspace и unknown future paid tiers fail-closed. Меню создания оффера показывает
-   только Google AI Pro/Ultra; организационные tier продолжают распознаваться для совместимости
-   старых callback и фактической проверки плана после OAuth.
-   После финального tier check выполняется non-streaming
-   `gemini-2.5-flash-lite:generateContent` с runtime headers; нужны 2xx, wrapped candidate и
-   ненулевая authoritative `usageMetadata`. Surface — сначала reviewed sandbox host, и ТОЛЬКО при
-   pre-generation отказе доступа (403/404) та же проба повторяется на production host, с которого
-   движок реально обслуживает трафик: аккаунт может быть допущен на одном хосте и отвергнут на
-   другом, а 403 означает, что модель не запускалась и платная генерация не потрачена. 503,
-   malformed response, missing usage или ambiguous transport не публикуют credential, не завершают
-   выплату и на второй surface НЕ уходят; состоявшаяся paid generation автоматически не
-   повторяется. Отказ уровня Google-аккаунта одинаков на всех surface, поэтому распознаётся сразу и
-   больше никуда не стучится: `VALIDATION_REQUIRED` / «Verify your account to continue» — это
-   `account_validation_required`, отдельный outcome с инструкцией пройти проверку Google в том же
-   профиле и прокси, а не «подожди и повтори»: ретрай состояние аккаунта не меняет. Персональную
-   ссылку проверки Google кладёт в `error.details[].metadata.validation_url`, а в `message` отдаёт
-   только фразу — ссылка извлекается и пересылается продавцу как copyable text (не кликабельной
-   ссылкой: открывать её нужно в его профиле и egress, а не во встроенном браузере Telegram).
-   Приходит она из upstream, поэтому fail-closed: только `https://accounts.google.com/`-префикс,
-   без control/whitespace/кавычек и ≤2048 байт — иначе наше же сообщение стало бы фишингом.
-   Токены такого аккаунта НЕ выбрасываются: Google уже подтвердил identity, tier и project, а
-   повторный проход обоих consent — лишний шанс подтвердить не тот аккаунт. Они паркуются
-   AEAD-конвертом в `gemini_pending_verifications` (AAD `gemini-verification-<chat>`, поэтому
-   конверт одного продавца не открывается для другого), ровно один на чат, с fencing по exact
-   seller-job generation и TTL 72 часа. Это НЕ публикация: в `profiles.json` ничего не попадает и
-   выплата не завершается. Рядом с сообщением появляется кнопка `gemini:verified`, и каждое
-   нажатие — одна настоящая acceptance-генерация на припаркованных токенах (access-token при
-   необходимости обновляется через тот же egress). Успех публикует профиль и закрывает сделку тем
-   же кодом, что и callback; повторный hold снова показывает кнопку; любой другой вердикт парковку
-   стирает, как и новый consent, `/cancel` и истёкший TTL. `countTokens`, quota и `loadCodeAssist` не являются acceptance. В журнал уходят
-   только HTTP-статус, surface и enum-поля Google (`error.status`, `error.details[].reason`);
-   free-form `error.message` — лишь под `AUTH_BOT_GEMINI_TIER_EVIDENCE=1`, потому что он может
-   содержать project и account.
-5. Google subject — quota identity: два РАЗНЫХ subject не могут делить профиль, а один subject
-   всегда занимает ровно один профиль. Legacy preflight распознаёт уже опубликованный Antigravity
-   subject ДО проверки изменчивого tier display и второго consent, поэтому повтор уже подключённого
-   аккаунта возвращает exact duplicate outcome, а не ложное «подписка не найдена», и не аннулирует
-   живой refresh-token. Существующий
-   legacy-профиль может мигрировать в Antigravity только с тем же subject/proxy; id профиля, roster и
-   IPRoyal lifecycle сохраняются. In-flight Antigravity callback старой версии остаётся совместимым
-   и при exact same subject/proxy может атомарно заменить материал на месте, потому что его consent
-   уже мог аннулировать старый token. Смена proxy и обратный переход на legacy fail-closed. Ссылка авторизации
-   всегда несёт `prompt=select_account consent`: одного `consent` мало — он подтверждает уже
-   залогиненный аккаунт без экрана выбора, и продавец, делающий позиции batch подряд в одном
-   профиле браузера, молча переподтверждает предыдущий аккаунт и убивает его токен. Email, subject,
-   project, tier, OAuth secret/token и authenticated proxy живут только внутри AEAD.
-   Если Google одновременно возвращает `paidTier` и `currentTier`, exact reviewed tier ID —
-   единственный authority: display name Google переписывает (Google One → без «One», формулировки
-   Antigravity) не трогая ID, поэтому имя другого известного плана считается drift и журналируется,
-   а не блокирует доступ. При расхождении reviewed-планов `paidTier` и `currentTier` выигрывает
-   `paidTier` (так же выбирает официальный клиент: `paidTier.id ?? currentTier.id`), потому что
-   Antigravity-онбординг штатно оставляет `currentTier` на другом тарифе, и старый fail-closed
-   говорил продавцу с живой подпиской «подписка не найдена». Неизвестный ID падает обратно на exact
-   reviewed name; знакомые подстроки доступ не дают, и evidence, не reviewed ни в одном поле, —
-   fail-closed. Перед каждым `unsupported_plan` журнал получает
-   только bounded shape-классы: наличие project/paid/current, число allowed tiers и
-   `known_id`/`known_name`/`name_drift` без raw tier, project или identity. Отдельный opt-in
-   `AUTH_BOT_GEMINI_TIER_EVIDENCE=1` (по умолчанию выключен) дополнительно печатает bounded сырые
-   tier id/name финального `loadCodeAssist` — иначе новый тариф Google опознаётся только новым
-   деплоем.
-6. Credential envelopes и `profiles.json` — `0600`, каталоги — `0700`, symlink/alternate path
-   запрещены. Новая публикация пишет сначала envelope, затем atomic roster rename+fsync. Миграция
-   сохраняет opaque profile id, roster и существующий IPRoyal lifecycle, атомарно заменяя только
-   envelope. После generation acceptance и ожидания publication-lock exact seller-job generation
-   проверяется повторно непосредственно перед записью; SQLite и roster не образуют общей транзакции,
-   поэтому это минимизирует неизбежное cross-store окно. Startup rewrap переводит старые envelopes
-   на active kid, сохраняя online key rotation.
-   Ручная смена egress выполняется только локальными operator-командами `gemini-proxy-stage`,
-   `gemini-proxy-commit` и `gemini-proxy-rollback` при остановленном Auth Bot: proxy читается из
-   stdin, старый envelope остаётся зашифрованным rollback, а runtime подхватывает atomic replace без
-   рестарта. Telegram, argv и вывод команды proxy не содержат. Stage не принимает proxy другого
-   профиля и сбрасывает IPRoyal order в `0`, потому что внешний proxy бот продлевать не может.
-7. После неуспешного OAuth retry сохраняет exact egress для buyer/IPRoyal и seller-proxy. Любая
-   ошибка второй фазы начинает новую двухфазную generation; legacy token/project нигде не остаются.
-   `transport_unavailable`, control-plane `temporary_upstream` и final
-   `generation_unavailable` — разные outcomes, поэтому исправный proxy больше не обвиняется
-   сообщением за Google HTTP/malformed response или generation 503. В
-   seller-proxy работе команда `повторить` создаёт новую PKCE generation с сохранённым proxy, а новое
-   proxy-сообщение явно заменяет его. До инструкции по созданию аккаунта выполняется только локальная
-   канонизация URL: speculative CONNECT запрещён, потому что residential gateway может ответить
-   transient 403 на сам probe при полностью рабочем allocation. Реальный OAuth transport сериализован
-   внутри authbot и различает bounded CONNECT-классы `proxy_auth`, `proxy_throttle`,
-   `proxy_rejected`, `proxy_upstream`, `proxy_connect`, `proxy_eof`, `proxy_protocol` и
-   `proxy_timeout`. Безопасные pre-target отказы token exchange автоматически повторяются свежим
-   helper на 0/2/7/17/37 секунде; после получения токена idempotent userinfo/Code Assist операции
-   используют то же bounded recovery. Ambiguous post-send timeout/network никогда не переигрывает
-   одноразовый authorization code. Transport-журнал содержит только номер попытки и bounded-класс,
-   никогда не URL/credentials прокси. `назад` с `gm_wait` восстанавливает egress из запечатанной
-   PKCE-транзакции, а не спрашивает прокси заново (`start_gemini_oauth` стирает `users.hproxy`,
-   поэтому другой копии нет); пока callback уже обрабатывает код, откат отказывает, а не гоняется с
-   обменом. `/cancel` — отдельный generation-fenced restart: он имеет право остановить уже claimed
-   callback, восстанавливает запечатанный или закреплённый egress до удаления старой сессии и
-   немедленно выдаёт свежую двухфазную попытку. Если egress повреждён или внешне удалён, старое
-   поколение всё равно гасится; seller-proxy запрашивается заново, fixed-proxy требует operator
-   repair. Закреплённый прокси обычный откат не стирает никогда — прежний `/cancel` делал это
-   безусловно и этим намертво запирал работу с прокси покупателя.
-8. **Реконструкция прокси из сообщения продавца обратима.** `ip:port:user:pass` режется ровно на
-   четыре поля (пароль может содержать `:`), а userinfo процент-кодируется в unreserved-набор,
-   потому что канонизация ниже по стеку ДЕКОДИРУЕТ процент-последовательности: без кодирования
-   литеральный `%41` в пароле превращается в `A`, а `/`, `?`, `#` рвут разбор authority. Любая
-   потеря здесь уходит в CONNECT как чужой пароль и возвращается классом `proxy_auth`, который
-   неотличим от мёртвого прокси без ручного расследования. Форма `ip:port` остаётся валидной
-   (авторизация по IP), но продавцу явно сообщается, что логин и пароль не распознаны. Отвергнутый
-   ввод логируется только бесключевым отпечатком (форма, валидность хоста/порта, длины полей).
-**Секреты:** `AUTH_BOT_TOKEN`, ключ BSC-выплат, Claude/Gemini credentials и прокси — только в
-`authbot.env` или закрытых runtime-файлах (вне репо). Не коммитить, не печатать.
+**Gemini branch invariants (critical):**
+1. A new handoff is two separate client-bound OAuth transactions, not a token conversion. First,
+   the public installed-app client of the official Gemini CLI with redirect
+   `https://codeassist.google.com/authcode` confirms the verified Google identity; its tokens are
+   never published and its volatile Code Assist response is not used for admission. Then a new
+   `state` + PKCE S256 uses
+   the public Antigravity client and the fixed redirect
+   `http://localhost:51121/oauth-callback`. Google subject, canonical proxy and seller-job
+   generation must all match; legacy proof is carried over only inside the state-bound AEAD of the
+   second phase. The seller does not create an OAuth client and does not enable private APIs in
+   their project.
+2. Token exchange, userinfo, Antigravity `loadCodeAssist` and onboarding go through the same
+   `node_transport.cjs` source as runtime: SHA-pinned `/usr/bin/node` v24.18.0 Linux/x64,
+   per-account authenticated CONNECT and `env_clear`. The legacy phase preserves the client-bound
+   form-order of `google-auth-library` 10.9.0 and token/userinfo identity; the final identity is
+   pinned to Antigravity 2.2.1: the control plane
+   uses `antigravity/hub/2.2.1 darwin/arm64`, onboarding adds
+   `google-api-nodejs-client/10.3.0`, token exchange — `Go-http-client/2.0`; userinfo goes through
+   the attested Node-internal Undici
+   dispatcher (its headers, pooling and ClientHello must not be replaced by a gaxios profile).
+   Proxy/bearer/form exist in zeroizing IPC buffers; Rust TLS and ambient proxy do not
+   participate. `loadCodeAssist` sends `ideType=ANTIGRAVITY`, and onboarding sends Antigravity ide
+   name/version metadata.
+3. OAuth codes/tokens never go through Telegram. In the legacy phase the seller copies the
+   one-time Gemini CLI code shown by Google into a no-store HTTPS form. In the Antigravity phase
+   localhost may fail to open; the seller copies the full URL from the address bar into a separate
+   form. The parser verifies the exact HTTP localhost:51121 path, the callback state and the
+   absence of credentials/fragment/OAuth error.
+   The short-lived proxy lives in SQLite only as an XChaCha20-Poly1305 envelope, bound by AAD to
+   the one-time state; the form/callback claim is one-time.
+4. The legacy phase checks verified userinfo and performs a duplicate/proxy preflight before the
+   second consent. Absence of a project/tier on the legacy Code Assist surface proves neither
+   compatibility nor incompatibility of the account, so authoritative tier/project admission runs
+   only after a fresh Antigravity consent. Only known
+   Google AI Pro/Ultra, Code Assist Standard/Enterprise and Workspace AI Ultra are accepted. Free,
+   Plus, incompatible Workspace and unknown future paid tiers fail closed. The offer-creation menu
+   shows only Google AI Pro/Ultra; organizational tiers keep being recognized for compatibility
+   with old callbacks and the actual plan check after OAuth.
+   After the final tier check a non-streaming
+   `gemini-2.5-flash-lite:generateContent` runs with runtime headers; it requires a 2xx, a wrapped
+   candidate and non-zero authoritative `usageMetadata`. The surface is the reviewed sandbox host
+   first, and ONLY on a pre-generation access refusal (403/404) is the same probe repeated on the
+   production host from which the engine actually serves traffic: an account may be admitted on
+   one host and rejected on the other, and a 403 means the model never ran and no paid generation
+   was spent. A 503, malformed response, missing usage or ambiguous transport does not publish the
+   credential, does not complete the payout and does NOT move to the second surface; a paid
+   generation that already happened is never automatically repeated. A Google-account-level refusal
+   is identical on every surface, so it is recognized immediately and not retried anywhere else:
+   `VALIDATION_REQUIRED` / "Verify your account to continue" is
+   `account_validation_required`, a separate outcome instructing the seller to complete Google
+   verification in the same profile and proxy — not "wait and retry": a retry does not change the
+   account state. Google puts the personal verification link in
+   `error.details[].metadata.validation_url`, while `message` carries only the phrase — the link
+   is extracted and forwarded to the seller as copyable text (not a clickable link: it must be
+   opened in their profile and egress, not in Telegram's built-in browser).
+   It comes from upstream, so fail-closed: only an `https://accounts.google.com/` prefix,
+   no control/whitespace/quotes and ≤2048 bytes — otherwise our own message would become phishing.
+   Such an account's tokens are NOT discarded: Google has already confirmed identity, tier and
+   project, and rerunning both consents is an extra chance to confirm the wrong account. They are
+   parked as an AEAD envelope in `gemini_pending_verifications` (AAD
+   `gemini-verification-<chat>`, so one seller's envelope cannot be opened for another), exactly
+   one per chat, fenced by the exact seller-job generation with a 72-hour TTL. This is NOT
+   publication: nothing enters `profiles.json` and the payout does not complete. A
+   `gemini:verified` button appears next to the message, and every press is one real acceptance
+   generation on the parked tokens (the access token is refreshed via the same egress when
+   needed). Success publishes the profile and closes the deal with the same code path as the
+   callback; a repeated hold shows the button again; any other verdict erases the parking, as do a
+   new consent, `/cancel` and an expired TTL. `countTokens`, quota and `loadCodeAssist` are not
+   acceptance. Only the HTTP status, the surface and Google's enum fields (`error.status`,
+   `error.details[].reason`) go to the log;
+   free-form `error.message` — only under `AUTH_BOT_GEMINI_TIER_EVIDENCE=1`, because it may
+   contain the project and account.
+5. Google subject is the quota identity: two DIFFERENT subjects cannot share a profile, and one
+   subject always occupies exactly one profile. The legacy preflight recognizes an already
+   published Antigravity subject BEFORE checking the volatile tier display and the second consent,
+   so repeating an already connected account returns the exact duplicate outcome instead of a
+   false "subscription not found", and does not annul the live refresh token. An existing
+   legacy profile may migrate to Antigravity only with the same subject/proxy; the profile id,
+   roster and IPRoyal lifecycle are preserved. An in-flight Antigravity callback from an old
+   version stays compatible and, with the exact same subject/proxy, can atomically replace the
+   material in place, because its consent may already have annulled the old token. Changing the
+   proxy and reverting to legacy fail closed. The authorization
+   link always carries `prompt=select_account consent`: `consent` alone is not enough — it
+   reconfirms the already logged-in account without a selection screen, and a seller doing batch
+   positions in a row in one browser profile silently reconfirms the previous account and kills
+   its token. Email, subject, project, tier, OAuth secret/token and the authenticated proxy live
+   only inside the AEAD.
+   If Google returns both `paidTier` and `currentTier`, the exact reviewed tier ID is the only
+   authority: Google rewrites the display name (Google One → without "One", Antigravity wording)
+   without touching the ID, so a name of another known plan counts as drift and is logged rather
+   than blocking access. On a mismatch between the reviewed `paidTier` and `currentTier` plans,
+   `paidTier` wins (the official client chooses the same way: `paidTier.id ?? currentTier.id`),
+   because Antigravity onboarding legitimately leaves `currentTier` on a different plan, and the
+   old fail-closed behavior told sellers with a live subscription "subscription not found". An
+   unknown ID falls back to the exact reviewed name; familiar substrings do not grant access, and
+   evidence not reviewed in any field fails closed. Before every `unsupported_plan` the log
+   receives only bounded shape classes: presence of project/paid/current, the number of allowed
+   tiers and `known_id`/`known_name`/`name_drift` without raw tier, project or identity. A
+   separate opt-in `AUTH_BOT_GEMINI_TIER_EVIDENCE=1` (off by default) additionally prints the
+   bounded raw tier id/name of the final `loadCodeAssist` — otherwise a new Google plan is
+   recognized only by a new deploy.
+6. Credential envelopes and `profiles.json` are `0600`, directories are `0700`,
+   symlinks/alternate paths are forbidden. A new publication writes the envelope first, then the
+   atomic roster rename+fsync. Migration preserves the opaque profile id, roster and the existing
+   IPRoyal lifecycle, atomically replacing only the envelope. After generation acceptance and
+   publication-lock wait, the exact seller-job generation is re-checked immediately before the
+   write; SQLite and the roster do not form a shared transaction, so this minimizes the inevitable
+   cross-store window. Startup rewrap moves old envelopes to the active kid, preserving online key
+   rotation.
+   A manual egress change is performed only by the local operator commands `gemini-proxy-stage`,
+   `gemini-proxy-commit` and `gemini-proxy-rollback` with the Auth Bot stopped: the proxy is read
+   from stdin, the old envelope remains as an encrypted rollback, and runtime picks up the atomic
+   replace without a restart. Telegram, argv and command output never contain the proxy. Stage
+   does not accept another profile's proxy and resets the IPRoyal order to `0`, because the bot
+   cannot renew an external proxy.
+7. After an unsuccessful OAuth, retry preserves the exact egress for buyer/IPRoyal and
+   seller-proxy. Any second-phase error starts a new two-phase generation; legacy token/project
+   survive nowhere. `transport_unavailable`, control-plane `temporary_upstream` and final
+   `generation_unavailable` are different outcomes, so a healthy proxy is no longer blamed by a
+   message for a Google HTTP/malformed response or a generation 503. In a
+   seller-proxy job the command `повторить` ("retry") creates a new PKCE generation with the saved
+   proxy, while a new proxy message explicitly replaces it. Before the account-creation
+   instruction only local URL canonization runs: speculative CONNECT is forbidden, because a
+   residential gateway may answer a transient 403 to the probe itself with a fully working
+   allocation. The real OAuth transport is serialized inside authbot and distinguishes the bounded
+   CONNECT classes `proxy_auth`, `proxy_throttle`,
+   `proxy_rejected`, `proxy_upstream`, `proxy_connect`, `proxy_eof`, `proxy_protocol` and
+   `proxy_timeout`. Safe pre-target token-exchange refusals are automatically retried by a fresh
+   helper at 0/2/7/17/37 seconds; after the token is obtained, idempotent userinfo/Code Assist
+   operations use the same bounded recovery. An ambiguous post-send timeout/network error never
+   replays a one-time authorization code. The transport log contains only the attempt number and
+   the bounded class, never the proxy URL/credentials. `назад` ("back") from `gm_wait` restores
+   the egress from the sealed PKCE transaction instead of asking for the proxy again
+   (`start_gemini_oauth` erases `users.hproxy`, so no other copy exists); while the callback is
+   already processing the code, rollback refuses rather than racing the exchange. `/cancel` is a
+   separate generation-fenced restart: it is entitled to stop an already claimed callback,
+   restores the sealed or pinned egress before deleting the old session and immediately issues a
+   fresh two-phase attempt. If the egress is corrupted or externally deleted, the old generation
+   is extinguished anyway; the seller proxy is requested anew, a fixed proxy requires operator
+   repair. A regular rollback never erases a pinned proxy — the previous `/cancel` did so
+   unconditionally and thereby permanently locked a job with the buyer's proxy.
+8. **Reconstructing the proxy from the seller's message is reversible.** `ip:port:user:pass` is
+   split into exactly four fields (the password may contain `:`), and userinfo is percent-encoded
+   into the unreserved set, because canonization further down the stack DECODES percent sequences:
+   without encoding, a literal `%41` in the password becomes `A`, and `/`, `?`, `#` break the
+   authority parsing. Any loss here goes into CONNECT as someone else's password and comes back as
+   the `proxy_auth` class, which is indistinguishable from a dead proxy without a manual
+   investigation. The `ip:port` form remains valid (IP-based authorization), but the seller is
+   explicitly told that the login and password were not recognized. Rejected input is logged only
+   as a keyless fingerprint (form, host/port validity, field lengths).
+**Secrets:** `AUTH_BOT_TOKEN`, the BSC payout key, Claude/Gemini credentials and proxies — only in
+`authbot.env` or closed runtime files (outside the repo). Do not commit, do not print.
 
 **Env:**
-- `AUTH_BOT_TOKEN`, `AUTH_BOT_ADMIN`, `AUTH_BOT_FLEET`, `CLAUDE_API_DATABASE_URL` — база.
-- `AUTH_BOT_CLAUDE_BIN` (приоритет) / `CLAUDE_BIN` — claude CLI для Claude-ветки. Production unit
-  задаёт первый и bind-mount'ит официальный install read-only в `/run/claude-authbot/claude`, не
-  открывая остальной home; legacy `CLAUDE_BIN` из `authbot.env` не может переопределить unit path.
-- `AUTH_BOT_CLAUDE_CONFIG_DIR` — writable-корень изолированных Claude-сессий (деф
-  `/srv/claude-api/data/authbot`); токены и состояние не должны лежать в home.
-- `AUTH_BOT_CODEX_BIN` — пиннованный codex CLI (деф `/srv/claude-api/data/codex/bin/codex`).
-- `AUTH_BOT_CODEX_HOMES_DIR` — staging-каталог device-флоу (скрытые каталоги логина; НЕ пул).
-- `AUTH_BOT_CODEX_ROSTER_DIR` — корень `credentials/` + `profiles.json` движка (деф
-  `/srv/claude-api/data/codex`); движковый `CLAUDE_API_CODEX_PROFILES_FILE` должен указывать на
-  `<этот каталог>/profiles.json`.
-- `AUTH_BOT_CODEX_CREDENTIAL_KEYS`, `AUTH_BOT_CODEX_CREDENTIAL_ACTIVE_KID` — общий с runtime
-  AEAD keyring и активный ключ публикации/rotation (`CLAUDE_API_CODEX_CREDENTIAL_KEYS` у движка).
-- `AUTH_BOT_GEMINI_DIR` — корень `credentials/` + `profiles.json` (деф
-  `/srv/claude-api/data/gemini`); движковый `CLAUDE_API_GEMINI_PROFILES_FILE` должен указывать на
-  `<этот каталог>/profiles.json`.
-- `AUTH_BOT_GEMINI_REDIRECT_URI`, `AUTH_BOT_GEMINI_OAUTH_BIND` — публичная HTTPS-форма приёма
-  одноразового кода (`…/oauth/callback`) + её loopback bind. Legacy-название redirect сохранено для
-  совместимости env; Google получает фиксированный localhost redirect Antigravity.
-- `AUTH_BOT_GEMINI_CREDENTIAL_KEYS`, `AUTH_BOT_GEMINI_CREDENTIAL_ACTIVE_KID` — общий с runtime
-  AEAD keyring и активный ключ публикации/rotation.
-- `AUTH_BOT_GEMINI_TIER_EVIDENCE` — `1` включает bounded raw tier id/name в журнале Gemini-
-  admission (диагностика нового тарифа Google). По умолчанию выключено.
-- `AUTH_BOT_IPROYAL_KEY` — авто-выпуск прокси (пусто = ручной ввод).
+- `AUTH_BOT_TOKEN`, `AUTH_BOT_ADMIN`, `AUTH_BOT_FLEET`, `CLAUDE_API_DATABASE_URL` — the basics.
+- `AUTH_BOT_CLAUDE_BIN` (priority) / `CLAUDE_BIN` — the claude CLI for the Claude branch. The
+  production unit sets the former and bind-mounts the official install read-only at
+  `/run/claude-authbot/claude`, without exposing the rest of home; the legacy `CLAUDE_BIN` from
+  `authbot.env` cannot override the unit path.
+- `AUTH_BOT_CLAUDE_CONFIG_DIR` — writable root of isolated Claude sessions (default
+  `/srv/claude-api/data/authbot`); tokens and state must not live in home.
+- `AUTH_BOT_CODEX_BIN` — the pinned codex CLI (default `/srv/claude-api/data/codex/bin/codex`).
+- `AUTH_BOT_CODEX_HOMES_DIR` — staging directory of the device flow (hidden login directories;
+  NOT the pool).
+- `AUTH_BOT_CODEX_ROSTER_DIR` — root of the engine's `credentials/` + `profiles.json` (default
+  `/srv/claude-api/data/codex`); the engine's `CLAUDE_API_CODEX_PROFILES_FILE` must point to
+  `<this directory>/profiles.json`.
+- `AUTH_BOT_CODEX_CREDENTIAL_KEYS`, `AUTH_BOT_CODEX_CREDENTIAL_ACTIVE_KID` — the AEAD keyring
+  shared with runtime and the active publication/rotation key (`CLAUDE_API_CODEX_CREDENTIAL_KEYS`
+  on the engine side).
+- `AUTH_BOT_GEMINI_DIR` — root of `credentials/` + `profiles.json` (default
+  `/srv/claude-api/data/gemini`); the engine's `CLAUDE_API_GEMINI_PROFILES_FILE` must point to
+  `<this directory>/profiles.json`.
+- `AUTH_BOT_GEMINI_REDIRECT_URI`, `AUTH_BOT_GEMINI_OAUTH_BIND` — the public HTTPS form accepting
+  the one-time code (`…/oauth/callback`) + its loopback bind. The legacy redirect name is kept
+  for env compatibility; Google gets the fixed Antigravity localhost redirect.
+- `AUTH_BOT_GEMINI_CREDENTIAL_KEYS`, `AUTH_BOT_GEMINI_CREDENTIAL_ACTIVE_KID` — the AEAD keyring
+  shared with runtime and the active publication/rotation key.
+- `AUTH_BOT_GEMINI_TIER_EVIDENCE` — `1` enables bounded raw tier id/name in the Gemini admission
+  log (diagnostics for a new Google plan). Off by default.
+- `AUTH_BOT_IPROYAL_KEY` — automatic proxy issuance (empty = manual input).
 
-Фоновый lifecycle-контроль обновляет срок прокси и при необходимости продлевает тот же IPRoyal
-allocation, но не отправляет периодические отчёты «Контроль прокси» в Telegram.
+The background lifecycle check refreshes the proxy expiry and, when needed, renews the same
+IPRoyal allocation, but does not send periodic "Контроль прокси" ("Proxy check") reports to
+Telegram.
 
-**Деплой:** watchdog собирает бот вместе с движком и кладёт протестированный бинарь в immutable
-engine release; `claude-authbot.service` запускает `/srv/claude-api/releases/current/authbot`.
-Изменённый бинарь перезапускается после promotion. На startup потерянный in-memory Claude child
-восстанавливается из persisted `ho_code` в `ho_email`, а прерванное ожидание ChatGPT — из `cx_wait`
-в `cx_email`; продавец присылает email и получает свежий flow. Gemini-сессии `processing` никогда
-не replay-ят уже отданный Google code: startup использует тот же generation-fenced `/cancel` path,
-сохраняет egress и автоматически выдаёт продавцу совершенно новые state+PKCE-ссылки.
+**Deploy:** the watchdog builds the bot together with the engine and places the tested binary in
+the immutable engine release; `claude-authbot.service` runs
+`/srv/claude-api/releases/current/authbot`. A changed binary is restarted after promotion. On
+startup, a lost in-memory Claude child is restored from persisted `ho_code` into `ho_email`, and
+an interrupted ChatGPT wait from `cx_wait` into `cx_email`; the seller sends the email and gets a
+fresh flow. Gemini `processing` sessions never replay an already submitted Google code: startup
+uses the same generation-fenced `/cancel` path, preserves the egress and automatically issues the
+seller completely new state+PKCE links.
 
-**Проверка:** `cargo test -p authbot`. Живой прогон Telegram/OAuth/Google API — только на сервере.
+**Verification:** `cargo test -p authbot`. A live Telegram/OAuth/Google API run — only on the
+server.
 
-## KIMI (Kimi Code) — device-code acquisition, пока dormant
+## KIMI (Kimi Code) — device-code acquisition, dormant for now
 
-Меню оффера и быстрая админская клавиатура покрывают всю платную лестницу Kimi Code по именам
-провайдера: Andante, Moderato, Allegretto, Allegro и топовый Vivace. Цена вводится на каждый
-оффер отдельно и нигде не предполагается: USD- и CNY-страницы провайдера расходятся.
+The offer menu and the quick admin keyboard cover the entire paid Kimi Code ladder under the
+provider's names: Andante, Moderato, Allegretto, Allegro and the top Vivace. The price is entered
+per offer individually and is never assumed anywhere: the provider's USD and CNY pages diverge.
 
-`kimi_oauth.rs` — чистый протокольный модуль получения подписки KIMI. Он НЕ владеет Telegram-
-состоянием, seller job, выплатой и публикацией roster: мастер, который его вызывает, приезжает
-отдельным зависимым изменением, чтобы новый контракт провайдера не смешивался с правками
-state-машины продавца в одном diff. Факты и метки evidence — `docs/engine/KIMI_PROVIDER.md` §2.
+`kimi_oauth.rs` — a pure protocol module for acquiring a KIMI subscription. It does NOT own the
+Telegram state, the seller job, the payout or the roster publication: the wizard that calls it
+arrives as a separate dependent change, so that the new provider contract is not mixed with seller
+state-machine edits in one diff. Evidence facts and labels — `docs/engine/KIMI_PROVIDER.md` §2.
 
-- **Grant — RFC 8628 device authorization** на `https://auth.kimi.com`
-  (`/api/oauth/device_authorization` → `/api/oauth/token`). Это правильная форма для handoff:
-  продавец видит только короткий `user_code` и `verification_uri_complete` и **никогда** не
-  передаёт оператору пароль, 2FA, cookie, токен или прокси. `device_code` наружу не уходит —
-  `seller_prompt()` его не содержит, и это закреплено тестом.
-- **Refresh-семья ротирующая.** Grant без `refresh_token` отвергается: он умрёт при первом
-  refresh. Ответ с неизвестным OAuth-кодом ошибки не считается «продолжаем поллить» — иначе
-  изменение контракта провайдера тихо крутилось бы до дедлайна.
-- **Identity берётся только из `/me`**, не из того, что ввёл продавец. Пустой `user_id` ломает
-  атрибуцию квоты, пустой `user_level_name` схлопывает разные когорты калибровки в одну, статус
-  не `USER_STATUS_NORMAL` означает нероутируемый аккаунт — все три fail closed до того, как
-  что-либо запечатано. `email`/`phone`/`nickname` в разобранную структуру не попадают вовсе.
-- **Egress обязателен на всём приобретении.** Некорректный proxy URL валит acquisition, а не
-  молча уходит в прямой egress: открыть аккаунт с одного IP и авторизовать с другого — ровно то,
-  что триггерит risk-проверки провайдера.
-- **Границы поллинга.** Интервал провайдера соблюдается, но не ниже 5 с; `slow_down` увеличивает
-  его; дедлайн одного приобретения ограничен нашим потолком 15 минут независимо от `expires_in`,
-  чтобы зависшее приобретение не удерживало seller job навсегда.
-- Печать/публикация конверта делает вызывающий, и только ДО завершения выплаты: неудачный,
-  просроченный или wrong-plan flow не должен оставить ни файла credential, ни строки roster.
+- **Grant — RFC 8628 device authorization** at `https://auth.kimi.com`
+  (`/api/oauth/device_authorization` → `/api/oauth/token`). This is the correct form for handoff:
+  the seller sees only the short `user_code` and `verification_uri_complete` and **never** hands
+  the operator a password, 2FA, cookie, token or proxy. The `device_code` never leaves the bot —
+  `seller_prompt()` does not contain it, and this is pinned by a test.
+- **The refresh family is rotating.** A grant without a `refresh_token` is rejected: it would die
+  on the first refresh. A response with an unknown OAuth error code does not count as "keep
+  polling" — otherwise a provider contract change would silently spin until the deadline.
+- **Identity is taken only from `/me`**, not from what the seller entered. An empty `user_id`
+  breaks quota attribution, an empty `user_level_name` collapses different calibration cohorts into
+  one, a status other than `USER_STATUS_NORMAL` means an unroutable account — all three fail
+  closed before anything is sealed. `email`/`phone`/`nickname` never enter the parsed structure at
+  all.
+- **Egress is mandatory for the entire acquisition.** A malformed proxy URL fails the acquisition
+  rather than silently falling back to direct egress: opening an account from one IP and
+  authorizing from another is exactly what triggers the provider's risk checks.
+- **Polling boundaries.** The provider's interval is honored, but never below 5 s; `slow_down`
+  increases it; the deadline of one acquisition is capped by our 15-minute ceiling regardless of
+  `expires_in`, so that a stuck acquisition does not hold the seller job forever.
+- The caller seals/publishes the envelope, and only BEFORE completing the payout: a failed,
+  expired or wrong-plan flow must leave neither a credential file nor a roster row.
 
-`kimi_roster.rs` — файловый контракт публикации. Отделён от обмена намеренно: там протокол, здесь
-файловая система.
+`kimi_roster.rs` — the file contract of publication. Separated from the exchange deliberately:
+there is the protocol, here is the filesystem.
 
-- **Порядок — конверт, затем roster**, оба atomic + fsync родителя. Обратный порядок дал бы движку
-  строку roster, чей credential-файл ещё не существует, и он валил бы здоровый профиль на каждой
-  перезагрузке.
-- **Subject — quota identity.** Квота KIMI общая на все устройства и API-ключи аккаунта, поэтому
-  единица — `user_id`, а не ключ и не profile id. Два профиля с одним subject удвоили бы ёмкость
-  одной подписки и разорвали её calibration evidence на две строки. Повторная авторизация
-  известного subject **заменяет** его профиль на месте, сохраняя id (а с ним affinity, health и
-  историю калибровки); новый subject с уже занятым profile id отклоняется. Замена — не удобство:
-  провайдер ротирует refresh-семью на каждом consent, поэтому отказ оставил бы в roster заведомо
-  мёртвый токен.
-- **Fail closed:** строка roster обязана указывать ровно на канонический путь своего id (иначе
-  правка roster перенаправила бы движок на файл вне запечатанного каталога); symlink,
-  world-readable файл и нечитаемый конверт останавливают публикацию, а не выкидывают профиль;
-  невалидный credential не трогает roster вообще. В roster лежат только opaque id и путь — ни
-  subject, ни плана, ни токена.
+- **Order — envelope, then roster**, both atomic + parent fsync. The reverse order would give the
+  engine a roster row whose credential file does not exist yet, and it would fail a healthy
+  profile on every reload.
+- **Subject is the quota identity.** KIMI quota is shared across all devices and API keys of the
+  account, so the unit is `user_id`, not a key and not a profile id. Two profiles with one subject
+  would double the capacity of one subscription and tear its calibration evidence into two rows.
+  Re-authorization of a known subject **replaces** its profile in place, preserving the id (and
+  with it affinity, health and calibration history); a new subject with an already occupied
+  profile id is rejected. Replacement is not a convenience: the provider rotates the refresh
+  family on every consent, so refusing would leave a knowingly dead token in the roster.
+- **Fail closed:** a roster row must point exactly at the canonical path of its own id (otherwise
+  editing the roster would redirect the engine to a file outside the sealed directory); a symlink,
+  a world-readable file and an unreadable envelope stop publication rather than dropping the
+  profile; an invalid credential does not touch the roster at all. The roster holds only the
+  opaque id and path — no subject, no plan, no token.
 
-**Мастер продавца.** Шаги `km_proxy → km_ready → km_wait`, кнопка `kimi:ready`. Отдельный callback
-у каждого провайдера намеренно: общий id позволил бы кнопке одной сделки продвинуть другую. На
-`km_proxy` бот принимает прокси текстовым сообщением — раньше этой ветки не было, и ввод падал в
-общий fallback «Доступна только команда /start». Разбор тот же обратимый, что и у Gemini
-(`parse_proxy_input`, пароль с `:` переживает реконструкцию), а перед закреплением прокси проходит
-каноникализацию `kimi_credential::normalize_proxy_url`, поэтому мусор не доходит до `km_ready` и не
-запирает продавца на device-flow с нерабочим egress. Закреплённый buyer/IPRoyal прокси сообщение
-продавца заменить не может — решает общий `job_accepts_seller_proxy`; невалидный ввод оставляет
-сделку на `km_proxy` с безопасной повторной подсказкой, а в журнал уходит только бесключевой
-отпечаток формы. Single-оффер с прокси покупателя и выдача IPRoyal приходят на `km_ready` через тот
-же `prepare_kimi_account`, что и batch, поэтому карточка с кнопкой приходит всегда.
-`km_ready` требует одновременно своего шага И сохранённого прокси — иначе кнопка инертна, потому
-что приобретение без назначенного egress авторизовалось бы не с того IP, с которого открыт аккаунт.
-Поллинг идёт под generation guard: на каждом тике сделка перепроверяется, поэтому cancel, шаг назад
-и рестарт останавливают приобретение, а не дают ему опубликоваться в уже уехавшую сделку. Шаг назад
-с `km_wait` гасит выданный код и требует подтверждения; без восстановимого egress он деградирует до
-`km_proxy`, иначе продавец попал бы на `km_ready` с пустым `hproxy` — тупик. Истёкший, отклонённый
-или невалидный flow возвращает на `km_ready`, не оставляет ни конверта, ни строки roster и **не
-завершает выплату**. Поллинг токена read-only, поэтому transport-сбой безопасно повторяется до
-дедлайна и никогда не переигрывает одноразовую операцию.
+**Seller wizard.** Steps `km_proxy → km_ready → km_wait`, button `kimi:ready`. A separate callback
+per provider is deliberate: a shared id would let one deal's button advance another deal. At
+`km_proxy` the bot accepts the proxy as a text message — this branch did not exist before, and the
+input fell into the generic fallback "Доступна только команда /start" ("Only the /start command
+is available"). Parsing is the same reversible one as Gemini's (`parse_proxy_input`, a password
+with `:` survives reconstruction), and before pinning, the proxy passes
+`kimi_credential::normalize_proxy_url` canonization, so garbage never reaches `km_ready` and does
+not lock the seller into a device flow with a broken egress. A pinned buyer/IPRoyal proxy cannot
+be replaced by the seller's message — the shared `job_accepts_seller_proxy` decides; invalid input
+leaves the deal on `km_proxy` with a safe re-prompt, and only the keyless form fingerprint goes to
+the log. A single-offer with the buyer's proxy and IPRoyal issuance arrive at `km_ready` through
+the same `prepare_kimi_account` as a batch, so the card with the button always arrives.
+`km_ready` requires both its own step AND a saved proxy — otherwise the button is inert, because
+an acquisition without an assigned egress would authorize from an IP other than the one the
+account was opened from. Polling runs under the generation guard: on every tick the deal is
+re-checked, so cancel, step back and restart stop the acquisition instead of letting it publish
+into a deal that has already moved on. Stepping back from `km_wait` extinguishes the issued code
+and requires confirmation; without a recoverable egress it degrades to `km_proxy`, otherwise the
+seller would land on `km_ready` with an empty `hproxy` — a dead end. An expired, rejected or
+invalid flow returns to `km_ready`, leaves neither an envelope nor a roster row and **does not
+complete the payout**. Token polling is read-only, so a transport failure is safely retried until
+the deadline and never replays a one-time operation.
 
-**Env:** `AUTH_BOT_KIMI_DIR` (корень `credentials/` + `profiles.json`, деф
+**Env:** `AUTH_BOT_KIMI_DIR` (root of `credentials/` + `profiles.json`, default
 `/srv/claude-api/data/kimi`), `AUTH_BOT_KIMI_CREDENTIAL_KEYS`,
-`AUTH_BOT_KIMI_CREDENTIAL_ACTIVE_KID`. Без keyring ветка не публикует ничего и честно говорит
-продавцу, что подключение временно недоступно, вместо того чтобы провести его через flow, результат
-которого пришлось бы выбросить.
+`AUTH_BOT_KIMI_CREDENTIAL_ACTIVE_KID`. Without a keyring the branch publishes nothing and honestly
+tells the seller that onboarding is temporarily unavailable, instead of walking them through a
+flow whose result would have to be discarded.
 
-Проверка: `cargo test -p authbot kimi`.
+Verification: `cargo test -p authbot kimi`.
 
-## GLM (Zhipu AI / Z.ai Coding Plan) — статический API-ключ
+## GLM (Zhipu AI / Z.ai Coding Plan) — static API key
 
-`glm_key.rs` — чистый протокольный модуль валидации ключа GLM Coding Plan. Он НЕ владеет
-Telegram-состоянием, seller job, выплатой и публикацией roster: мастер продавца в `bot.rs`
-вызывает его шаг за шагом. Факты и метки evidence — `docs/engine/GLM_PROVIDER.md` §2
+`glm_key.rs` — a pure protocol module for validating a GLM Coding Plan key. It does NOT own the
+Telegram state, the seller job, the payout or the roster publication: the seller wizard in
+`bot.rs` calls it step by step. Evidence facts and labels — `docs/engine/GLM_PROVIDER.md` §2
 (credential/identity), §4 (wire), §7 (acquisition flow).
 
-- **Credential — статический ключ из консоли**, OAuth device flow нет. Продавец покупает exact
-  individual credits-план (Lite/Pro/Max по продукту оффера) на своём аккаунте и присылает ключ
-  боту текстом; пароль, 2FA и cookie бот никогда не запрашивает — ключ единственный
-  credential-артефакт, как `sk-ant-oat01-…` у Claude.
-- **Quota-probe бесплатный и read-only**: `GET {base}/api/monitor/usage/quota/limit` с
-  заголовком `Authorization: <key>` БЕЗ Bearer-префикса. Ловушка протокола: невалидный ключ
-  отвечает **HTTP 200 с `code: 401` в теле**, поэтому парсер смотрит business code, а не HTTP
-  status. Поля лимитов (`unit/number/usage/currentValue/remaining/…`) сохраняются сырыми —
-  семантика единиц не доказана (`oss-hypothesis`, манифест §6), интерпретации нет.
-- **План корроборируется квотой**: наблюдённый лимит 5-часового окна (наименьшее TIME_LIMIT
-  окно, `number` либо `currentValue+usage`) обязан совпасть с официальными кредитами
-  declared-плана (2 000/12 000/28 000 за 5ч). Противоречие — `PlanMismatch`; legacy
-  prompts-форма, Team tokens (`TOKENS_LIMIT` без `TIME_LIMIT`) и неоднозначные окна —
-  `UnsupportedPlanShape`, fail closed без угадывания.
-- **Admission — одна минимальная платная generation** (`POST {base}/api/anthropic/v1/messages`,
-  `Authorization: Bearer`, `glm-4.7`, `max_tokens=1`). Успех — 2xx с непустым `usage`
-  (`input_tokens`/`output_tokens`). Классы ошибок — typed `KeyVerdict`, никаких bool:
-  1000–1005/1309/1311/1313/1315/1113 — невалидный ключ (с typed reason для безопасной
-  подсказки продавцу), 1308/1310 — валидный ключ с нулевой квотой (`QuotaExhausted`, это НЕ
-  невалидный ключ), 1316–1321 — Team/legacy форма. Прочие коды и ответы без business code —
-  transport. Платная generation НИКОГДА не повторяется автоматически после ambiguous
-  transport; read-only probe повторяется с bounded backoff (1с → 30с cap), дедлайн одной
-  валидации — 60 секунд.
-- **Печать конверта — только ДО завершения выплаты**: неудачный, просроченный или wrong-plan
-  flow не оставляет ни файла credential, ни строки roster.
+- **Credential — a static key from the console**; there is no OAuth device flow. The seller buys
+  the exact individual credits plan (Lite/Pro/Max per the offer product) on their own account and
+  sends the key to the bot as text; the bot never requests a password, 2FA or cookies — the key is
+  the only credential artifact, like `sk-ant-oat01-…` for Claude.
+- **The quota probe is free and read-only**: `GET {base}/api/monitor/usage/quota/limit` with the
+  `Authorization: <key>` header WITHOUT a Bearer prefix. Protocol trap: an invalid key answers
+  **HTTP 200 with `code: 401` in the body**, so the parser looks at the business code, not the
+  HTTP status. Limit fields (`unit/number/usage/currentValue/remaining/…`) are kept raw — the
+  unit semantics are unproven (`oss-hypothesis`, manifest §6), there is no interpretation.
+- **The plan is corroborated by quota**: the observed 5-hour window limit (the smallest
+  TIME_LIMIT window, `number` or `currentValue+usage`) must match the official credits of the
+  declared plan (2,000/12,000/28,000 per 5h). A contradiction is `PlanMismatch`; the legacy
+  prompts form, Team tokens (`TOKENS_LIMIT` without `TIME_LIMIT`) and ambiguous windows are
+  `UnsupportedPlanShape`, fail closed without guessing.
+- **Admission — one minimal paid generation** (`POST {base}/api/anthropic/v1/messages`,
+  `Authorization: Bearer`, `glm-4.7`, `max_tokens=1`). Success is a 2xx with non-empty `usage`
+  (`input_tokens`/`output_tokens`). Error classes are a typed `KeyVerdict`, no bools:
+  1000–1005/1309/1311/1313/1315/1113 — invalid key (with a typed reason for a safe seller hint),
+  1308/1310 — valid key with zero quota (`QuotaExhausted`, this is NOT an invalid key),
+  1316–1321 — Team/legacy form. Other codes and responses without a business code are transport.
+  A paid generation is NEVER automatically repeated after ambiguous transport; the read-only
+  probe is retried with bounded backoff (1s → 30s cap), the deadline of one validation is 60
+  seconds.
+- **Envelope sealing — only BEFORE completing the payout**: a failed, expired or wrong-plan flow
+  leaves neither a credential file nor a roster row.
 
-`glm_roster.rs` — файловый контракт публикации, зеркало `kimi_roster.rs`.
+`glm_roster.rs` — the file contract of publication, a mirror of `kimi_roster.rs`.
 
-- **Порядок — конверт, затем roster**, оба atomic + fsync родителя (файлы 0600, каталоги
-  0700): движок никогда не читает строку roster, чей credential-файл ещё не существует.
-- **Ключ — quota identity.** Machine-readable `/me` у GLM нет, поэтому subject-дедуп идёт по
-  самому API-ключу: сравнение выполняется на открытых конвертах внутри безопасной зоны, raw
-  ключ наружу не уходит. Повторная публикация того же ключа **заменяет** профиль на месте,
-  сохраняя profile id (affinity, health и история калибровки переживают замену); новый ключ с
-  уже занятым profile id отклоняется.
-- **Fail closed:** строка roster обязана указывать ровно на канонический путь своего id;
-  symlink, world-readable файл и нечитаемый конверт останавливают публикацию, а не выкидывают
-  профиль; невалидный credential roster не трогает вообще. В roster лежат только opaque id и
-  путь — ни ключа, ни плана, ни прокси.
+- **Order — envelope, then roster**, both atomic + parent fsync (files 0600, directories 0700):
+  the engine never reads a roster row whose credential file does not exist yet.
+- **The key is the quota identity.** GLM has no machine-readable `/me`, so subject dedup runs on
+  the API key itself: the comparison is performed on opened envelopes inside the safe zone, the
+  raw key never leaves it. Re-publication of the same key **replaces** the profile in place,
+  preserving the profile id (affinity, health and calibration history survive the replacement); a
+  new key with an already occupied profile id is rejected.
+- **Fail closed:** a roster row must point exactly at the canonical path of its own id; a
+  symlink, a world-readable file and an unreadable envelope stop publication rather than dropping
+  the profile; an invalid credential does not touch the roster at all. The roster holds only the
+  opaque id and path — no key, no plan, no proxy.
 
-**Мастер продавца.** Шаги `glm_proxy → glm_ready → glm_wait`, кнопка `glm:ready`. Отдельный
-callback у каждого провайдера намеренно: общий id позволил бы кнопке одной сделки продвинуть
-другую. Продукты — три оффера «GLM Coding Plan Lite/Pro/Max»; правило `handoff_kind` ключуется
-на словах провайдера (`glm`, `zhipu`, `z.ai`, `bigmodel`, `coding plan`) и стоит выше
-остальных, потому что голые имена тиров (Lite/Pro/Max — у Claude тоже есть Max) ничего не
-значат. На `glm_proxy` бот принимает прокси текстовым сообщением: разбор тот же обратимый, что
-и у KIMI (`parse_proxy_input`, пароль с `:` переживает реконструкцию), а перед закреплением
-прокси проходит каноникализацию `glm_credential::normalize_proxy_url`, поэтому мусор не
-доходит до `glm_ready`. Закреплённый buyer/IPRoyal прокси сообщение продавца заменить не может
-— решает общий `job_accepts_seller_proxy`; невалидный ввод оставляет сделку на `glm_proxy` с
-безопасной повторной подсказкой, а в журнал уходит только бесключевой отпечаток формы.
-Single-оффер с прокси покупателя и выдача IPRoyal приходят на `glm_ready` через тот же
-`prepare_glm_account`, что и batch. На карточке `glm_ready` — выбор площадки
-(`glm:region:int`/`glm:region:cn`, default int): ключ `api.z.ai` не работает на
-`open.bigmodel.cn` и наоборот, поэтому выбор хранится в `users.hregion` до самого
-`credential_from`, переживает рестарт и сбрасывается на международный default при входе каждой
-новой сделки в `glm_ready`. `glm_ready` требует одновременно своего шага И сохранённого прокси
-— иначе кнопка инертна, потому что валидация без назначенного egress пошла бы не с того IP, с
-которого открыт аккаунт. На `glm_wait` продавец присылает API-ключ одним текстовым сообщением,
-и бот валидирует его на egress сделки: бесплатный quota-probe (bounded retry; отказ — возврат
-на `glm_ready` с typed-подсказкой) → corroborate_plan против declared продукта
-(mismatch/legacy — возврат с подсказкой) → одна минимальная платная generation
-(`QuotaExhausted` — отдельная подсказка «квота исчерпана, пришлите позже/другой», это НЕ
-невалидный ключ; ambiguous transport — платный запрос автоматически не повторяется) →
-`credential_from` → `glm_roster::publish` (тот же ключ — replace-in-place; занятый id — typed
-ошибка) → завершение выплаты ТОЛЬКО после публикации. Все подсказки статические: ключ не
-логируется (журнал видит лишь `key_len`), не возвращается эхом в чат и не сохраняется в SQLite
-— валидация живёт только в памяти. Шаг назад с `glm_wait` гасит ожидание ключа и требует
-подтверждения; без восстановимого egress он деградирует до `glm_proxy`, иначе продавец попал
-бы на `glm_ready` с пустым `hproxy` — тупик. Невалидный, wrong-plan или transport-сорванный
-flow возвращает на `glm_ready`, не оставляет ни конверта, ни строки roster и **не завершает
-выплату**. После рестарта незавершённый `glm_wait` восстанавливается в `glm_ready` — ключ
-продавец пришлёт заново, а прокси и выбор площадки рестарт переживают.
+**Seller wizard.** Steps `glm_proxy → glm_ready → glm_wait`, button `glm:ready`. A separate
+callback per provider is deliberate: a shared id would let one deal's button advance another
+deal. Products — the three offers "GLM Coding Plan Lite/Pro/Max"; the `handoff_kind` rule keys on
+provider words (`glm`, `zhipu`, `z.ai`, `bigmodel`, `coding plan`) and ranks above the others,
+because bare tier names mean nothing (Lite/Pro/Max — Claude also has a Max). At `glm_proxy` the
+bot accepts the proxy as a text message: parsing is the same reversible one as KIMI's
+(`parse_proxy_input`, a password with `:` survives reconstruction), and before pinning, the proxy
+passes `glm_credential::normalize_proxy_url` canonization, so garbage never reaches `glm_ready`.
+A pinned buyer/IPRoyal proxy cannot be replaced by the seller's message — the shared
+`job_accepts_seller_proxy` decides; invalid input leaves the deal on `glm_proxy` with a safe
+re-prompt, and only the keyless form fingerprint goes to the log. A single-offer with the buyer's
+proxy and IPRoyal issuance arrive at `glm_ready` through the same `prepare_glm_account` as a
+batch. The `glm_ready` card offers the platform selection
+(`glm:region:int`/`glm:region:cn`, default int): an `api.z.ai` key does not work on
+`open.bigmodel.cn` and vice versa, so the choice is stored in `users.hregion` all the way to
+`credential_from`, survives a restart and resets to the international default when each new deal
+enters `glm_ready`. `glm_ready` requires both its own step AND a saved proxy — otherwise the
+button is inert, because validation without an assigned egress would come from an IP other than
+the one the account was opened from. At `glm_wait` the seller sends the API key as a single text
+message, and the bot validates it on the deal's egress: free quota probe (bounded retry; failure
+— return to `glm_ready` with a typed hint) → corroborate_plan against the declared product
+(mismatch/legacy — return with a hint) → one minimal paid generation (`QuotaExhausted` — a
+separate hint "квота исчерпана, пришлите позже/другой" ("quota exhausted, send later/another
+one"), this is NOT an invalid key; ambiguous transport — the paid request is not automatically
+repeated) → `credential_from` → `glm_roster::publish` (same key — replace-in-place; occupied id —
+typed error) → payout completion ONLY after publication. All hints are static: the key is not
+logged (the log sees only `key_len`), is not echoed back to the chat and is not stored in SQLite
+— validation lives only in memory. Stepping back from `glm_wait` extinguishes the key wait and
+requires confirmation; without a recoverable egress it degrades to `glm_proxy`, otherwise the
+seller would land on `glm_ready` with an empty `hproxy` — a dead end. An invalid, wrong-plan or
+transport-broken flow returns to `glm_ready`, leaves neither an envelope nor a roster row and
+**does not complete the payout**. After a restart an unfinished `glm_wait` is restored into
+`glm_ready` — the seller will send the key again, while the proxy and the platform selection
+survive the restart.
 
-**Env:** `AUTH_BOT_GLM_DIR` (корень `credentials/` + `profiles.json`, деф
+**Env:** `AUTH_BOT_GLM_DIR` (root of `credentials/` + `profiles.json`, default
 `/srv/claude-api/data/glm`), `AUTH_BOT_GLM_CREDENTIAL_KEYS`,
-`AUTH_BOT_GLM_CREDENTIAL_ACTIVE_KID`. Без keyring ветка не публикует ничего — как и у KIMI,
-intake гейтится только на AEAD keyring, и бот честно говорит продавцу, что подключение
-временно недоступно, вместо того чтобы провести его через flow, результат которого пришлось бы
-выбросить.
+`AUTH_BOT_GLM_CREDENTIAL_ACTIVE_KID`. Without a keyring the branch publishes nothing — as with
+KIMI, intake is gated only on the AEAD keyring, and the bot honestly tells the seller that
+onboarding is temporarily unavailable, instead of walking them through a flow whose result would
+have to be discarded.
 
-Проверка: `cargo test -p authbot glm`.
+Verification: `cargo test -p authbot glm`.

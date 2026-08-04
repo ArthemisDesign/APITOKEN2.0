@@ -1,108 +1,107 @@
-# DigiSeller — провайдер отключён (адаптер без точки входа)
+# DigiSeller — provider disabled (adapter without an entry point)
 
-**Статус: недоступен для клиентов.** Адаптер DigiSeller существует в коде
-(`packages/payments/src/digiseller.ts`, `DigiSellerProvider`) и регистрируется в реестре
-провайдеров (`apps/api/src/payments.module.ts`) при заданных `DIGISELLER_*` переменных,
-но **создать чекаут через DigiSeller сейчас невозможно**:
+**Status: unavailable to clients.** The DigiSeller adapter exists in the code
+(`packages/payments/src/digiseller.ts`, `DigiSellerProvider`) and is registered in the
+provider registry (`apps/api/src/payments.module.ts`) when the `DIGISELLER_*` variables
+are set, but **it is currently impossible to create a checkout via DigiSeller**:
 
 - `PaymentProviderCode = "cryptomus" | "platega"` (`apps/api/src/checkout.service.ts`)
-  и `paymentProviderSchema = z.enum(["cryptomus", "platega"])`
-  (`packages/contracts/src/index.ts`) не содержат `"digiseller"` — запрос
-  `POST /v1/checkouts` с `provider: "digiseller"` отклоняется валидацией;
-- HTTP-точки входа для оплаты нет: ни эндпоинта завершения платежа
-  (`/v1/payments/digiseller/complete`), ни вебхука в `apps/api/src/payments.controller.ts`
-  не существует. Никакой код не вызывает ни `createCheckout()`, ни `verifyUniqueCode()`
-  адаптера.
+  and `paymentProviderSchema = z.enum(["cryptomus", "platega"])`
+  (`packages/contracts/src/index.ts`) do not contain `"digiseller"` — a
+  `POST /v1/checkouts` request with `provider: "digiseller"` is rejected by validation;
+- there is no HTTP entry point for payment: neither a payment completion endpoint
+  (`/v1/payments/digiseller/complete`) nor a webhook exists in `apps/api/src/payments.controller.ts`.
+  No code calls either the adapter's `createCheckout()` or `verifyUniqueCode()`.
 
-Исторические платежи и чекауты с `provider = "digiseller"` остаются в БД и видны в
-admin-finance отчётах (выручка по дням, воронка чекаута по провайдерам —
-`apps/api/src/admin-finance.service.ts`). Это единственное живое присутствие
-провайдера в рантайме.
+Historical payments and checkouts with `provider = "digiseller"` remain in the database and are visible in
+admin-finance reports (revenue by day, checkout funnel by provider —
+`apps/api/src/admin-finance.service.ts`). This is the provider's only live presence
+in the runtime.
 
-Официальная документация DigiSeller:
+Official DigiSeller documentation:
 
 - API index: https://my.digiseller.com/inside/api.asp
 - Checkout/payment methods: https://my.digiseller.com/inside/api_payment.asp
 - API login and purchase verification: https://my.digiseller.com/inside/api_general.asp?view=settings
 - Swagger: https://api.digiseller.com/swagger/ui/index
 
-## Что реализовано в адаптере (задел, не подключённый к рантайму)
+## What is implemented in the adapter (groundwork not wired into the runtime)
 
-Мы — DigiSeller **seller**. Протокол «Setup individual payment methods» с HMAC из
-документации — для компаний, реализующих платёжный метод внутри DigiSeller, а не для
-колбеков продавца; использовать его для аутентификации наших продаж нельзя.
+We are a DigiSeller **seller**. The "Setup individual payment methods" protocol with HMAC from
+the documentation is for companies implementing a payment method inside DigiSeller, not for
+seller callbacks; it must not be used to authenticate our sales.
 
-Запроектированный (но не включённый) флоу продавца:
+The designed (but not enabled) seller flow:
 
 ```text
-коммерческий API создаёт локальный чекаут
-  → браузер POSTит форму товара на https://oplata.info/asp2/pay.asp
-    с checkout_id + HMAC checkout_sig в GET-параметрах платёжного URL
-  → DigiSeller обрабатывает оплату
-  → DigiSeller редиректит на настроенный completion URL с uniquecode и tracking-параметрами
-  → бэкенд трактует редирект как недоверенный сигнал пробуждения
-  → бэкенд получает короткоживущий seller API token
+the commerce API creates a local checkout
+  → the browser POSTs the product form to https://oplata.info/asp2/pay.asp
+    with checkout_id + HMAC checkout_sig in the payment URL GET parameters
+  → DigiSeller processes the payment
+  → DigiSeller redirects to the configured completion URL with uniquecode and tracking parameters
+  → the backend treats the redirect as an untrusted wake-up signal
+  → the backend obtains a short-lived seller API token
   → GET /api/purchases/unique-code/{uniquecode}?token=...
-  → сверка item_id, checkout tracking и ожидаемой суммы целых USD
-  → атомарное сохранение платежа + постановка engine credit
+  → cross-check of item_id, checkout tracking, and the expected whole-USD amount
+  → atomic payment storage + engine credit enqueue
 ```
 
-`GET /api/purchase/info/{invoice_id}` (`verifyPayment()`) — для последующей сверки и
-проверки возвратов. Начислять по return URL или телу уведомления в одиночку нельзя.
+`GET /api/purchase/info/{invoice_id}` (`verifyPayment()`) — for subsequent reconciliation and
+refund checks. Crediting based on the return URL or the notification body alone is not allowed.
 
-## Аутентификация seller API
+## Seller API authentication
 
-`POST https://api.digiseller.com/api/apilogin` принимает `seller_id`, Unix-timestamp и
-`SHA256(api_key + timestamp)`. Токен живёт около двух часов; адаптер кэширует его,
-обновляет за минуту до истечения и сериализует конкурентные обновления. Необходимое
-разрешение API-ключа — **Operations → Invoice details**.
+`POST https://api.digiseller.com/api/apilogin` accepts `seller_id`, a Unix timestamp, and
+`SHA256(api_key + timestamp)`. The token lives for about two hours; the adapter caches it,
+refreshes it one minute before expiry, and serializes concurrent refreshes. The required
+API key permission is **Operations → Invoice details**.
 
-## Статусы платежа
+## Payment statuses
 
-`invoice_state` из Purchase Info мапится так:
+`invoice_state` from Purchase Info maps as follows:
 
-| DigiSeller | Значение | Нормализованное состояние |
+| DigiSeller | Meaning | Normalized state |
 |---:|---|---|
-| 1 | ожидается оплата | pending |
-| 2 | отменён | canceled |
-| 3 | успешная оплата | paid |
-| 4 | просрочен | canceled |
-| 35 | возврат не завершён покупателем | refunded |
-| 5 | возврат | refunded |
+| 1 | awaiting payment | pending |
+| 2 | canceled | canceled |
+| 3 | successful payment | paid |
+| 4 | expired | canceled |
+| 35 | refund not completed by the buyer | refunded |
+| 5 | refund | refunded |
 
-Только состояние `3` может ставить положительный engine credit. Состояния возврата
-требуют отдельной коммерческой политики и никогда не должны молча выдавать новый
-положительный кредит.
+Only state `3` may enqueue a positive engine credit. Refund states
+require a separate commercial policy and must never silently issue a new
+positive credit.
 
-## Правила идентичности и сумм (как задумано)
+## Identity and amount rules (as designed)
 
-- Invoice ID DigiSeller — provider payment ID, глобально уникальный в нашей БД.
-- Идентичность события провайдера — `invoice_id:invoice_state`: один переход на статус.
-- `item_id` должен совпадать с нашей конфигурацией товара, но никогда не определяет кредит.
-- Введённая пользователем сумма локального чекаута авторитетна; каталога товаров нет.
-- Введённые целые USD хранятся bigint; кредит — `amountUsd * 1_000_000_000` nanoUSD.
-- DigiSeller должен в итоге взыскивать ровно сумму чекаута в целых USD. Существующий
-  product-form адаптер — только задел: продавец-сторона механизма переменной цены
-  пока не подтверждена и не реализована.
-- Связь платежа с чекаутом — через `checkout_id` + HMAC `checkout_sig` в GET-параметрах
-  платёжного URL; Purchase lookup может вернуть их как base64 `query_string`, и адаптер
-  принимает связь только при валидном HMAC.
+- The DigiSeller Invoice ID is the provider payment ID, globally unique in our database.
+- Provider event identity is `invoice_id:invoice_state`: one transition per status.
+- `item_id` must match our product configuration but never determines the credit.
+- The user-entered amount of the local checkout is authoritative; there is no product catalog.
+- Entered whole USD are stored as bigint; the credit is `amountUsd * 1_000_000_000` nanoUSD.
+- DigiSeller must ultimately charge exactly the checkout amount in whole USD. The existing
+  product-form adapter is groundwork only: the seller side of the variable-price
+  mechanism is not yet confirmed and not implemented.
+- The payment-to-checkout binding is via `checkout_id` + HMAC `checkout_sig` in the
+  payment URL GET parameters; the Purchase lookup may return them as a base64
+  `query_string`, and the adapter accepts the binding only with a valid HMAC.
 
-## Что нужно для включения провайдера
+## What is needed to enable the provider
 
-1. Расширить `paymentProviderSchema` (`packages/contracts`) и `PaymentProviderCode`
-   (`apps/api/src/checkout.service.ts`) значением `"digiseller"`. Это контрактное
-   изменение (expand-only): производитель первым, потребители — после зелёного
-   `deploy/watchdog` на SHA производителя.
-2. Добавить публичный эндпоинт завершения платежа (например,
-   `/v1/payments/digiseller/complete`) в `apps/api/src/payments.controller.ts`:
-   приём `uniquecode` + tracking-параметров, полная идемпотентность (DigiSeller
-   документирует повторный запрос при неудаче первого редиректа), исключение из
-   origin-гарда, обработка через `verifyUniqueCode()` и
+1. Extend `paymentProviderSchema` (`packages/contracts`) and `PaymentProviderCode`
+   (`apps/api/src/checkout.service.ts`) with the value `"digiseller"`. This is a contract
+   change (expand-only): the producer first, consumers — after a green
+   `deploy/watchdog` on the producer's SHA.
+2. Add a public payment completion endpoint (for example,
+   `/v1/payments/digiseller/complete`) in `apps/api/src/payments.controller.ts`:
+   accepting `uniquecode` + tracking parameters, full idempotency (DigiSeller
+   documents a repeated request if the first redirect fails), exclusion from the
+   origin guard, processing via `verifyUniqueCode()` and
    `applyVerifiedCheckoutPaymentEvent`.
-3. Подтвердить и реализовать seller-side механизм переменной цены, чтобы DigiSeller
-   взыскивал ровно сумму чекаута.
-4. Задать конфигурацию в окружении деплоя (значениям не место в репозитории):
+3. Confirm and implement the seller-side variable-price mechanism so that DigiSeller
+   charges exactly the checkout amount.
+4. Set the configuration in the deployment environment (the values do not belong in the repository):
 
 ```text
 DIGISELLER_SELLER_ID
@@ -111,7 +110,7 @@ DIGISELLER_PRODUCT_ID
 DIGISELLER_CHECKOUT_TRACKING_SECRET
 ```
 
-5. Настроить notification/completion URL в кабинете DigiSeller и провести одну
-   контролируемую покупку, чтобы зафиксировать точный метод, content type, имена
-   параметров и ожидаемое подтверждение колбека: контракт колбека настраивается на
-   аккаунте, а публичная документация перенаправляет в закрытые настройки продавца.
+5. Configure the notification/completion URL in the DigiSeller dashboard and run one
+   controlled purchase to pin down the exact method, content type, parameter
+   names, and expected callback confirmation: the callback contract is configured on the
+   account, and the public documentation redirects to the closed seller settings.

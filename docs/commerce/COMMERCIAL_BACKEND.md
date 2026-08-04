@@ -262,20 +262,21 @@ POST /v1/admin/pricing-stage5-v2/dry-run       body: {}
 POST /v1/admin/pricing-stage5-v2/materialize   body: {plan_digest, reason}
 ```
 
-Если созданный до pre-cutover compatibility fix аккаунт застрял на exact terminal policy job с
-историческим `strict + legacy_single`, `POST /v1/admin/pricing-policy-delivery-repairs` принимает
-его UUID, effective version, content digest и reason. Producer работает только при отсутствующем
-global release head, атомарно сохраняет старый job как `superseded`, создаёт следующую immutable
-`shadow + legacy_single` delivery и audit link. Он не является generic retry permanent-ошибок и
-не разрешает ручное редактирование job/binding rows.
+If an account created before the pre-cutover compatibility fix is stuck on an exact terminal policy
+job with the historical `strict + legacy_single`, `POST /v1/admin/pricing-policy-delivery-repairs`
+accepts its UUID, effective version, content digest and reason. The producer works only while the
+global release head is absent, atomically marks the old job as `superseded`, and creates the next
+immutable `shadow + legacy_single` delivery plus an audit link. It is not a generic retry for
+permanent failures and does not permit manual editing of job/binding rows.
 
-Если commerce catalog/switch heads отстали от engine-active lineage (engine перешёл на более новое
-immutable поколение отдельным producer), protected `POST /v1/admin/pricing-catalog-jobs/stage`
-(`{product_id, generation, reason}`) и `POST /v1/admin/pricing-switch-jobs/stage`
-(`{generation, reason}`) stage'ят control job ровно для хранимой immutable версии: запрос не несёт
-payload, версия перечитывается из commerce storage, а engine delivery идемпотентен (exact replay
-возвращает `unchanged`). Staging двигает только commerce head и создаёт audited delivery job; он не
-меняет traffic, политики аккаунтов или деньги. Replay не создаёт второй job и не дублирует audit.
+If the commerce catalog/switch heads lag behind the engine-active lineage (the engine moved to a
+newer immutable generation via a separate producer), the protected
+`POST /v1/admin/pricing-catalog-jobs/stage` (`{product_id, generation, reason}`) and
+`POST /v1/admin/pricing-switch-jobs/stage` (`{generation, reason}`) stage a control job for exactly
+the stored immutable version: the request carries no payload, the version is re-read from commerce
+storage, and engine delivery is idempotent (an exact replay returns `unchanged`). Staging moves only
+the commerce head and creates an audited delivery job; it does not change traffic, account policies
+or money. A replay does not create a second job and does not duplicate the audit.
 The operation exhausts engine and OpenKeys cursors twice, snapshots commerce/service in
 `REPEATABLE READ`, writes target/recovery skeletons in `SERIALIZABLE`, and records only exact
 prepare+readback ACKs for dormant catalogs, switches and policies. It never creates a Stage 6 job,

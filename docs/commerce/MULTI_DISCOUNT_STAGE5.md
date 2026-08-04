@@ -1,41 +1,45 @@
-# Stage 5 — materialization целевого pricing release
+# Stage 5 — materialization of the target pricing release
 
-Статус: двухфазный consumer реализован в
-`packages/db/src/pricing-stage5-materializer-v2{,-store}.ts` после отдельных GREEN producer и
-migration checkpoint. OpenKeys authoritative cursor, admin-managed service inventory, compile-fixed
-runtime capability generations 3/4 и migration `0029_pricing_release_two_phase_finalize.sql` уже
-являются его deployed prerequisites. Stage 5 готовит immutable source/ownership/policy authority,
-но не угадывает меняющиеся funding identities и не меняет live traffic.
+Status: the two-phase consumer is implemented in
+`packages/db/src/pricing-stage5-materializer-v2{,-store}.ts` after separate GREEN producer and
+migration checkpoints. The OpenKeys authoritative cursor, the admin-managed service inventory, the
+compile-fixed runtime capability generations 3/4, and migration `0029_pricing_release_two_phase_finalize.sql` are already
+its deployed prerequisites. Stage 5 prepares the immutable source/ownership/policy authority,
+but does not guess changing funding identities and does not change live traffic.
 
-## Входные inventories
+## Input inventories
 
-Planner получает свежие authoritative inventories всех bounded contexts:
+The planner receives fresh authoritative inventories of all bounded contexts:
 
-- commerce B2C и B2B с полными engine account IDs;
-- B2B current scalar discount и active invitation snapshots;
-- каждый OpenKeys account из exact `/api/internal/pricing/v2/inventory`, включая disabled,
-  removed и ранее считавшиеся legacy; все страницы обязаны иметь один full-manifest digest;
-- каждый service account с purpose/responsible metadata;
-- полный engine inventory для проверки покрытия.
+- commerce B2C and B2B with full engine account IDs;
+- B2B current scalar discount and active invitation snapshots;
+- every OpenKeys account from the exact `/api/internal/pricing/v2/inventory`, including disabled,
+  removed, and previously considered legacy ones; all pages must have a single full-manifest digest;
+- every service account with purpose/responsible metadata;
+- the full engine inventory for coverage verification.
 
-Service authority заполняется только через `PUT /admin/service-account-inventory/{service_id}`.
-Mutation делает два совпадающих полных engine scans, берёт status из engine, отклоняет commerce и
-OpenKeys ownership и пишет monotonic per-service version/content digest по exact CAS. Простое
-отсутствие account в commerce/OpenKeys не превращает его в service автоматически: metadata должны
-быть явно зарегистрированы, а Stage 5 проверяет весь complement. GET этого admin endpoint возвращает
-canonical aggregate inventory digest. До cutover (`provisioning-context=null`) mutation не создаёт
-release-v2 artifacts. После cutover она до записи inventory готовит rule-free service policy с
-`billing_mode=meter_only`, без product/catalog/switch pins, и exact active/recovery assignment
-extension с purpose/responsible; prepare ACK, GET readback и свежий context обязаны совпасть.
-Mutation не создаёт engine account, release или activation и не двигает global head.
-Exact replay существующей service identity остаётся `unchanged`; смена metadata уже immutable
-active assignment требует следующей release generation и не переписывается на месте.
+Service authority is populated only via `PUT /admin/service-account-inventory/{service_id}`.
+The mutation performs two matching full engine scans, takes the status from the engine, rejects
+commerce and OpenKeys ownership, and writes a monotonic per-service version/content digest via
+exact CAS. Simply being absent from commerce/OpenKeys does not automatically turn an account into a
+service one: the metadata must be explicitly registered, and Stage 5 checks the entire complement.
+The GET of this admin endpoint returns the canonical aggregate inventory digest. Before cutover
+(`provisioning-context=null`) the mutation does not create release-v2 artifacts. After cutover,
+before writing the inventory it prepares a rule-free service policy with
+`billing_mode=meter_only`, without product/catalog/switch pins, and an exact active/recovery
+assignment extension with purpose/responsible; the prepare ACK, the GET readback, and a fresh
+context must all match.
+The mutation does not create an engine account, release, or activation and does not move the global
+head. An exact replay of an existing service identity remains `unchanged`; changing the metadata of
+an already immutable active assignment requires the next release generation and is not rewritten in
+place.
 
-## Восстановление terminal pre-cutover policy delivery
+## Restoring terminal pre-cutover policy delivery
 
-Аккаунт, созданный старым commerce writer до фикса `strict + legacy_single`, мог получить active
-engine account, но terminal `engine_policy_jobs.status=dead` и остаться `pending` в commerce. Такой
-исторический blocker восстанавливается только защищённым producer endpoint:
+An account created by the old commerce writer before the `strict + legacy_single` fix may have
+received an active engine account but a terminal `engine_policy_jobs.status=dead` and remained
+`pending` in commerce. Such a historical blocker is restored only via the protected producer
+endpoint:
 
 ```text
 POST /v1/admin/pricing-policy-delivery-repairs
@@ -47,74 +51,81 @@ POST /v1/admin/pricing-policy-delivery-repairs
 }
 ```
 
-Endpoint требует AdminGuard key и проверенный `x-admin-actor`, а также подтверждает отсутствие
-global release head через engine provisioning context. В одной `SERIALIZABLE` transaction он
-принимает только current `dead` job с exact expected identity, исходным payload
-`strict + legacy_single + verified`, всё ещё не применённым commerce binding
-`legacy_scalar + legacy_single + verified`, terminal `sync_state=failed` и неизменившимся source
-policy head. Payload и identity старого job не переписываются и не запускаются повторно: меняется
-только lifecycle status на `superseded`, а новая immutable effective version получает корректный
-`shadow + legacy_single` payload и обычный
-durable worker job. Actor, reason и обе job identities записываются в `audit_log`; exact replay
-возвращает `unchanged` по этому audit link. Другой permanent error, изменившийся binding/source,
-уже применённая policy или post-cutover state отклоняются. Ручное изменение commerce rows или
-повторная отправка старого invalid payload не являются recovery-процедурой.
+The endpoint requires an AdminGuard key and a verified `x-admin-actor`, and also confirms the
+absence of a global release head through the engine provisioning context. In a single
+`SERIALIZABLE` transaction it accepts only the current `dead` job with the exact expected identity,
+the original payload `strict + legacy_single + verified`, a still unapplied commerce binding
+`legacy_scalar + legacy_single + verified`, a terminal `sync_state=failed`, and an unchanged source
+policy head. The old job's payload and identity are not rewritten and not re-run: only its
+lifecycle status changes to `superseded`, and a new immutable effective version receives the
+correct `shadow + legacy_single` payload and an ordinary
+durable worker job. The actor, the reason, and both job identities are recorded in `audit_log`; an
+exact replay returns `unchanged` via this audit link. A different permanent error, a changed
+binding/source, an already applied policy, or a post-cutover state is rejected. Manually modifying
+commerce rows or resending the old invalid payload is not a recovery procedure.
 
-После обычного worker ACK binding становится `confirmed`, а только тогда соответствующая
-commerce mapping переходит `pending → active`. Операция не меняет engine account, баланс, ledger,
-ключи, release head или клиентский трафик.
+After the ordinary worker ACK the binding becomes `confirmed`, and only then does the corresponding
+commerce mapping transition `pending → active`. The operation does not change the engine account,
+balance, ledger, keys, release head, or client traffic.
 
-Ручная assignment matrix больше не является authority. Все владельцы должны следовать из
-authoritative inventory. Один account в двух inventories, неизвестный account, active account без
-owner или отсутствующий engine account — typed blocker. Аккаунты не исключаются из target release
-из-за disabled status: при последующем включении они уже должны иметь корректную policy.
+The manual assignment matrix is no longer an authority. All owners must follow from the
+authoritative inventory. One account in two inventories, an unknown account, an active account
+without an owner, or a missing engine account is a typed blocker. Accounts are not excluded from
+the target release because of disabled status: upon subsequent re-enabling they must already have
+the correct policy.
 
-## Матрица target policies
+## Target policy matrix
 
-- B2C: global default `discount_bps=5000` для Anthropic, OpenAI и Gemini с возможными явными
-  provider/model overrides. Exact model rule имеет приоритет над provider, provider — над global.
-- Existing B2B: текущий `mult_bp` становится только provider-rule `anthropic`:
-  `discount_bps=10000-mult_bp`. OpenAI/Gemini автоматически не добавляются.
-- B2B invitations: независимый immutable full-policy snapshot; redemption копирует exact snapshot.
-- OpenKeys: один canonical 1:1 contract (`discount_bps=0`) для всех существующих и новых accounts.
-  Старые scalar discounts не переносятся в target release.
-- Service: все runtime-capable модели и `billing_mode=meter_only`; balance не участвует в admission.
+- B2C: global default `discount_bps=5000` for Anthropic, OpenAI, and Gemini with possible explicit
+  provider/model overrides. An exact model rule takes priority over a provider rule, a provider rule
+  over the global one.
+- Existing B2B: the current `mult_bp` becomes only the provider rule `anthropic`:
+  `discount_bps=10000-mult_bp`. OpenAI/Gemini are not added automatically.
+- B2B invitations: an independent immutable full-policy snapshot; redemption copies the exact
+  snapshot.
+- OpenKeys: one canonical 1:1 contract (`discount_bps=0`) for all existing and new accounts.
+  Old scalar discounts are not carried over into the target release.
+- Service: all runtime-capable models and `billing_mode=meter_only`; the balance does not
+  participate in admission.
 
-Внутренний engine provider ID Gemini — `google`. Frozen capability generation 3 сохраняет исходные
-восемь тарифно закреплённых Gemini-моделей. Additive generation 4 добавила
-`gemini-3-flash-preview`, но не стала target после failed production gate. OpenKeys target
-по-прежнему намеренно сохраняет Anthropic/OpenAI набор:
-Gemini появится там только отдельной явной OpenKeys catalog generation и всё равно будет 1:1.
-Capability publication не является таким enablement. Generation 4 остаётся immutable rejected
-artifact: Stage 5 не materialize и не финализирует target/recovery plan на её digest. Fresh
-Pro+Ultra live matrix разрешила additive capability generation 5; текущий materializer строит
-main/OpenKeys catalogs и switches generation 5, policy version 2 и включает Preview только в main.
-OpenKeys generation 5 остаётся без Gemini.
+The internal engine provider ID for Gemini is `google`. Frozen capability generation 3 preserves
+the original eight tariff-pinned Gemini models. Additive generation 4 added
+`gemini-3-flash-preview` but did not become the target after the failed production gate. The
+OpenKeys target still deliberately retains the Anthropic/OpenAI set:
+Gemini will appear there only via a separate explicit OpenKeys catalog generation and will still be
+1:1. Capability publication is not such an enablement. Generation 4 remains an immutable rejected
+artifact: Stage 5 does not materialize or finalize a target/recovery plan on its digest. The fresh
+Pro+Ultra live matrix authorized additive capability generation 5; the current materializer builds
+main/OpenKeys catalogs and switches generation 5, policy version 2, and includes Preview only in
+main. OpenKeys generation 5 remains without Gemini.
 
-Planner резервирует target generation и recovery generation следующего monotonic номера и строит
-immutable source/policy/assignment plan для обеих. На этой фазе balance assignments намеренно имеют
-`funding_generation=NULL`, а `funding_manifest_digest`, `engine_release_digest` и итоговые
-target/recovery release digests отсутствуют. Их нельзя честно вычислить заранее: account-local
-normalization включает live `balance_nano`, `reserved_nano`, `spent_nano` и lots, пока money writers
-продолжают работать. Финальные release manifests строятся только из Stage 6 readback evidence.
+The planner reserves the target generation and the recovery generation of the next monotonic number
+and builds an immutable source/policy/assignment plan for both. At this phase balance assignments
+deliberately have `funding_generation=NULL`, and `funding_manifest_digest`,
+`engine_release_digest`, and the final target/recovery release digests are absent. They cannot be
+honestly computed in advance: account-local normalization includes live `balance_nano`,
+`reserved_nano`, `spent_nano`, and lots while money writers keep running. The final release
+manifests are built only from Stage 6 readback evidence.
 
 ## Dry run
 
-Dry run работает в read-only repeatable snapshot и выводит:
+The dry run operates in a read-only repeatable snapshot and outputs:
 
 - source/inventory digests;
-- полное покрытие account classes;
+- full coverage of account classes;
 - immutable policy identities;
-- зарезервированные target/recovery generations и отсутствие преждевременных release digests;
-- typed blockers и exact writes plan.
+- the reserved target/recovery generations and the absence of premature release digests;
+- typed blockers and an exact writes plan.
 
-Dry run ничего не пишет и не требует reviewer field. Любое изменение стабильной inventory identity
-делает результат stale; JSON нельзя редактировать вручную. Движущиеся деньги намеренно не входят в
-plan digest: apply сохраняет свой свежий полный snapshot как evidence, а replay того же immutable
-плана не подменяет уже записанное evidence более поздними balance/reserved/spent значениями.
+The dry run writes nothing and does not require a reviewer field. Any change to a stable inventory
+identity makes the result stale; the JSON must not be edited manually. Moving money is deliberately
+not part of the plan digest: apply preserves its own fresh full snapshot as evidence, and replaying
+the same immutable plan does not replace already recorded evidence with later
+balance/reserved/spent values.
 
-Production dry-run запускается только через AdminGuard-protected commerce API. Оба POST требуют
-непустой проверенный `x-admin-actor`; mutation дополнительно требует осмысленный `reason`:
+The production dry run is launched only through the AdminGuard-protected commerce API. Both POST
+requests require a non-empty verified `x-admin-actor`; the mutation additionally requires a
+meaningful `reason`:
 
 ```text
 POST /v1/admin/pricing-stage5-v2/dry-run
@@ -124,71 +135,76 @@ POST /v1/admin/pricing-stage5-v2/materialize
 {"plan_digest":"sha256:v2:<exact-fresh-plan>","reason":"materialize reviewed full inventory"}
 ```
 
-Ответ — strict summary: source/plan digests, target/recovery generations и plan digests, total
-blocker count и полный exact blocker list. Dry-run не пишет даже audit row. Materialize заново
-собирает полный plan, отклоняет stale digest и атомарно с local
-run/plan пишет attributed audit request; dormant engine prepare/readback остаётся следующей частью
-той же идемпотентной операции. Runtime берёт `DATABASE_URL`, `ENGINE_BASE_URL`,
-`ENGINE_CONTROL_KEY`; OpenKeys читается напрямую на loopback `OPENKEYS_INTERNAL_BASE_URL` (по
-умолчанию `http://127.0.0.1:3410`) с отдельным `OPENKEYS_CONTROL_KEY` либо тем же server credential.
-Package CLI остаётся только диагностическим non-production entrypoint и не является разрешённым
-production control-plane или SSH-процедурой.
+The response is a strict summary: source/plan digests, target/recovery generations and plan
+digests, the total blocker count, and the full exact blocker list. The dry run does not write even
+an audit row. Materialize rebuilds the full plan, rejects a stale digest, and, atomically with the
+local run/plan, writes the attributed audit request; the dormant engine prepare/readback remains
+the next part of the same idempotent operation. The runtime takes `DATABASE_URL`,
+`ENGINE_BASE_URL`, `ENGINE_CONTROL_KEY`; OpenKeys is read directly on loopback
+`OPENKEYS_INTERNAL_BASE_URL` (default `http://127.0.0.1:3410`) with a separate
+`OPENKEYS_CONTROL_KEY` or the same server credential.
+The package CLI remains only a diagnostic non-production entrypoint and is not a permitted
+production control-plane or SSH procedure.
 
-Engine cursor исчерпывается дважды. Стабильность Stage 5 identity включает `account_id`, status и
-legacy scalar multiplier, но намеренно не включает меняющиеся `balance/reserved/spent` и funding
-head: полные денежные snapshots сохраняются как evidence, а их финальная identity принадлежит
-Stage 6. OpenKeys cursor также исчерпывается дважды и обязан вернуть один неизменный full-manifest
-digest на всех страницах обоих проходов.
+The engine cursor is exhausted twice. Stage 5 identity stability includes `account_id`, status, and
+the legacy scalar multiplier, but deliberately does not include the changing
+`balance/reserved/spent` and the funding head: full money snapshots are preserved as evidence,
+while their final identity belongs to Stage 6. The OpenKeys cursor is also exhausted twice and must
+return one unchanged full-manifest digest on all pages of both passes.
 
 ## Materialize
 
-Apply работает в `SERIALIZABLE` transaction, повторно строит тот же план и принимает exact expected
-source/plan digest. Он materialize'ит immutable capability/catalog/switch/policy rows, Stage 5 run,
-release-plan skeletons и полные assignments. У balance assignments funding identity остаётся
-nullable; engine release и Stage 6 parent job в этом independently delivered checkpoint не
-создаются. Только после GREEN Stage 5 source/policy materialization отдельный consumer может
-запустить Stage 6 по exact plan digest. Active pricing release head не двигается.
+Apply operates in a `SERIALIZABLE` transaction, rebuilds the same plan, and accepts the exact
+expected source/plan digest. It materializes immutable capability/catalog/switch/policy rows, the
+Stage 5 run, release-plan skeletons, and full assignments. For balance assignments the funding
+identity remains nullable; the engine release and the Stage 6 parent job are not created in this
+independently delivered checkpoint. Only after a GREEN Stage 5 source/policy materialization may a
+separate consumer launch Stage 6 by the exact plan digest. The active pricing release head does not
+move.
 
-Local plan сначала фиксируется под advisory lock с повторной проверкой commerce/service snapshot;
-та же проверка обязательна перед сохранением terminal blocker evidence. Затем consumer делает
-только dormant engine prepare для main/OpenKeys catalog generation 5, provider switches generation
-5 и каждой policy version 2, немедленно читает exact version обратно и фиксирует ACK лишь для
-`stored|unchanged` с совпавшим digest. Materializer строит capability projection, оба каталога,
-switches, customer и service policies на admitted capability generation 5. Rejected generation 4 остаётся
-compile-fixed immutable history, не входит ни в один Stage 5 target/recovery artifact и не получает
-фиктивный capability ACK. Target/recovery release prepare, recovery link и control job до Stage 6
-отсутствуют.
+The local plan is first pinned under an advisory lock with a re-check of the commerce/service
+snapshot; the same check is mandatory before saving terminal blocker evidence. Then the consumer
+performs only a dormant engine prepare for the main/OpenKeys catalog generation 5, provider
+switches generation 5, and each policy version 2, immediately reads the exact version back, and
+records an ACK only for `stored|unchanged` with a matching digest. The materializer builds the
+capability projection, both catalogs, the switches, and the customer and service policies on the
+admitted capability generation 5. Rejected generation 4 remains compile-fixed immutable history, is
+not part of any Stage 5 target/recovery artifact, and does not receive a fictitious capability
+ACK. Target/recovery release prepare, the recovery link, and the control job are absent until
+Stage 6.
 
-Same-version/same-digest replay возвращает `unchanged`. Same-version/different-digest, неполное
-покрытие inventory, stale source, policy collision или unsupported runtime capability отклоняются
-до commit. B2C/B2B/service/OpenKeys target готовится целиком; partial apply по классам запрещён.
-Стабильный план с ownership blockers может сохранить только terminal `blocked` run и typed blocker
-rows; catalog/policy/release skeleton и remote prepare при этом не создаются. Нестабильные парные
-сканы не сохраняются как ложное evidence и требуют нового полного прохода.
+A same-version/same-digest replay returns `unchanged`. Same-version/different-digest, incomplete
+inventory coverage, a stale source, a policy collision, or an unsupported runtime capability is
+rejected before commit. The B2C/B2B/service/OpenKeys target is prepared in full; partial apply per
+class is forbidden. A stable plan with ownership blockers may save only a terminal `blocked` run
+and typed blocker rows; the catalog/policy/release skeleton and the remote prepare are not created
+in that case. Unstable paired scans are not saved as false evidence and require a new full pass.
 
-## Evidence для следующих этапов
+## Evidence for the following stages
 
-До Stage 6/8 сохраняются restricted operational artifacts:
+Until Stage 6/8, restricted operational artifacts are preserved:
 
 - exact inventories;
-- dry-run report и plan digest;
-- target/recovery plan skeletons, а после Stage 6 — финализированные release manifests;
-- durable ACK всех prepared identities.
+- the dry-run report and plan digest;
+- target/recovery plan skeletons, and after Stage 6 — the finalized release manifests;
+- the durable ACK of all prepared identities.
 
-Migration `packages/db/migrations/0028_pricing_stage5_evidence.sql` заранее создаёт пустое
-хранилище этих доказательств: `pricing_stage5_runs_v2` удерживает exact inventory/plan artifacts и
-обе пары scan digests, `pricing_stage5_blockers_v2` — типизированные расхождения, а
-`pricing_stage5_prepare_acks_v2` — только успешные prepare+readback identities. DB constraint не
-даёт принять нестабильные engine/OpenKeys scans или ACK с отличающимся readback digest. Наличие
-таблиц не запускает planner, не создаёт release/control job и не двигает head.
+Migration `packages/db/migrations/0028_pricing_stage5_evidence.sql` creates the empty storage for
+this evidence in advance: `pricing_stage5_runs_v2` holds the exact inventory/plan artifacts and
+both pairs of scan digests, `pricing_stage5_blockers_v2` holds the typed discrepancies, and
+`pricing_stage5_prepare_acks_v2` holds only successful prepare+readback identities. A DB constraint
+prevents accepting unstable engine/OpenKeys scans or an ACK with a differing readback digest. The
+existence of the tables does not start the planner, does not create a release/control job, and does
+not move the head.
 
-Migration `packages/db/migrations/0029_pricing_release_two_phase_finalize.sql` разрешает честное
-двухфазное состояние: Stage 5 run и release plans могут хранить nullable final identities, а
-balance assignment — nullable funding generation. Guard triggers сохраняют source/policy plan
-immutable, разрешают только переход funding generation `NULL → positive`, запрещают замену уже
-установленной identity и не дают перевести release в `prepared`, пока assignment graph не полный и
-не совпадает один-к-одному с ready Stage 6 rows. После engine prepare/readback обе release identity
-и assignments замораживаются. Миграция ничего не запускает и не касается live money rows.
+Migration `packages/db/migrations/0029_pricing_release_two_phase_finalize.sql` permits an honest
+two-phase state: the Stage 5 run and release plans may store nullable final identities, and a
+balance assignment may store a nullable funding generation. Guard triggers keep the source/policy
+plan immutable, permit only the funding generation transition `NULL → positive`, forbid replacing
+an already set identity, and prevent moving a release to `prepared` until the assignment graph is
+complete and matches the ready Stage 6 rows one-to-one. After the engine prepare/readback, both
+release identities and assignments are frozen. The migration starts nothing and does not touch live
+money rows.
 
-Stage 5 не меняет цены, балансы, ключи и доступ. Live behavior меняется только single-head CAS на
-Stage 9 по `docs/commerce/MULTI_DISCOUNT_STAGE9.md`.
+Stage 5 does not change prices, balances, keys, or access. Live behavior changes only via the
+single-head CAS at Stage 9 per `docs/commerce/MULTI_DISCOUNT_STAGE9.md`.

@@ -1,244 +1,250 @@
-# Чеклист подключения провайдера — механическая карта
+# Provider wiring checklist — mechanical map
 
-`docs/engine/PROVIDER_ONBOARDING.md` отвечает на вопрос **что доказать**. Этот файл отвечает на
-вопрос **что именно отредактировать**: точные пути, точные символы, порядок и ловушки, каждая из
-которых реально сработала при подключении KIMI (`docs/engine/KIMI_PROVIDER.md`).
+`docs/engine/PROVIDER_ONBOARDING.md` answers the question **what must be proven**. This file answers
+the question **what exactly to edit**: exact paths, exact symbols, order, and traps, each of which
+actually fired while wiring KIMI (`docs/engine/KIMI_PROVIDER.md`).
 
-Читать оба. Принципы без карты дают верный, но медленный обход; карта без принципов даёт быстрый
-неверный провайдер.
+Read both. Principles without the map give a correct but slow traversal; the map without principles
+gives a fast but wrong provider.
 
-## 0. Правило завершённости
+## 0. The completeness rule
 
-Результат — работающий провайдер, а не зелёные тесты. Пройденный этап, смёрженный коммит и
-появившаяся кнопка — это прогресс, но не готовность. Не возвращай управление, пока не достигнуто
-терминальное состояние: оператор проводит покупку через Auth Bot, полученный профиль становится
-маршрутизируемой ёмкостью, трафик тарифицируется по официальному прайсу, калибровка пишет evidence
-из реального движения квоты. Единственная законная остановка раньше — отсутствие живой подписки:
-тогда доделай всё, что без неё делается, и назови точный заблокированный live-гейт.
+The result is a working provider, not green tests. A passed stage, a merged commit, and
+a button that appeared are progress, but not readiness. Do not hand control back until the
+terminal state is reached: an operator completes a purchase through Auth Bot, the resulting profile
+becomes routable capacity, traffic is metered at the official price, and calibration writes evidence
+from real quota movement. The only legitimate earlier stop is the absence of a live subscription:
+in that case, finish everything that can be done without it, and name the exact blocked live gate.
 
-**План живёт на диске, а не в контексте.** Длинное подключение переживает любое окно контекста, а
-план, существующий только в переписке, исчезает при первом же сбросе — это и есть механическая
-причина, по которой агент бросает цепочку на середине. Веди
-`research/<PROVIDER>_PLANE_PROGRESS.md` и после любого сброса читай **сначала его**, а не
-восстанавливай план по памяти. В нём: терминальное состояние, таблица сделанного **со SHA на каждую
-строку**, открытые швы прямым текстом, ровно одно конкретное следующее действие, очередь и то, что
-заблокировано человеком. Обновляй в том же коммите, что и сам шаг: отдельный «коммит про прогресс»
-устаревает в момент написания, а строка «сделано» без SHA непроверяема.
+**The plan lives on disk, not in context.** A long wiring outlives any context window, and
+a plan that exists only in the conversation disappears at the first reset — this is the mechanical
+reason an agent abandons the chain halfway. Maintain
+`research/<PROVIDER>_PLANE_PROGRESS.md` and after any reset read **it first** — do not
+reconstruct the plan from memory. It contains: the terminal state, a table of what is done **with
+a SHA on every row**, open seams in plain text, exactly one concrete next action, the queue, and
+what is blocked by a human. Update it in the same commit as the step itself: a separate
+"commit about progress" is stale the moment it is written, and a "done" row without a SHA is
+unverifiable.
 
-**Это не значит «один большой мёрж».** Схема и её первый читатель не едут вместе никогда: миграция
-уходит одна и ждёт зелёных `deploy/migration` и `deploy/watchdog`. Цепочку мёржей веди сама,
-но не схлопывай — агент, смёрживший схему вместе с читателем, не ускорился, а убрал путь отката.
+**This does not mean "one big merge".** The schema and its first reader never ride together: the
+migration goes alone and waits for green `deploy/migration` and `deploy/watchdog`. Drive the merge
+chain yourself, but do not collapse it — an agent that merged the schema together with its reader
+did not speed up; it removed the rollback path.
 
-Два состояния, которые выглядят как готовность и ею не являются:
+Two states that look like readiness and are not:
 
-- **Шов.** Кнопки продукта без обработчика, который завершает сделку; запечатанный профиль без
-  плоскости, читающей roster. Провайдер выглядит подключённым и не отдаёт ничего. Если изменение
-  создаёт такой шов — напиши об этом в теле коммита и закрой его следующим.
-- **«Тесты зелёные».** Моки доказывают страховки, но не контракт провайдера. Явно называй preview
-  против GA и перечисляй каждый `unknown`, который блокирует свой live-гейт.
+- **A seam.** Product buttons with no handler that completes the deal; a sealed profile with
+  no plane reading the roster. The provider looks wired and delivers nothing. If a change
+  creates such a seam — write about it in the commit body and close it in the next one.
+- **"Tests are green".** Mocks prove the guards, but not the provider's contract. Explicitly name
+  preview versus GA and list every `unknown` that blocks its own live gate.
 
-## 1. Прежде чем открыть первый файл
+## 1. Before opening the first file
 
-1. **Сделай коммит в первые же минуты.** Worktree без коммитов выглядит как `clean+merged`, и
-   постоянный `DELETE_WORKTREE` (`docs/ops/DELETE_WORKTREE.md`) удаляет его вместе с
-   незакоммиченными файлами. При подключении KIMI это случилось дважды. Первый коммит —
-   скелет capability manifest, даже пустой.
-2. **Сначала research, потом дизайн.** Прайс-агрегаторы противоречат друг другу и провайдеру.
-   Тариф берётся только с provider-owned страницы, с датой ревью.
-3. **Проверь, есть ли у провайдера официальный OSS-клиент.** Он показывает реальные эндпоинты,
-   которых нет в документации. У KIMI именно так нашлись `/usages`, `/me`, device-flow и
-   client id. Клонировать read-only в `mktemp -d`, читать `rg`, ничего не запускать, удалить
-   после исследования, зафиксировать URL + полный SHA + лицензию в манифесте.
+1. **Commit within the first few minutes.** A worktree without commits looks like `clean+merged`,
+   and the persistent `DELETE_WORKTREE` (`docs/ops/DELETE_WORKTREE.md`) deletes it together with
+   the uncommitted files. During the KIMI wiring this happened twice. The first commit is
+   the capability manifest skeleton, even if empty.
+2. **Research first, then design.** Price aggregators contradict each other and the provider.
+   The tariff is taken only from a provider-owned page, with a review date.
+3. **Check whether the provider has an official OSS client.** It shows real endpoints
+   missing from the documentation. With KIMI, that is exactly how `/usages`, `/me`, the device
+   flow, and the client id were found. Clone read-only into `mktemp -d`, read with `rg`, run
+   nothing, delete after the research, and record URL + full SHA + license in the manifest.
 
-## 2. Порядок доставки
+## 2. Delivery order
 
-Строго producer-first, каждый пункт — отдельный коммит:
+Strictly producer-first, each item a separate commit:
 
 ```
 manifest → metering → migration → credential → estimator → authbot → runtime → server → live
 ```
 
-Миграция уходит **одна**, и зависимый код мёржится только после зелёных `deploy/migration` и
-`deploy/watchdog` на её SHA.
+The migration goes **alone**, and dependent code merges only after green `deploy/migration` and
+`deploy/watchdog` on its SHA.
 
 ## 3. Metering — `crates/metering`
 
-| Действие | Место |
+| Action | Location |
 |---|---|
-| Новый модуль | `src/<provider>.rs` |
-| Объявление | `src/lib.rs`: `pub mod <provider>;` |
-| Реэкспорт | `src/lib.rs`: блок `pub use <provider>::{…};` |
+| New module | `src/<provider>.rs` |
+| Declaration | `src/lib.rs`: `pub mod <provider>;` |
+| Re-export | `src/lib.rs`: the `pub use <provider>::{…};` block |
 
-Обязательно:
+Mandatory:
 
-- `<PROVIDER>_TARIFF_SCHEDULE_ID` с датой ревью; epoch'и с `effective_from`, первый — `0`.
-- Ставки — `$/M × 1000` в целых nanoUSD, поля `i128`.
-- Легенды не пересекаются. Subset-счётчики (reasoning, tool prompt) **не** тарифицируются
-  отдельно и имеют явный инвариант.
-- Неизвестная и снятая модель отсутствуют в каталоге → `None` → fail closed до reserve.
-- Арифметика `checked_*`, не `saturating_*`; overflow — типизированная ошибка.
+- `<PROVIDER>_TARIFF_SCHEDULE_ID` with a review date; epochs with `effective_from`, the first being
+  `0`.
+- Rates are `$/M × 1000` in integer nanoUSD, fields `i128`.
+- Legs do not overlap. Subset counters (reasoning, tool prompt) are **not** priced
+  separately and have an explicit invariant.
+- An unknown or withdrawn model is absent from the catalog → `None` → fail closed before reserve.
+- Arithmetic is `checked_*`, not `saturating_*`; overflow is a typed error.
 
-**Ловушка «served ≠ requested».** Если провайдер умеет молча переехать на другую модель (у KIMI
-выключенный thinking уводит K3 и K2.7 Code на K2.6 с другим прайсом) — тариф обязан браться по
-**served** модели из ответа. Заведи `<provider>_prices_for_served_model`. Тест должен показывать
-цену ошибки в цифрах.
+**The "served ≠ requested" trap.** If the provider can silently move to another model (with KIMI,
+disabled thinking moves K3 and K2.7 Code onto K2.6 with different pricing) — the tariff must be
+taken from the **served** model in the response. Create `<provider>_prices_for_served_model`. The
+test must show the price of the error in numbers.
 
-**Ловушка «нет цены на leg».** Отсутствие опубликованной ставки (у KIMI нет cache-write) — не
-повод молча считать ноль. Заведи явное поле с консервативным значением и тестом, который это
-фиксирует.
+**The "no price for a leg" trap.** The absence of a published rate (KIMI has no cache-write) is no
+reason to silently count zero. Create an explicit field with a conservative value and a test that
+pins it down.
 
-Гейт: `cargo test -p metering` **целиком** — крейт денежный, подмножество не годится.
+Gate: `cargo test -p metering` **in full** — the crate handles money; a subset will not do.
 
-## 4. Миграция — `crates/registry`
+## 4. Migration — `crates/registry`
 
-| Действие | Место |
+| Action | Location |
 |---|---|
-| Файл | `migrations_pg/00NN_<provider>_window_calibration.sql` |
-| `const MIGRATION_00NN` | `src/pg.rs` (рядом с предыдущими) |
-| `CURRENT_SCHEMA_VERSION` | `src/pg.rs` — поднять |
-| Строка в `ENGINE_MIGRATIONS` | `src/pg.rs` |
-| `INSERT INTO engine_schema_migrations(version) VALUES (NN)` | хвост самого SQL |
+| File | `migrations_pg/00NN_<provider>_window_calibration.sql` |
+| `const MIGRATION_00NN` | `src/pg.rs` (next to the previous ones) |
+| `CURRENT_SCHEMA_VERSION` | `src/pg.rs` — bump it |
+| Row in `ENGINE_MIGRATIONS` | `src/pg.rs` |
+| `INSERT INTO engine_schema_migrations(version) VALUES (NN)` | the tail of the SQL itself |
 
-**Решение «расширять или ставить рядом».** Прежде чем добавлять провайдера в
-`provider_turn_calibration_events` (миграция 0019), сверь durable identity. Если ей не хватает
-измерения — paid plan, пара requested/served, provider bucket, длительность, tariff schedule —
-делай **новую authority рядом** и не трогай старую. Для KIMI не хватило двух сразу: одна колонка
-`model_id` и отсутствие плана.
+**The "extend or place alongside" decision.** Before adding the provider to
+`provider_turn_calibration_events` (migration 0019), check the durable identity. If it lacks
+a dimension — paid plan, the requested/served pair, provider bucket, duration, tariff schedule —
+build a **new authority alongside** and do not touch the old one. For KIMI two were missing at
+once: a single `model_id` column and the absence of a plan.
 
-Схема обязана содержать: immutable turn events, cumulative subject spend, immutable quota
-observations, состояние estimator'а. `Unknown` — `NULL`, никогда `0`. Cold-состояние и measured-
-состояние разделены `CHECK`.
+The schema must contain: immutable turn events, cumulative subject spend, immutable quota
+observations, and estimator state. `Unknown` is `NULL`, never `0`. The cold state and the measured
+state are separated by a `CHECK`.
 
-**Ловушки в тестах миграции:**
+**Traps in migration tests:**
 
-- Перед проверкой «не трогает чужую таблицу» **вырежи `--` комментарии**: заголовок обычно
-  объясняет, почему миграция стоит рядом с той таблицей, и упоминает её имя.
-- `std::ptr::eq` на `const` ненадёжен — константы инлайнятся на каждом use site. Сравнивай
-  содержимое: `assert_eq!(registered, Some(MIGRATION_00NN))`.
+- Before the "does not touch someone else's table" check, **strip `--` comments**: the header
+  usually explains why the migration sits next to that table and mentions its name.
+- `std::ptr::eq` on a `const` is unreliable — constants are inlined at every use site. Compare
+  the contents: `assert_eq!(registered, Some(MIGRATION_00NN))`.
 
-## 5. Типы наблюдений — `crates/registry/src/<provider>_calibration.rs`
+## 5. Observation types — `crates/registry/src/<provider>_calibration.rs`
 
-Объявление и реэкспорт — `src/lib.rs` (`mod` рядом с `provider_calibration`, `pub use …::*`).
+Declaration and re-export — `src/lib.rs` (`mod` next to `provider_calibration`, `pub use …::*`).
 
-**Форма quota определяет всё остальное:**
+**The shape of quota determines everything else:**
 
-| Провайдер публикует | Модель estimator'а |
+| The provider publishes | The estimator model |
 |---|---|
-| долю (процент) | Claude-подобный: `capacity = SCALE·ΣΔspend / ΣΔfraction` |
-| долю + нативный расход **на turn** | GPT-подобный dual-ledger, два независимых ledger'а |
-| целые `used`/`limit` по окну | Claude-подобный, но `limit` уже даёт точную нативную ёмкость |
+| a fraction (percent) | Claude-like: `capacity = SCALE·ΣΔspend / ΣΔfraction` |
+| a fraction + native consumption **per turn** | GPT-like dual-ledger, two independent ledgers |
+| integer `used`/`limit` per window | Claude-like, but `limit` already gives exact native capacity |
 
-Не путай третий случай со вторым. Нативный ledger «на turn» существует, только если провайдер
-отдаёт нативное списание в каждом ответе. Агрегат окна — это не он.
+Do not confuse the third case with the second. A per-turn native ledger exists only if the provider
+returns native consumption in every response. A window aggregate is not that.
 
-`measurement_resolution` выводится из **реального знаменателя** провайдера
-(`ceil(SCALE / limit)`), а не задаётся константой. Хранение в широком integer точности не создаёт.
+`measurement_resolution` is derived from the provider's **real denominator**
+(`ceil(SCALE / limit)`), not set as a constant. Storage in a wide integer does not create precision.
 
-Неизвестная единица времени окна — fail closed: неверная длительность сольёт два независимых
-окна в одну строку.
+An unknown window time unit — fail closed: a wrong duration would merge two independent
+windows into one row.
 
 ## 6. Credential — `crates/<provider>-credential`
 
-| Действие | Место |
+| Action | Location |
 |---|---|
-| Крейт | `crates/<provider>-credential/{Cargo.toml,src/lib.rs,CLAUDE.md}` |
-| Member | корневой `Cargo.toml`, список `members` |
+| Crate | `crates/<provider>-credential/{Cargo.toml,src/lib.rs,CLAUDE.md}` |
+| Member | the root `Cargo.toml`, the `members` list |
 
-Обязательно: versioned XChaCha20-Poly1305, явный `kid`, AAD связывает profile id **и** вид
-credential, keyring читает старые ключи, ручной `Debug` с `REDACTED` + тест на отсутствие
-секретов, границы profile id (никаких `/`, `..`), bounded поля.
+Mandatory: versioned XChaCha20-Poly1305, explicit `kid`, the AAD binds profile id **and** the
+credential kind, the keyring reads old keys, a manual `Debug` with `REDACTED` + a test for absence
+of secrets, profile id boundaries (no `/`, `..`), bounded fields.
 
-**Ротирующая семья refresh.** Если провайдер выдаёт новый refresh на каждом обмене (KIMI, Codex) —
-`rotate()` обязан отказываться от ответа без нового токена, а вызывающий обязан держать
-per-profile single-flight от refresh до повторного `seal`.
+**Rotating refresh family.** If the provider issues a new refresh token on every exchange (KIMI,
+Codex) — `rotate()` must reject a response without a new token, and the caller must hold a
+per-profile single-flight from refresh through the re-`seal`.
 
-**Непроверенная лестница тарифов.** Не выдумывай, какой тир что открывает. Заводи
-`<PROVIDER>_REVIEWED_PLANS` **пустым** и отдавай непроверенному плану только те возможности,
-которые документированы для всех. Строка добавляется вместе с датированным live-наблюдением.
+**The unverified plan ladder.** Do not invent which tier unlocks what. Create
+`<PROVIDER>_REVIEWED_PLANS` **empty** and give an unverified plan only those capabilities
+documented for everyone. A row is added together with a dated live observation.
 
 ## 7. Estimator — `crates/forward/src/<provider>_calibration.rs`
 
-Объявление — `crates/forward/src/lib.rs`, **в алфавитном порядке** внутри списка `mod`.
+Declaration — `crates/forward/src/lib.rs`, **in alphabetical order** within the `mod` list.
 
-Машина состояний интервала обязана покрывать: anchor, первый полный интервал, quota-before-
-settlement (удержать anchor один раз), повторное quota-only движение → `unattributed`, reset,
-rolling rollover, jitter, rollback к старому high-water, stale-наблюдения, независимые
-длительности, rebuild из immutable history, смену версии estimator'а, overflow.
+The interval state machine must cover: anchor, first complete interval, quota-before-
+settlement (hold the anchor once), repeated quota-only movement → `unattributed`, reset,
+rolling rollover, jitter, rollback to an old high-water, stale observations, independent
+durations, rebuild from immutable history, estimator version change, overflow.
 
-Prior/EMA/WLS/номинал подписки/float money — запрещены.
+Prior/EMA/WLS/subscription nominal/float money — forbidden.
 
 ## 8. Auth Bot — `crates/authbot`
 
-Порядок правок, ровно такой:
+Order of edits, exactly this:
 
-1. **Протокольный модуль** `src/<provider>_oauth.rs` + `mod` в `src/main.rs` + зависимость
-   credential-крейта в `Cargo.toml`. Пока его никто не вызывает — поставь `#![allow(dead_code)]`
-   с объяснением, иначе гейт зашумит.
-2. **`HandoffKind`** в `src/bot.rs` — добавь вариант **первым делом**. Компилятор сам покажет все
-   места, где нужна ветка (для KIMI их оказалось ровно три). Это и есть fail-closed: без варианта
-   новый продукт молча уехал бы в Claude setup-token и сжёг оплаченную подписку.
-3. **`handoff_kind()`** — правило провайдера ставь **выше** остальных, если имена тарифов
-   генеричные. У KIMI это Andante/Moderato/Allegretto: любое соседнее substring-правило могло бы
-   их перехватить. Тест обязан проверять, что голое имя тира **не** классифицируется.
-4. **`tier_name()`**, **`product_kb()`**, **`admin_quick_tier()`**, **`admin_home_kb()`** — коды
-   и кнопки. Batch-меню обычно подхватывает список само.
-5. **Тексты продавцу**: `<PROVIDER>_OFFER_GUIDE`, `<PROVIDER>_ACCOUNT_SETUP`,
-   `<PROVIDER>_PROXY_PROMPT` + строки в `seller_offer_guide()`, `account_setup_prompt()`,
+1. **Protocol module** `src/<provider>_oauth.rs` + `mod` in `src/main.rs` + the credential-crate
+   dependency in `Cargo.toml`. While nothing calls it — add `#![allow(dead_code)]`
+   with an explanation, otherwise the gate will go noisy.
+2. **`HandoffKind`** in `src/bot.rs` — add the variant **first of all**. The compiler itself will
+   show every place that needs a branch (for KIMI there were exactly three). That is the fail-closed:
+   without the variant, the new product would silently have gone down the Claude setup-token path
+   and burned a paid subscription.
+3. **`handoff_kind()`** — place the provider's rule **above** the others if the plan names are
+   generic. For KIMI these are Andante/Moderato/Allegretto: any neighboring substring rule could
+   intercept them. The test must verify that a bare tier name is **not** classified.
+4. **`tier_name()`**, **`product_kb()`**, **`admin_quick_tier()`**, **`admin_home_kb()`** — codes
+   and buttons. The batch menu usually picks up the list by itself.
+5. **Seller texts**: `<PROVIDER>_OFFER_GUIDE`, `<PROVIDER>_ACCOUNT_SETUP`,
+   `<PROVIDER>_PROXY_PROMPT` + rows in `seller_offer_guide()`, `account_setup_prompt()`,
    `proxy_prompt()`, `accepted_next_step()`.
-6. **Шаги мастера**: `handoff_steps_for_kind()` — пара уникальных id (`km_proxy`/`km_ready`).
-   Общий id с чужим провайдером позволил бы callback'у одной сделки продвинуть другую.
-7. **Обработчик готовности** — выдача device-кода/ссылки, поллинг, `/me`, seal, атомарная
-   публикация roster, и только потом завершение выплаты.
+6. **Wizard steps**: `handoff_steps_for_kind()` — a pair of unique ids (`km_proxy`/`km_ready`).
+   An id shared with another provider would let one deal's callback advance another deal.
+7. **Readiness handler** — issuing the device code/link, polling, `/me`, seal, atomic
+   roster publication, and only then payout completion.
 
-**Ловушка в тестах меню.** `every_product_button_resolves_and_classifies` и
-`batch_product_menu_covers_every_subscription_variant` — исчерпывающие: у них жёсткий счётчик и
-закрытый `matches!`. Обнови оба, иначе билд красный.
+**The menu-test trap.** `every_product_button_resolves_and_classifies` and
+`batch_product_menu_covers_every_subscription_variant` are exhaustive: they have a hard counter and
+a closed `matches!`. Update both, or the build goes red.
 
-**Ловушка в тексте продавца.** Слово «пароль» легитимно встречается в объяснении полей прокси.
-Тест на «бот не просит секретов» должен проверять формулировки-просьбы («пришли пароль»), а не
-само слово — иначе он ловит собственную инструкцию.
+**The seller-text trap.** The word "password" legitimately appears in the explanation of proxy
+fields. The "bot does not ask for secrets" test must check request phrasings ("send the password"),
+not the word itself — otherwise it catches its own instructions.
 
-Продавец никогда не передаёт пароль, 2FA, cookie, токен или прокси-URL. Неудачный, просроченный
-или wrong-plan flow не оставляет ни файла credential, ни строки roster и не завершает выплату.
+The seller never transmits a password, 2FA, cookie, token, or proxy URL. A failed, expired,
+or wrong-plan flow leaves neither a credential file nor a roster row and does not complete the
+payout.
 
 ## 9. Runtime, server, observability
 
-- `crates/forward/src/<provider>/` — транспорт, пул, стрим, биллинг. Если провайдер
-  Anthropic-совместим (как KIMI), переиспользуй нативный путь: трансляционный слой размера
-  `gemini/` не нужен.
-- `crates/server/src/config.rs` — **единственное** место чтения env.
-- Readiness: **никогда** не проверяй здоровье негейтед эндпоинтом. У KIMI `/v1/models` отвечает
-  200 на невалидный ключ, а generation потом даёт 403 — проба обязана бить в `/messages` или `/me`.
-- Метрики только фиксированной кардинальности; ни profile id, ни email, ни prompt, ни текст
-  ошибки провайдера.
-- Алерт и одноимённая секция в `docs/ops/MONITORING.md` добавляются одним изменением —
-  `deploy/monitoring-config.test.sh` это проверяет.
+- `crates/forward/src/<provider>/` — transport, pool, stream, billing. If the provider is
+  Anthropic-compatible (like KIMI), reuse the native path: a translation layer of the size of
+  `gemini/` is not needed.
+- `crates/server/src/config.rs` — the **only** place env is read.
+- Readiness: **never** check health with an ungated endpoint. With KIMI, `/v1/models` returns
+  200 for an invalid key, and generation then gives a 403 — the probe must hit `/messages` or
+  `/me`.
+- Metrics of fixed cardinality only; no profile id, no email, no prompt, no provider error
+  text.
+- An alert and its same-named section in `docs/ops/MONITORING.md` are added in a single change —
+  `deploy/monitoring-config.test.sh` checks this.
 
-## 10. Документация — в том же коммите
+## 10. Documentation — in the same commit
 
-- `docs/engine/<PROVIDER>_PROVIDER.md` — capability manifest с метками evidence.
-- Строка в `docs/README.md`.
-- `crates/<name>/CLAUDE.md` для каждого нового или существенно изменённого крейта.
-- `docs/DEPENDENCIES.md` — при новой кросс-контекстной связи.
-- Раздел «состояние доставки» в манифесте: что сделано и что **не** сделано. Зелёные тесты
-  читаются как «готово», если прямо не написано обратное.
+- `docs/engine/<PROVIDER>_PROVIDER.md` — the capability manifest with evidence labels.
+- A row in `docs/README.md`.
+- `crates/<name>/CLAUDE.md` for every new or substantially changed crate.
+- `docs/DEPENDENCIES.md` — on a new cross-context connection.
+- A "delivery state" section in the manifest: what is done and what is **not** done. Green tests
+  read as "ready" unless the opposite is written explicitly.
 
-## 11. Гейты перед мёржем
+## 11. Gates before the merge
 
 ```bash
 cargo build
-cargo test -p metering                     # целиком, если трогал деньги
+cargo test -p metering                     # in full, if you touched money
 cargo test --locked --workspace
 git diff --check origin/master...HEAD
 bash -n deploy/*.sh
 bash deploy/docs-check.sh "$(git rev-parse origin/master)" "$(git rev-parse HEAD)"
 ```
 
-Мёрж — только `git push -u origin HEAD` && `./deploy/agent-merge.sh`, из своего worktree.
+Merge — only `git push -u origin HEAD` && `./deploy/agent-merge.sh`, from your own worktree.
 
-## 12. Что нельзя объявлять готовым
+## 12. What must not be declared ready
 
-Зелёная сборка, mock 200, строка модели в каталоге и правдоподобное число в админке — не
-доказательства. GA требует живых доказательств по каждой опубликованной строке
-plan × model × tier. Пока их нет, состояние называется preview, а незакрытые вопросы
-перечисляются списком в манифесте — по одному пункту на каждый заблокированный live-гейт.
+A green build, a mock 200, a model row in the catalog, and a plausible number in the admin panel
+are not evidence. GA requires live evidence for every published
+plan × model × tier row. Until then the state is called preview, and the open questions are
+listed in the manifest — one item per blocked live gate.

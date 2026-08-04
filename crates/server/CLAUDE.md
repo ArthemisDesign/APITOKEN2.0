@@ -1,52 +1,52 @@
 # crates/server — CLAUDE.md
 
-**Роль:** КОМПОЗИЦИЯ (bin `claude-api`). Читает env, поднимает пул из реестра, стартует фоновые
-циклы и HTTP-роутер. Здесь — и только здесь — всё связывается вместе.
+**Role:** COMPOSITION (bin `claude-api`). Reads env, raises the pool from the registry, starts the
+background loops and the HTTP router. Here — and only here — everything is wired together.
 
-**Владелец-ветка:** `comp/server`.
+**Owner branch:** `comp/server`.
 
-**Границы (жёстко):**
-- Зависит от `forward`, `pool`, `registry`, `tokio`, `axum`, `clap`.
-- **ЕДИНСТВЕННОЕ место, где читается окружение** — `src/config.rs` (`Settings::from_env`).
-  Ниже по стеку env не трогают.
-- Не содержит бизнес-логики форвардинга (она в `forward`) и логики выбора (она в `pool`).
-  Здесь — проводка: env → `ProxyConfig`/`Pool`/`Clients` → `AppState` → роутер + циклы.
+**Boundaries (hard):**
+- Depends on `forward`, `pool`, `registry`, `tokio`, `axum`, `clap`.
+- **The ONLY place where the environment is read** — `src/config.rs` (`Settings::from_env`).
+  Nothing below this layer touches env.
+- Contains no forwarding business logic (it lives in `forward`) and no selection logic (it lives in `pool`).
+  Here is the wiring: env → `ProxyConfig`/`Pool`/`Clients` → `AppState` → router + loops.
 
-**Что внутри:**
-- `config.rs` — `Settings` (db_path/bind/fleet/Redis affinity + `ProxyConfig`) из env.
-- `http.rs` — роутер: `/health`, `/pool`, `/balance`, `/capacity` (управляющие) + startup-fixed
-  Claude/OpenAI/Gemini router. Production provider выбирает systemd unit, не request; Caddy marker остаётся
-  только в одноразовом `Combined` migration bridge и никогда не принимается от клиента. +
-  data routes для admin.apitoken.sale (`/overview`, `/capacity`, `/subs` и др.; UI — standalone
-  Next.js `apps/admin`, архитектура — корневой `docs/product/PANEL.md`) +
-  `/admin/*` (control-плоскость,
-  см. `admin.rs`) + fallback на `forward::forward`. Выпуск ключа возвращает не-секретный `key_id`,
-  а `/admin/key-id/{key_id}/status` позволяет отзывать ключ без повторной передачи полного секрета.
-  `/metrics` экспортирует registry incident-tripwire
-  `claude_api_execution_group_double_winner_total`; метрика должна оставаться нулевой, а
-  transactional winner correctness не зависит от процесса или Prometheus. Там же fixed-cardinality
-  `claude_api_execution_not_started_total{plane}` считает только exact single `not_started` на
-  non-2xx ответе, фактически возвращённом конкретной Anthropic/OpenAI/Gemini plane; Combined bridge
-  атрибутирует старый Caddy OpenAI marker, иначе Anthropic.
-  Одинаковый на всех fixed planes `POST /internal/router/policy/preflight` — loopback-only
-  producer-контракт фазы router 6.4a: принимает до 32 catalog-кандидатов, авторизует customer/admin
-  credential и возвращает только ordered allow-list без account/policy/pricing identity.
-  Предшествующий ему bodyless `POST /internal/router/auth/preflight` — producer-first read-only
-  контракт раннего universal admission: проверяет customer/forwarding-admin credential до чтения
-  router'ом большого request body, не читает prompt, не резервирует деньги и возвращает только
-  закрытый `{schema_version:1,authenticated:true}` либо 401/503.
-  Отдельный producer-first `POST /internal/router/catalog/pricing` принимает до 256 provider-native
-  catalog-кандидатов и возвращает только opaque candidate ID плюс персональные integer
-  nanoUSD-per-million rate cards. Customer credential разрешается через `AsyncBilling`; legacy
-  account использует live `mult_bp`, strict account — тот же coherent bundle/resolver и payable
-  multiplier, что admission. Тарифные корзины берутся только из `metering`; endpoint read-only,
-  не резервирует деньги и не возвращает credential/account/policy/rule identity. Он установлен на
-  каждой fixed plane до подключения consumer в `crates/router`.
-- `admin.rs` — **Control API** (`/admin/account`, `/admin/key`, `/admin/*/credit|status`): контракт,
-  которым БУДУЩАЯ КОММЕРЦИЯ (отдельный сервис) управляет движком. Гейт — `forward::control_authed`
-  (control-ключ, ОТДЕЛЬНО от forwarding-admin). Все записи — через single-writer актор `AsyncBilling`
-  (та же дисциплина, что reserve/settle). Движок остаётся авторитетом ЖИВОГО баланса; коммерция лишь
-  создаёт аккаунты/ключи и кредитует (идемпотентно по `ref`). Полный контракт — `docs/engine/CONTROL_API.md`.
+**What's inside:**
+- `config.rs` — `Settings` (db_path/bind/fleet/Redis affinity + `ProxyConfig`) from env.
+- `http.rs` — the router: `/health`, `/pool`, `/balance`, `/capacity` (control endpoints) + startup-fixed
+  Claude/OpenAI/Gemini router. The production provider is selected by the systemd unit, not the request; the Caddy marker remains
+  only in the one-shot `Combined` migration bridge and is never accepted from a client. +
+  data routes for admin.apitoken.sale (`/overview`, `/capacity`, `/subs` etc.; UI — standalone
+  Next.js `apps/admin`, architecture — root `docs/product/PANEL.md`) +
+  `/admin/*` (control plane,
+  see `admin.rs`) + fallback to `forward::forward`. Key issuance returns the non-secret `key_id`,
+  and `/admin/key-id/{key_id}/status` allows revoking a key without passing the full secret again.
+  `/metrics` exports the registry incident tripwire
+  `claude_api_execution_group_double_winner_total`; the metric must stay at zero, and
+  transactional winner correctness does not depend on the process or Prometheus. The fixed-cardinality
+  `claude_api_execution_not_started_total{plane}` in the same place counts only an exact single `not_started` on a
+  non-2xx response actually returned by the concrete Anthropic/OpenAI/Gemini plane; the Combined bridge
+  attributes the old Caddy OpenAI marker, otherwise Anthropic.
+  Identical on all fixed planes, `POST /internal/router/policy/preflight` is a loopback-only
+  producer contract of router phase 6.4a: it accepts up to 32 catalog candidates, authorizes the customer/admin
+  credential and returns only an ordered allow-list without any account/policy/pricing identity.
+  The bodyless `POST /internal/router/auth/preflight` preceding it is a producer-first read-only
+  contract of early universal admission: it verifies the customer/forwarding-admin credential before the router reads
+  a large request body, does not read the prompt, does not reserve money and returns only a
+  closed `{schema_version:1,authenticated:true}` or 401/503.
+  A separate producer-first `POST /internal/router/catalog/pricing` accepts up to 256 provider-native
+  catalog candidates and returns only an opaque candidate ID plus personalized integer
+  nanoUSD-per-million rate cards. The customer credential is resolved via `AsyncBilling`; a legacy
+  account uses the live `mult_bp`, a strict account uses the same coherent bundle/resolver and payable
+  multiplier as admission. Tariff baskets are taken only from `metering`; the endpoint is read-only,
+  does not reserve money and does not return credential/account/policy/rule identity. It is mounted on
+  every fixed plane before the consumer in `crates/router` is wired in.
+- `admin.rs` — **Control API** (`/admin/account`, `/admin/key`, `/admin/*/credit|status`): the contract
+  by which the FUTURE COMMERCE (a separate service) manages the engine. The gate is `forward::control_authed`
+  (the control key, SEPARATE from forwarding-admin). All writes go through the single-writer actor `AsyncBilling`
+  (the same discipline as reserve/settle). The engine remains the authority on the LIVE balance; commerce only
+  creates accounts/keys and credits (idempotently by `ref`). The full contract is `docs/engine/CONTROL_API.md`.
   Account pricing is updated by `/admin/account/{id}/pricing`; cursor ledger reads use `after_id` for
   the commercial pricing worker. Account reads include the coherent paid/bonus/other/unattributed
   funding summary. Ledger rows add stored immutable attribution and normalized funding allocations;
@@ -72,273 +72,273 @@
   `POST /admin/pricing/v2/stage8-evidence/capture` accepts only explicit window/sample/release
   inputs, attaches the compile-fixed runtime manifest from `AppState` and returns the same
   PostgreSQL schema-v2 report even when `passed=false`; it is read-only and never stages a job.
-  Отдельный
-  `POST /admin/pricing/v2/activate` принимает strict fresh-evidence/CAS body и является единственной
+  The separate
+  `POST /admin/pricing/v2/activate` accepts a strict fresh-evidence/CAS body and is the only
   release-head mutation.
   Key issue/list also carries optional `spend_limit_nano`/`expires_ts` policy metadata. The
   account-scoped `/admin/account/{id}/key-id/{key_id}/policy` endpoint replaces both nullable
   guardrails; validation is at this HTTP boundary while enforcement remains in registry reservation
   transactions.
-- `poller.rs` — СОБЫТИЙНЫЕ циклы: `reload_loop` (перечитать реестр; будит поллер `Notify` при
-  изменении флота) + `poll_loop` (free count-tokens probe созревших подписок конкурентно, затем сон
-  РОВНО до ближайшего due-времени или до `poke`). Фиксированного тика нет: reset вычисляется
-  локально. Под боевым трафиком пассивные headers обычно держат `polled_ts` свежим, но завершение
-  authoritative Claude turn после постановки exact spend в FIFO принудительно помечает подписку due
-  и будит poller для post-turn quota pairing. `LIVENESS_INTERVAL` задаёт редкую фоновую проверку
-  простаивающей, а per-sub 15-секундный debounce ограничивает forced probes. Если у Claude-sub
-  отсутствует plan, тот же backend probe сначала читает официальный OAuth profile. Для inference-only
-  токена с HTTP 403 разрешён только fail-closed fallback: все непустые планы активного fleet должны
-  единогласно совпасть с одним `pro|max5|max20`. Результат durable сохраняется и сразу обновляет
-  in-memory roster; mixed/unknown fleet остаётся без plan, UI в детекте не участвует.
-  `persist_loop` — write-through персист состояния пула по событию cooling (`pool.on_change` → `Notify`)
-  + редкий safety-flush; на старте `serve` восстанавливает состояние через `pool.import_state`.
-  Если import карантинил implausible legacy calibration, `serve` сразу будит persist-loop, чтобы
-  repaired prior-fallback не остался лишь in-memory до safety-flush.
-  `poll_loop` также ведёт **durable auth-health**: probe кормит `pool.record_probe` (машина dead-детекта),
-  изменившийся вердикт персистится owner-fenced (`save_sub_health`); suspect/dead probe-ятся НЕЗАВИСИМО
-  от cooling (`SUSPECT_INTERVAL`/`DEAD_RESURRECT_INTERVAL`), чтобы добрать корроборацию/ресуррекцию. На
-  старте `serve` сеет вердикт через `pool.import_health` (мёртвые сразу вне ротации, переживают рестарт).
-  Отдельный Gemini health loop каждые 15 секунд обнаруживает новые roster profiles и по настроенной
-  cadence проверяет health/quota. После durable settlement admin-only exact-target turn он принимает
-  coalesced `Notify` и сразу выполняет бесплатный probe; обычные customer turns этот wake не посылают.
-  Отдельный KIMI maintenance loop каждые 15 секунд обнаруживает атомарную публикацию Auth Bot, а
-  по `CLAUDE_API_KIMI_QUOTA_POLL_SECS` запускает бесплатный `/usages` sweep (первый anchor — сразу
-  после preflight). Gateway сам валидирует roster generation, idle/epoch границу quota snapshot,
-  turn-FIFO→durable spend→observation/CAS порядок и last-good publication; server владеет только
-  cadence. Ошибка одного profile не останавливает sweep остальных.
-  GLM maintenance loop — зеркало KIMI (`docs/engine/GLM_PROVIDER.md` §5.4): тот же независимый
-  15-секундный roster discovery и бесплатный quota sweep по `CLAUDE_API_GLM_QUOTA_POLL_SECS`;
-  gateway владеет idle/epoch границей, turn-before-quota ordering и durable observation/CAS,
-  server — только cadence.
+- `poller.rs` — EVENT-DRIVEN loops: `reload_loop` (re-reads the registry; wakes the poller via `Notify` when
+  the fleet changes) + `poll_loop` (free count-tokens probe of matured subscriptions concurrently, then sleep
+  EXACTLY until the nearest due time or until a `poke`). There is no fixed tick: reset is computed
+  locally. Under live traffic, passive headers usually keep `polled_ts` fresh, but the completion of an
+  authoritative Claude turn after the exact spend is queued to FIFO forcibly marks the subscription due
+  and wakes the poller for post-turn quota pairing. `LIVENESS_INTERVAL` sets the rare background check of an
+  idle subscription, and a per-sub 15-second debounce bounds forced probes. If a Claude sub
+  lacks a plan, the same backend probe first reads the official OAuth profile. For an inference-only
+  token with HTTP 403 only a fail-closed fallback is allowed: all non-empty plans of the active fleet must
+  unanimously match one `pro|max5|max20`. The result is durably persisted and immediately updates the
+  in-memory roster; a mixed/unknown fleet stays without a plan, the UI does not participate in detection.
+  `persist_loop` — write-through persistence of pool state on a cooling event (`pool.on_change` → `Notify`)
+  + a rare safety flush; at startup `serve` restores state via `pool.import_state`.
+  If import quarantined implausible legacy calibration, `serve` immediately wakes the persist loop so the
+  repaired prior-fallback does not remain merely in-memory until the safety flush.
+  `poll_loop` also maintains **durable auth-health**: the probe feeds `pool.record_probe` (the dead-detection state machine),
+  a changed verdict is persisted owner-fenced (`save_sub_health`); suspect/dead are probed INDEPENDENTLY
+  of cooling (`SUSPECT_INTERVAL`/`DEAD_RESURRECT_INTERVAL`) to gather corroboration/resurrection. At
+  startup `serve` seeds the verdict via `pool.import_health` (dead subs are immediately out of rotation and survive a restart).
+  A separate Gemini health loop every 15 seconds discovers new roster profiles and, on the configured
+  cadence, checks health/quota. After a durable-settled admin-only exact-target turn it receives a
+  coalesced `Notify` and immediately performs a free probe; ordinary customer turns do not send this wake.
+  A separate KIMI maintenance loop every 15 seconds discovers the Auth Bot's atomic publication, and
+  on `CLAUDE_API_KIMI_QUOTA_POLL_SECS` runs a free `/usages` sweep (the first anchor — immediately
+  after preflight). The gateway itself validates roster generation, the idle/epoch boundary of a quota snapshot,
+  the turn-FIFO→durable spend→observation/CAS order and last-good publication; server owns only the
+  cadence. A failure of one profile does not stop the sweep of the others.
+  The GLM maintenance loop is a mirror of KIMI (`docs/engine/GLM_PROVIDER.md` §5.4): the same independent
+  15-second roster discovery and free quota sweep on `CLAUDE_API_GLM_QUOTA_POLL_SECS`;
+  the gateway owns the idle/epoch boundary, the turn-before-quota ordering and the durable observation/CAS,
+  server owns only the cadence.
 - `main.rs` — clap CLI: `serve`, `sub add/add-file/list/rm/status/proxy/fleet/set-plan/detect-plan/health`
-  и PostgreSQL-only read evidence `db stage8-evidence`.
+  and the PostgreSQL-only read evidence `db stage8-evidence`.
 
-**Инварианты:**
-- При старте PostgreSQL authority только read-only проверяет применённую схему; DDL выполняется
-  отдельным `db migrate-engine` до запуска слота blue-green.
-- Новую env-переменную заводи ТОЛЬКО тут и прокидывай дальше через конфиг-структуры.
+**Invariants:**
+- At startup the PostgreSQL authority only read-only verifies the applied schema; DDL is executed
+  by the separate `db migrate-engine` before a blue-green slot is started.
+- Introduce a new env variable ONLY here and pass it further down through config structures.
 - ClaudeStore emergency transport: `CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED` strict default-off
-  (`0|1|false|true`), secret `CLAUDE_API_CLAUDESTORE_API_KEY` обязателен только при enable и проходит
-  shape-validation/redacted Debug. Enable допустим лишь для `Combined|Anthropic`; production base
-  URL compile-fixed в `forward`, env override отсутствует. Secret живёт только в root-owned
-  `server.env`, а runtime-контракт — `docs/engine/CLAUDESTORE_FALLBACK.md`.
-- GPT transport использует независимые `CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED` и
-  `CLAUDE_API_CLAUDESTORE_CODEX_API_KEY`. Enable допустим лишь для `Combined|OpenAi`, дополнительно
-  требует `CLAUDE_API_CODEX_ENABLED=1` и никогда не переиспользует Basic/Claude key. Fixed OpenAI
-  systemd unit наследует этот switch; Anthropic/Gemini units обязаны argv-level фиксировать `0`.
-  Наличие валидного конфига не закрывает authenticated live gate и не разрешает production enable.
-- Backend-only KIMI switch читается здесь как строгий default-off набор
-  `CLAUDE_API_KIMI_{ENABLED,ROSTER_DIR,CREDENTIAL_KEYS,BASE_URL,AUTH_SCHEME,QUOTA_POLL_SECS}` и
-  передаётся целиком в `forward::kimi::config::build`. Disabled-плоскость не валидирует dormant
-  значения; enabled-плоскость fail-closed требует абсолютный roster, encrypted keyring, HTTPS,
-  известную auth-схему и положительный poll interval. Exact KIMI aliases обслуживаются только
-  authenticated profiles; initial degraded gateway и ошибочный reload сохраняют отдельный
-  fail-closed KIMI path, не влияя на Claude readiness и не проваливая alias в Claude pool.
-  `ProviderMode::Kimi` (`CLAUDE_API_PROVIDER=kimi`) — выделенная delivery-плоскость: production
-  юниты `systemd/claude-api-kimi@.service` (active/passive слоты 8804/8805 за stable loopback
-  origin 127.0.0.1:8803) и legacy/anchor singleton `systemd/claude-api-kimi.service` (8804).
-  Оба юнита argv-level пинят `CLAUDE_API_KIMI_ENABLED=1`: состояние плоскости живёт только в
-  reviewed юнитах; выключение — обратное reviewed изменение.
-  Anthropic-плоскость держит KIMI выключенным, чтобы ровно один процесс вёл maintenance writer.
-  В kimi-режиме роутер монтирует только common-роуты, `/kimi-subs` и `/v1/messages`, который
-  диспатчит exact KIMI aliases через тот же `KimiGateway::handle`, что Anthropic-путь, а любая
-  другая модель получает bounded fail-closed 404 — Claude pool на этой плоскости не поднят.
-  `/ready` здесь — accepting && authority_ready && (gateway есть ? его readiness (live>=1 &&
-  persistence_ok → иначе provider_unavailable) : ready-to-serve-disabled-envelope).
-- Backend-only GLM switch читается здесь как строгий default-off набор
-  `CLAUDE_API_GLM_{ENABLED,ROSTER_DIR,CREDENTIAL_KEYS,AUTH_SCHEME,QUOTA_POLL_SECS}` и передаётся
-  целиком в `forward::glm::config::build`. Fleet base-URL override отсутствует намеренно: console
-  origin — per-profile внутри sealed credential (int/CN ключи несовместимы,
-  `docs/engine/GLM_PROVIDER.md` §2), поэтому `CLAUDE_API_GLM_BASE_URL` отклоняется fail-closed как
-  unknown key, а не игнорируется как dormant мусор. Disabled-плоскость не валидирует dormant
-  значения; enabled-плоскость fail-closed требует абсолютный roster, encrypted keyring, схему
-  `bearer` (единственная доказанная) и положительный poll interval. Как и KIMI, initial degraded
-  gateway и ошибочный reload сохраняют fail-closed GLM path, не влияя на Claude readiness и не
-  проваливая exact GLM alias в Claude pool. Client-фингерпринт GLM-плоскости GLM-специфичных env
-  НЕ имеет: identity персоны заполняется здесь из ТЕХ ЖЕ shared fleet env, что и Claude-персона
-  (`CLAUDE_API_IDENTITY`, `CLAUDE_API_UA` (+ пул через `|`), `CLAUDE_API_BETA`,
+  (`0|1|false|true`), the secret `CLAUDE_API_CLAUDESTORE_API_KEY` is required only when enabled and undergoes
+  shape-validation/redacted Debug. Enable is allowed only for `Combined|Anthropic`; the production base
+  URL is compile-fixed in `forward`, with no env override. The secret lives only in the root-owned
+  `server.env`, and the runtime contract is `docs/engine/CLAUDESTORE_FALLBACK.md`.
+- The GPT transport uses the independent `CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED` and
+  `CLAUDE_API_CLAUDESTORE_CODEX_API_KEY`. Enable is allowed only for `Combined|OpenAi`, additionally
+  requires `CLAUDE_API_CODEX_ENABLED=1` and never reuses the Basic/Claude key. The fixed OpenAI
+  systemd unit inherits this switch; the Anthropic/Gemini units must pin `0` at argv level.
+  Having a valid config neither closes the authenticated live gate nor permits a production enable.
+- The backend-only KIMI switch is read here as a strict default-off set
+  `CLAUDE_API_KIMI_{ENABLED,ROSTER_DIR,CREDENTIAL_KEYS,BASE_URL,AUTH_SCHEME,QUOTA_POLL_SECS}` and is
+  passed whole to `forward::kimi::config::build`. A disabled plane does not validate dormant
+  values; an enabled plane fail-closed requires an absolute roster, an encrypted keyring, HTTPS,
+  a known auth scheme and a positive poll interval. Exact KIMI aliases are served only by
+  authenticated profiles; an initially degraded gateway and a failed reload keep a separate
+  fail-closed KIMI path without affecting Claude readiness and without dropping the alias into the Claude pool.
+  `ProviderMode::Kimi` (`CLAUDE_API_PROVIDER=kimi`) is a dedicated delivery plane: production
+  units `systemd/claude-api-kimi@.service` (active/passive slots 8804/8805 behind the stable loopback
+  origin 127.0.0.1:8803) and the legacy/anchor singleton `systemd/claude-api-kimi.service` (8804).
+  Both units pin `CLAUDE_API_KIMI_ENABLED=1` at argv level: the plane state lives only in
+  reviewed units; turning it off is a reverse reviewed change.
+  The Anthropic plane keeps KIMI disabled so that exactly one process runs the maintenance writer.
+  In kimi mode the router mounts only the common routes, `/kimi-subs` and `/v1/messages`, which
+  dispatches exact KIMI aliases through the same `KimiGateway::handle` as the Anthropic path, while any
+  other model gets a bounded fail-closed 404 — the Claude pool is not raised on this plane.
+  `/ready` here is accepting && authority_ready && (gateway present ? its readiness (live>=1 &&
+  persistence_ok → otherwise provider_unavailable) : ready-to-serve-disabled-envelope).
+- The backend-only GLM switch is read here as a strict default-off set
+  `CLAUDE_API_GLM_{ENABLED,ROSTER_DIR,CREDENTIAL_KEYS,AUTH_SCHEME,QUOTA_POLL_SECS}` and is
+  passed whole to `forward::glm::config::build`. The absence of a fleet base-URL override is intentional: the console
+  origin is per-profile inside the sealed credential (int/CN keys are incompatible,
+  `docs/engine/GLM_PROVIDER.md` §2), so `CLAUDE_API_GLM_BASE_URL` is rejected fail-closed as an
+  unknown key rather than ignored as dormant junk. A disabled plane does not validate dormant
+  values; an enabled plane fail-closed requires an absolute roster, an encrypted keyring, the
+  `bearer` scheme (the only proven one) and a positive poll interval. As with KIMI, an initially degraded
+  gateway and a failed reload keep the fail-closed GLM path without affecting Claude readiness and
+  without dropping an exact GLM alias into the Claude pool. The GLM plane's client fingerprint has NO
+  GLM-specific env: the persona identity is filled here from the SAME shared fleet env as the Claude persona
+  (`CLAUDE_API_IDENTITY`, `CLAUDE_API_UA` (+ pool via `|`), `CLAUDE_API_BETA`,
   `CLAUDE_API_ANTHROPIC_VERSION`, `CLAUDE_API_X_APP`, `CLAUDE_API_SL_*`, `CLAUDE_API_CC_VERSION`,
-  `CLAUDE_API_CC_ENTRYPOINT`, `CLAUDE_API_INJECT_BILLING`), которые авто-обновляет
-  `tools/refresh-fingerprint.sh`; per-field fallback — reviewed-захват 2.1.195 в
-  `GlmIdentityHeaders::default`. `CLAUDE_API_UA_SPREAD` GLM намеренно не читает: patch-разброс UA
-  удалён из Claude-персоны как источник внутри-запросных аномалий (`persona_ua` в
-  `forward::upstream`), зеркалить нечего.
-- Atomic legacy snapshot bridge config читается только здесь
-  `CLAUDE_API_PRICING_BRIDGE_ENABLED`/`CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP`. Default строго
-  `false/0`; bool принимает только `0|1|false|true`, sample — integer `0..=10000`, несогласованные
-  пары отклоняются. Enabled требует sample `1..=10000` и активирует только atomic actual-snapshot
-  reserve caller fixed Anthropic/OpenAI/Gemini plane (durable Gemini provider ID — `google`);
-  policy shadow/resolver он сам не включает. Rollout выполняется
-  отдельными наблюдаемыми config-ступенями, а не изменением безопасного default.
-- Pricing shadow config читается только здесь под `CLAUDE_API_PRICING_SHADOW_*`. Default —
+  `CLAUDE_API_CC_ENTRYPOINT`, `CLAUDE_API_INJECT_BILLING`), which is auto-refreshed by
+  `tools/refresh-fingerprint.sh`; the per-field fallback is the reviewed capture of 2.1.195 in
+  `GlmIdentityHeaders::default`. GLM intentionally does not read `CLAUDE_API_UA_SPREAD`: the patch-level UA
+  spread was removed from the Claude persona as a source of within-request anomalies (`persona_ua` in
+  `forward::upstream`); there is nothing to mirror.
+- The atomic legacy snapshot bridge config is read only here:
+  `CLAUDE_API_PRICING_BRIDGE_ENABLED`/`CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP`. The default is strictly
+  `false/0`; the bool accepts only `0|1|false|true`, the sample — integer `0..=10000`; inconsistent
+  pairs are rejected. Enabled requires sample `1..=10000` and activates only the atomic actual-snapshot
+  reserve caller of the fixed Anthropic/OpenAI/Gemini plane (the durable Gemini provider ID is `google`);
+  it does not itself enable the policy shadow/resolver. The rollout is performed
+  in separate observable config steps, not by changing the safe default.
+- The pricing shadow config is read only here under `CLAUDE_API_PRICING_SHADOW_*`. Default —
   disabled/0 bp; queue 256, workers 2, timeout 750ms, max age 300s, field 512 B, item 16 KiB,
-  rate 20/s burst 40, PostgreSQL readers 2. Все значения strict-validated; max age всегда `<24h`.
-  Enabled требует billing + PostgreSQL и активен только на fixed Anthropic/OpenAI/Gemini plane;
-  на не-pricing plane (KIMI) тот же shared env не останавливает startup — producer остаётся inert
-  с явным notice, потому что fleet env файл общий для всех plane. Server собирает fixed
-  versioned runtime manifest, запускает отдельные read actors/worker и дренирует worker до billing
-  FIFO flush. Это разрешает Google legacy-snapshot shadow evidence, но не включает strict Gemini
-  или Stage 9 release activation.
-- Тот же compile-fixed pricing manifest используется независимо от shadow enablement при claim
-  PostgreSQL owner epoch, startup heartbeat и каждом регулярном heartbeat. Active strict
-  dependencies, которых нет в manifest, не получают новый owner; drift после claim снимает
-  readiness и fence-ит slot. Scalar-only `claim_instance` остаётся несовместимым со strict heads.
-- `POST /admin/key` и reactivation через `/admin/key-id/{key_id}/status` принимают nested
-  `activation_policy_ack {effective_policy_version, policy_digest}`. Для strict binding exact ACK
-  обязателен; отсутствующий/stale/wrong identity даёт 409, malformed identity — 400. Disable не
-  требует ACK. Секрет ключа по-прежнему выдаётся один раз и только после durable ACK check.
-- `db stage8-evidence` и защищённый
-  `POST /admin/pricing/v2/stage8-evidence/capture` получают тот же compile-fixed runtime manifest
-  из `Settings`/`AppState`, требуют exact target/recovery, явное frozen window/sample limits и
-  внешний агрегат Gemini admissions. Report schema v2 связывает prepared release pair с текущими
-  inventory/funding/shadow/runtime-floor digests и legacy-inflight count. CLI печатает JSON и
-  возвращает ошибку после печати при любом blocker; HTTP всегда возвращает сам валидный report с
-  `200`, включая `passed=false`. До Stage 9 runtime claims отсутствие release/funding schema v2 у
-  любого live instance намеренно оставляет report красным. Оба пути не меняют heads, bindings или
-  деньги; HTTP идёт только через bounded PostgreSQL reader, а не writer.
-- Redis здесь только конфигурируется; `AffinityStore` живёт в `forward`, а pool остаётся без сети.
-- Router policy preflight не открывает authority сам: metered credential резолвится через
-  `AsyncBilling`, strict account читает ровно один `PricingReadBundle`, а решение каждой модели
-  использует тот же `forward::resolve_pricing` и compile-fixed runtime manifest, что live strict
-  admission. Legacy/shadow/unbound account и forwarding-admin остаются unrestricted; Google для
-  strict binding фильтруется, пока Gemini strict admission сама fail-closed недоступна. Ответы и
-  логи не содержат credential/account/model-rule identity, решения не кэшируются.
-- Router auth preflight использует тот же `authed`/`resolve_client_key`, что live admission:
-  inactive/unknown credential получает 401, сбой billing authority — 503, а success не раскрывает
-  key/account identity и не делает reserve/settle. Endpoint одинаков на всех fixed planes и
-  loopback-only; `crates/router` вызывает его до materialization каждого universal request body.
-- Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/fleet-history`, `/settlement-health`,
-  `/codex-subs`, `/gemini-subs`, `/kimi-subs`, `/glm-subs`, `/admin/*`) — здесь; остальное → форвардинг. `/capacity`,
-  `/codex-subs` и `/gemini-subs` сериализуют безопасный paid-plan identity для защищённого
-  `admin.apitoken.sale/sales/calculator`; этот классификатор не является credential. `/codex-subs`
-  гейтится `control_authed` и отдаёт только opaque home id плюс bounded email hint (первые четыре
-  символа local-part без домена), никогда полный ChatGPT email/account id/OAuth/proxy. Окна явно
-  публикуют provider measurement resolution, а `plan_cohorts` объединяет только exact paid plan +
-  duration в общий native-credit capacity per home/fleet; per-home evidence и workload-dependent
-  API USD не заменяются этим агрегатом. `/capacity` публикует Claude 5ч/7д и horizon money как
-  decimal nanoUSD strings, per-sub remaining и authoritative conversion catalogue из `metering`:
-  Standard для семи canonical-моделей, Fast только для фактически поддерживаемых Opus 5/4.8.
-  Claude full-window capacity pool-ится только внутри exact plan+duration по формуле
-  `10^8*Σspend/Σfraction`; другой routable plan без evidence, snapshot старше 900с или pending/
-  degraded calibration delivery fail-closed для fleet remaining. Историческая capacity при этом
-  не стирается. Current per-sub/fleet remaining может использовать более новый ephemeral
-  `pool::QuotaSnapshot`: exact fixed-point utilization от response/count-tokens probe остаётся
-  полезным, даже если provider не прислал reset. Такой снимок живёт только в runtime, протухает через
-  900с и никогда не становится estimator/history evidence; horizon availability остаётся `null` без
-  реального reset. До точного будущего provider deadline последний snapshot routable-idle или
-  quota-cooling home остаётся отдельным display-state: fraction/reset и
-  `last_known_remaining_nano` видны оператору, но `snapshot_fresh=false`, canonical remaining и
-  saleable fleet/horizon money остаются `null`. Новый snapshot заменяет его, а прошедший reset
-  удаляет его, чтобы старое значение не переехало в новое окно. Pending/degraded delivery этот
-  display-state не публикует. `calibration_delivery` раскрывает только bounded queue
-  counts/integrity, без identity.
-  `/capacity` также отдаёт newest-first `calibration_recent_turns` максимум из 512 immutable
-  Anthropic events: opaque request ID, masked email и полный token/cost vector без prompt/credential.
-  Это backend evidence операторского runner; aggregate `calibration_evidence` остаётся статистикой.
-  `/gemini-subs` симметрично публикует только новую plan-scoped exact authority: independent 5h/
+  rate 20/s burst 40, PostgreSQL readers 2. All values are strict-validated; max age is always `<24h`.
+  Enabled requires billing + PostgreSQL and is active only on the fixed Anthropic/OpenAI/Gemini plane;
+  on a non-pricing plane (KIMI) the same shared env does not stop startup — the producer remains inert
+  with an explicit notice, because the fleet env file is shared by all planes. Server assembles the fixed
+  versioned runtime manifest, starts the separate read actors/worker and drains the worker before the billing
+  FIFO flush. This permits Google legacy-snapshot shadow evidence but does not enable strict Gemini
+  or Stage 9 release activation.
+- The same compile-fixed pricing manifest is used regardless of shadow enablement when claiming the
+  PostgreSQL owner epoch, at the startup heartbeat and at every regular heartbeat. Active strict
+  dependencies missing from the manifest do not get a new owner; drift after the claim drops
+  readiness and fences the slot. Scalar-only `claim_instance` remains incompatible with strict heads.
+- `POST /admin/key` and reactivation via `/admin/key-id/{key_id}/status` accept a nested
+  `activation_policy_ack {effective_policy_version, policy_digest}`. For a strict binding an exact ACK
+  is mandatory; a missing/stale/wrong identity yields 409, a malformed identity — 400. Disable does not
+  require an ACK. The key secret is still issued once and only after the durable ACK check.
+- `db stage8-evidence` and the protected
+  `POST /admin/pricing/v2/stage8-evidence/capture` receive the same compile-fixed runtime manifest
+  from `Settings`/`AppState`, require an exact target/recovery, explicit frozen window/sample limits and
+  the external aggregate of Gemini admissions. The report schema v2 binds the prepared release pair to the current
+  inventory/funding/shadow/runtime-floor digests and the legacy-inflight count. The CLI prints JSON and
+  returns an error after printing on any blocker; HTTP always returns the valid report itself with
+  `200`, including `passed=false`. Until Stage 9 runtime claims, the absence of release/funding schema v2 on
+  any live instance intentionally keeps the report red. Neither path changes heads, bindings or
+  money; HTTP goes only through the bounded PostgreSQL reader, not the writer.
+- Redis is only configured here; `AffinityStore` lives in `forward`, and pool stays network-free.
+- Router policy preflight does not open the authority itself: a metered credential is resolved via
+  `AsyncBilling`, a strict account reads exactly one `PricingReadBundle`, and each model's decision
+  uses the same `forward::resolve_pricing` and compile-fixed runtime manifest as the live strict
+  admission. Legacy/shadow/unbound accounts and forwarding-admin remain unrestricted; Google for a
+  strict binding is filtered out while Gemini strict admission itself is not fail-closed available. Responses and
+  logs contain no credential/account/model-rule identity; decisions are not cached.
+- Router auth preflight uses the same `authed`/`resolve_client_key` as live admission: an
+  inactive/unknown credential gets 401, a billing authority failure — 503, and success does not reveal
+  key/account identity and does not reserve/settle. The endpoint is identical on all fixed planes and
+  loopback-only; `crates/router` calls it before materializing each universal request body.
+- The control endpoints (`/health`, `/pool`, `/capacity`, `/fleet-history`, `/settlement-health`,
+  `/codex-subs`, `/gemini-subs`, `/kimi-subs`, `/glm-subs`, `/admin/*`) live here; everything else → forwarding. `/capacity`,
+  `/codex-subs` and `/gemini-subs` serialize a safe paid-plan identity for the protected
+  `admin.apitoken.sale/sales/calculator`; this classifier is not a credential. `/codex-subs`
+  is gated by `control_authed` and returns only an opaque home id plus a bounded email hint (the first four
+  characters of the local part without the domain), never the full ChatGPT email/account id/OAuth/proxy. Windows explicitly
+  publish the provider measurement resolution, and `plan_cohorts` merges only exact paid plan +
+  duration into a shared native-credit capacity per home/fleet; per-home evidence and workload-dependent
+  API USD are not replaced by this aggregate. `/capacity` publishes Claude 5h/7d and horizon money as
+  decimal nanoUSD strings, per-sub remaining and the authoritative conversion catalogue from `metering`:
+  Standard for the seven canonical models, Fast only for the actually supported Opus 5/4.8.
+  Claude full-window capacity is pooled only within an exact plan+duration by the formula
+  `10^8*Σspend/Σfraction`; a different routable plan without evidence, a snapshot older than 900s or pending/
+  degraded calibration delivery fails closed for fleet remaining. Historical capacity is not
+  erased in that case. Current per-sub/fleet remaining may use a fresher ephemeral
+  `pool::QuotaSnapshot`: the exact fixed-point utilization from a response/count-tokens probe remains
+  useful even if the provider did not send a reset. Such a snapshot lives only in runtime, goes stale after
+  900s and never becomes estimator/history evidence; horizon availability stays `null` without a
+  real reset. Until the exact future provider deadline, the last snapshot of a routable-idle or
+  quota-cooling home remains a separate display state: fraction/reset and
+  `last_known_remaining_nano` are visible to the operator, but `snapshot_fresh=false`, canonical remaining and
+  saleable fleet/horizon money stay `null`. A new snapshot replaces it, and an elapsed reset
+  removes it so the old value does not migrate into the new window. Pending/degraded delivery does not publish
+  this display state. `calibration_delivery` exposes only bounded queue
+  counts/integrity, without identity.
+  `/capacity` also returns newest-first `calibration_recent_turns` with at most 512 immutable
+  Anthropic events: opaque request ID, masked email and the full token/cost vector without prompt/credential.
+  This is backend evidence for the operator runner; the aggregate `calibration_evidence` remains statistics.
+  `/gemini-subs` symmetrically publishes only the new plan-scoped exact authority: independent 5h/
   weekly rows and fleet totals, `calibration_authority_available`, bounded Gemini FIFO health,
-  exact model/token/API-cost aggregates и newest-first максимум 512 immutable Google turn events.
-  Pending/dropped/degraded delivery делает Gemini fleet remaining unavailable, а не saleable stale
-  числом; legacy pre-plan Gemini calibration не смешивается с этой authority.
-  `/overview` и новые metrics.db snapshots берут capacity-facing поля из того же exact report;
-  `pool::Cap` prior/EMA остаётся routing-only. Overview добавляет canonical decimal `*_nano`, а его
-  старые float USD поля остаются только display compatibility.
-  `/fleet-history` читает историю metrics.db
-  (snapshots/sub_snapshots за 24h/7d/30d/90d, бакетирование до ≤ ~500 точек, опциональный
-  per-sub ряд по маске email) и гейтится `control_authed`, как `/overview` с денежными
-  агрегатами. `/settlement-health` — денежная диагностика settlement pipeline: counts
-  settlement_outbox по state (pending/done/failed; 'processing' в схеме есть, но не пишется),
-  failed всего/24ч, backlog несеттленых старше 300с, ≤10 последних failed с last_error,
-  урезанным до 200 символов (settle-ошибки — invariant/SQLSTATE детали, без секретов), и лаг
-  pricing-консьюмера (max(ledger.id) vs ledger_consumer_checkpoints, возраст старейшей
-  неподтверждённой строки); читается через registry (`PgStore::settlement_health` / SQLite-twin
-  в registry::settlement_health), server в PG напрямую не лезет. `/spend-stats` принимает
-  опциональные `from`/`to` (epoch-секунды, вместе): ответ дополняется блоком `custom` за
-  полуоткрытый диапазон [from, to) шириной ≤ 92 дней (мусор/from ≥ to/будущее/шире лимита — 400,
-  `to` зажимается до now+1); `custom` считается на каждый запрос мимо TTL-кэша, в котором лежат
-  только стандартные окна d1/d7/d30. Range-агрегации — через registry `spend_by_*_range`. `/gemini-subs` существует
-  только в fixed Gemini runtime, гейтится
-  `readonly_authed` и сериализует opaque ids, bounded email hint, quota/cooling, per-model
-  generation health и low-cardinality failure classes плюс отдельные gaxios и Undici transport attestations и
-  Antigravity version без Google subject/full email/domain, project/proxy/OAuth. Ответ также
-  публикует exact nanoUSD fleet totals, paid-tier conversion catalogue из `metering::gemini` и
-  canonical-model → private quota-bucket mapping; отсутствующий provider amount остаётся `null`.
-  `/kimi-subs` существует в Combined и Anthropic режимах (встроенный gateway — dev/test-only) и на
-  выделенной Kimi-плоскости (production, origin 8803), гейтится `control_authed`, а не panel key. Ответ — либо
-  disabled envelope `{"now", "enabled": false, "profiles": []}`, либо read-only operational
-  projection: bounded FIFO delivery, fleet counts и per-profile cooling/inflight/quota-window
-  state плюс per-window durable calibration (capacity/remaining как decimal nano strings).
-  Для live-runner'а конверт несёт `calibration_authority_available`,
+  exact model/token/API-cost aggregates and newest-first at most 512 immutable Google turn events.
+  Pending/dropped/degraded delivery makes Gemini fleet remaining unavailable rather than a saleable stale
+  number; legacy pre-plan Gemini calibration is not mixed into this authority.
+  `/overview` and the new metrics.db snapshots take capacity-facing fields from the same exact report;
+  `pool::Cap` prior/EMA remains routing-only. Overview adds canonical decimal `*_nano`, while its
+  old float USD fields remain only for display compatibility.
+  `/fleet-history` reads metrics.db history
+  (snapshots/sub_snapshots for 24h/7d/30d/90d, bucketed to ≤ ~500 points, an optional
+  per-sub series by an email mask) and is gated by `control_authed`, like `/overview` with money
+  aggregates. `/settlement-health` is money diagnostics of the settlement pipeline: counts of
+  settlement_outbox by state (pending/done/failed; 'processing' exists in the schema but is never written),
+  failed total/24h, backlog of unsettled older than 300s, ≤10 latest failed with last_error
+  truncated to 200 characters (settle errors — invariant/SQLSTATE details, no secrets), and the lag of the
+  pricing consumer (max(ledger.id) vs ledger_consumer_checkpoints, the age of the oldest
+  unconfirmed row); read via registry (`PgStore::settlement_health` / SQLite twin
+  in registry::settlement_health) — server never touches PG directly. `/spend-stats` accepts
+  optional `from`/`to` (epoch seconds, together): the response is extended with a `custom` block for
+  the half-open range [from, to) up to 92 days wide (garbage/from ≥ to/future/wider than the limit — 400;
+  `to` is clamped to now+1); `custom` is computed on every request, bypassing the TTL cache, which holds
+  only the standard windows d1/d7/d30. Range aggregations go through registry `spend_by_*_range`. `/gemini-subs` exists
+  only in the fixed Gemini runtime, is gated by
+  `readonly_authed` and serializes opaque ids, a bounded email hint, quota/cooling, per-model
+  generation health and low-cardinality failure classes plus separate gaxios and Undici transport attestations and
+  the Antigravity version — without Google subject/full email/domain, project/proxy/OAuth. The response also
+  publishes exact nanoUSD fleet totals, the paid-tier conversion catalogue from `metering::gemini` and the
+  canonical-model → private quota-bucket mapping; a missing provider amount stays `null`.
+  `/kimi-subs` exists in Combined and Anthropic modes (the embedded gateway is dev/test-only) and on
+  the dedicated Kimi plane (production, origin 8803), gated by `control_authed`, not the panel key. The response is either a
+  disabled envelope `{"now", "enabled": false, "profiles": []}` or a read-only operational
+  projection: bounded FIFO delivery, fleet counts and per-profile cooling/inflight/quota-window
+  state plus per-window durable calibration (capacity/remaining as decimal nano strings).
+  For the live runner the envelope carries `calibration_authority_available`,
   `calibration_recent_turn_limit`, immutable `calibration_recent_turns` (engine request id +
-  opaque profile id + bounded plan + exact usage/nano-legs) и `conversion_models` с официальным
-  rate card. Dispatch поддерживает admin-only пару `x-apitoken-calibration-{profile,request-id}`:
-  только вместе, только под admin-ключом, никогда upstream; полупара/не-admin/мусор — 400, а
-  закреплённый turn идёт ровно на указанный профиль без rebind.
-  Сериализуются только opaque roster ids и reviewed bounded plan labels (`"unreviewed"` для
-  любого нереviewed provider plan string); subject, email, phone, token, proxy, credential path,
-  customer/request id и raw provider errors не сериализуются никогда, неизвестное — `null`,
-  а не 0. Join durable subject→opaque id выполняется внутри HTTP-слоя через gateway, сам subject
-  в ответ не попадает; строки чужого subject остаются durable для аудита, но не публикуются.
-  `/glm-subs` — тот же контракт для backend-only GLM плоскости (Combined и Anthropic режимы,
-  `control_authed`, disabled envelope без плоскости). Отличия от kimi-формы отражают оси GLM:
-  timed auth quarantine у GLM нет — вместо `cooling.auth_until` профиль несёт durable флаги
-  `account_dead`/`account_suspect`; raw quota counters сериализуются как `null`, пока их unit
-  semantics недоказаны; calibration — dual-ledger (decimal nanoUSD strings + exact native
-  microcredits); envelope добавляет `window_totals` — fleet-агрегацию canonical окон 5ч/7д
-  (`window_minutes` 300/10080 как проекция exact `duration_secs`, capacity/remaining decimal
-  nanoUSD strings), где агрегат `null`, пока хотя бы один roster profile не назвал значение для
-  окна, — частичная сумма не публикуется никогда. Subject здесь — keyed digest ключа; он,
-  сам ключ, proxy и base_url не сериализуются, join subject→opaque id так же выполняется внутри
-  HTTP-слоя через gateway.
-- **Три класса ключей (разделение секретов):** `CLAUDE_API_KEYS` (forwarding-admin: неметеренный /v1
-  + всё), `CLAUDE_API_CONTROL_KEY` (control-плоскость `/admin/*`: аккаунты/деньги, для коммерции),
-  `CLAUDE_API_PANEL_KEY` (read-only дашборды `/capacity`,`/metrics`). Гейты: `authed` (admin) ⊂
+  opaque profile id + bounded plan + exact usage/nano legs) and `conversion_models` with the official
+  rate card. Dispatch supports the admin-only pair `x-apitoken-calibration-{profile,request-id}`:
+  only together, only under the admin key, never upstream; a half-pair/non-admin/garbage — 400, and the
+  pinned turn goes exactly to the named profile without rebind.
+  Only opaque roster ids and reviewed bounded plan labels are serialized (`"unreviewed"` for
+  any unreviewed provider plan string); subject, email, phone, token, proxy, credential path,
+  customer/request id and raw provider errors are never serialized; unknown is `null`,
+  not 0. The join durable subject→opaque id is performed inside the HTTP layer via the gateway; the subject itself
+  never enters the response; rows of a foreign subject remain durable for audit but are not published.
+  `/glm-subs` — the same contract for the backend-only GLM plane (Combined and Anthropic modes,
+  `control_authed`, a disabled envelope without the plane). Differences from the kimi form reflect the GLM axes:
+  GLM has no timed auth quarantine — instead of `cooling.auth_until` the profile carries durable flags
+  `account_dead`/`account_suspect`; raw quota counters are serialized as `null` while their unit
+  semantics are unproven; calibration is dual-ledger (decimal nanoUSD strings + exact native
+  microcredits); the envelope adds `window_totals` — a fleet aggregation of the canonical 5h/7d windows
+  (`window_minutes` 300/10080 as a projection of the exact `duration_secs`, capacity/remaining as decimal
+  nanoUSD strings), where the aggregate is `null` while at least one roster profile has not named a value for
+  the window — a partial sum is never published. The subject here is a keyed digest of the key; it,
+  the key itself, proxy and base_url are not serialized, and the join subject→opaque id is likewise performed inside the
+  HTTP layer via the gateway.
+- **Three key classes (secret separation):** `CLAUDE_API_KEYS` (forwarding-admin: unmetered /v1
+  + everything), `CLAUDE_API_CONTROL_KEY` (control plane `/admin/*`: accounts/money, for commerce),
+  `CLAUDE_API_PANEL_KEY` (read-only dashboards `/capacity`,`/metrics`). Gates: `authed` (admin) ⊂
   `control_authed` (admin|control) ⊂ `readonly_authed` (admin|control|panel).
-- `/health` без авторизации (голый liveness); `/pool` — `authed`; `/capacity`,`/metrics` —
-  `readonly_authed`; `/fleet-history`, `/settlement-health` и `/admin/*` — `control_authed`.
-- Fixed OpenAI `/ready` дополнительно проверяет provider snapshot: любой transport требует хотя бы
-  один live+authenticated home. Одна рабочая подписка остаётся реальной ёмкостью и не превращается
-  в 503 из-за размера пула; оба blue-green поколения читают один sealed roster, поэтому паритет
-  authenticated-home set при cutover обеспечен конструкцией, без минимального soak-интервала.
-  Fixed KIMI `/ready` при составленном gateway требует live>=1 && persistence_ok
-  (иначе `provider_unavailable`); при отсутствующем gateway (argv-пин default-off) слот остаётся
-  ready и обслуживает стабильный disabled envelope.
-- `/metrics` публикует privacy-safe affinity counters, включая soft cache-root hits/writes,
-  fixed-cardinality strict admission/rejection counters для Anthropic/OpenAI/Gemini и fleet-only
-  Anthropic exact-capacity/coverage/delivery gauges, а также три execution-not-started series.
-  Raw client IDs, prompt content, account IDs, model IDs, credential/group/request identity и
-  subscription IDs в Redis/метрики не попадают.
-- Stage 9 runtime delivery сам не активирует production pricing release. Stage 5/6 materialization
-  и full-inventory Stage 8 evidence должны завершиться до одного global release-head CAS. Ручной
-  assignment matrix, canary accounts, maintenance window и zero-active-reservations gate не
-  используются; authoritative inventories обязаны покрыть все accounts exact.
-- `/admin/pricing/v2/*` является producer-first surface: immutable policy/release/recovery, cursor
-  inventory, nullable head, account-local funding normalization и один activation CAS. Handler
-  передаёт compile-fixed runtime manifest; registry повторно проверяет evidence TTL,
-  inventory/funding/runtime owner epochs и атомарно пишет evidence/audit/head. Contracts/client и
-  durable commerce caller добавляются только после GREEN exact producer SHA; поэтому deploy route
-  сам по себе не меняет traffic.
-- **loopback-доверие — только явный opt-in** `CLAUDE_API_TRUST_LOOPBACK=1` + реальный loopback-bind
-  (иначе за реверс-прокси аноним получил бы админ-доступ).
-- Shutdown OpenAI сначала ждёт detached Codex stream/history/settlement tasks (нативный провайдер
-  не держит child-процессов — abort-сигнал рвёт upstream read на deadline); только после этого
-  billing FIFO-flush может завершить процесс.
-- Shutdown Gemini сначала закрывает admission и ждёт detached SSE drain; на deadline abort-сигнал
-  прерывает upstream read, task settle-ит последний usage snapshot и пересекает semaphore barrier.
-  Billing FIFO-flush разрешён только после этого. Gemini health/preflight/network живут в `forward`,
-  а env/upstream pin и startup-fixed service composition — только здесь. Production unit обязан
-  argv-level pin-ить Antigravity version + Cloud Code host + Node binary/version/SHA после shared
+- `/health` without authorization (bare liveness); `/pool` — `authed`; `/capacity`,`/metrics` —
+  `readonly_authed`; `/fleet-history`, `/settlement-health` and `/admin/*` — `control_authed`.
+- Fixed OpenAI `/ready` additionally checks the provider snapshot: any transport requires at least
+  one live+authenticated home. One working subscription remains real capacity and does not turn into
+  a 503 because of pool size; both blue-green generations read one sealed roster, so parity of the
+  authenticated-home set at cutover is guaranteed by construction, without a minimum soak interval.
+  Fixed KIMI `/ready` with an assembled gateway requires live>=1 && persistence_ok
+  (otherwise `provider_unavailable`); with no gateway (argv-pinned default-off) the slot stays
+  ready and serves the stable disabled envelope.
+- `/metrics` publishes privacy-safe affinity counters, including soft cache-root hits/writes,
+  fixed-cardinality strict admission/rejection counters for Anthropic/OpenAI/Gemini and fleet-only
+  Anthropic exact-capacity/coverage/delivery gauges, as well as three execution-not-started series.
+  Raw client IDs, prompt content, account IDs, model IDs, credential/group/request identity and
+  subscription IDs never reach Redis/metrics.
+- Stage 9 runtime delivery does not itself activate a production pricing release. Stage 5/6 materialization
+  and full-inventory Stage 8 evidence must complete before the one global release-head CAS. A manual
+  assignment matrix, canary accounts, a maintenance window and a zero-active-reservations gate are not
+  used; authoritative inventories must cover all accounts exactly.
+- `/admin/pricing/v2/*` is a producer-first surface: immutable policy/release/recovery, cursor
+  inventory, nullable head, account-local funding normalization and one activation CAS. The handler
+  passes the compile-fixed runtime manifest; registry re-checks the evidence TTL,
+  inventory/funding/runtime owner epochs and atomically writes evidence/audit/head. Contracts/client and the
+  durable commerce caller are added only after a GREEN exact producer SHA; therefore the deploy route
+  by itself does not change traffic.
+- **loopback trust is explicit opt-in only** `CLAUDE_API_TRUST_LOOPBACK=1` + a real loopback bind
+  (otherwise behind a reverse proxy an anonymous caller would get admin access).
+- OpenAI shutdown first waits for detached Codex stream/history/settlement tasks (the native provider
+  holds no child processes — the abort signal tears the upstream read on the deadline); only after that
+  may the billing FIFO flush terminate the process.
+- Gemini shutdown first closes admission and waits for the detached SSE drain; on the deadline the abort signal
+  interrupts the upstream read, the task settles the last usage snapshot and crosses the semaphore barrier.
+  The billing FIFO flush is allowed only after that. Gemini health/preflight/network live in `forward`,
+  while the env/upstream pin and the startup-fixed service composition live only here. The production unit must
+  argv-level pin the Antigravity version + Cloud Code host + Node binary/version/SHA after the shared
   EnvironmentFile.
-- Shutdown KIMI закрывает admission и steady maintenance, отменяет висящий quota GET, ждёт detached
-  stream drain и turn FIFO; на deadline abort-ит stream read, сохраняет консервативный settlement,
-  затем под тем же deadline делает финальный turn-before-`/usages` pass. Ни старый poll, ни
-  финальный provider read не могут пережить общий billing flush.
-- Shutdown GLM зеркалит KIMI: закрывает admission и steady maintenance, ждёт detached stream drain
-  и turn FIFO, на deadline abort-ит stream read, затем под тем же deadline делает финальный
-  turn-before-quota pass против quota endpoint GLM. Ни старый poll, ни финальный provider read не
-  могут пережить общий billing flush.
-- Shutdown Claude после stream drain вызывает общий billing FIFO barrier: pending calibration head
-  повторяется до outbox reconcile; процесс не объявляет flush успешным, пока exact evidence остаётся
-  неприменённым.
+- KIMI shutdown closes admission and steady maintenance, cancels a pending quota GET, waits for the detached
+  stream drain and the turn FIFO; on the deadline it aborts the stream read, saves the conservative settlement,
+  then under the same deadline performs a final turn-before-`/usages` pass. Neither the old poll nor the
+  final provider read may outlive the shared billing flush.
+- GLM shutdown mirrors KIMI: closes admission and steady maintenance, waits for the detached stream drain
+  and the turn FIFO, on the deadline aborts the stream read, then under the same deadline performs a final
+  turn-before-quota pass against the GLM quota endpoint. Neither the old poll nor the final provider read
+  may outlive the shared billing flush.
+- Claude shutdown, after the stream drain, calls the shared billing FIFO barrier: a pending calibration head
+  is retried until the outbox reconcile; the process does not declare the flush successful while exact evidence remains
+  unapplied.
 
-**Проверка:** `cargo build -p claude-api`; `cargo run -p claude-api -- serve`.
+**Verification:** `cargo build -p claude-api`; `cargo run -p claude-api -- serve`.

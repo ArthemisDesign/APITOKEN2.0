@@ -1,67 +1,76 @@
-# Live-калибровка Claude-пула
+# Live calibration of the Claude pool
 
-`tools/claude_calibration/run_live.py` — операторский нагрузочный прогон реального Claude-пула.
-Он проверяет все опубликованные Claude model ID и для каждого реально поддерживаемого tier выполняет
-полную матрицу fresh input/output, cache write/read 5m, cache write/read 1h и Web Search. Fast Mode
-отправляется с обязательным beta `fast-mode-2026-02-01` только для Opus 5 и Opus 4.8; официальный
-conversion-каталог не изображает Fast у остальных моделей. Затем при наличии бюджета runner
-добирает измеримый signal стандартными 1h cache-write запросами Fable 5. Итоговый JSON содержит
-exact spend, движение 5ч/7д quota, реально недоступные capability и рейтинг модель × tier по
-наблюдённому API-dollar equivalent на 1% 5-часового окна.
+`tools/claude_calibration/run_live.py` is an operator load run against the real Claude pool.
+It checks all published Claude model IDs and, for every actually supported tier, executes the
+full matrix of fresh input/output, cache write/read 5m, cache write/read 1h, and Web Search.
+Fast Mode is sent with the mandatory `fast-mode-2026-02-01` beta only for Opus 5 and Opus 4.8;
+the official conversion catalog does not show Fast for the other models. Then, budget
+permitting, the runner collects additional measurable signal with standard 1h cache-write
+requests from Fable 5. The resulting JSON contains the exact spend, the 5h/7d quota movement,
+the actually unavailable capabilities, and a model × tier ranking by the observed API-dollar
+equivalent per 1% of the 5-hour window.
 
-Это не frontend-тест и не расчёт по размеру prompt. Источники истины — backend `/capacity`,
-immutable `calibration_recent_turns` и provider quota snapshots. Aggregate
-`calibration_evidence` остаётся статистикой всей накопленной смеси, но не используется для
-атрибуции отдельного тестового запроса. `/capacity` разделяет два вида evidence: reset-bearing
-durable snapshots строят estimator/history, а свежая exact fraction без reset может определить
-только current remaining. Она не доказывает время следующего окна, поэтому horizon-поля остаются
-`null`, пока provider не вернёт настоящий reset.
+This is not a frontend test and not a calculation based on prompt size. The sources of truth
+are the backend `/capacity`, the immutable `calibration_recent_turns`, and provider quota
+snapshots. The aggregate `calibration_evidence` remains statistics of the entire accumulated
+mix, but it is not used to attribute an individual test request. `/capacity` separates two
+kinds of evidence: reset-bearing durable snapshots build the estimator/history, while a fresh
+exact fraction without a reset can determine only the current remaining. It does not prove the
+next window's time, so the horizon fields stay `null` until the provider returns a real reset.
 
-## Страховки
+## Safeguards
 
-- Без явного `--execute` скрипт завершится до любого live-запроса.
-- `--budget-usd` принимает не больше `40`; деньги переводятся в integer nanoUSD без float.
-- Перед каждым generation выполняется бесплатный `/v1/messages/count_tokens`. Anthropic отклоняет
-  server-side Web Search в этом endpoint, поэтому runner убирает только эту tool-схему из preflight,
-  а затем резервирует полный `max_input_tokens` этой модели из `/v1/models`: поисковая выдача
-  добавляется уже после preflight и тоже тарифицируется как input. Отсутствующий/противоречивый
-  model limit останавливает прогон. Worst-case отдельно включает полный cache miss нужного TTL,
-  весь `max_tokens` output и все разрешённые Web Search calls.
-- Guard проверяет свободный бюджет **каждой** healthy-подписки, а не только ожидаемого sticky home:
-  неожиданный affinity rebind не может перелить запрос на уже исчерпавший тестовый лимит аккаунт.
-- До generation runner запоминает все видимые immutable `request_id`. После ответа следующий запрос
-  запрещён, пока среди новых backend events не появится ровно один exact
-  `profile + model + tier + полный token vector`. Поэтому любой параллельный customer traffic,
-  включая ту же aggregate-строку, не меняет стоимость тестового turn. Два новых полностью
-  одинаковых события остаются честной неоднозначностью и останавливают прогон fail closed.
-- Rebind, cooling/dead, degraded/pending delivery или actual cost выше
-  preflight bound останавливают конкретную небезопасную ветку fail closed. Provider quota wall
-  выводит только соответствующую подписку из оставшейся нагрузки, не лишая данных другие профили.
-  Ожидаемый 400/403/429 первого Fast-запроса сохраняется как `unavailable_capabilities` и не
-  повторяется для остальных token legs той же model/profile пары. Отсутствие требуемого token class
-  не прерывает оставшуюся матрицу, но помечает leg как `coverage_ok=false`, а весь отчёт как incomplete.
-- Между turn одной подписки выдерживается 16 секунд — больше 15-секундного backend probe debounce.
-  Это даёт post-turn poll шанс связать exact spend с новой quota fraction.
-- Cache payload включает уникальный `run_id`: write/read одной пары делят один ключ, но новый
-  запуск не может принять ещё живой 5m/1h cache предыдущего прогона за собственный cache write.
-- Краткий transport failure до исполнения автоматически повторяется до трёх раз только для
-  read-only `/models`, `count_tokens` и `/capacity`. Платный `/messages` после SSH/HTTP transport
-  ambiguity не повторяется: runner останавливается, чтобы исключить двойной расход.
-- API key и panel/control key читаются только из env/remote shell и в отчёт не попадают. Email уже
-  приходит из `/capacity` в bounded mask без домена.
-- Production-режим отправляет generation через SSH прямо в стабильный loopback router с
-  forwarding-admin key, который раскрывается только внутри remote shell. Admin-only заголовок
-  адресует bounded четырёхсимвольный profile hint, вырезается до upstream и fail-closed при
-  коллизии. Поэтому normal customer routing/reserve не мешает измерить конкретную подписку, а
-  калибровочный запрос никогда не spill/rebind-ится на соседнюю.
+- Without an explicit `--execute` the script exits before any live request.
+- `--budget-usd` accepts no more than `40`; money amounts are converted to integer nanoUSD
+  without floats.
+- Before every generation a free `/v1/messages/count_tokens` is executed. Anthropic rejects
+  server-side Web Search in this endpoint, so the runner removes only that tool schema from
+  the preflight, and then reserves the model's full `max_input_tokens` from `/v1/models`:
+  search results are added after the preflight and are also metered as input. A missing or
+  contradictory model limit stops the run. The worst case separately includes a full cache
+  miss of the required TTL, the entire `max_tokens` output, and all permitted Web Search
+  calls.
+- The guard checks the free budget of **every** healthy subscription, not only the expected
+  sticky home: an unexpected affinity rebind cannot spill a request onto an account that has
+  already exhausted its test limit.
+- Before generation the runner records all visible immutable `request_id`s. After the
+  response, the next request is forbidden until exactly one exact
+  `profile + model + tier + full token vector` appears among the new backend events. Therefore
+  any parallel customer traffic, including traffic hitting the same aggregate row, does not
+  change the cost of the test turn. Two new fully identical events remain an honest ambiguity
+  and stop the run fail closed.
+- A rebind, cooling/dead, degraded/pending delivery, or an actual cost above the preflight
+  bound stops the specific unsafe branch fail closed. A provider quota wall removes only the
+  corresponding subscription from the remaining load, without depriving the other profiles of
+  data. An expected 400/403/429 of the first Fast request is recorded as
+  `unavailable_capabilities` and is not retried for the remaining token legs of the same
+  model/profile pair. A missing required token class does not interrupt the rest of the
+  matrix, but marks the leg as `coverage_ok=false` and the whole report as incomplete.
+- Between turns of one subscription a 16-second pause is kept — longer than the 15-second
+  backend probe debounce. This gives the post-turn poll a chance to tie the exact spend to the
+  new quota fraction.
+- The cache payload includes a unique `run_id`: the write/read of one pair share one key, but
+  a new run cannot mistake a still-live 5m/1h cache of a previous run for its own cache write.
+- A brief transport failure before execution is automatically retried up to three times only
+  for the read-only `/models`, `count_tokens`, and `/capacity`. A paid `/messages` is never
+  retried after an SSH/HTTP transport ambiguity: the runner stops to rule out a double charge.
+- The API key and the panel/control key are read only from env/remote shell and never appear
+  in the report. The email already arrives from `/capacity` in a bounded mask without the
+  domain.
+- Production mode sends generation over SSH directly to the stable loopback router with a
+  forwarding-admin key that is exposed only inside the remote shell. The admin-only header
+  addresses a bounded four-character profile hint, is stripped before the upstream, and is
+  fail-closed on collision. Therefore normal customer routing/reserve does not interfere with
+  measuring a specific subscription, and a calibration request never spills/rebinds onto a
+  neighbouring one.
 
-## Production-команда
+## Production command
 
-Control snapshot и live generation безопасно выполняются на production host: remote shell загружает
-`/srv/claude-api/data/server.env`; panel key используется только для JSON `/capacity`, а
-forwarding-admin key — только для loopback `/v1/*`. Ни один секрет через SSH не печатается и в
-локальный процесс не возвращается. `APITOKEN_API_KEY` нужен только для legacy/public режима без
-`--production-api-over-ssh`.
+The control snapshot and live generation are safely executed on the production host: the
+remote shell loads `/srv/claude-api/data/server.env`; the panel key is used only for the JSON
+`/capacity`, and the forwarding-admin key — only for loopback `/v1/*`. No secret is printed
+over SSH or returned to the local process. `APITOKEN_API_KEY` is needed only for the
+legacy/public mode without `--production-api-over-ssh`.
 
 ```bash
 python3 tools/claude_calibration/run_live.py \
@@ -72,49 +81,53 @@ python3 tools/claude_calibration/run_live.py \
   --report /tmp/claude-calibration-report.json
 ```
 
-Перед запуском обязательны зелёный production deploy и baseline:
+Before launching, a green production deploy and baseline are mandatory:
 
 - `calibration_delivery.pending_events=0`;
 - `calibration_delivery.dropped_events=0`;
 - `calibration_delivery.persistence_ok=true`;
-- хотя бы одна `per_sub` строка `routable=true`, без `dead`/`cooling`.
+- at least one `per_sub` row with `routable=true`, without `dead`/`cooling`.
 
-У каждой routable строки должен быть непустой paid plan. Backend сначала использует OAuth profile;
-для inference-only токена с 403 допускается только единогласный plan остальных подписок этого fleet.
-Если fleet смешанный или полностью не размечен, нагрузку не запускают до появления authoritative plan.
+Every routable row must have a non-empty paid plan. The backend uses the OAuth profile first;
+for an inference-only token with a 403, only the unanimous plan of the remaining subscriptions
+of that fleet is acceptable. If the fleet is mixed or entirely unlabelled, the load is not
+started until an authoritative plan appears.
 
-В production SSH-режиме runner создаёт отдельный `x-session-id` на каждую healthy подписку и
-проверяет первым микрозапросом, что admin-only exact target совпал с backend attribution. Target
-обходит только мягкий routing reserve; hard 100% provider cap, cooling и auth-dead остаются
-непроходимыми. В legacy/public режиме runner по-прежнему пытается разложить новые sessions обычным
-capacity placement. Если все homes получить не удалось, нагрузочная матрица не начинается.
+In production SSH mode the runner creates a separate `x-session-id` for every healthy
+subscription and verifies with a first micro-request that the admin-only exact target matched
+the backend attribution. The target bypasses only the soft routing reserve; the hard 100%
+provider cap, cooling, and auth-dead remain impassable. In legacy/public mode the runner still
+tries to place the new sessions via ordinary capacity placement. If not all homes could be
+obtained, the load matrix does not start.
 
-## Офлайн-проверка runner
+## Offline runner verification
 
 ```bash
 python3 -m unittest tools.claude_calibration.test_run_live
 ```
 
-Тесты покрывают budget/rebind guard, exact immutable-event attribution на фоне конкурентного
-traffic, fail-closed неоднозначность, целостность cost vector, все Claude token classes, tariff
-alias/ceiling, полный coverage plan и сортировку наблюдаемой profitability.
+The tests cover the budget/rebind guard, exact immutable-event attribution against competing
+traffic, fail-closed ambiguity, cost vector integrity, all Claude token classes, tariff
+alias/ceiling, the full coverage plan, and the sorting of observed profitability.
 
-## Как читать результат
+## How to read the result
 
-`spent_nano_per_profile` — только стоимость запросов этого запуска в official API equivalent.
-Она не равна списанию клиентского баланса: скидка/multiplier клиента здесь намеренно не участвует.
+`spent_nano_per_profile` — only the cost of this run's requests in official API equivalent.
+It does not equal the client balance charge: the client's discount/multiplier is deliberately
+not involved here.
 
-Каждая `records[]` строка содержит:
+Each `records[]` row contains:
 
-- requested/served model, tier и token leg;
-- exact usage и `actual_nano` из backend evidence;
-- count-tokens worst-case `upper_bound_nano`;
-- observed `fraction_delta_5h` и `fraction_delta_7d` до/после turn.
+- requested/served model, tier, and token leg;
+- exact usage and `actual_nano` from backend evidence;
+- the count-tokens worst-case `upper_bound_nano`;
+- the observed `fraction_delta_5h` and `fraction_delta_7d` before/after the turn.
 
-`model_profitability` сортируется по `api_nano_per_1pct_5h` убыванию. `null` означает не нулевую
-выгодность, а отсутствие различимого движения quota: провайдерская fraction грубее этого сегмента.
-`unavailable_capabilities` отделяет проверенную недоступность Fast на конкретном профиле от нулевого
-расхода, а `profile_stops` фиксирует настоящий provider quota wall/cooling без spill на соседа.
-Для коммерческого вывода сравниваются только строки с положительным наблюдённым delta и достаточным
-числом turn; full-window `final_capacity.window_totals` остаётся pooled realized-workload оценкой,
-а не универсальным номиналом подписки для любой будущей смеси.
+`model_profitability` is sorted by `api_nano_per_1pct_5h` descending. `null` does not mean
+zero profitability — it means no distinguishable quota movement: the provider fraction is
+coarser than this segment. `unavailable_capabilities` separates verified Fast unavailability
+on a specific profile from zero spend, and `profile_stops` records a real provider quota
+wall/cooling without spilling onto a neighbour. For a commercial conclusion, only rows with a
+positive observed delta and a sufficient number of turns are compared; the full-window
+`final_capacity.window_totals` remains a pooled realized-workload estimate, not a universal
+subscription nominal for any future mix.

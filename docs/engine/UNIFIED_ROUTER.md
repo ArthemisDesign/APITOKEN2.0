@@ -1,456 +1,497 @@
-# UNIFIED_ROUTER — единый endpoint для всех провайдеров (целевая архитектура)
+# UNIFIED_ROUTER — a single endpoint for all providers (target architecture)
 
-Статус: **этапы 1–5, фазы 6.1–6.3, policy/presets 6.4a–6.4b и telemetry/mock-load
-часть 6.4c реализованы при выключенном fallback.**
-`router.apitoken.sale` обслуживает весь публичный native-контракт через blue-green процессы
-`claude-router@8800/8801` за атомарно переключаемым Caddy backend, единый агрегированный каталог
-`GET /v1/models{,/{id}}` и universal Chat/Responses/Messages lanes с model-based
-dispatch на три плоскости. `/v1/messages/count_tokens` использует тот же dispatch.
-До полного OpenRouter-grade routing остаются post-deploy live canary и отдельный GA-флаг 6.4c. Документ фиксирует целевую
-картину, публичный контракт, инварианты и этапный план; каждый этап при реализации
-обновляет этот документ и смежные инструкции в том же коммите.
+Status: **stages 1–5, phases 6.1–6.3, policy/presets 6.4a–6.4b and the
+telemetry/mock-load part of 6.4c are implemented with fallback disabled.**
+`router.apitoken.sale` serves the entire public native contract through blue-green
+processes `claude-router@8800/8801` behind an atomically switched Caddy backend, the
+unified aggregated catalog `GET /v1/models{,/{id}}`, and universal
+Chat/Responses/Messages lanes with model-based dispatch to three planes.
+`/v1/messages/count_tokens` uses the same dispatch.
+What remains to reach full OpenRouter-grade routing is post-deploy live canary and a separate 6.4c GA flag. This document fixes the target
+picture, the public contract, the invariants, and the staged plan; each stage, when
+implemented, updates this document and the adjacent instructions in the same commit.
 
-## Контекст и цель
+## Context and goal
 
-Продуктовая цель — повторить модель OpenRouter (один аккаунт, один ключ, один баланс,
-единый каталог моделей нескольких провайдеров, pay-as-you-go), но **без потери качества
-для harness-агентов** (Claude Code, Codex, Gemini-клиенты). OpenRouter гонит все запросы
-через один OpenAI-совместимый формат и неизбежно обрезает провайдер-специфику
-(thinking signatures, Anthropic beta-поля, encrypted reasoning, stored responses). Наше
-отличие: тяжёлые harness'ы получают не перевод, а настоящий API провайдера.
+The product goal is to replicate the OpenRouter model (one account, one key, one
+balance, a unified catalog of models from multiple providers, pay-as-you-go), but
+**without losing quality for harness agents** (Claude Code, Codex, Gemini clients).
+OpenRouter pushes every request through a single OpenAI-compatible format and
+inevitably clips provider specifics (thinking signatures, Anthropic beta fields,
+encrypted reasoning, stored responses). Our difference: heavy harnesses get not a
+translation but the provider's real API.
 
-| | OpenRouter | Это решение |
+| | OpenRouter | This solution |
 |---|---|---|
-| Один ключ / баланс / каталог | да | да |
-| Универсальный OpenAI-compatible вход | да | да (universal lane) |
-| Нативная точность для Claude Code / Codex | нет, всё переводится | да (native lanes) |
-| Неподдерживаемые параметры | молча игнорирует | fail-closed `400 unsupported_parameter` |
-| Provider preferences / fallback | да | fallback 6.2 + durable fencing 6.3 + policy/preferences/presets 6.4b + telemetry/mock-load 6.4c готовы default-off; live canary и unit-флаг остаются |
+| One key / balance / catalog | yes | yes |
+| Universal OpenAI-compatible entry | yes | yes (universal lane) |
+| Native fidelity for Claude Code / Codex | no, everything is translated | yes (native lanes) |
+| Unsupported parameters | silently ignored | fail-closed `400 unsupported_parameter` |
+| Provider preferences / fallback | yes | fallback 6.2 + durable fencing 6.3 + policy/preferences/presets 6.4b + telemetry/mock-load 6.4c are ready default-off; live canary and the unit flag remain |
 
-Ключевой факт, делающий решение дешёвым: три provider-плоскости уже независимы на уровне
-процессов и уже делят один fenced PostgreSQL billing authority — ключи `sk-pool-…`
-работают на всех плоскостях (см. `docs/engine/ARCHITECTURE.md`,
+The key fact that makes the solution cheap: the three provider planes are already
+independent at the process level and already share one fenced PostgreSQL billing
+authority — `sk-pool-…` keys work on all planes (see `docs/engine/ARCHITECTURE.md`,
 `docs/engine/STAGE2_POSTGRES_AUTHORITY.md`).
 
-## Целевая архитектура
+## Target architecture
 
 ```
-                    router.apitoken.sale — новая единая точка входа
-                    (добавляется РЯДОМ; старые домены не отключаются,
-                     см. «Миграционная политика»)
+                    router.apitoken.sale — the new single entry point
+                    (added ALONGSIDE; the old domains are not disabled,
+                     see "Migration policy")
                                     |
                     +---------------+----------------+
                     |           ROUTER               |  stateless replicas
-                    |  auth passthrough · каталог    |
-                    |  route planner · IR-перевод    |
+                    |  auth passthrough · catalog    |
+                    |  route planner · IR translation|
                     +-------+---------------+--------+
                             |               |
               +-------------+--+   +--------+---------+
               |  NATIVE LANES  |   | UNIVERSAL LANE   |
-              | (точность 100%)|   | (охват клиентов) |
+              | (100% fidelity)|   | (client coverage)|
               +-------+--------+   +--------+---------+
-                      |                     | перевод через
+                      |                     | translation via
           +-----------+-----------+         | typed canonical IR
           v           v           v         v
-     Anthropic    OpenAI      Gemini   выбирает любую плоскость
-      plane        plane       plane     по model ID + policy
+     Anthropic    OpenAI      Gemini   selects any plane
+      plane        plane       plane     by model ID + policy
      8787/8788   8793/8797   8795/8799
           |           |           |
           +-----------+-----+-----+
                             v
-              BILLING CORE (единый, уже существует)
-     fenced PostgreSQL: ключи · reserve/settle · ledger ·
+              BILLING CORE (unified, already exists)
+     fenced PostgreSQL: keys · reserve/settle · ledger ·
      versioned pricing catalog · owner_epoch fencing
                             |
                             v
-              Пулы подписок за каждой плоскостью
-        (OAuth-конверты, cooling, affinity, blue-green)
+              Subscription pools behind each plane
+        (OAuth envelopes, cooling, affinity, blue-green)
 ```
 
 ### Native lane
 
-Входной протокол совпадает с backend — запрос идёт без трансляции, байт-в-байт по телу,
-SSE и provider-native errors. Router только авторизует (passthrough ключа), разрешает
-model ID и передаёт запрос в stable origin соответствующей плоскости. Это основной вход
-для harness-агентов и гарантия качества уровня протокола.
+The input protocol matches the backend — the request passes without translation,
+byte-for-byte in body, SSE, and provider-native errors. The router only authorizes
+(key passthrough), resolves the model ID, and forwards the request to the stable
+origin of the corresponding plane. This is the primary entry for harness agents and
+the guarantee of protocol-level quality.
 
 ### Universal lane
 
-Клиент, умеющий только OpenAI Chat Completions (Aider, Continue, Roo/Kilo, Hermes,
-большинство IDE-плагинов), шлёт в `/v1/chat/completions` любую модель из каталога.
-Router переводит через типизированный canonical Turn/Event IR в нативный протокол
-выбранной плоскости. IR обязан покрывать: system/developer messages, content blocks и
-изображения, tool calls и tool results, structured output, thinking/reasoning,
-prompt-cache boundaries, usage и canonical streaming events.
+A client that only speaks OpenAI Chat Completions (Aider, Continue, Roo/Kilo, Hermes,
+most IDE plugins) sends any model from the catalog to `/v1/chat/completions`. The
+router translates through a typed canonical Turn/Event IR into the native protocol of
+the selected plane. The IR must cover: system/developer messages, content blocks and
+images, tool calls and tool results, structured output, thinking/reasoning,
+prompt-cache boundaries, usage, and canonical streaming events.
 
-Контракт перевода — **строгий, fail-closed**:
+The translation contract is **strict, fail-closed**:
 
-- неподдерживаемая target-плоскостью capability → понятный `400 unsupported_parameter`,
-  никакого молчаливого выбрасывания `strict`, `thinking`, server tools, response schema;
+- a capability unsupported by the target plane → a clear `400 unsupported_parameter`;
+  never silently drop `strict`, `thinking`, server tools, or response schema;
 - opaque reasoning artifacts (Claude thinking signatures, OpenAI encrypted reasoning,
-  Gemini thought signatures) имеют provider provenance: возвращаются только тому же
-  провайдеру либо отклоняются; молчаливое удаление запрещено (ломает agent loop или
-  раскрывает внутреннее reasoning).
+  Gemini thought signatures) carry provider provenance: they are returned only to the
+  same provider or rejected; silent removal is forbidden (it breaks the agent loop or
+  leaks internal reasoning).
 
-## Публичный контракт
+## Public contract
 
-Один hostname; входной endpoint определяет wire-протокол и (на этапах 1a–1b) плоскость:
+One hostname; the input endpoint determines the wire protocol and (in stages 1a–1b)
+the plane:
 
 ```
 POST /v1/messages                                   Anthropic Messages (Claude Code)
-                                                    (этап 5.1 — + любая openai/* модель
-                                                    каталога через model-based dispatch
-                                                    в Anthropic Skin на Codex plane;
-                                                    этап 5.2 — + любая google/* модель
-                                                    каталога на Gemini plane)
-POST /v1/messages/count_tokens                    Anthropic token counting с model-based
-                                                  dispatch: native Anthropic, локальный
-                                                  подсчёт Codex или native Gemini
-                                                  `:countTokens` (этапы 5.1–5.2)
+                                                    (stage 5.1 — + any openai/* catalog
+                                                    model via model-based dispatch into
+                                                    the Anthropic Skin on Codex plane;
+                                                    stage 5.2 — + any google/* catalog
+                                                    model on Gemini plane)
+POST /v1/messages/count_tokens                    Anthropic token counting with
+                                                  model-based dispatch: native Anthropic,
+                                                  local Codex counting, or native Gemini
+                                                  `:countTokens` (stages 5.1–5.2)
 
-POST /v1/responses                                OpenAI Responses (этап 1a — только OpenAI
-                                                  plane, этап 4.1 — + любая Claude-модель
-                                                  каталога через model-based dispatch)
-POST /v1/responses/input_tokens                   OpenAI token counting (пока openai-only)
-GET  /v1/responses/{id}                           stored response — только openai/*
-GET  /v1/responses/{id}/input_items               (решение 5)
+POST /v1/responses                                OpenAI Responses (stage 1a — OpenAI
+                                                  plane only, stage 4.1 — + any Claude
+                                                  catalog model via model-based dispatch)
+POST /v1/responses/input_tokens                   OpenAI token counting (openai-only for now)
+GET  /v1/responses/{id}                           stored response — openai/* only
+GET  /v1/responses/{id}/input_items               (decision 5)
 
-POST /v1/chat/completions                         universal OpenAI-compatible вход
-                                                  (этап 1a — только OpenAI plane,
-                                                   этап 3.1 — + любая Claude-модель
-                                                   каталога через model-based dispatch,
-                                                   этап 3.3 — + Gemini-модели)
+POST /v1/chat/completions                         universal OpenAI-compatible entry
+                                                  (stage 1a — OpenAI plane only,
+                                                   stage 3.1 — + any Claude catalog model
+                                                   via model-based dispatch,
+                                                   stage 3.3 — + Gemini models)
 
-GET  /v1/models                                   единый агрегированный каталог (этап 1b)
+GET  /v1/models                                   unified aggregated catalog (stage 1b)
 GET  /v1/models/{id}
 
 GET  /v1beta/models                               Gemini native
 POST /v1beta/models/{id}:generateContent
-POST /v1beta/models/{id}:streamGenerateContent    (alt=sse и alt=json)
+POST /v1beta/models/{id}:streamGenerateContent    (alt=sse and alt=json)
 POST /v1beta/models/{id}:countTokens
 
 GET  /balance                                    bodyless shared-authority read: Anthropic →
-                                                  OpenAI → Gemini только после transport,
-                                                  response-header timeout или 5xx; 401 и любой
-                                                  non-5xx терминальны
+                                                  OpenAI → Gemini only after transport,
+                                                  response-header timeout, or 5xx; 401 and any
+                                                  non-5xx are terminal
 GET  /health, /live, /ready                       router-local process probes
 ```
 
-Четыре universal POST-пути (`chat/completions`, `responses`, `messages` и
-`messages/count_tokens`) принимают необязательное `models: [<id>, …]` как продолжение
-цепочки после обязательного `model`, strict OpenRouter-shaped `provider` preferences и
-reserved primary IDs `preset/auto|quality|fast|hermes`. Эти возможности активны только при
-`CLAUDE_ROUTER_FALLBACK_ENABLED=1`; default-off router возвращает lane-shaped `400` до
-обращения к catalog/policy/plane. Router раскрывает preset, делает один aggregate snapshot,
-canonical dedup, provider filters/order/reviewed sort, `allow_fallbacks`, затем engine-owned
-account-policy preflight; `models` и `provider` никогда не доходят до плоскости. Подробный
-контракт и retry matrix —
-`docs/engine/ROUTING_FENCING.md` §§3.3, 5.
+The four universal POST paths (`chat/completions`, `responses`, `messages`, and
+`messages/count_tokens`) accept an optional `models: [<id>, …]` as a continuation
+chain after the mandatory `model`, strict OpenRouter-shaped `provider` preferences,
+and reserved primary IDs `preset/auto|quality|fast|hermes`. These capabilities are
+active only with `CLAUDE_ROUTER_FALLBACK_ENABLED=1`; a default-off router returns a
+lane-shaped `400` before touching catalog/policy/plane. The router expands the
+preset, takes one aggregate snapshot, does canonical dedup, provider
+filters/order/reviewed sort, `allow_fallbacks`, then an engine-owned account-policy
+preflight; `models` and `provider` never reach the plane. The detailed contract and
+retry matrix are in `docs/engine/ROUTING_FENCING.md` §§3.3, 5.
 
-Префикс `/api/v1` (OpenRouter-совместимые пути) в MVP **не** добавляется: Cline, Codex и
-большинство custom-provider конфигураций принимают свой Base URL. Он понадобится, только
-если появятся клиенты, жёстко привязанные к OpenRouter path.
+The `/api/v1` prefix (OpenRouter-compatible paths) is **not** added in the MVP:
+Cline, Codex, and most custom-provider configurations accept their own Base URL. It
+will be needed only if clients hard-bound to the OpenRouter path appear.
 
-## Совместимость с harness-агентами
+## Harness-agent compatibility
 
-| Harness | Нужный контракт | Вход |
+| Harness | Required contract | Entry |
 |---|---|---|
-| Claude Code | Anthropic Messages, SSE, открытые beta/header/body lists | native Anthropic lane; Anthropic Skin (этап 5) для non-Claude моделей |
-| Codex | Responses API; custom provider поддерживает только `wire_api="responses"` | native OpenAI lane; chat-only прокси недостаточен |
-| OpenCode | OpenRouter preset либо custom AI SDK / OpenAI-compatible provider | universal lane, namespaced model IDs |
-| Cline | OpenRouter с custom Base URL, OpenAI Compatible или Anthropic с custom Base URL; custom headers для GPT Fast | universal lane либо native Messages для Claude |
-| Hermes | OpenRouter / custom providers; routing, fallback, auxiliary models; контекст ≥ 64K (меньшие окна отклоняются на старте) | universal lane; preset на router, каталог для preset — только модели ≥ 64K |
-| Aider, Continue, Roo/Kilo, большинство IDE agents | OpenAI Chat Completions | universal lane |
-| Native SDKs | Messages / Responses / Gemini Developer API | соответствующий native lane |
+| Claude Code | Anthropic Messages, SSE, open beta/header/body lists | native Anthropic lane; Anthropic Skin (stage 5) for non-Claude models |
+| Codex | Responses API; custom provider supports only `wire_api="responses"` | native OpenAI lane; a chat-only proxy is insufficient |
+| OpenCode | OpenRouter preset or custom AI SDK / OpenAI-compatible provider | universal lane, namespaced model IDs |
+| Cline | OpenRouter with custom Base URL, OpenAI Compatible, or Anthropic with custom Base URL; custom headers for GPT Fast | universal lane or native Messages for Claude |
+| Hermes | OpenRouter / custom providers; routing, fallback, auxiliary models; context ≥ 64K (smaller windows are rejected at startup) | universal lane; preset on the router, preset catalog — models ≥ 64K only |
+| Aider, Continue, Roo/Kilo, most IDE agents | OpenAI Chat Completions | universal lane |
+| Native SDKs | Messages / Responses / Gemini Developer API | the corresponding native lane |
 
-Проверенная OpenAI-compatible выборка покрывает два разных класса клиентов. OpenCode 1.18.11
-(`@ai-sdk/openai-compatible` 2.0.41), Kilo 7.4.17 (2.0.48), Cline 3.0.49 (2.0.63) и Roo Code
-3.54.0 (2.0.28) используют один AI SDK transport; его неизвестные model options идут в JSON
-verbatim. Continue 1.5.47, Hermes 0.19.1 (OpenAI Python SDK 2.24.0) и Aider 0.86.2 (LiteLLM)
-проверяют независимые OpenAI-compatible реализации. Codex, Claude Code и Gemini CLI в этой же
-матрице намеренно используют native Responses, Messages и Gemini Developer API, а не Chat skin.
+The verified OpenAI-compatible sample covers two different client classes. OpenCode
+1.18.11 (`@ai-sdk/openai-compatible` 2.0.41), Kilo 7.4.17 (2.0.48), Cline 3.0.49
+(2.0.63), and Roo Code 3.54.0 (2.0.28) use a single AI SDK transport; its unknown
+model options go into the JSON verbatim. Continue 1.5.47, Hermes 0.19.1 (OpenAI
+Python SDK 2.24.0), and Aider 0.86.2 (LiteLLM) verify independent OpenAI-compatible
+implementations. Codex, Claude Code, and Gemini CLI in this same matrix deliberately
+use native Responses, Messages, and Gemini Developer API rather than the Chat skin.
 
-Контролируемая production-матрица реальных harness-клиентов запускается только вручную
-(каждая успешная генерация платная):
+The controlled production matrix of real harness clients is launched manually only
+(every successful generation is billed):
 
 ```bash
 APITOKEN_API_KEY=... bash tests/router_harness_live_matrix.sh
 ```
 
-Скрипт поднимает loopback evidence-proxy для каждого кейса: реальный ключ получает только proxy
-через env и сразу удаляет его из своего environment; Cline, Continue, OpenCode, Kilo, Codex,
-Claude Code, Gemini CLI, Hermes и Aider видят только placeholder. Evidence-файлы содержат только
-mode-0600 metadata: endpoint, protocol, model, status, request/response tier и SSE/control types;
-credential/general-header values, prompt, tool arguments и generated content в evidence не пишутся.
-Временное состояние каждого клиента изолировано в одноразовом temp-root и удаляется trap'ом. Для
-точечного перезапуска можно передать список меток через
-`APITOKEN_HARNESS_CASES=cline-fast,codex-fast`. Ретраи самого harness разрешены, но каждая принятая
-исполнимая попытка обязана дать HTTP 200 с ожидаемым tier; для Fast нужен авторитетный response
-`service_tier=priority`. Claude Code дополнительно доказывает полный Messages SSE lifecycle и
-текущие structured-output/context/cache controls; Codex — Responses lifecycle и текущие tool forms;
-Gemini CLI — native `streamGenerateContent`. Отдельный `opencode-gemini-tools` запускает OpenCode
-без пользовательских plugins/sanitizer, требует реальный bash-вызов и второй Chat turn, а bounded
-evidence подтверждает сырой AI SDK `$schema`/exclusive bounds, tool-call ответа и replay tool history.
-`opencode-claude-native` тем же чистым provider-конфигом без plugins запускает основной Claude 4.6
-и штатный title-agent на Claude 4.5; evidence требует оба HTTP 200 и подтверждает, что сырой
-`reasoning_effort: low` title-запрос дошёл до router без клиентского rewrite.
-`opencode-claude-effort-xhigh` и `opencode-claude-effort-max` отдельно запускают Opus 5 без
-пользовательского plugin/request rewrite через реальные `--variant xhigh|max`; evidence требует
-HTTP 200 и подтверждает сырой `reasoning_effort` каждого уровня на router ingress.
-`opencode-fast` и `kilo-fast` работают без plugin/request rewrite: конфиг объявляет отдельную
-Fast-модель с исходным API model ID и обычной для models.dev-style конфигов option
-`serviceTier:"priority"`. AI SDK передаёт неизвестную option в JSON verbatim; router принимает
-этот bounded camelCase alias на GPT Chat/Responses, снимает его и передаёт Codex plane canonical
-`service_tier:"priority"`. Evidence требует именно сырой ingress `serviceTier`, отсутствие
-клиентского canonical body и авторитетный response `usage.service_tier:"priority"`; OpenCode
-дополнительно проверяет reasoning variant `low`. Так исправляется общий transport-класс, а не
-конкретный пользовательский конфиг OpenCode. Cline и Continue проверяют header selector, Aider и
-Codex — canonical snake_case body. Hermes Fast проверяется через документированный
-`providers.<name>.extra_body.service_tier`: в Hermes 0.19.1 интерактивный `/fast` поддержан, но
-отдельный `--oneshot` path не передаёт `agent.service_tier` в создаваемый `AIAgent`, поэтому
-headless matrix не приписывает роутеру потерянную клиентом option и использует его native
-custom-provider body contract.
+The script brings up a loopback evidence proxy for each case: the real key is given
+only to the proxy via env and is immediately removed from its own environment; Cline,
+Continue, OpenCode, Kilo, Codex, Claude Code, Gemini CLI, Hermes, and Aider see only
+a placeholder. Evidence files contain only mode-0600 metadata: endpoint, protocol,
+model, status, request/response tier, and SSE/control types; credential/general-header
+values, prompts, tool arguments, and generated content are never written to evidence.
+Each client's transient state is isolated in a single-use temp-root and removed by a
+trap. For a targeted rerun, pass a list of labels via
+`APITOKEN_HARNESS_CASES=cline-fast,codex-fast`. Harness-internal retries are allowed,
+but every accepted executable attempt must yield HTTP 200 with the expected tier; Fast
+requires an authoritative response `service_tier=priority`. Claude Code additionally
+proves the full Messages SSE lifecycle and the current
+structured-output/context/cache controls; Codex — the Responses lifecycle and current
+tool forms; Gemini CLI — native `streamGenerateContent`. A separate
+`opencode-gemini-tools` case runs OpenCode without user plugins/sanitizer, requires a
+real bash call and a second Chat turn, and bounded evidence confirms the raw AI SDK
+`$schema`/exclusive bounds, the tool-call response, and the replayed tool history.
+`opencode-claude-native`, with the same clean provider config without plugins, runs
+the main Claude 4.6 and the stock title agent on Claude 4.5; evidence requires both
+HTTP 200 and confirms that the raw `reasoning_effort: low` title request reached the
+router without client-side rewrite.
+`opencode-claude-effort-xhigh` and `opencode-claude-effort-max` separately run Opus 5
+without user plugin/request rewrite via real `--variant xhigh|max`; evidence requires
+HTTP 200 and confirms the raw `reasoning_effort` of each level at router ingress.
+`opencode-fast` and `kilo-fast` run without plugin/request rewrite: the config
+declares a separate Fast model with the original API model ID and the
+models.dev-style option `serviceTier:"priority"` customary for such configs. The AI
+SDK passes the unknown option into the JSON verbatim; the router accepts this bounded
+camelCase alias on GPT Chat/Responses, strips it, and passes the Codex plane the
+canonical `service_tier:"priority"`. Evidence requires exactly the raw ingress
+`serviceTier`, the absence of a client-side canonical body, and an authoritative
+response `usage.service_tier:"priority"`; OpenCode additionally verifies the `low`
+reasoning variant. This fixes a whole transport class rather than one specific
+OpenCode user config. Cline and Continue verify the header selector, Aider and Codex
+— the canonical snake_case body. Hermes Fast is verified through the documented
+`providers.<name>.extra_body.service_tier`: in Hermes 0.19.1 the interactive `/fast`
+is supported, but the separate `--oneshot` path does not pass `agent.service_tier` to
+the created `AIAgent`, so the headless matrix does not attribute to the router an
+option the client lost and uses its native custom-provider body contract.
 
-OpenCode не выводит произвольные поля OpenAI `/v1/models` напрямую в свой внутренний model schema:
-канонический config-plugin `packages/opencode-router-plugin/apitoken-router.js` преобразует
-`data[].apitoken.pricing.standard` в штатный
-`model.cost`, разделив exact nanoUSD/M на `1e9` до требуемого OpenCode числа USD/M. Синтетическая
-GPT Fast-модель с исходным API ID использует `pricing.priority`; Standard — `pricing.standard`.
-Такой discovery обязан выполняться синхронно с credential текущего запуска: общий файловый cache
-допустим только для capability metadata без цен, но не для полного key-scoped ответа.
+OpenCode does not project arbitrary fields of the OpenAI `/v1/models` response
+directly into its internal model schema: the canonical config-plugin
+`packages/opencode-router-plugin/apitoken-router.js` converts
+`data[].apitoken.pricing.standard` into the stock `model.cost` by dividing the exact
+nanoUSD/M by `1e9` to the USD/M number OpenCode requires. The synthetic GPT Fast model
+with the original API ID uses `pricing.priority`; Standard uses `pricing.standard`.
+Such discovery must run synchronously with the credential of the current launch: a
+shared file cache is acceptable only for pricing-free capability metadata, not for
+the full key-scoped response.
 
-Plugin всегда сначала запрашивает live-каталог. Его last-good fallback сохраняет только строгий
-белый список model ID/name, limits, reasoning efforts и service tiers: AES-256-GCM snapshot
-криптографически привязан к точной паре credential/base URL, записывается атомарно с mode `0600`,
-имеет schema guard, freshness TTL 15 минут и maximum stale age 7 дней. Другой ключ/URL,
-неизвестная версия, неправильные permissions, повреждение и expiry отклоняются fail-closed. При
-fallback каждая модель явно получает suffix `[stale metadata; pricing unavailable]`, warning
-содержит время снимка, а `cost` полностью отсутствует до следующего успешного live discovery.
-Таким образом, краткий catalog outage не оставляет OpenCode без моделей и одновременно не может
-показать ставку другого ключа или устаревшую персональную цену. Контракт и crypto/negative tests
-живут рядом с plugin в `packages/opencode-router-plugin`.
-Plugin entrypoint имеет только один ESM export — default factory: OpenCode 1.18.11 интерпретирует
-каждый export файла как отдельный plugin и отклоняет named constants/helpers с
-`Plugin export is not a function`. Exact export shape закреплён unit-тестом и клиентским smoke.
+The plugin always requests the live catalog first. Its last-good fallback stores only
+a strict whitelist of model ID/name, limits, reasoning efforts, and service tiers:
+the AES-256-GCM snapshot is cryptographically bound to the exact credential/base URL
+pair, is written atomically with mode `0600`, has a schema guard, a 15-minute
+freshness TTL, and a 7-day maximum stale age. A different key/URL, an unknown
+version, wrong permissions, corruption, and expiry are rejected fail-closed. On
+fallback every model explicitly gets the suffix `[stale metadata; pricing
+unavailable]`, the warning contains the snapshot time, and `cost` is entirely absent
+until the next successful live discovery. This way a brief catalog outage neither
+leaves OpenCode without models nor can show another key's rate or a stale personal
+price. The contract and crypto/negative tests live next to the plugin in
+`packages/opencode-router-plugin`.
+The plugin entrypoint has exactly one ESM export — a default factory: OpenCode
+1.18.11 interprets every export of the file as a separate plugin and rejects named
+constants/helpers with `Plugin export is not a function`. The exact export shape is
+pinned by a unit test and a client smoke.
 
-Generated-image capability намеренно не рекламируется в OpenCode model schema. Provider пакета
-использует `@ai-sdk/openai-compatible` 2.0.41: его Chat decoder принимает
-`message.content` только как string/null и не потребляет нативный Gemini `inlineData` или
-OpenRouter-style image metadata. Поэтому даже image-model получает
-`modalities.output:["text"]`, иначе UI обещал бы результат, который transport отбросит. Это не
-отключает генерацию изображений в gateway: `google/gemini-3.1-flash-image` продолжает работать
-через нативный Gemini `generateContent`/`streamGenerateContent`, возвращая
-`candidates[].content.parts[].inlineData` с обычным authoritative settlement.
+The generated-image capability is deliberately not advertised in the OpenCode model
+schema. The package provider uses `@ai-sdk/openai-compatible` 2.0.41: its Chat
+decoder accepts `message.content` only as string/null and does not consume native
+Gemini `inlineData` or OpenRouter-style image metadata. Therefore even an image model
+gets `modalities.output:["text"]`, otherwise the UI would promise a result the
+transport will drop. This does not disable image generation in the gateway:
+`google/gemini-3.1-flash-image` keeps working through native Gemini
+`generateContent`/`streamGenerateContent`, returning
+`candidates[].content.parts[].inlineData` with the usual authoritative settlement.
 
-После live discovery
-OpenCode сам считает стоимость сообщения по input/output/reasoning/cache token usage; отдельный
-`usage.cost` от router не требуется. Его custom-provider schema умеет отдельный
-`context_over_200k`, поэтому plugin заполняет его только при exact provider threshold 200000;
-произвольный GPT threshold 272000 и отдельный Anthropic cache-write 1h штатная cost schema
-OpenCode 1.18.11 не выражает, но router сохраняет их в `apitoken.pricing.long_context` и
-`cache_write_1h` для клиентов с более точной моделью тарификации.
+After live discovery
+OpenCode itself computes message cost from input/output/reasoning/cache token usage;
+a separate `usage.cost` from the router is not required. Its custom-provider schema
+supports a separate `context_over_200k`, so the plugin fills it only at the exact
+provider threshold of 200000; the arbitrary GPT threshold 272000 and the separate
+Anthropic cache-write 1h are not expressible in the stock OpenCode 1.18.11 cost
+schema, but the router keeps them in `apitoken.pricing.long_context` and
+`cache_write_1h` for clients with a more precise metering model.
 
-Контрольный прогон 2026-08-02 зелёный на Cline 3.0.49, Continue CLI 1.5.47, OpenCode 1.18.11,
-Kilo 7.4.17, Codex CLI 0.146.0, Claude Code 2.1.220, Gemini CLI 0.53.1, Hermes 0.19.1 и Aider
-0.86.2: базовые 19 executable кейсов зелёные, включая настоящий многоходовый OpenCode→Gemini
-bash tool cycle и чистый OpenCode Claude main/title cycle без request rewrite. Текущая матрица
-содержит 21 executable кейс после добавления двух Opus 5 effort-cases (Gemini CLI — Standard
-native; остальные обычные harness — оба tier).
-Roo Code 3.54.0 установлен и имеет совместимые OpenAI base URL/model/service-tier settings, но у
-расширения нет официального headless CLI, поэтому оно честно отмечено `SKIP`, а не имитируется
-через другой клиент.
+The control run of 2026-08-02 is green on Cline 3.0.49, Continue CLI 1.5.47, OpenCode
+1.18.11, Kilo 7.4.17, Codex CLI 0.146.0, Claude Code 2.1.220, Gemini CLI 0.53.1,
+Hermes 0.19.1, and Aider 0.86.2: the base 19 executable cases are green, including a
+real multi-turn OpenCode→Gemini bash tool cycle and a clean OpenCode Claude
+main/title cycle without request rewrite. The current matrix contains 21 executable
+cases after adding two Opus 5 effort cases (Gemini CLI — Standard native; the
+remaining regular harnesses — both tiers).
+Roo Code 3.54.0 is installed and has compatible OpenAI base URL/model/service-tier
+settings, but the extension has no official headless CLI, so it is honestly marked
+`SKIP` rather than simulated through another client.
 
-Критические требования Claude Code (контракт native Anthropic lane):
+Critical Claude Code requirements (native Anthropic lane contract):
 
-- не буферизовать SSE — буферизация полного ответа останавливает клиент;
-- сохранять `/v1/messages?beta=true` и передавать `anthropic-beta` / `anthropic-version`
-  в плоскость verbatim;
-- headers и body fields — открытые списки: неизвестные поля проксируются, а не
-  отклоняются и не выбрасываются;
-- native Anthropic errors не оборачивать: Claude Code иногда восстанавливается по тексту
-  ошибки;
-- `GET /v1/models?limit=1000` — без redirect и быстрее трёх секунд;
-- Claude Code игнорирует discovery-ID, не начинающиеся с `claude` или `anthropic`
-  (поэтому `anthropic/claude-*` совместим); `/v1/messages/count_tokens` опционален —
-  без него клиент считает контекст локально; model discovery выключен по умолчанию и
-  требует `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` (Claude Code v2.1.129+).
+- do not buffer SSE — buffering the full response stalls the client;
+- preserve `/v1/messages?beta=true` and pass `anthropic-beta` / `anthropic-version`
+  to the plane verbatim;
+- headers and body fields are open lists: unknown fields are proxied, not rejected
+  and not dropped;
+- do not wrap native Anthropic errors: Claude Code sometimes recovers based on the
+  error text;
+- `GET /v1/models?limit=1000` — no redirects and faster than three seconds;
+- Claude Code ignores discovery IDs that do not start with `claude` or `anthropic`
+  (therefore `anthropic/claude-*` is compatible); `/v1/messages/count_tokens` is
+  optional — without it the client counts context locally; model discovery is off by
+  default and requires `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` (Claude Code
+  v2.1.129+).
 
-Codex: требуется полноценный Responses API, а не адаптация Chat Completions — custom
-provider поддерживает только `wire_api="responses"` (это дефолт при omitted). Codex 0.146
-передаёт function, Lark custom и client-executed `tool_search` в top-level `tools`; Codex plane
-принимает эти формы тем же bounded parser, что legacy `additional_tools`, и возвращает client tool
-calls без исполнения на gateway. Hosted `web_search` не является client tool и fail-closed
-отклоняется, поэтому изолированный custom-provider профиль harness отключает его явно.
+Codex: a full Responses API is required, not an adaptation of Chat Completions —
+custom provider supports only `wire_api="responses"` (this is the default when
+omitted). Codex 0.146 passes function, Lark custom, and client-executed `tool_search`
+in top-level `tools`; the Codex plane accepts these forms with the same bounded
+parser as legacy `additional_tools` and returns client tool calls without executing
+them on the gateway. Hosted `web_search` is not a client tool and is rejected
+fail-closed, so the harness's isolated custom-provider profile disables it
+explicitly.
 
-Namespaced ID из агрегированного каталога — исполнимый контракт, а не только discovery metadata:
-router сохраняет universal request body, поэтому каждая плоскость снимает свой префикс до
-admission (`anthropic/`, `openai/`, `google/`). Для GPT Fast на Responses и Chat canonical-контракт
-использует `service_tier: "fast"|"priority"`; совместимый models.dev/AI SDK alias
-`serviceTier: "fast"|"priority"` router принимает только здесь и нормализует в canonical body.
-Anthropic Messages harness может отправить нативный
-`speed: "fast"`, а `service_tier: "fast"|"priority"` принимается как совместимый alias. Все
-варианты нормализуются в effective `priority`, который определяет reserve, settlement и публичный
-`usage.service_tier`. `GET /v1/models` по Codex `originator`/User-Agent после обычной проверки ключа
-возвращает backend-native overlay `{models: []}`: Codex объединяет его со встроенным каталогом;
-обычные OpenAI/OpenRouter SDK по-прежнему получают агрегированный `{object:"list",data:[…]}`.
+Namespaced IDs from the aggregated catalog are an executable contract, not just
+discovery metadata: the router preserves the universal request body, so each plane
+strips its own prefix before admission (`anthropic/`, `openai/`, `google/`). For GPT
+Fast on Responses and Chat, the canonical contract uses `service_tier:
+"fast"|"priority"`; the compatible models.dev/AI SDK alias `serviceTier:
+"fast"|"priority"` is accepted by the router only here and normalized into the
+canonical body. An Anthropic Messages harness may send native `speed: "fast"`, while
+`service_tier: "fast"|"priority"` is accepted as a compatible alias. All variants
+normalize to the effective `priority`, which determines reserve, settlement, and the
+public `usage.service_tier`. `GET /v1/models`, after the usual key check, returns the
+backend-native overlay `{models: []}` for the Codex `originator`/User-Agent: Codex
+merges it with the built-in catalog; regular OpenAI/OpenRouter SDKs still receive the
+aggregated `{object:"list",data:[…]}`.
 
-Harness, который умеет задавать custom headers, но не произвольные body fields (в частности,
-Cline), выбирает GPT Fast заголовком `x-apitoken-service-tier: fast` (alias `priority` также
-принимается). Router разрешает его на исполняемых GPT-запросах Chat, Responses и Messages,
-нормализует в body `service_tier:"priority"` до admission и всегда снимает сам заголовок перед
-плоскостью. CamelCase body alias `serviceTier` обслуживает harness'ы на
-`@ai-sdk/openai-compatible`, которые сериализуют models.dev-style options verbatim; он разрешён
-только на Chat/Responses. Для обоих alias модель сначала разрешается каталогом; явная
-fallback-цепочка обязана целиком состоять из `openai/*` моделей. `messages/count_tokens`,
-`serviceTier` на Messages, non-GPT модель, повторный/невалидный заголовок и противоречащие
-`serviceTier`/`service_tier` либо Messages `speed` получают lane-shaped `400` до billable-вызова.
-Отсутствующее canonical body-поле и эквивалентные `fast`/`priority` совместимы; в плоскость всегда
-уходит `service_tier:"priority"`, camelCase alias и capability-header снимаются. Reserve,
-settlement и effective-tier evidence по-прежнему принадлежат Codex plane — router только
-адаптирует клиентский ввод.
+A harness that can set custom headers but not arbitrary body fields (in particular,
+Cline) selects GPT Fast with the `x-apitoken-service-tier: fast` header (the
+`priority` alias is also accepted). The router allows it on executable GPT requests
+of Chat, Responses, and Messages, normalizes it into the body
+`service_tier:"priority"` before admission, and always strips the header itself
+before the plane. The camelCase body alias `serviceTier` serves harnesses on
+`@ai-sdk/openai-compatible`, which serialize models.dev-style options verbatim; it is
+allowed only on Chat/Responses. For both aliases the model is resolved by the catalog
+first; an explicit fallback chain must consist entirely of `openai/*` models.
+`messages/count_tokens`, `serviceTier` on Messages, a non-GPT model, a
+repeated/invalid header, and contradictory `serviceTier`/`service_tier` or Messages
+`speed` get a lane-shaped `400` before any billable call. A missing canonical body
+field and equivalent `fast`/`priority` are compatible; the plane always receives
+`service_tier:"priority"`, and the camelCase alias and the capability header are
+stripped. Reserve, settlement, and effective-tier evidence still belong to the Codex
+plane — the router only adapts client input.
 
-## Инварианты
+## Invariants
 
-1. **Биллинг только в provider-плоскости.** Router не резервирует и не списывает деньги.
-   Ключ клиента передаётся в плоскость verbatim; `request_id`, reserve → delivering →
-   settle и exactly-once ledger остаются ответственностью плоскости
-   (`docs/engine/STAGE2_POSTGRES_AUTHORITY.md`). Двойное списание исключено конструктивно.
-2. **Router не ретраит неоднозначный исход, который мог дойти до плоскости.** Повтор по timeout после
-   отправки запроса создал бы новый `request_id` и второе списание: backend мог выполнить
-   запрос и settle, даже если router ответа не получил. Следующая модель явной fallback-
-   цепочки допустима только после доказанного TCP ConnectionRefused либо точного не-2xx
-   `x-apitoken-execution-state: not_started`, которым плоскость гарантирует отсутствие
-   charge. 401/402 и клиентские 4xx не ретраятся; signed 429 — capacity-исключение.
-   Подробности — «Семантика fallback».
-3. **Никаких общих execution-очередей, semaphore и circuit breaker в router.** Concurrency limits,
-   breaker и cooling живут в плоскостях (процессная изоляция, см.
-   `docs/engine/ARCHITECTURE.md`). Router не добавляет глобальный лимит — иначе
-   перегруженная плоскость съест capacity остальных. Readiness router никогда не является
-   конъюнкцией health всех плоскостей; синхронных health-check'ов на пути запроса нет. Единственное
-   исключение — fail-fast 64 MiB memory admission для materialized universal request bodies:
-   известный размер округляется вверх с шагом 1 MiB, неизвестный/chunked начинается с одного unit
-   и fail-fast добирает units по фактически прочитанным байтам. Admission не ждёт в очереди,
-   ограничен 15-секундным idle и 5-минутным абсолютным body-read deadline и не удерживает
+1. **Billing lives only in the provider plane.** The router neither reserves nor
+   charges money. The client's key is passed to the plane verbatim; `request_id`,
+   reserve → delivering → settle, and the exactly-once ledger remain the plane's
+   responsibility (`docs/engine/STAGE2_POSTGRES_AUTHORITY.md`). Double charging is
+   ruled out by construction.
+2. **The router never retries an ambiguous outcome that may have reached the plane.**
+   Repeating after a timeout once the request was sent would create a new
+   `request_id` and a second charge: the backend may have executed the request and
+   settled even if the router never received the response. Continuing to the next
+   model of an explicit fallback chain is allowed only after a proven TCP
+   ConnectionRefused or an exact non-2xx `x-apitoken-execution-state: not_started`,
+   with which the plane guarantees the absence of a charge. 401/402 and client 4xx
+   are not retried; signed 429 is the capacity exception. Details — "Fallback
+   semantics".
+3. **No shared execution queues, semaphores, or circuit breakers in the router.**
+   Concurrency limits, breakers, and cooling live in the planes (process isolation,
+   see `docs/engine/ARCHITECTURE.md`). The router adds no global limit — otherwise an
+   overloaded plane would eat the capacity of the others. Router readiness is never a
+   conjunction of all planes' health; there are no synchronous health checks on the
+   request path. The single exception is the fail-fast 64 MiB memory admission for
+   materialized universal request bodies: a known size is rounded up in 1 MiB steps;
+   an unknown/chunked size starts with one unit and fail-fast acquires more units as
+   bytes are actually read. Admission never waits in a queue, is bounded by a
+   15-second idle and a 5-minute absolute body-read deadline, and does not hold the
    native/SSE response body.
-   Single-model path освобождает permit после outbound upload; advanced fallback удерживает его до
-   terminal response headers, пока parsed template ещё нужен для следующей попытки. Data-plane
-   не имеет router-owned response-header deadline: non-stream Chat/Responses/Messages плоскость
-   может вернуть заголовки только после законного завершения длинной генерации. Lifetime после
-   connect определяют клиентский disconnect и плоскость; двухсекундный header deadline существует
-   только у безопасного read-only `/balance` failover.
-4. **SSE не буферизуется** ни в router, ни в Caddy перед ним (требование Claude Code
-   gateway protocol). Disconnect клиента транзитивно рвёт соединение router→плоскость,
-   чтобы существующий TeeMeter drain дочитывал authoritative usage и settle корректно.
-5. **Деньги — только integer** (bigint / nanoUSD-строки) во всех новых поверхностях.
-6. **Старые per-provider домены** (`api.`, `openai.api.`, `gemini.api.apitoken.sale`)
-   остаются полноценными production-входами на весь период миграции — не «аварийными
-   запасными», а действующими endpoint'ами активных клиентов. Их контракт, поведение и
-   SLA не меняются; см. «Миграционная политика».
-7. **Router — отдельный bounded context** (`crates/router`), общается с плоскостями
-   только по HTTP, не импортирует `pool`/`forward`. Control API — loopback-only
-   управление аккаунтами/прайсингом; в data-plane router'а он не участвует.
+   The single-model path releases the permit after the outbound upload; advanced
+   fallback holds it until terminal response headers, while the parsed template is
+   still needed for the next attempt. The data plane has no router-owned
+   response-header deadline: a non-stream Chat/Responses/Messages plane may return
+   headers only after a long generation legitimately completes. Lifetime after
+   connect is governed by client disconnect and the plane; the two-second header
+   deadline exists only on the safe read-only `/balance` failover.
+4. **SSE is never buffered**, neither in the router nor in the Caddy in front of it
+   (a Claude Code gateway protocol requirement). A client disconnect transitively
+   tears down the router→plane connection so the existing TeeMeter drain can finish
+   reading authoritative usage and settle correctly.
+5. **Money is integer-only** (bigint / nanoUSD strings) on all new surfaces.
+6. **The old per-provider domains** (`api.`, `openai.api.`, `gemini.api.apitoken.sale`)
+   remain full production entries for the entire migration period — not "emergency
+   fallbacks" but live endpoints of active clients. Their contract, behavior, and SLA
+   do not change; see "Migration policy".
+7. **The router is a separate bounded context** (`crates/router`), talks to the
+   planes only over HTTP, and does not import `pool`/`forward`. The Control API is
+   loopback-only account/pricing management; it does not participate in the router's
+   data plane.
 
-### Ранний auth и граница памяти request body
+### Early auth and the request-body memory boundary
 
-Universal model dispatch обязан прочитать JSON request body ради `model`, но не имеет права
-материализовать до 32 MiB от неавторизованного клиента. Producer-first контракт на каждой fixed
-plane — bodyless `POST /internal/router/auth/preflight`: forwarding-admin проверяется тем же
-in-memory `authed`, customer credential — тем же active-key `AsyncBilling` resolver, что live
-admission. Endpoint read-only, не читает prompt, не резервирует и не списывает деньги, не читает
-pricing policy и возвращает только:
+Universal model dispatch must read the JSON request body for `model`, but has no
+right to materialize up to 32 MiB from an unauthenticated client. The producer-first
+contract on each fixed plane is a bodyless `POST /internal/router/auth/preflight`:
+the forwarding admin is checked with the same in-memory `authed`, a customer
+credential with the same active-key `AsyncBilling` resolver as live admission. The
+endpoint is read-only, does not read the prompt, neither reserves nor charges money,
+does not read pricing policy, and returns only:
 
 - `200 {"schema_version":1,"authenticated":true}`;
-- `401 unauthorized` для отсутствующего, неизвестного или неактивного credential;
-- `503 auth_unavailable` при недоступной billing authority.
+- `401 unauthorized` for a missing, unknown, or inactive credential;
+- `503 auth_unavailable` when the billing authority is unavailable.
 
-Публичные provider vhost'ы не маршрутизируют `/internal/*`; router обращается только к stable
-loopback origins. Consumer запускает три двухсекундных probe конкурентно: первый exact schema-v1
-success либо terminal 401 завершает race, а transport/404/5xx/malformed ответы inconclusive. Так
-живой OpenAI/Gemini authority не ждёт зависший первый origin; ни success, ни credential не
-кэшируются между запросами. Contradictory 200/401 означают нарушение общей authority; по wire
-действует первый полученный conclusive outcome, а фактическая provider-plane admission всё равно
-повторно проверяет credential до reserve.
+Public provider vhosts do not route `/internal/*`; the router talks only to stable
+loopback origins. The consumer fires three two-second probes concurrently: the first
+exact schema-v1 success or a terminal 401 ends the race, while
+transport/404/5xx/malformed responses are inconclusive. This way a live
+OpenAI/Gemini authority does not wait on a hung first origin; neither success nor the
+credential is cached between requests. Contradictory 200/401 mean a violation of the
+shared authority; on the wire the first conclusive outcome received wins, and the
+actual provider-plane admission re-checks the credential before reserve anyway.
 
-После auth consumer делает fail-fast reservation в 64 MiB budget с шагом 1 MiB. Валидный
-`Content-Length` округляется вверх; chunked/неизвестный размер сначала получает 1 MiB и добирает
-вес только при пересечении следующей MiB-границы. При исчерпании router сразу возвращает
-lane-shaped 503 без очереди и billable call; body без прогресса 15 секунд или незавершённый за
-5 минут получает 408 и освобождает units. У single-model path parsed JSON удаляется до сети, а permit передаётся outbound
-body и освобождается после upload/отмены. Advanced routing сохраняет один parsed template для
-следующих attempts, поэтому честно удерживает его permit до terminal response headers; открытый
-SSE response permit не держит. Billable data-plane attempt не имеет отдельного response-header
-или body timeout: это сохраняет одинаковую семантику длинных non-stream и streaming генераций и
-не создаёт неоднозначного локального обрыва после начала исполнения. Disconnect клиента отменяет
-ожидание. Bounded header timeout остаётся только у read-only `/balance`, где failover не может
-создать второе исполнение или списание.
+After auth the consumer makes a fail-fast reservation against the 64 MiB budget in
+1 MiB steps. A valid `Content-Length` is rounded up; a chunked/unknown size first
+gets 1 MiB and acquires more weight only when crossing the next MiB boundary. On
+exhaustion the router immediately returns a lane-shaped 503 with no queue and no
+billable call; a body without progress for 15 seconds or unfinished after 5 minutes
+gets 408 and releases its units. In the single-model path the parsed JSON is dropped
+before the network, and the permit is handed to the outbound body and released after
+upload/cancellation. Advanced routing keeps one parsed template for subsequent
+attempts, so it honestly holds its permit until terminal response headers; an open
+SSE response does not hold a permit. A billable data-plane attempt has no separate
+response-header or body timeout: this keeps long non-stream and streaming generations
+semantically identical and creates no ambiguous local abort after execution has
+started. A client disconnect cancels the wait. A bounded header timeout remains only
+on read-only `/balance`, where failover cannot create a second execution or charge.
 
-## Миграционная политика (мягкий переезд)
+## Migration policy (soft migration)
 
-У продукта есть активные клиенты на существующих per-provider endpoint'ах, поэтому
-переезд — только мягкий, без единой даты «выключения старого»:
+The product has active clients on the existing per-provider endpoints, so the
+migration is soft only, with no single "old shutdown" date:
 
-- **Ничего не отключаем.** `api.apitoken.sale`, `openai.api.apitoken.sale` и
-  `gemini.api.apitoken.sale` продолжают обслуживать трафик бессрочно — минимум до
-  отдельно объявленной deprecation-программы с измеримой долей остаточного трафика
-  и персональной коммуникацией с затронутыми клиентами. Sunset-дата в этом документе
-  отсутствует намеренно.
-- **Unified endpoint — новый, отдельный hostname.** Существующие домены не
-  переиспользуются и не меняют поведение: `api.apitoken.sale` остаётся прямым
-  Anthropic-входом. Новые клиенты и новые интеграции получают unified-домен; старые
-  клиенты переезжают добровольно, когда им это удобно.
-- **Одинаковый backend.** Оба входа ведут в одни и те же provider-плоскости и один
-  billing authority, поэтому ключ, баланс и ledger клиента идентичны на любом входе —
-  переезд клиента это смена base URL, а не миграция аккаунта.
-- **Публичная документация ведёт с unified.** `apitoken.sale/docs` (портал, API
-  reference, integration builder, models & pricing, `/md/*`, llms.txt) представляет
-  `https://router.apitoken.sale` как рекомендуемый вход: native lanes для каждого
-  провайдера плюс OpenAI-compatible universal lane и единый каталог; per-provider
-  хосты описаны там как полностью поддерживаемые legacy-входы без sunset-даты.
-  Та же позиция распространена на остальные user-facing поверхности: дашборд
-  (карточки провайдеров), лендинг и FAQ, маркетинговые страницы `/models` и
-  integration-гайды, кластер `/docs/learn` (4 локали), справочники ошибок
-  (`/errors/[tool]`, `/md/docs/errors`) и buyer-facing поверхности OpenKeys
-  (текст выдачи ключа, карточки провайдеров, setup-команды) — везде первичная
-  инструкция указывает на unified endpoint, legacy-хосты упоминаются только
-  как поддерживаемые входы для существующих интеграций.
-- **Новые возможности — сначала unified.** Universal lane, единый каталог и routing
-  policy развиваются на unified endpoint; старые домены сохраняют текущий контракт
-  (критические исправления, разумеется, общие — плоскости одни).
-- **Наблюдаемость раздельная.** Метрики трафика по hostname, чтобы решение о любой
-  будущей deprecation-программе опиралось на фактическую долю трафика старых доменов,
-  а не на оценки.
+- **Nothing is disabled.** `api.apitoken.sale`, `openai.api.apitoken.sale`, and
+  `gemini.api.apitoken.sale` keep serving traffic indefinitely — at minimum until a
+  separately announced deprecation program with a measured share of residual traffic
+  and personal communication with affected clients. A sunset date is deliberately
+  absent from this document.
+- **The unified endpoint is a new, separate hostname.** Existing domains are neither
+  reused nor changed in behavior: `api.apitoken.sale` remains the direct Anthropic
+  entry. New clients and new integrations get the unified domain; old clients migrate
+  voluntarily when it suits them.
+- **Same backend.** Both entries lead to the same provider planes and one billing
+  authority, so a client's key, balance, and ledger are identical on any entry —
+  client migration is a base URL change, not an account migration.
+- **Public documentation leads with unified.** `apitoken.sale/docs` (portal, API
+  reference, integration builder, models & pricing, `/md/*`, llms.txt) presents
+  `https://router.apitoken.sale` as the recommended entry: native lanes for each
+  provider plus an OpenAI-compatible universal lane and a unified catalog; the
+  per-provider hosts are described there as fully supported legacy entries with no
+  sunset date. The same position is propagated to the other user-facing surfaces: the
+  dashboard (provider cards), the landing page and FAQ, the marketing `/models`
+  pages and integration guides, the `/docs/learn` cluster (4 locales), the error
+  references (`/errors/[tool]`, `/md/docs/errors`), and the buyer-facing OpenKeys
+  surfaces (key-issuance text, provider cards, setup commands) — everywhere the
+  primary instruction points at the unified endpoint, and legacy hosts are mentioned
+  only as supported entries for existing integrations.
+- **New capabilities — unified first.** The universal lane, the unified catalog, and
+  routing policy evolve on the unified endpoint; the old domains keep their current
+  contract (critical fixes are of course shared — the planes are the same).
+- **Observability is split.** Traffic metrics per hostname, so that a decision on any
+  future deprecation program rests on the actual traffic share of the old domains,
+  not on estimates.
 
-## Модели и каталог
+## Models and catalog
 
-Единый каталог публикует namespaced ID: `anthropic/claude-*`, `openai/gpt-*`,
-`google/gemini-*`. Namespace означает семейство модели, не обязательно единственного
-исполнителя: при появлении альтернативных backends одной модели (Anthropic direct,
-Bedrock, Vertex) route planner сможет выбирать между ними. Нативный ID рекламируется как alias
-только пока он глобально однозначен. Если две плоскости публикуют один alias, router снимает его
-со всех конфликтующих записей и alias lookup возвращает 404; namespaced ID обеих моделей остаются
-исполнимыми, а их приватный native ID по-прежнему используется для body rewrite и pricing
-preflight. Поэтому новая модель не может молча перехватить существующий alias по порядку плоскостей.
-Каждый plane response ограничен 4 MiB и 1 024 моделями; ID и display name — 256 байтами без
-control characters и surrounding whitespace, duplicate namespaced ID делает весь refresh
-malformed. Expired refresh имеет отдельный per-plane singleflight: ожидающие callers
-используют и успешный, и failed/oversized результат той же in-flight попытки, но следующий
-независимый запрос сразу пробует снова без negative cache/circuit breaker. 30-секундный TTL
-детерминированно скошен до 27/30/33 секунд для Anthropic/OpenAI/Gemini, чтобы один тёплый aggregate
-не создавал синхронный refresh burst всех providers. Oversized/malformed producer сохраняет
-last-good и помечает namespace degraded.
+The unified catalog publishes namespaced IDs: `anthropic/claude-*`, `openai/gpt-*`,
+`google/gemini-*`. The namespace denotes the model family, not necessarily a single
+executor: when alternative backends of one model appear (Anthropic direct, Bedrock,
+Vertex), the route planner will be able to choose between them. A native ID is
+advertised as an alias only while it is globally unambiguous. If two planes publish
+the same alias, the router strips it from all conflicting entries and alias lookup
+returns 404; the namespaced IDs of both models remain executable, and their private
+native ID is still used for body rewrite and pricing preflight. Therefore a new model
+cannot silently hijack an existing alias through plane ordering. Each plane response
+is bounded by 4 MiB and 1,024 models; IDs and display names by 256 bytes with no
+control characters or surrounding whitespace; a duplicate namespaced ID makes the
+whole refresh malformed. An expired refresh has a separate per-plane singleflight:
+waiting callers use both the successful and the failed/oversized result of the same
+in-flight attempt, but the next independent request retries immediately with no
+negative cache/circuit breaker. The 30-second TTL is deterministically skewed to
+27/30/33 seconds for Anthropic/OpenAI/Gemini so that one warm aggregate does not
+create a synchronous refresh burst of all providers. An oversized/malformed producer
+keeps last-good and marks the namespace degraded.
 
-Нормализованные `reasoning_efforts` и `service_tiers` публикуются одновременно в
-`apitoken.capabilities` и как прежние top-level mirrors для совместимости клиентов. Клиенты с
-model-level options (в частности, OpenCode/Kilo) могут по `service_tiers` показать отдельную
-Fast-модель, сохранив исходный API model ID и добавив canonical `service_tier:"priority"` либо
-совместимый `serviceTier:"priority"`; Standard-модель и reasoning variants при этом остаются
-независимыми. Product/model eligibility принадлежит существующему versioned multi-provider
-pricing catalog (`docs/engine/CONTROL_API.md`, `crates/registry/src/pricing.rs`), а точные provider
-token rates — только `crates/metering`.
+Normalized `reasoning_efforts` and `service_tiers` are published both in
+`apitoken.capabilities` and as the previous top-level mirrors for client
+compatibility. Clients with model-level options (in particular, OpenCode/Kilo) can
+use `service_tiers` to show a separate Fast model, keeping the original API model ID
+and adding the canonical `service_tier:"priority"` or the compatible
+`serviceTier:"priority"`; the Standard model and reasoning variants remain
+independent. Product/model eligibility belongs to the existing versioned
+multi-provider pricing catalog (`docs/engine/CONTROL_API.md`,
+`crates/registry/src/pricing.rs`), and exact provider token rates belong only to
+`crates/metering`.
 
-Authoritative runtime metadata приходит producer-first от плоскостей. Anthropic уже публикует
-native `max_input_tokens`, `max_tokens` и `capabilities`; owned OpenAI/Gemini model resources
-добавляют закрытый expand-only объект:
+Authoritative runtime metadata arrives producer-first from the planes. Anthropic
+already publishes native `max_input_tokens`, `max_tokens`, and `capabilities`; owned
+OpenAI/Gemini model resources add a closed expand-only object:
 
 ```json
 {"apitoken":{
@@ -465,52 +506,61 @@ native `max_input_tokens`, `max_tokens` и `capabilities`; owned OpenAI/Gemini m
 }}
 ```
 
-Поля внутри `limits` независимы: неизвестные input/context опускаются, но известный output
-сохраняется. Codex input берётся из authenticated last-good `/codex/models.context_window`, а при
-несовпадении профилей публикуется минимальная общая гарантия; отсутствие metadata хотя бы у одного
-serving profile снимает гарантию. Опциональный OpenAI `name` берётся только из provider-authored
-`display_name` и снимается при конфликте профилей. Gemini публикует configured native limits и
-точные model-specific capabilities: image-generation route принимает text/image, выдаёт
-text/image и явно имеет `tool_calling:false`/`structured_outputs:false`; text routes выдают text и
-поддерживают оба controls; только Gemini 3 Flash Preview дополнительно рекламирует exact PCM WAV
-audio input. Router-consumer принимает token limits только как положительные целые
-до `u32::MAX`, capability booleans (`tool_calling`, `structured_outputs`, `reasoning`,
-`streaming`) — только как JSON bool, modalities — только без повторов из
-`text|image|audio`, а остальные arrays — только без повторов из закрытых множеств
-`none|minimal|low|medium|high|xhigh|max` и `standard|priority`. Anthropic `max_input_tokens`
-становится `limits.context` и `limits.input`, `max_tokens` — `limits.output`, а native
-capabilities нормализуются в те же modalities/control booleans. `thinking.supported` становится
-отдельным `reasoning`, чтобы наличие reasoning не путалось с наличием переключателя effort:
-pre-4.6 Claude честно имеет reasoning, но adapter принимает только model default и поэтому
-публикует пустой `reasoning_efforts`; Claude 4.6 допускает `low|medium|high|max`, Claude 4.7+ и 5 —
-`low|medium|high|xhigh|max`, после пересечения с текущим native capability catalog. Для
-owned-плоскостей отсутствие отдельного `reasoning` допускает
-точный вывод из authoritative efforts (`none` сам по себе reasoning не включает).
-Отсутствующая legacy metadata опускается без догадок; malformed
-authoritative metadata делает fetch плоскости failed, поэтому router использует её last-good и
-ставит `x-apitoken-catalog-degraded`, либо опускает плоскость, если last-good ещё нет. Pricing
-overlay добавляется в тот же `apitoken` object и не затирает limits/capabilities. Лимиты нельзя
-выводить из model id, pricing threshold или клиентских таблиц; capabilities нельзя угадывать по
-namespace/`owned_by`.
+The fields inside `limits` are independent: unknown input/context are omitted, but a
+known output is preserved. Codex input is taken from the authenticated last-good
+`/codex/models.context_window`, and when profiles disagree the minimum common
+guarantee is published; missing metadata on even one serving profile lifts the
+guarantee. The optional OpenAI `name` is taken only from provider-authored
+`display_name` and is dropped on profile conflict. Gemini publishes configured native
+limits and exact model-specific capabilities: the image-generation route accepts
+text/image, outputs text/image, and explicitly has
+`tool_calling:false`/`structured_outputs:false`; text routes output text and support
+both controls; only Gemini 3 Flash Preview additionally advertises exact PCM WAV
+audio input. The router consumer accepts token limits only as positive integers up to
+`u32::MAX`, capability booleans (`tool_calling`, `structured_outputs`, `reasoning`,
+`streaming`) only as JSON bool, modalities only without duplicates from
+`text|image|audio`, and the other arrays only without duplicates from the closed sets
+`none|minimal|low|medium|high|xhigh|max` and `standard|priority`. Anthropic
+`max_input_tokens` becomes `limits.context` and `limits.input`, `max_tokens` becomes
+`limits.output`, and native capabilities are normalized into the same
+modalities/control booleans. `thinking.supported` becomes a separate `reasoning`, so
+the presence of reasoning is not confused with the presence of an effort switch:
+pre-4.6 Claude honestly has reasoning, but the adapter accepts only the model default
+and therefore publishes an empty `reasoning_efforts`; Claude 4.6 allows
+`low|medium|high|max`, Claude 4.7+ and 5 — `low|medium|high|xhigh|max`, after
+intersecting with the current native capability catalog. For owned planes the absence
+of a separate `reasoning` allows exact derivation from authoritative efforts (`none`
+by itself does not enable reasoning). Missing legacy metadata is omitted without
+guessing; malformed authoritative metadata makes the plane fetch failed, so the
+router uses its last-good and sets `x-apitoken-catalog-degraded`, or omits the plane
+if there is no last-good yet. The pricing overlay is added to the same `apitoken`
+object and does not overwrite limits/capabilities. Limits must not be derived from
+the model id, pricing thresholds, or client tables; capabilities must not be guessed
+from namespace/`owned_by`.
 
-`created:0` означает только «producer не дал общей OpenAI-compatible даты создания». Router не
-подменяет это поле датой релиза из документации или именем модели. Активные `preset/*` записи
-публикуют `apitoken.routing.members` ровно из доступных этому ключу live members и
-`variable_model_pricing:true`: выбранная модель определяется на каждом запросе, поэтому единой
-ставки у preset нет. Их limits — минимум только по значениям, известным у каждого активного
-member; arrays — ordered intersection; boolean capability равна `true` только при unanimous true,
-`false` при любом authoritative false и опускается при смеси true/unknown. Manifest ranks/context
-остаются reviewed routing constraints, но не являются runtime authority для `/v1/models`.
+`created:0` means only "the producer provided no shared OpenAI-compatible creation
+date". The router does not substitute this field with a release date from
+documentation or a model name. Active `preset/*` entries publish
+`apitoken.routing.members` exactly from the live members available to this key, and
+`variable_model_pricing:true`: the selected model is determined per request, so a
+preset has no single rate. Their limits are the minimum over only the values known
+for every active member; arrays are the ordered intersection; a boolean capability
+equals `true` only on unanimous true, `false` on any authoritative false, and is
+omitted on a true/unknown mix. Manifest ranks/context remain reviewed routing
+constraints but are not runtime authority for `/v1/models`.
 
-Персональная ценовая проекция использует отдельный producer-first loopback-контракт
-`POST /internal/router/catalog/pricing` на каждой fixed provider plane. Router передаёт туда
-customer credential verbatim и bounded список `(opaque catalog id, provider, native model id)`;
-движок применяет live legacy scalar либо exact strict-policy payable multiplier к audited tariff и
-возвращает только integer `nano_usd_per_million_tokens` rate cards. Account/key/policy/rule identity,
-баланс и settlement в ответ не входят. Общий 30-секундный cache хранит только model/capability
-catalog: персональные ставки в нём запрещены. Consumer вызывает pricing authority на каждом
-`GET /v1/models{,/{id}}`, валидирует версию/unit/canonical decimal strings и exact ordered subset,
-удаляет из публичного списка модели вне subset и добавляет разрешённым expand-only metadata:
+The personal price projection uses a separate producer-first loopback contract
+`POST /internal/router/catalog/pricing` on each fixed provider plane. The router
+passes the customer credential verbatim and a bounded list of `(opaque catalog id,
+provider, native model id)`; the engine applies the live legacy scalar or the exact
+strict-policy payable multiplier to the audited tariff and returns only integer
+`nano_usd_per_million_tokens` rate cards. Account/key/policy/rule identity, balance,
+and settlement are not part of the response. The shared 30-second cache stores only
+the model/capability catalog: personal rates are forbidden in it. The consumer calls
+the pricing authority on every `GET /v1/models{,/{id}}`, validates
+version/unit/canonical decimal strings and the exact ordered subset, removes models
+outside the subset from the public list, and adds expand-only metadata to the allowed
+ones:
 
 ```json
 {"apitoken":{"pricing":{"unit":"nano_usd_per_million_tokens",
@@ -519,15 +569,17 @@ catalog: персональные ставки в нём запрещены. Con
   "priority":null,"long_context":null}}}
 ```
 
-Полный key-scoped `/v1/models` response нельзя класть в shared cache; все ответы поверхности
-получают `Cache-Control: private, no-store`. `401` authority терминален, а transport/non-2xx,
-malformed/mixed-version или oversized response после перебора fixed origins даёт публичный
-`503 pricing_unavailable`: нулевой, last-good или взятый у другого ключа rate card запрещён.
+The full key-scoped `/v1/models` response must not be placed in a shared cache; all
+responses of the surface get `Cache-Control: private, no-store`. A `401` from the
+authority is terminal, while transport/non-2xx, malformed/mixed-version, or oversized
+responses after iterating the fixed origins yield a public `503
+pricing_unavailable`: a zero, last-good, or another key's rate card is forbidden.
 
-Wire schema v1 закрыта для неизвестных полей. Один authority request содержит `schema_version:1`
-и не более 256 уникальных кандидатов. Больший агрегированный каталог router режет на
-детерминированные чанки по 256, объединяет exact ordered subsets в исходном порядке и отклоняет
-весь pricing overlay, если хотя бы один chunk не прошёл transport/schema/auth validation:
+Wire schema v1 is closed to unknown fields. One authority request contains
+`schema_version:1` and no more than 256 unique candidates. A larger aggregated
+catalog is cut by the router into deterministic chunks of 256, the exact ordered
+subsets are merged in the original order, and the entire pricing overlay is rejected
+if even one chunk failed transport/schema/auth validation:
 
 ```json
 {"schema_version":1,"candidates":[
@@ -535,7 +587,8 @@ Wire schema v1 закрыта для неизвестных полей. Один
 ]}
 ```
 
-Успех возвращает `mode:admin|legacy|strict`, exact unit и ordered subset входных ID:
+Success returns `mode:admin|legacy|strict`, the exact unit, and the ordered subset of
+input IDs:
 
 ```json
 {"schema_version":1,"unit":"nano_usd_per_million_tokens","mode":"legacy","entries":[{
@@ -552,634 +605,685 @@ Wire schema v1 закрыта для неизвестных полей. Один
 }]}
 ```
 
-Значения примера иллюстрируют full-price GPT и не являются отдельным прайс-листом документа.
-Anthropic `cache_write` означает обычный 5m class и дополнительно публикует optional
-`cache_write_1h`; Gemini без отдельной write-корзины возвращает `"0"`. `priority` есть только у
-фактически поддерживающих Fast GPT. `long_context` сохраняет provider threshold, даже когда клиент
-не умеет его учитывать. Неподдержанная/запрещённая модель отсутствует в ordered subset. Невалидный
-request получает `400 invalid_request`, неизвестный/неактивный credential — `401 unauthorized`,
-недоступный pricing authority — `503 pricing_unavailable`; никакой из этих исходов не заменяется
-нулевой или глобально закэшированной ценой.
+The example values illustrate full-price GPT and are not a separate price list of
+this document. Anthropic `cache_write` means the regular 5m class and additionally
+publishes the optional `cache_write_1h`; Gemini, having no separate write bucket,
+returns `"0"`. `priority` exists only for GPT models that actually support Fast.
+`long_context` preserves the provider threshold even when the client cannot account
+for it. An unsupported/forbidden model is absent from the ordered subset. An invalid
+request gets `400 invalid_request`, an unknown/inactive credential — `401
+unauthorized`, an unavailable pricing authority — `503 pricing_unavailable`; none of
+these outcomes is replaced by a zero or globally cached price.
 
-`/v1/models` — единственная коллизия путей native-плоскостей: unified endpoint обязан
-агрегировать каталоги всех плоскостей (кэш, частичный каталог при падении одной
-плоскости, без блокировки остальных). Именно агрегация каталога — первый код,
-оправдывающий `crates/router`.
+`/v1/models` is the only path collision of the native planes: the unified endpoint
+must aggregate the catalogs of all planes (cache, partial catalog when one plane is
+down, without blocking the others). Catalog aggregation is precisely the first code
+justifying `crates/router`.
 
-## Семантика fallback и billing fencing
+## Fallback semantics and billing fencing
 
-Наивное правило «fallback только до первого байта» недостаточно: при timeout backend мог
-выполнить запрос и settle, даже если router ответа не получил. Отсюда градация:
+The naive rule "fallback only before the first byte" is insufficient: on a timeout
+the backend may have executed the request and settled even if the router never
+received the response. Hence the gradation:
 
-- **Этапы 1a–5: межмодельного fallback нет вообще.** Единственный retry — существующий
-  внутри плоскости до первого публичного байта (no-byte retry boundary), он безопасен,
-  потому что не создаёт новый billable request после начала доставки.
-- **Фаза 6.1:** плоскости выставляют внутренний
-  `x-apitoken-execution-state: not_started` только до started при гарантии refund/cancel;
-  router снимает его со всех публичных ответов.
-- **Фаза 6.2, MVP fallback:** default-off поле `models` задаёт serial continuation после
-  обязательного `model`. Router preflight-валидирует всю цепочку по одному catalog snapshot,
-  а повторяет только по точному сигналу 6.1 либо доказанному TCP ConnectionRefused. Timeout,
-  unsigned 5xx, обрыв после headers и клиентские 4xx fail closed.
-- **Фаза 6.3, durable fencing:** общий execution group / attempt ID, идемпотентные reservations и
-  атомарный выбор единственного billable winner — reservation identity расширяется с
-  `request_id` на `(group_id, attempt_id)`, а settled-запись допускает ровно один winner
-  на группу (расширение текущего `UNIQUE ledger(kind, request_id)`). Реализовано migration-first:
-  Caddy снимает клиентские capability headers, router инжектирует одну CSPRNG UUIDv4 на explicit
-  fallback chain, плоскости валидируют и durable сохраняют пару, registry loser-settlement
-  принудительно делает zero-charge/full refund. Любой loser увеличивает always-zero incident metric.
-- **Фаза 6.4:** provider preferences/presets и engine-owned strict policy фильтруют цепочку до
-  attempt 1. Router и fixed planes экспортируют bounded fallback/not-started counters; Prometheus
-  скрейпит их отдельно и связывает с double-winner, balance divergence и settlement detectors.
-  Mock-load зелёный, но production unit остаётся default-off до live canary точного deployed SHA.
-- **Ambiguous disconnect → никакого автоматического повтора на другой модели.** Клиент
-  получает честную ошибку и решает сам; молчаливый retry на timeout — путь к двойному
-  списанию.
+- **Stages 1a–5: no cross-model fallback at all.** The only retry is the existing
+  in-plane one before the first public byte (no-byte retry boundary); it is safe
+  because it does not create a new billable request after delivery has begun.
+- **Phase 6.1:** the planes emit the internal `x-apitoken-execution-state:
+  not_started` only before started with a refund/cancel guarantee; the router strips
+  it from all public responses.
+- **Phase 6.2, MVP fallback:** the default-off `models` field defines a serial
+  continuation after the mandatory `model`. The router preflight-validates the whole
+  chain against one catalog snapshot and repeats only on the exact 6.1 signal or a
+  proven TCP ConnectionRefused. Timeout, unsigned 5xx, abort after headers, and
+  client 4xx fail closed.
+- **Phase 6.3, durable fencing:** a shared execution group / attempt ID, idempotent
+  reservations, and atomic selection of a single billable winner — reservation
+  identity is extended from `request_id` to `(group_id, attempt_id)`, and the settled
+  record admits exactly one winner per group (an extension of the current `UNIQUE
+  ledger(kind, request_id)`). Implemented migration-first: Caddy strips client
+  capability headers, the router injects one CSPRNG UUIDv4 per explicit fallback
+  chain, the planes validate and durably store the pair, and registry
+  loser-settlement forces zero-charge/full refund. Any loser increments an
+  always-zero incident metric.
+- **Phase 6.4:** provider preferences/presets and an engine-owned strict policy
+  filter the chain before attempt 1. The router and fixed planes export bounded
+  fallback/not-started counters; Prometheus scrapes them separately and links them
+  with double-winner, balance divergence, and settlement detectors. Mock-load is
+  green, but the production unit remains default-off until live canary of the exact
+  deployed SHA.
+- **Ambiguous disconnect → no automatic retry on another model.** The client gets an
+  honest error and decides for itself; silent retry on timeout is a path to double
+  charging.
 
-## Решения universal lanes (зафиксированы 2026-08-01, перед этапом 3)
+## Universal lanes decisions (fixed 2026-08-01, before stage 3)
 
-Обсуждены с владельцем продукта и утверждены; реализация этапов 3–6 следует им, а отклонение
-требует пересмотра этого раздела.
+Discussed with the product owner and approved; the implementation of stages 3–6
+follows them, and deviating requires revising this section.
 
-1. **Перевод живёт в плоскостях, не в router.** Universal-входы реализуются адаптерами внутри
-   каждой плоскости (этап 3: chat→Messages в Anthropic plane, chat→generateContent в Gemini
-   plane; этап 4: Responses→native; этап 5: Messages→native). Router получает ровно одну новую
-   способность — model-based routing: распарсить тело запроса, извлечь `model`, выбрать
-   плоскость по namespace (`anthropic/`→8790, `openai/`→8792, `google/`→8794) или alias из
-   собственного кэшированного каталога; тело дальше проксируется без изменений, namespaced ID
-   резолвит admission плоскости. Перевод в router отвергнут: он дублирует provider-логику вне
-   `forward`, отрывает биллинг (reserve/settle) от плоскости и раздувает router до второго
-   движка.
-2. **Без единого IR-типа.** «Canonical IR» из этапного плана означает контракт событий —
-   типизированный словарь (text delta, tool_call delta, reasoning delta, usage, finish) —
-   который каждый per-plane адаптер обязан воспроизводить и который закреплён contract-тестами
-   плоскости. Общий IR-структ, в который переводятся все провайдеры, отвергнут: это путь к
-   наименьшему общему знаменателю и молчаливой потере специфики (сценарий OpenRouter).
-3. **Capability matrix + fail-closed с поправкой на defaults.** У каждой плоскости — явная
-   матрица параметров universal-входа: honored / unsupported. Unsupported-параметр с
-   не-дефолтным значением → `400 unsupported_parameter`; с дефолтным значением — принимается
-   (stock SDK шлют дефолты пачками, совместимость сохраняется). Неизвестные поля проксируются
-   (открытый список). Это легализует leniency существующего `crates/forward/src/codex/chat.rs`
-   как «lenient для defaults» и делает её политикой всех адаптеров.
-4. **Reasoning.** `reasoning_effort` мапится на native thinking-конфиг провайдера; поток
-   reasoning отдаётся дельтами в задокументированном расширении `reasoning_content`
-   (конвенция DeepSeek/OpenRouter). Подписи/encrypted reasoning в universal lanes **не
-   выставляются** — задокументированное ограничение: harness-клиенты используют native lanes.
-   Поэтому входной `reasoning_content` является display-only: его нельзя повышать до unsigned
-   native thinking. Если это единственная нагрузка assistant-turn, адаптер опускает такой turn и
-   склеивает соседние одинаковые роли; действительно пустой assistant без reasoning остаётся 400.
-5. **Stored responses (этап 4) — только для `openai/*`.** `store:true` и
-   `GET/DELETE /v1/responses/{id}` работают только для OpenAI-моделей; для остальных →
-   `400 documented_limitation`. Кросс-провайдерное хранилище ответов не строится.
-6. **Этап 5 зеркалит 3–4.** `/v1/messages` для `openai/*` и `google/*` — адаптеры
-   Messages→native в соответствующих плоскостях с той же capability matrix; thinking-дельты
-   без подписей; реплей thinking-блоков для non-Claude моделей не поддерживается.
-7. **Этап 6: fencing и fallback реализуются фазами.** Фундамент уже есть в
-   `crates/registry/src/pricing.rs` (versioned catalog, provider switches, account policy).
-   Фазы 6.1–6.3 реализовали внутренний `not_started`, default-off serial fallback по
-   `models` и durable execution group/единственный billable winner;
-   policy/presets и telemetry/mock-load реализованы в фазе 6.4; live canary и unit-флаг остаются. Детальный контракт —
-   `docs/engine/ROUTING_FENCING.md`.
+1. **Translation lives in the planes, not in the router.** Universal entries are
+   implemented by adapters inside each plane (stage 3: chat→Messages in the Anthropic
+   plane, chat→generateContent in the Gemini plane; stage 4: Responses→native; stage
+   5: Messages→native). The router gets exactly one new capability — model-based
+   routing: parse the request body, extract `model`, choose the plane by namespace
+   (`anthropic/`→8790, `openai/`→8792, `google/`→8794) or by alias from its own
+   cached catalog; the body is then proxied unchanged, and the namespaced ID is
+   resolved by the plane's admission. Translation in the router was rejected: it
+   duplicates provider logic outside `forward`, detaches billing (reserve/settle)
+   from the plane, and inflates the router into a second engine.
+2. **No unified IR type.** The "canonical IR" from the staged plan means an event
+   contract — a typed vocabulary (text delta, tool_call delta, reasoning delta,
+   usage, finish) — that every per-plane adapter must reproduce and that is pinned by
+   the plane's contract tests. A shared IR struct into which all providers are
+   translated was rejected: it is a path to the lowest common denominator and silent
+   loss of specifics (the OpenRouter scenario).
+3. **Capability matrix + fail-closed with a defaults allowance.** Each plane has an
+   explicit matrix of universal-entry parameters: honored / unsupported. An
+   unsupported parameter with a non-default value → `400 unsupported_parameter`; with
+   a default value it is accepted (stock SDKs send defaults in batches;
+   compatibility is preserved). Unknown fields are proxied (open list). This
+   legalizes the leniency of the existing `crates/forward/src/codex/chat.rs` as
+   "lenient for defaults" and makes it the policy of all adapters.
+4. **Reasoning.** `reasoning_effort` maps to the provider's native thinking config;
+   the reasoning stream is delivered as deltas in the documented `reasoning_content`
+   extension (the DeepSeek/OpenRouter convention). Signatures/encrypted reasoning are
+   **not exposed** in universal lanes — a documented limitation: harness clients use
+   native lanes. Therefore inbound `reasoning_content` is display-only: it must not
+   be promoted to unsigned native thinking. If it is the only payload of an assistant
+   turn, the adapter omits that turn and merges adjacent identical roles; a genuinely
+   empty assistant without reasoning remains a 400.
+5. **Stored responses (stage 4) — only for `openai/*`.** `store:true` and
+   `GET/DELETE /v1/responses/{id}` work only for OpenAI models; for the rest →
+   `400 documented_limitation`. A cross-provider response store is not built.
+6. **Stage 5 mirrors 3–4.** `/v1/messages` for `openai/*` and `google/*` —
+   Messages→native adapters in the corresponding planes with the same capability
+   matrix; thinking deltas without signatures; replay of thinking blocks for
+   non-Claude models is not supported.
+7. **Stage 6: fencing and fallback are implemented in phases.** The foundation
+   already exists in `crates/registry/src/pricing.rs` (versioned catalog, provider
+   switches, account policy). Phases 6.1–6.3 implemented the internal `not_started`,
+   the default-off serial fallback via `models`, and the durable execution
+   group/single billable winner; policy/presets and telemetry/mock-load are
+   implemented in phase 6.4; live canary and the unit flag remain. The detailed
+   contract is `docs/engine/ROUTING_FENCING.md`.
 
-## Существующая база (что переиспользуем)
+## Existing base (what we reuse)
 
-Проверено аудитом кода 2026-08-01; всё перечисленное реально существует:
+Verified by a code audit on 2026-08-01; everything listed really exists:
 
-- Chat Completions поверх Responses (`crates/forward/src/codex/chat.rs`) — provider-
-  specific; использовать как reference и источник contract tests, не объявляя
-  универсальным IR без переработки;
-- типизированный диспатч `response.*` streaming-событий
+- Chat Completions on top of Responses (`crates/forward/src/codex/chat.rs`) —
+  provider-specific; use as reference and a source of contract tests, without
+  declaring it a universal IR without rework;
+- typed dispatch of `response.*` streaming events
   (`crates/forward/src/codex/transport.rs`);
-- retry только до первого публичного SSE-события — на всех трёх плоскостях;
-- disconnect drain до authoritative usage и settlement (`crates/forward/src/meter.rs`);
+- retry only before the first public SSE event — on all three planes;
+- disconnect drain to authoritative usage and settlement
+  (`crates/forward/src/meter.rs`);
 - per-model Gemini cooling (`crates/forward/src/gemini/pool.rs`);
-- единый `AffinityStore` с provider-проекциями для Anthropic/OpenAI/Gemini
+- a unified `AffinityStore` with provider projections for Anthropic/OpenAI/Gemini
   (`crates/forward/src/affinity.rs`);
-- fenced reserve/settle, `owner_epoch` fencing и exactly-once ledger
+- fenced reserve/settle, `owner_epoch` fencing, and an exactly-once ledger
   (`docs/engine/STAGE2_POSTGRES_AUTHORITY.md`);
-- versioned multi-provider pricing catalog и provider switches
+- versioned multi-provider pricing catalog and provider switches
   (`docs/engine/CONTROL_API.md`);
-- нативные пути Gemini уже обслуживаются плоскостью (`docs/engine/GEMINI_PROVIDER.md`).
+- Gemini native paths already served by the plane
+  (`docs/engine/GEMINI_PROVIDER.md`).
 
-Две уточняющие оговорки аудита:
+Two clarifying caveats from the audit:
 
-- circuit breaker кодово глобален внутри процесса (`crates/forward/src/breaker.rs`);
-  per-provider изоляция достигается процессной моделью (один процесс = одна плоскость),
-  а не раздельными breaker-объектами. Для router-архитектуры это достаточно, но
-  формулировка «свой breaker у провайдера» означает деплоймент, а не код;
-- `ProviderMode::Combined` (`crates/forward/src/state.rs`) — legacy rollout bridge для
-  установок со старыми systemd-юнитами, а не «combined pool» и не целевая модель;
-  Gemini он не обслуживает. Router его не использует.
+- the circuit breaker is code-global within a process
+  (`crates/forward/src/breaker.rs`); per-provider isolation is achieved by the
+  process model (one process = one plane), not by separate breaker objects. For the
+  router architecture this is sufficient, but the phrasing "a provider has its own
+  breaker" means deployment, not code;
+- `ProviderMode::Combined` (`crates/forward/src/state.rs`) is a legacy rollout bridge
+  for installations with old systemd units, not a "combined pool" and not the target
+  model; it does not serve Gemini. The router does not use it.
 
-## Этапный план
+## Staged plan
 
-1. **1a. Caddy fan-in — РЕАЛИЗОВАН.** `router.apitoken.sale` маршрутизирует по форме пути
-   на существующие loopback origins: `/v1/messages*` и `/balance` → 8790, `/v1/responses*` +
-   `/v1/chat/completions` → 8792, `/v1beta/*` → 8794; `/health` отвечает сам Caddy (не
-   конъюнкция health плоскостей), остальные пути — 404. Без нового кода; изоляция,
-   биллинг и auth passthrough — «из коробки». Провайдер определяется путём, не ключом
-   и не моделью. `/v1/models` намеренно не обслуживается до этапа 1b.
-2. **1b. `crates/router` + единый каталог — РЕАЛИЗОВАН.** Stateless router (`crates/router`,
-   бинарь `claude-router`, blue-green loopback slots `127.0.0.1:8800/8801`): байт-в-байт proxy
-   трёх плоскостей без native retries и без
-   общего таймаута (стримы не обрезаются), hop-by-hop заголовки снимаются, ошибки шейпятся
-   под lane пути. Единый `/v1/models` агрегирует каталоги плоскостей конкурентно: namespaced
-   ID (`anthropic/…`, `openai/…`, `google/…`) + только глобально однозначные aliases, per-plane
-   singleflight TTL-кэш 27/30/33 с + last-good без TTL. Router строго нормализует
-   producer-owned limits/capabilities в
-   `apitoken` и совместимые top-level mirrors: Anthropic native model resource, owned OpenAI
-   `apitoken` metadata и owned Gemini `apitoken` metadata являются authority вместо model-name
-   таблиц router/client. Межплоскостная коллизия снимает alias со всех конфликтующих записей;
-   namespaced ID остаются доступными.
-   Упавшая плоскость опускается с маркировкой `x-apitoken-catalog-degraded`, пустой каталог
-   плоскости считается сбоем, 401/403 плоскости → единый 401, все плоскости без кэша → 503.
-   Auth passthrough без изменений; `/health`, `/live`, `/ready` — router-local. Деплой: третий
-   tested artifact в цепочке watchdog → promote → stage. `router-bluegreen.sh` запускает inactive
-   slot, требует direct `/ready`, exact `/proc/<pid>/exe` из выбранного immutable release и
-   loopback-only `/startup`, который получает exact unauthenticated auth contract хотя бы от одной
-   provider plane,
-   после чего root-owned `router-promote.sh` атомарно заменяет
-   `/etc/caddy/router-active.caddy`, валидирует и reload'ит Caddy. Новые запросы переходят на
-   target, а старый Axum-процесс получает SIGTERM только после cutover и дренирует уже открытые SSE
-   в пределах `TimeoutStopSec=660`. На этапе 1b — без cross-provider translation и fallback;
-   последующие фазы
-   расширяют тот же bounded context. Cutover Caddy выполнен: vhost
-   `router.apitoken.sale` терминирует TLS и импортирует тот же single-active backend, что stable
-   loopback origin `127.0.0.1:8802` для метрик/проверок. Legacy `claude-router.service:8798`
-   сохраняется только как bootstrap/rollback anchor первого перехода и после переключения
-   останавливается и отключается. Это устраняет и окно 502, и release-induced обрыв SSE, не
-   добавляя multi-host HA и не меняя default-off fallback.
-3. **Universal Chat (2–4 недели).** `/v1/chat/completions` для всех моделей каталога:
-   text, images, tools, structured output, streaming. Реализуется по решениям 1–4 раздела
-   «Решения universal lanes»: адаптеры в плоскостях, router — только model-based routing,
-   контракт событий вместо IR-структа, capability matrix. Подпакеты: **3.0** — фиксация
-   решений в этом документе (РЕАЛИЗОВАН); **3.1** — router model-routing + адаптер
-   Anthropic plane (text, streaming, usage) — **РЕАЛИЗОВАН**: `POST /v1/chat/completions`
-   в router (`crates/router/src/chat.rs`) буферизует только тело запроса (32 MiB — потолок
-   наибольшей плоскости), извлекает `model` и выбирает плоскость по namespace-префиксу без
-   опроса каталога либо по alias через кэшированный каталог; тело проксируется без
-   изменений, ошибки dispatch (400 невалидный JSON/нет `model`, 404 `model_not_found`,
-   503 `catalog_unavailable`, единый 401) — в OpenAI-конверте. Адаптер Anthropic plane
-   (`crates/forward/src/anthropic.rs`, роут в `ProviderMode::Anthropic`) переводит
-   chat→Messages (system/developer → top-level `system`, склейка подряд идущих одноролевых
-   сообщений, `max_completion_tokens`→`max_tokens`; если клиент не задал output cap,
-   обязательный Messages `max_tokens` равен нативному потолку модели
-   (64k для Claude ≤4.5, 128k для 4.6+/5) и может быть снижен только balance cap;
-   `stop`→`stop_sequences`,
-   `user`→`metadata.user_id`, strip `anthropic/`-префикса до admission) и вызывает общий
-   `forward()` — auth, reserve, ротация, identity-инжект, tee-метеринг и settle без
-   изменений. Ответ переводится снаружи: Messages SSE → `chat.completion.chunk` (role/text/
-   finish-чанки, ping→heartbeat, `event: error`→OpenAI error frame без `[DONE]`,
-   usage-чанк по `stream_options.include_usage`), JSON message → `chat.completion`
-   (usage включает cache-токены с `prompt_tokens_details.cached_tokens`).
-   Для успешного SSE обязателен валидный Messages lifecycle `message_start` → block events →
-   `message_delta` → `message_stop`; malformed known event, несовпадающий `data.type`,
-   невозможный порядок или преждевременный EOF → OpenAI protocol error без `[DONE]`.
-   Неизвестные именованные события игнорируются, последний незавершённый SSE frame разбирается
-   на EOF. Capability matrix: structured/reasoning/penalties/n>1/store и прочие не-дефолтные
-   unsupported-параметры → `400 unsupported_parameter` до этапа 3.4; дефолтные
-   значения принимаются, неизвестные поля проксируются. Все ошибки этого пути (включая
-   `local_err` плоскости и пасsthrough апстрима) конвертируются в OpenAI-конверт с
-   сохранением статуса (402 LowBalance тоже) и `Retry-After`; **3.2** — tools/tool_choice
-   + contract-тесты словаря событий — **РЕАЛИЗОВАН**: chat `tools[]` и legacy
-   `functions[]` → Messages `tools[]` (`parameters`→`input_schema`, отсутствующая схема
-   → `{"type":"object"}`); `tool_choice` (auto/required/none/именная функция) и legacy
-   `function_call` → Messages `tool_choice` (auto/any/none/tool);
-   `parallel_tool_calls:false` → `disable_parallel_tool_use:true`; дефолты (пустой
-   `tools`, `auto`) в тело не вставляются. В истории assistant `tool_calls[]`/
-   `function_call` → `tool_use`-блоки (`arguments` JSON-строка парсится в `input`;
-   legacy id — детерминированный `callu_<name>`), role `tool`/`function` →
-   user-сообщение с `tool_result`-блоками, серии tool-ответов склеиваются в одно
-   user-сообщение (семантика параллельных tool calls Messages). В ответе non-stream
-   `tool_use`-блоки → `message.tool_calls` (`input` сериализуется обратно в
-   `arguments`-строку, `content:null` при отсутствии текста), SSE
-   `content_block_start(tool_use)` → tool_calls-чанк с id/name, `input_json_delta` →
-   arguments-дельты; tool ordinal нумеруется отдельно от Messages block index.
-   Contract-тесты словаря событий (решение 2): табличные «каноническая
-   последовательность Messages-событий → чанки» для text, одиночного и параллельных
-   tool calls, text+tool и usage — в тестах `crates/forward/src/anthropic.rs`; e2e —
-   `tests/universal_chat_smoke.sh` (мок отдаёт tool_use диалог, проверки tools
-   non-stream/stream/history и сквозной цепочки router→engine→mock); **3.3** —
-   адаптер Gemini plane — **РЕАЛИЗОВАН**: `crates/forward/src/gemini/chat.rs`,
-   роут в `ProviderMode::Gemini`. Chat→GenerateContentRequest: system/developer →
-   `systemInstruction`, user/assistant → `contents` с Gemini-ролями user/model и
-   склейкой подряд идущих одноролевых, `max_completion_tokens`/`max_tokens` →
-   `maxOutputTokens` только при явном клиентском cap; при omission общий Gemini
-   admission использует нативный output limit модели и снижает его только
-   по балансу; `stop` → `stopSequences` (≤5),
-   temperature/top_p/top_k → `generationConfig`, strip `google/`-префикса до
-   admission. Адаптер синтезирует внутренний запрос на
-   `/v1beta/models/{model}:generateContent|streamGenerateContent?alt=sse` и вызывает
-   общий `gemini_api()` — admission, reserve, affinity, ротация, Code Assist
-   wrapper, tee-метеринг и settle без изменений. Tools: chat `tools[]`/legacy
-   `functions[]` → `tools:[{functionDeclarations}]`. Общий bounded translator для Chat tools,
-   Responses tools, Messages `input_schema` и обеих structured-output surfaces переводит legal
-   JSON Schema в точный Google `Schema` subset: локальные JSON Pointer `$ref`/`$defs` inline,
-   строковый `const` в `enum`, числовой `const` в равные bounds, nullable union и representable
-   exclusive/contains constraints — в нативные поля. Аннотации снимаются; непредставимые
-   constraints и неизвестные keywords получают локальный 400 с точным schema path вместо
-   ослабления контракта или upstream `INVALID_ARGUMENT`. Expansion ограничен 4096 узлами и
-   глубиной 64; одноимённые property names являются данными и сохраняются. Отсутствующие
-   parameters опускаются; `tool_choice`/legacy `function_call` →
-   `toolConfig.functionCallingConfig` (auto не вставляется, required→ANY, none→NONE,
-   именная → ANY+allowedFunctionNames). История: assistant `tool_calls[]`/
-   `function_call` → functionCall-парты, role `tool`/`function` →
-   functionResponse-парты в user-content (имя восстанавливается по tool_call_id из
-   карты id→name этой же истории, неизвестный id → 400; не-JSON tool output
-   заворачивается строкой в `{result}`), серии tool-ответов склеиваются. Ответ:
-   non-stream candidates[0] — text-парты склеиваются, functionCall →
-   `message.tool_calls` (args → arguments-строка, синтезируемые id
-   `callu_<name>[_N]`, content:null без текста), finishReason → finish_reason
+1. **1a. Caddy fan-in — IMPLEMENTED.** `router.apitoken.sale` routes by path shape to
+   the existing loopback origins: `/v1/messages*` and `/balance` → 8790,
+   `/v1/responses*` + `/v1/chat/completions` → 8792, `/v1beta/*` → 8794; `/health` is
+   answered by Caddy itself (not a conjunction of plane health), other paths — 404.
+   No new code; isolation, billing, and auth passthrough — out of the box. The
+   provider is determined by the path, not by the key and not by the model.
+   `/v1/models` is deliberately not served until stage 1b.
+2. **1b. `crates/router` + unified catalog — IMPLEMENTED.** Stateless router
+   (`crates/router`, binary `claude-router`, blue-green loopback slots
+   `127.0.0.1:8800/8801`): byte-for-byte proxy of the three planes with no native
+   retries and no shared timeout (streams are not clipped), hop-by-hop headers are
+   stripped, errors are shaped to the path's lane. The unified `/v1/models`
+   aggregates plane catalogs concurrently: namespaced IDs (`anthropic/…`, `openai/…`,
+   `google/…`) + only globally unambiguous aliases, per-plane singleflight TTL cache
+   27/30/33 s + TTL-less last-good. The router strictly normalizes producer-owned
+   limits/capabilities into `apitoken` and compatible top-level mirrors: the
+   Anthropic native model resource, owned OpenAI `apitoken` metadata, and owned
+   Gemini `apitoken` metadata are the authority instead of router/client model-name
+   tables. A cross-plane collision strips the alias from all conflicting entries;
+   namespaced IDs remain available.
+   A downed plane is omitted with the `x-apitoken-catalog-degraded` marker, an empty
+   plane catalog counts as a failure, a plane 401/403 → a unified 401, all planes
+   down without cache → 503. Auth passthrough unchanged; `/health`, `/live`,
+   `/ready` — router-local. Deploy: the third tested artifact in the watchdog →
+   promote → stage chain. `router-bluegreen.sh` starts the inactive slot, requires a
+   direct `/ready`, an exact `/proc/<pid>/exe` from the selected immutable release,
+   and a loopback-only `/startup` that receives the exact unauthenticated auth
+   contract from at least one provider plane, after which the root-owned
+   `router-promote.sh` atomically replaces `/etc/caddy/router-active.caddy`,
+   validates, and reloads Caddy. New requests move to the target, and the old Axum
+   process receives SIGTERM only after cutover and drains already-open SSE within
+   `TimeoutStopSec=660`. At stage 1b — no cross-provider translation and no fallback;
+   subsequent phases extend the same bounded context. The Caddy cutover is done: the
+   vhost `router.apitoken.sale` terminates TLS and imports the same single-active
+   backend as the stable loopback origin `127.0.0.1:8802` for metrics/checks. The
+   legacy `claude-router.service:8798` is kept only as a bootstrap/rollback anchor of
+   the first transition and is stopped and disabled after the switch. This eliminates
+   both the 502 window and release-induced SSE aborts without adding multi-host HA
+   and without changing default-off fallback.
+3. **Universal Chat (2–4 weeks).** `/v1/chat/completions` for all catalog models:
+   text, images, tools, structured output, streaming. Implemented per decisions 1–4
+   of the "Universal lanes decisions" section: adapters in the planes, the router —
+   only model-based routing, an event contract instead of an IR struct, a capability
+   matrix. Subpackages: **3.0** — fixing the decisions in this document
+   (IMPLEMENTED); **3.1** — router model-routing + Anthropic plane adapter (text,
+   streaming, usage) — **IMPLEMENTED**: `POST /v1/chat/completions` in the router
+   (`crates/router/src/chat.rs`) buffers only the request body (32 MiB — the ceiling
+   of the largest plane), extracts `model`, and selects the plane by namespace prefix
+   without querying the catalog or by alias through the cached catalog; the body is
+   proxied unchanged, and dispatch errors (400 invalid JSON/no `model`, 404
+   `model_not_found`, 503 `catalog_unavailable`, unified 401) come in the OpenAI
+   envelope. The Anthropic plane adapter (`crates/forward/src/anthropic.rs`, a route
+   in `ProviderMode::Anthropic`) translates chat→Messages (system/developer →
+   top-level `system`, merging consecutive same-role messages,
+   `max_completion_tokens`→`max_tokens`; if the client set no output cap, the
+   mandatory Messages `max_tokens` equals the model's native ceiling (64k for Claude
+   ≤4.5, 128k for 4.6+/5) and can be lowered only by the balance cap;
+   `stop`→`stop_sequences`, `user`→`metadata.user_id`, stripping the
+   `anthropic/` prefix before admission) and calls the shared `forward()` — auth,
+   reserve, rotation, identity injection, tee-metering, and settle unchanged. The
+   response is translated on the outside: Messages SSE → `chat.completion.chunk`
+   (role/text/finish chunks, ping→heartbeat, `event: error`→OpenAI error frame
+   without `[DONE]`, usage chunk per `stream_options.include_usage`), JSON message →
+   `chat.completion` (usage includes cache tokens with
+   `prompt_tokens_details.cached_tokens`).
+   A successful SSE requires a valid Messages lifecycle `message_start` → block
+   events → `message_delta` → `message_stop`; a malformed known event, a mismatching
+   `data.type`, an impossible order, or premature EOF → an OpenAI protocol error
+   without `[DONE]`. Unknown named events are ignored; the last unfinished SSE frame
+   is parsed at EOF. Capability matrix: structured/reasoning/penalties/n>1/store and
+   other non-default unsupported parameters → `400 unsupported_parameter` until stage
+   3.4; default values are accepted, unknown fields are proxied. All errors of this
+   path (including the plane's `local_err` and upstream passthrough) are converted to
+   the OpenAI envelope with status preserved (402 LowBalance too) and `Retry-After`;
+   **3.2** — tools/tool_choice + contract tests of the event vocabulary —
+   **IMPLEMENTED**: chat `tools[]` and legacy `functions[]` → Messages `tools[]`
+   (`parameters`→`input_schema`, a missing schema → `{"type":"object"}`);
+   `tool_choice` (auto/required/none/named function) and legacy `function_call` →
+   Messages `tool_choice` (auto/any/none/tool); `parallel_tool_calls:false` →
+   `disable_parallel_tool_use:true`; defaults (empty `tools`, `auto`) are not
+   inserted into the body. In history, assistant `tool_calls[]`/`function_call` →
+   `tool_use` blocks (the `arguments` JSON string is parsed into `input`; a legacy id
+   becomes the deterministic `callu_<name>`), role `tool`/`function` → a user message
+   with `tool_result` blocks, and series of tool responses are merged into one user
+   message (the Messages parallel-tool-calls semantics). In the response, non-stream
+   `tool_use` blocks → `message.tool_calls` (`input` is serialized back into an
+   `arguments` string, `content:null` when there is no text), SSE
+   `content_block_start(tool_use)` → a tool_calls chunk with id/name,
+   `input_json_delta` → arguments deltas; the tool ordinal is numbered separately
+   from the Messages block index. Contract tests of the event vocabulary (decision
+   2): tabular "canonical Messages event sequence → chunks" for text, single and
+   parallel tool calls, text+tool, and usage — in the tests of
+   `crates/forward/src/anthropic.rs`; e2e — `tests/universal_chat_smoke.sh` (the mock
+   serves a tool_use dialog; checks of tools non-stream/stream/history and the
+   end-to-end chain router→engine→mock); **3.3** — Gemini plane adapter —
+   **IMPLEMENTED**: `crates/forward/src/gemini/chat.rs`, a route in
+   `ProviderMode::Gemini`. Chat→GenerateContentRequest: system/developer →
+   `systemInstruction`, user/assistant → `contents` with the Gemini roles user/model
+   and merging of consecutive same-role messages,
+   `max_completion_tokens`/`max_tokens` → `maxOutputTokens` only with an explicit
+   client cap; on omission the shared Gemini admission uses the model's native output
+   limit and lowers it only by balance; `stop` → `stopSequences` (≤5),
+   temperature/top_p/top_k → `generationConfig`, stripping the `google/` prefix
+   before admission. The adapter synthesizes an internal request to
+   `/v1beta/models/{model}:generateContent|streamGenerateContent?alt=sse` and calls
+   the shared `gemini_api()` — admission, reserve, affinity, rotation, Code Assist
+   wrapper, tee-metering, and settle unchanged. Tools: chat `tools[]`/legacy
+   `functions[]` → `tools:[{functionDeclarations}]`. The shared bounded translator
+   for Chat tools, Responses tools, Messages `input_schema`, and both
+   structured-output surfaces translates legal JSON Schema into the exact Google
+   `Schema` subset: local JSON Pointer `$ref`/`$defs` inline, string `const` into
+   `enum`, numeric `const` into equal bounds, nullable union and representable
+   exclusive/contains constraints — into native fields. Annotations are stripped;
+   unrepresentable constraints and unknown keywords get a local 400 with the exact
+   schema path instead of weakening the contract or an upstream `INVALID_ARGUMENT`.
+   Expansion is bounded by 4096 nodes and depth 64; duplicate property names are data
+   and are preserved. Missing parameters are omitted; `tool_choice`/legacy
+   `function_call` → `toolConfig.functionCallingConfig` (auto is not inserted,
+   required→ANY, none→NONE, named → ANY+allowedFunctionNames). History: assistant
+   `tool_calls[]`/`function_call` → functionCall parts, role `tool`/`function` →
+   functionResponse parts in user content (the name is recovered from the tool_call_id
+   via the id→name map of the same history; an unknown id → 400; non-JSON tool output
+   is wrapped as a string in `{result}`); series of tool responses are merged.
+   Response: non-stream candidates[0] — text parts are merged, functionCall →
+   `message.tool_calls` (args → an arguments string, synthesized ids
+   `callu_<name>[_N]`, content:null without text), finishReason → finish_reason
    (MAX_TOKENS→length, SAFETY/RECITATION/BLOCKLIST/PROHIBITED_CONTENT/SPII→
-   content_filter), promptFeedback.blockReason без кандидатов → content_filter с
-   пустым content, usageMetadata → usage (completion = candidates+thoughts, cached →
-   `prompt_tokens_details.cached_tokens`), model = `modelVersion` либо запрошенная.
-   SSE: data-only кадры GenerateContentResponse → role-чанк, content-дельты,
-   functionCall целиком одним tool_calls-чанком (arguments-дельт на wire нет),
-   finishReason → finish-чанк, последний usageMetadata → usage-чанк после подтверждённого
-   terminal state на EOF (по `stream_options.include_usage`) → `[DONE]`;
-   `promptFeedback.blockReason` также является terminal evidence. Malformed JSON/известный
-   provider shape и EOF без обоих terminal signals → OpenAI protocol error без `[DONE]`;
-   санитизированный mid-stream `{error}` → OpenAI error frame без `[DONE]`. Неизвестные
-   дополнительные JSON-поля сохраняют forward compatibility, последний data-frame без
-   завершающей пустой строки разбирается на EOF.
-   Capability matrix — те же 17 правил Anthropic-плоскости плюс
-   `parallel_tool_calls` и `user` (19 всего), и отличие плоскости: закрытый список
-   top-level полей (неизвестное поле → `400 unsupported_parameter`, потому что
-   Code Assist wrapper иначе выбросил бы его молча). Ошибки: Google-конверт
-   `{error:{code,message,status}}` → OpenAI-конверт с сохранением статуса (402
-   LowBalance тоже) и `Retry-After`; особый маппинг нативного
-   `400 API_KEY_INVALID` → `401 authentication_error`. Replayed functionCall-парты
-   получают подтверждённый Code Assist context-engineering `thoughtSignature` marker,
-   поэтому следующий functionResponse исполняется без состояния и без opaque-signature
-   passthrough; реальные provider signatures ответа по решению 4 остаются скрытыми.
-   Contract-тесты — табличные
-   в `crates/forward/src/gemini/chat.rs` (запрос, matrix, ответ, SSE); e2e-харнесс
-   для Gemini-ноги не добавлялся: native-путь плоскости покрыт своими тестами, а
-   мок-харнесс не умеет AEAD-конверты профилей — шов адаптера покрыт
-   unit/contract-тестами; production live-регресс — `opencode-gemini-tools` в
+   content_filter), promptFeedback.blockReason without candidates → content_filter
+   with empty content, usageMetadata → usage (completion = candidates+thoughts, cached
+   → `prompt_tokens_details.cached_tokens`), model = `modelVersion` or the requested
+   one. SSE: data-only GenerateContentResponse frames → a role chunk, content deltas,
+   functionCall delivered whole as a single tool_calls chunk (there are no arguments
+   deltas on the wire), finishReason → a finish chunk, the last usageMetadata → a
+   usage chunk after the confirmed terminal state at EOF (per
+   `stream_options.include_usage`) → `[DONE]`; `promptFeedback.blockReason` is also
+   terminal evidence. Malformed JSON/known provider shape and EOF without both
+   terminal signals → an OpenAI protocol error without `[DONE]`; a sanitized
+   mid-stream `{error}` → an OpenAI error frame without `[DONE]`. Unknown extra JSON
+   fields keep forward compatibility; the last data-frame without a terminating empty
+   line is parsed at EOF.
+   The capability matrix is the same 17 rules of the Anthropic plane plus
+   `parallel_tool_calls` and `user` (19 total), and the plane's difference: a closed
+   list of top-level fields (an unknown field → `400 unsupported_parameter`, because
+   the Code Assist wrapper would otherwise drop it silently). Errors: the Google
+   envelope `{error:{code,message,status}}` → the OpenAI envelope with status
+   preserved (402 LowBalance too) and `Retry-After`; a special mapping of native
+   `400 API_KEY_INVALID` → `401 authentication_error`. Replayed functionCall parts
+   receive the confirmed Code Assist context-engineering `thoughtSignature` marker,
+   so the next functionResponse executes statelessly and without opaque-signature
+   passthrough; the response's real provider signatures remain hidden per decision 4.
+   Contract tests — tabular ones in `crates/forward/src/gemini/chat.rs` (request,
+   matrix, response, SSE); no e2e harness was added for the Gemini leg: the plane's
+   native path is covered by its own tests, and the mock harness cannot do AEAD
+   profile envelopes — the adapter seam is covered by unit/contract tests; the
+   production live regression is `opencode-gemini-tools` in
    `tests/router_harness_live_matrix.sh`; **3.4a** — images + structured output —
-   **РЕАЛИЗОВАН** (обе плоскости): image_url-части user-сообщений — Anthropic:
-   data: URL → base64 source, http(s) → url source (оба нативные Messages
-   image-блока); Gemini: только data: URL → inlineData (http(s) ссылки
-   generateContent не принимает — честный 400, fileData требует File API
-   upload); `detail` != auto отклоняется `400 unsupported_parameter` на обеих.
-   `response_format` json_schema → Anthropic GA `output_config.format`
-   (обёрточные name/strict/description не проксируются — только схема;
-   json_object у Messages нет → matrix 400), на Gemini json_object →
-   `generationConfig.responseMimeType: application/json`, json_schema →
-   +`responseSchema` (обёртка аналогично снимается, schema проходит общий
-   Code Assist supported-subset translator); **3.4b** —
-   `reasoning_effort` → native thinking-конфиг + `reasoning_content` дельты
-   (решение 4) — **РЕАЛИЗОВАН** (обе плоскости): вход Anthropic `reasoning_effort`
-   принимает compatibility-набор minimal|low|medium|high|xhigh|max (null/отсутствие — выкл;
-   другое не-null значение → `400 invalid_request` с `param: reasoning_effort`) и мапится на
-   GA `output_config.effort` (minimal клампится в low, beta-заголовок не нужен; `effort`
-   соседствует с `format` из 3.4a в одном `output_config`, не затирая его). Точная матрица:
-   Claude 4.6 принимает low|medium|high|max, Claude 4.7+/5 — low|medium|high|xhigh|max;
-   model-specific неподдерживаемый уровень получает локальный 400 до reserve/upstream.
-   Gemini low|medium|high мапятся на
-   `generationConfig.thinkingConfig` (`thinkingLevel` проксируется как есть —
-   плоскость сама мапит уровень в wire model id; `includeThoughts: true`).
-   **3.4c** (фикс по живым пробам native lane): на Anthropic одного `effort`
-   мало — на моделях 4.6+ adaptive thinking по умолчанию выключен, а
-   дефолтный `display: "omitted"` присылает thinking-блоки с пустым текстом,
-   поэтому при не-null `reasoning_effort` адаптер дополнительно инжектит
-   `thinking: {"type": "adaptive", "display": "summarized"}` (явный
-   `thinking` клиента не переопределяется — open list). На моделях до 4.6
-   upstream не принимает ни `output_config.effort`, ни adaptive thinking;
-   валидный OpenAI-compatible effort там является hint и деградирует к model
-   default без обоих полей. Явный legacy `thinking` клиента сохраняется.
-   Отдельного metering modifier для effort нет: Anthropic учитывает thinking в общем
-   `output_tokens`, а существующий reserve ограничивает весь output через `max_tokens`.
-   Ответ — конвенция `reasoning_content`: Anthropic thinking-блоки и Gemini
-   thought-парты склеиваются в `message.reasoning_content` (non-stream, поле
-   присутствует только при непустом reasoning), thinking_delta/thought-парты
-   стрима → чанки `{"delta":{"reasoning_content": ...}}` в естественном
-   порядке апстрима (reasoning перед content, role-чанк первый). Подписи не
-   выставляются (решение 4): signature_delta/thoughtSignature выбрасываются,
-   redacted_thinking игнорируется. При следующем Chat-запросе непустой
-   `reasoning_content` принимается как display-only; reasoning-only assistant-turn опускается,
-   а обычный content/tool history переводится без изменений. Это делает ответ обеих плоскостей
-   replay-safe для `@ai-sdk/openai-compatible`, не подделывая provider signatures. Правило
-   `reasoning_effort` удалено из
-   capability matrix обеих плоскостей (Anthropic 17→16, Gemini 19→18).
-   Общий request-validation контракт Chat/Responses/Messages: missing и explicit `null`
-   optional control означают absence/default, но любой present non-null control валидируется
-   fail-closed до reserve/upstream. `stream` и `stream_options.include_usage` — только JSON
-   boolean; `max_completion_tokens`/`max_tokens`/`max_output_tokens` — только положительный
-   integer в диапазоне `u64` (zero, negative, fraction, string, compound value и overflow →
-   lane-shaped 400). Для Chat aliases первый non-null spelling имеет приоритет: `null`
-   preferred alias разрешает legacy fallback, malformed preferred alias терминален. OpenAI
-   Chat/Responses возвращают точный failing spelling в `error.param`; Anthropic Messages
-   envelope сохраняет свой штатный формат без `param`, с именем control в message. Семантика
-   реализована общим `crates/forward/src/validation.rs` и отдельно закреплена wiring-тестами
-   Anthropic/Gemini Chat и Responses, Codex Chat и native Responses, Codex/Gemini Messages skin.
-4. **Universal Responses для Codex-parity (2–4 недели).** `POST /v1/responses` для всех
-   моделей каталога: text, images, tools, reasoning, usage, streaming. Реализуется по решениям
-   1–5 раздела «Решения universal lanes»: адаптеры в плоскостях, router — только model-based
-   routing, stored responses — только `openai/*` (для остальных явный
-   `400 documented_limitation`). Потоковый wire-контракт одинаков для native OpenAI,
-   Anthropic и Gemini planes: каждый JSON object в `data:` содержит совпадающий с SSE
-   `event:` поле `type` и строго возрастающий без пропусков `sequence_number`; lifecycle
-   events `response.created|in_progress|completed|failed` несут Response object в поле
-   `response`. Поэтому штатные OpenAI SDK распознают события без клиентских обёрток.
-   Терминальный сбой выдаёт `error` event (`code`, `message`, `param`), затем
-   `response.failed` с полным failed Response object; comment keepalive sequence не потребляет.
-   Подпакеты: **4.1** — router dispatch + адаптер Anthropic
-   plane (ядро: текст, usage, stream; tools в запросе и function_call в ответе) —
-   **РЕАЛИЗОВАН**: `POST /v1/responses` в router (`crates/router/src/responses.rs`) повторяет
-   chat-диспатч этапа 3.1 — буферизуется только тело запроса (32 MiB), извлекается `model`,
-   плоскость выбирается по namespace-префиксу без опроса каталога либо по alias через
-   кэшированный каталог, тело проксируется без изменений, ошибки dispatch (400 невалидный
-   JSON/нет `model`, 404 `model_not_found`, 503 `catalog_unavailable`, единый 401) — в
-   OpenAI-конверте. Stored endpoints (`POST /v1/responses/input_tokens`,
-   `GET/DELETE /v1/responses/{id}`, `GET /v1/responses/{id}/input_items`) dispatch НЕ
-   используют и остаются native OpenAI lane (решение 5; token counting пока тоже openai-only
-   — задокументированное ограничение). Адаптер Anthropic plane
-   (`crates/forward/src/anthropic_responses.rs`, роут в `ProviderMode::Anthropic`) переводит
-   Responses→Messages и вызывает общий `forward()` (auth, reserve, ротация, identity-инжект,
-   tee-метеринг, settle — без изменений). Запрос: `instructions` и system/developer items →
-   top-level `system` (instructions первым), `input` строка → user-сообщение, массив items
-   (message item — `{type:"message",…}` или компактная `{role, content}` без type) →
-   сообщения со склейкой одноролевых, parts `input_text`/`output_text` → text-блоки,
-   `input_image` → image-блоки (общий с chat-адаптером перевод: data: → base64, http(s) →
-   url source, `detail` != auto → 400), `tools` → `tools[]` (`parameters`→`input_schema`,
-   `strict` снимается; не-function tool → `400 unsupported_parameter`),
-   `tool_choice`/`parallel_tool_calls` → Messages `tool_choice`, `max_output_tokens` →
-   `max_tokens`; omission материализует тот же нативный 64k/128k потолок,
-   а не universal-lane default; `reasoning.effort` → та же model-specific матрица
-   `output_config.effort` (minimal клампится в low) + инжект
-   `thinking: {type:"adaptive", display:"summarized"}` (как 3.4c; на прежних моделях hint
-   деградирует к model default; явный `thinking` клиента не переопределяется),
-   `text.format` json_schema →
-   `output_config.format` (обёртка снимается; json_object → 400), capability matrix
-   (`background`, `service_tier`, `truncation`, `include`, `prompt_cache_key`,
-   `safety_identifier`, `user`, `metadata`, `max_tool_calls`, не-дефолтная `text.verbosity`)
-   с не-дефолтом → `400 unsupported_parameter`, неизвестные поля проксируются (open list).
-   Ответ (словарь 4.1): non-stream → Response object (`resp_*`; text-блоки склеиваются в
-   один message item с одним output_text part, tool_use → function_call items `fc_*` с
-   `call_id` = tool_use id и arguments-строкой; usage: input = input+cache_creation+
-   cache_read с `input_tokens_details.cached_tokens`, reasoning_tokens из thinking_tokens;
-   status completed/incomplete по stop_reason: max_tokens/context_window →
-   `max_output_tokens`, refusal → `content_filter`); stream Messages SSE → Responses SSE
-   (`response.created` → `response.in_progress` → per-block `output_item.added` /
-   `content_part.added` / `output_text.delta|done` / `function_call_arguments.delta|done` /
-   `output_item.done` → `response.completed` с полным объектом и usage; ping → `: ping`
-   comment-кадр; malformed known event/order, mid-stream `event: error` и преждевременный EOF →
-   `error` → `response.failed`; неизвестные именованные события игнорируются;
-   output_index — плотный собственный счётчик, thinking-блоки позицию не занимают).
-   Ошибки — общий с chat-адаптером OpenAI-конверт с сохранением статуса (402 LowBalance
-   тоже) и `Retry-After`. Временные ограничения 4.1: `function_call`/
-   `function_call_output` items во входе → `400 unsupported_parameter` (replay истории
-   tool calls — 4.2), `reasoning` items во входе принимаются и выбрасываются (подписи не
-   выставляются — решение 4), thinking-блоки ответа пропускаются без reasoning-событий,
-   `store:true`/`previous_response_id`/`item_reference` → `400 documented_limitation`;
-   **4.2** — replay tool-истории во входе + reasoning summary события — **РЕАЛИЗОВАН**:
-   входные `function_call` items → assistant `tool_use`-блоки Messages (`call_id` → `id`,
-   `arguments` JSON-строка парсится в `input` — невалидный JSON/не-object →
-   `400 invalid_request`, отсутствующая/пустая строка — `{}`; отсутствующие/пустые
-   `call_id`/`name` → 400), входные `function_call_output` items → user
-   `tool_result`-блоки (`call_id` → `tool_use_id`; `output` строка → text content как
-   есть, массив text-партов склеивается через \n, нетекстовые части → 400); склейка с
-   соседними message items — общая одноролевая, pairing tool_use/tool_result адаптером
-   не валидируется (апстрим Messages честно отвечает 400, как в chat-адаптере 3.2).
-   Thinking-блоки ответа переводятся в reasoning-словарь Responses: non-stream —
-   reasoning item `{"type":"reasoning","id":"rs_*","summary":[{"type":"summary_text",
-   "text":<текст блока>}]}` в output в порядке появления блоков (каждый thinking-блок —
-   отдельный item; пустой thinking item не порождает; message item — на позиции первого
-   text-блока); stream — `response.output_item.added` (reasoning, summary []) →
-   `response.reasoning_summary_part.added` (summary_index 0, пустой summary_text part) →
-   `response.reasoning_summary_text.delta`* из thinking_delta (пустые дельты и
-   signature_delta дропаются) → `response.reasoning_summary_text.done` →
-   `response.reasoning_summary_part.done` → `response.output_item.done`; output_index —
-   плотный счётчик, теперь включающий thinking-блоки (redacted_thinking пропускается
-   без позиции — решение 4), reasoning item попадает в completed output;
-   `output_tokens_details` из message_delta проксируются в usage (reasoning_tokens, как
-   non-stream). Подписи/encrypted_content по-прежнему не выставляются (решение 4).
-   Временные ограничения после 4.2: `store:true`/`previous_response_id`/`item_reference`
-   → `400 documented_limitation` и `POST /v1/responses/input_tokens` openai-only
-   (решение 5), `reasoning` items во входе принимаются и выбрасываются. В router
-   продублированный `namespace_lane` chat/responses dispatch'ей вынесен в общий
-   `pub(crate)` в `crates/router/src/catalog.rs`; **4.3** — Gemini-зеркало
-   (Responses→generateContent в Gemini plane по образцу 3.3) — **РЕАЛИЗОВАН**:
-   адаптер `crates/forward/src/gemini/responses.rs`, роут `POST /v1/responses` в
-   `ProviderMode::Gemini` (router не менялся — dispatch `google/*` и gemini-alias'ов
-   работает с 4.1). Поток — паттерн chat-адаптера 3.3: перевод в GenerateContentRequest
-   → внутренний запрос на `/v1beta/models/{model}:generateContent|streamGenerateContent?alt=sse`
-   → общий `gemini_api()` без изменений → перевод ответа СНАРУЖИ. Responses-сторона
-   словаря 4.1+4.2 (item-формы, события SSE, usage, status/incomplete_details)
-   идентична Anthropic-адаптеру и закреплена contract-тестами модуля на тех же
-   табличных ожиданиях. Запрос: `instructions` и system/developer items →
-   `systemInstruction` (text-парт на каждый, instructions первым), `input` строка/items
-   → contents со склейкой одноролевых, `input_image` → inlineData общим переводом
-   (только data: URL — http(s) generateContent не принимает → `400 invalid_request`;
-   `detail` != auto → `400 unsupported_parameter`), replay
-   function_call/function_call_output → functionCall/functionResponse парты
-   (`arguments` JSON-строка → `args`; functionResponse ссылается на вызов по ИМЕНИ —
-   карта call_id→name по function_call items истории, output без пары →
-   `400 invalid_request` — отличие от Anthropic-зеркала, где pairing не валидируется),
-   `tools` → `[{"functionDeclarations": …}]` (плоский дескриптор, `strict` снимается),
+   **IMPLEMENTED** (both planes): image_url parts of user messages — Anthropic:
+   data: URL → base64 source, http(s) → url source (both native Messages image
+   blocks); Gemini: only data: URL → inlineData (generateContent does not accept
+   http(s) links — an honest 400; fileData requires a File API upload); `detail` !=
+   auto is rejected with `400 unsupported_parameter` on both. `response_format`
+   json_schema → Anthropic GA `output_config.format` (the wrapper
+   name/strict/description are not proxied — only the schema; Messages has no
+   json_object → matrix 400); on Gemini json_object → `generationConfig.responseMimeType:
+   application/json`, json_schema → +`responseSchema` (the wrapper is likewise
+   stripped, and the schema passes through the shared Code Assist supported-subset
+   translator); **3.4b** — `reasoning_effort` → native thinking config +
+   `reasoning_content` deltas (decision 4) — **IMPLEMENTED** (both planes): Anthropic
+   inbound `reasoning_effort` accepts the compatibility set
+   minimal|low|medium|high|xhigh|max (null/absent — off; any other non-null value →
+   `400 invalid_request` with `param: reasoning_effort`) and maps to the GA
+   `output_config.effort` (minimal is clamped to low, no beta header needed; `effort`
+   coexists with `format` from 3.4a in one `output_config` without overwriting it).
+   The exact matrix: Claude 4.6 accepts low|medium|high|max, Claude 4.7+/5 —
+   low|medium|high|xhigh|max; a model-specific unsupported level gets a local 400
+   before reserve/upstream. Gemini low|medium|high map to
+   `generationConfig.thinkingConfig` (`thinkingLevel` is proxied as-is — the plane
+   itself maps the level into the wire model id; `includeThoughts: true`).
+   **3.4c** (a fix from live probes of the native lane): on Anthropic `effort`
+   alone is not enough — on 4.6+ models adaptive thinking is off by default, and
+   the default `display: "omitted"` sends thinking blocks with empty text, so with
+   non-null `reasoning_effort` the adapter additionally injects `thinking: {"type":
+   "adaptive", "display": "summarized"}` (a client's explicit `thinking` is not
+   overridden — open list). On pre-4.6 models the upstream accepts neither
+   `output_config.effort` nor adaptive thinking; a valid OpenAI-compatible effort
+   there is a hint and degrades to the model default without both fields. A client's
+   explicit legacy `thinking` is preserved. There is no separate metering modifier
+   for effort: Anthropic counts thinking within the shared `output_tokens`, and the
+   existing reserve bounds all output through `max_tokens`. The response — the
+   `reasoning_content` convention: Anthropic thinking blocks and Gemini thought parts
+   are merged into `message.reasoning_content` (non-stream; the field is present only
+   with non-empty reasoning); thinking_delta/thought parts of the stream →
+   `{"delta":{"reasoning_content": ...}}` chunks in the upstream's natural order
+   (reasoning before content, role chunk first). Signatures are not exposed (decision
+   4): signature_delta/thoughtSignature are dropped, redacted_thinking is ignored. On
+   the next Chat request a non-empty `reasoning_content` is accepted as display-only;
+   a reasoning-only assistant turn is omitted, while regular content/tool history is
+   translated unchanged. This makes both planes' responses replay-safe for
+   `@ai-sdk/openai-compatible` without forging provider signatures. The
+   `reasoning_effort` rule was removed from both planes' capability matrix (Anthropic
+   17→16, Gemini 19→18).
+   The shared request-validation contract of Chat/Responses/Messages: missing and
+   explicit `null` of an optional control mean absence/default, but any present
+   non-null control is validated fail-closed before reserve/upstream. `stream` and
+   `stream_options.include_usage` — JSON boolean only;
+   `max_completion_tokens`/`max_tokens`/`max_output_tokens` — only a positive integer
+   within `u64` range (zero, negative, fraction, string, compound value, and overflow
+   → lane-shaped 400). For Chat aliases the first non-null spelling wins: `null` of
+   the preferred alias allows the legacy fallback, a malformed preferred alias is
+   terminal. OpenAI Chat/Responses return the exact failing spelling in
+   `error.param`; the Anthropic Messages envelope keeps its stock format without
+   `param`, with the control name in the message. The semantics are implemented by
+   the shared `crates/forward/src/validation.rs` and separately pinned by wiring
+   tests of Anthropic/Gemini Chat and Responses, Codex Chat and native Responses, and
+   the Codex/Gemini Messages skin.
+4. **Universal Responses for Codex parity (2–4 weeks).** `POST /v1/responses` for all
+   catalog models: text, images, tools, reasoning, usage, streaming. Implemented per
+   decisions 1–5 of the "Universal lanes decisions" section: adapters in the planes,
+   the router — only model-based routing, stored responses — `openai/*` only (for the
+   rest an explicit `400 documented_limitation`). The streaming wire contract is
+   identical for the native OpenAI, Anthropic, and Gemini planes: every JSON object
+   in `data:` contains a `type` matching the SSE `event:` field and a strictly
+   increasing gapless `sequence_number`; the lifecycle events
+   `response.created|in_progress|completed|failed` carry the Response object in the
+   `response` field. Therefore stock OpenAI SDKs recognize the events without
+   client-side wrappers. A terminal failure emits an `error` event (`code`, `message`,
+   `param`), then `response.failed` with the full failed Response object; the comment
+   keepalive sequence is not consumed. Subpackages: **4.1** — router dispatch +
+   Anthropic plane adapter (core: text, usage, stream; tools in the request and
+   function_call in the response) — **IMPLEMENTED**: `POST /v1/responses` in the
+   router (`crates/router/src/responses.rs`) repeats the stage-3.1 chat dispatch —
+   only the request body is buffered (32 MiB), `model` is extracted, the plane is
+   selected by namespace prefix without querying the catalog or by alias through the
+   cached catalog, the body is proxied unchanged, and dispatch errors (400 invalid
+   JSON/no `model`, 404 `model_not_found`, 503 `catalog_unavailable`, unified 401)
+   come in the OpenAI envelope. Stored endpoints (`POST /v1/responses/input_tokens`,
+   `GET/DELETE /v1/responses/{id}`, `GET /v1/responses/{id}/input_items`) do NOT use
+   dispatch and remain the native OpenAI lane (decision 5; token counting is also
+   openai-only for now — a documented limitation). The Anthropic plane adapter
+   (`crates/forward/src/anthropic_responses.rs`, a route in `ProviderMode::Anthropic`)
+   translates Responses→Messages and calls the shared `forward()` (auth, reserve,
+   rotation, identity injection, tee-metering, settle — unchanged). Request:
+   `instructions` and system/developer items → top-level `system` (instructions
+   first), an `input` string → a user message, an array of items (a message item —
+   `{type:"message",…}` or a compact `{role, content}` without type) → messages with
+   same-role merging, `input_text`/`output_text` parts → text blocks, `input_image` →
+   image blocks (the same translation as the chat adapter: data: → base64, http(s) →
+   url source, `detail` != auto → 400), `tools` → `tools[]`
+   (`parameters`→`input_schema`, `strict` is stripped; a non-function tool →
+   `400 unsupported_parameter`), `tool_choice`/`parallel_tool_calls` → Messages
+   `tool_choice`, `max_output_tokens` → `max_tokens`; omission materializes the same
+   native 64k/128k ceiling rather than a universal-lane default; `reasoning.effort` →
+   the same model-specific `output_config.effort` matrix (minimal clamped to low) +
+   injection of `thinking: {type:"adaptive", display:"summarized"}` (as in 3.4c; on
+   earlier models the hint degrades to the model default; a client's explicit
+   `thinking` is not overridden), `text.format` json_schema → `output_config.format`
+   (the wrapper is stripped; json_object → 400), the capability matrix (`background`,
+   `service_tier`, `truncation`, `include`, `prompt_cache_key`, `safety_identifier`,
+   `user`, `metadata`, `max_tool_calls`, non-default `text.verbosity`) with a
+   non-default → `400 unsupported_parameter`, unknown fields are proxied (open list).
+   Response (the 4.1 vocabulary): non-stream → a Response object (`resp_*`; text
+   blocks are merged into one message item with one output_text part, tool_use →
+   function_call items `fc_*` with `call_id` = tool_use id and an arguments string;
+   usage: input = input+cache_creation+cache_read with
+   `input_tokens_details.cached_tokens`, reasoning_tokens from thinking_tokens; status
+   completed/incomplete by stop_reason: max_tokens/context_window →
+   `max_output_tokens`, refusal → `content_filter`); stream Messages SSE → Responses
+   SSE (`response.created` → `response.in_progress` → per-block `output_item.added` /
+   `content_part.added` / `output_text.delta|done` / `function_call_arguments.delta|done`
+   / `output_item.done` → `response.completed` with the full object and usage; ping →
+   a `: ping` comment frame; malformed known event/order, mid-stream `event: error`,
+   and premature EOF → `error` → `response.failed`; unknown named events are ignored;
+   output_index — a dense counter of its own, thinking blocks occupy no position).
+   Errors — the same OpenAI envelope as the chat adapter with status preserved (402
+   LowBalance too) and `Retry-After`. Temporary 4.1 limitations: `function_call`/
+   `function_call_output` items in the input → `400 unsupported_parameter` (tool-call
+   history replay — 4.2), `reasoning` items in the input are accepted and dropped
+   (signatures are not exposed — decision 4), thinking blocks of the response are
+   skipped without reasoning events, `store:true`/`previous_response_id`/
+   `item_reference` → `400 documented_limitation`; **4.2** — replay of tool history
+   in the input + reasoning summary events — **IMPLEMENTED**: input `function_call`
+   items → Messages assistant `tool_use` blocks (`call_id` → `id`, the `arguments`
+   JSON string is parsed into `input` — invalid JSON/non-object → `400
+   invalid_request`, a missing/empty string — `{}`; missing/empty `call_id`/`name` →
+   400), input `function_call_output` items → user `tool_result` blocks (`call_id` →
+   `tool_use_id`; an `output` string → text content as-is, an array of text parts is
+   merged with \n, non-text parts → 400); merging with neighboring message items is
+   the shared same-role one; tool_use/tool_result pairing is not validated by the
+   adapter (the Messages upstream honestly answers 400, as in the chat adapter 3.2).
+   Thinking blocks of the response are translated into the Responses reasoning
+   vocabulary: non-stream — a reasoning item
+   `{"type":"reasoning","id":"rs_*","summary":[{"type":"summary_text","text":<block
+   text>}]}` in the output in block order (each thinking block — a separate item; an
+   empty thinking block spawns no item; the message item sits at the position of the
+   first text block); stream — `response.output_item.added` (reasoning, summary []) →
+   `response.reasoning_summary_part.added` (summary_index 0, an empty summary_text
+   part) → `response.reasoning_summary_text.delta`* from thinking_delta (empty deltas
+   and signature_delta are dropped) → `response.reasoning_summary_text.done` →
+   `response.reasoning_summary_part.done` → `response.output_item.done`; output_index
+   — a dense counter now including thinking blocks (redacted_thinking is skipped
+   without a position — decision 4), and the reasoning item lands in the completed
+   output; `output_tokens_details` from message_delta are proxied into usage
+   (reasoning_tokens, as in non-stream). Signatures/encrypted_content are still not
+   exposed (decision 4). Temporary limitations after 4.2:
+   `store:true`/`previous_response_id`/`item_reference` → `400 documented_limitation`
+   and `POST /v1/responses/input_tokens` openai-only (decision 5); `reasoning` items
+   in the input are accepted and dropped. In the router the duplicated
+   `namespace_lane` of the chat/responses dispatches was factored into a shared
+   `pub(crate)` in `crates/router/src/catalog.rs`; **4.3** — the Gemini mirror
+   (Responses→generateContent in the Gemini plane after the pattern of 3.3) —
+   **IMPLEMENTED**: adapter `crates/forward/src/gemini/responses.rs`, a route `POST
+   /v1/responses` in `ProviderMode::Gemini` (the router was not changed — dispatch of
+   `google/*` and gemini aliases works since 4.1). The flow — the chat-adapter 3.3
+   pattern: translation into a GenerateContentRequest → an internal request to
+   `/v1beta/models/{model}:generateContent|streamGenerateContent?alt=sse` → the shared
+   `gemini_api()` unchanged → translation of the response ON THE OUTSIDE. The
+   Responses side of the 4.1+4.2 vocabulary (item forms, SSE events, usage,
+   status/incomplete_details) is identical to the Anthropic adapter and is pinned by
+   the module's contract tests on the same tabular expectations. Request:
+   `instructions` and system/developer items → `systemInstruction` (one text part per
+   item, instructions first), `input` string/items → contents with same-role merging,
+   `input_image` → inlineData by the shared translation (only data: URL — http(s) is
+   not accepted by generateContent → `400 invalid_request`; `detail` != auto →
+   `400 unsupported_parameter`), replay of function_call/function_call_output →
+   functionCall/functionResponse parts (the `arguments` JSON string → `args`;
+   functionResponse references the call by NAME — a call_id→name map over the
+   history's function_call items, output without a pair → `400 invalid_request` — a
+   difference from the Anthropic mirror, where pairing is not validated), `tools` →
+   `[{"functionDeclarations": …}]` (a flat descriptor, `strict` stripped),
    `tool_choice` → `toolConfig.functionCallingConfig`, `max_output_tokens` →
-   `generationConfig.maxOutputTokens` только при явном cap; omission оставляет поле
-   отсутствующим до общего model-limit/balance admission; `reasoning.effort` →
-   `generationConfig.thinkingConfig` (`thinkingLevel` проксируется как есть — minimal
-   НЕ клампится, отличие от Anthropic-зеркала; `includeThoughts: true`), `text.format`
-   json_schema → `responseMimeType: application/json` + `responseSchema` (обёртка
-   снимается), json_object → `responseMimeType` (у generateContent есть — отличие от
-   Messages, где json_object → 400). Capability matrix — те же 9 правил, что у
-   Anthropic-зеркала, плюс `parallel_tool_calls` (у generateContent нет
-   disable_parallel_tool_use — только дефолт true); НЕИЗВЕСТНЫЕ top-level поля →
-   `400 unsupported_parameter` (закрытый список, как chat-адаптер 3.3 — Code Assist
-   wrapper выбросил бы их молча). Ответ: thought-парты → reasoning items `rs_*` и
-   reasoning_summary события словаря 4.2 (парт с одним thoughtSignature событий не
-   порождает — решение 4), functionCall → function_call items `fc_*` с
-   синтезированными call_id `callu_<name>[_N]` (functionCall.id на private wire нет —
-   схема chat-адаптера) и ровно одной arguments-дельтой (functionCall приходит
-   целиком); usage — input = `promptTokenCount`, output =
-   `candidatesTokenCount`+`thoughtsTokenCount` (та же сумма, что тарифицирует
-   metering), `cachedContentTokenCount` → `input_tokens_details.cached_tokens`,
+   `generationConfig.maxOutputTokens` only with an explicit cap; omission leaves the
+   field absent until the shared model-limit/balance admission; `reasoning.effort` →
+   `generationConfig.thinkingConfig` (`thinkingLevel` proxied as-is — minimal is NOT
+   clamped, a difference from the Anthropic mirror; `includeThoughts: true`),
+   `text.format` json_schema → `responseMimeType: application/json` +
+   `responseSchema` (the wrapper is stripped), json_object → `responseMimeType`
+   (generateContent has it — a difference from Messages, where json_object → 400).
+   The capability matrix — the same 9 rules as the Anthropic mirror plus
+   `parallel_tool_calls` (generateContent has no disable_parallel_tool_use — only
+   default true); UNKNOWN top-level fields → `400 unsupported_parameter` (a closed
+   list, like the chat adapter 3.3 — the Code Assist wrapper would drop them
+   silently). Response: thought parts → reasoning items `rs_*` and reasoning_summary
+   events of the 4.2 vocabulary (a part with only a thoughtSignature spawns no events
+   — decision 4), functionCall → function_call items `fc_*` with synthesized call_id
+   `callu_<name>[_N]` (there is no functionCall.id on the private wire — the chat
+   adapter's scheme) and exactly one arguments delta (functionCall arrives whole);
+   usage — input = `promptTokenCount`, output = `candidatesTokenCount`+
+   `thoughtsTokenCount` (the same sum that metering bills),
+   `cachedContentTokenCount` → `input_tokens_details.cached_tokens`,
    `thoughtsTokenCount` → `output_tokens_details.reasoning_tokens`;
-   finishReason/blockReason → status через общий `map_finish_reason`: MAX_TOKENS →
+   finishReason/blockReason → status via the shared `map_finish_reason`: MAX_TOKENS →
    incomplete `max_output_tokens`, SAFETY/RECITATION/BLOCKLIST/PROHIBITED_CONTENT/SPII
-   → incomplete `content_filter`. Stream: data-only SSE → Responses SSE; нормальное
-   завершение Gemini-стрима — `finishReason`/`promptFeedback.blockReason` + чистый EOF
-   (message_stop на wire нет): открытый item
-   закрывается done-событиями и эмитится `response.completed` (отличие от
-   Anthropic-зеркала, где обязателен полный lifecycle до `message_stop`); malformed
-   provider frame, EOF без terminal evidence, mid-stream error-кадр
-   `{error:{code,message,status}}` и транспортный сбой → `error` → `response.failed`
-   (error.code — google.rpc status). Ошибки — общий с chat-адаптером
-   `convert_error_response` (Google-конверт → OpenAI-конверт, нативный
-   `400 API_KEY_INVALID` → `401 authentication_error`, 402 и `Retry-After`
-   сохраняются). Tool declarations и `text.format` schema проходят общий Code Assist
-   sanitizer; replayed functionCall использует тот же stateless context-engineering marker,
-   что Chat 3.3. Временные ограничения — как после 4.2: reasoning items входа
-   выбрасываются, `store:true`/`previous_response_id`/`item_reference` →
-   `400 documented_limitation` (решение 5). Реальные `thoughtSignature` ответа по решению 4
-   не сохраняются и публично не выставляются. Общие хелперы (`chat_error`,
-   `invalid_request`, `unsupported_parameter`, `convert_error_response`,
-   `merge_or_push`, `gemini_image_part`/`translate_reasoning_effort`/
-   `parse_tool_arguments` с именем параметра, `function_declaration`,
-   `code_assist_schema`, `replayed_function_call_part`,
-   `function_response_value`, `synthetic_call_id`, `map_finish_reason`, константы
-   лимитов) вынесены в `pub(crate)` в `gemini/chat.rs` (по образцу выноса 4.1 в
-   `anthropic.rs`). Mock e2e-smoke Gemini-цепочки не добавлялся (плоскость требует
-   encrypted OAuth-пул, как в 3.3); mock e2e-покрытие universal lane — Anthropic-цепочка
-   в `tests/universal_chat_smoke.sh`, production Gemini/OpenCode tool-cycle — отдельный
-   live-case harness matrix.
-5. **Anthropic Skin для non-Claude моделей (3–5 недель).** Messages-вход для GPT/Gemini:
-   beta fields, tool streaming, thinking, error recovery, token counting — по решению 6
-   (зеркало решений 3–4, thinking без подписей). **5.1 — Anthropic Skin для `openai/*`
-   моделей (Codex plane) — РЕАЛИЗОВАН.** В router `POST /v1/messages` получил model-based
-   dispatch (`crates/router/src/messages.rs`) по тем же правилам, что chat/responses
-   dispatch'и 3.1/4.1: буферизуется только тело запроса (32 MiB), namespace-префикс
-   `openai/` выбирает Codex plane без опроса каталога (общий `catalog::namespace_lane`;
-   `anthropic/` и `google/` уходят на свои плоскости — Gemini Messages skin реализован
-   в 5.2 ниже),
-   остальное — alias через кэшированный каталог; тело проксируется без изменений, ошибки
-   dispatch — в Anthropic-конверте. Namespaced `anthropic/<id>` на Anthropic plane
-   снимается admission'ом плоскости до reserve и upstream (`strip_own_namespace` в
-   `crates/forward/src/proxy.rs`, зеркало strip'а chat-адаптера 3.x): до этого исправления
-   префикс доезжал до upstream байт-идентично и тот отвечал 404 (прод-проба 2026-08-01).
-   `POST /v1/messages/count_tokens` использует тот же model-based dispatch: native
-   Anthropic lane, локальный reserve-grade подсчёт Codex или Gemini endpoint из 5.2.
-   На Codex plane
-   (`crates/forward/src/codex/skin.rs`, роуты `/v1/messages` и
-   `/v1/messages/count_tokens` в `ProviderMode::OpenAi`) Messages-запрос переводится в
-   Responses JSON и идёт через тот же turn pipeline, что chat-адаптер (admission,
-   affinity, reserve, run, settle по authoritative usage): strip `openai/`-префикса,
-   `speed:"fast"` и совместимые `service_tier:"fast"|"priority"` → canonical
-   Responses `service_tier:"priority"` (остальные/отсутствующие значения → Standard),
-   top-level `system` (строка или text-блоки, склейка \n\n) → `instructions`, user
-   text/image-блоки → `input_text`/`input_image` (общий `canonical_image_part`),
-   assistant text → `output_text`, replay tool-истории — зеркало 4.2 (`tool_use` →
-   `function_call` с `call_id` и arguments-строкой, `tool_result` →
-   `function_call_output`; pairing не валидируется), thinking/redacted_thinking входных
-   блоков дропаются (решение 6), `tools[]` → function tools (`input_schema` →
-   `parameters`; server tools → 400), `tool_choice` auto/any/none/tool →
-   default/required/none/named (+`disable_parallel_tool_use` →
-   `parallel_tool_calls:false`), `thinking` → `reasoning.effort` (lossy: disabled/
-   adaptive → дефолт модели; enabled budget <4096 → low, <16384 → medium, иначе high;
-   <1024 → 400), `stop_sequences` и `max_tokens` честно обрабатываются на доставленном
-   тексте общим `StopFilter` и output-бюджетом ~4 chars/token (как chat.rs — транспорт
-   не умеет резать генерацию upstream). Capability matrix: stateful/неизвестный
-   `cache_control` где угодно (system, content-блоки, tools), stateful/неизвестный `context_management`,
-   `mcp_servers`, `container` → `400 invalid_request_error` с именем
-   параметра. Exact Claude Code `cache_control:{type:"ephemeral"}` принимается и снимается:
-   Codex prompt caching автоматический; любое расширение marker'а остаётся fail-closed.
-   Bounded no-op, который Claude Code 2.1.220 присылает по умолчанию
-   (`context_management.edits` пуст либо содержит ровно
-   `{type:"clear_thinking_20251015",keep:"all"}`), принимается и снимается: stateless
-   adapter уже дропает входные thinking-блоки; дополнительные поля, edits и значения
-   остаются fail-closed. Native Messages `output_config.effort` (low/medium/high) →
-   Responses `reasoning.effort`, а bounded GA `output_config.format` json_schema →
-   Responses `text.format` с той же schema; unknown keys и непредставимые shapes → 400.
-   Тем самым поддержаны и structured title request, и основной adaptive turn текущего
-   Claude Code;
-   `metadata` (включая `user_id`), sampling controls и неизвестные поля принимаются и
-   игнорируются (та же leniency, что у chat.rs, — Claude Code шлёт `metadata.user_id`
-   в каждом запросе). Ответ — зеркало словаря 4.1+4.2: message items → text-блок на
-   позиции первого message item, `function_call` → `tool_use` (arguments парсятся в
-   `input`, невалидный JSON → `{}`), `reasoning` → thinking-блоки БЕЗ signature
-   (summary-парты склеиваются \n\n), usage → Messages usage (cache write/read →
-   `cache_creation_input_tokens`/`cache_read_input_tokens` при >0, reasoning →
-   `output_tokens_details.thinking_tokens`, effective tier → `service_tier`), stop_reason:
-   function_call в output →
-   `tool_use`, срез output-бюджета → `max_tokens`, совпавшая stop_sequence →
-   `stop_sequence`, иначе `end_turn`. SSE: `message_start` с нулевым usage
-   (authoritative usage существует только в конце turn — задокументированное
-   ограничение) → per-block `content_block_start`/`content_block_delta`
-   (`text_delta`, `thinking_delta`, `input_json_delta`)/`content_block_stop` (плотные
-   индексы, новый тип блока закрывает предыдущий) → `message_delta` (stop reason +
-   usage) → `message_stop`, но только после source `finishReason`/`blockReason` + EOF;
-   heartbeat — `event: ping`, malformed/premature EOF и mid-stream отказ — `event: error`;
-   disconnect клиента не убивает turn — он добегает до authoritative usage для
-   settlement (как chat.rs). Все ошибки endpoint'а (валидация адаптера, общий парсер,
-   admission, billing) пересобираются в Anthropic-конверт с сохранением статуса и
-   `Retry-After` (503 → 529 `overloaded_error`, 402 сохраняется — Claude Code
-   восстанавливается по тексту ошибки). `POST /v1/messages/count_tokens` на плоскости —
-   тот же parse + `parse_responses_request`/`prepare_turn` → reserve-grade оценка
-   `input_tokens` без сети (`max_tokens` там опционален, как у официального endpoint'а).
-   Ограничения 5.1: лимит тела — 8 MiB (общий `OPENAI_BODY_LIMIT` плоскости, не 32),
-   сквозного e2e-smoke Codex plane нет (харнесс
-   не умеет encrypted OAuth-профили — покрытие unit/contract-тестами, как 3.3/4.3).
-   **5.2 — Anthropic Skin для `google/*` моделей (Gemini plane) — РЕАЛИЗОВАН.**
-   Gemini-зеркало 5.1 (`crates/forward/src/gemini/skin.rs`, роуты `/v1/messages` и
-   `/v1/messages/count_tokens` в `ProviderMode::Gemini`; router не менялся — dispatch
-   `google/*` и gemini-alias'ов работает с 5.1): Messages-сторона словаря идентична 5.1
-   (system/messages/tools/tool_choice/thinking/capability matrix, Messages SSE,
-   Anthropic-конверт ошибок — contract-тесты обоих модулей на эквивалентном входе),
-   перевод запроса и разбор ответа — по правилам chat/responses-адаптеров плоскости
-   (3.3/4.3), общие хелперы переиспользованы из `gemini/chat.rs` без изменения его
-   логики. Запрос: strip `google/`-префикса ДО admission, top-level `system` →
-   `systemInstruction` (склейка \n\n, не-дефолт `cache_control` → 400), messages →
-   contents общим `merge_or_push` (assistant → роль model; `tool_use` → functionCall с
-   `args` OBJECT — не JSON-строка, отличие от Codex-стороны; `tool_result` →
-   functionResponse, pairing по карте id→name валидируется — паттерн 3.3/4.3), image:
-   только base64 → inlineData (url source → 400), thinking входа дропается (решение 6);
-   `disable_parallel_tool_use: true` → 400 (у generateContent нет аналога); sampling
-   (temperature/top_p/top_k) и `stop_sequences` проксируются в generationConfig (умеет
-   нативно — плоскостное отличие от 5.1; stop_reason `stop_sequence` неразличим →
-   `end_turn`); capability matrix — те же 4 правила 5.1 ПЛЮС закрытый список top-level
-   полей (неизвестное → 400, как chat.rs). Ответ: text-парты → один text-блок,
-   thought-парты → thinking-блоки БЕЗ signature, functionCall → `tool_use` с
-   синтезируемым `toolu_<name>[_N]`, usage — input=`promptTokenCount`, output=
-   candidates+thoughts (thoughts → `output_tokens_details.thinking_tokens`, cached →
-   `cache_read_input_tokens`). Хендлеры идут через общий `gemini_api()` внутренним
-   Request на `generateContent|streamGenerateContent?alt=sse|:countTokens` — admission,
-   reserve, affinity, ротация, Code Assist wrapper и usage-settlement без единого
-   изменения; `count_tokens` — нативный `:countTokens` (quota-free, без reserve),
-   `max_tokens` там опционален. Tool schemas проходят общий sanitizer, а replayed tool_use
-   получает stateless context-engineering marker; actual provider signatures ответа остаются
-   скрытыми по решению 4. Лимит тела — общий плоскости; mock e2e-smoke Gemini plane нет
-   (как 3.3/4.3 — покрытие unit/contract-тестами модуля), production OpenCode tool-cycle
-   закреплён live harness matrix. Router dispatch `/v1/messages/count_tokens` покрыт
-   интеграционными mock-тестами namespace и alias-путей всех трёх плоскостей.
-6. **OpenRouter-grade routing (2–4 недели).** Provider preferences, явные
-   fallback-списки, attempt fencing (execution group / единственный billable winner,
-   см. «Семантика fallback»), per-account policy, telemetry, presets. По решению 7 первым
-   пакетом этапа идёт детальный дизайн на живой телеметрии этапов 3–5 — он зафиксирован в
-   `docs/engine/ROUTING_FENCING.md` (фактбаза, контракт `execution_state=not_started`,
-   group/attempt identity, фазировка 6.1–6.4). Фаза 6.1 реализована (2026-08-01):
-   плоскости выставляют `x-apitoken-execution-state: not_started` на не-2xx отказах до
-   границы started при гарантии refund/cancel reserve, router снимает заголовок со всех
-   транзитных ответов. Gemini Messages skin и universal Chat/Responses-адаптеры обеих
-   переводящих плоскостей сохраняют сигнал на pre-delivery не-2xx и снимают его с
-   пересобранных ошибок после 2xx, когда charge возможен (§3.2 там же). Фаза 6.2
-   реализована (2026-08-02): shared router engine принимает default-off `models`,
-   preflight-валидирует цепочку и делает serial retry только по exact signal либо
-   ConnectionRefused; timeout/unsigned 5xx/client 4xx fail closed, внутренний header
-   никогда не виден клиенту. Фаза 6.3 реализована (2026-08-02): trusted group/attempt identity
-   проходит router→plane→reservation, а SQLite/PostgreSQL settle выбирает ровно одного
-   billable winner и полностью возвращает loser hold; `ExecutionGroupDoubleWinner` гейтит любой
-   такой инцидент. Контракт фазы 6.4 зафиксирован 2026-08-02: одинаковый authenticated
-   policy-preflight на плоскостях реализован producer-first, а router consumer 6.4b добавил strict
-   `provider` preferences, version-controlled presets/ranks и fail-closed policy filtering до
-   attempt 1. Router/plane metrics, Prometheus rules/runbooks, exact-delta mock-load и
-   credential-safe live runner реализованы default-off; после их выката идут live canary exact
-   deployed binary и отдельное включение production-флага. Полная схема,
-   fail-closed mixed-version semantics и rollout-порядок — `docs/engine/ROUTING_FENCING.md`
-   §5.1–5.3. Отдельно —
-   Stage 3 HA: второй host, router replicas, HA PostgreSQL (см. ограничения в
-   `docs/engine/STAGE2_POSTGRES_AUTHORITY.md`: потеря единственного host пока не
-   покрыта — это Stage 3, а не блокер router'а).
+   → incomplete `content_filter`. Stream: data-only SSE → Responses SSE; normal
+   termination of a Gemini stream — `finishReason`/`promptFeedback.blockReason` + a
+   clean EOF (there is no message_stop on the wire): an open item is closed with done
+   events and `response.completed` is emitted (a difference from the Anthropic
+   mirror, where the full lifecycle up to `message_stop` is mandatory); a malformed
+   provider frame, EOF without terminal evidence, a mid-stream error frame
+   `{error:{code,message,status}}`, and a transport failure → `error` →
+   `response.failed` (error.code — the google.rpc status). Errors — the same
+   `convert_error_response` as the chat adapter (Google envelope → OpenAI envelope,
+   native `400 API_KEY_INVALID` → `401 authentication_error`, 402 and `Retry-After`
+   preserved). Tool declarations and the `text.format` schema pass through the shared
+   Code Assist sanitizer; a replayed functionCall uses the same stateless
+   context-engineering marker as Chat 3.3. Temporary limitations — as after 4.2:
+   input reasoning items are dropped, `store:true`/`previous_response_id`/
+   `item_reference` → `400 documented_limitation` (decision 5). The response's real
+   `thoughtSignature` is neither stored nor publicly exposed per decision 4. The
+   shared helpers (`chat_error`, `invalid_request`, `unsupported_parameter`,
+   `convert_error_response`, `merge_or_push`,
+   `gemini_image_part`/`translate_reasoning_effort`/`parse_tool_arguments` with the
+   parameter name, `function_declaration`, `code_assist_schema`,
+   `replayed_function_call_part`, `function_response_value`, `synthetic_call_id`,
+   `map_finish_reason`, the limit constants) were factored into `pub(crate)` in
+   `gemini/chat.rs` (after the pattern of the 4.1 factoring into `anthropic.rs`). No
+   mock e2e smoke of the Gemini chain was added (the plane requires an encrypted
+   OAuth pool, as in 3.3); the mock e2e coverage of the universal lane is the
+   Anthropic chain in `tests/universal_chat_smoke.sh`; the production Gemini/OpenCode
+   tool cycle is a separate live case of the harness matrix.
+5. **Anthropic Skin for non-Claude models (3–5 weeks).** A Messages entry for
+   GPT/Gemini: beta fields, tool streaming, thinking, error recovery, token counting —
+   per decision 6 (a mirror of decisions 3–4, thinking without signatures). **5.1 —
+   Anthropic Skin for `openai/*` models (Codex plane) — IMPLEMENTED.** In the router
+   `POST /v1/messages` gained model-based dispatch (`crates/router/src/messages.rs`)
+   under the same rules as the chat/responses dispatches of 3.1/4.1: only the request
+   body is buffered (32 MiB), the `openai/` namespace prefix selects the Codex plane
+   without querying the catalog (the shared `catalog::namespace_lane`; `anthropic/`
+   and `google/` go to their own planes — the Gemini Messages skin is implemented in
+   5.2 below), the rest — by alias through the cached catalog; the body is proxied
+   unchanged, and dispatch errors come in the Anthropic envelope. A namespaced
+   `anthropic/<id>` on the Anthropic plane is stripped by the plane's admission
+   before reserve and upstream (`strip_own_namespace` in
+   `crates/forward/src/proxy.rs`, a mirror of the chat adapter 3.x strip): before this
+   fix the prefix reached the upstream byte-identical and it answered 404 (production
+   probe 2026-08-01). `POST /v1/messages/count_tokens` uses the same model-based
+   dispatch: native Anthropic lane, local reserve-grade Codex counting, or the Gemini
+   endpoint from 5.2. On the Codex plane (`crates/forward/src/codex/skin.rs`, routes
+   `/v1/messages` and `/v1/messages/count_tokens` in `ProviderMode::OpenAi`) a
+   Messages request is translated into Responses JSON and goes through the same turn
+   pipeline as the chat adapter (admission, affinity, reserve, run, settle by
+   authoritative usage): stripping the `openai/` prefix, `speed:"fast"` and the
+   compatible `service_tier:"fast"|"priority"` → canonical Responses
+   `service_tier:"priority"` (other/absent values → Standard), top-level `system` (a
+   string or text blocks, merged with \n\n) → `instructions`, user text/image blocks
+   → `input_text`/`input_image` (the shared `canonical_image_part`), assistant text →
+   `output_text`, tool-history replay — a mirror of 4.2 (`tool_use` → `function_call`
+   with a `call_id` and an arguments string, `tool_result` → `function_call_output`;
+   pairing is not validated), thinking/redacted_thinking of input blocks are dropped
+   (decision 6), `tools[]` → function tools (`input_schema` → `parameters`; server
+   tools → 400), `tool_choice` auto/any/none/tool → default/required/none/named
+   (+`disable_parallel_tool_use` → `parallel_tool_calls:false`), `thinking` →
+   `reasoning.effort` (lossy: disabled/adaptive → model default; enabled budget <4096
+   → low, <16384 → medium, otherwise high; <1024 → 400), `stop_sequences` and
+   `max_tokens` are honestly processed on the delivered text by the shared
+   `StopFilter` and an output budget of ~4 chars/token (as in chat.rs — the transport
+   cannot clip generation upstream). Capability matrix: stateful/unknown
+   `cache_control` anywhere (system, content blocks, tools), stateful/unknown
+   `context_management`, `mcp_servers`, `container` → `400 invalid_request_error`
+   with the parameter name. The exact Claude Code `cache_control:{type:"ephemeral"}`
+   is accepted and stripped: Codex prompt caching is automatic; any extension of the
+   marker remains fail-closed. The bounded no-op that Claude Code 2.1.220 sends by
+   default (`context_management.edits` empty or containing exactly
+   `{type:"clear_thinking_20251015",keep:"all"}`) is accepted and stripped: the
+   stateless adapter already drops input thinking blocks; additional fields, edits,
+   and values remain fail-closed. Native Messages `output_config.effort`
+   (low/medium/high) → Responses `reasoning.effort`, and the bounded GA
+   `output_config.format` json_schema → Responses `text.format` with the same schema;
+   unknown keys and unrepresentable shapes → 400. This supports both the structured
+   title request and the main adaptive turn of current Claude Code; `metadata`
+   (including `user_id`), sampling controls, and unknown fields are accepted and
+   ignored (the same leniency as chat.rs — Claude Code sends `metadata.user_id` in
+   every request). The response — a mirror of the 4.1+4.2 vocabulary: message items →
+   a text block at the position of the first message item, `function_call` →
+   `tool_use` (arguments are parsed into `input`, invalid JSON → `{}`), `reasoning` →
+   thinking blocks WITHOUT a signature (summary parts merged with \n\n), usage →
+   Messages usage (cache write/read → `cache_creation_input_tokens`/
+   `cache_read_input_tokens` when >0, reasoning →
+   `output_tokens_details.thinking_tokens`, effective tier → `service_tier`),
+   stop_reason: function_call in the output → `tool_use`, an output-budget cut →
+   `max_tokens`, a matched stop_sequence → `stop_sequence`, otherwise `end_turn`.
+   SSE: `message_start` with zero usage (authoritative usage exists only at the end
+   of the turn — a documented limitation) → per-block
+   `content_block_start`/`content_block_delta` (`text_delta`, `thinking_delta`,
+   `input_json_delta`)/`content_block_stop` (dense indexes, a new block type closes
+   the previous one) → `message_delta` (stop reason + usage) → `message_stop`, but
+   only after the source `finishReason`/`blockReason` + EOF; heartbeat — `event:
+   ping`, malformed/premature EOF and a mid-stream failure — `event: error`; a client
+   disconnect does not kill the turn — it runs to authoritative usage for settlement
+   (as in chat.rs). All endpoint errors (adapter validation, the shared parser,
+   admission, billing) are rebuilt into the Anthropic envelope with status and
+   `Retry-After` preserved (503 → 529 `overloaded_error`, 402 is preserved — Claude
+   Code recovers based on the error text). `POST /v1/messages/count_tokens` on the
+   plane — the same parse + `parse_responses_request`/`prepare_turn` → a reserve-grade
+   `input_tokens` estimate without network (`max_tokens` is optional there, as in the
+   official endpoint). 5.1 limitations: the body limit is 8 MiB (the plane's shared
+   `OPENAI_BODY_LIMIT`, not 32); there is no end-to-end e2e smoke of the Codex plane
+   (the harness cannot do encrypted OAuth profiles — coverage by unit/contract tests,
+   as in 3.3/4.3). **5.2 — Anthropic Skin for `google/*` models (Gemini plane) —
+   IMPLEMENTED.** The Gemini mirror of 5.1 (`crates/forward/src/gemini/skin.rs`,
+   routes `/v1/messages` and `/v1/messages/count_tokens` in `ProviderMode::Gemini`;
+   the router was not changed — dispatch of `google/*` and gemini aliases works since
+   5.1): the Messages side of the vocabulary is identical to 5.1
+   (system/messages/tools/tool_choice/thinking/capability matrix, Messages SSE, the
+   Anthropic error envelope — contract tests of both modules on equivalent input),
+   request translation and response parsing — by the rules of the plane's
+   chat/responses adapters (3.3/4.3), with shared helpers reused from `gemini/chat.rs`
+   without changing its logic. Request: stripping the `google/` prefix BEFORE
+   admission, top-level `system` → `systemInstruction` (merged with \n\n, a
+   non-default `cache_control` → 400), messages → contents via the shared
+   `merge_or_push` (assistant → role model; `tool_use` → functionCall with `args` as
+   an OBJECT — not a JSON string, a difference from the Codex side; `tool_result` →
+   functionResponse, pairing via the id→name map is validated — the 3.3/4.3 pattern),
+   image: only base64 → inlineData (url source → 400), input thinking is dropped
+   (decision 6); `disable_parallel_tool_use: true` → 400 (generateContent has no
+   analog); sampling (temperature/top_p/top_k) and `stop_sequences` are proxied into
+   generationConfig (it supports them natively — a plane-level difference from 5.1;
+   stop_reason `stop_sequence` is indistinguishable → `end_turn`); the capability
+   matrix — the same 4 rules of 5.1 PLUS a closed list of top-level fields (unknown →
+   400, as in chat.rs). Response: text parts → one text block, thought parts →
+   thinking blocks WITHOUT a signature, functionCall → `tool_use` with a synthesized
+   `toolu_<name>[_N]`, usage — input=`promptTokenCount`, output=candidates+thoughts
+   (thoughts → `output_tokens_details.thinking_tokens`, cached →
+   `cache_read_input_tokens`). The handlers go through the shared `gemini_api()` via
+   an internal Request to `generateContent|streamGenerateContent?alt=sse|:countTokens`
+   — admission, reserve, affinity, rotation, Code Assist wrapper, and usage settlement
+   without a single change; `count_tokens` — native `:countTokens` (quota-free, no
+   reserve), `max_tokens` is optional there. Tool schemas pass through the shared
+   sanitizer, and a replayed tool_use gets the stateless context-engineering marker;
+   actual provider signatures of the response remain hidden per decision 4. The body
+   limit — the plane's shared one; there is no mock e2e smoke of the Gemini plane (as
+   in 3.3/4.3 — coverage by the module's unit/contract tests); the production OpenCode
+   tool cycle is pinned by the live harness matrix. Router dispatch of
+   `/v1/messages/count_tokens` is covered by integration mock tests of the namespace
+   and alias paths of all three planes.
+6. **OpenRouter-grade routing (2–4 weeks).** Provider preferences, explicit fallback
+   lists, attempt fencing (execution group / single billable winner, see "Fallback
+   semantics"), per-account policy, telemetry, presets. Per decision 7 the first
+   package of the stage is a detailed design on the live telemetry of stages 3–5 — it
+   is fixed in `docs/engine/ROUTING_FENCING.md` (fact base, the
+   `execution_state=not_started` contract, group/attempt identity, phasing 6.1–6.4).
+   Phase 6.1 is implemented (2026-08-01): the planes emit `x-apitoken-execution-state:
+   not_started` on non-2xx failures before the started boundary with a refund/cancel
+   guarantee of the reserve; the router strips the header from all transit responses.
+   The Gemini Messages skin and the universal Chat/Responses adapters of both
+   translating planes preserve the signal on pre-delivery non-2xx and strip it from
+   rebuilt errors after 2xx, when a charge is possible (§3.2 there). Phase 6.2 is
+   implemented (2026-08-02): the shared router engine accepts the default-off
+   `models`, preflight-validates the chain, and does a serial retry only on the exact
+   signal or ConnectionRefused; timeout/unsigned 5xx/client 4xx fail closed, and the
+   internal header is never visible to the client. Phase 6.3 is implemented
+   (2026-08-02): the trusted group/attempt identity travels router→plane→reservation,
+   and SQLite/PostgreSQL settle selects exactly one billable winner and fully refunds
+   the loser hold; `ExecutionGroupDoubleWinner` gates any such incident. The phase
+   6.4 contract was fixed 2026-08-02: the identical authenticated policy preflight on
+   the planes is implemented producer-first, and the router consumer 6.4b added strict
+   `provider` preferences, version-controlled presets/ranks, and fail-closed policy
+   filtering before attempt 1. Router/plane metrics, Prometheus rules/runbooks,
+   exact-delta mock-load, and the credential-safe live runner are implemented
+   default-off; after their rollout come live canary of the exact deployed binary and
+   a separate enabling of the production flag. The full scheme, fail-closed
+   mixed-version semantics, and rollout order — `docs/engine/ROUTING_FENCING.md`
+   §5.1–5.3. Separately — Stage 3 HA: a second host, router replicas, HA PostgreSQL
+   (see the limitations in `docs/engine/STAGE2_POSTGRES_AUTHORITY.md`: loss of the
+   single host is not covered yet — that is Stage 3, not a router blocker).
 
-Полезный единый native endpoint — этапы 1a–1b. Production-grade multiprotocol parity —
-ориентировочно 8–14 инженерных недель последовательно. Основная сложность не в изоляции
-отказов (она уже есть), а в корректном переводе tools/reasoning/streaming и exactly-once
-биллинге.
+A useful unified native endpoint — stages 1a–1b. Production-grade multiprotocol
+parity — roughly 8–14 engineer-weeks sequentially. The main difficulty is not failure
+isolation (it already exists) but correct translation of tools/reasoning/streaming
+and exactly-once billing.
 
-## Открытые решения
+## Open decisions
 
-- ~~Имя публичного домена~~ — решено на этапе 1a: `router.apitoken.sale` (новый отдельный
-  hostname, `api.apitoken.sale` не переиспользуется и не меняет поведение).
-- ~~Политика частичного каталога `/v1/models` при падении плоскости~~ — решено на этапе 1b:
-  TTL-кэш 30 с + last-good без TTL; упавшая плоскость опускается из выдачи, деградация
-  маркируется заголовком `x-apitoken-catalog-degraded` со списком namespace'ов; пустой
-  каталог плоскости считается сбоем и не кэшируется; 401/403 любой плоскости → единый 401
-  `invalid_api_key`; все плоскости недоступны без кэша → 503 `catalog_unavailable`.
-- ~~Продуктовый охват Gemini~~ — решение принято 2026-08-02: Gemini входит в целевой main product
-  и pricing release. Service получает все runtime-capable Gemini-модели; OpenKeys включает Gemini
-  только явной OpenKeys catalog generation и всегда 1:1. Producer schema/catalog expansion
-  доставляется до consumer и до единого Stage 9 cutover.
+- ~~Public domain name~~ — decided at stage 1a: `router.apitoken.sale` (a new
+  separate hostname; `api.apitoken.sale` is not reused and does not change behavior).
+- ~~Partial-catalog policy of `/v1/models` when a plane is down~~ — decided at stage
+  1b: 30 s TTL cache + TTL-less last-good; a downed plane is omitted from the
+  listing, degradation is marked with the `x-apitoken-catalog-degraded` header with a
+  list of namespaces; an empty plane catalog counts as a failure and is not cached; a
+  401/403 from any plane → a unified 401 `invalid_api_key`; all planes unavailable
+  without cache → 503 `catalog_unavailable`.
+- ~~Gemini product scope~~ — decided 2026-08-02: Gemini is part of the target main
+  product and pricing release. Service gets all runtime-capable Gemini models;
+  OpenKeys includes Gemini only through an explicit OpenKeys catalog generation and
+  always 1:1. Producer schema/catalog expansion is delivered before the consumer and
+  before the single Stage 9 cutover.

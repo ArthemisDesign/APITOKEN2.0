@@ -202,8 +202,8 @@ Keep `/subscriptions` an operator control room, not a calibration laboratory.
 2. Below the overview, render one compact account/profile table with bounded email hint on the left,
    plan and state, quota/reset, and exact remaining/full API-$ for each real window. Reuse
    `ProviderSection`, `ProviderQuotaMeter`, `TableCard`, and the existing CSS language.
-3. Render dead/non-routable identities as `вне ротации`; render stale or incomplete evidence as
-   `обновляем`/`ждём данные`; never show stale capacity as saleable and never turn `null` into `$0`.
+3. Render dead/non-routable identities as `вне ротации` ("out of rotation"); render stale or incomplete evidence as
+   `обновляем` ("updating")/`ждём данные` ("waiting for data"); never show stale capacity as saleable and never turn `null` into `$0`.
 4. Keep model availability as a compact count only when operationally useful. Do not add token
    capacity, profitability, private quota-bucket, raw ledger, schedule, UUID, proxy, or transport
    matrices to the main page.

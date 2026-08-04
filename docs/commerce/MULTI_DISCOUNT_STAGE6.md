@@ -1,49 +1,52 @@
 # Stage 6 — online funding normalization
 
-Статус: engine producer, strict TypeScript transport consumer и bounded commerce orchestration
-реализованы поверх уже доставленной migration `0029_pricing_release_two_phase_finalize.sql`.
-Orchestration связывается с exact Stage 5 plan, вычисляет funding manifest только из фактического
-full-inventory readback и затем двухфазно финализирует target/recovery releases. Наличие кода само
-по себе ничего не запускает: worker начинает POST только после явного idempotent staging. Stage 6
-не требует maintenance window, остановки money writers, нуля всех reservations или ручной
-проверки аккаунтов и ничего не активирует.
+Status: the engine producer, the strict TypeScript transport consumer, and the bounded commerce
+orchestration are implemented on top of the already delivered migration
+`0029_pricing_release_two_phase_finalize.sql`.
+The orchestration binds to the exact Stage 5 plan, computes the funding manifest only from the
+actual full-inventory readback, and then finalizes the target/recovery releases in two phases. The
+existence of the code by itself starts nothing: the worker begins POST only after explicit
+idempotent staging. Stage 6 does not require a maintenance window, stopping the money writers,
+zero reservations, or manual account verification, and it activates nothing.
 
 ## Source policy
 
-Funding normalization нужна для paid/bonus attribution и реферальной математики, а не для
-ограничения доступных моделей.
+Funding normalization is needed for paid/bonus attribution and referral math, not for restricting
+available models.
 
-- точный неотозванный `signup-bonus:<subject>` сохраняется как `welcome_bonus`;
-- точная пара `signup-bonus:<subject>` + полный отрицательный
-  `bonus-revoke:<subject>` удаляет welcome entitlement: весь текущий aggregate становится `paid`;
-- существующая выдача сохраняет фактический номинал `$4`;
-- новые выдачи после изменения контракта имеют номинал `$5`;
-- весь остальной существующий остаток по решению владельца классифицируется `paid`;
-- paid lot материализуется и при нулевом residual: это immutable anchor для разрешённого `$1`
-  overrun у bonus-only/zero-hold request;
-- bonus разрешён для любой модели, доступной B2C policy;
-- reserve расходует bonus-first, затем paid;
-- referral commission получает только paid-funded settlement amount.
+- an exact non-revoked `signup-bonus:<subject>` is preserved as `welcome_bonus`;
+- an exact pair `signup-bonus:<subject>` + full negative
+  `bonus-revoke:<subject>` removes the welcome entitlement: the entire current aggregate becomes
+  `paid`;
+- an existing grant retains its actual nominal value `$4`;
+- new grants after the contract change have a nominal value `$5`;
+- all other existing balance is classified `paid` by the owner's decision;
+- a paid lot is materialized even at zero residual: it is the immutable anchor for the permitted
+  `$1` overrun on a bonus-only/zero-hold request;
+- bonus is allowed for any model available to the B2C policy;
+- reserve spends bonus-first, then paid;
+- referral commission receives only the paid-funded settlement amount.
 
-Режим `track`, eligibility `track` и bucket `welcome_track_bonus` не создаются новым кодом.
-Immutable historical rows могут сохранять старые значения только как audit evidence.
+The `track` mode, `track` eligibility, and the `welcome_track_bonus` bucket are not created by the
+new code. Immutable historical rows may keep the old values only as audit evidence.
 
-## Подготовка writers
+## Preparing the writers
 
-До backfill production runtime должен:
+Before the backfill, the production runtime must:
 
-1. сохранять v2 pricing/funding snapshot в каждой новой reservation;
-2. dual-write topup, bonus, reserve, cancel, settlement и refund в aggregate и funding lots одной
-   account transaction;
-3. брать тот же account row/advisory lock, что и backfill;
-4. после ожидания lock повторно читать funding generation;
-5. уметь завершать старую reservation по её immutable legacy snapshot.
+1. save a v2 pricing/funding snapshot in every new reservation;
+2. dual-write topup, bonus, reserve, cancel, settlement, and refund to the aggregate and funding
+   lots in a single account transaction;
+3. take the same account row/advisory lock as the backfill;
+4. re-read the funding generation after waiting for the lock;
+5. be able to complete an old reservation by its immutable legacy snapshot.
 
-Это приложение выкатывается blue-green при старом active release и само по себе не меняет цену.
+This application rolls out blue-green under the old active release and by itself does not change
+the price.
 
 ### Pre-cutover writer checkpoint
 
-PostgreSQL writer выбирает путь только после account-local serialization:
+The PostgreSQL writer selects its path only after account-local serialization:
 
 ```text
 reserve/settlement: request advisory lock → funding account advisory lock
@@ -52,44 +55,44 @@ topup/adjust:       funding account advisory lock → reread active funding head
                     → row locks/money writes
 ```
 
-Отсутствующий head означает полностью legacy transaction. Существующий head означает обязательный
-dual-write: account aggregate, active generation, lots и reservation snapshot/allocation либо
-commit вместе, либо полностью rollback. Это же правило закрывает гонку с normalization: writer,
-который ждал её lock, перечитывает уже новый head и не может продолжить как legacy writer.
+A missing head means a fully legacy transaction. An existing head means a mandatory dual-write: the
+account aggregate, the active generation, the lots, and the reservation snapshot/allocation either
+commit together or fully roll back. The same rule closes the race with normalization: a writer that
+waited for its lock re-reads the already new head and cannot continue as a legacy writer.
 
-Reserve сохраняет bonus-first allocation. Overdraft разрешён только в paid и не больше старого
-account floor `$1`; normalized generation обязана содержать paid lot даже с нулевым residual, и
-bonus-only или нулевой hold сохраняет его как zero allocation anchor, чтобы возможный settlement
-overrun не был ошибочно отнесён к bonus. Cancel возвращает весь hold по сохранённым
-allocations. Settlement превращает ровно эти allocations в charged/released, обновляет lots и
-пишет charge attribution в `funding_ledger_allocations_v2`. Exact terminal replay ничего повторно
-не списывает и проверяет исходную immutable generation даже после последующего monotonic head
-advance.
+Reserve saves the bonus-first allocation. Overdraft is permitted only in paid and not beyond the
+old account floor `$1`; the normalized generation must contain a paid lot even with zero residual,
+and a bonus-only or zero hold keeps it as a zero allocation anchor, so that a possible settlement
+overrun is not erroneously attributed to bonus. Cancel returns the entire hold by the saved
+allocations. Settlement turns exactly these allocations into charged/released, updates the lots,
+and writes the charge attribution to `funding_ledger_allocations_v2`. An exact terminal replay
+charges nothing again and checks the original immutable generation even after a subsequent
+monotonic head advance.
 
-`account_topup` классифицирует положительный `signup-bonus:*` как `welcome_bonus`; остальные
-credits и negative adjustments — как `paid`. Exact idempotency replay возвращает первую ledger
-строку до любой повторной lot mutation. Durable outbox recovery выполняет тот же settlement path.
+`account_topup` classifies a positive `signup-bonus:*` as `welcome_bonus`; all other credits and
+negative adjustments — as `paid`. An exact idempotency replay returns the first ledger row before
+any repeated lot mutation. Durable outbox recovery executes the same settlement path.
 
 Real PostgreSQL evidence —
 `pg::tests::pre_cutover_funding_v2_writer_postgres_matrix`: bonus-first/replay/cancel/settlement,
-paid overrun, top-up/bonus/adjust, recovery после enqueue, writer после normalization wait и
-проверка, что settlement не захватывает reservation row до funding-account lock.
+paid overrun, top-up/bonus/adjust, recovery after enqueue, writer after normalization wait, and
+verification that settlement does not seize the reservation row before the funding-account lock.
 
-Пока global release head отсутствует, snapshot составной: существующий immutable
-`pricing_admission_snapshots` закрепляет старую активную цену, а
-`funding_reservation_snapshots_v2` вместе с `funding_reservation_allocations_v2` закрепляет exact
-funding generation и bonus-first lots. Это необходимо, потому что полный prepared release сам
-ссылается на уже нормализованные funding generations. После Stage 9 новые запросы атомарно пишут
-release-связанные таблицы migration 0023; pre-cutover rows продолжают завершаться по своему
-составному snapshot и не пересчитываются.
+While the global release head is absent, the snapshot is composite: the existing immutable
+`pricing_admission_snapshots` pins the old active price, while
+`funding_reservation_snapshots_v2` together with `funding_reservation_allocations_v2` pins the
+exact funding generation and bonus-first lots. This is necessary because the full prepared release
+itself references already normalized funding generations. After Stage 9, new requests atomically
+write the release-linked tables of migration 0023; pre-cutover rows continue to complete by their
+composite snapshot and are not recalculated.
 
 ## Online plan/apply
 
-Planner строит content-addressed plan по всему inventory. Ручной resolution/reviewer artifact не
-используется. Для каждого аккаунта plan содержит source-state/ledger digests, точные target lots и
-структурные blockers.
+The planner builds a content-addressed plan over the entire inventory. No manual
+resolution/reviewer artifact is used. For each account the plan contains source-state/ledger
+digests, exact target lots, and structural blockers.
 
-Engine producer предоставляет только account-local операции под control key:
+The engine producer provides only account-local operations under the control key:
 
 ```text
 GET  /admin/pricing/v2/funding/{account_id}/normalization
@@ -97,112 +100,119 @@ POST /admin/pricing/v2/funding/{account_id}/normalization
      {expected_source_state_digest, expected_normalization_digest}
 ```
 
-`GET` работает в `REPEATABLE READ READ ONLY` и возвращает `ready|blocked|normalized`, canonical
-`sha256:v2` source/target identities, exact lots и typed blockers. `POST` выполняется в
-`SERIALIZABLE`, сначала берёт тот же funding-account advisory lock, затем полностью перестраивает
-plan. Ответ `stored|unchanged|stale|blocked|conflict` не допускает применения отредактированного или
-устаревшего JSON. SQLite отвечает fail closed: live authority этого перехода только PostgreSQL.
-`packages/contracts` валидирует полный strict wire shape и canonical digests, а единственные typed
-вызовы находятся в `packages/engine-client`; transport consumer сам по себе не запускает backfill.
+`GET` operates in `REPEATABLE READ READ ONLY` and returns `ready|blocked|normalized`, canonical
+`sha256:v2` source/target identities, exact lots, and typed blockers. `POST` runs in
+`SERIALIZABLE`, first takes the same funding-account advisory lock, then fully rebuilds the plan.
+The response `stored|unchanged|stale|blocked|conflict` does not permit applying edited or stale
+JSON. SQLite responds fail closed: the live authority of this transition is PostgreSQL only.
+`packages/contracts` validates the full strict wire shape and canonical digests, and the only typed
+calls live in `packages/engine-client`; the transport consumer by itself does not start the
+backfill.
 
-При наличии согласованных legacy `funding_buckets` exact historical `welcome_track_bonus`
-переносится в provider-independent `welcome_bonus`, а все остальные buckets схлопываются в `paid`.
-Если legacy buckets отсутствуют, planner восстанавливает welcome по immutable
-`signup-bonus:*` top-up и `balance_after_nano`; удалённые retention-ом charge rows учитываются как
-точные отрицательные gaps между сохранившимися money rows. Без welcome evidence весь aggregate
-становится paid. То же верно после exact same-subject/full-amount `bonus-revoke:*`: это отзыв
-entitlement, а не расход welcome lot, поэтому pre-revoke gaps остаются историческим evidence и не
-создают активный bonus. Partial, mismatched, duplicate или mixed revoked/active grant остаётся
-`invalid_ledger_evidence`. В каждом варианте создаётся нулевой paid anchor.
+When consistent legacy `funding_buckets` exist, the exact historical `welcome_track_bonus` is
+carried into the provider-independent `welcome_bonus`, and all other buckets collapse into `paid`.
+If legacy buckets are absent, the planner restores the welcome amount from the immutable
+`signup-bonus:*` top-up and `balance_after_nano`; charge rows deleted by retention are accounted
+for as exact negative gaps between the surviving money rows. Without welcome evidence the entire
+aggregate becomes paid. The same holds after an exact same-subject/full-amount `bonus-revoke:*`:
+this is a revocation of the entitlement, not a spend of the welcome lot, so pre-revoke gaps remain
+historical evidence and do not create an active bonus. A partial, mismatched, duplicate, or mixed
+revoked/active grant remains `invalid_ledger_evidence`. In every variant a zero paid anchor is
+created.
 
-Apply идёт bounded batches. Каждая account-local `SERIALIZABLE` transaction:
+Apply proceeds in bounded batches. Each account-local `SERIALIZABLE` transaction:
 
-1. берёт account money lock;
-2. перечитывает aggregate, ledger, reservations и existing lots;
-3. проверяет expected source digest;
-4. вычисляет точный неиспользованный welcome остаток;
-5. относит residual balance/reserved/spent к paid;
-6. проверяет суммы и overflow;
-7. если active legacy reservations имеют единственную доказанную paid-only attribution, атомарно
-   создаёт для них immutable funding snapshots/allocations на paid lot; старый pricing snapshot
-   остаётся неизменным;
-8. атомарно пишет lots, funding generation и head.
+1. takes the account money lock;
+2. re-reads the aggregate, the ledger, reservations, and existing lots;
+3. checks the expected source digest;
+4. computes the exact unused welcome remainder;
+5. attributes the residual balance/reserved/spent to paid;
+6. checks the sums and overflow;
+7. if active legacy reservations have a single proven paid-only attribution, atomically creates
+   immutable funding snapshots/allocations for them on the paid lot; the old pricing snapshot
+   remains unchanged;
+8. atomically writes the lots, the funding generation, and the head.
 
-Paid-only adoption разрешена только когда active holds исчерпывают точный account reserved
-aggregate, ни один welcome lot не владеет reserve, а ledger-replay без legacy buckets дополнительно
-доказывает полностью исчерпанный welcome остаток. Любая живая bonus/paid неоднозначность остаётся
-`active_legacy_reservation`; post-reserve attribution не угадывается.
+Paid-only adoption is permitted only when the active holds exhaust the exact account reserved
+aggregate, no welcome lot owns any reserve, and the ledger replay without legacy buckets
+additionally proves a fully exhausted welcome remainder. Any live bonus/paid ambiguity remains
+`active_legacy_reservation`; post-reserve attribution is not guessed.
 
-Другие аккаунты не блокируются. Запрос текущего аккаунта может кратко ждать его money lock, после
-чего целиком выполняется по состоянию до или после normalization.
+Other accounts are not blocked. A request for the current account may briefly wait for its money
+lock, after which it executes entirely against the state before or after normalization.
 
-Apply resumable и idempotent: exact account replay не создаёт дубликаты. Stale account
-перепланируется без отката уже завершённых аккаунтов. Глобальный partial-result допустим во время
-backfill, потому что active release остаётся legacy; Stage 9 требует 100% readiness.
+Apply is resumable and idempotent: an exact account replay does not create duplicates. A stale
+account is replanned without rolling back already completed accounts. A global partial result is
+acceptable during the backfill because the active release remains legacy; Stage 9 requires 100%
+readiness.
 
 ## Bounded orchestration
 
-Двухфазный `stageFundingNormalizationJobV2` принимает только exact `plan_digest` полностью ACKed
-Stage 5 run в состоянии `materializing`, у которого target/recovery skeletons ещё имеют nullable
-final identities, и идемпотентно создаёт один
-`pricing_release_control_jobs_v2` с `job_kind=normalize_funding`. Payload identity связывает
-immutable Stage 5 run/plan, оба skeleton plan digest, engine/service inventories и funding-plan
-digest, но не содержит ещё не существующий final funding manifest. `planned`, blocked/failed,
-already-finalized или изменившийся Stage 5 run отклоняется до создания job. Replay уже
-подтверждённого `prepared` run возвращает тот же job ID. Worker не ищет release для автоматического
-запуска: отсутствие явно staged job означает отсутствие любых normalization POST.
+The two-phase `stageFundingNormalizationJobV2` accepts only the exact `plan_digest` of a fully
+ACKed Stage 5 run in the `materializing` state, whose target/recovery skeletons still have nullable
+final identities, and idempotently creates one
+`pricing_release_control_jobs_v2` with `job_kind=normalize_funding`. The payload identity binds the
+immutable Stage 5 run/plan, both skeleton plan digests, the engine/service inventories, and the
+funding-plan digest, but does not contain the not-yet-existing final funding manifest. `planned`,
+blocked/failed, already-finalized, or a changed Stage 5 run is rejected before the job is created.
+Replaying an already confirmed `prepared` run returns the same job ID. The worker does not look for
+a release to launch automatically: the absence of an explicitly staged job means the absence of any
+normalization POSTs.
 
-На каждом resumable slice worker:
+On each resumable slice the worker:
 
-1. восстанавливает только истёкшие parent/account leases;
-2. дважды исчерпывает engine cursor с bounded page size и отклоняет duplicate/regressing cursor;
-3. сравнивает stable identity `(account_id,status,multiplier_bp)`. Live
-   `balance/reserved/spent` и funding head намеренно не входят в coverage digest: money writers
-   продолжают работать и сериализуются с apply account-local lock'ом;
-4. отдельно сверяет canonical service inventory. Все service accounts исключаются из funding
-   queue, потому что их release assignment — `meter_only` без funding generation;
-5. получает и применяет не больше configured account batch. Перед каждым POST выполняется новый
-   GET, и POST получает только exact digests из этого ответа;
-6. делает финальный полный inventory scan и повторную coverage-проверку перед confirmation.
+1. recovers only expired parent/account leases;
+2. exhausts the engine cursor twice with a bounded page size and rejects a duplicate/regressing
+   cursor;
+3. compares the stable identity `(account_id,status,multiplier_bp)`. Live
+   `balance/reserved/spent` and the funding head are deliberately not part of the coverage digest:
+   money writers keep running and serialize with the apply account-local lock;
+4. separately verifies the canonical service inventory. All service accounts are excluded from the
+   funding queue because their release assignment is `meter_only` without a funding generation;
+5. fetches and applies no more than the configured account batch. Before each POST a new GET is
+   performed, and the POST receives only the exact digests from that response;
+6. performs a final full inventory scan and a repeated coverage check before confirmation.
 
-`active_legacy_reservation` возвращает только свой account в `retry`, когда funding attribution
-остаётся неоднозначной. Доказанный paid-only active reserve нормализуется без ожидания idle gap и
-без остановки новых запросов. Остальные typed blockers сохраняются как `blocker` с exact `source`,
-`source_state_digest` и `blockers[]`; `conflict` также остаётся fail closed. `stale`
-перепланируется. `normalized`, `stored` и `unchanged` фиксируются как `ready`. Expired leases не
-теряют plan identity, а bounded retry не откатывает уже ready accounts.
+`active_legacy_reservation` returns only its own account to `retry` when funding attribution
+remains ambiguous. A proven paid-only active reserve is normalized without waiting for an idle gap
+and without stopping new requests. The remaining typed blockers are saved as `blocker` with the
+exact `source`, `source_state_digest`, and `blockers[]`; `conflict` likewise remains fail closed.
+`stale` is replanned. `normalized`, `stored`, and `unchanged` are recorded as `ready`. Expired
+leases do not lose plan identity, and a bounded retry does not roll back already ready accounts.
 
-Parent становится `confirmed` только при одновременном выполнении всех условий:
+The parent becomes `confirmed` only when all of the following conditions hold simultaneously:
 
-- final engine identity digest и service inventory digest совпадают с immutable target plan;
-- queue содержит ровно все balance accounts и ни одного service/missing/extra account;
-- каждая строка `ready`, имеет positive funding generation и
-  `applied_funding_digest=target_funding_digest` без blockers;
-- canonical funding manifest вычислен из exact ready queue и ещё не конфликтует с уже
-  финализированной identity.
+- the final engine identity digest and the service inventory digest match the immutable target
+  plan;
+- the queue contains exactly all balance accounts and not a single service/missing/extra account;
+- every row is `ready`, has a positive funding generation, and
+  `applied_funding_digest=target_funding_digest` without blockers;
+- the canonical funding manifest is computed from the exact ready queue and does not yet conflict
+  with an already finalized identity.
 
-Новый account после этого evidence инвалидирует следующий Stage 8 inventory digest; Stage 9 ещё
-раз проверяет полное покрытие под global release lock непосредственно перед single-head CAS.
-Первая короткая `SERIALIZABLE` confirmation transaction заполняет каждую balance assignment только
-переходом `funding_generation: NULL → positive`, сохраняет одинаковый canonical
-`funding_manifest_digest` и копирует exact funding evidence в заранее подготовленный recovery plan.
-Любая replacement, missing/extra assignment или несовпадение ready queue откатывает всю локальную
-финализацию. После commit consumer строит exact target/recovery engine releases и recovery link,
-выполняет три prepare+readback без удержания PostgreSQL transaction, а затем второй короткой
-`SERIALIZABLE` transaction сохраняет три ACK, `engine_release_digest`, target/recovery digests и
-статус `prepared`. Retryable transport/DB failure оставляет parent неподтверждённым и допускает
-idempotent retry; immutable readback drift или изменившийся local bundle останавливается fail
-closed. DB guards запрещают более ранний `prepared` и замораживают assignments после него. Runner
-не создаёт activation job/Stage 8 evidence, не двигает release head и не меняет balances или
-pricing policy.
+A new account after this evidence invalidates the next Stage 8 inventory digest; Stage 9 once again
+checks full coverage under the global release lock immediately before the single-head CAS. The
+first short `SERIALIZABLE` confirmation transaction fills each balance assignment only with the
+`funding_generation: NULL → positive` transition, saves the identical canonical
+`funding_manifest_digest`, and copies the exact funding evidence into the pre-prepared recovery
+plan. Any replacement, missing/extra assignment, or ready-queue mismatch rolls back the entire
+local finalization. After commit the consumer builds the exact target/recovery engine releases and
+the recovery link, performs three prepare+readback operations without holding a PostgreSQL
+transaction, and then in a second short `SERIALIZABLE` transaction saves the three ACKs, the
+`engine_release_digest`, the target/recovery digests, and the `prepared` status. A retryable
+transport/DB failure leaves the parent unconfirmed and permits an idempotent retry; immutable
+readback drift or a changed local bundle stops fail closed. DB guards forbid an earlier `prepared`
+and freeze assignments after it. The runner does not create an activation job/Stage 8 evidence,
+does not move the release head, and does not change balances or the pricing policy.
 
-## Staging и status
+## Staging and status
 
-Production status и staging доступны только через AdminGuard-protected commerce API. Оба endpoint
-требуют проверенный `x-admin-actor`; stage дополнительно принимает осмысленный `reason`. Status
-ничего не пишет и показывает lineage, состояния обоих plans/job, attempts/last error, разбиение
-queue и обе final identities. Stage идемпотентно создаёт job, атомарно пишет attributed audit
-request и возвращает тот же strict status snapshot с `staged_job_id`:
+Production status and staging are available only through the AdminGuard-protected commerce API.
+Both endpoints require a verified `x-admin-actor`; stage additionally accepts a meaningful
+`reason`. Status writes nothing and shows the lineage, the states of both plans/job,
+attempts/last error, the queue breakdown, and both final identities. Stage idempotently creates the
+job, atomically writes the attributed audit request, and returns the same strict status snapshot
+with `staged_job_id`:
 
 ```text
 GET  /v1/admin/pricing-stage6-v2?plan_digest=sha256:v2:<exact-stage5-plan-digest>
@@ -210,60 +220,62 @@ POST /v1/admin/pricing-stage6-v2/stage
 {"plan_digest":"sha256:v2:<exact-stage5-plan-digest>","reason":"normalize reviewed full inventory"}
 ```
 
-Engine credentials endpoint'ам не нужны: account-local и release prepare выполняет уже запущенный
-worker. Package CLI остаётся диагностическим non-production entrypoint и не запускается по SSH.
-Наличие кода, API или локального integration evidence не заменяет production `confirmed` status.
+The endpoints do not need engine credentials: the account-local and release prepare work is
+performed by the already running worker. The package CLI remains a diagnostic non-production
+entrypoint and is not launched over SSH. The existence of code, the API, or local integration
+evidence does not substitute for the production `confirmed` status.
 
-Bounded параметры worker имеют безопасные defaults и жёсткие пределы:
+The worker's bounded parameters have safe defaults and hard limits:
 
 ```text
 FUNDING_NORMALIZATION_POLL_MS=5000
 FUNDING_NORMALIZATION_BATCH_SIZE=25              # 1..500 account operations per slice
 FUNDING_NORMALIZATION_INVENTORY_PAGE_SIZE=500    # 1..500 rows per cursor page
-FUNDING_NORMALIZATION_LEASE_MS=300000             # 30s..1h, heartbeat на cursor pages
+FUNDING_NORMALIZATION_LEASE_MS=300000             # 30s..1h, heartbeat on cursor pages
 FUNDING_NORMALIZATION_RETRY_MS=15000              # 1s..1h
 ```
 
 ## In-flight contract
 
-Ноль reservations не требуется. Legacy-format reservations/outbox rows, созданные до
-dual-compatible runtime, продолжают естественно завершаться до или после Stage 9 по своей
-reserve-time identity. Новые запросы продолжают поступать и уже несут v2 snapshot; оба формата
-пересекают Stage 9 без пересчёта цены или funding allocation.
+Zero reservations is not required. Legacy-format reservations/outbox rows created before the
+dual-compatible runtime continue to complete naturally before or after Stage 9 by their
+reserve-time identity. New requests keep arriving and already carry a v2 snapshot; both formats
+cross Stage 9 without any price or funding allocation recalculation.
 
-Hot account также не обязан случайно попасть в idle gap: когда welcome полностью исчерпан или
-другая exact authority уже доказывает paid-only reserve, Stage 6 под общим account lock добавляет
-только funding identity к незавершённым legacy reservations. Их immutable pricing identity и
-клиентский stream не меняются. Если хотя бы часть reserve может принадлежать welcome, account ждёт
-естественного terminal state и остаётся fail-closed.
+A hot account also does not have to happen to fall into an idle gap: when the welcome amount is
+fully exhausted or another exact authority already proves a paid-only reserve, Stage 6, under the
+shared account lock, adds only the funding identity to unfinished legacy reservations. Their
+immutable pricing identity and the client stream do not change. If even part of the reserve may
+belong to welcome, the account waits for its natural terminal state and remains fail-closed.
 
 ## Blockers
 
-Ручной финансовой ревизии нет, но автоматическая арифметика остаётся fail closed. Stage 6 не может
-объявить account ready при:
+There is no manual financial review, but the automatic arithmetic remains fail closed. Stage 6
+cannot declare an account ready in case of:
 
-- несовпадении aggregate и суммы lots;
-- partial/mismatched/duplicate `bonus-revoke:*`, который не доказывает полный отзыв каждого
-  retained `signup-bonus:*` того же subject;
-- negative/overflow, нарушающем money invariants;
-- конфликтующем idempotency reference;
-- незавершённой legacy reservation, для которой нет честной paid-only attribution и поэтому нельзя
-  атомарно создать funding snapshot без угадывания;
-- изменении account state после построения expected digest.
+- a mismatch between the aggregate and the sum of lots;
+- a partial/mismatched/duplicate `bonus-revoke:*` that does not prove the full revocation of every
+  retained `signup-bonus:*` of the same subject;
+- negative/overflow violating the money invariants;
+- a conflicting idempotency reference;
+- an unfinished legacy reservation for which there is no honest paid-only attribution, so a funding
+  snapshot cannot be atomically created without guessing;
+- a change in account state after the expected digest was built.
 
-Такой blocker исправляется кодом или повторным планом на свежем state; production traffic ради него
-не останавливается.
+Such a blocker is fixed by code or by a repeated plan on fresh state; production traffic is not
+stopped for it.
 
-Durable queue хранит точные `source_state_digest`, `source`, `blockers[]` и nullable target identity.
-Для `ready` target generation/digest и exact applied digest остаются обязательными. Это позволяет
-сохранять честный blocked-план без placeholder-значений; наличие expand-схемы само по себе не
-запускает backfill.
+The durable queue stores the exact `source_state_digest`, `source`, `blockers[]`, and a nullable
+target identity. For `ready`, the target generation/digest and the exact applied digest remain
+mandatory. This makes it possible to preserve an honest blocked plan without placeholder values;
+the existence of the expand schema by itself does not start the backfill.
 
 ## Completion evidence
 
-Stage 6 завершён, когда confirmed parent доказывает exact full-inventory funding manifest, каждый
-balance account target и recovery plan имеет exact immutable funding generation, final manifest
-атомарно сохранён, все новые writers dual-compatible, legacy-format inflight count наблюдается и
-format-aware settlement доказан, а full replay возвращает только `unchanged`. После engine prepare/readback evidence входит в Stage 8 и
-обе финальные release identities. Наличие runner-кода без staged/confirmed production job
-завершением не считается.
+Stage 6 is complete when the confirmed parent proves the exact full-inventory funding manifest,
+every balance account target and the recovery plan has an exact immutable funding generation, the
+final manifest is atomically saved, all new writers are dual-compatible, the legacy-format inflight
+count is observed, format-aware settlement is proven, and a full replay returns only `unchanged`.
+After the engine prepare/readback, the evidence feeds into Stage 8 and both final release
+identities. The existence of runner code without a staged/confirmed production job does not count
+as completion.

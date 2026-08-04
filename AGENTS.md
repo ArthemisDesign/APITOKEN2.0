@@ -1,352 +1,352 @@
-# AGENTS.md — контракт для любого AI-агента в этом репозитории
+# AGENTS.md — contract for any AI agent in this repository
 
-Полные правила проекта — в `CLAUDE.md` (архитектура, слои, инварианты), `BRANCHES.md` (модель
-веток) и `CONTRIBUTING.md` (delivery-конвейер). Прочитай их. Этот файл и `CLAUDE.md` —
-единый контракт: агент ОБЯЗАН прочитать ОБА файла целиком до начала работы, ни один из них
-не заменяет другой. Здесь — то, что нарушают чаще всего, плюс проверенная карта и команды.
-Над репозиторием одновременно работают десятки агентов (см. `git worktree list`), поэтому
-дисциплина изоляции и атрибуции — не формальность.
+The full project rules live in `CLAUDE.md` (architecture, layers, invariants), `BRANCHES.md` (branch
+model) and `CONTRIBUTING.md` (delivery pipeline). Read them. This file and `CLAUDE.md` form a
+single contract: the agent MUST read BOTH files in full before starting work; neither one
+replaces the other. Here you find what gets violated most often, plus a proven map and commands.
+Dozens of agents work on this repository simultaneously (see `git worktree list`), so
+isolation and attribution discipline is not a formality.
 
-## Общение и совместная работа
+## Communication and collaboration
 
-ВСЕГДА отвечай на языке текущего запроса пользователя. Язык предыдущих сообщений не переопределяет
-язык нового запроса. Если запрос смешивает несколько языков, используй преобладающий; переходи на
-другой язык только по явной просьбе пользователя.
+ALWAYS reply in the language of the user's current request. The language of previous messages does not
+override the language of a new request. If a request mixes several languages, use the predominant one; switch to
+another language only at the user's explicit request.
 
-Цель ответа — не минимальное число строк, а максимальная практическая польза без воды. Пиши ясно и
-конкретно. Краткий простой вопрос закрывай кратко; сложное решение, диагностику или неоднозначный
-выбор объясняй настолько подробно, чтобы человек понял вывод, основания и последствия без
-необходимости вытягивать контекст дополнительными вопросами.
+The goal of a reply is not the minimum number of lines but the maximum practical benefit without filler. Write clearly and
+concretely. Close a short, simple question briefly; explain a complex decision, diagnosis, or ambiguous
+choice in enough detail that the person understands the conclusion, its grounds, and its consequences without
+having to pull context out of you with follow-up questions.
 
-- Начинай с главного вывода или результата, затем давай существенные причины, ограничения и
-  следующий шаг. Не выдавай голый итог, если без объяснения непонятно, почему он верен.
-- Будь инициативным партнёром: замечай риски, упущенные возможности и логичные улучшения. После
-  выполнения предлагай 1–3 наиболее ценные идеи продолжения, если они действительно полезны.
-- Направляй пользователя: если есть несколько путей, рекомендуй один, объясняй критерий выбора и
-  кратко обозначай компромиссы альтернатив. Не перекладывай обычные технические решения обратно
-  на пользователя.
-- Учитывай уровень собеседника и контекст проекта. Незнакомые термины поясняй простыми словами;
-  для опытного пользователя не разжёвывай очевидное.
-- Если запрос сформулирован неточно, сначала исследуй доступный контекст и сделай безопасное
-  разумное предположение. Уточняющий вопрос задавай только когда разные ответы существенно меняют
-  результат или действие рискованно.
-- Не обрывай диалог формальным отказом. При ограничении или блокере объясни конкретную причину,
-  что уже можно сделать безопасно, и предложи лучший доступный обходной путь.
-- Отделяй факты от предположений. Не придумывай успешные проверки, свойства системы или причины
-  ошибки; указывай неопределённость и способ её снять.
-- Не показывай код, diff, команды и длинный журнал работы без запроса. Но сообщай результат,
-  изменённые файлы, выполненные проверки, важные ограничения и полезный следующий шаг.
+- Start with the main conclusion or result, then give the material reasons, constraints, and the
+  next step. Do not hand over a bare result if it is unclear why it is correct without explanation.
+- Be a proactive partner: notice risks, missed opportunities, and sensible improvements. After
+  completing work, suggest 1–3 of the most valuable follow-up ideas, if they are genuinely useful.
+- Guide the user: if there are several paths, recommend one, explain the selection criterion, and
+  briefly outline the trade-offs of the alternatives. Do not push routine technical decisions back
+  onto the user.
+- Consider your interlocutor's level and the project context. Explain unfamiliar terms in plain words;
+  for an experienced user, do not spell out the obvious.
+- If a request is imprecisely worded, first investigate the available context and make a safe,
+  reasonable assumption. Ask a clarifying question only when different answers materially change the
+  result or the action is risky.
+- Do not cut the dialogue short with a formal refusal. When limited or blocked, explain the specific reason,
+  what can already be done safely, and propose the best available workaround.
+- Separate facts from assumptions. Do not invent successful checks, system properties, or causes of
+  an error; state the uncertainty and the way to resolve it.
+- Do not show code, diffs, commands, or a long work log unprompted. But do report the result,
+  the changed files, the checks performed, important constraints, and a useful next step.
 
-Формат выбирай по содержанию, а не по искусственному лимиту строк. Обычно достаточно нескольких
-абзацев или короткого списка; для архитектуры, расследования, плана и сравнения допустим подробный
-структурированный ответ. Избегай повторов, канцелярита, формальных секций ради секций и россыпи
-малозначимых советов. В ходе долгой работы давай короткие содержательные обновления, чтобы человек
-понимал текущий статус и мог вовремя скорректировать направление.
+Choose the format based on content, not on an artificial line limit. Usually a few
+paragraphs or a short list suffice; for architecture, an investigation, a plan, or a comparison, a detailed
+structured reply is acceptable. Avoid repetition, bureaucratese, formal sections for the sake of sections, and a scatter of
+low-value tips. During long work, give short, substantive updates so the person
+understands the current status and can correct course in time.
 
-## Инженерные принципы
+## Engineering principles
 
-- Не сохраняй обратную совместимость как самоцель: legacy-прослойки, deprecated-ветки кода и
-  двойные форматы «на всякий случай» не тащим. Исключения — зафиксированные инварианты репо:
-  expand-only миграции и контракты между контекстами (Control API, sales feed) меняются только
-  по правилам ниже, а не удаляются.
-- Выбирай простейшую реализацию, которая полностью закрывает текущие требования. Запас
-  «на будущее» и абстракции без второго вызова не проектируем.
-- Предпочитай зрелые поддерживаемые библиотеки самописным реализациям. Сначала смотри, что уже
-  есть в зависимостях проекта (`Cargo.toml`, `package.json`, соседние импорты); новая зависимость
-  требует обоснования в коммите.
-- Исправляй причину, а не следствие. Если фикс маскирует симптом (retry вокруг непонятной ошибки,
-  `|| true`, заглушенный assert), остановись и найди корень — или честно опиши в коммите, почему
-  корень сейчас недостижим.
-- Предлагай лучшие практики, даже если они требуют рефакторинга. Но оформляй это как предложение:
-  объём рефакторинга согласовывай с человеком и не раздувай текущий diff сверх задачи.
+- Do not preserve backward compatibility as an end in itself: we do not drag along legacy shims, deprecated code
+  branches, and dual formats "just in case". The exceptions are the repo's fixed invariants:
+  expand-only migrations and cross-context contracts (Control API, sales feed) change only
+  by the rules below; they are not deleted.
+- Choose the simplest implementation that fully covers the current requirements. We do not design
+  headroom "for the future" or abstractions without a second call site.
+- Prefer mature, maintained libraries over hand-rolled implementations. First look at what is already
+  in the project's dependencies (`Cargo.toml`, `package.json`, neighboring imports); a new dependency
+  requires justification in the commit.
+- Fix the cause, not the symptom. If a fix masks the symptom (a retry around an unexplained error,
+  `|| true`, a silenced assert), stop and find the root — or honestly describe in the commit why
+  the root is currently unreachable.
+- Propose best practices even when they require refactoring. But frame it as a proposal:
+  agree the refactoring scope with the person and do not inflate the current diff beyond the task.
 
-## Страховки нет — правила соблюдаешь сам
+## There is no safety net — you follow the rules yourself
 
-Хук `.claude/hooks/guard-git.sh` — это PreToolUse-hook Claude Code (см. `.claude/settings.json`).
-Его запуск ограничен 15 секундами, чтобы ошибка в разборе команды не могла навсегда повесить
-сессию Claude Code; сам hook всё равно обязан завершаться сразу и покрывается regression-suite.
-В OpenCode и других агентах он НЕ исполняется: запрещённые git-команды ничто не блокирует,
-и чужую работу можно уничтожить молча. Дисциплина ниже — на тебе.
+The `.claude/hooks/guard-git.sh` hook is a Claude Code PreToolUse hook (see `.claude/settings.json`).
+Its run is capped at 15 seconds so that a bug in command parsing cannot hang a Claude Code
+session forever; the hook itself must still exit immediately and is covered by a regression suite.
+In OpenCode and other agents it does NOT run: nothing blocks forbidden git commands,
+and someone else's work can be destroyed silently. The discipline below is on you.
 
-## Ветка не изолирует — изолирует worktree
+## A branch does not isolate — a worktree isolates
 
-Рабочее дерево одно на каталог. `git checkout` в общем каталоге переписывает файлы под соседним
-агентом и переносит его незакоммиченные правки на твою ветку. Именно так работа оказывается
-приписана не тому автору.
+There is one working tree per directory. `git checkout` in a shared directory rewrites files from under a neighboring
+agent and carries their uncommitted changes onto your branch. That is exactly how work ends up
+attributed to the wrong author.
 
-Worktree нужен для ЛЮБОЙ работы с репозиторием, а не только для правок. Изучение кода, аудит,
-расследование, прогон тестов — всё это тоже делается в отдельном worktree со свежего
-`origin/master`: основной клон может в этот момент переключать другой агент, сборка в нём
-перезаписывает `target/` и `node_modules/` под соседом, а вывод `git status`/`git diff` в общем
-дереве смешивает чужие изменения с твоими выводами. Read-only worktree удаляется сразу после
-завершения задачи — по тем же правилам, что и после мёрджа (см. «Уборка после мёрджа»).
+A worktree is required for ANY work with the repository, not just for edits. Reading code, auditing,
+investigating, running tests — all of this is also done in a separate worktree off a fresh
+`origin/master`: another agent may be switching the primary clone at that moment, a build in it
+overwrites `target/` and `node_modules/` from under the neighbor, and `git status`/`git diff` output in a shared
+tree mixes someone else's changes into your findings. A read-only worktree is deleted immediately after
+the task completes — by the same rules as after a merge (see "Cleanup after merge").
 
 ```bash
 worktree=$(./deploy/agent-worktree.sh create fix/task-slug task-slug)
-cd "$worktree"          # дальше не покидаешь этот каталог
+cd "$worktree"          # do not leave this directory afterwards
 ```
 
-Lifecycle-скрипт сам делает `git fetch origin`, создаёт ветку от свежего `origin/master` в
-`${AGENT_WORKTREE_ROOT:-$HOME/wt}` и записывает служебную метку владения/возраста. Сырые
-`git worktree add/remove/prune` обходят эти страховки и запрещены. Для изучения используй любую
-scratch-ветку через тот же `create`.
+The lifecycle script itself runs `git fetch origin`, creates a branch off a fresh `origin/master` in
+`${AGENT_WORKTREE_ROOT:-$HOME/wt}`, and records a service ownership/age marker. Raw
+`git worktree add/remove/prune` bypasses these safeguards and is forbidden. For exploration, use any
+scratch branch via the same `create`.
 
-Проверь до первой правки: `git rev-parse --show-toplevel` — твой каталог, `git rev-parse
---abbrev-ref HEAD` — твоя ветка. Если это не так, не останавливай работу и не перекладывай
-обычную подготовку на человека: сам создай новый worktree и task-ветку от `origin/master`, перейди
-в них и продолжай. Спрашивай только если безопасное уникальное имя или база ветки действительно
-не определяются из задачи.
+Verify before the first edit: `git rev-parse --show-toplevel` — your directory, `git rev-parse
+--abbrev-ref HEAD` — your branch. If that is not the case, do not stop working and do not push
+routine setup back onto the person: create a new worktree and task branch off `origin/master` yourself, move
+into them, and continue. Ask only if a safe unique name or the branch base genuinely cannot
+be determined from the task.
 
-## Запрещённые команды
+## Forbidden commands
 
-Без явной команды человека НИКОГДА: `git checkout <branch>`, `git switch`, `git stash`,
-`git reset --hard`, `git clean -f`, `git merge`, `git rebase`, `git push` в чужую ветку или в
-`master`, сырые `git worktree add/remove/prune`. Стейджи только свои пути:
-`git add crates/forward/...`. `git add -A` и `git add .` запрещены. Создание и уборку делает
-только `deploy/agent-worktree.sh`; синхронизацию локального master при `finish` он выполняет сам.
+Without an explicit instruction from the person, NEVER: `git checkout <branch>`, `git switch`, `git stash`,
+`git reset --hard`, `git clean -f`, `git merge`, `git rebase`, `git push` into someone else's branch or into
+`master`, raw `git worktree add/remove/prune`. Stage only your own paths:
+`git add crates/forward/...`. `git add -A` and `git add .` are forbidden. Only
+`deploy/agent-worktree.sh` performs creation and cleanup; it also syncs the local master itself during `finish`.
 
-## Что считать своей работой
+## What counts as your work
 
-Твоя работа — коммиты на твоей ветке, а не состояние дерева:
+Your work is the commits on your branch, not the state of the tree:
 
 ```bash
-git diff --stat origin/master...HEAD    # только это идёт в отчёт
+git diff --stat origin/master...HEAD    # only this goes into the report
 ```
 
-Увидел в `git status` чужие изменения — не откатывай, не чини, не объясняй их происхождение.
-Одна строка «в дереве есть посторонние изменения», и продолжай свою задачу. Файл, прочитанный
-давно, перечитай перед правкой: между чтением и записью его мог изменить другой агент. Никогда не
-описывай содержимое файла по памяти из контекста.
+If you see someone else's changes in `git status` — do not revert them, do not fix them, do not explain their origin.
+One line "there are foreign changes in the tree", and continue your task. Re-read a file read
+long ago before editing it: another agent may have changed it between your read and your write. Never
+describe a file's contents from context memory.
 
-## Комментарий к каждому коммиту — обязателен
+## A message for every commit — mandatory
 
-КАЖДЫЙ созданный агентом коммит должен иметь содержательное сообщение как на странице коммита в
-GitHub: короткий Conventional Commit-заголовок (`type(scope): result`), пустую строку и подробный
-body. Однострочный `git commit -m "..."` без body запрещён.
+EVERY commit created by an agent must have a substantive message like on a commit page in
+GitHub: a short Conventional Commit header (`type(scope): result`), a blank line, and a detailed
+body. A one-line `git commit -m "..."` without a body is forbidden.
 
-Body должен объяснять:
+The body must explain:
 
-- какую проблему или ручную работу устраняет изменение и почему оно понадобилось;
-- что именно теперь делает код или документация, включая важные ограничения и страховки;
-- какие проверки выполнены. Нельзя заявлять о проверках, которые не запускались.
+- what problem or manual work the change eliminates and why it was needed;
+- what exactly the code or documentation now does, including important limitations and safeguards;
+- which checks were performed. You must not claim checks that were not run.
 
-Сообщение описывает изменение и его последствия, а не инструмент, модель или агента, который его
-сделал. Не добавляй AI/модель в заголовок, body, `Co-Authored-By` или другие trailers.
+The message describes the change and its consequences, not the tool, model, or agent that
+made it. Do not add AI/model mentions to the header, body, `Co-Authored-By`, or other trailers.
 
-## Документация — живой контракт
+## Documentation is a living contract
 
-Инструкции (этот файл, `CLAUDE.md`, `docs/**`, `crates/*/CLAUDE.md`, `README.md` пакетов) — часть
-кода, а не приложение к нему.
+The instructions (this file, `CLAUDE.md`, `docs/**`, `crates/*/CLAUDE.md`, package `README.md` files) are part of
+the code, not an appendix to it.
 
-- Твоя работа меняет поведение, описанное в инструкции (команда, контракт, путь, инвариант,
-  состав gate) — обнови соответствующую инструкцию В ТОМ ЖЕ коммите. Устаревшая инструкция
-  хуже отсутствующей: следующий агент будет выполнять её буквально.
-- Добавляешь новый функционал, сервис или bounded context — пиши для него новую инструкцию:
-  документ в `docs/<domain>/` (или `crates/<name>/CLAUDE.md` для крейта) и строку в индексе
-  `docs/README.md` и в карте репозитория ниже.
-- Инструкция перестала соответствовать реальности и исправить её некому/некогда — удали
-  вводящий в заблуждение фрагмент вместо того, чтобы оставить ложь. Ссылка на несуществующий
-  файл или команду — дефект уровня бага.
-- Новая кросс-контекстная связь, новый потребитель существующей связи или изменение контракта —
-  обнови строку в `docs/DEPENDENCIES.md` В ТОМ ЖЕ коммите. Исчезнувшую связь удаляют из карты,
-  а не оставляют «для истории».
-- Кросс-функциональное изменение (новая модель, цена/мультипликатор, новый провайдер, Control
-  API, sales feed, способ оплаты, алерт) — пройди соответствующий чеклист из
-  `docs/CHANGE_CHECKLISTS.md` целиком и укажи в body коммита, какой чеклист применён и какие
-  пункты неприменимы с причиной. Молча пропущенный пункт — нарушение.
-- Новую модель существующего провайдера доставляй двумя этапами. Первый коммит содержит research,
-  тариф и dormant implementation/canary, но НЕ production defaults, публичный catalog, router
-  presets, сайт или публичные docs. Публикация идёт отдельным последующим коммитом только после
-  GREEN exact implementation SHA и controlled production live: generation 2xx с реальным output,
-  terminal authoritative usage, incremental SSE и все заявленные controls. Строка quota/catalog и
-  успешный `countTokens` этим доказательством не являются. Failed generation означает withdrawal,
-  а не публикацию «для проверки». Admission micro-smoke сначала делает бесплатный `countTokens`,
-  затем минимальный generation с aggregate cap `$0.0001` (0,01 цента), если человек явно не
-  разрешил больший бюджет.
-- Исключение: `docs/audits/*` — исторические снимки на дату. Их не редактируют задним числом;
-  новый аудит — новым файлом с датой в названии или заголовке.
+- Your work changes behavior described in an instruction (a command, contract, path, invariant,
+  gate composition) — update the corresponding instruction IN THE SAME commit. A stale instruction
+  is worse than a missing one: the next agent will execute it literally.
+- Adding new functionality, a service, or a bounded context — write a new instruction for it:
+  a document in `docs/<domain>/` (or `crates/<name>/CLAUDE.md` for a crate) plus a line in the
+  `docs/README.md` index and in the repository map below.
+- An instruction no longer matches reality and there is nobody/no time to fix it — delete
+  the misleading fragment instead of leaving a lie. A link to a nonexistent
+  file or command is a bug-level defect.
+- A new cross-context link, a new consumer of an existing link, or a contract change —
+  update the line in `docs/DEPENDENCIES.md` IN THE SAME commit. A vanished link is removed from the map,
+  not left "for history".
+- A cross-functional change (a new model, price/multiplier, new provider, Control
+  API, sales feed, payment method, alert) — walk the corresponding checklist from
+  `docs/CHANGE_CHECKLISTS.md` in full and state in the commit body which checklist was applied and which
+  items are not applicable, with the reason. A silently skipped item is a violation.
+- Deliver a new model of an existing provider in two stages. The first commit contains the research,
+  the tariff, and a dormant implementation/canary, but NOT production defaults, the public catalog, router
+  presets, the site, or public docs. Publication goes in a separate follow-up commit only after
+  a GREEN exact implementation SHA and controlled production live: generation 2xx with real output,
+  terminal authoritative usage, incremental SSE, and all advertised controls. A quota/catalog line and
+  a successful `countTokens` are not this proof. A failed generation means withdrawal,
+  not publication "for checking". The admission micro-smoke first makes a free `countTokens` call,
+  then a minimal generation with an aggregate cap of `$0.0001` (0.01 of a cent), unless the person explicitly
+  allowed a larger budget.
+- Exception: `docs/audits/*` — historical snapshots as of a date. They are not edited retroactively;
+  a new audit is a new file with the date in its name or title.
 
-## Организация документации
+## Documentation organization
 
-В корне репозитория остаются только точки входа для агентов и людей: `AGENTS.md`, `CLAUDE.md`,
-`README.md`, `CONTRIBUTING.md`, `BRANCHES.md`. Вся предметная документация живёт в `docs/`
-по доменам, совпадающим с bounded context'ами:
+Only entry points for agents and people remain in the repository root: `AGENTS.md`, `CLAUDE.md`,
+`README.md`, `CONTRIBUTING.md`, `BRANCHES.md`. All subject-matter documentation lives in `docs/`
+by domain, matching the bounded contexts:
 
-- `docs/engine/` — Rust-движок: архитектура, Control API, провайдеры (Codex, Gemini), Stage 2.
-- `docs/commerce/` — коммерция: бэкенд, аутентификация, прайсинг, скидки, интеграции оплат и почты.
-- `docs/sales/` — партнёрское направление.
-- `docs/product/` — продуктовые витрины: OpenKeys, админ-панель.
-- `docs/ops/` — эксплуатация: деплой, инфраструктура, мониторинг, QA-прогоны.
-- `docs/audits/` — аудиты (append-only, см. выше).
-- `research/` — исследования и журналы, не являющиеся инструкциями.
+- `docs/engine/` — the Rust engine: architecture, Control API, providers (Codex, Gemini), Stage 2.
+- `docs/commerce/` — commerce: backend, authentication, pricing, discounts, payment and email integrations.
+- `docs/sales/` — the sales (affiliate) arm.
+- `docs/product/` — product storefronts: OpenKeys, admin panel.
+- `docs/ops/` — operations: deployment, infrastructure, monitoring, QA runs.
+- `docs/audits/` — audits (append-only, see above).
+- `research/` — research and journals that are not instructions.
 
-Правила:
+Rules:
 
-- Новый документ кладётся в домен своего контекста, а не в корень и не в чужой домен.
-- `docs/README.md` — индекс всего `docs/`; при добавлении или переносе документа обнови его.
-- Локальные инструкции остаются рядом с кодом: `crates/<name>/CLAUDE.md`,
-  `packages/db/MIGRATIONS.md`, `deploy/README.md` — не переносить в `docs/`.
-- В markdown-ссылках — относительные пути; в прозе и комментариях кода — путь от корня репо
-  (`docs/ops/DEPLOYMENT.md`), чтобы ссылка читалась из любого файла.
-- Runbook-анкоры вида `docs/ops/MONITORING.md#<alert>` в `observability/prometheus/rules/*` — это
-  идентификаторы алертов; их согласованность с секциями `docs/ops/MONITORING.md` проверяет
-  `deploy/monitoring-config.test.sh`, поэтому новый алерт без runbook-секции не пройдёт gate.
+- A new document goes into the domain of its context, not into the root and not into someone else's domain.
+- `docs/README.md` is the index of all of `docs/`; update it when adding or moving a document.
+- Local instructions stay next to the code: `crates/<name>/CLAUDE.md`,
+  `packages/db/MIGRATIONS.md`, `deploy/README.md` — do not move them into `docs/`.
+- In markdown links — relative paths; in prose and code comments — the path from the repo root
+  (`docs/ops/DEPLOYMENT.md`), so the reference reads correctly from any file.
+- Runbook anchors of the form `docs/ops/MONITORING.md#<alert>` in `observability/prometheus/rules/*` are
+  alert identifiers; their consistency with the sections of `docs/ops/MONITORING.md` is checked by
+  `deploy/monitoring-config.test.sh`, so a new alert without a runbook section will not pass the gate.
 
-## Инфраструктура и прод-сервер
+## Infrastructure and the production server
 
-Вся информация о проде — топология, хосты, порты, юниты, расположение секретов и способ доступа
-к серверу — берётся из инфра-доков: `docs/ops/INFRASTRUCTURE.md` в первую очередь, затем
-`docs/ops/DEPLOYMENT.md` и `docs/ops/MONITORING.md`. Прежде чем что-либо делать с продом,
-прочитай эти документы. Не угадывай адреса, порты, пути и credentials по памяти: если способа
-доступа нет в инфра-доках, его у агента нет. Ничего не деплоить и не мигрировать по SSH вручную —
-это делает только host-watchdog.
+All information about production — topology, hosts, ports, units, secret locations, and the way to access
+the server — is taken from the infra docs: `docs/ops/INFRASTRUCTURE.md` first, then
+`docs/ops/DEPLOYMENT.md` and `docs/ops/MONITORING.md`. Before doing anything with production,
+read these documents. Do not guess addresses, ports, paths, or credentials from memory: if the access
+method is not in the infra docs, the agent does not have it. Never deploy or migrate anything over SSH manually —
+only the host watchdog does that.
 
-## Карта репозитория
+## Repository map
 
-Все связи между контекстами (производитель → контракт → потребители) — `docs/DEPENDENCIES.md`;
-обходы зависимых мест при типовых кросс-функциональных изменениях — `docs/CHANGE_CHECKLISTS.md`.
+All links between contexts (producer → contract → consumers) — `docs/DEPENDENCIES.md`;
+walkthroughs of dependent places for typical cross-functional changes — `docs/CHANGE_CHECKLISTS.md`.
 
-- **Rust-движок** (Cargo workspace, `crates/*`): слои строго вниз
-  `registry ← pool ← forward ← server` (бинарь `claude-api`). Рядом, со своими границами:
-  `crates/metering` (тарификация, чистая математика, только `serde_json`), `crates/authbot`
-  (пополнение пула, стоит ВНЕ слоёв, перед реестром), `crates/router` (stateless unified
-  endpoint `router.apitoken.sale`, бинарь `claude-router` в blue-green слотах
-  `127.0.0.1:8800/8801` (`claude-router@.service`, stable Caddy origin `:8802`); ВНЕ слоёв,
-  к плоскостям только HTTP, без биллинга и registry —
-  см. `docs/engine/UNIFIED_ROUTER.md`) и credential-крейты `crates/gemini-credential`
-  и `crates/codex-credential` (шифрованные OAuth-конверты подписок Gemini/Codex — без сети и HTTP).
-  В API-слоях env читается только в `crates/server/src/config.rs`; `pool` — без сети
-  и HTTP, `registry` — без HTTP и внешней сети, но это единственный владелец
-  PostgreSQL-подключений движка (authority Stage 2), DB-I/O внутри `registry` — норма. Локальные границы крейта — в его `crates/<name>/CLAUDE.md`; он есть у основных крейтов
-  (registry, pool, forward, server, metering, authbot, router) — читай до первой правки крейта. Если
-  `CLAUDE.md` у крейта нет — ориентируйся по соседним и по `docs/engine/ARCHITECTURE.md`, а когда
-  осмысленно меняешь такой крейт, создай инструкцию по правилам выше.
-- **Коммерция** (pnpm workspace): `apps/api` (NestJS), `apps/worker`, общие
-  `packages/{contracts,db,engine-client,payments}`. К движку — ТОЛЬКО через HTTP Control API
-  (`docs/engine/CONTROL_API.md`); engine PostgreSQL/SQLite коммерция не открывает. Карта и
-  локальный запуск — `docs/commerce/COMMERCIAL_BACKEND.md`.
-- **Партнёрка**: `apps/sales-api`, `apps/sales-web`, `packages/sales-db` — своя БД `sales`;
-  единственная граница с коммерцией — internal feed под ключом `SALES_CONTROL_KEY`. Описание —
+- **Rust engine** (Cargo workspace, `crates/*`): layers strictly downward
+  `registry ← pool ← forward ← server` (binary `claude-api`). Alongside, with their own boundaries:
+  `crates/metering` (metering, pure math, only `serde_json`), `crates/authbot`
+  (pool replenishment, sits OUTSIDE the layers, ahead of the registry), `crates/router` (stateless unified
+  endpoint `router.apitoken.sale`, binary `claude-router` in blue-green slots
+  `127.0.0.1:8800/8801` (`claude-router@.service`, stable Caddy origin `:8802`); OUTSIDE the layers,
+  HTTP-only to the planes, no billing and no registry —
+  see `docs/engine/UNIFIED_ROUTER.md`) and the credential crates `crates/gemini-credential`
+  and `crates/codex-credential` (encrypted OAuth envelopes of Gemini/Codex subscriptions — no network and no HTTP).
+  In the API layers, env is read only in `crates/server/src/config.rs`; `pool` — no network
+  and no HTTP, `registry` — no HTTP and no external network, but it is the sole owner of the engine's
+  PostgreSQL connections (Stage 2 authority); DB I/O inside `registry` is the norm. A crate's local boundaries are in its `crates/<name>/CLAUDE.md`; the main crates have one
+  (registry, pool, forward, server, metering, authbot, router) — read it before the first edit of the crate. If
+  a crate has no `CLAUDE.md` — orient yourself by its neighbors and by `docs/engine/ARCHITECTURE.md`, and when
+  you meaningfully change such a crate, create an instruction by the rules above.
+- **Commerce** (pnpm workspace): `apps/api` (NestJS), `apps/worker`, shared
+  `packages/{contracts,db,engine-client,payments}`. To the engine — ONLY via the HTTP Control API
+  (`docs/engine/CONTROL_API.md`); commerce never opens the engine's PostgreSQL/SQLite. Map and
+  local launch — `docs/commerce/COMMERCIAL_BACKEND.md`.
+- **Sales (affiliate)**: `apps/sales-api`, `apps/sales-web`, `packages/sales-db` — its own `sales` DB;
+  the only boundary with commerce is the internal feed under the `SALES_CONTROL_KEY`. Description —
   `docs/sales/SALES_PORTAL.md`.
-- **OpenKeys** (`openkeys.apitoken.sale`): `apps/openkeys` (Next.js, порт 3410) и
-  `packages/openkeys-db` — своя PostgreSQL-схема и свои миграции. Предоплаченные ключи без
-  регистрации; с движком — только через Control API, commerce и sales не трогает. Описание —
+- **OpenKeys** (`openkeys.apitoken.sale`): `apps/openkeys` (Next.js, port 3410) and
+  `packages/openkeys-db` — its own PostgreSQL schema and its own migrations. Prepaid keys without
+  registration; with the engine — only via the Control API; does not touch commerce or sales. Description —
   `docs/product/OPENKEYS.md`.
-- **Админ-панель** (`admin.apitoken.sale`): `apps/admin` — Next.js на `127.0.0.1:3700`, без
-  собственной БД и секретов. Описание — `docs/product/ADMIN_PANEL.md`.
-- **OpenCode integration**: `packages/opencode-router-plugin` — standalone config-plugin,
-  потребляющий key-scoped unified `/v1/models`; не является commerce/runtime-сервисом и не
-  деплоится на host; workspace gate проверяет его в Vercel/web context. Capability-only
-  last-good cache обязан оставаться зашифрованным, credential/base-bound и без pricing/cost.
-  Контракт — `docs/engine/UNIFIED_ROUTER.md`.
-- **Devbot** (dev-уведомления в Telegram): `apps/devbot` — plain Node-сервис на
-  `127.0.0.1:3800` (env `DEVBOT_PORT`), своя watchdog-lane `deploy/devbot` с релизным корнем
-  `/opt/apitoken/devbot-releases`; секреты — `/etc/apitoken/devbot.env`, до его provisioning
-  юнит и lane отключены. Описание — `docs/ops/DEVBOT.md`.
-- **`apps/web`** — фронт клиентов, деплоится на Vercel независимо от host-watchdog.
-- **`apps/content-studio`** (`content-studio.apitoken.sale`) — контент-студия, Next.js;
-  выкатывается host-watchdog отдельной lane (`systemd/apitoken-content-studio.service`).
-- CRM вынесена в отдельный репозиторий; роутинг `crm.apitoken.sale` в `deploy/Caddyfile` и юниты
-  `systemd/apitoken-crm-*` остаются здесь — НЕ удалять (снесёт прод-роут CRM).
-- Сквозной инвариант: деньги — только integer (`bigint` / nanoUSD-строки); float и JavaScript
-  `number` для сумм запрещены везде.
+- **Admin panel** (`admin.apitoken.sale`): `apps/admin` — Next.js on `127.0.0.1:3700`, with no
+  DB or secrets of its own. Description — `docs/product/ADMIN_PANEL.md`.
+- **OpenCode integration**: `packages/opencode-router-plugin` — a standalone config plugin
+  consuming the key-scoped unified `/v1/models`; it is not a commerce/runtime service and is not
+  deployed to the host; the workspace gate checks it in the Vercel/web context. The capability-only
+  last-good cache must remain encrypted, credential/base-bound, and free of pricing/cost.
+  Contract — `docs/engine/UNIFIED_ROUTER.md`.
+- **Devbot** (dev notifications in Telegram): `apps/devbot` — a plain Node service on
+  `127.0.0.1:3800` (env `DEVBOT_PORT`), its own watchdog lane `deploy/devbot` with a release root at
+  `/opt/apitoken/devbot-releases`; secrets — `/etc/apitoken/devbot.env`; until its provisioning,
+  the unit and lane are disabled. Description — `docs/ops/DEVBOT.md`.
+- **`apps/web`** — the customer frontend, deployed to Vercel independently of the host watchdog.
+- **`apps/content-studio`** (`content-studio.apitoken.sale`) — content studio, Next.js;
+  rolled out by the host watchdog as a separate lane (`systemd/apitoken-content-studio.service`).
+- The CRM has been moved to a separate repository; the `crm.apitoken.sale` routing in `deploy/Caddyfile` and the
+  `systemd/apitoken-crm-*` units remain here — DO NOT delete (it would take down the production CRM route).
+- Cross-cutting invariant: money amounts — integer only (`bigint` / nanoUSD strings); float and JavaScript
+  `number` for amounts are forbidden everywhere.
 
-## Проверка
+## Verification
 
 ```bash
-cargo build                        # всегда зелёный до коммита
-cargo test -p <crate>              # точечно; для metering/денег — ВСЕ тесты обязательны
-cargo build && bash tests/rotation_fanout_smoke.sh   # smoke ротации без живых подписок (мок-апстрим)
-cargo build && bash tests/universal_chat_smoke.sh    # smoke universal lanes chat+responses (router→engine→мок-апстрим)
+cargo build                        # always green before committing
+cargo test -p <crate>              # targeted; for metering/money — ALL tests are mandatory
+cargo build && bash tests/rotation_fanout_smoke.sh   # rotation smoke without live subscriptions (mock upstream)
+cargo build && bash tests/universal_chat_smoke.sh    # universal lanes chat+responses smoke (router→engine→mock upstream)
 
-pnpm build && pnpm typecheck && pnpm test            # коммерческий workspace
-pnpm --filter @claude-api/<pkg> test                 # один пакет
-# интеграционные тесты требуют PostgreSQL:
+pnpm build && pnpm typecheck && pnpm test            # commerce workspace
+pnpm --filter @claude-api/<pkg> test                 # a single package
+# integration tests require PostgreSQL:
 docker compose up -d commerce-postgres
 TEST_DATABASE_URL=postgresql://commerce:commerce-local-only@127.0.0.1:5433/commerce pnpm test:integration
 ```
 
-Gate перед мёржем прогоняет `deploy/agent-merge.sh` и выбирает lanes по diff (path-aware).
-Статический lane — всегда: `bash -n deploy/*.sh deploy/apitoken-db-dump`, ranged
-`git diff --check`, `deploy/docs-check.sh` (контрактные поверхности без изменений в
-документации не пройдут — см. «Документация — живой контракт»). TypeScript/Rust/deployment
-lanes включаются классификаторами из `deploy/watchdog-lib.sh`; cargo-тесты идут через
-`deploy/sccache-cargo.sh`. Полное описание lane-модели — `CONTRIBUTING.md`. Локальный
-эквивалент полного прогона:
+The pre-merge gate is run by `deploy/agent-merge.sh` and selects lanes by diff (path-aware).
+The static lane — always: `bash -n deploy/*.sh deploy/apitoken-db-dump`, ranged
+`git diff --check`, `deploy/docs-check.sh` (contract surfaces without documentation
+changes will not pass — see "Documentation is a living contract"). The TypeScript/Rust/deployment
+lanes are enabled by classifiers from `deploy/watchdog-lib.sh`; cargo tests run via
+`deploy/sccache-cargo.sh`. Full description of the lane model — `CONTRIBUTING.md`. Local
+equivalent of the full run:
 `pnpm install --frozen-lockfile` → `pnpm build` → `pnpm typecheck` → `pnpm test` →
 `bash deploy/sccache-cargo.sh cargo test --locked --workspace` →
 `bash -n deploy/*.sh deploy/apitoken-db-dump` → `git diff --check` →
 `bash deploy/docs-check.sh "$(git rev-parse origin/master)" "$(git rev-parse HEAD)"`.
-Node 24 (`engines` уже задан, `.node-version` есть), pnpm 9.
+Node 24 (`engines` already set, `.node-version` exists), pnpm 9.
 
-## Миграции — только expand, двумя коммитами
+## Migrations — expand-only, in two commits
 
-- Пути: коммерция — `packages/db/migrations`, движок — `crates/registry/migrations_pg`, партнёрка —
-  `packages/sales-db/migrations`, OpenKeys — `packages/openkeys-db/migrations`. Существующую
-  миграцию не редактировать, не переименовывать, не удалять (`packages/db/MIGRATIONS.md`).
-- Зависимая схема идёт отдельным expand-only коммитом ПЕРВЫМ; код, который от неё зависит,
-  мёржится только после зелёных `deploy/migration` и `deploy/watchdog` на миграционном SHA.
-- Production-миграции и деплой выполняет только host-watchdog. Ничего не деплоить и не мигрировать
-  по SSH вручную.
+- Paths: commerce — `packages/db/migrations`, engine — `crates/registry/migrations_pg`, sales —
+  `packages/sales-db/migrations`, OpenKeys — `packages/openkeys-db/migrations`. Never edit, rename, or delete an existing
+  migration (`packages/db/MIGRATIONS.md`).
+- A dependent schema goes FIRST as a separate expand-only commit; code that depends on it
+  is merged only after green `deploy/migration` and `deploy/watchdog` on the migration SHA.
+- Only the host watchdog performs production migrations and deployment. Never deploy or migrate
+  anything over SSH manually.
 
-## Контракты между контекстами — expand-only
+## Cross-context contracts — expand-only
 
-Контракты между bounded context'ами (Control API движка, sales feed, публичные API `apps/api`
-и `apps/sales-api`, схемы `packages/contracts`) меняются по той же дисциплине, что и миграции:
+Contracts between bounded contexts (the engine's Control API, the sales feed, the public APIs of `apps/api`
+and `apps/sales-api`, the `packages/contracts` schemas) change under the same discipline as migrations:
 
-- **Только расширение.** Новые поля, эндпоинты и методы добавляются; существующие не удаляются,
-  не переименовываются и не меняют семантику. Потребители обязаны игнорировать неизвестные поля.
-- **Производитель первым.** Изменение производителя контракта мёржится и деплоится отдельно;
-  потребители, использующие новое, мёржатся только после зелёного `deploy/watchdog` на SHA
-  производителя. Состав потребителей каждой связи — `docs/DEPENDENCIES.md`.
-- **Удаление — последним шагом.** Поле/эндпоинт убирают отдельным изменением, когда по
-  `docs/DEPENDENCIES.md` и коду потребителей не осталось.
-- Документ контракта (`docs/engine/CONTROL_API.md`, `docs/sales/SALES_PORTAL.md` и т.п.)
-  обновляется В ТОМ ЖЕ коммите, что и код производителя.
+- **Extension only.** New fields, endpoints, and methods are added; existing ones are not deleted,
+  not renamed, and do not change semantics. Consumers must ignore unknown fields.
+- **Producer first.** A change to a contract producer is merged and deployed separately;
+  consumers using the new capability are merged only after a green `deploy/watchdog` on the producer's
+  SHA. The consumer list for each link — `docs/DEPENDENCIES.md`.
+- **Removal is the last step.** A field/endpoint is removed in a separate change once
+  `docs/DEPENDENCIES.md` and the consumers' code show none remain.
+- The contract document (`docs/engine/CONTROL_API.md`, `docs/sales/SALES_PORTAL.md`, etc.)
+  is updated IN THE SAME commit as the producer's code.
 
-## Мёрж в master — одной командой
+## Merging into master — a single command
 
 ```bash
 git push -u origin HEAD
 ./deploy/agent-merge.sh
 ```
 
-Запуск — из своего worktree, без аргументов, с чистым деревом и настроенным upstream (из основного
-клона скрипт откажет; `--allow-primary-tree` — только для человека). `master` — production trigger:
-хост деплоит ровно один SHA за раз. Скрипт прогоняет полный gate, берёт машинный merge-lock,
-ребейзит, перепроверяет gate на том самом SHA, который пушит, и держит lock до зелёного
-`deploy/watchdog`. До gate и повторно под lock он сам читает именно `deploy/watchdog` через
-GitHub API, переиспользуя credential из `git credential` (на macOS — Keychain), поэтому `gh` и
-отдельный `GITHUB_TOKEN` не нужны. Pending/временную ошибку скрипт ждёт и перепроверяет сам. Агент
-НИКОГДА не просит человека дать токен или доказать зелёный деплой: сломанный credential чинит
-локально и перезапускает команду. Мёржить вслепую или вручную запрещено. Красный SHA не ретраить —
-исправлять новым коммитом на новой ветке.
+Run it from your own worktree, with no arguments, a clean tree, and a configured upstream (from the primary
+clone the script will refuse; `--allow-primary-tree` is for the person only). `master` is the production trigger:
+the host deploys exactly one SHA at a time. The script runs the full gate, takes a machine merge-lock,
+rebases, re-verifies the gate on the very SHA it pushes, and holds the lock until `deploy/watchdog` is green.
+Before the gate, and again under the lock, it reads `deploy/watchdog` itself via the
+GitHub API, reusing the credential from `git credential` (on macOS — Keychain), so `gh` and
+a separate `GITHUB_TOKEN` are not needed. The script waits out pending/transient errors and re-checks itself. The agent
+NEVER asks the person for a token or for proof of a green deploy: it fixes a broken credential
+locally and re-runs the command. Merging blind or manually is forbidden. Never retry a red SHA —
+fix it with a new commit on a new branch.
 
-## Уборка после мёрджа
+## Cleanup after merge
 
-После того как `agent-merge.sh` завершился и `deploy/watchdog` зелёный на твоём SHA, агент обязан
-удалить свой worktree и ветку через lifecycle-скрипт:
+After `agent-merge.sh` has finished and `deploy/watchdog` is green on your SHA, the agent must
+delete its worktree and branch via the lifecycle script:
 
 ```bash
-cd <основной_каталог_репо>          # выйти из удаляемого worktree
+cd <primary_repo_dir>          # leave the worktree being deleted
 ./deploy/agent-worktree.sh finish ~/wt/<task>
 ```
 
-`finish` повторно получает `origin/master`, отказывается трогать primary, detached, locked, dirty,
-unmerged и защищённые `master`/`comp/*`, удаляет ровно переданный worktree и атомарно удаляет
-ветку только если её ref не изменился после проверки. Чистый локальный `master` он догоняет
-`--ff-only`; расхождение или чужая грязь дают warning, но не блокируют безопасную уборку задачи.
+`finish` fetches `origin/master` again, refuses to touch primary, detached, locked, dirty,
+unmerged, and the protected `master`/`comp/*`, deletes exactly the worktree passed to it, and atomically deletes
+the branch only if its ref has not changed since the check. It catches up a clean local `master`
+with `--ff-only`; divergence or someone else's dirt produce a warning but do not block safe task cleanup.
 
-То же относится к read-only worktree для изучения кода: задача закрыта — worktree и scratch-ветка
-удаляются сразу, не дожидаясь ничьего мёрджа, через тот же `finish`. Чужие worktree агент не
-трогает. Для диагностики есть `deploy/agent-worktree.sh doctor`; глобальный
-`deploy/agent-worktree.sh gc` по умолчанию только показывает план. `gc --apply` — операторская или
-плановая maintenance-команда: она соблюдает grace period (24 часа по умолчанию), никогда не
-удаляет dirty/unmerged/locked/protected деревья и сохраняет ветку исчезнувшего worktree, если в ней
-есть уникальные коммиты.
+The same applies to a read-only worktree used for studying code: once the task is closed, the worktree and scratch
+branch are deleted immediately, without waiting for anyone's merge, via the same `finish`. An agent does not
+touch other agents' worktrees. For diagnostics there is `deploy/agent-worktree.sh doctor`; the global
+`deploy/agent-worktree.sh gc` by default only shows the plan. `gc --apply` is an operator or
+scheduled maintenance command: it honors a grace period (24 hours by default), never
+deletes dirty/unmerged/locked/protected trees, and preserves the branch of a vanished worktree if it
+contains unique commits.
 
-На macOS пропущенную уборку подбирает постоянный LaunchAgent `DELETE_WORKTREE` (установка и
-fail-closed контракт — `docs/ops/DELETE_WORKTREE.md`). Он не ослабляет обязанность агента вызвать
-`finish`: автомат удаляет только clean+merged дерево после двух стабильных наблюдений, отсутствия
-открытых файлов/рабочих каталогов и повторной финальной проверки штатным lifecycle-скриптом.
-Самостоятельные клоны никогда не обнаруживаются автоматически и требуют явной регистрации пути.
+On macOS, missed cleanup is picked up by the persistent LaunchAgent `DELETE_WORKTREE` (installation and
+fail-closed contract — `docs/ops/DELETE_WORKTREE.md`). It does not lessen the agent's obligation to call
+`finish`: the automation deletes only a clean+merged tree after two stable observations, no
+open files/working directories, and a repeated final check by the standard lifecycle script.
+Standalone clones are never discovered automatically and require explicit path registration.
