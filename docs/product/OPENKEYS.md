@@ -70,7 +70,9 @@ provider cards on the spend page and the Claude Code/Codex connection commands u
   `GOOGLE_GEMINI_BASE_URL=https://router.apitoken.sale`).
 
 The Gemini block deliberately stays in the handover and the cards, and Gemini access is live:
-the pricing authority admits every runtime-capable provider at 1:1. The former per-provider
+the pricing authority admits every runtime-capable provider at 1:1, and the issuance
+supported-model list (`MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES`) shows the full
+generation-5 main set — Anthropic, OpenAI and Gemini. The former per-provider
 hosts (`api.apitoken.sale`,
 `openai.api.apitoken.sale`, `gemini.api.apitoken.sale`) keep working, but the buyer is
 given only the router address as the primary instruction. Balance lookup by key
