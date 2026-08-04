@@ -63,6 +63,7 @@ context'ов. Правила размещения и обновления — в
 - [CLAUDE_CALIBRATION.md](ops/CLAUDE_CALIBRATION.md) — bounded live-прогон Claude: модели, token classes, sticky-подписки и жёсткий nanoUSD-бюджет.
 - [GEMINI_CALIBRATION.md](ops/GEMINI_CALIBRATION.md) — exact-profile live-прогон Gemini: immutable backend evidence, capability matrix и общий лимит $40.
 - [KIMI_CALIBRATION.md](ops/KIMI_CALIBRATION.md) — dry-run-by-default live-прогон KIMI: exact request-id атрибуция, aggregate-потолок $0.0001, paid только с явным разрешением.
+- [GLM_CALIBRATION.md](ops/GLM_CALIBRATION.md) — fail-closed live-прогон GLM Coding Plan напрямую в провайдера: quota-anchor, матрица 3 модели × stream/non-stream, hard cap $0.05.
 - [DEVBOT.md](ops/DEVBOT.md) — дизайн dev-бота Telegram (`apps/devbot`): топики, уведомления, источники событий (этапы 1–3 реализованы; этап 4 — бизнес-события — впереди).
 - [FRONTEND_VISUAL_QA.md](ops/FRONTEND_VISUAL_QA.md) — визуальный QA фронтенда.
 - [VERCEL_PRODUCT_ANALYTICS.md](ops/VERCEL_PRODUCT_ANALYTICS.md) — продуктовая аналитика Vercel.

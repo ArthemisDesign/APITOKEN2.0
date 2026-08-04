@@ -370,7 +370,7 @@ cumulative ledgers и завершает immutable observation/CAS до публ
 | server: env/config + композиция | `crates/server/src/{config,main,poller}.rs` | готово (env/config, композиция, maintenance loop, shutdown flush) |
 | observability, alerts, admin projection | `crates/{forward,server}`, `observability/**`, `docs/ops/MONITORING.md` | готово: operational status, admin-only `GET /glm-subs` (+`window_totals` для fleet-карточки), fixed-cardinality aggregate метрики, `glm-provider` алерты с runbook и consistency-пины |
 | admin UI consumer | `apps/admin` | не начато — same-origin потребитель `/glm-subs` отдельным checkpoint'ом |
-| безопасный live-runner | `tools/glm_calibration/` | не начато — ждёт первую живую подписку (runner без неё не проверить) |
+| безопасный live-runner | `tools/glm_calibration/`, `docs/ops/GLM_CALIBRATION.md` | готово, ждёт первую подписку |
 | live-матрица на нашей подписке | — | **нужна подписка (блокирует человек)** |
 
 Очередь и SHA-трекинг — `research/GLM_PLANE_PROGRESS.md`.

@@ -40,6 +40,7 @@ backend-only (по образцу KIMI, `docs/engine/KIMI_PROVIDER.md` §0) до
 | Docs: причины отложенных строк §8 | `docs/engine/GLM_PROVIDER.md` | 0869040a |
 | **Мёрж runtime-цепочки в master, deploy/watchdog GREEN** | master `1c8b7fc1eda45025bc1e04dc917a0cf7087aba45` (trusted host validation GREEN, deployment 5736492612; ребейз на 54fb2220: landed SHAs bc4c23ce, 1d279145, d42e916b, 2525973b, b4eab375, edb126f2, 36dc9a5d, 1c8b7fc1) | 1c8b7fc1 |
 | Observability: operational status, admin-only `GET /glm-subs` (+fleet `window_totals`), aggregate метрики, `glm-provider` алерты + runbook + consistency-пины | `crates/{forward,server}`, `observability/**`, `deploy/**`, `docs/**` | _этот коммит_ |
+| Безопасный live-runner + offline tests + ops runbook | `tools/glm_calibration/{run_live,test_run_live}.py`, `docs/ops/GLM_CALIBRATION.md`, `docs/README.md`, §8 манифеста | _этот коммит_ |
 
 ## Рамка от владельца (2026-08-04)
 
