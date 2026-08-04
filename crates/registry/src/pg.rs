@@ -8944,15 +8944,15 @@ mod tests {
         }
     }
 
-    fn stage8_pg_policy() -> crate::pricing::AccountPolicySpec {
+    fn stage8_pg_policy(account_id: &str) -> crate::pricing::AccountPolicySpec {
         crate::pricing::AccountPolicySpec {
-            account_id: "stage8-account".into(),
+            account_id: account_id.into(),
             effective_version: 1,
-            policy_id: "b2b:stage8-account".into(),
+            policy_id: format!("b2b:{account_id}"),
             policy_version: 1,
             source_policy_digest: "stage8-source-policy-1".into(),
             owner_type: crate::pricing::PolicyOwnerType::B2bClient,
-            owner_id: "stage8-account".into(),
+            owner_id: account_id.into(),
             account_class: crate::pricing::AccountClass::B2b,
             product_id: "main".into(),
             schema_version: crate::pricing::PRICING_SCHEMA_VERSION,
@@ -8969,6 +8969,7 @@ mod tests {
     }
 
     fn stage8_pg_snapshot(
+        account_id: &str,
         request_id: &str,
         provider_id: &str,
         admission_ts: i64,
@@ -9018,7 +9019,7 @@ mod tests {
         crate::pricing::LegacyScalarAdmissionSnapshot::new(
             crate::pricing::LegacyScalarAdmissionSnapshotInput {
                 request_id: request_id.into(),
-                account_id: "stage8-account".into(),
+                account_id: account_id.into(),
                 provider,
                 requested_model_id: requested_model_id.into(),
                 canonical_model_id: canonical_model_id.into(),
@@ -9037,7 +9038,9 @@ mod tests {
 
     fn stage8_pg_shadow_input(
         snapshot: &crate::pricing::LegacyScalarAdmissionSnapshot,
+        account_id: &str,
         provider_id: &str,
+        observed_multiplier_bp: i64,
     ) -> crate::pricing::PricingShadowAdmissionEvaluationInput {
         let actual = crate::pricing::ShadowActualSnapshotRef::from_snapshot(snapshot).unwrap();
         let dependency_catalog = crate::pricing::PricingShadowDependency {
@@ -9056,12 +9059,12 @@ mod tests {
             crate::pricing::PricingShadowResolved::new(
                 &actual,
                 crate::pricing::PricingShadowResolvedInput {
-                    observed_multiplier_bp: 2_000,
+                    observed_multiplier_bp,
                     product_id: "main".into(),
                     account_class: crate::pricing::AccountClass::B2b,
                     policy: crate::pricing::PricingShadowPolicyIdentity {
                         target: crate::pricing::VersionTarget::new(1, "stage8-policy-1"),
-                        policy_id: "b2b:stage8-account".into(),
+                        policy_id: format!("b2b:{account_id}"),
                         policy_version: 1,
                         source_policy_digest: "stage8-source-policy-1".into(),
                         schema_version: crate::pricing::PRICING_SCHEMA_VERSION,
@@ -9094,6 +9097,25 @@ mod tests {
             snapshot.admission_ts() + 1,
             snapshot.admission_ts() + 2,
             outcome,
+            crate::pricing::ShadowDiagnosticContext::new(serde_json::json!({})).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn stage8_pg_shadow_rejected_input(
+        snapshot: &crate::pricing::LegacyScalarAdmissionSnapshot,
+        observed_multiplier_bp: i64,
+    ) -> crate::pricing::PricingShadowAdmissionEvaluationInput {
+        crate::pricing::PricingShadowAdmissionEvaluationInput::new(
+            crate::pricing::ShadowActualSnapshotRef::from_snapshot(snapshot).unwrap(),
+            crate::pricing::PRICING_SCHEMA_VERSION,
+            stage8_pg_manifest(),
+            snapshot.admission_ts() + 1,
+            snapshot.admission_ts() + 2,
+            crate::pricing::PricingShadowEvaluationOutcome::Rejected {
+                reason: crate::pricing::PricingShadowRejectionCode::MissingRule,
+                observed_multiplier_bp,
+            },
             crate::pricing::ShadowDiagnosticContext::new(serde_json::json!({})).unwrap(),
         )
         .unwrap()
@@ -9175,7 +9197,7 @@ mod tests {
                 .unwrap(),
             PricingMutation::Applied
         );
-        let policy = stage8_pg_policy();
+        let policy = stage8_pg_policy("stage8-account");
         assert_eq!(
             pg.prepare_account_policy(&policy).unwrap(),
             PricingMutation::Stored
@@ -9216,18 +9238,21 @@ mod tests {
 
         let snapshots = [
             stage8_pg_snapshot(
+                "stage8-account",
                 "stage8-anthropic-request",
                 "anthropic",
                 window_start_ts + 10,
                 100_000_000,
             ),
             stage8_pg_snapshot(
+                "stage8-account",
                 "stage8-openai-request",
                 "openai",
                 window_start_ts + 20,
                 90_000_000,
             ),
             stage8_pg_snapshot(
+                "stage8-account",
                 "stage8-google-request",
                 "google",
                 window_start_ts + 30,
@@ -9243,7 +9268,9 @@ mod tests {
             assert!(matches!(
                 pg.insert_pricing_shadow_admission_evaluation(&stage8_pg_shadow_input(
                     snapshot,
+                    "stage8-account",
                     provider_id,
+                    2_000,
                 ))
                 .unwrap(),
                 crate::pricing::PricingShadowEvaluationWrite::Inserted(_)
@@ -9504,6 +9531,7 @@ mod tests {
         // Zero-drain means legacy-format work is audit evidence, not an activation blocker. Its
         // immutable reserve-time snapshot must remain settleable after both forward head steps.
         let legacy_inflight = stage8_pg_snapshot(
+            "stage8-account",
             "stage8-legacy-inflight-request",
             "anthropic",
             window_start_ts - 10,
@@ -10012,6 +10040,576 @@ mod tests {
             )
             .expect("clean Stage 8 activation authority before releasing the test lock");
 
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+    }
+
+    /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+    /// pg::tests::postgres_stage8_consistent_rejection_evidence`
+    #[test]
+    fn postgres_stage8_consistent_rejection_evidence() {
+        use crate::pricing::{
+            AccountPolicyActivationSpec, AccountPolicyBindingSpec, ActiveExpectation,
+            FundingEnforcement, LegacyScalarReserveOutcome, PolicyActiveExpectation,
+            PolicyEnforcement, PricingMutation, ReconciliationState,
+        };
+
+        const TARGET_GENERATION: i64 = 80_101;
+        const RECOVERY_GENERATION: i64 = 80_102;
+
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!(
+                "skipping PostgreSQL Stage 8 consistent rejection evidence: \
+                 CLAUDE_API_TEST_DATABASE_URL is unset"
+            );
+            return;
+        };
+        let mut pg = PgStore::connect(&url).unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+            .unwrap();
+        pg.client
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        pg.client
+            .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+            .unwrap();
+        pg.migrate().unwrap();
+        pg.client
+            .batch_execute(
+                "TRUNCATE pricing_release_policy_versions,pricing_release_versions,
+                 account_policy_bindings,account_policy_rules,account_policy_versions,
+                 provider_switch_head,provider_switch_entries,provider_switch_versions,
+                 pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
+                 execution_group_winner,settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances,
+                 usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+
+        let owner = pg.claim_instance("stage8-cr-engine", 600).unwrap();
+        for (account_id, key_id) in [
+            ("stage8-cr-b1", "stage8-cr-b1-key"),
+            ("stage8-cr-b2", "stage8-cr-b2-key"),
+            ("stage8-cr-s1", "stage8-cr-s1-key"),
+        ] {
+            pg.account_create(account_id, None, 2_000).unwrap();
+            pg.account_topup(account_id, 900_000_000, None).unwrap();
+            pg.key_issue(key_id, account_id, None).unwrap();
+        }
+
+        for catalog in [stage8_pg_catalog("main"), stage8_pg_catalog("openkeys")] {
+            assert_eq!(
+                pg.prepare_pricing_catalog(&catalog).unwrap(),
+                PricingMutation::Stored
+            );
+            assert_eq!(
+                pg.activate_pricing_catalog(
+                    &catalog.product_id,
+                    &catalog.target(),
+                    &ActiveExpectation::Absent,
+                )
+                .unwrap(),
+                PricingMutation::Applied
+            );
+        }
+        let switches = stage8_pg_switches();
+        assert_eq!(
+            pg.prepare_provider_switches(&switches).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            pg.activate_provider_switches(&switches.target(), &ActiveExpectation::Absent)
+                .unwrap(),
+            PricingMutation::Applied
+        );
+        for account_id in ["stage8-cr-b1", "stage8-cr-b2", "stage8-cr-s1"] {
+            let policy = stage8_pg_policy(account_id);
+            assert_eq!(
+                pg.prepare_account_policy(&policy).unwrap(),
+                PricingMutation::Stored
+            );
+            let activation = AccountPolicyActivationSpec {
+                account_id: policy.account_id.clone(),
+                effective_version: policy.effective_version,
+                content_digest: policy.content_digest.clone(),
+                binding: AccountPolicyBindingSpec {
+                    policy_enforcement: PolicyEnforcement::Shadow,
+                    funding_enforcement: FundingEnforcement::Shadow,
+                    reconciliation_state: ReconciliationState::Pending,
+                },
+            };
+            assert_eq!(
+                pg.activate_account_policy(&activation, &PolicyActiveExpectation::Unbound)
+                    .unwrap(),
+                PricingMutation::Applied
+            );
+        }
+
+        let window_end_ts = now() - 2;
+        let window_start_ts = window_end_ts - 100;
+        let authority_ts = window_start_ts - 10;
+        for statement in [
+            "UPDATE accounts SET created_ts=$1",
+            "UPDATE pricing_catalog_versions SET created_ts=$1",
+            "UPDATE pricing_catalog_heads SET updated_ts=$1",
+            "UPDATE provider_switch_versions SET created_ts=$1",
+            "UPDATE provider_switch_head SET updated_ts=$1",
+            "UPDATE account_policy_versions SET created_ts=$1",
+            "UPDATE account_policy_bindings SET updated_ts=$1",
+        ] {
+            pg.client.execute(statement, &[&authority_ts]).unwrap();
+        }
+
+        // (account, key, request, provider, admission offset, charged hold, resolved, observed):
+        // resolved=false builds a MissingRule rejection with the observed multiplier.
+        let scenarios: [(&str, &str, &str, &str, i64, i64, bool, i64); 7] = [
+            // B1 balance, target policy allows only anthropic: a google/openai rejection is
+            // consistent with the target release, an anthropic rejection is not.
+            (
+                "stage8-cr-b1",
+                "stage8-cr-b1-key",
+                "stage8-cr-b1-google-rejected",
+                "google",
+                10,
+                100_000_000,
+                false,
+                2_000,
+            ),
+            (
+                "stage8-cr-b1",
+                "stage8-cr-b1-key",
+                "stage8-cr-b1-anthropic-rejected",
+                "anthropic",
+                20,
+                90_000_000,
+                false,
+                2_000,
+            ),
+            (
+                "stage8-cr-b1",
+                "stage8-cr-b1-key",
+                "stage8-cr-b1-openai-rejected",
+                "openai",
+                30,
+                80_000_000,
+                false,
+                2_000,
+            ),
+            // B2 balance, target policy allows only openai: a resolved anthropic admission has
+            // no target rule and must block the target comparison only.
+            (
+                "stage8-cr-b2",
+                "stage8-cr-b2-key",
+                "stage8-cr-b2-anthropic-resolved",
+                "anthropic",
+                40,
+                100_000_000,
+                true,
+                2_000,
+            ),
+            // S1 meter_only service assignment: price comparison is skipped entirely, but an
+            // observed/authorized mismatch and a rejection still block the runtime check.
+            (
+                "stage8-cr-s1",
+                "stage8-cr-s1-key",
+                "stage8-cr-s1-anthropic-resolved",
+                "anthropic",
+                50,
+                100_000_000,
+                true,
+                2_000,
+            ),
+            (
+                "stage8-cr-s1",
+                "stage8-cr-s1-key",
+                "stage8-cr-s1-openai-mismatch",
+                "openai",
+                60,
+                90_000_000,
+                true,
+                3_000,
+            ),
+            (
+                "stage8-cr-s1",
+                "stage8-cr-s1-key",
+                "stage8-cr-s1-google-rejected",
+                "google",
+                70,
+                80_000_000,
+                false,
+                2_000,
+            ),
+        ];
+        for (
+            account_id,
+            key_id,
+            request_id,
+            provider_id,
+            offset,
+            charged_hold,
+            resolved,
+            observed,
+        ) in &scenarios
+        {
+            let snapshot = stage8_pg_snapshot(
+                *account_id,
+                *request_id,
+                *provider_id,
+                window_start_ts + *offset,
+                *charged_hold,
+            );
+            assert!(matches!(
+                pg.reserve_request_with_legacy_snapshot(&owner, key_id, 600, &snapshot)
+                    .unwrap(),
+                LegacyScalarReserveOutcome::Inserted(_)
+            ));
+            let input = if *resolved {
+                stage8_pg_shadow_input(&snapshot, account_id, provider_id, *observed)
+            } else {
+                stage8_pg_shadow_rejected_input(&snapshot, *observed)
+            };
+            assert!(matches!(
+                pg.insert_pricing_shadow_admission_evaluation(&input)
+                    .unwrap(),
+                crate::pricing::PricingShadowEvaluationWrite::Inserted(_)
+            ));
+        }
+        for scenario in &scenarios {
+            pg.cancel_request(scenario.2).unwrap();
+        }
+
+        let normalization_digest = format!("sha256:v2:{}", "1".repeat(64));
+        let mut funding_tx = pg.client.transaction().unwrap();
+        for account_id in ["stage8-cr-b1", "stage8-cr-b2"] {
+            let totals = funding_tx
+                .query_one(
+                    "SELECT balance_nano,reserved_nano,spent_nano FROM accounts WHERE id=$1",
+                    &[&account_id],
+                )
+                .unwrap();
+            let balance_nano: i64 = totals.get(0);
+            let reserved_nano: i64 = totals.get(1);
+            let spent_nano: i64 = totals.get(2);
+            funding_tx
+                .execute(
+                    "INSERT INTO account_funding_generations_v2( \
+                       account_id,generation,schema_version,source_state_digest,normalization_digest, \
+                       balance_nano,reserved_nano,spent_nano,version,normalized_ts,updated_ts \
+                     ) VALUES($1,1,2,$2,$3,$4,$5,$6,1,$7,$7)",
+                    &[
+                        &account_id,
+                        &format!("sha256:v2:{}", "2".repeat(64)),
+                        &normalization_digest,
+                        &balance_nano,
+                        &reserved_nano,
+                        &spent_nano,
+                        &authority_ts,
+                    ],
+                )
+                .unwrap();
+            funding_tx
+                .execute(
+                    "INSERT INTO funding_lots_v2( \
+                       lot_id,account_id,funding_generation,source_type,source_ref,balance_nano, \
+                       reserved_nano,spent_nano,version,status,created_ts,updated_ts \
+                     ) VALUES($1,$2,1,'paid','stage6:paid-residual:v2', \
+                              $3,$4,$5,1,'active',$6,$6)",
+                    &[
+                        &format!("{account_id}-v2-paid"),
+                        &account_id,
+                        &balance_nano,
+                        &reserved_nano,
+                        &spent_nano,
+                        &authority_ts,
+                    ],
+                )
+                .unwrap();
+            funding_tx
+                .execute(
+                    "INSERT INTO account_funding_head_v2(account_id,active_generation,head_version,updated_ts) \
+                     VALUES($1,1,1,$2)",
+                    &[&account_id, &authority_ts],
+                )
+                .unwrap();
+        }
+        funding_tx.commit().unwrap();
+
+        let inventory_digest = crate::stage8::engine_inventory_digest(&mut pg.client).unwrap();
+        let release_for_funding = crate::pricing::PricingReleaseV2 {
+            generation: TARGET_GENERATION,
+            release_kind: crate::pricing::PricingReleaseKindV2::Target,
+            schema_version: 2,
+            capability_generation: 1,
+            capability_digest: "stage8-capability-1".into(),
+            main_catalog_generation: 1,
+            main_catalog_digest: "stage8-main-catalog-1".into(),
+            openkeys_catalog_generation: 1,
+            openkeys_catalog_digest: "stage8-openkeys-catalog-1".into(),
+            switch_generation: 1,
+            switch_digest: "stage8-switches-1".into(),
+            inventory_digest: inventory_digest.clone(),
+            policy_manifest_digest: "stage8-cr-policy-manifest".into(),
+            assignment_manifest_digest: "stage8-cr-assignment-manifest".into(),
+            funding_manifest_digest: String::new(),
+            minimum_runtime_schema_version: 2,
+            content_digest: "stage8-cr-target-release".into(),
+            assignments: vec![
+                crate::pricing::PricingReleaseAssignmentV2 {
+                    account_id: "stage8-cr-b1".into(),
+                    account_class: crate::pricing::AccountClass::B2c,
+                    policy_id: "stage8-cr-b1-policy".into(),
+                    policy_version: 1,
+                    policy_digest: "stage8-cr-b1-policy-digest".into(),
+                    billing_mode: crate::pricing::BillingModeV2::Balance,
+                    funding_generation: Some(1),
+                    purpose: None,
+                    responsible: None,
+                    assignment_digest: "stage8-cr-b1-assignment-digest".into(),
+                },
+                crate::pricing::PricingReleaseAssignmentV2 {
+                    account_id: "stage8-cr-b2".into(),
+                    account_class: crate::pricing::AccountClass::B2c,
+                    policy_id: "stage8-cr-b2-policy".into(),
+                    policy_version: 1,
+                    policy_digest: "stage8-cr-b2-policy-digest".into(),
+                    billing_mode: crate::pricing::BillingModeV2::Balance,
+                    funding_generation: Some(1),
+                    purpose: None,
+                    responsible: None,
+                    assignment_digest: "stage8-cr-b2-assignment-digest".into(),
+                },
+                crate::pricing::PricingReleaseAssignmentV2 {
+                    account_id: "stage8-cr-s1".into(),
+                    account_class: crate::pricing::AccountClass::Service,
+                    policy_id: "stage8-cr-s1-policy".into(),
+                    policy_version: 1,
+                    policy_digest: "stage8-cr-s1-policy-digest".into(),
+                    billing_mode: crate::pricing::BillingModeV2::MeterOnly,
+                    funding_generation: None,
+                    purpose: Some("stage8-cr-service".into()),
+                    responsible: Some("stage8-cr-operator".into()),
+                    assignment_digest: "stage8-cr-s1-assignment-digest".into(),
+                },
+            ],
+        };
+        let funding_manifest_digest =
+            crate::stage8::funding_manifest_digest(&mut pg.client, Some(&release_for_funding))
+                .unwrap();
+        pg.client
+            .batch_execute(
+                "INSERT INTO pricing_release_policy_versions( \
+                   policy_id,policy_version,owner_type,owner_id,account_class,product_id, \
+                   billing_mode,schema_version,capability_generation,capability_digest, \
+                   catalog_generation,catalog_digest,switch_generation,switch_digest, \
+                   content_digest,created_ts \
+                 ) VALUES( \
+                   'stage8-cr-b1-policy',1,'global_b2c','global','b2c','main','balance',2, \
+                   1,'stage8-capability-1',1,'stage8-main-catalog-1',1,'stage8-switches-1', \
+                   'stage8-cr-b1-policy-digest',100 \
+                 ),( \
+                   'stage8-cr-b2-policy',1,'global_b2c','global','b2c','main','balance',2, \
+                   1,'stage8-capability-1',1,'stage8-main-catalog-1',1,'stage8-switches-1', \
+                   'stage8-cr-b2-policy-digest',100 \
+                 ),( \
+                   'stage8-cr-s1-policy',1,'service','stage8-cr-s1','service',NULL,'meter_only',2, \
+                   1,'stage8-capability-1',NULL,NULL,NULL,NULL, \
+                   'stage8-cr-s1-policy-digest',100 \
+                 ); \
+                 INSERT INTO pricing_release_policy_rules( \
+                   policy_id,policy_version,rule_id,rule_digest,scope_type,provider_id, \
+                   canonical_model_id,discount_bps,payable_multiplier_bp \
+                 ) VALUES( \
+                   'stage8-cr-b1-policy',1,'stage8-cr-b1-anthropic','stage8-cr-b1-anthropic-digest', \
+                   'provider','anthropic',NULL,8000,2000 \
+                 ),( \
+                   'stage8-cr-b2-policy',1,'stage8-cr-b2-openai','stage8-cr-b2-openai-digest', \
+                   'provider','openai',NULL,7000,3000 \
+                 );",
+            )
+            .unwrap();
+        for (generation, release_kind, policy_manifest, assignment_manifest, content_digest) in [
+            (
+                TARGET_GENERATION,
+                "target",
+                "stage8-cr-target-policies",
+                "stage8-cr-target-assignments",
+                "stage8-cr-target-release",
+            ),
+            (
+                RECOVERY_GENERATION,
+                "recovery",
+                "stage8-cr-recovery-policies",
+                "stage8-cr-recovery-assignments",
+                "stage8-cr-recovery-release",
+            ),
+        ] {
+            pg.client
+                .execute(
+                    "INSERT INTO pricing_release_versions( \
+                   generation,release_kind,schema_version,capability_generation,capability_digest, \
+                   main_catalog_generation,main_catalog_digest,openkeys_catalog_generation, \
+                   openkeys_catalog_digest,switch_generation,switch_digest,inventory_digest, \
+                   policy_manifest_digest,assignment_manifest_digest,funding_manifest_digest, \
+                   minimum_runtime_schema_version,content_digest,created_ts \
+                 ) VALUES($1,$2,2,1,'stage8-capability-1',1,'stage8-main-catalog-1',1, \
+                          'stage8-openkeys-catalog-1',1,'stage8-switches-1',$3,$4,$5,$6,2,$7,$8)",
+                    &[
+                        &generation,
+                        &release_kind,
+                        &inventory_digest,
+                        &policy_manifest,
+                        &assignment_manifest,
+                        &funding_manifest_digest,
+                        &content_digest,
+                        &authority_ts,
+                    ],
+                )
+                .unwrap();
+            for (
+                account_id,
+                account_class,
+                policy_id,
+                policy_digest,
+                billing_mode,
+                funding_generation,
+                purpose,
+                responsible,
+            ) in [
+                (
+                    "stage8-cr-b1",
+                    "b2c",
+                    "stage8-cr-b1-policy",
+                    "stage8-cr-b1-policy-digest",
+                    "balance",
+                    Some(1_i64),
+                    None,
+                    None,
+                ),
+                (
+                    "stage8-cr-b2",
+                    "b2c",
+                    "stage8-cr-b2-policy",
+                    "stage8-cr-b2-policy-digest",
+                    "balance",
+                    Some(1_i64),
+                    None,
+                    None,
+                ),
+                (
+                    "stage8-cr-s1",
+                    "service",
+                    "stage8-cr-s1-policy",
+                    "stage8-cr-s1-policy-digest",
+                    "meter_only",
+                    None,
+                    Some("stage8-cr-service"),
+                    Some("stage8-cr-operator"),
+                ),
+            ] {
+                pg.client
+                    .execute(
+                        "INSERT INTO pricing_release_assignments( \
+                           release_generation,account_id,account_class,policy_id,policy_version, \
+                           policy_digest,billing_mode,funding_generation,purpose,responsible,assignment_digest \
+                         ) VALUES($1,$2,$3,$4,1,$5,$6,$7,$8,$9,$10)",
+                        &[
+                            &generation,
+                            &account_id,
+                            &account_class,
+                            &policy_id,
+                            &policy_digest,
+                            &billing_mode,
+                            &funding_generation,
+                            &purpose,
+                            &responsible,
+                            &format!("stage8-cr-{account_id}-assignment-{generation}"),
+                        ],
+                    )
+                    .unwrap();
+            }
+        }
+        pg.client
+            .execute(
+                "INSERT INTO pricing_release_recovery_links( \
+                   target_generation,target_digest,recovery_generation,recovery_digest,link_digest,created_ts \
+                 ) VALUES($1,'stage8-cr-target-release',$2,'stage8-cr-recovery-release', \
+                          'stage8-cr-recovery-link',100)",
+                &[&TARGET_GENERATION, &RECOVERY_GENERATION],
+            )
+            .unwrap();
+        pg.client
+            .execute(
+                "UPDATE engine_instances SET pricing_release_schema_version=2, \
+                   funding_schema_version=2,pricing_release_runtime_digest=$1, \
+                   pricing_release_claim_epoch=owner_epoch \
+                 WHERE instance_id='stage8-cr-engine'",
+                &[&crate::pricing::PRICING_RELEASE_RUNTIME_DIGEST_V2],
+            )
+            .unwrap();
+
+        let request = crate::stage8::Stage8EngineEvidenceRequest {
+            target_generation: TARGET_GENERATION,
+            recovery_generation: RECOVERY_GENERATION,
+            window_start_ts,
+            window_end_ts,
+            min_samples_per_provider: 1,
+            financial_sample_size: 7,
+            gemini_client_admissions: 0,
+            runtime_manifest: stage8_pg_manifest(),
+        };
+        let report = pg.stage8_engine_evidence(&request).unwrap();
+        assert!(!report.passed, "expected blockers: {:?}", report.blockers);
+        assert_eq!(
+            report.counts.evaluations_by_outcome.get("resolved"),
+            Some(&3)
+        );
+        assert_eq!(
+            report.counts.evaluations_by_outcome.get("rejected"),
+            Some(&4)
+        );
+        let codes: Vec<&str> = report
+            .blockers
+            .iter()
+            .map(|blocker| blocker.code.as_str())
+            .collect();
+        assert_eq!(
+            codes,
+            vec![
+                "shadow_evaluation_differs_from_target_release",
+                "shadow_evaluation_not_resolved_by_expected_runtime",
+            ],
+            "unexpected blockers: {:?}",
+            report.blockers
+        );
+        // Target comparison blockers: B1 rejected on anthropic (target rule exists) and B2
+        // resolved on anthropic (no target rule).
+        let differs = &report.blockers[0];
+        assert_eq!(differs.count, 2);
+        assert_eq!(differs.subject_digests.len(), 2);
+        // Runtime blockers: B1 rejected on anthropic, S1 resolved with observed!=authorized,
+        // S1 rejected under a meter_only assignment.
+        let not_resolved = &report.blockers[1];
+        assert_eq!(not_resolved.count, 3);
+        assert_eq!(not_resolved.subject_digests.len(), 3);
+
+        pg.client
+            .batch_execute(
+                "TRUNCATE pricing_release_policy_versions,pricing_release_versions,
+                 account_policy_bindings,account_policy_rules,account_policy_versions,
+                 provider_switch_head,provider_switch_entries,provider_switch_versions,
+                 pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
+                 execution_group_winner,settlement_outbox,reservations,capacity_leases,
+                 leader_leases,engine_instances,usage_events,ledger,api_keys,accounts,pool_state,
+                 subs RESTART IDENTITY CASCADE",
+            )
+            .expect("clean Stage 8 rejection authority before releasing the test lock");
         pg.client
             .query_one(
                 "SELECT pg_advisory_unlock($1)",

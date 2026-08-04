@@ -1150,18 +1150,70 @@ pub(crate) fn postgres_stage8_engine_evidence(
         "shadow_evaluation_not_resolved_by_expected_runtime",
         "SELECT evaluation.request_id FROM pricing_shadow_admission_evaluations evaluation \
          JOIN pricing_admission_snapshots snapshot ON snapshot.request_id=evaluation.request_id \
+         LEFT JOIN LATERAL( \
+           SELECT candidate.account_id,candidate.policy_id,candidate.policy_version, \
+                  candidate.billing_mode \
+           FROM( \
+             SELECT assignment.account_id,assignment.policy_id,assignment.policy_version, \
+                    assignment.billing_mode,0 priority \
+             FROM pricing_release_assignments assignment \
+             WHERE assignment.release_generation=$5 \
+               AND assignment.account_id=evaluation.account_id \
+             UNION ALL \
+             SELECT extension.account_id,extension.policy_id,extension.policy_version, \
+                    extension.billing_mode,1 priority \
+             FROM pricing_release_assignment_extensions_v2 extension \
+             WHERE $6 AND extension.release_generation=$5 \
+               AND extension.account_id=evaluation.account_id \
+               AND extension.provisioning_head_generation=$5 \
+               AND extension.provisioning_head_digest=$7 \
+               AND extension.provisioning_head_version=$8 \
+               AND extension.paired_recovery_generation=$9 \
+               AND extension.paired_recovery_digest=$10 \
+           ) candidate ORDER BY candidate.priority LIMIT 1 \
+         ) assignment ON true \
+         LEFT JOIN LATERAL( \
+           SELECT rule.payable_multiplier_bp \
+           FROM pricing_release_policy_rules rule \
+           WHERE rule.policy_id=assignment.policy_id \
+             AND rule.policy_version=assignment.policy_version \
+             AND( rule.scope_type='global' \
+               OR(rule.scope_type='provider' AND rule.provider_id=snapshot.provider_id) \
+               OR(rule.scope_type='model' AND rule.provider_id=snapshot.provider_id \
+                  AND rule.canonical_model_id=snapshot.canonical_model_id)) \
+           ORDER BY CASE rule.scope_type WHEN 'model' THEN 0 WHEN 'provider' THEN 1 ELSE 2 END \
+           LIMIT 1 \
+         ) target_rule ON true \
          WHERE snapshot.snapshot_kind='legacy_scalar' \
           AND snapshot.provider_id IN('anthropic','openai','google') \
           AND snapshot.admission_ts >= $1 AND snapshot.admission_ts < $2 \
-          AND(evaluation.outcome<>'resolved' \
-           OR evaluation.runtime_manifest_generation<>$3 \
+          AND(evaluation.runtime_manifest_generation<>$3 \
            OR evaluation.runtime_manifest_digest<>$4 \
-           OR evaluation.observed_multiplier_bp IS DISTINCT FROM evaluation.authorized_multiplier_bp)",
+           OR (evaluation.outcome='resolved' \
+            AND evaluation.observed_multiplier_bp IS DISTINCT FROM evaluation.authorized_multiplier_bp) \
+           OR (evaluation.outcome='rejected' \
+            AND (assignment.account_id IS NULL OR assignment.billing_mode<>'balance' \
+              OR target_rule.payable_multiplier_bp IS NOT NULL)))",
         &[
             &request.window_start_ts,
             &request.window_end_ts,
             &runtime_manifest.generation,
             &runtime_manifest.digest,
+            &request.target_generation,
+            &recovery_evidence_mode,
+            &target
+                .as_ref()
+                .map(|release| release.content_digest.as_str())
+                .unwrap_or_default(),
+            &active_release_head
+                .as_ref()
+                .map(|head| head.head_version)
+                .unwrap_or(0),
+            &request.recovery_generation,
+            &recovery
+                .as_ref()
+                .map(|release| release.content_digest.as_str())
+                .unwrap_or_default(),
         ],
     )?;
     query_blocker(
@@ -1241,12 +1293,16 @@ pub(crate) fn postgres_stage8_engine_evidence(
            ORDER BY CASE rule.scope_type WHEN 'model' THEN 0 WHEN 'provider' THEN 1 ELSE 2 END \
            LIMIT 1 \
          ) target_rule ON true \
-         WHERE snapshot.snapshot_kind='legacy_scalar' \
+          WHERE snapshot.snapshot_kind='legacy_scalar' \
            AND snapshot.provider_id IN('anthropic','openai','google') \
            AND snapshot.admission_ts >= $1 AND snapshot.admission_ts < $2 \
-           AND(assignment.account_id IS NULL OR assignment.billing_mode<>'balance' \
-             OR target_rule.payable_multiplier_bp IS NULL \
-             OR evaluation.payable_multiplier_bp IS DISTINCT FROM target_rule.payable_multiplier_bp)",
+           AND(assignment.account_id IS NULL \
+             OR (assignment.billing_mode='balance' \
+               AND ((evaluation.outcome='resolved' \
+                     AND (target_rule.payable_multiplier_bp IS NULL \
+                       OR evaluation.payable_multiplier_bp IS DISTINCT FROM target_rule.payable_multiplier_bp)) \
+                 OR (evaluation.outcome='rejected' \
+                     AND target_rule.payable_multiplier_bp IS NOT NULL))))",
         &[
             &request.window_start_ts,
             &request.window_end_ts,

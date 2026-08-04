@@ -468,7 +468,12 @@ Required target evidence includes:
 - Stage 6 funding generation for every account;
 - exact format-aware counts for unfinished legacy reservations/outbox rows; nonzero legacy and
   active-v2 work is permitted and continues settlement against immutable reserve-time snapshots;
-- 100% shadow coverage, exact nanoUSD parity and no unresolved outcome;
+- 100% shadow coverage, exact nanoUSD parity and no unexplained outcome: every evaluated request
+  is either resolved with the exact authorized multiplier or rejected consistently with the target
+  release (a rejection is evidence-consistent only when the balance-billed target policy has no
+  applicable rule for that provider/model, so the same request would fail closed after the
+  cutover); service `meter_only` assignments prove resolution and lineage but skip the target
+  price comparison, because they carry no customer charge;
 - exact prepared target/recovery release and recovery-link digests, with equal runtime/funding
   lineage and one assignment for every active or disabled engine account;
 - current engine inventory and target funding-manifest digests, active funding heads and exact

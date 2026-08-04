@@ -411,7 +411,12 @@ single legacy reserve, and evaluation compares admission, official cost, resolve
 availability, and release lineage against the expected target.
 
 No canary-account list is created. Stage 8 accepts only full inventory coverage and the absence of
-unexplained discrepancies. External Gemini usage/admission counters are audit context only; without
+unexplained discrepancies. A shadow rejection is evidence-consistent only when the balance-billed
+target policy has no applicable rule for that provider/model — the same request would fail closed
+after the cutover (for example B2B non-Anthropic or OpenKeys Google traffic, which the target
+deliberately does not admit). Service `meter_only` evaluations prove resolution and lineage but
+skip the target price comparison, since they carry no customer charge. External Gemini usage/admission
+counters are audit context only; without
 real Google actual snapshots and shadow evaluations, provider coverage is not considered complete.
 The mere presence of a Google legacy shadow producer does not enable strict Gemini or the Stage 9
 runtime.
