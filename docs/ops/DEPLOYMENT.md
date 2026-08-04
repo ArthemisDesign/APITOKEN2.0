@@ -403,13 +403,17 @@ writer. The legacy `claude-api db stage8-evidence` and
 controlled non-production tests, not the production control-plane.
 
 Migration `0035_pricing_shadow_rollout_jobs.sql` supplies the durable lane for the required
-generation-3 pre-cutover policy alignment across the exact Stage 5 inventory, including OpenKeys
-and service accounts that are not commerce-local bindings. The lane is delivered: the only rollout
+generation-3 pre-cutover policy alignment of the OpenKeys inventory, whose accounts are not
+commerce-local bindings. Commerce B2C/B2B and service lineages are aligned by their managed policy
+writers instead: the engine never accepts a different policy identity on an account with an
+existing lineage, and the v1 shadow format cannot express service `meter_only`. The lane is
+delivered: the only rollout
 producer is the AdminGuard-protected `POST /v1/admin/pricing-shadow-rollout-v2/stage` in
 `apps/api` (UUID idempotency key, exact `stage5_run_id`, verified `x-admin-actor`, reason), which
 pins a prepared target/recovery pair and persists the complete policy/binding/CAS body of every
-account before any delivery; the bounded `apps/worker` consumer claims per-account jobs with a
-lease, delivers generic `policy_shadow` requests through prepare/readback/activate and
+OpenKeys job before any delivery; the bounded `apps/worker` consumer claims per-account jobs with a
+lease, advances canonical OpenKeys lineages in place at the next monotonic version through
+prepare/readback/activate and
 replacement-locked legacy OpenKeys only through `locked-openkeys-transition`, stores exact ACK
 digests/payloads and atomically closes the rollout `confirmed|blocked|dead`. The paired
 `GET /v1/admin/pricing-shadow-rollout-v2` exposes only bounded aggregates and subject digests.

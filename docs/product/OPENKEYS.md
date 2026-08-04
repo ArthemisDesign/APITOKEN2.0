@@ -109,10 +109,12 @@ issuance во время global CAS.
 Stage 7 existing-inventory alignment идёт только через durable shadow-rollout lane (migration
 `0035_pricing_shadow_rollout_jobs.sql`), а не через OpenKeys-local backfill: защищённый AdminGuard
 producer `POST /v1/admin/pricing-shadow-rollout-v2/stage` в `apps/api` пинит exact prepared Stage 5
-target/recovery pair и materialize'ит один immutable per-account job на каждый assignment,
+target/recovery pair и materialize'ит один immutable per-account job на каждый OpenKeys assignment,
 включая replacement-locked legacy OpenKeys. Для locked legacy bindings доставка идёт исключительно
 через engine `POST /admin/pricing/policy/{account_id}/locked-openkeys-transition`; generic
-prepare/activate для них запрещены (engine отвечает `423 locked`). Bounded worker `apps/worker`
+prepare/activate для них запрещены (engine отвечает `423 locked`). Канонические `official_1_to_1`
+аккаунты advancing'ятся на своей существующей lineage (тот же policy identity, следующая monotonic
+version, rules из release policy, pins exact Stage 5 catalog/switch). Bounded worker `apps/worker`
 claim'ит jobs с lease, хранит exact ACK digest/payload и завершает rollout `confirmed|blocked|dead`;
 статус читается через `GET /v1/admin/pricing-shadow-rollout-v2` только с digest'ами субъектов.
 Lane не меняет OpenKeys rows, balances, key status или history и не активирует live цену: всё

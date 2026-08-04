@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   PricingCatalogSpec,
   PricingReleaseInventoryAccountV2,
@@ -27,6 +27,8 @@ import { MIGRATIONS_FOLDER } from "./migrate.js";
 const connectionString = process.env.TEST_DATABASE_URL;
 const TEST_TIMEOUT_MS = 120_000;
 const V2 = (label: string): string => stage5V2Digest("shadow-rollout-integration", label);
+const V1 = (label: string): string =>
+  `sha256:v1:${createHash("sha256").update(`shadow-rollout-integration${label}`).digest("hex")}`;
 
 function quoteIdentifier(identifier: string): string {
   if (!/^[a-z][a-z0-9_]*$/.test(identifier)) throw new Error(`unsafe identifier ${identifier}`);
@@ -103,6 +105,48 @@ function engineReader(accounts = engineAccounts()) {
       accounts,
       next_after_account_id: null,
     }),
+    getAccountPricingState: async (accountId: string) => {
+      if (accountId !== "acct_ok_new") return "unbound" as const;
+      const base = {
+        account_id: "acct_ok_new",
+        effective_version: 1,
+        policy_id: "policy:openkeys:official-1-to-1",
+        policy_version: 1,
+        source_policy_digest: "sha256:v1:official-source",
+        owner_type: "open_keys" as const,
+        owner_id: "7c8d9e2f-1111-4a2f-9b6e-1a2b3c4d5e6f",
+        account_class: "open_keys" as const,
+        product_id: "openkeys",
+        schema_version: 1,
+        catalog_generation: 1,
+        switch_generation: 1,
+        replacement_locked: false,
+        rules: [
+          {
+            rule_id: "provider:anthropic:official-1-to-1",
+            rule_digest: "sha256:v1:rule-anthropic",
+            scope: { provider: { provider_id: "anthropic" } },
+            pricing_mode: "discount" as const,
+            rule_origin: "managed" as const,
+            discount_bps: 0,
+            payable_multiplier_bp: 10_000,
+            track_eligible: false,
+            retention_eligible: false,
+            commission_eligible: false,
+          },
+        ],
+      };
+      return {
+        active: {
+          policy: { ...base, content_digest: V1("official-v1") },
+          binding: {
+            policy_enforcement: "shadow" as const,
+            funding_enforcement: "legacy_single" as const,
+            reconciliation_state: "verified" as const,
+          },
+        },
+      };
+    },
   };
 }
 
@@ -425,30 +469,27 @@ describe.runIf(Boolean(connectionString))("pricing shadow rollout v2 lane", () =
     );
   });
 
-  it("stages one exact rollout with a locked transition and generic shadow jobs", async () => {
+  it("stages one exact rollout with a locked transition and a lineage advance", async () => {
     const runId = randomUUID();
     await seedStage5(seed, runId);
     const input = stageInput(runId);
     const staged = await stagePricingShadowRolloutV2(database, engineReader(), input);
     expect(staged.idempotentReplay).toBe(false);
-    expect(staged.jobCount).toBe(5);
+    expect(staged.jobCount).toBe(2);
 
     const jobs = await seed.query<{
       engine_account_id: string;
       expected_active_version: string | null;
       expected_active_digest: string | null;
-      request_payload: { kind: string };
+      request_payload: { kind: string; policy?: { policy_id: string; effective_version: number } };
     }>(`
       SELECT engine_account_id, expected_active_version::text, expected_active_digest, request_payload
       FROM pricing_shadow_policy_jobs_v2
       ORDER BY engine_account_id COLLATE "C"
     `);
     expect(jobs.rows.map((row) => row.engine_account_id)).toEqual([
-      "acct_b2b",
-      "acct_b2c",
       "acct_ok_legacy",
       "acct_ok_new",
-      "acct_svc",
     ]);
     const byAccount = new Map(jobs.rows.map((row) => [row.engine_account_id, row]));
     expect(byAccount.get("acct_ok_legacy")!.request_payload.kind).toBe("locked_openkeys_transition");
@@ -459,11 +500,14 @@ describe.runIf(Boolean(connectionString))("pricing shadow rollout v2 lane", () =
     });
     expect(byAccount.get("acct_ok_legacy")!.expected_active_version).toBe("1");
     expect(byAccount.get("acct_ok_legacy")!.expected_active_digest).toBe(legacy.content_digest);
-    for (const accountId of ["acct_b2b", "acct_b2c", "acct_ok_new", "acct_svc"]) {
-      expect(byAccount.get(accountId)!.request_payload.kind).toBe("policy_shadow");
-      expect(byAccount.get(accountId)!.expected_active_version).toBeNull();
-      expect(byAccount.get(accountId)!.expected_active_digest).toBeNull();
-    }
+
+    // The canonical OpenKeys account advances its existing lineage in place at the next version.
+    const advance = byAccount.get("acct_ok_new")!;
+    expect(advance.request_payload.kind).toBe("policy_shadow");
+    expect(advance.request_payload.policy!.policy_id).toBe("policy:openkeys:official-1-to-1");
+    expect(advance.request_payload.policy!.effective_version).toBe(2);
+    expect(advance.expected_active_version).toBe("1");
+    expect(advance.expected_active_digest).toBe(V1("official-v1"));
 
     const again = await stagePricingShadowRolloutV2(database, engineReader(), input);
     expect(again).toEqual({ ...staged, idempotentReplay: true });
@@ -485,7 +529,7 @@ describe.runIf(Boolean(connectionString))("pricing shadow rollout v2 lane", () =
         (SELECT count(*)::int FROM pricing_shadow_policy_jobs_v2) AS jobs,
         (SELECT count(*)::int FROM audit_log WHERE action = 'pricing_shadow_rollout_staged') AS audits
     `);
-    expect(counts.rows[0]).toEqual({ rollouts: 1, jobs: 5, audits: 1 });
+    expect(counts.rows[0]).toEqual({ rollouts: 1, jobs: 2, audits: 1 });
   });
 
   it("fails closed when the engine inventory drifted from the Stage 5 run", async () => {
@@ -514,7 +558,7 @@ describe.runIf(Boolean(connectionString))("pricing shadow rollout v2 lane", () =
       leaseMs: 300_000,
       maxAttempts: 3,
     });
-    expect(claimed).toHaveLength(5);
+    expect(claimed).toHaveLength(2);
     await expect(claimPricingShadowPolicyJobsV2(database, "worker-b", {
       batchSize: 10,
       leaseMs: 300_000,
@@ -537,8 +581,8 @@ describe.runIf(Boolean(connectionString))("pricing shadow rollout v2 lane", () =
     const control = await readPricingShadowRolloutControlV2(database);
     expect(control.countsByStatus.confirmed).toBe(1);
     expect(control.rollouts).toHaveLength(1);
-    expect(control.rollouts[0]!.jobCountsByStatus).toEqual({ confirmed: 5 });
-    expect(control.jobs).toHaveLength(5);
+    expect(control.rollouts[0]!.jobCountsByStatus).toEqual({ confirmed: 2 });
+    expect(control.jobs).toHaveLength(2);
     for (const job of control.jobs) {
       expect(job.subjectDigest).toMatch(/^sha256:v2:[0-9a-f]{64}$/);
       expect(job).not.toHaveProperty("engineAccountId");

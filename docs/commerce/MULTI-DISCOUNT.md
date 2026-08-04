@@ -231,9 +231,11 @@ Engine хранит prepared releases и один active release head. Подг�
   создаёт пустую durable очередь и append-only raw/combined artifacts для protected Stage 8
   workflow без SSH/file handoff, но сама не создаёт job, не вызывает engine и не двигает release
   head; `0035_pricing_shadow_rollout_jobs.sql` добавляет пустые parent/child таблицы для
-  full-inventory generation-3 shadow alignment. Parent связывает exact prepared target/recovery
+  generation-3 shadow alignment OpenKeys-инвентаря. Parent связывает exact prepared target/recovery
   releases с catalog/switch/inventory manifests, child хранит неизменяемый policy/binding/CAS
-  request и terminal ACK каждого commerce/OpenKeys/service account. Эта migration не создаёт
+  request и terminal ACK каждого OpenKeys account. Commerce/service lineages выравниваются их
+  managed policy writers, а не этим lane: engine не принимает другой policy identity на
+  существующей lineage, а service `meter_only` не выражается v1 shadow policy. Эта migration не создаёт
   rollout/job, не активирует legacy policy и не меняет release head. После GREEN exact engine
   producer SHA отдельный consumer checkpoint подключает полный durable lane: strict contracts и
   typed client (включая locked-openkeys-transition), `packages/db` staging/lifecycle store,

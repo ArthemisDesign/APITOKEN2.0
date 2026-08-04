@@ -435,6 +435,15 @@ function convertReleaseRulesV1(
 
 function buildGenericShadowPolicyV1(input: {
   accountId: string;
+  lineage: {
+    policy_id: string;
+    policy_version: number;
+    owner_type: "global_b2c" | "b2b_client" | "open_keys" | "service";
+    owner_id: string;
+    account_class: "b2c" | "b2b" | "open_keys" | "service";
+    product_id: string;
+  };
+  effectiveVersion: number;
   document: StoredPolicyDocumentRow;
   rules: StoredPolicyRuleRow[];
   mainCatalog: PricingCatalogSpec;
@@ -442,7 +451,7 @@ function buildGenericShadowPolicyV1(input: {
   switches: ProviderSwitchSpec;
 }): AccountPolicySpec {
   const document = input.document;
-  const productId = document.product_id ?? "main";
+  const productId = input.lineage.product_id;
   const catalog = productId === "openkeys" ? input.openkeysCatalog : input.mainCatalog;
   const catalogGeneration = document.catalog_generation === null
     ? catalog.generation
@@ -457,25 +466,28 @@ function buildGenericShadowPolicyV1(input: {
   }
   const providers = scopedProviders(
     input.switches,
-    requiredSwitchScope(document.account_class, productId),
+    requiredSwitchScope(input.lineage.account_class, productId),
     catalogGeneration,
   );
   const rules = convertReleaseRulesV1(document, input.rules, providers);
-  const ownerType = document.owner_type === "openkeys" ? "open_keys" as const : document.owner_type;
-  const accountClass = document.account_class === "openkeys" ? "open_keys" as const : document.account_class;
+  if (rules.length === 0) {
+    throw permanent(
+      `release policy ${document.policy_id} converts to an empty shadow ruleset`,
+    );
+  }
   const base = {
     account_id: input.accountId,
-    effective_version: 1,
-    policy_id: document.policy_id,
-    policy_version: positiveSafeNumber(document.policy_version, "release policy version"),
+    effective_version: input.effectiveVersion,
+    policy_id: input.lineage.policy_id,
+    policy_version: input.lineage.policy_version,
     source_policy_digest: stage5V2Digest("shadow-rollout-source-policy", {
       policy_id: document.policy_id,
       policy_version: document.policy_version,
       content_digest: document.content_digest,
     }),
-    owner_type: ownerType,
-    owner_id: document.owner_id,
-    account_class: accountClass,
+    owner_type: input.lineage.owner_type,
+    owner_id: input.lineage.owner_id,
+    account_class: input.lineage.account_class,
     product_id: productId,
     schema_version: 1,
     catalog_generation: catalogGeneration,
@@ -522,7 +534,7 @@ async function loadReleasePlan(
 
 export async function stagePricingShadowRolloutV2(
   database: Database,
-  engine: Pick<EngineClient, "getPricingReleaseInventoryV2">,
+  engine: Pick<EngineClient, "getPricingReleaseInventoryV2" | "getAccountPricingState">,
   untrustedInput: StagePricingShadowRolloutV2Input,
 ): Promise<StagedPricingShadowRolloutV2> {
   const input: StagePricingShadowRolloutV2Input = {
@@ -545,6 +557,49 @@ export async function stagePricingShadowRolloutV2(
     throw error;
   }
   const inventoryByAccount = new Map(scan.accounts.map((account) => [account.account_id, account]));
+
+  // Immutable pre-pass: the Stage 5 run row and target assignment manifest are append-only, so
+  // reading them outside the staging transaction is safe; the in-transaction FOR SHARE re-read
+  // below must reproduce the manifest byte-for-byte or staging fails closed. The pre-pass exists
+  // so per-account engine lineage reads (network I/O) never happen inside the SERIALIZABLE
+  // transaction.
+  const preRun = await database.pool.query<{
+    target_generation: string;
+    inventory_artifact: unknown;
+  }>(`
+    SELECT target_generation::text, inventory_artifact
+    FROM pricing_stage5_runs_v2 WHERE run_id = $1
+  `, [input.stage5RunId]);
+  const preRunRow = preRun.rows[0];
+  if (!preRunRow) {
+    throw permanent("Stage 5 run is not fully prepared for shadow rollout staging");
+  }
+  const preTargetGeneration = preRunRow.target_generation;
+  const preAssignments = await database.pool.query<StoredAssignmentRow>(`
+    SELECT engine_account_id, account_class, owner_context, owner_id,
+           policy_id, policy_version::text, policy_digest
+    FROM pricing_release_assignments_v2
+    WHERE release_generation = $1
+    ORDER BY engine_account_id COLLATE "C"
+  `, [preTargetGeneration]);
+  const preOpenkeysAccounts = new Map<string, OpenKeysPricingInventoryAccountV2>(
+    inventoryArtifactSchema.parse(preRunRow.inventory_artifact).openkeys.accounts
+      .map((account) => [account.account_id, account]),
+  );
+
+  // Only OpenKeys accounts are aligned by this lane: commerce and service lineages are advanced
+  // by their managed policy writers, and a release-policy identity can never attach to an
+  // account whose engine lineage already exists (policy identity is immutable per lineage).
+  // Canonical (non-legacy) OpenKeys accounts advance their existing lineage, so their exact live
+  // lineage state is read once up front.
+  const openkeysAdvance = new Map<string, Awaited<ReturnType<EngineClient["getAccountPricingState"]>>>();
+  for (const row of preAssignments.rows) {
+    if (row.owner_context !== "openkeys") continue;
+    const contract = preOpenkeysAccounts.get(row.engine_account_id)?.pricing_contract;
+    if (contract === undefined || contract === "legacy") continue;
+    const state = await engine.getAccountPricingState(row.engine_account_id);
+    openkeysAdvance.set(row.engine_account_id, state);
+  }
 
   const client = await database.pool.connect();
   let transactionOpen = false;
@@ -616,6 +671,10 @@ export async function stagePricingShadowRolloutV2(
     if (assignments.rows.length === 0) {
       throw permanent("exact target release has no assignments to align");
     }
+    if (preTargetGeneration !== String(run.target_generation)
+        || stage5V2CanonicalJson(preAssignments.rows) !== stage5V2CanonicalJson(assignments.rows)) {
+      throw permanent("target assignment manifest drifted during shadow rollout staging");
+    }
 
     const policyKeys = [...new Map(assignments.rows.map((row) => [
       `${row.policy_id}${row.policy_version}`,
@@ -648,7 +707,8 @@ export async function stagePricingShadowRolloutV2(
       documentRules.set(`${key.policy_id}${key.policy_version}`, rules.rows);
     }
 
-    const jobs: JobDraft[] = assignments.rows.map((assignment) => {
+    const jobs: JobDraft[] = [];
+    for (const assignment of assignments.rows) {
       const inventoryAccount = inventoryByAccount.get(assignment.engine_account_id);
       if (!inventoryAccount) {
         throw permanent(
@@ -667,8 +727,12 @@ export async function stagePricingShadowRolloutV2(
           `OpenKeys assignment ${assignment.engine_account_id} is missing its exact inventory owner`,
         );
       }
-      if (assignment.owner_context === "openkeys"
-          && openkeysAccount!.pricing_contract === "legacy") {
+      if (assignment.owner_context !== "openkeys") {
+        // Commerce and service lineages are advanced by their managed policy writers; this lane
+        // never attaches a release-policy identity to an existing engine lineage.
+        continue;
+      }
+      if (openkeysAccount!.pricing_contract === "legacy") {
         if (openkeysAccount!.source_multiplier_bp !== inventoryAccount.multiplier_bp) {
           throw permanent(
             `legacy OpenKeys multiplier drifted for ${assignment.engine_account_id}`,
@@ -693,7 +757,7 @@ export async function stagePricingShadowRolloutV2(
             binding: LOCKED_OPENKEYS_EXPECTED_BINDING,
           },
         };
-        return {
+        jobs.push({
           engine_account_id: assignment.engine_account_id,
           account_status: inventoryAccount.status,
           account_class: assignment.account_class,
@@ -707,10 +771,35 @@ export async function stagePricingShadowRolloutV2(
           expected_active_digest: legacy.content_digest,
           request_digest: stage5V2Digest("pricing-shadow-rollout-request-v2", payload),
           request_payload: payload,
-        };
+        });
+        continue;
+      }
+      // Already-canonical OpenKeys accounts advance their existing engine lineage in place: the
+      // engine never accepts a different policy identity for an account with a lineage, so the
+      // shadow successor reuses the live identity at the next monotonic version.
+      const lineageState = openkeysAdvance.get(assignment.engine_account_id);
+      if (!lineageState || lineageState === "unbound" || "inactive" in lineageState) {
+        throw permanent(
+          `canonical OpenKeys account ${assignment.engine_account_id} has no active engine policy lineage`,
+        );
+      }
+      const lineage = lineageState.active.policy;
+      if (lineage.replacement_locked) {
+        throw permanent(
+          `canonical OpenKeys account ${assignment.engine_account_id} lineage is unexpectedly locked`,
+        );
       }
       const policy = buildGenericShadowPolicyV1({
         accountId: assignment.engine_account_id,
+        lineage: {
+          policy_id: lineage.policy_id,
+          policy_version: lineage.policy_version + 1,
+          owner_type: lineage.owner_type,
+          owner_id: lineage.owner_id,
+          account_class: lineage.account_class,
+          product_id: lineage.product_id,
+        },
+        effectiveVersion: lineage.effective_version + 1,
         document,
         rules: documentRules.get(`${assignment.policy_id}${assignment.policy_version}`)!,
         mainCatalog,
@@ -722,7 +811,7 @@ export async function stagePricingShadowRolloutV2(
         policy,
         binding: PRICING_SHADOW_ROLLOUT_BINDING_V2,
       };
-      return {
+      jobs.push({
         engine_account_id: assignment.engine_account_id,
         account_status: inventoryAccount.status,
         account_class: assignment.account_class,
@@ -732,12 +821,12 @@ export async function stagePricingShadowRolloutV2(
         release_policy_digest: assignment.policy_digest,
         effective_version: policy.effective_version,
         content_digest: policy.content_digest,
-        expected_active_version: null,
-        expected_active_digest: null,
+        expected_active_version: lineage.effective_version,
+        expected_active_digest: lineage.content_digest,
         request_digest: stage5V2Digest("pricing-shadow-rollout-request-v2", payload),
         request_payload: payload,
-      };
-    });
+      });
+    }
 
     const rolloutDigest = stage5V2Digest("pricing-shadow-rollout-v2", {
       stage5_run_id: input.stage5RunId,

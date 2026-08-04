@@ -32,12 +32,19 @@ global active release head, не меняет balance/key/status и не вып�
 
 ## Durable shadow rollout lane (migration 0035)
 
-Pre-cutover policy alignment всего exact Stage 5 инвентаря — commerce B2C/B2B, OpenKeys (включая
-replacement-locked legacy) и service accounts — выполняется только durable lane поверх пустых
-parent/child таблиц `pricing_shadow_rollouts_v2` / `pricing_shadow_policy_jobs_v2`. Это заменяет
-упразднённый OpenKeys-local backfill с ручной assignment matrix: его модуль, CLI и тесты удалены,
-потому что generic prepare/activate для replacement-locked bindings принципиально возвращают
-`423 locked`, а ручная matrix не является durable authority.
+Pre-cutover policy alignment OpenKeys-инвентаря (включая replacement-locked legacy) выполняется
+только durable lane поверх пустых parent/child таблиц `pricing_shadow_rollouts_v2` /
+`pricing_shadow_policy_jobs_v2`. Это заменяет упразднённый OpenKeys-local backfill с ручной
+assignment matrix: его модуль, CLI и тесты удалены, потому что generic prepare/activate для
+replacement-locked bindings принципиально возвращают `423 locked`, а ручная matrix не является
+durable authority.
+
+**Scope lane — только OpenKeys.** Commerce B2C/B2B и service lineages выравниваются их managed
+policy writers (catalog/switch convergence + managed policy update создают gen-aligned версии на
+существующей lineage), потому что engine никогда не принимает другой policy identity для аккаунта
+с существующей lineage (`policy_identity_matches`), а `meter_only` service-семантика вообще не
+выражается v1 shadow policy. Rollout по-прежнему валидирует full Stage 5 inventory fail-closed,
+но jobs создаются только для OpenKeys assignments.
 
 **Producer.** Единственный способ создать rollout — AdminGuard-protected
 `POST /v1/admin/pricing-shadow-rollout-v2/stage` в `apps/api` с UUID `idempotency_key`, exact
@@ -62,8 +69,11 @@ Worker доставляет его исключительно через
 расхождение active policy с durable expectation, потерянный replacement lock или typed отказ
 (400/409/423) — terminal `blocked` с `last_error`.
 
-**Generic путь.** Остальные jobs несут payload `policy_shadow` (exact AccountPolicySpec +
-binding `shadow + legacy_single + verified`). Worker читает engine state, подтверждает уже exact
+**Generic путь (canonical OpenKeys).** Для уже канонических OpenKeys-аккаунтов (`official_1_to_1`)
+job несёт payload `policy_shadow`: successor строится на СУЩЕСТВУЮЩЕЙ engine lineage аккаунта
+(тот же policy identity, следующая monotonic version, exact current active как expected active),
+с правилами, сконвертированными из release policy, и pins точного Stage 5 catalog/switch.
+Worker читает engine state, подтверждает уже exact
 policy одним readback без mutation, иначе делает prepare → exact readback → activate с CAS
 expectation из fresh state. Любой version conflict, digest mismatch, newer engine policy или typed
 rejection — `blocked`; transient transport — bounded `retry` с lease; expired lease reclaim'ится,
