@@ -506,7 +506,8 @@ impl CodexHome {
             updates,
             emitted,
             requested_fast,
-            std::time::Duration::from_millis(self.config().turn_timeout_ms.max(1)),
+            (self.config().turn_timeout_ms > 0)
+                .then(|| std::time::Duration::from_millis(self.config().turn_timeout_ms)),
             std::time::Duration::from_millis(self.config().turn_silence_timeout_ms.max(1)),
         )
         .await
@@ -522,7 +523,7 @@ impl CodexHome {
         updates: Option<mpsc::Sender<TurnUpdate>>,
         emitted: &Arc<AtomicBool>,
         requested_fast: bool,
-        timeout: std::time::Duration,
+        timeout: Option<std::time::Duration>,
         silence_timeout: std::time::Duration,
     ) -> Result<CodexTurnResult, ProcessError> {
         // A silence bound at or above the total deadline simply never fires: the total governs and
@@ -688,6 +689,13 @@ impl CodexHome {
             })
         };
 
+        // No total deadline unless an operator asks for one. Silence above already answers "has
+        // this home stopped replying"; a total bound could only answer "has this taken too long",
+        // which is a question about the customer's task, not about our transport, and every value
+        // we could pick is a guess some legitimate task exceeds.
+        let Some(timeout) = timeout else {
+            return event_loop.await;
+        };
         match tokio::time::timeout(timeout, event_loop).await {
             Ok(result) => result,
             Err(_) => Err(ProcessError::Timeout("turn completion")),

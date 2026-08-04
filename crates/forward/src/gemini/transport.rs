@@ -55,8 +55,9 @@ struct RequestFrame<'a> {
     url: &'a str,
     headers: &'a [(&'a str, &'a str)],
     body: &'a str,
-    /// Per-request silence bound. Absent means "use the process-wide value from the configure
-    /// frame", which keeps other embedders of this helper (authbot) working unchanged.
+    /// Per-request silence bound in milliseconds. Absent means "use the process-wide value from
+    /// the configure frame", which keeps other embedders of this helper (authbot) working
+    /// unchanged; an explicit `0` means "no deadline", which is what customer generation sends.
     #[serde(skip_serializing_if = "Option::is_none")]
     read_timeout_ms: Option<u64>,
 }
@@ -156,12 +157,16 @@ pub(crate) struct TransportRequest<'a> {
     pub(crate) url: &'a str,
     pub(crate) headers: Vec<(&'static str, SecretString)>,
     pub(crate) body: Bytes,
-    /// How long this specific call may stay silent before it is treated as dead. Generation and
-    /// token refresh have opposite needs: a reasoning model legitimately produces nothing for
-    /// minutes, while a hung token call must fail fast so the profile can rotate. A single
-    /// process-wide value cannot serve both, and the compromise between them was what turned a
-    /// liveness bound into a ceiling on how long a customer request was allowed to take.
-    pub(crate) idle_timeout: Duration,
+    /// How long this specific call may stay silent before it is treated as dead, or `None` for no
+    /// deadline at all. Generation and token refresh have opposite needs: a reasoning model
+    /// legitimately produces nothing for minutes, while a hung token call must fail fast so the
+    /// profile can rotate.
+    ///
+    /// Customer generation passes `None` on purpose. Time cannot answer "is this dead" — that is
+    /// what the TCP keepalive probes are for, and they answer it without caring how long the
+    /// request has been running. Any wall-clock value here would be a bet on how long a model is
+    /// allowed to think, and some customer's task always eventually exceeds the bet.
+    pub(crate) idle_timeout: Option<Duration>,
 }
 
 pub(crate) enum ProfileTransport {
@@ -176,7 +181,9 @@ impl ProfileTransport {
                 .no_proxy()
                 .redirect(wreq::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(cfg.connect_timeout_secs))
-                .read_timeout(Duration::from_secs(cfg.read_timeout_secs))
+                // No client-wide read timeout: every send decides for itself, and customer
+                // generation deliberately decides "none". A default here would silently reimpose
+                // the ceiling this split exists to remove.
                 .pool_idle_timeout(Duration::from_secs(90))
                 .tcp_keepalive(Duration::from_secs(60));
             if !proxy.is_empty() {
@@ -193,7 +200,10 @@ impl ProfileTransport {
     ) -> Result<TransportResponse, TransportError> {
         match self {
             Self::Loopback(client) => {
-                let mut builder = client.post(request.url).read_timeout(request.idle_timeout);
+                let mut builder = client.post(request.url);
+                if let Some(idle) = request.idle_timeout {
+                    builder = builder.read_timeout(idle);
+                }
                 for (name, value) in request.headers {
                     builder = builder.header(name, value.as_str());
                 }
@@ -577,9 +587,9 @@ impl NodeProcess {
             url: request.url,
             headers: &headers,
             body: encoded_body.as_str(),
-            read_timeout_ms: Some(
-                u64::try_from(request.idle_timeout.as_millis()).unwrap_or(u64::MAX),
-            ),
+            read_timeout_ms: Some(request.idle_timeout.map_or(0, |idle| {
+                u64::try_from(idle.as_millis()).unwrap_or(u64::MAX)
+            })),
         };
         if let Err(error) = self.write_frame(&frame).await {
             return Err(error);

@@ -2391,8 +2391,17 @@ pub async fn forward(
                 )
                 // x-client-request-id — случайный per-request uuid (реальный CC шлёт на каждый запрос).
                 .header("x-client-request-id", &engine_request_id);
-            if !client_streams {
-                rb = rb.read_timeout(app.clients.nonstream_read_timeout());
+            // Стрим ловит зависшее соединение по паузе между чтениями: Anthropic шлёт SSE-ping,
+            // поэтому живой поток её не встречает. Не-стриминговый запрос молчит до конца
+            // генерации штатно, и никакая пауза не отличит там «думает» от «умер» — границы нет,
+            // живость держат TCP keep-alive и отмена при уходе клиента.
+            let idle = if client_streams {
+                app.clients.stream_read_timeout()
+            } else {
+                app.clients.nonstream_read_timeout()
+            };
+            if let Some(idle) = idle {
+                rb = rb.read_timeout(idle);
             }
             if !beta.is_empty() {
                 rb = rb.header("anthropic-beta", &beta);

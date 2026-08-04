@@ -21,7 +21,7 @@ const SUPPORTED_MODELS: [&str; 2] = ["gpt-5.5", "gpt-5.4"];
 pub(crate) struct ClaudeStoreCodexFallback {
     config: ClaudeStoreFallbackConfig,
     client: wreq::Client,
-    turn_timeout: std::time::Duration,
+    turn_timeout: Option<std::time::Duration>,
     silence_timeout: std::time::Duration,
 }
 
@@ -52,7 +52,8 @@ impl ClaudeStoreCodexFallback {
         Ok(Self {
             config,
             client,
-            turn_timeout: std::time::Duration::from_millis(turn_timeout_ms.max(1)),
+            turn_timeout: (turn_timeout_ms > 0)
+                .then(|| std::time::Duration::from_millis(turn_timeout_ms)),
             silence_timeout: std::time::Duration::from_millis(turn_silence_timeout_ms.max(1)),
         })
     }

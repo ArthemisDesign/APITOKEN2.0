@@ -175,9 +175,9 @@ pub(crate) struct GeminiProfile {
     calibration_persistence_ok: AtomicBool,
     billing: Option<Arc<AsyncBilling>>,
     calibrations: Mutex<BTreeMap<String, WindowCalibration>>,
-    /// Silence allowance for customer generation, kept here so the send path does not have to
-    /// thread the config through. Auxiliary calls pass their own, much shorter bound.
-    generation_idle: Duration,
+    /// Silence allowance for customer generation, or `None` for no deadline — the production
+    /// default. Kept here so the send path does not have to thread the config through.
+    generation_idle: Option<Duration>,
     /// Silence allowance for token refresh, quota and catalogue calls. Short on purpose: a wedged
     /// auxiliary call must rotate the profile out quickly rather than stall behind a backstop
     /// sized for generation.
@@ -253,7 +253,8 @@ impl GeminiProfile {
             calibration_persistence_ok: AtomicBool::new(billing.is_some()),
             billing,
             calibrations: Mutex::new(BTreeMap::new()),
-            generation_idle: Duration::from_secs(cfg.generation_idle_timeout_secs),
+            generation_idle: (cfg.generation_idle_timeout_secs > 0)
+                .then(|| Duration::from_secs(cfg.generation_idle_timeout_secs)),
             auxiliary_idle: Duration::from_secs(cfg.read_timeout_secs),
         })
     }
@@ -279,7 +280,7 @@ impl GeminiProfile {
         accept: Option<&'static str>,
         content_type: &'static str,
         body: bytes::Bytes,
-        idle_timeout: Duration,
+        idle_timeout: Option<Duration>,
     ) -> Result<TransportResponse, super::transport::TransportError> {
         let mut headers = vec![
             (
@@ -327,7 +328,7 @@ impl GeminiProfile {
     }
 
     /// Silence allowance for customer generation on this profile.
-    pub(crate) fn generation_idle(&self) -> Duration {
+    pub(crate) fn generation_idle(&self) -> Option<Duration> {
         self.generation_idle
     }
     pub(crate) async fn access_token(
@@ -401,7 +402,7 @@ impl GeminiProfile {
                 url: &credential.token_uri,
                 headers,
                 body: bytes::Bytes::copy_from_slice(form.as_bytes()),
-                idle_timeout: self.auxiliary_idle,
+                idle_timeout: Some(self.auxiliary_idle),
             })
             .await
             .map_err(|_| TokenError::Temporary)?;
@@ -934,7 +935,7 @@ impl GeminiProfile {
                     (self.oauth_kind == OAuthKind::LegacyGeminiCli).then_some("application/json"),
                     "application/json",
                     bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
-                    self.auxiliary_idle,
+                    Some(self.auxiliary_idle),
                 )
                 .await;
             match response {
@@ -995,7 +996,7 @@ impl GeminiProfile {
                 (self.oauth_kind == OAuthKind::LegacyGeminiCli).then_some("application/json"),
                 "application/json",
                 bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
-                self.auxiliary_idle,
+                Some(self.auxiliary_idle),
             )
             .await;
         let Ok(response) = response else {
@@ -1060,7 +1061,7 @@ impl GeminiProfile {
                 None,
                 "application/json",
                 bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
-                self.auxiliary_idle,
+                Some(self.auxiliary_idle),
             )
             .await;
         let Ok(response) = response else {

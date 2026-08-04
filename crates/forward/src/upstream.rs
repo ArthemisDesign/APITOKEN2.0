@@ -161,11 +161,17 @@ impl Clients {
         }
     }
 
-    /// Пауза между чтениями для НЕ-стриминговых запросов. Отдельная величина, потому что там
-    /// апстрим молчит до конца генерации и «молчит» не означает «умер»: длинный ответ иначе
-    /// уничтожался бы на середине единственным сигналом, который не умеет их различать.
-    pub fn nonstream_read_timeout(&self) -> Duration {
-        Duration::from_secs(self.nonstream_read_timeout)
+    /// Пауза между чтениями для СТРИМА, если она задана. Anthropic шлёт SSE-ping, поэтому живой
+    /// поток её не встречает, а зависший ловится быстро — это детектор, а не потолок.
+    pub fn stream_read_timeout(&self) -> Option<Duration> {
+        (self.read_timeout > 0).then(|| Duration::from_secs(self.read_timeout))
+    }
+
+    /// Пауза между чтениями для НЕ-стриминговых запросов, если она задана. По умолчанию её нет:
+    /// апстрим молчит до конца генерации, «молчит» там не означает «умер», и никакое число не
+    /// умеет их различить. Живость на этом пути держат TCP keep-alive и отмена по дисконнекту.
+    pub fn nonstream_read_timeout(&self) -> Option<Duration> {
+        (self.nonstream_read_timeout > 0).then(|| Duration::from_secs(self.nonstream_read_timeout))
     }
 
     /// Клиент для данного прокси ("" = напрямую). Без общего request-timeout — иначе рвал бы стримы.
@@ -189,12 +195,10 @@ impl Clients {
             // (Bun/BoringSSL) + ALPN=http/1.1 (см. nodetls)
             .connect_timeout(Duration::from_secs(self.connect_timeout))
             .pool_idle_timeout(Duration::from_secs(90))
-            .tcp_keepalive(Duration::from_secs(60))
-            // Idle между чтениями: ловит «подключился, но молчит» до первого байта и зависший
-            // посреди стрима. Сбрасывается на каждом чтении, поэтому живой SSE с ping-ами не рвёт.
-            // Это значение — стриминговое; не-стриминговый запрос переопределяет его на свой,
-            // потому что там тишина до конца генерации штатна и по времени неотличима от смерти.
-            .read_timeout(Duration::from_secs(self.read_timeout));
+            // Никакого клиентского read_timeout по умолчанию: границу выбирает каждый запрос сам,
+            // и не-стриминговый выбирает «никакой». Значение на уровне клиента молча вернуло бы
+            // потолок, ради снятия которого это разделение и сделано.
+            .tcp_keepalive(Duration::from_secs(60));
         if !proxy.is_empty() {
             b = b.proxy(wreq::Proxy::all(proxy)?);
         }

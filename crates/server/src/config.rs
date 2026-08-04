@@ -750,13 +750,14 @@ fn gemini_config() -> Option<GeminiConfig> {
         models,
         connect_timeout_secs: bounded_u64("CLAUDE_API_GEMINI_CONNECT_TIMEOUT_SECS", 30, 1, 120),
         read_timeout_secs: bounded_u64("CLAUDE_API_GEMINI_READ_TIMEOUT_SECS", 120, 15, 600),
-        // Generous on purpose: it must never cut short a model that is genuinely thinking, only
-        // reap a request whose peer is gone in a way TCP probes somehow did not surface. It is a
-        // backstop, not a latency budget — the customer never meets it.
+        // 0 = no deadline on customer generation, which is the intended production state. A
+        // wall-clock bound here can only ever be a guess at how long a model may think, and some
+        // customer task always exceeds the guess; liveness is answered by keepalive probes and
+        // cancel-on-disconnect instead. Non-zero remains available as an operator escape hatch.
         generation_idle_timeout_secs: bounded_u64(
             "CLAUDE_API_GEMINI_GENERATION_IDLE_SECS",
-            1_800,
-            30,
+            0,
+            0,
             3_600,
         ),
         max_transport_retries: bounded_usize("CLAUDE_API_GEMINI_MAX_TRANSPORT_RETRIES", 1, 0, 5),
@@ -952,17 +953,11 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
             500,
             120_000,
         ),
-        // The only hard ceiling a customer turn can meet. Its old default sat exactly on its own
-        // upper bound, so a ten-minute turn was unraisable even by env — the knob looked tunable
-        // and was not. Liveness is answered by turn_silence_timeout_ms and TCP keepalive below;
-        // this value only bounds a turn whose peer is gone in a way neither of those surfaced, so
-        // it is sized as a backstop against a leaked lease and reserve, not as a latency budget.
-        turn_timeout_ms: bounded_u64(
-            "CLAUDE_API_CODEX_TURN_TIMEOUT_MS",
-            1_800_000,
-            5_000,
-            3_600_000,
-        ),
+        // 0 = хода без общего дедлайна, и это целевое состояние. Живость отвечает
+        // turn_silence_timeout_ms («этот профиль вообще ещё там?») и TCP keep-alive; общий предел
+        // мог бы отвечать только на вопрос «не слишком ли долго считает задача клиента», а это
+        // вопрос не к транспорту. Ненулевое значение остаётся операторским рычагом.
+        turn_timeout_ms: bounded_u64("CLAUDE_API_CODEX_TURN_TIMEOUT_MS", 0, 0, 3_600_000),
         // Generous on purpose: this must never cut short a model that is genuinely thinking, only
         // catch one that has stopped answering. It is a liveness bound, not a latency budget.
         turn_silence_timeout_ms: bounded_u64(
@@ -1287,15 +1282,11 @@ impl Settings {
                 // Стриминговая граница простоя: Anthropic шлёт SSE-ping, поэтому живой поток её
                 // не встречает, а зависший ловится за две минуты.
                 read_timeout: bounded_u64("CLAUDE_API_READ_TIMEOUT", 120, 15, 600),
-                // Не-стриминговая: там апстрим молчит до конца генерации, и по времени эта тишина
-                // неотличима от смерти. Живость держит TCP keep-alive, а эта величина остаётся
-                // страховкой от утёкшего слота — клиент её встречать не должен.
-                nonstream_read_timeout: bounded_u64(
-                    "CLAUDE_API_NONSTREAM_READ_TIMEOUT",
-                    1_800,
-                    30,
-                    3_600,
-                ),
+                // Не-стриминговая: 0 = границы нет, и это целевое состояние. Апстрим там молчит до
+                // конца генерации, тишина неотличима от смерти по времени, а любое число было бы
+                // ставкой на то, сколько модели «положено» думать. Живость держат TCP keep-alive и
+                // отмена при уходе клиента; ненулевое значение остаётся операторским рычагом.
+                nonstream_read_timeout: bounded_u64("CLAUDE_API_NONSTREAM_READ_TIMEOUT", 0, 0, 3_600),
                 // Отпечаток Stainless-SDK клиента Claude Code. Дефолты — правдоподобные; ТОЧНЫЕ значения
                 // снимаются с живого claude (refresh-fingerprint.sh) и кладутся в config.env. Флот-константны.
                 x_app: ev_or("CLAUDE_API_X_APP", "cli"),

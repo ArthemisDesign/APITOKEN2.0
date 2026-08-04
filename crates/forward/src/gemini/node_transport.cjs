@@ -329,10 +329,12 @@ function startRequest(frame) {
         (frame.method !== 'POST' && frame.method !== 'GET') ||
         typeof frame.url !== 'string' || frame.url.length > 8192 ||
         typeof frame.body !== 'string') throw new Error('request');
-    // Absent means the process-wide value from the configure frame; present must be valid rather
-    // than silently coerced, so a caller bug surfaces as a failed request instead of an unintended
-    // ceiling on someone's generation.
-    if (frame.readTimeoutMs !== undefined &&
+    // Absent means the process-wide value from the configure frame; an explicit 0 means no
+    // deadline, which is what customer generation sends — liveness there comes from the keepalive
+    // probes below, and any wall-clock value would just be a bet on how long a model may think.
+    // A present-but-invalid value fails the request rather than being coerced, so a caller bug
+    // surfaces instead of quietly reinstating a ceiling.
+    if (frame.readTimeoutMs !== undefined && frame.readTimeoutMs !== 0 &&
         !boundedInteger(frame.readTimeoutMs, 1000, MAX_READ_TIMEOUT_MS)) throw new Error('request');
     const idleTimeoutMs = frame.readTimeoutMs === undefined ? readTimeoutMs : frame.readTimeoutMs;
     const url = new URL(frame.url);
@@ -382,7 +384,9 @@ function startRequest(frame) {
     // 'socket' event has nothing left to deliver.
     if (request.socket) request.socket.setKeepAlive(true, KEEPALIVE_MS);
     else request.once('socket', socket => socket.setKeepAlive(true, KEEPALIVE_MS));
-    request.setTimeout(idleTimeoutMs, () => request.destroy(new Error('timeout')));
+    if (idleTimeoutMs !== 0) {
+      request.setTimeout(idleTimeoutMs, () => request.destroy(new Error('timeout')));
+    }
     request.once('error', error => {
       if (!active.delete(id)) return;
       fail(id, requestFailureKind(error));

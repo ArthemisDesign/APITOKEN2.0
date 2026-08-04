@@ -359,21 +359,25 @@ CLAUDE_API_GEMINI_QUOTA_RESERVE_JITTER=0.01
 
 ## Liveness versus duration
 
-A long answer is not a broken one. Liveness on the upstream socket comes from TCP keepalive probes
-(60s, set by the Node helper on every request); a dead proxy, a rebooted peer or an expired NAT
-mapping resets within about a minute no matter how long the request has been running, while a
-healthy request answers probes for as long as it needs. Silence bounds are therefore backstops, not
-deadlines, and they are split by purpose because generation and auxiliary calls have opposite needs:
+A long answer is not a broken one, and time cannot tell the two apart. Nothing on the customer path
+is ended by a clock. A request ends early only on a fact: TCP keepalive probes (60s, set by the Node
+helper on every request) report the peer gone, the client disconnects and cancel-on-drop tears the
+upstream socket down, or the upstream closes the response. None of the three depends on how long the
+request has been running. The blast radius of an upstream that hangs while its socket stays healthy
+is bounded by the inflight caps, which limit concurrency rather than duration — that is the shape
+the risk actually has.
 
 - `CLAUDE_API_GEMINI_READ_TIMEOUT_SECS` (default 120, range 15–600) — token refresh, quota and
-  catalogue calls. Short on purpose: a wedged auxiliary call must rotate the profile out quickly.
-- `CLAUDE_API_GEMINI_GENERATION_IDLE_SECS` (default 1800, range 30–3600) — customer generation. It
-  exists only so a leaked lease and customer reserve cannot be held forever; a customer must never
-  meet it. Behind a CONNECT proxy the keepalive probes are invisible to the provider.
+  catalogue calls only. Short on purpose: a wedged auxiliary call must rotate the profile out
+  quickly, and none of these is a customer request.
+- `CLAUDE_API_GEMINI_GENERATION_IDLE_SECS` (default 0 = no deadline, range 0–3600) — customer
+  generation. Any non-zero value is a bet on how long a model may think, and some customer task
+  always exceeds the bet; it exists only as an operator escape hatch. Behind a CONNECT proxy the
+  keepalive probes are invisible to the provider.
 
-Before the split, one process-wide 120s value served both, so any non-streaming answer that took
-longer than two minutes was destroyed mid-flight and surfaced as `gemini_transport_unavailable`
-after a pointless retry — a liveness heuristic acting as a ceiling on customer requests.
+Before this, one process-wide 120s value served both, so any non-streaming answer that took longer
+than two minutes was destroyed mid-flight and surfaced as `gemini_transport_unavailable` after a
+pointless retry — a liveness heuristic acting as a ceiling on customer requests.
 
 `CLAUDE_API_GEMINI_UPSTREAM` defaults to and is production-pinned at
 `https://daily-cloudcode-pa.sandbox.googleapis.com`. The validator also recognizes only the daily
