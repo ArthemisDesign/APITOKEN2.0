@@ -1002,6 +1002,15 @@ UUIDv4), наружу не проксируется. Закреплённый tu
 request id; `AsyncBilling::kimi_recent_turns` отдаёт bounded newest-first чтение для атрибуции
 (PostgreSQL-only, на SQLite authority — пусто).
 
+Affinity на уровне остальных плоскостей: новая беседа получает soft warm-home preference на
+attempt 0 (тёплый cache root важнее только равных кандидатов), home регистрируется early claim'ом
+ДО первой попытки (два concurrent первых turn'а одной беседы не могут double-home), а cooling
+deadline публикуется siblings через `publish_cooling_hint`. Пер-model ось отказов: два подряд
+сбоя одной модели (stalled stream start, broken 2xx body) охлаждают ровно её на 60 секунд на этом
+профиле (`Ineligible::ModelCooling`), остальные модели профиля остаются eligible; успех модели
+снимает именно её ось. Barriered burst-тест доказывает отсутствие admission-семафоры: все N
+одновременных запросов стартуют upstream attempts до первого ответа.
+
 **GLM backend preview runtime — default-off, без публичного каталога:**
 `glm_calibration.rs` содержит чистый dual-ledger estimator одного окна подписки GLM Coding
 Plan (Zhipu AI / Z.ai), а `glm/` — строгий loader encrypted roster, last-good atomic reload,

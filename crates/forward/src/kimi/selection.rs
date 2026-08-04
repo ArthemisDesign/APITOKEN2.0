@@ -21,6 +21,8 @@ pub enum Ineligible {
     TransportWedged,
     /// The plan does not grant the requested capability.
     CapabilityNotInPlan,
+    /// This model is failing on this profile while its other models stay eligible.
+    ModelCooling,
 }
 
 /// A candidate profile as the selector sees it.

@@ -217,7 +217,21 @@ struct ProfileHealth {
     /// Last full `/usages` snapshot, retained for the operational projection. Empty until the
     /// first durable observation; never zero-filled.
     quota_windows: Vec<KimiQuotaWindowStatus>,
+    /// Per-model failure axis: a single-model wedge cools only that model on this profile.
+    model_failures: std::collections::HashMap<String, ModelFailure>,
 }
+
+/// One model's recent failure streak and its cooling deadline on this profile.
+#[derive(Default)]
+struct ModelFailure {
+    streak: u32,
+    cool_until: i64,
+}
+
+/// Two consecutive failures of the same model cool it on this profile for a bounded minute.
+/// The first failure alone only records the streak: a single blip must not blind a model on a
+/// single-profile fleet.
+const MODEL_FAILURE_COOL_SECS: i64 = 60;
 
 struct RuntimeProfile {
     id: String,
@@ -275,6 +289,12 @@ impl RuntimeProfile {
             Some(Ineligible::QuotaWall)
         } else if health.transport_cool_until > now {
             Some(Ineligible::TransportWedged)
+        } else if health
+            .model_failures
+            .get(model)
+            .is_some_and(|failure| failure.cool_until > now)
+        {
+            Some(Ineligible::ModelCooling)
         } else {
             None
         };
@@ -332,6 +352,25 @@ impl RuntimeProfile {
         health.authenticated = true;
         health.auth_quarantined_until = 0;
         health.transport_cool_until = 0;
+    }
+
+    /// A generation failure scoped to one model: two in a row cool that model on this profile.
+    /// The profile itself stays eligible for its other models — a broken model path is not a
+    /// broken egress.
+    fn mark_model_failure(&self, model: &str, now: i64) {
+        let mut health = self.health.lock().expect("KIMI profile health lock");
+        let failure = health.model_failures.entry(model.to_string()).or_default();
+        failure.streak = failure.streak.saturating_add(1);
+        if failure.streak >= 2 {
+            failure.cool_until = now.saturating_add(MODEL_FAILURE_COOL_SECS);
+            failure.streak = 0;
+        }
+    }
+
+    /// A successful turn on a model clears exactly that model's failure axis.
+    fn mark_model_healthy(&self, model: &str) {
+        let mut health = self.health.lock().expect("KIMI profile health lock");
+        health.model_failures.remove(model);
     }
 
     fn publish_quota(&self, snapshots: &[KimiQuotaSnapshot], observed_at: i64) {
@@ -1236,6 +1275,24 @@ impl KimiGateway {
         let sticky = affinity_resolution.as_ref().and_then(|resolution| {
             self.profile_id_for_home(&request.affinity_store, &resolution.home)
         });
+        // A brand-new conversation gets a soft warm-home preference for attempt 0: reusing the
+        // profile already holding this tenant's cache root keeps provider cache pricing warm.
+        // The hint never outranks eligibility — it only orders otherwise-equal candidates.
+        let mut warm_preference: Option<String> = None;
+        if sticky.is_none() {
+            if let Some(input) = request.affinity.as_ref() {
+                warm_preference = request
+                    .affinity_store
+                    .warm_homes(input)
+                    .await
+                    .iter()
+                    .find_map(|home| self.profile_id_for_home(&request.affinity_store, home));
+                request
+                    .affinity_store
+                    .record_cache_root_placement(input, warm_preference.is_some());
+            }
+        }
+        let placement = sticky.as_deref().or(warm_preference.as_deref());
         let mut excluded = HashSet::new();
         let mut policy = AttemptPolicy::default();
 
@@ -1258,10 +1315,19 @@ impl KimiGateway {
                             .is_none()
                     }),
                 Some(_) => None,
-                None => self.select_profile(&request.model, &excluded, sticky.as_deref()),
+                None => self.select_profile(&request.model, &excluded, placement),
             }) else {
                 return error_response(GatewayFailure::Capacity);
             };
+            // Early claim: a new conversation's home is registered before the first attempt, so
+            // concurrent first turns of the same conversation cannot double-home. An existing
+            // resolution is untouched until a successful first byte rebinds it at commit time.
+            if affinity_resolution.is_none() {
+                if let Some(input) = request.affinity.as_ref() {
+                    let home = request.affinity_store.home_id(&profile.id);
+                    affinity_resolution = Some(request.affinity_store.claim(input, &home).await);
+                }
+            }
             let lease = ProfileLease::new(profile.clone());
             let mut rejected_token: Option<String> = None;
             loop {
@@ -1271,7 +1337,12 @@ impl KimiGateway {
                         let verdict = error.verdict();
                         let remaining = self.eligible_count(&request.model, &excluded, &profile.id);
                         let decision = decide(verdict, Delivery::PreByte, policy, remaining);
-                        profile.apply_effect(decision.effect, now_unix());
+                        self.apply_effect_and_hint(
+                            &request.affinity_store,
+                            &profile,
+                            decision.effect,
+                            None,
+                        );
                         policy = decision.policy;
                         if decision.next == NextStep::RotateToAnotherProfile {
                             excluded.insert(profile.id.clone());
@@ -1316,7 +1387,12 @@ impl KimiGateway {
                 let verdict = classify_status(status);
                 let remaining = self.eligible_count(&request.model, &excluded, &profile.id);
                 let decision = decide(verdict, Delivery::PreByte, policy, remaining);
-                profile.apply_effect_with_hint(decision.effect, now_unix(), retry_after);
+                self.apply_effect_and_hint(
+                    &request.affinity_store,
+                    &profile,
+                    decision.effect,
+                    retry_after,
+                );
                 policy = decision.policy;
                 match decision.next {
                     NextStep::RefreshAndRetrySameProfile => {
@@ -1396,13 +1472,25 @@ impl KimiGateway {
                                         policy,
                                         remaining,
                                     );
-                                    profile.apply_effect(decision.effect, now_unix());
+                                    // A 2xx that never becomes a usable first byte is the model
+                                    // path wedging, not the egress: cool this model on this
+                                    // profile and leave its other models eligible.
+                                    profile.mark_model_failure(&request.model, now_unix());
+                                    self.publish_cooling_deadline(
+                                        &request.affinity_store,
+                                        &profile,
+                                    );
                                     policy = decision.policy;
-                                    if decision.next == NextStep::RotateToAnotherProfile {
-                                        excluded.insert(profile.id.clone());
-                                        break;
+                                    match decision.next {
+                                        NextStep::RotateToAnotherProfile => {
+                                            excluded.insert(profile.id.clone());
+                                            break;
+                                        }
+                                        NextStep::SurfaceCapacityExhausted => {
+                                            return error_response(GatewayFailure::Capacity);
+                                        }
+                                        _ => return error_response(error),
                                     }
-                                    return error_response(error);
                                 }
                                 Err(_) => {
                                     let remaining = self.eligible_count(
@@ -1416,13 +1504,25 @@ impl KimiGateway {
                                         policy,
                                         remaining,
                                     );
-                                    profile.apply_effect(decision.effect, now_unix());
+                                    // A 2xx that never becomes a usable first byte is the model
+                                    // path wedging, not the egress: cool this model on this
+                                    // profile and leave its other models eligible.
+                                    profile.mark_model_failure(&request.model, now_unix());
+                                    self.publish_cooling_deadline(
+                                        &request.affinity_store,
+                                        &profile,
+                                    );
                                     policy = decision.policy;
-                                    if decision.next == NextStep::RotateToAnotherProfile {
-                                        excluded.insert(profile.id.clone());
-                                        break;
+                                    match decision.next {
+                                        NextStep::RotateToAnotherProfile => {
+                                            excluded.insert(profile.id.clone());
+                                            break;
+                                        }
+                                        NextStep::SurfaceCapacityExhausted => {
+                                            return error_response(GatewayFailure::Capacity);
+                                        }
+                                        _ => return error_response(GatewayFailure::Transport),
                                     }
-                                    return error_response(GatewayFailure::Transport);
                                 }
                             };
                             let mut sse = SseAccounting::default();
@@ -1467,7 +1567,9 @@ impl KimiGateway {
                         let body = match read_bounded(response, RESPONSE_BODY_LIMIT).await {
                             Ok(body) => body,
                             // Nothing reached the client yet, so a failed body read is a pre-byte
-                            // transport fault with the same rotation contract as a connect error.
+                            // fault with the same rotation contract as a connect error. A 2xx
+                            // whose body breaks is the model path, not the egress: cool this
+                            // model on this profile and leave its other models eligible.
                             Err(error) => {
                                 let remaining =
                                     self.eligible_count(&request.model, &excluded, &profile.id);
@@ -1477,13 +1579,19 @@ impl KimiGateway {
                                     policy,
                                     remaining,
                                 );
-                                profile.apply_effect(decision.effect, now_unix());
+                                profile.mark_model_failure(&request.model, now_unix());
+                                self.publish_cooling_deadline(&request.affinity_store, &profile);
                                 policy = decision.policy;
-                                if decision.next == NextStep::RotateToAnotherProfile {
-                                    excluded.insert(profile.id.clone());
-                                    break;
+                                match decision.next {
+                                    NextStep::RotateToAnotherProfile => {
+                                        excluded.insert(profile.id.clone());
+                                        break;
+                                    }
+                                    NextStep::SurfaceCapacityExhausted => {
+                                        return error_response(GatewayFailure::Capacity);
+                                    }
+                                    _ => return error_response(error),
                                 }
-                                return error_response(error);
                             }
                         };
                         if !self.mark_delivering(reservation.as_ref()).await {
@@ -1507,6 +1615,7 @@ impl KimiGateway {
                         self.finalize_turn(&accounting, reservation.take(), parsed)
                             .await;
                         profile.mark_healthy();
+                        profile.mark_model_healthy(&request.model);
                         self.live_profiles.store(
                             self.profiles_snapshot()
                                 .iter()
@@ -1673,6 +1782,44 @@ impl KimiGateway {
             .count()
     }
 
+    /// Share the profile's current cooling deadline with sibling processes. The hint is one
+    /// fire-and-forget write that saves every sibling a doomed attempt; losing it costs a sibling
+    /// one extra refusal its own handling converts into local cooling anyway.
+    fn publish_cooling_deadline(&self, store: &Arc<AffinityStore>, profile: &RuntimeProfile) {
+        let now = now_unix();
+        let until = {
+            let health = profile.health.lock().expect("KIMI profile health lock");
+            let profile_axes = health
+                .auth_quarantined_until
+                .max(health.transport_cool_until)
+                .max(health.quota_cool_until);
+            let model_axes = health
+                .model_failures
+                .values()
+                .map(|failure| failure.cool_until)
+                .max()
+                .unwrap_or(0);
+            profile_axes.max(model_axes)
+        };
+        if until > now {
+            store.publish_cooling_hint(&profile.id, until);
+        }
+    }
+
+    /// Apply the decision's profile effect and share the cooling deadline with siblings.
+    fn apply_effect_and_hint(
+        &self,
+        store: &Arc<AffinityStore>,
+        profile: &RuntimeProfile,
+        effect: ProfileEffect,
+        retry_after_secs: Option<i64>,
+    ) {
+        profile.apply_effect_with_hint(effect, now_unix(), retry_after_secs);
+        if effect != ProfileEffect::None {
+            self.publish_cooling_deadline(store, profile);
+        }
+    }
+
     fn profile_id_for_home(&self, affinity: &AffinityStore, home: &str) -> Option<String> {
         self.profiles_snapshot()
             .into_iter()
@@ -1824,6 +1971,9 @@ impl KimiGateway {
                 .await;
             if clean && parsed.terminal {
                 accounting.profile.mark_healthy();
+                accounting
+                    .profile
+                    .mark_model_healthy(&accounting.requested_model);
             } else {
                 accounting
                     .profile
@@ -3402,7 +3552,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stalled_stream_start_cools_the_profile_and_rotates_pre_byte() {
+    async fn a_stalled_stream_start_rotates_pre_byte_and_marks_the_model() {
         let fixture = Fixture::new();
         fixture.publish_console_profile();
         publish_second_console_profile(&fixture);
@@ -3442,19 +3592,24 @@ data: {"type":"message_stop"}
             .filter(|request| request.starts_with("POST /messages "))
             .collect();
         assert_eq!(posts.len(), 2, "the wedged profile must be rotated past");
-        // The failed profile cooled on the transport axis; exactly one profile did.
+        // A 2xx that never became a byte is the model path, not the egress: exactly one profile
+        // carries the first model-failure streak and NO profile-level cooling.
         let now = now_unix();
-        let cooled = gateway
+        let streaked = gateway
             .profiles_snapshot()
             .iter()
             .filter(|profile| {
-                matches!(
-                    profile.candidate("kimi-for-coding", now).ineligible,
-                    Some(Ineligible::TransportWedged)
-                )
+                let health = profile.health.lock().unwrap();
+                health
+                    .model_failures
+                    .get("kimi-for-coding")
+                    .is_some_and(|failure| failure.streak == 1 && failure.cool_until == 0)
+                    && health.transport_cool_until <= now
+                    && health.quota_cool_until <= now
+                    && health.auth_quarantined_until <= now
             })
             .count();
-        assert_eq!(cooled, 1);
+        assert_eq!(streaked, 1);
     }
 
     #[tokio::test]
@@ -3495,18 +3650,72 @@ data: {"type":"message_stop"}
             }
         }
         assert_eq!(posts, 2);
+        // Same model-axis semantics as the stalled stream start: a streak on one profile, no
+        // profile-level cooling.
         let now = now_unix();
-        let cooled = gateway
+        let streaked = gateway
             .profiles_snapshot()
             .iter()
             .filter(|profile| {
-                matches!(
-                    profile.candidate("kimi-for-coding", now).ineligible,
-                    Some(Ineligible::TransportWedged)
-                )
+                let health = profile.health.lock().unwrap();
+                health
+                    .model_failures
+                    .get("kimi-for-coding")
+                    .is_some_and(|failure| failure.streak == 1 && failure.cool_until == 0)
+                    && health.transport_cool_until <= now
+                    && health.quota_cool_until <= now
+                    && health.auth_quarantined_until <= now
             })
             .count();
-        assert_eq!(cooled, 1);
+        assert_eq!(streaked, 1);
+    }
+
+    #[tokio::test]
+    async fn a_second_failure_of_the_same_model_cools_only_that_model() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let identity = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let stalled = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_vec();
+        let (base_url, requests) = mock_server(vec![
+            http_response("application/json", identity),
+            stalled.clone(),
+            stalled,
+        ]);
+        let gateway = Arc::new(
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap(),
+        );
+        assert_eq!(gateway.preflight().await, 1);
+        assert!(requests.recv().unwrap().starts_with(b"GET /me "));
+
+        // Two consecutive failures of the same model on the only profile.
+        for _ in 0..2 {
+            let response = gateway.handle(kimi_request(kimi_request_body(true))).await;
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        }
+        // The model axis cooled; every profile-level axis stayed clean.
+        let now = now_unix();
+        let profile = gateway.profiles_snapshot()[0].clone();
+        assert!(matches!(
+            profile.candidate("kimi-for-coding", now).ineligible,
+            Some(Ineligible::ModelCooling)
+        ));
+        {
+            let health = profile.health.lock().unwrap();
+            assert!(health.transport_cool_until <= now);
+            assert!(health.quota_cool_until <= now);
+            assert!(health.auth_quarantined_until <= now);
+        }
+        // The next request for the cooled model never reaches the upstream; the profile's other
+        // models would still be eligible had the plan granted them.
+        let response = gateway.handle(kimi_request(kimi_request_body(true))).await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let mut posts = 0;
+        while let Ok(request) = requests.try_recv() {
+            if request.starts_with(b"POST /messages ") {
+                posts += 1;
+            }
+        }
+        assert_eq!(posts, 2, "the cooled model must not be attempted again");
     }
 
     #[test]
@@ -3716,6 +3925,210 @@ data: {"type":"message_stop"}
         assert!(
             requests.try_recv().is_err(),
             "no upstream attempt may happen for a pinned target that cannot serve"
+        );
+    }
+
+    /// Barriered mock: identity probes are answered immediately so preflight completes; every
+    /// burst attempt is then accepted and fully read BEFORE any of them is answered. If admission
+    /// had a semaphore or queue, the read loop would deadlock — the test would time out.
+    fn burst_mock_server(
+        identities: Vec<Vec<u8>>,
+        generation: Vec<u8>,
+        burst: usize,
+    ) -> (String, mpsc::Receiver<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            for identity in identities {
+                let (mut stream, _) = listener.accept().unwrap();
+                sender.send(read_request(&mut stream)).unwrap();
+                stream.write_all(&identity).unwrap();
+            }
+            let mut pending = Vec::new();
+            for _ in 0..burst {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_request(&mut stream);
+                sender.send(request).unwrap();
+                pending.push(stream);
+            }
+            for mut stream in pending {
+                stream.write_all(&generation).unwrap();
+            }
+        });
+        (format!("http://{address}"), receiver)
+    }
+
+    /// Bounded receive for test assertions that yields to the executor: on the single-threaded
+    /// test runtime a blocking std-channel wait would starve the very tasks being awaited.
+    async fn recv_bounded(receiver: &mpsc::Receiver<Vec<u8>>, what: &str) -> Vec<u8> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match receiver.recv_timeout(Duration::from_millis(50)) {
+                Ok(request) => return request,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "timed out waiting for {what}"
+                    );
+                    tokio::task::yield_now().await;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("request channel closed while waiting for {what}")
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn burst_admission_starts_every_attempt_before_any_response() {
+        const BURST: usize = 8;
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let identity = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let generation = br#"{"id":"msg_1","type":"message","model":"kimi-k2.7-code","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":7,"output_tokens":2}}"#;
+        let (base_url, requests) = burst_mock_server(
+            vec![http_response("application/json", identity)],
+            http_response("application/json", generation),
+            BURST,
+        );
+        let gateway = Arc::new(
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap(),
+        );
+        assert_eq!(gateway.preflight().await, 1);
+        assert!(recv_bounded(&requests, "the /me probe").await.starts_with(b"GET /me "));
+        let profile = gateway.profiles_snapshot()[0].clone();
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..BURST {
+            let gateway = gateway.clone();
+            tasks.spawn(async move { gateway.handle(kimi_request(kimi_request_body(false))).await });
+        }
+        // All eight upstream attempts start before any answer exists: inflight is a placement
+        // signal, never a ceiling.
+        for _ in 0..BURST {
+            let request = recv_bounded(&requests, "a burst attempt").await;
+            assert!(request.starts_with(b"POST /messages "));
+        }
+        assert_eq!(profile.inflight.load(Ordering::Acquire), BURST as u32);
+        while let Some(outcome) = tasks.join_next().await {
+            assert_eq!(outcome.unwrap().status(), StatusCode::OK);
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_turns_of_one_conversation_cannot_double_home() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        publish_second_console_profile(&fixture);
+        let identity_1 = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let identity_2 = br#"{"user_id":"subject-2","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let generation = br#"{"id":"msg_1","type":"message","model":"kimi-k2.7-code","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":7,"output_tokens":2}}"#;
+        let (base_url, requests) = burst_mock_server(
+            vec![
+                http_response("application/json", identity_1),
+                http_response("application/json", identity_2),
+            ],
+            http_response("application/json", generation),
+            2,
+        );
+        let gateway = Arc::new(
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap(),
+        );
+        assert_eq!(gateway.preflight().await, 2);
+        assert!(recv_bounded(&requests, "the first /me probe").await.starts_with(b"GET /me "));
+        assert!(recv_bounded(&requests, "the second /me probe").await.starts_with(b"GET /me "));
+
+        let store = affinity();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-session-id", "session-0042".parse().unwrap());
+        let body = kimi_request_body(false);
+        let input = store.infer("account-1", &headers, &body).expect("session alias");
+
+        // Turn A claims the conversation's home before its attempt; turn B starts only after
+        // A's attempt is on the wire, so it must resolve to A's home rather than the cursor's
+        // next profile.
+        let first = {
+            let gateway = gateway.clone();
+            let store = store.clone();
+            let input = input.clone();
+            let body = body.clone();
+            tokio::spawn(async move {
+                let mut request = kimi_request(body);
+                request.affinity = Some(input);
+                request.affinity_store = store;
+                gateway.handle(request).await
+            })
+        };
+        let post_a = String::from_utf8(recv_bounded(&requests, "turn A's attempt").await).unwrap();
+        assert!(post_a.starts_with("POST /messages "));
+        let second = {
+            let gateway = gateway.clone();
+            tokio::spawn(async move {
+                let mut request = kimi_request(body);
+                request.affinity = Some(input);
+                request.affinity_store = store;
+                gateway.handle(request).await
+            })
+        };
+        let post_b = String::from_utf8(recv_bounded(&requests, "turn B's attempt").await).unwrap();
+        assert!(post_b.starts_with("POST /messages "));
+        assert_eq!(first.await.unwrap().status(), StatusCode::OK);
+        assert_eq!(second.await.unwrap().status(), StatusCode::OK);
+
+        let a_second = post_a.contains("console-secret-2");
+        let b_second = post_b.contains("console-secret-2");
+        assert_eq!(
+            a_second, b_second,
+            "concurrent first turns of one conversation must land on one home"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_conversation_prefers_the_warm_home_for_its_first_attempt() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        publish_second_console_profile(&fixture);
+        let identity_1 = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let identity_2 = br#"{"user_id":"subject-2","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let generation = br#"{"id":"msg_1","type":"message","model":"kimi-k2.7-code","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":7,"output_tokens":2}}"#;
+        let (base_url, requests) = burst_mock_server(
+            vec![
+                http_response("application/json", identity_1),
+                http_response("application/json", identity_2),
+            ],
+            http_response("application/json", generation),
+            1,
+        );
+        let gateway = Arc::new(
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap(),
+        );
+        assert_eq!(gateway.preflight().await, 2);
+        assert!(recv_bounded(&requests, "the first /me probe").await.starts_with(b"GET /me "));
+        assert!(recv_bounded(&requests, "the second /me probe").await.starts_with(b"GET /me "));
+
+        let store = affinity();
+        // A cacheable system prompt creates the cache root; mark kimi-02's home warm for it.
+        let body = json!({
+            "model": "kimi-for-coding",
+            "max_tokens": 8,
+            "system": "x".repeat(8192),
+            "messages": [{"role": "user", "content": "hello"}],
+        });
+        let input = store.infer("account-1", &HeaderMap::new(), &body).expect("cache root");
+        let warm_home = store.home_id("kimi-02");
+        store.mark_cache_warm(&input, &warm_home);
+
+        let mut request = kimi_request(body);
+        request.affinity = Some(input);
+        request.affinity_store = store.clone();
+        let response = gateway.handle(request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let post = String::from_utf8(recv_bounded(&requests, "the generation attempt").await).unwrap();
+        assert!(post.starts_with("POST /messages "));
+        assert!(
+            post.to_ascii_lowercase().contains("authorization: bearer console-secret-2"),
+            "the first attempt must prefer the warm home: {post}"
         );
     }
 
