@@ -2367,7 +2367,10 @@ mod tests {
             "a bounded display-prefix collision must never guess a subscription"
         );
         let selected = p.route_operator_target("beta", prefix).unwrap();
-        assert_eq!(selected.email, "beta", "soft reserve is intentionally bypassed");
+        assert_eq!(
+            selected.email, "beta",
+            "soft reserve is intentionally bypassed"
+        );
         p.mark_done(&selected.email);
 
         p.mark_cooling("beta", 60);

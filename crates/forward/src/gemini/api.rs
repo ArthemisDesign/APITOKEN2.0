@@ -3762,11 +3762,9 @@ mod tests {
         assert!(tool.get("googleSearch").is_some());
         assert!(tool.get("google_search").is_none());
         // The normalized tool must pass validation just like its camelCase form.
-        assert!(validate_generation_request(
-            &value,
-            &catalog_model("gemini-2.5-flash-lite")
-        )
-        .is_ok());
+        assert!(
+            validate_generation_request(&value, &catalog_model("gemini-2.5-flash-lite")).is_ok()
+        );
     }
 
     #[test]
@@ -3781,8 +3779,7 @@ mod tests {
             "contents": [{"parts": [{"text": "hello"}]}],
             "generationConfig": {"maxOutputTokens": 5_000}
         });
-        let (_, output, _, _) =
-            generation_controls(&capped, &model, 0, AudioUsageHint::default());
+        let (_, output, _, _) = generation_controls(&capped, &model, 0, AudioUsageHint::default());
         assert_eq!(output, 5_000);
     }
 
@@ -4947,9 +4944,12 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
-        tokio::time::timeout(Duration::from_millis(100), fixture.gateway.probe_requested())
-            .await
-            .expect("an exact settled turn must wake the free quota probe");
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            fixture.gateway.probe_requested(),
+        )
+        .await
+        .expect("an exact settled turn must wake the free quota probe");
         billing.flush().await.unwrap();
 
         let connection = registry::open(&path_string).unwrap();
@@ -5382,9 +5382,8 @@ mod tests {
             .await
             .unwrap();
         let stream_text = std::str::from_utf8(&stream_body).unwrap();
-        assert!(stream_text.contains(
-            "\"promptTokensDetails\":[{\"modality\":\"AUDIO\",\"tokenCount\":8}]"
-        ));
+        assert!(stream_text
+            .contains("\"promptTokensDetails\":[{\"modality\":\"AUDIO\",\"tokenCount\":8}]"));
         assert!(stream_text.contains("\"modelVersion\":\"gemini-3-flash-preview\""));
 
         let seen = server.state.seen();

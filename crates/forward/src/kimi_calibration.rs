@@ -474,9 +474,11 @@ mod tests {
     fn the_first_complete_interval_publishes_an_estimate() {
         let row = apply_observation(None, &obs(WEEK, T0, T0 - 200, 0, 1_000, 0)).unwrap();
         // 1% of the window consumed $1.00 of official API cost.
-        let row =
-            apply_observation(Some(row), &obs(WEEK, T0, T0 - 100, 10, 1_000, 1_000_000_000))
-                .unwrap();
+        let row = apply_observation(
+            Some(row),
+            &obs(WEEK, T0, T0 - 100, 10, 1_000, 1_000_000_000),
+        )
+        .unwrap();
         assert_eq!(row.samples, 1);
         // capacity = 1e8 * 1e9 / 1e6 = 1e11 nanoUSD = $100.
         assert_eq!(row.current_capacity_nano, Some(100_000_000_000));
@@ -488,9 +490,11 @@ mod tests {
     fn fine_resolution_proves_a_finite_high_that_whole_percent_could_not() {
         // limit=1000 -> resolution 0.1%, so a 1% move is 10x the quantisation width.
         let fine = apply_observation(None, &obs(WEEK, T0, T0 - 200, 0, 1_000, 0)).unwrap();
-        let fine =
-            apply_observation(Some(fine), &obs(WEEK, T0, T0 - 100, 10, 1_000, 1_000_000_000))
-                .unwrap();
+        let fine = apply_observation(
+            Some(fine),
+            &obs(WEEK, T0, T0 - 100, 10, 1_000, 1_000_000_000),
+        )
+        .unwrap();
         assert!(
             fine.current_high_nano.is_some(),
             "a move far beyond the envelope must bound the high side"
@@ -499,9 +503,11 @@ mod tests {
         // limit=100 -> resolution 1%, so a 1% move is exactly the envelope width and a finite
         // high is not mathematically proved.
         let coarse = apply_observation(None, &obs(WEEK, T0, T0 - 200, 0, 100, 0)).unwrap();
-        let coarse =
-            apply_observation(Some(coarse), &obs(WEEK, T0, T0 - 100, 1, 100, 1_000_000_000))
-                .unwrap();
+        let coarse = apply_observation(
+            Some(coarse),
+            &obs(WEEK, T0, T0 - 100, 1, 100, 1_000_000_000),
+        )
+        .unwrap();
         assert_eq!(
             coarse.current_high_nano, None,
             "an unbounded high must stay null, never a guessed ceiling"
@@ -516,12 +522,17 @@ mod tests {
         let held =
             apply_observation(Some(row.clone()), &obs(WEEK, T0, T0 - 200, 10, 1_000, 0)).unwrap();
         assert_eq!(held.samples, 0);
-        assert_eq!(held.anchor_used_fraction_units, row.anchor_used_fraction_units);
+        assert_eq!(
+            held.anchor_used_fraction_units,
+            row.anchor_used_fraction_units
+        );
 
         // Settlement lands: the interval completes against the original anchor.
-        let settled =
-            apply_observation(Some(held), &obs(WEEK, T0, T0 - 100, 10, 1_000, 1_000_000_000))
-                .unwrap();
+        let settled = apply_observation(
+            Some(held),
+            &obs(WEEK, T0, T0 - 100, 10, 1_000, 1_000_000_000),
+        )
+        .unwrap();
         assert_eq!(settled.samples, 1);
         assert_eq!(settled.current_capacity_nano, Some(100_000_000_000));
     }
@@ -543,9 +554,11 @@ mod tests {
     #[test]
     fn a_reset_starts_a_new_interval_without_erasing_history() {
         let row = apply_observation(None, &obs(WEEK, T0, T0 - 200, 0, 1_000, 0)).unwrap();
-        let row =
-            apply_observation(Some(row), &obs(WEEK, T0, T0 - 100, 10, 1_000, 1_000_000_000))
-                .unwrap();
+        let row = apply_observation(
+            Some(row),
+            &obs(WEEK, T0, T0 - 100, 10, 1_000, 1_000_000_000),
+        )
+        .unwrap();
         assert_eq!(row.samples, 1);
 
         // Window resets: utilisation falls back and the reset advances a full window.
@@ -576,23 +589,29 @@ mod tests {
     #[test]
     fn a_rollback_to_an_old_high_water_is_not_new_spend() {
         let row = apply_observation(None, &obs(WEEK, T0, T0 - 300, 0, 1_000, 0)).unwrap();
-        let row =
-            apply_observation(Some(row), &obs(WEEK, T0, T0 - 200, 20, 1_000, 2_000_000_000))
-                .unwrap();
+        let row = apply_observation(
+            Some(row),
+            &obs(WEEK, T0, T0 - 200, 20, 1_000, 2_000_000_000),
+        )
+        .unwrap();
         assert_eq!(row.samples, 1);
         // A lower reading with no material reset advance: not a new window, not new evidence.
-        let row =
-            apply_observation(Some(row), &obs(WEEK, T0, T0 - 100, 15, 1_000, 2_000_000_000))
-                .unwrap();
+        let row = apply_observation(
+            Some(row),
+            &obs(WEEK, T0, T0 - 100, 15, 1_000, 2_000_000_000),
+        )
+        .unwrap();
         assert_eq!(row.samples, 1);
     }
 
     #[test]
     fn stale_observations_do_not_mutate_state() {
         let row = apply_observation(None, &obs(WEEK, T0, T0 - 100, 10, 1_000, 500)).unwrap();
-        let after =
-            apply_observation(Some(row.clone()), &obs(WEEK, T0, T0 - 500, 90, 1_000, 9_000))
-                .unwrap();
+        let after = apply_observation(
+            Some(row.clone()),
+            &obs(WEEK, T0, T0 - 500, 90, 1_000, 9_000),
+        )
+        .unwrap();
         assert_eq!(after.used_fraction_units, row.used_fraction_units);
         assert_eq!(after.observed_at, row.observed_at);
     }
@@ -601,11 +620,8 @@ mod tests {
     fn independent_durations_never_share_a_row() {
         let weekly = apply_observation(None, &obs(WEEK, T0, T0 - 100, 10, 1_000, 500)).unwrap();
         // A rolling-window observation must be refused against weekly state, not folded in.
-        let err = apply_observation(
-            Some(weekly),
-            &obs(ROLLING, T0, T0 - 50, 5, 100, 900),
-        )
-        .unwrap_err();
+        let err =
+            apply_observation(Some(weekly), &obs(ROLLING, T0, T0 - 50, 5, 100, 900)).unwrap_err();
         assert!(err.to_string().contains("identity mismatch"));
     }
 
@@ -621,12 +637,16 @@ mod tests {
     fn mixed_workload_intervals_accumulate_into_one_blend() {
         let row = apply_observation(None, &obs(WEEK, T0, T0 - 400, 0, 1_000, 0)).unwrap();
         // 1% for $1.00 (a cheap cached turn), then 1% for $3.00 (an expensive k3 turn).
-        let row =
-            apply_observation(Some(row), &obs(WEEK, T0, T0 - 300, 10, 1_000, 1_000_000_000))
-                .unwrap();
-        let row =
-            apply_observation(Some(row), &obs(WEEK, T0, T0 - 200, 20, 1_000, 4_000_000_000))
-                .unwrap();
+        let row = apply_observation(
+            Some(row),
+            &obs(WEEK, T0, T0 - 300, 10, 1_000, 1_000_000_000),
+        )
+        .unwrap();
+        let row = apply_observation(
+            Some(row),
+            &obs(WEEK, T0, T0 - 200, 20, 1_000, 4_000_000_000),
+        )
+        .unwrap();
         assert_eq!(row.samples, 2);
         // Blend: 1e8 * 4e9 / 2e6 = 2e11 = $200 per window for this observed mix.
         assert_eq!(row.current_capacity_nano, Some(200_000_000_000));
@@ -690,9 +710,11 @@ mod tests {
     #[test]
     fn remaining_uses_the_current_exact_fraction() {
         let row = apply_observation(None, &obs(WEEK, T0, T0 - 200, 0, 1_000, 0)).unwrap();
-        let row =
-            apply_observation(Some(row), &obs(WEEK, T0, T0 - 100, 10, 1_000, 1_000_000_000))
-                .unwrap();
+        let row = apply_observation(
+            Some(row),
+            &obs(WEEK, T0, T0 - 100, 10, 1_000, 1_000_000_000),
+        )
+        .unwrap();
         // 99% of a $100 window remains.
         assert_eq!(row.current_remaining_nano(), Some(99_000_000_000));
         assert_eq!(row.native_remaining_units(), Some(990));
@@ -735,8 +757,7 @@ mod tests {
         assert_eq!(row.native_remaining_units(), Some(900));
         // The plan is upgraded and the window grows; native remaining must follow the new limit
         // rather than drift against the stale one.
-        let row =
-            apply_observation(Some(row), &obs(WEEK, T0, T0 - 100, 100, 5_000, 0)).unwrap();
+        let row = apply_observation(Some(row), &obs(WEEK, T0, T0 - 100, 100, 5_000, 0)).unwrap();
         assert_eq!(row.native_limit_units, 5_000);
         assert_eq!(row.native_remaining_units(), Some(4_900));
     }

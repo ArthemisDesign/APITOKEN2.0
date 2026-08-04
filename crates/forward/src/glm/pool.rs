@@ -233,7 +233,12 @@ mod tests {
     fn a_quota_wall_rotates_without_spending_the_transport_budget() {
         // That budget exists for upstream outages. Spending it on an account-level refusal
         // would stop the search before a healthy profile is reached.
-        let decision = decide(UpstreamVerdict::QuotaExhausted, Delivery::PreByte, policy(), 5);
+        let decision = decide(
+            UpstreamVerdict::QuotaExhausted,
+            Delivery::PreByte,
+            policy(),
+            5,
+        );
         assert_eq!(decision.next, NextStep::RotateToAnotherProfile);
         assert_eq!(decision.effect, ProfileEffect::CoolUntilReset);
         assert_eq!(decision.policy.transport_budget, policy().transport_budget);
@@ -263,7 +268,12 @@ mod tests {
     fn an_exhausted_fleet_reports_capacity_rather_than_a_request_error() {
         // Nothing is wrong with the customer's request, so the error must be retryable and
         // must not blame them.
-        let decision = decide(UpstreamVerdict::QuotaExhausted, Delivery::PreByte, policy(), 0);
+        let decision = decide(
+            UpstreamVerdict::QuotaExhausted,
+            Delivery::PreByte,
+            policy(),
+            0,
+        );
         assert_eq!(decision.next, NextStep::SurfaceCapacityExhausted);
         assert_eq!(decision.effect, ProfileEffect::CoolUntilReset);
     }
@@ -305,7 +315,12 @@ mod tests {
     fn a_quota_wall_never_marks_a_profile_dead() {
         // Exhausted quota is a capacity state that resets; treating it as a health failure
         // would permanently remove a paid subscription from the fleet.
-        let decision = decide(UpstreamVerdict::QuotaExhausted, Delivery::PreByte, policy(), 3);
+        let decision = decide(
+            UpstreamVerdict::QuotaExhausted,
+            Delivery::PreByte,
+            policy(),
+            3,
+        );
         assert_ne!(decision.effect, ProfileEffect::AccountDead);
         assert_eq!(decision.effect, ProfileEffect::CoolUntilReset);
     }

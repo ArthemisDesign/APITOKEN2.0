@@ -3284,15 +3284,12 @@ pub(crate) fn postgres_prepare_pricing_release_assignment_extension_v2(
     let provisioning_context =
         pricing_release_provisioning_context_v2_in_transaction(&mut transaction)?
             .context("active pricing release lacks a coherent provisioning context")?;
-    let expected_recovery = provisioning_context
-        .paired_recovery
-        .as_ref()
-        .map(|paired| {
-            (
-                paired.recovery_link.recovery_generation,
-                paired.recovery_link.recovery_digest.as_str(),
-            )
-        });
+    let expected_recovery = provisioning_context.paired_recovery.as_ref().map(|paired| {
+        (
+            paired.recovery_link.recovery_generation,
+            paired.recovery_link.recovery_digest.as_str(),
+        )
+    });
     let supplied_recovery = extension
         .paired_recovery_generation
         .zip(extension.paired_recovery_digest.as_deref());
@@ -3458,7 +3455,8 @@ fn pricing_release_provisioning_release_v2_in_transaction<C: GenericClient>(
                 minimum_runtime_schema_version,content_digest \
            FROM pricing_release_versions WHERE generation=$1",
         &[&generation],
-    )? else {
+    )?
+    else {
         return Ok(None);
     };
     Ok(Some(super::PricingReleaseProvisioningReleaseV2 {
@@ -3505,7 +3503,8 @@ fn pricing_release_provisioning_context_v2_in_transaction<C: GenericClient>(
         "SELECT active_generation,active_digest,head_version,updated_ts \
            FROM pricing_release_head_v2 WHERE singleton=1",
         &[],
-    )? else {
+    )?
+    else {
         return Ok(None);
     };
     let head = super::PricingReleaseHeadV2 {
@@ -3575,16 +3574,11 @@ fn pricing_release_provisioning_context_v2_in_transaction<C: GenericClient>(
         bail!("active pricing release head, activation audit, or Stage 8 evidence disagree");
     }
 
-    let target = pricing_release_provisioning_release_v2_in_transaction(
-        client,
-        target_generation,
-    )?
-    .context("pricing provisioning target release is missing")?;
-    let recovery = pricing_release_provisioning_release_v2_in_transaction(
-        client,
-        recovery_generation,
-    )?
-    .context("pricing provisioning recovery release is missing")?;
+    let target = pricing_release_provisioning_release_v2_in_transaction(client, target_generation)?
+        .context("pricing provisioning target release is missing")?;
+    let recovery =
+        pricing_release_provisioning_release_v2_in_transaction(client, recovery_generation)?
+            .context("pricing provisioning recovery release is missing")?;
     if target.release_kind != super::PricingReleaseKindV2::Target
         || target.content_digest != target_digest
         || recovery.release_kind != super::PricingReleaseKindV2::Recovery

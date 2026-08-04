@@ -10,12 +10,12 @@ use crate::{
     GeminiCalibrationRow, GeminiExactCalibrationRow, GeminiExactWindowObservation,
     GeminiWindowObservation, GlmCalibrationRow, GlmSubjectSpend, GlmTurnCalibrationEvent,
     GlmWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow, KimiCalibrationRow,
-    KimiTurnCalibrationEvent, KimiWindowObservation, LedgerAttribution,
-    LedgerConsumerLag, LedgerFundingAllocation, LedgerRow, PoolStateRow,
-    ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
-    ProviderTurnCalibrationEvent, SettlementFailure, SettlementHealth, SpendAccountAgg,
-    SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, UsageDailyAgg,
-    UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
+    KimiTurnCalibrationEvent, KimiWindowObservation, LedgerAttribution, LedgerConsumerLag,
+    LedgerFundingAllocation, LedgerRow, PoolStateRow, ProviderCalibrationSubjectSpend,
+    ProviderTurnCalibrationAggregate, ProviderTurnCalibrationEvent, SettlementFailure,
+    SettlementHealth, SpendAccountAgg, SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth,
+    SubRow, UsageDailyAgg, UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg,
+    UsageReport,
 };
 use anyhow::{bail, Context, Result};
 use postgres::config::{Host, SslMode};
@@ -173,12 +173,10 @@ const MIGRATION_0025: &str =
     include_str!("../migrations_pg/0025_pricing_release_runtime_epoch_fence.sql");
 const MIGRATION_0026: &str =
     include_str!("../migrations_pg/0026_pricing_release_zero_drain_extensions.sql");
-const MIGRATION_0027: &str =
-    include_str!("../migrations_pg/0027_kimi_window_calibration.sql");
+const MIGRATION_0027: &str = include_str!("../migrations_pg/0027_kimi_window_calibration.sql");
 const MIGRATION_0028: &str =
     include_str!("../migrations_pg/0028_pricing_ledger_release_v2_attribution.sql");
-const MIGRATION_0029: &str =
-    include_str!("../migrations_pg/0029_glm_window_calibration.sql");
+const MIGRATION_0029: &str = include_str!("../migrations_pg/0029_glm_window_calibration.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
 pub const CURRENT_SCHEMA_VERSION: i64 = 29;
@@ -960,9 +958,8 @@ fn postgres_process_pricing_release_settlement_v2(
         snapshot.snapshot_digest.as_str(),
     );
     if actual_nano > 0 {
-        let funding = funding.context(
-            "pricing release balance settlement lacks its exact funding split evidence",
-        )?;
+        let funding = funding
+            .context("pricing release balance settlement lacks its exact funding split evidence")?;
         let model = usage
             .map(|event| event.model.as_str())
             .unwrap_or(snapshot.canonical_model_id.as_str());
@@ -7778,9 +7775,7 @@ impl PgStore {
     pub fn pricing_release_provisioning_context_v2(
         &mut self,
     ) -> Result<Option<crate::pricing::PricingReleaseProvisioningContextV2>> {
-        crate::pricing::postgres::postgres_pricing_release_provisioning_context_v2(
-            &mut self.client,
-        )
+        crate::pricing::postgres::postgres_pricing_release_provisioning_context_v2(&mut self.client)
     }
 
     pub fn activate_pricing_release_v2(
@@ -11284,7 +11279,9 @@ mod tests {
         // keep the exact same expression, release_v2 is only added to the closed kind set.
         assert!(normalized.contains("DROP CONSTRAINT ledger_multi_discount_ranges"));
         assert!(normalized.contains("ADD CONSTRAINT ledger_multi_discount_ranges"));
-        assert!(normalized.contains("snapshot_kind IN ('policy_v1', 'legacy_scalar', 'release_v2')"));
+        assert!(
+            normalized.contains("snapshot_kind IN ('policy_v1', 'legacy_scalar', 'release_v2')")
+        );
         assert!(normalized.contains("VALIDATE CONSTRAINT ledger_multi_discount_ranges"));
 
         // The dedicated release_v2 shape is a separate additive constraint, valid for every
@@ -11376,15 +11373,17 @@ mod tests {
 
         // Raw quota counters have unproven units: unknown stays NULL, never 0, and the derived
         // fraction pair exists only once the units are proven.
-        assert!(normalized
-            .contains("native_used_units bigint CHECK (native_used_units IS NULL OR native_used_units >= 0)"));
+        assert!(normalized.contains(
+            "native_used_units bigint CHECK (native_used_units IS NULL OR native_used_units >= 0)"
+        ));
         assert!(normalized
             .contains("native_remaining_units bigint CHECK (native_remaining_units IS NULL"));
         assert!(normalized.contains(
             "used_fraction_units bigint CHECK (used_fraction_units IS NULL OR used_fraction_units BETWEEN 0 AND 100000000)"
         ));
-        assert!(normalized
-            .contains("(used_fraction_units IS NULL) = (measurement_resolution_fraction_units IS NULL)"));
+        assert!(normalized.contains(
+            "(used_fraction_units IS NULL) = (measurement_resolution_fraction_units IS NULL)"
+        ));
 
         // Quota arrives by poll and on responses; a response names its request, a poll invents
         // none, and the dedup key treats NULL raw counters as equal.
@@ -11863,10 +11862,7 @@ mod tests {
 
         // A stale writer loses the CAS and rolls its observation back. Raw history remains
         // exact, oldest-first and contains only the two winning transitions.
-        assert_eq!(
-            pg.save_glm_calibration(&state, &observation).unwrap(),
-            None
-        );
+        assert_eq!(pg.save_glm_calibration(&state, &observation).unwrap(), None);
         let history = pg
             .load_glm_window_observations(
                 &state.subject_id,
@@ -12358,10 +12354,9 @@ mod tests {
         use crate::pricing::{
             AccountClass, BillingModeV2, PricingMutation, PricingRejection,
             PricingReleaseActivationKindV2, PricingReleaseAssignmentExtensionMemberV2,
-            PricingReleaseAssignmentExtensionV2, PricingReleaseAssignmentV2,
-            PricingReleaseKindV2, PricingReleasePolicyRuleV2, PricingReleasePolicyV2,
-            PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2,
-            PricingReleaseRuleScopeV2, PricingReleaseV2,
+            PricingReleaseAssignmentExtensionV2, PricingReleaseAssignmentV2, PricingReleaseKindV2,
+            PricingReleasePolicyRuleV2, PricingReleasePolicyV2, PricingReleaseRecoveryLinkV2,
+            PricingReleaseReserveOutcomeV2, PricingReleaseRuleScopeV2, PricingReleaseV2,
         };
 
         const TARGET_GENERATION: i64 = 91_001;
@@ -13512,12 +13507,10 @@ mod tests {
         );
         assert_eq!(attribution.tariff_priced_ts, Some(admission_ts));
         assert_eq!(attribution.official_nano, Some(160));
-        assert!(
-            attribution
-                .official_cost_json
-                .as_ref()
-                .is_some_and(serde_json::Value::is_object)
-        );
+        assert!(attribution
+            .official_cost_json
+            .as_ref()
+            .is_some_and(serde_json::Value::is_object));
         assert_eq!(
             (
                 attribution.paid_funded_nano,
@@ -13560,7 +13553,10 @@ mod tests {
         );
         assert_eq!(attribution.release_schema_version, Some(2));
         assert_eq!(attribution.release_generation, Some(TARGET_GENERATION));
-        assert_eq!(attribution.release_digest.as_deref(), Some("v2-ledger-target"));
+        assert_eq!(
+            attribution.release_digest.as_deref(),
+            Some("v2-ledger-target")
+        );
         assert_eq!(attribution.release_billing_mode.as_deref(), Some("balance"));
         assert_eq!(attribution.release_funding_generation, Some(1));
 
@@ -13579,7 +13575,11 @@ mod tests {
         assert_eq!(
             durable_allocations,
             vec![
-                ("v2-ledger-bonus".to_string(), "welcome_bonus".to_string(), 60),
+                (
+                    "v2-ledger-bonus".to_string(),
+                    "welcome_bonus".to_string(),
+                    60
+                ),
                 ("v2-ledger-paid".to_string(), "paid".to_string(), 20),
             ]
         );
@@ -13663,23 +13663,13 @@ mod tests {
             ..UsageEventInput::default()
         };
         assert_eq!(
-            pg.settle_request(
-                "v2-ledger-service-request",
-                0,
-                None,
-                Some(&service_usage),
-            )
-            .unwrap(),
+            pg.settle_request("v2-ledger-service-request", 0, None, Some(&service_usage),)
+                .unwrap(),
             Some(0)
         );
         assert_eq!(
-            pg.settle_request(
-                "v2-ledger-service-request",
-                0,
-                None,
-                Some(&service_usage),
-            )
-            .unwrap(),
+            pg.settle_request("v2-ledger-service-request", 0, None, Some(&service_usage),)
+                .unwrap(),
             Some(0)
         );
         let service_ledger_count: i64 = pg

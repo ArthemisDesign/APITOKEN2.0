@@ -215,10 +215,7 @@ fn atomic_private_replace(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().context("KIMI roster has no parent")?;
     let mut random = [0u8; 8];
     getrandom::fill(&mut random).map_err(|_| anyhow::anyhow!("CSPRNG unavailable"))?;
-    let staging = parent.join(format!(
-        ".kimi.{}.pending",
-        URL_SAFE_NO_PAD.encode(random)
-    ));
+    let staging = parent.join(format!(".kimi.{}.pending", URL_SAFE_NO_PAD.encode(random)));
     write_new_private(&staging, bytes)?;
     if let Err(error) = fs::rename(&staging, path) {
         let _ = fs::remove_file(&staging);
@@ -267,8 +264,14 @@ mod tests {
     fn publication_writes_a_private_envelope_and_an_atomic_roster() {
         let root = root();
         let ring = keyring();
-        let published =
-            publish(&root, &ring, "a1", "kimi-01", &credential("u_1", "access-1")).unwrap();
+        let published = publish(
+            &root,
+            &ring,
+            "a1",
+            "kimi-01",
+            &credential("u_1", "access-1"),
+        )
+        .unwrap();
         assert!(!published.replaced_existing);
         assert_eq!(published.id, "kimi-01");
 
@@ -297,7 +300,14 @@ mod tests {
     fn the_roster_never_carries_the_subject_or_any_secret() {
         let root = root();
         let ring = keyring();
-        publish(&root, &ring, "a1", "kimi-01", &credential("u_secret", "access-1")).unwrap();
+        publish(
+            &root,
+            &ring,
+            "a1",
+            "kimi-01",
+            &credential("u_secret", "access-1"),
+        )
+        .unwrap();
         let roster = fs::read_to_string(root.join("profiles.json")).unwrap();
         assert!(!roster.contains("u_secret"));
         assert!(!roster.contains("access-1"));
@@ -310,11 +320,23 @@ mod tests {
     fn the_same_subject_replaces_its_profile_instead_of_adding_a_second_one() {
         let root = root();
         let ring = keyring();
-        let first =
-            publish(&root, &ring, "a1", "kimi-01", &credential("u_1", "access-1")).unwrap();
+        let first = publish(
+            &root,
+            &ring,
+            "a1",
+            "kimi-01",
+            &credential("u_1", "access-1"),
+        )
+        .unwrap();
         // Re-authorization: the provider rotated the refresh family, so the old token is dead.
-        let second =
-            publish(&root, &ring, "a1", "kimi-99", &credential("u_1", "access-2")).unwrap();
+        let second = publish(
+            &root,
+            &ring,
+            "a1",
+            "kimi-99",
+            &credential("u_1", "access-2"),
+        )
+        .unwrap();
 
         assert!(second.replaced_existing);
         assert_eq!(second.id, first.id, "profile identity must survive re-auth");
@@ -327,8 +349,7 @@ mod tests {
             "one subscription must never occupy two profiles"
         );
 
-        let envelope =
-            decode_envelope(&fs::read(&second.credential_file).unwrap()).unwrap();
+        let envelope = decode_envelope(&fs::read(&second.credential_file).unwrap()).unwrap();
         let opened = ring.open(&second.id, &envelope).unwrap();
         assert_eq!(opened.access_token, "access-2");
         fs::remove_dir_all(&root).ok();

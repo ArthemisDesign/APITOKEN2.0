@@ -268,8 +268,7 @@ mod tests {
     fn publication_writes_a_private_envelope_and_an_atomic_roster() {
         let root = root();
         let ring = keyring();
-        let published =
-            publish(&root, &ring, "a1", "glm-01", &credential("zai-key-1")).unwrap();
+        let published = publish(&root, &ring, "a1", "glm-01", &credential("zai-key-1")).unwrap();
         assert!(!published.replaced_existing);
         assert_eq!(published.id, "glm-01");
 

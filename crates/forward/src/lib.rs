@@ -63,9 +63,7 @@ pub use gemini::{
     GEMINI_NODE_EXPECTED_JA4, GEMINI_NODE_FETCH_EXPECTED_JA3, GEMINI_NODE_FETCH_EXPECTED_JA4,
     GEMINI_NODE_FETCH_TRANSPORT_PROFILE, GEMINI_NODE_TRANSPORT_PROFILE,
 };
-pub use kimi::{
-    KimiGateway, KimiOperationalStatus, KimiProfileStatus, KimiQuotaWindowStatus,
-};
+pub use kimi::{KimiGateway, KimiOperationalStatus, KimiProfileStatus, KimiQuotaWindowStatus};
 pub use metrics::{
     Metrics, StrictPricingProvider, StrictPricingRejectionReason,
     PRICING_BRIDGE_LATENCY_BUCKETS_MS, PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS,
@@ -82,8 +80,8 @@ pub use pricing::{
     ResolvedPricingRule, RuntimePricingCapability, RuntimePricingManifest,
 };
 pub use proxy::{
-    authed, client_keys, control_authed, forward, is_exact_not_started_response,
-    readonly_authed, resolve_client_key, resolve_client_keys, TerminalErrorReason,
+    authed, client_keys, control_authed, forward, is_exact_not_started_response, readonly_authed,
+    resolve_client_key, resolve_client_keys, TerminalErrorReason,
 };
 pub use state::{AppState, ProviderMode};
 pub use upstream::{

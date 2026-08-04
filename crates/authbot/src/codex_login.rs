@@ -73,7 +73,10 @@ pub struct DeviceAuth {
 
 pub enum Outcome {
     /// Аккаунт в пуле: envelope в roster, staging удалён.
-    Authorized { label: String, has_proxy: bool },
+    Authorized {
+        label: String,
+        has_proxy: bool,
+    },
     /// Продавец не завершил флоу за отведённое время.
     Expired,
     /// Флоу завершился, но это не ChatGPT-подписка (например, вход по API-ключу или free-план).
@@ -143,8 +146,12 @@ pub(crate) fn scan_code(s: &str) -> Option<String> {
         };
         let ok = (4..=6).contains(&left.len())
             && (4..=6).contains(&right.len())
-            && left.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-            && right.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            && left
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            && right
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
             && token.len() == left.len() + right.len() + 1;
         if ok {
             return Some(token.to_string());
@@ -196,7 +203,13 @@ fn publish(path: &Path, bytes: &[u8], secret: bool) -> Result<()> {
 }
 
 /// Начать device-флоу для нового аккаунта. Возвращает ссылку и код для продавца.
-pub fn start(chat: i64, label: &str, proxy: &str, codex_bin: &str, staging_dir: &str) -> Result<DeviceAuth> {
+pub fn start(
+    chat: i64,
+    label: &str,
+    proxy: &str,
+    codex_bin: &str,
+    staging_dir: &str,
+) -> Result<DeviceAuth> {
     cancel(chat);
     let slug = slug(label);
     if slug.is_empty() {
@@ -235,7 +248,14 @@ pub fn start(chat: i64, label: &str, proxy: &str, codex_bin: &str, staging_dir: 
     if !proxy.trim().is_empty() {
         // Логин уходит через тот же egress, что и будущий трафик аккаунта: иначе покупка
         // и эксплуатация выглядят как два разных пользователя.
-        for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
+        for name in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ] {
             cmd.env(name, proxy.trim());
         }
     }
@@ -338,9 +358,11 @@ fn jwt_claims(token: &str) -> Option<serde_json::Value> {
 /// Извлечь из auth store официального клиента ровно тот материал, который войдёт в envelope.
 /// Это единственная точка модуля, где открытый токен существует в памяти; по выходу из неё
 /// staging удаляется.
-fn credential_from_auth_store(home: &Path, proxy: &str) -> Result<(String, codex_credential::CodexCredential)> {
-    let raw = std::fs::read_to_string(home.join(AUTH_STORE))
-        .context("прочитать auth store")?;
+fn credential_from_auth_store(
+    home: &Path,
+    proxy: &str,
+) -> Result<(String, codex_credential::CodexCredential)> {
+    let raw = std::fs::read_to_string(home.join(AUTH_STORE)).context("прочитать auth store")?;
     let raw = zeroize::Zeroizing::new(raw);
     let store: serde_json::Value = serde_json::from_str(&raw).context("разобрать auth store")?;
     let tokens = store
@@ -435,7 +457,8 @@ fn publish_credential(
         .and_then(|value| value.get("profiles")?.as_array().cloned())
         .unwrap_or_default();
     let credential_file = credential_file.to_string_lossy().to_string();
-    profiles.retain(|entry| entry.get("id").and_then(serde_json::Value::as_str) != Some(profile_id));
+    profiles
+        .retain(|entry| entry.get("id").and_then(serde_json::Value::as_str) != Some(profile_id));
     profiles.push(serde_json::json!({
         "id": profile_id,
         "credential_file": credential_file,
@@ -558,7 +581,8 @@ Follow these steps to sign in with ChatGPT using device code authorization:\n\n\
 
     #[test]
     fn waits_instead_of_reporting_a_half_written_screen() {
-        let partial = "Follow these steps to sign in with ChatGPT using device code authorization:\n";
+        let partial =
+            "Follow these steps to sign in with ChatGPT using device code authorization:\n";
         assert!(scan_url(partial).is_none());
         assert!(scan_code(partial).is_none());
     }
@@ -572,7 +596,10 @@ Follow these steps to sign in with ChatGPT using device code authorization:\n\n\
 
     #[test]
     fn account_slug_is_filesystem_safe() {
-        assert_eq!(slug("Seller.One+tag@Example.COM"), "seller-one-tag-example-com");
+        assert_eq!(
+            slug("Seller.One+tag@Example.COM"),
+            "seller-one-tag-example-com"
+        );
         assert_eq!(slug("../../etc/passwd"), "etc-passwd");
         assert!(slug("!!!").is_empty());
     }
@@ -686,10 +713,9 @@ Follow these steps to sign in with ChatGPT using device code authorization:\n\n\
         let envelope = codex_credential::decode_envelope(&sealed).unwrap();
         let opened = roster.keyring.open(&profile_id, &envelope).unwrap();
         assert_eq!(opened.refresh_token, "refresh-material");
-        let profiles: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(roster.dir.join("profiles.json")).unwrap(),
-        )
-        .unwrap();
+        let profiles: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(roster.dir.join("profiles.json")).unwrap())
+                .unwrap();
         assert_eq!(profiles["profiles"][0]["id"], "acct-test-0001");
         std::fs::remove_dir_all(root).unwrap();
     }

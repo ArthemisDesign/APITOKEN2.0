@@ -24,9 +24,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use glm_credential::{
-    decode_envelope, validate_profile_id, CredentialKeyring, GlmCredential,
-};
+use glm_credential::{decode_envelope, validate_profile_id, CredentialKeyring, GlmCredential};
 use serde::Deserialize;
 
 /// Domain-separation context for the provider-subject digest (manifest §2.1: the subject is
@@ -141,8 +139,8 @@ fn load_roster_inner(
         if !recorded.is_absolute() || recorded != expected {
             bail!("GLM roster profile points outside its credential directory");
         }
-        let envelope = decode_envelope(&read_private(&recorded)?)
-            .context("decode GLM credential envelope")?;
+        let envelope =
+            decode_envelope(&read_private(&recorded)?).context("decode GLM credential envelope")?;
         let credential_key_id = envelope.key_id.clone();
         let credential = keyring
             .open(&entry.id, &envelope)

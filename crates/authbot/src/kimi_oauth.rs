@@ -118,17 +118,16 @@ struct IdentityResponse {
 pub fn parse_device_authorization(body: &[u8]) -> Result<DeviceAuthorization> {
     let parsed: DeviceAuthorizationResponse =
         serde_json::from_slice(body).context("decode KIMI device authorization")?;
-    let user_code = non_empty(parsed.user_code).ok_or_else(|| {
-        anyhow!("KIMI device authorization response is missing user_code")
-    })?;
-    let device_code = non_empty(parsed.device_code).ok_or_else(|| {
-        anyhow!("KIMI device authorization response is missing device_code")
-    })?;
+    let user_code = non_empty(parsed.user_code)
+        .ok_or_else(|| anyhow!("KIMI device authorization response is missing user_code"))?;
+    let device_code = non_empty(parsed.device_code)
+        .ok_or_else(|| anyhow!("KIMI device authorization response is missing device_code"))?;
     // Without the complete URI we would have to build one, and a hand-built verification URL is
     // exactly the kind of thing that quietly sends a seller to the wrong place.
-    let verification_uri_complete = non_empty(parsed.verification_uri_complete).ok_or_else(|| {
-        anyhow!("KIMI device authorization response is missing verification_uri_complete")
-    })?;
+    let verification_uri_complete =
+        non_empty(parsed.verification_uri_complete).ok_or_else(|| {
+            anyhow!("KIMI device authorization response is missing verification_uri_complete")
+        })?;
     let interval = parsed
         .interval
         .filter(|value| *value > 0)
@@ -191,14 +190,13 @@ pub fn parse_token_response(status: u16, body: &[u8], now_unix: i64) -> Result<D
 /// subject breaks quota attribution, an empty plan collapses distinct cohorts into one, and a
 /// non-normal status means the account cannot serve traffic at all.
 pub fn parse_identity(body: &[u8]) -> Result<KimiIdentity> {
-    let parsed: IdentityResponse =
-        serde_json::from_slice(body).context("decode KIMI identity")?;
+    let parsed: IdentityResponse = serde_json::from_slice(body).context("decode KIMI identity")?;
     let subject_id =
         non_empty(parsed.user_id).ok_or_else(|| anyhow!("KIMI identity is missing user_id"))?;
     let plan_name = non_empty(parsed.user_level_name)
         .ok_or_else(|| anyhow!("KIMI identity is missing user_level_name"))?;
-    let status = non_empty(parsed.status)
-        .ok_or_else(|| anyhow!("KIMI identity is missing status"))?;
+    let status =
+        non_empty(parsed.status).ok_or_else(|| anyhow!("KIMI identity is missing status"))?;
     if status != KIMI_STATUS_NORMAL {
         bail!("KIMI account status is not routable");
     }
@@ -246,9 +244,8 @@ fn client(proxy_url: &str) -> Result<reqwest::Client> {
     if !proxy_url.is_empty() {
         // The seller's assigned egress must be used for the whole acquisition: opening the
         // account from one IP and authorizing from another is what trips provider risk checks.
-        builder = builder.proxy(
-            reqwest::Proxy::all(proxy_url).context("configure KIMI acquisition proxy")?,
-        );
+        builder = builder
+            .proxy(reqwest::Proxy::all(proxy_url).context("configure KIMI acquisition proxy")?);
     }
     builder.build().context("build KIMI acquisition client")
 }
@@ -414,12 +411,9 @@ mod tests {
     #[test]
     fn a_grant_without_a_refresh_token_is_refused() {
         // The refresh family rotates, so a grant with no refresh token dies on first refresh.
-        assert!(parse_token_response(
-            200,
-            br#"{"access_token":"a","expires_in":3600}"#,
-            NOW
-        )
-        .is_err());
+        assert!(
+            parse_token_response(200, br#"{"access_token":"a","expires_in":3600}"#, NOW).is_err()
+        );
     }
 
     #[test]
@@ -453,10 +447,10 @@ mod tests {
             br#"{"user_id":"u_1","user_level_name":"","status":"USER_STATUS_NORMAL"}"#
         )
         .is_err());
-        assert!(parse_identity(
-            br#"{"user_level_name":"Vivace","status":"USER_STATUS_NORMAL"}"#
-        )
-        .is_err());
+        assert!(
+            parse_identity(br#"{"user_level_name":"Vivace","status":"USER_STATUS_NORMAL"}"#)
+                .is_err()
+        );
     }
 
     #[test]
@@ -535,7 +529,10 @@ mod tests {
         assert_eq!(acquisition_deadline(&authorization), MAX_ACQUISITION);
 
         authorization.expires_in = Some(60);
-        assert_eq!(acquisition_deadline(&authorization), Duration::from_secs(60));
+        assert_eq!(
+            acquisition_deadline(&authorization),
+            Duration::from_secs(60)
+        );
 
         // A provider expiry longer than our ceiling must not pin a seller job.
         authorization.expires_in = Some(86_400);
@@ -544,9 +541,6 @@ mod tests {
 
     #[test]
     fn slow_down_increases_the_interval() {
-        assert_eq!(
-            backed_off(Duration::from_secs(5)),
-            Duration::from_secs(10)
-        );
+        assert_eq!(backed_off(Duration::from_secs(5)), Duration::from_secs(10));
     }
 }

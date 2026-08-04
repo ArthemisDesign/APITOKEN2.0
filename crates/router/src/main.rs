@@ -20,8 +20,8 @@ mod error;
 mod messages;
 mod metrics;
 mod policy;
-mod pricing;
 mod presets;
+mod pricing;
 mod proxy;
 mod responses;
 mod routing;
@@ -85,10 +85,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/metrics", get(router_metrics))
         .route("/balance", get(proxy_balance))
         .route("/v1/messages", post(messages::proxy_messages))
-        .route(
-            "/v1/messages/count_tokens",
-            post(messages::proxy_messages),
-        )
+        .route("/v1/messages/count_tokens", post(messages::proxy_messages))
         .route("/v1/models", get(list_models))
         .route("/v1/models/{*id}", get(get_model))
         .route("/v1/responses", post(responses::proxy_responses))
@@ -106,7 +103,10 @@ pub fn app(state: Arc<AppState>) -> Router {
 /// already constrained to loopback and Prometheus scrapes it directly on the host.
 async fn router_metrics(State(state): State<Arc<AppState>>) -> Response {
     (
-        [(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
         state.metrics.render(),
     )
         .into_response()
@@ -130,7 +130,11 @@ async fn proxy_balance(State(state): State<Arc<AppState>>, req: Request) -> Resp
 /// calls the direct candidate slot and requires an exact provider unauthenticated wire contract.
 async fn startup(State(state): State<Arc<AppState>>) -> Response {
     if auth::startup_probe(&state.client, &origins(&state)).await {
-        (axum::http::StatusCode::OK, axum::Json(serde_json::json!({"startup": true}))).into_response()
+        (
+            axum::http::StatusCode::OK,
+            axum::Json(serde_json::json!({"startup": true})),
+        )
+            .into_response()
     } else {
         (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -345,8 +349,10 @@ fn private_catalog_response(mut response: Response) -> Response {
 pub(crate) fn auth_rejected_response() -> Response {
     (
         axum::http::StatusCode::UNAUTHORIZED,
-        axum::Json(serde_json::json!({"error": {"message": "Invalid or missing API key.",
-            "type": "invalid_request_error", "code": "invalid_api_key"}})),
+        axum::Json(
+            serde_json::json!({"error": {"message": "Invalid or missing API key.",
+            "type": "invalid_request_error", "code": "invalid_api_key"}}),
+        ),
     )
         .into_response()
 }
@@ -389,7 +395,6 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,14 +426,15 @@ mod tests {
         // Keep the upload pending after headers. The router rejects the declared length before
         // reading, so the test observes the 400 deterministically instead of racing a 32 MiB
         // client write against the server closing the HTTP/1 connection.
-        reqwest::Body::wrap_stream(futures_util::stream::pending::<
-            Result<Bytes, std::io::Error>,
-        >())
+        reqwest::Body::wrap_stream(futures_util::stream::pending::<Result<Bytes, std::io::Error>>())
     }
 
     fn record_of(req: &AxumRequest<Body>) -> Recorded {
         let header = |name: &str| {
-            req.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string)
+            req.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
         };
         Recorded {
             method: req.method().to_string(),
@@ -477,12 +483,7 @@ mod tests {
         )
     }
 
-    fn make_fallback_router(
-        anthropic: &str,
-        openai: &str,
-        gemini: &str,
-        ttl: Duration,
-    ) -> Router {
+    fn make_fallback_router(anthropic: &str, openai: &str, gemini: &str, ttl: Duration) -> Router {
         make_router_with(
             anthropic,
             openai,
@@ -629,15 +630,17 @@ mod tests {
         AxumResponse::builder()
             .status(StatusCode::OK)
             .header("content-type", "application/json")
-            .body(Body::from(
-                r#"{"schema_version":1,"authenticated":true}"#,
-            ))
+            .body(Body::from(r#"{"schema_version":1,"authenticated":true}"#))
             .unwrap()
     }
 
     /// Каталог-плоскость: отдаёт fixture на свой catalog path, логирует запрос.
     /// `mode`: "ok" — fixture, "fail" — всегда 500, "auth" — всегда 401.
-    async fn catalog_plane(body: &'static str, path: &'static str, mode: &'static str) -> (String, SharedLog) {
+    async fn catalog_plane(
+        body: &'static str,
+        path: &'static str,
+        mode: &'static str,
+    ) -> (String, SharedLog) {
         let log: SharedLog = Arc::new(StdMutex::new(Vec::new()));
         let state = log.clone();
         let router = Router::new().fallback(any(move |req: AxumRequest<Body>| {
@@ -678,7 +681,11 @@ mod tests {
                 AxumResponse::builder()
                     .status(status)
                     .header("content-type", "application/json")
-                    .body(Body::from(if status == StatusCode::OK { body } else { "{}" }))
+                    .body(Body::from(if status == StatusCode::OK {
+                        body
+                    } else {
+                        "{}"
+                    }))
                     .unwrap()
             }
         }));
@@ -911,11 +918,18 @@ mod tests {
     #[tokio::test]
     async fn native_lane_passes_body_headers_and_response_verbatim() {
         let (origin, log) = echo_plane().await;
-        let router = spawn(make_router(&origin, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let router = spawn(make_router(
+            &origin,
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:2",
+            Duration::ZERO,
+        ))
+        .await;
 
         // Namespaced `anthropic/*` модель: dispatch (этап 5.1) обязан сохранить
         // байт-идентичный passthrough native lane, каталог не опрашивается.
-        let payload = r#"{"model":"anthropic/claude-opus-4-8","max_tokens":64,"stream":true,"messages":[]}"#;
+        let payload =
+            r#"{"model":"anthropic/claude-opus-4-8","max_tokens":64,"stream":true,"messages":[]}"#;
         let client = reqwest::Client::new();
         let response = client
             .post(format!("{router}/v1/messages"))
@@ -938,7 +952,10 @@ mod tests {
         assert_eq!(recorded.method, "POST");
         assert_eq!(recorded.path, "/v1/messages");
         assert_eq!(recorded.x_api_key.as_deref(), Some("sk-pool-secret"));
-        assert_eq!(recorded.anthropic_beta.as_deref(), Some("messages-2023-12-15"));
+        assert_eq!(
+            recorded.anthropic_beta.as_deref(),
+            Some("messages-2023-12-15")
+        );
         assert_eq!(recorded.anthropic_version.as_deref(), Some("2023-06-01"));
         assert!(recorded.execution_group.is_none());
         assert!(recorded.execution_attempt.is_none());
@@ -950,26 +967,43 @@ mod tests {
     async fn fast_header_normalizes_all_gpt_surfaces_and_is_stripped() {
         let (openai, log) = echo_plane().await;
         let router = spawn(make_router(
-            "http://127.0.0.1:1", &openai, "http://127.0.0.1:2", Duration::ZERO,
-        )).await;
+            "http://127.0.0.1:1",
+            &openai,
+            "http://127.0.0.1:2",
+            Duration::ZERO,
+        ))
+        .await;
         let client = reqwest::Client::new();
 
         for (path, body) in [
-            ("/v1/chat/completions", serde_json::json!({
-                "model": "openai/gpt-5.6",
-                "messages": [{"role": "user", "content": "hi"}]
-            })),
-            ("/v1/responses", serde_json::json!({
-                "model": "openai/gpt-5.6", "input": "hi", "service_tier": "fast"
-            })),
-            ("/v1/messages", serde_json::json!({
-                "model": "openai/gpt-5.6", "max_tokens": 32,
-                "messages": [{"role": "user", "content": "hi"}], "speed": "fast"
-            })),
+            (
+                "/v1/chat/completions",
+                serde_json::json!({
+                    "model": "openai/gpt-5.6",
+                    "messages": [{"role": "user", "content": "hi"}]
+                }),
+            ),
+            (
+                "/v1/responses",
+                serde_json::json!({
+                    "model": "openai/gpt-5.6", "input": "hi", "service_tier": "fast"
+                }),
+            ),
+            (
+                "/v1/messages",
+                serde_json::json!({
+                    "model": "openai/gpt-5.6", "max_tokens": 32,
+                    "messages": [{"role": "user", "content": "hi"}], "speed": "fast"
+                }),
+            ),
         ] {
-            let response = client.post(format!("{router}{path}"))
+            let response = client
+                .post(format!("{router}{path}"))
                 .header("x-apitoken-service-tier", "fast")
-                .json(&body).send().await.unwrap();
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::OK, "{path}");
             let forwarded: serde_json::Value = response.json().await.unwrap();
             assert_eq!(forwarded["service_tier"], "priority", "{path}");
@@ -977,32 +1011,48 @@ mod tests {
 
         let recorded = log.lock().unwrap().clone();
         assert_eq!(recorded.len(), 3);
-        assert!(recorded.iter().all(|request| request.service_tier_header.is_none()));
+        assert!(recorded
+            .iter()
+            .all(|request| request.service_tier_header.is_none()));
     }
 
     #[tokio::test]
     async fn camel_service_tier_alias_normalizes_chat_and_responses_before_plane() {
         let (openai, log) = echo_plane().await;
         let router = spawn(make_router(
-            "http://127.0.0.1:1", &openai, "http://127.0.0.1:2", Duration::ZERO,
-        )).await;
+            "http://127.0.0.1:1",
+            &openai,
+            "http://127.0.0.1:2",
+            Duration::ZERO,
+        ))
+        .await;
         let client = reqwest::Client::new();
 
         for (path, body) in [
-            ("/v1/chat/completions", serde_json::json!({
-                "model": "openai/gpt-5.6",
-                "messages": [{"role": "user", "content": "hi"}],
-                "serviceTier": "priority"
-            })),
-            ("/v1/responses", serde_json::json!({
-                "model": "openai/gpt-5.6",
-                "input": "hi",
-                "serviceTier": "fast",
-                "service_tier": "priority"
-            })),
+            (
+                "/v1/chat/completions",
+                serde_json::json!({
+                    "model": "openai/gpt-5.6",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "serviceTier": "priority"
+                }),
+            ),
+            (
+                "/v1/responses",
+                serde_json::json!({
+                    "model": "openai/gpt-5.6",
+                    "input": "hi",
+                    "serviceTier": "fast",
+                    "service_tier": "priority"
+                }),
+            ),
         ] {
-            let response = client.post(format!("{router}{path}"))
-                .json(&body).send().await.unwrap();
+            let response = client
+                .post(format!("{router}{path}"))
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::OK, "{path}");
             let forwarded: serde_json::Value = response.json().await.unwrap();
             assert_eq!(forwarded["service_tier"], "priority", "{path}");
@@ -1021,28 +1071,47 @@ mod tests {
         let client = reqwest::Client::new();
 
         for (path, body) in [
-            ("/v1/chat/completions", serde_json::json!({
-                "model": "openai/gpt-5.6", "messages": [], "serviceTier": "default"
-            })),
-            ("/v1/responses", serde_json::json!({
-                "model": "openai/gpt-5.6", "input": "hi",
-                "serviceTier": "priority", "service_tier": "default"
-            })),
-            ("/v1/chat/completions", serde_json::json!({
-                "model": "anthropic/claude-opus-4-8", "messages": [],
-                "serviceTier": "priority"
-            })),
-            ("/v1/messages", serde_json::json!({
-                "model": "openai/gpt-5.6", "max_tokens": 32, "messages": [],
-                "serviceTier": "priority"
-            })),
-            ("/v1/messages/count_tokens", serde_json::json!({
-                "model": "openai/gpt-5.6", "messages": [],
-                "serviceTier": "priority"
-            })),
+            (
+                "/v1/chat/completions",
+                serde_json::json!({
+                    "model": "openai/gpt-5.6", "messages": [], "serviceTier": "default"
+                }),
+            ),
+            (
+                "/v1/responses",
+                serde_json::json!({
+                    "model": "openai/gpt-5.6", "input": "hi",
+                    "serviceTier": "priority", "service_tier": "default"
+                }),
+            ),
+            (
+                "/v1/chat/completions",
+                serde_json::json!({
+                    "model": "anthropic/claude-opus-4-8", "messages": [],
+                    "serviceTier": "priority"
+                }),
+            ),
+            (
+                "/v1/messages",
+                serde_json::json!({
+                    "model": "openai/gpt-5.6", "max_tokens": 32, "messages": [],
+                    "serviceTier": "priority"
+                }),
+            ),
+            (
+                "/v1/messages/count_tokens",
+                serde_json::json!({
+                    "model": "openai/gpt-5.6", "messages": [],
+                    "serviceTier": "priority"
+                }),
+            ),
         ] {
-            let response = client.post(format!("{router}{path}"))
-                .json(&body).send().await.unwrap();
+            let response = client
+                .post(format!("{router}{path}"))
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
         }
 
@@ -1060,22 +1129,42 @@ mod tests {
         let client = reqwest::Client::new();
 
         for (path, tier, body) in [
-            ("/v1/chat/completions", "economy", serde_json::json!({
-                "model": "openai/gpt-5.6", "messages": []
-            })),
-            ("/v1/responses", "fast", serde_json::json!({
-                "model": "openai/gpt-5.6", "input": "hi", "service_tier": "default"
-            })),
-            ("/v1/messages", "fast", serde_json::json!({
-                "model": "anthropic/claude-opus-4-8", "max_tokens": 32, "messages": []
-            })),
-            ("/v1/messages/count_tokens", "fast", serde_json::json!({
-                "model": "openai/gpt-5.6", "messages": []
-            })),
+            (
+                "/v1/chat/completions",
+                "economy",
+                serde_json::json!({
+                    "model": "openai/gpt-5.6", "messages": []
+                }),
+            ),
+            (
+                "/v1/responses",
+                "fast",
+                serde_json::json!({
+                    "model": "openai/gpt-5.6", "input": "hi", "service_tier": "default"
+                }),
+            ),
+            (
+                "/v1/messages",
+                "fast",
+                serde_json::json!({
+                    "model": "anthropic/claude-opus-4-8", "max_tokens": 32, "messages": []
+                }),
+            ),
+            (
+                "/v1/messages/count_tokens",
+                "fast",
+                serde_json::json!({
+                    "model": "openai/gpt-5.6", "messages": []
+                }),
+            ),
         ] {
-            let response = client.post(format!("{router}{path}"))
+            let response = client
+                .post(format!("{router}{path}"))
                 .header("x-apitoken-service-tier", tier)
-                .json(&body).send().await.unwrap();
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
         }
 
@@ -1089,22 +1178,27 @@ mod tests {
         // Плоскость пометила отказ авторитетной семантикой исполнения. Router снимает
         // заголовок с транзита (за его условия отвечает только сам движок), а статус,
         // тело и остальные заголовки доезжают до клиента без изменений.
-        let plane = spawn(Router::new().fallback(any(|req: AxumRequest<Body>| async move {
-            if req.uri().path() == "/internal/router/auth/preflight" {
-                return authenticated_response();
-            }
-            AxumResponse::builder()
-                .status(StatusCode::SERVICE_UNAVAILABLE)
-                .header("content-type", "application/json")
-                .header("x-apitoken-execution-state", "not_started")
-                .header("x-plane-marker", "refused")
-                .body(Body::from("{}"))
-                .unwrap()
-        })))
-        .await;
-        let router = spawn(
-            make_router(&plane, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO),
+        let plane = spawn(
+            Router::new().fallback(any(|req: AxumRequest<Body>| async move {
+                if req.uri().path() == "/internal/router/auth/preflight" {
+                    return authenticated_response();
+                }
+                AxumResponse::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .header("content-type", "application/json")
+                    .header("x-apitoken-execution-state", "not_started")
+                    .header("x-plane-marker", "refused")
+                    .body(Body::from("{}"))
+                    .unwrap()
+            })),
         )
+        .await;
+        let router = spawn(make_router(
+            &plane,
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:2",
+            Duration::ZERO,
+        ))
         .await;
 
         let response = reqwest::Client::new()
@@ -1125,7 +1219,13 @@ mod tests {
     #[tokio::test]
     async fn native_lane_passes_query_string_verbatim() {
         let (origin, log) = echo_plane().await;
-        let router = spawn(make_router(&origin, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let router = spawn(make_router(
+            &origin,
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:2",
+            Duration::ZERO,
+        ))
+        .await;
 
         reqwest::Client::new()
             .post(format!("{router}/v1/messages?beta=true"))
@@ -1133,30 +1233,43 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(log.lock().unwrap().pop().unwrap().path, "/v1/messages?beta=true");
+        assert_eq!(
+            log.lock().unwrap().pop().unwrap().path,
+            "/v1/messages?beta=true"
+        );
     }
 
     #[tokio::test]
     async fn sse_stream_first_chunk_is_not_buffered() {
         // SSE-плоскость: первый чанк сразу, второй через 700 мс. Если router
         // буферизует, первый чанк клиент увидит только после полного ответа.
-        let plane = spawn(Router::new().fallback(any(|req: AxumRequest<Body>| async move {
-            if req.uri().path() == "/internal/router/auth/preflight" {
-                return authenticated_response();
-            }
-            let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
-            tokio::spawn(async move {
-                let _ = tx.send(Ok(Bytes::from("event: message_start\ndata: {}\n\n"))).await;
-                tokio::time::sleep(Duration::from_millis(700)).await;
-                let _ = tx.send(Ok(Bytes::from("data: [DONE]\n\n"))).await;
-            });
-            AxumResponse::builder()
-                .header("content-type", "text/event-stream")
-                .body(Body::from_stream(ReceiverStream::new(rx)))
-                .unwrap()
-        })))
+        let plane = spawn(
+            Router::new().fallback(any(|req: AxumRequest<Body>| async move {
+                if req.uri().path() == "/internal/router/auth/preflight" {
+                    return authenticated_response();
+                }
+                let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+                tokio::spawn(async move {
+                    let _ = tx
+                        .send(Ok(Bytes::from("event: message_start\ndata: {}\n\n")))
+                        .await;
+                    tokio::time::sleep(Duration::from_millis(700)).await;
+                    let _ = tx.send(Ok(Bytes::from("data: [DONE]\n\n"))).await;
+                });
+                AxumResponse::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from_stream(ReceiverStream::new(rx)))
+                    .unwrap()
+            })),
+        )
         .await;
-        let router = spawn(make_router(&plane, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let router = spawn(make_router(
+            &plane,
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:2",
+            Duration::ZERO,
+        ))
+        .await;
 
         let started = std::time::Instant::now();
         let mut response = reqwest::Client::new()
@@ -1206,7 +1319,13 @@ mod tests {
             }
         })))
         .await;
-        let router = spawn(make_router(&plane, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let router = spawn(make_router(
+            &plane,
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:2",
+            Duration::ZERO,
+        ))
+        .await;
 
         let mut response = reqwest::Client::new()
             .post(format!("{router}/v1/messages"))
@@ -1233,11 +1352,18 @@ mod tests {
 
         for (method, path) in [
             ("POST", "/v1beta/models/gemini-2.5-pro:generateContent"),
-            ("POST", "/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse"),
+            (
+                "POST",
+                "/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
+            ),
             ("GET", "/v1beta/models"),
             ("OPTIONS", "/v1beta/models"),
         ] {
-            client.request(method.parse().unwrap(), format!("{router}{path}")).send().await.unwrap();
+            client
+                .request(method.parse().unwrap(), format!("{router}{path}"))
+                .send()
+                .await
+                .unwrap();
         }
         // /v1/responses — universal lane с dispatch по model (этап 4.1):
         // валидный namespaced model обязателен; openai/* остаётся на своей
@@ -1254,7 +1380,11 @@ mod tests {
             ("DELETE", "/v1/responses/resp_42"),
             ("GET", "/v1/responses/resp_42/input_items"),
         ] {
-            client.request(method.parse().unwrap(), format!("{router}{path}")).send().await.unwrap();
+            client
+                .request(method.parse().unwrap(), format!("{router}{path}"))
+                .send()
+                .await
+                .unwrap();
         }
         // /v1/chat/completions — universal lane: до плоскости доходит запрос
         // с валидным namespaced model (этап 3.1, chat::proxy_chat).
@@ -1264,12 +1394,20 @@ mod tests {
             .send()
             .await
             .unwrap();
-        client.get(format!("{router}/balance")).send().await.unwrap();
+        client
+            .get(format!("{router}/balance"))
+            .send()
+            .await
+            .unwrap();
 
         assert_eq!(log_g.lock().unwrap().len(), 4);
         assert_eq!(log_o.lock().unwrap().len(), 6);
-        let anthropic_paths: Vec<String> =
-            log_a.lock().unwrap().iter().map(|r| r.path.clone()).collect();
+        let anthropic_paths: Vec<String> = log_a
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.path.clone())
+            .collect();
         assert_eq!(anthropic_paths, ["/balance"]);
     }
 
@@ -1415,22 +1553,10 @@ mod tests {
             false,
         )
         .await;
-        let (o, bodies_o) = attempt_plane(
-            OPENAI_MODELS,
-            "/v1/models",
-            StatusCode::OK,
-            None,
-            false,
-        )
-        .await;
-        let (g, bodies_g) = attempt_plane(
-            GEMINI_MODELS,
-            "/v1beta/models",
-            StatusCode::OK,
-            None,
-            false,
-        )
-        .await;
+        let (o, bodies_o) =
+            attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
+        let (g, bodies_g) =
+            attempt_plane(GEMINI_MODELS, "/v1beta/models", StatusCode::OK, None, false).await;
         let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
         let response = reqwest::Client::new()
             .post(format!("{router}/v1/chat/completions"))
@@ -1443,7 +1569,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(response.headers().get("x-apitoken-execution-state").is_none());
+        assert!(response
+            .headers()
+            .get("x-apitoken-execution-state")
+            .is_none());
         let final_body: serde_json::Value = response.json().await.unwrap();
         assert_eq!(final_body["model"], "openai/gpt-5.6");
         assert!(final_body.get("models").is_none());
@@ -1485,20 +1614,10 @@ mod tests {
             Some("not_started"),
         )
         .await;
-        let (o, log_o) = identity_attempt_plane(
-            OPENAI_MODELS,
-            "/v1/models",
-            StatusCode::OK,
-            None,
-        )
-        .await;
-        let (g, _) = identity_attempt_plane(
-            GEMINI_MODELS,
-            "/v1beta/models",
-            StatusCode::OK,
-            None,
-        )
-        .await;
+        let (o, log_o) =
+            identity_attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None).await;
+        let (g, _) =
+            identity_attempt_plane(GEMINI_MODELS, "/v1beta/models", StatusCode::OK, None).await;
         let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
         let response = reqwest::Client::new()
             .post(format!("{router}/v1/responses"))
@@ -1524,8 +1643,7 @@ mod tests {
         assert_eq!(bytes[14], b'4');
         assert!(matches!(bytes[19], b'8' | b'9' | b'a' | b'b'));
         assert!(bytes.iter().enumerate().all(|(index, byte)| {
-            matches!(index, 8 | 13 | 18 | 23)
-                || matches!(byte, b'0'..=b'9' | b'a'..=b'f')
+            matches!(index, 8 | 13 | 18 | 23) || matches!(byte, b'0'..=b'9' | b'a'..=b'f')
         }));
         assert_ne!(group, "client-controlled");
         assert_eq!(second.execution_group.as_deref(), Some(group));
@@ -1545,14 +1663,8 @@ mod tests {
                 attempt_plane(ANTHROPIC_MODELS, "/v1/models", status, signal, false).await;
             let (o, bodies_o) =
                 attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
-            let (g, _) = attempt_plane(
-                GEMINI_MODELS,
-                "/v1beta/models",
-                StatusCode::OK,
-                None,
-                false,
-            )
-            .await;
+            let (g, _) =
+                attempt_plane(GEMINI_MODELS, "/v1beta/models", StatusCode::OK, None, false).await;
             let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
             let response = reqwest::Client::new()
                 .post(format!("{router}/v1/messages"))
@@ -1562,8 +1674,15 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(response.status(), status, "status={status} signal={signal:?}");
-            assert!(response.headers().get("x-apitoken-execution-state").is_none());
+            assert_eq!(
+                response.status(),
+                status,
+                "status={status} signal={signal:?}"
+            );
+            assert!(response
+                .headers()
+                .get("x-apitoken-execution-state")
+                .is_none());
             assert_eq!(bodies_a.lock().unwrap().len(), 1);
             assert!(bodies_o.lock().unwrap().is_empty());
             let metrics = reqwest::get(format!("{router}/metrics"))
@@ -1590,14 +1709,8 @@ mod tests {
         .await;
         let (o, bodies_o) =
             attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
-        let (g, _) = attempt_plane(
-            GEMINI_MODELS,
-            "/v1beta/models",
-            StatusCode::OK,
-            None,
-            false,
-        )
-        .await;
+        let (g, _) =
+            attempt_plane(GEMINI_MODELS, "/v1beta/models", StatusCode::OK, None, false).await;
         let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
         let response = reqwest::Client::new()
             .post(format!("{router}/v1/messages/count_tokens"))
@@ -1619,16 +1732,11 @@ mod tests {
         let a = one_shot_catalog_origin(ANTHROPIC_MODELS).await;
         let (o, bodies_o) =
             attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
-        let (g, _) = attempt_plane(
-            GEMINI_MODELS,
-            "/v1beta/models",
-            StatusCode::OK,
-            None,
-            false,
-        )
-        .await;
+        let (g, _) =
+            attempt_plane(GEMINI_MODELS, "/v1beta/models", StatusCode::OK, None, false).await;
         let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
-        let payload = r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"messages":[]}"#;
+        let payload =
+            r#"{"model":"anthropic/claude-opus-4-8","models":["openai/gpt-5.6"],"messages":[]}"#;
         let response = reqwest::Client::new()
             .post(format!("{router}/v1/chat/completions"))
             .body(payload)
@@ -1649,24 +1757,12 @@ mod tests {
 
         // A deterministic timeout after TCP connect but before response headers
         // is ambiguous: the plane has received the body, so no second attempt.
-        let (a, bodies_a) = attempt_plane(
-            ANTHROPIC_MODELS,
-            "/v1/models",
-            StatusCode::OK,
-            None,
-            true,
-        )
-        .await;
+        let (a, bodies_a) =
+            attempt_plane(ANTHROPIC_MODELS, "/v1/models", StatusCode::OK, None, true).await;
         let (o, bodies_o) =
             attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
-        let (g, _) = attempt_plane(
-            GEMINI_MODELS,
-            "/v1beta/models",
-            StatusCode::OK,
-            None,
-            false,
-        )
-        .await;
+        let (g, _) =
+            attempt_plane(GEMINI_MODELS, "/v1beta/models", StatusCode::OK, None, false).await;
         let timeout_client = Client::builder()
             .timeout(Duration::from_millis(150))
             .redirect(reqwest::redirect::Policy::none())
@@ -1694,30 +1790,24 @@ mod tests {
 
     #[tokio::test]
     async fn fallback_chain_validation_is_lane_shaped_and_preflighted() {
-        let (a, bodies_a) = attempt_plane(
-            ANTHROPIC_MODELS,
-            "/v1/models",
-            StatusCode::OK,
-            None,
-            false,
-        )
-        .await;
+        let (a, bodies_a) =
+            attempt_plane(ANTHROPIC_MODELS, "/v1/models", StatusCode::OK, None, false).await;
         let (o, bodies_o) =
             attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
-        let (g, bodies_g) = attempt_plane(
-            GEMINI_MODELS,
-            "/v1beta/models",
-            StatusCode::OK,
-            None,
-            false,
-        )
-        .await;
+        let (g, bodies_g) =
+            attempt_plane(GEMINI_MODELS, "/v1beta/models", StatusCode::OK, None, false).await;
         // This test exercises validation, not stale-catalog refresh. Keep one stable aggregate so
         // host-wide parallel test load cannot turn repeated zero-TTL fetches into a timing probe.
         let router = spawn(make_fallback_router(&a, &o, &g, Duration::from_secs(60))).await;
         let client = reqwest::Client::new();
 
-        for models in ["[]", "{}", r#"[""]"#, r#"[42]"#, r#"["anthropic/claude-opus-4-8"]"#] {
+        for models in [
+            "[]",
+            "{}",
+            r#"[""]"#,
+            r#"[42]"#,
+            r#"["anthropic/claude-opus-4-8"]"#,
+        ] {
             let response = client
                 .post(format!("{router}/v1/chat/completions"))
                 .body(format!(
@@ -1726,7 +1816,11 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "models={models}");
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "models={models}"
+            );
             let json: serde_json::Value = response.json().await.unwrap();
             assert_eq!(json["error"]["type"], "invalid_request_error");
             assert_eq!(json["error"]["param"], "models");
@@ -1745,7 +1839,11 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "models={models}");
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "models={models}"
+            );
             let json: serde_json::Value = response.json().await.unwrap();
             assert_eq!(json["type"], "error");
             assert_eq!(json["error"]["type"], "invalid_request_error");
@@ -1799,9 +1897,11 @@ mod tests {
             assert_eq!(bodies_a.lock().unwrap().len(), 1);
             assert!(bodies_o.lock().unwrap().is_empty());
             assert!(bodies_g.lock().unwrap().is_empty());
-            assert!(log_o.lock().unwrap().iter().any(|request| {
-                request.path == "/internal/router/policy/preflight"
-            }));
+            assert!(log_o
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|request| { request.path == "/internal/router/policy/preflight" }));
         }
 
         let (a, bodies_a, _) = policy_attempt_plane(
@@ -1877,9 +1977,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        assert!(!log_o.lock().unwrap().iter().any(|request| {
-            request.path == "/internal/router/policy/preflight"
-        }));
+        assert!(!log_o
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| { request.path == "/internal/router/policy/preflight" }));
         assert!(bodies_a.lock().unwrap().is_empty());
         assert!(bodies_o.lock().unwrap().is_empty());
         assert!(bodies_g.lock().unwrap().is_empty());
@@ -1920,7 +2022,11 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{invalid}");
+            assert_eq!(
+                response.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{invalid}"
+            );
             assert!(bodies_a.lock().unwrap().is_empty());
             assert!(bodies_o.lock().unwrap().is_empty());
             assert!(bodies_g.lock().unwrap().is_empty());
@@ -1963,8 +2069,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert!(bodies_a.lock().unwrap().is_empty());
-        let body: serde_json::Value =
-            serde_json::from_slice(&bodies_o.lock().unwrap()[0]).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bodies_o.lock().unwrap()[0]).unwrap();
         assert_eq!(body["model"], "openai/gpt-5.6");
         assert_eq!(body["service_tier"], "priority");
         let execution = log_o
@@ -2094,8 +2199,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert!(bodies_o.lock().unwrap().is_empty());
-        let body: serde_json::Value =
-            serde_json::from_slice(&bodies_g.lock().unwrap()[0]).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bodies_g.lock().unwrap()[0]).unwrap();
         assert_eq!(body["model"], "google/gemini-3.1-flash-lite");
         let execution = log_g
             .lock()
@@ -2109,24 +2213,12 @@ mod tests {
 
     #[tokio::test]
     async fn provider_validation_and_expanded_chain_bounds_fail_before_execution() {
-        let (a, bodies_a) = attempt_plane(
-            ANTHROPIC_MODELS,
-            "/v1/models",
-            StatusCode::OK,
-            None,
-            false,
-        )
-        .await;
+        let (a, bodies_a) =
+            attempt_plane(ANTHROPIC_MODELS, "/v1/models", StatusCode::OK, None, false).await;
         let (o, bodies_o) =
             attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
-        let (g, bodies_g) = attempt_plane(
-            GEMINI_MODELS,
-            "/v1beta/models",
-            StatusCode::OK,
-            None,
-            false,
-        )
-        .await;
+        let (g, bodies_g) =
+            attempt_plane(GEMINI_MODELS, "/v1beta/models", StatusCode::OK, None, false).await;
         let router = spawn(make_fallback_router(&a, &o, &g, Duration::from_secs(60))).await;
         let client = reqwest::Client::new();
 
@@ -2144,7 +2236,9 @@ mod tests {
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
 
-        let overflow: Vec<_> = (0..30).map(|index| format!("unknown/model-{index}")).collect();
+        let overflow: Vec<_> = (0..30)
+            .map(|index| format!("unknown/model-{index}"))
+            .collect();
         let response = client
             .post(format!("{router}/v1/responses"))
             .json(&serde_json::json!({
@@ -2190,7 +2284,11 @@ mod tests {
         let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
         let client = reqwest::Client::new();
 
-        let response = client.get(format!("{router}/v1/models")).send().await.unwrap();
+        let response = client
+            .get(format!("{router}/v1/models"))
+            .send()
+            .await
+            .unwrap();
         let json: serde_json::Value = response.json().await.unwrap();
         let ids: Vec<_> = json["data"]
             .as_array()
@@ -2268,8 +2366,7 @@ mod tests {
             None,
         )
         .await;
-        let partial_router =
-            spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
+        let partial_router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
         let response = client
             .post(format!("{partial_router}/v1/responses"))
             .body(r#"{"model":"preset/auto","input":"hi"}"#)
@@ -2281,24 +2378,12 @@ mod tests {
         assert_eq!(bodies_o.lock().unwrap().len(), 1);
         assert!(bodies_g.lock().unwrap().is_empty());
 
-        let (a, bodies_a) = attempt_plane(
-            ANTHROPIC_MODELS,
-            "/v1/models",
-            StatusCode::OK,
-            None,
-            false,
-        )
-        .await;
+        let (a, bodies_a) =
+            attempt_plane(ANTHROPIC_MODELS, "/v1/models", StatusCode::OK, None, false).await;
         let (o, bodies_o) =
             attempt_plane(OPENAI_MODELS, "/v1/models", StatusCode::OK, None, false).await;
-        let (g, bodies_g) = attempt_plane(
-            GEMINI_MODELS,
-            "/v1beta/models",
-            StatusCode::OK,
-            None,
-            false,
-        )
-        .await;
+        let (g, bodies_g) =
+            attempt_plane(GEMINI_MODELS, "/v1beta/models", StatusCode::OK, None, false).await;
         let router = spawn(make_fallback_router(&a, &o, &g, Duration::ZERO)).await;
         let response = client
             .post(format!("{router}/v1/responses"))
@@ -2386,7 +2471,11 @@ mod tests {
         let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
         let client = reqwest::Client::new();
 
-        for model in ["anthropic/claude-opus-4-8", "openai/gpt-5.6", "google/gemini-2.5-pro"] {
+        for model in [
+            "anthropic/claude-opus-4-8",
+            "openai/gpt-5.6",
+            "google/gemini-2.5-pro",
+        ] {
             let payload =
                 format!(r#"{{"model":"{model}","messages":[{{"role":"user","content":"hi"}}]}}"#);
             let response = client
@@ -2438,15 +2527,36 @@ mod tests {
             assert_eq!(response.text().await.unwrap(), payload, "{model}");
         }
 
-        let paths = |log: &SharedLog| log.lock().unwrap().iter().map(|r| r.path.clone()).collect::<Vec<_>>();
+        let paths = |log: &SharedLog| {
+            log.lock()
+                .unwrap()
+                .iter()
+                .map(|r| r.path.clone())
+                .collect::<Vec<_>>()
+        };
         let (pa, po, pg) = (paths(&log_a), paths(&log_o), paths(&log_g));
         // Каждая плоскость увидела catalog fetch и ровно один chat-запрос.
         assert!(pa.contains(&"/v1/models?limit=1000".to_string()), "{pa:?}");
         assert!(po.contains(&"/v1/models".to_string()), "{po:?}");
-        assert!(pg.contains(&"/v1beta/models?pageSize=1000".to_string()), "{pg:?}");
-        assert_eq!(pa.iter().filter(|p| *p == "/v1/chat/completions").count(), 1, "{pa:?}");
-        assert_eq!(po.iter().filter(|p| *p == "/v1/chat/completions").count(), 1, "{po:?}");
-        assert_eq!(pg.iter().filter(|p| *p == "/v1/chat/completions").count(), 1, "{pg:?}");
+        assert!(
+            pg.contains(&"/v1beta/models?pageSize=1000".to_string()),
+            "{pg:?}"
+        );
+        assert_eq!(
+            pa.iter().filter(|p| *p == "/v1/chat/completions").count(),
+            1,
+            "{pa:?}"
+        );
+        assert_eq!(
+            po.iter().filter(|p| *p == "/v1/chat/completions").count(),
+            1,
+            "{po:?}"
+        );
+        assert_eq!(
+            pg.iter().filter(|p| *p == "/v1/chat/completions").count(),
+            1,
+            "{pg:?}"
+        );
     }
 
     #[tokio::test]
@@ -2470,14 +2580,23 @@ mod tests {
             let json: serde_json::Value = response.json().await.unwrap();
             assert_eq!(json["error"]["code"], "model_not_found", "{model}");
             assert_eq!(json["error"]["param"], "model", "{model}");
-            assert!(json["error"]["message"].as_str().unwrap().contains(model), "{model}");
+            assert!(
+                json["error"]["message"].as_str().unwrap().contains(model),
+                "{model}"
+            );
         }
     }
 
     #[tokio::test]
     async fn chat_invalid_json_and_missing_model_are_400_without_plane_call() {
         let (a, log_a) = echo_plane().await;
-        let router = spawn(make_router(&a, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let router = spawn(make_router(
+            &a,
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:2",
+            Duration::ZERO,
+        ))
+        .await;
         let client = reqwest::Client::new();
 
         for body in ["not json{", "{}", r#"{"model":42}"#, r#"{"model":""}"#] {
@@ -2577,7 +2696,8 @@ mod tests {
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             tx.try_send(Ok::<Bytes, std::io::Error>(Bytes::from(vec![
                 b' ';
-                32 * 1024 * 1024
+                32 * 1024
+                    * 1024
             ])))
             .unwrap();
             (reqwest::Body::wrap_stream(ReceiverStream::new(rx)), tx)
@@ -2702,7 +2822,8 @@ mod tests {
 
     #[tokio::test]
     async fn body_permit_is_not_retained_by_open_sse_responses() {
-        type OpenStreams = Arc<StdMutex<Vec<tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>>>>;
+        type OpenStreams =
+            Arc<StdMutex<Vec<tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>>>>;
         let open_streams: OpenStreams = Arc::new(StdMutex::new(Vec::new()));
         let stream_state = open_streams.clone();
         let plane = spawn(Router::new().fallback(any(move |req: AxumRequest<Body>| {
@@ -2711,8 +2832,7 @@ mod tests {
                 if req.uri().path() == "/internal/router/auth/preflight" {
                     return authenticated_response();
                 }
-                let (tx, rx) =
-                    tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(2);
+                let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(2);
                 tx.try_send(Ok(Bytes::from_static(b"data: open\n\n")))
                     .unwrap();
                 open_streams.lock().unwrap().push(tx);
@@ -2802,7 +2922,13 @@ mod tests {
     #[tokio::test]
     async fn chat_oversized_body_is_400_and_never_reaches_plane() {
         let (a, log_a) = echo_plane().await;
-        let router = spawn(make_router(&a, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let router = spawn(make_router(
+            &a,
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:2",
+            Duration::ZERO,
+        ))
+        .await;
         let response = reqwest::Client::new()
             .post(format!("{router}/v1/chat/completions"))
             .header(reqwest::header::CONTENT_LENGTH, 32 * 1024 * 1024 + 1)
@@ -2813,30 +2939,41 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let json: serde_json::Value = response.json().await.unwrap();
         assert_eq!(json["error"]["type"], "invalid_request_error");
-        assert!(json["error"]["message"].as_str().unwrap().contains("32 MiB"));
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("32 MiB"));
         assert!(log_a.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn chat_sse_response_first_chunk_is_not_buffered() {
         // Буферизуется только тело запроса; ответ стримится, как в native lanes.
-        let plane = spawn(Router::new().fallback(any(|req: AxumRequest<Body>| async move {
-            if req.uri().path() == "/internal/router/auth/preflight" {
-                return authenticated_response();
-            }
-            let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
-            tokio::spawn(async move {
-                let _ = tx.send(Ok(Bytes::from("data: {\"delta\":{}}\n\n"))).await;
-                tokio::time::sleep(Duration::from_millis(700)).await;
-                let _ = tx.send(Ok(Bytes::from("data: [DONE]\n\n"))).await;
-            });
-            AxumResponse::builder()
-                .header("content-type", "text/event-stream")
-                .body(Body::from_stream(ReceiverStream::new(rx)))
-                .unwrap()
-        })))
+        let plane = spawn(
+            Router::new().fallback(any(|req: AxumRequest<Body>| async move {
+                if req.uri().path() == "/internal/router/auth/preflight" {
+                    return authenticated_response();
+                }
+                let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+                tokio::spawn(async move {
+                    let _ = tx.send(Ok(Bytes::from("data: {\"delta\":{}}\n\n"))).await;
+                    tokio::time::sleep(Duration::from_millis(700)).await;
+                    let _ = tx.send(Ok(Bytes::from("data: [DONE]\n\n"))).await;
+                });
+                AxumResponse::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from_stream(ReceiverStream::new(rx)))
+                    .unwrap()
+            })),
+        )
         .await;
-        let router = spawn(make_router(&plane, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let router = spawn(make_router(
+            &plane,
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:2",
+            Duration::ZERO,
+        ))
+        .await;
 
         let mut response = reqwest::Client::new()
             .post(format!("{router}/v1/chat/completions"))
@@ -2862,7 +2999,11 @@ mod tests {
         let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
         let client = reqwest::Client::new();
 
-        for model in ["anthropic/claude-opus-4-8", "openai/gpt-5.6", "google/gemini-2.5-pro"] {
+        for model in [
+            "anthropic/claude-opus-4-8",
+            "openai/gpt-5.6",
+            "google/gemini-2.5-pro",
+        ] {
             let payload = format!(r#"{{"model":"{model}","input":"hi"}}"#);
             let response = client
                 .post(format!("{router}/v1/responses"))
@@ -2913,15 +3054,36 @@ mod tests {
             assert_eq!(response.text().await.unwrap(), payload, "{model}");
         }
 
-        let paths = |log: &SharedLog| log.lock().unwrap().iter().map(|r| r.path.clone()).collect::<Vec<_>>();
+        let paths = |log: &SharedLog| {
+            log.lock()
+                .unwrap()
+                .iter()
+                .map(|r| r.path.clone())
+                .collect::<Vec<_>>()
+        };
         let (pa, po, pg) = (paths(&log_a), paths(&log_o), paths(&log_g));
         // Каждая плоскость увидела catalog fetch и ровно один responses-запрос.
         assert!(pa.contains(&"/v1/models?limit=1000".to_string()), "{pa:?}");
         assert!(po.contains(&"/v1/models".to_string()), "{po:?}");
-        assert!(pg.contains(&"/v1beta/models?pageSize=1000".to_string()), "{pg:?}");
-        assert_eq!(pa.iter().filter(|p| *p == "/v1/responses").count(), 1, "{pa:?}");
-        assert_eq!(po.iter().filter(|p| *p == "/v1/responses").count(), 1, "{po:?}");
-        assert_eq!(pg.iter().filter(|p| *p == "/v1/responses").count(), 1, "{pg:?}");
+        assert!(
+            pg.contains(&"/v1beta/models?pageSize=1000".to_string()),
+            "{pg:?}"
+        );
+        assert_eq!(
+            pa.iter().filter(|p| *p == "/v1/responses").count(),
+            1,
+            "{pa:?}"
+        );
+        assert_eq!(
+            po.iter().filter(|p| *p == "/v1/responses").count(),
+            1,
+            "{po:?}"
+        );
+        assert_eq!(
+            pg.iter().filter(|p| *p == "/v1/responses").count(),
+            1,
+            "{pg:?}"
+        );
     }
 
     #[tokio::test]
@@ -2945,14 +3107,23 @@ mod tests {
             let json: serde_json::Value = response.json().await.unwrap();
             assert_eq!(json["error"]["code"], "model_not_found", "{model}");
             assert_eq!(json["error"]["param"], "model", "{model}");
-            assert!(json["error"]["message"].as_str().unwrap().contains(model), "{model}");
+            assert!(
+                json["error"]["message"].as_str().unwrap().contains(model),
+                "{model}"
+            );
         }
     }
 
     #[tokio::test]
     async fn responses_invalid_json_and_missing_model_are_400_without_plane_call() {
         let (a, log_a) = echo_plane().await;
-        let router = spawn(make_router(&a, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let router = spawn(make_router(
+            &a,
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:2",
+            Duration::ZERO,
+        ))
+        .await;
         let client = reqwest::Client::new();
 
         for body in ["not json{", "{}", r#"{"model":42}"#, r#"{"model":""}"#] {
@@ -2978,7 +3149,13 @@ mod tests {
     #[tokio::test]
     async fn responses_oversized_body_is_400_and_never_reaches_plane() {
         let (a, log_a) = echo_plane().await;
-        let router = spawn(make_router(&a, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let router = spawn(make_router(
+            &a,
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:2",
+            Duration::ZERO,
+        ))
+        .await;
         let response = reqwest::Client::new()
             .post(format!("{router}/v1/responses"))
             .header(reqwest::header::CONTENT_LENGTH, 32 * 1024 * 1024 + 1)
@@ -2989,7 +3166,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let json: serde_json::Value = response.json().await.unwrap();
         assert_eq!(json["error"]["type"], "invalid_request_error");
-        assert!(json["error"]["message"].as_str().unwrap().contains("32 MiB"));
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("32 MiB"));
         assert!(log_a.lock().unwrap().is_empty());
     }
 
@@ -3003,7 +3183,11 @@ mod tests {
         let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
         let client = reqwest::Client::new();
 
-        for model in ["anthropic/claude-opus-4-8", "openai/gpt-5.6", "google/gemini-2.5-pro"] {
+        for model in [
+            "anthropic/claude-opus-4-8",
+            "openai/gpt-5.6",
+            "google/gemini-2.5-pro",
+        ] {
             let payload = format!(
                 r#"{{"model":"{model}","max_tokens":64,"messages":[{{"role":"user","content":"hi"}}]}}"#
             );
@@ -3059,15 +3243,36 @@ mod tests {
             assert_eq!(response.text().await.unwrap(), payload, "{model}");
         }
 
-        let paths = |log: &SharedLog| log.lock().unwrap().iter().map(|r| r.path.clone()).collect::<Vec<_>>();
+        let paths = |log: &SharedLog| {
+            log.lock()
+                .unwrap()
+                .iter()
+                .map(|r| r.path.clone())
+                .collect::<Vec<_>>()
+        };
         let (pa, po, pg) = (paths(&log_a), paths(&log_o), paths(&log_g));
         // Каждая плоскость увидела catalog fetch и ровно один messages-запрос.
         assert!(pa.contains(&"/v1/models?limit=1000".to_string()), "{pa:?}");
         assert!(po.contains(&"/v1/models".to_string()), "{po:?}");
-        assert!(pg.contains(&"/v1beta/models?pageSize=1000".to_string()), "{pg:?}");
-        assert_eq!(pa.iter().filter(|p| *p == "/v1/messages").count(), 1, "{pa:?}");
-        assert_eq!(po.iter().filter(|p| *p == "/v1/messages").count(), 1, "{po:?}");
-        assert_eq!(pg.iter().filter(|p| *p == "/v1/messages").count(), 1, "{pg:?}");
+        assert!(
+            pg.contains(&"/v1beta/models?pageSize=1000".to_string()),
+            "{pg:?}"
+        );
+        assert_eq!(
+            pa.iter().filter(|p| *p == "/v1/messages").count(),
+            1,
+            "{pa:?}"
+        );
+        assert_eq!(
+            po.iter().filter(|p| *p == "/v1/messages").count(),
+            1,
+            "{po:?}"
+        );
+        assert_eq!(
+            pg.iter().filter(|p| *p == "/v1/messages").count(),
+            1,
+            "{pg:?}"
+        );
     }
 
     #[tokio::test]
@@ -3092,14 +3297,23 @@ mod tests {
             // Ошибки messages dispatch — Anthropic-конверт, не OpenAI.
             assert_eq!(json["type"], "error", "{model}");
             assert_eq!(json["error"]["type"], "not_found_error", "{model}");
-            assert!(json["error"]["message"].as_str().unwrap().contains(model), "{model}");
+            assert!(
+                json["error"]["message"].as_str().unwrap().contains(model),
+                "{model}"
+            );
         }
     }
 
     #[tokio::test]
     async fn messages_invalid_json_and_missing_model_are_anthropic_shaped_400() {
         let (a, log_a) = echo_plane().await;
-        let router = spawn(make_router(&a, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let router = spawn(make_router(
+            &a,
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:2",
+            Duration::ZERO,
+        ))
+        .await;
         let client = reqwest::Client::new();
 
         for body in ["not json{", "{}", r#"{"model":42}"#, r#"{"model":""}"#] {
@@ -3113,7 +3327,10 @@ mod tests {
             let json: serde_json::Value = response.json().await.unwrap();
             assert_eq!(json["type"], "error", "{body}");
             assert_eq!(json["error"]["type"], "invalid_request_error", "{body}");
-            assert!(json["error"]["message"].as_str().unwrap().contains("model") || body == "not json{", "{body}");
+            assert!(
+                json["error"]["message"].as_str().unwrap().contains("model") || body == "not json{",
+                "{body}"
+            );
         }
         // Невалидный запрос не должен дойти до плоскости.
         assert!(log_a.lock().unwrap().is_empty());
@@ -3168,7 +3385,13 @@ mod tests {
     #[tokio::test]
     async fn messages_oversized_body_is_400_and_never_reaches_plane() {
         let (a, log_a) = echo_plane().await;
-        let router = spawn(make_router(&a, "http://127.0.0.1:1", "http://127.0.0.1:2", Duration::ZERO)).await;
+        let router = spawn(make_router(
+            &a,
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:2",
+            Duration::ZERO,
+        ))
+        .await;
         let response = reqwest::Client::new()
             .post(format!("{router}/v1/messages"))
             .header(reqwest::header::CONTENT_LENGTH, 32 * 1024 * 1024 + 1)
@@ -3179,7 +3402,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let json: serde_json::Value = response.json().await.unwrap();
         assert_eq!(json["error"]["type"], "invalid_request_error");
-        assert!(json["error"]["message"].as_str().unwrap().contains("32 MiB"));
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("32 MiB"));
         assert!(log_a.lock().unwrap().is_empty());
     }
 
@@ -3193,10 +3419,13 @@ mod tests {
         let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
         let client = reqwest::Client::new();
 
-        for model in ["anthropic/claude-opus-4-8", "openai/gpt-5.6", "google/gemini-2.5-pro"] {
-            let payload = format!(
-                r#"{{"model":"{model}","messages":[{{"role":"user","content":"hi"}}]}}"#
-            );
+        for model in [
+            "anthropic/claude-opus-4-8",
+            "openai/gpt-5.6",
+            "google/gemini-2.5-pro",
+        ] {
+            let payload =
+                format!(r#"{{"model":"{model}","messages":[{{"role":"user","content":"hi"}}]}}"#);
             let response = client
                 .post(format!("{router}/v1/messages/count_tokens"))
                 .header("x-api-key", "sk-pool-secret")
@@ -3247,7 +3476,10 @@ mod tests {
         let (pa, po, pg) = (paths(&log_a), paths(&log_o), paths(&log_g));
         assert!(pa.contains(&"/v1/models?limit=1000".to_string()), "{pa:?}");
         assert!(po.contains(&"/v1/models".to_string()), "{po:?}");
-        assert!(pg.contains(&"/v1beta/models?pageSize=1000".to_string()), "{pg:?}");
+        assert!(
+            pg.contains(&"/v1beta/models?pageSize=1000".to_string()),
+            "{pg:?}"
+        );
         for paths in [&pa, &po, &pg] {
             assert_eq!(
                 paths
@@ -3274,11 +3506,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers().get(header::CACHE_CONTROL).unwrap(), "private, no-store");
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "private, no-store"
+        );
         assert!(response.headers().get(catalog::DEGRADED_HEADER).is_none());
         let json: serde_json::Value = response.json().await.unwrap();
         assert_eq!(json["object"], "list");
-        let ids: Vec<&str> = json["data"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
         assert_eq!(
             ids,
             [
@@ -3306,8 +3546,14 @@ mod tests {
             json["data"][2]["service_tiers"],
             serde_json::json!(["standard", "priority"])
         );
-        assert_eq!(json["data"][0]["service_tiers"], serde_json::json!(["standard"]));
-        assert_eq!(json["data"][4]["service_tiers"], serde_json::json!(["standard"]));
+        assert_eq!(
+            json["data"][0]["service_tiers"],
+            serde_json::json!(["standard"])
+        );
+        assert_eq!(
+            json["data"][4]["service_tiers"],
+            serde_json::json!(["standard"])
+        );
         assert_eq!(
             json["data"][0]["apitoken"]["limits"],
             serde_json::json!({"context": 1_000_000, "input": 1_000_000, "output": 128_000})
@@ -3320,8 +3566,14 @@ mod tests {
             json["data"][0]["apitoken"]["capabilities"]["input_modalities"],
             serde_json::json!(["text", "image"])
         );
-        assert_eq!(json["data"][0]["apitoken"]["capabilities"]["reasoning"], true);
-        assert_eq!(json["data"][2]["apitoken"]["capabilities"]["tool_calling"], true);
+        assert_eq!(
+            json["data"][0]["apitoken"]["capabilities"]["reasoning"],
+            true
+        );
+        assert_eq!(
+            json["data"][2]["apitoken"]["capabilities"]["tool_calling"],
+            true
+        );
         assert_eq!(
             json["data"][4]["apitoken"]["limits"],
             serde_json::json!({"context": 1_048_576, "input": 1_048_576, "output": 65_536})
@@ -3365,7 +3617,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers().get(header::CACHE_CONTROL).unwrap(), "private, no-store");
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "private, no-store"
+        );
         assert_eq!(
             response.json::<serde_json::Value>().await.unwrap(),
             serde_json::json!({"models": []})
@@ -3392,9 +3647,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers().get(catalog::DEGRADED_HEADER).unwrap(), "google");
+        assert_eq!(
+            response.headers().get(catalog::DEGRADED_HEADER).unwrap(),
+            "google"
+        );
         let json: serde_json::Value = response.json().await.unwrap();
-        let ids: Vec<&str> = json["data"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
         assert_eq!(ids.len(), 4);
         assert!(!ids.iter().any(|id| id.starts_with("google/")));
     }
@@ -3414,7 +3677,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers().get(catalog::DEGRADED_HEADER).unwrap(), "openai");
+        assert_eq!(
+            response.headers().get(catalog::DEGRADED_HEADER).unwrap(),
+            "openai"
+        );
         let json: serde_json::Value = response.json().await.unwrap();
         assert!(json["data"]
             .as_array()
@@ -3435,7 +3701,11 @@ mod tests {
         let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
         let client = reqwest::Client::new();
 
-        let response = client.get(format!("{router}/v1/models")).send().await.unwrap();
+        let response = client
+            .get(format!("{router}/v1/models"))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let json: serde_json::Value = response.json().await.unwrap();
         let models = json["data"].as_array().unwrap();
@@ -3444,7 +3714,11 @@ mod tests {
             assert_eq!(model["aliases"], serde_json::json!([]));
         }
 
-        let response = client.get(format!("{router}/v1/models/shared")).send().await.unwrap();
+        let response = client
+            .get(format!("{router}/v1/models/shared"))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let response = client
             .post(format!("{router}/v1/chat/completions"))
@@ -3461,7 +3735,10 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK, "{id}");
-            assert_eq!(response.json::<serde_json::Value>().await.unwrap()["id"], id);
+            assert_eq!(
+                response.json::<serde_json::Value>().await.unwrap()["id"],
+                id
+            );
         }
     }
 
@@ -3531,7 +3808,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(response.headers().get(header::CACHE_CONTROL).unwrap(), "private, no-store");
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "private, no-store"
+        );
         assert_eq!(
             response.json::<serde_json::Value>().await.unwrap()["error"]["code"],
             "pricing_unavailable"
@@ -3602,26 +3882,56 @@ mod tests {
         let client = reqwest::Client::new();
 
         // Первый запрос: плоскость жива, кэш наполняется, degraded нет.
-        let response = client.get(format!("{router}/v1/models")).send().await.unwrap();
+        let response = client
+            .get(format!("{router}/v1/models"))
+            .send()
+            .await
+            .unwrap();
         assert!(response.headers().get(catalog::DEGRADED_HEADER).is_none());
-        assert_eq!(response.json::<serde_json::Value>().await.unwrap()["data"].as_array().unwrap().len(), 6);
+        assert_eq!(
+            response.json::<serde_json::Value>().await.unwrap()["data"]
+                .as_array()
+                .unwrap()
+                .len(),
+            6
+        );
 
         // Плоскость упала: тот же каталог из last-good кэша + маркер деградации.
         flag.store(false, Ordering::SeqCst);
-        let response = client.get(format!("{router}/v1/models")).send().await.unwrap();
+        let response = client
+            .get(format!("{router}/v1/models"))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers().get(catalog::DEGRADED_HEADER).unwrap(), "google");
+        assert_eq!(
+            response.headers().get(catalog::DEGRADED_HEADER).unwrap(),
+            "google"
+        );
         let json: serde_json::Value = response.json().await.unwrap();
-        let ids: Vec<&str> = json["data"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
         assert!(ids.contains(&"google/gemini-2.5-pro"));
         assert!(log.lock().unwrap().len() >= 2);
     }
 
     #[tokio::test]
     async fn catalog_is_503_when_no_plane_has_ever_answered() {
-        let (d1, d2, d3) = (dead_origin().await, dead_origin().await, dead_origin().await);
+        let (d1, d2, d3) = (
+            dead_origin().await,
+            dead_origin().await,
+            dead_origin().await,
+        );
         let router = spawn(make_router(&d1, &d2, &d3, Duration::ZERO)).await;
-        let response = reqwest::Client::new().get(format!("{router}/v1/models")).send().await.unwrap();
+        let response = reqwest::Client::new()
+            .get(format!("{router}/v1/models"))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let json: serde_json::Value = response.json().await.unwrap();
         assert_eq!(json["error"]["code"], "catalog_unavailable");
@@ -3632,7 +3942,11 @@ mod tests {
         let (a, _) = catalog_plane("", "/v1/models", "auth").await;
         let (o, g) = (dead_origin().await, dead_origin().await);
         let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
-        let response = reqwest::Client::new().get(format!("{router}/v1/models")).send().await.unwrap();
+        let response = reqwest::Client::new()
+            .get(format!("{router}/v1/models"))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json: serde_json::Value = response.json().await.unwrap();
         assert_eq!(json["error"]["code"], "invalid_api_key");
@@ -3646,7 +3960,12 @@ mod tests {
 
         let json: serde_json::Value = client
             .get(format!("{router}/v1/models/anthropic/claude-opus-4-8"))
-            .send().await.unwrap().json().await.unwrap();
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
         assert_eq!(json["id"], "anthropic/claude-opus-4-8");
         assert_eq!(
             json["reasoning_efforts"],
@@ -3655,23 +3974,44 @@ mod tests {
 
         let json: serde_json::Value = client
             .get(format!("{router}/v1/models/claude-opus-4-8"))
-            .send().await.unwrap().json().await.unwrap();
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
         assert_eq!(json["id"], "anthropic/claude-opus-4-8");
 
         let json: serde_json::Value = client
             .get(format!("{router}/v1/models/gpt-5.6"))
-            .send().await.unwrap().json().await.unwrap();
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
         assert_eq!(json["id"], "openai/gpt-5.6");
         assert_eq!(
             json["service_tiers"],
             serde_json::json!(["standard", "priority"])
         );
 
-        let response = client.get(format!("{router}/v1/models/cohere/command-x")).send().await.unwrap();
+        let response = client
+            .get(format!("{router}/v1/models/cohere/command-x"))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert_eq!(response.json::<serde_json::Value>().await.unwrap()["error"]["code"], "model_not_found");
+        assert_eq!(
+            response.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+            "model_not_found"
+        );
 
-        let response = client.get(format!("{router}/v1/models/gpt-9")).send().await.unwrap();
+        let response = client
+            .get(format!("{router}/v1/models/gpt-9"))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
@@ -3679,7 +4019,11 @@ mod tests {
 
     #[tokio::test]
     async fn health_and_ready_are_router_local_even_with_dead_planes() {
-        let (d1, d2, d3) = (dead_origin().await, dead_origin().await, dead_origin().await);
+        let (d1, d2, d3) = (
+            dead_origin().await,
+            dead_origin().await,
+            dead_origin().await,
+        );
         let router = spawn(make_router(&d1, &d2, &d3, Duration::ZERO)).await;
         let client = reqwest::Client::new();
         for path in ["/health", "/live", "/ready"] {
@@ -3694,16 +4038,32 @@ mod tests {
         let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
         let client = reqwest::Client::new();
 
-        let response = client.get(format!("{router}/v1/completions")).send().await.unwrap();
+        let response = client
+            .get(format!("{router}/v1/completions"))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let json: serde_json::Value = response.json().await.unwrap();
         assert_eq!(json["error"]["code"], "unsupported_endpoint");
 
-        let response = client.put(format!("{router}/v1/messages")).body("{}").send().await.unwrap();
+        let response = client
+            .put(format!("{router}/v1/messages"))
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
-        assert_eq!(response.json::<serde_json::Value>().await.unwrap()["error"]["type"], "not_found_error");
+        assert_eq!(
+            response.json::<serde_json::Value>().await.unwrap()["error"]["type"],
+            "not_found_error"
+        );
 
-        let response = client.get(format!("{router}/v1/chat/completions")).send().await.unwrap();
+        let response = client
+            .get(format!("{router}/v1/chat/completions"))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(
             response.json::<serde_json::Value>().await.unwrap()["error"]["code"],

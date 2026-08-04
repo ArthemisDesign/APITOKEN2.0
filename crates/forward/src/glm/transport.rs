@@ -408,7 +408,10 @@ mod tests {
         // The quota endpoint trap: HTTP 200 with code 401 is a dead key, not a success.
         assert_eq!(verdict_for(200, "401"), UpstreamVerdict::AccountDead);
         // …and the same shape through the envelope code path the quota parser also uses.
-        assert_eq!(classify_status(200, Some(401)), UpstreamVerdict::AccountDead);
+        assert_eq!(
+            classify_status(200, Some(401)),
+            UpstreamVerdict::AccountDead
+        );
         assert_eq!(
             classify_status(200, Some(1001)),
             UpstreamVerdict::AccountDead
@@ -556,7 +559,10 @@ mod tests {
             "Bearer zai-key-1"
         );
         assert_eq!(AuthScheme::Bearer.header_name(), "authorization");
-        assert_eq!(GlmTransportConfig::default().auth_scheme, AuthScheme::Bearer);
+        assert_eq!(
+            GlmTransportConfig::default().auth_scheme,
+            AuthScheme::Bearer
+        );
     }
 
     #[test]
@@ -610,10 +616,7 @@ mod tests {
         // No system at all: the identity becomes the only block.
         let mut bare = json!({"model": "glm-5.2", "messages": []});
         assert!(inject_identity(&mut bare, &identity));
-        assert_eq!(
-            bare["system"],
-            json!([{"type": "text", "text": identity}])
-        );
+        assert_eq!(bare["system"], json!([{"type": "text", "text": identity}]));
         // A client string system becomes the second block, identity first, no cache_control.
         let mut with_string = json!({"messages": [], "system": "be brief"});
         assert!(inject_identity(&mut with_string, &identity));
@@ -622,7 +625,8 @@ mod tests {
         assert_eq!(system[1]["text"], json!("be brief"));
         assert!(system[0].get("cache_control").is_none());
         // A client array gets the identity prepended once.
-        let mut with_array = json!({"messages": [], "system": [{"type": "text", "text": "be brief"}]});
+        let mut with_array =
+            json!({"messages": [], "system": [{"type": "text", "text": "be brief"}]});
         assert!(inject_identity(&mut with_array, &identity));
         assert_eq!(with_array["system"].as_array().unwrap().len(), 2);
         assert!(!inject_identity(&mut with_array, &identity));
@@ -631,8 +635,7 @@ mod tests {
         let mut cc_string = json!({"messages": [], "system": "You are Claude Code, ..."});
         assert!(!inject_identity(&mut cc_string, &identity));
         assert_eq!(cc_string["system"], json!("You are Claude Code, ..."));
-        let mut cc_array =
-            json!({"messages": [], "system": [{"type": "text", "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK."}]});
+        let mut cc_array = json!({"messages": [], "system": [{"type": "text", "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK."}]});
         assert!(!inject_identity(&mut cc_array, &identity));
         assert_eq!(cc_array["system"].as_array().unwrap().len(), 1);
         // Not a messages request: untouched.
@@ -667,9 +670,7 @@ mod tests {
         let text = identity.billing_header_for("glm-01");
         let pattern = regex_lite_match(&text);
         assert!(pattern, "unexpected billing header shape: {text}");
-        assert!(text.starts_with(
-            "x-anthropic-billing-header: cc_version=2.1.195.d"
-        ));
+        assert!(text.starts_with("x-anthropic-billing-header: cc_version=2.1.195.d"));
         assert!(text.contains("; cc_entrypoint=sdk-cli; cch="));
         assert!(text.ends_with(';'));
         // Stable for the same profile, distinct between profiles (per-install realism).
@@ -684,7 +685,9 @@ mod tests {
         assert!(custom
             .billing_header_for("glm-01")
             .starts_with("x-anthropic-billing-header: cc_version=9.9.9.d"));
-        assert!(custom.billing_header_for("glm-01").contains("; cc_entrypoint=cli;"));
+        assert!(custom
+            .billing_header_for("glm-01")
+            .contains("; cc_entrypoint=cli;"));
     }
 
     /// Minimal shape check: `cc_version=<base>.d<two digits>; … cch=<5 hex>;`

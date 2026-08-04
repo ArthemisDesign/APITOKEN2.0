@@ -1845,7 +1845,8 @@ mod tests {
     /// it, so an absent value there means the shared-state backend silently disappeared and the L2
     /// invariants below would stop being proven. Failing loudly is the whole point — this proof was
     /// previously annotated as ignored and therefore never ran in the gate at all.
-    fn test_redis_url() -> Option<String> {        match std::env::var("CLAUDE_API_TEST_REDIS_URL") {
+    fn test_redis_url() -> Option<String> {
+        match std::env::var("CLAUDE_API_TEST_REDIS_URL") {
             Ok(url) if !url.is_empty() => Some(url),
             _ => {
                 assert!(
@@ -2075,8 +2076,14 @@ mod tests {
         assert!(!key.contains("seller@example.com"));
         assert!(!key.contains("seller"));
         let foreign = Arc::new(
-            AffinityStore::new(None, Some("another-secret-at-least-32-characters"), 3600, 3600, 20)
-                .unwrap(),
+            AffinityStore::new(
+                None,
+                Some("another-secret-at-least-32-characters"),
+                3600,
+                3600,
+                20,
+            )
+            .unwrap(),
         );
         assert_ne!(
             store.cooling_hint_key("seller@example.com"),

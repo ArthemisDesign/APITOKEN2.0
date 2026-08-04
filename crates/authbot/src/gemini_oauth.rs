@@ -2169,8 +2169,14 @@ async fn complete(
         session.chat_id,
         plan_label(&credential.plan)
     );
-    publish_verified_credential(store, config, session.chat_id, session.job.as_ref(), credential)
-        .await
+    publish_verified_credential(
+        store,
+        config,
+        session.chat_id,
+        session.job.as_ref(),
+        credential,
+    )
+    .await
 }
 
 /// Publication tail shared by the callback and the seller's post-verification retry.
@@ -4187,10 +4193,7 @@ mod tests {
             "https://accounts.google.com/signin\"><script>",
             "https://accounts.google.com/sign in",
         ] {
-            assert!(
-                !valid_verification_url(hostile),
-                "must reject {hostile}"
-            );
+            assert!(!valid_verification_url(hostile), "must reject {hostile}");
         }
         assert!(valid_verification_url(
             "https://accounts.google.com/signin/continue?sarp=1&scc=1"

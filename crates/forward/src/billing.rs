@@ -1849,8 +1849,7 @@ enum PricingShadowReadCmd {
 /// struct exists; the `/metrics` handler reads a snapshot through `pg_command_stats`. Bucket
 /// boundaries match the pricing-bridge histogram so operator thresholds stay comparable, and the
 /// array sizes stay within what `#[derive(Default)]` can initialize.
-pub const PG_COMMAND_LATENCY_BUCKETS_MS: [u64; 10] =
-    [1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000];
+pub const PG_COMMAND_LATENCY_BUCKETS_MS: [u64; 10] = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000];
 
 /// The PostgreSQL write commands a request pays for synchronously. Compile-bounded so the metric
 /// label set can never grow at runtime.
@@ -1980,9 +1979,7 @@ impl AsyncBilling {
     /// Latency histogram of the PostgreSQL reserve/settle/acquire_capacity commands, or `None`
     /// when this facade runs on the SQLite fallback.
     pub fn pg_command_stats(&self) -> Option<PgCommandLatencyStats> {
-        self.pg_command
-            .as_deref()
-            .map(PgCommandMetrics::snapshot)
+        self.pg_command.as_deref().map(PgCommandMetrics::snapshot)
     }
 
     pub fn anthropic_calibration_delivery_status(&self) -> AnthropicCalibrationDeliveryStatus {
@@ -2317,9 +2314,7 @@ impl AsyncBilling {
     /// Rows are keyed by provider subject; joining them to opaque roster ids is the caller's
     /// concern (the gateway owns that mapping). KIMI calibration is PostgreSQL-only, so a SQLite
     /// authority reports an empty fleet rather than an error.
-    pub async fn kimi_calibration_report(
-        &self,
-    ) -> anyhow::Result<Vec<KimiCalibrationRow>> {
+    pub async fn kimi_calibration_report(&self) -> anyhow::Result<Vec<KimiCalibrationRow>> {
         let (reply, result) = oneshot::channel();
         let reader = &self.readers[self.rr.fetch_add(1, Ordering::Relaxed) % self.readers.len()];
         reader
@@ -2354,9 +2349,7 @@ impl AsyncBilling {
     /// Rows are keyed by provider subject; joining them to opaque roster ids is the caller's
     /// concern (the gateway owns that mapping). GLM calibration is PostgreSQL-only, so a SQLite
     /// authority reports an empty fleet rather than an error.
-    pub async fn glm_calibration_report(
-        &self,
-    ) -> anyhow::Result<Vec<GlmCalibrationRow>> {
+    pub async fn glm_calibration_report(&self) -> anyhow::Result<Vec<GlmCalibrationRow>> {
         let (reply, result) = oneshot::channel();
         let reader = &self.readers[self.rr.fetch_add(1, Ordering::Relaxed) % self.readers.len()];
         reader
@@ -8033,8 +8026,7 @@ mod tests {
             api_total_nanousd,
             native_fresh_input_microcredits: native_total_microcredits / 2,
             native_cached_input_microcredits: 0,
-            native_output_microcredits: native_total_microcredits
-                - native_total_microcredits / 2,
+            native_output_microcredits: native_total_microcredits - native_total_microcredits / 2,
             native_total_microcredits,
             off_peak: false,
         }
@@ -8295,12 +8287,7 @@ mod tests {
                 .observe_glm_windows(
                     "glm-subject-b",
                     "Max",
-                    vec![glm_snapshot(
-                        registry::GLM_5H_WINDOW_SECS,
-                        10,
-                        1_000,
-                        101,
-                    )],
+                    vec![glm_snapshot(registry::GLM_5H_WINDOW_SECS, 10, 1_000, 101)],
                 )
                 .await
                 .unwrap();
@@ -8314,10 +8301,9 @@ mod tests {
                 .filter(|row| row.subject_id == "glm-subject-a")
                 .collect();
             assert_eq!(subject_a.len(), 2);
-            assert!(subject_a
-                .iter()
-                .any(|row| row.window_duration_secs == registry::GLM_WEEKLY_WINDOW_SECS
-                    && row.native_used_microcredits == Some(200_000_000)));
+            assert!(subject_a.iter().any(|row| row.window_duration_secs
+                == registry::GLM_WEEKLY_WINDOW_SECS
+                && row.native_used_microcredits == Some(200_000_000)));
             let subject_b: Vec<_> = report
                 .iter()
                 .filter(|row| row.subject_id == "glm-subject-b")
@@ -8424,10 +8410,9 @@ mod tests {
                 .filter(|row| row.subject_id == "kimi-subject-a")
                 .collect();
             assert_eq!(subject_a.len(), 2);
-            assert!(subject_a
-                .iter()
-                .any(|row| row.window_duration_secs == registry::KIMI_WEEKLY_WINDOW_SECS
-                    && row.native_used_units == 200));
+            assert!(subject_a.iter().any(|row| row.window_duration_secs
+                == registry::KIMI_WEEKLY_WINDOW_SECS
+                && row.native_used_units == 200));
             let subject_b: Vec<_> = report
                 .iter()
                 .filter(|row| row.subject_id == "kimi-subject-b")

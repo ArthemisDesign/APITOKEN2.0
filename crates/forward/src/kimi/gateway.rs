@@ -333,7 +333,12 @@ impl RuntimeProfile {
     /// A wall with an explicit hint cools the quota axis until exactly then instead of the flat
     /// fallback constant; an absent or unparsable hint keeps the fallback. The hint is bounded so
     /// a hostile or broken value cannot park a profile forever.
-    fn apply_effect_with_hint(&self, effect: ProfileEffect, now: i64, retry_after_secs: Option<i64>) {
+    fn apply_effect_with_hint(
+        &self,
+        effect: ProfileEffect,
+        now: i64,
+        retry_after_secs: Option<i64>,
+    ) {
         match (effect, retry_after_secs) {
             (ProfileEffect::CoolUntilReset, Some(seconds)) => {
                 let mut health = self.health.lock().expect("KIMI profile health lock");
@@ -909,7 +914,8 @@ impl KimiGateway {
                 }
                 state.credential.access_token.clone()
             } else {
-                self.access_token(profile, rejected_token.as_deref()).await?
+                self.access_token(profile, rejected_token.as_deref())
+                    .await?
             };
             let send = profile
                 .client
@@ -1461,11 +1467,8 @@ impl KimiGateway {
                                 // budget and rotate when another profile is eligible — a wedged
                                 // profile must not stay instantly re-selectable.
                                 Ok(Err(error)) => {
-                                    let remaining = self.eligible_count(
-                                        &request.model,
-                                        &excluded,
-                                        &profile.id,
-                                    );
+                                    let remaining =
+                                        self.eligible_count(&request.model, &excluded, &profile.id);
                                     let decision = decide(
                                         UpstreamVerdict::Transport,
                                         Delivery::PreByte,
@@ -1493,11 +1496,8 @@ impl KimiGateway {
                                     }
                                 }
                                 Err(_) => {
-                                    let remaining = self.eligible_count(
-                                        &request.model,
-                                        &excluded,
-                                        &profile.id,
-                                    );
+                                    let remaining =
+                                        self.eligible_count(&request.model, &excluded, &profile.id);
                                     let decision = decide(
                                         UpstreamVerdict::Transport,
                                         Delivery::PreByte,
@@ -3762,16 +3762,14 @@ data: {"type":"message_stop"}
         let walls: Vec<i64> = gateway
             .profiles_snapshot()
             .iter()
-            .filter_map(|profile| match profile.candidate("kimi-for-coding", now).ineligible {
-                Some(Ineligible::QuotaWall) => Some(
-                    profile
-                        .health
-                        .lock()
-                        .unwrap()
-                        .quota_cool_until,
-                ),
-                _ => None,
-            })
+            .filter_map(
+                |profile| match profile.candidate("kimi-for-coding", now).ineligible {
+                    Some(Ineligible::QuotaWall) => {
+                        Some(profile.health.lock().unwrap().quota_cool_until)
+                    }
+                    _ => None,
+                },
+            )
             .collect();
         assert_eq!(walls.len(), 1);
         let expected = before + 42;
@@ -3787,7 +3785,9 @@ data: {"type":"message_stop"}
         let profile = "kimi-01";
         let uuid = "123e4567-e89b-42d3-a456-426614174000";
         let mut headers = HeaderMap::new();
-        assert!(parse_kimi_calibration_headers(&headers, true).unwrap().is_none());
+        assert!(parse_kimi_calibration_headers(&headers, true)
+            .unwrap()
+            .is_none());
 
         headers.insert("x-apitoken-calibration-profile", profile.parse().unwrap());
         headers.insert("x-apitoken-calibration-request-id", uuid.parse().unwrap());
@@ -3808,7 +3808,10 @@ data: {"type":"message_stop"}
 
         // A profile id with a path escape and a non-v4 request id both fail closed.
         let mut bad_profile = headers.clone();
-        bad_profile.insert("x-apitoken-calibration-profile", "../escape".parse().unwrap());
+        bad_profile.insert(
+            "x-apitoken-calibration-profile",
+            "../escape".parse().unwrap(),
+        );
         assert!(parse_kimi_calibration_headers(&bad_profile, true).is_err());
         let mut not_v4 = headers.clone();
         not_v4.insert(
@@ -3862,8 +3865,7 @@ data: {"type":"message_stop"}
         let turn = String::from_utf8(requests.recv().unwrap()).unwrap();
         assert!(turn.starts_with("POST /messages "));
         assert!(
-            turn
-                .to_ascii_lowercase()
+            turn.to_ascii_lowercase()
                 .contains(&format!("x-client-request-id: {uuid}")),
             "the upstream attempt must carry the preselected immutable id: {turn}"
         );
@@ -3996,13 +3998,16 @@ data: {"type":"message_stop"}
             KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap(),
         );
         assert_eq!(gateway.preflight().await, 1);
-        assert!(recv_bounded(&requests, "the /me probe").await.starts_with(b"GET /me "));
+        assert!(recv_bounded(&requests, "the /me probe")
+            .await
+            .starts_with(b"GET /me "));
         let profile = gateway.profiles_snapshot()[0].clone();
 
         let mut tasks = tokio::task::JoinSet::new();
         for _ in 0..BURST {
             let gateway = gateway.clone();
-            tasks.spawn(async move { gateway.handle(kimi_request(kimi_request_body(false))).await });
+            tasks
+                .spawn(async move { gateway.handle(kimi_request(kimi_request_body(false))).await });
         }
         // All eight upstream attempts start before any answer exists: inflight is a placement
         // signal, never a ceiling.
@@ -4036,14 +4041,20 @@ data: {"type":"message_stop"}
             KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap(),
         );
         assert_eq!(gateway.preflight().await, 2);
-        assert!(recv_bounded(&requests, "the first /me probe").await.starts_with(b"GET /me "));
-        assert!(recv_bounded(&requests, "the second /me probe").await.starts_with(b"GET /me "));
+        assert!(recv_bounded(&requests, "the first /me probe")
+            .await
+            .starts_with(b"GET /me "));
+        assert!(recv_bounded(&requests, "the second /me probe")
+            .await
+            .starts_with(b"GET /me "));
 
         let store = affinity();
         let mut headers = HeaderMap::new();
         headers.insert("x-session-id", "session-0042".parse().unwrap());
         let body = kimi_request_body(false);
-        let input = store.infer("account-1", &headers, &body).expect("session alias");
+        let input = store
+            .infer("account-1", &headers, &body)
+            .expect("session alias");
 
         // Turn A claims the conversation's home before its attempt; turn B starts only after
         // A's attempt is on the wire, so it must resolve to A's home rather than the cursor's
@@ -4104,8 +4115,12 @@ data: {"type":"message_stop"}
             KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap(),
         );
         assert_eq!(gateway.preflight().await, 2);
-        assert!(recv_bounded(&requests, "the first /me probe").await.starts_with(b"GET /me "));
-        assert!(recv_bounded(&requests, "the second /me probe").await.starts_with(b"GET /me "));
+        assert!(recv_bounded(&requests, "the first /me probe")
+            .await
+            .starts_with(b"GET /me "));
+        assert!(recv_bounded(&requests, "the second /me probe")
+            .await
+            .starts_with(b"GET /me "));
 
         let store = affinity();
         // A cacheable system prompt creates the cache root; mark kimi-02's home warm for it.
@@ -4115,7 +4130,9 @@ data: {"type":"message_stop"}
             "system": "x".repeat(8192),
             "messages": [{"role": "user", "content": "hello"}],
         });
-        let input = store.infer("account-1", &HeaderMap::new(), &body).expect("cache root");
+        let input = store
+            .infer("account-1", &HeaderMap::new(), &body)
+            .expect("cache root");
         let warm_home = store.home_id("kimi-02");
         store.mark_cache_warm(&input, &warm_home);
 
@@ -4124,10 +4141,12 @@ data: {"type":"message_stop"}
         request.affinity_store = store.clone();
         let response = gateway.handle(request).await;
         assert_eq!(response.status(), StatusCode::OK);
-        let post = String::from_utf8(recv_bounded(&requests, "the generation attempt").await).unwrap();
+        let post =
+            String::from_utf8(recv_bounded(&requests, "the generation attempt").await).unwrap();
         assert!(post.starts_with("POST /messages "));
         assert!(
-            post.to_ascii_lowercase().contains("authorization: bearer console-secret-2"),
+            post.to_ascii_lowercase()
+                .contains("authorization: bearer console-secret-2"),
             "the first attempt must prefer the warm home: {post}"
         );
     }
@@ -4209,7 +4228,12 @@ data: {"type":"message_stop"}
         assert!(reasoning_effort(&json!({"reasoning_effort": "invented"})).is_err());
     }
 
-    fn quota_snapshot(used: i64, limit: i64, resets_at: i64, observed_at: i64) -> KimiQuotaSnapshot {
+    fn quota_snapshot(
+        used: i64,
+        limit: i64,
+        resets_at: i64,
+        observed_at: i64,
+    ) -> KimiQuotaSnapshot {
         let derived = registry::kimi_fraction_from_native(used, limit).unwrap();
         KimiQuotaSnapshot {
             window_duration_secs: 18_000,
@@ -4227,9 +4251,11 @@ data: {"type":"message_stop"}
     async fn the_status_projection_reports_cooling_axes_availability_and_inflight() {
         let fixture = Fixture::new();
         fixture.publish_console_profile();
-        let gateway =
-            KimiGateway::new_with_calibration(config(&fixture.root, "http://127.0.0.1:9".into()), None)
-                .unwrap();
+        let gateway = KimiGateway::new_with_calibration(
+            config(&fixture.root, "http://127.0.0.1:9".into()),
+            None,
+        )
+        .unwrap();
         let now = now_unix();
         let profile = gateway.profiles.read().unwrap()[0].clone();
 
@@ -4284,9 +4310,11 @@ data: {"type":"message_stop"}
     async fn publish_quota_retains_the_exact_per_window_snapshot() {
         let fixture = Fixture::new();
         fixture.publish_console_profile();
-        let gateway =
-            KimiGateway::new_with_calibration(config(&fixture.root, "http://127.0.0.1:9".into()), None)
-                .unwrap();
+        let gateway = KimiGateway::new_with_calibration(
+            config(&fixture.root, "http://127.0.0.1:9".into()),
+            None,
+        )
+        .unwrap();
         let profile = gateway.profiles.read().unwrap()[0].clone();
         let observed_at = now_unix();
         let five_hour = quota_snapshot(250, 1000, 4_102_444_800, observed_at);
@@ -4329,9 +4357,11 @@ data: {"type":"message_stop"}
 
         let fixture = Fixture::new();
         fixture.publish_console_profile();
-        let gateway =
-            KimiGateway::new_with_calibration(config(&fixture.root, "http://127.0.0.1:9".into()), None)
-                .unwrap();
+        let gateway = KimiGateway::new_with_calibration(
+            config(&fixture.root, "http://127.0.0.1:9".into()),
+            None,
+        )
+        .unwrap();
         let status = gateway.operational_status();
         assert_eq!(status.profiles[0].plan, "unreviewed");
         // The durable-calibration join resolves only through the opaque roster id; an unknown

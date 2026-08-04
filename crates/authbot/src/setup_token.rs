@@ -52,8 +52,13 @@ fn slug(email: &str) -> String {
     let mut out = String::new();
     let mut prev_dash = false;
     for ch in email.to_lowercase().chars() {
-        if ch.is_ascii_alphanumeric() { out.push(ch); prev_dash = false; }
-        else if !prev_dash { out.push('-'); prev_dash = true; }
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
     }
     out.trim_matches('-').to_string()
 }
@@ -83,26 +88,43 @@ fn buf_string(buf: &Arc<Mutex<Vec<u8>>>) -> String {
 fn scan_url(s: &str) -> Option<String> {
     let start = s.find("https://claude.com/")?;
     let tail = &s[start..];
-    if !tail.contains("oauth/authorize") { return None; }
-    let end = tail.find(|c: char| c.is_whitespace() || c == '\u{1b}' || c == '\u{7}' || c == '"' || c == '\'' || c == '<')
+    if !tail.contains("oauth/authorize") {
+        return None;
+    }
+    let end = tail
+        .find(|c: char| {
+            c.is_whitespace() || c == '\u{1b}' || c == '\u{7}' || c == '"' || c == '\'' || c == '<'
+        })
         .unwrap_or(tail.len());
     let url = &tail[..end];
-    if url.contains("oauth/authorize") { Some(url.to_string()) } else { None }
+    if url.contains("oauth/authorize") {
+        Some(url.to_string())
+    } else {
+        None
+    }
 }
 
 /// Извлечь токен sk-ant-oat01-… (трейлинг из [A-Za-z0-9_-]).
 fn scan_token(s: &str) -> Option<String> {
     let start = s.find("sk-ant-oat01-")?;
     let tail = &s[start..];
-    let end = tail.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_')).unwrap_or(tail.len());
+    let end = tail
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        .unwrap_or(tail.len());
     let tok = &tail[..end];
-    if tok.len() >= 30 { Some(tok.to_string()) } else { None }
+    if tok.len() >= 30 {
+        Some(tok.to_string())
+    } else {
+        None
+    }
 }
 
 fn has_error(s: &str) -> bool {
     let l = s.to_lowercase();
-    l.contains("oauth error") || l.contains("request failed with status code")
-        || l.contains("invalid") || l.contains("expired")
+    l.contains("oauth error")
+        || l.contains("request failed with status code")
+        || l.contains("invalid")
+        || l.contains("expired")
 }
 
 pub fn kill(chat: i64) {
@@ -150,7 +172,12 @@ pub fn start(
 ) -> Result<String> {
     kill(chat);
     let pty = native_pty_system();
-    let pair = pty.openpty(PtySize { rows: 50, cols: 1000, pixel_width: 0, pixel_height: 0 })?;
+    let pair = pty.openpty(PtySize {
+        rows: 50,
+        cols: 1000,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
 
     let mut cmd = CommandBuilder::new(claude_bin);
     cmd.arg("setup-token");
@@ -158,7 +185,14 @@ pub fn start(
     cmd.env("CLAUDE_CONFIG_DIR", &cfg_dir);
     cmd.env("HOME", &cfg_dir);
     cmd.env("BROWSER", format!("{}/open", shim_dir()));
-    cmd.env("PATH", format!("{}:{}", shim_dir(), std::env::var("PATH").unwrap_or_default()));
+    cmd.env(
+        "PATH",
+        format!(
+            "{}:{}",
+            shim_dir(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
     cmd.env("COLUMNS", "1000");
     cmd.env("LINES", "50");
     cmd.env("TERM", "xterm-256color");
@@ -191,18 +225,31 @@ pub fn start(
         }
     });
 
-    sessions().lock().unwrap().insert(chat, Session {
-        writer, child, buf: buf.clone(), email: email.to_string(),
-        proxy: proxy.to_string(), job, bridge, _master: pair.master,
-    });
+    sessions().lock().unwrap().insert(
+        chat,
+        Session {
+            writer,
+            child,
+            buf: buf.clone(),
+            email: email.to_string(),
+            proxy: proxy.to_string(),
+            job,
+            bridge,
+            _master: pair.master,
+        },
+    );
 
     // ждём URL до 25с
     let deadline = Instant::now() + Duration::from_secs(25);
     loop {
-        if let Some(url) = scan_url(&buf_string(&buf)) { return Ok(url); }
+        if let Some(url) = scan_url(&buf_string(&buf)) {
+            return Ok(url);
+        }
         if Instant::now() > deadline {
             kill(chat);
-            return Err(anyhow!("не нашёл OAuth-URL (claude setup-token не ответил вовремя)"));
+            return Err(anyhow!(
+                "не нашёл OAuth-URL (claude setup-token не ответил вовремя)"
+            ));
         }
         std::thread::sleep(Duration::from_millis(400));
     }
@@ -215,8 +262,10 @@ mod tests {
     #[test]
     fn account_state_is_scoped_below_the_writable_root() {
         let root = Path::new("/srv/claude-api/data/authbot");
-        assert_eq!(account_config_dir(root, "Seller+Test@example.com"),
-                   root.join(".claude-bot-seller-test-example-com"));
+        assert_eq!(
+            account_config_dir(root, "Seller+Test@example.com"),
+            root.join(".claude-bot-seller-test-example-com")
+        );
     }
 }
 
@@ -230,13 +279,20 @@ pub enum Outcome {
 pub fn feed(chat: i64, codestate: &str) -> Result<Outcome> {
     let (email, proxy, job, buf) = {
         let mut g = sessions().lock().unwrap();
-        let s = g.get_mut(&chat).ok_or_else(|| anyhow!("нет активной сессии — начни с email"))?;
+        let s = g
+            .get_mut(&chat)
+            .ok_or_else(|| anyhow!("нет активной сессии — начни с email"))?;
         // Ink-TUI claude сабмитит ТОЛЬКО отдельным CR ПОСЛЕ того, как поле отрисовало
         // вставленный код. code#state+\r одной пачкой поле НЕ сабмитит — claude висит.
         // Поэтому: пишем код → пауза (даём TUI отрисоваться) → отдельный \r (см. Python-бот).
         s.writer.write_all(codestate.trim().as_bytes())?;
         s.writer.flush()?;
-        (s.email.clone(), s.proxy.clone(), s.job.clone(), s.buf.clone())
+        (
+            s.email.clone(),
+            s.proxy.clone(),
+            s.job.clone(),
+            s.buf.clone(),
+        )
     };
     std::thread::sleep(Duration::from_millis(1200));
     {
@@ -246,7 +302,7 @@ pub fn feed(chat: i64, codestate: &str) -> Result<Outcome> {
             let _ = s.writer.flush();
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(120);   // токен ~до 120с (как в Python)
+    let deadline = Instant::now() + Duration::from_secs(120); // токен ~до 120с (как в Python)
     loop {
         let out = buf_string(&buf);
         if let Some(tok) = scan_token(&out) {
@@ -254,14 +310,28 @@ pub fn feed(chat: i64, codestate: &str) -> Result<Outcome> {
             return Ok(Outcome::Token(tok, email, proxy, job));
         }
         if has_error(&out) {
-            let tail: String = out.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect();
-            eprintln!("setup-token BAD CODE, хвост вывода claude: {:?}", tail);   // диагностика отказа
+            let tail: String = out
+                .chars()
+                .rev()
+                .take(400)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            eprintln!("setup-token BAD CODE, хвост вывода claude: {:?}", tail); // диагностика отказа
             kill(chat);
             return Ok(Outcome::BadCode(job));
         }
         if Instant::now() > deadline {
-            let tail: String = out.chars().rev().take(700).collect::<Vec<_>>().into_iter().rev().collect();
-            eprintln!("setup-token NO TOKEN, хвост вывода claude: {:?}", tail);   // для дебага
+            let tail: String = out
+                .chars()
+                .rev()
+                .take(700)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            eprintln!("setup-token NO TOKEN, хвост вывода claude: {:?}", tail); // для дебага
             kill(chat);
             return Ok(Outcome::NoToken(job));
         }

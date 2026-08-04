@@ -158,11 +158,11 @@ use super::chat::{
 };
 use super::gemini_api;
 use crate::codex::new_id;
+use crate::gemini_stream::GeminiStreamState;
 use crate::openai_responses_stream::ResponsesEventEncoder;
 use crate::proxy::{read_body_limited, without_not_started, BodyReadError};
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
-use crate::gemini_stream::GeminiStreamState;
 
 /// Хендлер `POST /v1/responses` (роут регистрируется в server только в
 /// `ProviderMode::Gemini`). Точный паттерн `gemini_chat_completions`.
@@ -216,7 +216,10 @@ pub async fn gemini_responses(
     // только content-length/content-type под синтезированное тело.
     let mut headers = parts.headers.clone();
     headers.remove(header::CONTENT_LENGTH);
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
     let body_bytes = match serde_json::to_vec(&translated.body) {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -342,13 +345,9 @@ fn translate_responses_request(value: Value) -> Result<Translated, Response> {
         .map_err(|field| invalid_request("stream must be a boolean.", Some(field)))?
         .unwrap_or(false);
 
-    let max_tokens = optional_positive_u64(&object, &["max_output_tokens"])
-        .map_err(|field| {
-            invalid_request(
-                "max_output_tokens must be a positive integer.",
-                Some(field),
-            )
-        })?;
+    let max_tokens = optional_positive_u64(&object, &["max_output_tokens"]).map_err(|field| {
+        invalid_request("max_output_tokens must be a positive integer.", Some(field))
+    })?;
 
     let mut generation_config = Map::new();
     if let Some(max_tokens) = max_tokens {
@@ -464,7 +463,9 @@ fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> 
         ("service_tier", |v| {
             v.is_null() || v.as_str() == Some("auto") || v.as_str() == Some("default")
         }),
-        ("truncation", |v| v.is_null() || v.as_str() == Some("disabled")),
+        ("truncation", |v| {
+            v.is_null() || v.as_str() == Some("disabled")
+        }),
         ("include", |v| {
             v.is_null() || v.as_array().is_some_and(Vec::is_empty)
         }),
@@ -498,7 +499,10 @@ fn check_stored_limitations(object: &Map<String, Value>) -> Result<(), Response>
             "Stored responses are supported only for openai/* models.",
         ));
     }
-    if object.get("previous_response_id").is_some_and(|v| !v.is_null()) {
+    if object
+        .get("previous_response_id")
+        .is_some_and(|v| !v.is_null())
+    {
         return Err(documented_limitation(
             "previous_response_id",
             "Stored responses are supported only for openai/* models.",
@@ -711,12 +715,15 @@ fn message_item_parts(content: Option<&Value>) -> Result<Vec<Value>, Response> {
 /// generateContent не принимает → `400 invalid_request`; `detail` != auto →
 /// `400 unsupported_parameter`).
 fn input_image_part(part: &Value) -> Result<Value, Response> {
-    let url = part.get("image_url").and_then(Value::as_str).ok_or_else(|| {
-        invalid_request(
-            "Invalid input_image part: expected an image_url string.",
-            Some("input"),
-        )
-    })?;
+    let url = part
+        .get("image_url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            invalid_request(
+                "Invalid input_image part: expected an image_url string.",
+                Some("input"),
+            )
+        })?;
     let mut image = json!({"url": url});
     if let Some(detail) = part.get("detail").and_then(Value::as_str) {
         image["detail"] = Value::String(detail.to_string());
@@ -908,7 +915,9 @@ fn translate_reasoning(value: Option<&Value>) -> Result<Option<String>, Response
 /// проксируются — только схема); json_object у generateContent есть (отличие
 /// от Messages, где он → 400) — JSON без схемы; не-дефолтная verbosity
 /// (дефолт — "medium") → `400 unsupported_parameter`.
-fn translate_text_format(value: Option<&Value>) -> Result<Option<(String, Option<Value>)>, Response> {
+fn translate_text_format(
+    value: Option<&Value>,
+) -> Result<Option<(String, Option<Value>)>, Response> {
     let Some(value) = value.filter(|v| !v.is_null()) else {
         return Ok(None);
     };
@@ -1264,7 +1273,9 @@ impl GeminiResponsesSseTranslator {
     }
 
     fn model(&self) -> &str {
-        self.served_model.as_deref().unwrap_or(&self.requested_model)
+        self.served_model
+            .as_deref()
+            .unwrap_or(&self.requested_model)
     }
 
     fn push_event(&mut self, event: &'static str, value: Value) {
@@ -1765,7 +1776,6 @@ impl Stream for GeminiResponsesSseTranslator {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2025,10 +2035,7 @@ mod tests {
                 "image MIME",
             ),
             // Нет image_url.
-            (
-                json!([{"type": "input_image"}]),
-                "image_url string",
-            ),
+            (json!([{"type": "input_image"}]), "image_url string"),
         ] {
             let (status, body) = expect_err(json!({
                 "model": "gemini-2.5-flash",
@@ -2038,7 +2045,10 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST, "{content}");
             assert_eq!(body["error"]["param"], "input", "{content}");
             assert!(
-                body["error"]["message"].as_str().unwrap().contains(expected),
+                body["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(expected),
                 "{content}: {body}"
             );
         }
@@ -2079,7 +2089,8 @@ mod tests {
             "tools": [{"type":"function", "name":"f", "parameters":{
                 "type":"object", "dependentRequired":{"x":["y"]}
             }}]
-        })).await;
+        }))
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(
             body["error"]["param"],
@@ -2092,7 +2103,8 @@ mod tests {
             "text": {"format":{"type":"json_schema", "name":"x", "schema":{
                 "type":"object", "unevaluatedProperties":false
             }}}
-        })).await;
+        }))
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(
             body["error"]["param"],
@@ -2194,15 +2206,15 @@ mod tests {
         let translated = ok_translated(json!({
             "model": "gemini-2.5-flash", "input": "hi", "reasoning": null,
         }));
-        assert!(
-            translated.body["generationConfig"].get("thinkingConfig").is_none()
-        );
+        assert!(translated.body["generationConfig"]
+            .get("thinkingConfig")
+            .is_none());
         let translated = ok_translated(json!({
             "model": "gemini-2.5-flash", "input": "hi", "reasoning": {"effort": null},
         }));
-        assert!(
-            translated.body["generationConfig"].get("thinkingConfig").is_none()
-        );
+        assert!(translated.body["generationConfig"]
+            .get("thinkingConfig")
+            .is_none());
     }
 
     #[tokio::test]
@@ -2305,9 +2317,9 @@ mod tests {
             "model": "gemini-2.5-flash", "input": "hi",
             "text": {"verbosity": "medium", "format": {"type": "text"}}
         }));
-        assert!(
-            translated.body["generationConfig"].get("responseMimeType").is_none()
-        );
+        assert!(translated.body["generationConfig"]
+            .get("responseMimeType")
+            .is_none());
 
         // json_schema без schema-объекта — битый запрос.
         let (status, _) = expect_err(json!({
@@ -2461,7 +2473,10 @@ mod tests {
             }))
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{arguments}");
-            assert_eq!(body["error"]["type"], "invalid_request_error", "{arguments}");
+            assert_eq!(
+                body["error"]["type"], "invalid_request_error",
+                "{arguments}"
+            );
             assert_eq!(body["error"]["param"], "input", "{arguments}");
         }
         // Отсутствующие/пустые call_id и name → 400.
@@ -2705,7 +2720,13 @@ mod tests {
         let (status, details) = map_status(Some("MAX_TOKENS"));
         assert_eq!(status, "incomplete");
         assert_eq!(details, json!({"reason": "max_output_tokens"}));
-        for reason in ["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"] {
+        for reason in [
+            "SAFETY",
+            "RECITATION",
+            "BLOCKLIST",
+            "PROHIBITED_CONTENT",
+            "SPII",
+        ] {
             let (status, details) = map_status(Some(reason));
             assert_eq!(status, "incomplete", "{reason}");
             assert_eq!(details, json!({"reason": "content_filter"}), "{reason}");
@@ -2917,7 +2938,10 @@ mod tests {
         assert!(!body.to_string().contains("sig_"), "{body}");
         // thoughts-токены в output и в reasoning_tokens (как metering).
         assert_eq!(body["usage"]["output_tokens"], 16);
-        assert_eq!(body["usage"]["output_tokens_details"]["reasoning_tokens"], 7);
+        assert_eq!(
+            body["usage"]["output_tokens_details"]["reasoning_tokens"],
+            7
+        );
     }
 
     #[tokio::test]
@@ -2939,12 +2963,10 @@ mod tests {
             .body(Body::from("not json"))
             .unwrap();
         let response = json_responses_response(upstream, "gemini-2.5-flash".into()).await;
-        assert!(
-            response
-                .headers()
-                .get(crate::proxy::EXECUTION_STATE_HEADER)
-                .is_none()
-        );
+        assert!(response
+            .headers()
+            .get(crate::proxy::EXECUTION_STATE_HEADER)
+            .is_none());
         let (status, body) = err_parts(response).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body["error"]["type"], "server_error");
@@ -2980,8 +3002,10 @@ data: {"candidates":[{"content":{"role":"model","parts":[{"text":", world"}]},"f
         // text.delta* → text.done → part.done → item.done → completed —
         // та же последовательность и shapes, что у Anthropic-зеркала (чистый
         // EOF Gemini-стрима выполняет роль message_stop).
-        let translator =
-            GeminiResponsesSseTranslator::new(sse_bytes(SSE_TEXT_DIALOG), "gemini-2.5-flash".into());
+        let translator = GeminiResponsesSseTranslator::new(
+            sse_bytes(SSE_TEXT_DIALOG),
+            "gemini-2.5-flash".into(),
+        );
         let output = collect_stream(translator).await;
         let frames = event_frames(&output);
         assert_eq!(
@@ -3038,7 +3062,10 @@ data: {"candidates":[{"content":{"role":"model","parts":[{"text":", world"}]},"f
         assert_eq!(completed["output"].as_array().unwrap().len(), 1);
         assert_eq!(completed["output"][0]["content"][0]["text"], "Hello, world");
         assert_eq!(completed["usage"]["input_tokens"], 14);
-        assert_eq!(completed["usage"]["input_tokens_details"]["cached_tokens"], 4);
+        assert_eq!(
+            completed["usage"]["input_tokens_details"]["cached_tokens"],
+            4
+        );
         assert_eq!(completed["usage"]["output_tokens"], 6);
         assert_eq!(completed["usage"]["total_tokens"], 20);
         assert!(completed["error"].is_null());
@@ -3054,8 +3081,10 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         // function_call: item.added (arguments "") → arguments.delta →
         // arguments.done → item.done → completed. Gemini присылает
         // functionCall целиком — ровно одна дельта с полной строкой.
-        let translator =
-            GeminiResponsesSseTranslator::new(sse_bytes(SSE_FUNCTION_CALL), "gemini-2.5-flash".into());
+        let translator = GeminiResponsesSseTranslator::new(
+            sse_bytes(SSE_FUNCTION_CALL),
+            "gemini-2.5-flash".into(),
+        );
         let output = collect_stream(translator).await;
         let frames = event_frames(&output);
         assert_eq!(
@@ -3170,7 +3199,8 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
             "\n",
             "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Answer.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":8,\"thoughtsTokenCount\":5,\"totalTokenCount\":23}}\n",
         );
-        let translator = GeminiResponsesSseTranslator::new(sse_bytes(events), "gemini-2.5-flash".into());
+        let translator =
+            GeminiResponsesSseTranslator::new(sse_bytes(events), "gemini-2.5-flash".into());
         let output = collect_stream(translator).await;
         assert!(!output.contains("sig_1"), "{output}");
         let frames = event_frames(&output);
@@ -3200,7 +3230,10 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         // стабилен внутри item'а.
         assert_eq!(frames[2].1["output_index"], 0);
         assert_eq!(frames[2].1["item"]["type"], "reasoning");
-        assert!(frames[2].1["item"]["id"].as_str().unwrap().starts_with("rs_"));
+        assert!(frames[2].1["item"]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("rs_"));
         assert_eq!(frames[2].1["item"]["summary"], json!([]));
         let item_id = frames[2].1["item"]["id"].clone();
         assert_eq!(frames[3].1["item_id"], item_id);
@@ -3216,7 +3249,10 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         assert_eq!(frames[6].1["text"], "Let me think. Done.");
         assert_eq!(frames[7].1["part"]["text"], "Let me think. Done.");
         assert_eq!(frames[8].1["item"]["id"], item_id);
-        assert_eq!(frames[8].1["item"]["summary"][0]["text"], "Let me think. Done.");
+        assert_eq!(
+            frames[8].1["item"]["summary"][0]["text"],
+            "Let me think. Done."
+        );
         // Message item — output_index 1 (плотный счётчик, дыр нет).
         assert_eq!(frames[9].1["output_index"], 1);
         assert_eq!(frames[9].1["item"]["type"], "message");
@@ -3230,7 +3266,10 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         assert_eq!(items[0]["summary"][0]["text"], "Let me think. Done.");
         assert_eq!(items[1]["type"], "message");
         assert_eq!(completed["usage"]["output_tokens"], 13);
-        assert_eq!(completed["usage"]["output_tokens_details"]["reasoning_tokens"], 5);
+        assert_eq!(
+            completed["usage"]["output_tokens_details"]["reasoning_tokens"],
+            5
+        );
         assert_eq!(completed["usage"]["total_tokens"], 23);
     }
 
@@ -3245,7 +3284,11 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         let frames = event_frames(&output);
         assert_eq!(
             event_names(&frames),
-            ["response.created", "response.in_progress", "response.completed"],
+            [
+                "response.created",
+                "response.in_progress",
+                "response.completed"
+            ],
             "{output}"
         );
         let completed = &frames[2].1;
@@ -3371,7 +3414,9 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         // Кадр, разрезанный посреди JSON двумя сетевыми чанками.
         let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
             Ok(Bytes::from("data: {\"candidates\":[{\"content\":{\"par")),
-            Ok(Bytes::from("ts\":[{\"text\":\"split ok\"}]}}]}\n\ndata: {\"candidates\":[{\"fin")),
+            Ok(Bytes::from(
+                "ts\":[{\"text\":\"split ok\"}]}}]}\n\ndata: {\"candidates\":[{\"fin",
+            )),
             Ok(Bytes::from("ishReason\":\"STOP\"}]}\n\n")),
         ];
         let translator = GeminiResponsesSseTranslator::new(
@@ -3404,7 +3449,11 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
             "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\",\"futurePartField\":true}]},\"futureCandidateField\":1}],\"futureTopLevelField\":{}}\n\n",
             "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}"
         );
-        let output = collect_stream(GeminiResponsesSseTranslator::new(sse_bytes(events), "m".into())).await;
+        let output = collect_stream(GeminiResponsesSseTranslator::new(
+            sse_bytes(events),
+            "m".into(),
+        ))
+        .await;
         let frames = event_frames(&output);
         assert_eq!(frames.last().unwrap().0, "response.completed", "{output}");
         assert!(output.contains("ok"), "{output}");

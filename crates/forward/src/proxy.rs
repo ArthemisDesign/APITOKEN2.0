@@ -2358,7 +2358,8 @@ pub async fn forward(
                 Ok(c) => c,
                 Err(e) => {
                     app.pool.mark_cooling(&sub.email, 10); // битый прокси → cooling (слот закроет guard)
-                    app.affinity.publish_cooling_hint(&sub.email, pool::now() + 10);
+                    app.affinity
+                        .publish_cooling_hint(&sub.email, pool::now() + 10);
                     eprintln!("⚠ прокси {}: {e}", sub.email); // детали ТОЛЬКО в лог (не клиенту)
                     last_local =
                         local_err_for(LocalErr::Overloaded, "subscription_proxy_unavailable", None);
@@ -2460,7 +2461,8 @@ pub async fn forward(
                     // Сетевой сбой остаётся per-subscription сигналом: короткий cooling и ротация.
                     // Не кормим global breaker — один нестабильный прокси не доказывает outage провайдера.
                     app.pool.mark_cooling(&sub.email, 15);
-                    app.affinity.publish_cooling_hint(&sub.email, pool::now() + 15);
+                    app.affinity
+                        .publish_cooling_hint(&sub.email, pool::now() + 15);
                     eprintln!("⚠ upstream {}: {e}", sub.email); // детали (email/сеть) ТОЛЬКО в лог
                     last_local =
                         local_err_for(LocalErr::Overloaded, "upstream_connection_error", None);

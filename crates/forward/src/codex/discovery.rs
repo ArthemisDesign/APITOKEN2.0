@@ -14,9 +14,9 @@ pub(crate) fn discover(cfg: &CodexConfig) -> Vec<CodexProfileSpec> {
     let Ok(bytes) = std::fs::read(&cfg.profiles_file) else {
         return Vec::new();
     };
-    let Ok(roster) = serde_json::from_str::<CodexProfilesFile>(
-        std::str::from_utf8(&bytes).unwrap_or(""),
-    ) else {
+    let Ok(roster) =
+        serde_json::from_str::<CodexProfilesFile>(std::str::from_utf8(&bytes).unwrap_or(""))
+    else {
         eprintln!("Codex roster is not valid JSON; keeping the current pool");
         return Vec::new();
     };
@@ -86,10 +86,8 @@ mod tests {
 
     #[test]
     fn roster_layout_is_enforced() {
-        let root = std::env::temp_dir().join(format!(
-            "claude-api-codex-discovery-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("claude-api-codex-discovery-{}", std::process::id()));
         let credentials = root.join("credentials");
         std::fs::create_dir_all(&credentials).unwrap();
         let roster_path = root.join("profiles.json");

@@ -56,13 +56,13 @@ use serde_json::{json, Map, Value};
 use super::gemini_api;
 use crate::codex::new_id;
 use crate::gemini_schema;
+use crate::gemini_stream::GeminiStreamState;
 use crate::proxy::{
-    read_body_limited, with_not_started, without_not_started, BodyReadError,
-    TerminalErrorReason, EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
+    read_body_limited, with_not_started, without_not_started, BodyReadError, TerminalErrorReason,
+    EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
 };
 use crate::state::AppState;
 use crate::validation::{optional_bool, optional_positive_u64};
-use crate::gemini_stream::GeminiStreamState;
 
 /// Лимит тела chat-запроса — как у нативного text-пути плоскости
 /// (`GEMINI_TEXT_REQUEST_BODY_LIMIT`). Общий с Responses-адаптером этапа 4.3
@@ -133,7 +133,10 @@ pub async fn gemini_chat_completions(
     // только content-length/content-type под синтезированное тело.
     let mut headers = parts.headers.clone();
     headers.remove(header::CONTENT_LENGTH);
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
     let body_bytes = match serde_json::to_vec(&translated.body) {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -234,16 +237,10 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
         .unwrap_or(false);
     let include_usage = parse_stream_options(object.get("stream_options"))?;
 
-    let max_tokens = optional_positive_u64(
-        &object,
-        &["max_completion_tokens", "max_tokens"],
-    )
-    .map_err(|field| {
-        invalid_request(
-            &format!("{field} must be a positive integer."),
-            Some(field),
-        )
-    })?;
+    let max_tokens = optional_positive_u64(&object, &["max_completion_tokens", "max_tokens"])
+        .map_err(|field| {
+            invalid_request(&format!("{field} must be a positive integer."), Some(field))
+        })?;
 
     let mut generation_config = Map::new();
     if let Some(max_tokens) = max_tokens {
@@ -273,7 +270,9 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
     // Reasoning (этап 3.4b): reasoning_effort → thinkingConfig — соседнее
     // поле того же generationConfig, responseMimeType/responseSchema не
     // затираются.
-    if let Some(level) = translate_reasoning_effort(object.get("reasoning_effort"), "reasoning_effort")? {
+    if let Some(level) =
+        translate_reasoning_effort(object.get("reasoning_effort"), "reasoning_effort")?
+    {
         generation_config.insert(
             "thinkingConfig".to_string(),
             json!({"thinkingLevel": level, "includeThoughts": true}),
@@ -386,7 +385,9 @@ fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> 
         ("n", |v| v.as_u64() == Some(1)),
         ("presence_penalty", |v| v.as_f64() == Some(0.0)),
         ("frequency_penalty", |v| v.as_f64() == Some(0.0)),
-        ("logit_bias", |v| v.is_null() || v.as_object().is_some_and(Map::is_empty)),
+        ("logit_bias", |v| {
+            v.is_null() || v.as_object().is_some_and(Map::is_empty)
+        }),
         ("logprobs", |v| v.is_null() || v.as_bool() == Some(false)),
         ("top_logprobs", |v| v.is_null()),
         ("seed", |v| v.is_null()),
@@ -394,14 +395,16 @@ fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> 
             v.is_null() || v.as_str() == Some("auto") || v.as_str() == Some("default")
         }),
         ("modalities", |v| {
-            v.as_array().is_some_and(|m| m.len() == 1 && m[0].as_str() == Some("text"))
+            v.as_array()
+                .is_some_and(|m| m.len() == 1 && m[0].as_str() == Some("text"))
         }),
         ("audio", |v| v.is_null()),
         ("prediction", |v| v.is_null()),
         ("web_search_options", |v| v.is_null()),
         ("user", |v| v.is_null()),
         ("stream_options", |v| {
-            v.as_object().is_some_and(|o| o.keys().all(|k| k == "include_usage"))
+            v.as_object()
+                .is_some_and(|o| o.keys().all(|k| k == "include_usage"))
         }),
     ];
     for (param, is_default) in rules {
@@ -480,8 +483,7 @@ fn translate_messages(messages: Vec<Value>) -> Result<(Option<Value>, Vec<Value>
             Some("messages"),
         ));
     }
-    let system_instruction = (!system_parts.is_empty())
-        .then(|| json!({"parts": system_parts}));
+    let system_instruction = (!system_parts.is_empty()).then(|| json!({"parts": system_parts}));
     Ok((system_instruction, contents))
 }
 
@@ -553,10 +555,7 @@ fn user_message_parts(content: Option<&Value>) -> Result<Vec<Value>, Response> {
     for part in parts {
         match part.get("type").and_then(Value::as_str) {
             Some("text") => {
-                let segment = part
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
+                let segment = part.get("text").and_then(Value::as_str).unwrap_or_default();
                 if !text.is_empty() && !segment.is_empty() {
                     text.push('\n');
                 }
@@ -588,12 +587,15 @@ fn user_message_parts(content: Option<&Value>) -> Result<Vec<Value>, Response> {
 /// Общая с Responses-адаптером этапа 4.3 (`responses.rs`); `param` — имя
 /// параметра в ошибках (`messages` у chat, `input` у Responses).
 pub(crate) fn gemini_image_part(part: &Value, param: &str) -> Result<Value, Response> {
-    let image = part.get("image_url").and_then(Value::as_object).ok_or_else(|| {
-        invalid_request(
-            "Invalid image_url part: expected an object with a url string.",
-            Some(param),
-        )
-    })?;
+    let image = part
+        .get("image_url")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            invalid_request(
+                "Invalid image_url part: expected an object with a url string.",
+                Some(param),
+            )
+        })?;
     if let Some(detail) = image.get("detail").and_then(Value::as_str) {
         if detail != "auto" {
             return Err(unsupported_parameter(param));
@@ -630,7 +632,9 @@ pub(crate) fn gemini_image_part(part: &Value, param: &str) -> Result<Value, Resp
 /// 3.4a). json_object — JSON без схемы; json_schema требует schema-объект.
 /// Обёрточные name/strict/description у generateContent отсутствуют —
 /// проксируется сама схема.
-fn translate_response_format(value: Option<&Value>) -> Result<Option<(String, Option<Value>)>, Response> {
+fn translate_response_format(
+    value: Option<&Value>,
+) -> Result<Option<(String, Option<Value>)>, Response> {
     let Some(value) = value.filter(|v| !v.is_null()) else {
         return Ok(None);
     };
@@ -720,7 +724,10 @@ fn assistant_parts(
                 invalid_request("Invalid tool_calls entry: missing id.", Some("messages"))
             })?;
             let function = call.get("function").ok_or_else(|| {
-                invalid_request("Invalid tool_calls entry: missing function.", Some("messages"))
+                invalid_request(
+                    "Invalid tool_calls entry: missing function.",
+                    Some("messages"),
+                )
             })?;
             let name = function
                 .get("name")
@@ -828,9 +835,10 @@ fn function_response_part(
 
 /// Legacy role "function" → functionResponse; имя — из поля `name`.
 fn legacy_function_response_part(object: &Map<String, Value>) -> Result<Value, Response> {
-    let name = object.get("name").and_then(Value::as_str).ok_or_else(|| {
-        invalid_request("Function message requires a name.", Some("messages"))
-    })?;
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_request("Function message requires a name.", Some("messages")))?;
     let text = message_text(object.get("content"))?;
     Ok(json!({
         "functionResponse": {"name": name, "response": function_response_value(&text)}
@@ -911,10 +919,8 @@ pub(crate) fn function_declaration(
     match function.get("parameters") {
         None | Some(Value::Null) => {}
         Some(schema) if schema.is_object() => {
-            declaration["parameters"] = code_assist_schema(
-                schema,
-                &format!("{descriptor_path}.parameters"),
-            )?
+            declaration["parameters"] =
+                code_assist_schema(schema, &format!("{descriptor_path}.parameters"))?
         }
         Some(_) => {
             return Err(invalid_request(
@@ -929,13 +935,9 @@ pub(crate) fn function_declaration(
 /// Translate a legal JSON Schema into the exact bounded Google `Schema`
 /// vocabulary accepted by Code Assist. Unrepresentable constraints fail
 /// locally with an exact JSON Pointer suffix in `error.param`.
-pub(crate) fn code_assist_schema(
-    schema: &Value,
-    root_path: &str,
-) -> Result<Value, Response> {
-    gemini_schema::translate(schema, root_path).map_err(|error| {
-        invalid_request(&error.message(), Some(error.path()))
-    })
+pub(crate) fn code_assist_schema(schema: &Value, root_path: &str) -> Result<Value, Response> {
+    gemini_schema::translate(schema, root_path)
+        .map_err(|error| invalid_request(&error.message(), Some(error.path())))
 }
 
 /// Builds a replay-safe Gemini model part without persisting or exposing the
@@ -1205,7 +1207,9 @@ pub(crate) async fn convert_error_response(upstream: Response) -> Response {
     };
     let mut response = chat_error(status, message, None, code, reason);
     if let Some(retry_after) = retry_after {
-        response.headers_mut().insert(header::RETRY_AFTER, retry_after);
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, retry_after);
     }
     if !not_started {
         response = without_not_started(response);
@@ -1446,7 +1450,9 @@ impl GeminiChatSseTranslator {
     }
 
     fn model(&self) -> &str {
-        self.served_model.as_deref().unwrap_or(&self.requested_model)
+        self.served_model
+            .as_deref()
+            .unwrap_or(&self.requested_model)
     }
 
     fn frame(value: Value) -> Bytes {
@@ -1911,7 +1917,8 @@ mod tests {
             "model": "gemini-2.5-flash",
             "messages": [{"role": "user", "content": "hi"}],
             "stream_options": {"include_usage": "true"}
-        })).await;
+        }))
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["error"]["param"], "stream_options.include_usage");
 
@@ -1920,7 +1927,8 @@ mod tests {
             "messages": [{"role": "user", "content": "hi"}],
             "max_completion_tokens": 0,
             "max_tokens": 77
-        })).await;
+        }))
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["error"]["param"], "max_completion_tokens");
     }
@@ -1940,7 +1948,11 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_invalid_stop() {
-        for stop in [json!([]), json!(["a", "b", "c", "d", "e", "f"]), json!(["a", 1])] {
+        for stop in [
+            json!([]),
+            json!(["a", "b", "c", "d", "e", "f"]),
+            json!(["a", 1]),
+        ] {
             let (status, body) = expect_err(json!({
                 "model": "gemini-2.5-flash",
                 "messages": [{"role": "user", "content": "hi"}],
@@ -2025,15 +2037,18 @@ mod tests {
             translated["properties"]["$schema"],
             json!({"type":"string", "enum":["fast"]})
         );
-        assert!(translated["properties"]["exclusiveMinimum"]["minimum"]
-            .as_f64()
-            .unwrap()
-            > 1.0);
-        assert!(translated["properties"]["nested"]["items"]["properties"]["value"]
-            ["minimum"]
-            .as_f64()
-            .unwrap()
-            > 2.0);
+        assert!(
+            translated["properties"]["exclusiveMinimum"]["minimum"]
+                .as_f64()
+                .unwrap()
+                > 1.0
+        );
+        assert!(
+            translated["properties"]["nested"]["items"]["properties"]["value"]["minimum"]
+                .as_f64()
+                .unwrap()
+                > 2.0
+        );
         assert!(translated.get("$defs").is_none());
     }
 
@@ -2046,7 +2061,8 @@ mod tests {
                 "type":"object", "properties":{"x":{"type":"object",
                     "patternProperties":{"^a":{"type":"string"}}}}
             }}}]
-        })).await;
+        }))
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(
             body["error"]["param"],
@@ -2058,7 +2074,8 @@ mod tests {
             "messages": [{"role": "user", "content": "hi"}],
             "response_format": {"type":"json_schema", "json_schema":{"name":"x",
                 "schema":{"type":"boolean", "const":true}}}
-        })).await;
+        }))
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(
             body["error"]["param"],
@@ -2449,9 +2466,9 @@ mod tests {
             "messages": [{"role": "user", "content": "hi"}],
             "reasoning_effort": null,
         }));
-        assert!(
-            translated.body["generationConfig"].get("thinkingConfig").is_none()
-        );
+        assert!(translated.body["generationConfig"]
+            .get("thinkingConfig")
+            .is_none());
     }
 
     #[test]
@@ -2495,7 +2512,10 @@ mod tests {
         assert_eq!(map_finish_reason(Some("MAX_TOKENS")), "length");
         assert_eq!(map_finish_reason(Some("SAFETY")), "content_filter");
         assert_eq!(map_finish_reason(Some("RECITATION")), "content_filter");
-        assert_eq!(map_finish_reason(Some("PROHIBITED_CONTENT")), "content_filter");
+        assert_eq!(
+            map_finish_reason(Some("PROHIBITED_CONTENT")),
+            "content_filter"
+        );
         assert_eq!(map_finish_reason(Some("STOP")), "stop");
         assert_eq!(map_finish_reason(Some("OTHER")), "stop");
         assert_eq!(map_finish_reason(None), "stop");
@@ -2697,19 +2717,15 @@ mod tests {
             r#"{"error":{"code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"}}"#,
             "upstream_rate_limit",
         );
-        upstream.headers_mut().insert(
-            header::RETRY_AFTER,
-            HeaderValue::from_static("7"),
-        );
+        upstream
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("7"));
         upstream.headers_mut().insert(
             EXECUTION_STATE_HEADER,
             HeaderValue::from_static(EXECUTION_STATE_NOT_STARTED),
         );
         let response = convert_error_response(upstream).await;
-        assert_eq!(
-            response.headers().get(header::RETRY_AFTER).unwrap(),
-            "7"
-        );
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "7");
         assert_eq!(
             response.headers().get(EXECUTION_STATE_HEADER).unwrap(),
             EXECUTION_STATE_NOT_STARTED
@@ -2758,8 +2774,14 @@ mod tests {
             frames[0]["choices"][0]["delta"],
             json!({"role": "assistant", "content": ""})
         );
-        assert_eq!(frames[1]["choices"][0]["delta"], json!({"content": "Hello"}));
-        assert_eq!(frames[2]["choices"][0]["delta"], json!({"content": " world"}));
+        assert_eq!(
+            frames[1]["choices"][0]["delta"],
+            json!({"content": "Hello"})
+        );
+        assert_eq!(
+            frames[2]["choices"][0]["delta"],
+            json!({"content": " world"})
+        );
         assert_eq!(frames[3]["choices"][0]["delta"], json!({}));
         assert_eq!(frames[3]["choices"][0]["finish_reason"], "stop");
         assert_eq!(frames[4]["choices"], json!([]));
@@ -2811,7 +2833,10 @@ mod tests {
             frames[2]["choices"][0]["delta"],
             json!({"reasoning_content": "more "})
         );
-        assert_eq!(frames[3]["choices"][0]["delta"], json!({"content": "Answer."}));
+        assert_eq!(
+            frames[3]["choices"][0]["delta"],
+            json!({"content": "Answer."})
+        );
         assert_eq!(frames[4]["choices"][0]["delta"], json!({}));
         assert_eq!(frames[4]["choices"][0]["finish_reason"], "stop");
         assert_eq!(frames[5]["choices"], json!([]));
@@ -2892,7 +2917,10 @@ mod tests {
         let output = collect_stream(translator).await;
         let frames = data_frames(&output);
         assert_eq!(frames.len(), 3);
-        assert_eq!(frames[1]["choices"][0]["delta"], json!({"content": "Hello"}));
+        assert_eq!(
+            frames[1]["choices"][0]["delta"],
+            json!({"content": "Hello"})
+        );
         assert_eq!(frames[2]["choices"][0]["finish_reason"], "length");
     }
 
@@ -2905,14 +2933,20 @@ mod tests {
         );
         let output = collect_stream(translate_events(events, false)).await;
         let frames = data_frames(&output);
-        assert_eq!(frames.last().unwrap()["error"]["code"], "protocol_error", "{output}");
+        assert_eq!(
+            frames.last().unwrap()["error"]["code"],
+            "protocol_error",
+            "{output}"
+        );
         assert!(!output.contains("[DONE]"), "{output}");
     }
 
     #[tokio::test]
     async fn stream_transport_error_terminates_with_error_frame() {
         let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
-            Ok(Bytes::from("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"He\"}]}}]}\n\n")),
+            Ok(Bytes::from(
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"He\"}]}}]}\n\n",
+            )),
             Err(std::io::Error::other("reset")),
         ];
         let translator = GeminiChatSseTranslator::new(

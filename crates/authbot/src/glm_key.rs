@@ -91,7 +91,10 @@ pub enum PlanVerdict {
     /// The window is readable as a credits number but contradicts the declared plan —
     /// including a number matching no reviewed tier. Fail closed: the profile stays out of
     /// rotation pending operator review.
-    PlanMismatch { declared: GlmPlan, observed_limit: u64 },
+    PlanMismatch {
+        declared: GlmPlan,
+        observed_limit: u64,
+    },
     /// The quota shape is not a readable individual credits plan: no `TIME_LIMIT` window
     /// (legacy prompts or Team token mechanics), or an unreadable/ambiguous window total.
     /// Never reinterpreted and never guessed.
@@ -286,8 +289,8 @@ pub fn corroborate_plan(snapshot: &QuotaSnapshot, declared: GlmPlan) -> PlanVerd
     let Some(observed) = observed_smallest_time_window(&snapshot.limits) else {
         return PlanVerdict::UnsupportedPlanShape;
     };
-    let confirmed = reviewed_plan_credits(declared)
-        .is_some_and(|credits| credits.per_five_hours == observed);
+    let confirmed =
+        reviewed_plan_credits(declared).is_some_and(|credits| credits.per_five_hours == observed);
     if confirmed {
         PlanVerdict::Confirmed(declared)
     } else {
@@ -303,9 +306,9 @@ pub fn corroborate_plan(snapshot: &QuotaSnapshot, declared: GlmPlan) -> PlanVerd
 fn business_code(value: Option<&serde_json::Value>) -> Option<u32> {
     match value? {
         serde_json::Value::String(text) => text.trim().parse().ok(),
-        serde_json::Value::Number(number) => number
-            .as_u64()
-            .and_then(|value| u32::try_from(value).ok()),
+        serde_json::Value::Number(number) => {
+            number.as_u64().and_then(|value| u32::try_from(value).ok())
+        }
         _ => None,
     }
 }
@@ -643,9 +646,7 @@ mod tests {
     fn a_2xx_without_authoritative_usage_is_not_a_success() {
         // Missing usage or a missing counter is a contract change, never an admission.
         assert!(parse_generation_verdict(200, br#"{"id":"msg_1"}"#).is_err());
-        assert!(
-            parse_generation_verdict(200, br#"{"usage":{"input_tokens":12}}"#).is_err()
-        );
+        assert!(parse_generation_verdict(200, br#"{"usage":{"input_tokens":12}}"#).is_err());
     }
 
     #[test]
@@ -653,11 +654,17 @@ mod tests {
         let cases = [
             ("1001", KeyVerdict::Invalid(InvalidKeyReason::Auth)),
             ("1005", KeyVerdict::Invalid(InvalidKeyReason::Auth)),
-            ("1113", KeyVerdict::Invalid(InvalidKeyReason::OutOfPlanBalance)),
+            (
+                "1113",
+                KeyVerdict::Invalid(InvalidKeyReason::OutOfPlanBalance),
+            ),
             ("1308", KeyVerdict::QuotaExhausted),
             ("1310", KeyVerdict::QuotaExhausted),
             ("1309", KeyVerdict::Invalid(InvalidKeyReason::PlanExpired)),
-            ("1311", KeyVerdict::Invalid(InvalidKeyReason::ModelOutOfPlan)),
+            (
+                "1311",
+                KeyVerdict::Invalid(InvalidKeyReason::ModelOutOfPlan),
+            ),
             ("1313", KeyVerdict::Invalid(InvalidKeyReason::FairUse)),
             ("1315", KeyVerdict::Invalid(InvalidKeyReason::WrongKeyKind)),
             ("1316", KeyVerdict::UnsupportedPlanShape),
@@ -709,7 +716,9 @@ mod tests {
 
         // Foreign origins and non-proxy schemes fail closed instead of sealing.
         assert!(credential_from("k", GlmPlan::Pro, "https://glm.example.com", "").is_err());
-        assert!(credential_from("k", GlmPlan::Pro, "https://api.z.ai", "file:///etc/passwd").is_err());
+        assert!(
+            credential_from("k", GlmPlan::Pro, "https://api.z.ai", "file:///etc/passwd").is_err()
+        );
         assert!(credential_from("", GlmPlan::Pro, "https://api.z.ai", "").is_err());
         // Sealing and publication belong to glm_roster, which owns the filesystem contract.
     }

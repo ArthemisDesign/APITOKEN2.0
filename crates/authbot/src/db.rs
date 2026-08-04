@@ -21,10 +21,10 @@ pub struct UserRow {
     pub status: String,    // new | pending | approved | rejected | pending_admin
     pub role: String,      // "" | admin
     pub address: String,   // BEP-20
-    pub want: String, // ожидаемый ввод (reg_address | ho_* | cx_* | gm_* | km_* | glm_*)
-    pub hproxy: String, // прокси аккаунта при передаче доступа (handover)
+    pub want: String,      // ожидаемый ввод (reg_address | ho_* | cx_* | gm_* | km_* | glm_*)
+    pub hproxy: String,    // прокси аккаунта при передаче доступа (handover)
     pub hproxy_order: i64, // IPRoyal order id за handover-прокси (0 = ручной/внешний)
-    pub hregion: String, // площадка GLM-аккаунта текущей сделки ("" = int, "cn" = bigmodel.cn)
+    pub hregion: String,   // площадка GLM-аккаунта текущей сделки ("" = int, "cn" = bigmodel.cn)
 }
 
 #[derive(Clone, Debug)]
@@ -894,7 +894,10 @@ impl Store {
 
     /// Read the parked account and count this attempt in one transaction, so a seller hammering
     /// the button cannot start several paid acceptance generations from one parked record.
-    pub fn claim_gemini_verification(&self, chat_id: i64) -> Result<Option<GeminiPendingVerification>> {
+    pub fn claim_gemini_verification(
+        &self,
+        chat_id: i64,
+    ) -> Result<Option<GeminiPendingVerification>> {
         let mut c = self.c.lock().unwrap();
         let tx = c.transaction()?;
         tx.execute(
@@ -960,7 +963,8 @@ impl Store {
         Ok(())
     }
 
-    pub fn finish_gemini_oauth(&self, state: &str) -> Result<()> {        self.c.lock().unwrap().execute(
+    pub fn finish_gemini_oauth(&self, state: &str) -> Result<()> {
+        self.c.lock().unwrap().execute(
             "DELETE FROM gemini_oauth_sessions WHERE state=?1",
             rusqlite::params![state],
         )?;
@@ -1001,11 +1005,10 @@ impl Store {
     /// again and resend the key into a fresh validation. The proxy and the platform selection
     /// survive, so the retry runs on the same egress and platform.
     pub fn recover_interrupted_glm_handoffs(&self) -> Result<usize> {
-        Ok(self
-            .c
-            .lock()
-            .unwrap()
-            .execute("UPDATE users SET want='glm_ready' WHERE want='glm_wait'", [])?)
+        Ok(self.c.lock().unwrap().execute(
+            "UPDATE users SET want='glm_ready' WHERE want='glm_wait'",
+            [],
+        )?)
     }
 
     /// Normalize every removed Gemini custom-client wizard state to the single official-CLI proxy
@@ -2980,12 +2983,18 @@ mod tests {
         assert_eq!(first.attempts, 1);
         assert_eq!(first.sealed_payload, "sealed-envelope");
         assert_eq!(first.job.as_ref().unwrap().token, "generation-a");
-        assert_eq!(s.claim_gemini_verification(555).unwrap().unwrap().attempts, 2);
+        assert_eq!(
+            s.claim_gemini_verification(555).unwrap().unwrap().attempts,
+            2
+        );
 
         // Re-parking a newer account for the same seller restarts the count instead of stacking.
         s.park_gemini_verification(555, "second-envelope", now() + 3600, Some(&job))
             .unwrap();
-        assert_eq!(s.claim_gemini_verification(555).unwrap().unwrap().attempts, 1);
+        assert_eq!(
+            s.claim_gemini_verification(555).unwrap().unwrap().attempts,
+            1
+        );
 
         // An expired record is swept rather than served: parked token material is not permanent.
         s.park_gemini_verification(555, "stale-envelope", now() - 1, Some(&job))

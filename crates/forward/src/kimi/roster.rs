@@ -98,8 +98,7 @@ fn load_roster_inner(
         }
         Err(error) => return Err(error),
     };
-    let parsed: ProfilesFile =
-        serde_json::from_slice(&bytes).context("decode KIMI roster")?;
+    let parsed: ProfilesFile = serde_json::from_slice(&bytes).context("decode KIMI roster")?;
 
     let credentials_dir = root.join("credentials");
     let mut ids = HashSet::new();
@@ -179,9 +178,7 @@ pub fn reseal_credential(
     credential: &KimiCredential,
 ) -> Result<()> {
     validate_profile_id(profile_id)?;
-    let path = root
-        .join("credentials")
-        .join(format!("{profile_id}.json"));
+    let path = root.join("credentials").join(format!("{profile_id}.json"));
     let parent = path.parent().context("KIMI credential has no parent")?;
     let metadata = fs::symlink_metadata(parent).context("stat KIMI credential directory")?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {

@@ -1336,10 +1336,7 @@ mod tests {
             Ok(ProviderMode::Gemini)
         );
         assert_eq!(parse_provider_mode(Some("kimi")), Ok(ProviderMode::Kimi));
-        assert_eq!(
-            parse_provider_mode(Some(" KIMI ")),
-            Ok(ProviderMode::Kimi)
-        );
+        assert_eq!(parse_provider_mode(Some(" KIMI ")), Ok(ProviderMode::Kimi));
         assert!(parse_provider_mode(Some("both")).is_err());
         assert!(parse_provider_mode(Some("codex")).is_err());
         assert!(parse_provider_mode(Some("kimi2")).is_err());
@@ -1451,9 +1448,7 @@ mod tests {
         )
         .unwrap();
         assert!(validate_claudestore_credential_separation(Some(&shared), Some(&shared)).is_err());
-        assert!(
-            validate_claudestore_credential_separation(Some(&shared), Some(&distinct)).is_ok()
-        );
+        assert!(validate_claudestore_credential_separation(Some(&shared), Some(&distinct)).is_ok());
     }
 
     #[test]
@@ -1559,10 +1554,7 @@ mod tests {
                 "CLAUDE_API_GLM_ROSTER_DIR".to_owned(),
                 "relative/roster".to_owned(),
             ),
-            (
-                "CLAUDE_API_GLM_AUTH_SCHEME".to_owned(),
-                "bogus".to_owned(),
-            ),
+            ("CLAUDE_API_GLM_AUTH_SCHEME".to_owned(), "bogus".to_owned()),
             (
                 "CLAUDE_API_GLM_QUOTA_POLL_SECS".to_owned(),
                 "not-an-integer".to_owned(),
@@ -1590,14 +1582,8 @@ mod tests {
                 "CLAUDE_API_GLM_CREDENTIAL_KEYS".to_owned(),
                 format!("a1:{}", "11".repeat(32)),
             ),
-            (
-                "CLAUDE_API_GLM_AUTH_SCHEME".to_owned(),
-                "bearer".to_owned(),
-            ),
-            (
-                "CLAUDE_API_GLM_QUOTA_POLL_SECS".to_owned(),
-                "37".to_owned(),
-            ),
+            ("CLAUDE_API_GLM_AUTH_SCHEME".to_owned(), "bearer".to_owned()),
+            ("CLAUDE_API_GLM_QUOTA_POLL_SECS".to_owned(), "37".to_owned()),
         ]);
         let config = parse_glm_config(&values).unwrap().unwrap();
         assert_eq!(
@@ -1647,10 +1633,7 @@ mod tests {
                     "CLAUDE_API_GLM_CREDENTIAL_KEYS".to_owned(),
                     format!("a1:{}", "11".repeat(32)),
                 ),
-                (
-                    "CLAUDE_API_GLM_AUTH_SCHEME".to_owned(),
-                    scheme.to_owned(),
-                ),
+                ("CLAUDE_API_GLM_AUTH_SCHEME".to_owned(), scheme.to_owned()),
             ]);
             assert!(parse_glm_config(&values).is_err(), "{scheme}");
         }
@@ -1705,7 +1688,10 @@ mod tests {
             ("CLAUDE_API_CC_VERSION", "3.0.0"),
             ("CLAUDE_API_CC_ENTRYPOINT", "cli"),
             ("CLAUDE_API_BETA", "oauth-2025-04-20,custom-beta-2099-01-01"),
-            ("CLAUDE_API_UA", "claude-cli/3.0.0 (external, cli)|claude-cli/2.9.9 (external, cli)"),
+            (
+                "CLAUDE_API_UA",
+                "claude-cli/3.0.0 (external, cli)|claude-cli/2.9.9 (external, cli)",
+            ),
             ("CLAUDE_API_ANTHROPIC_VERSION", "2024-01-01"),
             ("CLAUDE_API_X_APP", "cli-x"),
             ("CLAUDE_API_SL_LANG", "js-x"),
@@ -1717,12 +1703,19 @@ mod tests {
         ] {
             values.insert(key.to_owned(), value.to_owned());
         }
-        let identity = parse_glm_config(&values).unwrap().unwrap().transport.identity;
+        let identity = parse_glm_config(&values)
+            .unwrap()
+            .unwrap()
+            .transport
+            .identity;
         assert_eq!(identity.identity, "You are a test agent.");
         assert!(!identity.inject_billing);
         assert_eq!(identity.cc_version, "3.0.0");
         assert_eq!(identity.cc_entrypoint, "cli");
-        assert_eq!(identity.anthropic_beta, "oauth-2025-04-20,custom-beta-2099-01-01");
+        assert_eq!(
+            identity.anthropic_beta,
+            "oauth-2025-04-20,custom-beta-2099-01-01"
+        );
         assert_eq!(identity.anthropic_version, "2024-01-01");
         assert_eq!(identity.x_app, "cli-x");
         assert_eq!(identity.stainless_lang, "js-x");
@@ -1756,7 +1749,10 @@ mod tests {
         assert_eq!(identity, GlmIdentityHeaders::default());
         assert_eq!(identity.anthropic_beta.split(',').count(), 10);
         assert!(identity.anthropic_beta.contains("claude-code-20250219"));
-        assert_eq!(identity.user_agent, "claude-cli/2.1.195 (external, sdk-cli)");
+        assert_eq!(
+            identity.user_agent,
+            "claude-cli/2.1.195 (external, sdk-cli)"
+        );
         assert_eq!(identity.x_app, "cli");
         assert_eq!(identity.stainless_package_version, "0.94.0");
         assert_eq!(identity.cc_version, "2.1.195");
@@ -1772,7 +1768,8 @@ mod tests {
     fn a_disabled_glm_plane_ignores_dormant_fleet_fingerprint_values() {
         // The shared keys belong to the Claude persona first: with the GLM plane off they must
         // not gate its startup validation in either direction.
-        let mut values = BTreeMap::from([("CLAUDE_API_GLM_ENABLED".to_owned(), "false".to_owned())]);
+        let mut values =
+            BTreeMap::from([("CLAUDE_API_GLM_ENABLED".to_owned(), "false".to_owned())]);
         values.insert("CLAUDE_API_BETA".to_owned(), "dormant".to_owned());
         values.insert("CLAUDE_API_INJECT_BILLING".to_owned(), "off".to_owned());
         assert!(parse_glm_config(&values).unwrap().is_none());

@@ -418,7 +418,10 @@ mod tests {
     #[test]
     fn native_proxy_preserves_affinity_and_exact_gemini_evidence_headers() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-session-id", HeaderValue::from_static("sticky-client-session"));
+        headers.insert(
+            "x-session-id",
+            HeaderValue::from_static("sticky-client-session"),
+        );
         headers.insert(
             "x-apitoken-calibration-profile",
             HeaderValue::from_static("gemini_oauth_000001"),
@@ -429,15 +432,16 @@ mod tests {
         );
 
         let stripped = strip_hop_by_hop(&headers);
-        assert_eq!(stripped.get("x-session-id").unwrap(), "sticky-client-session");
+        assert_eq!(
+            stripped.get("x-session-id").unwrap(),
+            "sticky-client-session"
+        );
         assert_eq!(
             stripped.get("x-apitoken-calibration-profile").unwrap(),
             "gemini_oauth_000001"
         );
         assert_eq!(
-            stripped
-                .get("x-apitoken-calibration-request-id")
-                .unwrap(),
+            stripped.get("x-apitoken-calibration-request-id").unwrap(),
             "123e4567-e89b-42d3-a456-426614174000"
         );
     }

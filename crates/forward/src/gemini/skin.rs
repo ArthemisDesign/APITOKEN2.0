@@ -136,13 +136,12 @@ use super::chat::{
 use super::gemini_api;
 use crate::codex::new_id;
 use crate::gemini_schema;
+use crate::gemini_stream::GeminiStreamState;
 use crate::proxy::{
-    read_body_limited, with_not_started, without_not_started, BodyReadError,
-    TerminalErrorReason,
+    read_body_limited, with_not_started, without_not_started, BodyReadError, TerminalErrorReason,
 };
 use crate::state::AppState;
 use crate::validation::optional_bool;
-use crate::gemini_stream::GeminiStreamState;
 
 /// Интервал heartbeat `event: ping` в Messages SSE — как у Codex skin 5.1
 /// (на Gemini wire ping-кадров нет, генерируется локально).
@@ -199,14 +198,13 @@ fn unsupported_parameter(param: &str) -> Response {
 
 /// Anthropic-тип ошибки по HTTP-статусу — зеркало `anthropic_error` Codex skin 5.1
 /// (аутентичные триплеты нативной плоскости `proxy.rs`).
-fn anthropic_error_parts(status: StatusCode, message: String) -> (StatusCode, &'static str, String) {
+fn anthropic_error_parts(
+    status: StatusCode,
+    message: String,
+) -> (StatusCode, &'static str, String) {
     match status.as_u16() {
         400 => (StatusCode::BAD_REQUEST, "invalid_request_error", message),
-        401 => (
-            StatusCode::UNAUTHORIZED,
-            "authentication_error",
-            message,
-        ),
+        401 => (StatusCode::UNAUTHORIZED, "authentication_error", message),
         402 => (
             StatusCode::PAYMENT_REQUIRED,
             "invalid_request_error",
@@ -279,12 +277,13 @@ struct Translated {
 /// ответы (400). Когда `require_max_tokens` false (count_tokens), отсутствующий `max_tokens`
 /// tolerated: официальный token-counting endpoint его не требует, а нативный countTokens он не
 /// нужен (generationConfig тогда опускается, если пуст).
-fn translate_messages_request(value: Value, require_max_tokens: bool) -> Result<Translated, Response> {
+fn translate_messages_request(
+    value: Value,
+    require_max_tokens: bool,
+) -> Result<Translated, Response> {
     let mut object = match value {
         Value::Object(object) => object,
-        _ => {
-            return Err(invalid_request("Request body must be a JSON object."))
-        }
+        _ => return Err(invalid_request("Request body must be a JSON object.")),
     };
 
     check_capability_matrix(&object)?;
@@ -292,14 +291,18 @@ fn translate_messages_request(value: Value, require_max_tokens: bool) -> Result<
     let model = match object.remove("model") {
         Some(Value::String(model)) => model,
         _ => {
-            return Err(invalid_request("Missing or invalid required parameter: model."))
+            return Err(invalid_request(
+                "Missing or invalid required parameter: model.",
+            ))
         }
     };
     // Namespaced ID резолвится здесь, а не в router: после strip'а admission плоскости видит
     // нативный публичный id (закрытый allowlist config.models) — зеркало strip'а 5.1.
     let model = model.strip_prefix("google/").unwrap_or(&model).to_string();
     if model.is_empty() {
-        return Err(invalid_request("Missing or invalid required parameter: model."));
+        return Err(invalid_request(
+            "Missing or invalid required parameter: model.",
+        ));
     }
 
     let max_tokens = match object.remove("max_tokens") {
@@ -307,7 +310,9 @@ fn translate_messages_request(value: Value, require_max_tokens: bool) -> Result<
             invalid_request("Invalid type for parameter: max_tokens must be a positive integer.")
         })?,
         None if require_max_tokens => {
-            return Err(invalid_request("Missing or invalid required parameter: max_tokens."))
+            return Err(invalid_request(
+                "Missing or invalid required parameter: max_tokens.",
+            ))
         }
         None => 0,
     };
@@ -448,7 +453,10 @@ fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> 
 /// Не-дефолтный `cache_control` отклоняется везде (system, content-блоки, tools): Gemini
 /// prompt caching не управляется клиентскими breakpoints (как 5.1 у Codex).
 fn reject_cache_control(block: &Value, param: &str) -> Result<(), Response> {
-    if block.get("cache_control").is_some_and(|value| !value.is_null()) {
+    if block
+        .get("cache_control")
+        .is_some_and(|value| !value.is_null())
+    {
         return Err(invalid_request(format!(
             "Unsupported parameter: 'cache_control' is not supported with this endpoint (in {param})."
         )));
@@ -470,7 +478,9 @@ fn translate_system(value: Option<Value>) -> Result<Option<String>, Response> {
                 match block.get("type").and_then(Value::as_str) {
                     Some("text") => {
                         let text = block.get("text").and_then(Value::as_str).ok_or_else(|| {
-                            invalid_request(format!("System text block requires text ({param}.text)."))
+                            invalid_request(format!(
+                                "System text block requires text ({param}.text)."
+                            ))
                         })?;
                         parts.push(text.to_string());
                     }
@@ -500,11 +510,15 @@ fn translate_messages(messages: &[Value]) -> Result<Vec<Value>, Response> {
     let mut call_names: HashMap<String, String> = HashMap::new();
     for (index, message) in messages.iter().enumerate() {
         let object = message.as_object().ok_or_else(|| {
-            invalid_request(format!("Each message must be an object (messages.{index})."))
+            invalid_request(format!(
+                "Each message must be an object (messages.{index})."
+            ))
         })?;
         let param = format!("messages.{index}");
         let role = object.get("role").and_then(Value::as_str).ok_or_else(|| {
-            invalid_request(format!("Each message requires a valid role ({param}.role)."))
+            invalid_request(format!(
+                "Each message requires a valid role ({param}.role)."
+            ))
         })?;
         let parts = match role {
             "user" => user_content_parts(object.get("content"), &param, &call_names)?,
@@ -526,7 +540,11 @@ fn translate_messages(messages: &[Value]) -> Result<Vec<Value>, Response> {
 
 /// Gemini-роль Messages-роли (assistant → model).
 fn role_gemini(role: &str) -> &'static str {
-    if role == "assistant" { "model" } else { "user" }
+    if role == "assistant" {
+        "model"
+    } else {
+        "user"
+    }
 }
 
 /// Контент user-сообщения → Gemini-парты. Текстовые блоки склеиваются в text-парты (через
@@ -556,9 +574,12 @@ fn user_content_parts(
                 reject_cache_control(block, &block_param)?;
                 match block.get("type").and_then(Value::as_str) {
                     Some("text") => {
-                        let segment = block.get("text").and_then(Value::as_str).ok_or_else(|| {
-                            invalid_request(format!("Text block requires text ({block_param}.text)."))
-                        })?;
+                        let segment =
+                            block.get("text").and_then(Value::as_str).ok_or_else(|| {
+                                invalid_request(format!(
+                                    "Text block requires text ({block_param}.text)."
+                                ))
+                            })?;
                         if !text.is_empty() && !segment.is_empty() {
                             text.push('\n');
                         }
@@ -608,16 +629,23 @@ fn flush_text_part(out: &mut Vec<Value>, text: &mut String) {
 /// http(s) ссылки не принимает (fileData требует File API upload, которого на плоскости нет),
 /// поэтому url source → честный 400 (как 3.3/3.4a), а не молчаливое выбрасывание.
 fn translate_image_block(block: &Value, param: &str) -> Result<Value, Response> {
-    let source = block.get("source").and_then(Value::as_object).ok_or_else(|| {
-        invalid_request(format!("Image block requires a source object ({param}.source)."))
-    })?;
+    let source = block
+        .get("source")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            invalid_request(format!(
+                "Image block requires a source object ({param}.source)."
+            ))
+        })?;
     let required = |field: &str| {
         source
             .get(field)
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
-                invalid_request(format!("Image source requires a non-empty {field} ({param}.source.{field})."))
+                invalid_request(format!(
+                    "Image source requires a non-empty {field} ({param}.source.{field})."
+                ))
             })
     };
     match source.get("type").and_then(Value::as_str) {
@@ -656,7 +684,9 @@ fn translate_tool_result(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
-            invalid_request(format!("tool_result requires a non-empty tool_use_id ({param}.tool_use_id)."))
+            invalid_request(format!(
+                "tool_result requires a non-empty tool_use_id ({param}.tool_use_id)."
+            ))
         })?;
     let name = call_names.get(tool_use_id).ok_or_else(|| {
         invalid_request(format!(
@@ -721,7 +751,9 @@ fn assistant_content_parts(
                 match block.get("type").and_then(Value::as_str) {
                     Some("text") => {
                         let text = block.get("text").and_then(Value::as_str).ok_or_else(|| {
-                            invalid_request(format!("Text block requires text ({block_param}.text)."))
+                            invalid_request(format!(
+                                "Text block requires text ({block_param}.text)."
+                            ))
                         })?;
                         if !text.is_empty() {
                             out.push(json!({"text": text}));
@@ -766,13 +798,20 @@ fn translate_tool_use(
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
-                invalid_request(format!("tool_use requires a non-empty {field} ({param}.{field})."))
+                invalid_request(format!(
+                    "tool_use requires a non-empty {field} ({param}.{field})."
+                ))
             })
     };
     let id = required("id")?;
     let name = required("name")?;
-    if call_names.insert(id.to_string(), name.to_string()).is_some() {
-        return Err(invalid_request(format!("Duplicate tool_use id {id:?} ({param}.id).")));
+    if call_names
+        .insert(id.to_string(), name.to_string())
+        .is_some()
+    {
+        return Err(invalid_request(format!(
+            "Duplicate tool_use id {id:?} ({param}.id)."
+        )));
     }
     let args = match block.get("input") {
         None | Some(Value::Null) => json!({}),
@@ -791,15 +830,15 @@ fn translate_tool_use(
 /// (как у общего `function_declaration` chat.rs). Server tools (web_search и пр.),
 /// не-дефолтный `cache_control`, не-объект `input_schema` → 400 (как 5.1).
 fn translate_tools(value: &Value) -> Result<Vec<Value>, Response> {
-    let tools = value.as_array().ok_or_else(|| {
-        invalid_request("Invalid type for parameter: tools must be an array.")
-    })?;
+    let tools = value
+        .as_array()
+        .ok_or_else(|| invalid_request("Invalid type for parameter: tools must be an array."))?;
     let mut declarations = Vec::with_capacity(tools.len());
     for (index, tool) in tools.iter().enumerate() {
         let param = format!("tools.{index}");
-        let object = tool.as_object().ok_or_else(|| {
-            invalid_request(format!("Each tool must be an object ({param})."))
-        })?;
+        let object = tool
+            .as_object()
+            .ok_or_else(|| invalid_request(format!("Each tool must be an object ({param}).")))?;
         match object.get("type").and_then(Value::as_str) {
             None | Some("custom") => {}
             Some(_) => {
@@ -917,9 +956,13 @@ fn translate_thinking(value: Option<&Value>) -> Result<Option<Value>, Response> 
                 4096..=16383 => "medium",
                 _ => "high",
             };
-            Ok(Some(json!({"thinkingLevel": level, "includeThoughts": true})))
+            Ok(Some(
+                json!({"thinkingLevel": level, "includeThoughts": true}),
+            ))
         }
-        _ => Err(invalid_request("Invalid value for parameter: thinking.type.")),
+        _ => Err(invalid_request(
+            "Invalid value for parameter: thinking.type.",
+        )),
     }
 }
 
@@ -935,9 +978,9 @@ fn translate_stop_sequences(value: Option<&Value>) -> Result<Option<Value>, Resp
     })?;
     let mut out = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
-        let sequence = item.as_str().ok_or_else(|| {
-            invalid_request(format!("stop_sequences.{index} must be a string."))
-        })?;
+        let sequence = item
+            .as_str()
+            .ok_or_else(|| invalid_request(format!("stop_sequences.{index} must be a string.")))?;
         if !sequence.is_empty() {
             out.push(Value::String(sequence.to_string()));
         }
@@ -1227,10 +1270,8 @@ struct GeminiMessagesSseTranslator {
 
 impl GeminiMessagesSseTranslator {
     fn new(inner: ByteStream, requested_model: String, ping_interval: Duration) -> Self {
-        let mut heartbeat = tokio::time::interval_at(
-            tokio::time::Instant::now() + ping_interval,
-            ping_interval,
-        );
+        let mut heartbeat =
+            tokio::time::interval_at(tokio::time::Instant::now() + ping_interval, ping_interval);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         Self {
             inner,
@@ -1253,7 +1294,9 @@ impl GeminiMessagesSseTranslator {
     }
 
     fn model(&self) -> &str {
-        self.served_model.as_deref().unwrap_or(&self.requested_model)
+        self.served_model
+            .as_deref()
+            .unwrap_or(&self.requested_model)
     }
 
     /// SSE-кадр события Messages: `event:` + `data:` (типизированные события — как 5.1 и
@@ -1638,9 +1681,7 @@ async fn read_messages_body(body: Body) -> Result<Value, Response> {
         Err(BodyReadError::TooLarge) => {
             return Err(invalid_request("Request body exceeds the 32 MiB limit."))
         }
-        Err(BodyReadError::Read) => {
-            return Err(invalid_request("Could not read request body."))
-        }
+        Err(BodyReadError::Read) => return Err(invalid_request("Could not read request body.")),
     };
     match serde_json::from_slice(&raw) {
         Ok(value) => Ok(value),
@@ -1662,7 +1703,10 @@ async fn run_inner(
 ) -> Response {
     let mut headers = headers;
     headers.remove(header::CONTENT_LENGTH);
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
     let body_bytes = match serde_json::to_vec(&translated.body) {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -1768,11 +1812,15 @@ mod tests {
             "max_tokens": 256,
             "messages": [{"role": "user", "content": "Hello"}],
             "stream": "false"
-        })).await;
+        }))
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["type"], "error");
         assert_eq!(body["error"]["type"], "invalid_request_error");
-        assert!(body["error"]["message"].as_str().unwrap().contains("stream"));
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("stream"));
         assert!(body["error"].get("param").is_none());
 
         let translated = ok_translated(json!({
@@ -1980,7 +2028,13 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
             assert_eq!(json["type"], "error");
             assert_eq!(json["error"]["type"], "invalid_request_error");
-            assert!(json["error"]["message"].as_str().unwrap().contains("cache_control"), "{json}");
+            assert!(
+                json["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("cache_control"),
+                "{json}"
+            );
         }
     }
 
@@ -2011,9 +2065,15 @@ mod tests {
         for (source, expected) in [
             // url source → 400 (generateContent ссылки не принимает — как 3.3/3.4a; на
             // Codex-плоскости 5.1 url принимается — плоскостное отличие).
-            (json!({"type": "url", "url": "https://example.com/cat.jpg"}), "base64"),
+            (
+                json!({"type": "url", "url": "https://example.com/cat.jpg"}),
+                "base64",
+            ),
             (json!({"type": "base64", "media_type": "image/png"}), "data"),
-            (json!({"type": "base64", "media_type": "text/html", "data": "PGI+"}), "image MIME"),
+            (
+                json!({"type": "base64", "media_type": "text/html", "data": "PGI+"}),
+                "image MIME",
+            ),
             (json!({"type": "s3", "location": "x"}), "source type"),
         ] {
             let (status, json) = expect_err(json!({
@@ -2025,7 +2085,10 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
             assert_eq!(json["error"]["type"], "invalid_request_error", "{json}");
             assert!(
-                json["error"]["message"].as_str().unwrap().contains(expected),
+                json["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(expected),
                 "{json}"
             );
         }
@@ -2151,7 +2214,10 @@ mod tests {
         }))
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(json["error"]["message"].as_str().unwrap().contains("tool_result"));
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("tool_result"));
 
         // tool_use input не object → 400.
         let (status, _) = expect_err(json!({
@@ -2218,7 +2284,8 @@ mod tests {
             "tools": [{"name":"f", "input_schema":{
                 "type":"object", "propertyNames":{"type":"string", "pattern":"^x"}
             }}]
-        })).await;
+        }))
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert!(
             body["error"]["message"]
@@ -2309,7 +2376,11 @@ mod tests {
             .unwrap()
             .contains("disable_parallel_tool_use"));
 
-        for choice in [json!({"type": "sometimes"}), json!("auto"), json!({"type": "tool"})] {
+        for choice in [
+            json!({"type": "sometimes"}),
+            json!("auto"),
+            json!({"type": "tool"}),
+        ] {
             let (status, _) = expect_err(json!({
                 "model": "m", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}],
                 "tool_choice": choice
@@ -2333,7 +2404,10 @@ mod tests {
         };
         // Те же пороги budget→level, что в 5.1 (+ includeThoughts: true — как 3.4b).
         assert_eq!(config(json!({"type": "disabled"})), None);
-        assert_eq!(config(json!({"type": "adaptive", "display": "summarized"})), None);
+        assert_eq!(
+            config(json!({"type": "adaptive", "display": "summarized"})),
+            None
+        );
         assert_eq!(
             config(json!({"type": "enabled", "budget_tokens": 1024})),
             Some(json!({"thinkingLevel": "low", "includeThoughts": true}))
@@ -2381,7 +2455,10 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{param}");
             assert_eq!(json["error"]["type"], "invalid_request_error", "{param}");
-            assert!(json["error"]["message"].as_str().unwrap().contains(param), "{json}");
+            assert!(
+                json["error"]["message"].as_str().unwrap().contains(param),
+                "{json}"
+            );
         }
         // Дефолтные значения (пустой mcp_servers) принимаются.
         ok_translated(json!({
@@ -2469,7 +2546,10 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
             assert_eq!(json["type"], "error", "{json}");
             assert_eq!(json["error"]["type"], "invalid_request_error", "{json}");
-            assert!(json["error"].get("param").is_none(), "Anthropic envelope has no param: {json}");
+            assert!(
+                json["error"].get("param").is_none(),
+                "Anthropic envelope has no param: {json}"
+            );
         }
     }
 
@@ -2800,15 +2880,11 @@ mod tests {
             r#"{"error":{"code":429,"message":"Resource has been exhausted. Please retry later.","status":"RESOURCE_EXHAUSTED"}}"#,
             "gemini_capacity_exhausted",
         );
-        upstream.headers_mut().insert(
-            header::RETRY_AFTER,
-            HeaderValue::from_static("7"),
-        );
+        upstream
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("7"));
         let response = convert_error_response(upstream).await;
-        assert_eq!(
-            response.headers().get(header::RETRY_AFTER).unwrap(),
-            "7"
-        );
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "7");
         let (status, body) = err_parts(response).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(body["error"]["type"], "rate_limit_error");
@@ -2894,12 +2970,27 @@ mod tests {
         // message_start несёт сервёную модель (modelVersion зафиксирован до эмиссии) и
         // нулевой usage (authoritative usage — только в message_delta, как 5.1).
         assert_eq!(message["model"], "gemini-2.5-flash-001");
-        assert_eq!(message["usage"], json!({"input_tokens": 0, "output_tokens": 0}));
+        assert_eq!(
+            message["usage"],
+            json!({"input_tokens": 0, "output_tokens": 0})
+        );
         assert_eq!(frames[1].1["index"], 0);
-        assert_eq!(frames[1].1["content_block"], json!({"type": "text", "text": ""}));
-        assert_eq!(frames[2].1["delta"], json!({"type": "text_delta", "text": "Hello"}));
-        assert_eq!(frames[3].1["delta"], json!({"type": "text_delta", "text": " world"}));
-        assert_eq!(frames[4].1, json!({"type": "content_block_stop", "index": 0}));
+        assert_eq!(
+            frames[1].1["content_block"],
+            json!({"type": "text", "text": ""})
+        );
+        assert_eq!(
+            frames[2].1["delta"],
+            json!({"type": "text_delta", "text": "Hello"})
+        );
+        assert_eq!(
+            frames[3].1["delta"],
+            json!({"type": "text_delta", "text": " world"})
+        );
+        assert_eq!(
+            frames[4].1,
+            json!({"type": "content_block_stop", "index": 0})
+        );
         assert_eq!(frames[5].1["delta"]["stop_reason"], "end_turn");
         assert_eq!(
             frames[5].1["usage"],
@@ -2923,11 +3014,11 @@ mod tests {
             event_names(&frames),
             [
                 "message_start",
-                "content_block_start",   // thinking (index 0)
-                "content_block_delta",   // "Thinking. "
-                "content_block_delta",   // "more" — тот же блок
+                "content_block_start", // thinking (index 0)
+                "content_block_delta", // "Thinking. "
+                "content_block_delta", // "more" — тот же блок
                 "content_block_stop",
-                "content_block_start",   // text (index 1)
+                "content_block_start", // text (index 1)
                 "content_block_delta",
                 "content_block_stop",
                 "message_delta",
@@ -2938,11 +3029,20 @@ mod tests {
             frames[1].1["content_block"],
             json!({"type": "thinking", "thinking": ""})
         );
-        assert_eq!(frames[2].1["delta"], json!({"type": "thinking_delta", "thinking": "Thinking. "}));
-        assert_eq!(frames[3].1["delta"], json!({"type": "thinking_delta", "thinking": "more"}));
+        assert_eq!(
+            frames[2].1["delta"],
+            json!({"type": "thinking_delta", "thinking": "Thinking. "})
+        );
+        assert_eq!(
+            frames[3].1["delta"],
+            json!({"type": "thinking_delta", "thinking": "more"})
+        );
         assert_eq!(frames[3].1["index"], 0);
         assert_eq!(frames[5].1["index"], 1);
-        assert_eq!(frames[6].1["delta"], json!({"type": "text_delta", "text": "Answer."}));
+        assert_eq!(
+            frames[6].1["delta"],
+            json!({"type": "text_delta", "text": "Answer."})
+        );
         assert_eq!(
             frames[8].1["usage"]["output_tokens_details"]["thinking_tokens"],
             4
@@ -2966,10 +3066,10 @@ mod tests {
             event_names(&frames),
             [
                 "message_start",
-                "content_block_start",   // text (index 0)
+                "content_block_start", // text (index 0)
                 "content_block_delta",
                 "content_block_stop",
-                "content_block_start",   // tool_use (index 1)
+                "content_block_start", // tool_use (index 1)
                 "content_block_stop",
                 "message_delta",
                 "message_stop",
@@ -3040,7 +3140,9 @@ mod tests {
     #[tokio::test]
     async fn stream_transport_error_terminates_with_error_event() {
         let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
-            Ok(Bytes::from("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"He\"}]}}]}\n\n")),
+            Ok(Bytes::from(
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"He\"}]}}]}\n\n",
+            )),
             Err(std::io::Error::other("reset")),
         ];
         let translator = GeminiMessagesSseTranslator::new(
@@ -3076,7 +3178,10 @@ mod tests {
             .iter()
             .find(|(_, data)| data["delta"]["text"].is_string())
             .unwrap();
-        assert_eq!(delta.1["delta"], json!({"type": "text_delta", "text": "Hello"}));
+        assert_eq!(
+            delta.1["delta"],
+            json!({"type": "text_delta", "text": "Hello"})
+        );
         let message_delta = frames
             .iter()
             .find(|(event, _)| event == "message_delta")

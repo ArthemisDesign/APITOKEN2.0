@@ -13,6 +13,11 @@ or explicitly marked not applicable with a reason. The checklist is a floor, not
 ceiling: if `docs/DEPENDENCIES.md` shows the change has additional consumers, they belong
 in the diff or in the report too.
 
+A mechanical formatter-only diff does not fall under these cross-functional checklists: it changes
+neither behavior nor a contract, even when `rustfmt` touches a path used by the documentation gate.
+Record that determination in the commit body and still run the repository-wide format, build, and
+relevant test checks.
+
 ## New model (in an existing provider)
 
 Publication is two-stage. The implementation/research merge lands first and stays dormant:

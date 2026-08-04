@@ -30,7 +30,9 @@ pub enum ProcessError {
     Timeout(&'static str),
     Protocol(String),
     ContextWindowExceeded,
-    UsageLimitExceeded { retry_after: Option<u64> },
+    UsageLimitExceeded {
+        retry_after: Option<u64>,
+    },
     BadRequest,
     AuthenticationRequired,
     SubscriptionRequired,
@@ -38,7 +40,9 @@ pub enum ProcessError {
     /// turn did not produce an authoritative successful result. Keep the original local error so
     /// the public status remains stable, while callers can remove the `not_started` proof: once an
     /// external send begins, execution is ambiguous even when no public response byte was emitted.
-    ExternalFallbackFailed { local: Box<ProcessError> },
+    ExternalFallbackFailed {
+        local: Box<ProcessError>,
+    },
 }
 
 impl std::fmt::Display for ProcessError {
@@ -59,7 +63,10 @@ impl std::fmt::Display for ProcessError {
                 f.write_str("Codex profile is not authenticated with a ChatGPT subscription")
             }
             Self::ExternalFallbackFailed { local } => {
-                write!(f, "ClaudeStore fallback failed after local terminal result: {local}")
+                write!(
+                    f,
+                    "ClaudeStore fallback failed after local terminal result: {local}"
+                )
             }
         }
     }

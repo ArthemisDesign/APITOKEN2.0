@@ -1555,8 +1555,7 @@ mod tests {
         assert_eq!(parsed.responses.input.prior_items.len(), 1);
         assert_eq!(parsed.responses.input.prior_items[0]["role"], "user");
         assert_eq!(parsed.responses.input.turn_input[0]["text"], "continue");
-        assert!(!format!("{:?}", parsed.responses.input.prior_items)
-            .contains("private summary"));
+        assert!(!format!("{:?}", parsed.responses.input.prior_items).contains("private summary"));
 
         for message in [
             json!({"role": "assistant", "content": null}),
@@ -1777,7 +1776,10 @@ mod tests {
             ("max_completion_tokens", json!(1.5)),
             ("max_tokens", json!("10")),
             ("max_tokens", json!({})),
-            ("max_tokens", serde_json::from_str("18446744073709551616").unwrap()),
+            (
+                "max_tokens",
+                serde_json::from_str("18446744073709551616").unwrap(),
+            ),
         ] {
             let mut request = json!({
                 "model": "gpt-5.6",

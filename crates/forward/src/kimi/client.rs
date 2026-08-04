@@ -13,9 +13,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use kimi_credential::{KIMI_OAUTH_HOST, KIMI_OFFICIAL_OAUTH_CLIENT_ID, KIMI_TOKEN_PATH};
-use registry::{
-    kimi_fraction_from_native, kimi_window_duration_secs, KIMI_WEEKLY_WINDOW_SECS,
-};
+use registry::{kimi_fraction_from_native, kimi_window_duration_secs, KIMI_WEEKLY_WINDOW_SECS};
 use serde_json::Value;
 
 /// One quota window exactly as the provider reported it.
@@ -77,8 +75,8 @@ fn reset_from(raw: &Value) -> Result<i64> {
 
 fn window_from(detail: &Value, duration_secs: i64, name: Option<String>) -> Result<QuotaWindow> {
     let used = as_int(detail.get("used")).unwrap_or(0);
-    let limit = as_int(detail.get("limit"))
-        .ok_or_else(|| anyhow!("KIMI quota window has no limit"))?;
+    let limit =
+        as_int(detail.get("limit")).ok_or_else(|| anyhow!("KIMI quota window has no limit"))?;
     let derived = kimi_fraction_from_native(used, limit)?;
     Ok(QuotaWindow {
         duration_secs,
@@ -329,7 +327,11 @@ pub fn refresh_url() -> String {
 ///
 /// The egress is part of the subscription's identity: the account was opened through it, so
 /// traffic from anywhere else looks like a different user to the provider.
-pub fn build_client(proxy: &str, connect_timeout: Duration, read_timeout: Duration) -> Result<wreq::Client> {
+pub fn build_client(
+    proxy: &str,
+    connect_timeout: Duration,
+    read_timeout: Duration,
+) -> Result<wreq::Client> {
     let mut builder = wreq::Client::builder()
         .connect_timeout(connect_timeout)
         // The subscription endpoint identifies the official CLI by its User-Agent; a bare client
@@ -341,8 +343,7 @@ pub fn build_client(proxy: &str, connect_timeout: Duration, read_timeout: Durati
         .tcp_keepalive(Duration::from_secs(60))
         .read_timeout(read_timeout);
     if !proxy.is_empty() {
-        builder = builder
-            .proxy(wreq::Proxy::all(proxy).context("configure KIMI egress")?);
+        builder = builder.proxy(wreq::Proxy::all(proxy).context("configure KIMI egress")?);
     }
     builder.build().context("build KIMI client")
 }

@@ -51,13 +51,13 @@ use bytes::BytesMut;
 use futures_util::{Stream, StreamExt};
 use serde_json::{json, Map, Value};
 
+use crate::anthropic_stream::AnthropicStreamState;
 use crate::codex::new_id;
 use crate::proxy::{
     forward, read_body_limited, with_not_started, without_not_started, BodyReadError,
     TerminalErrorReason, EXECUTION_STATE_HEADER, EXECUTION_STATE_NOT_STARTED,
 };
 use crate::state::AppState;
-use crate::anthropic_stream::AnthropicStreamState;
 use crate::validation::{optional_bool, optional_positive_u64};
 
 /// Лимит тела chat-запроса — тот же 32 MiB, что у native `/v1/messages`
@@ -186,7 +186,10 @@ pub async fn anthropic_chat_completions(
     // только content-length/content-type под синтезированное тело.
     let mut headers = parts.headers.clone();
     headers.remove(header::CONTENT_LENGTH);
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
     let body_bytes = match serde_json::to_vec(&translated.body) {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -285,17 +288,11 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
         .unwrap_or(false);
     let include_usage = parse_stream_options(object.get("stream_options"))?;
 
-    let max_tokens = optional_positive_u64(
-        &object,
-        &["max_completion_tokens", "max_tokens"],
-    )
-    .map_err(|field| {
-        invalid_request(
-            &format!("{field} must be a positive integer."),
-            Some(field),
-        )
-    })?
-    .unwrap_or_else(|| native_max_output_tokens(&model));
+    let max_tokens = optional_positive_u64(&object, &["max_completion_tokens", "max_tokens"])
+        .map_err(|field| {
+            invalid_request(&format!("{field} must be a positive integer."), Some(field))
+        })?
+        .unwrap_or_else(|| native_max_output_tokens(&model));
 
     let mut body = Map::new();
     body.insert("model".to_string(), Value::String(model.clone()));
@@ -317,10 +314,7 @@ fn translate_chat_request(value: Value) -> Result<Translated, Response> {
     if let Some(user) = object.get("user") {
         match user.as_str() {
             Some(user) => {
-                body.insert(
-                    "metadata".to_string(),
-                    json!({"user_id": user}),
-                );
+                body.insert("metadata".to_string(), json!({"user_id": user}));
             }
             None => {
                 return Err(invalid_request(
@@ -455,7 +449,9 @@ fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> 
         ("n", |v| v.as_u64() == Some(1)),
         ("presence_penalty", |v| v.as_f64() == Some(0.0)),
         ("frequency_penalty", |v| v.as_f64() == Some(0.0)),
-        ("logit_bias", |v| v.is_null() || v.as_object().is_some_and(Map::is_empty)),
+        ("logit_bias", |v| {
+            v.is_null() || v.as_object().is_some_and(Map::is_empty)
+        }),
         ("logprobs", |v| v.is_null() || v.as_bool() == Some(false)),
         ("top_logprobs", |v| v.is_null()),
         ("seed", |v| v.is_null()),
@@ -463,13 +459,15 @@ fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> 
             v.is_null() || v.as_str() == Some("auto") || v.as_str() == Some("default")
         }),
         ("modalities", |v| {
-            v.as_array().is_some_and(|m| m.len() == 1 && m[0].as_str() == Some("text"))
+            v.as_array()
+                .is_some_and(|m| m.len() == 1 && m[0].as_str() == Some("text"))
         }),
         ("audio", |v| v.is_null()),
         ("prediction", |v| v.is_null()),
         ("web_search_options", |v| v.is_null()),
         ("stream_options", |v| {
-            v.as_object().is_some_and(|o| o.keys().all(|k| k == "include_usage"))
+            v.as_object()
+                .is_some_and(|o| o.keys().all(|k| k == "include_usage"))
         }),
     ];
     for (param, is_default) in rules {
@@ -637,7 +635,10 @@ fn tool_use_block(call: &Value) -> Result<Value, Response> {
         invalid_request("Invalid tool_calls entry: missing id.", Some("messages"))
     })?;
     let function = call.get("function").ok_or_else(|| {
-        invalid_request("Invalid tool_calls entry: missing function.", Some("messages"))
+        invalid_request(
+            "Invalid tool_calls entry: missing function.",
+            Some("messages"),
+        )
     })?;
     let name = function
         .get("name")
@@ -699,9 +700,10 @@ fn tool_result_block(object: &Map<String, Value>) -> Result<Value, Response> {
 /// Legacy role "function" → tool_result; tool_use_id восстанавливается из
 /// имени (та же формула, что у assistant function_call — см. assistant_blocks).
 fn legacy_function_result_block(object: &Map<String, Value>) -> Result<Value, Response> {
-    let name = object.get("name").and_then(Value::as_str).ok_or_else(|| {
-        invalid_request("Function message requires a name.", Some("messages"))
-    })?;
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_request("Function message requires a name.", Some("messages")))?;
     let text = message_text(object.get("content"))?;
     Ok(json!({
         "type": "tool_result",
@@ -763,10 +765,7 @@ fn message_blocks(role: &str, content: Option<&Value>) -> Result<Vec<Value>, Res
     for part in parts {
         match part.get("type").and_then(Value::as_str) {
             Some("text") => {
-                let segment = part
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
+                let segment = part.get("text").and_then(Value::as_str).unwrap_or_default();
                 if !text.is_empty() && !segment.is_empty() {
                     text.push('\n');
                 }
@@ -798,12 +797,15 @@ fn message_blocks(role: &str, content: Option<&Value>) -> Result<Vec<Value>, Res
 /// Общая с Responses-адаптером этапа 4.1 (`anthropic_responses.rs`);
 /// `param` — имя параметра в ошибках (`messages` у chat, `input` у Responses).
 pub(crate) fn image_block(part: &Value, param: &str) -> Result<Value, Response> {
-    let image = part.get("image_url").and_then(Value::as_object).ok_or_else(|| {
-        invalid_request(
-            "Invalid image_url part: expected an object with a url string.",
-            Some(param),
-        )
-    })?;
+    let image = part
+        .get("image_url")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            invalid_request(
+                "Invalid image_url part: expected an object with a url string.",
+                Some(param),
+            )
+        })?;
     if let Some(detail) = image.get("detail").and_then(Value::as_str) {
         if detail != "auto" {
             return Err(unsupported_parameter(param));
@@ -988,7 +990,10 @@ fn translate_chat_tools(value: &Value, param: &str) -> Result<Vec<Value>, Respon
 /// `parameters` → `input_schema` (отсутствующая схема — пустой object).
 /// Общая с Responses-адаптером этапа 4.1 (у Responses function-дескриптор
 /// плоский — сам tool-объект, `strict` снимается тем же игнором).
-pub(crate) fn translate_tool_function(function: &Map<String, Value>, param: &str) -> Result<Value, Response> {
+pub(crate) fn translate_tool_function(
+    function: &Map<String, Value>,
+    param: &str,
+) -> Result<Value, Response> {
     let name = function
         .get("name")
         .and_then(Value::as_str)
@@ -1245,7 +1250,9 @@ pub(crate) async fn convert_error_response(upstream: Response) -> Response {
         .unwrap_or(Value::Null);
     let mut response = chat_error(status, message, None, code, reason);
     if let Some(retry_after) = retry_after {
-        response.headers_mut().insert(header::RETRY_AFTER, retry_after);
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, retry_after);
     }
     if !not_started {
         response = without_not_started(response);
@@ -1324,10 +1331,7 @@ async fn json_chat_response(upstream: Response) -> Response {
         }
     }
     let finish = map_finish_reason(value.get("stop_reason").and_then(Value::as_str));
-    let usage = value
-        .get("usage")
-        .map(map_usage)
-        .unwrap_or(Value::Null);
+    let usage = value.get("usage").map(map_usage).unwrap_or(Value::Null);
     // Контракт OpenAI: при tool calls без текста content — null.
     let content = if text.is_empty() && !tool_calls.is_empty() {
         Value::Null
@@ -1368,7 +1372,11 @@ type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Sen
 /// протапал оригинальные Anthropic-байты (usage/settle не меняются), а
 /// SseErrorTail гарантирует `event: error` на транспортном обрыве — он
 /// переводится в OpenAI error frame по тому же правилу.
-fn stream_chat_response(upstream: Response, requested_model: String, include_usage: bool) -> Response {
+fn stream_chat_response(
+    upstream: Response,
+    requested_model: String,
+    include_usage: bool,
+) -> Response {
     let request_id = upstream.headers().get("request-id").cloned();
     let stream = upstream
         .into_body()
@@ -1445,7 +1453,9 @@ impl ChatSseTranslator {
     }
 
     fn model(&self) -> &str {
-        self.served_model.as_deref().unwrap_or(&self.requested_model)
+        self.served_model
+            .as_deref()
+            .unwrap_or(&self.requested_model)
     }
 
     fn frame(value: Value) -> Bytes {
@@ -1508,9 +1518,7 @@ impl ChatSseTranslator {
                 // (аргументы приедут input_json_delta'ми). text/thinking
                 // block starts client-visible дельт не несут.
                 let block = data.get("content_block");
-                if block.and_then(|b| b.get("type")).and_then(Value::as_str)
-                    == Some("tool_use")
-                {
+                if block.and_then(|b| b.get("type")).and_then(Value::as_str) == Some("tool_use") {
                     let block_index = data.get("index").and_then(Value::as_u64).unwrap_or(0);
                     let ordinal = self.next_tool_ordinal;
                     self.next_tool_ordinal += 1;
@@ -1549,8 +1557,7 @@ impl ChatSseTranslator {
                     // partial_json уезжает как есть — это уже сегмент
                     // JSON-строки arguments в терминах OpenAI.
                     Some("input_json_delta") => {
-                        let block_index =
-                            data.get("index").and_then(Value::as_u64).unwrap_or(0);
+                        let block_index = data.get("index").and_then(Value::as_u64).unwrap_or(0);
                         let ordinal = self.tool_ordinals.get(&block_index).copied();
                         let partial = delta
                             .and_then(|d| d.get("partial_json"))
@@ -1627,9 +1634,7 @@ impl ChatSseTranslator {
                     .and_then(|e| e.get("message"))
                     .and_then(Value::as_str)
                     .unwrap_or("The provider returned an error.");
-                let code = error
-                    .and_then(|e| e.get("type"))
-                    .and_then(Value::as_str);
+                let code = error.and_then(|e| e.get("type")).and_then(Value::as_str);
                 self.push_error(message, code);
             }
             // content_block_stop и неизвестные события не несут
@@ -1664,7 +1669,10 @@ impl ChatSseTranslator {
             match self.source.accept(event, &data) {
                 Ok(Some(data)) => self.handle_event(event, data),
                 Ok(None) => {}
-                Err(()) => self.push_error("The provider stream contained a malformed event.", Some("protocol_error")),
+                Err(()) => self.push_error(
+                    "The provider stream contained a malformed event.",
+                    Some("protocol_error"),
+                ),
             }
             if self.finished {
                 self.buf.clear();
@@ -1704,7 +1712,10 @@ impl Stream for ChatSseTranslator {
                         self.drain_frames();
                     }
                     if !self.finished {
-                        self.push_error("The provider stream ended before completion.", Some("protocol_error"));
+                        self.push_error(
+                            "The provider stream ended before completion.",
+                            Some("protocol_error"),
+                        );
                     }
                 }
                 Poll::Pending => return Poll::Pending,
@@ -1712,7 +1723,6 @@ impl Stream for ChatSseTranslator {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1801,7 +1811,10 @@ mod tests {
     fn omitted_chat_limit_materializes_the_native_model_ceiling() {
         for (model, expected) in [
             ("claude-haiku-4-5-20251001", LEGACY_MAX_OUTPUT_TOKENS),
-            ("anthropic/claude-sonnet-4-5-20250929", LEGACY_MAX_OUTPUT_TOKENS),
+            (
+                "anthropic/claude-sonnet-4-5-20250929",
+                LEGACY_MAX_OUTPUT_TOKENS,
+            ),
             ("claude-sonnet-4-6", CURRENT_MAX_OUTPUT_TOKENS),
             ("claude-opus-4-7", CURRENT_MAX_OUTPUT_TOKENS),
             ("claude-opus-4-8", CURRENT_MAX_OUTPUT_TOKENS),
@@ -1854,9 +1867,21 @@ mod tests {
     async fn malformed_optional_controls_are_parameter_specific_400s() {
         for (field, value, expected_param) in [
             ("stream", serde_json::json!("false"), "stream"),
-            ("max_completion_tokens", serde_json::json!(0), "max_completion_tokens"),
-            ("max_completion_tokens", serde_json::json!(-1), "max_completion_tokens"),
-            ("max_completion_tokens", serde_json::json!(1.5), "max_completion_tokens"),
+            (
+                "max_completion_tokens",
+                serde_json::json!(0),
+                "max_completion_tokens",
+            ),
+            (
+                "max_completion_tokens",
+                serde_json::json!(-1),
+                "max_completion_tokens",
+            ),
+            (
+                "max_completion_tokens",
+                serde_json::json!(1.5),
+                "max_completion_tokens",
+            ),
             ("max_tokens", serde_json::json!("10"), "max_tokens"),
             ("max_tokens", serde_json::json!({}), "max_tokens"),
         ] {
@@ -1874,7 +1899,8 @@ mod tests {
             "model": "anthropic/claude-opus-4-8",
             "messages": [{"role": "user", "content": "hi"}],
             "stream_options": {"include_usage": "true"}
-        })).await;
+        }))
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["error"]["param"], "stream_options.include_usage");
 
@@ -1883,7 +1909,8 @@ mod tests {
             "messages": [{"role": "user", "content": "hi"}],
             "max_completion_tokens": 0,
             "max_tokens": 77
-        })).await;
+        }))
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["error"]["param"], "max_completion_tokens");
     }
@@ -1946,17 +1973,26 @@ mod tests {
             "top_p": 0.9,
             "user": "user-42"
         }));
-        assert_eq!(translated.body["stop_sequences"], serde_json::json!(["END", "STOP"]));
+        assert_eq!(
+            translated.body["stop_sequences"],
+            serde_json::json!(["END", "STOP"])
+        );
         assert_eq!(translated.body["temperature"], 0.7);
         assert_eq!(translated.body["top_p"], 0.9);
-        assert_eq!(translated.body["metadata"], serde_json::json!({"user_id": "user-42"}));
+        assert_eq!(
+            translated.body["metadata"],
+            serde_json::json!({"user_id": "user-42"})
+        );
 
         let translated = ok_translated(serde_json::json!({
             "model": "claude-opus-4-8",
             "messages": [{"role": "user", "content": "hi"}],
             "stop": "END"
         }));
-        assert_eq!(translated.body["stop_sequences"], serde_json::json!(["END"]));
+        assert_eq!(
+            translated.body["stop_sequences"],
+            serde_json::json!(["END"])
+        );
     }
 
     #[test]
@@ -1970,7 +2006,10 @@ mod tests {
             "future_openai_field": {"x": 1}
         }));
         assert_eq!(translated.body["top_k"], 40);
-        assert_eq!(translated.body["future_openai_field"], serde_json::json!({"x": 1}));
+        assert_eq!(
+            translated.body["future_openai_field"],
+            serde_json::json!({"x": 1})
+        );
     }
 
     #[test]
@@ -2050,13 +2089,19 @@ mod tests {
             "model": "m", "messages": [{"role": "user", "content": "hi"}],
             "tool_choice": "required"
         }));
-        assert_eq!(translated.body["tool_choice"], serde_json::json!({"type": "any"}));
+        assert_eq!(
+            translated.body["tool_choice"],
+            serde_json::json!({"type": "any"})
+        );
 
         let translated = ok_translated(serde_json::json!({
             "model": "m", "messages": [{"role": "user", "content": "hi"}],
             "tool_choice": "none"
         }));
-        assert_eq!(translated.body["tool_choice"], serde_json::json!({"type": "none"}));
+        assert_eq!(
+            translated.body["tool_choice"],
+            serde_json::json!({"type": "none"})
+        );
 
         let translated = ok_translated(serde_json::json!({
             "model": "m", "messages": [{"role": "user", "content": "hi"}],
@@ -2082,7 +2127,10 @@ mod tests {
             "model": "m", "messages": [{"role": "user", "content": "hi"}],
             "function_call": "none"
         }));
-        assert_eq!(translated.body["tool_choice"], serde_json::json!({"type": "none"}));
+        assert_eq!(
+            translated.body["tool_choice"],
+            serde_json::json!({"type": "none"})
+        );
         let translated = ok_translated(serde_json::json!({
             "model": "m", "messages": [{"role": "user", "content": "hi"}],
             "function_call": "auto"
@@ -2328,7 +2376,10 @@ mod tests {
     #[tokio::test]
     async fn unsupported_non_default_parameters_are_400() {
         for (field, value) in [
-            ("response_format", serde_json::json!({"type": "json_object"})),
+            (
+                "response_format",
+                serde_json::json!({"type": "json_object"}),
+            ),
             ("store", serde_json::json!(true)),
             ("metadata", serde_json::json!({"k": "v"})),
             ("n", serde_json::json!(2)),
@@ -2766,7 +2817,10 @@ mod tests {
         assert_eq!(map_finish_reason(Some("end_turn")), "stop");
         assert_eq!(map_finish_reason(Some("stop_sequence")), "stop");
         assert_eq!(map_finish_reason(Some("max_tokens")), "length");
-        assert_eq!(map_finish_reason(Some("model_context_window_exceeded")), "length");
+        assert_eq!(
+            map_finish_reason(Some("model_context_window_exceeded")),
+            "length"
+        );
         assert_eq!(map_finish_reason(Some("tool_use")), "tool_calls");
         assert_eq!(map_finish_reason(None), "stop");
     }
@@ -2813,7 +2867,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
         assert!(response.headers().get(EXECUTION_STATE_HEADER).is_none());
         assert_eq!(
-            response.extensions().get::<TerminalErrorReason>().map(|r| r.0),
+            response
+                .extensions()
+                .get::<TerminalErrorReason>()
+                .map(|r| r.0),
             Some("billing_limit")
         );
         let (_, json) = err_parts(response).await;
@@ -3064,15 +3121,25 @@ data: {"type":"message_stop"}"#;
 
     #[tokio::test]
     async fn sse_dialog_translates_to_chat_chunks() {
-        let translator = ChatSseTranslator::new(sse_bytes(SSE_DIALOG), "claude-opus-4-8".into(), false);
+        let translator =
+            ChatSseTranslator::new(sse_bytes(SSE_DIALOG), "claude-opus-4-8".into(), false);
         let output = collect_stream(translator).await;
         assert!(output.ends_with("data: [DONE]\n\n"), "{output}");
         let frames = data_frames(&output);
         // role-чанк, 2 контентных, финиш-чанк; usage-чанка нет (include_usage=false).
         assert_eq!(frames.len(), 4, "{output}");
-        assert_eq!(frames[0]["choices"][0]["delta"], serde_json::json!({"role": "assistant", "content": ""}));
-        assert_eq!(frames[1]["choices"][0]["delta"], serde_json::json!({"content": "Hello"}));
-        assert_eq!(frames[2]["choices"][0]["delta"], serde_json::json!({"content": ", world"}));
+        assert_eq!(
+            frames[0]["choices"][0]["delta"],
+            serde_json::json!({"role": "assistant", "content": ""})
+        );
+        assert_eq!(
+            frames[1]["choices"][0]["delta"],
+            serde_json::json!({"content": "Hello"})
+        );
+        assert_eq!(
+            frames[2]["choices"][0]["delta"],
+            serde_json::json!({"content": ", world"})
+        );
         assert_eq!(frames[3]["choices"][0]["finish_reason"], "stop");
         // id/created/model стабильны по всему стриму; model — сервёная из message_start.
         for frame in &frames {
@@ -3085,7 +3152,8 @@ data: {"type":"message_stop"}"#;
 
     #[tokio::test]
     async fn sse_usage_chunk_honors_include_usage() {
-        let translator = ChatSseTranslator::new(sse_bytes(SSE_DIALOG), "claude-opus-4-8".into(), true);
+        let translator =
+            ChatSseTranslator::new(sse_bytes(SSE_DIALOG), "claude-opus-4-8".into(), true);
         let output = collect_stream(translator).await;
         let frames = data_frames(&output);
         assert_eq!(frames.len(), 5, "{output}");
@@ -3113,10 +3181,13 @@ data: {"type":"message_stop"}"#;
         let translator = ChatSseTranslator::new(sse_bytes(events), "m".into(), false);
         let output = collect_stream(translator).await;
         let frames = data_frames(&output);
-        assert!(frames.iter().any(|frame| {
-            frame["choices"][0]["delta"] == serde_json::json!({})
-                && frame["choices"][0]["finish_reason"].is_null()
-        }), "{output}");
+        assert!(
+            frames.iter().any(|frame| {
+                frame["choices"][0]["delta"] == serde_json::json!({})
+                    && frame["choices"][0]["finish_reason"].is_null()
+            }),
+            "{output}"
+        );
         assert!(output.ends_with("data: [DONE]\n\n"));
     }
 
@@ -3168,7 +3239,11 @@ data: {"type":"message_stop"}"#;
             ))),
             Err(std::io::Error::other("boom")),
         ];
-        let translator = ChatSseTranslator::new(Box::pin(futures_util::stream::iter(chunks)), "m".into(), false);
+        let translator = ChatSseTranslator::new(
+            Box::pin(futures_util::stream::iter(chunks)),
+            "m".into(),
+            false,
+        );
         let output = collect_stream(translator).await;
         assert!(output.contains("\"error\""), "{output}");
         assert!(!output.contains("[DONE]"), "{output}");
@@ -3194,7 +3269,11 @@ data: {"type":"message_stop"}"#;
         let (head, tail) = full.split_at(37);
         let chunks: Vec<Result<Bytes, std::io::Error>> =
             vec![Ok(Bytes::from(head)), Ok(Bytes::from(tail))];
-        let translator = ChatSseTranslator::new(Box::pin(futures_util::stream::iter(chunks)), "m".into(), false);
+        let translator = ChatSseTranslator::new(
+            Box::pin(futures_util::stream::iter(chunks)),
+            "m".into(),
+            false,
+        );
         let output = collect_stream(translator).await;
         assert!(output.contains("split ok"), "{output}");
         assert!(output.ends_with("data: [DONE]\n\n"), "{output}");
@@ -3233,7 +3312,10 @@ data: {"type":"message_stop"}"#;
         assert_eq!(
             delta_frames(&output),
             vec![
-                (serde_json::json!({"role": "assistant", "content": ""}), Value::Null),
+                (
+                    serde_json::json!({"role": "assistant", "content": ""}),
+                    Value::Null
+                ),
                 (serde_json::json!({"content": "Hello"}), Value::Null),
                 (serde_json::json!({"content": ", world"}), Value::Null),
                 (serde_json::json!({}), serde_json::json!("stop")),
@@ -3272,10 +3354,22 @@ data: {"type":"message_stop"}"#;
         assert_eq!(
             delta_frames(&output),
             vec![
-                (serde_json::json!({"role": "assistant", "content": ""}), Value::Null),
-                (serde_json::json!({"tool_calls": [{"index": 0, "id": "toolu_1", "type": "function", "function": {"name": "get_weather", "arguments": ""}}]}), Value::Null),
-                (serde_json::json!({"tool_calls": [{"index": 0, "function": {"arguments": "{\"city\":"}}]}), Value::Null),
-                (serde_json::json!({"tool_calls": [{"index": 0, "function": {"arguments": "\"Paris\"}"}}]}), Value::Null),
+                (
+                    serde_json::json!({"role": "assistant", "content": ""}),
+                    Value::Null
+                ),
+                (
+                    serde_json::json!({"tool_calls": [{"index": 0, "id": "toolu_1", "type": "function", "function": {"name": "get_weather", "arguments": ""}}]}),
+                    Value::Null
+                ),
+                (
+                    serde_json::json!({"tool_calls": [{"index": 0, "function": {"arguments": "{\"city\":"}}]}),
+                    Value::Null
+                ),
+                (
+                    serde_json::json!({"tool_calls": [{"index": 0, "function": {"arguments": "\"Paris\"}"}}]}),
+                    Value::Null
+                ),
                 (serde_json::json!({}), serde_json::json!("tool_calls")),
             ]
         );
@@ -3311,11 +3405,26 @@ data: {"type":"message_stop"}"#;
         assert_eq!(
             delta_frames(&output),
             vec![
-                (serde_json::json!({"role": "assistant", "content": ""}), Value::Null),
-                (serde_json::json!({"tool_calls": [{"index": 0, "id": "toolu_a", "type": "function", "function": {"name": "f", "arguments": ""}}]}), Value::Null),
-                (serde_json::json!({"tool_calls": [{"index": 0, "function": {"arguments": "{}"}}]}), Value::Null),
-                (serde_json::json!({"tool_calls": [{"index": 1, "id": "toolu_b", "type": "function", "function": {"name": "g", "arguments": ""}}]}), Value::Null),
-                (serde_json::json!({"tool_calls": [{"index": 1, "function": {"arguments": "{\"x\":1}"}}]}), Value::Null),
+                (
+                    serde_json::json!({"role": "assistant", "content": ""}),
+                    Value::Null
+                ),
+                (
+                    serde_json::json!({"tool_calls": [{"index": 0, "id": "toolu_a", "type": "function", "function": {"name": "f", "arguments": ""}}]}),
+                    Value::Null
+                ),
+                (
+                    serde_json::json!({"tool_calls": [{"index": 0, "function": {"arguments": "{}"}}]}),
+                    Value::Null
+                ),
+                (
+                    serde_json::json!({"tool_calls": [{"index": 1, "id": "toolu_b", "type": "function", "function": {"name": "g", "arguments": ""}}]}),
+                    Value::Null
+                ),
+                (
+                    serde_json::json!({"tool_calls": [{"index": 1, "function": {"arguments": "{\"x\":1}"}}]}),
+                    Value::Null
+                ),
                 (serde_json::json!({}), serde_json::json!("tool_calls")),
             ]
         );
@@ -3352,10 +3461,19 @@ data: {"type":"message_stop"}"#;
         assert_eq!(
             delta_frames(&output),
             vec![
-                (serde_json::json!({"role": "assistant", "content": ""}), Value::Null),
+                (
+                    serde_json::json!({"role": "assistant", "content": ""}),
+                    Value::Null
+                ),
                 (serde_json::json!({"content": "Checking."}), Value::Null),
-                (serde_json::json!({"tool_calls": [{"index": 0, "id": "toolu_1", "type": "function", "function": {"name": "f", "arguments": ""}}]}), Value::Null),
-                (serde_json::json!({"tool_calls": [{"index": 0, "function": {"arguments": "{}"}}]}), Value::Null),
+                (
+                    serde_json::json!({"tool_calls": [{"index": 0, "id": "toolu_1", "type": "function", "function": {"name": "f", "arguments": ""}}]}),
+                    Value::Null
+                ),
+                (
+                    serde_json::json!({"tool_calls": [{"index": 0, "function": {"arguments": "{}"}}]}),
+                    Value::Null
+                ),
                 (serde_json::json!({}), serde_json::json!("tool_calls")),
             ]
         );
@@ -3396,9 +3514,18 @@ data: {"type":"message_stop"}"#;
         assert_eq!(
             delta_frames(&output),
             vec![
-                (serde_json::json!({"role": "assistant", "content": ""}), Value::Null),
-                (serde_json::json!({"reasoning_content": "Let me "}), Value::Null),
-                (serde_json::json!({"reasoning_content": "think."}), Value::Null),
+                (
+                    serde_json::json!({"role": "assistant", "content": ""}),
+                    Value::Null
+                ),
+                (
+                    serde_json::json!({"reasoning_content": "Let me "}),
+                    Value::Null
+                ),
+                (
+                    serde_json::json!({"reasoning_content": "think."}),
+                    Value::Null
+                ),
                 (serde_json::json!({"content": "Answer."}), Value::Null),
                 (serde_json::json!({}), serde_json::json!("stop")),
             ]

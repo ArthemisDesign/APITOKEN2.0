@@ -1008,14 +1008,13 @@ pub(super) fn parse_responses_request(
     // Requested output cap bounds reserve and billed output. A present non-null value is strict:
     // silently treating malformed/zero as absence would let billed generation diverge from the
     // client's requested delivery limit.
-    let max_output_tokens = optional_positive_u64(object, &["max_output_tokens"]).map_err(
-        |field| {
+    let max_output_tokens =
+        optional_positive_u64(object, &["max_output_tokens"]).map_err(|field| {
             ApiError::invalid(
                 "max_output_tokens must be a positive integer.",
                 Some(field.to_string()),
             )
-        },
-    )?;
+        })?;
     let metadata = match object.get("metadata") {
         None | Some(Value::Null) => json!({}),
         Some(Value::Object(metadata)) if metadata.len() <= 16 => Value::Object(metadata.clone()),

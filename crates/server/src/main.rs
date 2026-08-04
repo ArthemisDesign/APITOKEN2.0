@@ -383,8 +383,7 @@ fn codex_seal_cmd(
         bail!("legacy CODEX_HOME is missing or unsafe: {home}");
     }
     let raw = zeroize::Zeroizing::new(
-        std::fs::read_to_string(home_path.join("auth.json"))
-            .context("read legacy auth.json")?,
+        std::fs::read_to_string(home_path.join("auth.json")).context("read legacy auth.json")?,
     );
     let store: serde_json::Value = serde_json::from_str(&raw).context("parse legacy auth.json")?;
     let tokens = store
@@ -424,9 +423,7 @@ fn codex_seal_cmd(
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
     let plan = codex_credential::supported_plan_for_claim(plan_claim)
-        .ok_or_else(|| {
-            anyhow::anyhow!("plan {plan_claim:?} is not a paid ChatGPT subscription")
-        })?
+        .ok_or_else(|| anyhow::anyhow!("plan {plan_claim:?} is not a paid ChatGPT subscription"))?
         .to_string();
     let email = id_claims
         .get("email")
@@ -1410,7 +1407,9 @@ async fn serve() -> Result<()> {
                 } else {
                     // GLM is an optional backend inside the Anthropic service. Its cold roster or
                     // outage must not take unrelated Claude traffic out of readiness.
-                    eprintln!("GLM backend has no authenticated profile; exact GLM aliases fail closed");
+                    eprintln!(
+                        "GLM backend has no authenticated profile; exact GLM aliases fail closed"
+                    );
                 }
                 tokio::spawn(poller::glm_maintenance_loop(gateway.clone()));
                 Some(gateway)

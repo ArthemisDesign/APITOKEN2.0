@@ -421,8 +421,7 @@ mod tests {
         assert_eq!(code.input, 950);
         assert_eq!(code.output, 4_000);
 
-        let fast =
-            kimi_prices_at("kimi-k2.7-code-highspeed", NOW).expect("k2.7 highspeed priced");
+        let fast = kimi_prices_at("kimi-k2.7-code-highspeed", NOW).expect("k2.7 highspeed priced");
         assert_eq!(fast.cached_input, 380);
         assert_eq!(fast.input, 1_900);
         assert_eq!(fast.output, 8_000);

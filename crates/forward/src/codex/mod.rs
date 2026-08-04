@@ -1666,8 +1666,7 @@ mod admission_tests {
         assert!(uncertain.models.contains("gpt-shared"));
         assert!(!uncertain.input_token_limits.contains_key("gpt-shared"));
 
-        let incomplete =
-            aggregate_model_catalogs([catalog("gpt-shared", Some(272_000))], false);
+        let incomplete = aggregate_model_catalogs([catalog("gpt-shared", Some(272_000))], false);
         assert!(incomplete.models.contains("gpt-shared"));
         assert!(incomplete.input_token_limits.is_empty());
     }
@@ -1678,10 +1677,7 @@ mod admission_tests {
             models: HashSet::from(["gpt-shared".to_string()]),
             display_names: name
                 .map(|name| {
-                    std::collections::HashMap::from([(
-                        "gpt-shared".to_string(),
-                        name.to_string(),
-                    )])
+                    std::collections::HashMap::from([("gpt-shared".to_string(), name.to_string())])
                 })
                 .unwrap_or_default(),
             ..Default::default()

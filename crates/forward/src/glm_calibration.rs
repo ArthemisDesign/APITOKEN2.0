@@ -185,10 +185,12 @@ fn native_baseline(row: &GlmCalibrationRow) -> Option<i64> {
 /// between them is a no-op anyway.
 fn stored_fraction_source(row: &GlmCalibrationRow) -> Option<FractionSource> {
     let used_fraction = row.used_fraction_units?;
-    if let (Some(used), Some(limit)) = (row.native_used_microcredits, row.native_limit_microcredits) {
+    if let (Some(used), Some(limit)) = (row.native_used_microcredits, row.native_limit_microcredits)
+    {
         if let Ok(Some(native)) = resolve_native_fraction(used, limit) {
             if native.used_fraction_units == used_fraction
-                && Some(native.resolution_fraction_units) == row.measurement_resolution_fraction_units
+                && Some(native.resolution_fraction_units)
+                    == row.measurement_resolution_fraction_units
             {
                 return Some(FractionSource::NativeLedger);
             }
@@ -208,8 +210,11 @@ fn resolve_native_fraction(used: i64, limit: i64) -> anyhow::Result<Option<Resol
             .and_then(|value| value.checked_div(i128::from(limit)))
             .context("GLM native fraction overflow")?,
     )?;
-    let resolution_fraction_units =
-        checked_i64(ceil_nonnegative(i128::from(FRACTION_SCALE), i128::from(limit))?)?.max(1);
+    let resolution_fraction_units = checked_i64(ceil_nonnegative(
+        i128::from(FRACTION_SCALE),
+        i128::from(limit),
+    )?)?
+    .max(1);
     Ok(Some(ResolvedFraction {
         used_fraction_units,
         resolution_fraction_units,
@@ -230,7 +235,10 @@ impl GlmWindowCalibration {
         // The first snapshot baselines the window at the current cumulative native total:
         // exactly what our own ledger can prove, with no fabrication about consumption that
         // predates tracking.
-        let resolved = resolve_fraction(observation, Some(observation.cumulative_native_microcredits))?;
+        let resolved = resolve_fraction(
+            observation,
+            Some(observation.cumulative_native_microcredits),
+        )?;
         Ok(Self {
             row: GlmCalibrationRow {
                 subject_id: observation.subject_id.clone(),
@@ -296,7 +304,8 @@ impl GlmWindowCalibration {
         // Both cumulative ledgers are monotone. A regression is corruption, not a reset:
         // fail closed rather than reinterpret it.
         if observation.cumulative_api_nanousd < self.row.anchor_spend_api_nanousd
-            || observation.cumulative_native_microcredits < self.row.anchor_spend_native_microcredits
+            || observation.cumulative_native_microcredits
+                < self.row.anchor_spend_native_microcredits
         {
             anyhow::bail!("GLM cumulative calibration ledger regressed");
         }
@@ -320,21 +329,27 @@ impl GlmWindowCalibration {
         // A rolling window rolls over when utilisation falls back AND the reset advances
         // materially. Bounded timestamp jitter alone must not fork the window, and an unnamed
         // reset supplies no reset evidence at all.
-        let rolling_window_rollover = fraction_fell_back
-            && reset_delta.is_some_and(|delta| delta >= jitter_tolerance);
+        let rolling_window_rollover =
+            fraction_fell_back && reset_delta.is_some_and(|delta| delta >= jitter_tolerance);
         // Our own ledger says the window usage outgrew the published window size: the window
         // slid under the baseline (rolling expiry) or the published limit went stale. Re-anchor
         // instead of publishing an impossible fraction above 100%.
         let window_slid = resolved.is_some_and(|value| {
             value.source == FractionSource::NativeLedger
-                && match (value.native_used_microcredits, value.native_limit_microcredits) {
+                && match (
+                    value.native_used_microcredits,
+                    value.native_limit_microcredits,
+                ) {
                     (Some(used), Some(limit)) => used > limit,
                     _ => false,
                 }
         });
         // A fraction-basis change (native-ledger ↔ quota-endpoint) is a cutover: the new
         // observation anchors a fresh interval and completed history stays.
-        let cutover = match (stored_fraction_source(&self.row), resolved.map(|value| value.source)) {
+        let cutover = match (
+            stored_fraction_source(&self.row),
+            resolved.map(|value| value.source),
+        ) {
             (Some(stored), Some(new)) => stored != new,
             _ => false,
         };
@@ -416,7 +431,8 @@ impl GlmWindowCalibration {
             return Ok(());
         }
 
-        let uncertainty = interval_fraction_uncertainty(anchor_resolution, current.resolution_fraction_units);
+        let uncertainty =
+            interval_fraction_uncertainty(anchor_resolution, current.resolution_fraction_units);
         self.update_workload_envelope(delta_used, uncertainty, delta_api)?;
         self.row.observed_fraction_units = self
             .row
@@ -458,7 +474,10 @@ impl GlmWindowCalibration {
     fn begin_window(&mut self, observation: &GlmWindowObservation) -> anyhow::Result<()> {
         // Re-baseline the native ledger at the current cumulative total: whatever the old
         // window consumed stays behind, and the new window measures from here.
-        let resolved = resolve_fraction(observation, Some(observation.cumulative_native_microcredits))?;
+        let resolved = resolve_fraction(
+            observation,
+            Some(observation.cumulative_native_microcredits),
+        )?;
         self.row.reset_at = observation.reset_at;
         self.row.observed_at = observation.observed_at;
         self.row.updated_ts = observation.observed_at;
@@ -670,7 +689,10 @@ pub(crate) fn pooled_cohort_capacity_nanousd(
 
 /// Apply a pooled cohort capacity to one member's current exact unused fraction. `None` while
 /// the member's fraction is unknown — never zero.
-pub(crate) fn pooled_remaining_nanousd(capacity_nanousd: i64, row: &GlmCalibrationRow) -> Option<i64> {
+pub(crate) fn pooled_remaining_nanousd(
+    capacity_nanousd: i64,
+    row: &GlmCalibrationRow,
+) -> Option<i64> {
     let unused = FRACTION_SCALE.checked_sub(row.used_fraction_units?)?;
     let remaining = i128::from(capacity_nanousd)
         .checked_mul(i128::from(unused))?
@@ -705,12 +727,20 @@ fn validate_observation(observation: &GlmWindowObservation) -> anyhow::Result<()
         }
     }
     if let Some(used) = observation.native_used_units {
-        if used < 0 || observation.native_limit_units.is_some_and(|limit| used > limit) {
+        if used < 0
+            || observation
+                .native_limit_units
+                .is_some_and(|limit| used > limit)
+        {
             anyhow::bail!("GLM calibration observation has an invalid quota usage");
         }
     }
     if let Some(remaining) = observation.native_remaining_units {
-        if remaining < 0 || observation.native_limit_units.is_some_and(|limit| remaining > limit) {
+        if remaining < 0
+            || observation
+                .native_limit_units
+                .is_some_and(|limit| remaining > limit)
+        {
             anyhow::bail!("GLM calibration observation has an invalid quota remaining");
         }
     }
@@ -813,11 +843,21 @@ mod tests {
         }
     }
 
-    fn pro_5h(reset_at: Option<i64>, observed_at: i64, cum_api: i64, cum_native: i64) -> GlmWindowObservation {
+    fn pro_5h(
+        reset_at: Option<i64>,
+        observed_at: i64,
+        cum_api: i64,
+        cum_native: i64,
+    ) -> GlmWindowObservation {
         native_obs("Pro", ROLLING, reset_at, observed_at, cum_api, cum_native)
     }
 
-    fn pro_week(reset_at: Option<i64>, observed_at: i64, cum_api: i64, cum_native: i64) -> GlmWindowObservation {
+    fn pro_week(
+        reset_at: Option<i64>,
+        observed_at: i64,
+        cum_api: i64,
+        cum_native: i64,
+    ) -> GlmWindowObservation {
         native_obs("Pro", WEEK, reset_at, observed_at, cum_api, cum_native)
     }
 
@@ -840,7 +880,9 @@ mod tests {
             native_limit_units: Some(limit),
             native_remaining_units: Some(limit - used),
             used_fraction_units: Some(derived.used_fraction_units),
-            measurement_resolution_fraction_units: Some(derived.measurement_resolution_fraction_units),
+            measurement_resolution_fraction_units: Some(
+                derived.measurement_resolution_fraction_units,
+            ),
             ..native_obs(plan, duration, reset_at, observed_at, cum_api, cum_native)
         }
     }
@@ -858,7 +900,8 @@ mod tests {
 
     #[test]
     fn the_first_snapshot_is_an_anchor_not_a_sample() {
-        let row = apply_observation(None, &pro_5h(Some(T0 + ROLLING), T0 - 100, 500, 40_000_000)).unwrap();
+        let row = apply_observation(None, &pro_5h(Some(T0 + ROLLING), T0 - 100, 500, 40_000_000))
+            .unwrap();
         assert_eq!(row.samples, 0);
         assert_eq!(row.current_capacity_nanousd, None);
         assert_eq!(row.current_low_nanousd, None);
@@ -911,7 +954,16 @@ mod tests {
         .unwrap();
         let coarse = apply_observation(
             Some(coarse),
-            &quota_obs("Pro", WEEK, Some(T0 + WEEK), T0 - 100, 1, 100, 1_000_000_000, 500_000_000),
+            &quota_obs(
+                "Pro",
+                WEEK,
+                Some(T0 + WEEK),
+                T0 - 100,
+                1,
+                100,
+                1_000_000_000,
+                500_000_000,
+            ),
         )
         .unwrap();
         assert_eq!(coarse.samples, 1);
@@ -929,7 +981,16 @@ mod tests {
         .unwrap();
         let fine = apply_observation(
             Some(fine),
-            &quota_obs("Pro", WEEK, Some(T0 + WEEK), T0 - 100, 10, 1_000, 1_000_000_000, 500_000_000),
+            &quota_obs(
+                "Pro",
+                WEEK,
+                Some(T0 + WEEK),
+                T0 - 100,
+                10,
+                1_000,
+                1_000_000_000,
+                500_000_000,
+            ),
         )
         .unwrap();
         assert!(fine.current_high_nanousd.is_some());
@@ -972,12 +1033,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(held.samples, 0);
-        assert_eq!(held.anchor_used_fraction_units, row.anchor_used_fraction_units);
+        assert_eq!(
+            held.anchor_used_fraction_units,
+            row.anchor_used_fraction_units
+        );
 
         // Settlement lands: the interval completes against the original anchor.
         let settled = apply_observation(
             Some(held),
-            &quota_obs("Pro", WEEK, Some(T0 + WEEK), T0 - 100, 10, 1_000, 1_000_000_000, 500_000_000),
+            &quota_obs(
+                "Pro",
+                WEEK,
+                Some(T0 + WEEK),
+                T0 - 100,
+                10,
+                1_000,
+                1_000_000_000,
+                500_000_000,
+            ),
         )
         .unwrap();
         assert_eq!(settled.samples, 1);
@@ -1047,7 +1120,16 @@ mod tests {
         // 10% more for $2.00: one complete interval on the rolling 5h window.
         let row = apply_observation(
             Some(row),
-            &quota_obs("Pro", ROLLING, Some(reset_1), T0 - 200, 2_400, 12_000, 2_000_000_000, 2_400_000_000),
+            &quota_obs(
+                "Pro",
+                ROLLING,
+                Some(reset_1),
+                T0 - 200,
+                2_400,
+                12_000,
+                2_000_000_000,
+                2_400_000_000,
+            ),
         )
         .unwrap();
         assert_eq!(row.samples, 1);
@@ -1058,7 +1140,16 @@ mod tests {
         let reset_2 = reset_1 + 1_800;
         let row = apply_observation(
             Some(row),
-            &quota_obs("Pro", ROLLING, Some(reset_2), T0 - 100, 300, 12_000, 2_000_000_000, 2_400_000_000),
+            &quota_obs(
+                "Pro",
+                ROLLING,
+                Some(reset_2),
+                T0 - 100,
+                300,
+                12_000,
+                2_000_000_000,
+                2_400_000_000,
+            ),
         )
         .unwrap();
         assert_eq!(row.samples, 1, "completed evidence survives the rollover");
@@ -1090,14 +1181,32 @@ mod tests {
         .unwrap();
         let row = apply_observation(
             Some(row),
-            &quota_obs("Pro", WEEK, Some(T0 + WEEK), T0 - 200, 20, 1_000, 2_000_000_000, 1_000_000_000),
+            &quota_obs(
+                "Pro",
+                WEEK,
+                Some(T0 + WEEK),
+                T0 - 200,
+                20,
+                1_000,
+                2_000_000_000,
+                1_000_000_000,
+            ),
         )
         .unwrap();
         assert_eq!(row.samples, 1);
         // A lower reading with no material reset advance: not a new window, not new evidence.
         let row = apply_observation(
             Some(row),
-            &quota_obs("Pro", WEEK, Some(T0 + WEEK), T0 - 100, 15, 1_000, 2_000_000_000, 1_000_000_000),
+            &quota_obs(
+                "Pro",
+                WEEK,
+                Some(T0 + WEEK),
+                T0 - 100,
+                15,
+                1_000,
+                2_000_000_000,
+                1_000_000_000,
+            ),
         )
         .unwrap();
         assert_eq!(row.samples, 1);
@@ -1105,7 +1214,8 @@ mod tests {
 
     #[test]
     fn stale_observations_do_not_mutate_state() {
-        let row = apply_observation(None, &pro_5h(Some(T0 + ROLLING), T0 - 100, 500, 40_000_000)).unwrap();
+        let row = apply_observation(None, &pro_5h(Some(T0 + ROLLING), T0 - 100, 500, 40_000_000))
+            .unwrap();
         let after = apply_observation(
             Some(row.clone()),
             &pro_5h(Some(T0 + ROLLING), T0 - 500, 9_000, 90_000_000),
@@ -1117,7 +1227,8 @@ mod tests {
 
     #[test]
     fn independent_durations_never_share_a_row() {
-        let weekly = apply_observation(None, &pro_week(Some(T0 + WEEK), T0 - 100, 500, 40_000_000)).unwrap();
+        let weekly =
+            apply_observation(None, &pro_week(Some(T0 + WEEK), T0 - 100, 500, 40_000_000)).unwrap();
         // A rolling 5h observation must be refused against weekly state, not folded in.
         let err = apply_observation(
             Some(weekly),
@@ -1129,7 +1240,8 @@ mod tests {
 
     #[test]
     fn a_different_plan_is_a_different_cohort() {
-        let row = apply_observation(None, &pro_week(Some(T0 + WEEK), T0 - 100, 500, 40_000_000)).unwrap();
+        let row =
+            apply_observation(None, &pro_week(Some(T0 + WEEK), T0 - 100, 500, 40_000_000)).unwrap();
         let upgraded = native_obs("Max", WEEK, Some(T0 + WEEK), T0 - 50, 900, 50_000_000);
         assert!(apply_observation(Some(row), &upgraded).is_err());
     }
@@ -1152,7 +1264,16 @@ mod tests {
         // zero-native spend.
         let row = apply_observation(
             Some(row),
-            &quota_obs("Pro", WEEK, Some(T0 + WEEK), T0 - 50, 15_000, 60_000, 1_000_000_000, 6_000_000_000),
+            &quota_obs(
+                "Pro",
+                WEEK,
+                Some(T0 + WEEK),
+                T0 - 50,
+                15_000,
+                60_000,
+                1_000_000_000,
+                6_000_000_000,
+            ),
         )
         .unwrap();
         assert_eq!(row.samples, 1, "the cutover keeps completed intervals");
@@ -1165,7 +1286,16 @@ mod tests {
         // fraction 10% + 5%, spend $1 + $1 -> 1e8 * 2e9 / 15e6 = 13 333 333 333.33.
         let row = apply_observation(
             Some(row),
-            &quota_obs("Pro", WEEK, Some(T0 + WEEK), T0 - 10, 18_000, 60_000, 2_000_000_000, 12_000_000_000),
+            &quota_obs(
+                "Pro",
+                WEEK,
+                Some(T0 + WEEK),
+                T0 - 10,
+                18_000,
+                60_000,
+                2_000_000_000,
+                12_000_000_000,
+            ),
         )
         .unwrap();
         assert_eq!(row.samples, 2);
@@ -1204,7 +1334,14 @@ mod tests {
         assert_eq!(row.native_limit_microcredits, None);
         let row = apply_observation(
             Some(row),
-            &native_obs("Legacy", WEEK, Some(T0 + WEEK), T0 - 100, 5_000_000_000, 2_000_000_000),
+            &native_obs(
+                "Legacy",
+                WEEK,
+                Some(T0 + WEEK),
+                T0 - 100,
+                5_000_000_000,
+                2_000_000_000,
+            ),
         )
         .unwrap();
         assert_eq!(row.samples, 0);
@@ -1243,14 +1380,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rebuilt.estimator_version, ESTIMATOR_VERSION);
-        assert_eq!(rebuilt.version, 7, "the outer CAS generation must be preserved");
+        assert_eq!(
+            rebuilt.version, 7,
+            "the outer CAS generation must be preserved"
+        );
         assert_eq!(rebuilt.samples, 1);
         assert_ne!(rebuilt.current_capacity_nanousd, Some(999_999_999));
     }
 
     #[test]
     fn an_estimator_version_change_without_history_fails_closed() {
-        let mut legacy = apply_observation(None, &pro_5h(Some(T0 + ROLLING), T0 - 200, 0, 0)).unwrap();
+        let mut legacy =
+            apply_observation(None, &pro_5h(Some(T0 + ROLLING), T0 - 200, 0, 0)).unwrap();
         legacy.estimator_version = ESTIMATOR_VERSION + 1;
         assert!(apply_observation_with_history(
             Some(legacy),
@@ -1290,16 +1431,43 @@ mod tests {
         assert!(apply_observation(None, &negative_ledger).is_err());
 
         // Fraction and resolution must move together.
-        let mut split_pair = quota_obs("Pro", ROLLING, Some(T0 + ROLLING), T0 - 100, 10, 1_000, 0, 0);
+        let mut split_pair = quota_obs(
+            "Pro",
+            ROLLING,
+            Some(T0 + ROLLING),
+            T0 - 100,
+            10,
+            1_000,
+            0,
+            0,
+        );
         split_pair.measurement_resolution_fraction_units = None;
         assert!(apply_observation(None, &split_pair).is_err());
 
-        let mut bad_resolution = quota_obs("Pro", ROLLING, Some(T0 + ROLLING), T0 - 100, 10, 1_000, 0, 0);
+        let mut bad_resolution = quota_obs(
+            "Pro",
+            ROLLING,
+            Some(T0 + ROLLING),
+            T0 - 100,
+            10,
+            1_000,
+            0,
+            0,
+        );
         bad_resolution.measurement_resolution_fraction_units = Some(0);
         assert!(apply_observation(None, &bad_resolution).is_err());
 
         // Raw counters stay sane when present.
-        let mut bad_raw = quota_obs("Pro", ROLLING, Some(T0 + ROLLING), T0 - 100, 10, 1_000, 0, 0);
+        let mut bad_raw = quota_obs(
+            "Pro",
+            ROLLING,
+            Some(T0 + ROLLING),
+            T0 - 100,
+            10,
+            1_000,
+            0,
+            0,
+        );
         bad_raw.native_used_units = Some(2_000);
         assert!(apply_observation(None, &bad_raw).is_err());
 
@@ -1317,7 +1485,11 @@ mod tests {
 
     #[test]
     fn regressing_cumulative_ledgers_fail_closed() {
-        let row = apply_observation(None, &pro_5h(Some(T0 + ROLLING), T0 - 200, 5_000_000_000, 3_000_000_000)).unwrap();
+        let row = apply_observation(
+            None,
+            &pro_5h(Some(T0 + ROLLING), T0 - 200, 5_000_000_000, 3_000_000_000),
+        )
+        .unwrap();
         // A cumulative total can never shrink; a regression is corruption, not a reset.
         let regressed_api = pro_5h(Some(T0 + ROLLING), T0 - 100, 4_999_999_999, 3_000_000_000);
         assert!(apply_observation(Some(row.clone()), &regressed_api).is_err());

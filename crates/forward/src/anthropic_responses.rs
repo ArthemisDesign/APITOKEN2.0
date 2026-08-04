@@ -189,7 +189,10 @@ pub async fn anthropic_responses(
     // только content-length/content-type под синтезированное тело.
     let mut headers = parts.headers.clone();
     headers.remove(header::CONTENT_LENGTH);
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
     let body_bytes = match serde_json::to_vec(&translated.body) {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -317,10 +320,7 @@ fn translate_responses_request(value: Value) -> Result<Translated, Response> {
     // materialize the native model maximum so omission stays uncapped like the Codex lane.
     let max_tokens = optional_positive_u64(&object, &["max_output_tokens"])
         .map_err(|field| {
-            invalid_request(
-                "max_output_tokens must be a positive integer.",
-                Some(field),
-            )
+            invalid_request("max_output_tokens must be a positive integer.", Some(field))
         })?
         .unwrap_or_else(|| native_max_output_tokens(&model));
 
@@ -432,7 +432,9 @@ fn check_capability_matrix(object: &Map<String, Value>) -> Result<(), Response> 
         ("service_tier", |v| {
             v.is_null() || v.as_str() == Some("auto") || v.as_str() == Some("default")
         }),
-        ("truncation", |v| v.is_null() || v.as_str() == Some("disabled")),
+        ("truncation", |v| {
+            v.is_null() || v.as_str() == Some("disabled")
+        }),
         ("include", |v| {
             v.is_null() || v.as_array().is_some_and(Vec::is_empty)
         }),
@@ -462,7 +464,10 @@ fn check_stored_limitations(object: &Map<String, Value>) -> Result<(), Response>
             "Stored responses are supported only for openai/* models.",
         ));
     }
-    if object.get("previous_response_id").is_some_and(|v| !v.is_null()) {
+    if object
+        .get("previous_response_id")
+        .is_some_and(|v| !v.is_null())
+    {
         return Err(documented_limitation(
             "previous_response_id",
             "Stored responses are supported only for openai/* models.",
@@ -668,12 +673,15 @@ fn message_item_blocks(content: Option<&Value>) -> Result<Vec<Value>, Response> 
 /// дальше работает общий с chat-адаптером перевод (data: → base64 source,
 /// http(s) → url source; `detail` != auto → `400 unsupported_parameter`).
 fn input_image_block(part: &Value) -> Result<Value, Response> {
-    let url = part.get("image_url").and_then(Value::as_str).ok_or_else(|| {
-        invalid_request(
-            "Invalid input_image part: expected an image_url string.",
-            Some("input"),
-        )
-    })?;
+    let url = part
+        .get("image_url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            invalid_request(
+                "Invalid input_image part: expected an image_url string.",
+                Some("input"),
+            )
+        })?;
     let mut image = json!({"url": url});
     if let Some(detail) = part.get("detail").and_then(Value::as_str) {
         image["detail"] = Value::String(detail.to_string());
@@ -1007,7 +1015,10 @@ fn output_items(blocks: Option<&Vec<Value>>) -> Vec<Value> {
             Some("tool_use") => {
                 output.push(function_call_item(
                     block.get("id").and_then(Value::as_str).unwrap_or_default(),
-                    block.get("name").and_then(Value::as_str).unwrap_or_default(),
+                    block
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
                     &block
                         .get("input")
                         .map(|i| i.to_string())
@@ -1060,9 +1071,11 @@ async fn json_responses_response(upstream: Response, requested_model: String) ->
         .unwrap_or(&requested_model)
         .to_string();
     let output = output_items(value.get("content").and_then(Value::as_array));
-    let (status, incomplete_details) =
-        map_status(value.get("stop_reason").and_then(Value::as_str));
-    let usage = value.get("usage").map(map_responses_usage).unwrap_or(Value::Null);
+    let (status, incomplete_details) = map_status(value.get("stop_reason").and_then(Value::as_str));
+    let usage = value
+        .get("usage")
+        .map(map_responses_usage)
+        .unwrap_or(Value::Null);
     let response_object = json!({
         "id": new_id("resp"),
         "object": "response",
@@ -1197,7 +1210,9 @@ impl ResponsesSseTranslator {
     }
 
     fn model(&self) -> &str {
-        self.served_model.as_deref().unwrap_or(&self.requested_model)
+        self.served_model
+            .as_deref()
+            .unwrap_or(&self.requested_model)
     }
 
     fn push_event(&mut self, event: &'static str, value: Value) {
@@ -1385,7 +1400,9 @@ impl ResponsesSseTranslator {
             }
             "content_block_delta" => {
                 let block_index = data.get("index").and_then(Value::as_u64).unwrap_or(0);
-                let Some(delta) = data.get("delta") else { return };
+                let Some(delta) = data.get("delta") else {
+                    return;
+                };
                 match self.blocks.get_mut(&block_index) {
                     Some(OpenBlock::Text {
                         output_index,
@@ -1416,9 +1433,7 @@ impl ResponsesSseTranslator {
                         item_id,
                         arguments,
                         ..
-                    }) if delta.get("type").and_then(Value::as_str)
-                        == Some("input_json_delta") =>
-                    {
+                    }) if delta.get("type").and_then(Value::as_str) == Some("input_json_delta") => {
                         // partial_json уезжает как есть — это уже сегмент
                         // JSON-строки arguments в терминах Responses.
                         if let Some(partial) = delta
@@ -1442,9 +1457,7 @@ impl ResponsesSseTranslator {
                         output_index,
                         item_id,
                         text,
-                    }) if delta.get("type").and_then(Value::as_str)
-                        == Some("thinking_delta") =>
-                    {
+                    }) if delta.get("type").and_then(Value::as_str) == Some("thinking_delta") => {
                         if let Some(segment) = delta
                             .get("thinking")
                             .and_then(Value::as_str)
@@ -1626,9 +1639,7 @@ impl ResponsesSseTranslator {
                     .and_then(|e| e.get("message"))
                     .and_then(Value::as_str)
                     .unwrap_or("The provider returned an error.");
-                let code = error
-                    .and_then(|e| e.get("type"))
-                    .and_then(Value::as_str);
+                let code = error.and_then(|e| e.get("type")).and_then(Value::as_str);
                 self.push_failed(message, code);
             }
             // Неизвестные события не несут client-visible дельт.
@@ -1714,7 +1725,6 @@ impl Stream for ResponsesSseTranslator {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1822,7 +1832,10 @@ mod tests {
         }));
         let body = &translated.body;
         assert_eq!(body["model"], "claude-opus-4-8");
-        assert_eq!(body["max_tokens"], native_max_output_tokens("claude-opus-4-8"));
+        assert_eq!(
+            body["max_tokens"],
+            native_max_output_tokens("claude-opus-4-8")
+        );
         assert_eq!(body["stream"], false);
         assert!(!translated.stream);
         assert_eq!(
@@ -1844,7 +1857,10 @@ mod tests {
             "max_output_tokens": null
         }));
         assert!(!translated.stream);
-        assert_eq!(translated.body["max_tokens"], native_max_output_tokens("claude-opus-4-8"));
+        assert_eq!(
+            translated.body["max_tokens"],
+            native_max_output_tokens("claude-opus-4-8")
+        );
     }
 
     #[test]
@@ -2037,12 +2053,18 @@ mod tests {
         let translated = ok_translated(serde_json::json!({
             "model": "m", "input": "hi", "tool_choice": "required"
         }));
-        assert_eq!(translated.body["tool_choice"], serde_json::json!({"type": "any"}));
+        assert_eq!(
+            translated.body["tool_choice"],
+            serde_json::json!({"type": "any"})
+        );
 
         let translated = ok_translated(serde_json::json!({
             "model": "m", "input": "hi", "tool_choice": "none"
         }));
-        assert_eq!(translated.body["tool_choice"], serde_json::json!({"type": "none"}));
+        assert_eq!(
+            translated.body["tool_choice"],
+            serde_json::json!({"type": "none"})
+        );
 
         // Именная форма Responses — плоская {type:"function", name}.
         let translated = ok_translated(serde_json::json!({
@@ -2445,7 +2467,10 @@ mod tests {
             }))
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{arguments}");
-            assert_eq!(json["error"]["type"], "invalid_request_error", "{arguments}");
+            assert_eq!(
+                json["error"]["type"], "invalid_request_error",
+                "{arguments}"
+            );
             assert_eq!(json["error"]["param"], "input", "{arguments}");
         }
         // Отсутствующие/пустые call_id и name → 400.
@@ -2560,7 +2585,10 @@ mod tests {
             "future_openai_field": {"x": 1}
         }));
         assert_eq!(translated.body["top_k"], 40);
-        assert_eq!(translated.body["future_openai_field"], serde_json::json!({"x": 1}));
+        assert_eq!(
+            translated.body["future_openai_field"],
+            serde_json::json!({"x": 1})
+        );
     }
 
     #[test]
@@ -2820,7 +2848,10 @@ mod tests {
             let response = json_responses_response(upstream, "claude-opus-4-8".into()).await;
             let (_, json) = err_parts(response).await;
             assert_eq!(json["status"], "incomplete", "{stop_reason}");
-            assert_eq!(json["incomplete_details"]["reason"], reason, "{stop_reason}");
+            assert_eq!(
+                json["incomplete_details"]["reason"], reason,
+                "{stop_reason}"
+            );
         }
     }
 
@@ -2863,7 +2894,10 @@ mod tests {
         assert_eq!(output[2]["summary"][0]["text"], "Second thought.");
         assert_eq!(output[3]["type"], "function_call");
         assert!(!json.to_string().contains("sig_"), "{json}");
-        assert_eq!(json["usage"]["output_tokens_details"]["reasoning_tokens"], 7);
+        assert_eq!(
+            json["usage"]["output_tokens_details"]["reasoning_tokens"],
+            7
+        );
     }
 
     #[test]
@@ -2886,12 +2920,10 @@ mod tests {
             .unwrap();
         let response = json_responses_response(upstream, "claude-opus-4-8".into()).await;
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(
-            response
-                .headers()
-                .get(crate::proxy::EXECUTION_STATE_HEADER)
-                .is_none()
-        );
+        assert!(response
+            .headers()
+            .get(crate::proxy::EXECUTION_STATE_HEADER)
+            .is_none());
     }
 
     // ---------- SSE-транслятор: contract-тесты словаря событий 4.1–4.2 ----------
@@ -2962,7 +2994,10 @@ data: {"type":"message_stop"}"#;
         assert!(item_id.as_str().unwrap().starts_with("msg_"));
         assert_eq!(frames[3].1["item_id"], item_id);
         assert_eq!(frames[3].1["content_index"], 0);
-        assert_eq!(frames[3].1["part"], serde_json::json!({"type": "output_text", "text": "", "annotations": [], "logprobs": []}));
+        assert_eq!(
+            frames[3].1["part"],
+            serde_json::json!({"type": "output_text", "text": "", "annotations": [], "logprobs": []})
+        );
         assert_eq!(frames[4].1["delta"], "Hello");
         assert_eq!(frames[4].1["logprobs"], serde_json::json!([]));
         assert_eq!(frames[5].1["delta"], ", world");
@@ -2978,7 +3013,10 @@ data: {"type":"message_stop"}"#;
         assert_eq!(completed["output"].as_array().unwrap().len(), 1);
         assert_eq!(completed["output"][0]["content"][0]["text"], "Hello, world");
         assert_eq!(completed["usage"]["input_tokens"], 14);
-        assert_eq!(completed["usage"]["input_tokens_details"]["cached_tokens"], 4);
+        assert_eq!(
+            completed["usage"]["input_tokens_details"]["cached_tokens"],
+            4
+        );
         assert_eq!(completed["usage"]["output_tokens"], 6);
         assert_eq!(completed["usage"]["total_tokens"], 20);
         assert!(completed["error"].is_null());
@@ -3151,7 +3189,10 @@ data: {"type":"message_stop"}"#;
         // стабилен внутри блока.
         assert_eq!(frames[2].1["output_index"], 0);
         assert_eq!(frames[2].1["item"]["type"], "reasoning");
-        assert!(frames[2].1["item"]["id"].as_str().unwrap().starts_with("rs_"));
+        assert!(frames[2].1["item"]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("rs_"));
         assert_eq!(frames[2].1["item"]["summary"], serde_json::json!([]));
         let item_id = frames[2].1["item"]["id"].clone();
         assert_eq!(frames[3].1["item_id"], item_id);
@@ -3167,7 +3208,10 @@ data: {"type":"message_stop"}"#;
         assert_eq!(frames[6].1["text"], "Let me think. Done.");
         assert_eq!(frames[7].1["part"]["text"], "Let me think. Done.");
         assert_eq!(frames[8].1["item"]["id"], item_id);
-        assert_eq!(frames[8].1["item"]["summary"][0]["text"], "Let me think. Done.");
+        assert_eq!(
+            frames[8].1["item"]["summary"][0]["text"],
+            "Let me think. Done."
+        );
         // Message item — output_index 1 (плотный счётчик, дыр нет).
         assert_eq!(frames[9].1["output_index"], 1);
         assert_eq!(frames[9].1["item"]["type"], "message");
@@ -3180,7 +3224,10 @@ data: {"type":"message_stop"}"#;
         assert_eq!(items[0]["type"], "reasoning");
         assert_eq!(items[0]["summary"][0]["text"], "Let me think. Done.");
         assert_eq!(items[1]["type"], "message");
-        assert_eq!(completed["usage"]["output_tokens_details"]["reasoning_tokens"], 5);
+        assert_eq!(
+            completed["usage"]["output_tokens_details"]["reasoning_tokens"],
+            5
+        );
         assert_eq!(completed["usage"]["output_tokens"], 8);
     }
 
@@ -3362,7 +3409,8 @@ data: {"type":"message_stop"}"#;
             "event: message_start\ndata: {not json}\n\n",
             "event: message_start\ndata: {\"type\":\"ping\",\"message\":{}}\n\n",
         ] {
-            let output = collect_stream(ResponsesSseTranslator::new(sse_bytes(events), "m".into())).await;
+            let output =
+                collect_stream(ResponsesSseTranslator::new(sse_bytes(events), "m".into())).await;
             let frames = event_frames(&output);
             assert_eq!(frames.last().unwrap().0, "response.failed", "{output}");
             assert_eq!(frames.last().unwrap().1["error"]["code"], "protocol_error");
@@ -3381,7 +3429,8 @@ data: {"type":"message_stop"}"#;
             "event: message_stop\n",
             "data: {\"type\":\"message_stop\"}"
         );
-        let output = collect_stream(ResponsesSseTranslator::new(sse_bytes(events), "m".into())).await;
+        let output =
+            collect_stream(ResponsesSseTranslator::new(sse_bytes(events), "m".into())).await;
         assert!(output.contains("response.completed"), "{output}");
         assert!(!output.contains("response.failed"), "{output}");
     }

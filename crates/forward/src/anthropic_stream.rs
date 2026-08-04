@@ -108,7 +108,11 @@ impl AnthropicStreamState {
     }
 
     fn require_started(&self) -> Result<(), ()> {
-        if self.started { Ok(()) } else { Err(()) }
+        if self.started {
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 }
 
@@ -126,10 +130,22 @@ mod tests {
         assert_eq!(state.accept("future_event", "not-json").unwrap(), None);
         for (event, data) in [
             ("message_start", r#"{"type":"message_start","message":{}}"#),
-            ("content_block_start", r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#),
-            ("content_block_delta", r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}"#),
-            ("content_block_stop", r#"{"type":"content_block_stop","index":0}"#),
-            ("message_delta", r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}"#),
+            (
+                "content_block_start",
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}"#,
+            ),
+            (
+                "content_block_stop",
+                r#"{"type":"content_block_stop","index":0}"#,
+            ),
+            (
+                "message_delta",
+                r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}"#,
+            ),
             ("message_stop", r#"{"type":"message_stop"}"#),
         ] {
             assert!(state.accept(event, data).unwrap().is_some(), "{event}");
@@ -142,7 +158,10 @@ mod tests {
             ("", r#"{"type":"message_start","message":{}}"#),
             ("message_start", "not-json"),
             ("message_start", r#"{"type":"ping","message":{}}"#),
-            ("content_block_delta", r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lost"}}"#),
+            (
+                "content_block_delta",
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lost"}}"#,
+            ),
         ] {
             assert!(AnthropicStreamState::default().accept(event, data).is_err());
         }

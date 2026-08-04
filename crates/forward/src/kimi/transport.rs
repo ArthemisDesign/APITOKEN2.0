@@ -174,11 +174,7 @@ pub fn needs_refresh(
 
 /// Build the absolute URL for a non-billable probe.
 pub fn probe_url(config: &KimiTransportConfig, route: ProbeRoute) -> String {
-    format!(
-        "{}{}",
-        config.base_url.trim_end_matches('/'),
-        route.path()
-    )
+    format!("{}{}", config.base_url.trim_end_matches('/'), route.path())
 }
 
 #[cfg(test)]
@@ -229,7 +225,9 @@ mod tests {
         assert!(!spends_transport_budget(UpstreamVerdict::QuotaExhausted));
         assert!(!spends_transport_budget(UpstreamVerdict::Auth));
         assert!(spends_transport_budget(UpstreamVerdict::Transport));
-        assert!(spends_transport_budget(UpstreamVerdict::MembershipTemporary));
+        assert!(spends_transport_budget(
+            UpstreamVerdict::MembershipTemporary
+        ));
     }
 
     #[test]
@@ -279,7 +277,10 @@ mod tests {
         assert_eq!(AuthScheme::ApiKeyHeader.header_name(), "x-api-key");
         assert_eq!(AuthScheme::ApiKeyHeader.header_value("t"), "t");
         // Bearer is the default because it is the one proven by the official client.
-        assert_eq!(KimiTransportConfig::default().auth_scheme, AuthScheme::Bearer);
+        assert_eq!(
+            KimiTransportConfig::default().auth_scheme,
+            AuthScheme::Bearer
+        );
     }
 
     #[test]
@@ -296,7 +297,11 @@ mod tests {
         let mut credential = oauth_credential(0);
         credential.kind = KimiCredentialKind::ConsoleKey;
         credential.refresh_token = String::new();
-        assert!(!needs_refresh(&credential, i64::MAX, &KimiTransportConfig::default()));
+        assert!(!needs_refresh(
+            &credential,
+            i64::MAX,
+            &KimiTransportConfig::default()
+        ));
     }
 
     #[tokio::test]

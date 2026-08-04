@@ -12,11 +12,9 @@ mod skin;
 mod transport;
 
 pub use api::api as gemini_api;
-pub use chat::gemini_chat_completions;
-pub use responses::gemini_responses;
-pub use skin::{gemini_messages_count_tokens, gemini_messages_skin};
 pub use calibration::WindowCalibration;
 pub(crate) use calibration::{apply_observation_with_history, ESTIMATOR_VERSION};
+pub use chat::gemini_chat_completions;
 pub use config::{
     subscription_model_supported, GeminiConfig, GeminiModel, GeminiPrices, GeminiProfileSpec,
     GeminiProfilesFile, GEMINI_NODE_EXPECTED_JA3, GEMINI_NODE_EXPECTED_JA4,
@@ -27,3 +25,5 @@ pub use pool::{
     GeminiGateway, GeminiModelStatus, GeminiOperationalStatus, GeminiProfileStatus,
     GeminiWindowCapacityReport,
 };
+pub use responses::gemini_responses;
+pub use skin::{gemini_messages_count_tokens, gemini_messages_skin};

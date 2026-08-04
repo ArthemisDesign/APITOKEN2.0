@@ -158,7 +158,9 @@ impl std::fmt::Display for GlmTurnReplayConflict {
 impl std::error::Error for GlmTurnReplayConflict {}
 
 pub fn is_glm_turn_replay_conflict(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| cause.is::<GlmTurnReplayConflict>())
+    error
+        .chain()
+        .any(|cause| cause.is::<GlmTurnReplayConflict>())
 }
 
 impl GlmTurnCalibrationEvent {
@@ -548,7 +550,9 @@ mod tests {
     #[test]
     fn full_and_empty_windows_map_to_the_scale_bounds() {
         assert_eq!(
-            glm_fraction_from_native(0, 500).unwrap().used_fraction_units,
+            glm_fraction_from_native(0, 500)
+                .unwrap()
+                .used_fraction_units,
             0
         );
         assert_eq!(

@@ -4457,13 +4457,17 @@ fn glm_window_totals(
                         rows.iter()
                             .find(|row| row.window_duration_secs == *duration_secs)
                     });
-                capacity_sum = match (capacity_sum, row.and_then(|row| row.current_capacity_nanousd))
-                {
+                capacity_sum = match (
+                    capacity_sum,
+                    row.and_then(|row| row.current_capacity_nanousd),
+                ) {
                     (Some(sum), Some(value)) => Some(sum + i128::from(value)),
                     _ => None,
                 };
-                remaining_sum = match (remaining_sum, row.and_then(|row| row.current_remaining_nano()))
-                {
+                remaining_sum = match (
+                    remaining_sum,
+                    row.and_then(|row| row.current_remaining_nano()),
+                ) {
                     (Some(sum), Some(value)) => Some(sum + i128::from(value)),
                     _ => None,
                 };
@@ -7939,10 +7943,8 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let root = std::env::temp_dir().join(format!(
-                "kimi-subs-http-{}-{suffix}",
-                std::process::id()
-            ));
+            let root = std::env::temp_dir()
+                .join(format!("kimi-subs-http-{}-{suffix}", std::process::id()));
             std::fs::create_dir_all(root.join("credentials")).unwrap();
             std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
             std::fs::set_permissions(
@@ -7973,8 +7975,9 @@ mod tests {
                 region: "REGION_CN".into(),
                 proxy_url: String::new(),
             };
-            let ring = kimi_credential::CredentialKeyring::parse(&format!("a1:{}", "11".repeat(32)))
-                .unwrap();
+            let ring =
+                kimi_credential::CredentialKeyring::parse(&format!("a1:{}", "11".repeat(32)))
+                    .unwrap();
             let envelope = ring.seal("a1", "kimi-01", &credential).unwrap();
             let credential_path = self.root.join("credentials/kimi-01.json");
             std::fs::write(
@@ -7982,11 +7985,8 @@ mod tests {
                 kimi_credential::encode_envelope(&envelope).unwrap(),
             )
             .unwrap();
-            std::fs::set_permissions(
-                &credential_path,
-                std::fs::Permissions::from_mode(0o600),
-            )
-            .unwrap();
+            std::fs::set_permissions(&credential_path, std::fs::Permissions::from_mode(0o600))
+                .unwrap();
             let roster = json!({
                 "profiles": [{
                     "id": "kimi-01",
@@ -7995,8 +7995,7 @@ mod tests {
             });
             let roster_path = self.root.join("profiles.json");
             std::fs::write(&roster_path, serde_json::to_vec(&roster).unwrap()).unwrap();
-            std::fs::set_permissions(&roster_path, std::fs::Permissions::from_mode(0o600))
-                .unwrap();
+            std::fs::set_permissions(&roster_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
 
         fn gateway(&self) -> forward::KimiGateway {
@@ -8110,7 +8109,11 @@ mod tests {
                         .insert("x-api-key", key.parse().unwrap());
                 }
                 let response = service.clone().oneshot(request).await.unwrap();
-                assert_eq!(response.status(), expected, "{mode:?} credential {credential:?}");
+                assert_eq!(
+                    response.status(),
+                    expected,
+                    "{mode:?} credential {credential:?}"
+                );
                 if expected == StatusCode::OK {
                     let body = to_bytes(response.into_body(), 4_096).await.unwrap();
                     let body: Value = serde_json::from_slice(&body).unwrap();
@@ -8196,7 +8199,10 @@ mod tests {
 
         // The gateway is absent on the argv-pinned default-off plane: readiness stays green so
         // Caddy health-includes the slot serving the stable disabled envelope.
-        let mut request = Request::builder().uri("/ready").body(Body::empty()).unwrap();
+        let mut request = Request::builder()
+            .uri("/ready")
+            .body(Body::empty())
+            .unwrap();
         request.extensions_mut().insert(peer);
         let response = service.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -8213,7 +8219,9 @@ mod tests {
         request.extensions_mut().insert(peer);
         let response = service.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), 2 * 1024 * 1024).await.unwrap();
+        let body = to_bytes(response.into_body(), 2 * 1024 * 1024)
+            .await
+            .unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("claude_api_kimi_enabled 0"));
         assert!(body.contains("claude_api_kimi_live_profiles 0"));
@@ -8227,7 +8235,10 @@ mod tests {
             (Some("control-key"), StatusCode::OK),
             (Some("admin-key"), StatusCode::OK),
         ] {
-            let mut request = Request::builder().uri("/kimi-subs").body(Body::empty()).unwrap();
+            let mut request = Request::builder()
+                .uri("/kimi-subs")
+                .body(Body::empty())
+                .unwrap();
             request.extensions_mut().insert(peer);
             if let Some(key) = credential {
                 request
@@ -8254,13 +8265,19 @@ mod tests {
         app.kimi = Some(Arc::new(fixture.gateway()));
         let service = router(app, Arc::new(AtomicBool::new(true)));
         let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
-        let mut request = Request::builder().uri("/ready").body(Body::empty()).unwrap();
+        let mut request = Request::builder()
+            .uri("/ready")
+            .body(Body::empty())
+            .unwrap();
         request.extensions_mut().insert(peer);
         let response = service.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = to_bytes(response.into_body(), 4_096).await.unwrap();
         let body: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(body, json!({"ready": false, "reason": "provider_unavailable"}));
+        assert_eq!(
+            body,
+            json!({"ready": false, "reason": "provider_unavailable"})
+        );
     }
 
     #[tokio::test]
@@ -8332,7 +8349,13 @@ mod tests {
     fn kimi_subs_value_serializes_the_exact_quota_window() {
         let fixture = KimiHttpFixture::new();
         let gateway = fixture.gateway();
-        let value = kimi_subs_value_with_report(&gateway, &unknown_kimi_status(), 1_800_000_100, None, None);
+        let value = kimi_subs_value_with_report(
+            &gateway,
+            &unknown_kimi_status(),
+            1_800_000_100,
+            None,
+            None,
+        );
         assert_eq!(value["fleet"]["inflight_requests"], 2);
         assert_eq!(value["delivery"]["pending_events"], 1);
         // The runner attribution surface: authority flag, bounded recent-turn list and the
@@ -8607,10 +8630,8 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let root = std::env::temp_dir().join(format!(
-                "glm-subs-http-{}-{suffix}",
-                std::process::id()
-            ));
+            let root =
+                std::env::temp_dir().join(format!("glm-subs-http-{}-{suffix}", std::process::id()));
             std::fs::create_dir_all(root.join("credentials")).unwrap();
             std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
             std::fs::set_permissions(
@@ -8646,11 +8667,8 @@ mod tests {
                     glm_credential::encode_envelope(&envelope).unwrap(),
                 )
                 .unwrap();
-                std::fs::set_permissions(
-                    &credential_path,
-                    std::fs::Permissions::from_mode(0o600),
-                )
-                .unwrap();
+                std::fs::set_permissions(&credential_path, std::fs::Permissions::from_mode(0o600))
+                    .unwrap();
                 entries.push(json!({
                     "id": id,
                     "credential_file": credential_path.to_string_lossy(),
@@ -8659,8 +8677,7 @@ mod tests {
             let roster = json!({ "profiles": entries });
             let roster_path = self.root.join("profiles.json");
             std::fs::write(&roster_path, serde_json::to_vec(&roster).unwrap()).unwrap();
-            std::fs::set_permissions(&roster_path, std::fs::Permissions::from_mode(0o600))
-                .unwrap();
+            std::fs::set_permissions(&roster_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
 
         fn gateway(&self) -> forward::glm::GlmGateway {
@@ -8780,7 +8797,11 @@ mod tests {
                         .insert("x-api-key", key.parse().unwrap());
                 }
                 let response = service.clone().oneshot(request).await.unwrap();
-                assert_eq!(response.status(), expected, "{mode:?} credential {credential:?}");
+                assert_eq!(
+                    response.status(),
+                    expected,
+                    "{mode:?} credential {credential:?}"
+                );
                 if expected == StatusCode::OK {
                     let body = to_bytes(response.into_body(), 4_096).await.unwrap();
                     let body: Value = serde_json::from_slice(&body).unwrap();
@@ -8872,7 +8893,8 @@ mod tests {
     fn glm_subs_value_serializes_the_exact_quota_window() {
         let fixture = GlmHttpFixture::new();
         let gateway = fixture.gateway();
-        let value = glm_subs_value_with_report(&gateway, &unknown_glm_status(), 1_800_000_100, None);
+        let value =
+            glm_subs_value_with_report(&gateway, &unknown_glm_status(), 1_800_000_100, None);
         assert_eq!(value["fleet"]["inflight_requests"], 2);
         assert_eq!(value["delivery"]["pending_events"], 1);
         assert_eq!(value["profiles"][0]["quota_observed_at"], 1_800_000_000);
@@ -9001,17 +9023,32 @@ mod tests {
             row
         };
         let report = vec![
-            measured(&subject_one, registry::GLM_5H_WINDOW_SECS, 50_000_000_000, 25_000_000),
-            measured(&subject_one, registry::GLM_WEEKLY_WINDOW_SECS, 200_000_000_000, 10_000_000),
-            measured(&subject_two, registry::GLM_5H_WINDOW_SECS, 30_000_000_000, 50_000_000),
-            measured(&subject_two, registry::GLM_WEEKLY_WINDOW_SECS, 100_000_000_000, 0),
+            measured(
+                &subject_one,
+                registry::GLM_5H_WINDOW_SECS,
+                50_000_000_000,
+                25_000_000,
+            ),
+            measured(
+                &subject_one,
+                registry::GLM_WEEKLY_WINDOW_SECS,
+                200_000_000_000,
+                10_000_000,
+            ),
+            measured(
+                &subject_two,
+                registry::GLM_5H_WINDOW_SECS,
+                30_000_000_000,
+                50_000_000,
+            ),
+            measured(
+                &subject_two,
+                registry::GLM_WEEKLY_WINDOW_SECS,
+                100_000_000_000,
+                0,
+            ),
         ];
-        let value = glm_subs_value_with_report(
-            &gateway,
-            &status,
-            1_800_000_100,
-            Some(&report),
-        );
+        let value = glm_subs_value_with_report(&gateway, &status, 1_800_000_100, Some(&report));
         let totals = value["window_totals"].as_array().unwrap();
         assert_eq!(totals.len(), 2);
         // 5h window: capacity 50e9 + 30e9, remaining 37.5e9 (75% of 50e9) + 15e9 (50% of 30e9).
@@ -9029,16 +9066,26 @@ mod tests {
         // partial sum would silently understate fleet capacity — while the complete 5h window
         // still sums exactly.
         let report = vec![
-            measured(&subject_one, registry::GLM_5H_WINDOW_SECS, 50_000_000_000, 25_000_000),
-            measured(&subject_one, registry::GLM_WEEKLY_WINDOW_SECS, 200_000_000_000, 10_000_000),
-            measured(&subject_two, registry::GLM_5H_WINDOW_SECS, 30_000_000_000, 50_000_000),
+            measured(
+                &subject_one,
+                registry::GLM_5H_WINDOW_SECS,
+                50_000_000_000,
+                25_000_000,
+            ),
+            measured(
+                &subject_one,
+                registry::GLM_WEEKLY_WINDOW_SECS,
+                200_000_000_000,
+                10_000_000,
+            ),
+            measured(
+                &subject_two,
+                registry::GLM_5H_WINDOW_SECS,
+                30_000_000_000,
+                50_000_000,
+            ),
         ];
-        let value = glm_subs_value_with_report(
-            &gateway,
-            &status,
-            1_800_000_100,
-            Some(&report),
-        );
+        let value = glm_subs_value_with_report(&gateway, &status, 1_800_000_100, Some(&report));
         let totals = value["window_totals"].as_array().unwrap();
         assert_eq!(totals[0]["capacity_nano"], "80000000000");
         assert!(totals[1]["capacity_nano"].is_null());

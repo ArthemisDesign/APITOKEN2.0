@@ -147,7 +147,11 @@ fn anthropic_error(error: ApiError) -> Response {
     let retry_after = error.retry_after;
     let reason = error.reason;
     let (status, kind, message) = match error.status.as_u16() {
-        400 => (StatusCode::BAD_REQUEST, "invalid_request_error", error.message),
+        400 => (
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            error.message,
+        ),
         401 => (
             StatusCode::UNAUTHORIZED,
             "authentication_error",
@@ -159,7 +163,11 @@ fn anthropic_error(error: ApiError) -> Response {
             error.message,
         ),
         404 => (StatusCode::NOT_FOUND, "not_found_error", error.message),
-        429 => (StatusCode::TOO_MANY_REQUESTS, "rate_limit_error", error.message),
+        429 => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limit_error",
+            error.message,
+        ),
         503 => (
             StatusCode::from_u16(529).expect("529 is a valid HTTP status code"),
             "overloaded_error",
@@ -199,7 +207,10 @@ struct ParsedSkin {
 /// ready-made Anthropic-envelope responses. When `require_max_tokens` is false (count_tokens),
 /// a missing `max_tokens` is tolerated: the official token-counting endpoint does not require
 /// it and the input estimate does not use it.
-fn translate_messages_request(value: Value, require_max_tokens: bool) -> Result<ParsedSkin, Response> {
+fn translate_messages_request(
+    value: Value,
+    require_max_tokens: bool,
+) -> Result<ParsedSkin, Response> {
     let mut object = match value {
         Value::Object(object) => object,
         _ => return Err(invalid_request("Request body must be a JSON object.")),
@@ -208,13 +219,19 @@ fn translate_messages_request(value: Value, require_max_tokens: bool) -> Result<
 
     let model = match object.remove("model") {
         Some(Value::String(model)) => model,
-        _ => return Err(invalid_request("Missing or invalid required parameter: model.")),
+        _ => {
+            return Err(invalid_request(
+                "Missing or invalid required parameter: model.",
+            ))
+        }
     };
     // The namespaced ID is resolved here, not in the router and not in metering — the mirror
     // of the `anthropic/` strip in `anthropic_responses.rs`.
     let model = model.strip_prefix("openai/").unwrap_or(&model).to_string();
     if model.is_empty() {
-        return Err(invalid_request("Missing or invalid required parameter: model."));
+        return Err(invalid_request(
+            "Missing or invalid required parameter: model.",
+        ));
     }
 
     let max_tokens = match object.remove("max_tokens") {
@@ -222,7 +239,9 @@ fn translate_messages_request(value: Value, require_max_tokens: bool) -> Result<
             invalid_request("Invalid type for parameter: max_tokens must be a positive integer.")
         })?,
         None if require_max_tokens => {
-            return Err(invalid_request("Missing or invalid required parameter: max_tokens."))
+            return Err(invalid_request(
+                "Missing or invalid required parameter: max_tokens.",
+            ))
         }
         None => 0,
     };
@@ -267,8 +286,7 @@ fn translate_messages_request(value: Value, require_max_tokens: bool) -> Result<
             .get("service_tier")
             .and_then(Value::as_str)
             .is_some_and(|value| {
-                value.eq_ignore_ascii_case("fast")
-                    || value.eq_ignore_ascii_case("priority")
+                value.eq_ignore_ascii_case("fast") || value.eq_ignore_ascii_case("priority")
             });
     if requested_fast {
         responses.insert("service_tier".to_string(), json!("priority"));
@@ -392,17 +410,16 @@ fn translate_output_config(
         )));
     }
 
-    let effort = match object.get("effort") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(effort)) if matches!(effort.as_str(), "low" | "medium" | "high") => {
-            Some(effort.clone())
-        }
-        Some(_) => {
-            return Err(invalid_request(
+    let effort =
+        match object.get("effort") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(effort)) if matches!(effort.as_str(), "low" | "medium" | "high") => {
+                Some(effort.clone())
+            }
+            Some(_) => return Err(invalid_request(
                 "Invalid value for parameter: output_config.effort must be low, medium, or high.",
-            ))
-        }
-    };
+            )),
+        };
 
     let format = match object.get("format") {
         None | Some(Value::Null) => None,
@@ -441,8 +458,7 @@ fn reject_cache_control(block: &Value, param: &str) -> Result<(), Response> {
 fn is_ignorable_cache_control(value: &Value) -> bool {
     value.is_null()
         || value.as_object().is_some_and(|object| {
-            object.len() == 1
-                && object.get("type").and_then(Value::as_str) == Some("ephemeral")
+            object.len() == 1 && object.get("type").and_then(Value::as_str) == Some("ephemeral")
         })
 }
 
@@ -461,7 +477,9 @@ fn translate_system(value: Option<Value>) -> Result<Option<String>, Response> {
                 match block.get("type").and_then(Value::as_str) {
                     Some("text") => {
                         let text = block.get("text").and_then(Value::as_str).ok_or_else(|| {
-                            invalid_request(format!("System text block requires text ({param}.text)."))
+                            invalid_request(format!(
+                                "System text block requires text ({param}.text)."
+                            ))
                         })?;
                         parts.push(text.to_string());
                     }
@@ -490,17 +508,24 @@ fn translate_messages(messages: &[Value]) -> Result<Vec<Value>, Response> {
     let mut call_ids = HashSet::new();
     for (index, message) in messages.iter().enumerate() {
         let object = message.as_object().ok_or_else(|| {
-            invalid_request(format!("Each message must be an object (messages.{index})."))
+            invalid_request(format!(
+                "Each message must be an object (messages.{index})."
+            ))
         })?;
         let param = format!("messages.{index}");
         let role = object.get("role").and_then(Value::as_str).ok_or_else(|| {
-            invalid_request(format!("Each message requires a valid role ({param}.role)."))
+            invalid_request(format!(
+                "Each message requires a valid role ({param}.role)."
+            ))
         })?;
         match role {
             "user" => translate_user_content(object.get("content"), &param, &mut input)?,
-            "assistant" => {
-                translate_assistant_content(object.get("content"), &param, &mut input, &mut call_ids)?
-            }
+            "assistant" => translate_assistant_content(
+                object.get("content"),
+                &param,
+                &mut input,
+                &mut call_ids,
+            )?,
             _ => {
                 return Err(invalid_request(format!(
                     "Message role {role:?} is not supported ({param}.role)."
@@ -552,7 +577,9 @@ fn translate_user_content(
                 match block.get("type").and_then(Value::as_str) {
                     Some("text") => {
                         let text = block.get("text").and_then(Value::as_str).ok_or_else(|| {
-                            invalid_request(format!("Text block requires text ({block_param}.text)."))
+                            invalid_request(format!(
+                                "Text block requires text ({block_param}.text)."
+                            ))
                         })?;
                         parts.push(json!({"type": "input_text", "text": text}));
                     }
@@ -590,16 +617,23 @@ fn translate_user_content(
 /// Messages image block → canonical Responses `input_image` part (the shared
 /// `canonical_image_part` of `api.rs`): base64 source → data: URL, url source → URL verbatim.
 fn translate_image_block(block: &Value, param: &str) -> Result<Value, Response> {
-    let source = block.get("source").and_then(Value::as_object).ok_or_else(|| {
-        invalid_request(format!("Image block requires a source object ({param}.source)."))
-    })?;
+    let source = block
+        .get("source")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            invalid_request(format!(
+                "Image block requires a source object ({param}.source)."
+            ))
+        })?;
     let required = |field: &str| {
         source
             .get(field)
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
-                invalid_request(format!("Image source requires a non-empty {field} ({param}.source.{field})."))
+                invalid_request(format!(
+                    "Image source requires a non-empty {field} ({param}.source.{field})."
+                ))
             })
     };
     let url = match source.get("type").and_then(Value::as_str) {
@@ -627,7 +661,9 @@ fn translate_tool_result(block: &Value, param: &str) -> Result<Value, Response> 
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
-            invalid_request(format!("tool_result requires a non-empty tool_use_id ({param}.tool_use_id)."))
+            invalid_request(format!(
+                "tool_result requires a non-empty tool_use_id ({param}.tool_use_id)."
+            ))
         })?;
     let output = match block.get("content") {
         None | Some(Value::Null) => String::new(),
@@ -703,7 +739,9 @@ fn translate_assistant_content(
                 match block.get("type").and_then(Value::as_str) {
                     Some("text") => {
                         let text = block.get("text").and_then(Value::as_str).ok_or_else(|| {
-                            invalid_request(format!("Text block requires text ({block_param}.text)."))
+                            invalid_request(format!(
+                                "Text block requires text ({block_param}.text)."
+                            ))
                         })?;
                         if !text.is_empty() {
                             parts.push(json!({"type": "output_text", "text": text}));
@@ -751,12 +789,16 @@ fn translate_tool_use(
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
-                invalid_request(format!("tool_use requires a non-empty {field} ({param}.{field})."))
+                invalid_request(format!(
+                    "tool_use requires a non-empty {field} ({param}.{field})."
+                ))
             })
     };
     let id = required("id")?;
     if !call_ids.insert(id.to_string()) {
-        return Err(invalid_request(format!("Duplicate tool_use id {id:?} ({param}.id).")));
+        return Err(invalid_request(format!(
+            "Duplicate tool_use id {id:?} ({param}.id)."
+        )));
     }
     let name = required("name")?;
     let tool_input = match block.get("input") {
@@ -768,8 +810,7 @@ fn translate_tool_use(
             )))
         }
     };
-    let arguments = serde_json::to_string(&tool_input)
-        .unwrap_or_else(|_| "{}".to_string());
+    let arguments = serde_json::to_string(&tool_input).unwrap_or_else(|_| "{}".to_string());
     Ok(json!({
         "type": "function_call",
         "call_id": id,
@@ -783,15 +824,15 @@ fn translate_tool_use(
 /// supported; `input_schema` → `parameters`. Server tools (web_search etc.) and an unsupported
 /// `cache_control` shape → 400.
 fn translate_tools(value: &Value) -> Result<Vec<Value>, Response> {
-    let tools = value.as_array().ok_or_else(|| {
-        invalid_request("Invalid type for parameter: tools must be an array.")
-    })?;
+    let tools = value
+        .as_array()
+        .ok_or_else(|| invalid_request("Invalid type for parameter: tools must be an array."))?;
     let mut translated = Vec::with_capacity(tools.len());
     for (index, tool) in tools.iter().enumerate() {
         let param = format!("tools.{index}");
-        let object = tool.as_object().ok_or_else(|| {
-            invalid_request(format!("Each tool must be an object ({param})."))
-        })?;
+        let object = tool
+            .as_object()
+            .ok_or_else(|| invalid_request(format!("Each tool must be an object ({param}).")))?;
         match object.get("type").and_then(Value::as_str) {
             None | Some("custom") => {}
             Some(_) => {
@@ -825,7 +866,9 @@ fn translate_tools(value: &Value) -> Result<Vec<Value>, Response> {
 /// (the default), any → "required", none → "none", tool → the named function form;
 /// `disable_parallel_tool_use: true` → `parallel_tool_calls: false`. The mirror of
 /// `translate_responses_tool_choice` in `anthropic_responses.rs`.
-fn translate_tool_choice(object: &Map<String, Value>) -> Result<(Option<Value>, Option<bool>), Response> {
+fn translate_tool_choice(
+    object: &Map<String, Value>,
+) -> Result<(Option<Value>, Option<bool>), Response> {
     let Some(choice) = object.get("tool_choice").filter(|value| !value.is_null()) else {
         return Ok((None, None));
     };
@@ -891,7 +934,9 @@ fn translate_thinking(value: Option<&Value>) -> Result<Option<String>, Response>
                 .to_string(),
             ))
         }
-        _ => Err(invalid_request("Invalid value for parameter: thinking.type.")),
+        _ => Err(invalid_request(
+            "Invalid value for parameter: thinking.type.",
+        )),
     }
 }
 
@@ -906,9 +951,11 @@ fn parse_stop_sequences(value: Option<&Value>) -> Result<Vec<String>, Response> 
     })?;
     let mut out = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
-        out.push(item.as_str().ok_or_else(|| {
-            invalid_request(format!("stop_sequences.{index} must be a string."))
-        })?);
+        out.push(
+            item.as_str().ok_or_else(|| {
+                invalid_request(format!("stop_sequences.{index} must be a string."))
+            })?,
+        );
     }
     Ok(out
         .into_iter()
@@ -939,8 +986,7 @@ fn messages_usage(usage: &CodexUsage, effective_service_tier: Option<&str>) -> V
         mapped["cache_read_input_tokens"] = Value::from(usage.cached_input_tokens);
     }
     if usage.reasoning_output_tokens > 0 {
-        mapped["output_tokens_details"] =
-            json!({"thinking_tokens": usage.reasoning_output_tokens});
+        mapped["output_tokens_details"] = json!({"thinking_tokens": usage.reasoning_output_tokens});
     }
     mapped
 }
@@ -1139,15 +1185,22 @@ impl BlockEmitter {
     }
 
     fn thinking_delta(&mut self, text: &str) -> Vec<(String, Value)> {
-        let mut out =
-            self.ensure_open(OpenBlockKind::Thinking, json!({"type": "thinking", "thinking": ""}));
+        let mut out = self.ensure_open(
+            OpenBlockKind::Thinking,
+            json!({"type": "thinking", "thinking": ""}),
+        );
         out.push(self.delta(json!({"type": "thinking_delta", "thinking": text})));
         out
     }
 
     /// A complete function_call item arrives as one RawItem: the whole block lifecycle
     /// (start → arguments delta → stop) is emitted immediately.
-    fn function_call(&mut self, call_id: &str, name: &str, arguments: &str) -> Vec<(String, Value)> {
+    fn function_call(
+        &mut self,
+        call_id: &str,
+        name: &str,
+        arguments: &str,
+    ) -> Vec<(String, Value)> {
         let mut out = self.ensure_open(
             OpenBlockKind::ToolUse,
             json!({"type": "tool_use", "id": call_id, "name": name, "input": {}}),
@@ -1164,7 +1217,11 @@ async fn send_skin_frame(sender: &mpsc::Sender<Bytes>, event: &str, value: Value
         r#"{"type":"error","error":{"type":"api_error","message":"serialization failed"}}"#
             .to_string()
     });
-    send_chat_bytes(sender, Bytes::from(format!("event: {event}\ndata: {data}\n\n"))).await
+    send_chat_bytes(
+        sender,
+        Bytes::from(format!("event: {event}\ndata: {data}\n\n")),
+    )
+    .await
 }
 
 /// Mid-stream failure: Anthropic-shaped `event: error` and the stream ends (the mirror of the
@@ -1408,7 +1465,10 @@ async fn stream_messages(
         let result = match run.await {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
-                eprintln!("Codex messages skin stream failed [{}]", error.diagnostic_class());
+                eprintln!(
+                    "Codex messages skin stream failed [{}]",
+                    error.diagnostic_class()
+                );
                 let _ = send_skin_error(&frame_tx).await;
                 return;
             }
@@ -1663,7 +1723,6 @@ pub async fn count_tokens(
     )
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1697,7 +1756,9 @@ mod tests {
                 Some(2),
             ),
             invalid_request("bad request"),
-            anthropic_error(ApiError::from(crate::codex::billing::AdmissionError::LowBalance)),
+            anthropic_error(ApiError::from(
+                crate::codex::billing::AdmissionError::LowBalance,
+            )),
             anthropic_error(ApiError::from(
                 crate::codex::billing::AdmissionError::Unauthorized,
             )),
@@ -1761,11 +1822,15 @@ mod tests {
             "max_tokens": 256,
             "messages": [{"role": "user", "content": "Hello"}],
             "stream": "false"
-        })).await;
+        }))
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["type"], "error");
         assert_eq!(body["error"]["type"], "invalid_request_error");
-        assert!(body["error"]["message"].as_str().unwrap().contains("stream"));
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("stream"));
         assert!(body["error"].get("param").is_none());
 
         let parsed = ok_translated(json!({
@@ -1792,8 +1857,7 @@ mod tests {
             body[field] = json!(value);
             let translated = ok_translated(body);
             assert_eq!(
-                translated.responses["service_tier"],
-                "priority",
+                translated.responses["service_tier"], "priority",
                 "{field}={value}"
             );
         }
@@ -1863,7 +1927,13 @@ mod tests {
         ] {
             let (status, json) = expect_err(body).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
-            assert!(json["error"]["message"].as_str().unwrap().contains("cache_control"), "{json}");
+            assert!(
+                json["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("cache_control"),
+                "{json}"
+            );
         }
     }
 
@@ -1933,7 +2003,10 @@ mod tests {
         assert_eq!(input[0]["type"], "message");
         assert_eq!(input[0]["role"], "user");
         assert_eq!(input[1]["role"], "assistant");
-        assert_eq!(input[1]["content"][0], json!({"type": "output_text", "text": "Let me check."}));
+        assert_eq!(
+            input[1]["content"][0],
+            json!({"type": "output_text", "text": "Let me check."})
+        );
         assert_eq!(
             input[2],
             json!({"type": "function_call", "call_id": "toolu_1", "name": "weather",
@@ -1945,7 +2018,10 @@ mod tests {
         );
         // Текст после tool_result остаётся отдельным user message item (порядок блоков).
         assert_eq!(input[4]["role"], "user");
-        assert_eq!(input[4]["content"][0], json!({"type": "input_text", "text": "thanks"}));
+        assert_eq!(
+            input[4]["content"][0],
+            json!({"type": "input_text", "text": "thanks"})
+        );
     }
 
     #[test]
@@ -1986,7 +2062,10 @@ mod tests {
         }))
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(json["error"]["message"].as_str().unwrap().contains("tool_result"));
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("tool_result"));
     }
 
     #[test]
@@ -2071,7 +2150,10 @@ mod tests {
             "model": "m", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}],
             "tool_choice": {"type": "tool", "name": "f"}
         }));
-        assert_eq!(parsed.responses["tool_choice"], json!({"type": "function", "name": "f"}));
+        assert_eq!(
+            parsed.responses["tool_choice"],
+            json!({"type": "function", "name": "f"})
+        );
 
         // disable_parallel_tool_use → parallel_tool_calls:false (зеркало 4.1).
         let parsed = ok_translated(json!({
@@ -2093,10 +2175,22 @@ mod tests {
             .cloned()
         };
         assert_eq!(effort(json!({"type": "disabled"})), None);
-        assert_eq!(effort(json!({"type": "adaptive", "display": "summarized"})), None);
-        assert_eq!(effort(json!({"type": "enabled", "budget_tokens": 1024})), Some(json!({"effort": "low"})));
-        assert_eq!(effort(json!({"type": "enabled", "budget_tokens": 8000})), Some(json!({"effort": "medium"})));
-        assert_eq!(effort(json!({"type": "enabled", "budget_tokens": 32000})), Some(json!({"effort": "high"})));
+        assert_eq!(
+            effort(json!({"type": "adaptive", "display": "summarized"})),
+            None
+        );
+        assert_eq!(
+            effort(json!({"type": "enabled", "budget_tokens": 1024})),
+            Some(json!({"effort": "low"}))
+        );
+        assert_eq!(
+            effort(json!({"type": "enabled", "budget_tokens": 8000})),
+            Some(json!({"effort": "medium"}))
+        );
+        assert_eq!(
+            effort(json!({"type": "enabled", "budget_tokens": 32000})),
+            Some(json!({"effort": "high"}))
+        );
     }
 
     #[tokio::test]
@@ -2118,7 +2212,10 @@ mod tests {
     #[tokio::test]
     async fn capability_matrix_rejects_unsupported_values() {
         for (param, value) in [
-            ("context_management", json!({"edits": [{"type": "clear_thinking_20251015", "keep": "none"}]})),
+            (
+                "context_management",
+                json!({"edits": [{"type": "clear_thinking_20251015", "keep": "none"}]}),
+            ),
             ("mcp_servers", json!([{"name": "srv"}])),
             ("container", json!({"id": "c"})),
         ] {
@@ -2129,7 +2226,10 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{param}");
             assert_eq!(json["error"]["type"], "invalid_request_error", "{param}");
-            assert!(json["error"]["message"].as_str().unwrap().contains(param), "{json}");
+            assert!(
+                json["error"]["message"].as_str().unwrap().contains(param),
+                "{json}"
+            );
         }
         for context_management in [
             json!(null),
@@ -2265,7 +2365,10 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
             assert_eq!(json["type"], "error", "{json}");
             assert_eq!(json["error"]["type"], "invalid_request_error", "{json}");
-            assert!(json["error"].get("param").is_none(), "Anthropic envelope has no param: {json}");
+            assert!(
+                json["error"].get("param").is_none(),
+                "Anthropic envelope has no param: {json}"
+            );
         }
     }
 
@@ -2377,28 +2480,61 @@ mod tests {
         assert_eq!(
             frame_names(&all),
             [
-                "content_block_start", "content_block_delta", "content_block_delta",
-                "content_block_stop", "content_block_start", "content_block_delta",
-                "content_block_stop", "content_block_start", "content_block_delta",
+                "content_block_start",
+                "content_block_delta",
+                "content_block_delta",
+                "content_block_stop",
+                "content_block_start",
+                "content_block_delta",
+                "content_block_stop",
+                "content_block_start",
+                "content_block_delta",
                 "content_block_stop",
             ]
         );
         // Плотные индексы: text=0, tool_use=1, text=2; смена типа блока сначала закрывает
         // предыдущий (stop перед start), function_call приходит целиком → start/delta/stop сразу.
         assert_eq!(all[0].1["index"], 0);
-        assert_eq!(all[0].1["content_block"], json!({"type": "text", "text": ""}));
-        assert_eq!(all[1].1["delta"], json!({"type": "text_delta", "text": "hello"}));
+        assert_eq!(
+            all[0].1["content_block"],
+            json!({"type": "text", "text": ""})
+        );
+        assert_eq!(
+            all[1].1["delta"],
+            json!({"type": "text_delta", "text": "hello"})
+        );
         assert_eq!(all[2].1["index"], 0);
-        assert_eq!(all[3], ("content_block_stop".to_string(), json!({"type": "content_block_stop", "index": 0})));
+        assert_eq!(
+            all[3],
+            (
+                "content_block_stop".to_string(),
+                json!({"type": "content_block_stop", "index": 0})
+            )
+        );
         assert_eq!(all[4].1["index"], 1);
         assert_eq!(
             all[4].1["content_block"],
             json!({"type": "tool_use", "id": "call_1", "name": "weather", "input": {}})
         );
-        assert_eq!(all[5].1["delta"], json!({"type": "input_json_delta", "partial_json": "{\"city\":\"Paris\"}"}));
-        assert_eq!(all[6], ("content_block_stop".to_string(), json!({"type": "content_block_stop", "index": 1})));
+        assert_eq!(
+            all[5].1["delta"],
+            json!({"type": "input_json_delta", "partial_json": "{\"city\":\"Paris\"}"})
+        );
+        assert_eq!(
+            all[6],
+            (
+                "content_block_stop".to_string(),
+                json!({"type": "content_block_stop", "index": 1})
+            )
+        );
         assert_eq!(all[7].1["index"], 2);
-        assert_eq!(all[9], ("content_block_stop".to_string(), json!({"type": "content_block_stop", "index": 2})));
+        assert_eq!(
+            all[9],
+            (
+                "content_block_stop".to_string(),
+                json!({"type": "content_block_stop", "index": 2})
+            )
+        );
     }
 
     #[test]
@@ -2406,22 +2542,49 @@ mod tests {
         let mut emitter = BlockEmitter::new();
         let mut all: Vec<(String, Value)> = Vec::new();
         // Новый reasoning item открывает thinking-блок (через PartAdded summary_index 0).
-        all.extend(emitter.ensure_open(OpenBlockKind::Thinking, json!({"type": "thinking", "thinking": ""})));
+        all.extend(emitter.ensure_open(
+            OpenBlockKind::Thinking,
+            json!({"type": "thinking", "thinking": ""}),
+        ));
         all.extend(emitter.thinking_delta("plan"));
         all.extend(emitter.text_delta("answer"));
         all.extend(emitter.close_open());
 
         assert_eq!(
             frame_names(&all),
-            ["content_block_start", "content_block_delta", "content_block_stop",
-             "content_block_start", "content_block_delta", "content_block_stop"]
+            [
+                "content_block_start",
+                "content_block_delta",
+                "content_block_stop",
+                "content_block_start",
+                "content_block_delta",
+                "content_block_stop"
+            ]
         );
-        assert_eq!(all[1].1["delta"], json!({"type": "thinking_delta", "thinking": "plan"}));
+        assert_eq!(
+            all[1].1["delta"],
+            json!({"type": "thinking_delta", "thinking": "plan"})
+        );
         // Открытие text-блока сначала закрывает thinking-блок (stop index 0).
-        assert_eq!(all[2], ("content_block_stop".to_string(), json!({"type": "content_block_stop", "index": 0})));
+        assert_eq!(
+            all[2],
+            (
+                "content_block_stop".to_string(),
+                json!({"type": "content_block_stop", "index": 0})
+            )
+        );
         assert_eq!(all[3].1["index"], 1);
-        assert_eq!(all[4].1["delta"], json!({"type": "text_delta", "text": "answer"}));
-        assert_eq!(all[5], ("content_block_stop".to_string(), json!({"type": "content_block_stop", "index": 1})));
+        assert_eq!(
+            all[4].1["delta"],
+            json!({"type": "text_delta", "text": "answer"})
+        );
+        assert_eq!(
+            all[5],
+            (
+                "content_block_stop".to_string(),
+                json!({"type": "content_block_stop", "index": 1})
+            )
+        );
     }
 
     #[test]

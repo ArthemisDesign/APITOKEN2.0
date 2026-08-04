@@ -116,7 +116,9 @@ impl CodexConfig {
     pub fn usage_url(&self) -> String {
         format!(
             "{}/wham/usage",
-            self.base_url.trim_end_matches("/codex").trim_end_matches('/')
+            self.base_url
+                .trim_end_matches("/codex")
+                .trim_end_matches('/')
         )
     }
 

@@ -508,8 +508,12 @@ mod tests {
     const KEY_B: &str = "b2";
 
     fn keyring() -> CredentialKeyring {
-        CredentialKeyring::parse(&format!("{KEY_A}:{},{KEY_B}:{}", "11".repeat(32), "22".repeat(32)))
-            .expect("keyring parses")
+        CredentialKeyring::parse(&format!(
+            "{KEY_A}:{},{KEY_B}:{}",
+            "11".repeat(32),
+            "22".repeat(32)
+        ))
+        .expect("keyring parses")
     }
 
     fn oauth_credential() -> KimiCredential {
@@ -606,7 +610,12 @@ mod tests {
         // The provider invalidates the old refresh token on every refresh, so a response that
         // omits a new one would leave a credential that dies on next use.
         let err = credential
-            .rotate("access-2".into(), String::new(), 2_100_000_000, String::new())
+            .rotate(
+                "access-2".into(),
+                String::new(),
+                2_100_000_000,
+                String::new(),
+            )
             .unwrap_err();
         assert!(err.to_string().contains("did not rotate"));
         assert_eq!(credential.refresh_token, "refresh-1");

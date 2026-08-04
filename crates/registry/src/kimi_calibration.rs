@@ -150,7 +150,10 @@ impl KimiTurnCalibrationEvent {
         if !matches!(self.context_mode.as_str(), "256k" | "1m") {
             return Err(KimiEventError::UnsupportedContextMode);
         }
-        if !matches!(self.reasoning_effort.as_str(), "low" | "high" | "max" | "off") {
+        if !matches!(
+            self.reasoning_effort.as_str(),
+            "low" | "high" | "max" | "off"
+        ) {
             return Err(KimiEventError::UnsupportedReasoningEffort);
         }
         if self.priced_ts <= 0 || self.completed_at <= 0 {
@@ -482,7 +485,9 @@ mod tests {
     #[test]
     fn full_and_empty_windows_map_to_the_scale_bounds() {
         assert_eq!(
-            kimi_fraction_from_native(0, 500).unwrap().used_fraction_units,
+            kimi_fraction_from_native(0, 500)
+                .unwrap()
+                .used_fraction_units,
             0
         );
         assert_eq!(
@@ -507,7 +512,10 @@ mod tests {
             kimi_window_duration_secs(300, "TIME_UNIT_MINUTE").unwrap(),
             KIMI_ROLLING_WINDOW_SECS
         );
-        assert_eq!(kimi_window_duration_secs(5, "TIME_UNIT_HOUR").unwrap(), 18_000);
+        assert_eq!(
+            kimi_window_duration_secs(5, "TIME_UNIT_HOUR").unwrap(),
+            18_000
+        );
         assert_eq!(
             kimi_window_duration_secs(7, "TIME_UNIT_DAY").unwrap(),
             KIMI_WEEKLY_WINDOW_SECS

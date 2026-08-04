@@ -33,9 +33,9 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use glm_credential::{GlmCredential, GLM_ANTHROPIC_MESSAGES_PATH};
 use metering::glm::{
-    cost_nanodollars, glm_credit_cost_micro, glm_credit_rates_for_served_model,
-    glm_is_peak_utc, glm_prices_for_served_model, glm_resolve_subscription_model,
-    merge_stream_event, GlmPrices, GlmUsage, GLM_CREDIT_SCHEDULE_ID, GLM_TARIFF_SCHEDULE_ID,
+    cost_nanodollars, glm_credit_cost_micro, glm_credit_rates_for_served_model, glm_is_peak_utc,
+    glm_prices_for_served_model, glm_resolve_subscription_model, merge_stream_event, GlmPrices,
+    GlmUsage, GLM_CREDIT_SCHEDULE_ID, GLM_TARIFF_SCHEDULE_ID,
 };
 use registry::{ExecutionAttempt, GlmTurnCalibrationEvent};
 use serde_json::{json, Value};
@@ -687,12 +687,7 @@ impl GlmGateway {
                 Err(error) => {
                     let verdict = error.verdict();
                     if verdict == UpstreamVerdict::AccountDead {
-                        profile.apply_effect(
-                            ProfileEffect::AccountDead,
-                            now_unix(),
-                            None,
-                            None,
-                        );
+                        profile.apply_effect(ProfileEffect::AccountDead, now_unix(), None, None);
                     }
                     // Classification only: never print provider bodies, subject, proxy or keys.
                     eprintln!(
@@ -815,8 +810,7 @@ impl GlmGateway {
                 native_remaining_units: window.remaining_units,
                 percentage_raw: whole_percent(limit.percentage),
                 used_fraction_units: window.used_fraction_units,
-                measurement_resolution_fraction_units: window
-                    .measurement_resolution_fraction_units,
+                measurement_resolution_fraction_units: window.measurement_resolution_fraction_units,
             })
             .collect::<Vec<_>>();
 
@@ -1120,12 +1114,7 @@ impl GlmGateway {
                         policy,
                         remaining,
                     );
-                    profile.apply_effect(
-                        decision.effect,
-                        now_unix(),
-                        Some(&request.model),
-                        None,
-                    );
+                    profile.apply_effect(decision.effect, now_unix(), Some(&request.model), None);
                     policy = decision.policy;
                     if decision.next == NextStep::RotateToAnotherProfile {
                         excluded.insert(profile.id.clone());
@@ -1148,9 +1137,7 @@ impl GlmGateway {
                 if stream_requested || response_is_sse(&response) {
                     let background = match self.background.track() {
                         Some(guard) => guard,
-                        None => {
-                            return error_response(GatewayFailure::Unavailable("glm_shutdown"))
-                        }
+                        None => return error_response(GatewayFailure::Unavailable("glm_shutdown")),
                     };
                     let headers = response_headers(&response);
                     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -2020,9 +2007,7 @@ fn price_turn(
     priced_ts: i64,
     completed_at: i64,
 ) -> anyhow::Result<PricedTurn> {
-    usage
-        .validate()
-        .map_err(|_| anyhow!("invalid GLM usage"))?;
+    usage.validate().map_err(|_| anyhow!("invalid GLM usage"))?;
     if usage.is_zero() {
         anyhow::bail!("empty GLM usage is not terminal evidence");
     }
@@ -2393,9 +2378,7 @@ fn now_unix() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glm_credential::{
-        encode_envelope, CredentialKeyring, GlmCredentialKind, GlmPlan,
-    };
+    use glm_credential::{encode_envelope, CredentialKeyring, GlmCredentialKind, GlmPlan};
     use std::fs;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -2587,8 +2570,7 @@ mod tests {
             gate_receiver.recv().unwrap();
             write_chunk(
                 &mut stream,
-                br#"data: {"type":"message_delta","usage":{"output_tokens":4}}"#
-                    .as_slice(),
+                br#"data: {"type":"message_delta","usage":{"output_tokens":4}}"#.as_slice(),
             );
             write_chunk(&mut stream, b"\n\n");
             write_chunk(&mut stream, br#"data: {"type":"message_stop"}"#.as_slice());
@@ -2748,8 +2730,8 @@ mod tests {
         let fixture = Fixture::new();
         let (base_url, mut requests, _responses) = controlled_mock_server(1);
         fixture.publish_profile("zai-key-1", &base_url);
-        let gateway = GlmGateway::new_with_calibration(config(&fixture.root, &base_url), None)
-            .unwrap();
+        let gateway =
+            GlmGateway::new_with_calibration(config(&fixture.root, &base_url), None).unwrap();
         gateway
             .turn_queue
             .lock()
@@ -2788,7 +2770,10 @@ mod tests {
         let lease = ProfileLease::new(profile.clone());
         assert_eq!(profile.inflight.load(Ordering::Acquire), 1);
         responses
-            .send(http_response("application/json", &quota_body(10, 12_000, 0, 60_000)))
+            .send(http_response(
+                "application/json",
+                &quota_body(10, 12_000, 0, 60_000),
+            ))
             .unwrap();
         assert_eq!(poll.await.unwrap(), 0);
         drop(lease);
@@ -2809,11 +2794,9 @@ mod tests {
         let sqlite = fixture.root.join("billing.sqlite");
         let billing =
             Arc::new(AsyncBilling::start(sqlite.to_string_lossy().into_owned(), 1).unwrap());
-        let gateway = GlmGateway::new_with_calibration(
-            config(&fixture.root, &base_url),
-            Some(billing),
-        )
-        .unwrap();
+        let gateway =
+            GlmGateway::new_with_calibration(config(&fixture.root, &base_url), Some(billing))
+                .unwrap();
         let profile = gateway.profiles_snapshot()[0].clone();
 
         // SQLite deliberately refuses GLM calibration. A successful provider GET is not enough
@@ -2832,11 +2815,9 @@ mod tests {
     fn a_durable_snapshot_publishes_the_tightest_window_and_exact_full_reset() {
         let fixture = Fixture::new();
         fixture.publish_profile("zai-key-1", "http://127.0.0.1:1");
-        let gateway = GlmGateway::new_with_calibration(
-            config(&fixture.root, "http://127.0.0.1:1"),
-            None,
-        )
-        .unwrap();
+        let gateway =
+            GlmGateway::new_with_calibration(config(&fixture.root, "http://127.0.0.1:1"), None)
+                .unwrap();
         let profile = gateway.profiles_snapshot()[0].clone();
         let observed_at = now_unix();
         let snapshots = vec![
@@ -2871,8 +2852,8 @@ mod tests {
 
     #[tokio::test]
     async fn quota_poll_failures_stay_profile_local_and_classify_on_the_business_code() {
-        let code_401 = br#"{"code":401,"msg":"invalid api key","success":false,"data":null}"#
-            .as_slice();
+        let code_401 =
+            br#"{"code":401,"msg":"invalid api key","success":false,"data":null}"#.as_slice();
         let quota_wall =
             br#"{"error":{"code":"1308","message":"5-hour quota exhausted"}}"#.as_slice();
         let fair_use = br#"{"error":{"code":"1313","message":"fair use violation"}}"#.as_slice();
@@ -2881,8 +2862,16 @@ mod tests {
             ("401 Unauthorized", empty, Some(Ineligible::AccountDead)),
             // The trap of this endpoint: HTTP 200 carrying code:401 is a dead key.
             ("200 OK", code_401, Some(Ineligible::AccountDead)),
-            ("429 Too Many Requests", quota_wall, Some(Ineligible::QuotaWall)),
-            ("429 Too Many Requests", fair_use, Some(Ineligible::AccountSuspect)),
+            (
+                "429 Too Many Requests",
+                quota_wall,
+                Some(Ineligible::QuotaWall),
+            ),
+            (
+                "429 Too Many Requests",
+                fair_use,
+                Some(Ineligible::AccountSuspect),
+            ),
             (
                 "503 Service Unavailable",
                 empty,
@@ -2894,8 +2883,7 @@ mod tests {
                 mock_server(vec![http_status_response(status, "application/json", body)]);
             fixture.publish_profile("zai-key-1", &base_url);
             let gateway =
-                GlmGateway::new_with_calibration(config(&fixture.root, &base_url), None)
-                    .unwrap();
+                GlmGateway::new_with_calibration(config(&fixture.root, &base_url), None).unwrap();
             let profile = gateway.profiles_snapshot()[0].clone();
             profile.mark_probe_healthy();
             gateway.live_profiles.store(1, Ordering::Release);
@@ -2938,7 +2926,10 @@ mod tests {
         assert!(gateway.refresh_profiles().await);
         assert!(gateway.profiles_snapshot().is_empty());
         responses
-            .send(http_response("application/json", &quota_body(10, 12_000, 0, 60_000)))
+            .send(http_response(
+                "application/json",
+                &quota_body(10, 12_000, 0, 60_000),
+            ))
             .unwrap();
         assert_eq!(poll.await.unwrap(), 0);
         assert!(gateway.profiles_snapshot().is_empty());
@@ -3146,8 +3137,8 @@ mod tests {
         assert_eq!(system.len(), 2, "billing and identity only");
         // Deterministic per profile: the fixture profile is "glm-01", so the gateway must emit
         // exactly the derivation the persona function produces for that id.
-        let expected = super::super::transport::GlmIdentityHeaders::default()
-            .billing_header_for("glm-01");
+        let expected =
+            super::super::transport::GlmIdentityHeaders::default().billing_header_for("glm-01");
         assert_eq!(billing, expected);
         assert_eq!(
             system[1]["text"].as_str().unwrap(),
@@ -3482,7 +3473,10 @@ mod tests {
         // after this generation loaded it but before its candidate probe completed.
         fixture.publish_profile("peer-rotated-secret", &base_url);
         responses
-            .send(http_response("application/json", &quota_body(0, 12_000, 0, 60_000)))
+            .send(http_response(
+                "application/json",
+                &quota_body(0, 12_000, 0, 60_000),
+            ))
             .unwrap();
 
         let second = String::from_utf8(
@@ -3496,7 +3490,10 @@ mod tests {
             .to_ascii_lowercase()
             .contains("authorization: peer-rotated-secret"));
         responses
-            .send(http_response("application/json", &quota_body(0, 12_000, 0, 60_000)))
+            .send(http_response(
+                "application/json",
+                &quota_body(0, 12_000, 0, 60_000),
+            ))
             .unwrap();
 
         assert!(reload.await.unwrap());
@@ -3561,7 +3558,13 @@ mod tests {
                 .unwrap();
             let body = String::from_utf8_lossy(&body).to_ascii_lowercase();
             for private in [
-                "glm", "zhipu", "z.ai", "subscription", "roster", "upstream", "provider",
+                "glm",
+                "zhipu",
+                "z.ai",
+                "subscription",
+                "roster",
+                "upstream",
+                "provider",
             ] {
                 assert!(
                     !body.contains(private),
@@ -3597,7 +3600,8 @@ mod tests {
         // The provider answers on glm-4.7 while glm-5.2 was requested: billing follows the
         // SERVED model's rate card (manifest §3), not the requested alias.
         let generation = br#"{"id":"msg_1","type":"message","model":"glm-4.7","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":7,"output_tokens":2}}"#;
-        let (base_url, _requests) = mock_server(vec![http_response("application/json", generation)]);
+        let (base_url, _requests) =
+            mock_server(vec![http_response("application/json", generation)]);
         fixture.publish_profile("zai-key-1", &base_url);
         let sqlite = fixture.root.join("billing.sqlite");
         let billing =
@@ -3655,7 +3659,8 @@ mod tests {
         let expected_native = if event.off_peak { 3_210 } else { 6_420 };
         assert_eq!(event.native_total_microcredits, expected_native);
         assert_eq!(
-            event.native_fresh_input_microcredits + event.native_cached_input_microcredits
+            event.native_fresh_input_microcredits
+                + event.native_cached_input_microcredits
                 + event.native_output_microcredits,
             event.native_total_microcredits
         );
@@ -3673,7 +3678,8 @@ mod tests {
         // echoed id the provider silently re-routes. The native ledger cannot price it, so the
         // whole turn fails closed (manifest §3): conservative hold, typed counter, no event.
         let generation = br#"{"id":"msg_1","type":"message","model":"glm-5","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":7,"output_tokens":2}}"#;
-        let (base_url, _requests) = mock_server(vec![http_response("application/json", generation)]);
+        let (base_url, _requests) =
+            mock_server(vec![http_response("application/json", generation)]);
         fixture.publish_profile("zai-key-1", &base_url);
         let sqlite = fixture.root.join("billing.sqlite");
         let billing =
@@ -3731,7 +3737,8 @@ mod tests {
         // A parseable 200 without a usage object is not authoritative terminal evidence.
         // Synthetic usage is never created: the reservation settles on the documented hold.
         let generation = br#"{"id":"msg_1","type":"message","model":"glm-5.2","content":[]}"#;
-        let (base_url, _requests) = mock_server(vec![http_response("application/json", generation)]);
+        let (base_url, _requests) =
+            mock_server(vec![http_response("application/json", generation)]);
         fixture.publish_profile("zai-key-1", &base_url);
         let sqlite = fixture.root.join("billing.sqlite");
         let billing =
@@ -3959,7 +3966,10 @@ data: {"type":"message_stop"}
 
     #[test]
     fn reasoning_effort_maps_only_for_glm_5_2_and_follows_the_provider_mapping() {
-        assert_eq!(reasoning_effort("glm-5.2", &json!({})).unwrap(), Some("high".into()));
+        assert_eq!(
+            reasoning_effort("glm-5.2", &json!({})).unwrap(),
+            Some("high".into())
+        );
         assert_eq!(
             reasoning_effort("glm-5.2[1m]", &json!({})).unwrap(),
             Some("high".into())
@@ -3998,7 +4008,13 @@ data: {"type":"message_stop"}
 
     #[test]
     fn model_is_glm_accepts_only_the_exact_reviewed_aliases() {
-        for alias in ["glm-5.2", "glm-5.2[1m]", "glm-5-turbo", "glm-4.7", "GLM-5.2"] {
+        for alias in [
+            "glm-5.2",
+            "glm-5.2[1m]",
+            "glm-5-turbo",
+            "glm-4.7",
+            "GLM-5.2",
+        ] {
             assert!(GlmGateway::model_is_glm(alias), "{alias}");
         }
         // Historical/echoed ids are NOT admission aliases: they never dispatch here.
@@ -4052,11 +4068,9 @@ data: {"type":"message_stop"}
         // disjoint legs still sum to the total.
         let fixture = Fixture::new();
         fixture.publish_profile("zai-key-1", "http://127.0.0.1:1");
-        let gateway = GlmGateway::new_with_calibration(
-            config(&fixture.root, "http://127.0.0.1:1"),
-            None,
-        )
-        .unwrap();
+        let gateway =
+            GlmGateway::new_with_calibration(config(&fixture.root, "http://127.0.0.1:1"), None)
+                .unwrap();
         let context = AccountingContext {
             request_id: "req-1".into(),
             requested_model: "glm-5.2".into(),
@@ -4087,11 +4101,9 @@ data: {"type":"message_stop"}
     async fn the_status_projection_reports_cooling_axes_availability_inflight_and_counters() {
         let fixture = Fixture::new();
         fixture.publish_profile("zai-key-1", "http://127.0.0.1:9");
-        let gateway = GlmGateway::new_with_calibration(
-            config(&fixture.root, "http://127.0.0.1:9"),
-            None,
-        )
-        .unwrap();
+        let gateway =
+            GlmGateway::new_with_calibration(config(&fixture.root, "http://127.0.0.1:9"), None)
+                .unwrap();
         let now = now_unix();
         let profile = gateway.profiles_snapshot()[0].clone();
 
@@ -4147,10 +4159,7 @@ data: {"type":"message_stop"}
 
         // A quota wall with provider reset evidence cools to the exact reset, never a guess.
         profile.apply_effect(ProfileEffect::CoolUntilReset, now, None, Some(now + 3_600));
-        assert_eq!(
-            profile.health.lock().unwrap().quota_cool_until,
-            now + 3_600
-        );
+        assert_eq!(profile.health.lock().unwrap().quota_cool_until, now + 3_600);
         // …and without one it falls back to the bounded cool the next poll will refine.
         profile.apply_effect(ProfileEffect::CoolUntilReset, now, None, None);
         assert_eq!(
@@ -4177,11 +4186,9 @@ data: {"type":"message_stop"}
     async fn publish_quota_retains_the_exact_per_window_snapshot_with_unknowns_absent() {
         let fixture = Fixture::new();
         fixture.publish_profile("zai-key-1", "http://127.0.0.1:9");
-        let gateway = GlmGateway::new_with_calibration(
-            config(&fixture.root, "http://127.0.0.1:9"),
-            None,
-        )
-        .unwrap();
+        let gateway =
+            GlmGateway::new_with_calibration(config(&fixture.root, "http://127.0.0.1:9"), None)
+                .unwrap();
         let profile = gateway.profiles_snapshot()[0].clone();
         let observed_at = now_unix();
         let five_hour = quota_snapshot(18_000, 250, 1_000, 4_102_444_800, observed_at);
@@ -4233,11 +4240,9 @@ data: {"type":"message_stop"}
 
         let fixture = Fixture::new();
         fixture.publish_profile("zai-key-1", "http://127.0.0.1:9");
-        let gateway = GlmGateway::new_with_calibration(
-            config(&fixture.root, "http://127.0.0.1:9"),
-            None,
-        )
-        .unwrap();
+        let gateway =
+            GlmGateway::new_with_calibration(config(&fixture.root, "http://127.0.0.1:9"), None)
+                .unwrap();
         let status = gateway.operational_status();
         assert_eq!(status.profiles[0].plan, "Pro");
         // The durable-calibration join resolves only through the opaque roster id; an unknown

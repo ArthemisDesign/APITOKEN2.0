@@ -445,9 +445,7 @@ mod tests {
         // Missing success flag.
         assert!(parse_quota_probe(200, br#"{"code":200,"data":{}}"#).is_err());
         // Unrecognised business code: a contract change, never trusted data.
-        assert!(
-            parse_quota_probe(200, br#"{"code":1308,"success":true,"data":{}}"#).is_err()
-        );
+        assert!(parse_quota_probe(200, br#"{"code":1308,"success":true,"data":{}}"#).is_err());
         // A non-200 status on an otherwise valid envelope is transport-class.
         let body = br#"{"code":200,"success":true,"data":{"limits":[]}}"#;
         assert!(parse_quota_probe(500, body).is_err());
@@ -482,7 +480,10 @@ mod tests {
         };
         assert_eq!(snapshot.windows[0].used_units, Some(120));
         assert_eq!(snapshot.windows[0].used_fraction_units, None);
-        assert_eq!(snapshot.windows[0].measurement_resolution_fraction_units, None);
+        assert_eq!(
+            snapshot.windows[0].measurement_resolution_fraction_units,
+            None
+        );
 
         // No readable total: same rule.
         let body = br#"{"code":200,"success":true,"data":{"limits":[
@@ -547,8 +548,12 @@ mod tests {
     fn a_client_refuses_a_malformed_egress_instead_of_going_direct() {
         // Falling back to direct egress would make traffic look like a different user than the
         // one who opened the account.
-        assert!(build_client("not-a-proxy", Duration::from_secs(5), Duration::from_secs(30))
-            .is_err());
+        assert!(build_client(
+            "not-a-proxy",
+            Duration::from_secs(5),
+            Duration::from_secs(30)
+        )
+        .is_err());
         assert!(build_client("", Duration::from_secs(5), Duration::from_secs(30)).is_ok());
     }
 }

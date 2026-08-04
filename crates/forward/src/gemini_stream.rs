@@ -20,7 +20,10 @@ impl GeminiStreamState {
             let error = error.as_object().ok_or(())?;
             error.get("message").and_then(Value::as_str).ok_or(())?;
             validate_optional_string(error, "status")?;
-            if error.get("code").is_some_and(|code| code.as_i64().is_none()) {
+            if error
+                .get("code")
+                .is_some_and(|code| code.as_i64().is_none())
+            {
                 return Err(());
             }
             return Ok(value);
@@ -29,7 +32,11 @@ impl GeminiStreamState {
         if let Some(feedback) = object.get("promptFeedback") {
             let feedback = feedback.as_object().ok_or(())?;
             if let Some(reason) = feedback.get("blockReason") {
-                if reason.as_str().filter(|reason| !reason.is_empty()).is_none() {
+                if reason
+                    .as_str()
+                    .filter(|reason| !reason.is_empty())
+                    .is_none()
+                {
                     return Err(());
                 }
                 if reason != "BLOCK_REASON_UNSPECIFIED" {
@@ -46,7 +53,11 @@ impl GeminiStreamState {
                     validate_content(content)?;
                 }
                 if let Some(reason) = candidate.get("finishReason") {
-                    if reason.as_str().filter(|reason| !reason.is_empty()).is_none() {
+                    if reason
+                        .as_str()
+                        .filter(|reason| !reason.is_empty())
+                        .is_none()
+                    {
                         return Err(());
                     }
                     if reason != "FINISH_REASON_UNSPECIFIED" {
@@ -100,7 +111,10 @@ fn validate_usage(value: &Value) -> Result<(), ()> {
         "cachedContentTokenCount",
         "thoughtsTokenCount",
     ] {
-        if usage.get(field).is_some_and(|value| value.as_u64().is_none()) {
+        if usage
+            .get(field)
+            .is_some_and(|value| value.as_u64().is_none())
+        {
             return Err(());
         }
     }

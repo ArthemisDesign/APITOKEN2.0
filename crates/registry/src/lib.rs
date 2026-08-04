@@ -11,10 +11,10 @@ pub mod authority;
 pub mod funding;
 pub mod funding_normalization_v2;
 mod funding_v2;
-pub mod pg;
-pub mod pricing;
 mod glm_calibration;
 mod kimi_calibration;
+pub mod pg;
+pub mod pricing;
 mod provider_calibration;
 pub mod stage8;
 
@@ -51,7 +51,11 @@ pub fn validate_kimi_calibration_row(row: &KimiCalibrationRow) -> Result<()> {
     if !(1..=KIMI_FRACTION_SCALE).contains(&row.measurement_resolution_fraction_units) {
         bail!("KIMI calibration row resolution is out of range");
     }
-    match (row.current_low_nano, row.current_high_nano, row.current_capacity_nano) {
+    match (
+        row.current_low_nano,
+        row.current_high_nano,
+        row.current_capacity_nano,
+    ) {
         (Some(_), _, None) | (_, Some(_), None) => {
             bail!("KIMI calibration row has bounds without a capacity")
         }
@@ -101,7 +105,9 @@ pub fn validate_glm_calibration_row(row: &GlmCalibrationRow) -> Result<()> {
     if row.window_duration_secs <= 0 {
         bail!("GLM calibration row has an invalid window duration");
     }
-    if row.native_limit_microcredits.is_some_and(|limit| limit <= 0)
+    if row
+        .native_limit_microcredits
+        .is_some_and(|limit| limit <= 0)
         || row.native_used_microcredits.is_some_and(|used| used < 0)
         || match (row.native_used_microcredits, row.native_limit_microcredits) {
             (Some(used), Some(limit)) => used > limit,
@@ -120,13 +126,10 @@ pub fn validate_glm_calibration_row(row: &GlmCalibrationRow) -> Result<()> {
             bail!("GLM calibration row resolution is out of range");
         }
     }
-    if row.used_fraction_units.is_some() != row.measurement_resolution_fraction_units.is_some()
-    {
+    if row.used_fraction_units.is_some() != row.measurement_resolution_fraction_units.is_some() {
         bail!("GLM calibration row fraction and resolution must move together");
     }
-    if row.anchor_used_fraction_units.is_some()
-        != row.anchor_resolution_fraction_units.is_some()
-    {
+    if row.anchor_used_fraction_units.is_some() != row.anchor_resolution_fraction_units.is_some() {
         bail!("GLM calibration row anchor fraction and resolution must move together");
     }
     match (
@@ -9267,7 +9270,15 @@ mod tests {
         .unwrap();
         c.execute(
             insert_state,
-            rusqlite::params!["profile-a", "google_ai_ultra", "gemini-5h", "5h", 300, 10, 1],
+            rusqlite::params![
+                "profile-a",
+                "google_ai_ultra",
+                "gemini-5h",
+                "5h",
+                300,
+                10,
+                1
+            ],
         )
         .unwrap();
         c.execute(

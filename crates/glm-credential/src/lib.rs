@@ -327,8 +327,7 @@ fn decode_hex_key(encoded: &str) -> anyhow::Result<[u8; 32]> {
     let mut key = [0u8; 32];
     for (index, chunk) in encoded.as_bytes().chunks_exact(2).enumerate() {
         let text = std::str::from_utf8(chunk).context("decode GLM credential key")?;
-        key[index] =
-            u8::from_str_radix(text, 16).context("GLM credential key is not valid hex")?;
+        key[index] = u8::from_str_radix(text, 16).context("GLM credential key is not valid hex")?;
     }
     Ok(key)
 }
@@ -504,8 +503,12 @@ mod tests {
     const KEY_B: &str = "b2";
 
     fn keyring() -> CredentialKeyring {
-        CredentialKeyring::parse(&format!("{KEY_A}:{},{KEY_B}:{}", "11".repeat(32), "22".repeat(32)))
-            .expect("keyring parses")
+        CredentialKeyring::parse(&format!(
+            "{KEY_A}:{},{KEY_B}:{}",
+            "11".repeat(32),
+            "22".repeat(32)
+        ))
+        .expect("keyring parses")
     }
 
     fn plan_credential() -> GlmCredential {
@@ -637,7 +640,15 @@ mod tests {
         assert_eq!(GlmPlan::parse("lite").unwrap(), GlmPlan::Lite);
         assert_eq!(GlmPlan::parse(" PRO ").unwrap(), GlmPlan::Pro);
         assert_eq!(GlmPlan::parse("Max").unwrap(), GlmPlan::Max);
-        for bad in ["", "team", "standard", "premium", "v1", "enterprise", "lite+"] {
+        for bad in [
+            "",
+            "team",
+            "standard",
+            "premium",
+            "v1",
+            "enterprise",
+            "lite+",
+        ] {
             assert!(GlmPlan::parse(bad).is_err(), "accepted {bad:?}");
         }
         // The canonical label is what the envelope serializes.
@@ -760,8 +771,7 @@ mod tests {
         // parse → normalize → serialize → re-parse round trip unchanged: the Auth Bot
         // stores the normalized form and the transport re-parses it.
         let original = url::Url::parse("socks5://user:p%41ss:w@egress.example:1080").unwrap();
-        let normalized =
-            normalize_proxy_url("socks5://user:p%41ss:w@egress.example:1080").unwrap();
+        let normalized = normalize_proxy_url("socks5://user:p%41ss:w@egress.example:1080").unwrap();
         let reparsed = url::Url::parse(&normalized).unwrap();
         assert_eq!(reparsed.username(), original.username());
         assert_eq!(reparsed.password(), original.password());
