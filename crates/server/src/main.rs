@@ -1113,6 +1113,9 @@ async fn serve() -> Result<()> {
     if s.kimi.is_some() && (!authority.is_postgres() || !s.billing) {
         bail!("KIMI backend preview requires PostgreSQL billing authority");
     }
+    if s.glm.is_some() && (!authority.is_postgres() || !s.billing) {
+        bail!("GLM backend requires PostgreSQL billing authority");
+    }
     if matches!(
         s.provider,
         forward::ProviderMode::OpenAi | forward::ProviderMode::Gemini
@@ -1386,6 +1389,43 @@ async fn serve() -> Result<()> {
     } else {
         None
     };
+    let glm = if let Some(config) = s.glm.clone() {
+        let calibration_store = billing.clone().context(
+            "GLM provider requires the durable billing authority for settlement and calibration",
+        )?;
+        match forward::glm::GlmGateway::new_with_calibration(
+            config.clone(),
+            Some(calibration_store.clone()),
+        ) {
+            Ok(gateway) => {
+                let gateway = Arc::new(gateway);
+                let live = gateway.preflight().await;
+                if live > 0 {
+                    eprintln!("GLM backend preflight passed: live_profiles={live}");
+                } else {
+                    // GLM is an optional backend inside the Anthropic service. Its cold roster or
+                    // outage must not take unrelated Claude traffic out of readiness.
+                    eprintln!("GLM backend has no authenticated profile; exact GLM aliases fail closed");
+                }
+                tokio::spawn(poller::glm_maintenance_loop(gateway.clone()));
+                Some(gateway)
+            }
+            Err(_) => {
+                // Do not render the error: proxy parsing failures may embed credentialed egress.
+                // Keep the dispatcher present with zero capacity: removing it here would let an
+                // exact GLM alias fall through into the unrelated Claude pool.
+                eprintln!("GLM backend initialization failed; exact GLM aliases fail closed");
+                let gateway = Arc::new(forward::glm::GlmGateway::new_degraded(
+                    config,
+                    Some(calibration_store),
+                ));
+                tokio::spawn(poller::glm_maintenance_loop(gateway.clone()));
+                Some(gateway)
+            }
+        }
+    } else {
+        None
+    };
     let pricing_shadow = Some(forward::PricingShadowRuntime::start(
         s.proxy.pricing_shadow,
         s.pricing_shadow_manifest.clone(),
@@ -1423,9 +1463,7 @@ async fn serve() -> Result<()> {
         codex,
         gemini,
         kimi,
-        // GLM server composition (env/config, maintenance loop, admin projection) is a separate
-        // delivery step; the runtime plane stays unwired behind its off switch here.
-        glm: None,
+        glm,
         billing,
         pricing_shadow,
         pricing_manifest: Arc::new(s.pricing_shadow_manifest.clone()),
@@ -1621,6 +1659,12 @@ async fn serve() -> Result<()> {
         // A disconnected KIMI stream keeps draining until terminal usage and FIFO delivery. The
         // billing writer stays open until every such finalizer has crossed this barrier.
         kimi.shutdown_until(shutdown_deadline).await;
+    }
+    if let Some(glm) = &flush_app.glm {
+        // Same barrier as KIMI: a disconnected GLM stream drains to terminal usage and FIFO
+        // delivery, then the final turn-before-quota pass runs inside the same deadline. The
+        // billing writer stays open until every finalizer has crossed this barrier.
+        glm.shutdown_until(shutdown_deadline).await;
     }
     if let Some(pricing_shadow) = &flush_app.pricing_shadow {
         pricing_shadow.shutdown_until(shutdown_deadline).await;

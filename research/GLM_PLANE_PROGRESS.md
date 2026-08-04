@@ -35,8 +35,8 @@ backend-only (по образцу KIMI, `docs/engine/KIMI_PROVIDER.md` §0) до
 | Auth Bot: протокол + roster (dormant) | `crates/authbot/src/{glm_key,glm_roster}.rs`, `main.rs`, CLAUDE.md | 3378eb06 |
 | Auth Bot: мастер продавца | `crates/authbot/src/{bot,db,main}.rs`, CLAUDE.md | 093c05c2 |
 | Runtime примитивы | `crates/forward/src/glm/{config,transport,roster,client,selection,pool,queue,mod}.rs` | 9ce68f55 |
-| Gateway + dispatch + billing writer | `crates/forward/src/glm/gateway.rs`, `proxy.rs`, `state.rs`, `billing.rs` | _этот коммит_ |
-| Runtime gateway + диспетч + billing writer | `crates/forward/src/glm/gateway.rs`, `crates/forward/src/{proxy,state,billing}.rs`, `crates/glm-credential` (test-loopback-base-url фича) | _это изменение_ |
+| Gateway + dispatch + billing writer | `crates/forward/src/glm/gateway.rs`, `proxy.rs`, `state.rs`, `billing.rs` | 884b8869 |
+| Server wiring | `crates/server/src/{config,main,poller}.rs`, server CLAUDE.md | _этот коммит_ |
 
 ## Рамка от владельца (2026-08-04)
 
@@ -57,8 +57,18 @@ clean+merged (штатный критерий) вместе с локально�
 
 ## Открытые швы
 
-- Нет. Authority и metering в master с зелёным watchdog; credential (18 тестов) и
-  estimator (27 тестов) — код в этом дереве, гейты зелёные.
+- Нет. Цепочка от credential до server wiring замкнута: плоскость композируется сервером,
+  default-off, пять env-ключей CLAUDE_API_GLM_* (fleet BASE_URL отклоняется fail closed).
+  За рамкой backend-ядра: observability/admin projection (не запрошено владельцем —
+  тестовый режим, см. «Рамка от владельца»), live-runner `tools/glm_calibration/` и
+  live-матрица (нужна подписка — блокирует человек).
+
+## Следующее действие (ровно одно)
+
+Полные гейты (cargo test --locked --workspace, bash -n deploy/*.sh, git diff --check,
+docs-check) и мёрж цепочки (7 коммитов: credential → estimator → authbot×2 → примитивы →
+gateway → server) через `git push -u origin HEAD && ./deploy/agent-merge.sh`, затем
+финальный отчёт preview.
 
 Ключевые факты research (дата ревью 2026-08-03): credits-система с 2026-07-30
 (Lite 2000/5ч+10000/нед, Pro 12000/60000, Max 28000/140000); формула кредитов
@@ -70,14 +80,6 @@ clean+merged (штатный критерий) вместе с локально�
 плане, 1313=fair-use; только 3 модели на плане (glm-5.2 1M, glm-5-turbo 200K, glm-4.7 200K);
 reroute glm-5.1/5→5.2 (billing по served); rate card 5.2=$1.40/0.26/4.40,
 5-turbo=$1.20/0.24/4.00, 4.7=$0.60/0.11/2.20; ToS запрещает resale/proxy → backend-only.
-
-## Следующее действие (ровно одно)
-
-Server wiring плоскости: `crates/server/src/config.rs` (env `CLAUDE_API_GLM_*` →
-`glm::config::build`), композиция `AppState.glm` в `main.rs` (gateway +
-`new_degraded` fail-closed контур), maintenance loop в `poller.rs` (15-секундный roster
-discovery + `quota_poll_interval` sweep), readiness. Затем observability/admin projection
-(`observability/**`, `apps/admin`) по образцу `write_kimi_operational_metrics`/`kimi_subs`.
 
 ## Очередь
 

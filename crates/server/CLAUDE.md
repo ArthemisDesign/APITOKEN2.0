@@ -106,6 +106,10 @@
   после preflight). Gateway сам валидирует roster generation, idle/epoch границу quota snapshot,
   turn-FIFO→durable spend→observation/CAS порядок и last-good publication; server владеет только
   cadence. Ошибка одного profile не останавливает sweep остальных.
+  GLM maintenance loop — зеркало KIMI (`docs/engine/GLM_PROVIDER.md` §5.4): тот же независимый
+  15-секундный roster discovery и бесплатный quota sweep по `CLAUDE_API_GLM_QUOTA_POLL_SECS`;
+  gateway владеет idle/epoch границей, turn-before-quota ordering и durable observation/CAS,
+  server — только cadence.
 - `main.rs` — clap CLI: `serve`, `sub add/add-file/list/rm/status/proxy/fleet/set-plan/detect-plan/health`
   и PostgreSQL-only read evidence `db stage8-evidence`.
 
@@ -130,6 +134,16 @@
   известную auth-схему и положительный poll interval. Exact KIMI aliases обслуживаются только
   authenticated profiles; initial degraded gateway и ошибочный reload сохраняют отдельный
   fail-closed KIMI path, не влияя на Claude readiness и не проваливая alias в Claude pool.
+- Backend-only GLM switch читается здесь как строгий default-off набор
+  `CLAUDE_API_GLM_{ENABLED,ROSTER_DIR,CREDENTIAL_KEYS,AUTH_SCHEME,QUOTA_POLL_SECS}` и передаётся
+  целиком в `forward::glm::config::build`. Fleet base-URL override отсутствует намеренно: console
+  origin — per-profile внутри sealed credential (int/CN ключи несовместимы,
+  `docs/engine/GLM_PROVIDER.md` §2), поэтому `CLAUDE_API_GLM_BASE_URL` отклоняется fail-closed как
+  unknown key, а не игнорируется как dormant мусор. Disabled-плоскость не валидирует dormant
+  значения; enabled-плоскость fail-closed требует абсолютный roster, encrypted keyring, схему
+  `bearer` (единственная доказанная) и положительный poll interval. Как и KIMI, initial degraded
+  gateway и ошибочный reload сохраняют fail-closed GLM path, не влияя на Claude readiness и не
+  проваливая exact GLM alias в Claude pool.
 - Atomic legacy snapshot bridge config читается только здесь
   `CLAUDE_API_PRICING_BRIDGE_ENABLED`/`CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP`. Default строго
   `false/0`; bool принимает только `0|1|false|true`, sample — integer `0..=10000`, несогласованные
@@ -278,6 +292,10 @@
   stream drain и turn FIFO; на deadline abort-ит stream read, сохраняет консервативный settlement,
   затем под тем же deadline делает финальный turn-before-`/usages` pass. Ни старый poll, ни
   финальный provider read не могут пережить общий billing flush.
+- Shutdown GLM зеркалит KIMI: закрывает admission и steady maintenance, ждёт detached stream drain
+  и turn FIFO, на deadline abort-ит stream read, затем под тем же deadline делает финальный
+  turn-before-quota pass против quota endpoint GLM. Ни старый poll, ни финальный provider read не
+  могут пережить общий billing flush.
 - Shutdown Claude после stream drain вызывает общий billing FIFO barrier: pending calibration head
   повторяется до outbox reconcile; процесс не объявляет flush успешным, пока exact evidence остаётся
   неприменённым.

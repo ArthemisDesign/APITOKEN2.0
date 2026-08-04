@@ -354,7 +354,7 @@ cumulative ledgers и завершает immutable observation/CAS до публ
 | Auth Bot: мастер продавца | `crates/authbot/src/bot.rs` (+`db.rs` `hregion`/recovery, `main.rs`) | готово, 21 тест (мастер, меню, регион, restart-восстановление) |
 | runtime-примитивы: config / transport / roster / client / selection / pool / queue | `crates/forward/src/glm/` | готово, 71 тест |
 | gateway (+ диспетч `proxy.rs`, `AppState.glm`, billing writer, test-loopback фича credential) | `crates/forward/src/glm/gateway.rs` | готово, 35 mock-тестов + real-PG гейт в `billing.rs` |
-| server: env/config + композиция | `crates/server/src/{config,main,poller}.rs` | не начато |
+| server: env/config + композиция | `crates/server/src/{config,main,poller}.rs` | готово (env/config, композиция, maintenance loop, shutdown flush) |
 | observability, admin projection | `observability/**`, `apps/admin` | не начато |
 | безопасный live-runner | `tools/glm_calibration/` | не начато |
 | live-матрица на нашей подписке | — | **нужна подписка (блокирует человек)** |

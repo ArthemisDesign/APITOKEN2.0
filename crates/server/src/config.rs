@@ -2,6 +2,7 @@
 //! [`forward::ProxyConfig`]. Единственное место в проекте, где читается env.
 
 use forward::{
+    glm::config::{GlmPlaneConfig, GlmPlaneInput},
     kimi::config::{KimiPlaneConfig, KimiPlaneInput},
     ClaudeStoreFallbackConfig, CodexConfig, CodexModel, GeminiConfig, GeminiModel,
     PricingBridgeConfig, PricingShadowConfig, PricingShadowConfigValues, ProviderMode, ProxyConfig,
@@ -50,6 +51,11 @@ pub struct Settings {
     /// Backend-only KIMI plane. Exact aliases dispatch through its private runtime only when this
     /// validated, default-off switch is enabled; it is never inferred from the shipped binary.
     pub kimi: Option<KimiPlaneConfig>,
+    /// Backend-only GLM (Z.ai Coding Plan) plane. Same contract shape as KIMI: exact reviewed
+    /// aliases dispatch through the private runtime only behind this validated, default-off
+    /// switch. There is no fleet base-URL override — the console origin is per-profile inside
+    /// the sealed credential.
+    pub glm: Option<GlmPlaneConfig>,
     /// Compile-versioned evaluator capability evidence, assembled by trusted server composition.
     pub pricing_shadow_manifest: registry::pricing::PricingRuntimeManifestEvidence,
     pub proxy: ProxyConfig,
@@ -294,6 +300,75 @@ fn kimi_config() -> Option<KimiPlaneConfig> {
         .filter_map(|name| ev(name).map(|value| (name.to_owned(), value)))
         .collect::<BTreeMap<_, _>>();
     parse_kimi_config(&values).unwrap_or_else(|message| panic!("{message}"))
+}
+
+const GLM_ENV_KEYS: [&str; 5] = [
+    "CLAUDE_API_GLM_ENABLED",
+    "CLAUDE_API_GLM_ROSTER_DIR",
+    "CLAUDE_API_GLM_CREDENTIAL_KEYS",
+    "CLAUDE_API_GLM_AUTH_SCHEME",
+    "CLAUDE_API_GLM_QUOTA_POLL_SECS",
+];
+
+/// Keys an operator might carry over from another plane that the GLM plane deliberately does
+/// not have. Unlike KIMI there is no `base_url` override: the console origin is per-profile
+/// inside the sealed credential (int and CN keys are not interchangeable,
+/// `docs/engine/GLM_PROVIDER.md` §2), so a fleet-level override could silently route a key to a
+/// console that never issued it. Setting one of these is an operator mistake and fails closed
+/// with an explicit unknown-key error rather than being ignored as dormant input.
+const GLM_REJECTED_ENV_KEYS: [&str; 1] = ["CLAUDE_API_GLM_BASE_URL"];
+
+fn parse_glm_config(values: &BTreeMap<String, String>) -> Result<Option<GlmPlaneConfig>, String> {
+    for rejected in GLM_REJECTED_ENV_KEYS {
+        if values.contains_key(rejected) {
+            return Err(format!(
+                "{rejected}: unknown key for the GLM plane; the console origin is per-profile inside the sealed credential and has no fleet override"
+            ));
+        }
+    }
+    let defaults = GlmPlaneInput::default();
+    let enabled = parse_strict_bool(
+        "CLAUDE_API_GLM_ENABLED",
+        values.get("CLAUDE_API_GLM_ENABLED").map(String::as_str),
+        defaults.enabled,
+    )?;
+    if !enabled {
+        return forward::glm::config::build(&GlmPlaneInput::default())
+            .map_err(|error| format!("invalid GLM plane config: {error}"));
+    }
+    let quota_poll_secs = values.get("CLAUDE_API_GLM_QUOTA_POLL_SECS").map_or(
+        Ok(defaults.quota_poll_secs),
+        |value| {
+            value.parse::<u64>().map_err(|_| {
+                "CLAUDE_API_GLM_QUOTA_POLL_SECS: expected a non-negative base-10 integer"
+                    .to_string()
+            })
+        },
+    )?;
+    let input = GlmPlaneInput {
+        enabled,
+        roster_dir: values
+            .get("CLAUDE_API_GLM_ROSTER_DIR")
+            .cloned()
+            .unwrap_or(defaults.roster_dir),
+        credential_keys: values.get("CLAUDE_API_GLM_CREDENTIAL_KEYS").cloned(),
+        auth_scheme: values
+            .get("CLAUDE_API_GLM_AUTH_SCHEME")
+            .cloned()
+            .unwrap_or(defaults.auth_scheme),
+        quota_poll_secs,
+    };
+    forward::glm::config::build(&input)
+        .map_err(|error| format!("invalid GLM plane config: {error}"))
+}
+
+fn glm_config() -> Option<GlmPlaneConfig> {
+    let values = GLM_ENV_KEYS
+        .into_iter()
+        .chain(GLM_REJECTED_ENV_KEYS)
+        .filter_map(|name| ev(name).map(|value| (name.to_owned(), value)))
+        .collect::<BTreeMap<_, _>>();
+    parse_glm_config(&values).unwrap_or_else(|message| panic!("{message}"))
 }
 
 fn parse_pricing_shadow_config(
@@ -986,6 +1061,13 @@ impl Settings {
         } else {
             None
         };
+        // GLM is a backend inside the Anthropic plane, exactly like KIMI: the switch is read
+        // only where exact GLM aliases can dispatch.
+        let glm = if provider.serves_anthropic() {
+            glm_config()
+        } else {
+            None
+        };
         Settings {
             provider,
             db_path,
@@ -1050,6 +1132,7 @@ impl Settings {
             claudestore_codex_fallback,
             gemini,
             kimi,
+            glm,
             pricing_shadow_manifest: pricing_shadow_runtime_manifest(),
             proxy: ProxyConfig {
                 api_keys,
@@ -1355,6 +1438,140 @@ mod tests {
             ]);
             assert!(parse_kimi_config(&values).is_err(), "{value}");
         }
+    }
+
+    #[test]
+    fn glm_server_config_is_strict_default_off_and_ignores_dormant_values() {
+        assert!(parse_glm_config(&BTreeMap::new()).unwrap().is_none());
+        let disabled_with_broken_dormant_values = BTreeMap::from([
+            ("CLAUDE_API_GLM_ENABLED".to_owned(), "false".to_owned()),
+            (
+                "CLAUDE_API_GLM_ROSTER_DIR".to_owned(),
+                "relative/roster".to_owned(),
+            ),
+            (
+                "CLAUDE_API_GLM_AUTH_SCHEME".to_owned(),
+                "bogus".to_owned(),
+            ),
+            (
+                "CLAUDE_API_GLM_QUOTA_POLL_SECS".to_owned(),
+                "not-an-integer".to_owned(),
+            ),
+        ]);
+        assert!(parse_glm_config(&disabled_with_broken_dormant_values)
+            .unwrap()
+            .is_none());
+        for invalid in ["yes", "on", "2", " true "] {
+            let values =
+                BTreeMap::from([("CLAUDE_API_GLM_ENABLED".to_owned(), invalid.to_owned())]);
+            assert!(parse_glm_config(&values).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn glm_server_config_passes_every_operator_value_to_the_typed_builder() {
+        let values = BTreeMap::from([
+            ("CLAUDE_API_GLM_ENABLED".to_owned(), "true".to_owned()),
+            (
+                "CLAUDE_API_GLM_ROSTER_DIR".to_owned(),
+                "/srv/private/glm".to_owned(),
+            ),
+            (
+                "CLAUDE_API_GLM_CREDENTIAL_KEYS".to_owned(),
+                format!("a1:{}", "11".repeat(32)),
+            ),
+            (
+                "CLAUDE_API_GLM_AUTH_SCHEME".to_owned(),
+                "bearer".to_owned(),
+            ),
+            (
+                "CLAUDE_API_GLM_QUOTA_POLL_SECS".to_owned(),
+                "37".to_owned(),
+            ),
+        ]);
+        let config = parse_glm_config(&values).unwrap().unwrap();
+        assert_eq!(
+            config.roster_dir,
+            std::path::PathBuf::from("/srv/private/glm")
+        );
+        assert_eq!(
+            config.transport.auth_scheme,
+            forward::glm::transport::AuthScheme::Bearer
+        );
+        assert_eq!(
+            config.quota_poll_interval,
+            std::time::Duration::from_secs(37)
+        );
+        // Readiness always probes the free quota route; generation is never a probe because it
+        // spends plan quota.
+        assert_eq!(
+            config.readiness_probe,
+            forward::glm::transport::ProbeRoute::Quota
+        );
+    }
+
+    #[test]
+    fn enabled_glm_server_config_fails_closed_before_runtime_start() {
+        let enabled = BTreeMap::from([("CLAUDE_API_GLM_ENABLED".to_owned(), "true".to_owned())]);
+        assert!(parse_glm_config(&enabled).is_err());
+
+        for value in ["0", "garbage", "-1"] {
+            let values = BTreeMap::from([
+                ("CLAUDE_API_GLM_ENABLED".to_owned(), "true".to_owned()),
+                (
+                    "CLAUDE_API_GLM_CREDENTIAL_KEYS".to_owned(),
+                    format!("a1:{}", "11".repeat(32)),
+                ),
+                (
+                    "CLAUDE_API_GLM_QUOTA_POLL_SECS".to_owned(),
+                    value.to_owned(),
+                ),
+            ]);
+            assert!(parse_glm_config(&values).is_err(), "{value}");
+        }
+        // Only `bearer` is selectable until `x-api-key` acceptance is proven live (manifest §4).
+        for scheme in ["x-api-key", "basic", "garbage"] {
+            let values = BTreeMap::from([
+                ("CLAUDE_API_GLM_ENABLED".to_owned(), "true".to_owned()),
+                (
+                    "CLAUDE_API_GLM_CREDENTIAL_KEYS".to_owned(),
+                    format!("a1:{}", "11".repeat(32)),
+                ),
+                (
+                    "CLAUDE_API_GLM_AUTH_SCHEME".to_owned(),
+                    scheme.to_owned(),
+                ),
+            ]);
+            assert!(parse_glm_config(&values).is_err(), "{scheme}");
+        }
+    }
+
+    #[test]
+    fn glm_server_config_rejects_the_fleet_base_url_override_as_an_unknown_key() {
+        // The console origin lives inside each sealed credential (int/CN keys are not
+        // interchangeable), so a fleet `BASE_URL` can never be honoured. It fails closed even
+        // while the plane is disabled: silently ignoring it would let the operator believe a
+        // routing override is armed.
+        let dormant = BTreeMap::from([(
+            "CLAUDE_API_GLM_BASE_URL".to_owned(),
+            "https://open.bigmodel.cn".to_owned(),
+        )]);
+        let error = parse_glm_config(&dormant).unwrap_err();
+        assert!(error.contains("unknown key"), "{error}");
+
+        let enabled = BTreeMap::from([
+            ("CLAUDE_API_GLM_ENABLED".to_owned(), "true".to_owned()),
+            (
+                "CLAUDE_API_GLM_CREDENTIAL_KEYS".to_owned(),
+                format!("a1:{}", "11".repeat(32)),
+            ),
+            (
+                "CLAUDE_API_GLM_BASE_URL".to_owned(),
+                "https://open.bigmodel.cn".to_owned(),
+            ),
+        ]);
+        let error = parse_glm_config(&enabled).unwrap_err();
+        assert!(error.contains("unknown key"), "{error}");
     }
 
     #[test]
