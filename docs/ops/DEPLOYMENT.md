@@ -232,6 +232,22 @@ value outside these bounds:
 | `CLAUDE_API_PRICING_SHADOW_RATE_BURST` | `40` | `1..=rate_per_sec*60` |
 | `CLAUDE_API_PRICING_SHADOW_DB_READ_CONNECTIONS` | `2` | `1..=8` |
 
+**Never set these in a shared engine `EnvironmentFile`.** `/srv/claude-api/data/server.env` and
+`config.env` are read by *every* engine slot, and the startup validator rejects the shadow producer
+on any plane other than Anthropic, OpenAI or Gemini (`crates/server/src/main.rs`, "pricing shadow
+producer requires a fixed Anthropic, OpenAI, or Gemini provider plane"). A shared enablement
+therefore makes the KIMI slot — and any future non-producer plane — fail to start. Because the
+release is verified only after traffic is committed, the whole engine rollout then rolls back and
+quarantines whatever candidate SHA happened to be in flight, regardless of what that commit changed.
+This happened on 2026-08-04: the switch was added to `server.env`, and the next unrelated candidate
+was quarantined with `claude-api-kimi@8805.service did not become ready on current release`.
+
+Enable the shadow the same way every other plane-scoped switch is enabled: pinned argv-level in the
+reviewed unit of the one producing plane, exactly as `CLAUDE_API_KIMI_ENABLED=1` is pinned in
+`systemd/claude-api-kimi@.service`. Argv assignments cannot be overridden by a shared
+`EnvironmentFile`, and the plane's state stays visible in its own unit instead of leaking sideways
+into planes that must never run it.
+
 Keep every ceiling fixed while changing only one rollout dimension on one fixed plane at a time.
 For Anthropic, OpenAI and Gemini the required order is: default-off binary → bridge small sample →
 bridge target sample → bridge 100% of eligible traffic → shadow small sample → wider shadow sample
