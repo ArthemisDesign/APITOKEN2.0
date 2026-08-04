@@ -41,6 +41,10 @@ pnpm dev:worker
 Production API and worker must instead use `ENGINE_BASE_URL=http://127.0.0.1:8790`; that stable,
 loopback-only Caddy origin follows the healthy engine slot across blue-green cutovers.
 
+Individual engine requests can still fail transiently during a slot cutover. `packages/engine-client`
+retries an idempotent `GET` exactly once (after a 300 ms pause) when it classified the failure as
+retryable (network/timeout, HTTP ≥ 500, 429); mutations are never retried.
+
 When a retryable engine failure reaches `apps/api`, the account/payments controllers log the
 original engine error at warn level (message, HTTP status, retryable flag, provisioning cause)
 before answering the generic `503 "engine is temporarily unavailable"` — the public text is

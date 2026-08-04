@@ -45,6 +45,70 @@ describe("EngineClient", () => {
     });
   });
 
+  it("retries an idempotent GET once after a transient network failure", async () => {
+    let calls = 0;
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => {
+        calls += 1;
+        if (calls === 1) throw new TypeError("fetch failed");
+        return Response.json({
+          account: "acct_test",
+          balance_nano: 0,
+          spent_nano: 12,
+          reserved_nano: 0,
+          balance: "$0.000000000",
+          mult_bp: 2000,
+          status: "active",
+          handle: null,
+          funding: null,
+        });
+      },
+    });
+
+    const account = await client.getAccount("acct_test");
+    expect(calls).toBe(2);
+    expect(account).toMatchObject({ account: "acct_test", spent_nano: "12" });
+  });
+
+  it("gives up an idempotent GET after exactly one retry on repeated HTTP 503", async () => {
+    let calls = 0;
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => {
+        calls += 1;
+        return Response.json({ error: "engine is restarting" }, { status: 503 });
+      },
+    });
+
+    await expect(client.getAccount("acct_test")).rejects.toMatchObject({
+      message: "engine is restarting",
+      status: 503,
+      retryable: true,
+    });
+    expect(calls).toBe(2);
+  });
+
+  it("never retries a mutation after a transient network failure", async () => {
+    let calls = 0;
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => {
+        calls += 1;
+        throw new TypeError("fetch failed");
+      },
+    });
+
+    await expect(client.setAccountMultiplier("acct_test", 2000)).rejects.toMatchObject({
+      message: "engine request failed",
+      retryable: true,
+    });
+    expect(calls).toBe(1);
+  });
+
   it("rejects policy values that cannot be represented safely by the engine", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2030-01-01T00:00:00.100Z"));

@@ -175,6 +175,9 @@ const releaseRecoveryLinkV2PrepareIdentitySchema = pricingReleaseRecoveryLinkV2S
 const releaseInventoryLimitV2Schema = z.number().int().min(1).max(500);
 const fundingNormalizationAccountIdV2Schema = z.string().startsWith("acct_").max(200);
 const stage8EvidenceMaxResponseBytes = 16 * 1024 * 1024;
+// One extra attempt for idempotent GET reads: engine blue-green slot cutovers fail individual
+// requests for a sub-second window, and pausing briefly lets the health-gated origin settle.
+const transientGetRetryDelayMs = 300;
 
 export class EngineClient {
   private readonly baseUrl: string;
@@ -983,6 +986,32 @@ export class EngineClient {
       acceptedStatuses?: readonly number[];
       maxResponseBytes?: number;
     } = {},
+  ): Promise<{ response: Response; payload: unknown; rawText: string }> {
+    // Retry only idempotent GETs (the default method), exactly once, on failures the client
+    // itself classified as retryable (network/timeout, HTTP >= 500, 429). Mutations are never
+    // retried here: issueKey, disableKey and pricing writes are not safe to replay blindly.
+    const maxAttempts = (options.method ?? "GET") === "GET" ? 2 : 1;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.attemptRequest(path, options);
+      } catch (error) {
+        if (attempt >= maxAttempts || !(error instanceof EngineClientError && error.retryable)) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, transientGetRetryDelayMs));
+      }
+    }
+  }
+
+  private async attemptRequest(
+    path: string,
+    options: {
+      method?: string;
+      body?: string;
+      authenticated?: boolean;
+      acceptedStatuses?: readonly number[];
+      maxResponseBytes?: number;
+    },
   ): Promise<{ response: Response; payload: unknown; rawText: string }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
