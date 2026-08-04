@@ -636,6 +636,16 @@ fn gemini_ready_kb(back: Option<&HandoffStepBack>) -> Keyboard {
     keyboard
 }
 
+/// Offered only next to an `account_validation_required` answer, and only while the account is
+/// actually parked: one press runs one real acceptance generation with the tokens consent already
+/// produced, instead of walking the seller through both Google consents again.
+pub(crate) fn gemini_verified_kb() -> Keyboard {
+    vec![vec![(
+        "✅ Я подтвердил аккаунт — проверить".into(),
+        "gemini:verified".into(),
+    )]]
+}
+
 fn seller_offer_guide(product: &str) -> &'static str {
     match handoff_kind(product) {
         HandoffKind::Claude => CLAUDE_OFFER_GUIDE,
@@ -4997,6 +5007,20 @@ pub async fn on_callback(bot: &Bot, store: &Arc<Store>, cfg: &Arc<Config>, cb: C
 
     if data == "gemini:ready" {
         continue_gemini_handoff(bot, store, cfg, chat).await;
+        return;
+    }
+
+    if data == "gemini:verified" {
+        let Some(oauth) = cfg.gemini_oauth.as_ref() else {
+            let _ = bot
+                .send(
+                    chat,
+                    "Подключение Gemini временно недоступно: администратор уведомлён.",
+                )
+                .await;
+            return;
+        };
+        gemini_oauth::finish_parked_verification(bot, store, cfg, oauth, chat).await;
         return;
     }
 

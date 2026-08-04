@@ -161,6 +161,13 @@ the Antigravity checks below remain decisive.
    verification link in `error.details[].metadata.validation_url` while `message` carries only the
    sentence; Auth Bot forwards that link to the seller as copyable text, fail-closed on anything but
    an `https://accounts.google.com/` URL so the message cannot be turned into a phishing vector. The
+   admitted-but-held token material is parked in an AEAD envelope bound to that seller's chat
+   (never in `profiles.json`, never a completed payout), fenced to the exact seller-job generation
+   and expiring after 72 hours, so the seller finishes with one button press instead of two fresh
+   Google consents. Each press runs exactly one acceptance generation on those tokens, refreshing
+   the access token over the same egress when needed; success publishes and settles the deal
+   through the same code path as the callback, and any verdict other than the same hold discards
+   the parked material. The
    journal carries the HTTP status, the surface and Google's enum fields (`error.status`,
    `error.details[].reason`); the free-form `error.message` can name the project or account and is
    printed only under `AUTH_BOT_GEMINI_TIER_EVIDENCE=1`.

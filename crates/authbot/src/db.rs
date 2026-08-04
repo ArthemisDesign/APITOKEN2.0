@@ -125,6 +125,18 @@ pub struct GeminiOAuthSession {
     pub job: Option<SellerJobRef>,
 }
 
+/// An account waiting for Google's own account verification. Everything identifying — tokens,
+/// subject, email, project, tier and proxy — lives only inside `sealed_payload`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeminiPendingVerification {
+    pub chat_id: i64,
+    pub sealed_payload: String,
+    pub expires_ts: i64,
+    /// Includes the attempt being claimed right now.
+    pub attempts: i64,
+    pub job: Option<SellerJobRef>,
+}
+
 fn now() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -214,8 +226,23 @@ impl Store {
                 job_item_no INTEGER NOT NULL DEFAULT 0,
                 job_token TEXT NOT NULL DEFAULT '',
                 ts INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE IF NOT EXISTS purchase_batches(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+             -- Token material of a Google account that Google itself holds for verification. It
+             -- passed OAuth, tier and project admission but was refused the acceptance generation,
+             -- so it must NOT reach the roster. Keeping it sealed here is what lets the seller
+             -- press one button after verifying instead of walking both consents again; it is
+             -- fenced to the exact seller-job generation and expires on its own.
+             CREATE TABLE IF NOT EXISTS gemini_pending_verifications(
+                chat_id INTEGER PRIMARY KEY,
+                sealed_payload TEXT NOT NULL,
+                expires_ts INTEGER NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                job_kind TEXT NOT NULL DEFAULT '',
+                job_offer_id INTEGER NOT NULL DEFAULT 0,
+                job_batch_id INTEGER NOT NULL DEFAULT 0,
+                job_item_no INTEGER NOT NULL DEFAULT 0,
+                job_token TEXT NOT NULL DEFAULT '',
+                ts INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE IF NOT EXISTS purchase_batches(                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 product TEXT NOT NULL, unit_price TEXT NOT NULL,
                 quantity INTEGER NOT NULL, total_price TEXT NOT NULL,
                 created_by INTEGER NOT NULL, seller_chat INTEGER NOT NULL,
@@ -415,6 +442,12 @@ impl Store {
         let tx = c.transaction()?;
         tx.execute(
             "DELETE FROM gemini_oauth_sessions WHERE chat_id=?1 OR expires_ts<?2",
+            rusqlite::params![chat_id, now()],
+        )?;
+        // A brand new consent supersedes any account still waiting for Google's verification: its
+        // sealed tokens belong to the previous generation and must not survive into this one.
+        tx.execute(
+            "DELETE FROM gemini_pending_verifications WHERE chat_id=?1 OR expires_ts<?2",
             rusqlite::params![chat_id, now()],
         )?;
         let mut job = tx
@@ -817,8 +850,117 @@ impl Store {
         )? == 1)
     }
 
-    pub fn finish_gemini_oauth(&self, state: &str) -> Result<()> {
+    /// Seal the token material of an account that Google admitted but is holding for its own
+    /// verification. Exactly one such account may wait per seller chat, fenced to the seller-job
+    /// generation that produced it, so a later deal can never publish an earlier deal's account.
+    pub fn park_gemini_verification(
+        &self,
+        chat_id: i64,
+        sealed_payload: &str,
+        expires_ts: i64,
+        job: Option<&SellerJobRef>,
+    ) -> Result<()> {
+        let stored = job.cloned().unwrap_or(SellerJobRef {
+            kind: String::new(),
+            offer_id: 0,
+            batch_id: 0,
+            item_no: 0,
+            token: String::new(),
+        });
         self.c.lock().unwrap().execute(
+            "INSERT INTO gemini_pending_verifications(
+                chat_id,sealed_payload,expires_ts,attempts,ts,
+                job_kind,job_offer_id,job_batch_id,job_item_no,job_token)
+             VALUES(?1,?2,?3,0,?4,?5,?6,?7,?8,?9)
+             ON CONFLICT(chat_id) DO UPDATE SET
+                sealed_payload=excluded.sealed_payload,expires_ts=excluded.expires_ts,
+                attempts=0,ts=excluded.ts,job_kind=excluded.job_kind,
+                job_offer_id=excluded.job_offer_id,job_batch_id=excluded.job_batch_id,
+                job_item_no=excluded.job_item_no,job_token=excluded.job_token",
+            rusqlite::params![
+                chat_id,
+                sealed_payload,
+                expires_ts,
+                now(),
+                stored.kind,
+                stored.offer_id,
+                stored.batch_id,
+                stored.item_no,
+                stored.token
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Read the parked account and count this attempt in one transaction, so a seller hammering
+    /// the button cannot start several paid acceptance generations from one parked record.
+    pub fn claim_gemini_verification(&self, chat_id: i64) -> Result<Option<GeminiPendingVerification>> {
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction()?;
+        tx.execute(
+            "DELETE FROM gemini_pending_verifications WHERE expires_ts<?1",
+            rusqlite::params![now()],
+        )?;
+        let parked = tx
+            .query_row(
+                "SELECT sealed_payload,expires_ts,attempts,
+                        job_kind,job_offer_id,job_batch_id,job_item_no,job_token
+                 FROM gemini_pending_verifications WHERE chat_id=?1",
+                rusqlite::params![chat_id],
+                |row| {
+                    let kind: String = row.get(3)?;
+                    let job = (!kind.is_empty()).then(|| SellerJobRef {
+                        kind,
+                        offer_id: row.get(4).unwrap_or_default(),
+                        batch_id: row.get(5).unwrap_or_default(),
+                        item_no: row.get(6).unwrap_or_default(),
+                        token: row.get(7).unwrap_or_default(),
+                    });
+                    Ok(GeminiPendingVerification {
+                        chat_id,
+                        sealed_payload: row.get(0)?,
+                        expires_ts: row.get(1)?,
+                        attempts: row.get::<_, i64>(2)? + 1,
+                        job,
+                    })
+                },
+            )
+            .optional()?;
+        if parked.is_some() {
+            tx.execute(
+                "UPDATE gemini_pending_verifications SET attempts=attempts+1,ts=?2 WHERE chat_id=?1",
+                rusqlite::params![chat_id, now()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(parked)
+    }
+
+    /// Is an account still parked for this seller? Read-only: it must not consume an attempt,
+    /// because it only decides whether the retry button is worth offering.
+    pub fn gemini_verification_is_parked(&self, chat_id: i64) -> Result<bool> {
+        let parked = self
+            .c
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT 1 FROM gemini_pending_verifications WHERE chat_id=?1 AND expires_ts>=?2",
+                rusqlite::params![chat_id, now()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        Ok(parked.is_some())
+    }
+
+    pub fn clear_gemini_verification(&self, chat_id: i64) -> Result<()> {
+        self.c.lock().unwrap().execute(
+            "DELETE FROM gemini_pending_verifications WHERE chat_id=?1",
+            rusqlite::params![chat_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn finish_gemini_oauth(&self, state: &str) -> Result<()> {        self.c.lock().unwrap().execute(
             "DELETE FROM gemini_oauth_sessions WHERE state=?1",
             rusqlite::params![state],
         )?;
@@ -2811,6 +2953,50 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
         format!("{dir}/authbot.db")
+    }
+
+    #[test]
+    fn parked_gemini_verification_is_generation_fenced_and_counts_every_press() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        let job = SellerJobRef {
+            kind: "offer".into(),
+            offer_id: 7,
+            batch_id: 0,
+            item_no: 0,
+            token: "generation-a".into(),
+        };
+        assert!(!s.gemini_verification_is_parked(555).unwrap());
+        s.park_gemini_verification(555, "sealed-envelope", now() + 3600, Some(&job))
+            .unwrap();
+        assert!(s.gemini_verification_is_parked(555).unwrap());
+        // Reading the record must not consume an attempt: it only decides whether to show a button.
+        assert!(s.gemini_verification_is_parked(555).unwrap());
+
+        // Each claim is one paid acceptance generation, so the counter advances per press and the
+        // job generation travels with the record.
+        let first = s.claim_gemini_verification(555).unwrap().unwrap();
+        assert_eq!(first.attempts, 1);
+        assert_eq!(first.sealed_payload, "sealed-envelope");
+        assert_eq!(first.job.as_ref().unwrap().token, "generation-a");
+        assert_eq!(s.claim_gemini_verification(555).unwrap().unwrap().attempts, 2);
+
+        // Re-parking a newer account for the same seller restarts the count instead of stacking.
+        s.park_gemini_verification(555, "second-envelope", now() + 3600, Some(&job))
+            .unwrap();
+        assert_eq!(s.claim_gemini_verification(555).unwrap().unwrap().attempts, 1);
+
+        // An expired record is swept rather than served: parked token material is not permanent.
+        s.park_gemini_verification(555, "stale-envelope", now() - 1, Some(&job))
+            .unwrap();
+        assert!(!s.gemini_verification_is_parked(555).unwrap());
+        assert!(s.claim_gemini_verification(555).unwrap().is_none());
+
+        s.park_gemini_verification(555, "sealed-envelope", now() + 3600, Some(&job))
+            .unwrap();
+        s.clear_gemini_verification(555).unwrap();
+        assert!(s.claim_gemini_verification(555).unwrap().is_none());
     }
 
     #[test]

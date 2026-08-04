@@ -148,7 +148,17 @@ seller lock освобождается, response становится `cancelled
    только фразу — ссылка извлекается и пересылается продавцу как copyable text (не кликабельной
    ссылкой: открывать её нужно в его профиле и egress, а не во встроенном браузере Telegram).
    Приходит она из upstream, поэтому fail-closed: только `https://accounts.google.com/`-префикс,
-   без control/whitespace/кавычек и ≤2048 байт — иначе наше же сообщение стало бы фишингом. `countTokens`, quota и `loadCodeAssist` не являются acceptance. В журнал уходят
+   без control/whitespace/кавычек и ≤2048 байт — иначе наше же сообщение стало бы фишингом.
+   Токены такого аккаунта НЕ выбрасываются: Google уже подтвердил identity, tier и project, а
+   повторный проход обоих consent — лишний шанс подтвердить не тот аккаунт. Они паркуются
+   AEAD-конвертом в `gemini_pending_verifications` (AAD `gemini-verification-<chat>`, поэтому
+   конверт одного продавца не открывается для другого), ровно один на чат, с fencing по exact
+   seller-job generation и TTL 72 часа. Это НЕ публикация: в `profiles.json` ничего не попадает и
+   выплата не завершается. Рядом с сообщением появляется кнопка `gemini:verified`, и каждое
+   нажатие — одна настоящая acceptance-генерация на припаркованных токенах (access-token при
+   необходимости обновляется через тот же egress). Успех публикует профиль и закрывает сделку тем
+   же кодом, что и callback; повторный hold снова показывает кнопку; любой другой вердикт парковку
+   стирает, как и новый consent, `/cancel` и истёкший TTL. `countTokens`, quota и `loadCodeAssist` не являются acceptance. В журнал уходят
    только HTTP-статус, surface и enum-поля Google (`error.status`, `error.details[].reason`);
    free-form `error.message` — лишь под `AUTH_BOT_GEMINI_TIER_EVIDENCE=1`, потому что он может
    содержать project и account.

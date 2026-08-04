@@ -6,7 +6,7 @@
 //! Antigravity credential is published; account email, Google subject, refresh tokens, authenticated
 //! proxy and PKCE material never enter the roster, Telegram messages, filenames or logs.
 
-use crate::db::{GeminiOAuthSession, SellerJobRef, Store};
+use crate::db::{GeminiOAuthSession, GeminiPendingVerification, SellerJobRef, Store};
 use crate::gemini_transport::{Client as GeminiHttpClient, Method as GeminiHttpMethod};
 use crate::tg::Bot;
 use crate::Config as BotConfig;
@@ -1072,60 +1072,13 @@ async fn process_oauth_completion(
         }
         Ok(Completion::Published(profile, _terminal_guard)) => {
             let _ = state.store.finish_gemini_oauth(&session.state);
-            let current = crate::bot::seller_handoff_is_current(
-                &state.store,
-                session.chat_id,
-                session.job.as_ref(),
-                crate::bot::HandoffKind::Gemini,
-            );
-            if current {
-                let seller_outcome = if profile.reauthorized {
-                    "переподключена"
-                } else if profile.migrated {
-                    "переведена на Antigravity"
-                } else {
-                    "подключена"
-                };
-                let _ = state
-                    .bot
-                    .send(
-                        session.chat_id,
-                        &format!(
-                            "✅ <b>Gemini-подписка {seller_outcome}.</b> План: <b>{}</b>. Профиль <code>{}</code> опубликован в отдельном Gemini-пуле.",
-                            plan_label(&profile.plan),
-                            profile.id
-                        ),
-                    )
-                    .await;
-                for admin in &state.config.admins_id {
-                    let admin_outcome = if profile.reauthorized {
-                        "переавторизован; прежний токен был аннулирован Google, конверт заменён атомарно"
-                    } else if profile.migrated {
-                        "переведён на Antigravity; профиль обновлён атомарно"
-                    } else {
-                        "получен; аккаунт добавлен в пул"
-                    };
-                    let _ = state
-                        .bot
-                        .send(
-                            *admin,
-                            &format!(
-                                "✅ <b>Gemini-доступ {admin_outcome}</b>: аккаунт <code>{}</code>, план <b>{}</b>, отдельный прокси: {}.",
-                                profile.id,
-                                plan_label(&profile.plan),
-                                if profile.has_proxy { "да" } else { "нет" }
-                            ),
-                        )
-                        .await;
-                }
-            }
-            crate::bot::complete_seller_job_after_handoff(
+            announce_publication(
                 &state.bot,
                 &state.store,
                 &state.config,
                 session.chat_id,
                 session.job.clone(),
-                crate::bot::HandoffKind::Gemini,
+                &profile,
             )
             .await;
         }
@@ -1136,13 +1089,79 @@ async fn process_oauth_completion(
 }
 
 fn oauth_session_handoff_is_current(store: &Store, session: &GeminiOAuthSession) -> bool {
-    session.job.is_none()
+    handoff_is_current(store, session.chat_id, session.job.as_ref())
+}
+
+/// A handoff with no seller job is an admin/self-serve connection and is always current; a job-bound
+/// one must still be the exact activation generation that started this attempt.
+fn handoff_is_current(store: &Store, chat_id: i64, job: Option<&SellerJobRef>) -> bool {
+    job.is_none()
         || crate::bot::seller_handoff_is_current(
             store,
-            session.chat_id,
-            session.job.as_ref(),
+            chat_id,
+            job,
             crate::bot::HandoffKind::Gemini,
         )
+}
+
+/// Announce a published profile and settle the seller's job. Shared by the OAuth callback and the
+/// post-verification retry so both paths pay out through exactly one code path.
+pub(crate) async fn announce_publication(
+    bot: &Bot,
+    store: &Arc<Store>,
+    config: &Arc<BotConfig>,
+    chat_id: i64,
+    job: Option<SellerJobRef>,
+    profile: &PublishedProfile,
+) {
+    if handoff_is_current(store, chat_id, job.as_ref()) {
+        let seller_outcome = if profile.reauthorized {
+            "переподключена"
+        } else if profile.migrated {
+            "переведена на Antigravity"
+        } else {
+            "подключена"
+        };
+        let _ = bot
+            .send(
+                chat_id,
+                &format!(
+                    "✅ <b>Gemini-подписка {seller_outcome}.</b> План: <b>{}</b>. Профиль <code>{}</code> опубликован в отдельном Gemini-пуле.",
+                    plan_label(&profile.plan),
+                    profile.id
+                ),
+            )
+            .await;
+        for admin in &config.admins_id {
+            let admin_outcome = if profile.reauthorized {
+                "переавторизован; прежний токен был аннулирован Google, конверт заменён атомарно"
+            } else if profile.migrated {
+                "переведён на Antigravity; профиль обновлён атомарно"
+            } else {
+                "получен; аккаунт добавлен в пул"
+            };
+            let _ = bot
+                .send(
+                    *admin,
+                    &format!(
+                        "✅ <b>Gemini-доступ {admin_outcome}</b>: аккаунт <code>{}</code>, план <b>{}</b>, отдельный прокси: {}.",
+                        profile.id,
+                        plan_label(&profile.plan),
+                        if profile.has_proxy { "да" } else { "нет" }
+                    ),
+                )
+                .await;
+        }
+    }
+    crate::bot::complete_seller_job_after_handoff(
+        bot,
+        store,
+        config,
+        chat_id,
+        job,
+        crate::bot::HandoffKind::Gemini,
+    )
+    .await;
 }
 
 #[derive(Clone, Copy)]
@@ -1435,7 +1454,25 @@ async fn fail_callback(
         ),
         _ => base.to_string(),
     };
-    let _ = state.bot.send(session.chat_id, &message).await;
+    // The button exists only while the account is actually parked: offering a retry we cannot honour
+    // would send the seller back into two consents believing one press was enough.
+    let parked = failure == Failure::AccountValidationRequired
+        && matches!(
+            state.store.gemini_verification_is_parked(session.chat_id),
+            Ok(true)
+        );
+    if parked {
+        let _ = state
+            .bot
+            .send_kb(
+                session.chat_id,
+                &message,
+                Some(&crate::bot::gemini_verified_kb()),
+            )
+            .await;
+    } else {
+        let _ = state.bot.send(session.chat_id, &message).await;
+    }
     if failure.operator_action_required() {
         for admin in &state.config.admins_id {
             let _ = state.bot.send(*admin, failure.operator_message()).await;
@@ -2091,19 +2128,6 @@ async fn complete(
         );
         return Err(Failure::AccountMismatch);
     }
-    generation_probe(
-        &mut client,
-        &token.access_token,
-        &resolved.project_id,
-        session.chat_id,
-        verification_url,
-    )
-    .await?;
-    eprintln!(
-        "[gemini-oauth] chat={} Google account and exact generation verified, plan={}, sealing credential",
-        session.chat_id,
-        plan_label(&resolved.plan)
-    );
     let credential = GeminiCredential {
         version: 1,
         access_token: std::mem::take(&mut token.access_token),
@@ -2122,17 +2146,53 @@ async fn complete(
         proxy_order_id,
         issued_at: now(),
     };
+    if let Err(failure) = generation_probe(
+        &mut client,
+        &credential.access_token,
+        &credential.project_id,
+        session.chat_id,
+        verification_url,
+    )
+    .await
+    {
+        // Google admitted the identity, the tier and the project and is only holding the account
+        // for its own verification. Discarding the material here would force the seller through
+        // both consents again after verifying — and every extra `select_account consent` is a
+        // chance to confirm the wrong account. Park it sealed instead, fenced to this exact deal.
+        if failure == Failure::AccountValidationRequired {
+            park_verification(store, config, session, &credential);
+        }
+        return Err(failure);
+    }
+    eprintln!(
+        "[gemini-oauth] chat={} Google account and exact generation verified, plan={}, sealing credential",
+        session.chat_id,
+        plan_label(&credential.plan)
+    );
+    publish_verified_credential(store, config, session.chat_id, session.job.as_ref(), credential)
+        .await
+}
+
+/// Publication tail shared by the callback and the seller's post-verification retry.
+async fn publish_verified_credential(
+    store: &Store,
+    config: &Config,
+    chat_id: i64,
+    job: Option<&SellerJobRef>,
+    credential: GeminiCredential,
+) -> Result<Completion, Failure> {
+    let plan = credential.plan.clone();
     let terminal_guard = config.terminal_guard().await;
     // Generation acceptance may take long enough for the seller to cancel, rewind or replace the
     // exact job generation. Re-check after waiting for the filesystem publication lock and as close
     // as possible to the credential write; SQLite and the roster cannot form one atomic transaction.
-    if !oauth_session_handoff_is_current(store, session) {
+    if !handoff_is_current(store, chat_id, job) {
         eprintln!(
-            "[gemini-oauth] chat={} rejected stale seller generation immediately before publication",
-            session.chat_id
+            "[gemini-oauth] chat={chat_id} rejected stale seller generation immediately before publication"
         );
         return Err(Failure::StaleHandoff);
     }
+    let _ = plan;
     let root = config.root.clone();
     let ring = config.keyring.clone();
     let active = config.active_key_id.clone();
@@ -2142,19 +2202,19 @@ async fn complete(
     match &published {
         Ok(profile) if profile.reauthorized => eprintln!(
             "[gemini-oauth] chat={} reauthorized profile {} in place (plan {}); the previous refresh token was invalidated by Google",
-            session.chat_id, profile.id, plan_label(&profile.plan)
+            chat_id, profile.id, plan_label(&profile.plan)
         ),
         Ok(profile) if profile.migrated => eprintln!(
             "[gemini-oauth] chat={} atomically migrated profile {} to Antigravity (plan {})",
-            session.chat_id, profile.id, plan_label(&profile.plan)
+            chat_id, profile.id, plan_label(&profile.plan)
         ),
         Ok(profile) => eprintln!(
             "[gemini-oauth] chat={} sealed and published profile {} (plan {}) into the Gemini roster",
-            session.chat_id, profile.id, plan_label(&profile.plan)
+            chat_id, profile.id, plan_label(&profile.plan)
         ),
         Err(failure) => eprintln!(
             "[gemini-oauth] chat={} sealing/publishing the profile failed: {}",
-            session.chat_id,
+            chat_id,
             failure.code()
         ),
     }
@@ -2171,6 +2231,263 @@ fn validate_final_subject(
     } else {
         Ok(())
     }
+}
+
+/// How long a parked account may wait for its seller to finish Google's verification. Long enough
+/// for a phone check and a night's sleep, short enough that abandoned token material does not sit
+/// at rest indefinitely.
+const VERIFICATION_PARK_SECS: i64 = 72 * 3600;
+
+/// AEAD context for a parked account. The keyring restricts a context id to `[A-Za-z0-9_-]`, so the
+/// separator is a dash — a colon here silently fails the seal and loses the parked account.
+fn verification_aad(chat_id: i64) -> String {
+    format!("gemini-verification-{chat_id}")
+}
+
+/// Seal the admitted-but-held account so one button press can finish the deal. The envelope uses
+/// the same keyring and AEAD as a published credential and is bound to this chat, so it cannot be
+/// moved to another seller, and it never enters `profiles.json`.
+fn park_verification(
+    store: &Store,
+    config: &Config,
+    session: &GeminiOAuthSession,
+    credential: &GeminiCredential,
+) {
+    let sealed = Zeroizing::new(serde_json::to_string(credential).unwrap_or_default());
+    let sealed = (!sealed.is_empty())
+        .then(|| {
+            config
+                .keyring
+                .seal_secret(
+                    &config.active_key_id,
+                    &verification_aad(session.chat_id),
+                    sealed.as_str(),
+                )
+                .ok()
+                .and_then(|envelope| serde_json::to_string(&envelope).ok())
+        })
+        .flatten();
+    let Some(sealed) = sealed else {
+        eprintln!(
+            "[gemini-oauth] chat={} could not seal the held account; the seller must authorize again after verifying",
+            session.chat_id
+        );
+        return;
+    };
+    match store.park_gemini_verification(
+        session.chat_id,
+        &sealed,
+        now().saturating_add(VERIFICATION_PARK_SECS),
+        session.job.as_ref(),
+    ) {
+        Ok(()) => eprintln!(
+            "[gemini-oauth] chat={} parked the held account for a post-verification retry",
+            session.chat_id
+        ),
+        Err(_) => eprintln!(
+            "[gemini-oauth] chat={} could not park the held account; the seller must authorize again after verifying",
+            session.chat_id
+        ),
+    }
+}
+
+/// The seller pressed “I verified the account”. One press = one real acceptance generation with the
+/// tokens their consent already produced; the deal is settled here on success, and on a repeated
+/// hold the same button is offered again with whatever fresh verification link Google returned.
+pub(crate) async fn finish_parked_verification(
+    bot: &Bot,
+    store: &Arc<Store>,
+    config: &Arc<BotConfig>,
+    oauth: &Config,
+    chat_id: i64,
+) {
+    let job = store
+        .active_seller_job(chat_id)
+        .ok()
+        .flatten()
+        .map(|job| job.reference);
+    match retry_parked_verification(store, oauth, chat_id).await {
+        VerificationRetry::Published(profile) => {
+            announce_publication(bot, store, config, chat_id, job, &profile).await;
+        }
+        VerificationRetry::Rejected(failure, verification_url) => {
+            let accepts_proxy_input = job.as_ref().is_some_and(|expected| {
+                crate::bot::gemini_job_accepts_proxy_input(store, expected, 0)
+            });
+            let base = if accepts_proxy_input {
+                failure.public_message()
+            } else {
+                failure.fixed_proxy_message()
+            };
+            let message = match verification_url.as_deref() {
+                Some(url) if failure == Failure::AccountValidationRequired => format!(
+                    "{base}\n\n🔗 Персональная ссылка Google для этой проверки:\n<code>{}</code>",
+                    crate::bot::esc(url)
+                ),
+                _ => base.to_string(),
+            };
+            if matches!(store.gemini_verification_is_parked(chat_id), Ok(true)) {
+                let _ = bot
+                    .send_kb(chat_id, &message, Some(&crate::bot::gemini_verified_kb()))
+                    .await;
+            } else {
+                let _ = bot.send(chat_id, &message).await;
+            }
+            if failure.operator_action_required() {
+                for admin in &config.admins_id {
+                    let _ = bot.send(*admin, failure.operator_message()).await;
+                }
+            }
+            eprintln!(
+                "[gemini-oauth] chat={chat_id} post-verification retry failed: {}",
+                failure.code()
+            );
+        }
+        VerificationRetry::Missing => {
+            let _ = bot
+                .send(
+                    chat_id,
+                    "Эта кнопка уже неактивна: сохранённого доступа для проверки нет. Отправь <code>повторить</code> — бот выдаст новые ссылки авторизации на том же прокси.",
+                )
+                .await;
+        }
+    }
+}
+
+/// Result of the seller pressing “I verified the account”.
+pub(crate) enum VerificationRetry {
+    Published(PublishedProfile),
+    Rejected(Failure, Option<String>),
+    /// Nothing is parked for this chat, or it belongs to a deal that has since moved on.
+    Missing,
+}
+
+/// Re-run the paid acceptance generation for an account Google was holding, using the tokens that
+/// consent already produced. Every press is one real generation: the account either passes now or
+/// is still held, and nothing else about the deal changes.
+pub(crate) async fn retry_parked_verification(
+    store: &Store,
+    config: &Config,
+    chat_id: i64,
+) -> VerificationRetry {
+    let Ok(Some(parked)) = store.claim_gemini_verification(chat_id) else {
+        return VerificationRetry::Missing;
+    };
+    if !handoff_is_current(store, chat_id, parked.job.as_ref()) {
+        let _ = store.clear_gemini_verification(chat_id);
+        eprintln!(
+            "[gemini-oauth] chat={chat_id} dropped a parked account whose seller generation moved on"
+        );
+        return VerificationRetry::Missing;
+    }
+    let Some(mut credential) = open_parked_credential(config, &parked) else {
+        let _ = store.clear_gemini_verification(chat_id);
+        eprintln!("[gemini-oauth] chat={chat_id} could not open the parked account envelope");
+        return VerificationRetry::Missing;
+    };
+    eprintln!(
+        "[gemini-oauth] chat={chat_id} re-running acceptance for the parked account (attempt {})",
+        parked.attempts
+    );
+    // The client borrows the egress for its whole lifetime, so hand it an owned copy: the parked
+    // credential itself still has to be mutable for the token refresh below.
+    let proxy = credential.proxy.clone();
+    let mut client = match RecoveringClient::connect(&proxy, chat_id).await {
+        Ok(client) => client,
+        Err(failure) => return VerificationRetry::Rejected(failure, None),
+    };
+    if credential.expires_at <= now() {
+        if let Err(failure) = refresh_parked_access_token(&mut client, &mut credential).await {
+            return VerificationRetry::Rejected(failure, None);
+        }
+    }
+    let mut verification_url = None;
+    if let Err(failure) = generation_probe(
+        &mut client,
+        &credential.access_token,
+        &credential.project_id,
+        chat_id,
+        &mut verification_url,
+    )
+    .await
+    {
+        if failure != Failure::AccountValidationRequired {
+            // Anything other than the same hold is a different verdict about this material; it must
+            // not keep masquerading as “press the button again after verifying”.
+            let _ = store.clear_gemini_verification(chat_id);
+        }
+        return VerificationRetry::Rejected(failure, verification_url);
+    }
+    match publish_verified_credential(store, config, chat_id, parked.job.as_ref(), credential).await
+    {
+        Ok(Completion::Published(profile, _guard)) => {
+            let _ = store.clear_gemini_verification(chat_id);
+            VerificationRetry::Published(profile)
+        }
+        Ok(Completion::LegacyBootstrap { .. }) => VerificationRetry::Missing,
+        Err(failure) => VerificationRetry::Rejected(failure, None),
+    }
+}
+
+fn open_parked_credential(
+    config: &Config,
+    parked: &GeminiPendingVerification,
+) -> Option<GeminiCredential> {
+    let envelope: SealedCredential = serde_json::from_str(&parked.sealed_payload).ok()?;
+    let payload = config
+        .keyring
+        .open_secret(&verification_aad(parked.chat_id), &envelope)
+        .ok()?;
+    serde_json::from_str::<GeminiCredential>(payload.as_str()).ok()
+}
+
+/// Trade the parked refresh token for a fresh access token over the account's own egress. Google
+/// rotates nothing here, so a failure is a verdict about the account, not a lost credential.
+async fn refresh_parked_access_token(
+    client: &mut RecoveringClient<'_>,
+    credential: &mut GeminiCredential,
+) -> Result<(), Failure> {
+    // Antigravity's own refresh keeps the Go client's lexical field order.
+    let form = serde_urlencoded::to_string([
+        ("client_id", credential.oauth_client_id.as_str()),
+        ("client_secret", credential.oauth_client_secret.as_str()),
+        ("grant_type", "refresh_token"),
+        ("refresh_token", credential.refresh_token.as_str()),
+    ])
+    .map(Zeroizing::new)
+    .map_err(|_| Failure::Authorization)?;
+    let response = client
+        .token_request(
+            &[
+                (
+                    "content-type",
+                    "application/x-www-form-urlencoded;charset=UTF-8",
+                ),
+                ("user-agent", "Go-http-client/2.0"),
+            ],
+            form.as_bytes(),
+        )
+        .await?;
+    if !(200..300).contains(&response.status) {
+        eprintln!(
+            "[gemini-oauth] chat={} refreshing the parked access token failed: HTTP {}",
+            client.chat_id, response.status
+        );
+        return Err(if matches!(response.status, 400 | 401) {
+            Failure::Authorization
+        } else {
+            Failure::Temporary
+        });
+    }
+    let mut token: TokenResponse =
+        serde_json::from_slice(&response.body).map_err(|_| Failure::Temporary)?;
+    if !valid_oauth_value(&token.access_token, 16_384) || !(60..=86_400).contains(&token.expires_in)
+    {
+        return Err(Failure::Authorization);
+    }
+    credential.access_token = std::mem::take(&mut token.access_token);
+    credential.expires_at = now().saturating_add(token.expires_in).saturating_sub(60);
+    Ok(())
 }
 
 fn valid_identity(value: &str, max: usize) -> bool {
@@ -3740,6 +4057,53 @@ mod tests {
             TRANSPORT_RECOVERY_DELAYS.iter().sum::<Duration>(),
             Duration::from_secs(37)
         );
+    }
+
+    #[test]
+    fn a_held_account_is_parked_sealed_and_reopens_only_for_its_own_chat() {
+        let (root, ring) = fixture();
+        let database = root.join("state").join("authbot.db");
+        let store = Store::open(database.to_str().unwrap()).unwrap();
+        let config = Config::new(
+            "https://gemini.example/oauth/callback".into(),
+            "127.0.0.1:8796".parse().unwrap(),
+            root.join("gemini").to_string_lossy().into_owned(),
+            ring,
+            "current".into(),
+        )
+        .unwrap();
+        let session = GeminiOAuthSession {
+            state: "state-value".into(),
+            chat_id: 4242,
+            sealed_payload: String::new(),
+            expires_ts: now() + 600,
+            job: None,
+        };
+        let credential = credential("subject-parked");
+        park_verification(&store, &config, &session, &credential);
+
+        let parked = store.claim_gemini_verification(4242).unwrap().unwrap();
+        // Nothing identifying may sit in the clear next to the record.
+        for secret in [
+            credential.refresh_token.as_str(),
+            credential.access_token.as_str(),
+            credential.email.as_str(),
+            credential.subject.as_str(),
+            credential.proxy.as_str(),
+        ] {
+            assert!(!parked.sealed_payload.contains(secret));
+        }
+        let opened = open_parked_credential(&config, &parked).unwrap();
+        assert_eq!(opened.refresh_token, credential.refresh_token);
+        assert_eq!(opened.project_id, credential.project_id);
+        assert_eq!(opened.proxy, credential.proxy);
+
+        // The envelope is bound to its chat, so another seller's record cannot be opened with it.
+        let foreign = GeminiPendingVerification {
+            chat_id: 4243,
+            ..parked
+        };
+        assert!(open_parked_credential(&config, &foreign).is_none());
     }
 
     #[test]
