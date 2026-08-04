@@ -372,9 +372,11 @@ together with it (the full walk — the "New model" / "Price change" checklists 
   ladder.
 - `packages/engine-client/src/openkeys-policy.ts` — canonical OpenKeys policy
   identity/digest and the catalog check against the exact reviewed identity of
-  generation 1 or 2 (`CURRENT_PRODUCT_CATALOG_ENTRIES` /
-  `MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES`); `apps/openkeys` and the Stage 5 planner
-  use one builder (fail closed on divergence).
+  generation 1, 2 or 5 (`CURRENT_PRODUCT_CATALOG_ENTRIES` /
+  `MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES` /
+  `MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES`); generations 1 and 2 are historical
+  reviewed identities, generation 5 is the current active production authority;
+  `apps/openkeys` and the Stage 5 planner use one builder (fail closed on divergence).
 - `apps/admin/src/app/sales/calculator/calculation.ts` — hardcoded `PRODUCT_CATALOG`
   of subscription products (nanoUSD, bigint).
 - Model inclusion policy and discount calculation: `docs/commerce/MULTI-DISCOUNT.md` §§2–4;

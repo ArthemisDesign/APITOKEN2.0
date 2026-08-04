@@ -6,6 +6,9 @@ import {
   MULTI_DISCOUNT_GEN2_CAPABILITY_DIGEST,
   MULTI_DISCOUNT_GEN2_CAPABILITY_GENERATION,
   MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES,
+  MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
+  MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
+  MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES,
   MULTI_DISCOUNT_SCHEMA_VERSION,
   OPENKEYS_PRICING_PRODUCT_ID,
   type AccountPolicyBinding,
@@ -20,6 +23,7 @@ import {
   assertNoOpenKeysPricingOverride,
   assertOfficialEngineAccount,
   assertOpenKeysCatalog,
+  assertOpenKeysSwitches,
   buildOfficialOpenKeysPolicy,
   describeIssuanceBlock,
   OFFICIAL_ONE_TO_ONE_MULT_BP,
@@ -101,6 +105,37 @@ function switchesGen2(): ProviderSwitchSpec {
         provider_id: providerId,
         scope: { product: { product_id: OPENKEYS_PRICING_PRODUCT_ID } },
         catalog_generation: 2,
+        enabled: true,
+      },
+    ]),
+  };
+}
+
+function catalogGen5(): PricingCatalogSpec {
+  return {
+    product_id: OPENKEYS_PRICING_PRODUCT_ID,
+    generation: 5,
+    schema_version: MULTI_DISCOUNT_SCHEMA_VERSION,
+    capability_generation: MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
+    capability_digest: MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
+    content_digest: "catalog-openkeys-v5",
+    entries: MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES.map((entry) => ({ ...entry })),
+  };
+}
+
+function switchesGen5(): ProviderSwitchSpec {
+  return {
+    generation: 5,
+    schema_version: MULTI_DISCOUNT_SCHEMA_VERSION,
+    capability_generation: MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
+    capability_digest: MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
+    content_digest: "switches-v5",
+    entries: ["anthropic", "openai"].flatMap((providerId) => [
+      { provider_id: providerId, scope: "master" as const, catalog_generation: null, enabled: true },
+      {
+        provider_id: providerId,
+        scope: { product: { product_id: OPENKEYS_PRICING_PRODUCT_ID } },
+        catalog_generation: 5,
         enabled: true,
       },
     ]),
@@ -190,6 +225,64 @@ describe("OpenKeys official 1:1 pricing", () => {
     await expect(resolveOpenKeysPricingAuthority(engine)).rejects.toMatchObject({
       code: "switch_identity_mismatch",
     });
+  });
+
+  it("accepts the reviewed generation-5 catalog only with its exact pinned identity", () => {
+    const gen5 = catalogGen5();
+    expect(() => assertOpenKeysCatalog(gen5)).not.toThrow();
+    expect(gen5.entries.map((entry) => entry.provider_id)).not.toContain("gemini");
+    expect(gen5.entries.map((entry) => entry.canonical_model_id)).toEqual([
+      "claude-fable-5",
+      "claude-haiku-4-5",
+      "claude-opus-4-7",
+      "claude-opus-4-8",
+      "claude-opus-5",
+      "claude-sonnet-4-6",
+      "claude-sonnet-5",
+      "gpt-5.4",
+      "gpt-5.5",
+      "gpt-5.6-luna",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+    ]);
+
+    // Generation-5 content under the generation-2 catalog identity is not the
+    // reviewed catalog, and neither is a capability mismatch.
+    expect(() => assertOpenKeysCatalog({ ...gen5, generation: 2 }))
+      .toThrow("exact reviewed Anthropic/OpenAI catalog");
+    expect(() =>
+      assertOpenKeysCatalog({
+        ...gen5,
+        capability_generation: MULTI_DISCOUNT_GEN2_CAPABILITY_GENERATION,
+        capability_digest: MULTI_DISCOUNT_GEN2_CAPABILITY_DIGEST,
+      })
+    ).toThrow("exact reviewed Anthropic/OpenAI catalog");
+    expect(() =>
+      assertOpenKeysCatalog({
+        ...gen5,
+        entries: gen5.entries.filter((entry) => entry.canonical_model_id !== "claude-fable-5"),
+      })
+    ).toThrow("exact reviewed Anthropic/OpenAI catalog");
+  });
+
+  it("resolves the generation-5 authority only with matching generation-5 switches", async () => {
+    const gen5Authority: OpenKeysPricingAuthority = { catalog: catalogGen5(), switches: switchesGen5() };
+    const getActivePricingCatalog = vi.fn(async () => catalogGen5());
+    const getActiveProviderSwitches = vi.fn(async (): Promise<ProviderSwitchSpec | null> => switchesGen5());
+    const engine = { getActivePricingCatalog, getActiveProviderSwitches } as unknown as PricingEngine;
+    await expect(resolveOpenKeysPricingAuthority(engine)).resolves.toEqual(gen5Authority);
+
+    const policy = buildOfficialOpenKeysPolicy("acct_openkeys_gen5", gen5Authority);
+    expect(policy).toMatchObject({ catalog_generation: 5, switch_generation: 5 });
+
+    // A product switch pinned to another catalog generation stays fail closed.
+    const driftedSwitches: ProviderSwitchSpec = {
+      ...switchesGen5(),
+      entries: switchesGen5().entries.map((entry) =>
+        typeof entry.scope === "object" ? { ...entry, catalog_generation: 2 } : entry),
+    };
+    expect(() => assertOpenKeysSwitches(driftedSwitches, catalogGen5()))
+      .toThrow("only enabled Anthropic and OpenAI product switches");
   });
 
   it("rejects multiplier, discount, and pricing-contract overrides at every caller boundary", () => {
