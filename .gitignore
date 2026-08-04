@@ -33,3 +33,6 @@ secrets*
 
 # Local database volumes
 .data/
+
+# Локальное состояние AI-агентов (OpenCode: goals, plugins) — не коммитить
+.opencode/
