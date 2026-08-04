@@ -179,9 +179,11 @@ const MIGRATION_0028: &str =
 const MIGRATION_0029: &str = include_str!("../migrations_pg/0029_glm_window_calibration.sql");
 const MIGRATION_0030: &str =
     include_str!("../migrations_pg/0030_pricing_release_policy_override_extensions.sql");
+const MIGRATION_0031: &str =
+    include_str!("../migrations_pg/0031_pricing_request_snapshots_extension_lineage.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 30;
+pub const CURRENT_SCHEMA_VERSION: i64 = 31;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -215,6 +217,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (28, MIGRATION_0028),
     (29, MIGRATION_0029),
     (30, MIGRATION_0030),
+    (31, MIGRATION_0031),
 ];
 
 #[cfg(test)]
@@ -11399,7 +11402,7 @@ mod tests {
 
     #[test]
     fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 30);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 31);
         let registered = ENGINE_MIGRATIONS
             .iter()
             .find(|(version, _)| *version == 29)
@@ -13177,6 +13180,48 @@ mod tests {
             .unwrap();
         assert_eq!(overridden.assignment.policy_version, 2);
         assert_eq!(overridden.payable_multiplier_bp(), Some(4_000));
+        let override_snapshot = crate::pricing::LegacyScalarAdmissionSnapshot::new(
+            crate::pricing::LegacyScalarAdmissionSnapshotInput {
+                request_id: "release-runtime-b2c-request-override".into(),
+                account_id: "release-runtime-b2c".into(),
+                provider: crate::pricing::SnapshotProvider::Google,
+                requested_model_id: "gemini-3-flash-preview".into(),
+                canonical_model_id: "gemini-3-flash-preview".into(),
+                alias_generation: 1,
+                tariff_schedule_id: "google/runtime-test/v1".into(),
+                tariff_priced_ts: admission_ts,
+                admission_ts,
+                payable_multiplier_bp: 4_000,
+                official_hold_nano: 200,
+                charged_hold_nano: 80,
+                premium_modifiers: crate::pricing::LegacyPremiumModifiers::GeminiV1 {
+                    context_rate: crate::pricing::SnapshotGeminiContextRate::ConservativeMaximum,
+                    search_billing: crate::pricing::SnapshotGeminiSearchBilling::PerQuery,
+                    grounding_enabled: false,
+                    search_reserve_units: 0,
+                },
+            },
+        )
+        .unwrap();
+        let override_quote =
+            crate::pricing::PricingReleaseQuoteV2::from_legacy_snapshot(&override_snapshot)
+                .unwrap();
+        let override_receipt = match pg
+            .reserve_request_with_pricing_release_v2(
+                &owner,
+                "release-runtime-b2c-key",
+                600,
+                &overridden,
+                &override_quote,
+            )
+            .unwrap()
+        {
+            PricingReleaseReserveOutcomeV2::Inserted(receipt) => receipt,
+            other => panic!("unexpected override reserve outcome: {other:?}"),
+        };
+        assert_eq!(override_receipt.snapshot.charged_hold_nano, 80);
+        assert_eq!(override_receipt.snapshot.policy_version, 2);
+
 
         let openkeys_google = pg
             .pricing_release_resolution_v2(

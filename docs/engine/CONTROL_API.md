@@ -742,7 +742,9 @@ An exact replay returns `unchanged`, a different body for the same
 no longer current returns typed `stale` without inserting either member. `GET` performs exact
 readback by that tuple. Runtime resolution reads one coherent base assignment or append-only
 extension for the active release, preferring the extension when both exist; it never mutates the
-immutable release manifest. This surface does
+immutable release manifest. Reserve snapshots pin the resolved assignment identity, and the
+release-v2 snapshot invariants accept either the base lineage or the exact extension lineage
+(engine migration 0031). This surface does
 not create or activate a head.
 
 `POST /admin/pricing/v2/stage8-evidence/capture` is the producer-first machine transport for the
