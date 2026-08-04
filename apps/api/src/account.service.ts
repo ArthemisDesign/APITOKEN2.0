@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import {
   assertUserPolicyReadyForKey,
   findOwnedApiKey,
@@ -27,12 +27,15 @@ import {
 } from "@claude-api/contracts";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
 import { createFundedEngineAccount } from "./engine-provisioning.js";
+import { settleSignupBonus } from "./signup-bonus.js";
 
 export class EngineAccountUnavailableError extends Error {}
 class EngineAccountPolicyPendingError extends EngineAccountUnavailableError {}
 
 @Injectable()
 export class AccountService {
+  private readonly logger = new Logger(AccountService.name);
+
   constructor(
     @Inject(DATABASE) private readonly database: Database,
     @Inject(ENGINE_CLIENT) private readonly engine: EngineClient,
@@ -48,13 +51,16 @@ export class AccountService {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [userId]);
 
       const mappingResult = await client.query<EngineAccountMappingRow>(`
-        SELECT ea.engine_account_id, ea.status, ea.mult_bp,
+        SELECT ea.engine_account_id, ea.status, ea.mult_bp, u.email,
                COALESCE(cp.customer_type, 'b2c') AS customer_type,
+               COALESCE(sp.bonus_granted, false) AS bonus_granted,
+               sp.flagged_reason,
                CASE WHEN COALESCE(sp.bonus_granted, false)
                  THEN COALESCE(sp.bonus_amount_nano, $2::bigint)
                  ELSE NULL
                END AS welcome_bonus_amount_nano
         FROM engine_accounts ea
+        JOIN users u ON u.id = ea.user_id
         LEFT JOIN customer_profiles cp ON cp.user_id = ea.user_id
         LEFT JOIN signup_profiles sp ON sp.user_id = ea.user_id
         WHERE ea.user_id = $1
@@ -65,7 +71,10 @@ export class AccountService {
         engineAccountId: row.engine_account_id,
         status: row.status,
         multBp: row.mult_bp,
+        email: row.email,
         customerType: row.customer_type,
+        bonusGranted: row.bonus_granted,
+        flaggedReason: row.flagged_reason,
         welcomeBonusAmountNano: row.welcome_bonus_amount_nano === null
           ? null
           : BigInt(row.welcome_bonus_amount_nano),
@@ -75,6 +84,21 @@ export class AccountService {
       if (mapping.status === "active" && mapping.engineAccountId) {
         await client.query("COMMIT");
         transactionOpen = false;
+        // Отложенный welcome-бонус: профиль чист, но клейм ещё не прошёл — например, аккаунт
+        // активировался worker'ом уже после OAuth-регистрации, когда гейт видел pending.
+        // Best-effort: ошибка зачисления не ломает доступ к аккаунту — клейм освобождён,
+        // следующий вызов повторит.
+        if (mapping.customerType === "b2c" && !mapping.bonusGranted && mapping.flaggedReason === null) {
+          try {
+            await settleSignupBonus(this.database, this.engine, {
+              userId,
+              email: mapping.email,
+              customerType: mapping.customerType,
+            });
+          } catch (error) {
+            this.logger.warn(`deferred signup bonus settlement failed for user ${userId}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
         return mapping.engineAccountId;
       }
       if (mapping.status !== "pending" && mapping.status !== "error") {
@@ -584,7 +608,10 @@ interface EngineAccountMappingRow {
   engine_account_id: string | null;
   status: "pending" | "active" | "error" | "disabled";
   mult_bp: number;
+  email: string;
   customer_type: "b2c" | "b2b";
+  bonus_granted: boolean;
+  flagged_reason: string | null;
   welcome_bonus_amount_nano: string | null;
 }
 

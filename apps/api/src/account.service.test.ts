@@ -195,6 +195,49 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
     await expect(service.ensureEngineAccount(bobId)).resolves.toBe("acct_password_recovered");
     expect(engine.signupCredits).toEqual([]);
   });
+
+  it("settles a deferred welcome bonus on an already active account", async () => {
+    // Аккаунт активирован worker'ом после регистрации: профиль чист, но клейм ещё не прошёл.
+    const carolId = await createUserWithUnclaimedProfile(database, "carol@gmail.com", "acct_carol", null);
+
+    await expect(service.ensureEngineAccount(carolId)).resolves.toBe("acct_carol");
+    expect(engine.signupCredits).toEqual([{
+      account: "acct_carol", amountNano: "5000000000", reference: `signup-bonus:${carolId}`,
+    }]);
+    const profile = await database.pool.query(
+      "SELECT bonus_granted, bonus_amount_nano::text AS amount FROM signup_profiles WHERE user_id = $1",
+      [carolId],
+    );
+    expect(profile.rows[0]).toEqual({ bonus_granted: true, amount: "5000000000" });
+  });
+
+  it("does not settle the welcome bonus for a flagged profile", async () => {
+    const daveId = await createUserWithUnclaimedProfile(database, "dave@gmail.com", "acct_dave", "email-domain");
+
+    await expect(service.ensureEngineAccount(daveId)).resolves.toBe("acct_dave");
+    expect(engine.signupCredits).toEqual([]);
+    const profile = await database.pool.query(
+      "SELECT bonus_granted, flagged_reason FROM signup_profiles WHERE user_id = $1", [daveId],
+    );
+    expect(profile.rows[0]).toEqual({ bonus_granted: false, flagged_reason: "email-domain" });
+  });
+
+  it("keeps account access working when the deferred bonus credit fails", async () => {
+    const erinId = await createUserWithUnclaimedProfile(database, "erin@gmail.com", "acct_erin", null);
+    engine.failNextCredit = true;
+
+    await expect(service.ensureEngineAccount(erinId)).resolves.toBe("acct_erin");
+    expect(engine.signupCredits).toEqual([]);
+    const released = await database.pool.query(
+      "SELECT bonus_granted FROM signup_profiles WHERE user_id = $1", [erinId],
+    );
+    expect(released.rows[0]?.bonus_granted).toBe(false);
+
+    await expect(service.ensureEngineAccount(erinId)).resolves.toBe("acct_erin");
+    expect(engine.signupCredits).toEqual([{
+      account: "acct_erin", amountNano: "5000000000", reference: `signup-bonus:${erinId}`,
+    }]);
+  });
 });
 
 async function createUser(
@@ -229,12 +272,26 @@ async function createUser(
   return userId;
 }
 
+async function createUserWithUnclaimedProfile(
+  database: Database,
+  email: string,
+  engineAccountId: string,
+  flaggedReason: string | null,
+): Promise<string> {
+  const userId = await createUser(database, email, engineAccountId, "github");
+  await database.pool.query(`
+    UPDATE signup_profiles SET bonus_granted = false, flagged_reason = $2 WHERE user_id = $1
+  `, [userId, flaggedReason]);
+  return userId;
+}
+
 class FakeEngine {
   readonly disabledKeyIds: string[] = [];
   readonly policyUpdates: Array<{
     account: string; keyId: string; spendLimitNano: string | null; expiresTs: number | null;
   }> = [];
   rejectNextPolicyUpdate = false;
+  failNextCredit = false;
   readonly signupCredits: Array<{ account: string; amountNano: string; reference: string }> = [];
   readonly missingAccountIds = new Set<string>();
   releaseHeadReads = 0;
@@ -258,6 +315,10 @@ class FakeEngine {
       return Response.json({ account: this.recoveredAccountId, mult_bp: 2000, handle: "user:test" });
     }
     if (path.endsWith("/credit") && init?.method === "POST") {
+      if (this.failNextCredit) {
+        this.failNextCredit = false;
+        return Response.json({ error: "engine unavailable" }, { status: 500 });
+      }
       const account = path.slice("/admin/account/".length, -"/credit".length);
       const body = JSON.parse(String(init.body)) as { amount_nano: unknown; ref: string };
       if (typeof body.amount_nano !== "string") {

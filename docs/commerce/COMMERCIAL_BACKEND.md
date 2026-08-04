@@ -342,9 +342,13 @@ creation idempotent. API-key revocation uses the engine's non-secret `key_id`; P
 commercial UUID, engine `key_id`, and mask, never the usable key. A key issued by the engine is
 immediately disabled as compensation if its commercial record cannot be committed.
 
-The target Google/GitHub B2C flow atomically records the exact `$5.000000000` amount with the
-anti-fraud claim, then sends one idempotent credit using `signup-bonus:<commercial UUID>`. It can
-fund every model allowed by the B2C policy. Password accounts are ineligible even when their
+The target Google/GitHub B2C flow always records the anti-fraud profile and flags at OAuth
+sign-in, then atomically records the exact `$5.000000000` amount with the anti-fraud claim and
+sends one idempotent credit using `signup-bonus:<commercial UUID>`. The claim runs only against
+an engine account that is freshly read as `active`: managed provisioning confirms asynchronously
+via the worker, so the claim may be deferred past sign-in and is retried from both the next
+OAuth sign-in and `AccountService.ensureEngineAccount` on account access. It can fund every
+model allowed by the B2C policy. Password accounts are ineligible even when their
 address is hosted by Gmail. Failed credit compensation clears both the claim and its amount.
 Recovery never re-derives a nominal from OAuth or current pricing: it repeats the stored granted
 amount under the same reference. A granted pre-0034 row with `bonus_amount_nano IS NULL` means the

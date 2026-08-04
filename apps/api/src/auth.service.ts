@@ -1,20 +1,15 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { ForbiddenException, Inject, Injectable } from "@nestjs/common";
+import { ForbiddenException, Inject, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { hash, verify, argon2id } from "argon2";
-import { B2C_SIGNUP_BONUS_BALANCE_NANO, type AuthUserView } from "@claude-api/contracts";
+import { type AuthUserView } from "@claude-api/contracts";
 import {
   canonicalizeEmail,
-  claimSignupBonus,
   completeExternalSignIn,
   consumeEmailVerification,
-  countRecentSubnetSignups,
-  flagSignupProfile,
   ipSubnetOf,
-  isBonusEligibleEmailDomain,
   materializeProvisionedUserPolicy,
   recordDeviceSighting,
-  releaseSignupBonus,
   upsertSignupProfile,
   consumeOAuthTransaction,
   consumePasswordReset,
@@ -44,12 +39,9 @@ import type { Environment } from "./config.js";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
 import { OAuthProviderRegistry } from "./auth-providers.js";
 import { createFundedEngineAccount } from "./engine-provisioning.js";
+import { deviceHashOf, settleSignupBonus } from "./signup-bonus.js";
 
 const dummyHash = hash("not-a-real-user-password", passwordHashOptions());
-
-// Волна регистраций из одной подсети: сверх этого числа за окно бонус не выдаётся (флаг).
-const SUBNET_SIGNUP_MAXIMUM = 3;
-const SUBNET_SIGNUP_WINDOW_SECONDS = 86_400;
 
 export interface AuthSession {
   sessionId: string;
@@ -76,6 +68,8 @@ export class EngineAccountDisabledError extends ForbiddenException {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     @Inject(DATABASE) private readonly database: Database,
     @Inject(ENGINE_CLIENT) private readonly engine: EngineClient,
@@ -302,7 +296,16 @@ export class AuthService {
       await this.attributeReferral(user.id, transaction.referralCode);
       await this.applyReferralFloorFromAttribution(user.id);
     }
-    await this.maybeGrantSignupBonus(user, input);
+    // Welcome-бонус: профиль и антифрод-флаги фиксируются всегда, клейм — только когда
+    // engine-аккаунт уже active по свежему чтению (managed-provisioning подтверждается
+    // worker'ом асинхронно, поэтому in-memory статус здесь может быть ещё pending — тогда
+    // клейм повторится при следующем OAuth-входе или обращении к аккаунту).
+    await settleSignupBonus(this.database, this.engine, {
+      userId: user.id,
+      email: user.email,
+      customerType: user.customerType,
+      meta: input,
+    });
     return this.issueSession(user, input.userAgent, input.ipAddress, input.deviceToken ?? null);
   }
 
@@ -403,62 +406,10 @@ export class AuthService {
         userAgent: meta.userAgent,
         deviceHash: deviceHashOf(meta.deviceToken ?? null),
       });
-    } catch {
-      // считаем бонус уже выданным → в сомнительной ситуации бонус НЕ выдаём
-      return { bonusGranted: true, flaggedReason: null };
-    }
-  }
-
-  /**
-   * Welcome-бонус с антифрод-гейтом. В кластер достаточно попасть ЛЮБЫМ одним признаком:
-   * то же устройство (device-cookie), та же /24|/64 подсеть или тот же канонический email,
-   * что у уже выданного бонуса, — тогда аккаунт создаётся, но бонус молча не выдаётся.
-   * Клейм атомарен (частичные unique-индексы), поэтому конкурентная волна тоже получает один.
-   */
-  private async maybeGrantSignupBonus(
-    user: AuthUser,
-    meta: { userAgent: string | null; ipAddress: string | null; deviceToken?: string | null },
-  ): Promise<void> {
-    if (user.customerType !== "b2c" || user.engineAccountStatus !== "active") return;
-    const profile = await this.recordSignupProfile(user, meta);
-    if (profile.bonusGranted || profile.flaggedReason !== null) return;
-    // Подарок — только популярным почтовым провайдерам; GitHub OAuth пускает любой
-    // верифицированный ящик, включая одноразовые домены — эту дыру закрывает allowlist.
-    if (!isBonusEligibleEmailDomain(user.email)) {
-      await flagSignupProfile(this.database, user.id, "email-domain");
-      return;
-    }
-    const subnet = ipSubnetOf(meta.ipAddress);
-    if (subnet && await countRecentSubnetSignups(this.database, subnet, SUBNET_SIGNUP_WINDOW_SECONDS) > SUBNET_SIGNUP_MAXIMUM) {
-      await flagSignupProfile(this.database, user.id, "subnet-velocity");
-      return;
-    }
-    const claim = await claimSignupBonus(
-      this.database,
-      user.id,
-      B2C_SIGNUP_BONUS_BALANCE_NANO,
-    );
-    if (!claim.claimed) return;
-    const result = await this.database.pool.query<{ engine_account_id: string | null }>(`
-      SELECT engine_account_id
-      FROM engine_accounts
-      WHERE user_id = $1 AND status = 'active'
-    `, [user.id]);
-    const engineAccountId = result.rows[0]?.engine_account_id;
-    if (!engineAccountId) {
-      await releaseSignupBonus(this.database, user.id);
-      return;
-    }
-    try {
-      await this.engine.creditAccount(
-        engineAccountId,
-        B2C_SIGNUP_BONUS_BALANCE_NANO,
-        `signup-bonus:${user.id}`,
-      );
     } catch (error) {
-      // зачисление идемпотентно по ref — освобождаем клейм, следующий вход попробует снова
-      await releaseSignupBonus(this.database, user.id);
-      throw error;
+      // считаем бонус уже выданным → в сомнительной ситуации бонус НЕ выдаём
+      this.logger.warn(`signup profile recording failed for user ${user.id}: ${error instanceof Error ? error.message : String(error)}`);
+      return { bonusGranted: true, flaggedReason: null };
     }
   }
 
@@ -558,12 +509,6 @@ function maskEmail(email: string): string {
   const [local = "", domain = ""] = email.split("@");
   const visible = local.slice(0, Math.min(2, local.length));
   return `${visible}${"*".repeat(Math.max(1, Math.min(6, local.length - visible.length)))}@${domain}`;
-}
-
-// Device-cookie: 32 байта base64url (43 символа). Иной формат → сигнала нет (null).
-function deviceHashOf(token: string | null): string | null {
-  if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
-  return tokenHash(token);
 }
 
 function rateKey(value: string): string {
