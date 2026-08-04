@@ -63,7 +63,8 @@
 | Blue-green/default-off delivery plane: `ProviderMode::Kimi`, слоты 8804/8805 + origin 8803, capability markers, rollback-ветка, scrape `provider: kimi`, fail-closed `/v1/messages` | `crates/{forward,server}`, `systemd/claude-api-kimi{,@}.service`, `deploy/**`, `observability/**`, `docs/**` | `598b46a4` |
 | Admin: KIMI capacity board в control-room подписок | `apps/admin/**`, `docs/product/ADMIN_PANEL.md` | `8797a7a8` |
 | Pool parity: pre-byte rotation holes, pinned CLI UA, Retry-After cooling | `crates/forward/src/kimi/**`, `crates/kimi-credential` | `9ad22a58` |
-| Точная атрибуция: admin calibration headers, pinned profile + immutable request id, bounded recent-turns read, поля `/kimi-subs` | `crates/{forward,server,registry}` | текущий checkpoint |
+| Точная атрибуция: admin calibration headers, pinned profile + immutable request id, bounded recent-turns read, поля `/kimi-subs` | `crates/{forward,server,registry}` | `fbc000fc` |
+| Безопасный live-runner: `run_live.py` + 43 offline теста + ops runbook | `tools/kimi_calibration/`, `docs/ops/KIMI_CALIBRATION.md` | текущий checkpoint |
 
 ## Открытые швы (выглядит подключённым, не работает)
 
@@ -87,9 +88,9 @@
 
 ## Следующее действие
 
-**Смёржить safe live calibration runner** (`tools/kimi_calibration`, ветка
-`feat/kimi-calibration-runner-20260804`) поверх готовой engine-атрибуции и включить KIMI на
-выделенной плоскости reviewed unit change (`CLAUDE_API_KIMI_ENABLED=1`).
+**Включить KIMI на выделенной плоскости** reviewed unit change (`CLAUDE_API_KIMI_ENABLED=1` в
+`systemd/claude-api-kimi{,@}.service`) и провести dry-run live-runner'а против production origin
+8803; платная калибровка — только после явного бюджетного разрешения человека.
 
 **Процессные заметки (обе уже стоили потерянного мёржа):**
 
