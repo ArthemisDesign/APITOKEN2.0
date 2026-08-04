@@ -250,6 +250,15 @@ reviewed unit of the one producing plane, exactly as `CLAUDE_API_KIMI_ENABLED=1`
 `EnvironmentFile`, and the plane's state stays visible in its own unit instead of leaking sideways
 into planes that must never run it.
 
+Current production state: all three producing planes pin
+`CLAUDE_API_PRICING_BRIDGE_ENABLED=1 CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP=10000
+CLAUDE_API_PRICING_SHADOW_ENABLED=1 CLAUDE_API_PRICING_SHADOW_SAMPLE_BP=10000` argv-level in
+`systemd/claude-api-anthropic@.service`, `systemd/claude-api-openai@.service` and
+`systemd/claude-api-gemini@.service`, because the Stage 8 evidence gate requires full shadow
+coverage of supported traffic. The bounded producer (queue drop, never traffic backpressure) ran
+at a 100% sample on the Anthropic plane for two hours before this pinning with no customer-facing
+impact; KIMI and any future non-producer plane stay inert by construction.
+
 Keep every ceiling fixed while changing only one rollout dimension on one fixed plane at a time.
 For Anthropic, OpenAI and Gemini the required order is: default-off binary → bridge small sample →
 bridge target sample → bridge 100% of eligible traffic → shadow small sample → wider shadow sample

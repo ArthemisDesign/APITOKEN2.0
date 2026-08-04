@@ -15,7 +15,7 @@ EnvironmentFile=/srv/claude-api/data/engine-postgres.env
 # `/usr/bin/env` is deliberately at ExecStart: EnvironmentFile values override `Environment=`
 # regardless of their textual order, while argv-level assignments always win for the slot. The
 # shared secret env may later enable the OpenAI-only GPT fallback; never inherit it here.
-ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=anthropic CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:anthropic:%i /srv/claude-api/releases/current/claude-api serve
+ExecStart=/usr/bin/env CLAUDE_API_PRICING_BRIDGE_ENABLED=1 CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP=10000 CLAUDE_API_PRICING_SHADOW_ENABLED=1 CLAUDE_API_PRICING_SHADOW_SAMPLE_BP=10000 CLAUDE_API_PROVIDER=anthropic CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:anthropic:%i /srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM
