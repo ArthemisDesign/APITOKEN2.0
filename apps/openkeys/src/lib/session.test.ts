@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { cookies } from "next/headers";
 import type { OpenkeysConfig } from "./config";
-import { authenticate, issueSessionValue, sessionUser } from "./session";
+import { authenticate, currentAdmin, issueSessionValue, SESSION_COOKIE, sessionUser } from "./session";
+
+vi.mock("next/headers", () => ({ cookies: vi.fn() }));
 
 const config: OpenkeysConfig = {
   databaseUrl: "postgresql://localhost/openkeys",
@@ -68,5 +71,53 @@ describe("сессия", () => {
     for (const value of ["", "a.b.c", "1.2.3.4.5", "notanumber.n.u.s"]) {
       expect(sessionUser(value, config)).toBeNull();
     }
+  });
+});
+
+describe("currentAdmin", () => {
+  const mockCookies = vi.mocked(cookies);
+
+  function cookieStore(value: string | undefined) {
+    return { get: () => (value === undefined ? undefined : { name: SESSION_COOKIE, value }) };
+  }
+
+  beforeAll(() => {
+    vi.stubEnv("OPENKEYS_SESSION_SECRET", config.sessionSecret);
+    vi.stubEnv("OPENKEYS_DATABASE_URL", config.databaseUrl);
+    vi.stubEnv("ENGINE_CONTROL_KEY", config.engineControlKey);
+    vi.stubEnv("OPENKEYS_ADMIN_USER", "first");
+    vi.stubEnv("OPENKEYS_ADMIN_PASSWORD", "first-password");
+  });
+
+  afterAll(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("валидную сессию принимает, отсутствующую отклоняет — оба пути без error-лога", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { value } = issueSessionValue("first", config);
+
+    mockCookies.mockResolvedValueOnce(cookieStore(value) as never);
+    await expect(currentAdmin()).resolves.toBe("first");
+
+    mockCookies.mockResolvedValueOnce(cookieStore(undefined) as never);
+    await expect(currentAdmin()).resolves.toBeNull();
+
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("падение конфигурации env логирует, но по-прежнему отвечает null (401)", async () => {
+    vi.stubEnv("OPENKEYS_SESSION_SECRET", "");
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { value } = issueSessionValue("first", config);
+
+    mockCookies.mockResolvedValueOnce(cookieStore(value) as never);
+    await expect(currentAdmin()).resolves.toBeNull();
+
+    expect(spy).toHaveBeenCalledWith("openkeys admin session check failed", expect.objectContaining({
+      message: expect.stringContaining("OPENKEYS_SESSION_SECRET"),
+    }));
+    spy.mockRestore();
   });
 });

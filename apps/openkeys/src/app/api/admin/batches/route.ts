@@ -5,6 +5,7 @@ import { BatchIssuanceError, MAX_BATCH_QUANTITY, issueBatch, listBatches } from 
 import { formatUsd, usdStringToNano } from "@/lib/money";
 import {
   assertNoOpenKeysPricingOverride,
+  describeIssuanceBlock,
   OFFICIAL_ONE_TO_ONE_CONTRACT,
   OpenKeysPricingError,
   resolveOpenKeysPricingAuthority,
@@ -54,12 +55,18 @@ export async function GET(request: Request): Promise<NextResponse> {
         supportedModels,
       },
     });
-  } catch {
-    // Catalog/switch unavailability must not hide or mutate legacy inventory.
+  } catch (error) {
+    // Catalog/switch unavailability must not hide or mutate legacy inventory,
+    // но причина фиксируется в логе и уходит в UI безопасным кодом.
+    const reason = describeIssuanceBlock(error);
+    console.error("openkeys issuance authority check failed", {
+      code: reason.code,
+      error: error instanceof Error ? error.name : "UnknownError",
+    });
     return NextResponse.json({
       admin,
       ...batches,
-      issuanceAuthority: { ready: false, supportedModels: [] },
+      issuanceAuthority: { ready: false, supportedModels: [], reason },
     });
   }
 }

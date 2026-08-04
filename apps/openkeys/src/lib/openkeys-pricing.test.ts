@@ -15,12 +15,15 @@ import {
   type ProviderSwitchSpec,
 } from "@claude-api/contracts";
 import { describe, expect, it, vi } from "vitest";
+import { EngineClientError } from "@claude-api/engine-client";
 import {
   assertNoOpenKeysPricingOverride,
   assertOfficialEngineAccount,
   assertOpenKeysCatalog,
   buildOfficialOpenKeysPolicy,
+  describeIssuanceBlock,
   OFFICIAL_ONE_TO_ONE_MULT_BP,
+  OpenKeysPricingError,
   provisionOfficialOpenKeysCredential,
   resolveOpenKeysPricingAuthority,
   type OpenKeysPricingAuthority,
@@ -252,6 +255,31 @@ describe("OpenKeys official 1:1 pricing", () => {
     getActiveProviderSwitches.mockResolvedValueOnce(null);
     await expect(resolveOpenKeysPricingAuthority(engine)).rejects.toMatchObject({
       code: "pricing_authority_missing",
+    });
+  });
+
+  describe("describeIssuanceBlock", () => {
+    it("передаёт код pricing-ошибки без утечки внутреннего сообщения", () => {
+      const reason = describeIssuanceBlock(
+        new OpenKeysPricingError("pricing_authority_missing", "internal catalog detail"),
+      );
+      expect(reason.code).toBe("pricing_authority_missing");
+      expect(reason.message).toContain("authority");
+      expect(reason.message).not.toContain("internal catalog detail");
+    });
+
+    it("сетевую/HTTP-ошибку движка отличает от неподтверждённого authority", () => {
+      const reason = describeIssuanceBlock(
+        new EngineClientError("engine request failed", undefined, true),
+      );
+      expect(reason.code).toBe("engine_unavailable");
+      expect(reason.message).toContain("Движок недоступен");
+    });
+
+    it("прочие ошибки сворачивает в общий код без внутренностей", () => {
+      const reason = describeIssuanceBlock(new Error("ENGINE_BASE_URL must be an absolute URL"));
+      expect(reason.code).toBe("authority_check_failed");
+      expect(reason.message).not.toContain("ENGINE_BASE_URL");
     });
   });
 

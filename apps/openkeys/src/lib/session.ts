@@ -61,7 +61,14 @@ export async function currentAdmin(): Promise<string | null> {
   try {
     const store = await cookies();
     return sessionUser(store.get(SESSION_COOKIE)?.value);
-  } catch {
+  } catch (error) {
+    // Невалидная/истёкшая сессия возвращает null штатно; сюда попадают только
+    // исключения (прежде всего падение loadConfig из-за мисконфига env), которые
+    // иначе неотличимы от истёкшей сессии.
+    console.error("openkeys admin session check failed", {
+      error: error instanceof Error ? error.name : "UnknownError",
+      message: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }

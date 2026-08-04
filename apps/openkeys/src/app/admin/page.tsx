@@ -45,7 +45,11 @@ interface BatchPayload {
   limit: number;
   offset: number;
   totals: { stock: number; delivered: number; disabled: number };
-  issuanceAuthority: { ready: boolean; supportedModels: string[] };
+  issuanceAuthority: {
+    ready: boolean;
+    supportedModels: string[];
+    reason?: { code: string; message: string };
+  };
 }
 
 function CopyButton({
@@ -152,9 +156,9 @@ export default function AdminPage() {
   const [batchQuery, setBatchQuery] = useState("");
   const [batchQueryDraft, setBatchQueryDraft] = useState("");
   const [showIssueForm, setShowIssueForm] = useState(false);
-  const [issuanceAuthority, setIssuanceAuthority] = useState({
+  const [issuanceAuthority, setIssuanceAuthority] = useState<BatchPayload["issuanceAuthority"]>({
     ready: false,
-    supportedModels: [] as string[],
+    supportedModels: [],
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -183,6 +187,7 @@ export default function AdminPage() {
       const batchResponse = await fetch(`/api/admin/batches?${params}`, { cache: "no-store" });
       if (batchResponse.status === 401) {
         setAuthorized(false);
+        setError("Сессия истекла — войдите снова.");
         return;
       }
       if (!batchResponse.ok) throw new Error(`batch data failed: ${batchResponse.status}`);
@@ -197,6 +202,7 @@ export default function AdminPage() {
         const keyResponse = await fetch(`/api/admin/keys?batchId=${encodeURIComponent(selected)}`, { cache: "no-store" });
         if (keyResponse.status === 401) {
           setAuthorized(false);
+          setError("Сессия истекла — войдите снова.");
           return;
         }
         if (!keyResponse.ok) throw new Error(`key data failed: ${keyResponse.status}`);
@@ -259,6 +265,8 @@ export default function AdminPage() {
       }
       setAuthorized(true);
       await refresh({ offset: 0, query: "", openLatest: true });
+    } catch {
+      setError("Нет связи с сервером, попробуйте ещё раз.");
     } finally {
       setBusy(false);
     }
@@ -287,6 +295,8 @@ export default function AdminPage() {
       setShowIssueForm(false);
       setBatchQueryDraft("");
       await refresh({ batchId: payload.batchId, offset: 0, query: "" });
+    } catch {
+      setError("Нет связи с сервером, попробуйте ещё раз.");
     } finally {
       setBusy(false);
     }
@@ -308,6 +318,8 @@ export default function AdminPage() {
         return;
       }
       await refresh();
+    } catch {
+      setError("Нет связи с сервером, попробуйте ещё раз.");
     } finally {
       setBusy(false);
     }
@@ -328,6 +340,8 @@ export default function AdminPage() {
         return;
       }
       await refresh();
+    } catch {
+      setError("Нет связи с сервером, попробуйте ещё раз.");
     } finally {
       setBusy(false);
     }
@@ -437,7 +451,8 @@ export default function AdminPage() {
               <span>
                 {issuanceAuthority.ready
                   ? `Активный каталог: ${issuanceAuthority.supportedModels.join(", ")}`
-                  : "Выпуск недоступен: активный OpenKeys catalog/provider authority ещё не подтверждён."}
+                  : issuanceAuthority.reason?.message
+                    ?? "Выпуск недоступен: активный OpenKeys catalog/provider authority ещё не подтверждён."}
               </span>
             </div>
             <div className="openkeys-form-grid">
@@ -446,6 +461,12 @@ export default function AdminPage() {
               <div className="field"><label htmlFor="label">Метка партии</label><input id="label" name="label" placeholder="funpay-30-07-evening" maxLength={200} required /><span className="field-hint">площадка, дата или смена</span></div>
             </div>
             <button className="btn btn-primary" type="submit" disabled={busy || !issuanceAuthority.ready}>{busy ? "Выпускаем…" : "Создать партию"}</button>
+            {!issuanceAuthority.ready ? (
+              <span className="field-hint">
+                {issuanceAuthority.reason?.message
+                  ?? "Выпуск заблокирован до подтверждения активного OpenKeys catalog/provider authority."}
+              </span>
+            ) : null}
           </form>
         ) : null}
 

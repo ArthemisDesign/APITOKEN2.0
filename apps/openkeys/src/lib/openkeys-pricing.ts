@@ -9,6 +9,7 @@ import {
   assertOpenKeysSwitches,
   buildOfficialOpenKeysPolicy,
   canonicalPricingJson,
+  EngineClientError,
   OFFICIAL_ONE_TO_ONE_CONTRACT,
   OFFICIAL_ONE_TO_ONE_MULT_BP,
   officialOpenKeysBinding,
@@ -97,6 +98,34 @@ export async function resolveOpenKeysPricingAuthority(
   assertOpenKeysCatalog(catalog);
   assertOpenKeysSwitches(switches, catalog);
   return { catalog, switches };
+}
+
+export interface IssuanceBlockReason {
+  code: string;
+  message: string;
+}
+
+/**
+ * Безопасная причина недоступности выпуска для админ-UI: машинный код и
+ * человекочитаемое описание без стеков, адресов движка и других внутренностей.
+ */
+export function describeIssuanceBlock(error: unknown): IssuanceBlockReason {
+  if (error instanceof OpenKeysPricingError) {
+    return {
+      code: error.code,
+      message: "Активный OpenKeys catalog/provider authority не подтверждён — проверьте pricing authority в коммерции.",
+    };
+  }
+  if (error instanceof EngineClientError) {
+    return {
+      code: "engine_unavailable",
+      message: "Движок недоступен или вернул ошибку — проверьте состояние engine и ENGINE_CONTROL_KEY.",
+    };
+  }
+  return {
+    code: "authority_check_failed",
+    message: "Не удалось проверить pricing authority — смотрите серверные логи OpenKeys.",
+  };
 }
 
 function assertMutationAccepted(ack: { result: string }, phase: string): void {
