@@ -938,7 +938,7 @@ fn spawn_callback_failure(
         oauth,
         session,
         move |state, _oauth, session| async move {
-            fail_callback(&state, &session, failure).await;
+            fail_callback(&state, &session, failure, None).await;
         },
     );
 }
@@ -996,7 +996,7 @@ async fn process_oauth_completion(
     pending: PendingOAuthSecret,
 ) {
     let Ok(_callback_permit) = oauth.callback_limit.clone().acquire_owned().await else {
-        fail_callback(state, session, Failure::Interrupted).await;
+        fail_callback(state, session, Failure::Interrupted, None).await;
         return;
     };
     let exchange_redirect = if pending.redirect_uri.is_empty() {
@@ -1004,6 +1004,7 @@ async fn process_oauth_completion(
     } else {
         pending.redirect_uri.as_str()
     };
+    let mut verification_url = None;
     match complete(
         &state.store,
         oauth,
@@ -1017,6 +1018,7 @@ async fn process_oauth_completion(
         exchange_redirect,
         pending.phase,
         pending.bootstrap_subject.as_str(),
+        &mut verification_url,
     )
     .await
     {
@@ -1064,7 +1066,7 @@ async fn process_oauth_completion(
                     );
                 }
                 Err(_) => {
-                    fail_callback(state, &session, Failure::Storage).await;
+                    fail_callback(state, &session, Failure::Storage, None).await;
                 }
             }
         }
@@ -1128,7 +1130,7 @@ async fn process_oauth_completion(
             .await;
         }
         Err(failure) => {
-            fail_callback(state, &session, failure).await;
+            fail_callback(state, &session, failure, verification_url.as_deref()).await;
         }
     }
 }
@@ -1362,7 +1364,12 @@ fn secure_html(status: StatusCode, body: String, allow_form: bool) -> Response {
     response
 }
 
-async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, failure: Failure) {
+async fn fail_callback(
+    state: &CallbackState,
+    session: &GeminiOAuthSession,
+    failure: Failure,
+    verification_url: Option<&str>,
+) {
     let Some(oauth) = state.config.gemini_oauth.as_ref() else {
         return;
     };
@@ -1413,17 +1420,22 @@ async fn fail_callback(state: &CallbackState, session: &GeminiOAuthSession, fail
     }
     // The authorization code and its encrypted PKCE transaction cannot be reused after this point;
     // the proxy remains available for a new generation or can be explicitly replaced by its owner.
-    let _ = state
-        .bot
-        .send(
-            session.chat_id,
-            if accepts_proxy_input {
-                failure.public_message()
-            } else {
-                failure.fixed_proxy_message()
-            },
-        )
-        .await;
+    let base = if accepts_proxy_input {
+        failure.public_message()
+    } else {
+        failure.fixed_proxy_message()
+    };
+    // The link is account-bound and must be opened from the same browser profile and egress as the
+    // account itself, so it is offered as copyable text rather than a tappable link that Telegram
+    // would open in its own in-app browser.
+    let message = match verification_url {
+        Some(url) if failure == Failure::AccountValidationRequired => format!(
+            "{base}\n\n🔗 Персональная ссылка Google для этой проверки:\n<code>{}</code>",
+            crate::bot::esc(url)
+        ),
+        _ => base.to_string(),
+    };
+    let _ = state.bot.send(session.chat_id, &message).await;
     if failure.operator_action_required() {
         for admin in &state.config.admins_id {
             let _ = state.bot.send(*admin, failure.operator_message()).await;
@@ -1577,7 +1589,7 @@ impl Failure {
             Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь, что нужный тариф активирован именно на этом аккаунте; прокси сохранён, для новой авторизации отправь <code>повторить</code>.",
             Self::AccountMismatch => "❌ На втором этапе выбран другой Google-аккаунт. Оба согласия должны быть выданы одной подпиской в одном профиле браузера. Профиль не опубликован; отправь <code>повторить</code> и начни заново.",
             Self::GenerationUnavailable => "⚠️ Google подтвердил вход и активный тариф, но реальная тестовая генерация не была подтверждена. Профиль не опубликован и сделка не завершена; прокси сохранён. Подожди немного и отправь <code>повторить</code>.",
-            Self::AccountValidationRequired => "❌ Google подтвердил вход и активный тариф Google AI, но требует подтвердить сам аккаунт: генерация отклонена с «Verify your account to continue». Повтор не поможет, пока проверка не пройдена. В том же профиле антидетект-браузера и с тем же прокси открой <code>gemini.google.com</code> или Antigravity, выполни один запрос и заверши проверку, которую покажет Google (обычно номер телефона или подтверждение возраста). Профиль не опубликован, сделка не завершена, прокси сохранён; после успешной проверки отправь <code>повторить</code>.",
+            Self::AccountValidationRequired => "❌ Google подтвердил вход и активный тариф Google AI, но держит сам аккаунт на проверке: генерация отклонена с «Verify your account to continue». Обычный Gemini на сайте при этом может работать — это отдельная проверка, и повтор без её прохождения ничего не изменит. Открой ссылку ниже (если её нет — <code>gemini.google.com</code> или Antigravity) СТРОГО в том же профиле антидетект-браузера и через тот же прокси и заверши проверку Google — обычно это подтверждение номера телефона. Профиль не опубликован, сделка не завершена, прокси сохранён; после успешной проверки отправь <code>повторить</code>.",
             Self::StaleHandoff => "❌ Эта попытка подключения уже не относится к текущей сделке. Профиль не опубликован; продолжи актуальный шаг в боте.",
             Self::Duplicate => "❌ Эта Google-подписка уже присутствует в пуле.",
             Self::DuplicateProxy => "❌ Этот прокси уже закреплён за другим Gemini-профилем. Для подписки нужен отдельный прокси.",
@@ -1596,7 +1608,7 @@ impl Failure {
             Self::UnsupportedPlan => "❌ На этом Google-аккаунте не найдена активная подписка из оффера. Проверь тариф на этом аккаунте и отправь <code>повторить</code>; будет использован закреплённый прокси.",
             Self::AccountMismatch => "❌ На втором этапе выбран другой Google-аккаунт. Оба согласия должны быть выданы одной подпиской в одном профиле браузера. Профиль не опубликован; отправь <code>повторить</code> и начни заново.",
             Self::GenerationUnavailable => "⚠️ Google подтвердил вход и активный тариф, но реальная тестовая генерация не была подтверждена. Профиль не опубликован и сделка не завершена. Подожди немного и отправь <code>повторить</code>; будет использован закреплённый прокси.",
-            Self::AccountValidationRequired => "❌ Google подтвердил вход и активный тариф Google AI, но требует подтвердить сам аккаунт: генерация отклонена с «Verify your account to continue». Повтор не поможет, пока проверка не пройдена. В том же профиле браузера и с закреплённым прокси открой <code>gemini.google.com</code> или Antigravity, выполни один запрос и заверши проверку, которую покажет Google (обычно номер телефона или подтверждение возраста). Затем отправь <code>повторить</code> — будет использован закреплённый прокси.",
+            Self::AccountValidationRequired => "❌ Google подтвердил вход и активный тариф Google AI, но держит сам аккаунт на проверке: генерация отклонена с «Verify your account to continue». Обычный Gemini на сайте при этом может работать — это отдельная проверка, и повтор без её прохождения ничего не изменит. Открой ссылку ниже (если её нет — <code>gemini.google.com</code> или Antigravity) СТРОГО в том же профиле браузера и через закреплённый прокси и заверши проверку Google — обычно это подтверждение номера телефона. Затем отправь <code>повторить</code> — будет использован закреплённый прокси.",
             Self::StaleHandoff => "❌ Эта попытка подключения уже не относится к текущей сделке. Профиль не опубликован; продолжи актуальный шаг в боте.",
             _ => self.public_message(),
         }
@@ -1935,6 +1947,9 @@ async fn complete(
     redirect_uri: &str,
     phase: OAuthPhase,
     bootstrap_subject: &str,
+    // Set when Google refuses the acceptance generation until the seller's own Google account is
+    // verified; carries that account's verification link back to the Telegram answer.
+    verification_url: &mut Option<String>,
 ) -> Result<Completion, Failure> {
     eprintln!(
         "[gemini-oauth] chat={} proxy_order={} finalizing: exchanging Google authorization code",
@@ -2081,6 +2096,7 @@ async fn complete(
         &token.access_token,
         &resolved.project_id,
         session.chat_id,
+        verification_url,
     )
     .await?;
     eprintln!(
@@ -2222,6 +2238,7 @@ async fn generation_probe(
     access_token: &str,
     project_id: &str,
     chat_id: i64,
+    verification_url: &mut Option<String>,
 ) -> Result<(), Failure> {
     let mut last = Failure::GenerationUnavailable;
     for (surface, host) in GENERATION_PROBE_SURFACES {
@@ -2263,6 +2280,22 @@ async fn generation_probe(
                 // made before the model ran may try the next reviewed surface.
                 let classified = classify_generation_failure(&response.body);
                 if let Some(classified) = classified {
+                    if classified == Failure::AccountValidationRequired {
+                        // Google puts the account's own verification link in the rejection
+                        // metadata and only the bare sentence in `message`. Surfacing the link is
+                        // the difference between an actionable instruction and a dead end, because
+                        // the seller cannot reach this particular check from a normal Gemini
+                        // session — theirs already works.
+                        *verification_url = verification_url_from_body(&response.body);
+                        eprintln!(
+                            "[gemini-oauth] chat={chat_id} account verification link is {}",
+                            if verification_url.is_some() {
+                                "present in the rejection metadata"
+                            } else {
+                                "absent from the rejection metadata"
+                            }
+                        );
+                    }
                     return Err(classified);
                 }
                 if !matches!(response.status, 403 | 404) {
@@ -2335,6 +2368,34 @@ fn classify_generation_failure(body: &[u8]) -> Option<Failure> {
         .and_then(Value::as_str)
         .is_some_and(|message| message.to_ascii_lowercase().contains("verify your account"));
     (validation_reason || validation_message).then_some(Failure::AccountValidationRequired)
+}
+
+/// Pull Google's account-verification link out of the rejection metadata.
+///
+/// This string is upstream input that we forward to a human, so it is fail-closed on anything that
+/// is not literally a Google sign-in URL: a redirect elsewhere would turn our own Telegram message
+/// into a credible phishing vector against the seller whose account we just touched. Requiring the
+/// `https://accounts.google.com/` prefix (slash included) also rules out lookalike hosts such as
+/// `accounts.google.com.example.net`.
+fn verification_url_from_body(body: &[u8]) -> Option<String> {
+    let parsed = serde_json::from_slice::<Value>(body).ok()?;
+    let details = parsed.pointer("/error/details")?.as_array()?;
+    let url = details.iter().find_map(|detail| {
+        detail
+            .pointer("/metadata/validation_url")
+            .and_then(Value::as_str)
+    })?;
+    valid_verification_url(url).then(|| url.to_string())
+}
+
+fn valid_verification_url(url: &str) -> bool {
+    url.len() <= 2048
+        && url.starts_with("https://accounts.google.com/")
+        && !url.chars().any(|character| {
+            character.is_control()
+                || character.is_whitespace()
+                || matches!(character, '"' | '\'' | '<' | '>' | '\\')
+        })
 }
 
 fn generation_probe_body(project_id: &str, session_id: &str, request_id: &str) -> Value {
@@ -3727,6 +3788,49 @@ mod tests {
             Some(Failure::AccountValidationRequired),
             "the reason field is not guaranteed; the exact message alone is enough evidence"
         );
+        // Google carries the account's own verification link in the rejection metadata; forwarding
+        // it is the only actionable instruction, since a normal Gemini session never sees this check.
+        let with_link = json!({
+            "error": {
+                "code": 403,
+                "status": "PERMISSION_DENIED",
+                "message": "Verify your account to continue.",
+                "details": [{
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": "VALIDATION_REQUIRED",
+                    "metadata": {
+                        "validation_url": "https://accounts.google.com/signin/continue?sarp=1&scc=1&plt=token",
+                        "validation_url_link_text": "Verify your account",
+                    },
+                }],
+            }
+        });
+        assert_eq!(
+            verification_url_from_body(&serde_json::to_vec(&with_link).unwrap()).as_deref(),
+            Some("https://accounts.google.com/signin/continue?sarp=1&scc=1&plt=token")
+        );
+        assert_eq!(
+            verification_url_from_body(&serde_json::to_vec(&validation).unwrap()),
+            None,
+            "a rejection without metadata must not invent a link"
+        );
+        // The link is upstream input that we forward to a human, so anything but a real Google
+        // sign-in URL is refused rather than turned into a phishing vector in our own message.
+        for hostile in [
+            "http://accounts.google.com/signin",
+            "https://accounts.google.com.example.net/signin",
+            "https://evil.example/accounts.google.com/",
+            "https://accounts.google.com/signin\"><script>",
+            "https://accounts.google.com/sign in",
+        ] {
+            assert!(
+                !valid_verification_url(hostile),
+                "must reject {hostile}"
+            );
+        }
+        assert!(valid_verification_url(
+            "https://accounts.google.com/signin/continue?sarp=1&scc=1"
+        ));
         for message in [
             Failure::AccountValidationRequired.public_message(),
             Failure::AccountValidationRequired.fixed_proxy_message(),

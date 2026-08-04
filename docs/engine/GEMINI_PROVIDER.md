@@ -155,8 +155,12 @@ the Antigravity checks below remain decisive.
    replayed automatically, no credential is published and seller payout does not complete. An
    account-level rejection is identical on every host and therefore stops the probe immediately:
    `VALIDATION_REQUIRED` / "Verify your account to continue" becomes `account_validation_required`,
-   whose seller instruction is to finish Google's own account verification (usually phone or age) in
-   the same browser profile and proxy — retrying cannot clear it. The
+   whose seller instruction is to finish Google's own account verification in
+   the same browser profile and proxy — retrying cannot clear it, and a working `gemini.google.com`
+   session does not, because this check is separate. Google returns the account's personal
+   verification link in `error.details[].metadata.validation_url` while `message` carries only the
+   sentence; Auth Bot forwards that link to the seller as copyable text, fail-closed on anything but
+   an `https://accounts.google.com/` URL so the message cannot be turned into a phishing vector. The
    journal carries the HTTP status, the surface and Google's enum fields (`error.status`,
    `error.details[].reason`); the free-form `error.message` can name the project or account and is
    printed only under `AUTH_BOT_GEMINI_TIER_EVIDENCE=1`.

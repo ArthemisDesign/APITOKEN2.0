@@ -142,9 +142,13 @@ seller lock освобождается, response становится `cancelled
    выплату и на второй surface НЕ уходят; состоявшаяся paid generation автоматически не
    повторяется. Отказ уровня Google-аккаунта одинаков на всех surface, поэтому распознаётся сразу и
    больше никуда не стучится: `VALIDATION_REQUIRED` / «Verify your account to continue» — это
-   `account_validation_required`, отдельный outcome с инструкцией пройти проверку Google (обычно
-   телефон/возраст) в том же профиле и прокси, а не «подожди и повтори»: ретрай состояние аккаунта
-   не меняет. `countTokens`, quota и `loadCodeAssist` не являются acceptance. В журнал уходят
+   `account_validation_required`, отдельный outcome с инструкцией пройти проверку Google в том же
+   профиле и прокси, а не «подожди и повтори»: ретрай состояние аккаунта не меняет. Персональную
+   ссылку проверки Google кладёт в `error.details[].metadata.validation_url`, а в `message` отдаёт
+   только фразу — ссылка извлекается и пересылается продавцу как copyable text (не кликабельной
+   ссылкой: открывать её нужно в его профиле и egress, а не во встроенном браузере Telegram).
+   Приходит она из upstream, поэтому fail-closed: только `https://accounts.google.com/`-префикс,
+   без control/whitespace/кавычек и ≤2048 байт — иначе наше же сообщение стало бы фишингом. `countTokens`, quota и `loadCodeAssist` не являются acceptance. В журнал уходят
    только HTTP-статус, surface и enum-поля Google (`error.status`, `error.details[].reason`);
    free-form `error.message` — лишь под `AUTH_BOT_GEMINI_TIER_EVIDENCE=1`, потому что он может
    содержать project и account.
