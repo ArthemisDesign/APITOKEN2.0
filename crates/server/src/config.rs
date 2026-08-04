@@ -104,8 +104,9 @@ fn parse_provider_mode(value: Option<&str>) -> Result<ProviderMode, String> {
         "anthropic" => Ok(ProviderMode::Anthropic),
         "openai" => Ok(ProviderMode::OpenAi),
         "gemini" => Ok(ProviderMode::Gemini),
+        "kimi" => Ok(ProviderMode::Kimi),
         other => Err(format!(
-            "CLAUDE_API_PROVIDER={other:?}: expected combined, anthropic, openai, or gemini"
+            "CLAUDE_API_PROVIDER={other:?}: expected combined, anthropic, openai, gemini, or kimi"
         )),
     }
 }
@@ -1056,7 +1057,7 @@ impl Settings {
         } else {
             None
         };
-        let kimi = if provider.serves_anthropic() {
+        let kimi = if provider.serves_kimi() {
             kimi_config()
         } else {
             None
@@ -1231,8 +1232,14 @@ mod tests {
             parse_provider_mode(Some(" GEMINI ")),
             Ok(ProviderMode::Gemini)
         );
+        assert_eq!(parse_provider_mode(Some("kimi")), Ok(ProviderMode::Kimi));
+        assert_eq!(
+            parse_provider_mode(Some(" KIMI ")),
+            Ok(ProviderMode::Kimi)
+        );
         assert!(parse_provider_mode(Some("both")).is_err());
         assert!(parse_provider_mode(Some("codex")).is_err());
+        assert!(parse_provider_mode(Some("kimi2")).is_err());
     }
 
     #[test]

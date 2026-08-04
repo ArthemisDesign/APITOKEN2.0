@@ -178,12 +178,14 @@ grep -A20 -F 'node-exporter:' "$ROOT/observability/compose.yaml" | grep -Fq 'app
 grep -Fq 'metrics {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'per_host' "$ROOT/deploy/Caddyfile"
 
-# Anthropic, OpenAI and Gemini have independent stable origins and scrape labels. Without labels,
-# provider-local zero gauges can collide and make Codex or Claude alerts evaluate against both.
+# Anthropic, OpenAI, Gemini and KIMI have independent stable origins and scrape labels. Without
+# labels, provider-local zero gauges can collide and make Codex or Claude alerts evaluate against
+# both.
 for provider_target in \
   '127.0.0.1:8790"]|provider: anthropic' \
   '127.0.0.1:8792"]|provider: openai' \
-  '127.0.0.1:8794"]|provider: gemini'; do
+  '127.0.0.1:8794"]|provider: gemini' \
+  '127.0.0.1:8803"]|provider: kimi'; do
   target=${provider_target%%|*}
   label=${provider_target#*|}
   grep -F "$target" -A 1 "$ROOT/observability/prometheus/prometheus.yml" \
@@ -199,9 +201,9 @@ grep -F 'job_name: claude-router' -A 4 "$ROOT/observability/prometheus/prometheu
   || { printf 'router loopback metrics unexpectedly require a credential\n' >&2; exit 1; }
 grep -Fq 'claude_router_fallback_total' "$ROOT/crates/router/src/metrics.rs" \
   || { printf 'router does not export fallback continuations\n' >&2; exit 1; }
-[[ $(grep -Fc 'handle_errors 503 {' "$ROOT/deploy/Caddyfile") == 3 ]] \
-  || { printf 'stable provider origins must sign exactly three Caddy no-upstream error paths\n' >&2; exit 1; }
-[[ $(grep -Fc 'header X-Apitoken-Execution-State not_started' "$ROOT/deploy/Caddyfile") == 3 ]] \
+[[ $(grep -Fc 'handle_errors 503 {' "$ROOT/deploy/Caddyfile") == 4 ]] \
+  || { printf 'stable provider origins must sign exactly four Caddy no-upstream error paths\n' >&2; exit 1; }
+[[ $(grep -Fc 'header X-Apitoken-Execution-State not_started' "$ROOT/deploy/Caddyfile") == 4 ]] \
   || { printf 'stable provider no-upstream paths are missing execution fencing\n' >&2; exit 1; }
 [[ $(grep -Fc 'header_down -X-Apitoken-Execution-State' "$ROOT/deploy/Caddyfile") == 3 ]] \
   || { printf 'public provider proxies must strip internal execution fencing\n' >&2; exit 1; }
@@ -485,9 +487,10 @@ for gated_alert in CodexProviderDown CodexNoAvailableHomes; do
     | grep -Fq 'claude_api_codex_enabled{provider="openai"} == 1' \
     || { printf '%s is not gated on the provider being enabled\n' "$gated_alert" >&2; exit 1; }
 done
-# The backend-only KIMI plane runs inside the Anthropic runtime: its aggregate series are scraped
-# on the anthropic target and deliberately carry no provider label — the claude_api_kimi_ name
-# prefix is the discriminator, so the scoping pin here is the enabled gate, not a label selector.
+# The backend-only KIMI plane serves its own loopback origin: its aggregate series deliberately
+# carry no provider label in the metric text — the scrape target attaches provider: kimi exactly
+# like the other planes — so the claude_api_kimi_ name prefix and the enabled gate remain the
+# discriminators, and the scoping pin here is the enabled gate, not a label selector.
 for kimi_metric in \
   'claude_api_kimi_live_profiles' \
   'claude_api_kimi_available_profiles' \
@@ -538,10 +541,10 @@ done
 grep -Fq 'increase(claude_api_claudestore_fallback_failures_total{provider=~"anthropic|openai"}[10m]) > 0' \
   "$ROOT/observability/prometheus/rules/application.yml" \
   || { printf 'ClaudeStore fallback failures do not alert on both eligible provider planes\n' >&2; exit 1; }
-grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?)?|authbot|router)' \
+grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?|-kimi(@.+)?)?|authbot|router)' \
   "$ROOT/observability/prometheus/rules/operations.yml" \
   || { printf 'systemd alerts omit a provider runtime unit\n' >&2; exit 1; }
-grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?)?|authbot|router)' \
+grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?|-kimi(@.+)?)?|authbot|router)' \
   "$ROOT/observability/grafana/dashboards/production-overview.json" \
   || { printf 'Grafana systemd panel omits a provider runtime unit\n' >&2; exit 1; }
 [[ $(grep -Fc 'public-http|openai-http|gemini-http|protected-http|support-http|loopback-http' \

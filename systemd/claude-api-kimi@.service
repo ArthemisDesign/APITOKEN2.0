@@ -1,0 +1,54 @@
+# Health-gated KIMI slot. Only one slot accepts new traffic in steady state; during cutover the
+# old process drains established streams while the candidate serves new requests. The plane is
+# backend-only by design: no public hostname, no router namespace, no catalogue.
+[Unit]
+Description=claude-api KIMI subscription-pool slot on port %i
+After=network-online.target apitoken-affinity-redis.service
+Wants=network-online.target apitoken-affinity-redis.service
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+Environment=SUB_CFG_DIR=/srv/claude-api/data
+EnvironmentFile=-/srv/claude-api/data/config.env
+EnvironmentFile=-/srv/claude-api/data/server.env
+EnvironmentFile=/srv/claude-api/data/engine-postgres.env
+# A release predating the slot-safe handoff must never be started through this template. The
+# legacy singleton remains installed solely so rollback can run such a release on 8804.
+ExecCondition=/usr/bin/test -f /srv/claude-api/releases/current/.kimi-bluegreen-v1
+ExecCondition=/usr/bin/test ! -L /srv/claude-api/releases/current/.kimi-bluegreen-v1
+ExecCondition=/usr/bin/grep -Fxq kimi-bluegreen-v1 /srv/claude-api/releases/current/.kimi-bluegreen-v1
+# Argv-level assignments cannot be overridden by a shared EnvironmentFile. CLAUDE_API_KIMI_ENABLED=0
+# is pinned here on purpose: this plane ships default-off, so a shared config.env can never
+# silently enable the provider. Deliberate enablement is a later reviewed unit change made only
+# after live evidence (docs/engine/KIMI_PROVIDER.md), and the Anthropic plane keeps KIMI off so
+# exactly one process ever runs the maintenance writer. Both ClaudeStore switches belong to other
+# provider planes and must remain disabled here.
+ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=kimi CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:kimi:%i CLAUDE_API_KIMI_ENABLED=0 /srv/claude-api/releases/current/claude-api serve
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=660
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadWritePaths=/srv/claude-api/data
+ReadOnlyPaths=/srv/claude-api/data/kimi
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

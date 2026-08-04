@@ -700,7 +700,10 @@ fn execution_plane_index(plane: crate::ProviderMode) -> Option<usize> {
         crate::ProviderMode::Anthropic => Some(0),
         crate::ProviderMode::OpenAi => Some(1),
         crate::ProviderMode::Gemini => Some(2),
-        crate::ProviderMode::Combined => None,
+        // The backend-only KIMI plane has no public hostname feeding the Caddy no-upstream marker,
+        // so its synthetic refusals stay out of the three public plane series, exactly like the
+        // `Combined` bridge.
+        crate::ProviderMode::Combined | crate::ProviderMode::Kimi => None,
     }
 }
 

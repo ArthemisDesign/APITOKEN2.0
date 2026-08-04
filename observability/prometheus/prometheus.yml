@@ -51,6 +51,8 @@ scrape_configs:
         labels: { provider: openai }
       - targets: ["127.0.0.1:8794"]
         labels: { provider: gemini }
+      - targets: ["127.0.0.1:8803"]
+        labels: { provider: kimi }
 
   - job_name: claude-router
     metrics_path: /metrics

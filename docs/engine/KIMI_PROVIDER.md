@@ -437,13 +437,13 @@ default-off и backend-only: ни одна публичная поверхнос
 | last-good roster reload | `crates/{server,forward}` | готово на mock-гейтах: 15-секундное discovery, whole-generation validation, `/me` admission, exact-Arc reuse, refresh-race verification, safe removal |
 | quota observations | `crates/{server,forward}` | готово на mock/real-PG гейтах: idle `/usages`, generation-epoch rejection, turn-before-quota drain, exact spend read, independent-window immutable write/CAS, publish-after-durable и bounded shutdown |
 | observability, alerts, admin projection | `crates/{forward,server}`, `observability/**`, `docs/ops/MONITORING.md` | готово: extended operational status, admin-only `GET /kimi-subs`, fixed-cardinality aggregate метрики, `kimi-provider` алерты с runbook и consistency-тест |
-| blue-green | `systemd/**`, `deploy/**` | **не сделано** |
+| blue-green | `systemd/claude-api-kimi{,@}.service`, `deploy/**`, `observability/prometheus/prometheus.yml` | готово: два slot-юнита 8804/8805 + stable loopback origin 8803, capability-marker default-off (argv-пин `CLAUDE_API_KIMI_ENABLED=0`), rollback-ветка останавливает все incarnation, scrape target `provider: kimi`, `ProviderMode::Kimi` с fail-closed `/v1/messages` |
 | безопасный live-runner | `tools/kimi_calibration/` | **не сделано** |
 | live-матрица на нашей подписке | — | **не сделано, нужна подписка** |
 
-Следующий producer-first шаг — blue-green wiring с default-off secret/config и rollback gate для
-KIMI delivery плоскости. Затем следуют live-runner и контролируемый живой прогон. Публикация не
-планируется вовсе (см. §0).
+Следующий producer-first шаг — безопасный live calibration runner (engine attribution support +
+`tools/kimi_calibration`) по гейту `PROVIDER_ONBOARDING.md` §2. Затем контролируемый живой прогон
+по live-матрице. Публикация не планируется вовсе (см. §0).
 
 ## 8. Источники
 

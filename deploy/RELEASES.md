@@ -58,7 +58,11 @@ already-resolved immutable binary after `current` moves; `engine-bluegreen.sh` a
 target before readiness-draining its predecessor. Gemini slot activation additionally requires
 `.gemini-bluegreen-v1`; the old singleton unit remains installed only for rollback to the immediately
 preceding marker-less Gemini release. Rollback to a pre-Gemini release stops and disables all Gemini
-incarnations.
+incarnations. KIMI mirrors that shape: `claude-api-kimi@8804/8805` run the same binary in fixed
+`kimi` mode behind stable loopback origin 8803, slot activation requires `.kimi-bluegreen-v1`, the
+`claude-api-kimi` singleton on 8804 is the rollback anchor, rollback to a pre-KIMI release stops and
+disables all KIMI incarnations, and both units pin `CLAUDE_API_KIMI_ENABLED=0` argv-level so the
+plane ships default-off until a reviewed unit change.
 `claude-api.service` exists only as the bridge through the first cutover and is disabled afterward.
 
 The unified `claude-router` binary in the same engine release runs through

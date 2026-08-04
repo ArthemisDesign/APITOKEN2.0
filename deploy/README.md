@@ -135,6 +135,7 @@ The production queue remains strictly one SHA at a time.
 | Anthropic provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-anthropic@8787.service` / `claude-api-anthropic@8788.service` | `http://127.0.0.1:<port>/ready`, stable 8790 |
 | OpenAI-compatible provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-openai@8793.service` / `claude-api-openai@8797.service` | `http://127.0.0.1:<port>/ready`, stable 8792 |
 | Native Gemini provider | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-gemini@8795.service` / `claude-api-gemini@8799.service` | `http://127.0.0.1:<port>/ready`, stable 8794 |
+| Backend-only KIMI provider (default-off) | `/srv/claude-api/releases/<sha>/claude-api` | `claude-api-kimi@8804.service` / `claude-api-kimi@8805.service` | `http://127.0.0.1:<port>/ready`, stable 8803 |
 | Unified router | `/srv/claude-api/releases/<sha>/claude-router` | `claude-router@8800.service` / `claude-router@8801.service` | direct `/ready` + `/startup` + exact binary, stable 8802 repeats both data-path probes |
 | Commerce worker | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-worker.service` | process-active + exact cwd |
 | Content Studio | `/opt/apitoken/releases/<sha>` through `current` | `apitoken-content-studio.service` | `http://127.0.0.1:3500/api/health` + exact cwd |

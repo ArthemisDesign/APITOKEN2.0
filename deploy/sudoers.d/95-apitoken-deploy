@@ -143,6 +143,20 @@ Cmnd_Alias APITOKEN_UNITS = \
     /usr/bin/systemctl disable claude-api-gemini@[0-9]*.service, \
     /usr/bin/systemctl restart claude-api-gemini@[0-9]*.service, \
     /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-gemini@[0-9]*.service, \
+    /usr/bin/systemctl start claude-api-kimi.service, \
+    /usr/bin/systemctl stop claude-api-kimi.service, \
+    /usr/bin/systemctl restart claude-api-kimi.service, \
+    /usr/bin/systemctl enable claude-api-kimi.service, \
+    /usr/bin/systemctl disable claude-api-kimi.service, \
+    /usr/bin/systemctl --no-block stop claude-api-kimi.service, \
+    /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-kimi.service, \
+    /usr/bin/systemctl start claude-api-kimi@[0-9]*.service, \
+    /usr/bin/systemctl stop claude-api-kimi@[0-9]*.service, \
+    /usr/bin/systemctl --no-block stop claude-api-kimi@[0-9]*.service, \
+    /usr/bin/systemctl enable claude-api-kimi@[0-9]*.service, \
+    /usr/bin/systemctl disable claude-api-kimi@[0-9]*.service, \
+    /usr/bin/systemctl restart claude-api-kimi@[0-9]*.service, \
+    /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-kimi@[0-9]*.service, \
     /usr/bin/systemctl start claude-api-backup.service, \
     /usr/bin/systemctl reset-failed claude-api-backup.service, \
     /usr/bin/systemctl daemon-reload
@@ -200,6 +214,8 @@ Cmnd_Alias APITOKEN_PROBE = \
     /usr/bin/test -f /etc/systemd/system/claude-api-openai@.service, \
     /usr/bin/test -f /etc/systemd/system/claude-api-gemini.service, \
     /usr/bin/test -f /etc/systemd/system/claude-api-gemini@.service, \
+    /usr/bin/test -f /etc/systemd/system/claude-api-kimi.service, \
+    /usr/bin/test -f /etc/systemd/system/claude-api-kimi@.service, \
     /usr/bin/test -f /etc/systemd/system/claude-router@.service, \
     /usr/bin/test -x /usr/local/lib/apitoken-watchdog/controller/router-promote.sh
 

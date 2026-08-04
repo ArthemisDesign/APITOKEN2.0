@@ -104,6 +104,15 @@ import /etc/caddy/router-active.caddy
 	}
 }
 
+# KIMI is backend-only: a fixed provider process and stable loopback origin with NO public vhost,
+# no router namespace and no catalogue. The snippet exists for symmetry with the other planes;
+# nothing public imports it, so it strips no internal execution header.
+(kimi_engine_backend) {
+	reverse_proxy 127.0.0.1:8803 {
+		header_up Host 127.0.0.1:8803
+	}
+}
+
 (commerce_backend) {
 	reverse_proxy 127.0.0.1:8791 {
 		header_up Host 127.0.0.1:8791
@@ -278,6 +287,29 @@ http://127.0.0.1:8794 {
 	}
 }
 
+# Stable KIMI origin over active/passive blue-green slots, mirroring the Gemini policy: `first`
+# keeps one preferred generation serving while both are healthy. Backend-only — no public hostname
+# ever routes here; Prometheus scrapes it as the kimi provider target and the admin data route
+# below reads /kimi-subs from it.
+http://127.0.0.1:8803 {
+	bind 127.0.0.1
+
+	reverse_proxy 127.0.0.1:8804 127.0.0.1:8805 {
+		lb_policy first
+		lb_try_duration 2s
+		lb_try_interval 100ms
+
+		health_uri /ready
+		health_interval 2s
+		health_timeout 2s
+		health_status 2xx
+	}
+	handle_errors 503 {
+		header X-Apitoken-Execution-State not_started
+		respond "No healthy KIMI runtime is available." 503
+	}
+}
+
 backend.apitoken.sale {
 	# Service-to-service endpoints are reachable only through the stable loopback origin.
 	handle /v1/internal/* {
@@ -326,9 +358,7 @@ admin.apitoken.sale {
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 		X-Robots-Tag "noindex, nofollow, noarchive"
 	}
-	# /kimi-subs stays on this same Anthropic origin: KIMI is a backend inside the Anthropic
-	# runtime, so unlike /codex-subs and /gemini-subs it needs no separate origin or key.
-	@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /kimi-subs
+	@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health
 	handle @admin_data {
 		reverse_proxy 127.0.0.1:8790 {
 			header_up Host 127.0.0.1:8790
@@ -350,6 +380,16 @@ admin.apitoken.sale {
 	handle @admin_gemini_data {
 		reverse_proxy 127.0.0.1:8794 {
 			header_up Host 127.0.0.1:8794
+			header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"
+		}
+	}
+	# KIMI now owns its runtime: the dedicated default-off plane serves the sanitized projection
+	# from the stable loopback origin. The gateway embedded in the Anthropic runtime is dev/test
+	# only, so /kimi-subs no longer lives on the Anthropic-origin matcher.
+	@admin_kimi_data path /kimi-subs
+	handle @admin_kimi_data {
+		reverse_proxy 127.0.0.1:8803 {
+			header_up Host 127.0.0.1:8803
 			header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"
 		}
 	}

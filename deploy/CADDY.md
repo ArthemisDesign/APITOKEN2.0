@@ -91,6 +91,13 @@ CLI code-entry form and its POST only to Auth Bot on `127.0.0.1:8796`, so OAuth 
 the engine or Caddy access log. The vhost redacts `X-Goog-Api-Key` in access logs. The watchdog probes the
 public hostname for a native unauthenticated Gemini envelope before committing the provider cohort.
 
+KIMI is a backend-only active/passive pair with the same shape and no public vhost at all: stable
+loopback origin `127.0.0.1:8803` health-gates slots `127.0.0.1:8804` and `127.0.0.1:8805` with
+`lb_policy first`, signs its no-upstream 503 with the same execution-state header, and serves the
+default-off plane's disabled envelope until a reviewed unit change enables the provider. The only
+consumer routes are the Prometheus `provider: kimi` scrape target and the admin `/kimi-subs` data
+route with the proxy-injected control key.
+
 Caddy probes `/ready` on all fixed-provider slots. `engine-bluegreen.sh` admits the new Anthropic
 slot, sends `SIGUSR1` to make
 the old slot return 503 readiness, waits for depooling, then sends SIGTERM so established streams
@@ -115,9 +122,10 @@ do not advertise a supported `Accept-Encoding` continue to receive the byte-iden
 
 The commerce API and worker use `http://127.0.0.1:8790`, a loopback-only Caddy listener over the
 Anthropic slots. They must never address a deployment slot, the OpenAI origin, or the Gemini origin.
-The provider controller requires 8790 throughout the handoff and verifies 8792 and 8794 separately.
+The provider controller requires 8790 throughout the handoff and verifies 8792, 8794 and 8803
+separately.
 
-Each stable provider origin (8790/8792/8794) handles Caddy's own `503 no healthy upstream` failure
+Each stable provider origin (8790/8792/8794/8803) handles Caddy's own `503 no healthy upstream` failure
 by returning the internal header `X-Apitoken-Execution-State: not_started`. A normal runtime-produced
 HTTP 503 is a completed reverse-proxy response and does not enter `handle_errors`, so it never gains
 this proof. The unified router may continue an explicit fallback chain only on that exact signal;

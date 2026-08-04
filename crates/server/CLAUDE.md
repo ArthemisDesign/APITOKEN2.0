@@ -134,6 +134,17 @@
   известную auth-схему и положительный poll interval. Exact KIMI aliases обслуживаются только
   authenticated profiles; initial degraded gateway и ошибочный reload сохраняют отдельный
   fail-closed KIMI path, не влияя на Claude readiness и не проваливая alias в Claude pool.
+  `ProviderMode::Kimi` (`CLAUDE_API_PROVIDER=kimi`) — выделенная delivery-плоскость: production
+  юниты `systemd/claude-api-kimi@.service` (active/passive слоты 8804/8805 за stable loopback
+  origin 127.0.0.1:8803) и legacy/anchor singleton `systemd/claude-api-kimi.service` (8804).
+  Оба юнита argv-level пинят `CLAUDE_API_KIMI_ENABLED=0`: общий config.env не может молча включить
+  плоскость, deliberate enablement — отдельное reviewed изменение юнита после live evidence.
+  Anthropic-плоскость держит KIMI выключенным, чтобы ровно один процесс вёл maintenance writer.
+  В kimi-режиме роутер монтирует только common-роуты, `/kimi-subs` и `/v1/messages`, который
+  диспатчит exact KIMI aliases через тот же `KimiGateway::handle`, что Anthropic-путь, а любая
+  другая модель получает bounded fail-closed 404 — Claude pool на этой плоскости не поднят.
+  `/ready` здесь — accepting && authority_ready && (gateway есть ? его readiness (live>=1 &&
+  persistence_ok → иначе provider_unavailable) : ready-to-serve-disabled-envelope).
 - Backend-only GLM switch читается здесь как строгий default-off набор
   `CLAUDE_API_GLM_{ENABLED,ROSTER_DIR,CREDENTIAL_KEYS,AUTH_SCHEME,QUOTA_POLL_SECS}` и передаётся
   целиком в `forward::glm::config::build`. Fleet base-URL override отсутствует намеренно: console
@@ -242,8 +253,8 @@
   Antigravity version без Google subject/full email/domain, project/proxy/OAuth. Ответ также
   публикует exact nanoUSD fleet totals, paid-tier conversion catalogue из `metering::gemini` и
   canonical-model → private quota-bucket mapping; отсутствующий provider amount остаётся `null`.
-  `/kimi-subs` существует в Combined и Anthropic режимах (KIMI — backend внутри Anthropic
-  runtime, отдельного ProviderMode нет), гейтится `control_authed`, а не panel key. Ответ — либо
+  `/kimi-subs` существует в Combined и Anthropic режимах (встроенный gateway — dev/test-only) и на
+  выделенной Kimi-плоскости (production, origin 8803), гейтится `control_authed`, а не panel key. Ответ — либо
   disabled envelope `{"now", "enabled": false, "profiles": []}`, либо read-only operational
   projection: bounded FIFO delivery, fleet counts и per-profile cooling/inflight/quota-window
   state плюс per-window durable calibration (capacity/remaining как decimal nano strings).
@@ -262,6 +273,9 @@
   один live+authenticated home. Одна рабочая подписка остаётся реальной ёмкостью и не превращается
   в 503 из-за размера пула; оба blue-green поколения читают один sealed roster, поэтому паритет
   authenticated-home set при cutover обеспечен конструкцией, без минимального soak-интервала.
+  Fixed KIMI `/ready` при составленном gateway требует live>=1 && persistence_ok
+  (иначе `provider_unavailable`); при отсутствующем gateway (argv-пин default-off) слот остаётся
+  ready и обслуживает стабильный disabled envelope.
 - `/metrics` публикует privacy-safe affinity counters, включая soft cache-root hits/writes,
   fixed-cardinality strict admission/rejection counters для Anthropic/OpenAI/Gemini и fleet-only
   Anthropic exact-capacity/coverage/delivery gauges, а также три execution-not-started series.

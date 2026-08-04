@@ -1290,6 +1290,12 @@ pub async fn forward(
                 .await;
         }
     }
+    if app.provider == crate::ProviderMode::Kimi {
+        // The dedicated KIMI plane serves exact reviewed KIMI aliases only (dispatched above
+        // through the same gateway entry). Any other model — Claude included — fails closed with
+        // a bounded static 404: this process deliberately operates no Claude pool to fall into.
+        return local_err(LocalErr::NotFound, None);
+    }
     let fallback_preeligible = billable
         && matches!(authz, Authz::Metered { .. })
         && operator_target.is_none()

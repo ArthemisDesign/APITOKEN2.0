@@ -115,18 +115,18 @@ fi
 final_plan_cases=(
   'none 0 0 0 0 0|none'
   'controller 0 0 0 0 0|none'
-  'none 1 0 0 0 0|runtime,panel,monitoring,codex,gemini'
+  'none 1 0 0 0 0|runtime,panel,monitoring,codex,gemini,kimi'
   'none 0 1 0 0 0|monitoring'
   'none 0 0 1 0 0|monitoring'
   'none 0 0 0 1 0|monitoring'
   'none 0 0 0 0 1|monitoring'
-  'caddy 0 0 0 0 0|routing,monitoring,codex,gemini'
+  'caddy 0 0 0 0 0|routing,monitoring,codex,gemini,kimi'
   'monitoring 0 0 0 0 0|monitoring'
-  'controller+caddy+monitoring 0 0 0 0 0|routing,monitoring,codex,gemini'
-  'systemd 0 0 0 0 0|runtime,panel,routing,monitoring,codex,gemini'
-  'controller+systemd 0 0 0 0 0|runtime,panel,routing,monitoring,codex,gemini'
-  'full 0 0 0 0 0|runtime,panel,routing,monitoring,codex,gemini'
-  'full 1 1 1 1 1|runtime,panel,routing,monitoring,codex,gemini'
+  'controller+caddy+monitoring 0 0 0 0 0|routing,monitoring,codex,gemini,kimi'
+  'systemd 0 0 0 0 0|runtime,panel,routing,monitoring,codex,gemini,kimi'
+  'controller+systemd 0 0 0 0 0|runtime,panel,routing,monitoring,codex,gemini,kimi'
+  'full 0 0 0 0 0|runtime,panel,routing,monitoring,codex,gemini,kimi'
+  'full 1 1 1 1 1|runtime,panel,routing,monitoring,codex,gemini,kimi'
 )
 for final_plan_case in "${final_plan_cases[@]}"; do
   final_plan_args=${final_plan_case%%|*}
@@ -265,25 +265,26 @@ final_verify_admin_routing() { verification_probe routing; }
 final_verify_monitoring() { verification_probe monitoring; }
 final_verify_codex_surface() { verification_probe codex; }
 final_verify_gemini_surface() { verification_probe gemini; }
+final_verify_kimi_surface() { verification_probe kimi; }
 
 : >"$verification_barrier_log"
-VERIFICATION_BARRIER_EXPECTED=5
-run_final_verification_plan runtime,panel,routing,monitoring,codex,gemini deadbeef
+VERIFICATION_BARRIER_EXPECTED=6
+run_final_verification_plan runtime,panel,routing,monitoring,codex,gemini,kimi deadbeef
 [[ $(sed -n '1p' "$verification_barrier_log") == runtime ]] \
   || wd_die "read-only final probes started before runtime reconciliation"
-for final_probe in panel routing monitoring codex gemini; do
+for final_probe in panel routing monitoring codex gemini kimi; do
   grep -Fxq "$final_probe" "$verification_barrier_log" \
     || wd_die "final verification dispatcher omitted $final_probe"
 done
 
 : >"$verification_barrier_log"
-VERIFICATION_BARRIER_EXPECTED=5
+VERIFICATION_BARRIER_EXPECTED=6
 VERIFICATION_FAIL_CHECK=routing
-if ( run_final_verification_plan runtime,panel,routing,monitoring,codex,gemini deadbeef ) \
+if ( run_final_verification_plan runtime,panel,routing,monitoring,codex,gemini,kimi deadbeef ) \
     >/dev/null 2>&1; then
   wd_die "a failed final verifier did not fail the parent plan"
 fi
-[[ $(grep -Evc '^runtime$' "$verification_barrier_log") == 5 ]] \
+[[ $(grep -Evc '^runtime$' "$verification_barrier_log") == 6 ]] \
   || wd_die "a failed final verifier abandoned sibling checks"
 VERIFICATION_FAIL_CHECK=
 
@@ -448,6 +449,73 @@ VERIFICATION_FAIL_CHECK=
   fi
   (( $(wc -l <"$gemini_probe_log") == 6 )) \
     || wd_die "missing Gemini enablement metrics did not use the bounded retry window"
+)
+
+# KIMI keeps the same explicit optional-provider contract on its backend-only loopback origin:
+# disabled (the shipped default) is proven by the enabled gauge plus the bounded engine envelope;
+# enabled additionally requires one live profile, matching the plane's own readiness contract;
+# missing Prometheus series fail closed.
+(
+  # shellcheck disable=SC2091
+  eval "$(sed -n '/^final_verify_kimi_surface()/,/^}/p' "$ROOT/deploy/watchdog.sh")"
+  kimi_probe_log="$TEMP/kimi-probe.log"
+  KIMI_PROBE_MODE=disabled
+  # Invoked indirectly by the extracted verifier.
+  # shellcheck disable=SC2329
+  curl() {
+    printf '%s\n' "$*" >>"$kimi_probe_log"
+    case "$*" in
+      *'query=claude_api_kimi_enabled'*)
+        case "$KIMI_PROBE_MODE" in
+          disabled) printf '%s\n' '{"status":"success","data":{"result":[{"value":[0,"0"]}]}}' ;;
+          enabled|unauthenticated) printf '%s\n' '{"status":"success","data":{"result":[{"value":[0,"1"]}]}}' ;;
+          missing) printf '%s\n' '{"status":"success","data":{"result":[]}}' ;;
+        esac
+        ;;
+      *'claude_api_kimi_live_profiles'*)
+        if [[ $KIMI_PROBE_MODE == unauthenticated ]]; then
+          printf '%s\n' '{"status":"success","data":{"result":[]}}'
+        else
+          printf '%s\n' '{"status":"success","data":{"result":[{"value":[0,"1"]}]}}'
+        fi
+        ;;
+      *'127.0.0.1:8803/v1/messages'*)
+        printf '%s\n' '{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}'
+        ;;
+      *) return 2 ;;
+    esac
+  }
+  sleep() { :; }
+
+  : >"$kimi_probe_log"
+  KIMI_PROBE_MODE=disabled
+  final_verify_kimi_surface >/dev/null
+  (( $(wc -l <"$kimi_probe_log") == 2 )) \
+    || wd_die "disabled KIMI verification skipped the stable-origin envelope check"
+
+  : >"$kimi_probe_log"
+  KIMI_PROBE_MODE=enabled
+  final_verify_kimi_surface >/dev/null
+  (( $(wc -l <"$kimi_probe_log") == 3 )) \
+    || wd_die "enabled KIMI verification skipped the live-profile or envelope checks"
+  grep -Fq 'query=claude_api_kimi_live_profiles{provider="kimi"} >= 1' \
+    "$kimi_probe_log" || wd_die "enabled KIMI verification did not require a live profile"
+
+  : >"$kimi_probe_log"
+  KIMI_PROBE_MODE=unauthenticated
+  if ( final_verify_kimi_surface ) >/dev/null 2>&1; then
+    wd_die "an enabled KIMI provider without a live profile passed verification"
+  fi
+  (( $(wc -l <"$kimi_probe_log") == 7 )) \
+    || wd_die "missing KIMI runtime metrics did not use the bounded retry window"
+
+  : >"$kimi_probe_log"
+  KIMI_PROBE_MODE=missing
+  if ( final_verify_kimi_surface ) >/dev/null 2>&1; then
+    wd_die "missing KIMI enablement metrics were treated as disabled"
+  fi
+  (( $(wc -l <"$kimi_probe_log") == 6 )) \
+    || wd_die "missing KIMI enablement metrics did not use the bounded retry window"
 )
 
 # Atomic state writes are shared by parallel rollout lanes. Bash keeps `$$` constant in asynchronous
@@ -713,7 +781,8 @@ wd_path_is_engine tools/codex-native/probe-live.py \
 for provider_unit in systemd/claude-api.service systemd/claude-api@.service \
   systemd/claude-api-anthropic@.service systemd/claude-api-openai.service \
   systemd/claude-api-openai@.service systemd/claude-api-gemini.service \
-  systemd/claude-api-gemini@.service; do
+  systemd/claude-api-gemini@.service systemd/claude-api-kimi.service \
+  systemd/claude-api-kimi@.service; do
   wd_path_is_engine "$provider_unit" \
     || wd_die "provider unit change does not force runtime adoption: $provider_unit"
 done
@@ -795,6 +864,8 @@ for runtime_definition in \
   systemd/claude-api-openai@.service \
   systemd/claude-api-gemini.service \
   systemd/claude-api-gemini@.service \
+  systemd/claude-api-kimi.service \
+  systemd/claude-api-kimi@.service \
   systemd/apitoken-tmpfiles.conf \
   observability/prometheus/prometheus.yml; do
   wd_path_requires_infrastructure_install "$runtime_definition" \
@@ -840,6 +911,8 @@ wd_path_is_systemd_definition systemd/claude-api.service
 wd_path_is_systemd_definition systemd/claude-api-openai.service
 wd_path_is_systemd_definition systemd/claude-api-gemini.service
 wd_path_is_systemd_definition systemd/claude-api-gemini@.service
+wd_path_is_systemd_definition systemd/claude-api-kimi.service
+wd_path_is_systemd_definition systemd/claude-api-kimi@.service
 wd_path_is_systemd_definition systemd/apitoken-admin.service \
   || wd_die "the admin panel unit escaped the narrow systemd installer"
 if wd_path_is_systemd_definition systemd/future-uninstalled.service; then
@@ -1435,12 +1508,14 @@ grep -Fq 'CLAUDE_API_PROVIDER=openai CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 C
 grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:openai' "$ROOT/systemd/claude-api-openai.service"
 grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-openai@.service"
 for non_anthropic_unit in claude-api-openai.service claude-api-openai@.service \
-  claude-api-gemini.service claude-api-gemini@.service; do
+  claude-api-gemini.service claude-api-gemini@.service \
+  claude-api-kimi.service claude-api-kimi@.service; do
   grep -Fq 'CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0' "$ROOT/systemd/$non_anthropic_unit" \
     || wd_die "$non_anthropic_unit can inherit the Anthropic-only ClaudeStore switch"
 done
 for non_openai_unit in claude-api-anthropic@.service \
-  claude-api-gemini.service claude-api-gemini@.service; do
+  claude-api-gemini.service claude-api-gemini@.service \
+  claude-api-kimi.service claude-api-kimi@.service; do
   grep -Fq 'CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0' "$ROOT/systemd/$non_openai_unit" \
     || wd_die "$non_openai_unit can inherit the OpenAI-only ClaudeStore switch"
 done
@@ -1507,6 +1582,68 @@ legacy_gemini_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-gemini.servi
 slot_gemini_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-gemini@.service")
 [[ $slot_gemini_exec == "$legacy_gemini_exec" ]] \
   || wd_die 'Gemini slots drifted from the reviewed roster, catalog, upstream, or wire identity pins'
+grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-kimi.service"
+grep -Fq 'CLAUDE_API_PROVIDER=kimi CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8804' \
+  "$ROOT/systemd/claude-api-kimi.service"
+grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:kimi' "$ROOT/systemd/claude-api-kimi.service"
+grep -Fxq 'ReadOnlyPaths=/srv/claude-api/data/kimi' "$ROOT/systemd/claude-api-kimi.service"
+grep -Fxq 'KillMode=mixed' "$ROOT/systemd/claude-api-kimi@.service"
+grep -Fq 'CLAUDE_API_PROVIDER=kimi CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i' \
+  "$ROOT/systemd/claude-api-kimi@.service" \
+  || wd_die 'KIMI slot template does not pin fixed provider mode and its instance port'
+grep -Fq 'CLAUDE_API_INSTANCE_ID=%H:engine:kimi:%i' \
+  "$ROOT/systemd/claude-api-kimi@.service" \
+  || wd_die 'KIMI slot identities are not process-fenced by port'
+grep -Fq 'ExecCondition=/usr/bin/test ! -L /srv/claude-api/releases/current/.kimi-bluegreen-v1' \
+  "$ROOT/systemd/claude-api-kimi@.service" \
+  || wd_die 'legacy releases can start through the KIMI slot template'
+grep -Fq 'ExecCondition=/usr/bin/grep -Fxq kimi-bluegreen-v1' \
+  "$ROOT/systemd/claude-api-kimi@.service" \
+  || wd_die 'KIMI slot capability marker contents are not checked'
+grep -Fxq 'ReadOnlyPaths=/srv/claude-api/data/kimi' \
+  "$ROOT/systemd/claude-api-kimi@.service" \
+  || wd_die 'KIMI slots can mutate Auth Bot roster state'
+# The default-off pin must be argv-level in both incarnations: a shared config.env can never
+# silently enable the plane; deliberate enablement is a later reviewed unit change.
+for kimi_unit in claude-api-kimi.service claude-api-kimi@.service; do
+  grep -Fq 'CLAUDE_API_KIMI_ENABLED=0' "$ROOT/systemd/$kimi_unit" \
+    || wd_die "$kimi_unit lost the argv-level default-off KIMI pin"
+done
+legacy_kimi_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-kimi.service" \
+  | sed -e 's/CLAUDE_API_PORT=8804/CLAUDE_API_PORT=%i/' \
+    -e 's/CLAUDE_API_INSTANCE_ID=%H:engine:kimi /CLAUDE_API_INSTANCE_ID=%H:engine:kimi:%i /')
+slot_kimi_exec=$(grep -F 'ExecStart=' "$ROOT/systemd/claude-api-kimi@.service")
+[[ $slot_kimi_exec == "$legacy_kimi_exec" ]] \
+  || wd_die 'KIMI slots drifted from the reviewed default-off provider pins'
+grep -Fq 'systemctl_command kill --kill-whom=main -s SIGUSR1 "$KIMI_ACTIVE_UNIT"' \
+  "$ROOT/deploy/engine-bluegreen.sh" \
+  || wd_die 'KIMI blue-green cannot pre-drain its old slot'
+grep -Fq 'kimi-provider-v1 >"$ENGINE_STAGE/.kimi-provider-v1"' "$ROOT/deploy/deploy.sh" \
+  || wd_die "engine releases do not record KIMI provider capability"
+grep -Fq 'kimi-bluegreen-v1 >"$ENGINE_STAGE/.kimi-bluegreen-v1"' "$ROOT/deploy/deploy.sh" \
+  || wd_die "engine releases do not record KIMI blue-green capability"
+grep -Fq '[[ -f "$directory/.kimi-bluegreen-v1" && ! -L "$directory/.kimi-bluegreen-v1" ]]' \
+  "$ROOT/deploy/deploy.sh" \
+  || wd_die "engine staging does not reject an unsafe KIMI blue-green capability marker"
+grep -Fq '[[ $(<"$directory/.kimi-bluegreen-v1") == kimi-bluegreen-v1 ]]' \
+  "$ROOT/deploy/deploy.sh" \
+  || wd_die "engine staging does not validate KIMI blue-green marker contents"
+grep -Fq 'KIMI_SUPPORTED' "$ROOT/deploy/engine-bluegreen.sh" \
+  || wd_die 'engine blue-green does not gate the KIMI cutover on the provider capability marker'
+grep -Fq '/srv/claude-api/data/kimi/credentials' "$ROOT/deploy/install-watchdog.sh"
+grep -Fq 'claude-api-kimi.service' "$ROOT/deploy/install-watchdog.sh"
+grep -Fq 'claude-api-kimi@.service' "$ROOT/deploy/install-watchdog.sh"
+grep -Fq '/usr/bin/systemctl restart claude-api-kimi.service' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy"
+grep -Fq '/usr/bin/systemctl --no-block stop claude-api-kimi.service' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die "first KIMI slot cutover cannot retire the legacy singleton asynchronously"
+grep -Fq '/usr/bin/systemctl --no-block stop claude-api-kimi@[0-9]*.service' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die "KIMI blue-green cannot retire its old slot outside the deploy path"
+grep -Fq '/usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-kimi@8804.service' \
+  "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die "KIMI slot drain signal is denied by the sudo policy self-check"
 grep -Fq '/srv/claude-api/data/gemini/credentials' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'claude-api-openai.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'claude-api-gemini.service' "$ROOT/deploy/install-watchdog.sh"
@@ -1648,12 +1785,36 @@ grep -Fq 'http://127.0.0.1:8792 {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8793 127.0.0.1:8797 {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8794' "$ROOT/deploy/Caddyfile"
 grep -Fq '@admin_gemini_data path /gemini-subs' "$ROOT/deploy/Caddyfile"
-# KIMI lives inside the Anthropic runtime, so its admin projection is pinned on the existing
-# Anthropic-origin admin_data matcher — never a separate origin or key.
-grep -Fq '@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /kimi-subs' \
-  "$ROOT/deploy/Caddyfile" || wd_die 'KIMI admin projection lost its Anthropic-origin route'
-! grep -Fq '@admin_kimi_data' "$ROOT/deploy/Caddyfile" \
-  || wd_die 'KIMI must not grow a separate admin origin while it lives in the Anthropic runtime'
+# KIMI owns its runtime now: the dedicated default-off plane serves the sanitized projection from
+# the stable loopback origin, so /kimi-subs leaves the Anthropic-origin matcher for its own route.
+grep -Fq '@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health' \
+  "$ROOT/deploy/Caddyfile" || wd_die 'the Anthropic-origin admin matcher drifted'
+if grep -Fq '@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /kimi-subs' \
+  "$ROOT/deploy/Caddyfile"; then
+  wd_die 'KIMI admin projection still rides the Anthropic-origin route'
+fi
+grep -Fq '@admin_kimi_data path /kimi-subs' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'KIMI admin projection lost its dedicated origin route'
+grep -Fq '(kimi_engine_backend) {' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'KIMI lost its symmetric backend snippet'
+grep -Fq 'http://127.0.0.1:8803 {' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'stable KIMI loopback origin is missing'
+grep -Fq 'reverse_proxy 127.0.0.1:8804 127.0.0.1:8805 {' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'stable KIMI origin does not expose both blue-green slots'
+kimi_stable_origin=$(sed -n '/^http:\/\/127\.0\.0\.1:8803 {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
+grep -Fq 'lb_policy first' <<<"$kimi_stable_origin" \
+  || wd_die 'KIMI slots can round-robin the same roster during overlap'
+grep -Fq 'health_uri /ready' <<<"$kimi_stable_origin" \
+  || wd_die 'stable KIMI origin is not health-gated on slot readiness'
+grep -Fq 'respond "No healthy KIMI runtime is available." 503' <<<"$kimi_stable_origin" \
+  || wd_die 'stable KIMI origin lost its bounded no-upstream answer'
+# Backend-only by contract: no public hostname and no request header may reach this plane.
+if grep -Fq 'import kimi_engine_backend' "$ROOT/deploy/Caddyfile"; then
+  wd_die 'backend-only KIMI grew a public vhost import'
+fi
+if grep -Eq '^[a-z0-9.-]*kimi[a-z0-9.-]* \{' "$ROOT/deploy/Caddyfile"; then
+  wd_die 'backend-only KIMI grew a public hostname'
+fi
 grep -Fq 'http://127.0.0.1:8794 {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8795 127.0.0.1:8799 {' "$ROOT/deploy/Caddyfile" \
   || wd_die 'stable Gemini origin does not expose both blue-green slots'
@@ -2671,7 +2832,7 @@ for rendered in "$rendered_once" "$rendered_twice"; do
   ! grep -Fq 'basic_auth' "$rendered"
   ! grep -Fq '$2y$' "$rendered"
   grep -Fq 'forward_auth 127.0.0.1:8791' "$rendered"
-  [[ $(grep -Fc 'header_up x-api-key "test-control-secret"' "$rendered") == 3 ]]
+  [[ $(grep -Fc 'header_up x-api-key "test-control-secret"' "$rendered") == 4 ]]
   [[ $(grep -Fc 'header_up X-OpenKeys-Control-Key "test-control-secret"' "$rendered") == 1 ]]
   [[ $(grep -Fc 'header_up x-admin-key "test-commerce-secret"' "$rendered") == 2 ]]
   [[ $(grep -Fc 'header_up X-Admin-Key "test-commerce-secret"' "$rendered") == 1 ]]

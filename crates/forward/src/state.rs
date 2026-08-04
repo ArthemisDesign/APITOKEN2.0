@@ -24,6 +24,7 @@ pub enum ProviderMode {
     Anthropic,
     OpenAi,
     Gemini,
+    Kimi,
 }
 
 impl ProviderMode {
@@ -39,12 +40,20 @@ impl ProviderMode {
         matches!(self, Self::Gemini)
     }
 
+    /// This process composes the KIMI gateway. The Anthropic-serving modes keep the embedded
+    /// backend for dev/tests; `Kimi` is the dedicated default-off plane that serves exact KIMI
+    /// aliases only and never mounts the Claude pool.
+    pub fn serves_kimi(self) -> bool {
+        matches!(self, Self::Combined | Self::Anthropic | Self::Kimi)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Combined => "combined",
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
             Self::Gemini => "gemini",
+            Self::Kimi => "kimi",
         }
     }
 }
@@ -67,8 +76,9 @@ pub struct AppState {
     pub codex: Option<Arc<CodexGateway>>,
     /// Optional native Gemini surface backed by encrypted paid Code Assist OAuth profiles.
     pub gemini: Option<Arc<GeminiGateway>>,
-    /// Optional backend-only KIMI subscription pool. It dispatches exact KIMI aliases inside the
-    /// Anthropic Messages plane and intentionally has no public provider mode or catalogue.
+    /// Optional backend-only KIMI subscription pool. Anthropic-serving modes embed it to dispatch
+    /// exact KIMI aliases inside the Messages plane; the dedicated `Kimi` mode serves only those
+    /// aliases. It intentionally has no public hostname or catalogue.
     pub kimi: Option<Arc<KimiGateway>>,
     /// Optional backend-only GLM (Z.ai Coding Plan) subscription pool. Same shape as KIMI:
     /// exact reviewed GLM aliases dispatch inside the Anthropic Messages plane; the credential

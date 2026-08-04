@@ -1,0 +1,54 @@
+# PostgreSQL-fenced backend-only KIMI surface backed by encrypted paid KIMI subscription profiles.
+# This singleton is the legacy/anchor incarnation bound to the first slot port (8804): it exists so
+# the first handoff and a rollback to a release predating the slot template always have a unit to
+# run; steady state serves from claude-api-kimi@8804/8805 behind the stable 127.0.0.1:8803 origin.
+[Unit]
+Description=claude-api isolated KIMI subscription-pool provider
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+Environment=SUB_CFG_DIR=/srv/claude-api/data
+EnvironmentFile=-/srv/claude-api/data/config.env
+EnvironmentFile=-/srv/claude-api/data/server.env
+EnvironmentFile=/srv/claude-api/data/engine-postgres.env
+# Argv-level assignments cannot be overridden by a shared EnvironmentFile. CLAUDE_API_KIMI_ENABLED=0
+# is pinned here on purpose: this plane ships default-off, so a shared config.env can never
+# silently enable the provider. Deliberate enablement is a later reviewed unit change made only
+# after live evidence (docs/engine/KIMI_PROVIDER.md), and the Anthropic plane keeps KIMI off so
+# exactly one process ever runs the maintenance writer. Both ClaudeStore switches belong to other
+# provider planes and must remain disabled here.
+ExecStart=/usr/bin/env CLAUDE_API_PROVIDER=kimi CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0 CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=8804 CLAUDE_API_INSTANCE_ID=%H:engine:kimi CLAUDE_API_KIMI_ENABLED=0 /srv/claude-api/releases/current/claude-api serve
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=660
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadWritePaths=/srv/claude-api/data
+# Sealed roster generations and encrypted credential envelopes are atomically provisioned by Auth
+# Bot; the gateway only decrypts them in memory and never exposes account identity. Provisioning
+# creates this layout before runtime start. Absence fails the unit closed; otherwise an optional
+# bind skipped at startup could become writable when the directory appears.
+ReadOnlyPaths=/srv/claude-api/data/kimi
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

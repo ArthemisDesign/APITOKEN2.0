@@ -24,7 +24,7 @@
 | `packages/engine-client` | TS-клиент `EngineClient`, strict zod-валидация из `@claude-api/contracts`, деньги — `json-bigint` строками; pricing v2 provisioning-context/cursor/prepare/readback и единый canonical Stage 5 policy/assignment digest builder | `apps/api`, `apps/worker`, `apps/openkeys`; `packages/db` Stage 5 materializer, Stage 8 collector и pre-delivery activation authority (env `ENGINE_BASE_URL` + `ENGINE_CONTROL_KEY` только у runtime-потребителей) | `docs/engine/CONTROL_API.md`, `docs/commerce/MULTI_DISCOUNT_STAGE5.md`, `docs/commerce/MULTI_DISCOUNT_STAGE7.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md`, `docs/product/OPENKEYS.md` |
 | `claude-api db stage8-evidence` (`crates/registry`, `crates/server`) | protected schema-v2 JSON artifact with signed-i64 nanoUSD and canonical Rust `sha256:v2` evidence digest; exact target/recovery, full engine inventory/funding/shadow/runtime floor | parity/diagnostic non-production input for `packages/db`; production no longer uses an SSH/file handoff | `docs/ops/DEPLOYMENT.md`, `docs/commerce/MULTI-DISCOUNT.md`, `docs/commerce/MULTI_DISCOUNT_STAGE9.md` |
 | `crates/server` + `crates/forward` Stage 8 capture producer | protected `POST /admin/pricing/v2/stage8-evidence/capture`; strict explicit inputs, server-owned compile-fixed manifest, unwrapped schema-v2 report including `passed=false`; PostgreSQL bounded reader only | after GREEN exact producer SHA: strict `packages/contracts` → raw-text/`json-bigint` `packages/engine-client` → `apps/worker`; exact raw engine bytes are durable before `packages/db` combines commerce/service and two exhaustive OpenKeys scans | `docs/engine/CONTROL_API.md`, `docs/ops/DEPLOYMENT.md`, `docs/commerce/MULTI-DISCOUNT_STAGE9.md` |
-| `crates/server` operator-роуты | read-only `/overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /kimi-subs` (→ 8790), `/codex-subs` (→ 8792), `/gemini-subs` (→ 8794) через Caddy `admin.apitoken.sale`, ключ подставляет прокси (`ADMIN_CONTROL_KEY`); Claude `/capacity`, `/overview` supply и Prometheus используют одну exact turn+quota authority, не pool prior/EMA; last-known per-window display-state routable-idle/quota-cooling подписки сохраняется только до exact provider reset и не делает stale remaining продаваемым | `apps/admin` (без engine-client и без своих секретов); `/metrics` также скрейпит Prometheus напрямую по loopback, минуя Caddy (`observability/prometheus/prometheus.yml`) | `docs/product/ADMIN_PANEL.md`, `docs/engine/CONTROL_API.md` |
+| `crates/server` operator-роуты | read-only `/overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health` (→ 8790), `/codex-subs` (→ 8792), `/gemini-subs` (→ 8794), `/kimi-subs` (→ 8803, выделенная default-off KIMI plane; Anthropic-embedded gateway — только dev/test) через Caddy `admin.apitoken.sale`, ключ подставляет прокси (`ADMIN_CONTROL_KEY`); Claude `/capacity`, `/overview` supply и Prometheus используют одну exact turn+quota authority, не pool prior/EMA; last-known per-window display-state routable-idle/quota-cooling подписки сохраняется только до exact provider reset и не делает stale remaining продаваемым | `apps/admin` (без engine-client и без своих секретов); `/metrics` также скрейпит Prometheus напрямую по loopback, минуя Caddy (`observability/prometheus/prometheus.yml`), включая KIMI origin 8803 с target-лейблом `provider: kimi` | `docs/product/ADMIN_PANEL.md`, `docs/engine/CONTROL_API.md` |
 
 Группы эндпоинтов Control API: аккаунты, credit/ledger (идемпотентный credit по
 provider-qualified `ref`, cursor-протокол `ledger` + `ledger/ack`), usage, ключи, versioned pricing
@@ -357,9 +357,10 @@ Authority — `crates/metering` (выше). Всё нижеописанное �
 | `api.apitoken.sale` | engine `127.0.0.1:8790` (blue-green слоты 8787/8788) |
 | `openai.api.apitoken.sale` | OpenAI-runtime `:8792` (слоты 8793/8797) |
 | `gemini.api.apitoken.sale` | Gemini-runtime `:8794` (слоты 8795/8799); `/oauth/callback` → authbot `:8796` |
+| (только loopback, без публичного vhost) | KIMI-runtime `:8803` (active/passive слоты 8804/8805); backend-only plane, в router namespace и каталог не входит |
 | `router.apitoken.sale` | atomic `router_backend` → claude-router slot `:8800` или `:8801`; stable loopback `:8802` использует тот же backend |
 | `backend.apitoken.sale` | commerce `apps/api` `:8791` (слоты 3000/3001) |
-| `admin.apitoken.sale` | managed auth; data-роуты → engine 8790/8792/8794, `/admin/*` → commerce 8791, `/openkeys-admin/*` → 3410, `/partner-admin/*` → sales 3100; остальное → `apps/admin` `:3700` |
+| `admin.apitoken.sale` | managed auth; data-роуты → engine 8790/8792/8794/8803, `/admin/*` → commerce 8791, `/openkeys-admin/*` → 3410, `/partner-admin/*` → sales 3100; остальное → `apps/admin` `:3700` |
 | `partners.apitoken.sale` | `/v1/*` → sales-api `:3100`; остальное → sales-web `:3200` |
 | `openkeys.apitoken.sale` | `apps/openkeys` `:3410` |
 | `content-studio.apitoken.sale` | `/v1/*` → commerce 8791; остальное → `apps/content-studio` `:3500` |
@@ -369,7 +370,7 @@ Authority — `crates/metering` (выше). Всё нижеописанное �
 | `sales.apitoken.sale` | 301-редирект на `partners.apitoken.sale` |
 | `admin.partners.apitoken.sale` | managed auth; `/v1/*` → sales-api `:3100`; остальное → sales-web `:3200` |
 
-Stable provider origins 8790/8792/8794 синтезируют внутренний
+Stable provider origins 8790/8792/8794/8803 синтезируют внутренний
 `X-Apitoken-Execution-State: not_started` только на Caddy `no healthy upstream`; обычный runtime
 503 его не получает. Публичные provider vhost'ы снимают этот header, а loopback router использует
 его как безопасное fencing-доказательство до следующей explicit fallback attempt.
@@ -377,7 +378,7 @@ Stable provider origins 8790/8792/8794 синтезируют внутренни
 ### systemd (`systemd/`) — сервис → приложение
 
 `claude-api-anthropic@` → Anthropic-слоты 8787/8788 (текущий юнит; `claude-api@` — legacy) ·
-`claude-api-openai@` → 8793/8797 · `claude-api-gemini@` → 8795/8799 · `claude-router@` → 8800/8801 (`claude-router` → 8798 только legacy handoff) ·
+`claude-api-openai@` → 8793/8797 · `claude-api-gemini@` → 8795/8799 · `claude-api-kimi@` → 8804/8805 (`claude-api-kimi` → 8804, legacy/anchor singleton; stable origin 8803; plane default-off по argv-пину `CLAUDE_API_KIMI_ENABLED=0`) · `claude-router@` → 8800/8801 (`claude-router` → 8798 только legacy handoff) ·
 `claude-authbot` → authbot ·
 `apitoken-api[@]` → `apps/api` 3000/3001 · `apitoken-worker` → `apps/worker` ·
 `apitoken-admin` → 3700 · `apitoken-content-studio` → 3500 · `apitoken-openkeys` → 3410 ·

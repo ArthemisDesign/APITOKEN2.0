@@ -530,6 +530,7 @@ live_release_shas() {
     claude-api-anthropic@8787.service claude-api-anthropic@8788.service \
     claude-api-openai.service claude-api-openai@8793.service claude-api-openai@8797.service \
     claude-api-gemini.service claude-api-gemini@8795.service claude-api-gemini@8799.service \
+    claude-api-kimi.service claude-api-kimi@8804.service claude-api-kimi@8805.service \
     claude-authbot.service \
     claude-router.service claude-router@8800.service claude-router@8801.service \
     apitoken-api@3000.service apitoken-api@3001.service \
@@ -1335,6 +1336,10 @@ engine_runtime_aligned() {
   local gemini_active_8799=0 gemini_ready_8799=0 gemini_current_8799=0 gemini_enabled_8799=0
   local gemini_legacy_active=0 gemini_legacy_ready=0 gemini_legacy_current=0
   local gemini_legacy_enabled=0 gemini_supported=0 gemini_shared_supported=0 gemini_stable_status
+  local kimi_active_8804=0 kimi_ready_8804=0 kimi_current_8804=0 kimi_enabled_8804=0
+  local kimi_active_8805=0 kimi_ready_8805=0 kimi_current_8805=0 kimi_enabled_8805=0
+  local kimi_legacy_active=0 kimi_legacy_ready=0 kimi_legacy_current=0
+  local kimi_legacy_enabled=0 kimi_supported=0 kimi_shared_supported=0 kimi_stable_status
   local port unit pid executable status combined_unit environment
 
   [[ $codex_alignment == serving || $codex_alignment == converged ]] || return 2
@@ -1438,6 +1443,16 @@ engine_runtime_aligned() {
     (( gemini_supported == 1 )) || return 1
     gemini_shared_supported=1
   fi
+  if [[ -f "$expected/.kimi-provider-v1" && ! -L "$expected/.kimi-provider-v1" \
+      && $(<"$expected/.kimi-provider-v1") == kimi-provider-v1 ]]; then
+    kimi_supported=1
+  fi
+  if [[ -e "$expected/.kimi-bluegreen-v1" || -L "$expected/.kimi-bluegreen-v1" ]]; then
+    [[ -f "$expected/.kimi-bluegreen-v1" && ! -L "$expected/.kimi-bluegreen-v1" \
+        && $(<"$expected/.kimi-bluegreen-v1") == kimi-bluegreen-v1 ]] || return 1
+    (( kimi_supported == 1 )) || return 1
+    kimi_shared_supported=1
+  fi
   for port in 8795 8799; do
     unit="claude-api-gemini@$port.service"
     local gemini_active=0 gemini_ready=0 gemini_selected=0 gemini_enabled=0
@@ -1483,7 +1498,52 @@ engine_runtime_aligned() {
   fi
   gemini_stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
     http://127.0.0.1:8794/ready 2>/dev/null || true)
-  ENGINE_RUNTIME_DETAIL="anthropic[8787=$active_8787:$ready_8787:$current_8787:$enabled_8787 8788=$active_8788:$ready_8788:$current_8788:$enabled_8788 stable=${stable_status:-unreachable}] openai[shared=$openai_shared_supported 8793=$openai_active_8793:$openai_ready_8793:$openai_current_8793:$openai_enabled_8793 8797=$openai_active_8797:$openai_ready_8797:$openai_current_8797:$openai_enabled_8797 stable=${openai_stable_status:-unreachable} legacy=$openai_legacy_active:$openai_legacy_ready:$openai_legacy_current:$openai_legacy_enabled] gemini[supported=$gemini_supported shared=$gemini_shared_supported 8795=$gemini_active_8795:$gemini_ready_8795:$gemini_current_8795:$gemini_enabled_8795 8799=$gemini_active_8799:$gemini_ready_8799:$gemini_current_8799:$gemini_enabled_8799 stable=${gemini_stable_status:-unreachable} legacy=$gemini_legacy_active:$gemini_legacy_ready:$gemini_legacy_current:$gemini_legacy_enabled] legacy=$legacy_active:$legacy_enabled"
+  for port in 8804 8805; do
+    unit="claude-api-kimi@$port.service"
+    local kimi_active=0 kimi_ready=0 kimi_selected=0 kimi_enabled=0
+    systemctl is-active --quiet "$unit" && kimi_active=1
+    systemctl is-enabled --quiet "$unit" && kimi_enabled=1
+    status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+      "http://127.0.0.1:$port/ready" 2>/dev/null || true)
+    [[ $status == 200 ]] && kimi_ready=1
+    if (( kimi_active == 1 )); then
+      pid=$(systemctl show "$unit" -p MainPID --value)
+      if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
+        executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)
+        if [[ $executable == "$expected/claude-api" ]] \
+            && tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null \
+              | grep -Fxq 'CLAUDE_API_PROVIDER=kimi'; then
+          kimi_selected=1
+        fi
+      fi
+    fi
+    if [[ $port == 8804 ]]; then
+      kimi_active_8804=$kimi_active; kimi_ready_8804=$kimi_ready
+      kimi_current_8804=$kimi_selected; kimi_enabled_8804=$kimi_enabled
+    else
+      kimi_active_8805=$kimi_active; kimi_ready_8805=$kimi_ready
+      kimi_current_8805=$kimi_selected; kimi_enabled_8805=$kimi_enabled
+    fi
+  done
+  systemctl is-active --quiet claude-api-kimi.service && kimi_legacy_active=1
+  systemctl is-enabled --quiet claude-api-kimi.service && kimi_legacy_enabled=1
+  status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+    http://127.0.0.1:8804/ready 2>/dev/null || true)
+  [[ $status == 200 && $kimi_legacy_active == 1 ]] && kimi_legacy_ready=1
+  if (( kimi_legacy_active == 1 )); then
+    pid=$(systemctl show claude-api-kimi.service -p MainPID --value)
+    if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
+      executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)
+      if [[ $executable == "$expected/claude-api" ]] \
+          && tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null \
+            | grep -Fxq 'CLAUDE_API_PROVIDER=kimi'; then
+        kimi_legacy_current=1
+      fi
+    fi
+  fi
+  kimi_stable_status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+    http://127.0.0.1:8803/ready 2>/dev/null || true)
+  ENGINE_RUNTIME_DETAIL="anthropic[8787=$active_8787:$ready_8787:$current_8787:$enabled_8787 8788=$active_8788:$ready_8788:$current_8788:$enabled_8788 stable=${stable_status:-unreachable}] openai[shared=$openai_shared_supported 8793=$openai_active_8793:$openai_ready_8793:$openai_current_8793:$openai_enabled_8793 8797=$openai_active_8797:$openai_ready_8797:$openai_current_8797:$openai_enabled_8797 stable=${openai_stable_status:-unreachable} legacy=$openai_legacy_active:$openai_legacy_ready:$openai_legacy_current:$openai_legacy_enabled] gemini[supported=$gemini_supported shared=$gemini_shared_supported 8795=$gemini_active_8795:$gemini_ready_8795:$gemini_current_8795:$gemini_enabled_8795 8799=$gemini_active_8799:$gemini_ready_8799:$gemini_current_8799:$gemini_enabled_8799 stable=${gemini_stable_status:-unreachable} legacy=$gemini_legacy_active:$gemini_legacy_ready:$gemini_legacy_current:$gemini_legacy_enabled] kimi[supported=$kimi_supported shared=$kimi_shared_supported 8804=$kimi_active_8804:$kimi_ready_8804:$kimi_current_8804:$kimi_enabled_8804 8805=$kimi_active_8805:$kimi_ready_8805:$kimi_current_8805:$kimi_enabled_8805 stable=${kimi_stable_status:-unreachable} legacy=$kimi_legacy_active:$kimi_legacy_ready:$kimi_legacy_current:$kimi_legacy_enabled] legacy=$legacy_active:$legacy_enabled"
   [[ $stable_status == 200 ]] || return 1
   [[ $openai_stable_status == 200 ]] || return 1
   if (( openai_shared_supported == 0 )); then
@@ -1531,6 +1591,33 @@ engine_runtime_aligned() {
     (( gemini_legacy_active == 0 && gemini_legacy_enabled == 0 \
       && gemini_active_8795 == 0 && gemini_enabled_8795 == 0 \
       && gemini_active_8799 == 0 && gemini_enabled_8799 == 0 )) || return 1
+  fi
+  if (( kimi_supported == 1 )); then
+    [[ $kimi_stable_status == 200 ]] || return 1
+    if (( kimi_shared_supported == 0 )); then
+      (( kimi_legacy_active == 1 && kimi_legacy_ready == 1 \
+        && kimi_legacy_current == 1 && kimi_legacy_enabled == 1 \
+        && kimi_active_8804 == 0 && kimi_ready_8804 == 0 \
+        && kimi_current_8804 == 0 && kimi_enabled_8804 == 0 \
+        && kimi_active_8805 == 0 && kimi_ready_8805 == 0 \
+        && kimi_current_8805 == 0 && kimi_enabled_8805 == 0 )) || return 1
+    else
+      (( kimi_legacy_active == 0 && kimi_legacy_enabled == 0 )) || return 1
+      if (( kimi_active_8804 == 1 )); then
+        (( kimi_ready_8804 == 1 && kimi_current_8804 == 1 && kimi_enabled_8804 == 1 \
+          && kimi_active_8805 == 0 && kimi_ready_8805 == 0 \
+          && kimi_current_8805 == 0 && kimi_enabled_8805 == 0 )) || return 1
+      else
+        (( kimi_active_8805 == 1 && kimi_ready_8805 == 1 \
+          && kimi_current_8805 == 1 && kimi_enabled_8805 == 1 \
+          && kimi_active_8804 == 0 && kimi_ready_8804 == 0 \
+          && kimi_current_8804 == 0 && kimi_enabled_8804 == 0 )) || return 1
+      fi
+    fi
+  else
+    (( kimi_legacy_active == 0 && kimi_legacy_enabled == 0 \
+      && kimi_active_8804 == 0 && kimi_enabled_8804 == 0 \
+      && kimi_active_8805 == 0 && kimi_enabled_8805 == 0 )) || return 1
   fi
   wd_engine_topology_is_steady \
     "$active_8787" "$ready_8787" "$current_8787" "$enabled_8787" \
@@ -1866,6 +1953,59 @@ final_verify_gemini_surface() {
   wd_log "native Gemini subscription-pool surface verified (enabled=$enabled)"
 }
 
+# Post-promotion smoke for the backend-only KIMI plane. There is no public hostname to probe, so
+# it proves two independent facts instead: Prometheus scrapes the kimi provider target on the
+# stable loopback origin, and that origin answers with the engine's own bounded Anthropic-shaped
+# envelope rather than Caddy's plain-text no-upstream 503. Default-off is the expected steady
+# state; a deliberately enabled plane must additionally keep one live profile, matching the
+# plane's own readiness contract.
+final_verify_kimi_surface() {
+  local response envelope enabled=0 determined=0 enabled_state='' attempt
+  for attempt in 1 2 3 4 5 6; do
+    response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
+      --data-urlencode 'query=claude_api_kimi_enabled{provider="kimi"}' \
+      http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+    enabled_state=$(jq --exit-status --raw-output \
+      'select(.status == "success" and (.data.result | length) == 1)
+       | .data.result[0].value[1]
+       | select(. == "0" or . == "1")' <<<"$response" 2>/dev/null || true)
+    case "$enabled_state" in
+      0) determined=1; break ;;
+      1) enabled=1; determined=1; break ;;
+    esac
+    (( attempt == 6 )) || sleep 5
+  done
+  (( determined == 1 )) || wd_die "could not determine whether the KIMI provider is enabled"
+
+  if (( enabled == 1 )); then
+    # An enabled KIMI plane whose gateway lost every live profile takes its own slots out of
+    # readiness, so the runtime check would already have failed. Assert the same contract here:
+    # deliberate enablement must keep at least one live profile.
+    local provider_ready=0
+    for attempt in 1 2 3 4 5 6; do
+      response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
+        --data-urlencode 'query=claude_api_kimi_live_profiles{provider="kimi"} >= 1' \
+        http://127.0.0.1:9090/api/v1/query 2>/dev/null || true)
+      if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
+        >/dev/null 2>&1 <<<"$response"; then
+        provider_ready=1
+        break
+      fi
+      (( attempt == 6 )) || sleep 5
+    done
+    (( provider_ready == 1 )) \
+      || wd_die "KIMI provider is enabled but has no live profile"
+  fi
+
+  envelope=$(curl --noproxy '*' --silent --show-error --max-time 5 \
+    -H 'content-type: application/json' -d '{}' \
+    'http://127.0.0.1:8803/v1/messages' 2>/dev/null || true)
+  jq --exit-status '.error.type == "authentication_error"' \
+    >/dev/null 2>&1 <<<"$envelope" \
+    || wd_die "stable KIMI origin did not answer with the bounded engine envelope"
+  wd_log "backend-only KIMI subscription-pool surface verified (enabled=$enabled)"
+}
+
 run_final_verification_lane() {
   # Verification workers are read-only and independent. The parent joins every selected check and
   # owns quarantine/overall status so one fast failure never abandons another in-flight probe.
@@ -1875,8 +2015,8 @@ run_final_verification_lane() {
 
 run_final_verification_plan() {
   local verification_plan=$1 engine_sha=$2
-  local panel_pid='' routing_pid='' monitoring_pid='' codex_pid='' gemini_pid=''
-  local panel_rc=0 routing_rc=0 monitoring_rc=0 codex_rc=0 gemini_rc=0
+  local panel_pid='' routing_pid='' monitoring_pid='' codex_pid='' gemini_pid='' kimi_pid=''
+  local panel_rc=0 routing_rc=0 monitoring_rc=0 codex_rc=0 gemini_rc=0 kimi_rc=0
 
   if [[ $verification_plan == none ]]; then
     wd_log "no serving runtime changed; final component smokes are already satisfied"
@@ -1908,14 +2048,20 @@ run_final_verification_plan() {
     run_final_verification_lane final_verify_gemini_surface &
     gemini_pid=$!
   fi
+  if wd_verification_plan_has "$verification_plan" kimi; then
+    run_final_verification_lane final_verify_kimi_surface &
+    kimi_pid=$!
+  fi
 
   if [[ -n $panel_pid ]]; then wait "$panel_pid" || panel_rc=$?; fi
   if [[ -n $routing_pid ]]; then wait "$routing_pid" || routing_rc=$?; fi
   if [[ -n $monitoring_pid ]]; then wait "$monitoring_pid" || monitoring_rc=$?; fi
   if [[ -n $codex_pid ]]; then wait "$codex_pid" || codex_rc=$?; fi
   if [[ -n $gemini_pid ]]; then wait "$gemini_pid" || gemini_rc=$?; fi
-  (( panel_rc == 0 && routing_rc == 0 && monitoring_rc == 0 && codex_rc == 0 && gemini_rc == 0 )) \
-    || wd_die "final verification lanes failed (panel=$panel_rc routing=$routing_rc monitoring=$monitoring_rc codex=$codex_rc gemini=$gemini_rc)"
+  if [[ -n $kimi_pid ]]; then wait "$kimi_pid" || kimi_rc=$?; fi
+  (( panel_rc == 0 && routing_rc == 0 && monitoring_rc == 0 && codex_rc == 0 && gemini_rc == 0 \
+      && kimi_rc == 0 )) \
+    || wd_die "final verification lanes failed (panel=$panel_rc routing=$routing_rc monitoring=$monitoring_rc codex=$codex_rc gemini=$gemini_rc kimi=$kimi_rc)"
 }
 
 # Post-admission recovery. Before admission the blue-green controllers already fail closed and

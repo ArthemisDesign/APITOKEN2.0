@@ -537,6 +537,15 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             )
             .fallback(gemini_api)
             .method_not_allowed_fallback(gemini_api),
+        // Backend-only KIMI plane (default-off delivery): no public hostname, no router namespace,
+        // no catalogue. Exact reviewed KIMI aliases dispatch to the KIMI gateway through the same
+        // entry the Anthropic path uses; `forward` fails closed with a bounded 404 for every other
+        // model or path, so this plane can never fall through into the Claude pool it does not run.
+        forward::ProviderMode::Kimi => common
+            .route("/kimi-subs", get(kimi_subs))
+            .route("/v1/messages", post(forward))
+            .fallback(forward)
+            .method_not_allowed_fallback(forward),
     };
     router
         .with_state(state.clone())
@@ -1833,10 +1842,12 @@ async fn metrics(
         .into_response()
 }
 
-/// KIMI is a default-off backend inside the Anthropic plane. Aggregate-only, fixed cardinality:
+/// KIMI is a default-off backend: embedded in the Anthropic plane for dev/tests and served by the
+/// dedicated loopback-only kimi plane in production. Aggregate-only, fixed cardinality:
 /// no per-profile series at all — a profile id, plan, subject, customer or provider error must
-/// never become a label. These series are scraped on the anthropic target, so they deliberately
-/// carry no provider label; the kimi_ name prefix is the discriminator. Zero gauges are always
+/// never become a label. The metric text deliberately carries no provider label; the scrape target
+/// attaches `provider: anthropic` or `provider: kimi`, and the kimi_ name prefix plus the enabled
+/// gate stay the discriminators. Zero gauges are always
 /// published so a disabled plane reads as zero rather than absent; the last-observation
 /// timestamp is the one exception — emitting 0 there would masquerade as a real 1970
 /// observation.
@@ -4886,6 +4897,11 @@ async fn ready(State(state): State<HttpState>) -> Response {
             }
             None => None,
         }
+    } else if state.app.provider == forward::ProviderMode::Kimi {
+        // A present KIMI gateway must prove one live profile and intact delivery persistence
+        // before the slot accepts traffic; `kimi=None` (the argv-pinned default-off plane)
+        // deliberately stays ready to serve the stable disabled envelope, mirroring `codex=None`.
+        state.app.kimi.as_ref().map(|kimi| kimi.readiness().is_ok())
     } else {
         None
     };
@@ -7791,6 +7807,148 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn kimi_plane_serves_common_surface_and_kimi_subs_lattice() {
+        let service = router(
+            provider_test_app(forward::ProviderMode::Kimi),
+            Arc::new(AtomicBool::new(true)),
+        );
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+
+        // The gateway is absent on the argv-pinned default-off plane: readiness stays green so
+        // Caddy health-includes the slot serving the stable disabled envelope.
+        let mut request = Request::builder().uri("/ready").body(Body::empty()).unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body, json!({"ready": true}));
+
+        // /metrics exports the label-free KIMI series as zero gauges on this plane as well.
+        let mut request = Request::builder()
+            .uri("/metrics")
+            .header("x-api-key", "panel-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 2 * 1024 * 1024).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("claude_api_kimi_enabled 0"));
+        assert!(body.contains("claude_api_kimi_live_profiles 0"));
+        assert!(body.contains("claude_api_kimi_calibration_persistence_ok 0"));
+
+        // /kimi-subs is registered on this plane with the same control lattice and answers the
+        // disabled envelope while the gateway is absent.
+        for (credential, expected) in [
+            (None, StatusCode::UNAUTHORIZED),
+            (Some("panel-key"), StatusCode::UNAUTHORIZED),
+            (Some("control-key"), StatusCode::OK),
+            (Some("admin-key"), StatusCode::OK),
+        ] {
+            let mut request = Request::builder().uri("/kimi-subs").body(Body::empty()).unwrap();
+            request.extensions_mut().insert(peer);
+            if let Some(key) = credential {
+                request
+                    .headers_mut()
+                    .insert("x-api-key", key.parse().unwrap());
+            }
+            let response = service.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), expected, "credential {credential:?}");
+            if expected == StatusCode::OK {
+                let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["enabled"], false);
+                assert_eq!(body["profiles"], json!([]));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn kimi_plane_readiness_tracks_gateway_liveness() {
+        // One rostered profile that never authenticated keeps the gateway below its readiness
+        // contract (live >= 1 and intact delivery persistence), mapped to provider_unavailable.
+        let fixture = KimiHttpFixture::new();
+        let mut app = provider_test_app(forward::ProviderMode::Kimi);
+        app.kimi = Some(Arc::new(fixture.gateway()));
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        let mut request = Request::builder().uri("/ready").body(Body::empty()).unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body, json!({"ready": false, "reason": "provider_unavailable"}));
+    }
+
+    #[tokio::test]
+    async fn kimi_plane_messages_fails_closed_for_non_kimi_models() {
+        let service = router(
+            provider_test_app(forward::ProviderMode::Kimi),
+            Arc::new(AtomicBool::new(true)),
+        );
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+
+        // A Claude model on this plane must never reach a Claude pool: bounded static 404.
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/messages")
+            .header("x-api-key", "admin-key")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"claude-sonnet-5","max_tokens":1,"messages":[]}"#,
+            ))
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body,
+            json!({"type": "error", "error": {"type": "not_found_error", "message": "Not Found"}})
+        );
+        let wire = body.to_string();
+        for forbidden in ["kimi", "subscription", "pool", "upstream"] {
+            assert!(!wire.contains(forbidden), "leaked {forbidden}");
+        }
+
+        // An exact KIMI alias with no composed gateway fails closed through the same dispatch the
+        // Anthropic path uses — never a fallthrough into another provider.
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/messages")
+            .header("x-api-key", "admin-key")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"kimi-for-coding","max_tokens":1,"messages":[]}"#,
+            ))
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::from_u16(529).unwrap());
+        let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["type"], "overloaded_error");
+
+        // Other provider planes' routes stay unregistered here and fail closed as well.
+        for path in ["/v1/chat/completions", "/v1/responses"] {
+            let mut request = Request::builder()
+                .method(Method::POST)
+                .uri(path)
+                .header("x-api-key", "admin-key")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap();
+            request.extensions_mut().insert(peer);
+            let response = service.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
     #[test]
     fn kimi_subs_value_serializes_the_exact_quota_window() {
         let fixture = KimiHttpFixture::new();
@@ -8445,6 +8603,7 @@ mod tests {
             forward::ProviderMode::Anthropic,
             forward::ProviderMode::OpenAi,
             forward::ProviderMode::Gemini,
+            forward::ProviderMode::Kimi,
         ] {
             let service = router(provider_test_app(provider), Arc::new(AtomicBool::new(true)));
             let (status, body) = router_auth_request(&service, Some("admin-key")).await;
@@ -8499,6 +8658,7 @@ mod tests {
             forward::ProviderMode::Anthropic,
             forward::ProviderMode::OpenAi,
             forward::ProviderMode::Gemini,
+            forward::ProviderMode::Kimi,
         ] {
             let service = router(provider_test_app(provider), Arc::new(AtomicBool::new(true)));
             let (status, body) =
@@ -8538,6 +8698,7 @@ mod tests {
             forward::ProviderMode::Anthropic,
             forward::ProviderMode::OpenAi,
             forward::ProviderMode::Gemini,
+            forward::ProviderMode::Kimi,
         ] {
             let service = router(provider_test_app(provider), Arc::new(AtomicBool::new(true)));
             let (status, body) =

@@ -945,6 +945,15 @@ pre-byte-only rotation, transparent non-stream/SSE, disconnect drain и
 reserve→delivering→settlement→turn-FIFO. Cold/сломанный roster остаётся отдельным KIMI fail-closed
 path и никогда не проваливается в Claude.
 
+`state.rs` также несёт выделенный `ProviderMode::Kimi` для production delivery-плоскости:
+`serves_kimi()` истинен для `Combined|Anthropic|Kimi`, поэтому композиция gateway в
+`server::config` покрывает и встроенный dev/test backend, и отдельный процесс. В режиме `Kimi`
+общий `/v1/messages` путь диспатчит exact aliases через тот же `KimiGateway::handle`, а сразу за
+этим блоком стоит fail-closed гейт: любая не-KIMI модель получает bounded static 404 и никогда не
+доходит до Claude pool (плоскость его не поднимает). Gateway readiness
+(`live>=1 && persistence_ok`) публикуется как `provider_unavailable` на `/ready` только когда
+gateway составлен; без него слот обслуживает disabled envelope и остаётся ready.
+
 Roster discovery идёт каждые 15 секунд. Неизменённый profile обязан переиспользовать тот же
 runtime `Arc`; новый/изменённый credential проходит `/me` до whole-generation swap. Любая ошибка
 read/decrypt/client/probe и исчезнувший файл сохраняют last-good. Намеренное удаление — только

@@ -587,7 +587,7 @@ wd_final_verification_plan() {
   fi
   if (( engine_changed == 1 || caddy_infrastructure == 1 \
         || broad_infrastructure == 1 )); then
-    checks+=(codex gemini)
+    checks+=(codex gemini kimi)
   fi
 
   if (( ${#checks[@]} == 0 )); then
@@ -605,7 +605,7 @@ wd_verification_plan_has() {
 
 wd_path_is_engine() {
   case "$1" in
-    crates/*|vendor/*|Cargo.toml|Cargo.lock|config.env.example|server.env.example|schema/*|tests/*|tools/refresh-fingerprint.sh|tools/codex-native/*|systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-openai@.service|systemd/claude-api-gemini.service|systemd/claude-api-gemini@.service|systemd/claude-router.service|systemd/claude-router@.service|deploy/router-bluegreen.sh|deploy/router-promote.sh)
+    crates/*|vendor/*|Cargo.toml|Cargo.lock|config.env.example|server.env.example|schema/*|tests/*|tools/refresh-fingerprint.sh|tools/codex-native/*|systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-openai@.service|systemd/claude-api-gemini.service|systemd/claude-api-gemini@.service|systemd/claude-api-kimi.service|systemd/claude-api-kimi@.service|systemd/claude-router.service|systemd/claude-router@.service|deploy/router-bluegreen.sh|deploy/router-promote.sh)
       return 0
       ;;
     *) return 1 ;;
@@ -752,6 +752,7 @@ wd_path_is_systemd_definition() {
     systemd/apitoken-worker.service|systemd/apitoken-content-studio.service|\
     systemd/claude-api.service|systemd/claude-api@.service|systemd/claude-api-anthropic@.service|systemd/claude-api-openai.service|systemd/claude-api-openai@.service|\
     systemd/claude-api-gemini.service|systemd/claude-api-gemini@.service|\
+    systemd/claude-api-kimi.service|systemd/claude-api-kimi@.service|\
     systemd/claude-api-backup.service|\
     systemd/claude-api-backup.timer|systemd/claude-api-fingerprint.service|\
     systemd/claude-api-fingerprint.timer|systemd/apitoken-sales-api.service|\

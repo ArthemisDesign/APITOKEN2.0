@@ -519,9 +519,13 @@ PostgreSQL migrations through the fixed root helper. Phase 2 then starts the ina
 `MainPID`, binary and startup-fixed mode, admits it through Caddy, flips the old slot to 503 readiness
 with `SIGUSR1`, and fully stops its cgroup. It then health-gates the inactive OpenAI slot and, for
 releases carrying `.gemini-bluegreen-v1`, the inactive Gemini slot, proving the same selected binary
-in each startup-fixed provider mode before draining the predecessor.
+in each startup-fixed provider mode before draining the predecessor. Releases carrying
+`.kimi-bluegreen-v1` then health-gate the inactive KIMI slot (8804/8805) the same way; the KIMI
+plane ships default-off — its slots serve the stable disabled envelope behind loopback origin 8803
+until a reviewed unit change pins `CLAUDE_API_KIMI_ENABLED=1`, so the cutover itself never changes
+KIMI behavior.
 On the first split, this order guarantees the old combined process releases every Codex home before
-OpenAI starts; Gemini remains a separate subscription-pool failure domain throughout.
+OpenAI starts; Gemini and KIMI remain separate subscription-pool failure domains throughout.
 
 Phase 3 rolls the unified stateless router independently on fixed ports 8800/8801. The controller
 starts the inactive slot, proves direct readiness and the exact selected `claude-router` executable,
@@ -535,6 +539,7 @@ on 8798 as its old anchor; infrastructure installation never restarts it.
 curl -fsS http://127.0.0.1:8790/ready
 curl -fsS http://127.0.0.1:8792/ready
 curl -fsS http://127.0.0.1:8794/ready
+curl -fsS http://127.0.0.1:8803/ready
 curl -fsS http://127.0.0.1:8802/ready
 curl -fsS https://api.apitoken.sale/health
 openai_probe=$(mktemp)
@@ -555,12 +560,15 @@ systemctl list-units 'claude-api-anthropic@*.service' 'claude-api@*.service'
 systemctl list-unit-files 'claude-api-anthropic@*.service' 'claude-api@*.service'
 systemctl status 'claude-api-openai@*.service'
 systemctl status 'claude-api-gemini@*.service'
+systemctl status 'claude-api-kimi@*.service'
 systemctl status 'claude-router@*.service'
 ```
 
-All provider slots alternate. Consumers must never hard-code 8787/8788, 8793/8797, or 8795/8799;
-commerce always uses `http://127.0.0.1:8790`. OpenAI and Gemini clients use only their public
-hostnames; stable origins 8792/8794 and every runtime slot remain loopback-only.
+All provider slots alternate. Consumers must never hard-code 8787/8788, 8793/8797, 8795/8799, or
+8804/8805; commerce always uses `http://127.0.0.1:8790`. OpenAI and Gemini clients use only their public
+hostnames; stable origins 8792/8794 and every runtime slot remain loopback-only. KIMI is
+backend-only: no public hostname or router namespace, and its stable origin 8803 with slots
+8804/8805 stays loopback-only as well.
 Provision paid Antigravity OAuth profiles first as documented in `docs/engine/GEMINI_PROVIDER.md`.
 
 ## Manual recovery: deploy the commerce API
@@ -672,11 +680,12 @@ systemctl is-active caddy
 sudo ss -ltnH 'sport = :8790'
 sudo ss -ltnH 'sport = :8792'
 sudo ss -ltnH 'sport = :8794'
+sudo ss -ltnH 'sport = :8803'
 ```
 
 The installer extracts the existing host-only bcrypt/control-key lines without printing them,
 validates the rendered candidate, saves a timestamped rollback copy, and performs a Caddy reload
-rather than stop/start. Ports 8790, 8792, and 8794 must be bound to `127.0.0.1`, never `*`.
+rather than stop/start. Ports 8790, 8792, 8794, and 8803 must be bound to `127.0.0.1`, never `*`.
 
 Normal release selection also does not reinstall systemd templates. When a reviewed template itself
 changes, verify and install it before the matching blue-green cycle; `daemon-reload` does not replace
@@ -686,7 +695,8 @@ the already-running process:
 sudo systemd-analyze verify systemd/claude-api.service systemd/claude-api@.service \
   systemd/claude-api-anthropic@.service systemd/claude-api-openai.service \
   systemd/claude-api-openai@.service systemd/claude-api-gemini.service \
-  systemd/claude-api-gemini@.service systemd/apitoken-api@.service
+  systemd/claude-api-gemini@.service systemd/claude-api-kimi.service \
+  systemd/claude-api-kimi@.service systemd/apitoken-api@.service
 sudo install -o root -g root -m 0644 systemd/claude-api.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/claude-api@.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/claude-api-anthropic@.service /etc/systemd/system/
@@ -694,8 +704,11 @@ sudo install -o root -g root -m 0644 systemd/claude-api-openai.service /etc/syst
 sudo install -o root -g root -m 0644 systemd/claude-api-openai@.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/claude-api-gemini.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/claude-api-gemini@.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 systemd/claude-api-kimi.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 systemd/claude-api-kimi@.service /etc/systemd/system/
 sudo install -d -o deploy -g deploy -m 0700 \
-  /srv/claude-api/data/gemini /srv/claude-api/data/gemini/credentials
+  /srv/claude-api/data/gemini /srv/claude-api/data/gemini/credentials \
+  /srv/claude-api/data/kimi /srv/claude-api/data/kimi/credentials
 sudo install -o root -g root -m 0644 systemd/apitoken-api@.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 systemd/apitoken-tmpfiles.conf /etc/tmpfiles.d/apitoken.conf
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/apitoken.conf
@@ -729,6 +742,9 @@ deploy/api-bluegreen.sh
 
 An explicit existing SHA may follow the selector. Rollback changes links and slots but never reverses
 a database migration. A release whose migration breaks the prior binary is not rollout-safe.
+Rolling back to a release predating the KIMI plane additionally stops and disables every
+`claude-api-kimi` incarnation (the 8804 singleton anchor and both slot units), mirroring the
+pre-Gemini rollback branch; the plane's default-off argv pin means this never interrupts traffic.
 
 ### Automatic post-admission rollback
 
@@ -799,6 +815,7 @@ sudo deploy/configure-engine-control-url.sh --check
 curl -fsS http://127.0.0.1:8790/ready
 curl -fsS http://127.0.0.1:8792/ready
 curl -fsS http://127.0.0.1:8794/ready
+curl -fsS http://127.0.0.1:8803/ready
 curl -fsS https://api.apitoken.sale/health
 openai_probe=$(mktemp)
 openai_status=$(curl -sS -o "$openai_probe" -w '%{http_code}' \

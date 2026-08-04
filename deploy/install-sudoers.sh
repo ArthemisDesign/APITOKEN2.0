@@ -184,6 +184,24 @@ require_permitted 'Gemini reverse old-slot async stop' \
   /usr/bin/systemctl --no-block stop claude-api-gemini@8799.service
 require_permitted 'Gemini slot drain signal' \
   /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-gemini@8795.service
+require_permitted 'KIMI provider restart' /usr/bin/systemctl restart claude-api-kimi.service
+require_permitted 'KIMI provider stop' /usr/bin/systemctl stop claude-api-kimi.service
+require_permitted 'KIMI provider enable' /usr/bin/systemctl enable claude-api-kimi.service
+require_permitted 'KIMI provider async stop' \
+  /usr/bin/systemctl --no-block stop claude-api-kimi.service
+require_permitted 'KIMI provider drain signal' \
+  /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-kimi.service
+require_permitted 'KIMI target start' /usr/bin/systemctl start claude-api-kimi@8805.service
+require_permitted 'KIMI old-slot stop' /usr/bin/systemctl stop claude-api-kimi@8804.service
+require_permitted 'KIMI old-slot async stop' \
+  /usr/bin/systemctl --no-block stop claude-api-kimi@8804.service
+require_permitted 'KIMI target enable' /usr/bin/systemctl enable claude-api-kimi@8805.service
+require_permitted 'KIMI reverse target start' /usr/bin/systemctl start claude-api-kimi@8804.service
+require_permitted 'KIMI reverse old-slot stop' /usr/bin/systemctl stop claude-api-kimi@8805.service
+require_permitted 'KIMI reverse old-slot async stop' \
+  /usr/bin/systemctl --no-block stop claude-api-kimi@8805.service
+require_permitted 'KIMI slot drain signal' \
+  /usr/bin/systemctl kill --kill-whom=main -s SIGUSR1 claude-api-kimi@8804.service
 require_permitted 'router target start' /usr/bin/systemctl start claude-router@8801.service
 require_permitted 'router predecessor stop' /usr/bin/systemctl stop claude-router@8800.service
 require_permitted 'router target enable' /usr/bin/systemctl enable claude-router@8801.service
@@ -228,6 +246,9 @@ require_permitted 'OpenAI slot-template probe' \
 require_permitted 'Gemini unit probe' /usr/bin/test -f /etc/systemd/system/claude-api-gemini.service
 require_permitted 'Gemini slot-template probe' \
   /usr/bin/test -f /etc/systemd/system/claude-api-gemini@.service
+require_permitted 'KIMI unit probe' /usr/bin/test -f /etc/systemd/system/claude-api-kimi.service
+require_permitted 'KIMI slot-template probe' \
+  /usr/bin/test -f /etc/systemd/system/claude-api-kimi@.service
 require_permitted 'Anthropic unit probe' \
   /usr/bin/test -f /etc/systemd/system/claude-api-anthropic@.service
 require_permitted 'router slot-template probe' \

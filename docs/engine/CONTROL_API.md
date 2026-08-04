@@ -166,8 +166,10 @@ Antigravity effort buckets. `remaining_amount` сериализуется decima
 workload-dollar blend. Профиль содержит только bounded email hint (четыре символа local-part без
 домена); full email, subject, project, private tier, proxy и OAuth не сериализуются.
 
-`GET /kimi-subs` — read-only operational projection backend-only KIMI плоскости, которая живёт
-внутри Anthropic runtime (тот же origin 8790, отдельного процесса нет). Гейт — control key
+`GET /kimi-subs` — read-only operational projection backend-only KIMI плоскости. Production
+обслуживает её выделенная default-off KIMI plane через стабильный loopback origin 8803
+(`claude-api-kimi@8804/8805`); встроенный в Anthropic runtime gateway остаётся dev/test-only.
+Гейт — control key
 (`control_authed`, как `/codex-subs`; panel key не подходит). На процессе без плоскости ответ —
 disabled envelope `{"now": <unix>, "enabled": false, "profiles": []}`. Enabled envelope публикует
 `delivery` (pending/dropped/persistence bounded FIFO), fleet counts (total/live/available

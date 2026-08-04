@@ -59,7 +59,8 @@
 | Плоскость: last-good atomic roster reload + server discovery loop | `crates/forward/src/kimi/{gateway,roster}.rs`, `crates/server` | `31f27baa` |
 | Плоскость: `/usages` → FIFO/spend → immutable observation/CAS → steering | `crates/forward/src/{billing,kimi/**}`, `crates/server` | `23e7baba` |
 | Auth Bot: ввод прокси текстом на `km_proxy`, каноникализация до `km_ready`, карточка готовности на buyer/IPRoyal путях | `crates/authbot/src/bot.rs` | `3089ce72` |
-| Observability: extended operational status, admin-only `GET /kimi-subs`, aggregate метрики, алерты + runbook + consistency-тест | `crates/{forward,server}`, `observability/**`, `deploy/**`, `docs/**` | текущий checkpoint |
+| Observability: extended operational status, admin-only `GET /kimi-subs`, aggregate метрики, алерты + runbook + consistency-тест | `crates/{forward,server}`, `observability/**`, `deploy/**`, `docs/**` | `54db2afc` |
+| Blue-green/default-off delivery plane: `ProviderMode::Kimi`, слоты 8804/8805 + origin 8803, capability markers, rollback-ветка, scrape `provider: kimi`, fail-closed `/v1/messages` | `crates/{forward,server}`, `systemd/claude-api-kimi{,@}.service`, `deploy/**`, `observability/**`, `docs/**` | текущий checkpoint |
 
 ## Открытые швы (выглядит подключённым, не работает)
 
@@ -83,8 +84,8 @@
 
 ## Следующее действие
 
-**Blue-green/default-off KIMI delivery plane:** systemd blue-green wiring с default-off
-secret/config и rollback gate, чтобы плоскость могла безопасно включаться и выкатываться.
+**Безопасный live calibration runner:** engine attribution support + `tools/kimi_calibration`
+(dry-run по умолчанию, целочисленный бюджет, точная атрибуция по immutable request id).
 
 **Процессные заметки (обе уже стоили потерянного мёржа):**
 
@@ -106,10 +107,7 @@ secret/config и rollback gate, чтобы плоскость могла без�
 
 ## Очередь после этого
 
-1. Blue-green/deploy wiring с default-off secret/config и rollback gate.
-2. `tools/kimi_calibration/run_live.py` — dry-run по умолчанию, целочисленный бюджет, точная
-   атрибуция по immutable request id.
-3. Live-матрица на owned Kimi Code subscription; без неё generation не запускается.
+1. Live-матрица на owned Kimi Code subscription; без неё generation не запускается.
 
 ## Заблокировано человеком
 

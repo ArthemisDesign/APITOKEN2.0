@@ -10,8 +10,10 @@ usage() {
   printf '%s\n' \
     'Usage: engine-bluegreen.sh [--target-port 8787|8788] [--timeout SECONDS] [--dry-run]' \
     '' \
-    'Health-gated provider cutover. Admit Anthropic, OpenAI and Gemini targets before draining' \
-    'their old slots; fixed-provider rosters remain sealed and shared across each handoff.'
+    'Health-gated provider cutover. Admit Anthropic, OpenAI, Gemini and KIMI targets before' \
+    'draining their old slots; fixed-provider rosters remain sealed and shared across each' \
+    'handoff. The KIMI plane stays default-off: its slots serve the disabled envelope until a' \
+    'reviewed unit change enables the provider.'
 }
 
 DRY_RUN=0
@@ -27,13 +29,17 @@ CONTROL_READY_URL=${ENGINE_CONTROL_READY_URL:-http://127.0.0.1:8790/ready}
 LEGACY_UNIT=claude-api.service
 OPENAI_LEGACY_UNIT=claude-api-openai.service
 GEMINI_LEGACY_UNIT=claude-api-gemini.service
+KIMI_LEGACY_UNIT=claude-api-kimi.service
 PROVIDER_CAPABILITY_MARKER=.provider-runtime-v1
 GEMINI_CAPABILITY_MARKER=.gemini-provider-v1
 GEMINI_BLUEGREEN_MARKER=.gemini-bluegreen-v1
+KIMI_CAPABILITY_MARKER=.kimi-provider-v1
+KIMI_BLUEGREEN_MARKER=.kimi-bluegreen-v1
 OPENAI_CAPABILITY_MARKER=.openai-bluegreen-v1
 OPENAI_STABLE_READY_URL=${OPENAI_STABLE_READY_URL:-http://127.0.0.1:8792/ready}
 ENGINE_MIGRATION_HELPER=/usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh
 GEMINI_STABLE_READY_URL=${GEMINI_STABLE_READY_URL:-http://127.0.0.1:8794/ready}
+KIMI_STABLE_READY_URL=${KIMI_STABLE_READY_URL:-http://127.0.0.1:8803/ready}
 CURRENT_RELEASE=
 PREVIOUS_RELEASE=
 ACTIVE_PORT=
@@ -70,6 +76,19 @@ GEMINI_OLD_SIGNALLED=0
 GEMINI_OLD_STOPPED=0
 GEMINI_LEGACY_TARGET=0
 GEMINI_COMMITTED=0
+KIMI_SUPPORTED=0
+KIMI_SHARED_SUPPORTED=0
+KIMI_PREVIOUS_SHARED_SUPPORTED=0
+KIMI_ACTIVE_PORT=
+KIMI_ACTIVE_UNIT=
+KIMI_TARGET_PORT=
+KIMI_TARGET_UNIT=
+KIMI_TARGET_STARTED=0
+KIMI_TARGET_PREEXISTING=0
+KIMI_OLD_SIGNALLED=0
+KIMI_OLD_STOPPED=0
+KIMI_LEGACY_TARGET=0
+KIMI_COMMITTED=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -296,6 +315,86 @@ stable_gemini_ready() {
   curl --noproxy '*' --fail --silent --show-error --max-time 2 \
     "$GEMINI_STABLE_READY_URL" >/dev/null 2>&1
 }
+kimi_other_port() { [[ $1 == 8804 ]] && printf '8805\n' || printf '8804\n'; }
+kimi_slot_unit() { printf 'claude-api-kimi@%s.service\n' "$1"; }
+kimi_slot_url() { printf 'http://127.0.0.1:%s/ready\n' "$1"; }
+kimi_ready_port() {
+  local port=$1 status
+  status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+    "$(kimi_slot_url "$port")" 2>/dev/null) || return 1
+  [[ $status == 200 ]]
+}
+kimi_draining_port() {
+  local port=$1 status
+  status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+    "$(kimi_slot_url "$port")" 2>/dev/null) || return 1
+  [[ $status == 503 ]]
+}
+kimi_slot_retired() {
+  local unit=$1 port=$2 state
+  systemctl_raw is-enabled --quiet "$unit" >/dev/null 2>&1 && return 1
+  kimi_ready_port "$port" && return 1
+  state=$(systemctl_show_value "$unit" ActiveState) || return 1
+  case "$state" in
+    deactivating) return 0 ;;
+    inactive|failed) unit_stopped "$unit" ;;
+    *) return 1 ;;
+  esac
+}
+wait_kimi_retirement_ack() {
+  local unit=$1 port=$2 attempt
+  if [[ $DRY_RUN == 1 ]]; then return 0; fi
+  for attempt in $(seq 1 20); do
+    kimi_slot_retired "$unit" "$port" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+kimi_slot_serves_current() {
+  local port=$1 unit
+  unit=$(kimi_slot_unit "$port")
+  unit_release_binding_ok engine "$unit" "$ENGINE_RELEASE_ROOT" "$CURRENT_RELEASE" kimi \
+    && kimi_ready_port "$port"
+}
+kimi_slot_serves_release() {
+  local port=$1 release=$2 unit pid executable
+  unit=$(kimi_slot_unit "$port")
+  unit_active "$unit" || return 1
+  pid=$(systemctl_show_value "$unit" MainPID) || return 1
+  [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+  executable=$(realpath -- "/proc/$pid/exe" 2>/dev/null) || return 1
+  [[ $executable == "$release/claude-api" ]] || return 1
+  process_environment_has "$pid" 'CLAUDE_API_PROVIDER=kimi' || return 1
+  kimi_ready_port "$port"
+}
+kimi_legacy_ready() {
+  unit_active "$KIMI_LEGACY_UNIT" && kimi_ready_port 8804
+}
+kimi_legacy_serves_current() {
+  unit_release_binding_ok engine "$KIMI_LEGACY_UNIT" "$ENGINE_RELEASE_ROOT" \
+    "$CURRENT_RELEASE" kimi && kimi_ready_port 8804
+}
+kimi_target_serves_current() {
+  if [[ $KIMI_LEGACY_TARGET == 1 ]]; then
+    kimi_legacy_serves_current
+  else
+    kimi_slot_serves_current "$KIMI_TARGET_PORT"
+  fi
+}
+kimi_unit_for_ready_port() {
+  local port=$1 unit
+  unit=$(kimi_slot_unit "$port")
+  if unit_active "$unit" && kimi_ready_port "$port"; then printf '%s\n' "$unit"; return 0; fi
+  if [[ $port == 8804 ]] && kimi_legacy_ready; then
+    printf '%s\n' "$KIMI_LEGACY_UNIT"
+    return 0
+  fi
+  return 1
+}
+stable_kimi_ready() {
+  curl --noproxy '*' --fail --silent --show-error --max-time 2 \
+    "$KIMI_STABLE_READY_URL" >/dev/null 2>&1
+}
 gemini_provider_envelope() {
   local status body_file
   body_file=$(mktemp)
@@ -357,6 +456,20 @@ wait_gemini_target() {
     sleep 1
   done
   journalctl -u "$GEMINI_TARGET_UNIT" -n 60 --no-pager >&2 || true
+  return 1
+}
+
+wait_kimi_target() {
+  local deadline=$(( $(date +%s) + READINESS_TIMEOUT ))
+  if [[ $DRY_RUN == 1 ]]; then
+    log "dry-run: would require $KIMI_TARGET_UNIT on current release and HTTP 200 at $(kimi_slot_url "$KIMI_TARGET_PORT")"
+    return 0
+  fi
+  while (( $(date +%s) < deadline )); do
+    if kimi_target_serves_current; then return 0; fi
+    sleep 1
+  done
+  journalctl -u "$KIMI_TARGET_UNIT" -n 60 --no-pager >&2 || true
   return 1
 }
 
@@ -517,6 +630,81 @@ recover() {
       fi
     fi
   fi
+  if [[ $KIMI_COMMITTED == 0 ]]; then
+    if [[ $KIMI_LEGACY_TARGET == 1 && $KIMI_TARGET_STARTED == 1 ]]; then
+      if [[ $KIMI_OLD_SIGNALLED == 1 ]]; then
+        warn 'recovery is completing the one-way legacy KIMI handoff after the slot was drained'
+        if ! kimi_legacy_serves_current; then
+          systemctl_raw restart "$KIMI_LEGACY_UNIT" || failed=1
+          for _ in $(seq 1 "$READINESS_TIMEOUT"); do
+            kimi_legacy_serves_current && break
+            sleep 1
+          done
+        fi
+        if kimi_legacy_serves_current; then
+          if [[ -n $KIMI_ACTIVE_UNIT ]]; then
+            systemctl_raw stop "$KIMI_ACTIVE_UNIT" || failed=1
+            systemctl_raw disable "$KIMI_ACTIVE_UNIT" || failed=1
+          fi
+          if [[ -z $KIMI_ACTIVE_UNIT ]] || unit_stopped "$KIMI_ACTIVE_UNIT"; then
+            systemctl_raw enable "$KIMI_LEGACY_UNIT" || failed=1
+            systemctl_raw disable "$(kimi_slot_unit 8804)" || failed=1
+            systemctl_raw disable "$(kimi_slot_unit 8805)" || failed=1
+          else
+            failed=1
+            warn 'KIMI slot did not stop; both generations were retained'
+          fi
+        else
+          failed=1
+          warn 'legacy KIMI target did not recover; preserving the slot generation'
+        fi
+      else
+        warn 'recovery is releasing the unadmitted legacy KIMI target back to the slot generation'
+        systemctl_raw stop "$KIMI_LEGACY_UNIT" || failed=1
+      fi
+    elif [[ $KIMI_TARGET_STARTED == 1 && $KIMI_OLD_STOPPED == 1 ]] \
+        && kimi_target_serves_current; then
+      warn "recovery commits verified KIMI target $KIMI_TARGET_UNIT after old-slot drain"
+      systemctl_raw enable "$KIMI_TARGET_UNIT" || failed=1
+      if [[ -n $KIMI_ACTIVE_UNIT && $KIMI_ACTIVE_UNIT != "$KIMI_TARGET_UNIT" ]]; then
+        systemctl_raw disable "$KIMI_ACTIVE_UNIT" || failed=1
+      fi
+      systemctl_raw disable "$KIMI_LEGACY_UNIT" || failed=1
+    else
+      local kimi_old_recovered=1
+      if [[ $KIMI_TARGET_STARTED == 1 && -n $KIMI_ACTIVE_UNIT \
+          && $KIMI_ACTIVE_UNIT != "$KIMI_TARGET_UNIT" \
+          && $KIMI_OLD_SIGNALLED == 1 ]]; then
+        kimi_old_recovered=0
+        warn "recovery restoring the previous KIMI runtime before releasing the target"
+        systemctl_raw restart "$KIMI_ACTIVE_UNIT" || failed=1
+        for _ in $(seq 1 "$READINESS_TIMEOUT"); do
+          kimi_ready_port "$KIMI_ACTIVE_PORT" && break
+          sleep 1
+        done
+        if kimi_ready_port "$KIMI_ACTIVE_PORT"; then
+          kimi_old_recovered=1
+        else
+          failed=1
+          warn "previous KIMI runtime is not ready; retaining the target to preserve availability"
+        fi
+      fi
+      if [[ $kimi_old_recovered == 1 && $KIMI_TARGET_STARTED == 1 ]]; then
+        if [[ $KIMI_TARGET_PREEXISTING == 1 ]]; then
+          warn "recovery retains the pre-existing current KIMI target $KIMI_TARGET_UNIT"
+        elif [[ $KIMI_OLD_SIGNALLED == 1 \
+            && $KIMI_ACTIVE_UNIT == "$KIMI_LEGACY_UNIT" ]] \
+            && kimi_target_serves_current; then
+          warn "recovery retains verified KIMI target $KIMI_TARGET_UNIT as the release-rollback anchor"
+          systemctl_raw disable "$KIMI_TARGET_UNIT" || failed=1
+        else
+          warn "recovery stopping the unverified KIMI target $KIMI_TARGET_UNIT"
+          systemctl_raw stop "$KIMI_TARGET_UNIT" || failed=1
+          systemctl_raw disable "$KIMI_TARGET_UNIT" || failed=1
+        fi
+      fi
+    fi
+  fi
   if [[ $TARGET_COMMITTED == 1 ]] && slot_serves_current "$TARGET_PORT"; then
     warn "recovery retains the verified target $TARGET_UNIT"
     if [[ -n $ACTIVE_UNIT && $ACTIVE_UNIT != "$TARGET_UNIT" ]]; then
@@ -567,6 +755,9 @@ validate_service_unit "$(openai_slot_unit 8797)"
 validate_service_unit "$GEMINI_LEGACY_UNIT"
 validate_service_unit "$(gemini_slot_unit 8795)"
 validate_service_unit "$(gemini_slot_unit 8799)"
+validate_service_unit "$KIMI_LEGACY_UNIT"
+validate_service_unit "$(kimi_slot_unit 8804)"
+validate_service_unit "$(kimi_slot_unit 8805)"
 validate_service_unit "$(slot_unit 8787)"
 validate_service_unit "$(slot_unit 8788)"
 validate_service_unit "$(legacy_slot_unit 8787)"
@@ -590,6 +781,10 @@ privileged_command test -f "/etc/systemd/system/$GEMINI_LEGACY_UNIT" \
   || die "legacy Gemini provider unit is not installed"
 privileged_command test -f /etc/systemd/system/claude-api-gemini@.service \
   || die "Gemini slot template is not installed"
+privileged_command test -f "/etc/systemd/system/$KIMI_LEGACY_UNIT" \
+  || die "legacy KIMI provider unit is not installed"
+privileged_command test -f /etc/systemd/system/claude-api-kimi@.service \
+  || die "KIMI slot template is not installed"
 privileged_command caddy validate --adapter caddyfile --config "$CADDY_CONFIG" >/dev/null
 privileged_command grep -q '127.0.0.1:8788' "$CADDY_CONFIG" \
   || die "Caddy is not configured with the 8788 engine slot"
@@ -639,6 +834,25 @@ if [[ -f "$CURRENT_RELEASE/$GEMINI_CAPABILITY_MARKER" \
   privileged_command grep -q '127.0.0.1:8799' "$CADDY_CONFIG" \
     || die "Caddy is not configured with the Gemini slot on 127.0.0.1:8799"
 fi
+if [[ -f "$CURRENT_RELEASE/$KIMI_CAPABILITY_MARKER" \
+    && ! -L "$CURRENT_RELEASE/$KIMI_CAPABILITY_MARKER" \
+    && $(<"$CURRENT_RELEASE/$KIMI_CAPABILITY_MARKER") == kimi-provider-v1 ]]; then
+  KIMI_SUPPORTED=1
+  if [[ -e "$CURRENT_RELEASE/$KIMI_BLUEGREEN_MARKER" \
+      || -L "$CURRENT_RELEASE/$KIMI_BLUEGREEN_MARKER" ]]; then
+    [[ -f "$CURRENT_RELEASE/$KIMI_BLUEGREEN_MARKER" \
+        && ! -L "$CURRENT_RELEASE/$KIMI_BLUEGREEN_MARKER" \
+        && $(<"$CURRENT_RELEASE/$KIMI_BLUEGREEN_MARKER") == kimi-bluegreen-v1 ]] \
+      || die "current engine release has an invalid KIMI blue-green capability marker"
+    KIMI_SHARED_SUPPORTED=1
+  fi
+  privileged_command grep -q '127.0.0.1:8803' "$CADDY_CONFIG" \
+    || die "Caddy is missing the stable KIMI listener on 127.0.0.1:8803"
+  privileged_command grep -q '127.0.0.1:8804' "$CADDY_CONFIG" \
+    || die "Caddy is not configured with the KIMI slot on 127.0.0.1:8804"
+  privileged_command grep -q '127.0.0.1:8805' "$CADDY_CONFIG" \
+    || die "Caddy is not configured with the KIMI slot on 127.0.0.1:8805"
+fi
 PREVIOUS_RELEASE=$(release_path_from_link "$ENGINE_RELEASE_ROOT" "$ENGINE_RELEASE_ROOT/previous") \
   || die "previous engine release is required for provider cutover rollback"
 validate_release_marker "$PREVIOUS_RELEASE" "$(basename -- "$PREVIOUS_RELEASE")"
@@ -663,12 +877,24 @@ if [[ -e "$PREVIOUS_RELEASE/$GEMINI_BLUEGREEN_MARKER" \
     || die "previous engine release has an invalid Gemini blue-green capability marker"
   GEMINI_PREVIOUS_SHARED_SUPPORTED=1
 fi
+if [[ -e "$PREVIOUS_RELEASE/$KIMI_BLUEGREEN_MARKER" \
+    || -L "$PREVIOUS_RELEASE/$KIMI_BLUEGREEN_MARKER" ]]; then
+  [[ -f "$PREVIOUS_RELEASE/$KIMI_BLUEGREEN_MARKER" \
+      && ! -L "$PREVIOUS_RELEASE/$KIMI_BLUEGREEN_MARKER" \
+      && $(<"$PREVIOUS_RELEASE/$KIMI_BLUEGREEN_MARKER") == kimi-bluegreen-v1 ]] \
+    || die "previous engine release has an invalid KIMI blue-green capability marker"
+  KIMI_PREVIOUS_SHARED_SUPPORTED=1
+fi
 if [[ $OPENAI_SHARED_SUPPORTED == 0 && $OPENAI_PREVIOUS_SHARED_SUPPORTED == 0 ]]; then
   die 'legacy OpenAI rollback requires a previous shared-daemon release as its availability anchor'
 fi
 if [[ $GEMINI_SUPPORTED == 1 && $GEMINI_SHARED_SUPPORTED == 0 \
     && $GEMINI_PREVIOUS_SHARED_SUPPORTED == 0 ]]; then
   die 'legacy Gemini rollback requires a previous blue-green release as its availability anchor'
+fi
+if [[ $KIMI_SUPPORTED == 1 && $KIMI_SHARED_SUPPORTED == 0 \
+    && $KIMI_PREVIOUS_SHARED_SUPPORTED == 0 ]]; then
+  die 'legacy KIMI rollback requires a previous blue-green release as its availability anchor'
 fi
 
 if [[ $DRY_RUN == 1 ]]; then
@@ -1117,6 +1343,175 @@ else
   done
 fi
 
+# KIMI mirrors the Gemini two-slot cutover. The plane ships default-off: its slots serve the
+# stable disabled envelope, so readiness alone gates admission exactly like the Gemini fleet;
+# deliberate enablement is a later reviewed unit change and never part of a release cutover.
+if [[ $KIMI_SUPPORTED == 1 ]]; then
+  if [[ $KIMI_SHARED_SUPPORTED == 0 ]]; then
+    KIMI_LEGACY_TARGET=1
+    KIMI_TARGET_PORT=8804
+    KIMI_TARGET_UNIT=$KIMI_LEGACY_UNIT
+    KIMI_TARGET_STARTED=1
+    if kimi_slot_serves_release 8805 "$PREVIOUS_RELEASE"; then
+      KIMI_ACTIVE_PORT=8805
+      KIMI_ACTIVE_UNIT=$(kimi_slot_unit 8805)
+    elif ! kimi_legacy_serves_current; then
+      post_admission_die 'legacy KIMI rollback has neither its previous slot anchor nor a ready target'
+    fi
+    if unit_active "$(kimi_slot_unit 8804)"; then
+      post_admission_die 'KIMI slot 8804 blocks the rollback singleton port'
+    fi
+  else
+    if kimi_legacy_ready; then
+      # First transition from the singleton: the alternate port is admitted before the legacy
+      # process is touched, so installing the slot topology itself is zero-downtime.
+      KIMI_ACTIVE_PORT=8804
+      KIMI_ACTIVE_UNIT=$KIMI_LEGACY_UNIT
+      KIMI_TARGET_PORT=8805
+    else
+      if unit_active "$KIMI_LEGACY_UNIT"; then
+        warn "stopping unready legacy KIMI runtime before slot reconciliation"
+        systemctl_command stop "$KIMI_LEGACY_UNIT" \
+          || post_admission_die "could not stop unready legacy KIMI runtime"
+      fi
+      KIMI_READY_8804=0; KIMI_READY_8805=0
+      KIMI_CURRENT_8804=0; KIMI_CURRENT_8805=0
+      kimi_unit_for_ready_port 8804 >/dev/null && KIMI_READY_8804=1
+      kimi_unit_for_ready_port 8805 >/dev/null && KIMI_READY_8805=1
+      kimi_slot_serves_current 8804 && KIMI_CURRENT_8804=1
+      kimi_slot_serves_current 8805 && KIMI_CURRENT_8805=1
+      case "$KIMI_CURRENT_8804:$KIMI_CURRENT_8805" in
+        1:0)
+          KIMI_TARGET_PORT=8804
+          if (( KIMI_READY_8805 == 1 )); then
+            KIMI_ACTIVE_PORT=8805; KIMI_ACTIVE_UNIT=$(kimi_unit_for_ready_port 8805)
+          fi
+          log 'KIMI current release already serves on 8804; preserving it without another cutover'
+          ;;
+        0:1)
+          KIMI_TARGET_PORT=8805
+          if (( KIMI_READY_8804 == 1 )); then
+            KIMI_ACTIVE_PORT=8804; KIMI_ACTIVE_UNIT=$(kimi_unit_for_ready_port 8804)
+          fi
+          log 'KIMI current release already serves on 8805; preserving it without another cutover'
+          ;;
+        1:1)
+          if systemctl_raw is-enabled --quiet "$(kimi_slot_unit 8805)"; then
+            KIMI_TARGET_PORT=8805; KIMI_ACTIVE_PORT=8804
+            KIMI_ACTIVE_UNIT=$(kimi_unit_for_ready_port 8804)
+          else
+            KIMI_TARGET_PORT=8804; KIMI_ACTIVE_PORT=8805
+            KIMI_ACTIVE_UNIT=$(kimi_unit_for_ready_port 8805)
+          fi
+          ;;
+        0:0)
+          case "$KIMI_READY_8804:$KIMI_READY_8805" in
+            1:0) KIMI_ACTIVE_PORT=8804; KIMI_ACTIVE_UNIT=$(kimi_unit_for_ready_port 8804); KIMI_TARGET_PORT=8805 ;;
+            0:1) KIMI_ACTIVE_PORT=8805; KIMI_ACTIVE_UNIT=$(kimi_unit_for_ready_port 8805); KIMI_TARGET_PORT=8804 ;;
+            0:0) KIMI_TARGET_PORT=8804 ;;
+            1:1) KIMI_TARGET_PORT=8805; KIMI_ACTIVE_PORT=8804; KIMI_ACTIVE_UNIT=$(kimi_unit_for_ready_port 8804) ;;
+          esac
+          ;;
+      esac
+    fi
+    KIMI_TARGET_UNIT=$(kimi_slot_unit "$KIMI_TARGET_PORT")
+  fi
+  log "KIMI cutover decision: ${KIMI_ACTIVE_UNIT:-no ready old unit} -> $KIMI_TARGET_UNIT"
+  if kimi_target_serves_current; then KIMI_TARGET_PREEXISTING=1; fi
+  KIMI_TARGET_STARTED=1
+  if ! kimi_target_serves_current; then
+    systemctl_command stop "$KIMI_TARGET_UNIT"
+    systemctl_command start "$KIMI_TARGET_UNIT" \
+      || post_admission_die "could not start KIMI target $KIMI_TARGET_UNIT"
+  fi
+  wait_kimi_target \
+    || post_admission_die "$KIMI_TARGET_UNIT did not become ready on current release"
+  log "waiting ${HEALTH_WINDOW_SECONDS}s for Caddy to health-include KIMI slot $KIMI_TARGET_PORT"
+  run sleep "$HEALTH_WINDOW_SECONDS"
+  if [[ $DRY_RUN == 0 ]]; then
+    kimi_target_serves_current \
+      || post_admission_die "KIMI target lost readiness during Caddy inclusion"
+    stable_kimi_ready \
+      || post_admission_die "stable KIMI origin lost readiness while admitting the target"
+  fi
+  systemctl_command enable "$KIMI_TARGET_UNIT" \
+    || post_admission_die "could not enable KIMI target $KIMI_TARGET_UNIT"
+  if [[ $DRY_RUN == 0 ]]; then
+    systemctl_raw is-enabled --quiet "$KIMI_TARGET_UNIT" \
+      || post_admission_die "KIMI target is not enabled before old-slot drain"
+  fi
+
+  if [[ -n $KIMI_ACTIVE_UNIT && $KIMI_ACTIVE_UNIT != "$KIMI_TARGET_UNIT" ]]; then
+    log "pre-draining $KIMI_ACTIVE_UNIT with SIGUSR1"
+    systemctl_command kill --kill-whom=main -s SIGUSR1 "$KIMI_ACTIVE_UNIT" \
+      || post_admission_die "could not pre-drain $KIMI_ACTIVE_UNIT"
+    KIMI_OLD_SIGNALLED=1
+    run sleep "$PRE_DRAIN_SECONDS"
+    if [[ $DRY_RUN == 0 ]]; then
+      kimi_draining_port "$KIMI_ACTIVE_PORT" \
+        || post_admission_die "$KIMI_ACTIVE_UNIT did not flip readiness to 503"
+      kimi_target_serves_current \
+        || post_admission_die "KIMI target lost readiness during old-slot pre-drain"
+      stable_kimi_ready \
+        || post_admission_die "stable KIMI origin lost readiness during old-slot pre-drain"
+    fi
+    systemctl_command disable "$KIMI_ACTIVE_UNIT" \
+      || post_admission_die "could not disable old KIMI unit $KIMI_ACTIVE_UNIT"
+    if [[ $KIMI_LEGACY_TARGET == 1 ]]; then
+      systemctl_command stop "$KIMI_ACTIVE_UNIT" \
+        || post_admission_die "could not stop old KIMI unit $KIMI_ACTIVE_UNIT"
+      if [[ $DRY_RUN == 0 ]] && ! unit_stopped "$KIMI_ACTIVE_UNIT"; then
+        post_admission_die "old KIMI cgroup remains active before legacy commit"
+      fi
+    else
+      # Readiness fencing removes this generation from new routing; asynchronous stop lets its
+      # established SSE requests finish under the normal bounded settlement deadline.
+      systemctl_command --no-block stop "$KIMI_ACTIVE_UNIT" \
+        || post_admission_die "could not queue retirement of old KIMI unit $KIMI_ACTIVE_UNIT"
+      wait_kimi_retirement_ack "$KIMI_ACTIVE_UNIT" "$KIMI_ACTIVE_PORT" \
+        || post_admission_die "old KIMI unit did not acknowledge background retirement"
+    fi
+    KIMI_OLD_STOPPED=1
+  fi
+
+  if [[ $DRY_RUN == 0 ]]; then
+    kimi_target_serves_current \
+      || post_admission_die "KIMI target failed post-drain verification"
+    stable_kimi_ready \
+      || post_admission_die "stable KIMI origin failed post-drain verification"
+  fi
+  KIMI_COMMITTED=1
+  if [[ $KIMI_LEGACY_TARGET == 1 ]]; then
+    for KIMI_OTHER_UNIT in "$(kimi_slot_unit 8804)" "$(kimi_slot_unit 8805)"; do
+      systemctl_command stop "$KIMI_OTHER_UNIT" \
+        || post_admission_die "could not stop inactive KIMI slot $KIMI_OTHER_UNIT"
+      systemctl_command disable "$KIMI_OTHER_UNIT" \
+        || post_admission_die "could not disable inactive KIMI slot $KIMI_OTHER_UNIT"
+    done
+  else
+    KIMI_OTHER_PORT=$(kimi_other_port "$KIMI_TARGET_PORT")
+    KIMI_OTHER_UNIT=$(kimi_slot_unit "$KIMI_OTHER_PORT")
+    if [[ $KIMI_OTHER_UNIT != "$KIMI_ACTIVE_UNIT" ]]; then
+      systemctl_command stop "$KIMI_OTHER_UNIT" \
+        || post_admission_die "could not stop inactive KIMI slot $KIMI_OTHER_UNIT"
+      systemctl_command disable "$KIMI_OTHER_UNIT" \
+        || post_admission_die "could not disable inactive KIMI slot $KIMI_OTHER_UNIT"
+    fi
+    systemctl_command disable "$KIMI_LEGACY_UNIT" \
+      || post_admission_die "could not disable legacy KIMI singleton"
+  fi
+else
+  # Rollback to a release predating KIMI stops every provider incarnation.
+  for unit in "$KIMI_LEGACY_UNIT" "$(kimi_slot_unit 8804)" "$(kimi_slot_unit 8805)"; do
+    if unit_active "$unit"; then
+      systemctl_command stop "$unit" \
+        || post_admission_die "could not stop unsupported KIMI runtime $unit during rollback"
+    fi
+    systemctl_command disable "$unit" \
+      || post_admission_die "could not disable unsupported KIMI runtime $unit during rollback"
+  done
+fi
+
 if [[ $DRY_RUN == 0 ]]; then
   OTHER_PORT=$(other_port "$TARGET_PORT")
   OTHER_UNIT=$(slot_unit "$OTHER_PORT")
@@ -1189,6 +1584,41 @@ if [[ $DRY_RUN == 0 ]]; then
       fi
     done
   fi
+  if [[ $KIMI_SUPPORTED == 1 ]]; then
+    kimi_target_serves_current \
+      || post_admission_die "KIMI target failed final exact-release verification"
+    stable_kimi_ready \
+      || post_admission_die "stable KIMI origin failed final readiness verification"
+    systemctl_raw is-enabled --quiet "$KIMI_TARGET_UNIT" \
+      || post_admission_die "KIMI target is not enabled: $KIMI_TARGET_UNIT"
+    if [[ $KIMI_LEGACY_TARGET == 1 ]]; then
+      for KIMI_OTHER_UNIT in "$(kimi_slot_unit 8804)" "$(kimi_slot_unit 8805)"; do
+        ! unit_stopped "$KIMI_OTHER_UNIT" \
+          && post_admission_die "KIMI slot is not fully stopped: $KIMI_OTHER_UNIT"
+        if systemctl_raw is-enabled --quiet "$KIMI_OTHER_UNIT"; then
+          post_admission_die "KIMI slot remains enabled: $KIMI_OTHER_UNIT"
+        fi
+      done
+    else
+      kimi_slot_retired "$KIMI_OTHER_UNIT" "$KIMI_OTHER_PORT" \
+        || post_admission_die "inactive KIMI slot is neither stopped nor retiring: $KIMI_OTHER_UNIT"
+      if systemctl_raw is-enabled --quiet "$KIMI_OTHER_UNIT"; then
+        post_admission_die "inactive KIMI slot remains enabled: $KIMI_OTHER_UNIT"
+      fi
+      ! unit_stopped "$KIMI_LEGACY_UNIT" \
+        && post_admission_die "legacy KIMI singleton is not fully stopped"
+      if systemctl_raw is-enabled --quiet "$KIMI_LEGACY_UNIT"; then
+        post_admission_die "legacy KIMI singleton remains enabled"
+      fi
+    fi
+  else
+    for KIMI_OTHER_UNIT in "$KIMI_LEGACY_UNIT" \
+      "$(kimi_slot_unit 8804)" "$(kimi_slot_unit 8805)"; do
+      if systemctl_raw is-enabled --quiet "$KIMI_OTHER_UNIT"; then
+        post_admission_die "unsupported KIMI provider remains enabled after rollback: $KIMI_OTHER_UNIT"
+      fi
+    done
+  fi
   if systemctl_raw is-enabled --quiet "$OTHER_UNIT"; then
     post_admission_die "inactive engine slot remains enabled after cutover: $OTHER_UNIT"
   fi
@@ -1210,5 +1640,5 @@ commit_cutover
 if [[ $DRY_RUN == 1 ]]; then
   log "dry-run complete; no provider or Caddy state changed"
 else
-  log "provider cutover complete; $TARGET_UNIT, $OPENAI_TARGET_UNIT and ${GEMINI_TARGET_UNIT:-Gemini-disabled} serve $(basename -- "$CURRENT_RELEASE")"
+  log "provider cutover complete; $TARGET_UNIT, $OPENAI_TARGET_UNIT, ${GEMINI_TARGET_UNIT:-Gemini-disabled} and ${KIMI_TARGET_UNIT:-KIMI-disabled} serve $(basename -- "$CURRENT_RELEASE")"
 fi

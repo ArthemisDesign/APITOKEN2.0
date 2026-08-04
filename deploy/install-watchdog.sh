@@ -136,7 +136,7 @@ install_systemd_definitions() {
     apitoken-candidate-validator.service apitoken-candidate-validator.timer \
     apitoken-sudoers-install.service apitoken-tmpfiles-install.service \
     apitoken-sysctl-install.service \
-    apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-backup.service claude-api-backup.timer \
+    apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \
     claude-router.service claude-router@.service \
@@ -274,7 +274,8 @@ install_systemd_definitions
 server_env=/srv/claude-api/data/server.env
 install -d -o deploy -g deploy -m 0750 /srv/claude-api/data
 install -d -o deploy -g deploy -m 0700 \
-  /srv/claude-api/data/gemini /srv/claude-api/data/gemini/credentials
+  /srv/claude-api/data/gemini /srv/claude-api/data/gemini/credentials \
+  /srv/claude-api/data/kimi /srv/claude-api/data/kimi/credentials
 [[ ! -L $server_env ]] || { echo "$server_env must not be a symlink" >&2; exit 1; }
 if [[ ! -e $server_env ]]; then
   install -o deploy -g deploy -m 0600 /dev/null "$server_env"
