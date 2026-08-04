@@ -31,7 +31,14 @@ const GEMINI_TEXT_REQUEST_BODY_LIMIT: usize = 32 * 1024 * 1024;
 const GEMINI_IMAGE_REQUEST_BODY_LIMIT: usize = 20 * 1024 * 1024;
 const GEMINI_BODY_LIMIT: usize = 64 * 1024 * 1024;
 const DOWNSTREAM_SEND_TIMEOUT: Duration = Duration::from_secs(5);
-const STREAM_START_TIMEOUT: Duration = Duration::from_secs(30);
+/// Bounds the private prelude while a retry is still possible — nothing more. The abuse it was
+/// once alone against (an upstream emitting endless credit/accounting frames or empty chunks
+/// without ever producing a public event) is carried by STREAM_START_MAX_BYTES and
+/// STREAM_START_MAX_CHUNKS below, which stop an endless prologue regardless of how slow it is.
+/// Time therefore no longer has to stand in for that limit, and it must not: on a long prompt a
+/// reasoning model's time-to-first-token legitimately exceeds any small value, and the old 30s
+/// turned that into a 503 plus a spurious model-failure mark on a healthy profile.
+const STREAM_START_TIMEOUT: Duration = Duration::from_secs(600);
 const STREAM_START_MAX_BYTES: usize = 1024 * 1024;
 const STREAM_START_MAX_CHUNKS: usize = 1024;
 const IMAGE_STREAM_START_MAX_CHUNKS: usize = 8192;
