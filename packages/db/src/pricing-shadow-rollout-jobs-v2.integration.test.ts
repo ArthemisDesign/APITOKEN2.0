@@ -9,7 +9,6 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
-  buildLegacyLockedOpenKeysPolicyV1,
   claimPricingShadowPolicyJobsV2,
   completePricingShadowPolicyJobV2,
   createDatabase,
@@ -106,6 +105,47 @@ function engineReader(accounts = engineAccounts()) {
       next_after_account_id: null,
     }),
     getAccountPricingState: async (accountId: string) => {
+      if (accountId === "acct_ok_legacy") {
+        const base = {
+          account_id: "acct_ok_legacy",
+          effective_version: 1,
+          policy_id: `policy:openkeys:legacy:${LEGACY_SOURCE_ID}`,
+          policy_version: 1,
+          source_policy_digest: "sha256:v1:legacy-source",
+          owner_type: "open_keys" as const,
+          owner_id: LEGACY_SOURCE_ID,
+          account_class: "open_keys" as const,
+          product_id: "openkeys",
+          schema_version: 1,
+          catalog_generation: 1,
+          switch_generation: 1,
+          replacement_locked: true,
+          rules: [
+            {
+              rule_id: "provider:anthropic:legacy",
+              rule_digest: "sha256:v1:rule-a",
+              scope: { provider: { provider_id: "anthropic" } },
+              pricing_mode: "discount" as const,
+              rule_origin: "legacy" as const,
+              discount_bps: null,
+              payable_multiplier_bp: 7_000,
+              track_eligible: false,
+              retention_eligible: false,
+              commission_eligible: false,
+            },
+          ],
+        };
+        return {
+          active: {
+            policy: { ...base, content_digest: V1("legacy-v1") },
+            binding: {
+              policy_enforcement: "shadow" as const,
+              funding_enforcement: "legacy_single" as const,
+              reconciliation_state: "pending" as const,
+            },
+          },
+        };
+      }
       if (accountId !== "acct_ok_new") return "unbound" as const;
       const base = {
         account_id: "acct_ok_new",
@@ -493,13 +533,8 @@ describe.runIf(Boolean(connectionString))("pricing shadow rollout v2 lane", () =
     ]);
     const byAccount = new Map(jobs.rows.map((row) => [row.engine_account_id, row]));
     expect(byAccount.get("acct_ok_legacy")!.request_payload.kind).toBe("locked_openkeys_transition");
-    const legacy = buildLegacyLockedOpenKeysPolicyV1({
-      accountId: "acct_ok_legacy",
-      sourceId: LEGACY_SOURCE_ID,
-      multiplierBp: 7_000,
-    });
     expect(byAccount.get("acct_ok_legacy")!.expected_active_version).toBe("1");
-    expect(byAccount.get("acct_ok_legacy")!.expected_active_digest).toBe(legacy.content_digest);
+    expect(byAccount.get("acct_ok_legacy")!.expected_active_digest).toBe(V1("legacy-v1"));
 
     // The canonical OpenKeys account advances its existing lineage in place at the next version.
     const advance = byAccount.get("acct_ok_new")!;

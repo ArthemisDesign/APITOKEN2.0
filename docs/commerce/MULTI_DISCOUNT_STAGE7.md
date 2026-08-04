@@ -55,15 +55,15 @@ target/recovery release plans и делает fresh engine inventory scan: лю�
 collision или missing owner — fail closed до первой записи. Rollout пинит target/recovery
 generation+digest, catalog/switch generations+digests, engine inventory, assignment/policy manifest
 и canonical `sha256:v2` rollout digest; per-account jobs несут release-policy identity, exact
-effective version/content digest, nullable expected active (только для детерминированно выводимых
-locked legacy bindings), request digest и полное byte-exact request payload. Идемпотентность по
+effective version/content digest, expected active из live engine read, request digest и полное byte-exact request payload. Идемпотентность по
 `idempotency_key` и `rollout_digest`: exact replay возвращает существующий rollout без записи.
 
 **Locked-OpenKeys путь.** Job для replacement-locked legacy аккаунта (`owner_context=openkeys`,
 `pricing_contract=legacy` в exact Stage 5 inventory) содержит только payload
-`locked_openkeys_transition`: successor строится детерминированно (+1 exact version, тот же
-immutable policy identity, managed provider-only 1:1 rules, без replacement lock), а
-expected active — exact legacy policy version 1 с digest в домене `multi-discount-stage5`.
+`locked_openkeys_transition`: и successor, и expected active строятся из exact live engine lineage
+аккаунта (read при staging; никакой исторической реконструкции digest'ов — реальный stored identity
+и binding), successor — +1 exact version, тот же immutable policy identity, managed provider-only
+1:1 rules, без replacement lock.
 Worker доставляет его исключительно через
 `POST /admin/pricing/policy/{account_id}/locked-openkeys-transition` после fresh readback:
 расхождение active policy с durable expectation, потерянный replacement lock или typed отказ

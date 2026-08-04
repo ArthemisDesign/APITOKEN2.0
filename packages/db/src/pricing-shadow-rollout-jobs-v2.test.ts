@@ -1,8 +1,6 @@
 import { accountPolicySpecSchema } from "@claude-api/contracts";
 import { describe, expect, it } from "vitest";
-import { buildStage5OpenKeysPlan } from "./multi-discount-backfill.js";
 import {
-  buildLegacyLockedOpenKeysPolicyV1,
   buildLockedOpenkeysSuccessorPolicyV1,
   pricingShadowPolicyAckDigestV2,
   pricingShadowRolloutSubjectDigestV2,
@@ -10,47 +8,55 @@ import {
 
 const SHA256_V2 = /^sha256:v2:[0-9a-f]{64}$/;
 
-describe("shadow rollout locked OpenKeys derivation", () => {
-  it("rebuilds the exact replacement-locked legacy policy identity", () => {
-    const derived = buildLegacyLockedOpenKeysPolicyV1({
-      accountId: "acct_ok_legacy",
-      sourceId: "3f6b1f24-9f32-4a2f-9b6e-1a2b3c4d5e6f",
-      multiplierBp: 7_000,
-    });
-    const authority = buildStage5OpenKeysPlan({
-      source_id: "3f6b1f24-9f32-4a2f-9b6e-1a2b3c4d5e6f",
-      account_id: "acct_ok_legacy",
-      multiplier_bp: 7_000,
-      status: "active",
-      pricing_contract: "legacy",
-    });
-    expect(authority.effective_policy).not.toBeNull();
-    expect(derived).toEqual(authority.effective_policy);
-    expect(derived.replacement_locked).toBe(true);
-    expect(derived.effective_version).toBe(1);
-    expect(accountPolicySpecSchema.parse(derived)).toEqual(derived);
-  });
+const legacySource = accountPolicySpecSchema.parse({
+  account_id: "acct_ok_legacy",
+  effective_version: 1,
+  policy_id: "policy:openkeys:legacy:3f6b1f24-9f32-4a2f-9b6e-1a2b3c4d5e6f",
+  policy_version: 1,
+  source_policy_digest: "sha256:v1:legacy-source",
+  owner_type: "open_keys",
+  owner_id: "3f6b1f24-9f32-4a2f-9b6e-1a2b3c4d5e6f",
+  account_class: "open_keys",
+  product_id: "openkeys",
+  schema_version: 1,
+  catalog_generation: 1,
+  switch_generation: 1,
+  content_digest: "sha256:v1:legacy-content",
+  replacement_locked: true,
+  rules: [
+    {
+      rule_id: "provider:anthropic:legacy",
+      rule_digest: "sha256:v1:rule-a",
+      scope: { provider: { provider_id: "anthropic" } },
+      pricing_mode: "discount",
+      rule_origin: "legacy",
+      discount_bps: null,
+      payable_multiplier_bp: 7_000,
+      track_eligible: false,
+      retention_eligible: false,
+      commission_eligible: false,
+    },
+  ],
+});
 
-  it("builds the only accepted managed 1:1 successor one version ahead", () => {
-    const legacy = buildLegacyLockedOpenKeysPolicyV1({
-      accountId: "acct_ok_legacy",
-      sourceId: "3f6b1f24-9f32-4a2f-9b6e-1a2b3c4d5e6f",
-      multiplierBp: 7_000,
-    });
+describe("shadow rollout locked OpenKeys successor", () => {
+  it("builds the only accepted managed 1:1 successor one version ahead of the live source", () => {
     const successor = buildLockedOpenkeysSuccessorPolicyV1({
-      accountId: "acct_ok_legacy",
-      sourceId: "3f6b1f24-9f32-4a2f-9b6e-1a2b3c4d5e6f",
+      source: legacySource,
       catalogGeneration: 5,
       switchGeneration: 5,
     });
     expect(accountPolicySpecSchema.parse(successor)).toEqual(successor);
-    expect(successor.effective_version).toBe(legacy.effective_version + 1);
-    expect(successor.policy_version).toBe(legacy.policy_version + 1);
-    expect(successor.policy_id).toBe(legacy.policy_id);
+    expect(successor.effective_version).toBe(legacySource.effective_version + 1);
+    expect(successor.policy_version).toBe(legacySource.policy_version + 1);
+    expect(successor.policy_id).toBe(legacySource.policy_id);
+    expect(successor.source_policy_digest).toBe(legacySource.content_digest);
     expect(successor.owner_type).toBe("open_keys");
-    expect(successor.owner_id).toBe(legacy.owner_id);
+    expect(successor.owner_id).toBe(legacySource.owner_id);
     expect(successor.account_class).toBe("open_keys");
     expect(successor.product_id).toBe("openkeys");
+    expect(successor.catalog_generation).toBe(5);
+    expect(successor.switch_generation).toBe(5);
     expect(successor.replacement_locked).toBe(false);
     expect(successor.schema_version).toBe(1);
     expect(successor.content_digest).toMatch(SHA256_V2);

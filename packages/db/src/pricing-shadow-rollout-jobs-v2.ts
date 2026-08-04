@@ -19,7 +19,6 @@ import type { EngineClient } from "@claude-api/engine-client";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import type { Database } from "./client.js";
-import { stage5Digest } from "./multi-discount-backfill.js";
 import {
   Stage5MaterializerV2Error,
   scanStage5EngineInventoryV2,
@@ -31,12 +30,6 @@ export const PRICING_SHADOW_ROLLOUT_BINDING_V2: AccountPolicyBinding = {
   policy_enforcement: "shadow",
   funding_enforcement: "legacy_single",
   reconciliation_state: "verified",
-};
-
-const LOCKED_OPENKEYS_EXPECTED_BINDING: AccountPolicyBinding = {
-  policy_enforcement: "legacy_scalar",
-  funding_enforcement: "legacy_single",
-  reconciliation_state: "pending",
 };
 
 const OPENKEYS_TRANSITION_PROVIDERS = ["anthropic", "openai"] as const;
@@ -229,86 +222,17 @@ function shadowRuleDigest(base: Omit<AccountPolicySpec["rules"][number], "rule_d
 }
 
 /**
- * Rebuilds the exact replacement-locked legacy OpenKeys policy identity created by the
- * immutable Stage 5 legacy projection. The digest domain is the shared
- * `multi-discount-stage5` one, so a mismatch against the live engine policy can only mean
- * real drift and fails closed at delivery.
- */
-export function buildLegacyLockedOpenKeysPolicyV1(input: {
-  accountId: string;
-  sourceId: string;
-  multiplierBp: number;
-}): AccountPolicySpec {
-  const policyId = `policy:openkeys:legacy:${input.sourceId}`;
-  const sourceRules = OPENKEYS_TRANSITION_PROVIDERS.map((providerId) => {
-    const base = {
-      rule_id: `provider:${providerId}:legacy`,
-      scope_type: "provider",
-      provider_id: providerId,
-      canonical_model_id: null,
-      pricing_mode: "discount",
-      rule_origin: "legacy",
-      discount_bps: null,
-      payable_multiplier_bp: input.multiplierBp,
-      track_eligible: false,
-      retention_eligible: false,
-      commission_eligible: false,
-    };
-    return { ...base, rule_digest: stage5Digest("source-rule", base) };
-  });
-  const sourceDigest = stage5Digest("openkeys-source-policy", {
-    policy_id: policyId,
-    owner_id: input.sourceId,
-    product_id: "openkeys",
-    replacement_locked: true,
-    version: 1,
-    rules: sourceRules,
-  });
-  const rules = OPENKEYS_TRANSITION_PROVIDERS.map((providerId) => {
-    const base = {
-      rule_id: `provider:${providerId}:legacy`,
-      scope: { provider: { provider_id: providerId } },
-      pricing_mode: "discount" as const,
-      rule_origin: "legacy" as const,
-      discount_bps: null,
-      payable_multiplier_bp: input.multiplierBp,
-      track_eligible: false,
-      retention_eligible: false,
-      commission_eligible: false,
-    };
-    return { ...base, rule_digest: stage5Digest("effective-rule", base) };
-  });
-  const base = {
-    account_id: input.accountId,
-    effective_version: 1,
-    policy_id: policyId,
-    policy_version: 1,
-    source_policy_digest: sourceDigest,
-    owner_type: "open_keys" as const,
-    owner_id: input.sourceId,
-    account_class: "open_keys" as const,
-    product_id: "openkeys",
-    schema_version: 1,
-    catalog_generation: 1,
-    switch_generation: 1,
-    replacement_locked: true,
-    rules,
-  };
-  return { ...base, content_digest: stage5Digest("effective-policy", base) };
-}
-
-/**
- * Builds the only successor the engine transition accepts: identical immutable policy identity
- * advanced exactly once, managed provider-only 1:1 rules and no replacement lock. Digests use
- * the canonical `sha256:v2` Stage 5 domain.
+ * Builds the only successor the engine transition accepts: the exact live lineage identity
+ * advanced exactly once, managed provider-only 1:1 rules and no replacement lock. The source is
+ * the actual engine policy read at staging, never a reconstructed historical derivation.
+ * Digests use the canonical `sha256:v2` Stage 5 domain.
  */
 export function buildLockedOpenkeysSuccessorPolicyV1(input: {
-  accountId: string;
-  sourceId: string;
+  source: AccountPolicySpec;
   catalogGeneration: number;
   switchGeneration: number;
 }): AccountPolicySpec {
-  const policyId = `policy:openkeys:legacy:${input.sourceId}`;
+  const source = input.source;
   const rules = OPENKEYS_TRANSITION_PROVIDERS.map((providerId) => {
     const base = {
       rule_id: `openkeys-${providerId}-1to1`,
@@ -324,22 +248,15 @@ export function buildLockedOpenkeysSuccessorPolicyV1(input: {
     return { ...base, rule_digest: shadowRuleDigest(base) };
   });
   const base = {
-    account_id: input.accountId,
-    effective_version: 2,
-    policy_id: policyId,
-    policy_version: 2,
-    source_policy_digest: stage5V2Digest("shadow-rollout-locked-source", {
-      policy_id: policyId,
-      owner_id: input.sourceId,
-      product_id: "openkeys",
-      replacement_locked: false,
-      version: 2,
-      rules: rules.map(({ rule_digest: _digest, ...rule }) => rule),
-    }),
-    owner_type: "open_keys" as const,
-    owner_id: input.sourceId,
-    account_class: "open_keys" as const,
-    product_id: "openkeys",
+    account_id: source.account_id,
+    effective_version: source.effective_version + 1,
+    policy_id: source.policy_id,
+    policy_version: source.policy_version + 1,
+    source_policy_digest: source.content_digest,
+    owner_type: source.owner_type,
+    owner_id: source.owner_id,
+    account_class: source.account_class,
+    product_id: source.product_id,
     schema_version: 1,
     catalog_generation: input.catalogGeneration,
     switch_generation: input.switchGeneration,
@@ -590,13 +507,11 @@ export async function stagePricingShadowRolloutV2(
   // Only OpenKeys accounts are aligned by this lane: commerce and service lineages are advanced
   // by their managed policy writers, and a release-policy identity can never attach to an
   // account whose engine lineage already exists (policy identity is immutable per lineage).
-  // Canonical (non-legacy) OpenKeys accounts advance their existing lineage, so their exact live
-  // lineage state is read once up front.
+  // Every OpenKeys job builds from the exact live engine lineage read once up front.
   const openkeysAdvance = new Map<string, Awaited<ReturnType<EngineClient["getAccountPricingState"]>>>();
   for (const row of preAssignments.rows) {
     if (row.owner_context !== "openkeys") continue;
-    const contract = preOpenkeysAccounts.get(row.engine_account_id)?.pricing_contract;
-    if (contract === undefined || contract === "legacy") continue;
+    if (preOpenkeysAccounts.get(row.engine_account_id)?.pricing_contract === undefined) continue;
     const state = await engine.getAccountPricingState(row.engine_account_id);
     openkeysAdvance.set(row.engine_account_id, state);
   }
@@ -738,14 +653,22 @@ export async function stagePricingShadowRolloutV2(
             `legacy OpenKeys multiplier drifted for ${assignment.engine_account_id}`,
           );
         }
-        const legacy = buildLegacyLockedOpenKeysPolicyV1({
-          accountId: assignment.engine_account_id,
-          sourceId: openkeysAccount!.source_id,
-          multiplierBp: inventoryAccount.multiplier_bp,
-        });
+        // The exact legacy policy is read from the live engine lineage, never reconstructed:
+        // only the actual stored identity/digest can be the transition expectation.
+        const lockedState = openkeysAdvance.get(assignment.engine_account_id);
+        if (!lockedState || lockedState === "unbound" || "inactive" in lockedState) {
+          throw permanent(
+            `legacy OpenKeys account ${assignment.engine_account_id} has no active engine policy lineage`,
+          );
+        }
+        const lockedPolicy = lockedState.active.policy;
+        if (!lockedPolicy.replacement_locked) {
+          throw permanent(
+            `legacy OpenKeys account ${assignment.engine_account_id} lineage lost its replacement lock`,
+          );
+        }
         const successor = buildLockedOpenkeysSuccessorPolicyV1({
-          accountId: assignment.engine_account_id,
-          sourceId: openkeysAccount!.source_id,
+          source: lockedPolicy,
           catalogGeneration: openkeysCatalog.generation,
           switchGeneration: switches.generation,
         });
@@ -753,8 +676,11 @@ export async function stagePricingShadowRolloutV2(
           kind: "locked_openkeys_transition",
           policy: successor,
           expected_active: {
-            target: { version: 1, content_digest: legacy.content_digest },
-            binding: LOCKED_OPENKEYS_EXPECTED_BINDING,
+            target: {
+              version: lockedPolicy.effective_version,
+              content_digest: lockedPolicy.content_digest,
+            },
+            binding: lockedState.active.binding,
           },
         };
         jobs.push({
@@ -767,8 +693,8 @@ export async function stagePricingShadowRolloutV2(
           release_policy_digest: assignment.policy_digest,
           effective_version: successor.effective_version,
           content_digest: successor.content_digest,
-          expected_active_version: 1,
-          expected_active_digest: legacy.content_digest,
+          expected_active_version: lockedPolicy.effective_version,
+          expected_active_digest: lockedPolicy.content_digest,
           request_digest: stage5V2Digest("pricing-shadow-rollout-request-v2", payload),
           request_payload: payload,
         });
