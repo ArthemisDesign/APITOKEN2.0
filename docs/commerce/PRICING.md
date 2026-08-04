@@ -83,6 +83,14 @@ discount_bps = 10000 - mult_bp
 OpenAI/Gemini do not appear for an existing B2B automatically. The operator adds them via explicit
 provider/model rules.
 
+B2B spend IS ingested by the pricing usage sync: `listPricingSyncTargets` selects both
+`b2c` and `b2b`, so every charge lands in the immutable `pricing_usage_events` (with provider
+attribution and provider backfill) and the admin control room reports real B2B numbers. The
+progressive B2C machinery never touches B2B: `applyPricingLedgerPage` skips the free-first
+projection, `pricing_months` and the tier-window counters for it, and a pre-attribution B2B charge
+creates no commission basis (`real_funded_nano = 0`) because there is no local funding projection
+to prove paid money — under-paying commission is safe, over-paying is not.
+
 ## OpenKeys
 
 All existing and new OpenKeys operate 1:1: `discount_bps=0`,

@@ -1712,12 +1712,15 @@ export async function setReferralFloor(database: Database, input: {
 }
 
 export async function listPricingSyncTargets(database: Database): Promise<PricingSyncTarget[]> {
+  // И b2c, и b2b: расход обязан попадать в immutable pricing_usage_events для обеих сегментов.
+  // Прогрессивные эффекты (free-first, месяцы, тир-окна) применяются только к b2c внутри
+  // applyPricingLedgerPage и в b2c-фильтрованных функциях тир-модели.
   const result = await database.pool.query<{ user_id: string; engine_account_id: string }>(`
     SELECT cp.user_id, ea.engine_account_id
     FROM customer_profiles cp
     JOIN engine_accounts ea ON ea.user_id = cp.user_id
     JOIN users u ON u.id = cp.user_id
-    WHERE cp.customer_type = 'b2c' AND ea.status = 'active'
+    WHERE cp.customer_type IN ('b2c', 'b2b') AND ea.status = 'active'
       AND ea.engine_account_id IS NOT NULL AND u.status = 'active'
     ORDER BY cp.user_id
   `);
@@ -2186,15 +2189,26 @@ export async function applyPricingLedgerPage(
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
-    const profileResult = await client.query<{ current_tier: number; pricing_month_start: Date; free_balance_nano: string }>(`
-      SELECT current_tier, pricing_month_start, free_balance_nano::text AS free_balance_nano FROM customer_profiles
-      WHERE user_id = $1 AND customer_type = 'b2c' FOR UPDATE
+    // B2B-профиль тоже лочится и синкается: у него нет тира и free-first проекции, но его
+    // расход обязан попадать в immutable pricing_usage_events — иначе конвертация клиента в
+    // B2B навсегда замораживает его курсор и админка недосчитывает реальные списания.
+    const profileResult = await client.query<{
+      customer_type: "b2c" | "b2b"; current_tier: number | null;
+      pricing_month_start: Date | null; free_balance_nano: string;
+    }>(`
+      SELECT customer_type, current_tier, pricing_month_start,
+             free_balance_nano::text AS free_balance_nano
+      FROM customer_profiles
+      WHERE user_id = $1 FOR UPDATE
     `, [target.userId]);
     const profile = profileResult.rows[0];
     if (!profile) {
       await client.query("ROLLBACK");
       return;
     }
+    // Для b2b авторитет фондирования — только immutable evidence движка: локальная
+    // free-first проекция, месячные окна и тир-счётчики к нему не применяются.
+    const progressive = profile.customer_type === "b2c";
     // Курсор на старте: применяем эффекты (free projection, commission basis) ТОЛЬКО к записям выше него —
     // это делает применение страницы идемпотентным к повторной подаче тех же записей (free-топапы
     // не имеют ON CONFLICT, как у charge). customer_profiles залочена → обработка юзера сериализована.
@@ -2212,10 +2226,13 @@ export async function applyPricingLedgerPage(
       if (ledgerId > lastLedgerId) lastLedgerId = ledgerId;
       if (ledgerId <= startCursor) continue; // уже обработано ранее — не двоим эффекты
       const amount = BigInt(entry.amount_nano);
-      // Бесплатные кредиты (welcome-бонус/промо) пополняют бесплатный баланс.
+      // Бесплатные кредиты (welcome-бонус/промо) пополняют бесплатный баланс. У b2b локального
+      // free-баланса нет — фондирование целиком остаётся авторитетом движка.
       if (entry.kind === "topup" && amount > 0n && isFreeCreditRef(entry.ref)) {
-        freeBalance += amount;
-        freeBalanceChanged = true;
+        if (progressive) {
+          freeBalance += amount;
+          freeBalanceChanged = true;
+        }
         continue;
       }
       // Только положительные charge создают commission basis. Отрицательные `adjust`
@@ -2228,24 +2245,32 @@ export async function applyPricingLedgerPage(
       const validatedAttribution = validateLedgerAttribution(entry, amount);
       // New policy-aware rows trust only the engine's immutable settlement funding. The local
       // free-first projection remains solely for pre-attribution rows during rolling compatibility.
-      const legacyFromFree = validatedAttribution === null
+      const legacyFromFree = validatedAttribution === null && progressive
         ? amount < freeBalance ? amount : freeBalance
         : 0n;
       const attributedNonPaid = validatedAttribution?.nonPaidFundedNano ?? 0n;
-      if (validatedAttribution?.attribution.snapshot_kind === "policy_v1" && attributedNonPaid > freeBalance) {
+      if (
+        progressive
+        && validatedAttribution?.attribution.snapshot_kind === "policy_v1"
+        && attributedNonPaid > freeBalance
+      ) {
         throw new PricingLedgerAttributionError(
           "engine policy funding exceeds the local immutable free-credit projection",
         );
       }
       // Release-v2 funding lives entirely in engine v2 lots; the local legacy free-credit
       // projection must neither validate nor absorb its bonus/other funding.
-      const projectedFreeDebit = validatedAttribution === null
-        ? legacyFromFree
-        : validatedAttribution.attribution.snapshot_kind === "release_v2"
-          ? 0n
-          : attributedNonPaid;
+      const projectedFreeDebit = !progressive
+        ? 0n
+        : validatedAttribution === null
+          ? legacyFromFree
+          : validatedAttribution.attribution.snapshot_kind === "release_v2"
+            ? 0n
+            : attributedNonPaid;
+      // Комиссионный базис — только доказанные деньги. У b2b legacy-проекции нет, поэтому
+      // pre-attribution строка не создаёт базиса вовсе (недоплатить безопасно, переплатить — нет).
       const realFunded = validatedAttribution === null
-        ? amount - legacyFromFree
+        ? progressive ? amount - legacyFromFree : 0n
         : validatedAttribution.commissionEligible
           ? validatedAttribution.paidFundedNano ?? 0n
           : 0n;
@@ -2290,7 +2315,8 @@ export async function applyPricingLedgerPage(
       insertedCharge = true;
       // Release-v2 usage is flat post-tier pricing: no progressive month/retention projection is
       // ever created for it (tier windows already exclude it via retention_eligible = false).
-      if (validatedAttribution?.attribution.snapshot_kind !== "release_v2") {
+      // B2B не участвует в прогрессивной модели вообще.
+      if (progressive && validatedAttribution?.attribution.snapshot_kind !== "release_v2") {
         const monthStart = utcMonthStart(occurredAt);
         await client.query(`
           INSERT INTO pricing_months (
@@ -2298,7 +2324,7 @@ export async function applyPricingLedgerPage(
           ) VALUES ($1, $2, $3, $4, $4, $5)
           ON CONFLICT (user_id, month_start) DO UPDATE
           SET spent_nano = pricing_months.spent_nano + EXCLUDED.spent_nano, updated_at = now()
-        `, [randomUUID(), target.userId, monthStart, profile.current_tier, retentionSpend.toString()]);
+        `, [randomUUID(), target.userId, monthStart, profile.current_tier ?? 0, retentionSpend.toString()]);
       }
     }
     if (freeBalanceChanged) {
@@ -2318,7 +2344,7 @@ export async function applyPricingLedgerPage(
     // Prepay: расход НЕ поднимает тир (тир — за пополнения). The cached counter is rebuilt
     // from immutable events in the exact current [window_start, window_end) interval so late
     // ingestion cannot move a charge across retention windows.
-    if (insertedCharge) await refreshTierWindowSpend(client, [target.userId], new Date());
+    if (insertedCharge && progressive) await refreshTierWindowSpend(client, [target.userId], new Date());
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
