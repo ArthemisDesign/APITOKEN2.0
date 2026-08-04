@@ -74,6 +74,60 @@ pub(crate) struct KimiRequest {
     pub billing: Option<KimiBillingInput>,
     pub affinity: Option<AffinityInput>,
     pub affinity_store: Arc<AffinityStore>,
+    /// Admin-only calibration target: the exact profile and immutable request id the turn must
+    /// use. `None` for ordinary traffic. A pinned turn never rebinds to another profile.
+    pub calibration: Option<KimiCalibrationTarget>,
+}
+
+/// Exact calibration targeting for the admin-only live runner, validated at dispatch.
+pub(crate) struct KimiCalibrationTarget {
+    /// Opaque roster id the turn must run on; cooling/walls stay walls.
+    pub profile_id: String,
+    /// UUIDv4 the durable turn event must carry for exact attribution.
+    pub request_id: String,
+}
+
+/// Parse the admin-only calibration headers, mirroring the Gemini admission contract.
+///
+/// Both headers must arrive together and validate; a non-admin caller carrying either is refused,
+/// and a malformed or half-present pair fails closed rather than silently running untargeted.
+/// `Ok(None)` means no calibration headers were present at all.
+pub(crate) fn parse_kimi_calibration_headers(
+    headers: &HeaderMap,
+    is_admin: bool,
+) -> Result<Option<KimiCalibrationTarget>, ()> {
+    const PROFILE_HEADER: &str = "x-apitoken-calibration-profile";
+    const REQUEST_ID_HEADER: &str = "x-apitoken-calibration-request-id";
+    let profile = headers
+        .get(PROFILE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim);
+    let request_id = headers
+        .get(REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim);
+    let (Some(profile), Some(request_id)) = (profile, request_id) else {
+        // One header without the other is never meaningful.
+        return if profile.is_some() || request_id.is_some() {
+            Err(())
+        } else {
+            Ok(None)
+        };
+    };
+    if !is_admin {
+        return Err(());
+    }
+    if kimi_credential::validate_profile_id(profile).is_err() {
+        return Err(());
+    }
+    let Some(typed) = crate::pricing::EnginePricingRequestId::from_engine_uuid_v4(request_id)
+    else {
+        return Err(());
+    };
+    Ok(Some(KimiCalibrationTarget {
+        profile_id: profile.to_string(),
+        request_id: typed.as_str().to_string(),
+    }))
 }
 
 /// One retained `/usages` window exactly as last published by the provider. A window that was
@@ -1133,7 +1187,13 @@ impl KimiGateway {
             Ok(value) => value,
             Err(error) => return error_response(error),
         };
-        let request_id = crate::upstream::fresh_request_id();
+        // The admin calibration runner preselects its immutable request id; ordinary traffic
+        // always mints a fresh CSPRNG one.
+        let request_id = request
+            .calibration
+            .as_ref()
+            .map(|target| target.request_id.clone())
+            .unwrap_or_else(crate::upstream::fresh_request_id);
         let priced_ts = now_unix();
         let mut reservation = match self
             .reserve_customer(
@@ -1179,9 +1239,27 @@ impl KimiGateway {
         let mut excluded = HashSet::new();
         let mut policy = AttemptPolicy::default();
 
+        let pinned = request
+            .calibration
+            .as_ref()
+            .map(|target| target.profile_id.clone());
         loop {
-            let Some(profile) = self.select_profile(&request.model, &excluded, sticky.as_deref())
-            else {
+            let Some(profile) = (match pinned.as_deref() {
+                // Exact calibration target: the pinned profile is the only candidate, and only
+                // while it has not been attempted yet — a calibration turn never rebinds.
+                Some(id) if excluded.is_empty() => self
+                    .profiles_snapshot()
+                    .into_iter()
+                    .find(|profile| profile.id == id)
+                    .filter(|profile| {
+                        profile
+                            .candidate(&request.model, now_unix())
+                            .ineligible
+                            .is_none()
+                    }),
+                Some(_) => None,
+                None => self.select_profile(&request.model, &excluded, sticky.as_deref()),
+            }) else {
                 return error_response(GatewayFailure::Capacity);
             };
             let lease = ProfileLease::new(profile.clone());
@@ -2924,6 +3002,7 @@ mod tests {
                 billing: None,
                 affinity: None,
                 affinity_store: affinity(),
+                calibration: None,
             })
             .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -3187,6 +3266,7 @@ mod tests {
                 billing: None,
                 affinity: None,
                 affinity_store: affinity(),
+                calibration: None,
             })
             .await;
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -3489,6 +3569,152 @@ data: {"type":"message_stop"}
             walls[0] >= expected && walls[0] <= expected + 2,
             "quota wall must honor the provider hint exactly: {} vs {expected}",
             walls[0]
+        );
+    }
+
+    #[test]
+    fn calibration_headers_parse_only_for_a_valid_admin_pair() {
+        let profile = "kimi-01";
+        let uuid = "123e4567-e89b-42d3-a456-426614174000";
+        let mut headers = HeaderMap::new();
+        assert!(parse_kimi_calibration_headers(&headers, true).unwrap().is_none());
+
+        headers.insert("x-apitoken-calibration-profile", profile.parse().unwrap());
+        headers.insert("x-apitoken-calibration-request-id", uuid.parse().unwrap());
+        let target = parse_kimi_calibration_headers(&headers, true)
+            .unwrap()
+            .expect("a valid admin pair parses");
+        assert_eq!(target.profile_id, profile);
+        assert_eq!(target.request_id, uuid);
+
+        // A non-admin caller carrying the pair is refused outright.
+        assert!(parse_kimi_calibration_headers(&headers, false).is_err());
+
+        // Half a pair is never meaningful, admin or not.
+        let mut half = HeaderMap::new();
+        half.insert("x-apitoken-calibration-profile", profile.parse().unwrap());
+        assert!(parse_kimi_calibration_headers(&half, true).is_err());
+        assert!(parse_kimi_calibration_headers(&half, false).is_err());
+
+        // A profile id with a path escape and a non-v4 request id both fail closed.
+        let mut bad_profile = headers.clone();
+        bad_profile.insert("x-apitoken-calibration-profile", "../escape".parse().unwrap());
+        assert!(parse_kimi_calibration_headers(&bad_profile, true).is_err());
+        let mut not_v4 = headers.clone();
+        not_v4.insert(
+            "x-apitoken-calibration-request-id",
+            "123e4567-e89b-12d3-a456-426614174000".parse().unwrap(),
+        );
+        assert!(parse_kimi_calibration_headers(&not_v4, true).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_calibration_turn_uses_the_preselected_request_id_and_never_rebinds() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let identity = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let generation = br#"{"id":"msg_1","type":"message","model":"kimi-k2.7-code","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":7,"output_tokens":2}}"#;
+        let (base_url, requests) = mock_server(vec![
+            http_response("application/json", identity),
+            http_response("application/json", generation),
+        ]);
+        let gateway = Arc::new(
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap(),
+        );
+        assert_eq!(gateway.preflight().await, 1);
+
+        let uuid = "123e4567-e89b-42d3-a456-426614174000";
+        let body = json!({
+            "model": "kimi-for-coding",
+            "max_tokens": 8,
+            "messages": [{"role": "user", "content": "hello"}],
+        });
+        let response = gateway
+            .handle(KimiRequest {
+                headers: HeaderMap::new(),
+                raw_body_len: serde_json::to_vec(&body).unwrap().len(),
+                body,
+                model: "kimi-for-coding".into(),
+                execution: ExecutionAttempt::direct(),
+                billing: None,
+                affinity: None,
+                affinity_store: affinity(),
+                calibration: Some(KimiCalibrationTarget {
+                    profile_id: "kimi-01".into(),
+                    request_id: uuid.into(),
+                }),
+            })
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let probe = String::from_utf8(requests.recv().unwrap()).unwrap();
+        assert!(probe.starts_with("GET /me "));
+        let turn = String::from_utf8(requests.recv().unwrap()).unwrap();
+        assert!(turn.starts_with("POST /messages "));
+        assert!(
+            turn
+                .to_ascii_lowercase()
+                .contains(&format!("x-client-request-id: {uuid}")),
+            "the upstream attempt must carry the preselected immutable id: {turn}"
+        );
+        // The queued durable turn carries exactly the preselected id — that is what the runner
+        // diffs against when it attributes the spend.
+        let event = gateway
+            .turn_queue
+            .lock()
+            .unwrap()
+            .head()
+            .expect("the turn is queued for durable delivery")
+            .clone();
+        assert_eq!(event.request_id, uuid);
+    }
+
+    #[tokio::test]
+    async fn a_pinned_calibration_turn_fails_closed_instead_of_rebinding() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let identity = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let (base_url, requests) = mock_server(vec![http_response("application/json", identity)]);
+        let gateway = Arc::new(
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap(),
+        );
+        assert_eq!(gateway.preflight().await, 1);
+        let _probe = requests.recv().unwrap();
+
+        // Cool the only profile: a pinned turn has nowhere to go and must not hunt for one.
+        let profile = gateway.profiles_snapshot()[0].clone();
+        profile.apply_effect(ProfileEffect::TransportFault, now_unix());
+        for pinned_id in ["kimi-01", "kimi-99"] {
+            let body = json!({
+                "model": "kimi-for-coding",
+                "max_tokens": 8,
+                "messages": [{"role": "user", "content": "hello"}],
+            });
+            let response = gateway
+                .handle(KimiRequest {
+                    headers: HeaderMap::new(),
+                    raw_body_len: serde_json::to_vec(&body).unwrap().len(),
+                    body,
+                    model: "kimi-for-coding".into(),
+                    execution: ExecutionAttempt::direct(),
+                    billing: None,
+                    affinity: None,
+                    affinity_store: affinity(),
+                    calibration: Some(KimiCalibrationTarget {
+                        profile_id: pinned_id.into(),
+                        request_id: "123e4567-e89b-42d3-a456-426614174000".into(),
+                    }),
+                })
+                .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "{pinned_id}: a cooled or unknown pinned target is capacity, not a rebind"
+            );
+        }
+        assert!(
+            requests.try_recv().is_err(),
+            "no upstream attempt may happen for a pinned target that cannot serve"
         );
     }
 

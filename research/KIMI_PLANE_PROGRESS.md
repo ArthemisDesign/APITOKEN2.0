@@ -60,7 +60,10 @@
 | Плоскость: `/usages` → FIFO/spend → immutable observation/CAS → steering | `crates/forward/src/{billing,kimi/**}`, `crates/server` | `23e7baba` |
 | Auth Bot: ввод прокси текстом на `km_proxy`, каноникализация до `km_ready`, карточка готовности на buyer/IPRoyal путях | `crates/authbot/src/bot.rs` | `3089ce72` |
 | Observability: extended operational status, admin-only `GET /kimi-subs`, aggregate метрики, алерты + runbook + consistency-тест | `crates/{forward,server}`, `observability/**`, `deploy/**`, `docs/**` | `54db2afc` |
-| Blue-green/default-off delivery plane: `ProviderMode::Kimi`, слоты 8804/8805 + origin 8803, capability markers, rollback-ветка, scrape `provider: kimi`, fail-closed `/v1/messages` | `crates/{forward,server}`, `systemd/claude-api-kimi{,@}.service`, `deploy/**`, `observability/**`, `docs/**` | текущий checkpoint |
+| Blue-green/default-off delivery plane: `ProviderMode::Kimi`, слоты 8804/8805 + origin 8803, capability markers, rollback-ветка, scrape `provider: kimi`, fail-closed `/v1/messages` | `crates/{forward,server}`, `systemd/claude-api-kimi{,@}.service`, `deploy/**`, `observability/**`, `docs/**` | `598b46a4` |
+| Admin: KIMI capacity board в control-room подписок | `apps/admin/**`, `docs/product/ADMIN_PANEL.md` | `8797a7a8` |
+| Pool parity: pre-byte rotation holes, pinned CLI UA, Retry-After cooling | `crates/forward/src/kimi/**`, `crates/kimi-credential` | `9ad22a58` |
+| Точная атрибуция: admin calibration headers, pinned profile + immutable request id, bounded recent-turns read, поля `/kimi-subs` | `crates/{forward,server,registry}` | текущий checkpoint |
 
 ## Открытые швы (выглядит подключённым, не работает)
 
@@ -84,8 +87,9 @@
 
 ## Следующее действие
 
-**Безопасный live calibration runner:** engine attribution support + `tools/kimi_calibration`
-(dry-run по умолчанию, целочисленный бюджет, точная атрибуция по immutable request id).
+**Смёржить safe live calibration runner** (`tools/kimi_calibration`, ветка
+`feat/kimi-calibration-runner-20260804`) поверх готовой engine-атрибуции и включить KIMI на
+выделенной плоскости reviewed unit change (`CLAUDE_API_KIMI_ENABLED=1`).
 
 **Процессные заметки (обе уже стоили потерянного мёржа):**
 
@@ -107,10 +111,13 @@
 
 ## Очередь после этого
 
-1. Live-матрица на owned Kimi Code subscription; без неё generation не запускается.
+1. Live-матрица на owned Kimi Code subscription (подписка подключена 2026-08-04): incremental SSE,
+   quota movement pairing, 401/403 classification и остальные unknown из §6 манифеста.
 
 ## Заблокировано человеком
 
-- **Живая подписка Kimi Code.** Без неё не снимаются 8 `unknown` из §6 манифеста: auth-заголовок
-  Anthropic-маршрута, форма terminal usage, реальная инкрементальность SSE, единица `used`,
-  различение 401/403, набор планов, поведение месячного потолка, платные tool/search-единицы.
+- ~~**Живая подписка Kimi Code.**~~ Подписка Vivace подключена через Auth Bot 2026-08-04;
+  live smoke (`/me`, `/usages`, одна минимальная генерация с exact metering) прошёл.
+- **Бюджет на платную калибровку.** При потолке $0.0001 ни один leg не проходит worst-case
+  full-context bound — runner останавливается до dispatch. Нужно явное разрешение с бо́льшим
+  лимитом. Недельная квота подписки на момент подключения исчерпана на 98/100.

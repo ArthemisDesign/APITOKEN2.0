@@ -258,6 +258,12 @@
   disabled envelope `{"now", "enabled": false, "profiles": []}`, либо read-only operational
   projection: bounded FIFO delivery, fleet counts и per-profile cooling/inflight/quota-window
   state плюс per-window durable calibration (capacity/remaining как decimal nano strings).
+  Для live-runner'а конверт несёт `calibration_authority_available`,
+  `calibration_recent_turn_limit`, immutable `calibration_recent_turns` (engine request id +
+  opaque profile id + bounded plan + exact usage/nano-legs) и `conversion_models` с официальным
+  rate card. Dispatch поддерживает admin-only пару `x-apitoken-calibration-{profile,request-id}`:
+  только вместе, только под admin-ключом, никогда upstream; полупара/не-admin/мусор — 400, а
+  закреплённый turn идёт ровно на указанный профиль без rebind.
   Сериализуются только opaque roster ids и reviewed bounded plan labels (`"unreviewed"` для
   любого нереviewed provider plan string); subject, email, phone, token, proxy, credential path,
   customer/request id и raw provider errors не сериализуются никогда, неизвестное — `null`,

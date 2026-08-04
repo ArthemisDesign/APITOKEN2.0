@@ -176,10 +176,22 @@ disabled envelope `{"now": <unix>, "enabled": false, "profiles": []}`. Enabled e
 profiles, inflight, три оси cooling) и per-profile объекты с cooling-until timestamps, последним
 quota snapshot по каждому окну (`used`/`limit` — provider authority, доля и реальная measurement
 resolution рядом) и per-window calibration из durable PostgreSQL evidence (samples, confidence,
-capacity/remaining как decimal nano strings, estimator version). Контракт редакции: сериализуются
+capacity/remaining как decimal nano strings, estimator version). Для безопасного live-runner'а
+конверт дополнительно публикует `calibration_authority_available`,
+`calibration_recent_turn_limit` и `calibration_recent_turns` — immutable turn events
+(engine request id, opaque profile id, bounded plan label, served/requested модель, полный usage
+и exact nano-legs как decimal strings) — плюс `conversion_models` с официальным rate card для
+worst-case bounds. Контракт редакции: сериализуются
 только opaque profile ids и reviewed bounded plan labels; subject, email, phone, token, proxy,
 credential path, customer/request id и raw provider errors никогда не сериализуются; неизвестное
 — `null`, а не 0. Плоскость default-off: пока KIMI не включён, envelope всегда disabled.
+
+Точная атрибуция runner'а поддерживается на dispatch: admin-only заголовки
+`x-apitoken-calibration-profile` (полный opaque id, 1..128) и
+`x-apitoken-calibration-request-id` (UUIDv4) идут парой, только под admin-ключом и никогда не
+уходят upstream; полупара, не-admin или мусорное значение отклоняются 400. Закреплённый turn
+использует переданный immutable id и выполняется ровно на указанном профиле: cooling/wall — это
+стена, а не повод для rebind на соседний профиль.
 
 ---
 

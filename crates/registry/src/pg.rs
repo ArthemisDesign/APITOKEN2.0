@@ -5278,6 +5278,52 @@ impl PgStore {
         Ok(rows)
     }
 
+    /// Most recent immutable KIMI turn events, newest first, bounded by `limit`.
+    ///
+    /// This is the attribution surface of the admin-only calibration runner: its paid turns are
+    /// found here by exact internal request id. The read is bounded so it stays cheap no matter
+    /// how long the fleet runs, and every row is revalidated on the way out — a corrupted row
+    /// fails the read closed instead of feeding the runner invented numbers.
+    pub fn list_kimi_recent_turns(&mut self, limit: i64) -> Result<Vec<KimiTurnCalibrationEvent>> {
+        let rows = self.client.query(
+            "SELECT request_id,subject_id,plan,requested_model,served_model,context_mode,\
+             reasoning_effort,tariff_schedule_id,priced_ts,completed_at,input_tokens,\
+             cache_read_tokens,cache_write_tokens,output_tokens,reasoning_output_tokens,\
+             api_input_nanousd,api_cache_read_nanousd,api_cache_write_nanousd,\
+             api_output_nanousd,api_total_nanousd \
+             FROM kimi_turn_calibration_events ORDER BY completed_at DESC, request_id LIMIT $1",
+            &[&limit],
+        )?;
+        rows.iter()
+            .map(|row| {
+                let event = KimiTurnCalibrationEvent {
+                    request_id: row.get(0),
+                    subject_id: row.get(1),
+                    plan: row.get(2),
+                    requested_model: row.get(3),
+                    served_model: row.get(4),
+                    context_mode: row.get(5),
+                    reasoning_effort: row.get(6),
+                    tariff_schedule_id: row.get(7),
+                    priced_ts: row.get(8),
+                    completed_at: row.get(9),
+                    input_tokens: row.get(10),
+                    cache_read_tokens: row.get(11),
+                    cache_write_tokens: row.get(12),
+                    output_tokens: row.get(13),
+                    reasoning_output_tokens: row.get(14),
+                    api_input_nanousd: row.get(15),
+                    api_cache_read_nanousd: row.get(16),
+                    api_cache_write_nanousd: row.get(17),
+                    api_output_nanousd: row.get(18),
+                    api_total_nanousd: row.get(19),
+                };
+                event.validate()?;
+                Ok(event)
+            })
+            .collect()
+    }
+
     /// Immutable observation history for one window, oldest first.
     ///
     /// This is what an estimator-version change rebuilds from: a stored derived value is never

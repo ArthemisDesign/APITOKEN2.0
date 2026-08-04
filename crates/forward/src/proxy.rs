@@ -1198,6 +1198,17 @@ pub async fn forward(
                 return local_err_for(LocalErr::Overloaded, "kimi_gateway_unavailable", Some(2));
             };
             let kimi_body = parsed.take().expect("KIMI model came from parsed body");
+            // Admin-only exact calibration targeting, mirroring the Gemini admission contract:
+            // both headers together, validated, never forwarded upstream (send_generation passes
+            // through only the two named Anthropic headers). A customer carrying them, a
+            // half-present pair or a malformed value are all refused fail-closed.
+            let calibration = match crate::kimi::parse_kimi_calibration_headers(
+                &parts.headers,
+                matches!(authz, Authz::Admin { .. }),
+            ) {
+                Ok(calibration) => calibration,
+                Err(()) => return local_err(LocalErr::BadRequest, None),
+            };
             let kimi_affinity = authz
                 .affinity_scope()
                 .and_then(|scope| app.affinity.infer(scope, &parts.headers, &kimi_body));
@@ -1231,6 +1242,7 @@ pub async fn forward(
                     billing,
                     affinity: kimi_affinity,
                     affinity_store: app.affinity.clone(),
+                    calibration,
                 })
                 .await;
         }

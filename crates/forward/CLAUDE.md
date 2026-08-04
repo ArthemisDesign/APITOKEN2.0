@@ -995,6 +995,13 @@ calibration rows (`AsyncBilling::kimi_calibration_report` поверх PostgreSQ
 `PgStore::list_kimi_calibrations`, на SQLite authority — пустой отчёт) join-ятся к opaque id
 только через `profile_id_for_subject`, и чужой subject наружу не сериализуется.
 
+Точная атрибуция live-runner'а: dispatch принимает admin-only пару
+`x-apitoken-calibration-{profile,request-id}` (валидация `kimi_credential::validate_profile_id` +
+UUIDv4), наружу не проксируется. Закреплённый turn работает ровно на указанном профиле
+(cooling/wall — стена, а не повод для rebind) и пишет durable turn event под переданным immutable
+request id; `AsyncBilling::kimi_recent_turns` отдаёт bounded newest-first чтение для атрибуции
+(PostgreSQL-only, на SQLite authority — пусто).
+
 **GLM backend preview runtime — default-off, без публичного каталога:**
 `glm_calibration.rs` содержит чистый dual-ledger estimator одного окна подписки GLM Coding
 Plan (Zhipu AI / Z.ai), а `glm/` — строгий loader encrypted roster, last-good atomic reload,

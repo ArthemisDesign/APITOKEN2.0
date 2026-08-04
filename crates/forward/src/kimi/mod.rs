@@ -17,4 +17,4 @@ pub use gateway::{
     bounded_plan_label, KimiGateway, KimiOperationalStatus, KimiProfileStatus,
     KimiQuotaWindowStatus,
 };
-pub(crate) use gateway::{KimiBillingInput, KimiRequest};
+pub(crate) use gateway::{parse_kimi_calibration_headers, KimiBillingInput, KimiRequest};

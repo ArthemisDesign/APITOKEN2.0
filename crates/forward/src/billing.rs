@@ -1700,6 +1700,10 @@ enum ReadCmd {
     ),
     CodexCalibrationReport(oneshot::Sender<anyhow::Result<Vec<CodexTurnCalibrationAggregate>>>),
     KimiCalibrationReport(oneshot::Sender<anyhow::Result<Vec<KimiCalibrationRow>>>),
+    KimiRecentTurns(
+        i64,
+        oneshot::Sender<anyhow::Result<Vec<KimiTurnCalibrationEvent>>>,
+    ),
     KeyAuth(String, oneshot::Sender<anyhow::Result<Option<KeyAuth>>>),
     KeyGet(String, oneshot::Sender<anyhow::Result<Option<KeyRow>>>),
     Account(String, oneshot::Sender<anyhow::Result<Option<AccountRow>>>),
@@ -2319,6 +2323,24 @@ impl AsyncBilling {
         let reader = &self.readers[self.rr.fetch_add(1, Ordering::Relaxed) % self.readers.len()];
         reader
             .send(ReadCmd::KimiCalibrationReport(reply))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    /// Read the most recent immutable KIMI turn events, newest first, for exact request-id
+    /// attribution in the admin-only calibration runner. PostgreSQL-only like every KIMI
+    /// calibration read: a SQLite authority reports an empty list rather than an error.
+    pub async fn kimi_recent_turns(
+        &self,
+        limit: i64,
+    ) -> anyhow::Result<Vec<KimiTurnCalibrationEvent>> {
+        let (reply, result) = oneshot::channel();
+        let reader = &self.readers[self.rr.fetch_add(1, Ordering::Relaxed) % self.readers.len()];
+        reader
+            .send(ReadCmd::KimiRecentTurns(limit, reply))
             .await
             .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
         result
@@ -3193,6 +3215,10 @@ impl AsyncBilling {
                             ReadCmd::KimiCalibrationReport(reply) => {
                                 // KIMI calibration authority is PostgreSQL-only; a SQLite
                                 // authority simply has no rows to report.
+                                let _ = reply.send(Ok(Vec::new()));
+                            }
+                            ReadCmd::KimiRecentTurns(_limit, reply) => {
+                                // Same PostgreSQL-only contract as the calibration report.
                                 let _ = reply.send(Ok(Vec::new()));
                             }
                             ReadCmd::KeyAuth(k, r) => {
@@ -4339,6 +4365,9 @@ impl AsyncBilling {
                             }
                             ReadCmd::KimiCalibrationReport(reply) => {
                                 answer!(reply, pg.list_kimi_calibrations())
+                            }
+                            ReadCmd::KimiRecentTurns(limit, reply) => {
+                                answer!(reply, pg.list_kimi_recent_turns(limit))
                             }
                             ReadCmd::KeyAuth(k, r) => answer!(r, pg.key_account(&k)),
                             ReadCmd::KeyGet(k, r) => answer!(r, pg.key_get(&k)),
@@ -8251,6 +8280,113 @@ mod tests {
             assert_eq!(subject_b[0].plan, "unreviewed-base-plan");
             assert_eq!(subject_b[0].native_used_units, 10);
             billing.flush().await.unwrap();
+        });
+        drop(billing);
+
+        lock_holder
+            .batch_execute(
+                "TRUNCATE kimi_window_calibrations,kimi_window_observations,\
+                 kimi_calibration_subject_spend,kimi_turn_calibration_events \
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        lock_holder
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn kimi_recent_turns_is_empty_on_a_sqlite_authority() {
+        let billing = AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::new(":memory:".to_owned(), None),
+            None,
+            1,
+            0,
+        )
+        .unwrap();
+        // KIMI calibration is PostgreSQL-only: the read is empty, not an error.
+        assert_eq!(billing.kimi_recent_turns(512).await.unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn kimi_postgres_recent_turns_read_is_bounded_newest_first_and_exact() {
+        const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_441;
+
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!(
+                "skipping KIMI PostgreSQL recent-turns matrix: CLAUDE_API_TEST_DATABASE_URL is unset"
+            );
+            return;
+        };
+        let mut lock_holder = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        lock_holder
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+        pg.migrate().unwrap();
+        lock_holder
+            .batch_execute(
+                "TRUNCATE kimi_window_calibrations,kimi_window_observations,\
+                 kimi_calibration_subject_spend,kimi_turn_calibration_events \
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let instance_id = format!("kimi-turns-{}-{unique}", std::process::id());
+        let owner = pg.claim_instance(&instance_id, 60).unwrap();
+        drop(pg);
+
+        let billing = AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+            Some(owner),
+            1,
+            0,
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            for (id, total, completed_at) in [
+                ("kimi-turn-older", 11_600, 1_800_000_100),
+                ("kimi-turn-newer", 22_400, 1_800_000_200),
+                ("kimi-turn-middle", 5_000, 1_800_000_150),
+            ] {
+                billing
+                    .record_kimi_turn(kimi_event(id, total, completed_at))
+                    .await
+                    .unwrap();
+            }
+            billing.flush().await.unwrap();
+
+            let turns = billing.kimi_recent_turns(512).await.unwrap();
+            let ids: Vec<&str> = turns.iter().map(|turn| turn.request_id.as_str()).collect();
+            assert_eq!(
+                ids,
+                ["kimi-turn-newer", "kimi-turn-middle", "kimi-turn-older"],
+                "newest first by completed_at"
+            );
+            // Exact roundtrip: the full usage and money vector survives the read.
+            let newer = &turns[0];
+            assert_eq!(newer.served_model, "kimi-k2.7-code");
+            assert_eq!(newer.api_total_nanousd, 22_400);
+            assert_eq!(newer.completed_at, 1_800_000_200);
+            assert_eq!(newer.tariff_schedule_id, "moonshot/test/v1");
+            // The bound is honored.
+            let limited = billing.kimi_recent_turns(2).await.unwrap();
+            assert_eq!(limited.len(), 2);
+            assert_eq!(limited[0].request_id, "kimi-turn-newer");
+            assert_eq!(limited[1].request_id, "kimi-turn-middle");
         });
         drop(billing);
 

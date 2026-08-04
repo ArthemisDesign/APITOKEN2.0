@@ -4045,21 +4045,35 @@ async fn kimi_subs(
     };
     let status = kimi.operational_status();
     let now = pool::now();
-    let report = match &app.billing {
-        Some(billing) => match billing.kimi_calibration_report().await {
-            Ok(report) => Some(report),
-            Err(error) => {
-                eprintln!("KIMI calibration report unavailable: {error:#}");
-                None
-            }
-        },
-        None => None,
+    let (report, recent_turns) = match &app.billing {
+        Some(billing) => {
+            let report = match billing.kimi_calibration_report().await {
+                Ok(report) => Some(report),
+                Err(error) => {
+                    eprintln!("KIMI calibration report unavailable: {error:#}");
+                    None
+                }
+            };
+            let recent_turns = match billing
+                .kimi_recent_turns(registry::MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS as i64)
+                .await
+            {
+                Ok(turns) => Some(turns),
+                Err(error) => {
+                    eprintln!("KIMI recent turns unavailable: {error:#}");
+                    None
+                }
+            };
+            (report, recent_turns)
+        }
+        None => (None, None),
     };
     Json(kimi_subs_value_with_report(
         kimi,
         &status,
         now,
         report.as_deref(),
+        recent_turns.as_deref(),
     ))
     .into_response()
 }
@@ -4069,6 +4083,7 @@ fn kimi_subs_value_with_report(
     status: &forward::KimiOperationalStatus,
     now: i64,
     report: Option<&[registry::KimiCalibrationRow]>,
+    recent_turns: Option<&[registry::KimiTurnCalibrationEvent]>,
 ) -> Value {
     // Durable rows are keyed by provider subject; the join to the opaque roster id happens here
     // and the subject itself is never serialized. A row whose subject left the roster stays
@@ -4083,9 +4098,23 @@ fn kimi_subs_value_with_report(
         };
         calibration_by_profile.entry(id).or_default().push(row);
     }
+    // The recent-turn attribution surface for the admin-only calibration runner: the same join,
+    // the same rule — a roster-less subject is never serialized.
+    let recent: Vec<Value> = recent_turns
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|event| {
+            let profile_id = gateway.profile_id_for_subject(&event.subject_id)?;
+            Some(kimi_turn_value(event, &profile_id))
+        })
+        .collect();
     json!({
         "now": now,
         "enabled": true,
+        "calibration_authority_available": report.is_some(),
+        "calibration_recent_turn_limit": registry::MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS,
+        "calibration_recent_turns": recent,
+        "conversion_models": kimi_conversion_models(now),
         "delivery": {
             "pending_events": status.delivery.pending_events,
             "dropped_events": status.delivery.dropped_events,
@@ -4176,6 +4205,55 @@ fn kimi_calibration_value(row: &registry::KimiCalibrationRow) -> Value {
         "last_measured_at": row.last_measured_at,
         "estimator_version": row.estimator_version,
     })
+}
+
+/// One immutable KIMI turn for exact runner attribution. `profile_id` is the already-joined
+/// opaque roster id; the subject is never serialized. Money legs are decimal strings.
+fn kimi_turn_value(event: &registry::KimiTurnCalibrationEvent, profile_id: &str) -> Value {
+    json!({
+        "request_id": event.request_id,
+        "profile_id": profile_id,
+        "plan": forward::kimi::bounded_plan_label(&event.plan),
+        "requested_model": event.requested_model,
+        "served_model": event.served_model,
+        "context_mode": event.context_mode,
+        "reasoning_effort": event.reasoning_effort,
+        "tariff_schedule_id": event.tariff_schedule_id,
+        "priced_ts": event.priced_ts,
+        "completed_at": event.completed_at,
+        "input_tokens": event.input_tokens,
+        "cache_read_tokens": event.cache_read_tokens,
+        "cache_write_tokens": event.cache_write_tokens,
+        "output_tokens": event.output_tokens,
+        "reasoning_output_tokens": event.reasoning_output_tokens,
+        "api_input_nanousd": event.api_input_nanousd.to_string(),
+        "api_cache_read_nanousd": event.api_cache_read_nanousd.to_string(),
+        "api_cache_write_nanousd": event.api_cache_write_nanousd.to_string(),
+        "api_output_nanousd": event.api_output_nanousd.to_string(),
+        "api_total_nanousd": event.api_total_nanousd.to_string(),
+    })
+}
+
+/// The official KIMI rate card the runner needs for worst-case bounds: served-model prices as
+/// decimal nano-per-token strings with the tariff schedule id.
+fn kimi_conversion_models(now: i64) -> Vec<Value> {
+    metering::kimi::kimi_catalog_at(now)
+        .iter()
+        .map(|spec| {
+            json!({
+                "id": spec.id,
+                "display_name": spec.display_name,
+                "input_token_limit": spec.input_token_limit,
+                "api_tariff_schedule_id": metering::kimi::KIMI_TARIFF_SCHEDULE_ID,
+                "api": {
+                    "cached_input_nano_per_token": spec.prices.cached_input.to_string(),
+                    "input_nano_per_token": spec.prices.input.to_string(),
+                    "cache_write_nano_per_token": spec.prices.cache_write.to_string(),
+                    "output_nano_per_token": spec.prices.output.to_string(),
+                },
+            })
+        })
+        .collect()
 }
 
 fn codex_window_value(c: &forward::codex::CodexWindowCapacityReport) -> Value {
@@ -7796,7 +7874,12 @@ mod tests {
             "subject",
             "email",
             "phone",
-            "token",
+            // Compound secret shapes (the Gemini scan idiom): bare "token" would false-positive on
+            // the token-count and nano-per-token price vocabulary of conversion_models.
+            "access_token",
+            "refresh_token",
+            "api_key",
+            "authorization",
             "proxy",
             "credential",
             "request_id",
@@ -7953,9 +8036,22 @@ mod tests {
     fn kimi_subs_value_serializes_the_exact_quota_window() {
         let fixture = KimiHttpFixture::new();
         let gateway = fixture.gateway();
-        let value = kimi_subs_value_with_report(&gateway, &unknown_kimi_status(), 1_800_000_100, None);
+        let value = kimi_subs_value_with_report(&gateway, &unknown_kimi_status(), 1_800_000_100, None, None);
         assert_eq!(value["fleet"]["inflight_requests"], 2);
         assert_eq!(value["delivery"]["pending_events"], 1);
+        // The runner attribution surface: authority flag, bounded recent-turn list and the
+        // official rate card for worst-case bounds.
+        assert_eq!(value["calibration_authority_available"], false);
+        assert_eq!(
+            value["calibration_recent_turn_limit"],
+            registry::MAX_RECENT_PROVIDER_TURN_CALIBRATION_EVENTS
+        );
+        assert_eq!(value["calibration_recent_turns"], json!([]));
+        let models = value["conversion_models"].as_array().unwrap();
+        assert!(!models.is_empty());
+        assert!(models.iter().any(|model| model["id"] == "kimi-k2.7-code"
+            && model["api"]["output_nano_per_token"] == "4000"
+            && model["api_tariff_schedule_id"] == metering::kimi::KIMI_TARIFF_SCHEDULE_ID));
         assert_eq!(value["profiles"][0]["quota_observed_at"], 1_800_000_000);
         let window = &value["profiles"][0]["quota"][0];
         assert_eq!(window["duration_secs"], 18_000);
@@ -7988,6 +8084,7 @@ mod tests {
             &unknown_kimi_status(),
             1_800_000_100,
             Some(&report),
+            None,
         );
         let calibration = &value["profiles"][0]["calibration"];
         // The roster-less subject stays durable for audit but is never serialized.
@@ -8022,6 +8119,7 @@ mod tests {
             &unknown_kimi_status(),
             1_800_000_100,
             Some(&report),
+            None,
         );
         let entry = &value["profiles"][0]["calibration"][0];
         assert!(entry["capacity"]["current_nano"].is_null());
@@ -8045,8 +8143,64 @@ mod tests {
             &unknown_kimi_status(),
             1_800_000_100,
             Some(&report),
+            None,
         );
         assert!(value["profiles"][0]["calibration"][0]["remaining"].is_null());
+    }
+
+    #[test]
+    fn kimi_subs_recent_turns_join_through_the_opaque_id_and_bound_the_plan() {
+        let fixture = KimiHttpFixture::new();
+        let gateway = fixture.gateway();
+        let event = registry::KimiTurnCalibrationEvent {
+            request_id: "123e4567-e89b-42d3-a456-426614174000".into(),
+            subject_id: "subject-1".into(),
+            plan: "unreviewed-base-plan".into(),
+            requested_model: "kimi-for-coding".into(),
+            served_model: "kimi-k2.7-code".into(),
+            context_mode: "256k".into(),
+            reasoning_effort: "high".into(),
+            tariff_schedule_id: metering::kimi::KIMI_TARIFF_SCHEDULE_ID.into(),
+            priced_ts: 1_800_000_000,
+            completed_at: 1_800_000_001,
+            input_tokens: 10,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 2,
+            reasoning_output_tokens: 0,
+            api_input_nanousd: 600_000,
+            api_cache_read_nanousd: 0,
+            api_cache_write_nanousd: 0,
+            api_output_nanousd: 600_000,
+            api_total_nanousd: 1_200_000,
+        };
+        let mut foreign = event.clone();
+        foreign.subject_id = "subject-unknown".into();
+        foreign.request_id = "223e4567-e89b-42d3-a456-426614174000".into();
+        let turns = vec![event, foreign];
+
+        let value = kimi_subs_value_with_report(
+            &gateway,
+            &unknown_kimi_status(),
+            1_800_000_100,
+            None,
+            Some(&turns),
+        );
+        let recent = value["calibration_recent_turns"].as_array().unwrap();
+        // The roster-less subject's turn stays durable but is never serialized.
+        assert_eq!(recent.len(), 1);
+        let turn = &recent[0];
+        assert_eq!(turn["request_id"], "123e4567-e89b-42d3-a456-426614174000");
+        assert_eq!(turn["profile_id"], "kimi-01");
+        // The provider-controlled plan string is bounded to the reviewed placeholder.
+        assert_eq!(turn["plan"], "unreviewed");
+        assert_eq!(turn["served_model"], "kimi-k2.7-code");
+        assert_eq!(turn["api_total_nanousd"], "1200000");
+
+        let wire = value.to_string();
+        for forbidden in ["subject", "unreviewed-base-plan"] {
+            assert!(!wire.contains(forbidden), "leaked field {forbidden}");
+        }
     }
 
     #[test]
