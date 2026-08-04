@@ -1167,6 +1167,30 @@ export const pricingPolicyDeliveryRepairResponseV2Schema = z.object({
 export type PricingPolicyDeliveryRepairResponseV2 =
   z.infer<typeof pricingPolicyDeliveryRepairResponseV2Schema>;
 
+/**
+ * Protected operator convergence for the commerce catalog/switch heads: stages the exact stored
+ * immutable version as an engine control job. The request carries no policy payload, only the
+ * version identity and the human reason.
+ */
+export const pricingCatalogJobStageRequestV2Schema = z.object({
+  product_id: z.enum(["main", "openkeys"]),
+  generation: z.number().int().safe().positive(),
+  reason: pricingStageControlMutationReasonV2Schema,
+}).strict();
+export type PricingCatalogJobStageRequestV2 = z.infer<typeof pricingCatalogJobStageRequestV2Schema>;
+
+export const pricingSwitchJobStageRequestV2Schema = z.object({
+  generation: z.number().int().safe().positive(),
+  reason: pricingStageControlMutationReasonV2Schema,
+}).strict();
+export type PricingSwitchJobStageRequestV2 = z.infer<typeof pricingSwitchJobStageRequestV2Schema>;
+
+export const pricingControlJobStageResponseV2Schema = z.object({
+  status: z.enum(["staged"]),
+  job_id: z.string().uuid(),
+}).strict();
+export type PricingControlJobStageResponseV2 = z.infer<typeof pricingControlJobStageResponseV2Schema>;
+
 const pricingStageControlPositiveIntegerV2Schema = nonNegativeIntegerSchema.refine(
   (value) => BigInt(value) > 0n,
   "value must be positive",

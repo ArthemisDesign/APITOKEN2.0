@@ -163,6 +163,8 @@ GET/PATCH /admin/service-policies/{id}?product_id=...
 GET       /admin/service-account-inventory
 PUT       /admin/service-account-inventory/{service_id}
 POST      /admin/pricing-policy-delivery-repairs
+POST      /admin/pricing-catalog-jobs/stage
+POST      /admin/pricing-switch-jobs/stage
 GET       /admin/pricing-stage8-capture-v2
 POST      /admin/pricing-stage8-capture-v2/stage
 GET       /admin/pricing-release-activation-v2
@@ -258,6 +260,13 @@ global release head, атомарно сохраняет старый job как
 `shadow + legacy_single` delivery и audit link. Он не является generic retry permanent-ошибок и
 не разрешает ручное редактирование job/binding rows.
 
+Если commerce catalog/switch heads отстали от engine-active lineage (engine перешёл на более новое
+immutable поколение отдельным producer), protected `POST /v1/admin/pricing-catalog-jobs/stage`
+(`{product_id, generation, reason}`) и `POST /v1/admin/pricing-switch-jobs/stage`
+(`{generation, reason}`) stage'ят control job ровно для хранимой immutable версии: запрос не несёт
+payload, версия перечитывается из commerce storage, а engine delivery идемпотентен (exact replay
+возвращает `unchanged`). Staging двигает только commerce head и создаёт audited delivery job; он не
+меняет traffic, политики аккаунтов или деньги. Replay не создаёт второй job и не дублирует audit.
 The operation exhausts engine and OpenKeys cursors twice, snapshots commerce/service in
 `REPEATABLE READ`, writes target/recovery skeletons in `SERIALIZABLE`, and records only exact
 prepare+readback ACKs for dormant catalogs, switches and policies. It never creates a Stage 6 job,

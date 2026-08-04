@@ -73,6 +73,13 @@ export type ClaimedPricingControlJob =
 
 export type PricingControlJobDisposition = "retry" | "superseded" | "dead";
 
+export class PricingControlJobStageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PricingControlJobStageError";
+  }
+}
+
 interface VersionedJobRow {
   id: string;
   attempts: number;
@@ -279,6 +286,160 @@ export async function stagePricingCatalogControlJob(
   } finally {
     client.release();
   }
+}
+
+export interface StoredControlJobStageAudit {
+  actorId: string;
+  reason: string;
+}
+
+async function recordControlJobStageAudit(
+  database: Database,
+  audit: StoredControlJobStageAudit,
+  action: string,
+  targetType: string,
+  targetId: string,
+  jobId: string,
+): Promise<void> {
+  await database.pool.query(`
+    INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+    VALUES ('admin', $1, $2, $3, $4, $5::jsonb)
+  `, [
+    audit.actorId,
+    action,
+    targetType,
+    targetId,
+    JSON.stringify({ jobId, reason: audit.reason }),
+  ]);
+}
+
+/**
+ * Stages a catalog convergence job from the stored immutable version — the operator passes only
+ * the product and generation, never a wire payload. Exact replay returns the existing job.
+ */
+export async function stageStoredPricingCatalogControlJob(
+  database: Database,
+  productId: string,
+  generation: number,
+  audit: StoredControlJobStageAudit,
+): Promise<string> {
+  const version = await database.pool.query<{
+    schema_version: string;
+    capability_generation: string;
+    capability_digest: string;
+    content_digest: string;
+  }>(`
+    SELECT schema_version::text, capability_generation::text, capability_digest, content_digest
+    FROM product_catalog_versions
+    WHERE product_id = $1 AND generation = $2
+  `, [productId, generation]);
+  const row = version.rows[0];
+  if (!row) {
+    throw new PricingControlJobStageError(
+      `catalog version ${productId}/${generation} does not exist in commerce storage`,
+    );
+  }
+  const entries = await database.pool.query<{
+    provider_id: string;
+    canonical_model_id: string;
+    enabled: boolean;
+  }>(`
+    SELECT provider_id, canonical_model_id, enabled
+    FROM product_catalog_entries
+    WHERE product_id = $1 AND generation = $2
+    ORDER BY provider_id, canonical_model_id
+  `, [productId, generation]);
+  const spec = pricingCatalogSpecSchema.parse({
+    product_id: productId,
+    generation,
+    schema_version: safeVersion(row.schema_version, "catalog schema version"),
+    capability_generation: safeVersion(row.capability_generation, "catalog capability generation"),
+    capability_digest: row.capability_digest,
+    content_digest: row.content_digest,
+    entries: entries.rows,
+  });
+  const existingCatalogJob = await database.pool.query<{ id: string }>(`
+    SELECT id FROM engine_catalog_jobs WHERE product_id = $1 AND generation = $2
+  `, [productId, generation]);
+  const jobId = await stagePricingCatalogControlJob(database, spec);
+  if (!existingCatalogJob.rows[0]) {
+    await recordControlJobStageAudit(
+      database, audit, "pricing_catalog.convergence_staged", "product_catalog",
+      `catalog:${productId}:${generation}`, jobId,
+    );
+  }
+  return jobId;
+}
+
+/**
+ * Stages a provider-switch convergence job from the stored immutable version. Exact replay
+ * returns the existing job.
+ */
+export async function stageStoredProviderSwitchControlJob(
+  database: Database,
+  generation: number,
+  audit: StoredControlJobStageAudit,
+): Promise<string> {
+  const version = await database.pool.query<{
+    schema_version: string;
+    capability_generation: string;
+    capability_digest: string;
+    content_digest: string;
+  }>(`
+    SELECT schema_version::text, capability_generation::text, capability_digest, content_digest
+    FROM provider_switch_versions
+    WHERE generation = $1
+  `, [generation]);
+  const row = version.rows[0];
+  if (!row) {
+    throw new PricingControlJobStageError(
+      `provider-switch generation ${generation} does not exist in commerce storage`,
+    );
+  }
+  const entries = await database.pool.query<{
+    provider_id: string;
+    scope_type: "master" | "product" | "segment";
+    product_id: string;
+    segment: "" | "b2c" | "b2b";
+    catalog_generation: string | null;
+    enabled: boolean;
+  }>(`
+    SELECT provider_id, scope_type, product_id, segment,
+           catalog_generation::text, enabled
+    FROM provider_switch_entries
+    WHERE generation = $1
+    ORDER BY provider_id, scope_type, product_id, segment
+  `, [generation]);
+  const spec = providerSwitchSpecSchema.parse({
+    generation,
+    schema_version: safeVersion(row.schema_version, "switch schema version"),
+    capability_generation: safeVersion(row.capability_generation, "switch capability generation"),
+    capability_digest: row.capability_digest,
+    content_digest: row.content_digest,
+    entries: entries.rows.map((entry) => ({
+      provider_id: entry.provider_id,
+      scope: entry.scope_type === "master"
+        ? "master"
+        : entry.scope_type === "product"
+          ? { product: { product_id: entry.product_id } }
+          : { segment: { product_id: entry.product_id, segment: entry.segment } },
+      catalog_generation: entry.catalog_generation === null
+        ? null
+        : safeVersion(entry.catalog_generation, "switch catalog generation"),
+      enabled: entry.enabled,
+    })),
+  });
+  const existingSwitchJob = await database.pool.query<{ id: string }>(`
+    SELECT id FROM engine_switch_jobs WHERE generation = $1
+  `, [generation]);
+  const jobId = await stageProviderSwitchControlJob(database, spec);
+  if (!existingSwitchJob.rows[0]) {
+    await recordControlJobStageAudit(
+      database, audit, "provider_switches.convergence_staged", "provider_switches",
+      `switches:${generation}`, jobId,
+    );
+  }
+  return jobId;
 }
 
 export async function stageProviderSwitchControlJob(

@@ -16,6 +16,8 @@ import {
 } from "@nestjs/common";
 import {
   createBusinessInviteSchema,
+  pricingCatalogJobStageRequestV2Schema,
+  pricingSwitchJobStageRequestV2Schema,
   pricingPolicyDeliveryRepairRequestV2Schema,
   pricingReleaseActivationOperatorV2Schema,
   pricingReleaseActivationStageRequestV2Schema,
@@ -36,6 +38,7 @@ import {
   BusinessInvitationConflictError,
   BusinessInvitationNotFoundError,
   FundingNormalizationJobV2Error,
+  PricingControlJobStageError,
   PricingPolicyDeliveryRepairError,
   PricingPolicyWriteError,
   PricingReleaseActivationJobV2Error,
@@ -307,10 +310,43 @@ export class AdminController {
     }
   }
 
+  @Post("pricing-catalog-jobs/stage")
+  @Header("Cache-Control", "no-store")
+  async stagePricingCatalogJobV2(
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    const input = pricingCatalogJobStageRequestV2Schema.safeParse(body);
+    if (!input.success) throw new BadRequestException(input.error.flatten());
+    const actor = verifiedAdminActor(actorHeader);
+    try {
+      return await this.admin.stagePricingCatalogJobV2(input.data, actor);
+    } catch (error) {
+      throwPricingStageControlHttpError(error);
+      throw error;
+    }
+  }
+
+  @Post("pricing-switch-jobs/stage")
+  @Header("Cache-Control", "no-store")
+  async stagePricingSwitchJobV2(
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    const input = pricingSwitchJobStageRequestV2Schema.safeParse(body);
+    if (!input.success) throw new BadRequestException(input.error.flatten());
+    const actor = verifiedAdminActor(actorHeader);
+    try {
+      return await this.admin.stagePricingSwitchJobV2(input.data, actor);
+    } catch (error) {
+      throwPricingStageControlHttpError(error);
+      throw error;
+    }
+  }
+
   @Post("pricing-policy-delivery-repairs")
   @Header("Cache-Control", "no-store")
-  async repairPricingPolicyDeliveryV2(
-    @Body() body: unknown,
+  async repairPricingPolicyDeliveryV2(    @Body() body: unknown,
     @Headers("x-admin-actor") actorHeader?: string,
   ): Promise<unknown> {
     const input = pricingPolicyDeliveryRepairRequestV2Schema.safeParse(body);
@@ -618,6 +654,9 @@ function throwPricingPolicyHttpError(error: unknown): void {
 }
 
 function throwPricingStageControlHttpError(error: unknown): void {
+  if (error instanceof PricingControlJobStageError) {
+    throw new NotFoundException(error.message);
+  }
   if (error instanceof PricingPolicyDeliveryRepairError) {
     if (error.code === "repair_job_not_found") throw new NotFoundException(error.message);
     throw new HttpException(error.message, 409);

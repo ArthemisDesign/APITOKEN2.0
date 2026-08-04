@@ -223,6 +223,46 @@ describe("managed pricing HTTP contract", () => {
     }, "operator")).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it("stages catalog and switch convergence jobs with attributed intent", async () => {
+    const stagePricingCatalogJobV2 = vi.fn().mockResolvedValue({
+      status: "staged",
+      job_id: "11111111-2222-3333-4444-555555555555",
+    });
+    const stagePricingSwitchJobV2 = vi.fn().mockResolvedValue({
+      status: "staged",
+      job_id: "66666666-7777-4888-8999-000000000000",
+    });
+    const controller = new AdminController({
+      stagePricingCatalogJobV2,
+      stagePricingSwitchJobV2,
+    } as unknown as AdminService);
+
+    const catalogBody = {
+      product_id: "main",
+      generation: 3,
+      reason: "converge commerce catalog head with the engine gen 3",
+    };
+    await expect(controller.stagePricingCatalogJobV2(catalogBody, "operator@example.test"))
+      .resolves.toMatchObject({ status: "staged" });
+    expect(stagePricingCatalogJobV2).toHaveBeenCalledWith(catalogBody, "operator@example.test");
+
+    const switchBody = { generation: 3, reason: "converge provider switch head with the engine" };
+    await expect(controller.stagePricingSwitchJobV2(switchBody, "operator@example.test"))
+      .resolves.toMatchObject({ status: "staged" });
+    expect(stagePricingSwitchJobV2).toHaveBeenCalledWith(switchBody, "operator@example.test");
+
+    await expect(controller.stagePricingCatalogJobV2(catalogBody, undefined))
+      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.stagePricingCatalogJobV2({ ...catalogBody, payload: {} }, "operator"))
+      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.stagePricingCatalogJobV2(
+      { ...catalogBody, product_id: "staging" },
+      "operator",
+    )).rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.stagePricingSwitchJobV2({ generation: 0, reason: "x" }, "operator"))
+      .rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it("reads and stages Stage 6 by the same exact plan digest with attributed intent", async () => {
     const planDigest = `sha256:v2:${"b".repeat(64)}`;
     const getPricingStage6V2 = vi.fn().mockResolvedValue({

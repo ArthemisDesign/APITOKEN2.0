@@ -4,6 +4,8 @@ import { Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   multiplierForDiscount,
+  pricingCatalogJobStageRequestV2Schema,
+  pricingControlJobStageResponseV2Schema,
   pricingPolicyDeliveryRepairResponseV2Schema,
   pricingReleaseActivationStageResponseV2Schema,
   pricingStage5ControlResultV2Schema,
@@ -12,6 +14,9 @@ import {
   pricingStage8CaptureStageResponseV2Schema,
   pricingShadowRolloutControlV2Schema,
   pricingShadowRolloutStageResponseV2Schema,
+  type PricingCatalogJobStageRequestV2,
+  type PricingControlJobStageResponseV2,
+  type PricingSwitchJobStageRequestV2,
   type PricingReleaseActivationStageRequestV2,
   type PricingPolicyDeliveryRepairRequestV2,
   type PricingPolicyDeliveryRepairResponseV2,
@@ -59,6 +64,8 @@ import {
   stageFundingNormalizationJobV2,
   stagePricingShadowRolloutV2,
   stagePricingStage8CaptureJobV2,
+  stageStoredPricingCatalogControlJob,
+  stageStoredProviderSwitchControlJob,
   updateManagedPricingPolicy,
   updateManagedProviderSwitches,
   upsertServiceAccountInventoryV2,
@@ -281,6 +288,31 @@ export class AdminService {
     });
     const status = await getFundingNormalizationStageStatusV2(this.database, input.plan_digest);
     return pricingStage6StatusV2Schema.parse({ staged_job_id: stagedJobId, ...status });
+  }
+
+  async stagePricingCatalogJobV2(
+    input: PricingCatalogJobStageRequestV2,
+    actorId: string,
+  ): Promise<PricingControlJobStageResponseV2> {
+    const jobId = await stageStoredPricingCatalogControlJob(
+      this.database,
+      input.product_id,
+      input.generation,
+      { actorId, reason: input.reason },
+    );
+    return pricingControlJobStageResponseV2Schema.parse({ status: "staged", job_id: jobId });
+  }
+
+  async stagePricingSwitchJobV2(
+    input: PricingSwitchJobStageRequestV2,
+    actorId: string,
+  ): Promise<PricingControlJobStageResponseV2> {
+    const jobId = await stageStoredProviderSwitchControlJob(
+      this.database,
+      input.generation,
+      { actorId, reason: input.reason },
+    );
+    return pricingControlJobStageResponseV2Schema.parse({ status: "staged", job_id: jobId });
   }
 
   async repairPricingPolicyDeliveryV2(
