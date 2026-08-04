@@ -91,7 +91,7 @@ token on every refresh with strict family reuse detection. The pool therefore:
 | `CLAUDE_API_CODEX_CLI_VERSION` | `0.146.0` | pinned official-client wire identity |
 | `CLAUDE_API_CODEX_MODELS` | `gpt-5.6,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5,gpt-5.4` | enabled ids from the pinned price catalog |
 | `CLAUDE_API_CODEX_REQUEST_TIMEOUT_MS` | `15000` | connect/control bound (`CLAUDE_API_CODEX_RPC_TIMEOUT_MS` is accepted as a legacy alias) |
-| `CLAUDE_API_CODEX_TURN_TIMEOUT_MS` | `600000` | total turn bound |
+| `CLAUDE_API_CODEX_TURN_TIMEOUT_MS` | `1800000` | backstop against a leaked lease/reserve, not a latency budget (max `3600000`) |
 | `CLAUDE_API_CODEX_TURN_SILENCE_TIMEOUT_MS` | `180000` | "is this profile still there" bound |
 | `CLAUDE_API_CODEX_HEALTH_INTERVAL_SECS` | `10` | usage sweep + roster rescan cadence |
 | `CLAUDE_API_CODEX_RESERVE_OVERHEAD_TOKENS` | `16384` | conservative reserve allowance |

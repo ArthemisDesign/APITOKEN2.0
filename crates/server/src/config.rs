@@ -952,7 +952,17 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
             500,
             120_000,
         ),
-        turn_timeout_ms: bounded_u64("CLAUDE_API_CODEX_TURN_TIMEOUT_MS", 600_000, 5_000, 600_000),
+        // The only hard ceiling a customer turn can meet. Its old default sat exactly on its own
+        // upper bound, so a ten-minute turn was unraisable even by env — the knob looked tunable
+        // and was not. Liveness is answered by turn_silence_timeout_ms and TCP keepalive below;
+        // this value only bounds a turn whose peer is gone in a way neither of those surfaced, so
+        // it is sized as a backstop against a leaked lease and reserve, not as a latency budget.
+        turn_timeout_ms: bounded_u64(
+            "CLAUDE_API_CODEX_TURN_TIMEOUT_MS",
+            1_800_000,
+            5_000,
+            3_600_000,
+        ),
         // Generous on purpose: this must never cut short a model that is genuinely thinking, only
         // catch one that has stopped answering. It is a liveness bound, not a latency budget.
         turn_silence_timeout_ms: bounded_u64(
