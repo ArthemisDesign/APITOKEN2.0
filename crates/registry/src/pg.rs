@@ -12405,6 +12405,10 @@ mod tests {
             .unwrap();
         pg.account_create("release-runtime-service", None, 10_000)
             .unwrap();
+        pg.account_create("release-runtime-openkeys", None, 10_000)
+            .unwrap();
+        pg.account_topup("release-runtime-openkeys", 3_000, Some("openkeys-runtime-seed"))
+            .unwrap();
         pg.key_issue(
             "release-runtime-service-key",
             "release-runtime-service",
@@ -12462,6 +12466,24 @@ mod tests {
                  INSERT INTO account_funding_head_v2(
                      account_id,active_generation,head_version,updated_ts
                  ) VALUES('release-runtime-b2c',1,1,100);
+                 INSERT INTO account_funding_generations_v2(
+                     account_id,generation,schema_version,source_state_digest,
+                     normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                     normalized_ts,updated_ts
+                 ) VALUES(
+                     'release-runtime-openkeys',1,2,'runtime-source','runtime-normalization',
+                     3000,0,0,1,100,100
+                 );
+                 INSERT INTO funding_lots_v2(
+                     lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                     reserved_nano,spent_nano,version,status,created_ts,updated_ts
+                 ) VALUES(
+                     'release-runtime-openkeys-paid','release-runtime-openkeys',1,
+                     'paid','runtime-seed',3000,0,0,1,'active',100,100
+                 );
+                 INSERT INTO account_funding_head_v2(
+                     account_id,active_generation,head_version,updated_ts
+                 ) VALUES('release-runtime-openkeys',1,1,100);
                  SET CONSTRAINTS ALL IMMEDIATE;
                  COMMIT;",
             )
@@ -12509,7 +12531,31 @@ mod tests {
             content_digest: "release-runtime-service-policy-digest".into(),
             rules: Vec::new(),
         };
-        for policy in [&b2c_policy, &service_policy] {
+        let openkeys_policy = PricingReleasePolicyV2 {
+            policy_id: "release-runtime-openkeys-policy".into(),
+            policy_version: 1,
+            owner_type: crate::pricing::PolicyOwnerType::OpenKeys,
+            owner_id: "openkeys".into(),
+            account_class: crate::pricing::AccountClass::OpenKeys,
+            product_id: Some("openkeys".into()),
+            billing_mode: BillingModeV2::Balance,
+            schema_version: 2,
+            capability_generation: 1,
+            capability_digest: "stage8-capability-1".into(),
+            catalog_generation: Some(1),
+            catalog_digest: Some("stage8-openkeys-catalog-1".into()),
+            switch_generation: Some(1),
+            switch_digest: Some("stage8-switches-1".into()),
+            content_digest: "release-runtime-openkeys-policy-digest".into(),
+            rules: vec![PricingReleasePolicyRuleV2 {
+                rule_id: "release-runtime-openkeys-one-to-one".into(),
+                rule_digest: "release-runtime-openkeys-one-to-one-digest".into(),
+                scope: PricingReleaseRuleScopeV2::Global,
+                discount_bps: 0,
+                payable_multiplier_bp: 10_000,
+            }],
+        };
+        for policy in [&b2c_policy, &service_policy, &openkeys_policy] {
             assert_eq!(
                 pg.prepare_pricing_release_policy_v2(policy).unwrap(),
                 PricingMutation::Stored
@@ -12540,6 +12586,18 @@ mod tests {
                 purpose: Some("internal-runtime".into()),
                 responsible: Some("runtime-team".into()),
                 assignment_digest: "release-runtime-service-assignment".into(),
+            },
+            PricingReleaseAssignmentV2 {
+                account_id: "release-runtime-openkeys".into(),
+                account_class: crate::pricing::AccountClass::OpenKeys,
+                policy_id: openkeys_policy.policy_id.clone(),
+                policy_version: 1,
+                policy_digest: openkeys_policy.content_digest.clone(),
+                billing_mode: BillingModeV2::Balance,
+                funding_generation: Some(1),
+                purpose: None,
+                responsible: None,
+                assignment_digest: "release-runtime-openkeys-assignment".into(),
             },
         ];
         let release = |generation, release_kind, digest: &str| PricingReleaseV2 {
@@ -13119,6 +13177,29 @@ mod tests {
             .unwrap();
         assert_eq!(overridden.assignment.policy_version, 2);
         assert_eq!(overridden.payable_multiplier_bp(), Some(4_000));
+
+        let openkeys_google = pg
+            .pricing_release_resolution_v2(
+                "release-runtime-openkeys",
+                crate::PROVIDER_GOOGLE,
+                "gemini-3-flash-preview",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(openkeys_google.payable_multiplier_bp(), Some(10_000));
+        assert_eq!(
+            openkeys_google.assignment.policy_id,
+            "release-runtime-openkeys-policy"
+        );
+        let openkeys_anthropic = pg
+            .pricing_release_resolution_v2(
+                "release-runtime-openkeys",
+                "anthropic",
+                "claude-sonnet-5",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(openkeys_anthropic.payable_multiplier_bp(), Some(10_000));
 
         let recovery_activated_ts = activated_ts.saturating_add(1);
         pg.client

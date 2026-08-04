@@ -30,8 +30,9 @@ the spend page can show the remainder without knowing anything about the user.
 `openkeys_batches.api_type` distinguishes `anthropic` and `openai` only as a
 historical/storefront label. Historical rows with `NULL` are interpreted as `anthropic`;
 the field does not limit models, does not select a pricing rule and does not change the
-universal access of a single key. The target product catalog may explicitly add Gemini
-without using `api_type` as a pricing/admission authority.
+universal access of a single key. By explicit owner decision a key accesses every provider
+and model the runtime can price at 1:1, including Gemini and every future provider; no
+OpenKeys catalog cutover is required for admission.
 
 The full `sk-pool-…` secret is stored in the warehouse only as AES-256-GCM ciphertext and
 is wiped after issuance or withdrawal. `engine_account_id`, `engine_key_id`, the mask and
@@ -68,9 +69,9 @@ provider cards on the spend page and the Claude Code/Codex connection commands u
   /v1beta/models/{model}:generateContent`, `x-goog-api-key`,
   `GOOGLE_GEMINI_BASE_URL=https://router.apitoken.sale`).
 
-The Gemini block deliberately stays in the handover and the cards even though the current
-pricing catalog covers only Anthropic/OpenAI; the target product catalog may explicitly
-add Gemini. The former per-provider hosts (`api.apitoken.sale`,
+The Gemini block deliberately stays in the handover and the cards, and Gemini access is live:
+the pricing authority admits every runtime-capable provider at 1:1. The former per-provider
+hosts (`api.apitoken.sale`,
 `openai.api.apitoken.sale`, `gemini.api.apitoken.sale`) keep working, but the buyer is
 given only the router address as the primary instruction. Balance lookup by key
 (`/balance`) still goes to `ENGINE_PUBLIC_BASE_URL`/`ENGINE_OPENAI_PUBLIC_BASE_URL` — this

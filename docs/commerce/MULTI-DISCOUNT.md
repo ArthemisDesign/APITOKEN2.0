@@ -113,8 +113,10 @@ All OpenKeys, including ones previously considered legacy, receive a canonical i
 policy. The history of past charges is not rewritten, but after the global cutover every new
 reserve uses `payable_multiplier_bp=10000`. The issuance API has no multiplier/discount override.
 
-A new model becomes available to OpenKeys only through an explicit new generation of the OpenKeys
-product catalog. This does not change the 1:1 rule.
+By explicit owner decision, OpenKeys access follows the runtime: every provider and model the
+engine can price is sellable at 1:1 without an OpenKeys catalog cutover, and newly admitted
+providers flow automatically. The master switch and an explicitly disabled scoped provider switch
+still close a provider; a model without a runtime tariff fails closed at quote time.
 
 ### Service
 

@@ -4493,31 +4493,35 @@ pub(crate) fn pricing_release_resolution_v2_in_transaction<C: GenericClient>(
         {
             bail!("active pricing release policy catalog differs from the release pin");
         }
-        let model_enabled: bool = client
-            .query_opt(
-                "SELECT entry.enabled
-                   FROM pricing_catalog_versions catalog
-                   JOIN pricing_catalog_entries entry
-                     ON entry.product_id=catalog.product_id
-                    AND entry.generation=catalog.generation
-                  WHERE catalog.product_id=$1 AND catalog.generation=$2
-                    AND catalog.content_digest=$3
-                    AND catalog.capability_generation=$4 AND catalog.capability_digest=$5
-                    AND entry.provider_id=$6 AND entry.canonical_model_id=$7",
-                &[
-                    &product_id,
-                    &catalog_generation,
-                    &catalog_digest,
-                    &release_capability_generation,
-                    &release_capability_digest,
-                    &provider_id,
-                    &canonical_model_id,
-                ],
-            )?
-            .context("active pricing release model is absent from the pinned catalog")?
-            .get(0);
+        let model_enabled: bool = if product_id == "openkeys" {
+            true
+        } else {
+            client
+                .query_opt(
+                    "SELECT entry.enabled
+                       FROM pricing_catalog_versions catalog
+                       JOIN pricing_catalog_entries entry
+                         ON entry.product_id=catalog.product_id
+                        AND entry.generation=catalog.generation
+                      WHERE catalog.product_id=$1 AND catalog.generation=$2
+                        AND catalog.content_digest=$3
+                        AND catalog.capability_generation=$4 AND catalog.capability_digest=$5
+                        AND entry.provider_id=$6 AND entry.canonical_model_id=$7",
+                    &[
+                        &product_id,
+                        &catalog_generation,
+                        &catalog_digest,
+                        &release_capability_generation,
+                        &release_capability_digest,
+                        &provider_id,
+                        &canonical_model_id,
+                    ],
+                )?
+                .context("active pricing release model is absent from the pinned catalog")?
+                .get(0)
+        };
         if !model_enabled {
-            bail!("active pricing release model is disabled in the pinned catalog");
+            bail!("active pricing release model is disabled for the release authority");
         }
 
         let (scope_type, segment) = match assignment.account_class {
@@ -4541,12 +4545,17 @@ pub(crate) fn pricing_release_resolution_v2_in_transaction<C: GenericClient>(
                     &product_id,
                     &segment,
                 ],
-            )?
-            .context("active pricing release lacks the required scoped provider switch")?;
-        if !scoped_switch.get::<_, bool>(0)
-            || scoped_switch.get::<_, Option<i64>>(1) != Some(catalog_generation)
-        {
-            bail!("active pricing release scoped provider switch is disabled or stale");
+            )?;
+        match scoped_switch {
+            Some(entry) => {
+                if !entry.get::<_, bool>(0)
+                    || entry.get::<_, Option<i64>>(1) != Some(catalog_generation)
+                {
+                    bail!("active pricing release scoped provider switch is disabled or stale");
+                }
+            }
+            None if assignment.account_class == super::AccountClass::OpenKeys => {}
+            None => bail!("active pricing release lacks the required scoped provider switch"),
         }
 
         let selected = policy
