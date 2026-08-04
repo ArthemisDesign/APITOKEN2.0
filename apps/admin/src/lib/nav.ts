@@ -33,6 +33,7 @@ export const NAV: NavGroup[] = [
     items: [
       { href: "/sales/calculator", label: "Калькулятор", icon: "⌁" },
       { href: "/topups", label: "Пополнения", icon: "＄" },
+      { href: "/engine-spend", label: "Расход движка", icon: "⟠" },
       { href: "/finance", label: "Финансы", icon: "∑" },
     ],
   },

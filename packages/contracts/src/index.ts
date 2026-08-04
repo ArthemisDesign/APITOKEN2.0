@@ -294,6 +294,52 @@ export const engineUsageSchema = z.object({
 
 export type EngineUsage = z.infer<typeof engineUsageSchema>;
 
+// GET /spend-stats — операторская разбивка расхода ВСЕГО флота движка по окнам 24ч/7д/30д:
+// суммы приходят в USD-числах (charge_usd — списано клиенту с его множителем, real_usd —
+// эквивалент официального прайса провайдера), провайдер/модель — свободные строки по той же
+// причине, что и в engineUsageModelSchema. accounts[] — top-50 аккаунтов окна, включая те,
+// у которых нет commerce-юзера (OpenKeys, внутренние).
+const spendStatsAccountSchema = z.object({
+  account: z.string(),
+  handle: z.string().nullable().default(null),
+  requests: z.coerce.number().int().nonnegative().default(0),
+  charge_usd: z.coerce.number().default(0),
+  real_usd: z.coerce.number().default(0),
+  last_ts: z.coerce.number().int().nonnegative().default(0),
+});
+const spendStatsProviderSchema = z.object({
+  provider: z.string(),
+  requests: z.coerce.number().int().nonnegative().default(0),
+  charge_usd: z.coerce.number().default(0),
+  real_usd: z.coerce.number().default(0),
+});
+const spendStatsModelSchema = spendStatsProviderSchema.extend({
+  model: z.string(),
+  provider: z.string().optional(),
+});
+export const engineSpendPeriodSchema = z.object({
+  requests: z.coerce.number().int().nonnegative().default(0),
+  charge_usd: z.coerce.number().default(0),
+  real_usd: z.coerce.number().default(0),
+  accounts: z.array(spendStatsAccountSchema).default([]),
+  providers: z.array(spendStatsProviderSchema).default([]),
+  models: z.array(spendStatsModelSchema).default([]),
+});
+export const engineSpendStatsSchema = z.object({
+  now: z.coerce.number().int().nonnegative().default(0),
+  periods: z.object({
+    d1: engineSpendPeriodSchema,
+    d7: engineSpendPeriodSchema,
+    d30: engineSpendPeriodSchema,
+  }),
+});
+
+export type EngineSpendPeriod = z.infer<typeof engineSpendPeriodSchema>;
+export type EngineSpendStats = z.infer<typeof engineSpendStatsSchema>;
+export type EngineSpendAccount = z.infer<typeof spendStatsAccountSchema>;
+export type EngineSpendModel = z.infer<typeof spendStatsModelSchema>;
+export type EngineSpendProvider = z.infer<typeof spendStatsProviderSchema>;
+
 export const createEngineAccountSchema = z.object({
   handle: z.string().trim().min(1).max(200).optional(),
   multBp: z.number().int().min(0).max(100_000).optional(),

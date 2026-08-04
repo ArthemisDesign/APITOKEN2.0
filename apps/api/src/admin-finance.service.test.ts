@@ -6,6 +6,7 @@ vi.mock("@claude-api/db", async (importOriginal) => {
     ...actual,
     getAdminFinanceOverview: vi.fn(),
     getAdminFinanceFunnel: vi.fn(),
+    listAdminEngineAccountOwners: vi.fn(),
     listAdminFinanceChurnSignals: vi.fn(),
     listAdminFinanceCohorts: vi.fn(),
     listAdminFinanceRevenueDaily: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock("@claude-api/db", async (importOriginal) => {
 import {
   getAdminFinanceOverview,
   getAdminFinanceFunnel,
+  listAdminEngineAccountOwners,
   listAdminFinanceChurnSignals,
   listAdminFinanceCohorts,
   listAdminFinanceRevenueDaily,
@@ -35,9 +37,11 @@ const payingUsersMock = vi.mocked(listAdminPayingUsers);
 const refundsMock = vi.mocked(listAdminRefunds);
 const cohortsMock = vi.mocked(listAdminFinanceCohorts);
 const churnMock = vi.mocked(listAdminFinanceChurnSignals);
+const engineOwnersMock = vi.mocked(listAdminEngineAccountOwners);
+const getSpendStats = vi.fn();
 
 // db-слой замокан на уровне функций-репозиториев, поэтому Database не используется.
-const service = new AdminFinanceService({} as never);
+const service = new AdminFinanceService({} as never, { getSpendStats } as never);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -473,5 +477,64 @@ describe("admin finance churn signals", () => {
       spent_30d_usd: "12.345",
     });
     expect(value.rows[1]).toMatchObject({ last_seen_at: null, last_paid_at: null, spent_30d_usd: "0" });
+  });
+});
+
+describe("admin engine spend", () => {
+  const period = (accounts: Array<Record<string, unknown>>) => ({
+    requests: 10, charge_usd: 100, real_usd: 250,
+    providers: [{ provider: "openai", requests: 6, charge_usd: 60, real_usd: 150 }],
+    models: [{ model: "gpt-5.6-sol", provider: "openai", requests: 6, charge_usd: 60, real_usd: 150 }],
+    accounts,
+  });
+
+  it("labels client accounts and separates engine-only spend", async () => {
+    getSpendStats.mockResolvedValue({
+      now: 1_800_000_000,
+      periods: {
+        d1: period([
+          { account: "acct_client", handle: "user:u1", requests: 4, charge_usd: 40, real_usd: 100, last_ts: 1 },
+          { account: "acct_ok", handle: "openkeys-abc", requests: 3, charge_usd: 35, real_usd: 90, last_ts: 2 },
+          { account: "acct_int", handle: "crm-parsing", requests: 3, charge_usd: 25, real_usd: 60, last_ts: 3 },
+        ]),
+        d7: period([]),
+        d30: period([]),
+      },
+    });
+    engineOwnersMock.mockResolvedValue([
+      {
+        engineAccountId: "acct_client", userId: "u1", email: "a@example.com",
+        displayName: "A", status: "active", customerType: "b2b",
+      },
+    ]);
+
+    const value = await service.engineSpend(1) as {
+      days: number;
+      accounts: Array<Record<string, unknown>>;
+      by_class: Record<string, Record<string, number>>;
+      models: Array<Record<string, unknown>>;
+    };
+
+    expect(value.days).toBe(1);
+    expect(value.models[0]).toMatchObject({ model: "gpt-5.6-sol", charge_usd: 60 });
+    expect(value.accounts[0]).toMatchObject({
+      account_class: "client",
+      owner: { email: "a@example.com", customer_type: "b2b" },
+    });
+    expect(value.accounts[1]).toMatchObject({ account_class: "openkeys", owner: null });
+    expect(value.accounts[2]).toMatchObject({ account_class: "internal", owner: null });
+    expect(value.by_class.client).toMatchObject({ accounts: 1, charge_usd: 40 });
+    expect(value.by_class.openkeys).toMatchObject({ accounts: 1, charge_usd: 35 });
+    expect(value.by_class.internal).toMatchObject({ accounts: 1, charge_usd: 25 });
+  });
+
+  it("selects the requested window", async () => {
+    getSpendStats.mockResolvedValue({
+      now: 1,
+      periods: { d1: period([]), d7: period([]), d30: { ...period([]), charge_usd: 999 } },
+    });
+    engineOwnersMock.mockResolvedValue([]);
+    const value = await service.engineSpend(30) as { charge_usd: number };
+    expect(value.charge_usd).toBe(999);
   });
 });

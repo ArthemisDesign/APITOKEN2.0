@@ -27,6 +27,7 @@ const SOURCE_NAMES: Record<string, string> = {
   "/admin/finance/funnel": "Воронка чекаутов",
   "/admin/finance/top-customers": "Топ клиентов",
   "/admin/finance/paying-users": "Платящие клиенты",
+  "/admin/finance/engine-spend": "Расход движка",
   "/admin/refunds": "Возвраты",
   "/admin/finance/cohorts": "Когорты",
   "/admin/finance/churn-signals": "Сигналы оттока",

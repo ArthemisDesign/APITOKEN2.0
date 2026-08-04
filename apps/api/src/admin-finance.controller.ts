@@ -19,8 +19,9 @@ const weeksSchema = z.coerce.number().int().min(1).max(26).default(8);
 const topLimitSchema = z.coerce.number().int().min(1).max(100).default(20);
 const limitSchema = z.coerce.number().int().min(1).max(500).default(50);
 const offsetSchema = z.coerce.number().int().min(0).max(1_000_000).default(0);
-const payingUsersSchema = z.object({
-  days: z.enum(["1", "7", "30"]).default("30").transform((value) => Number(value) as 1 | 7 | 30),
+const engineSpendDaysSchema = z.enum(["1", "7", "30"]).default("30")
+  .transform((value) => Number(value) as 1 | 7 | 30);
+const payingUsersSchema = z.object({  days: z.enum(["1", "7", "30"]).default("30").transform((value) => Number(value) as 1 | 7 | 30),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
   q: z.string().trim().max(200).optional(),
@@ -89,6 +90,14 @@ export class AdminFinanceController {
       ...(parsed.data.status === undefined ? {} : { status: parsed.data.status }),
       ...(parsed.data.provider === undefined ? {} : { provider: parsed.data.provider }),
     });
+  }
+
+  @Get("finance/engine-spend")
+  @Header("Cache-Control", "no-store")
+  engineSpend(@Query("days") value?: string): Promise<Record<string, unknown>> {
+    const parsed = engineSpendDaysSchema.safeParse(value);
+    if (!parsed.success) throw new BadRequestException("days must be one of 1, 7, 30");
+    return this.finance.engineSpend(parsed.data);
   }
 
   @Get("finance/cohorts")

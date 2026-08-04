@@ -2,17 +2,25 @@ import { Inject, Injectable } from "@nestjs/common";
 import {
   getAdminFinanceOverview,
   getAdminFinanceFunnel,
+  listAdminEngineAccountOwners,
   listAdminFinanceChurnSignals,
   listAdminFinanceCohorts,
   listAdminFinanceRevenueDaily,
   listAdminFinanceTopCustomers,
   listAdminPayingUsers,
   listAdminRefunds,
+  type AdminEngineAccountOwner,
   type AdminPayingUsersQuery,
   type Database,
 } from "@claude-api/db";
-import { DATABASE } from "./infrastructure.module.js";
+import type { EngineClient } from "@claude-api/engine-client";
+import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
 import { nanoToUsd } from "./admin-operations.service.js";
+import {
+  buildEngineSpendWindow,
+  engineSpendWindowKey,
+  type EngineSpendWindow,
+} from "./admin-engine-spend.js";
 
 /**
  * Блок «Финансы» админ-панели: read-only агрегаты по commerce PostgreSQL. Деньги в ответах —
@@ -22,7 +30,33 @@ import { nanoToUsd } from "./admin-operations.service.js";
  */
 @Injectable()
 export class AdminFinanceService {
-  constructor(@Inject(DATABASE) private readonly database: Database) {}
+  constructor(
+    @Inject(DATABASE) private readonly database: Database,
+    @Inject(ENGINE_CLIENT) private readonly engine: EngineClient,
+  ) {}
+
+  /**
+   * «Расход движка»: единственный вызов `/spend-stats` (окна 24ч/7д/30д) плюс справочник
+   * владельцев engine-аккаунтов из коммерции. Отвечает на два вопроса, которых нет в
+   * «Платящих»: сколько ушло по каждой модели/провайдеру и сколько тратят аккаунты БЕЗ
+   * commerce-юзера (OpenKeys, внутренние) — их расход в коммерческих таблицах не существует.
+   */
+  async engineSpend(days: EngineSpendWindow): Promise<Record<string, unknown>> {
+    const [stats, owners] = await Promise.all([
+      this.engine.getSpendStats(),
+      listAdminEngineAccountOwners(this.database),
+    ]);
+    const ownerIndex = new Map<string, AdminEngineAccountOwner>(
+      owners.map((owner) => [owner.engineAccountId, owner]),
+    );
+    const window = buildEngineSpendWindow(stats.periods[engineSpendWindowKey(days)], ownerIndex);
+    return {
+      generated_at: new Date().toISOString(),
+      engine_now_ts: stats.now,
+      days,
+      ...window,
+    };
+  }
 
   async overview(): Promise<Record<string, unknown>> {
     const value = await getAdminFinanceOverview(this.database);

@@ -8,6 +8,7 @@ import {
   engineApiKeyListSchema,
   engineCreditResultSchema,
   engineLedgerSchema,
+  engineSpendStatsSchema,
   engineUsageSchema,
   fundingNormalizationApplyRequestV2Schema,
   fundingNormalizationApplyResultV2Schema,
@@ -40,6 +41,7 @@ import {
   type EngineApiKey,
   type EngineCreditResult,
   type EngineLedgerEntry,
+  type EngineSpendStats,
   type EngineUsage,
   type FundingNormalizationApplyRequestV2,
   type FundingNormalizationApplyResultV2,
@@ -393,8 +395,17 @@ export class EngineClient {
     return usage;
   }
 
-  async getLedgerAfter(accountId: string, afterId: bigint, limit = 1000): Promise<EngineLedgerEntry[]> {
-    if (afterId < 0n) throw new RangeError("afterId must not be negative");
+  /**
+   * Операторская сводка расхода всего флота (24ч/7д/30д): провайдеры, top-модели и top-аккаунты.
+   * Единственный источник для админской страницы «Расход движка» — включает аккаунты без
+   * commerce-юзера (OpenKeys, внутренние), которых нет ни в одной таблице коммерции.
+   */
+  async getSpendStats(): Promise<EngineSpendStats> {
+    const { payload } = await this.request("/spend-stats");
+    return engineSpendStatsSchema.parse(payload);
+  }
+
+  async getLedgerAfter(accountId: string, afterId: bigint, limit = 1000): Promise<EngineLedgerEntry[]> {    if (afterId < 0n) throw new RangeError("afterId must not be negative");
     if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new RangeError("limit must be an integer from 1 to 1000");
     const { response, payload } = await this.request(
       `/admin/account/${encodeURIComponent(accountId)}/ledger?after_id=${afterId.toString()}&limit=${limit}`,

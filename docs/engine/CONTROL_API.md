@@ -44,6 +44,11 @@ The same-origin admin panel additionally reads `GET /capacity`, `GET /codex-subs
 These routes are protected by server-side control/panel auth; the browser reaches them only through the closed
 `admin.apitoken.sale`, and no keys are issued to it.
 
+`GET /spend-stats` (windows `d1`/`d7`/`d30` plus an optional `from`/`to` range) is additionally consumed
+server-side by the commercial backend for `GET /admin/finance/engine-spend`: it is the only source that
+also covers engine accounts with no commerce user (OpenKeys, service/manual accounts). It stays a
+read-only operator projection in engine USD numbers — never a money authority for commerce.
+
 `GET /capacity` additionally publishes Claude `window_totals`, horizon `available_nano` and
 `conversion_models`. Money fields for calculations are decimal nanoUSD strings. The catalog comes from
 `metering` and separates Standard/Fast input, cache-read, cache-write 5m/1h and output; Web Search has

@@ -700,3 +700,42 @@ export async function listAdminFinanceChurnSignals(
     spent30dNano: row.spent_30d_nano,
   }));
 }
+
+export interface AdminEngineAccountOwner {
+  engineAccountId: string;
+  userId: string;
+  email: string;
+  displayName: string;
+  status: "active" | "disabled";
+  customerType: "b2c" | "b2b" | null;
+}
+
+/**
+ * Справочник «engine-аккаунт → клиент коммерции». Нужен админской странице расхода движка:
+ * `/spend-stats` знает только `account`/`handle`, а кто за ним стоит (и стоит ли вообще —
+ * OpenKeys и внутренние аккаунты commerce-юзера не имеют) знает только эта таблица.
+ */
+export async function listAdminEngineAccountOwners(
+  database: Database,
+): Promise<AdminEngineAccountOwner[]> {
+  const result = await database.pool.query<{
+    engine_account_id: string; user_id: string; email: string; display_name: string;
+    status: "active" | "disabled"; customer_type: "b2c" | "b2b" | null;
+  }>(`
+    /* admin-finance:engine-account-owners */
+    SELECT ea.engine_account_id, u.id AS user_id, u.email, u.display_name, u.status,
+           cp.customer_type
+    FROM engine_accounts ea
+    JOIN users u ON u.id = ea.user_id
+    LEFT JOIN customer_profiles cp ON cp.user_id = u.id
+    WHERE ea.engine_account_id IS NOT NULL
+  `);
+  return result.rows.map((row) => ({
+    engineAccountId: row.engine_account_id,
+    userId: row.user_id,
+    email: row.email,
+    displayName: row.display_name,
+    status: row.status,
+    customerType: row.customer_type,
+  }));
+}

@@ -18,6 +18,7 @@ describe("admin finance HTTP contract", () => {
     expect(() => controller.payingUsers("30", "50", "0", "", undefined, "claude")).toThrow(BadRequestException);
     expect(() => controller.payingUsers("30", "50", "0", "", undefined, undefined, "raw_sql")).toThrow(BadRequestException);
     expect(() => controller.cohorts("0")).toThrow(BadRequestException);
+    expect(() => controller.engineSpend("14")).toThrow(BadRequestException);
     expect(() => controller.churnSignals("91", undefined)).toThrow(BadRequestException);
     expect(() => controller.refunds("501", "0")).toThrow(BadRequestException);
     expect(() => controller.refunds("50", "-1")).toThrow(BadRequestException);
@@ -34,6 +35,7 @@ describe("admin finance HTTP contract", () => {
     finance.payingUsers.mockResolvedValue({ rows: [] });
     finance.churnSignals.mockResolvedValue({ rows: [] });
     finance.cohorts.mockResolvedValue({ cohorts: [] });
+    finance.engineSpend.mockResolvedValue({ models: [] });
 
     await expect(controller.revenue(undefined)).resolves.toEqual({ series: [] });
     expect(finance.revenue).toHaveBeenCalledWith(30);
@@ -60,6 +62,11 @@ describe("admin finance HTTP contract", () => {
 
     await controller.cohorts(undefined);
     expect(finance.cohorts).toHaveBeenCalledWith(8);
+
+    await controller.engineSpend(undefined);
+    expect(finance.engineSpend).toHaveBeenCalledWith(30);
+    await controller.engineSpend("1");
+    expect(finance.engineSpend).toHaveBeenCalledWith(1);
 
     await controller.churnSignals(undefined, undefined);
     expect(finance.churnSignals).toHaveBeenCalledWith(14, 50);
@@ -89,6 +96,7 @@ function fakeFinance() {
     refunds: vi.fn(),
     cohorts: vi.fn(),
     churnSignals: vi.fn(),
+    engineSpend: vi.fn(),
   };
   return { ...finance, service: finance as unknown as AdminFinanceService };
 }

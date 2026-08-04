@@ -179,7 +179,18 @@ POST      /admin/pricing-stage8-capture-v2/stage
 GET       /admin/pricing-release-activation-v2
 POST      /admin/pricing-release-activation-v2/stage
 GET       /admin/finance/paying-users?days=1|7|30&limit=...&offset=...
+GET       /admin/finance/engine-spend?days=1|7|30
 ```
+
+`GET /admin/finance/engine-spend` is the fleet-wide counterpart of the paid-customer control room.
+It reads the engine's operator projection `GET /spend-stats` once (windows `d1`/`d7`/`d30`) and
+joins it with the commerce `engine_accounts → users` directory, so the admin page can show the
+per-model and per-provider spend of the whole fleet and separate three account classes: `client`
+(has a commerce user), `openkeys` (issued through the OpenKeys portal, recognized by handle) and
+`internal` (service/manual engine accounts). The last two exist in no commerce table at all, which
+is why their spend is invisible to every other finance endpoint. Amounts here are the engine's own
+USD numbers (`charge_usd` — after the account multiplier, `real_usd` — provider list price), not
+commerce nanoUSD strings: this endpoint is an operator projection, not a money authority.
 
 `GET /admin/finance/paying-users` is the read-only producer for the paid-customer control room.
 It includes only users with at least one `payments.status='paid'` row, paginates and searches on the
