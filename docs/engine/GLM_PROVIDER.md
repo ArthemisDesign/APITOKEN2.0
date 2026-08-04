@@ -202,7 +202,7 @@ HTTP status + business code в теле `{"error": {"code": "1308", "message": "
 | 1310 | 429 | **недельная/месячная квота исчерпана** | quota wall → cooling до weekly reset |
 | 1311 | 429 | модель не входит в план | model-scope ineligible, не account |
 | 1313 | 429 | fair-use нарушение | account suspect (risk-control), out of rotation |
-| 1315 | 429 | ключ ограничен enterprise-сценариями | wrong key kind → dead |
+| 1315 | 429 | ключ ограничен enterprise-сценариями | wrong key kind → suspect (out of rotation, operator review) |
 | 1316–1321 | 429 | extra usage / monthly spend limit (Team-механика) | account anomaly → suspect |
 
 `official` При аномальном обрыве SSE коды ошибок не возвращаются — причина приходит в
@@ -351,7 +351,8 @@ cumulative ledgers и завершает immutable observation/CAS до публ
 | calibration estimator | `crates/forward/src/glm_calibration.rs` | готово, 27 тестов |
 | Auth Bot: протокол валидации + roster | `crates/authbot/src/{glm_key,glm_roster}.rs` | готово, 26 тестов |
 | Auth Bot: мастер продавца | `crates/authbot/src/bot.rs` (+`db.rs` `hregion`/recovery, `main.rs`) | готово, 21 тест (мастер, меню, регион, restart-восстановление) |
-| transport / pool / gateway | `crates/forward/src/glm/**` | не начато |
+| runtime-примитивы: config / transport / roster / client / selection / pool / queue | `crates/forward/src/glm/` | готово, 71 тест |
+| gateway | `crates/forward/src/glm/gateway.rs` | не начато |
 | server: env/config + композиция | `crates/server/src/{config,main,poller}.rs` | не начато |
 | observability, admin projection | `observability/**`, `apps/admin` | не начато |
 | безопасный live-runner | `tools/glm_calibration/` | не начато |

@@ -33,7 +33,8 @@ backend-only (по образцу KIMI, `docs/engine/KIMI_PROVIDER.md` §0) до
 | Credential crate | `crates/glm-credential` (+ корневой Cargo.toml/lock) | 0363581a |
 | Calibration estimator | `crates/forward/src/glm_calibration.rs` | 3825be3b |
 | Auth Bot: протокол + roster (dormant) | `crates/authbot/src/{glm_key,glm_roster}.rs`, `main.rs`, CLAUDE.md | 3378eb06 |
-| Auth Bot: мастер продавца | `crates/authbot/src/{bot,db,main}.rs`, CLAUDE.md | _этот коммит_ |
+| Auth Bot: мастер продавца | `crates/authbot/src/{bot,db,main}.rs`, CLAUDE.md | 093c05c2 |
+| Runtime примитивы | `crates/forward/src/glm/{config,transport,roster,client,selection,pool,queue,mod}.rs` | _этот коммит_ |
 
 ## Рамка от владельца (2026-08-04)
 
