@@ -1,6 +1,6 @@
 /**
  * Реестр API-провайдеров для дашборда: метаданные карточек в usage-разделе.
- * Ключ id совпадает с результатом modelProvider() из lib/model-label.
+ * Ключ id совпадает с providerId из usage/pricing policy API.
  * Новый провайдер = одна запись здесь; провайдеры без записи получают
  * автоматическую карточку с буквой вместо логотипа.
  */
@@ -41,7 +41,7 @@ export const DASHBOARD_PROVIDERS: DashboardProvider[] = [
     docsPath: "/docs",
   },
   {
-    id: "gemini",
+    id: "google",
     name: "Gemini",
     api: "Google Gemini API",
     color: "#4b8bf5",
