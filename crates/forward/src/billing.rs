@@ -8317,14 +8317,14 @@ mod tests {
             assert!(subject_a
                 .iter()
                 .any(|row| row.window_duration_secs == registry::GLM_WEEKLY_WINDOW_SECS
-                    && row.native_used_microcredits == Some(200)));
+                    && row.native_used_microcredits == Some(200_000_000)));
             let subject_b: Vec<_> = report
                 .iter()
                 .filter(|row| row.subject_id == "glm-subject-b")
                 .collect();
             assert_eq!(subject_b.len(), 1);
             assert_eq!(subject_b[0].plan, "Max");
-            assert_eq!(subject_b[0].native_used_microcredits, Some(10));
+            assert_eq!(subject_b[0].native_used_microcredits, Some(10_000_000));
             billing.flush().await.unwrap();
         });
         drop(billing);
