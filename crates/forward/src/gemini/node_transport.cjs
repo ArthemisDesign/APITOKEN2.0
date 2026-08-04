@@ -26,6 +26,9 @@ const MAX_LINE_CHARS = 48 * 1024 * 1024;
 // every other plane (upstream.rs, glm/client.rs, kimi/client.rs). Behind a CONNECT proxy the probes
 // travel only between us and the proxy, so the provider never observes them.
 const KEEPALIVE_MS = 60000;
+// Upper bound for a per-request silence allowance. Deliberately far above any plausible generation:
+// it exists so a malformed frame cannot disable the backstop entirely, not to cap customers.
+const MAX_READ_TIMEOUT_MS = 3600000;
 let configured = false;
 let proxyAgent;
 let connectTimeoutMs = 30000;
@@ -326,6 +329,12 @@ function startRequest(frame) {
         (frame.method !== 'POST' && frame.method !== 'GET') ||
         typeof frame.url !== 'string' || frame.url.length > 8192 ||
         typeof frame.body !== 'string') throw new Error('request');
+    // Absent means the process-wide value from the configure frame; present must be valid rather
+    // than silently coerced, so a caller bug surfaces as a failed request instead of an unintended
+    // ceiling on someone's generation.
+    if (frame.readTimeoutMs !== undefined &&
+        !boundedInteger(frame.readTimeoutMs, 1000, MAX_READ_TIMEOUT_MS)) throw new Error('request');
+    const idleTimeoutMs = frame.readTimeoutMs === undefined ? readTimeoutMs : frame.readTimeoutMs;
     const url = new URL(frame.url);
     if (url.protocol !== 'https:') throw new Error('scheme');
     const body = Buffer.from(frame.body, 'base64');
@@ -373,7 +382,7 @@ function startRequest(frame) {
     // 'socket' event has nothing left to deliver.
     if (request.socket) request.socket.setKeepAlive(true, KEEPALIVE_MS);
     else request.once('socket', socket => socket.setKeepAlive(true, KEEPALIVE_MS));
-    request.setTimeout(readTimeoutMs, () => request.destroy(new Error('timeout')));
+    request.setTimeout(idleTimeoutMs, () => request.destroy(new Error('timeout')));
     request.once('error', error => {
       if (!active.delete(id)) return;
       fail(id, requestFailureKind(error));

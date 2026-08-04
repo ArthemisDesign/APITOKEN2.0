@@ -223,7 +223,14 @@ pub struct GeminiConfig {
     pub credential_keys: gemini_credential::CredentialKeyring,
     pub models: Vec<GeminiModel>,
     pub connect_timeout_secs: u64,
+    /// Silence allowance for auxiliary calls (token refresh, quota and catalogue snapshots). These
+    /// must fail fast so a wedged profile rotates out quickly.
     pub read_timeout_secs: u64,
+    /// Silence allowance for customer generation. Deliberately far above any plausible answer: it
+    /// is a backstop against a leaked lease and reserve, not a latency budget. Real liveness comes
+    /// from TCP keepalive probes, which distinguish a dead peer from a thinking model without
+    /// putting any ceiling on how long a request may legitimately take.
+    pub generation_idle_timeout_secs: u64,
     pub max_transport_retries: usize,
     /// Quarantine after a terminal OAuth/auth rejection before the profile can re-enter rotation.
     pub auth_quarantine_secs: i64,

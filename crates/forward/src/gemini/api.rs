@@ -2056,6 +2056,7 @@ async fn send_upstream(
             accept,
             "application/json",
             body,
+            profile.generation_idle(),
         )
         .await
         .map_err(|_| SendError::Transport)?;
@@ -3534,6 +3535,7 @@ mod tests {
                 models,
                 connect_timeout_secs: 1,
                 read_timeout_secs: 5,
+                generation_idle_timeout_secs: 5,
                 max_transport_retries,
                 auth_quarantine_secs: 900,
                 transport_cool_secs: 30,

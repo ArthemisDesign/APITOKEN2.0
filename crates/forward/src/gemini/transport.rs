@@ -47,6 +47,7 @@ struct ConfigureFrame<'a> {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RequestFrame<'a> {
     r#type: &'static str,
     id: u64,
@@ -54,6 +55,10 @@ struct RequestFrame<'a> {
     url: &'a str,
     headers: &'a [(&'a str, &'a str)],
     body: &'a str,
+    /// Per-request silence bound. Absent means "use the process-wide value from the configure
+    /// frame", which keeps other embedders of this helper (authbot) working unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    read_timeout_ms: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -151,6 +156,12 @@ pub(crate) struct TransportRequest<'a> {
     pub(crate) url: &'a str,
     pub(crate) headers: Vec<(&'static str, SecretString)>,
     pub(crate) body: Bytes,
+    /// How long this specific call may stay silent before it is treated as dead. Generation and
+    /// token refresh have opposite needs: a reasoning model legitimately produces nothing for
+    /// minutes, while a hung token call must fail fast so the profile can rotate. A single
+    /// process-wide value cannot serve both, and the compromise between them was what turned a
+    /// liveness bound into a ceiling on how long a customer request was allowed to take.
+    pub(crate) idle_timeout: Duration,
 }
 
 pub(crate) enum ProfileTransport {
@@ -182,7 +193,7 @@ impl ProfileTransport {
     ) -> Result<TransportResponse, TransportError> {
         match self {
             Self::Loopback(client) => {
-                let mut builder = client.post(request.url);
+                let mut builder = client.post(request.url).read_timeout(request.idle_timeout);
                 for (name, value) in request.headers {
                     builder = builder.header(name, value.as_str());
                 }
@@ -566,6 +577,9 @@ impl NodeProcess {
             url: request.url,
             headers: &headers,
             body: encoded_body.as_str(),
+            read_timeout_ms: Some(
+                u64::try_from(request.idle_timeout.as_millis()).unwrap_or(u64::MAX),
+            ),
         };
         if let Err(error) = self.write_frame(&frame).await {
             return Err(error);
@@ -1017,6 +1031,39 @@ fn kill_process_group(pid: Option<u32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The per-request silence bound is the whole point of the split: generation and token refresh
+    /// travel over the same helper process and must not share one deadline. Absence must stay
+    /// representable so other embedders of this helper keep working against the configure-frame
+    /// value.
+    #[test]
+    fn request_frame_carries_an_optional_camel_case_idle_bound() {
+        let headers: Vec<(&str, &str)> = vec![];
+        let with_bound = serde_json::to_value(RequestFrame {
+            r#type: "request",
+            id: 7,
+            method: "POST",
+            url: "https://example.invalid/v1",
+            headers: &headers,
+            body: "",
+            read_timeout_ms: Some(1_800_000),
+        })
+        .expect("frame serializes");
+        assert_eq!(with_bound["readTimeoutMs"], serde_json::json!(1_800_000));
+        assert_eq!(with_bound["type"], serde_json::json!("request"));
+
+        let without_bound = serde_json::to_value(RequestFrame {
+            r#type: "request",
+            id: 8,
+            method: "POST",
+            url: "https://example.invalid/v1",
+            headers: &headers,
+            body: "",
+            read_timeout_ms: None,
+        })
+        .expect("frame serializes");
+        assert!(without_bound.get("readTimeoutMs").is_none());
+    }
 
     #[test]
     fn proxy_validation_rejects_non_origin_and_non_http_routes() {

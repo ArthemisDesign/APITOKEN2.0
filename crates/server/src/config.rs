@@ -750,6 +750,15 @@ fn gemini_config() -> Option<GeminiConfig> {
         models,
         connect_timeout_secs: bounded_u64("CLAUDE_API_GEMINI_CONNECT_TIMEOUT_SECS", 30, 1, 120),
         read_timeout_secs: bounded_u64("CLAUDE_API_GEMINI_READ_TIMEOUT_SECS", 120, 15, 600),
+        // Generous on purpose: it must never cut short a model that is genuinely thinking, only
+        // reap a request whose peer is gone in a way TCP probes somehow did not surface. It is a
+        // backstop, not a latency budget — the customer never meets it.
+        generation_idle_timeout_secs: bounded_u64(
+            "CLAUDE_API_GEMINI_GENERATION_IDLE_SECS",
+            1_800,
+            30,
+            3_600,
+        ),
         max_transport_retries: bounded_usize("CLAUDE_API_GEMINI_MAX_TRANSPORT_RETRIES", 1, 0, 5),
         auth_quarantine_secs: bounded_i64(
             "CLAUDE_API_GEMINI_AUTH_QUARANTINE_SECS",

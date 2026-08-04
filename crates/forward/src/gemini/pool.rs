@@ -15,6 +15,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const HEALTH_PROBE_CONCURRENCY: usize = 16;
@@ -174,6 +175,13 @@ pub(crate) struct GeminiProfile {
     calibration_persistence_ok: AtomicBool,
     billing: Option<Arc<AsyncBilling>>,
     calibrations: Mutex<BTreeMap<String, WindowCalibration>>,
+    /// Silence allowance for customer generation, kept here so the send path does not have to
+    /// thread the config through. Auxiliary calls pass their own, much shorter bound.
+    generation_idle: Duration,
+    /// Silence allowance for token refresh, quota and catalogue calls. Short on purpose: a wedged
+    /// auxiliary call must rotate the profile out quickly rather than stall behind a backstop
+    /// sized for generation.
+    auxiliary_idle: Duration,
 }
 
 #[derive(Clone, Default)]
@@ -245,6 +253,8 @@ impl GeminiProfile {
             calibration_persistence_ok: AtomicBool::new(billing.is_some()),
             billing,
             calibrations: Mutex::new(BTreeMap::new()),
+            generation_idle: Duration::from_secs(cfg.generation_idle_timeout_secs),
+            auxiliary_idle: Duration::from_secs(cfg.read_timeout_secs),
         })
     }
 
@@ -269,6 +279,7 @@ impl GeminiProfile {
         accept: Option<&'static str>,
         content_type: &'static str,
         body: bytes::Bytes,
+        idle_timeout: Duration,
     ) -> Result<TransportResponse, super::transport::TransportError> {
         let mut headers = vec![
             (
@@ -306,10 +317,19 @@ impl GeminiProfile {
             headers.push(("accept", SecretString::new(accept.to_string())));
         }
         self.transport
-            .send(TransportRequest { url, headers, body })
+            .send(TransportRequest {
+                url,
+                headers,
+                body,
+                idle_timeout,
+            })
             .await
     }
 
+    /// Silence allowance for customer generation on this profile.
+    pub(crate) fn generation_idle(&self) -> Duration {
+        self.generation_idle
+    }
     pub(crate) async fn access_token(
         &self,
         force_refresh: bool,
@@ -381,6 +401,7 @@ impl GeminiProfile {
                 url: &credential.token_uri,
                 headers,
                 body: bytes::Bytes::copy_from_slice(form.as_bytes()),
+                idle_timeout: self.auxiliary_idle,
             })
             .await
             .map_err(|_| TokenError::Temporary)?;
@@ -913,6 +934,7 @@ impl GeminiProfile {
                     (self.oauth_kind == OAuthKind::LegacyGeminiCli).then_some("application/json"),
                     "application/json",
                     bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
+                    self.auxiliary_idle,
                 )
                 .await;
             match response {
@@ -973,6 +995,7 @@ impl GeminiProfile {
                 (self.oauth_kind == OAuthKind::LegacyGeminiCli).then_some("application/json"),
                 "application/json",
                 bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
+                self.auxiliary_idle,
             )
             .await;
         let Ok(response) = response else {
@@ -1037,6 +1060,7 @@ impl GeminiProfile {
                 None,
                 "application/json",
                 bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
+                self.auxiliary_idle,
             )
             .await;
         let Ok(response) = response else {
@@ -2322,6 +2346,7 @@ mod tests {
             }],
             connect_timeout_secs: 1,
             read_timeout_secs: 1,
+            generation_idle_timeout_secs: 5,
             max_transport_retries: 1,
             auth_quarantine_secs: 900,
             transport_cool_secs: 5,
