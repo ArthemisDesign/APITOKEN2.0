@@ -7,6 +7,7 @@ describe("sourceName", () => {
     expect(sourceName("/spend-stats")).toBe("Статистика расхода");
     expect(sourceName("/settlement-health")).toBe("Settlement движка");
     expect(sourceName("/kimi-subs")).toBe("KIMI-подписки");
+    expect(sourceName("/glm-subs")).toBe("GLM-подписки");
   });
 
   it("query-строка отрезается", () => {

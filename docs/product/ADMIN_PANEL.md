@@ -75,11 +75,11 @@ systemctl enable apitoken-admin.service
 
 `admin.apitoken.sale` обслуживает `apps/admin` на `127.0.0.1:3700` и целиком закрыт
 `managed_admin_auth`: логин/пароль проверяет commerce internal auth с domain grants. Caddy
-same-origin проксирует обезличенные `/capacity`, `/codex-subs`, `/gemini-subs` и `/kimi-subs`
-в три provider runtime (KIMI — backend-only плоскость внутри Anthropic runtime, отдельного
-origin нет) и добавляет серверные ключи; браузер не получает control keys, полный email,
-OAuth, Google project, KIMI subject или proxy. Защита относится ко всем страницам, включая
-`/sales/calculator`.
+same-origin проксирует обезличенные `/capacity`, `/codex-subs`, `/gemini-subs`, `/kimi-subs`
+и `/glm-subs` в три provider runtime (KIMI и GLM — backend-only плоскости внутри Anthropic
+runtime, отдельного origin нет) и добавляет серверные ключи; браузер не получает control keys,
+полный email, OAuth, Google project, KIMI/GLM subject, ключи или proxy. Защита относится ко всем
+страницам, включая `/sales/calculator`.
 
 ## Pricing configurators и B2B policies
 
@@ -184,7 +184,7 @@ GPT-блок `/subscriptions` — компактная операторская 
 - provider placeholder с неположительным окном игнорируется. До появления положительного движения
   quota UI показывает короткое `ждём Δquota`, не подставляя ноль или прайор.
 
-## Claude, Gemini и KIMI capacity boards
+## Claude, Gemini, KIMI и GLM capacity boards
 
 Claude-блок `/subscriptions` намеренно оставляет только одну компактную таблицу аккаунтов: bounded
 email hint, routing/auth state, quota+reset и exact доступные/полные API-$ отдельно для 5ч и 7д.
@@ -194,18 +194,20 @@ Claude нужны только окна конкретных подписок. G
 профилям; отдельный локальный summary strip, model-quota и profitability таблицы удалены.
 Старые StatCard-наборы, proxy/transport details и длинные calibration explanations в основном экране
 не выводятся. Во всех пулах identity слева bounded: у Claude/GPT/Gemini — email hint (первые четыре
-символа local-part без домена), у KIMI — opaque roster id (email/subject в wire отсутствуют вовсе).
+символа local-part без домена), у KIMI и GLM — opaque roster id (email/subject/ключ в wire
+отсутствуют вовсе).
 
-Над деталями расположен единый control-room из четырёх карточек Claude/GPT/Gemini/KIMI. В каждой
-только два одинаково читаемых rail: `5ч` и `7д` (KIMI подписывает rail'ы реальными `duration_secs`:
-18000 → `5ч`, 604800 → `7д`, без фиктивных эквивалентов), current remaining / full-window API-$,
-использованная доля, число routable identities и coverage. Это главный экран сравнения продаваемой
-ёмкости; подробности по аккаунтам идут ниже без дополнительных cache/model/token-матриц.
-Claude-карточка вместо ложных денег немедленно показывает `N сохраняется`, `N потеряно` или ошибку
-authority из `calibration_delivery`. Gemini применяет тот же fail-closed контракт и не показывает
-stale API-$ при pending/degraded exact authority. Его свежие provider quota/reset при этом остаются
-видны, а денежная ячейка компактно говорит `обновляем`: сбой dollar-evidence не должен ослеплять
-оператора по реальному quota wall. KIMI держит тот же контракт на своей delivery FIFO.
+Над деталями расположен единый control-room из пяти карточек Claude/GPT/Gemini/KIMI/GLM. В каждой
+только два одинаково читаемых rail: `5ч` и `7д` (KIMI и GLM подписывают rail'ы реальными
+`duration_secs`: 18000 → `5ч`, 604800 → `7д`, без фиктивных эквивалентов), current remaining /
+full-window API-$, использованная доля, число routable identities и coverage. Это главный экран
+сравнения продаваемой ёмкости; подробности по аккаунтам идут ниже без дополнительных
+cache/model/token-матриц. Claude-карточка вместо ложных денег немедленно показывает
+`N сохраняется`, `N потеряно` или ошибку authority из `calibration_delivery`. Gemini применяет тот
+же fail-closed контракт и не показывает stale API-$ при pending/degraded exact authority. Его
+свежие provider quota/reset при этом остаются видны, а денежная ячейка компактно говорит
+`обновляем`: сбой dollar-evidence не должен ослеплять оператора по реальному quota wall. KIMI и
+GLM держат тот же контракт на своих delivery FIFO.
 
 Claude строится из `/capacity`:
 
@@ -258,3 +260,23 @@ saleable деньги, свежие quota/reset при этом остаются
 из трёх осей (auth/transport/quota) и протухший snapshot (>10 минут) говорят `вне ротации`/
 `обновляем` и не входят во fleet API-$: fleet-суммы считаются только по профилям, чья строка
 показывает реальные деньги, и null у любого из них делает итог неизвестным, а не частичной суммой.
+
+GLM строится из `/glm-subs` (конверт `enabled:false` показывается как «GLM-контур выключен») и
+повторяет тот же компактный контракт с особенностями источника. Идентичность профиля — только
+opaque roster id и bounded plan label (Lite/Pro/Max либо `unreviewed`); subject (digest ключа),
+сам ключ, proxy, base_url и credential path не сериализуются и не выводятся никогда. В отличие от
+KIMI, backend публикует fleet `window_totals` для двух канонических окон (300/10080 минут —
+проекция exact `duration_secs` 18000/604800) fail-closed суммами: null у любого профиля делает
+всё окно неизвестным, поэтому rail говорит `ждём данные`, а не `$0`, а без `window_totals`
+карточка деградирует в coverage-only, как у KIMI. Столбцы таблицы строятся из реальных
+`duration_secs` per-profile quota/calibration. Used share — exact provider `used_fraction_units`;
+API-$ — только calibrated `api_nano`/`current_nano` decimal strings, вся арифметика BigInt;
+native остаток (microcredits) показан отдельной компактной колонкой exact integer'ами, null
+остаётся `—`. Auth-оси GLM — durable флаги `account_dead`/`account_suspect`, а не timed
+quarantine: dead говорит `вне ротации` до замены ключа Auth Bot'ом, suspect — `под наблюдением`
+до свежего quota-probe, а ключ без прошедшего probe (`live:false`) — `ждём данные`; timed
+cooling оси — только transport/quota. Pending/dropped delivery и ошибка persistence показывают
+`сохраняется`/`обновляем` и скрывают saleable деньги, свежие quota/reset и native counters при
+этом остаются видны. Протухший snapshot (>10 минут) говорит `обновляем`; fleet-суммы в strip
+считаются только по профилям, чья строка показывает реальные деньги, и null у любого из них
+делает итог неизвестным, а не частичной суммой.

@@ -9,6 +9,7 @@ const SOURCE_NAMES: Record<string, string> = {
   "/codex-subs": "GPT-подписки",
   "/gemini-subs": "Gemini-подписки",
   "/kimi-subs": "KIMI-подписки",
+  "/glm-subs": "GLM-подписки",
   "/fleet-history": "История флота",
   "/partner-admin/overview": "Партнёрская сводка",
   "/partner-admin/partner-analytics": "Партнёрские аккаунты",

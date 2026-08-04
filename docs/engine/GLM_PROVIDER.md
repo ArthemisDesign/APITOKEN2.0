@@ -369,7 +369,7 @@ cumulative ledgers и завершает immutable observation/CAS до публ
 | gateway (+ диспетч `proxy.rs`, `AppState.glm`, billing writer, test-loopback фича credential) | `crates/forward/src/glm/gateway.rs` | готово, 35 mock-тестов + real-PG гейт в `billing.rs` |
 | server: env/config + композиция | `crates/server/src/{config,main,poller}.rs` | готово (env/config, композиция, maintenance loop, shutdown flush) |
 | observability, alerts, admin projection | `crates/{forward,server}`, `observability/**`, `docs/ops/MONITORING.md` | готово: operational status, admin-only `GET /glm-subs` (+`window_totals` для fleet-карточки), fixed-cardinality aggregate метрики, `glm-provider` алерты с runbook и consistency-пины |
-| admin UI consumer | `apps/admin` | не начато — same-origin потребитель `/glm-subs` отдельным checkpoint'ом |
+| admin UI consumer | `apps/admin` | готово: same-origin потребитель `/glm-subs` — GLM capacity board на `/subscriptions` (fleet-карточка, окна по аккаунтам, exact API-$, native microcredits) |
 | безопасный live-runner | `tools/glm_calibration/`, `docs/ops/GLM_CALIBRATION.md` | готово, ждёт первую подписку |
 | live-матрица на нашей подписке | — | **нужна подписка (блокирует человек)** |
 

@@ -4,6 +4,9 @@ import { type ReactElement } from "react";
 import { nanoMoney } from "@/lib/format";
 import { providerInteger, usedPercentFromNano } from "./provider-calibration";
 import {
+  glmMeasuredCoverage,
+  glmWindowDurations,
+  glmWindowLabel,
   kimiFleetUsedPercent,
   kimiFleetWindowMoney,
   kimiMeasuredCoverage,
@@ -17,6 +20,7 @@ import type {
   CodexWindowTotal,
   GeminiSubsResponse,
   GeminiWindowTotal,
+  GlmSubsResponse,
   KimiSubsResponse,
 } from "./types";
 
@@ -36,7 +40,7 @@ interface FleetRail {
 }
 
 interface FleetCardValue {
-  id: "claude" | "gpt" | "gemini" | "kimi";
+  id: "claude" | "gpt" | "gemini" | "kimi" | "glm";
   label: string;
   status: "ok" | "warn" | "bad";
   ready: number;
@@ -228,6 +232,65 @@ function kimiCard(response: KimiSubsResponse | null, nowMs?: number): FleetCardV
   };
 }
 
+// GLM публикует fleet window_totals для двух канонических окон (300/10080 минут —
+// проекция exact duration_secs 18000/604800) fail-closed суммами: null у любого
+// профиля делает всё окно неизвестным, поэтому rail показывает «ждём данные»,
+// а не $0. Без window_totals карточка деградирует в coverage-only, как KIMI.
+function glmCard(response: GlmSubsResponse | null): FleetCardValue {
+  if (!response || response.enabled === false) {
+    return {
+      id: "glm",
+      label: "GLM",
+      status: "bad",
+      ready: 0,
+      total: 0,
+      coverage: response ? "выключен" : "нет связи",
+      rails: [],
+    };
+  }
+  const profiles = response.profiles ?? [];
+  const totals = response.window_totals ?? [];
+  const ready = Number(response.fleet?.available_profiles ?? 0);
+  const total = Number(response.fleet?.profiles ?? profiles.length);
+  const pending = Number(response.delivery?.pending_events ?? 0);
+  const dropped = Number(response.delivery?.dropped_events ?? 0);
+  const persistenceOk = response.delivery?.persistence_ok !== false;
+  const moneyReady = persistenceOk && dropped === 0 && pending === 0;
+  const rails: FleetRail[] = totals.map((window) => {
+    const secs = Number(window.duration_secs ?? 0) || Number(window.window_minutes ?? 0) * 60;
+    const label = glmWindowLabel(secs);
+    if (!moneyReady) return { label };
+    return { label, window, unknownMoney: "ждём данные" };
+  });
+  const primary = Number(totals[0]?.duration_secs ?? 0) || glmWindowDurations(profiles)[0];
+  const coverage = dropped > 0
+    ? `${dropped} потеряно`
+    : pending > 0
+      ? `${pending} сохраняется`
+      : !persistenceOk
+        ? "ошибка persistence"
+        : primary == null
+          ? "окон нет"
+          : (() => {
+              const { measured, observed } = glmMeasuredCoverage(profiles, primary);
+              return `${measured}/${observed} измерено`;
+            })();
+  return {
+    id: "glm",
+    label: "GLM",
+    status: dropped > 0 || !persistenceOk
+      ? "bad"
+      : ready > 0 && pending === 0 && rails.length > 0
+          && rails.every((rail) => providerInteger(rail.window?.remaining_nano) != null)
+        ? "ok"
+        : "warn",
+    ready,
+    total,
+    coverage,
+    rails,
+  };
+}
+
 function FleetWindowRail({ rail }: { rail: FleetRail }): ReactElement {
   const used = rail.used ?? usedPercentFromNano(rail.window?.capacity_nano, rail.window?.remaining_nano);
   const percent = used.value ?? 0;
@@ -269,16 +332,24 @@ export function FleetCapacityOverview({
   gpt,
   gemini,
   kimi,
+  glm,
   nowMs,
 }: {
   claude: CapacityResponse | null;
   gpt: CodexSubsResponse | null;
   gemini: GeminiSubsResponse | null;
   kimi?: KimiSubsResponse | null;
+  glm?: GlmSubsResponse | null;
   /** Момент снимка (мс); KIMI считает cooling/staleness от response.now, это fallback. */
   nowMs?: number;
 }): ReactElement {
-  const cards = [claudeCard(claude), gptCard(gpt), geminiCard(gemini), kimiCard(kimi ?? null, nowMs)];
+  const cards = [
+    claudeCard(claude),
+    gptCard(gpt),
+    geminiCard(gemini),
+    kimiCard(kimi ?? null, nowMs),
+    glmCard(glm ?? null),
+  ];
   return (
     <section className="fleet-capacity-overview" aria-label="Доступная API-долларовая ёмкость пулов">
       <header>

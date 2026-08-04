@@ -1,10 +1,10 @@
 // Чистая логика страницы «Подписки» — порт вычислений из subscriptions()
-// (crates/server/src/admin-panel.js): баннер флота, статусы Claude/GPT/Gemini/KIMI,
+// (crates/server/src/admin-panel.js): баннер флота, статусы Claude/GPT/Gemini/KIMI/GLM,
 // пороговые бары. Вынесена из JSX ради юнит-тестов.
 import { count, duration } from "@/lib/format";
 import type { Tone } from "@/components/ui";
 import { providerInteger } from "./provider-calibration";
-import type { CodexHome, GeminiProfile, KimiProfile } from "./types";
+import type { CodexHome, GeminiProfile, GlmProfile, KimiProfile } from "./types";
 
 // deadLabel: причина смерти Claude-токена → русская подпись пилюли.
 export function deadLabel(reason: string | null | undefined): string {
@@ -280,6 +280,184 @@ export function kimiMeasuredCoverage(
   return { measured, observed: profiles.length };
 }
 
+/* ── GLM ─────────────────────────────────────────────── */
+
+// Возраст evidence, после которого snapshot считается протухшим (как snapshot_age_secs у GPT).
+const GLM_STALE_SECS = 600;
+
+// glmWindowLabel: exact duration_secs → короткая подпись окна. 18000 → "5ч",
+// 604800 → "7д"; любая другая длительность подписывается своим реальным
+// размером — фиктивных 5ч/7д эквивалентов не существует.
+export function glmWindowLabel(durationSecs: number | null | undefined): string {
+  const secs = Number(durationSecs) || 0;
+  if (secs <= 0) return "окно";
+  if (secs % 86_400 === 0) return `${secs / 86_400}д`;
+  if (secs % 3_600 === 0) return `${secs / 3_600}ч`;
+  if (secs % 60 === 0) return `${secs / 60}м`;
+  return `${secs}с`;
+}
+
+// glmWindowDurations: отсортированный набор реальных окон флота — union
+// duration_secs из quota и calibration записей всех профилей.
+export function glmWindowDurations(profiles: GlmProfile[]): number[] {
+  const found = new Set<number>();
+  for (const profile of profiles) {
+    for (const window of profile.quota ?? []) {
+      const secs = Number(window.duration_secs);
+      if (secs > 0) found.add(secs);
+    }
+    for (const row of profile.calibration ?? []) {
+      const secs = Number(row.duration_secs);
+      if (secs > 0) found.add(secs);
+    }
+  }
+  return [...found].sort((a, b) => a - b);
+}
+
+export interface GlmCoolingAxis {
+  name: string;
+  until: number;
+}
+
+// glmActiveCoolingAxes: активные timed оси cooling (transport/quota) с их until.
+// Auth-оси GLM — durable флаги account_dead/account_suspect, а не timed quarantine,
+// поэтому здесь их нет: они обрабатываются в glmProfileStatus отдельно.
+export function glmActiveCoolingAxes(profile: GlmProfile, nowSec: number): GlmCoolingAxis[] {
+  const cooling = profile.cooling;
+  return [
+    { name: "транспорт", until: Number(cooling?.transport_until ?? 0) },
+    { name: "quota", until: Number(cooling?.quota_until ?? 0) },
+  ].filter((axis) => axis.until > nowSec);
+}
+
+// glmLastObservedAt: свежайшая метка evidence профиля (quota snapshot или замер
+// калибровки); null — наблюдений ещё не было.
+export function glmLastObservedAt(profile: GlmProfile): number | null {
+  const stamps = [
+    Number(profile.quota_observed_at ?? 0),
+    ...(profile.quota ?? []).map((window) => Number(window.observed_at ?? 0)),
+    ...(profile.calibration ?? []).map((row) => Number(row.last_measured_at ?? 0)),
+  ].filter((value) => value > 0);
+  return stamps.length ? Math.max(...stamps) : null;
+}
+
+export type GlmEvidenceState = "fresh" | "stale" | "empty";
+
+export function glmEvidenceState(profile: GlmProfile, nowSec: number): GlmEvidenceState {
+  const observed = glmLastObservedAt(profile);
+  if (observed == null) return "empty";
+  return nowSec - observed > GLM_STALE_SECS ? "stale" : "fresh";
+}
+
+// glmProfileStatus: состояние профиля целиком, оси — ровно допуск runtime
+// (selection ineligibility): account_dead → «вне ротации» до замены ключа;
+// account_suspect → «под наблюдением» до свежего probe; активные cooling-оси —
+// с отсчётом до последнего until; ключ без прошедшего probe (live:false) и
+// полное отсутствие наблюдений → «ждём данные»; протухшие данные → «обновляем»
+// (null не превращается в 0).
+export function glmProfileStatus(profile: GlmProfile, nowSec: number): StatusPill {
+  if (profile.account_dead === true) return { label: "вне ротации", kind: "bad" };
+  if (profile.account_suspect === true) return { label: "под наблюдением", kind: "warn" };
+  const axes = glmActiveCoolingAxes(profile, nowSec);
+  if (axes.length > 0) {
+    const last = Math.max(...axes.map((axis) => axis.until));
+    const names = axes.map((axis) => axis.name).join("+");
+    return { label: `cooling ${names} ${duration(last - nowSec)}`, kind: "warn" };
+  }
+  if (profile.live !== true) return { label: "ждём данные", kind: "warn" };
+  const evidence = glmEvidenceState(profile, nowSec);
+  if (evidence === "empty") return { label: "ждём данные", kind: "warn" };
+  if (evidence === "stale") return { label: "обновляем", kind: "warn" };
+  return { label: "active", kind: "ok" };
+}
+
+// glmUsedPercent: used_fraction_units → точный процент с шагом 0.1 (BigInt,
+// округление half-up, как usedPercentFromNano у остальных флотов).
+export function glmUsedPercent(
+  unitsValue: number | string | bigint | null | undefined,
+): { value: number | null; label: string } {
+  const units = providerInteger(unitsValue);
+  if (units == null) return { value: null, label: "—" };
+  const bounded = units < 0n ? 0n : units > FRACTION_SCALE ? FRACTION_SCALE : units;
+  const tenths = (bounded * 1_000n + FRACTION_SCALE / 2n) / FRACTION_SCALE;
+  return {
+    value: Number(tenths) / 10,
+    label: `${tenths / 10n}${tenths % 10n ? `.${tenths % 10n}` : ""}%`,
+  };
+}
+
+// glmFleetUsedPercent: использованная доля окна по флоту — used_fraction_units
+// профилей, взвешенные по limit_units их окон (BigInt); без лимитов — среднее.
+export function glmFleetUsedPercent(
+  profiles: GlmProfile[],
+  durationSecs: number,
+): { value: number | null; label: string } {
+  let weighted = 0n;
+  let limits = 0n;
+  let sum = 0n;
+  let seen = 0n;
+  for (const profile of profiles) {
+    const window = (profile.quota ?? []).find((item) => Number(item.duration_secs) === durationSecs);
+    const units = providerInteger(window?.used_fraction_units ?? null);
+    if (units == null) continue;
+    const limit = providerInteger(window?.limit_units ?? null);
+    if (limit != null && limit > 0n) {
+      weighted += units * limit;
+      limits += limit;
+    }
+    sum += units;
+    seen += 1n;
+  }
+  const combined = limits > 0n ? (weighted + limits / 2n) / limits : seen > 0n ? sum / seen : null;
+  return glmUsedPercent(combined);
+}
+
+// glmFleetWindowMoney: сумма calibrated remaining/capacity окна только по
+// профилям, чьи деньги продаваемы прямо сейчас (ключ подтверждён, не dead и не
+// suspect, без активной cooling-оси, без протухшего snapshot) — ровно тем, чья
+// строка показывает реальные API-$. Fail-closed: пустой набор или null у любого
+// такого профиля делает итог неизвестным — никогда не частичная сумма и никогда
+// не $0 вместо неизвестного.
+export function glmFleetWindowMoney(
+  profiles: GlmProfile[],
+  durationSecs: number,
+  nowSec: number,
+): { capacity: string | null; remaining: string | null } {
+  const contributing = profiles.filter(
+    (profile) =>
+      profile.live === true
+      && profile.account_dead !== true
+      && profile.account_suspect !== true
+      && glmActiveCoolingAxes(profile, nowSec).length === 0
+      && glmEvidenceState(profile, nowSec) !== "stale",
+  );
+  if (!contributing.length) return { capacity: null, remaining: null };
+  let capacity = 0n;
+  let remaining = 0n;
+  for (const profile of contributing) {
+    const row = (profile.calibration ?? []).find((item) => Number(item.duration_secs) === durationSecs);
+    const current = providerInteger(row?.capacity?.current_nano ?? null);
+    const api = providerInteger(row?.remaining?.api_nano ?? null);
+    if (current == null || api == null) return { capacity: null, remaining: null };
+    capacity += current;
+    remaining += api;
+  }
+  return { capacity: capacity.toString(), remaining: remaining.toString() };
+}
+
+// glmMeasuredCoverage: доля профилей с реальными замерами (samples > 0) в окне.
+export function glmMeasuredCoverage(
+  profiles: GlmProfile[],
+  durationSecs: number,
+): { measured: number; observed: number } {
+  const measured = profiles.filter((profile) =>
+    (profile.calibration ?? []).some(
+      (row) => Number(row.duration_secs) === durationSecs && Number(row.samples ?? 0) > 0,
+    ),
+  ).length;
+  return { measured, observed: profiles.length };
+}
+
 export interface FleetBanner {
   kind: "ok" | "warn" | "bad";
   title: string;
@@ -301,6 +479,9 @@ export interface FleetBannerInput {
   kimiDown: boolean;
   kimiEmpty: boolean;
   kimiUnavailable: boolean;
+  glmDown: boolean;
+  glmEmpty: boolean;
+  glmUnavailable: boolean;
   claudeCount: number;
   /** homes.length или «выкл.» при отключённом контуре. */
   gptSummary: number | string;
@@ -308,6 +489,8 @@ export interface FleetBannerInput {
   geminiSummary: number | string;
   /** profiles.length или «выкл.». */
   kimiSummary: number | string;
+  /** profiles.length или «выкл.». */
+  glmSummary: number | string;
   /** Уже отформатированная метка обновления (formatDate(Date.now(), true)). */
   updatedAt: string;
 }
@@ -396,6 +579,24 @@ export function resolveBanner(input: FleetBannerInput): FleetBanner {
       title: "KIMI: нет доступных профилей",
       sub: "все профили cooling по одной из осей или вне ротации — ёмкость временно не продаётся",
     };
+  if (input.glmDown)
+    return {
+      kind: "warn",
+      title: "GLM-контур не отвечает",
+      sub: "/glm-subs недоступен — проверьте Anthropic runtime: GLM-плоскость живёт в нём",
+    };
+  if (input.glmEmpty)
+    return {
+      kind: "warn",
+      title: "В GLM-пуле нет профилей",
+      sub: "плоскость включена, но roster ещё пуст — ни одной подписки не опубликовано",
+    };
+  if (input.glmUnavailable)
+    return {
+      kind: "warn",
+      title: "GLM: нет доступных профилей",
+      sub: "все профили dead/suspect, cooling по одной из осей или вне ротации — ёмкость временно не продаётся",
+    };
   if (input.suspect)
     return {
       kind: "warn",
@@ -406,7 +607,7 @@ export function resolveBanner(input: FleetBannerInput): FleetBanner {
     };
   return {
     kind: "ok",
-    title: "Все четыре флота подписок в ротации",
-    sub: `Claude ${input.claudeCount} · GPT ${input.gptSummary} · Gemini ${input.geminiSummary} · KIMI ${input.kimiSummary} · обновлено ${input.updatedAt}`,
+    title: "Все пять флотов подписок в ротации",
+    sub: `Claude ${input.claudeCount} · GPT ${input.gptSummary} · Gemini ${input.geminiSummary} · KIMI ${input.kimiSummary} · GLM ${input.glmSummary} · обновлено ${input.updatedAt}`,
   };
 }

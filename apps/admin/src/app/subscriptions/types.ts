@@ -1,4 +1,4 @@
-// Типы payload'ов флотов подписок: GET /subs, /capacity, /codex-subs, /gemini-subs, /kimi-subs.
+// Типы payload'ов флотов подписок: GET /subs, /capacity, /codex-subs, /gemini-subs, /kimi-subs, /glm-subs.
 // Все поля опциональны — панель деградирует молча, как admin-panel.js.
 // Для Codex canonical money — *_nano строки; legacy *_usd только отображаются. Остальные старые
 // payload'ы страницы пока остаются presentation USD и не участвуют в money arithmetic.
@@ -643,4 +643,103 @@ export interface KimiSubsResponse {
   delivery?: KimiDelivery | null;
   fleet?: KimiFleet | null;
   profiles?: KimiProfile[];
+}
+
+// GET /glm-subs — GLM (Z.ai Coding Plan) профили (backend-only плоскость внутри Anthropic
+// runtime). Деньги — decimal nano strings (BigInt); native counters — plain integers
+// (microcredits у калибровки, сырые provider counters у quota); неизвестное — null, никогда
+// не 0. Идентичность окна — exact duration_secs (18000 = rolling 5ч, 604800 = weekly).
+// Subject (digest ключа), ключ, proxy, base_url и credential path не сериализуются никогда:
+// идентичность — opaque roster id + bounded plan label.
+export interface GlmQuotaWindow {
+  duration_secs?: number;
+  /** Provider authority: сырые counters — plain integers либо null, пока семантика единиц
+   * не доказана (docs/engine/GLM_PROVIDER.md §6.3); никогда не zero-filled. */
+  used_units?: number | null;
+  limit_units?: number | null;
+  remaining_units?: number | null;
+  /** Доля использования в единицах 1e-8 (100% = 100_000_000), как у остальных флотов. */
+  used_fraction_units?: number | null;
+  measurement_resolution_fraction_units?: number | null;
+  resets_at?: number | null;
+  observed_at?: number | null;
+}
+
+export interface GlmCalibrationWindow {
+  duration_secs?: number;
+  samples?: number;
+  confidence_bp?: number;
+  capacity?: {
+    current_nano?: string | null;
+    low_nano?: string | null;
+    high_nano?: string | null;
+  } | null;
+  /** null целиком, когда неизвестны и native, и API-значение. native_units — microcredits. */
+  remaining?: {
+    native_units?: number | null;
+    api_nano?: string | null;
+  } | null;
+  observed_spend_nano?: string;
+  observed_spend_native_units?: number;
+  unattributed_fraction_units?: number;
+  last_measured_at?: number | null;
+  estimator_version?: number;
+}
+
+export interface GlmProfile {
+  /** Opaque roster id; subject/key/proxy/base_url не покидают runtime. */
+  id?: string;
+  /** Bounded label тарифа: Lite/Pro/Max либо "unreviewed". */
+  plan?: string;
+  /** Ключ подтверждён quota-probe. Не ось ротации: допуск решают dead/suspect/cooling. */
+  live?: boolean;
+  /** Auth-оси GLM — durable флаги, а не timed quarantine: dead до замены ключа Auth Bot'ом,
+   * suspect до свежего прошедшего quota-probe. `auth_until` не существует. */
+  account_dead?: boolean;
+  account_suspect?: boolean;
+  /** Две timed оси cooling; epoch-секунды окончания либо null. */
+  cooling?: {
+    transport_until?: number | null;
+    quota_until?: number | null;
+  } | null;
+  inflight?: number;
+  quota_observed_at?: number | null;
+  quota?: GlmQuotaWindow[];
+  calibration?: GlmCalibrationWindow[];
+}
+
+export interface GlmDelivery {
+  pending_events?: number;
+  dropped_events?: number;
+  persistence_ok?: boolean;
+}
+
+export interface GlmFleet {
+  profiles?: number;
+  live_profiles?: number;
+  available_profiles?: number;
+  inflight_requests?: number;
+  account_dead_profiles?: number;
+  account_suspect_profiles?: number;
+  transport_cooling_profiles?: number;
+  quota_cooling_profiles?: number;
+}
+
+export interface GlmWindowTotal {
+  /** Проекция exact duration_secs (18_000s = 300 мин, 604_800s = 10_080 мин). */
+  window_minutes?: number;
+  duration_secs?: number;
+  /** Fail-closed суммы по флоту: null, пока хотя бы один профиль не измерен — никогда не 0. */
+  capacity_nano?: string | null;
+  remaining_nano?: string | null;
+}
+
+export interface GlmSubsResponse {
+  /** epoch-секунды «сейчас» по часам runtime (сбросы считаются от него). */
+  now?: number;
+  enabled?: boolean;
+  delivery?: GlmDelivery | null;
+  fleet?: GlmFleet | null;
+  window_totals?: GlmWindowTotal[];
+  profiles?: GlmProfile[];
 }
