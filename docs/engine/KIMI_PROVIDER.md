@@ -187,6 +187,11 @@ health по `/models` прямо запрещён.
 `unknown` Точный auth-заголовок Anthropic-маршрута (`Authorization: Bearer` против `x-api-key`)
 не подтверждён нормативной страницей. Официальный CLI использует Bearer для `/me`, `/usages` и
 чата; документация Claude Code задаёт `ANTHROPIC_API_KEY`, что даёт `x-api-key`.
+
+`oss-hypothesis` Официальный CLI идентифицирует себя строкой `kimi-code-cli/<version>` (changelog:
+User-Agent отправляется, чтобы реестры могли определить версию клиента). Движок пинит
+`kimi_credential::KIMI_CODE_CLI_USER_AGENT` к версии `apps/kimi-code/package.json` из pinned
+research SHA — голый HTTP-клиент без UA рискует выглядеть для подписочного endpoint чужим ботом.
 `decision` → реализуем Bearer как проверенный источником вариант, `x-api-key` — как
 конфигурируемую альтернативу; выбор фиксируется первым же live-прогоном.
 

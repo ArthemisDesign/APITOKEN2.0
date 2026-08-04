@@ -954,6 +954,14 @@ path и никогда не проваливается в Claude.
 (`live>=1 && persistence_ok`) публикуется как `provider_unavailable` на `/ready` только когда
 gateway составлен; без него слот обслуживает disabled envelope и остаётся ready.
 
+Pool parity с остальными плоскостями: каждый upstream client несёт пинned
+`kimi_credential::KIMI_CODE_CLI_USER_AGENT` (endpoint идентифицирует официальный CLI по этой
+строке). Ставший 2xx без первого байта (stalled stream start) и сорвавшееся чтение non-stream
+тела — pre-byte transport faults с ротацией через тот же `decide(...)`, а не терминальный ответ
+с мгновенно перевыбираемым профилем. `Retry-After` на 403/429 (bounded до часа) охлаждает ось
+quota/transport ровно до подсказанного момента; отсутствующая или мусорная подсказка оставляет
+дефолтный cooldown.
+
 Roster discovery идёт каждые 15 секунд. Неизменённый profile обязан переиспользовать тот же
 runtime `Arc`; новый/изменённый credential проходит `/me` до whole-generation swap. Любая ошибка
 read/decrypt/client/probe и исчезнувший файл сохраняют last-good. Намеренное удаление — только

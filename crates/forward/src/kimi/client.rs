@@ -332,6 +332,9 @@ pub fn refresh_url() -> String {
 pub fn build_client(proxy: &str, connect_timeout: Duration, read_timeout: Duration) -> Result<wreq::Client> {
     let mut builder = wreq::Client::builder()
         .connect_timeout(connect_timeout)
+        // The subscription endpoint identifies the official CLI by its User-Agent; a bare client
+        // fingerprint risks looking like an unrelated bot.
+        .user_agent(kimi_credential::KIMI_CODE_CLI_USER_AGENT)
         // A redirect must never carry a subscription bearer to another origin.
         .redirect(wreq::redirect::Policy::none())
         .pool_idle_timeout(Duration::from_secs(90))

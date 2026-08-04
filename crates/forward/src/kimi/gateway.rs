@@ -254,6 +254,25 @@ impl RuntimeProfile {
         }
     }
 
+    /// Apply the decision effect, honoring a provider `Retry-After` hint for a quota wall.
+    ///
+    /// A wall with an explicit hint cools the quota axis until exactly then instead of the flat
+    /// fallback constant; an absent or unparsable hint keeps the fallback. The hint is bounded so
+    /// a hostile or broken value cannot park a profile forever.
+    fn apply_effect_with_hint(&self, effect: ProfileEffect, now: i64, retry_after_secs: Option<i64>) {
+        match (effect, retry_after_secs) {
+            (ProfileEffect::CoolUntilReset, Some(seconds)) => {
+                let mut health = self.health.lock().expect("KIMI profile health lock");
+                health.quota_cool_until = now.saturating_add(seconds);
+            }
+            (ProfileEffect::TransportFault, Some(seconds)) => {
+                let mut health = self.health.lock().expect("KIMI profile health lock");
+                health.transport_cool_until = now.saturating_add(seconds);
+            }
+            _ => self.apply_effect(effect, now),
+        }
+    }
+
     fn mark_healthy(&self) {
         let mut health = self.health.lock().expect("KIMI profile health lock");
         health.authenticated = true;
@@ -1213,10 +1232,13 @@ impl KimiGateway {
                     }
                 };
                 let status = response.status().as_u16();
+                // A provider throttle/wall hint is honored before the response is dropped: the
+                // quota axis then cools until exactly the hinted instant, not a flat fallback.
+                let retry_after = retry_after_seconds(response.headers());
                 let verdict = classify_status(status);
                 let remaining = self.eligible_count(&request.model, &excluded, &profile.id);
                 let decision = decide(verdict, Delivery::PreByte, policy, remaining);
-                profile.apply_effect(decision.effect, now_unix());
+                profile.apply_effect_with_hint(decision.effect, now_unix(), retry_after);
                 policy = decision.policy;
                 match decision.next {
                     NextStep::RefreshAndRetrySameProfile => {
@@ -1280,8 +1302,50 @@ impl KimiGateway {
                             .await;
                             let initial = match startup {
                                 Ok(Ok(initial)) => initial,
-                                Ok(Err(error)) => return error_response(error),
-                                Err(_) => return error_response(GatewayFailure::Transport),
+                                // A 2xx that never yields a usable first byte is a pre-byte
+                                // transport fault: cool the profile, spend the bounded transport
+                                // budget and rotate when another profile is eligible — a wedged
+                                // profile must not stay instantly re-selectable.
+                                Ok(Err(error)) => {
+                                    let remaining = self.eligible_count(
+                                        &request.model,
+                                        &excluded,
+                                        &profile.id,
+                                    );
+                                    let decision = decide(
+                                        UpstreamVerdict::Transport,
+                                        Delivery::PreByte,
+                                        policy,
+                                        remaining,
+                                    );
+                                    profile.apply_effect(decision.effect, now_unix());
+                                    policy = decision.policy;
+                                    if decision.next == NextStep::RotateToAnotherProfile {
+                                        excluded.insert(profile.id.clone());
+                                        break;
+                                    }
+                                    return error_response(error);
+                                }
+                                Err(_) => {
+                                    let remaining = self.eligible_count(
+                                        &request.model,
+                                        &excluded,
+                                        &profile.id,
+                                    );
+                                    let decision = decide(
+                                        UpstreamVerdict::Transport,
+                                        Delivery::PreByte,
+                                        policy,
+                                        remaining,
+                                    );
+                                    profile.apply_effect(decision.effect, now_unix());
+                                    policy = decision.policy;
+                                    if decision.next == NextStep::RotateToAnotherProfile {
+                                        excluded.insert(profile.id.clone());
+                                        break;
+                                    }
+                                    return error_response(GatewayFailure::Transport);
+                                }
                             };
                             let mut sse = SseAccounting::default();
                             if sse.push(&initial).is_err() {
@@ -1324,7 +1388,25 @@ impl KimiGateway {
                         let headers = response_headers(&response);
                         let body = match read_bounded(response, RESPONSE_BODY_LIMIT).await {
                             Ok(body) => body,
-                            Err(error) => return error_response(error),
+                            // Nothing reached the client yet, so a failed body read is a pre-byte
+                            // transport fault with the same rotation contract as a connect error.
+                            Err(error) => {
+                                let remaining =
+                                    self.eligible_count(&request.model, &excluded, &profile.id);
+                                let decision = decide(
+                                    UpstreamVerdict::Transport,
+                                    Delivery::PreByte,
+                                    policy,
+                                    remaining,
+                                );
+                                profile.apply_effect(decision.effect, now_unix());
+                                policy = decision.policy;
+                                if decision.next == NextStep::RotateToAnotherProfile {
+                                    excluded.insert(profile.id.clone());
+                                    break;
+                                }
+                                return error_response(error);
+                            }
                         };
                         if !self.mark_delivering(reservation.as_ref()).await {
                             let parsed = non_stream_accounting(&body);
@@ -2281,6 +2363,18 @@ async fn drop_bounded(response: wreq::Response, limit: usize) {
     let _ = read_bounded(response, limit).await;
 }
 
+/// Parse a `Retry-After` delay-seconds hint, bounded to one hour.
+///
+/// Only the integer-seconds form is honored (the HTTP-date form is ignored): the value drives a
+/// cooling deadline, so an unbounded or hostile hint must never park a profile for longer than a
+/// plain wall would. Absent, malformed or out-of-range values return `None` and the caller falls
+/// back to the default cooldown.
+fn retry_after_seconds(headers: &wreq::header::HeaderMap) -> Option<i64> {
+    let raw = headers.get("retry-after")?.to_str().ok()?.trim();
+    let seconds: i64 = raw.parse().ok()?;
+    (seconds > 0 && seconds <= 3_600).then_some(seconds)
+}
+
 fn event_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
     let lf = bytes
         .windows(2)
@@ -3143,6 +3237,259 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn publish_second_console_profile(fixture: &Fixture) {
+        let credential_path = fixture.root.join("credentials/kimi-02.json");
+        // The second envelope must decrypt to its own subject: seal it on its own profile id.
+        let ring = keyring();
+        let credential = KimiCredential {
+            version: 1,
+            kind: KimiCredentialKind::ConsoleKey,
+            access_token: "console-secret-2".into(),
+            refresh_token: String::new(),
+            expires_at: 0,
+            scope: "coding".into(),
+            subject_id: "subject-2".into(),
+            plan_name: "unreviewed-base-plan".into(),
+            plan_level: 1,
+            status: KIMI_STATUS_NORMAL.into(),
+            region: "REGION_CN".into(),
+            proxy_url: String::new(),
+        };
+        let envelope = ring.seal("a1", "kimi-02", &credential).unwrap();
+        write_private(
+            &credential_path,
+            &kimi_credential::encode_envelope(&envelope).unwrap(),
+        );
+        let roster = json!({
+            "profiles": [
+                {
+                    "id": "kimi-01",
+                    "credential_file": fixture.root.join("credentials/kimi-01.json").to_string_lossy(),
+                },
+                {
+                    "id": "kimi-02",
+                    "credential_file": credential_path.to_string_lossy(),
+                },
+            ]
+        });
+        write_private(
+            &fixture.root.join("profiles.json"),
+            &serde_json::to_vec(&roster).unwrap(),
+        );
+    }
+
+    fn kimi_request_body(stream: bool) -> Value {
+        json!({
+            "model": "kimi-for-coding",
+            "max_tokens": 8,
+            "stream": stream,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+    }
+
+    fn kimi_request(body: Value) -> KimiRequest {
+        KimiRequest {
+            headers: HeaderMap::new(),
+            raw_body_len: serde_json::to_vec(&body).unwrap().len(),
+            body,
+            model: "kimi-for-coding".into(),
+            execution: ExecutionAttempt::direct(),
+            billing: None,
+            affinity: None,
+            affinity_store: affinity(),
+        }
+    }
+
+    #[tokio::test]
+    async fn every_upstream_call_carries_the_pinned_cli_user_agent() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        let identity = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let (base_url, requests) = mock_server(vec![http_response("application/json", identity)]);
+        let gateway =
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap();
+        assert_eq!(gateway.preflight().await, 1);
+        let probe = String::from_utf8(requests.recv().unwrap()).unwrap();
+        assert!(
+            probe
+                .to_ascii_lowercase()
+                .contains("user-agent: kimi-code-cli/0.31.1"),
+            "the subscription endpoint must see the pinned official CLI identity: {probe}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stalled_stream_start_cools_the_profile_and_rotates_pre_byte() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        publish_second_console_profile(&fixture);
+        let identity_1 = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let identity_2 = br#"{"user_id":"subject-2","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        // First generation attempt: 2xx SSE whose stream ends without a single byte — a wedged
+        // stream start. Second: a complete valid stream.
+        let stalled = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_vec();
+        let stream_body = br#"data: {"type":"message_start","message":{"model":"kimi-k2.7-code","usage":{"input_tokens":10}}}
+
+data: {"type":"message_delta","usage":{"output_tokens":4}}
+
+data: {"type":"message_stop"}
+
+"#.to_vec();
+        let good = http_response("text/event-stream", &stream_body);
+        let (base_url, requests) = mock_server(vec![
+            http_response("application/json", identity_1),
+            http_response("application/json", identity_2),
+            stalled,
+            good,
+        ]);
+        let gateway = Arc::new(
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap(),
+        );
+        assert_eq!(gateway.preflight().await, 2);
+
+        let response = gateway.handle(kimi_request(kimi_request_body(true))).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let served = axum::body::to_bytes(response.into_body(), RESPONSE_BODY_LIMIT)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&served).contains("message_stop"));
+
+        let posts: Vec<String> = (0..4)
+            .map(|_| String::from_utf8(requests.recv().unwrap()).unwrap())
+            .filter(|request| request.starts_with("POST /messages "))
+            .collect();
+        assert_eq!(posts.len(), 2, "the wedged profile must be rotated past");
+        // The failed profile cooled on the transport axis; exactly one profile did.
+        let now = now_unix();
+        let cooled = gateway
+            .profiles_snapshot()
+            .iter()
+            .filter(|profile| {
+                matches!(
+                    profile.candidate("kimi-for-coding", now).ineligible,
+                    Some(Ineligible::TransportWedged)
+                )
+            })
+            .count();
+        assert_eq!(cooled, 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_non_stream_body_read_rotates_pre_byte() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        publish_second_console_profile(&fixture);
+        let identity_1 = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let identity_2 = br#"{"user_id":"subject-2","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        // Declares more bytes than it delivers, then closes: the body read fails before the
+        // customer sees anything, so rotation is still legal.
+        let mut truncated = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 4096\r\nconnection: close\r\n\r\n".to_vec();
+        truncated.extend_from_slice(br#"{"partial":"#);
+        let generation = br#"{"id":"msg_1","type":"message","model":"kimi-k2.7-code","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":7,"output_tokens":2}}"#;
+        let (base_url, requests) = mock_server(vec![
+            http_response("application/json", identity_1),
+            http_response("application/json", identity_2),
+            truncated,
+            http_response("application/json", generation),
+        ]);
+        let gateway = Arc::new(
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap(),
+        );
+        assert_eq!(gateway.preflight().await, 2);
+
+        let response = gateway.handle(kimi_request(kimi_request_body(false))).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let served = axum::body::to_bytes(response.into_body(), RESPONSE_BODY_LIMIT)
+            .await
+            .unwrap();
+        assert_eq!(served.as_ref(), generation);
+
+        let mut posts = 0;
+        for _ in 0..4 {
+            let request = String::from_utf8(requests.recv().unwrap()).unwrap();
+            if request.starts_with("POST /messages ") {
+                posts += 1;
+            }
+        }
+        assert_eq!(posts, 2);
+        let now = now_unix();
+        let cooled = gateway
+            .profiles_snapshot()
+            .iter()
+            .filter(|profile| {
+                matches!(
+                    profile.candidate("kimi-for-coding", now).ineligible,
+                    Some(Ineligible::TransportWedged)
+                )
+            })
+            .count();
+        assert_eq!(cooled, 1);
+    }
+
+    #[test]
+    fn retry_after_hint_is_bounded_and_optional() {
+        let mut headers = wreq::header::HeaderMap::new();
+        assert_eq!(retry_after_seconds(&headers), None);
+        headers.insert("retry-after", "17".parse().unwrap());
+        assert_eq!(retry_after_seconds(&headers), Some(17));
+        for bad in ["0", "-3", "7201", "not-a-number", "1.5"] {
+            headers.insert("retry-after", bad.parse().unwrap());
+            assert_eq!(retry_after_seconds(&headers), None, "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_quota_wall_honors_retry_after_exactly_and_rotates() {
+        let fixture = Fixture::new();
+        fixture.publish_console_profile();
+        publish_second_console_profile(&fixture);
+        let identity_1 = br#"{"user_id":"subject-1","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let identity_2 = br#"{"user_id":"subject-2","user_level_name":"unreviewed-base-plan","status":"USER_STATUS_NORMAL"}"#;
+        let wall = b"HTTP/1.1 403 Forbidden\r\ncontent-type: application/json\r\nretry-after: 42\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}".to_vec();
+        let generation = br#"{"id":"msg_1","type":"message","model":"kimi-k2.7-code","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":7,"output_tokens":2}}"#;
+        let (base_url, requests) = mock_server(vec![
+            http_response("application/json", identity_1),
+            http_response("application/json", identity_2),
+            wall,
+            http_response("application/json", generation),
+        ]);
+        let gateway = Arc::new(
+            KimiGateway::new_with_calibration(config(&fixture.root, base_url), None).unwrap(),
+        );
+        assert_eq!(gateway.preflight().await, 2);
+
+        let before = now_unix();
+        let response = gateway.handle(kimi_request(kimi_request_body(false))).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        for _ in 0..4 {
+            let _ = requests.recv().unwrap();
+        }
+        // The walled profile cools on the quota axis until exactly now + 42 — not the flat
+        // fallback — and the request still completes on the sibling profile.
+        let now = now_unix();
+        let walls: Vec<i64> = gateway
+            .profiles_snapshot()
+            .iter()
+            .filter_map(|profile| match profile.candidate("kimi-for-coding", now).ineligible {
+                Some(Ineligible::QuotaWall) => Some(
+                    profile
+                        .health
+                        .lock()
+                        .unwrap()
+                        .quota_cool_until,
+                ),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(walls.len(), 1);
+        let expected = before + 42;
+        assert!(
+            walls[0] >= expected && walls[0] <= expected + 2,
+            "quota wall must honor the provider hint exactly: {} vs {expected}",
+            walls[0]
+        );
     }
 
     #[test]

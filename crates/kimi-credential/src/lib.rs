@@ -41,6 +41,13 @@ pub const KIMI_TOKEN_PATH: &str = "/api/oauth/token";
 pub const KIMI_DEVICE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 /// Public client id published by the official MIT-licensed Kimi Code CLI.
 pub const KIMI_OFFICIAL_OAUTH_CLIENT_ID: &str = "17e5f671-d194-4dfb-9706-5516cb48c098";
+/// User-Agent the official Kimi Code CLI sends, pinned to the reviewed CLI release.
+///
+/// The provider identifies clients by this string (the CLI changelog notes it is sent so
+/// registries can identify the client version), so a bare/default agent risks looking like an
+/// unrelated bot at the subscription endpoint. Version taken from `apps/kimi-code/package.json`
+/// at the pinned research SHA `75395f6abb17f83f30d16b51f4e060a639f43622`.
+pub const KIMI_CODE_CLI_USER_AGENT: &str = "kimi-code-cli/0.31.1";
 
 /// Canonical subscription API base. The Anthropic-compatible route is served from the same
 /// origin, which is why the engine's native protocol can be forwarded unchanged.
