@@ -625,6 +625,73 @@ describe.runIf(Boolean(connectionString))("pricing shadow rollout v2 lane", () =
     }
   });
 
+  it("skips a legacy-contract account whose lineage already holds the canonical successor", async () => {
+    const runId = randomUUID();
+    await seedStage5(seed, runId);
+    const reader = engineReader();
+    const originalState = reader.getAccountPricingState;
+    reader.getAccountPricingState = async (accountId: string) => {
+      if (accountId !== "acct_ok_legacy") return originalState(accountId);
+      const base = {
+        account_id: "acct_ok_legacy",
+        effective_version: 2,
+        policy_id: `policy:openkeys:legacy:${LEGACY_SOURCE_ID}`,
+        policy_version: 2,
+        source_policy_digest: V1("legacy-v1"),
+        owner_type: "open_keys" as const,
+        owner_id: LEGACY_SOURCE_ID,
+        account_class: "open_keys" as const,
+        product_id: "openkeys",
+        schema_version: 1,
+        catalog_generation: 5,
+        switch_generation: 5,
+        replacement_locked: false,
+        rules: [
+          {
+            rule_id: "openkeys-anthropic-1to1",
+            rule_digest: "sha256:v2:unused",
+            scope: { provider: { provider_id: "anthropic" } },
+            pricing_mode: "discount" as const,
+            rule_origin: "managed" as const,
+            discount_bps: 0,
+            payable_multiplier_bp: 10_000,
+            track_eligible: false,
+            retention_eligible: false,
+            commission_eligible: false,
+          },
+          {
+            rule_id: "openkeys-openai-1to1",
+            rule_digest: "sha256:v2:unused2",
+            scope: { provider: { provider_id: "openai" } },
+            pricing_mode: "discount" as const,
+            rule_origin: "managed" as const,
+            discount_bps: 0,
+            payable_multiplier_bp: 10_000,
+            track_eligible: false,
+            retention_eligible: false,
+            commission_eligible: false,
+          },
+        ],
+      };
+      return {
+        active: {
+          policy: { ...base, content_digest: V1("successor-v2") },
+          binding: {
+            policy_enforcement: "shadow" as const,
+            funding_enforcement: "legacy_single" as const,
+            reconciliation_state: "verified" as const,
+          },
+        },
+      };
+    };
+    const staged = await stagePricingShadowRolloutV2(database, reader, stageInput(runId));
+    expect(staged.jobCount).toBe(1);
+    const jobs = await seed.query<{ engine_account_id: string }>(`
+      SELECT engine_account_id FROM pricing_shadow_policy_jobs_v2
+    `);
+    expect(jobs.rows.map((row) => row.engine_account_id)).toEqual(["acct_ok_new"]);
+  });
+
   it("blocks semantic failures and closes the rollout as blocked", async () => {
     const runId = randomUUID();
     await seedStage5(seed, runId);

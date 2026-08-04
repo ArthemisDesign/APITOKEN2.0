@@ -663,9 +663,44 @@ export async function stagePricingShadowRolloutV2(
         }
         const lockedPolicy = lockedState.active.policy;
         if (!lockedPolicy.replacement_locked) {
-          throw permanent(
-            `legacy OpenKeys account ${assignment.engine_account_id} lineage lost its replacement lock`,
-          );
+          // A previous rollout already transitioned this account: the live policy must then be
+          // the exact canonical 1:1 successor (managed provider rules, unlocked, plan pins).
+          // Rule digests are producer-chosen identifiers, so alignment compares the semantic
+          // fields the engine validates. Anything else is real drift and fails closed.
+          const liveRules = [...lockedPolicy.rules].sort((left, right) =>
+            compareUtf8(left.rule_id, right.rule_id));
+          const expectedRules = OPENKEYS_TRANSITION_PROVIDERS.map((providerId) => ({
+            rule_id: `openkeys-${providerId}-1to1`,
+            scope: { provider: { provider_id: providerId } },
+            pricing_mode: "discount" as const,
+            rule_origin: "managed" as const,
+            discount_bps: 0,
+            payable_multiplier_bp: 10_000,
+            track_eligible: false,
+            retention_eligible: false,
+            commission_eligible: false,
+          })).sort((left, right) => compareUtf8(left.rule_id, right.rule_id));
+          const alreadyAligned = lockedPolicy.catalog_generation === openkeysCatalog.generation
+            && lockedPolicy.switch_generation === switches.generation
+            && liveRules.length === expectedRules.length
+            && liveRules.every((rule, index) => {
+              const expected = expectedRules[index]!;
+              return rule.rule_id === expected.rule_id
+                && stage5V2CanonicalJson(rule.scope) === stage5V2CanonicalJson(expected.scope)
+                && rule.pricing_mode === expected.pricing_mode
+                && rule.rule_origin === expected.rule_origin
+                && rule.discount_bps === expected.discount_bps
+                && rule.payable_multiplier_bp === expected.payable_multiplier_bp
+                && rule.track_eligible === expected.track_eligible
+                && rule.retention_eligible === expected.retention_eligible
+                && rule.commission_eligible === expected.commission_eligible;
+            });
+          if (!alreadyAligned) {
+            throw permanent(
+              `legacy OpenKeys account ${assignment.engine_account_id} lineage lost its replacement lock without the canonical successor`,
+            );
+          }
+          continue;
         }
         const successor = buildLockedOpenkeysSuccessorPolicyV1({
           source: lockedPolicy,
