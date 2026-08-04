@@ -71,7 +71,23 @@ describe("browser API client", () => {
     expect(failure).toEqual(expect.objectContaining({ status: 401, message: "authentication required" }));
   });
 
-  it("preserves B2B invitation tokens in OAuth starts", () => {
-    expect(oauthUrl("github", "invite-token")).toBe("https://backend.apitoken.sale/v1/auth/github?invite=invite-token");
+  it("sends persisted referrals through password registration", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ user: { id: "u" }, verificationRequired: false }), {
+      status: 200, headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.register({ email: "referral@example.com", password: "password", referralCode: "partner-code" });
+
+    expect(fetchMock).toHaveBeenCalledWith("https://backend.apitoken.sale/v1/auth/register", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ email: "referral@example.com", password: "password", referralCode: "partner-code" }),
+    }));
+  });
+
+  it("preserves invitation and referral codes in OAuth starts", () => {
+    expect(oauthUrl("github", "invite-token", "partner-code")).toBe(
+      "https://backend.apitoken.sale/v1/auth/github?invite=invite-token&ref=partner-code",
+    );
   });
 });

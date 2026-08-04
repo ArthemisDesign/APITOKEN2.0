@@ -59,10 +59,11 @@ Who issues invitations:
 ## 3. Referral links and attribution
 
 Every partner has a **ref code** and a link to the main site:
-`https://apitoken.sale/?ref=CODE`. When a person follows it, the code is remembered in the browser
-for **30 days** (the first code wins) and, at registration on apitoken.sale, binds that user to the
-partner **forever**. Attribution happens only for registration via the link; it does not affect the
-user's own price/discount.
+`https://apitoken.sale/?ref=CODE`. When a person follows it, the valid code is remembered in the
+browser for **30 days**; the latest distinct referral click wins, while revisiting the same code does
+not extend its expiry. Navigation, including language changes, preserves the query until the code is
+captured. Registration on apitoken.sale then binds that user to the partner **forever**. Attribution
+happens only for registration via the link; it does not affect the user's own price/discount.
 
 ## 4. Commission: on what and how much
 

@@ -3,7 +3,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
 import messages from "@/lib/messages.json";
-import { localeRoute } from "@/lib/locale-routes";
+import { localeDestination } from "@/lib/locale-routes";
 
 export type Language = "en" | "ru";
 type Dictionary = Record<string, string>;
@@ -27,11 +27,10 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const language: Language = isRuPath(pathname) ? "ru" : "en";
 
   const setLanguage = useCallback((next: Language) => {
-    const destination = localeRoute(pathname, next);
+    const destination = localeDestination(pathname, next, window.location.search, window.location.hash);
     if (!destination) return;
     try { window.localStorage.setItem("lang:v1", next); } catch { /* ignore */ }
-    const suffix = `${window.location.search}${window.location.hash}`;
-    if (destination !== pathname) router.push(`${destination}${suffix}`);
+    if (destination !== `${pathname}${window.location.search}${window.location.hash}`) router.push(destination);
   }, [pathname, router]);
 
   const t = useCallback((key: string) => {

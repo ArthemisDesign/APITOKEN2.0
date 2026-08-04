@@ -7,6 +7,7 @@ import { I18nProvider } from "@/components/i18n-provider";
 import { PersistentRouteShell } from "@/components/persistent-route-shell";
 import { SiteAnalytics, SiteSpeedInsights } from "@/components/site-analytics";
 import { RefCapture } from "@/components/ref-capture";
+import { referralBootstrapScript } from "@/lib/referral";
 import { DEFAULT_OG_IMAGE, SITE_ICONS, SITE_NAME, SITE_ORIGIN, seoPages } from "@/lib/seo";
 import { YANDEX_METRIKA_ID, yandexMetrikaBootstrap } from "@/lib/yandex-metrika";
 import { fontVariables } from "./fonts";
@@ -69,6 +70,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
   return (
     <html className={fontVariables} lang={documentLanguage} suppressHydrationWarning>
       <head>
+        <script id="referral-capture" dangerouslySetInnerHTML={{ __html: referralBootstrapScript }} />
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
         <script id="yandex-metrika" dangerouslySetInnerHTML={{ __html: yandexMetrikaBootstrap }} />
         <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM-readable site summary" />

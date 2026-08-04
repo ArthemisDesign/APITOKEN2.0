@@ -200,12 +200,14 @@ Money amounts — only integer nanoUSD decimal strings; end-user emails are neve
 
 ## Attribution on the main site
 
-`apps/web`: `?ref=CODE` on `/register` is saved to localStorage for 30 days (the first code wins)
-and is sent at registration as `referralCode`. Commerce writes it best-effort to
-`referral_attributions` (unique by user_id). Ref is also passed through OAuth registration: the
-social buttons pass it in `oauthUrl` (`apps/web/src/lib/api.ts`), `beginOAuth` saves the code in
-the OAuth transaction (it survives the redirect to the provider), and `completeOAuth` for a **new**
-account writes the attribution. The current code also calls the legacy `POST
+`apps/web`: a valid `?ref=CODE` on any main-site page is saved to first-party localStorage for
+30 days and sent at registration as `referralCode`. Initial capture runs before visible navigation;
+client-side route capture repeats it, and locale changes preserve the full query and fragment. The
+latest distinct referral click wins, while revisiting the same code does not extend its expiry.
+Commerce writes the code best-effort to `referral_attributions` (unique by user_id). Ref is also
+passed through OAuth registration: the social buttons pass it in `oauthUrl` (`apps/web/src/lib/api.ts`),
+`beginOAuth` saves the code in the OAuth transaction (it survives the redirect to the provider), and
+`completeOAuth` for a **new** account writes the attribution. The current code also calls the legacy `POST
 /v1/internal/partners/referral-discount`; by Stage 9 this call is removed. In the target contract
 ref only affects commission, and the B2C price is determined by global/provider/model policy.
 

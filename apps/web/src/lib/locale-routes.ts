@@ -59,6 +59,16 @@ export function localeRoute(pathname: string, locale: CoreLocale): string | null
   return path === "/" ? "/ru" : `/ru${path}`;
 }
 
+export function localeDestination(
+  pathname: string,
+  locale: CoreLocale,
+  search = "",
+  hash = "",
+): string | null {
+  const localized = localeRoute(pathname, locale);
+  return localized ? `${localized}${search}${hash}` : null;
+}
+
 export function localeHref(href: string, locale: CoreLocale): string {
   if (!href.startsWith("/") || href.startsWith("//")) return href;
   const separatorIndex = href.search(/[?#]/);

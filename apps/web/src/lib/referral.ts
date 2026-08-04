@@ -11,9 +11,17 @@ const STORAGE_KEY = "apitoken_ref";
 const TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const CODE_PATTERN = /^[A-Za-z0-9_-]{3,32}$/;
 
+// Runs in <head> before any visible link can be followed. RefCapture repeats the same operation
+// after hydration for client-side navigations and analytics.
+export const referralBootstrapScript = `(()=>{try{const code=new URLSearchParams(location.search).get("ref");if(!code||!${CODE_PATTERN}.test(code))return;const raw=localStorage.getItem("${STORAGE_KEY}");if(raw){try{const stored=JSON.parse(raw);if(stored&&stored.code===code&&typeof stored.at==="number"&&Date.now()-stored.at<=${TTL_MS})return}catch{}}localStorage.setItem("${STORAGE_KEY}",JSON.stringify({code,at:Date.now()}))}catch{}})()`;
+
+export function isReferralCode(value: string | null): value is string {
+  return Boolean(value && CODE_PATTERN.test(value));
+}
+
 export function captureReferralCode(codeFromUrl: string | null): void {
   if (typeof window === "undefined") return;
-  if (!codeFromUrl || !CODE_PATTERN.test(codeFromUrl)) return;
+  if (!isReferralCode(codeFromUrl)) return;
   try {
     // Тот же код повторно — не трогаем (не сдвигаем окно без нужды); иначе перезаписываем.
     if (readStored() === codeFromUrl) return;

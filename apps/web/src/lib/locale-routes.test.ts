@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { documentLanguageForPathname, localeHref, localeRoute, supportsRussianRoute, withoutRussianPrefix } from "./locale-routes";
+import { documentLanguageForPathname, localeDestination, localeHref, localeRoute, supportsRussianRoute, withoutRussianPrefix } from "./locale-routes";
 
 describe("locale routes", () => {
   it("derives the server document language from the locale route prefix", () => {
@@ -29,5 +29,13 @@ describe("locale routes", () => {
     expect(localeRoute("/ru/login", "en")).toBe("/login");
     expect(localeHref("/login?verified=1#form", "ru")).toBe("/ru/login?verified=1#form");
     expect(localeHref("https://example.com", "ru")).toBe("https://example.com");
+  });
+
+  it("preserves referral, invitation, and fragment data when changing language", () => {
+    expect(localeDestination("/", "ru", "?ref=partner-code", "#pricing")).toBe("/ru?ref=partner-code#pricing");
+    expect(localeDestination("/ru/register", "en", "?ref=partner-code&invite=invite-token", "#form")).toBe(
+      "/register?ref=partner-code&invite=invite-token#form",
+    );
+    expect(localeDestination("/about", "ru", "?ref=partner-code")).toBeNull();
   });
 });

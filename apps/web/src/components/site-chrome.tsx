@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { localeHref, localeRoute } from "@/lib/locale-routes";
+import { localeHref, supportsRussianRoute } from "@/lib/locale-routes";
 import { DOCS_URL, GITHUB_URL } from "@/lib/site-links";
 import { BackendPreconnect } from "./backend-preconnect";
 import { useI18n } from "./i18n-provider";
@@ -25,7 +25,7 @@ export function Brand() {
 }
 
 export function SiteHeader({ home = false, compact = false }: { home?: boolean; compact?: boolean }) {
-  const { language, t } = useI18n();
+  const { language, setLanguage, t } = useI18n();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
@@ -59,8 +59,7 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
 
   const ru = language === "ru";
   const loc = (path: string) => localeHref(path, language);
-  const englishPath = localeRoute(pathname, "en") ?? pathname;
-  const russianPath = localeRoute(pathname, "ru");
+  const russianSupported = supportsRussianRoute(pathname);
   const languageLabel = ru ? "Язык" : "Language";
   const russianUnavailable = ru ? "Русская версия недоступна" : "Russian version unavailable";
   const links = <>
@@ -90,12 +89,10 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
         <div className="nav-auth-mobile">{renderActions()}</div>
       </nav>}
       <div className="nav-right">
-        <nav className="lang" aria-label={languageLabel}>
-          <Link className={language === "en" ? "active" : ""} aria-current={language === "en" ? "page" : undefined} href={englishPath} hrefLang="en">EN</Link>
-          {russianPath
-            ? <Link className={language === "ru" ? "active" : ""} aria-current={language === "ru" ? "page" : undefined} href={russianPath} hrefLang="ru">RU</Link>
-            : <button type="button" disabled aria-disabled="true" title={russianUnavailable}>RU</button>}
-        </nav>
+        <div className="lang" role="group" aria-label={languageLabel}>
+          <button type="button" className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => setLanguage("en")}>EN</button>
+          <button type="button" className={language === "ru" ? "active" : ""} aria-pressed={language === "ru"} disabled={!russianSupported} aria-disabled={!russianSupported} title={russianSupported ? undefined : russianUnavailable} onClick={() => setLanguage("ru")}>RU</button>
+        </div>
         <ThemeToggle />
         {!compact && <div className={`nav-actions ${authenticated ? "authenticated" : ""}`}>{renderActions()}</div>}
       </div>

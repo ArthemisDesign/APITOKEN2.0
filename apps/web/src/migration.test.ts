@@ -351,6 +351,10 @@ describe("completed Next.js migration", () => {
     expect(header).not.toContain('k="nav_features"');
     expect(header).not.toContain('k="nav_faq"');
     expect(header).not.toContain("api.logout");
+    expect(header).toContain('onClick={() => setLanguage("en")}');
+    expect(header).toContain('onClick={() => setLanguage("ru")}');
+    expect(header).not.toContain("englishPath");
+    expect(header).not.toContain("russianPath");
     expect(styles).toContain("header.nav{position:fixed");
     expect(styles).toContain(".nav-links{display:flex;align-items:center;justify-content:space-evenly");
     expect(styles).not.toContain(".nav-links{display:grid;grid-template-columns:");
