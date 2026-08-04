@@ -66,7 +66,10 @@
 | Точная атрибуция: admin calibration headers, pinned profile + immutable request id, bounded recent-turns read, поля `/kimi-subs` | `crates/{forward,server,registry}` | `fbc000fc` |
 | Безопасный live-runner: `run_live.py` + 43 offline теста + ops runbook | `tools/kimi_calibration/`, `docs/ops/KIMI_CALIBRATION.md` | `a8b69c6d` |
 | Pool parity 2: warm-home placement + early claim + cooling hints, per-model failure axis, barriered burst-доказательство | `crates/forward/src/kimi/**` | `beb98be4` |
-| Включение плоскости: reviewed argv-пин `CLAUDE_API_KIMI_ENABLED=1` после live evidence 2026-08-04. Первый деплой `4efa3186` ушёл RED: unit-сandbox (`ReadOnlyPaths` на весь roster-каталог) не давал runtime перезапечатать конверт после обязательного refresh, и истёкший access token читался как auth-смерть. Фикс — read-only roster + writable `credentials/` | `systemd/claude-api-kimi{,@}.service`, `deploy/watchdog-lib.test.sh` | текущий checkpoint |
+| Включение плоскости: reviewed argv-пин `CLAUDE_API_KIMI_ENABLED=1` после live evidence 2026-08-04. Первый деплой `4efa3186` ушёл RED: unit-сandbox (`ReadOnlyPaths` на весь roster-каталог) не давал runtime перезапечатать конверт после обязательного refresh, и истёкший access token читался как auth-смерть. Фикс — read-only roster + writable `credentials/` | `systemd/claude-api-kimi{,@}.service`, `deploy/watchdog-lib.test.sh` | `4efa3186` + `0de59e28` |
+| **всё вышеперечисленное в master, watchdog GREEN** | — | `0de59e28` |
+| Прод-верификация плоскости после включения: слот `claude-api-kimi@8805` active, preflight `live_profiles=1`, ошибок reseal больше нет; origin 8803 `/ready`=true; `/kimi-subs` отдаёт `enabled:true`, 1 live-профиль, окна 5h 0/100 и weekly 98/100, `persistence_ok:true`, FIFO пуст; Prometheus `up{provider="kimi"}=1`, все 6 aggregate-серий на месте, 5 алертов `Kimi*` загружены; админка задеплоена из релиза `8797a7a8` (KIMI capacity board в bundle) | прод-хост (loopback checks) | `0de59e28` |
+| Dry-run live-runner'а против прода: план из 12 legs (k3-256k low/high/max/off, k3 1m ×4 — требуют reviewed plan, kimi-for-coding ±highspeed high/off), guards на месте, `paid_requests:0`; при потолке $0.0001 ни один leg не проходит worst-case bound — runner останавливается до dispatch, как задумано | `tools/kimi_calibration/run_live.py` | `a8b69c6d` (прогон 2026-08-04) |
 
 ## Открытые швы (выглядит подключённым, не работает)
 
@@ -90,9 +93,11 @@
 
 ## Следующее действие
 
-**Контролируемый живой прогон live-матрицы** на подключённой подписке Vivace: dry-run runner'а
-против origin 8803, затем paid legs только с явного бюджетного разрешения человека и после ресета
-недельной квоты подписки (на подключении израсходовано 98/100).
+**Платный прогон live-матрицы runner'ом** на подключённой подписке Vivace — только после обоих
+внешних условий: (1) ресет недельной квоты подписки (`resets_at` ≈ 2026-08-07, на подключении
+израсходовано 98/100), (2) явное бюджетное разрешение человека с лимитом выше $0.0001 — сейчас
+ни один leg не проходит worst-case full-context bound, и runner fail-closed останавливается до
+dispatch (проверено dry-run против прода 2026-08-04: план из 12 legs, `paid_requests:0`).
 
 **Процессные заметки (обе уже стоили потерянного мёржа):**
 
