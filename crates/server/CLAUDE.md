@@ -154,7 +154,15 @@
   значения; enabled-плоскость fail-closed требует абсолютный roster, encrypted keyring, схему
   `bearer` (единственная доказанная) и положительный poll interval. Как и KIMI, initial degraded
   gateway и ошибочный reload сохраняют fail-closed GLM path, не влияя на Claude readiness и не
-  проваливая exact GLM alias в Claude pool.
+  проваливая exact GLM alias в Claude pool. Client-фингерпринт GLM-плоскости GLM-специфичных env
+  НЕ имеет: identity персоны заполняется здесь из ТЕХ ЖЕ shared fleet env, что и Claude-персона
+  (`CLAUDE_API_IDENTITY`, `CLAUDE_API_UA` (+ пул через `|`), `CLAUDE_API_BETA`,
+  `CLAUDE_API_ANTHROPIC_VERSION`, `CLAUDE_API_X_APP`, `CLAUDE_API_SL_*`, `CLAUDE_API_CC_VERSION`,
+  `CLAUDE_API_CC_ENTRYPOINT`, `CLAUDE_API_INJECT_BILLING`), которые авто-обновляет
+  `tools/refresh-fingerprint.sh`; per-field fallback — reviewed-захват 2.1.195 в
+  `GlmIdentityHeaders::default`. `CLAUDE_API_UA_SPREAD` GLM намеренно не читает: patch-разброс UA
+  удалён из Claude-персоны как источник внутри-запросных аномалий (`persona_ua` в
+  `forward::upstream`), зеркалить нечего.
 - Atomic legacy snapshot bridge config читается только здесь
   `CLAUDE_API_PRICING_BRIDGE_ENABLED`/`CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP`. Default строго
   `false/0`; bool принимает только `0|1|false|true`, sample — integer `0..=10000`, несогласованные

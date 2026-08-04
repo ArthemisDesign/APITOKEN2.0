@@ -1290,7 +1290,6 @@ pub async fn forward(
             };
             return gateway
                 .handle(crate::glm::GlmRequest {
-                    headers: parts.headers.clone(),
                     body: glm_body,
                     raw_body_len: raw.len(),
                     model: glm_model,

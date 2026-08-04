@@ -1039,8 +1039,15 @@ Messages gateway. Контракт и факты — `docs/engine/GLM_PROVIDER.m
    bounded error body до `decide` (429 с кодом 1308 — quota wall, а не rate limit); из
    тела 1308/1310 парсится exact reset для cooling, иначе bounded fallback до ближайшего
    idle poll. Quota probe аутентифицируется сырым ключом БЕЗ Bearer-префикса; generation —
-   Bearer + Claude-Code-compatible identity-набор из конфига (risk-control Z.ai банит
-   SDK-подобный трафик). Единиц измерения счётчиков quota-endpoint'а live не доказаны, поэтому
+   Bearer + полный Claude-Code-фингерпринт из общих fleet env (risk-control Z.ai банит
+   SDK-подобный трафик): UA (per-profile пин из `|`-пула, как `persona_ua`), anthropic-version,
+   полный 10-бетный anthropic-beta, x-app + весь x-stainless-* набор, accept,
+   `anthropic-dangerous-direct-browser-access`, identity первым system-блоком (без двойной
+   инжекции, семантика `inject_identity`) и per-profile billing-блок `x-anthropic-billing-header:
+   cc_version=<base>.dNN; cc_entrypoint=…; cch=<hex>` (cch и .dNN детерминированы по roster id —
+   переиспользуются `persona_cch`/`persona_ccbuild`). Клиентские identity-заголовки в gateway
+   вообще не попадают (структурно: `GlmRequest` их не несёт) — синтезируется только reviewed
+   персона. Единиц измерения счётчиков quota-endpoint'а live не доказаны, поэтому
    raw counters и derived fraction хранятся optional: unknown — `None`, никогда не `0`.
 
 Identity строки — `subject (keyed-BLAKE3 digest ключа) + declared paid plan (Lite/Pro/Max,

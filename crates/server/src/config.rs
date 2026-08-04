@@ -3,6 +3,7 @@
 
 use forward::{
     glm::config::{GlmPlaneConfig, GlmPlaneInput},
+    glm::transport::GlmIdentityHeaders,
     kimi::config::{KimiPlaneConfig, KimiPlaneInput},
     ClaudeStoreFallbackConfig, CodexConfig, CodexModel, GeminiConfig, GeminiModel,
     PricingBridgeConfig, PricingShadowConfig, PricingShadowConfigValues, ProviderMode, ProxyConfig,
@@ -319,6 +320,78 @@ const GLM_ENV_KEYS: [&str; 5] = [
 /// with an explicit unknown-key error rather than being ignored as dormant input.
 const GLM_REJECTED_ENV_KEYS: [&str; 1] = ["CLAUDE_API_GLM_BASE_URL"];
 
+/// Shared fleet fingerprint keys the GLM plane reads INSTEAD of growing GLM-specific ones:
+/// the very same env the Claude persona below is built from, refreshed from a live client by
+/// `tools/refresh-fingerprint.sh` — one fleet fingerprint, one source of updates. The GLM
+/// persona per-field fallback is the reviewed 2.1.195 capture in `GlmIdentityHeaders::default`.
+///
+/// `CLAUDE_API_UA_SPREAD` is deliberately absent: patch-version spread was removed from the
+/// Claude persona as a within-request anomaly source (`persona_ua` in `forward::upstream`),
+/// so there is no spread behaviour left for the GLM plane to mirror.
+const GLM_IDENTITY_ENV_KEYS: [&str; 14] = [
+    "CLAUDE_API_IDENTITY",
+    "CLAUDE_API_INJECT_BILLING",
+    "CLAUDE_API_CC_VERSION",
+    "CLAUDE_API_CC_ENTRYPOINT",
+    "CLAUDE_API_BETA",
+    "CLAUDE_API_UA",
+    "CLAUDE_API_ANTHROPIC_VERSION",
+    "CLAUDE_API_X_APP",
+    "CLAUDE_API_SL_LANG",
+    "CLAUDE_API_SL_RUNTIME",
+    "CLAUDE_API_SL_RT_VER",
+    "CLAUDE_API_SL_PKG_VER",
+    "CLAUDE_API_SL_OS",
+    "CLAUDE_API_SL_ARCH",
+];
+
+/// Build the GLM identity persona from the shared fleet fingerprint values (already collected
+/// from the environment by [`glm_config`]). Every field falls back to the reviewed 2.1.195
+/// capture, so an absent key — including the whole set, e.g. in tests — reproduces the Claude
+/// persona defaults exactly. `CLAUDE_API_INJECT_BILLING` mirrors the lenient `ev_bool`
+/// semantics the Claude persona uses for the same key (anything but 0/false/no/off is on).
+fn glm_identity(values: &BTreeMap<String, String>) -> GlmIdentityHeaders {
+    let defaults = GlmIdentityHeaders::default();
+    let pick = |key: &str, fallback: &str| {
+        values
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| fallback.to_owned())
+    };
+    // The `|`-separated pool split reuses the Claude persona helper: a real UA contains a
+    // comma, so only `|` is a safe separator.
+    let user_agent = pick("CLAUDE_API_UA", &defaults.user_agent);
+    GlmIdentityHeaders {
+        user_agents: split_ua_list(&user_agent),
+        user_agent,
+        anthropic_version: pick("CLAUDE_API_ANTHROPIC_VERSION", &defaults.anthropic_version),
+        anthropic_beta: pick("CLAUDE_API_BETA", &defaults.anthropic_beta),
+        x_app: pick("CLAUDE_API_X_APP", &defaults.x_app),
+        stainless_lang: pick("CLAUDE_API_SL_LANG", &defaults.stainless_lang),
+        stainless_runtime: pick("CLAUDE_API_SL_RUNTIME", &defaults.stainless_runtime),
+        stainless_runtime_version: pick(
+            "CLAUDE_API_SL_RT_VER",
+            &defaults.stainless_runtime_version,
+        ),
+        stainless_package_version: pick(
+            "CLAUDE_API_SL_PKG_VER",
+            &defaults.stainless_package_version,
+        ),
+        stainless_os: pick("CLAUDE_API_SL_OS", &defaults.stainless_os),
+        stainless_arch: pick("CLAUDE_API_SL_ARCH", &defaults.stainless_arch),
+        cc_version: pick("CLAUDE_API_CC_VERSION", &defaults.cc_version),
+        cc_entrypoint: pick("CLAUDE_API_CC_ENTRYPOINT", &defaults.cc_entrypoint),
+        identity: pick("CLAUDE_API_IDENTITY", &defaults.identity),
+        inject_billing: match values.get("CLAUDE_API_INJECT_BILLING") {
+            Some(value) => !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            ),
+            None => defaults.inject_billing,
+        },
+    }
+}
+
 fn parse_glm_config(values: &BTreeMap<String, String>) -> Result<Option<GlmPlaneConfig>, String> {
     for rejected in GLM_REJECTED_ENV_KEYS {
         if values.contains_key(rejected) {
@@ -359,14 +432,22 @@ fn parse_glm_config(values: &BTreeMap<String, String>) -> Result<Option<GlmPlane
             .unwrap_or(defaults.auth_scheme),
         quota_poll_secs,
     };
-    forward::glm::config::build(&input)
-        .map_err(|error| format!("invalid GLM plane config: {error}"))
+    let mut built = forward::glm::config::build(&input)
+        .map_err(|error| format!("invalid GLM plane config: {error}"))?;
+    // The fleet fingerprint is owned by this composition layer, not by the plane's typed
+    // input: GLM shares the Claude persona env wholesale and must not grow GLM-specific
+    // fingerprint keys, so the identity is filled here after the plane's own validation.
+    if let Some(plane) = built.as_mut() {
+        plane.transport.identity = glm_identity(values);
+    }
+    Ok(built)
 }
 
 fn glm_config() -> Option<GlmPlaneConfig> {
     let values = GLM_ENV_KEYS
         .into_iter()
         .chain(GLM_REJECTED_ENV_KEYS)
+        .chain(GLM_IDENTITY_ENV_KEYS)
         .filter_map(|name| ev(name).map(|value| (name.to_owned(), value)))
         .collect::<BTreeMap<_, _>>();
     parse_glm_config(&values).unwrap_or_else(|message| panic!("{message}"))
@@ -1579,6 +1660,100 @@ mod tests {
         ]);
         let error = parse_glm_config(&enabled).unwrap_err();
         assert!(error.contains("unknown key"), "{error}");
+    }
+
+    fn glm_enabled_values() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("CLAUDE_API_GLM_ENABLED".to_owned(), "true".to_owned()),
+            (
+                "CLAUDE_API_GLM_CREDENTIAL_KEYS".to_owned(),
+                format!("a1:{}", "11".repeat(32)),
+            ),
+        ])
+    }
+
+    #[test]
+    fn glm_identity_inherits_the_shared_fleet_fingerprint_env() {
+        // One fleet fingerprint: the SAME keys the Claude persona reads (refreshed by
+        // tools/refresh-fingerprint.sh) feed the GLM persona — no GLM-specific keys exist.
+        let mut values = glm_enabled_values();
+        for (key, value) in [
+            ("CLAUDE_API_IDENTITY", "You are a test agent."),
+            ("CLAUDE_API_INJECT_BILLING", "false"),
+            ("CLAUDE_API_CC_VERSION", "3.0.0"),
+            ("CLAUDE_API_CC_ENTRYPOINT", "cli"),
+            ("CLAUDE_API_BETA", "oauth-2025-04-20,custom-beta-2099-01-01"),
+            ("CLAUDE_API_UA", "claude-cli/3.0.0 (external, cli)|claude-cli/2.9.9 (external, cli)"),
+            ("CLAUDE_API_ANTHROPIC_VERSION", "2024-01-01"),
+            ("CLAUDE_API_X_APP", "cli-x"),
+            ("CLAUDE_API_SL_LANG", "js-x"),
+            ("CLAUDE_API_SL_RUNTIME", "bun"),
+            ("CLAUDE_API_SL_RT_VER", "v99.0.0"),
+            ("CLAUDE_API_SL_PKG_VER", "9.9.9"),
+            ("CLAUDE_API_SL_OS", "Darwin"),
+            ("CLAUDE_API_SL_ARCH", "arm64"),
+        ] {
+            values.insert(key.to_owned(), value.to_owned());
+        }
+        let identity = parse_glm_config(&values).unwrap().unwrap().transport.identity;
+        assert_eq!(identity.identity, "You are a test agent.");
+        assert!(!identity.inject_billing);
+        assert_eq!(identity.cc_version, "3.0.0");
+        assert_eq!(identity.cc_entrypoint, "cli");
+        assert_eq!(identity.anthropic_beta, "oauth-2025-04-20,custom-beta-2099-01-01");
+        assert_eq!(identity.anthropic_version, "2024-01-01");
+        assert_eq!(identity.x_app, "cli-x");
+        assert_eq!(identity.stainless_lang, "js-x");
+        assert_eq!(identity.stainless_runtime, "bun");
+        assert_eq!(identity.stainless_runtime_version, "v99.0.0");
+        assert_eq!(identity.stainless_package_version, "9.9.9");
+        assert_eq!(identity.stainless_os, "Darwin");
+        assert_eq!(identity.stainless_arch, "arm64");
+        // The `|`-separated UA pool splits exactly like the Claude persona's list (a comma
+        // inside a UA never splits it).
+        assert_eq!(
+            identity.user_agents,
+            vec![
+                "claude-cli/3.0.0 (external, cli)".to_owned(),
+                "claude-cli/2.9.9 (external, cli)".to_owned()
+            ]
+        );
+        assert_eq!(
+            identity.user_agent,
+            "claude-cli/3.0.0 (external, cli)|claude-cli/2.9.9 (external, cli)"
+        );
+    }
+
+    #[test]
+    fn glm_identity_defaults_match_the_reviewed_2_1_195_capture_without_fleet_env() {
+        let identity = parse_glm_config(&glm_enabled_values())
+            .unwrap()
+            .unwrap()
+            .transport
+            .identity;
+        assert_eq!(identity, GlmIdentityHeaders::default());
+        assert_eq!(identity.anthropic_beta.split(',').count(), 10);
+        assert!(identity.anthropic_beta.contains("claude-code-20250219"));
+        assert_eq!(identity.user_agent, "claude-cli/2.1.195 (external, sdk-cli)");
+        assert_eq!(identity.x_app, "cli");
+        assert_eq!(identity.stainless_package_version, "0.94.0");
+        assert_eq!(identity.cc_version, "2.1.195");
+        assert_eq!(identity.cc_entrypoint, "sdk-cli");
+        assert!(identity.inject_billing);
+        assert_eq!(
+            identity.identity,
+            "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+        );
+    }
+
+    #[test]
+    fn a_disabled_glm_plane_ignores_dormant_fleet_fingerprint_values() {
+        // The shared keys belong to the Claude persona first: with the GLM plane off they must
+        // not gate its startup validation in either direction.
+        let mut values = BTreeMap::from([("CLAUDE_API_GLM_ENABLED".to_owned(), "false".to_owned())]);
+        values.insert("CLAUDE_API_BETA".to_owned(), "dormant".to_owned());
+        values.insert("CLAUDE_API_INJECT_BILLING".to_owned(), "off".to_owned());
+        assert!(parse_glm_config(&values).unwrap().is_none());
     }
 
     #[test]

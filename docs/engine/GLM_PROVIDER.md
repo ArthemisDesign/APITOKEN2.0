@@ -165,9 +165,22 @@ models.dev для `zai-coding-plan`, но не входят в официаль�
 OpenAI-маршрут задокументирован, но в v1 не поднимается.
 
 `oss-hypothesis` Risk-control Z.ai детектит «SDK-based access» — запросы без идентифицирующих
-tool-заголовков — и применяет throttling/бан (pi#4187). `decision` Gateway обязан отправлять
-Claude-Code-совместимый identity-набор (User-Agent CLI, anthropic-beta и т.п.) по образцу
-инжекта identity в Claude-плоскости; «голый SDK» трафик — прямой путь к бану подписки.
+tool-заголовков — и применяет throttling/бан (pi#4187). `decision` Generation-трафик несёт
+**полный флот-фингерпринт Claude Code, идентичный Claude-плоскости и питаемый из ТЕХ ЖЕ
+shared env** (`CLAUDE_API_UA` (+ пул через `|`), `CLAUDE_API_BETA`, `CLAUDE_API_ANTHROPIC_VERSION`,
+`CLAUDE_API_X_APP`, `CLAUDE_API_SL_*`, `CLAUDE_API_CC_VERSION`, `CLAUDE_API_CC_ENTRYPOINT`,
+`CLAUDE_API_IDENTITY`, `CLAUDE_API_INJECT_BILLING`; авто-рефреш живым клиентом —
+`tools/refresh-fingerprint.sh`; GLM-специфичных fingerprint env нет): per-profile пин UA из
+пула, полный 10-бетный `anthropic-beta`, `x-app` + весь набор `x-stainless-*`, `accept`,
+`anthropic-dangerous-direct-browser-access`, identity первым system-блоком без двойной инжекции
+и per-profile billing-блок `x-anthropic-billing-header: cc_version=<base>.dNN;
+cc_entrypoint=…; cch=<hex>` (cch и `.dNN` детерминированы по roster profile id, как per-персона
+у Claude-пула). Клиентские identity-заголовки апстриму не пробрасываются — персона
+синтезируется целиком (чужой `x-stainless-*` под нашим claude-cli UA — противоречие, на котором
+ловится SDK). Quota endpoint identity-набор не несёт: это monitor-поверхность, не generation.
+«Голый SDK» трафик — прямой путь к бану подписки. Fallback-значения — reviewed-захват Claude
+Code 2.1.195; если live-гейт §6.7 покажет, что Z.ai не принимает какую-то бету, набор
+подрезается через `CLAUDE_API_BETA` без пересборки.
 
 `unknown` Принимает ли Anthropic-endpoint `x-api-key` (документирован только Bearer).
 `decision` Реализуем Bearer; альтернатива не нужна до live-доказательства обратного.

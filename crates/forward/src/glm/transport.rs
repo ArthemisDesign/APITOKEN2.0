@@ -183,31 +183,183 @@ pub fn spends_transport_budget(verdict: UpstreamVerdict) -> bool {
     matches!(verdict, UpstreamVerdict::Transport)
 }
 
-/// Claude-Code-compatible identity headers sent on generation traffic.
+/// Full Claude-Code-compatible identity persona sent on generation traffic.
 ///
 /// Risk-control Z.ai detects SDK-like traffic and bans the subscription over it (manifest §4),
-/// so "bare SDK" requests are a direct path to losing the plan. The exact set that passes
-/// without throttling is an open `unknown` (manifest §6.7): the defaults below are the parts
-/// that identify a Claude Code client, deliberately without behaviour-changing beta flags, and
-/// the operator can tune the set once live evidence arrives.
+/// so "bare SDK" requests are a direct path to losing the plan. The persona deliberately
+/// mirrors the Claude plane's fleet fingerprint: the same values, fed by `server` from the
+/// SAME shared env (`CLAUDE_API_UA`, `CLAUDE_API_BETA`, `CLAUDE_API_SL_*`, `CLAUDE_API_CC_*`,
+/// `CLAUDE_API_IDENTITY`, …) that `tools/refresh-fingerprint.sh` keeps current — one fleet
+/// fingerprint, one source of updates, no GLM-specific keys. The exact set that passes
+/// without throttling is an open `unknown` (live gate, manifest §6.7): if Z.ai rejects one of
+/// the betas below, the operator trims the set through `CLAUDE_API_BETA` without a rebuild.
+/// The defaults are the reviewed live capture of Claude Code 2.1.195.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlmIdentityHeaders {
-    /// `User-Agent` of the reviewed Claude Code build (same value the Claude plane fleets).
+    /// Fleet `User-Agent` of the reviewed Claude Code build (same value the Claude plane
+    /// fleets). Used when `user_agents` holds zero or one entry.
     pub user_agent: String,
+    /// Optional pool of real UAs (operator sets `CLAUDE_API_UA` as a `|`-separated list): each
+    /// profile pins one entry deterministically. A single entry is the fleet-constant UA.
+    pub user_agents: Vec<String>,
     /// `anthropic-version` header value.
     pub anthropic_version: String,
-    /// `anthropic-beta` header value. Default carries only the Claude Code client marker:
-    /// behaviour-affecting betas (thinking, cache TTL, context management) stay out until a
-    /// live run proves the GLM endpoint tolerates them.
+    /// `anthropic-beta` header value: the full comma-joined set of the reviewed build (10
+    /// betas at 2.1.195), exactly what a real Claude Code sends.
     pub anthropic_beta: String,
+    /// `x-app` header value (`cli` for Claude Code).
+    pub x_app: String,
+    /// Stainless-SDK fingerprint of the reviewed build (`x-stainless-*`).
+    pub stainless_lang: String,
+    pub stainless_runtime: String,
+    pub stainless_runtime_version: String,
+    pub stainless_package_version: String,
+    pub stainless_os: String,
+    pub stainless_arch: String,
+    /// Billing-header `cc_version` BASE, without the `.dNN` build suffix: live captures show
+    /// the suffix varying between launches, so it is derived per profile (see
+    /// [`Self::billing_header_for`]), never fixed fleet-wide.
+    pub cc_version: String,
+    /// Billing-header `cc_entrypoint` value.
+    pub cc_entrypoint: String,
+    /// Identity system-block text ("You are a Claude agent, …") injected first into `system`.
+    pub identity: String,
+    /// Whether the billing header block is injected as `system[0]` (as the real client does).
+    pub inject_billing: bool,
 }
 
 impl Default for GlmIdentityHeaders {
+    /// Reviewed live capture of Claude Code 2.1.195 — the same fallback values the Claude
+    /// persona carries in `crates/server/src/config.rs`.
     fn default() -> Self {
+        let user_agent = "claude-cli/2.1.195 (external, sdk-cli)".to_string();
         Self {
-            user_agent: "claude-cli/2.1.195 (external, sdk-cli)".to_string(),
+            user_agents: vec![user_agent.clone()],
+            user_agent,
             anthropic_version: "2023-06-01".to_string(),
-            anthropic_beta: "claude-code-20250219".to_string(),
+            anthropic_beta: "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07".to_string(),
+            x_app: "cli".to_string(),
+            stainless_lang: "js".to_string(),
+            stainless_runtime: "node".to_string(),
+            stainless_runtime_version: "v26.3.0".to_string(),
+            stainless_package_version: "0.94.0".to_string(),
+            stainless_os: "Linux".to_string(),
+            stainless_arch: "x64".to_string(),
+            cc_version: "2.1.195".to_string(),
+            cc_entrypoint: "sdk-cli".to_string(),
+            identity: crate::config::CLAUDE_CODE_IDENTITY.to_string(),
+            inject_billing: true,
+        }
+    }
+}
+
+impl GlmIdentityHeaders {
+    /// Per-profile `User-Agent`, mirroring the Claude plane's `persona_ua`: a `|`-pool pins
+    /// one UA deterministically by profile id; a single UA is fleet-constant. The patch
+    /// version is deliberately NOT varied per profile — a fake patch under the real
+    /// x-stainless/identity versions is a within-request anomaly, worse than one valid fleet
+    /// UA (see the `persona_ua` history in `crate::upstream`).
+    pub fn user_agent_for(&self, profile_id: &str) -> String {
+        let seed = pool::stable_hash64(profile_id.as_bytes());
+        if self.user_agents.len() > 1 {
+            return self.user_agents[(seed as usize) % self.user_agents.len()].clone();
+        }
+        self.user_agents
+            .first()
+            .cloned()
+            .unwrap_or_else(|| self.user_agent.clone())
+    }
+
+    /// `x-anthropic-billing-header` block text, mirroring the Claude plane's billing inject:
+    /// fleet-base `cc_version` plus a deterministic per-profile `.dNN` build suffix and a
+    /// deterministic per-profile `cch` (each profile is a separate "installation" of the
+    /// client — a fleet-wide cch or build would be a cluster signal). Both derivations reuse
+    /// the Claude plane's per-persona functions, keyed on the roster profile id.
+    pub fn billing_header_for(&self, profile_id: &str) -> String {
+        format!(
+            "x-anthropic-billing-header: cc_version={}.{}; cc_entrypoint={}; cch={};",
+            self.cc_version,
+            crate::upstream::persona_ccbuild(profile_id),
+            self.cc_entrypoint,
+            crate::upstream::persona_cch(profile_id),
+        )
+    }
+}
+
+/// Mirrors `is_cc_marker` in `crate::proxy`: the first system block of a genuine Claude Code
+/// request already carries the client identity (billing header or "You are …").
+fn is_cc_marker(text: &str) -> bool {
+    text.starts_with("x-anthropic-billing-header:")
+        || text.starts_with("You are Claude Code")
+        || text.starts_with("You are a Claude agent")
+}
+
+/// Inject the Claude Code identity as the FIRST system block, unless one is already there —
+/// the exact semantics of `inject_identity` in `crate::proxy`, so a genuine Claude Code
+/// customer never gets a doubled identity. The block carries no `cache_control`, exactly
+/// like the real client. Non-messages bodies are left untouched.
+pub fn inject_identity(v: &mut Value, identity: &str) -> bool {
+    let obj = match v.as_object_mut() {
+        Some(o) => o,
+        None => return false,
+    };
+    if !obj.contains_key("messages") {
+        return false;
+    } // not a messages request — do not touch
+    let idblock = serde_json::json!({"type":"text","text":identity});
+    match obj.get("system").cloned() {
+        None => {
+            obj.insert("system".into(), serde_json::json!([idblock]));
+        }
+        Some(Value::String(s)) => {
+            if is_cc_marker(&s) {
+                return false;
+            } // client sent the identity as a string — do not duplicate
+            obj.insert(
+                "system".into(),
+                serde_json::json!([idblock, {"type":"text","text":s}]),
+            );
+        }
+        Some(Value::Array(mut arr)) => {
+            let first_cc = arr
+                .first()
+                .and_then(|b| b.get("text"))
+                .and_then(|t| t.as_str())
+                .map(is_cc_marker)
+                .unwrap_or(false);
+            if first_cc {
+                return false;
+            } // already a Claude Code request (e.g. Claude Code itself)
+            arr.insert(0, idblock);
+            obj.insert("system".into(), Value::Array(arr));
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// Prepend or replace `system[0]` with the billing-header block IDEMPOTENTLY (on rotation it
+/// replaces the text, it never duplicates) — the exact semantics of `set_billing_block` in
+/// `crate::proxy`. The real client sends it as the first system block, without
+/// `cache_control`. Only an array `system` is mutated (identity injection already guarantees
+/// an array on a messages request).
+pub fn set_billing_block(v: &mut Value, text: &str) {
+    let obj = match v.as_object_mut() {
+        Some(o) => o,
+        None => return,
+    };
+    let block = serde_json::json!({"type":"text","text":text});
+    if let Some(Value::Array(arr)) = obj.get_mut("system") {
+        let first_billing = arr
+            .first()
+            .and_then(|b| b.get("text"))
+            .and_then(|t| t.as_str())
+            .map(|t| t.starts_with("x-anthropic-billing-header:"))
+            .unwrap_or(false);
+        if first_billing {
+            arr[0] = block;
+        } else {
+            arr.insert(0, block);
         }
     }
 }
@@ -408,12 +560,186 @@ mod tests {
     }
 
     #[test]
-    fn the_default_identity_set_looks_like_claude_code_without_behavior_betas() {
+    fn the_default_identity_set_matches_the_reviewed_2_1_195_capture() {
         let identity = GlmIdentityHeaders::default();
-        assert!(identity.user_agent.starts_with("claude-cli/"));
+        assert_eq!(
+            identity.user_agent,
+            "claude-cli/2.1.195 (external, sdk-cli)"
+        );
+        // A single-entry pool is the fleet-constant UA (the comma inside it must not split).
+        assert_eq!(identity.user_agents, vec![identity.user_agent.clone()]);
         assert_eq!(identity.anthropic_version, "2023-06-01");
-        // The client marker is present; behaviour-changing flags are absent until live proof.
-        assert!(identity.anthropic_beta.contains("claude-code-20250219"));
-        assert!(!identity.anthropic_beta.contains("interleaved-thinking"));
+        // The full 10-beta set of the reviewed build — exactly what a real Claude Code sends.
+        let betas: Vec<&str> = identity.anthropic_beta.split(',').collect();
+        assert_eq!(betas.len(), 10);
+        for expected in [
+            "oauth-2025-04-20",
+            "interleaved-thinking-2025-05-14",
+            "thinking-token-count-2026-05-13",
+            "context-management-2025-06-27",
+            "prompt-caching-scope-2026-01-05",
+            "claude-code-20250219",
+            "advisor-tool-2026-03-01",
+            "advanced-tool-use-2025-11-20",
+            "extended-cache-ttl-2025-04-11",
+            "cache-diagnosis-2026-04-07",
+        ] {
+            assert!(betas.contains(&expected), "missing beta {expected}");
+        }
+        assert_eq!(identity.x_app, "cli");
+        assert_eq!(identity.stainless_lang, "js");
+        assert_eq!(identity.stainless_runtime, "node");
+        assert_eq!(identity.stainless_runtime_version, "v26.3.0");
+        assert_eq!(identity.stainless_package_version, "0.94.0");
+        assert_eq!(identity.stainless_os, "Linux");
+        assert_eq!(identity.stainless_arch, "x64");
+        // cc_version is the bare base: the .dNN suffix is derived per profile, never fixed.
+        assert_eq!(identity.cc_version, "2.1.195");
+        assert!(!identity.cc_version.contains(".d"));
+        assert_eq!(identity.cc_entrypoint, "sdk-cli");
+        assert_eq!(
+            identity.identity,
+            "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+        );
+        assert!(identity.inject_billing);
+    }
+
+    #[test]
+    fn identity_goes_first_and_is_never_doubled() {
+        let identity = GlmIdentityHeaders::default().identity;
+        // No system at all: the identity becomes the only block.
+        let mut bare = json!({"model": "glm-5.2", "messages": []});
+        assert!(inject_identity(&mut bare, &identity));
+        assert_eq!(
+            bare["system"],
+            json!([{"type": "text", "text": identity}])
+        );
+        // A client string system becomes the second block, identity first, no cache_control.
+        let mut with_string = json!({"messages": [], "system": "be brief"});
+        assert!(inject_identity(&mut with_string, &identity));
+        let system = with_string["system"].as_array().unwrap();
+        assert_eq!(system[0]["text"], json!(identity));
+        assert_eq!(system[1]["text"], json!("be brief"));
+        assert!(system[0].get("cache_control").is_none());
+        // A client array gets the identity prepended once.
+        let mut with_array = json!({"messages": [], "system": [{"type": "text", "text": "be brief"}]});
+        assert!(inject_identity(&mut with_array, &identity));
+        assert_eq!(with_array["system"].as_array().unwrap().len(), 2);
+        assert!(!inject_identity(&mut with_array, &identity));
+        assert_eq!(with_array["system"].as_array().unwrap().len(), 2);
+        // A genuine Claude Code client (string or array marker) is left exactly as sent.
+        let mut cc_string = json!({"messages": [], "system": "You are Claude Code, ..."});
+        assert!(!inject_identity(&mut cc_string, &identity));
+        assert_eq!(cc_string["system"], json!("You are Claude Code, ..."));
+        let mut cc_array =
+            json!({"messages": [], "system": [{"type": "text", "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK."}]});
+        assert!(!inject_identity(&mut cc_array, &identity));
+        assert_eq!(cc_array["system"].as_array().unwrap().len(), 1);
+        // Not a messages request: untouched.
+        let mut other = json!({"model": "glm-5.2"});
+        assert!(!inject_identity(&mut other, &identity));
+        assert!(other.get("system").is_none());
+    }
+
+    #[test]
+    fn the_billing_block_stays_first_and_rotates_in_place() {
+        let identity = GlmIdentityHeaders::default();
+        let mut body = json!({"messages": []});
+        assert!(inject_identity(&mut body, &identity.identity));
+        let first = identity.billing_header_for("glm-01");
+        set_billing_block(&mut body, &first);
+        let system = body["system"].as_array().unwrap();
+        // Order matches the real client: billing header first, identity second.
+        assert_eq!(system[0]["text"], json!(first));
+        assert_eq!(system[1]["text"], json!(identity.identity));
+        assert!(system[0].get("cache_control").is_none());
+        // Rotation to another profile replaces the block; it never stacks.
+        let second = identity.billing_header_for("glm-02");
+        set_billing_block(&mut body, &second);
+        let system = body["system"].as_array().unwrap();
+        assert_eq!(system.len(), 2);
+        assert_eq!(system[0]["text"], json!(second));
+    }
+
+    #[test]
+    fn the_billing_header_is_fleet_based_and_profile_keyed() {
+        let identity = GlmIdentityHeaders::default();
+        let text = identity.billing_header_for("glm-01");
+        let pattern = regex_lite_match(&text);
+        assert!(pattern, "unexpected billing header shape: {text}");
+        assert!(text.starts_with(
+            "x-anthropic-billing-header: cc_version=2.1.195.d"
+        ));
+        assert!(text.contains("; cc_entrypoint=sdk-cli; cch="));
+        assert!(text.ends_with(';'));
+        // Stable for the same profile, distinct between profiles (per-install realism).
+        assert_eq!(text, identity.billing_header_for("glm-01"));
+        assert_ne!(text, identity.billing_header_for("glm-02"));
+        // The operator-tuned base and entrypoint flow through.
+        let custom = GlmIdentityHeaders {
+            cc_version: "9.9.9".to_string(),
+            cc_entrypoint: "cli".to_string(),
+            ..GlmIdentityHeaders::default()
+        };
+        assert!(custom
+            .billing_header_for("glm-01")
+            .starts_with("x-anthropic-billing-header: cc_version=9.9.9.d"));
+        assert!(custom.billing_header_for("glm-01").contains("; cc_entrypoint=cli;"));
+    }
+
+    /// Minimal shape check: `cc_version=<base>.d<two digits>; … cch=<5 hex>;`
+    fn regex_lite_match(text: &str) -> bool {
+        let Some(rest) = text.strip_prefix("x-anthropic-billing-header: cc_version=") else {
+            return false;
+        };
+        let Some((version, rest)) = rest.split_once("; cc_entrypoint=") else {
+            return false;
+        };
+        let Some((_, build)) = version.rsplit_once('.') else {
+            return false;
+        };
+        let build_ok = build.len() == 3
+            && build.starts_with('d')
+            && build[1..].bytes().all(|b| b.is_ascii_digit());
+        let Some(cch) = rest.split_once("; cch=").map(|(_, cch)| cch) else {
+            return false;
+        };
+        let cch = cch.strip_suffix(';').unwrap_or(cch);
+        build_ok && cch.len() == 5 && cch.bytes().all(|b| b.is_ascii_hexdigit())
+    }
+
+    #[test]
+    fn the_user_agent_pins_pool_entries_deterministically_per_profile() {
+        let pool = [
+            "claude-cli/2.1.195 (external, sdk-cli)".to_string(),
+            "claude-cli/2.1.190 (external, sdk-cli)".to_string(),
+            "claude-cli/2.1.185 (external, sdk-cli)".to_string(),
+        ];
+        let identity = GlmIdentityHeaders {
+            user_agents: pool.to_vec(),
+            ..GlmIdentityHeaders::default()
+        };
+        // Every pin lands inside the pool and is stable across calls (roster reloads, restarts).
+        let pins: Vec<String> = (1..=8)
+            .map(|n| identity.user_agent_for(&format!("glm-{n:02}")))
+            .collect();
+        for (n, pin) in pins.iter().enumerate() {
+            assert!(pool.contains(pin), "pin outside the pool: {pin}");
+            assert_eq!(
+                *pin,
+                identity.user_agent_for(&format!("glm-{:02}", n + 1)),
+                "pin must be deterministic"
+            );
+        }
+        // A pool exists to differentiate profiles: eight distinct profiles must not collapse
+        // onto a single entry.
+        assert!(pins.iter().collect::<std::collections::HashSet<_>>().len() > 1);
+        // Without a pool the fleet-constant UA wins for every profile.
+        let single = GlmIdentityHeaders::default();
+        assert_eq!(
+            single.user_agent_for("glm-01"),
+            "claude-cli/2.1.195 (external, sdk-cli)"
+        );
+        assert_eq!(single.user_agent_for("glm-99"), single.user_agent);
     }
 }

@@ -85,7 +85,8 @@ pub(crate) struct GlmBillingInput {
 }
 
 pub(crate) struct GlmRequest {
-    pub headers: HeaderMap,
+    // No client headers on purpose: the upstream request is built from the reviewed fleet
+    // persona only (see `send_generation`), so inbound identity headers never enter the gateway.
     pub body: Value,
     pub raw_body_len: usize,
     pub model: String,
@@ -1059,6 +1060,12 @@ impl GlmGateway {
                 reserved.request_id.clone(),
             )
         });
+        // The Claude Code identity goes first into `system` (once — a body that already carries
+        // a Claude Code marker is left as sent, so a genuine Claude Code customer is never
+        // doubled). The fleet persona needs it in the body, not only in headers: risk-control
+        // fingerprints the whole request shape.
+        let identity = self.config.transport.identity.clone();
+        super::transport::inject_identity(&mut request.body, &identity.identity);
         let body = match serde_json::to_vec(&request.body) {
             Ok(body) => Bytes::from(body),
             Err(_) => return error_response(GatewayFailure::BadRequest("invalid_json")),
@@ -1085,14 +1092,23 @@ impl GlmGateway {
                 return error_response(GatewayFailure::Capacity);
             };
             let lease = ProfileLease::new(profile.clone());
+            // The billing header block is per profile (cch and the .dNN build suffix are keyed
+            // on the roster id), so it is written per attempt; on rotation it is replaced in
+            // place, never duplicated. With injection off the pre-serialized body is reused.
+            let attempt_body = if identity.inject_billing {
+                super::transport::set_billing_block(
+                    &mut request.body,
+                    &identity.billing_header_for(&profile.id),
+                );
+                match serde_json::to_vec(&request.body) {
+                    Ok(body) => Bytes::from(body),
+                    Err(_) => return error_response(GatewayFailure::BadRequest("invalid_json")),
+                }
+            } else {
+                body.clone()
+            };
             let response = match self
-                .send_generation(
-                    &profile,
-                    &request.headers,
-                    body.clone(),
-                    stream_requested,
-                    &request_id,
-                )
+                .send_generation(&profile, attempt_body, stream_requested, &request_id)
                 .await
             {
                 Ok(response) => response,
@@ -1346,15 +1362,16 @@ impl GlmGateway {
         Err(GatewayFailure::LowBalance)
     }
 
-    /// Native request on the profile's own console origin. The identity set comes from the
-    /// reviewed transport config, not from the inbound client: Z.ai risk-control fingerprints
-    /// SDK-like traffic and bans the subscription over it (manifest §4), so the plane sends
-    /// exactly the operator-reviewed Claude-Code-compatible headers. A redirect is never
+    /// Native request on the profile's own console origin. The FULL Claude Code identity set
+    /// comes from the reviewed transport config, never from the inbound client: Z.ai
+    /// risk-control fingerprints SDK-like traffic and bans the subscription over it
+    /// (manifest §4), and a foreign value under our persona (a Python SDK's
+    /// `x-stainless-lang: python` under a claude-cli UA) is exactly the contradiction it keys
+    /// on — the same skip rule as the Claude plane's `skip_req_header`. A redirect is never
     /// followed — it must not carry a subscription key to another origin.
     async fn send_generation(
         &self,
         profile: &RuntimeProfile,
-        client_headers: &HeaderMap,
         body: Bytes,
         stream: bool,
         request_id: &str,
@@ -1365,7 +1382,7 @@ impl GlmGateway {
             GLM_ANTHROPIC_MESSAGES_PATH
         );
         let identity = &self.config.transport.identity;
-        let mut request = profile
+        profile
             .client
             .post(url)
             .header(
@@ -1384,21 +1401,27 @@ impl GlmGateway {
                     "application/json"
                 },
             )
-            .header("user-agent", &identity.user_agent)
+            // Per-profile UA pin (fleet pool) — the same anti-cluster lever the Claude plane
+            // applies per subscription.
+            .header("user-agent", identity.user_agent_for(&profile.id))
             .header("anthropic-version", &identity.anthropic_version)
             .header("anthropic-beta", &identity.anthropic_beta)
-            .header("x-client-request-id", request_id);
-        // A genuine Claude Code client sends its own version/beta pair; prefer it when present
-        // so the wire keeps looking like the reviewed client at its own version.
-        for name in ["anthropic-version", "anthropic-beta"] {
-            if let Some(value) = client_headers
-                .get(name)
-                .and_then(|value| value.to_str().ok())
-            {
-                request = request.header(name, value);
-            }
-        }
-        request
+            .header("x-app", &identity.x_app)
+            .header("x-stainless-lang", &identity.stainless_lang)
+            .header("x-stainless-runtime", &identity.stainless_runtime)
+            .header(
+                "x-stainless-runtime-version",
+                &identity.stainless_runtime_version,
+            )
+            .header(
+                "x-stainless-package-version",
+                &identity.stainless_package_version,
+            )
+            .header("x-stainless-os", &identity.stainless_os)
+            .header("x-stainless-arch", &identity.stainless_arch)
+            // A real Claude Code always sends this.
+            .header("anthropic-dangerous-direct-browser-access", "true")
+            .header("x-client-request-id", request_id)
             .body(body)
             .send()
             .await
@@ -2626,7 +2649,6 @@ mod tests {
 
     fn glm_request(model: &str, body: Value, billing: Option<GlmBillingInput>) -> GlmRequest {
         GlmRequest {
-            headers: HeaderMap::new(),
             raw_body_len: serde_json::to_vec(&body).unwrap().len(),
             body,
             model: model.into(),
@@ -3011,16 +3033,227 @@ mod tests {
         assert!(turn
             .to_ascii_lowercase()
             .contains("authorization: bearer zai-key-1"));
-        // Generation traffic carries the Claude-Code-compatible identity set: Z.ai risk-control
-        // bans SDK-like clients, so these headers are part of keeping the subscription alive.
-        assert!(turn.to_ascii_lowercase().contains("user-agent: claude-cli/"));
-        assert!(turn.to_ascii_lowercase().contains("anthropic-version: 2023-06-01"));
-        assert!(turn.to_ascii_lowercase().contains("anthropic-beta: claude-code-20250219"));
-        assert!(turn.to_ascii_lowercase().contains("x-client-request-id:"));
+        // Generation traffic carries the full Claude-Code-compatible identity set: Z.ai
+        // risk-control bans SDK-like clients, so these headers keep the subscription alive.
+        let turn_lower = turn.to_ascii_lowercase();
+        assert!(turn_lower.contains("user-agent: claude-cli/"));
+        assert!(turn_lower.contains("anthropic-version: 2023-06-01"));
+        assert!(turn_lower.contains("x-client-request-id:"));
         assert!(turn.contains("\"model\":\"glm-5.2\""));
         // No calibration authority in this test: evidence remains visible in the bounded FIFO
         // instead of being silently discarded.
         assert_eq!(gateway.operational_status().delivery.pending_events, 1);
+    }
+
+    /// The body of a captured raw HTTP/1.1 request as parsed JSON.
+    fn captured_request_json(request: &str) -> Value {
+        let body = request
+            .split("\r\n\r\n")
+            .nth(1)
+            .expect("a captured request always carries a body");
+        serde_json::from_str(body).expect("the generation body is JSON")
+    }
+
+    #[tokio::test]
+    async fn generation_carries_the_full_fleet_fingerprint_and_nothing_from_the_client() {
+        let fixture = Fixture::new();
+        let generation = br#"{"id":"msg_1","type":"message","model":"glm-5.2","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":7,"output_tokens":2}}"#;
+        let (base_url, requests) = mock_server(vec![
+            http_response("application/json", &quota_body(120, 12_000, 0, 60_000)),
+            http_response("application/json", generation),
+        ]);
+        fixture.publish_profile("zai-key-1", &base_url);
+        let gateway = Arc::new(
+            GlmGateway::new_with_calibration(config(&fixture.root, &base_url), None).unwrap(),
+        );
+        assert_eq!(gateway.preflight().await, 1);
+        let response = gateway
+            .handle(glm_request("glm-5.2", request_body("glm-5.2"), None))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let _probe = requests.recv().unwrap();
+        let turn = String::from_utf8(requests.recv().unwrap()).unwrap();
+        let turn = turn.to_ascii_lowercase();
+        // The exact reviewed 2.1.195 capture, header by header.
+        assert!(turn.contains("user-agent: claude-cli/2.1.195 (external, sdk-cli)"));
+        assert!(turn.contains("anthropic-version: 2023-06-01"));
+        let beta_line = turn
+            .lines()
+            .find(|line| line.starts_with("anthropic-beta: "))
+            .expect("anthropic-beta is sent");
+        for beta in [
+            "oauth-2025-04-20",
+            "interleaved-thinking-2025-05-14",
+            "thinking-token-count-2026-05-13",
+            "context-management-2025-06-27",
+            "prompt-caching-scope-2026-01-05",
+            "claude-code-20250219",
+            "advisor-tool-2026-03-01",
+            "advanced-tool-use-2025-11-20",
+            "extended-cache-ttl-2025-04-11",
+            "cache-diagnosis-2026-04-07",
+        ] {
+            assert!(beta_line.contains(beta), "missing beta {beta}");
+        }
+        assert!(turn.contains("x-app: cli"));
+        assert!(turn.contains("x-stainless-lang: js"));
+        assert!(turn.contains("x-stainless-runtime: node"));
+        assert!(turn.contains("x-stainless-runtime-version: v26.3.0"));
+        assert!(turn.contains("x-stainless-package-version: 0.94.0"));
+        assert!(turn.contains("x-stainless-os: linux"));
+        assert!(turn.contains("x-stainless-arch: x64"));
+        assert!(turn.contains("accept: application/json"));
+        assert!(turn.contains("anthropic-dangerous-direct-browser-access: true"));
+        // Client identity headers structurally never enter the gateway: the wire shows the
+        // synthesized persona and nothing a foreign SDK could have sent (no python, no curl).
+        assert!(!turn.contains("python"));
+        assert!(!turn.contains("curl"));
+    }
+
+    #[tokio::test]
+    async fn generation_body_carries_identity_first_and_a_per_profile_billing_block() {
+        let fixture = Fixture::new();
+        let generation = br#"{"id":"msg_1","type":"message","model":"glm-5.2","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":7,"output_tokens":2}}"#;
+        let (base_url, requests) = mock_server(vec![
+            http_response("application/json", &quota_body(120, 12_000, 0, 60_000)),
+            http_response("application/json", generation),
+        ]);
+        fixture.publish_profile("zai-key-1", &base_url);
+        let gateway = Arc::new(
+            GlmGateway::new_with_calibration(config(&fixture.root, &base_url), None).unwrap(),
+        );
+        assert_eq!(gateway.preflight().await, 1);
+        let response = gateway
+            .handle(glm_request("glm-5.2", request_body("glm-5.2"), None))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let _probe = requests.recv().unwrap();
+        let turn = String::from_utf8(requests.recv().unwrap()).unwrap();
+        let body = captured_request_json(&turn);
+        let system = body["system"].as_array().expect("system is an array");
+        // Exactly the real client's order: billing header first, identity second, no
+        // cache_control on either (a cache-controlled identity is not what Claude Code sends).
+        assert_eq!(system.len(), 2);
+        let billing = system[0]["text"].as_str().unwrap();
+        assert!(
+            billing.starts_with("x-anthropic-billing-header: cc_version=2.1.195.d"),
+            "billing block: {billing}"
+        );
+        assert!(billing.contains("; cc_entrypoint=sdk-cli; cch="));
+        assert!(billing.ends_with(';'));
+        assert_eq!(system.len(), 2, "billing and identity only");
+        // Deterministic per profile: the fixture profile is "glm-01", so the gateway must emit
+        // exactly the derivation the persona function produces for that id.
+        let expected = super::super::transport::GlmIdentityHeaders::default()
+            .billing_header_for("glm-01");
+        assert_eq!(billing, expected);
+        assert_eq!(
+            system[1]["text"].as_str().unwrap(),
+            "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+        );
+        assert!(system[0].get("cache_control").is_none());
+        assert!(system[1].get("cache_control").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_genuine_claude_code_body_is_never_doubled() {
+        let fixture = Fixture::new();
+        let generation = br#"{"id":"msg_1","type":"message","model":"glm-5.2","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":7,"output_tokens":2}}"#;
+        let (base_url, requests) = mock_server(vec![
+            http_response("application/json", &quota_body(120, 12_000, 0, 60_000)),
+            http_response("application/json", generation),
+        ]);
+        fixture.publish_profile("zai-key-1", &base_url);
+        let gateway = Arc::new(
+            GlmGateway::new_with_calibration(config(&fixture.root, &base_url), None).unwrap(),
+        );
+        assert_eq!(gateway.preflight().await, 1);
+        // The customer IS Claude Code: its own identity block is already first. The gateway
+        // must not stack a second identity; the per-profile billing block still goes first
+        // (replacing nothing here — the client's billing marker would be replaced in place).
+        let mut body = request_body("glm-5.2");
+        body["system"] = json!([{
+            "type": "text",
+            "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+        }]);
+        let response = gateway.handle(glm_request("glm-5.2", body, None)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let _probe = requests.recv().unwrap();
+        let turn = String::from_utf8(requests.recv().unwrap()).unwrap();
+        let body = captured_request_json(&turn);
+        let system = body["system"].as_array().unwrap();
+        assert_eq!(system.len(), 2, "no stacked identity: {system:?}");
+        assert!(system[0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("x-anthropic-billing-header:"));
+        assert_eq!(
+            system[1]["text"].as_str().unwrap(),
+            "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+        );
+    }
+
+    #[tokio::test]
+    async fn billing_injection_can_be_switched_off_without_losing_the_identity() {
+        let fixture = Fixture::new();
+        let generation = br#"{"id":"msg_1","type":"message","model":"glm-5.2","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":7,"output_tokens":2}}"#;
+        let (base_url, requests) = mock_server(vec![
+            http_response("application/json", &quota_body(120, 12_000, 0, 60_000)),
+            http_response("application/json", generation),
+        ]);
+        fixture.publish_profile("zai-key-1", &base_url);
+        let mut config = config(&fixture.root, &base_url);
+        config.transport.identity.inject_billing = false;
+        let gateway = Arc::new(GlmGateway::new_with_calibration(config, None).unwrap());
+        assert_eq!(gateway.preflight().await, 1);
+        let response = gateway
+            .handle(glm_request("glm-5.2", request_body("glm-5.2"), None))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let _probe = requests.recv().unwrap();
+        let turn = String::from_utf8(requests.recv().unwrap()).unwrap();
+        assert!(!turn.contains("x-anthropic-billing-header"));
+        let body = captured_request_json(&turn);
+        let system = body["system"].as_array().unwrap();
+        assert_eq!(system.len(), 1);
+        assert_eq!(
+            system[0]["text"].as_str().unwrap(),
+            "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+        );
+    }
+
+    #[tokio::test]
+    async fn the_quota_probe_carries_no_identity_set() {
+        let fixture = Fixture::new();
+        let (base_url, requests) = mock_server(vec![http_response(
+            "application/json",
+            &quota_body(0, 12_000, 0, 60_000),
+        )]);
+        fixture.publish_profile("zai-key-1", &base_url);
+        let gateway =
+            GlmGateway::new_with_calibration(config(&fixture.root, &base_url), None).unwrap();
+        assert_eq!(gateway.preflight().await, 1);
+
+        let probe = String::from_utf8(requests.recv().unwrap()).unwrap();
+        assert!(probe.starts_with("GET /api/monitor/usage/quota/limit "));
+        // The quota endpoint is a monitor surface, not generation: none of the Claude Code
+        // fingerprint may ride on it.
+        let probe = probe.to_ascii_lowercase();
+        for absent in [
+            "anthropic-version",
+            "anthropic-beta",
+            "x-stainless",
+            "x-app",
+            "x-anthropic-billing-header",
+            "anthropic-dangerous-direct-browser-access",
+            "claude-cli",
+        ] {
+            assert!(!probe.contains(absent), "probe must not carry {absent}");
+        }
     }
 
     #[tokio::test]
