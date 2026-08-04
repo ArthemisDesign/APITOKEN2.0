@@ -26,7 +26,6 @@ const policyCopy = {
     paidBalance: "Paid balance",
     fundingPending: "Funding split pending",
     unavailable: "Unavailable",
-    access: "Access",
     pricingRule: "Pricing rule",
     progressive: "Progressive",
     legacy: "Legacy account rule",
@@ -35,7 +34,6 @@ const policyCopy = {
     policyPending: "Desired policy is waiting for an engine ACK.",
     policyUnavailable: "No applied provider/model policy is available yet.",
     providerUnattributed: "Unattributed",
-    actualProvider: "Actual provider",
     officialVsCharged: "Official → charged",
     paidFunding: "paid",
     bonusFunding: "bonus",
@@ -45,7 +43,6 @@ const policyCopy = {
     paidBalance: "Оплаченный баланс",
     fundingPending: "Разбивка средств ожидает сверки",
     unavailable: "Недоступно",
-    access: "Доступ",
     pricingRule: "Правило тарификации",
     progressive: "Прогрессивный тариф",
     legacy: "Legacy-правило аккаунта",
@@ -54,7 +51,6 @@ const policyCopy = {
     policyPending: "Desired policy ожидает подтверждения движка.",
     policyUnavailable: "Применённая provider/model policy пока недоступна.",
     providerUnattributed: "Без attribution",
-    actualProvider: "Фактический провайдер",
     officialVsCharged: "Официальная стоимость → списано",
     paidFunding: "оплачено",
     bonusFunding: "бонус",
@@ -70,10 +66,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
   const modelOfficialTotal = models.reduce((sum, model) => sum + BigInt(model.officialNano), 0n);
   const policy = account.pricingPolicies?.[0] ?? null;
   const appliedPolicy = policy?.applied ?? null;
-  const policyModels = appliedPolicy?.providers.flatMap((provider) => provider.models.map((model) => ({
-    ...model,
-    providerId: provider.providerId,
-  }))) ?? [];
+  const policyModels = appliedPolicy?.providers.flatMap((provider) => provider.models) ?? [];
   const availablePolicyModels = policyModels.filter((model) => model.available);
 
   // Stable model colours are shared by the distribution bar and model table.
@@ -223,19 +216,6 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
         })}
       </div>
       {!appliedPolicy && <div className="banner">{localPolicyCopy.policyUnavailable}</div>}
-      {appliedPolicy && <>
-        <p className="table-scroll-hint">{copy.tableScrollHint}</p>
-        <div className="table-scroll" role="region" tabIndex={0} aria-label={localPolicyCopy.availableModels}>
-          <table className="mtable"><thead><tr><th>{localPolicyCopy.actualProvider}</th><th>{copy.model}</th><th>{localPolicyCopy.access}</th><th>{localPolicyCopy.pricingRule}</th></tr></thead>
-            <tbody>{policyModels.map((model) => <tr key={`${model.providerId}:${model.modelId}`}>
-              <td>{providerDisplayName(model.providerId, localPolicyCopy.providerUnattributed)}</td>
-              <td>{modelLabel(model.modelId)}</td>
-              <td><span className={`pill ${model.available ? "pill-good" : "pill-soft"}`}>{model.available ? copy.ready : localPolicyCopy.unavailable}</span></td>
-              <td>{pricingRuleLabel(model.rule, localPolicyCopy)}</td>
-            </tr>)}</tbody>
-          </table>
-        </div>
-      </>}
     </section>
 
     <div className="usage-graph">
