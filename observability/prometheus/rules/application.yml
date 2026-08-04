@@ -510,6 +510,78 @@ groups:
           description: 'The newest /usages observation is older than three default poll intervals (3 x 300s = 900s); every quota reading now reports a frozen value.'
           runbook: 'docs/ops/MONITORING.md#kimiquotastale'
 
+  # The backend-only GLM (Z.ai Coding Plan) plane is optional and fail-closed. Every rule below
+  # is gated on claude_api_glm_enabled so a deployment with the provider switched off stays
+  # silent. GLM series are scraped on the anthropic target and deliberately carry no provider
+  # label; the glm_ name prefix is the discriminator.
+  - name: glm-provider
+    rules:
+      - alert: GlmNoLiveProfiles
+        expr: claude_api_glm_enabled == 1 and claude_api_glm_live_profiles == 0
+        for: 10m
+        labels:
+          severity: warning
+          component: glm-provider
+        annotations:
+          summary: 'GLM provider has no live profile'
+          description: 'The plane is enabled but no roster profile is authenticated; exact GLM aliases fail closed while Claude keeps its existing path.'
+          runbook: 'docs/ops/MONITORING.md#glmnoliveprofiles'
+
+      - alert: GlmNoAvailableProfiles
+        expr: claude_api_glm_enabled == 1 and claude_api_glm_live_profiles > 0 and claude_api_glm_available_profiles == 0
+        for: 15m
+        labels:
+          severity: warning
+          component: glm-provider
+        annotations:
+          summary: 'Every GLM profile is dead, suspect, cooling or quota-walled'
+          description: 'Live profiles exist but none is eligible for selection; GLM requests fail closed until an axis clears.'
+          runbook: 'docs/ops/MONITORING.md#glmnoavailableprofiles'
+
+      - alert: GlmCalibrationPersistenceFailed
+        expr: claude_api_glm_enabled == 1 and claude_api_glm_calibration_persistence_ok == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: glm-provider
+        annotations:
+          summary: 'GLM cannot persist calibration evidence'
+          description: 'Turn events or quota observations are not reaching PostgreSQL; measured capacity may not survive restart.'
+          runbook: 'docs/ops/MONITORING.md#glmcalibrationpersistencefailed'
+
+      - alert: GlmCalibrationBacklog
+        expr: claude_api_glm_enabled == 1 and claude_api_glm_calibration_pending_events > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: glm-provider
+        annotations:
+          summary: 'GLM calibration evidence is queued behind an undelivered head'
+          description: 'The bounded turn FIFO holds pending events, and the provider quota read is suspended by design until the head drains.'
+          runbook: 'docs/ops/MONITORING.md#glmcalibrationbacklog'
+
+      - alert: GlmQuotaStale
+        expr: claude_api_glm_enabled == 1 and claude_api_glm_live_profiles > 0 and time() - claude_api_glm_quota_last_observation_timestamp_seconds > 900
+        for: 15m
+        labels:
+          severity: warning
+          component: glm-provider
+        annotations:
+          summary: 'GLM quota observations have stopped refreshing'
+          description: 'The newest quota observation is older than three default poll intervals (3 x 300s = 900s); every quota reading now reports a frozen value.'
+          runbook: 'docs/ops/MONITORING.md#glmquotastale'
+
+      - alert: GlmAccountDead
+        expr: claude_api_glm_enabled == 1 and claude_api_glm_account_dead_profiles > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: glm-provider
+        annotations:
+          summary: 'A GLM subscription key is durably refused'
+          description: 'The static key was refused or the plan expired; the profile stays out of rotation until the Auth Bot publishes a replacement — no timer clears this axis.'
+          runbook: 'docs/ops/MONITORING.md#glmaccountdead'
+
   - name: durable-business-state
     rules:
       - alert: DurableQueueBacklog

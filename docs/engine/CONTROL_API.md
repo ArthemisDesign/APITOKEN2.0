@@ -39,8 +39,8 @@
 
 ### Operator telemetry подписок
 
-Same-origin админка дополнительно читает `GET /capacity`, `GET /codex-subs`, `GET /gemini-subs`
-и `GET /kimi-subs`.
+Same-origin админка дополнительно читает `GET /capacity`, `GET /codex-subs`, `GET /gemini-subs`,
+`GET /kimi-subs` и `GET /glm-subs`.
 Эти маршруты защищены server-side control/panel auth; браузер получает их только через закрытый
 `admin.apitoken.sale`, а ключи ему не выдаются.
 
@@ -192,6 +192,25 @@ credential path, customer/request id и raw provider errors никогда не 
 уходят upstream; полупара, не-admin или мусорное значение отклоняются 400. Закреплённый turn
 использует переданный immutable id и выполняется ровно на указанном профиле: cooling/wall — это
 стена, а не повод для rebind на соседний профиль.
+
+`GET /glm-subs` — read-only operational projection backend-only GLM (Z.ai Coding Plan)
+плоскости, которая живёт внутри Anthropic runtime (тот же origin 8790, отдельного процесса
+нет). Гейт — control key (`control_authed`, как `/codex-subs` и `/kimi-subs`; panel key не
+подходит). На процессе без плоскости ответ — disabled envelope `{"now": <unix>,
+"enabled": false, "profiles": []}`. Enabled envelope публикует `delivery` (pending/dropped/
+persistence bounded FIFO), fleet counts (total/live/available profiles, inflight, durable оси
+account-dead/account-suspect и две timed оси cooling), `window_totals` (fleet-агрегация двух
+canonical окон 5ч/7д: `window_minutes` 300/10080 — проекция exact `duration_secs`; capacity и
+remaining как decimal nanoUSD strings, агрегат `null`, пока хотя бы один профиль флота не назвал
+значение для окна — частичная сумма никогда не публикуется) и per-profile объекты с durable
+account flags, cooling-until timestamps, последним quota snapshot по каждому окну (raw counters
+`null`, пока их unit semantics недоказаны) и per-window calibration из durable PostgreSQL
+evidence (samples, confidence, capacity/remaining как decimal nano strings + exact native
+microcredits, estimator version). Контракт редакции: сериализуются только opaque profile ids и
+bounded plan labels (roster и так ограничен тремя reviewed individual plans); subject-digest
+ключа, сам ключ, proxy, base_url, credential path, customer/request id и raw provider errors
+никогда не сериализуются; неизвестное — `null`, а не 0. Плоскость default-off: пока GLM не
+включён, envelope всегда disabled.
 
 ---
 

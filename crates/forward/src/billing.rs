@@ -1704,6 +1704,7 @@ enum ReadCmd {
         i64,
         oneshot::Sender<anyhow::Result<Vec<KimiTurnCalibrationEvent>>>,
     ),
+    GlmCalibrationReport(oneshot::Sender<anyhow::Result<Vec<GlmCalibrationRow>>>),
     KeyAuth(String, oneshot::Sender<anyhow::Result<Option<KeyAuth>>>),
     KeyGet(String, oneshot::Sender<anyhow::Result<Option<KeyRow>>>),
     Account(String, oneshot::Sender<anyhow::Result<Option<AccountRow>>>),
@@ -2341,6 +2342,25 @@ impl AsyncBilling {
         let reader = &self.readers[self.rr.fetch_add(1, Ordering::Relaxed) % self.readers.len()];
         reader
             .send(ReadCmd::KimiRecentTurns(limit, reply))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    /// Read every durable GLM window calibration row for the admin operational projection.
+    ///
+    /// Rows are keyed by provider subject; joining them to opaque roster ids is the caller's
+    /// concern (the gateway owns that mapping). GLM calibration is PostgreSQL-only, so a SQLite
+    /// authority reports an empty fleet rather than an error.
+    pub async fn glm_calibration_report(
+        &self,
+    ) -> anyhow::Result<Vec<GlmCalibrationRow>> {
+        let (reply, result) = oneshot::channel();
+        let reader = &self.readers[self.rr.fetch_add(1, Ordering::Relaxed) % self.readers.len()];
+        reader
+            .send(ReadCmd::GlmCalibrationReport(reply))
             .await
             .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
         result
@@ -3219,6 +3239,11 @@ impl AsyncBilling {
                             }
                             ReadCmd::KimiRecentTurns(_limit, reply) => {
                                 // Same PostgreSQL-only contract as the calibration report.
+                                let _ = reply.send(Ok(Vec::new()));
+                            }
+                            ReadCmd::GlmCalibrationReport(reply) => {
+                                // GLM calibration authority is PostgreSQL-only; a SQLite
+                                // authority simply has no rows to report.
                                 let _ = reply.send(Ok(Vec::new()));
                             }
                             ReadCmd::KeyAuth(k, r) => {
@@ -4368,6 +4393,9 @@ impl AsyncBilling {
                             }
                             ReadCmd::KimiRecentTurns(limit, reply) => {
                                 answer!(reply, pg.list_kimi_recent_turns(limit))
+                            }
+                            ReadCmd::GlmCalibrationReport(reply) => {
+                                answer!(reply, pg.list_glm_calibrations())
                             }
                             ReadCmd::KeyAuth(k, r) => answer!(r, pg.key_account(&k)),
                             ReadCmd::KeyGet(k, r) => answer!(r, pg.key_get(&k)),
@@ -8059,6 +8087,24 @@ mod tests {
             .is_err());
     }
 
+    #[tokio::test]
+    async fn glm_calibration_report_is_empty_on_a_sqlite_authority() {
+        let billing = AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::new(":memory:".to_owned(), None),
+            None,
+            1,
+            0,
+        )
+        .unwrap();
+        // GLM calibration authority is PostgreSQL-only: the report is empty, not an error,
+        // while the evidence commands themselves keep refusing the SQLite authority.
+        assert_eq!(billing.glm_calibration_report().await.unwrap(), Vec::new());
+        assert!(billing
+            .record_glm_turn(glm_event("glm-sqlite-report-turn", 1, 1, 1))
+            .await
+            .is_err());
+    }
+
     #[test]
     fn glm_postgres_actor_pairs_dual_spend_before_independent_window_cas() {
         const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_441;
@@ -8173,6 +8219,116 @@ mod tests {
             assert_eq!(history[1].cumulative_api_nanousd, 1_000_000_000);
             assert_eq!(history[1].cumulative_native_microcredits, 500_000_000);
         }
+        lock_holder
+            .batch_execute(
+                "TRUNCATE glm_window_calibrations,glm_window_observations,\
+                 glm_calibration_subject_spend,glm_turn_calibration_events \
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        lock_holder
+            .query_one(
+                "SELECT pg_advisory_unlock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn glm_postgres_calibration_report_lists_every_subject_window() {
+        const POSTGRES_DESTRUCTIVE_TEST_LOCK: i64 = 831_572_908_441;
+
+        let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+            eprintln!(
+                "skipping GLM PostgreSQL report matrix: CLAUDE_API_TEST_DATABASE_URL is unset"
+            );
+            return;
+        };
+        let mut lock_holder = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        lock_holder
+            .query_one(
+                "SELECT pg_advisory_lock($1)",
+                &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+            )
+            .unwrap();
+        let mut pg = registry::pg::PgStore::connect(&url).unwrap();
+        pg.migrate().unwrap();
+        lock_holder
+            .batch_execute(
+                "TRUNCATE glm_window_calibrations,glm_window_observations,\
+                 glm_calibration_subject_spend,glm_turn_calibration_events \
+                 RESTART IDENTITY CASCADE",
+            )
+            .unwrap();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let instance_id = format!("glm-report-{}-{unique}", std::process::id());
+        let owner = pg.claim_instance(&instance_id, 60).unwrap();
+        drop(pg);
+
+        let billing = AsyncBilling::start_authority(
+            registry::authority::AuthorityConfig::Postgres { url: url.clone() },
+            Some(owner),
+            1,
+            0,
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            billing
+                .observe_glm_windows(
+                    "glm-subject-a",
+                    "Pro",
+                    vec![
+                        glm_snapshot(registry::GLM_5H_WINDOW_SECS, 100, 1_000, 100),
+                        glm_snapshot(registry::GLM_WEEKLY_WINDOW_SECS, 200, 1_000, 100),
+                    ],
+                )
+                .await
+                .unwrap();
+            billing
+                .observe_glm_windows(
+                    "glm-subject-b",
+                    "Max",
+                    vec![glm_snapshot(
+                        registry::GLM_5H_WINDOW_SECS,
+                        10,
+                        1_000,
+                        101,
+                    )],
+                )
+                .await
+                .unwrap();
+
+            let report = billing.glm_calibration_report().await.unwrap();
+            // Every durable row is reported, across subjects, plans and independent windows.
+            assert_eq!(report.len(), 3);
+            assert!(report.iter().all(|row| row.samples == 0));
+            let subject_a: Vec<_> = report
+                .iter()
+                .filter(|row| row.subject_id == "glm-subject-a")
+                .collect();
+            assert_eq!(subject_a.len(), 2);
+            assert!(subject_a
+                .iter()
+                .any(|row| row.window_duration_secs == registry::GLM_WEEKLY_WINDOW_SECS
+                    && row.native_used_microcredits == Some(200)));
+            let subject_b: Vec<_> = report
+                .iter()
+                .filter(|row| row.subject_id == "glm-subject-b")
+                .collect();
+            assert_eq!(subject_b.len(), 1);
+            assert_eq!(subject_b[0].plan, "Max");
+            assert_eq!(subject_b[0].native_used_microcredits, Some(10));
+            billing.flush().await.unwrap();
+        });
+        drop(billing);
+
         lock_holder
             .batch_execute(
                 "TRUNCATE glm_window_calibrations,glm_window_observations,\

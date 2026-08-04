@@ -206,7 +206,7 @@
   key/account identity и не делает reserve/settle. Endpoint одинаков на всех fixed planes и
   loopback-only; `crates/router` вызывает его до materialization каждого universal request body.
 - Управляющие эндпоинты (`/health`, `/pool`, `/capacity`, `/fleet-history`, `/settlement-health`,
-  `/codex-subs`, `/gemini-subs`, `/kimi-subs`, `/admin/*`) — здесь; остальное → форвардинг. `/capacity`,
+  `/codex-subs`, `/gemini-subs`, `/kimi-subs`, `/glm-subs`, `/admin/*`) — здесь; остальное → форвардинг. `/capacity`,
   `/codex-subs` и `/gemini-subs` сериализуют безопасный paid-plan identity для защищённого
   `admin.apitoken.sale/sales/calculator`; этот классификатор не является credential. `/codex-subs`
   гейтится `control_authed` и отдаёт только opaque home id плюс bounded email hint (первые четыре
@@ -277,6 +277,17 @@
   customer/request id и raw provider errors не сериализуются никогда, неизвестное — `null`,
   а не 0. Join durable subject→opaque id выполняется внутри HTTP-слоя через gateway, сам subject
   в ответ не попадает; строки чужого subject остаются durable для аудита, но не публикуются.
+  `/glm-subs` — тот же контракт для backend-only GLM плоскости (Combined и Anthropic режимы,
+  `control_authed`, disabled envelope без плоскости). Отличия от kimi-формы отражают оси GLM:
+  timed auth quarantine у GLM нет — вместо `cooling.auth_until` профиль несёт durable флаги
+  `account_dead`/`account_suspect`; raw quota counters сериализуются как `null`, пока их unit
+  semantics недоказаны; calibration — dual-ledger (decimal nanoUSD strings + exact native
+  microcredits); envelope добавляет `window_totals` — fleet-агрегацию canonical окон 5ч/7д
+  (`window_minutes` 300/10080 как проекция exact `duration_secs`, capacity/remaining decimal
+  nanoUSD strings), где агрегат `null`, пока хотя бы один roster profile не назвал значение для
+  окна, — частичная сумма не публикуется никогда. Subject здесь — keyed digest ключа; он,
+  сам ключ, proxy и base_url не сериализуются, join subject→opaque id так же выполняется внутри
+  HTTP-слоя через gateway.
 - **Три класса ключей (разделение секретов):** `CLAUDE_API_KEYS` (forwarding-admin: неметеренный /v1
   + всё), `CLAUDE_API_CONTROL_KEY` (control-плоскость `/admin/*`: аккаунты/деньги, для коммерции),
   `CLAUDE_API_PANEL_KEY` (read-only дашборды `/capacity`,`/metrics`). Гейты: `authed` (admin) ⊂

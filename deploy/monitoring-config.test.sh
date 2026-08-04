@@ -520,6 +520,39 @@ for gated_alert in KimiNoLiveProfiles KimiNoAvailableProfiles KimiCalibrationPer
     | grep -Fq 'claude_api_kimi_enabled == 1' \
     || { printf '%s is not gated on the provider being enabled\n' "$gated_alert" >&2; exit 1; }
 done
+# The backend-only GLM plane runs inside the Anthropic runtime: its aggregate series are scraped
+# on the anthropic target and deliberately carry no provider label — the claude_api_glm_ name
+# prefix is the discriminator, so the scoping pin here is the enabled gate, not a label selector.
+for glm_metric in \
+  'claude_api_glm_live_profiles' \
+  'claude_api_glm_available_profiles' \
+  'claude_api_glm_calibration_persistence_ok' \
+  'claude_api_glm_calibration_pending_events' \
+  'claude_api_glm_quota_last_observation_timestamp_seconds' \
+  'claude_api_glm_account_dead_profiles'; do
+  grep -Fq "$glm_metric" "$ROOT/crates/server/src/http.rs" \
+    || { printf 'engine does not export %s\n' "$glm_metric" >&2; exit 1; }
+  grep -Fq "$glm_metric" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'no alert rule consumes %s\n' "$glm_metric" >&2; exit 1; }
+done
+for glm_alert in GlmNoLiveProfiles GlmNoAvailableProfiles GlmCalibrationPersistenceFailed \
+  GlmCalibrationBacklog GlmQuotaStale GlmAccountDead; do
+  grep -Fq "alert: $glm_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'missing GLM alert %s\n' "$glm_alert" >&2; exit 1; }
+  anchor=$(printf '%s' "$glm_alert" | tr '[:upper:]' '[:lower:]')
+  grep -Fq "docs/ops/MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'alert %s has no runbook anchor\n' "$glm_alert" >&2; exit 1; }
+  grep -Fqi "## $glm_alert" "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$glm_alert" >&2; exit 1; }
+done
+# Every GLM rule is gated on the default-off plane being enabled, or it would page for a surface
+# nobody is serving.
+for gated_alert in GlmNoLiveProfiles GlmNoAvailableProfiles GlmCalibrationPersistenceFailed \
+  GlmCalibrationBacklog GlmQuotaStale GlmAccountDead; do
+  grep -F "alert: $gated_alert" -A 2 "$ROOT/observability/prometheus/rules/application.yml" \
+    | grep -Fq 'claude_api_glm_enabled == 1' \
+    || { printf '%s is not gated on the provider being enabled\n' "$gated_alert" >&2; exit 1; }
+done
 for anthropic_metric in claude_api_breaker_open claude_api_subs claude_api_cooling \
   claude_api_upstream_429_total claude_api_upstream_auth_total claude_api_upstream_5xx_total; do
   grep -Fq "${anthropic_metric}{provider=\"anthropic\"}" \

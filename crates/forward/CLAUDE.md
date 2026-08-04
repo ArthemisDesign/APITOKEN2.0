@@ -1071,9 +1071,22 @@ read/decrypt/client/probe и исчезнувший файл сохраняют 
 тот же turn-before-quota порядок, что у KIMI: drain FIFO → GET → epoch re-check → второй drain
 под FIFO-барьером → serial writer сам читает cumulative DUAL spend → immutable observation +
 estimator CAS по каждому независимому окну → publish steering только после durable успеха всех
-окон; transient failure сохраняет last-good quota. Server-композиция (env/config, maintenance
-loop, admin projection, observability) — отдельный следующий шаг: здесь плоскость собрана
-только внутри `forward` и остаётся выключенной.
+окон; transient failure сохраняет last-good quota.
+
+`GlmGateway::operational_status` публикует `GlmOperationalStatus` для readiness, `/metrics` и
+admin-only `GET /glm-subs`: fleet counts (total/live/available, durable оси
+account-dead/account-suspect, две timed оси cooling, суммарный inflight), operational counters
+missing-terminal-usage/served-model-rejected, per-profile `GlmProfileStatus` и bounded FIFO
+`DeliveryHealth`. Selection availability переиспользует `selection::ineligible_ids` поверх
+`glm-5.2` (его служит каждый reviewed план, поэтому capability-gap сюда не попадает).
+`publish_quota` сохраняет последний полный quota snapshot per profile (`GlmQuotaWindowStatus`:
+raw used/limit/remaining optional, пока unit semantics недоказаны, fraction и measurement
+resolution рядом, resets_at/observed_at); неизвестное отсутствует, а не заполнено нулём. Plan
+label ограничен `bounded_plan_label` (roster и так держит только три reviewed individual
+plans). Privacy by construction: subject (keyed digest ключа) остаётся private в
+`RuntimeProfile`; durable calibration rows (`AsyncBilling::glm_calibration_report` поверх
+PostgreSQL-only `PgStore::list_glm_calibrations`, на SQLite authority — пустой отчёт) join-ятся
+к opaque id только через `profile_id_for_subject`, и чужой subject наружу не сериализуется.
 
 **Тюнинг под живой Anthropic** (identity/beta/UA/version) — через поля `ProxyConfig`, которые
 `server` берёт из env. Значения по умолчанию — в `config.rs`.

@@ -457,6 +457,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/fleet-history", get(fleet_history))
             .route("/codex-subs", get(codex_subs))
             .route("/kimi-subs", get(kimi_subs))
+            .route("/glm-subs", get(glm_subs))
             .merge(admin)
             // Migration bridge: existing Caddy marks the OpenAI hostname until provider-specific
             // services are installed. Fixed provider modes below never inspect this header.
@@ -485,6 +486,7 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .route("/fleet-history", get(fleet_history))
             .route("/codex-subs", get(codex_subs))
             .route("/kimi-subs", get(kimi_subs))
+            .route("/glm-subs", get(glm_subs))
             // Universal lane (этап 3.1 UNIFIED_ROUTER.md): chat→Messages адаптер.
             .route("/v1/chat/completions", post(anthropic_chat_completions))
             // Universal Responses (этап 4.1 UNIFIED_ROUTER.md): Responses→Messages
@@ -1832,6 +1834,8 @@ async fn metrics(
     }
     let kimi_status = app.kimi.as_ref().map(|kimi| kimi.operational_status());
     write_kimi_operational_metrics(&mut body, app.kimi.is_some(), kimi_status.as_ref());
+    let glm_status = app.glm.as_ref().map(|glm| glm.operational_status());
+    write_glm_operational_metrics(&mut body, app.glm.is_some(), glm_status.as_ref());
     (
         [(
             axum::http::header::CONTENT_TYPE,
@@ -1903,6 +1907,78 @@ fn write_kimi_operational_metrics(
             body,
             "# TYPE claude_api_kimi_quota_last_observation_timestamp_seconds gauge\n\
              claude_api_kimi_quota_last_observation_timestamp_seconds {observed_at}"
+        );
+    }
+}
+
+/// GLM (Z.ai Coding Plan) is a default-off backend inside the Anthropic plane. Aggregate-only,
+/// fixed cardinality: no per-profile series at all — a profile id, plan, subject, customer or
+/// provider error must never become a label. These series are scraped on the anthropic target,
+/// so they deliberately carry no provider label; the glm_ name prefix is the discriminator.
+/// Zero gauges are always published so a disabled plane reads as zero rather than absent; the
+/// last-observation timestamp is the one exception — emitting 0 there would masquerade as a
+/// real 1970 observation.
+fn write_glm_operational_metrics(
+    body: &mut String,
+    enabled: bool,
+    status: Option<&forward::glm::GlmOperationalStatus>,
+) {
+    use std::fmt::Write as _;
+
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_glm_enabled gauge\nclaude_api_glm_enabled {}",
+        u8::from(enabled)
+    );
+    let _ = writeln!(
+        body,
+        "# TYPE claude_api_glm_profiles gauge\nclaude_api_glm_profiles {}\n\
+         # TYPE claude_api_glm_live_profiles gauge\nclaude_api_glm_live_profiles {}\n\
+         # TYPE claude_api_glm_available_profiles gauge\nclaude_api_glm_available_profiles {}\n\
+         # TYPE claude_api_glm_inflight_requests gauge\nclaude_api_glm_inflight_requests {}\n\
+         # TYPE claude_api_glm_account_dead_profiles gauge\n\
+         claude_api_glm_account_dead_profiles {}\n\
+         # TYPE claude_api_glm_account_suspect_profiles gauge\n\
+         claude_api_glm_account_suspect_profiles {}\n\
+         # TYPE claude_api_glm_transport_cooling_profiles gauge\n\
+         claude_api_glm_transport_cooling_profiles {}\n\
+         # TYPE claude_api_glm_quota_cooling_profiles gauge\n\
+         claude_api_glm_quota_cooling_profiles {}\n\
+         # TYPE claude_api_glm_calibration_pending_events gauge\n\
+         claude_api_glm_calibration_pending_events {}\n\
+         # TYPE claude_api_glm_calibration_dropped_events_total counter\n\
+         claude_api_glm_calibration_dropped_events_total {}\n\
+         # TYPE claude_api_glm_calibration_persistence_ok gauge\n\
+         claude_api_glm_calibration_persistence_ok {}\n\
+         # TYPE claude_api_glm_missing_terminal_usage_total counter\n\
+         claude_api_glm_missing_terminal_usage_total {}\n\
+         # TYPE claude_api_glm_served_model_rejected_total counter\n\
+         claude_api_glm_served_model_rejected_total {}",
+        status.map_or(0, |status| status.total_profiles),
+        status.map_or(0, |status| status.live_profiles),
+        status.map_or(0, |status| status.available_profiles),
+        status.map_or(0, |status| status.inflight_requests),
+        status.map_or(0, |status| status.account_dead_profiles),
+        status.map_or(0, |status| status.account_suspect_profiles),
+        status.map_or(0, |status| status.transport_cooling_profiles),
+        status.map_or(0, |status| status.quota_cooling_profiles),
+        status.map_or(0, |status| status.delivery.pending_events),
+        status.map_or(0, |status| status.delivery.dropped_events),
+        status.map_or(0, |status| u8::from(status.delivery.persistence_ok)),
+        status.map_or(0, |status| status.missing_terminal_usage),
+        status.map_or(0, |status| status.served_model_rejected),
+    );
+    if let Some(observed_at) = status.and_then(|status| {
+        status
+            .profiles
+            .iter()
+            .filter_map(|profile| profile.quota_observed_at)
+            .max()
+    }) {
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_glm_quota_last_observation_timestamp_seconds gauge\n\
+             claude_api_glm_quota_last_observation_timestamp_seconds {observed_at}"
         );
     }
 }
@@ -4254,6 +4330,226 @@ fn kimi_conversion_models(now: i64) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// GLM (Z.ai Coding Plan) подписки: read-only operational projection для админки. Гейт —
+/// `control_authed` (admin-only, как `/codex-subs` и `/kimi-subs`). Сериализуются только opaque
+/// roster ids и bounded plan labels; subject (digest ключа), сам ключ, proxy, base_url,
+/// credential path, customer/request id и raw provider errors никогда не попадают в ответ,
+/// а неизвестное остаётся `null`, а не 0. GLM живёт внутри Anthropic-плоскости; на процессе
+/// без плоскости — codex-style disabled envelope.
+async fn glm_subs(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !control_authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+    let Some(glm) = &app.glm else {
+        return Json(json!({"now": pool::now(), "enabled": false, "profiles": []})).into_response();
+    };
+    let status = glm.operational_status();
+    let now = pool::now();
+    let report = match &app.billing {
+        Some(billing) => match billing.glm_calibration_report().await {
+            Ok(report) => Some(report),
+            Err(error) => {
+                eprintln!("GLM calibration report unavailable: {error:#}");
+                None
+            }
+        },
+        None => None,
+    };
+    Json(glm_subs_value_with_report(
+        glm,
+        &status,
+        now,
+        report.as_deref(),
+    ))
+    .into_response()
+}
+
+fn glm_subs_value_with_report(
+    gateway: &forward::glm::GlmGateway,
+    status: &forward::glm::GlmOperationalStatus,
+    now: i64,
+    report: Option<&[registry::GlmCalibrationRow]>,
+) -> Value {
+    // Durable rows are keyed by provider subject (the keyed digest of the API key); the join to
+    // the opaque roster id happens here and the subject itself is never serialized. A row whose
+    // subject left the roster stays durable for audit but is NOT published.
+    let mut calibration_by_profile: std::collections::BTreeMap<
+        String,
+        Vec<&registry::GlmCalibrationRow>,
+    > = std::collections::BTreeMap::new();
+    for row in report.unwrap_or_default() {
+        let Some(id) = gateway.profile_id_for_subject(&row.subject_id) else {
+            continue;
+        };
+        calibration_by_profile.entry(id).or_default().push(row);
+    }
+    json!({
+        "now": now,
+        "enabled": true,
+        "delivery": {
+            "pending_events": status.delivery.pending_events,
+            "dropped_events": status.delivery.dropped_events,
+            "persistence_ok": status.delivery.persistence_ok,
+        },
+        "fleet": {
+            "profiles": status.total_profiles,
+            "live_profiles": status.live_profiles,
+            "available_profiles": status.available_profiles,
+            "inflight_requests": status.inflight_requests,
+            "account_dead_profiles": status.account_dead_profiles,
+            "account_suspect_profiles": status.account_suspect_profiles,
+            "transport_cooling_profiles": status.transport_cooling_profiles,
+            "quota_cooling_profiles": status.quota_cooling_profiles,
+        },
+        "window_totals": glm_window_totals(&status.profiles, &calibration_by_profile),
+        "profiles": status
+            .profiles
+            .iter()
+            .map(|profile| {
+                let rows = calibration_by_profile
+                    .get(profile.id.as_str())
+                    .cloned()
+                    .unwrap_or_default();
+                glm_profile_value(profile, &rows)
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// Fleet-wide capacity/remaining totals for the two canonical GLM quota windows, for the admin
+/// fleet card. `window_minutes` is a projection of the exact `duration_secs` authority
+/// (18_000 s = 300 min, 604_800 s = 10_080 min). A total is a sum only when EVERY roster profile
+/// has a durable row for the window AND every row names the value — a partial sum would
+/// silently understate fleet capacity, so anything unknown keeps the whole aggregate `null`,
+/// never 0. Money serializes as decimal nanoUSD strings (BigInt-safe).
+fn glm_window_totals(
+    profiles: &[forward::glm::GlmProfileStatus],
+    calibration_by_profile: &std::collections::BTreeMap<String, Vec<&registry::GlmCalibrationRow>>,
+) -> Value {
+    let decimal = |sum: Option<i128>| -> Option<String> {
+        sum.and_then(|sum| i64::try_from(sum).ok())
+            .map(|value| value.to_string())
+    };
+    Value::Array(
+        [
+            registry::GLM_5H_WINDOW_SECS,
+            registry::GLM_WEEKLY_WINDOW_SECS,
+        ]
+        .iter()
+        .map(|duration_secs| {
+            let mut capacity_sum = Some(0i128);
+            let mut remaining_sum = Some(0i128);
+            for profile in profiles {
+                let row = calibration_by_profile
+                    .get(profile.id.as_str())
+                    .and_then(|rows| {
+                        rows.iter()
+                            .find(|row| row.window_duration_secs == *duration_secs)
+                    });
+                capacity_sum = match (capacity_sum, row.and_then(|row| row.current_capacity_nanousd))
+                {
+                    (Some(sum), Some(value)) => Some(sum + i128::from(value)),
+                    _ => None,
+                };
+                remaining_sum = match (remaining_sum, row.and_then(|row| row.current_remaining_nano()))
+                {
+                    (Some(sum), Some(value)) => Some(sum + i128::from(value)),
+                    _ => None,
+                };
+            }
+            json!({
+                "window_minutes": duration_secs / 60,
+                "duration_secs": duration_secs,
+                "capacity_nano": decimal(capacity_sum),
+                "remaining_nano": decimal(remaining_sum),
+            })
+        })
+        .collect::<Vec<_>>(),
+    )
+}
+
+fn glm_profile_value(
+    profile: &forward::glm::GlmProfileStatus,
+    calibration: &[&registry::GlmCalibrationRow],
+) -> Value {
+    json!({
+        "id": profile.id,
+        "plan": profile.plan,
+        "live": profile.live,
+        // GLM's auth axis is durable, not a timed quarantine: a dead key stays out of rotation
+        // until the Auth Bot publishes a replacement, and a suspect account until a fresh quota
+        // probe passes. There is no `auth_until` to publish — the flags ARE the axis.
+        "account_dead": profile.account_dead,
+        "account_suspect": profile.account_suspect,
+        "cooling": {
+            "transport_until": profile.transport_cool_until,
+            "quota_until": profile.quota_cool_until,
+        },
+        "inflight": profile.inflight,
+        "quota_observed_at": profile.quota_observed_at,
+        "quota": profile
+            .quota_windows
+            .iter()
+            .map(|window| json!({
+                "duration_secs": window.duration_secs,
+                // Raw counters stay null while their unit semantics are unproven — never
+                // zero-filled or invented (docs/engine/GLM_PROVIDER.md §6.3).
+                "used_units": window.used_units,
+                "limit_units": window.limit_units,
+                "remaining_units": window.remaining_units,
+                "used_fraction_units": window.used_fraction_units,
+                "measurement_resolution_fraction_units": window
+                    .measurement_resolution_fraction_units,
+                "resets_at": window.resets_at,
+                "observed_at": window.observed_at,
+            }))
+            .collect::<Vec<_>>(),
+        "calibration": calibration
+            .iter()
+            .map(|row| glm_calibration_value(row))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn glm_calibration_value(row: &registry::GlmCalibrationRow) -> Value {
+    // Money serializes as decimal nanoUSD strings (BigInt-safe); native microcredits are plain
+    // integers like KIMI's native units. Unknown stays null — never 0, never an invented
+    // nominal.
+    let nano = |value: Option<i64>| value.map(|value| value.to_string());
+    let remaining = match (row.native_remaining_units(), row.current_remaining_nano()) {
+        (None, None) => Value::Null,
+        (native_units, api_nano) => json!({
+            "native_units": native_units,
+            "api_nano": api_nano.map(|value| value.to_string()),
+        }),
+    };
+    json!({
+        "duration_secs": row.window_duration_secs,
+        "samples": row.samples,
+        "confidence_bp": row.current_confidence_bp,
+        "capacity": {
+            "current_nano": nano(row.current_capacity_nanousd),
+            "low_nano": nano(row.current_low_nanousd),
+            "high_nano": nano(row.current_high_nanousd),
+        },
+        "remaining": remaining,
+        "observed_spend_nano": row.observed_spend_api_nanousd.to_string(),
+        "observed_spend_native_units": row.observed_spend_native_microcredits,
+        "unattributed_fraction_units": row.unattributed_fraction_units,
+        "last_measured_at": row.last_measured_at,
+        "estimator_version": row.estimator_version,
+    })
 }
 
 fn codex_window_value(c: &forward::codex::CodexWindowCapacityReport) -> Value {
@@ -8296,6 +8592,558 @@ mod tests {
             assert!(
                 !line.contains('{'),
                 "kimi series must carry no labels at all: {line}"
+            );
+        }
+    }
+
+    struct GlmHttpFixture {
+        root: std::path::PathBuf,
+    }
+
+    impl GlmHttpFixture {
+        fn new() -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let suffix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "glm-subs-http-{}-{suffix}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(root.join("credentials")).unwrap();
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::set_permissions(
+                root.join("credentials"),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+            let fixture = Self { root };
+            fixture.publish_profiles(&[("glm-01", "zai-test-key-1")]);
+            fixture
+        }
+
+        // Same sealed-envelope roster idiom as the forward gateway tests: tempdir 0700, keyring,
+        // per-profile plan keys whose subject digests stay private to the gateway.
+        fn publish_profiles(&self, profiles: &[(&str, &str)]) {
+            use std::os::unix::fs::PermissionsExt;
+            let ring = glm_credential::CredentialKeyring::parse(&format!("a1:{}", "11".repeat(32)))
+                .unwrap();
+            let mut entries = Vec::with_capacity(profiles.len());
+            for (id, api_key) in profiles {
+                let credential = glm_credential::GlmCredential {
+                    version: 1,
+                    kind: glm_credential::GlmCredentialKind::PlanKey,
+                    api_key: (*api_key).into(),
+                    plan: glm_credential::GlmPlan::Pro,
+                    base_url: glm_credential::GLM_BASE_URL_INTERNATIONAL.into(),
+                    proxy_url: String::new(),
+                };
+                let envelope = ring.seal("a1", id, &credential).unwrap();
+                let credential_path = self.root.join("credentials").join(format!("{id}.json"));
+                std::fs::write(
+                    &credential_path,
+                    glm_credential::encode_envelope(&envelope).unwrap(),
+                )
+                .unwrap();
+                std::fs::set_permissions(
+                    &credential_path,
+                    std::fs::Permissions::from_mode(0o600),
+                )
+                .unwrap();
+                entries.push(json!({
+                    "id": id,
+                    "credential_file": credential_path.to_string_lossy(),
+                }));
+            }
+            let roster = json!({ "profiles": entries });
+            let roster_path = self.root.join("profiles.json");
+            std::fs::write(&roster_path, serde_json::to_vec(&roster).unwrap()).unwrap();
+            std::fs::set_permissions(&roster_path, std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
+
+        fn gateway(&self) -> forward::glm::GlmGateway {
+            let config = forward::glm::config::build(&forward::glm::config::GlmPlaneInput {
+                enabled: true,
+                roster_dir: self.root.to_string_lossy().into_owned(),
+                credential_keys: Some(format!("a1:{}", "11".repeat(32))),
+                auth_scheme: "bearer".into(),
+                quota_poll_secs: 300,
+            })
+            .unwrap()
+            .unwrap();
+            forward::glm::GlmGateway::new_with_calibration(config, None).unwrap()
+        }
+    }
+
+    impl Drop for GlmHttpFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn unknown_glm_status() -> forward::glm::GlmOperationalStatus {
+        forward::glm::GlmOperationalStatus {
+            total_profiles: 1,
+            live_profiles: 1,
+            available_profiles: 1,
+            account_dead_profiles: 0,
+            account_suspect_profiles: 0,
+            transport_cooling_profiles: 0,
+            quota_cooling_profiles: 0,
+            inflight_requests: 2,
+            missing_terminal_usage: 3,
+            served_model_rejected: 2,
+            profiles: vec![forward::glm::GlmProfileStatus {
+                id: "glm-01".to_string(),
+                plan: "Pro",
+                live: true,
+                account_dead: false,
+                account_suspect: false,
+                transport_cool_until: None,
+                quota_cool_until: None,
+                inflight: 2,
+                quota_observed_at: Some(1_800_000_000),
+                quota_windows: vec![forward::glm::GlmQuotaWindowStatus {
+                    duration_secs: 18_000,
+                    used_units: Some(250),
+                    limit_units: Some(1_000),
+                    remaining_units: Some(750),
+                    used_fraction_units: Some(25_000_000),
+                    measurement_resolution_fraction_units: Some(100_000),
+                    resets_at: Some(1_800_100_000),
+                    observed_at: 1_800_000_000,
+                }],
+            }],
+            delivery: forward::glm::queue::DeliveryHealth {
+                pending_events: 1,
+                dropped_events: 0,
+                persistence_ok: true,
+            },
+        }
+    }
+
+    fn glm_calibration_row(subject_id: &str) -> registry::GlmCalibrationRow {
+        registry::GlmCalibrationRow {
+            subject_id: subject_id.into(),
+            plan: "Pro".into(),
+            window_duration_secs: registry::GLM_5H_WINDOW_SECS,
+            reset_at: Some(1_800_100_000),
+            anchor_used_fraction_units: Some(25_000_000),
+            anchor_resolution_fraction_units: Some(100_000),
+            anchor_spend_api_nanousd: 0,
+            anchor_spend_native_microcredits: 0,
+            used_fraction_units: Some(25_000_000),
+            measurement_resolution_fraction_units: Some(100_000),
+            observed_at: 1_800_000_000,
+            native_limit_microcredits: Some(1_000),
+            native_used_microcredits: Some(250),
+            observed_fraction_units: 0,
+            observed_spend_api_nanousd: 0,
+            observed_spend_native_microcredits: 0,
+            samples: 0,
+            unattributed_fraction_units: 0,
+            current_capacity_nanousd: None,
+            current_low_nanousd: None,
+            current_high_nanousd: None,
+            current_confidence_bp: 0,
+            last_measured_at: None,
+            estimator_version: 1,
+            version: 1,
+            updated_ts: 1_800_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn glm_subs_is_control_key_protected_and_runtime_scoped() {
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        for mode in [
+            forward::ProviderMode::Anthropic,
+            forward::ProviderMode::Combined,
+        ] {
+            let service = router(provider_test_app(mode), Arc::new(AtomicBool::new(true)));
+            for (credential, expected) in [
+                (None, StatusCode::UNAUTHORIZED),
+                (Some("panel-key"), StatusCode::UNAUTHORIZED),
+                (Some("control-key"), StatusCode::OK),
+                (Some("admin-key"), StatusCode::OK),
+            ] {
+                let mut request = Request::builder()
+                    .uri("/glm-subs")
+                    .body(Body::empty())
+                    .unwrap();
+                request.extensions_mut().insert(peer);
+                if let Some(key) = credential {
+                    request
+                        .headers_mut()
+                        .insert("x-api-key", key.parse().unwrap());
+                }
+                let response = service.clone().oneshot(request).await.unwrap();
+                assert_eq!(response.status(), expected, "{mode:?} credential {credential:?}");
+                if expected == StatusCode::OK {
+                    let body = to_bytes(response.into_body(), 4_096).await.unwrap();
+                    let body: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(body["enabled"], false);
+                    assert_eq!(body["profiles"], json!([]));
+                    assert!(body["now"].is_i64());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn glm_subs_enabled_shape_is_redacted_and_bounded() {
+        let fixture = GlmHttpFixture::new();
+        let mut app = provider_test_app(forward::ProviderMode::Anthropic);
+        app.glm = Some(Arc::new(fixture.gateway()));
+        let service = router(app, Arc::new(AtomicBool::new(true)));
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        let mut request = Request::builder()
+            .uri("/glm-subs")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        request
+            .headers_mut()
+            .insert("x-api-key", "control-key".parse().unwrap());
+        let response = service.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(body["enabled"], true);
+        assert!(body["now"].is_i64());
+        assert_eq!(body["delivery"]["pending_events"], 0);
+        assert_eq!(body["delivery"]["dropped_events"], 0);
+        assert_eq!(body["delivery"]["persistence_ok"], true);
+        assert_eq!(body["fleet"]["profiles"], 1);
+        assert_eq!(body["fleet"]["live_profiles"], 0);
+        assert_eq!(body["fleet"]["available_profiles"], 1);
+        assert_eq!(body["fleet"]["inflight_requests"], 0);
+        assert_eq!(body["fleet"]["account_dead_profiles"], 0);
+        assert_eq!(body["fleet"]["account_suspect_profiles"], 0);
+        // No durable rows yet: both canonical windows stay entirely unknown, never zero-filled.
+        let totals = body["window_totals"].as_array().unwrap();
+        assert_eq!(totals.len(), 2);
+        assert_eq!(totals[0]["window_minutes"], 300);
+        assert_eq!(totals[0]["duration_secs"], 18_000);
+        assert!(totals[0]["capacity_nano"].is_null());
+        assert!(totals[0]["remaining_nano"].is_null());
+        assert_eq!(totals[1]["window_minutes"], 10_080);
+        assert_eq!(totals[1]["duration_secs"], 604_800);
+        assert!(totals[1]["capacity_nano"].is_null());
+        assert!(totals[1]["remaining_nano"].is_null());
+        let profile = &body["profiles"][0];
+        assert_eq!(profile["id"], "glm-01");
+        // The roster constrains GLM to the three reviewed individual plans, so the exact
+        // declared plan is the bounded label.
+        assert_eq!(profile["plan"], "Pro");
+        assert_eq!(profile["live"], false);
+        assert_eq!(profile["account_dead"], false);
+        assert_eq!(profile["account_suspect"], false);
+        assert!(profile["cooling"]["transport_until"].is_null());
+        assert!(profile["cooling"]["quota_until"].is_null());
+        assert_eq!(profile["inflight"], 0);
+        // Never observed stays null / empty, never zero or invented.
+        assert!(profile["quota_observed_at"].is_null());
+        assert_eq!(profile["quota"], json!([]));
+        assert_eq!(profile["calibration"], json!([]));
+
+        let wire = body.to_string();
+        for forbidden in [
+            "subject",
+            "email",
+            "phone",
+            "token",
+            "proxy",
+            "credential",
+            "request_id",
+            "api_key",
+            "base_url",
+            "zai-test-key-1",
+            "api.z.ai",
+        ] {
+            assert!(!wire.contains(forbidden), "leaked field {forbidden}");
+        }
+    }
+
+    #[test]
+    fn glm_subs_value_serializes_the_exact_quota_window() {
+        let fixture = GlmHttpFixture::new();
+        let gateway = fixture.gateway();
+        let value = glm_subs_value_with_report(&gateway, &unknown_glm_status(), 1_800_000_100, None);
+        assert_eq!(value["fleet"]["inflight_requests"], 2);
+        assert_eq!(value["delivery"]["pending_events"], 1);
+        assert_eq!(value["profiles"][0]["quota_observed_at"], 1_800_000_000);
+        let window = &value["profiles"][0]["quota"][0];
+        assert_eq!(window["duration_secs"], 18_000);
+        assert_eq!(window["used_units"], 250);
+        assert_eq!(window["limit_units"], 1_000);
+        assert_eq!(window["remaining_units"], 750);
+        // Exact fraction semantics: 25% in 10^-8 units, real resolution of a limit-1000 counter.
+        assert_eq!(window["used_fraction_units"], 25_000_000);
+        assert_eq!(window["measurement_resolution_fraction_units"], 100_000);
+        assert_eq!(window["resets_at"], 1_800_100_000);
+        assert_eq!(window["observed_at"], 1_800_000_000);
+        assert_eq!(value["profiles"][0]["calibration"], json!([]));
+    }
+
+    #[test]
+    fn glm_subs_value_joins_calibration_through_the_opaque_id_and_drops_unknown_subjects() {
+        let fixture = GlmHttpFixture::new();
+        let gateway = fixture.gateway();
+        let subject = forward::glm::roster::subject_id_of("zai-test-key-1");
+        let mut measured = glm_calibration_row(&subject);
+        measured.samples = 2;
+        measured.observed_spend_api_nanousd = 1_250_000_000;
+        measured.observed_spend_native_microcredits = 500_000_000;
+        measured.current_capacity_nanousd = Some(50_000_000_000);
+        measured.current_low_nanousd = Some(40_000_000_000);
+        measured.current_confidence_bp = 9_000;
+        measured.last_measured_at = Some(1_800_000_000);
+        let unknown = glm_calibration_row("glm-subject-unknown");
+        let report = vec![measured, unknown];
+
+        let value = glm_subs_value_with_report(
+            &gateway,
+            &unknown_glm_status(),
+            1_800_000_100,
+            Some(&report),
+        );
+        let calibration = &value["profiles"][0]["calibration"];
+        // The roster-less subject stays durable for audit but is never serialized.
+        assert_eq!(calibration.as_array().unwrap().len(), 1);
+        let entry = &calibration[0];
+        assert_eq!(entry["duration_secs"], 18_000);
+        assert_eq!(entry["samples"], 2);
+        assert_eq!(entry["confidence_bp"], 9_000);
+        // Money integers are decimal strings (BigInt-safe); unknown high stays null.
+        assert_eq!(entry["capacity"]["current_nano"], "50000000000");
+        assert_eq!(entry["capacity"]["low_nano"], "40000000000");
+        assert!(entry["capacity"]["high_nano"].is_null());
+        assert_eq!(entry["remaining"]["native_units"], 750);
+        assert_eq!(entry["remaining"]["api_nano"], "37500000000");
+        assert_eq!(entry["observed_spend_nano"], "1250000000");
+        assert_eq!(entry["observed_spend_native_units"], 500_000_000);
+        assert_eq!(entry["last_measured_at"], 1_800_000_000);
+        assert_eq!(entry["estimator_version"], 1);
+
+        let wire = value.to_string();
+        assert!(!wire.contains("subject"), "leaked subject digest");
+        assert!(!wire.contains(&subject), "leaked subject digest value");
+    }
+
+    #[test]
+    fn glm_subs_value_keeps_unknown_capacity_and_remaining_null_never_zero() {
+        let fixture = GlmHttpFixture::new();
+        let gateway = fixture.gateway();
+        let subject = forward::glm::roster::subject_id_of("zai-test-key-1");
+        let report = vec![glm_calibration_row(&subject)];
+        let value = glm_subs_value_with_report(
+            &gateway,
+            &unknown_glm_status(),
+            1_800_000_100,
+            Some(&report),
+        );
+        let entry = &value["profiles"][0]["calibration"][0];
+        assert!(entry["capacity"]["current_nano"].is_null());
+        assert!(entry["capacity"]["low_nano"].is_null());
+        assert!(entry["capacity"]["high_nano"].is_null());
+        // Native remaining needs no estimation; the API-dollar one stays null while capacity is
+        // unknown — never a zero or an invented nominal.
+        assert_eq!(entry["remaining"]["native_units"], 750);
+        assert!(entry["remaining"]["api_nano"].is_null());
+        assert_eq!(entry["observed_spend_nano"], "0");
+        assert_eq!(entry["samples"], 0);
+        assert!(entry["last_measured_at"].is_null());
+
+        // An overflowing row (used so negative the remainder cannot be represented) has no native
+        // remainder either: the whole object is null rather than a negative or zero figure.
+        let mut malformed = glm_calibration_row(&subject);
+        malformed.native_used_microcredits = Some(i64::MIN);
+        let report = vec![malformed];
+        let value = glm_subs_value_with_report(
+            &gateway,
+            &unknown_glm_status(),
+            1_800_000_100,
+            Some(&report),
+        );
+        assert!(value["profiles"][0]["calibration"][0]["remaining"].is_null());
+    }
+
+    #[test]
+    fn glm_subs_window_totals_sum_known_rows_and_keep_unknown_null() {
+        let fixture = GlmHttpFixture::new();
+        fixture.publish_profiles(&[("glm-01", "zai-test-key-1"), ("glm-02", "zai-test-key-2")]);
+        let gateway = fixture.gateway();
+        let mut status = unknown_glm_status();
+        status.total_profiles = 2;
+        status.profiles.push(forward::glm::GlmProfileStatus {
+            id: "glm-02".to_string(),
+            plan: "Pro",
+            live: true,
+            account_dead: false,
+            account_suspect: false,
+            transport_cool_until: None,
+            quota_cool_until: None,
+            inflight: 0,
+            quota_observed_at: None,
+            quota_windows: Vec::new(),
+        });
+        let subject_one = forward::glm::roster::subject_id_of("zai-test-key-1");
+        let subject_two = forward::glm::roster::subject_id_of("zai-test-key-2");
+        let measured = |subject: &str, duration_secs: i64, capacity: i64, used_fraction: i64| {
+            let mut row = glm_calibration_row(subject);
+            row.window_duration_secs = duration_secs;
+            row.used_fraction_units = Some(used_fraction);
+            row.current_capacity_nanousd = Some(capacity);
+            row
+        };
+        let report = vec![
+            measured(&subject_one, registry::GLM_5H_WINDOW_SECS, 50_000_000_000, 25_000_000),
+            measured(&subject_one, registry::GLM_WEEKLY_WINDOW_SECS, 200_000_000_000, 10_000_000),
+            measured(&subject_two, registry::GLM_5H_WINDOW_SECS, 30_000_000_000, 50_000_000),
+            measured(&subject_two, registry::GLM_WEEKLY_WINDOW_SECS, 100_000_000_000, 0),
+        ];
+        let value = glm_subs_value_with_report(
+            &gateway,
+            &status,
+            1_800_000_100,
+            Some(&report),
+        );
+        let totals = value["window_totals"].as_array().unwrap();
+        assert_eq!(totals.len(), 2);
+        // 5h window: capacity 50e9 + 30e9, remaining 37.5e9 (75% of 50e9) + 15e9 (50% of 30e9).
+        assert_eq!(totals[0]["window_minutes"], 300);
+        assert_eq!(totals[0]["duration_secs"], 18_000);
+        assert_eq!(totals[0]["capacity_nano"], "80000000000");
+        assert_eq!(totals[0]["remaining_nano"], "52500000000");
+        // Weekly window: capacity 200e9 + 100e9, remaining 180e9 (90%) + 100e9 (100%).
+        assert_eq!(totals[1]["window_minutes"], 10_080);
+        assert_eq!(totals[1]["duration_secs"], 604_800);
+        assert_eq!(totals[1]["capacity_nano"], "300000000000");
+        assert_eq!(totals[1]["remaining_nano"], "280000000000");
+
+        // One profile missing its weekly row makes the whole weekly aggregate unknown — a
+        // partial sum would silently understate fleet capacity — while the complete 5h window
+        // still sums exactly.
+        let report = vec![
+            measured(&subject_one, registry::GLM_5H_WINDOW_SECS, 50_000_000_000, 25_000_000),
+            measured(&subject_one, registry::GLM_WEEKLY_WINDOW_SECS, 200_000_000_000, 10_000_000),
+            measured(&subject_two, registry::GLM_5H_WINDOW_SECS, 30_000_000_000, 50_000_000),
+        ];
+        let value = glm_subs_value_with_report(
+            &gateway,
+            &status,
+            1_800_000_100,
+            Some(&report),
+        );
+        let totals = value["window_totals"].as_array().unwrap();
+        assert_eq!(totals[0]["capacity_nano"], "80000000000");
+        assert!(totals[1]["capacity_nano"].is_null());
+        assert!(totals[1]["remaining_nano"].is_null());
+    }
+
+    #[test]
+    fn prometheus_glm_series_are_zero_gauges_without_a_plane_and_never_labelled() {
+        let mut body = String::new();
+        write_glm_operational_metrics(&mut body, false, None);
+        for sample in [
+            "claude_api_glm_enabled 0",
+            "claude_api_glm_profiles 0",
+            "claude_api_glm_live_profiles 0",
+            "claude_api_glm_available_profiles 0",
+            "claude_api_glm_inflight_requests 0",
+            "claude_api_glm_account_dead_profiles 0",
+            "claude_api_glm_account_suspect_profiles 0",
+            "claude_api_glm_transport_cooling_profiles 0",
+            "claude_api_glm_quota_cooling_profiles 0",
+            "claude_api_glm_calibration_pending_events 0",
+            "claude_api_glm_calibration_dropped_events_total 0",
+            "claude_api_glm_calibration_persistence_ok 0",
+            "claude_api_glm_missing_terminal_usage_total 0",
+            "claude_api_glm_served_model_rejected_total 0",
+        ] {
+            assert!(body.contains(sample), "missing {sample}");
+        }
+        // Never observed: the timestamp series is omitted entirely rather than emitted as 0.
+        assert!(!body.contains("claude_api_glm_quota_last_observation_timestamp_seconds"));
+        for line in body
+            .lines()
+            .filter(|line| line.starts_with("claude_api_glm") && !line.starts_with('#'))
+        {
+            assert!(
+                !line.contains('{'),
+                "glm series must carry no labels at all: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn prometheus_glm_series_report_fleet_aggregates_and_the_freshest_observation() {
+        let status = unknown_glm_status();
+        let mut body = String::new();
+        write_glm_operational_metrics(&mut body, true, Some(&status));
+        for sample in [
+            "claude_api_glm_enabled 1",
+            "claude_api_glm_profiles 1",
+            "claude_api_glm_live_profiles 1",
+            "claude_api_glm_available_profiles 1",
+            "claude_api_glm_inflight_requests 2",
+            "claude_api_glm_account_dead_profiles 0",
+            "claude_api_glm_account_suspect_profiles 0",
+            "claude_api_glm_transport_cooling_profiles 0",
+            "claude_api_glm_quota_cooling_profiles 0",
+            "claude_api_glm_calibration_pending_events 1",
+            "claude_api_glm_calibration_dropped_events_total 0",
+            "claude_api_glm_calibration_persistence_ok 1",
+            "claude_api_glm_missing_terminal_usage_total 3",
+            "claude_api_glm_served_model_rejected_total 2",
+            "claude_api_glm_quota_last_observation_timestamp_seconds 1800000000",
+        ] {
+            assert!(body.contains(sample), "missing {sample}");
+        }
+        for line in body
+            .lines()
+            .filter(|line| line.starts_with("claude_api_glm") && !line.starts_with('#'))
+        {
+            assert!(
+                !line.contains('{'),
+                "glm series must carry no labels at all: {line}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_publishes_label_free_glm_zero_gauges_for_a_disabled_plane() {
+        let service = router(admin_auth_test_app(), Arc::new(AtomicBool::new(true)));
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        let mut request = Request::builder()
+            .uri("/metrics")
+            .header("x-api-key", "panel-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = service.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = String::from_utf8(
+            to_bytes(response.into_body(), 2 * 1024 * 1024)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(body.contains("claude_api_glm_enabled 0"));
+        assert!(body.contains("claude_api_glm_profiles 0"));
+        assert!(!body.contains("claude_api_glm_quota_last_observation_timestamp_seconds"));
+        for line in body
+            .lines()
+            .filter(|line| line.starts_with("claude_api_glm") && !line.starts_with('#'))
+        {
+            assert!(
+                !line.contains('{'),
+                "glm series must carry no labels at all: {line}"
             );
         }
     }

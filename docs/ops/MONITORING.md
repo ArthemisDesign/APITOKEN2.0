@@ -729,6 +729,95 @@ fleet (see **KimiNoAvailableProfiles**) stops observing too. Do not treat the la
 fraction as current when selling capacity, and do not restart the whole Anthropic runtime for a
 KIMI-only stall; the loop resumes on its own once the blocking condition clears.
 
+## GlmNoLiveProfiles
+
+The GLM plane is enabled but no roster profile is authenticated, so exact GLM aliases fail
+closed while Claude keeps its existing path. GLM is default-off: this alert stays silent until
+the first enable, and `CLAUDE_API_GLM_ENABLED=false` keeps the plane dark at any time.
+
+Safely diagnose: read `GET /glm-subs` with the control key (per-profile `live`, `account_dead`
+and `account_suspect`), then the unit journal of the Anthropic runtime for the bounded GLM
+failure classes. Check that the roster directory still parses, every envelope decrypts under the
+configured keyring, and the free quota probe answers for at least one profile on its own console
+origin. Never decrypt or print an envelope, and never put API keys, subject digests or proxy
+values into logs or argv. Do NOT restart the healthy Claude path, widen admission to unreviewed
+models, or hammer a dead profile — repeated provider refusals are themselves a risk-control
+signal; a durably refused key is replaced through the Auth Bot, not retried.
+
+## GlmNoAvailableProfiles
+
+Live GLM profiles exist but every one of them is account-dead, account-suspect,
+transport-cooled or quota-walled, so selection has nothing eligible and GLM requests fail
+closed. GLM is default-off: this alert stays silent until the first enable, and
+`CLAUDE_API_GLM_ENABLED=false` keeps the plane dark at any time.
+
+Safely diagnose: `GET /glm-subs` shows which axis holds each profile (`account_dead` /
+`account_suspect` / `cooling.transport_until` / `cooling.quota_until`), and the aggregate gauges
+`claude_api_glm_account_dead_profiles`, `claude_api_glm_account_suspect_profiles`,
+`claude_api_glm_transport_cooling_profiles` and `claude_api_glm_quota_cooling_profiles` say
+which axis fired fleet-wide. Quota walls clear at the exact provider `resets_at`; transport
+cools clear in seconds once the egress path recovers; a suspect flag clears on the next passing
+quota probe; a dead key does not clear on any timer — see **GlmAccountDead**. Do NOT shorten
+cooling, route GLM aliases into the Claude pool, or mark a suspect profile healthy by hand. If
+capacity is genuinely exhausted, wait for the provider window or authorize another distinct
+subscription through the Auth Bot.
+
+## GlmCalibrationPersistenceFailed
+
+The GLM turn FIFO could not persist dual-ledger spend or quota evidence to PostgreSQL. Traffic
+intentionally remains fail-open, but measured window capacity may not survive a restart while
+this gauge is zero. GLM is default-off: this alert stays silent until the first enable, and
+`CLAUDE_API_GLM_ENABLED=false` keeps the plane dark at any time.
+
+Check PostgreSQL availability, that migration `0029_glm_window_calibration.sql` is applied, the
+billing writer logs and the owner fencing. Do not seed manual capacity numbers: restore the
+authority and let the next real observations reconcile durable spend and calibration state. Do
+not delete the pending FIFO head from outside — exact replay is idempotent and the retained head
+drains by itself.
+
+## GlmCalibrationBacklog
+
+The bounded GLM turn FIFO has held pending events for ten minutes, and the provider quota read
+is suspended by design until the head drains — quota freshness will degrade next, so this alert
+usually precedes **GlmQuotaStale**. GLM is default-off: this alert stays silent until the first
+enable, and `CLAUDE_API_GLM_ENABLED=false` keeps the plane dark at any time.
+
+This almost always shares a root cause with **GlmCalibrationPersistenceFailed**: diagnose the
+PostgreSQL authority first. A permanently conflicting head (same request id, different payload)
+is quarantined as poisoned and dropped — check
+`claude_api_glm_calibration_dropped_events_total` and the journal for the exact class; never
+hand-edit durable rows to unblock the queue.
+
+## GlmQuotaStale
+
+The newest GLM quota observation is older than three default poll intervals (3 × 300 s =
+900 s), so every quota reading reports a frozen value: the fleet can look perfectly healthy while
+the refresh path is broken. GLM is default-off: this alert stays silent until the first enable,
+and `CLAUDE_API_GLM_ENABLED=false` keeps the plane dark at any time.
+
+Safely diagnose: a pending calibration FIFO blocks the quota read by contract — check
+**GlmCalibrationBacklog** first. Otherwise inspect the maintenance loop journal: profiles with
+in-flight customer turns skip polling legitimately, and a dead, suspect or transport-cooled
+fleet (see **GlmNoAvailableProfiles**) stops observing too. Do not treat the last published
+fraction as current when selling capacity, and do not restart the whole Anthropic runtime for a
+GLM-only stall; the loop resumes on its own once the blocking condition clears.
+
+## GlmAccountDead
+
+A GLM subscription key was durably refused by the provider (invalid key or expired plan): the
+profile is out of rotation with no timer to clear it — only fresh auth evidence (a replacement
+key published through the Auth Bot) revives it. Other profiles may still serve, so this is an
+early per-subscription signal rather than a fleet outage. GLM is default-off: this alert stays
+silent until the first enable, and `CLAUDE_API_GLM_ENABLED=false` keeps the plane dark at any
+time.
+
+Safely diagnose: `GET /glm-subs` shows which opaque profile ids carry `account_dead`, and
+`claude_api_glm_account_dead_profiles` counts them fleet-wide. Confirm the refusal class in the
+unit journal (business code wins over the HTTP class), then rotate the key through the Auth Bot
+seller path; the roster reload admits the replacement only after a passing quota probe. Do NOT
+delete the profile from the roster to silence the alert, retry the refused key in a loop, or
+lower the plane's admission set; a plan that lapsed needs a paid renewal, not engineering.
+
 ## DurableQueueBacklog
 
 Check the owning worker/service, its database lock/lease fields, retry schedule, and downstream

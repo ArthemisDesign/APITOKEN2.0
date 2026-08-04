@@ -551,6 +551,7 @@ dependencies = [
  "codex-credential",
  "forward",
  "gemini-credential",
+ "glm-credential",
  "kimi-credential",
  "metering",
  "pool",

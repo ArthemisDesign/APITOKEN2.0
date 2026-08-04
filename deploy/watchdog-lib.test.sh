@@ -1793,12 +1793,16 @@ grep -Fq 'reverse_proxy 127.0.0.1:8794' "$ROOT/deploy/Caddyfile"
 grep -Fq '@admin_gemini_data path /gemini-subs' "$ROOT/deploy/Caddyfile"
 # KIMI owns its runtime now: the dedicated default-off plane serves the sanitized projection from
 # the stable loopback origin, so /kimi-subs leaves the Anthropic-origin matcher for its own route.
-grep -Fq '@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health' \
+# GLM is still a backend inside the Anthropic runtime, so /glm-subs rides the Anthropic-origin
+# matcher — never a separate origin or key while that is true.
+grep -Fq '@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /glm-subs' \
   "$ROOT/deploy/Caddyfile" || wd_die 'the Anthropic-origin admin matcher drifted'
-if grep -Fq '@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /kimi-subs' \
+if grep -Fq '@admin_data path /overview /capacity /metrics /subs /spend-stats /fleet-history /settlement-health /glm-subs /kimi-subs' \
   "$ROOT/deploy/Caddyfile"; then
   wd_die 'KIMI admin projection still rides the Anthropic-origin route'
 fi
+! grep -Fq '@admin_glm_data' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'GLM must not grow a separate admin origin while it lives in the Anthropic runtime'
 grep -Fq '@admin_kimi_data path /kimi-subs' "$ROOT/deploy/Caddyfile" \
   || wd_die 'KIMI admin projection lost its dedicated origin route'
 grep -Fq '(kimi_engine_backend) {' "$ROOT/deploy/Caddyfile" \

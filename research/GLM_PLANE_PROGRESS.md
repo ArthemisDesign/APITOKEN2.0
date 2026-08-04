@@ -39,6 +39,7 @@ backend-only (по образцу KIMI, `docs/engine/KIMI_PROVIDER.md` §0) до
 | Server wiring | `crates/server/src/{config,main,poller}.rs`, server CLAUDE.md | 08baad97 |
 | Docs: причины отложенных строк §8 | `docs/engine/GLM_PROVIDER.md` | 0869040a |
 | **Мёрж runtime-цепочки в master, deploy/watchdog GREEN** | master `1c8b7fc1eda45025bc1e04dc917a0cf7087aba45` (trusted host validation GREEN, deployment 5736492612; ребейз на 54fb2220: landed SHAs bc4c23ce, 1d279145, d42e916b, 2525973b, b4eab375, edb126f2, 36dc9a5d, 1c8b7fc1) | 1c8b7fc1 |
+| Observability: operational status, admin-only `GET /glm-subs` (+fleet `window_totals`), aggregate метрики, `glm-provider` алерты + runbook + consistency-пины | `crates/{forward,server}`, `observability/**`, `deploy/**`, `docs/**` | _этот коммит_ |
 
 ## Рамка от владельца (2026-08-04)
 
@@ -59,11 +60,11 @@ clean+merged (штатный критерий) вместе с локально�
 
 ## Открытые швы
 
-- Нет. Цепочка от credential до server wiring замкнута: плоскость композируется сервером,
-  default-off, пять env-ключей CLAUDE_API_GLM_* (fleet BASE_URL отклоняется fail closed).
-  За рамкой backend-ядра: observability/admin projection (не запрошено владельцем —
-  тестовый режим, см. «Рамка от владельца»), live-runner `tools/glm_calibration/` и
-  live-матрица (нужна подписка — блокирует человек).
+- Нет. Цепочка от credential до observability замкнута: плоскость композируется сервером,
+  default-off, пять env-ключей CLAUDE_API_GLM_* (fleet BASE_URL отклоняется fail closed),
+  engine-side admin projection и алерты на месте. За рамкой backend-ядра: same-origin admin UI
+  consumer `/glm-subs` (`apps/admin`, отдельный checkpoint), live-runner
+  `tools/glm_calibration/` и live-матрица (нужна подписка — блокирует человек).
 
 ## Следующее действие (ровно одно)
 
@@ -74,8 +75,8 @@ Backend-цепочка полностью в master с зелёным deploy/wat
 `CLAUDE_API_GLM_QUOTA_POLL_SECS=300`) и симметрично `AUTH_BOT_GLM_*` для authbot;
 (2) первая живая GLM Coding Plan подписка через Auth Bot → live-гейты из манифеста §6
 (usage-форма, SSE-инкрементальность, единицы quota endpoint, quota wall на живом аккаунте)
-→ live-runner `tools/glm_calibration/` → observability/admin projection (отложено по
-рамке «только backend») → verified preview report.
+→ live-runner `tools/glm_calibration/` → same-origin admin UI consumer `/glm-subs`
+(`apps/admin`, отдельный checkpoint) → verified preview report.
 
 Ключевые факты research (дата ревью 2026-08-03): credits-система с 2026-07-30
 (Lite 2000/5ч+10000/нед, Pro 12000/60000, Max 28000/140000); формула кредитов
