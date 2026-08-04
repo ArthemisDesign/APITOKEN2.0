@@ -86,8 +86,12 @@ const PayingRow = memo(function PayingRow({ row, rank, days }: { row: PayingUser
       <td className="paying-money-cell">
         <b>{nanoMoney(row.paid_nano)}</b>
         <span className="sub">
-          {row.payments_count ?? 0} платежей · {ago(row.last_paid_at)}
+          {row.payments_count ?? 0} платежей
+          {(row.manual_topups_count ?? 0) > 0 ? ` · ${row.manual_topups_count} ручных` : ""} · {ago(row.last_paid_at)}
         </span>
+        {isPositiveNano(row.manual_paid_nano) ? (
+          <span className="sub">вручную {nanoMoney(row.manual_paid_nano)}</span>
+        ) : null}
       </td>
       <td className="paying-money-cell paying-window-total">
         <b>{nanoMoney(row.spent_nano)}</b>
@@ -121,7 +125,10 @@ function PayingLedger({
       <div className="paying-ledger-lead">
         <span>Оплачено клиентами</span>
         <strong>{nanoMoney(summary.paid_nano)}</strong>
-        <small>за всё время · {count(summary.paying_users ?? 0, "клиент", "клиента", "клиентов")}</small>
+        <small>
+          за всё время · {count(summary.paying_users ?? 0, "клиент", "клиента", "клиентов")}
+          {isPositiveNano(summary.manual_paid_nano) ? ` · вручную ${nanoMoney(summary.manual_paid_nano)}` : ""}
+        </small>
       </div>
       <div className="paying-ledger-window">
         <span>Расход · {spendWindowLabel(data.days ?? 30)}</span>
@@ -215,7 +222,7 @@ export default function PayingUsersPage() {
     <div className="paying-page">
       <PageHead
         title="Платящие"
-        sub="только клиенты с подтверждённой оплатой · точный расход Claude, GPT и Gemini"
+        sub="клиенты с подтверждённой оплатой или ручным пополнением движка · точный расход Claude, GPT и Gemini"
         badge={<Pill kind="ok">{count(payingTotal, "клиент", "клиента", "клиентов")}</Pill>}
       />
 
@@ -316,7 +323,11 @@ export default function PayingUsersPage() {
           Дальше
         </button>
       </div>
-      <footer>Платящий клиент — пользователь с хотя бы одним подтверждённым платежом. Расход взят из immutable usage events коммерции.</footer>
+      <footer>
+        Платящий клиент — пользователь с подтверждённым платежом ИЛИ ручным пополнением баланса
+        движка (admin-credit); welcome-бонусы и промо деньгами не считаются. Расход взят из
+        immutable usage events коммерции; расход аккаунтов без клиента — на странице «Расход движка».
+      </footer>
     </div>
   );
 }

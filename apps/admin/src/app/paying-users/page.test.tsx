@@ -73,6 +73,8 @@ describe("paying customer helpers", () => {
       tier: 1,
       paid_nano: "25000000001",
       payments_count: 2,
+      manual_topups_count: 1,
+      manual_paid_nano: "5000000001",
       spent_nano: "7000000001",
       provider_spend: {
         anthropic_nano: "2000000001",
@@ -82,7 +84,7 @@ describe("paying customer helpers", () => {
       last_paid_at: "2026-07-30T10:00:00Z",
       active_api_keys: 1,
     }])[0]).toEqual([
-      "paid@example.com", "Paid", "active", "Builder", "25000000001", 2, "7000000001",
+      "paid@example.com", "Paid", "active", "Builder", "25000000001", 2, 1, "5000000001", "7000000001",
       "2000000001", "4000000000", "1000000000", "0", "2026-07-30T10:00:00Z", "", 1,
     ]);
   });

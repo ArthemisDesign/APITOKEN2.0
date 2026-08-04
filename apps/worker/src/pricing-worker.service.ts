@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import {
   applyPricingLedgerPage,
   applyPricingProviderBackfillPage,
+  applyPricingTopupBackfillPage,
   claimNextPricingControlJob,
   claimNextPricingJob,
   claimNextPricingReleaseActivationJobV2,
@@ -14,6 +15,7 @@ import {
   confirmPricingReleaseActivationJobV2,
   getPricingUsageCursor,
   getPricingProviderBackfillCursor,
+  getPricingTopupBackfillCursor,
   listPricingSyncTargets,
   reconcileTierLadderMultipliers,
   recoverStalePricingControlJobs,
@@ -45,6 +47,9 @@ import type { Environment } from "./config.js";
 import { DATABASE, ENGINE_CLIENT, WORKER_ID } from "./tokens.js";
 
 const PROVIDER_BACKFILL_MAX_PAGES_PER_SYNC = 4;
+// Догоняющий скан истории пополнений — разовая работа на аккаунт, поэтому лимит страниц за цикл
+// держим таким же скромным: цель не «быстро», а «без всплеска нагрузки на движок».
+const TOPUP_BACKFILL_MAX_PAGES_PER_SYNC = 4;
 
 @Injectable()
 export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown {
@@ -176,6 +181,47 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
     if (providerRows > 0) {
       this.logger.log(`completed provider recovery for ${providerRows} usage rows of ${target.userId}`);
     }
+    const topupRows = await this.backfillTargetTopups(target, cursor);
+    if (topupRows > 0) {
+      this.logger.log(`recorded ${topupRows} historical engine top-ups of ${target.userId}`);
+    }
+  }
+
+  /**
+   * История пополнений: обычный курсор расхода уже стоит выше старых топапов, поэтому отчётная
+   * таблица заполняется отдельным маркером с начала леджера — один раз на аккаунт, ограниченным
+   * числом страниц за цикл.
+   */
+  private async backfillTargetTopups(
+    target: PricingSyncTarget,
+    throughLedgerId: bigint,
+  ): Promise<number> {
+    const start = await getPricingTopupBackfillCursor(this.database, target, throughLedgerId);
+    if (start === null) return 0;
+    let cursor: bigint = start;
+    let recorded = 0;
+    for (let page = 0; page < TOPUP_BACKFILL_MAX_PAGES_PER_SYNC; page += 1) {
+      const entries = await this.engine.getLedgerAfter(target.engineAccountId, cursor, 1000);
+      if (entries.length === 0) {
+        recorded += await applyPricingTopupBackfillPage(this.database, target, [], throughLedgerId);
+        return recorded;
+      }
+      const nextCursor = entries.reduce<bigint>((highest, entry) => {
+        const ledgerId = BigInt(entry.id);
+        return ledgerId > highest ? ledgerId : highest;
+      }, cursor);
+      if (nextCursor <= cursor) throw new Error("engine top-up backfill ledger page did not advance");
+      const terminal = nextCursor >= throughLedgerId || entries.length < 1000;
+      recorded += await applyPricingTopupBackfillPage(
+        this.database,
+        target,
+        entries,
+        terminal ? throughLedgerId : nextCursor,
+      );
+      cursor = nextCursor;
+      if (terminal) return recorded;
+    }
+    return recorded;
   }
 
   private async backfillTargetProviders(

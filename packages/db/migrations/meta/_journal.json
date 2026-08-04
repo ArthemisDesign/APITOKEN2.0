@@ -281,6 +281,13 @@
       "when": 1785784083738,
       "tag": "0039_pricing_provider_recovery_version",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1785863811335,
+      "tag": "0040_pricing_usage_topups",
+      "breakpoints": true
     }
   ]
 }

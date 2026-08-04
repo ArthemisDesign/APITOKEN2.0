@@ -236,6 +236,7 @@ export class AdminFinanceService {
         paying_users: value.summary.payingUsers,
         active_spenders: value.summary.activeSpenders,
         paid_nano: value.summary.paidNano,
+        manual_paid_nano: value.summary.manualPaidNano,
         spent_nano: value.summary.spentNano,
         provider_spend: providerMoney(value.summary.providerSpendNano),
         provider_users: {
@@ -255,6 +256,8 @@ export class AdminFinanceService {
         multiplier_bp: row.multiplierBp,
         paid_nano: row.paidNano,
         payments_count: row.paymentsCount,
+        manual_paid_nano: row.manualPaidNano,
+        manual_topups_count: row.manualTopupsCount,
         last_paid_at: row.lastPaidAt?.toISOString() ?? null,
         spent_nano: row.spentNano,
         provider_spend: providerMoney(row.providerSpendNano),

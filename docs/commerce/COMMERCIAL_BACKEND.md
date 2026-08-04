@@ -193,7 +193,14 @@ USD numbers (`charge_usd` — after the account multiplier, `real_usd` — provi
 commerce nanoUSD strings: this endpoint is an operator projection, not a money authority.
 
 `GET /admin/finance/paying-users` is the read-only producer for the paid-customer control room.
-It includes only users with at least one `payments.status='paid'` row, paginates and searches on the
+It includes a user with at least one `payments.status='paid'` row **or** at least one manual engine
+top-up (`pricing_usage_topups.source='manual'` — `admin-credit:` and other credits granted straight
+in the engine, i.e. real money received outside the payment provider). Payment-sourced engine
+top-ups are deliberately excluded from that sum: `payments` is their authority, so counting both
+would double the same deposit. Bonus top-ups (welcome/promo) are never money. Rows and summary
+expose `manual_paid_nano`/`manual_topups_count` next to the payment counters.
+`pricing_usage_topups` is an immutable reporting copy of engine top-ups; it is not a balance and
+never drives one. Commission classification keeps using the stricter `isFreeCreditRef` whitelist.
 server, and returns lifetime paid totals plus the selected-window charged spend split into
 `anthropic`, `openai`, `google`, and `other`. All money is a decimal nanoUSD string; `other` keeps
 legacy usage without an attribution and unknown future provider IDs visible instead of silently

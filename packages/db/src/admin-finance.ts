@@ -106,6 +106,9 @@ export interface AdminPayingUserRow {
   multiplierBp: number | null;
   paidNano: string;
   paymentsCount: number;
+  /** Часть paidNano, зачисленная напрямую в движке (admin-credit/ручное), без платёжной системы. */
+  manualPaidNano: string;
+  manualTopupsCount: number;
   lastPaidAt: Date | null;
   spentNano: string;
   providerSpendNano: Record<AdminPayingUserProvider, string>;
@@ -118,6 +121,7 @@ export interface AdminPayingUsersSummary {
   payingUsers: number;
   activeSpenders: number;
   paidNano: string;
+  manualPaidNano: string;
   spentNano: string;
   providerSpendNano: Record<AdminPayingUserProvider, string>;
   providerUsers: Record<AdminPayingUserProvider, number>;
@@ -357,12 +361,33 @@ export async function listAdminPayingUsers(
     throw new Error(`unsupported paying users status: ${String(query.status)}`);
   }
 
+  // «Оплачено» = подтверждённые платежи + РУЧНЫЕ пополнения баланса движка (admin-credit и
+  // прочие зачисления мимо платёжной системы): это тоже реальные деньги клиента, и без них
+  // клиент, оплативший вне сайта, вообще не считался платящим. Пополнения с источником
+  // `payment` намеренно исключены — их авторитет payments, иначе платёж был бы посчитан дважды;
+  // `bonus` (welcome/промо) деньгами не является.
   const commonCtes = `
     WITH paid AS (
-      SELECT user_id, count(*) AS payments_count, sum(amount_nano) AS paid_nano,
-             max(paid_at) AS last_paid_at
-      FROM payments
-      WHERE status = 'paid'
+      SELECT user_id,
+             sum(payments_count)::bigint AS payments_count,
+             sum(manual_count)::bigint AS manual_topups_count,
+             sum(payments_nano) AS payments_nano,
+             sum(manual_nano) AS manual_nano,
+             sum(payments_nano) + sum(manual_nano) AS paid_nano,
+             max(last_paid_at) AS last_paid_at
+      FROM (
+        SELECT user_id, count(*) AS payments_count, 0::bigint AS manual_count,
+               sum(amount_nano) AS payments_nano, 0::numeric AS manual_nano,
+               max(paid_at) AS last_paid_at
+        FROM payments
+        WHERE status = 'paid'
+        GROUP BY user_id
+        UNION ALL
+        SELECT user_id, 0::bigint, count(*), 0::numeric, sum(amount_nano), max(occurred_at)
+        FROM pricing_usage_topups
+        WHERE source = 'manual'
+        GROUP BY user_id
+      ) sources
       GROUP BY user_id
     ), usage AS (
       SELECT e.user_id,
@@ -409,7 +434,8 @@ export async function listAdminPayingUsers(
     database.pool.query<{
       user_id: string; email: string; display_name: string; status: "active" | "disabled";
       customer_type: "b2c" | "b2b" | null; current_tier: number | null; multiplier_bp: number | null;
-      paid_nano: string; payments_count: string; last_paid_at: Date | null; spent_nano: string;
+      paid_nano: string; payments_count: string; last_paid_at: Date | null;
+      manual_paid_nano: string; manual_topups_count: string; spent_nano: string;
       anthropic_nano: string; openai_nano: string; google_nano: string; other_nano: string;
       active_api_keys: string; last_seen_at: Date | null; created_at: Date;
     }>(`
@@ -418,6 +444,7 @@ export async function listAdminPayingUsers(
       SELECT u.id AS user_id, u.email, u.display_name, u.status,
         cp.customer_type, cp.current_tier, cp.multiplier_bp,
         paid.paid_nano::text, paid.payments_count::text, paid.last_paid_at,
+        paid.manual_nano::text AS manual_paid_nano, paid.manual_topups_count::text,
         COALESCE(usage.spent_nano, 0)::text AS spent_nano,
         COALESCE(usage.anthropic_nano, 0)::text AS anthropic_nano,
         COALESCE(usage.openai_nano, 0)::text AS openai_nano,
@@ -445,15 +472,21 @@ export async function listAdminPayingUsers(
       WHERE ${filters}
     `, [days, q, status, provider]),
     database.pool.query<{
-      paying_users: string; active_spenders: string; paid_nano: string; spent_nano: string;
+      paying_users: string; active_spenders: string; paid_nano: string; manual_paid_nano: string;
+      spent_nano: string;
       anthropic_nano: string; openai_nano: string; google_nano: string; other_nano: string;
       anthropic_users: string; openai_users: string; google_users: string; other_users: string;
     }>(`
       /* admin-finance:paying-users-summary */
       WITH paid AS (
-        SELECT user_id, sum(amount_nano) AS paid_nano
-        FROM payments
-        WHERE status = 'paid'
+        SELECT user_id, sum(paid_nano) AS paid_nano, sum(manual_nano) AS manual_nano
+        FROM (
+          SELECT user_id, sum(amount_nano) AS paid_nano, 0::numeric AS manual_nano
+          FROM payments WHERE status = 'paid' GROUP BY user_id
+          UNION ALL
+          SELECT user_id, sum(amount_nano), sum(amount_nano)
+          FROM pricing_usage_topups WHERE source = 'manual' GROUP BY user_id
+        ) sources
         GROUP BY user_id
       ), usage AS (
         SELECT e.user_id,
@@ -479,6 +512,7 @@ export async function listAdminPayingUsers(
       SELECT count(*)::text AS paying_users,
         count(*) FILTER (WHERE COALESCE(usage.spent_nano, 0) > 0)::text AS active_spenders,
         COALESCE(sum(paid.paid_nano), 0)::text AS paid_nano,
+        COALESCE(sum(paid.manual_nano), 0)::text AS manual_paid_nano,
         COALESCE(sum(usage.spent_nano), 0)::text AS spent_nano,
         COALESCE(sum(usage.anthropic_nano), 0)::text AS anthropic_nano,
         COALESCE(sum(usage.openai_nano), 0)::text AS openai_nano,
@@ -494,7 +528,7 @@ export async function listAdminPayingUsers(
   ]);
 
   const summary = summaryResult.rows[0] ?? {
-    paying_users: "0", active_spenders: "0", paid_nano: "0", spent_nano: "0",
+    paying_users: "0", active_spenders: "0", paid_nano: "0", manual_paid_nano: "0", spent_nano: "0",
     anthropic_nano: "0", openai_nano: "0", google_nano: "0", other_nano: "0",
     anthropic_users: "0", openai_users: "0", google_users: "0", other_users: "0",
   };
@@ -509,6 +543,8 @@ export async function listAdminPayingUsers(
       multiplierBp: row.multiplier_bp,
       paidNano: row.paid_nano,
       paymentsCount: Number(row.payments_count),
+      manualPaidNano: row.manual_paid_nano,
+      manualTopupsCount: Number(row.manual_topups_count),
       lastPaidAt: row.last_paid_at,
       spentNano: row.spent_nano,
       providerSpendNano: {
@@ -529,6 +565,7 @@ export async function listAdminPayingUsers(
       payingUsers: Number(summary.paying_users),
       activeSpenders: Number(summary.active_spenders),
       paidNano: summary.paid_nano,
+      manualPaidNano: summary.manual_paid_nano,
       spentNano: summary.spent_nano,
       providerSpendNano: {
         anthropic: summary.anthropic_nano,

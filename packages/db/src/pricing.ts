@@ -107,6 +107,25 @@ export function isFreeCreditRef(ref: string | null | undefined): boolean {
   return !REAL_MONEY_REF_PREFIXES.some((prefix) => ref.startsWith(prefix));
 }
 
+/** Подарочные источники денег: welcome-бонус, промо и восстановление бонуса. */
+const BONUS_REF_PREFIXES: readonly string[] = ["signup-bonus:", "promo:", "bonus-restore", "welcome"];
+
+export type PricingTopupSource = "payment" | "bonus" | "manual";
+
+/**
+ * Классификация пополнения ДЛЯ ОТЧЁТНОСТИ (не для комиссии — та живёт в isFreeCreditRef и
+ * остаётся whitelist-строгой). `payment` — депозит через платёжного провайдера, `bonus` —
+ * известный подарок, `manual` — всё прочее: админ-кредит и ручные зачисления, то есть реальные
+ * деньги, полученные мимо платёжной системы. Неизвестный ref безопаснее считать ручным
+ * пополнением (он попадает в отчёт как «оплачено вручную» и виден оператору), а не подарком.
+ */
+export function classifyTopupRef(ref: string | null | undefined): PricingTopupSource {
+  if (typeof ref !== "string" || ref.trim() === "") return "manual";
+  if (REAL_MONEY_REF_PREFIXES.some((prefix) => ref.startsWith(prefix))) return "payment";
+  if (BONUS_REF_PREFIXES.some((prefix) => ref.startsWith(prefix))) return "bonus";
+  return "manual";
+}
+
 /** Тир по НАКОПЛЕННОЙ сумме пополнений (`spendThresholdNano` = порог пополнения). 0 = none (<$100). */
 export function tierForTopups(cumulativeNano: bigint): number {
   let tier = 0;
@@ -2170,6 +2189,94 @@ export async function completePricingProviderBackfill(
   return result.rowCount ?? 0;
 }
 
+/**
+ * Пишет одно движковое пополнение в иммутабельную отчётную таблицу. Идемпотентна по
+ * (engine_account_id, ledger_entry_id): повторная подача той же страницы ничего не двоит.
+ */
+async function recordPricingTopup(
+  client: PoolClient,
+  target: PricingSyncTarget,
+  entry: EngineLedgerEntry,
+  amount: bigint,
+): Promise<void> {
+  await client.query(`
+    INSERT INTO pricing_usage_topups (
+      id, user_id, engine_account_id, ledger_entry_id, ref, source, amount_nano, occurred_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    ON CONFLICT (engine_account_id, ledger_entry_id) DO NOTHING
+  `, [
+    randomUUID(),
+    target.userId,
+    target.engineAccountId,
+    BigInt(entry.id).toString(),
+    entry.ref,
+    classifyTopupRef(entry.ref),
+    amount.toString(),
+    epochSecondsDate(entry.ts, "topup timestamp"),
+  ]);
+}
+
+/**
+ * Курсор догоняющего скана пополнений. Обычный курсор расхода уже стоит выше исторических
+ * топапов, поэтому у отчётной таблицы свой маркер: пока он ниже основного курсора, воркер
+ * ограниченными страницами перечитывает леджер с начала и заполняет историю ровно один раз.
+ * NULL — история уже покрыта, скан не нужен.
+ */
+export async function getPricingTopupBackfillCursor(
+  database: Database,
+  target: PricingSyncTarget,
+  throughLedgerId: bigint,
+): Promise<bigint | null> {
+  if (throughLedgerId < 0n) throw new RangeError("topup backfill cursor must not be negative");
+  const result = await database.pool.query<{ scanned: string }>(`
+    SELECT topups_scanned_through_ledger_id::text AS scanned
+    FROM pricing_usage_cursors
+    WHERE engine_account_id = $1 AND user_id = $2
+  `, [target.engineAccountId, target.userId]);
+  const scanned = result.rows[0]?.scanned;
+  if (scanned === undefined) return null;
+  const from = BigInt(scanned);
+  return from >= throughLedgerId ? null : from;
+}
+
+/** Заполняет отчётные пополнения по одной странице леджера и двигает маркер скана. */
+export async function applyPricingTopupBackfillPage(
+  database: Database,
+  target: PricingSyncTarget,
+  entries: readonly EngineLedgerEntry[],
+  scannedThroughLedgerId: bigint,
+): Promise<number> {
+  if (scannedThroughLedgerId < 0n) throw new RangeError("topup backfill cursor must not be negative");
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    let inserted = 0;
+    for (const entry of entries) {
+      const amount = BigInt(entry.amount_nano);
+      if (entry.kind !== "topup" || amount <= 0n) continue;
+      const before = await client.query(`
+        SELECT 1 FROM pricing_usage_topups
+        WHERE engine_account_id = $1 AND ledger_entry_id = $2
+      `, [target.engineAccountId, BigInt(entry.id).toString()]);
+      if (before.rowCount) continue;
+      await recordPricingTopup(client, target, entry, amount);
+      inserted += 1;
+    }
+    await client.query(`
+      UPDATE pricing_usage_cursors
+      SET topups_scanned_through_ledger_id = GREATEST(topups_scanned_through_ledger_id, $3)
+      WHERE engine_account_id = $1 AND user_id = $2
+    `, [target.engineAccountId, target.userId, scannedThroughLedgerId.toString()]);
+    await client.query("COMMIT");
+    return inserted;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function applyPricingLedgerPage(
   database: Database,
   target: PricingSyncTarget,
@@ -2226,6 +2333,12 @@ export async function applyPricingLedgerPage(
       if (ledgerId > lastLedgerId) lastLedgerId = ledgerId;
       if (ledgerId <= startCursor) continue; // уже обработано ранее — не двоим эффекты
       const amount = BigInt(entry.amount_nano);
+      // Иммутабельная копия пополнения для отчётности: движковые топапы (админ-кредит, ручные)
+      // не создают строки в payments, поэтому иначе реальные деньги клиента невидимы админке.
+      // Деньгами и балансом эта таблица не управляет; вставка идемпотентна по (аккаунт, ledger id).
+      if (entry.kind === "topup" && amount > 0n) {
+        await recordPricingTopup(client, target, entry, amount);
+      }
       // Бесплатные кредиты (welcome-бонус/промо) пополняют бесплатный баланс. У b2b локального
       // free-баланса нет — фондирование целиком остаётся авторитетом движка.
       if (entry.kind === "topup" && amount > 0n && isFreeCreditRef(entry.ref)) {

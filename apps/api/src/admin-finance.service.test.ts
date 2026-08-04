@@ -305,6 +305,7 @@ describe("admin finance paying users", () => {
         payingUsers: 4,
         activeSpenders: 3,
         paidNano: "120000000000",
+        manualPaidNano: "20000000000",
         spentNano: "32000000000",
         providerSpendNano: {
           anthropic: "12000000000", openai: "15000000000", google: "5000000000", other: "0",
@@ -321,6 +322,8 @@ describe("admin finance paying users", () => {
         multiplierBp: 5000,
         paidNano: "25000000000",
         paymentsCount: 2,
+        manualPaidNano: "5000000000",
+        manualTopupsCount: 1,
         lastPaidAt: new Date("2026-07-30T10:00:00Z"),
         spentNano: "7000000000",
         providerSpendNano: {
@@ -340,6 +343,7 @@ describe("admin finance paying users", () => {
     expect(value.summary).toMatchObject({
       paying_users: 4,
       paid_nano: "120000000000",
+      manual_paid_nano: "20000000000",
       provider_spend: {
         anthropic_nano: "12000000000",
         openai_nano: "15000000000",
@@ -350,6 +354,8 @@ describe("admin finance paying users", () => {
     expect(value.rows[0]).toMatchObject({
       user_id: "u1",
       paid_nano: "25000000000",
+      manual_paid_nano: "5000000000",
+      manual_topups_count: 1,
       spent_nano: "7000000000",
       provider_spend: {
         anthropic_nano: "2000000000",

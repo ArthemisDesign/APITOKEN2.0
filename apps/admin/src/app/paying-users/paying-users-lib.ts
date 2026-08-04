@@ -26,6 +26,8 @@ export interface PayingUserRow {
   multiplier_bp?: number | null;
   paid_nano?: string;
   payments_count?: number;
+  manual_paid_nano?: string;
+  manual_topups_count?: number;
   last_paid_at?: string | null;
   spent_nano?: string;
   provider_spend?: ProviderSpend;
@@ -38,6 +40,7 @@ export interface PayingUsersSummary {
   paying_users?: number;
   active_spenders?: number;
   paid_nano?: string;
+  manual_paid_nano?: string;
   spent_nano?: string;
   provider_spend?: ProviderSpend;
   provider_users?: Partial<Record<PayingUserProvider, number>>;
@@ -130,6 +133,8 @@ export const PAYING_USERS_CSV_HEADER = [
   "тариф",
   "оплачено_nanoUSD",
   "платежей",
+  "ручных_пополнений",
+  "ручные_nanoUSD",
   "расход_окна_nanoUSD",
   "claude_nanoUSD",
   "gpt_nanoUSD",
@@ -148,6 +153,8 @@ export function buildPayingUsersCsvRows(rows: PayingUserRow[]): unknown[][] {
     payingTierLabel(row),
     row.paid_nano ?? "0",
     row.payments_count ?? 0,
+    row.manual_topups_count ?? 0,
+    row.manual_paid_nano ?? "0",
     row.spent_nano ?? "0",
     providerNano(row.provider_spend, "anthropic"),
     providerNano(row.provider_spend, "openai"),

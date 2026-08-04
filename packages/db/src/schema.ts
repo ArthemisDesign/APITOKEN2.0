@@ -155,8 +155,36 @@ export const pricingUsageCursors = pgTable("pricing_usage_cursors", {
   engineAccountId: text("engine_account_id").primaryKey(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
   lastLedgerId: bigint("last_ledger_id", { mode: "bigint" }).notNull().default(sql`0`),
+  // Отдельный догоняющий маркер для истории пополнений: обычный курсор уже стоит выше старых
+  // топапов, поэтому без него движковые пополнения до этой правки остались бы неизвестны коммерции.
+  topupsScannedThroughLedgerId: bigint("topups_scanned_through_ledger_id", { mode: "bigint" })
+    .notNull().default(sql`0`),
   updatedAt,
 }, (table) => [uniqueIndex("pricing_usage_cursors_user_uidx").on(table.userId)]);
+
+/**
+ * Иммутабельная копия ПОПОЛНЕНИЙ из леджера движка. Балансом не является и им не управляет:
+ * нужна отчётности, которая обязана видеть реальные деньги клиента целиком, включая
+ * пополнения, сделанные напрямую в движке (`admin-credit:`, ручные) — их нет в `payments`.
+ * `source`: `payment` — депозит через платёжного провайдера (тот же ref, что в payments),
+ * `bonus` — подарочные кредиты (welcome/промо), `manual` — всё остальное (админ-кредит и т.п.).
+ */
+export const pricingUsageTopups = pgTable("pricing_usage_topups", {
+  id: uuid("id").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  engineAccountId: text("engine_account_id").notNull(),
+  ledgerEntryId: bigint("ledger_entry_id", { mode: "bigint" }).notNull(),
+  ref: text("ref"),
+  source: text("source").notNull(),
+  amountNano: bigint("amount_nano", { mode: "bigint" }).notNull(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  createdAt,
+}, (table) => [
+  uniqueIndex("pricing_usage_topups_engine_ledger_uidx").on(table.engineAccountId, table.ledgerEntryId),
+  index("pricing_usage_topups_user_time_idx").on(table.userId, table.occurredAt),
+  check("pricing_usage_topups_amount_check", sql`${table.amountNano} > 0`),
+  check("pricing_usage_topups_source_check", sql`${table.source} IN ('payment', 'bonus', 'manual')`),
+]);
 
 export const pricingUsageEvents = pgTable("pricing_usage_events", {
   id: uuid("id").primaryKey(),
