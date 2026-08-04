@@ -526,9 +526,6 @@ export const MULTI_DISCOUNT_TARGET_MAIN_CATALOG_ENTRIES = Object.freeze([
   })),
 ]);
 
-/** OpenKeys remains explicit: target generation 4 does not silently grant Gemini. */
-export const MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES =
-  MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES;
 
 /**
  * Admitted publication capability for Gemini 3 Flash Preview. Generation 4 remains an immutable
@@ -565,6 +562,16 @@ export const MULTI_DISCOUNT_GEN5_MAIN_CATALOG_ENTRIES = Object.freeze([
 /** OpenKeys remains explicit in generation 5 and does not gain Gemini models. */
 export const MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES =
   MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES;
+
+/**
+ * Buyer/operator-facing supported-model list for OpenKeys issuance. By explicit owner decision
+ * OpenKeys access is universal: every runtime-priced provider is sellable at 1:1, so the display
+ * authority equals the full generation-5 main set. The release-pinned OpenKeys catalog identity
+ * (`MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES`) deliberately remains the Anthropic/OpenAI
+ * subset and must never be rewritten.
+ */
+export const MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES =
+  MULTI_DISCOUNT_GEN5_MAIN_CATALOG_ENTRIES;
 
 export const pricingCatalogSpecSchema = z.object({
   product_id: pricingIdentifierSchema,

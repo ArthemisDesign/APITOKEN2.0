@@ -99,15 +99,15 @@ describe("target pricing capability", () => {
     expect(generation5.digest).not.toBe(MULTI_DISCOUNT_TARGET_CAPABILITY_DIGEST);
   });
 
-  it("does not silently add Gemini to the OpenKeys catalog", () => {
-    expect(MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES)
-      .toEqual(MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES);
-    expect(MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES)
-      .not.toContainEqual(expect.objectContaining({ provider_id: "google" }));
+  it("keeps the pinned OpenKeys catalog Gemini-free while the issuance display is universal", () => {
     expect(MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES)
       .toEqual(MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES);
     expect(MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES)
       .not.toContainEqual(expect.objectContaining({ provider_id: "google" }));
+    expect(MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES)
+      .toEqual(MULTI_DISCOUNT_GEN5_MAIN_CATALOG_ENTRIES);
+    expect(MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES)
+      .toContainEqual(expect.objectContaining({ provider_id: "google" }));
   });
 
   it("moves Stage 5 target and recovery materialization to admitted generation 5", () => {
