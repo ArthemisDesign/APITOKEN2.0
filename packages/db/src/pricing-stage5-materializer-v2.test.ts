@@ -108,6 +108,7 @@ function completePlanInput(): Parameters<typeof buildStage5V2Plan>[0] {
           profile_multiplier_bp: 4_000,
           commerce_multiplier_bp: 4_000,
           commerce_status: "active" as const,
+          policy_rules: null,
         },
         {
           user_id: "20000000-0000-4000-8000-000000000002",
@@ -117,6 +118,7 @@ function completePlanInput(): Parameters<typeof buildStage5V2Plan>[0] {
           profile_multiplier_bp: 7_000,
           commerce_multiplier_bp: 7_000,
           commerce_status: "active" as const,
+          policy_rules: null,
         },
       ],
       invitations: [{
@@ -204,6 +206,110 @@ describe("pricing Stage 5 v2 planner", () => {
         purpose: "internal metered automation",
         responsible: "platform-team",
       });
+  });
+
+  it("carries the operator-approved B2B policy head rules into the target policy", () => {
+    const input = completePlanInput();
+    input.commerce.accounts[1]!.policy_rules = [
+      {
+        scope_type: "provider",
+        provider_id: "anthropic",
+        canonical_model_id: null,
+        pricing_mode: "discount",
+        payable_multiplier_bp: 7_000,
+      },
+      {
+        scope_type: "provider",
+        provider_id: "google",
+        canonical_model_id: null,
+        pricing_mode: "discount",
+        payable_multiplier_bp: 7_000,
+      },
+      {
+        scope_type: "model",
+        provider_id: "openai",
+        canonical_model_id: "gpt-5.5",
+        pricing_mode: "discount",
+        payable_multiplier_bp: 8_000,
+      },
+    ];
+    const plan = buildStage5V2Plan(input);
+
+    expect(plan.blockers).toEqual([]);
+    const b2b = plan.policies.find((policy) => policy.policy_id === "release-v2:b2b:acct_b2b")!;
+    expect(b2b.rules).toHaveLength(3);
+    expect(b2b.rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        rule_id: "provider:anthropic",
+        scope: { scope: "provider", provider_id: "anthropic" },
+        discount_bps: 3_000,
+        payable_multiplier_bp: 7_000,
+      }),
+      expect.objectContaining({
+        rule_id: "provider:google",
+        scope: { scope: "provider", provider_id: "google" },
+        discount_bps: 3_000,
+        payable_multiplier_bp: 7_000,
+      }),
+      expect.objectContaining({
+        rule_id: "model:openai:gpt-5.5",
+        scope: { scope: "model", provider_id: "openai", canonical_model_id: "gpt-5.5" },
+        discount_bps: 2_000,
+        payable_multiplier_bp: 8_000,
+      }),
+    ]));
+  });
+
+  it("blocks a B2B policy head that drops or reprices the live anthropic scalar rule", () => {
+    const missing = completePlanInput();
+    missing.commerce.accounts[1]!.policy_rules = [{
+      scope_type: "provider",
+      provider_id: "google",
+      canonical_model_id: null,
+      pricing_mode: "discount",
+      payable_multiplier_bp: 7_000,
+    }];
+    expect(buildStage5V2Plan(missing).blockers).toContainEqual(expect.objectContaining({
+      blocker_code: "b2b_policy_anthropic_rule_mismatch",
+      subject_id: "acct_b2b",
+    }));
+
+    const repriced = completePlanInput();
+    repriced.commerce.accounts[1]!.policy_rules = [{
+      scope_type: "provider",
+      provider_id: "anthropic",
+      canonical_model_id: null,
+      pricing_mode: "discount",
+      payable_multiplier_bp: 6_500,
+    }];
+    expect(buildStage5V2Plan(repriced).blockers).toContainEqual(expect.objectContaining({
+      blocker_code: "b2b_policy_anthropic_rule_mismatch",
+      subject_id: "acct_b2b",
+    }));
+  });
+
+  it("blocks a B2B policy head rule the release-v2 target cannot express", () => {
+    const input = completePlanInput();
+    input.commerce.accounts[1]!.policy_rules = [
+      {
+        scope_type: "provider",
+        provider_id: "anthropic",
+        canonical_model_id: null,
+        pricing_mode: "discount",
+        payable_multiplier_bp: 7_000,
+      },
+      {
+        scope_type: "provider",
+        provider_id: "google",
+        canonical_model_id: null,
+        pricing_mode: "track",
+        payable_multiplier_bp: 7_000,
+      },
+    ];
+    expect(buildStage5V2Plan(input).blockers).toContainEqual(expect.objectContaining({
+      blocker_code: "b2b_policy_rule_unsupported",
+      subject_id: "acct_b2b",
+    }));
   });
 
   it("shares the exact Stage 5 policy identity with post-cutover external-owner writers", () => {

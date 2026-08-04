@@ -462,7 +462,11 @@ completed charges. An exact replay of activation returns `unchanged`.
 ### Stage 5 — target materialization
 
 The planner builds B2C 50%, B2B Anthropic migration, canonical OpenKeys 1:1, and service
-`meter_only` assignments. There is no separate manual assignment matrix: the authoritative
+`meter_only` assignments. A B2B owner whose live policy head was already CAS-extended with extra
+provider/model rules receives a target policy that mirrors the current head exactly, so the cutover
+never reprices or closes already granted live traffic; the head must keep the `provider:anthropic`
+rule equal to the live scalar, and an inexpressible legacy rule is a typed blocker. There is no
+separate manual assignment matrix: the authoritative
 inventories must fully and unambiguously cover the active engine accounts; any collision/missing
 owner blocks apply.
 

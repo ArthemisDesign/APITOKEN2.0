@@ -46,6 +46,14 @@ export interface Stage5V2OpenKeysReader {
   getPage(options: { afterAccountId?: string; limit: number }): Promise<OpenKeysPricingInventoryPageV2>;
 }
 
+export interface Stage5V2B2bPolicyHeadRule {
+  scope_type: "provider" | "model";
+  provider_id: string;
+  canonical_model_id: string | null;
+  pricing_mode: string;
+  payable_multiplier_bp: number;
+}
+
 export interface Stage5V2CommerceAccount {
   user_id: string;
   engine_account_record_id: string;
@@ -54,6 +62,7 @@ export interface Stage5V2CommerceAccount {
   profile_multiplier_bp: number;
   commerce_multiplier_bp: number;
   commerce_status: "pending" | "active" | "error" | "disabled";
+  policy_rules: Stage5V2B2bPolicyHeadRule[] | null;
 }
 
 export interface Stage5V2BusinessInvitation {
@@ -580,7 +589,27 @@ function policyForB2b(
   multiplierBp: number,
   mainCatalog: PricingCatalogSpec,
   switches: ProviderSwitchSpec,
+  headRules?: readonly Stage5V2B2bPolicyHeadRule[] | null,
 ): PricingReleasePolicyV2 {
+  const rules = headRules && headRules.length > 0
+    ? headRules.map((rule) => policyRule({
+      rule_id: rule.scope_type === "provider"
+        ? `provider:${rule.provider_id}`
+        : `model:${rule.provider_id}:${rule.canonical_model_id}`,
+      scope: rule.scope_type === "provider"
+        ? { scope: "provider" as const, provider_id: rule.provider_id }
+        : {
+          scope: "model" as const,
+          provider_id: rule.provider_id,
+          canonical_model_id: rule.canonical_model_id!,
+        },
+      discount_bps: 10_000 - rule.payable_multiplier_bp,
+    }))
+    : [policyRule({
+      rule_id: "anthropic",
+      scope: { scope: "provider", provider_id: "anthropic" },
+      discount_bps: 10_000 - multiplierBp,
+    })];
   return buildPolicy({
     policy_id: policyId,
     policy_version: STAGE5_V2_POLICY_VERSION,
@@ -589,11 +618,7 @@ function policyForB2b(
     account_class: "b2b",
     product_id: MAIN_PRICING_PRODUCT_ID,
     ...customerPolicyBase(mainCatalog, switches),
-    rules: [policyRule({
-      rule_id: "anthropic",
-      scope: { scope: "provider", provider_id: "anthropic" },
-      discount_bps: 10_000 - multiplierBp,
-    })],
+    rules,
   });
 }
 
@@ -884,12 +909,44 @@ export function buildStage5V2Plan(input: {
       ));
       continue;
     }
+    const headRules = account.account_class === "b2b" ? account.policy_rules : null;
+    if (headRules) {
+      const unsupported = headRules.find((rule) =>
+        rule.pricing_mode !== "discount"
+        || !validMultiplier(rule.payable_multiplier_bp)
+        || (rule.scope_type !== "provider" && rule.scope_type !== "model")
+        || (rule.scope_type === "model" && !rule.canonical_model_id));
+      if (unsupported) {
+        blockers.push(blocker(
+          "b2b_policy_rule_unsupported",
+          "commerce",
+          account.engine_account_id,
+          "B2B policy head carries a rule the release-v2 target cannot express: "
+            + `${unsupported.scope_type}:${unsupported.provider_id}:${unsupported.canonical_model_id ?? ""}`
+            + ` mode=${unsupported.pricing_mode} payable_bp=${unsupported.payable_multiplier_bp}`,
+        ));
+        continue;
+      }
+      const anthropic = headRules.find((rule) =>
+        rule.scope_type === "provider" && rule.provider_id === "anthropic");
+      if (!anthropic || anthropic.payable_multiplier_bp !== account.commerce_multiplier_bp) {
+        blockers.push(blocker(
+          "b2b_policy_anthropic_rule_mismatch",
+          "commerce",
+          account.engine_account_id,
+          "B2B policy head must keep one provider:anthropic rule equal to the live scalar "
+            + `${account.commerce_multiplier_bp} payable bp, otherwise the cutover changes the live Anthropic price`,
+        ));
+        continue;
+      }
+    }
     const policy = policyForB2b(
       `release-v2:b2b:${account.engine_account_id}`,
       account.user_id,
       account.commerce_multiplier_bp,
       mainCatalog,
       switches,
+      headRules,
     );
     policies.push(policy);
     policyByAccount.set(account.engine_account_id, policy);

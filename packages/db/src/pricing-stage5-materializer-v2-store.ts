@@ -19,6 +19,7 @@ import {
   stage5V2CanonicalJson,
   stage5V2CommerceInventoryDigest,
   stage5V2Digest,
+  type Stage5V2B2bPolicyHeadRule,
   type Stage5V2Blocker,
   type Stage5V2CommerceSnapshot,
   type Stage5V2OpenKeysReader,
@@ -134,6 +135,46 @@ export async function readStage5V2CommerceAndServiceSnapshot(
     WHERE account.engine_account_id IS NOT NULL
     ORDER BY account.engine_account_id COLLATE "C"
   `);
+  const b2bPolicyRules = await client.query<{
+    user_id: string;
+    scope_type: "provider" | "model";
+    provider_id: string;
+    canonical_model_id: string | null;
+    pricing_mode: string;
+    payable_multiplier_bp: number;
+  }>(`
+    SELECT policy.owner_id AS user_id,
+           rule.scope_type::text,
+           rule.provider_id,
+           rule.canonical_model_id,
+           rule.pricing_mode::text,
+           rule.payable_multiplier_bp
+    FROM pricing_policies policy
+    JOIN pricing_policy_heads head ON head.policy_id = policy.id
+    JOIN pricing_policy_rules rule
+      ON rule.policy_id = policy.id AND rule.policy_version = head.current_version
+    WHERE policy.owner_type = 'b2b_client' AND policy.status = 'active'
+    ORDER BY policy.owner_id COLLATE "C", rule.provider_id COLLATE "C",
+             rule.scope_type COLLATE "C", COALESCE(rule.canonical_model_id, '') COLLATE "C"
+  `);
+  const policyRulesByUser = new Map<string, Stage5V2B2bPolicyHeadRule[]>();
+  for (const rule of b2bPolicyRules.rows) {
+    const rules = policyRulesByUser.get(rule.user_id) ?? [];
+    rules.push({
+      scope_type: rule.scope_type,
+      provider_id: rule.provider_id,
+      canonical_model_id: rule.canonical_model_id,
+      pricing_mode: rule.pricing_mode,
+      payable_multiplier_bp: rule.payable_multiplier_bp,
+    });
+    policyRulesByUser.set(rule.user_id, rules);
+  }
+  const accountRows = accounts.rows.map((account) => ({
+    ...account,
+    policy_rules: account.account_class === "b2b"
+      ? policyRulesByUser.get(account.user_id) ?? null
+      : null,
+  }));
   const invitations = await client.query<{
     invite_id: string;
     multiplier_bp: number;
@@ -164,7 +205,7 @@ export async function readStage5V2CommerceAndServiceSnapshot(
   }));
   return {
     commerce: {
-      accounts: accounts.rows,
+      accounts: accountRows,
       invitations: invitations.rows.map((row) => ({
         invite_id: row.invite_id,
         multiplier_bp: row.multiplier_bp,

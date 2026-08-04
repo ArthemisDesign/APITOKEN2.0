@@ -191,6 +191,47 @@ describe.runIf(Boolean(connectionString))("pricing Stage 5 v2 materializer", () 
       VALUES ($1, $2, 'acct_stage5_b2c', 4000, 'active'),
              ($3, $4, 'acct_stage5_b2b', 7000, 'active')
     `, [randomUUID(), b2cUser, randomUUID(), b2bUser]);
+    const b2bPolicyId = `policy:main:b2b:${b2bUser}`;
+    await seed.query(`
+      INSERT INTO provider_capability_versions (
+        generation, schema_version, content_digest, source_runtime, source_revision, observed_at
+      ) VALUES (1, 1, 'stage5-capability-v1', 'pricing-stage5-v2-test', 'test-revision', now())
+    `);
+    await seed.query(`
+      INSERT INTO product_catalog_versions (
+        product_id, generation, schema_version, capability_generation,
+        capability_digest, content_digest, actor_type, actor_id, reason
+      ) VALUES (
+        'main', 1, 1, 1, 'stage5-capability-v1', 'stage5-catalog-main-v1',
+        'system', 'pricing-stage5-v2-test', 'integration fixture'
+      )
+    `);
+    await seed.query(`
+      INSERT INTO pricing_policies (id, owner_type, owner_id, product_id)
+      VALUES ($1, 'b2b_client', $2, 'main')
+    `, [b2bPolicyId, b2bUser]);
+    await seed.query(`
+      INSERT INTO pricing_policy_versions (
+        policy_id, version, schema_version, product_id, catalog_generation,
+        content_digest, actor_type, actor_id, reason
+      ) VALUES ($1, 1, 1, 'main', 1, 'b2b-head-v1', 'admin', 'integration-test', 'seed b2b head')
+    `, [b2bPolicyId]);
+    await seed.query(`
+      INSERT INTO pricing_policy_heads (policy_id, current_version, current_digest)
+      VALUES ($1, 1, 'b2b-head-v1')
+    `, [b2bPolicyId]);
+    await seed.query(`
+      INSERT INTO pricing_policy_rules (
+        policy_id, policy_version, product_id, catalog_generation, rule_id,
+        rule_digest, scope_type, provider_id, canonical_model_id, pricing_mode,
+        rule_origin, discount_bps, payable_multiplier_bp, track_eligible,
+        retention_eligible, commission_eligible
+      ) VALUES
+        ($1, 1, 'main', 1, 'provider:anthropic:discount', 'rule-anthropic',
+          'provider', 'anthropic', NULL, 'discount', 'managed', 3000, 7000, false, false, false),
+        ($1, 1, 'main', 1, 'provider:google:discount', 'rule-google',
+          'provider', 'google', NULL, 'discount', 'managed', 3000, 7000, false, false, false)
+    `, [b2bPolicyId]);
     const inviteId = randomUUID();
     const expiredInviteId = randomUUID();
     await seed.query(`
@@ -326,6 +367,19 @@ describe.runIf(Boolean(connectionString))("pricing Stage 5 v2 materializer", () 
     expect(authorities.prepared.catalogs).toHaveLength(2);
     expect(authorities.prepared.switches).toHaveLength(1);
     expect(authorities.prepared.policies).toHaveLength(5);
+    const b2bPrepared = [...authorities.prepared.policies.values()]
+      .find((policy) => policy.policy_id === "release-v2:b2b:acct_stage5_b2b")!;
+    expect(b2bPrepared.rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        scope: { scope: "provider", provider_id: "anthropic" },
+        payable_multiplier_bp: 7_000,
+      }),
+      expect.objectContaining({
+        scope: { scope: "provider", provider_id: "google" },
+        payable_multiplier_bp: 7_000,
+      }),
+    ]));
+    expect(b2bPrepared.rules).toHaveLength(2);
 
     inventory[0]!.balance_nano = "1000000001";
     inventory[0]!.spent_nano = "1";

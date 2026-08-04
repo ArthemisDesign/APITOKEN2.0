@@ -80,7 +80,13 @@ the correct policy.
   provider/model overrides. An exact model rule takes priority over a provider rule, a provider rule
   over the global one.
 - Existing B2B: the current `mult_bp` becomes only the provider rule `anthropic`:
-  `discount_bps=10000-mult_bp`. OpenAI/Gemini are not added automatically.
+  `discount_bps=10000-mult_bp`. OpenAI/Gemini are not added automatically. When the operator has
+  already CAS-extended the live B2B policy head with additional provider/model rules, the target
+  policy mirrors the current head exactly instead of the migration baseline, so the cutover never
+  reprices or closes already granted live traffic. The head must keep one `provider:anthropic`
+  rule equal to the live scalar (`b2b_policy_anthropic_rule_mismatch` otherwise), and any rule the
+  release-v2 policy cannot express, such as a legacy `track` mode, is the typed blocker
+  `b2b_policy_rule_unsupported`.
 - B2B invitations: an independent immutable full-policy snapshot; redemption copies the exact
   snapshot.
 - OpenKeys: one canonical 1:1 contract (`discount_bps=0`) for all existing and new accounts.

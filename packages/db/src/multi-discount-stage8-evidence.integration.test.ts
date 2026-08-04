@@ -282,6 +282,7 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
         profile_multiplier_bp: 4_000,
         commerce_multiplier_bp: 4_000,
         commerce_status: "active",
+        policy_rules: null,
       }],
       invitations: [],
     });
