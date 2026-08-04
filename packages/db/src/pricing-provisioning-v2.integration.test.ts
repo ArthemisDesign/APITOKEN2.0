@@ -16,6 +16,7 @@ import { MIGRATIONS_FOLDER } from "./migrate.js";
 import {
   ensurePricingReleaseProvisioningV2,
   PricingReleaseProvisioningV2Error,
+  syncPricingReleasePolicyOverrideV2,
   type PricingReleaseProvisioningEngineV2,
 } from "./pricing-provisioning-v2.js";
 
@@ -451,5 +452,113 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
     });
     expect(policy.rules).toHaveLength(1);
     expect(state.extensions.get(`1:${accountId}`)?.members[0]?.assignment.account_class).toBe("b2b");
+  });
+
+  it("overrides a base-covered B2B assignment with a strictly newer policy version", async () => {
+    const b2bAccountId = "acct_override_b2b";
+    await seed.query(`
+      UPDATE customer_profiles
+      SET customer_type = 'b2b', current_tier = NULL, multiplier_bp = 1500
+      WHERE user_id = $1
+    `, [userId]);
+    await seed.query(
+      "UPDATE engine_accounts SET mult_bp = 1500, engine_account_id = $2 WHERE user_id = $1",
+      [userId, b2bAccountId],
+    );
+    const b2bPolicyId = `policy:main:b2b:${userId}`;
+    await seed.query(`
+      INSERT INTO provider_capability_versions (
+        generation, schema_version, content_digest, source_runtime, source_revision, observed_at
+      ) VALUES (3, 1, 'override-capability', 'pricing-provisioning-v2-test', 'test-revision', now())
+    `);
+    await seed.query(`
+      INSERT INTO product_catalog_versions (
+        product_id, generation, schema_version, capability_generation,
+        capability_digest, content_digest, actor_type, actor_id, reason
+      ) VALUES (
+        'main', 3, 1, 3, 'override-capability', 'override-catalog',
+        'system', 'pricing-provisioning-v2-test', 'integration fixture'
+      )
+    `);
+    await seed.query(`
+      INSERT INTO pricing_policies (id, owner_type, owner_id, product_id)
+      VALUES ($1, 'b2b_client', $2, 'main')
+    `, [b2bPolicyId, userId]);
+    await seed.query(`
+      INSERT INTO pricing_policy_versions (
+        policy_id, version, schema_version, product_id, catalog_generation,
+        content_digest, actor_type, actor_id, reason
+      ) VALUES ($1, 3, 1, 'main', 3, 'override-head-v3', 'admin', 'integration-test', 'extend b2b')
+    `, [b2bPolicyId]);
+    await seed.query(`
+      INSERT INTO pricing_policy_heads (policy_id, current_version, current_digest)
+      VALUES ($1, 3, 'override-head-v3')
+    `, [b2bPolicyId]);
+    await seed.query(`
+      INSERT INTO pricing_policy_rules (
+        policy_id, policy_version, product_id, catalog_generation, rule_id,
+        rule_digest, scope_type, provider_id, canonical_model_id, pricing_mode,
+        rule_origin, discount_bps, payable_multiplier_bp, track_eligible,
+        retention_eligible, commission_eligible
+      ) VALUES
+        ($1, 3, 'main', 3, 'provider:anthropic:discount', 'override-rule-anthropic',
+          'provider', 'anthropic', NULL, 'discount', 'managed', 8500, 1500, false, false, false),
+        ($1, 3, 'main', 3, 'provider:google:discount', 'override-rule-google',
+          'provider', 'google', NULL, 'discount', 'managed', 8500, 1500, false, false, false)
+    `, [b2bPolicyId]);
+    const basePolicyDigest = digest("b2b-base-policy");
+    const overrideTarget: PricingReleaseV2 = {
+      ...target,
+      assignments: [
+        ...target.assignments,
+        {
+          account_id: b2bAccountId,
+          account_class: "b2b",
+          policy_id: `release-v2:b2b:${b2bAccountId}`,
+          policy_version: 2,
+          policy_digest: basePolicyDigest,
+          billing_mode: "balance",
+          funding_generation: 1,
+          purpose: null,
+          responsible: null,
+          assignment_digest: digest("b2b-base-assignment"),
+        },
+      ],
+    };
+    const state = fakeEngine({ head, target: overrideTarget, recovery });
+
+    await expect(syncPricingReleasePolicyOverrideV2(database, state.engine, {
+      userId,
+      engineAccountId: b2bAccountId,
+    })).resolves.toEqual({ status: "override", headVersion: 1, policyVersion: 3 });
+
+    const prepared = [...state.policies.values()]
+      .find((policy) => policy.policy_id === `release-v2:b2b:${b2bAccountId}`)!;
+    expect(prepared.policy_version).toBe(3);
+    expect(prepared.rules).toHaveLength(2);
+    expect(prepared.rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        scope: { scope: "provider", provider_id: "anthropic" },
+        payable_multiplier_bp: 1500,
+      }),
+      expect.objectContaining({
+        scope: { scope: "provider", provider_id: "google" },
+        payable_multiplier_bp: 1500,
+      }),
+    ]));
+    const extension = state.extensions.get(`1:${b2bAccountId}`);
+    expect(extension?.members).toHaveLength(2);
+    expect(extension?.members[0]?.assignment).toMatchObject({
+      account_id: b2bAccountId,
+      account_class: "b2b",
+      policy_version: 3,
+      billing_mode: "balance",
+      funding_generation: 1,
+    });
+
+    await expect(syncPricingReleasePolicyOverrideV2(database, state.engine, {
+      userId,
+      engineAccountId: b2bAccountId,
+    })).resolves.toMatchObject({ status: "override" });
   });
 });

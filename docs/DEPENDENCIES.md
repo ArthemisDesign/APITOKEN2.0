@@ -80,7 +80,12 @@ OpenKeys issuance and service-account admin CAS use the shared external-owner bu
 directly. With a non-null context, balance writers complete funding/policy/active+recovery
 extension, the service writer completes a rule-free `meter_only` policy/extension, and all
 of them require exact readback plus a fresh context before a usable result. With a null
-context the release-v2 path is dormant.
+context the release-v2 path is dormant. After the green policy-override producer SHA
+(engine migration 0030), an operator B2B policy CAS (`PATCH /v1/admin/business-users/:id/pricing`)
+also calls `packages/db/src/pricing-provisioning-v2.ts` `syncPricingReleasePolicyOverrideV2`:
+for a base-covered account it prepares a strictly newer release policy version and pins it
+through the append-only assignment extension under the exact current head, returning the
+outcome additively in the CAS response.
 The managed Stage 8 capture is wired through the chain strict `packages/contracts` →
 raw-text `packages/engine-client` → `packages/db/src/pricing-stage8-capture-jobs-v2.ts` →
 `apps/worker`. The only job producer is the AdminGuard-protected

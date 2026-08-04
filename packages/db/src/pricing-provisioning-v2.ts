@@ -783,3 +783,112 @@ export async function ensurePricingReleaseProvisioningV2(
   }
   throw new PricingReleaseProvisioningV2Error("head_changed", "pricing release head kept changing during key provisioning");
 }
+
+export type PricingReleasePolicyOverrideResultV2 =
+  | { status: "pre_cutover" }
+  | { status: "not_covered" }
+  | { status: "unchanged" | "override"; headVersion: number; policyVersion: number };
+
+/**
+ * Propagates an operator CAS replacement of a live B2B commerce policy head into the release-v2
+ * authority for an account already covered by the active release's base manifest. The immutable
+ * base assignment is never rewritten: a strictly newer release policy version is prepared and
+ * pinned through the append-only assignment extension, and the resolver prefers the extension.
+ */
+export async function syncPricingReleasePolicyOverrideV2(
+  database: Database,
+  engine: PricingReleaseProvisioningEngineV2,
+  input: { userId: string; engineAccountId: string },
+): Promise<PricingReleasePolicyOverrideResultV2> {
+  const head = await engine.getPricingReleaseHeadV2();
+  if (!head) return { status: "pre_cutover" };
+  const release = await engine.getPricingReleaseV2(head.active_generation);
+  if (!release || release.content_digest !== head.active_digest) {
+    throw new PricingReleaseProvisioningV2Error(
+      "active_release_missing",
+      "active release readback does not match its head",
+    );
+  }
+  const account = await commerceAccount(database, input.userId, input.engineAccountId);
+  if (account.customerType !== "b2b") {
+    throw new PricingReleaseProvisioningV2Error(
+      "assignment_conflict",
+      "release policy override is only defined for B2B accounts",
+    );
+  }
+  const base = release.assignments.find((assignment) => assignment.account_id === input.engineAccountId);
+  if (!base) return { status: "not_covered" };
+  if (base.account_class !== "b2b" || base.billing_mode !== "balance" || base.funding_generation === null) {
+    throw new PricingReleaseProvisioningV2Error(
+      "assignment_conflict",
+      "base assignment conflicts with B2B balance ownership",
+    );
+  }
+  const policy = await dynamicB2bPolicy(database, input.userId, input.engineAccountId, account.multiplierBp, release);
+  if (base.policy_digest === policy.content_digest) {
+    return { status: "unchanged", headVersion: head.head_version, policyVersion: base.policy_version };
+  }
+  if (policy.policy_version <= base.policy_version) {
+    throw new PricingReleaseProvisioningV2Error(
+      "policy_not_ready",
+      `release policy override must advance beyond base version ${base.policy_version}`,
+    );
+  }
+  if (policy.product_id !== MAIN_PRICING_PRODUCT_ID
+      || policy.capability_generation !== release.capability_generation
+      || policy.capability_digest !== release.capability_digest
+      || policy.catalog_generation !== release.main_catalog_generation
+      || policy.catalog_digest !== release.main_catalog_digest
+      || policy.switch_generation !== release.switch_generation
+      || policy.switch_digest !== release.switch_digest) {
+    throw new PricingReleaseProvisioningV2Error(
+      "policy_not_ready",
+      "pricing release policy lineage does not match the exact active release",
+    );
+  }
+  const preparedPolicy = await engine.preparePricingReleasePolicyV2(policy);
+  if (preparedPolicy.result !== "stored" && preparedPolicy.result !== "unchanged") {
+    const result = preparedPolicy.result === "rejected" ? preparedPolicy.code : preparedPolicy.result;
+    throw new PricingReleaseProvisioningV2Error(
+      "policy_not_ready",
+      `engine rejected pricing release policy with ${result}`,
+    );
+  }
+  const policyReadback = await engine.getPricingReleasePolicyV2(policy.policy_id, policy.policy_version);
+  if (!policyReadback || !sameCanonical(policyReadback, policy)) {
+    throw new PricingReleaseProvisioningV2Error(
+      "policy_not_ready",
+      "engine policy readback differs from commerce authority",
+    );
+  }
+  const pair = await activationPair(database, head);
+  const extension = buildExtension({
+    head,
+    pair,
+    accountId: input.engineAccountId,
+    accountClass: "b2b",
+    fundingGeneration: base.funding_generation,
+    policy,
+  });
+  const prepared = await engine.preparePricingReleaseAssignmentExtensionV2(extension);
+  if (prepared.result === "rejected") {
+    if (prepared.code === "stale") {
+      throw new PricingReleaseProvisioningV2Error("head_changed", "pricing release head changed during the policy override");
+    }
+    throw new PricingReleaseProvisioningV2Error(
+      "assignment_conflict",
+      `engine rejected the policy override extension with ${prepared.code}`,
+    );
+  }
+  const readback = await engine.getPricingReleaseAssignmentExtensionV2(
+    extension.provisioning_head_version,
+    input.engineAccountId,
+  );
+  if (!readback || !sameCanonical(readback, extension)) {
+    throw new PricingReleaseProvisioningV2Error(
+      "assignment_conflict",
+      "policy override extension readback differs from the request",
+    );
+  }
+  return { status: "override", headVersion: head.head_version, policyVersion: policy.policy_version };
+}

@@ -57,6 +57,8 @@ import {
   repairDeadPreCutoverPolicyDelivery,
   PricingPolicyDeliveryRepairError,
   runStage5MaterializerV2,
+  syncPricingReleasePolicyOverrideV2,
+  PricingReleaseProvisioningV2Error,
   revokeBusinessInvite,
   rotateBusinessInvite,
   setBusinessPricing,
@@ -682,7 +684,13 @@ export class AdminService {
         actorId,
         reason,
       });
-      return { userId, policy, syncStatus: policy.targets.every((target) => target.syncState === "confirmed") ? "confirmed" : "pending" };
+      const releaseV2 = await this.syncReleasePolicyOverride(userId);
+      return {
+        userId,
+        policy,
+        syncStatus: policy.targets.every((target) => target.syncState === "confirmed") ? "confirmed" : "pending",
+        releaseV2,
+      };
     }
     if (input.discountPercent === undefined) throw new Error("business pricing mutation is empty");
     const result = await setBusinessPricing(this.database, {
@@ -692,6 +700,27 @@ export class AdminService {
       reason,
     });
     return { userId, discountPercent: input.discountPercent, syncStatus: "pending", pricingJobId: result.jobId };
+  }
+
+  private async syncReleasePolicyOverride(userId: string): Promise<Record<string, unknown>> {
+    const mapping = await this.database.pool.query<{ engine_account_id: string | null }>(
+      `SELECT engine_account_id FROM engine_accounts WHERE user_id = $1`,
+      [userId],
+    );
+    const engineAccountId = mapping.rows[0]?.engine_account_id;
+    if (!engineAccountId) return { status: "no_engine_account" };
+    try {
+      const result = await syncPricingReleasePolicyOverrideV2(this.database, this.engine, {
+        userId,
+        engineAccountId,
+      });
+      return result;
+    } catch (error) {
+      if (error instanceof PricingReleaseProvisioningV2Error) {
+        return { status: "error", code: error.code, message: error.message };
+      }
+      throw error;
+    }
   }
 
   private inviteUrl(token: string): string {
