@@ -860,9 +860,12 @@ export type AccountStrictCutoverStageResult = {
  *
  * The engine enforces the flip atomically: funding buckets must equal the account aggregates
  * and every active key must carry the exact active-policy ACK at flip time. The caller (the
- * admin cutover endpoint) arranges both before this job is staged; the delivery worker
- * re-stamps keys on the new head after a successful strict activation. Idempotent: an exact
- * replay returns the already-staged job, and an already-strict binding is a reported no-op.
+ * admin cutover endpoint or the automatic strict chain) arranges both before this job is
+ * staged; the delivery worker re-stamps keys on the new head after a successful strict
+ * activation. Idempotent: an exact replay returns the already-staged job, and an
+ * already-strict binding is a reported no-op. Both outcomes disarm the binding's
+ * `strict_chain_pending` intent in the same transaction, so the automatic chain never stages
+ * a duplicate after a race with the manual endpoint.
  */
 export async function stageAccountStrictCutoverJob(
   database: Database,
@@ -895,6 +898,10 @@ export async function stageAccountStrictCutoverJob(
         WHERE binding_id = $1 AND effective_version = $2
         ORDER BY created_at DESC LIMIT 1
       `, [row.id, row.applied_effective_version]);
+      await client.query(`
+        UPDATE account_policy_bindings SET strict_chain_pending = false, updated_at = now()
+        WHERE id = $1 AND strict_chain_pending
+      `, [row.id]);
       await client.query("COMMIT");
       return {
         status: "already_strict",
@@ -939,6 +946,10 @@ export async function stageAccountStrictCutoverJob(
       funding_enforcement: "strict",
       reconciliation_state: "verified",
     });
+    await client.query(`
+      UPDATE account_policy_bindings SET strict_chain_pending = false, updated_at = now()
+      WHERE id = $1 AND strict_chain_pending
+    `, [row.id]);
     await client.query("COMMIT");
     return {
       status: "staged",

@@ -23,7 +23,7 @@ import {
   type AdminAuditQuery,
   type Database,
 } from "@claude-api/db";
-import { EngineClient } from "@claude-api/engine-client";
+import { EngineClient, AccountStrictCutoverPreflightError, ensureAccountStrictCutoverPreflight } from "@claude-api/engine-client";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
 
 @Injectable()
@@ -320,15 +320,16 @@ export class AdminOperationsService {
   }
 
   /**
-   * Per-account shadow→strict cutover for one converted B2B client. Sequence: normalize the
-   * account's funding buckets (the strict trigger requires bucket/aggregate parity), stamp
-   * every active key with the exact active-policy ACK (the cutover trigger requires it), then
-   * stage the durable strict control job — the worker delivers the engine activation and
-   * re-stamps keys on the new head. From the ACK on, the engine bills the materialized
-   * per-provider policy instead of the legacy scalar, and the dashboard projection follows.
-   * The engine enforces its side atomically (funding parity, key ACKs, drained legacy
-   * reservations, policy-capable instances), so an unmet precondition fails the delivery job
-   * loudly instead of producing a partial state.
+   * Per-account shadow→strict cutover for one converted B2B client. The engine-side
+   * preconditions are shared with the automatic strict chain
+   * (ensureAccountStrictCutoverPreflight): normalize the account's funding buckets (the strict
+   * trigger requires bucket/aggregate parity), stamp every active key with the exact
+   * active-policy ACK (the cutover trigger requires it), then stage the durable strict control
+   * job — the worker delivers the engine activation and re-stamps keys on the new head. From
+   * the ACK on, the engine bills the materialized per-provider policy instead of the legacy
+   * scalar, and the dashboard projection follows. The engine enforces its side atomically
+   * (funding parity, key ACKs, drained legacy reservations, policy-capable instances), so an
+   * unmet precondition fails the delivery job loudly instead of producing a partial state.
    */
   async cutoverUserPolicyToStrict(input: {
     userId: string;
@@ -340,41 +341,14 @@ export class AdminOperationsService {
     if (!target.engineAccountId) throw new AdminOperationError(409, "user has no engine account");
     const accountId = target.engineAccountId;
 
-    const plan = await this.engine.getFundingNormalizationPlanV2(accountId);
-    let funding: "normalized" | "already_normalized" | "nothing_to_normalize";
-    if (plan === null) {
-      funding = "nothing_to_normalize";
-    } else if (plan.status === "normalized") {
-      funding = "already_normalized";
-    } else if (plan.status === "blocked") {
-      const blockers = plan.blockers.map((blocker) => `${blocker.code}: ${blocker.detail}`).join("; ");
-      throw new AdminOperationError(409, `funding normalization is blocked: ${blockers}`);
-    } else {
-      if (plan.normalization_digest === null) {
-        throw new AdminOperationError(409, "engine account has no funding normalization target");
+    let preflight;
+    try {
+      preflight = await ensureAccountStrictCutoverPreflight(this.engine, accountId);
+    } catch (error) {
+      if (error instanceof AccountStrictCutoverPreflightError) {
+        throw new AdminOperationError(409, error.message);
       }
-      const applied = await this.engine.applyFundingNormalizationV2(accountId, {
-        expected_source_state_digest: plan.source_state_digest,
-        expected_normalization_digest: plan.normalization_digest,
-      });
-      if (applied === null) throw new AdminOperationError(409, "funding normalization target vanished");
-      funding = "normalized";
-    }
-
-    const state = await this.engine.getAccountPricingState(accountId);
-    if (typeof state !== "object" || state === null || !("active" in state)) {
-      throw new AdminOperationError(409, "account has no active engine policy to cut over");
-    }
-    if (state.active.binding.policy_enforcement !== "strict") {
-      const ack = {
-        effectivePolicyVersion: state.active.policy.effective_version,
-        policyDigest: state.active.policy.content_digest,
-      };
-      const keys = await this.engine.listKeys(accountId);
-      for (const key of keys) {
-        if (key.status !== "active") continue;
-        await this.engine.setKeyStatus(key.key_id, "active", ack);
-      }
+      throw error;
     }
 
     let staged;
@@ -393,7 +367,7 @@ export class AdminOperationsService {
       job_id: staged.jobId,
       job_status: staged.jobStatus,
       effective_version: staged.effectiveVersion,
-      funding,
+      funding: preflight.funding,
     };
   }
 

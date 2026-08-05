@@ -371,6 +371,11 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
       actorId: "admin-q",
       discountPercent: 60,
     });
+    // The conversion armed the automatic strict chain on the binding.
+    const armed = await database.pool.query<{ strict_chain_pending: boolean }>(`
+      SELECT strict_chain_pending FROM account_policy_bindings WHERE user_id = $1
+    `, [passwordUserId]);
+    expect(armed.rows).toEqual([{ strict_chain_pending: true }]);
     // The engine confirmed the first policy delivery: the binding is shadow with applied v1
     // and the durable delivery job is terminal-confirmed.
     await database.pool.query(`
@@ -417,7 +422,8 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
 
     const binding = await database.pool.query(`
       SELECT policy_enforcement, funding_enforcement, reconciliation_state, sync_state,
-             desired_effective_version::text, applied_effective_version::text
+             desired_effective_version::text, applied_effective_version::text,
+             strict_chain_pending
       FROM account_policy_bindings WHERE user_id = $1
     `, [passwordUserId]);
     expect(binding.rows).toEqual([{
@@ -427,6 +433,7 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
       sync_state: "confirmed",
       desired_effective_version: "1",
       applied_effective_version: "1",
+      strict_chain_pending: false,
     }]);
     const job = await database.pool.query<{ status: string; binding: unknown }>(`
       SELECT status, payload->'binding' AS binding FROM engine_policy_jobs WHERE id = $1
@@ -462,6 +469,55 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
     })).rejects.toMatchObject({ status: 404 });
   });
 
+  it("rejects the strict cutover loudly when funding normalization is blocked", async () => {
+    await service.convertToBusiness({
+      userId: passwordUserId,
+      reason: "customer negotiated business terms",
+      actorId: "admin-q",
+      discountPercent: 60,
+    });
+    await database.pool.query(`
+      UPDATE account_policy_bindings
+      SET applied_effective_version = desired_effective_version,
+          applied_digest = desired_digest,
+          policy_enforcement = 'shadow', last_ack_at = now(), sync_state = 'confirmed'
+      WHERE user_id = $1
+    `, [passwordUserId]);
+    engine.normalizationPlan = {
+      account_id: "acct_password",
+      account_status: "active",
+      status: "blocked",
+      source: "aggregate_paid_only",
+      source_state_digest: `sha256:v2:${"a".repeat(64)}`,
+      normalization_digest: null,
+      funding_generation: null,
+      funding_head_version: null,
+      balance_nano: "5000000000",
+      reserved_nano: "0",
+      spent_nano: "0",
+      lots: [],
+      blockers: [{ code: "active_legacy_reservation", detail: "reservation r1 is open" }],
+    };
+    await expect(service.cutoverUserPolicyToStrict({
+      userId: passwordUserId,
+      reason: "enforce the negotiated per-provider rates",
+      actorId: "admin-q",
+    })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("active_legacy_reservation: reservation r1 is open"),
+    });
+    // No partial state: the binding stays shadow and the automatic chain stays armed, so the
+    // worker sweep retries the cutover once the blocker is resolved.
+    const binding = await database.pool.query<{
+      policy_enforcement: string;
+      strict_chain_pending: boolean;
+    }>(`
+      SELECT policy_enforcement, strict_chain_pending FROM account_policy_bindings
+      WHERE user_id = $1
+    `, [passwordUserId]);
+    expect(binding.rows).toEqual([{ policy_enforcement: "shadow", strict_chain_pending: true }]);
+  });
+
   it("resets TOTP and revokes active sessions with an audit event", async () => {
     const result = await service.resetTotp({
       userId: passwordUserId,
@@ -488,6 +544,7 @@ class FakeAdminEngine {
     status: string;
     ack: { effective_policy_version: number; policy_digest: string } | null;
   }> = [];
+  normalizationPlan: Record<string, unknown> | null = null;
   pricingStateBinding: { policy_enforcement: string; funding_enforcement: string; reconciliation_state: string } = {
     policy_enforcement: "shadow",
     funding_enforcement: "legacy_single",
@@ -517,6 +574,9 @@ class FakeAdminEngine {
         });
       }
       if (url.pathname.endsWith("/normalization")) {
+        if (this.normalizationPlan !== null) {
+          return Response.json({ normalization: this.normalizationPlan });
+        }
         return Response.json({ error: "no normalization plan" }, { status: 404 });
       }
       if (url.pathname.includes("/pricing/policy/") && url.pathname.endsWith("/state")) {

@@ -4,6 +4,7 @@ import {
   applyPricingLedgerPage,
   applyPricingProviderBackfillPage,
   applyPricingTopupBackfillPage,
+  advanceAccountStrictChain,
   claimNextPricingControlJob,
   claimNextPricingJob,
   claimNextPricingReleaseActivationJobV2,
@@ -16,6 +17,7 @@ import {
   getPricingUsageCursor,
   getPricingProviderBackfillCursor,
   getPricingTopupBackfillCursor,
+  listPendingStrictChainAccounts,
   listPricingSyncTargets,
   PricingControlNotifyListener,
   reconcileTierLadderMultipliers,
@@ -51,6 +53,9 @@ const PROVIDER_BACKFILL_MAX_PAGES_PER_SYNC = 4;
 // Догоняющий скан истории пополнений — разовая работа на аккаунт, поэтому лимит страниц за цикл
 // держим таким же скромным: цель не «быстро», а «без всплеска нагрузки на движок».
 const TOPUP_BACKFILL_MAX_PAGES_PER_SYNC = 4;
+// The strict chain fires once per converted/edited B2B account, so a small bound keeps a sweep
+// cycle fast; the remainder is picked up by the next pass.
+const STRICT_CHAIN_MAX_ACCOUNTS_PER_SWEEP = 25;
 
 @Injectable()
 export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown {
@@ -191,6 +196,7 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
           }
         }
         await this.flushPricingControlJobs();
+        await this.flushPendingStrictChains();
         await this.flushPricingJobs();
         await this.flushPricingReleaseActivationJobs();
       } catch (error) {
@@ -432,6 +438,37 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
     for (const key of keys) {
       if (key.status !== "active") continue;
       await this.engine.setKeyStatus(key.key_id, "active", ack);
+    }
+  }
+
+  /**
+   * Automatic half of the per-account strict lane (docs/commerce/PRICING.md): a B2C→B2B
+   * conversion and every b2b_client policy save flag the binding strict_chain_pending, and
+   * this sweep runs the shared preflight + durable strict staging as soon as the shadow
+   * delivery of that exact version confirms. The staging transaction disarms the flag, so a
+   * replay never duplicates the cutover; a failed precondition is recorded on the binding and
+   * retried on the next pass instead of producing a partial state.
+   */
+  private async flushPendingStrictChains(): Promise<void> {
+    const candidates = await listPendingStrictChainAccounts(
+      this.database,
+      STRICT_CHAIN_MAX_ACCOUNTS_PER_SWEEP,
+    );
+    for (const candidate of candidates) {
+      if (this.stopped) return;
+      try {
+        const result = await advanceAccountStrictChain(this.database, this.engine, candidate);
+        if (result.status === "staged") {
+          this.logger.log(
+            `strict chain staged for ${candidate.userId}: job ${result.jobId} ` +
+            `(funding ${result.funding}, ${result.keysStamped} active keys stamped)`,
+          );
+        } else if (result.status === "failed") {
+          this.logger.error(`strict chain for ${candidate.userId} cannot advance: ${result.error}`);
+        }
+      } catch (error) {
+        this.logger.error(`strict chain sweep failed for ${candidate.userId}: ${message(error)}`);
+      }
     }
   }
 

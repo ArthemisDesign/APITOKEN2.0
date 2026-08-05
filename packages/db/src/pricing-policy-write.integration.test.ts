@@ -282,6 +282,11 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
       applied_effective_version: "1",
       last_error: null,
     }]);
+    // Conversion armed the automatic strict chain for the account.
+    const armedOnConvert = await seedClient.query<{ strict_chain_pending: boolean }>(`
+      SELECT strict_chain_pending FROM account_policy_bindings WHERE user_id = $1
+    `, [user.id]);
+    expect(armedOnConvert.rows).toEqual([{ strict_chain_pending: true }]);
     const staged = await seedClient.query<{ versions: string; jobs: string }>(`
       SELECT
         (SELECT count(*)::text FROM account_policy_versions) AS versions,
@@ -347,10 +352,13 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
 
     // A strict binding keeps the old behavior: the lineage is immutable until the release
     // cutover, so the save folds any drifted desired state back to the engine-confirmed
-    // applied state and stages no delivery.
+    // applied state and stages no delivery. The strict staging itself disarms the chain flag
+    // in the same transaction, and a save on the strict binding never re-arms it — when the
+    // engine lineage already matches, the save stages the strict→strict advance directly.
     await seedClient.query(`
       UPDATE account_policy_bindings
-      SET policy_enforcement = 'strict', reconciliation_state = 'verified'
+      SET policy_enforcement = 'strict', reconciliation_state = 'verified',
+          strict_chain_pending = false
       WHERE user_id = $1
     `, [user.id]);
     const strictSave = await updateManagedPricingPolicy(database, {
@@ -362,6 +370,10 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
       reason: "adjust discount on a strict binding",
     });
     expect(strictSave.currentVersion).toBe(3);
+    const strictArmed = await seedClient.query<{ strict_chain_pending: boolean }>(`
+      SELECT strict_chain_pending FROM account_policy_bindings WHERE user_id = $1
+    `, [user.id]);
+    expect(strictArmed.rows).toEqual([{ strict_chain_pending: false }]);
     const healed = await seedClient.query<{
       sync_state: string;
       desired_effective_version: string | null;
@@ -419,6 +431,12 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
       syncState: "pending",
       deliveryState: "pending",
     });
+    // The conversion arms the automatic strict chain: once the staged shadow delivery
+    // confirms, the pricing worker cuts the account over without a second operator action.
+    const armed = await seedClient.query<{ strict_chain_pending: boolean }>(`
+      SELECT strict_chain_pending FROM account_policy_bindings WHERE user_id = $1
+    `, [user.id]);
+    expect(armed.rows).toEqual([{ strict_chain_pending: true }]);
     const jobs = await seedClient.query<{ policy_jobs: string; legacy_jobs: string }>(`
       SELECT
         (SELECT count(*)::text FROM engine_policy_jobs) AS policy_jobs,
@@ -493,6 +511,11 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
       multiplierBp: 4_000,
       policyVersion: 1,
     });
+    // The repair path arms the automatic strict chain as well.
+    const repairedArmed = await seedClient.query<{ strict_chain_pending: boolean }>(`
+      SELECT strict_chain_pending FROM account_policy_bindings WHERE user_id = $1
+    `, [legacy.id]);
+    expect(repairedArmed.rows).toEqual([{ strict_chain_pending: true }]);
 
     // A scalar that does not map to a whole-percent managed discount is rejected loudly instead
     // of silently rounding money.
@@ -569,6 +592,13 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
     expect(syncAudit.rows[0]?.metadata).toMatchObject({
       scalarSync: { synced: true, multiplierBp: 3_000, previousMultiplierBp: 2_000 },
     });
+    // Every b2b_client save arms the automatic strict chain while the account is pre-strict:
+    // the saved policy becomes the enforced price as soon as its shadow delivery confirms,
+    // without waiting for the fleet cutover.
+    const armedOnSave = await seedClient.query<{ strict_chain_pending: boolean }>(`
+      SELECT strict_chain_pending FROM account_policy_bindings WHERE user_id = $1
+    `, [user.id]);
+    expect(armedOnSave.rows).toEqual([{ strict_chain_pending: true }]);
 
     // The customer-facing projection prices a governed provider by the authoritative scalar,
     // not by the materialized shadow rules that billing does not enforce yet. Providers the

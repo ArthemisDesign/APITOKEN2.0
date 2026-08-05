@@ -1105,10 +1105,10 @@ export async function updateManagedPricingPolicy(database: Database, input: {
     }
     let scalarSync: { synced: boolean; jobId: string | null; previousMultiplierBp: number | null; multiplierBp: number } | null = null;
     if (input.ownerType === "b2b_client") {
-      // Pre-cutover the engine enforces only the legacy scalar, so a uniform provider-discount
-      // policy must move the scalar with it — otherwise the panel shows the new policy while
-      // billing follows the stale multiplier. Non-uniform rules cannot be one scalar; they stay
-      // shadow-only until the release cutover.
+      // While the account is pre-strict the legacy scalar stays the enforced bridge, so a
+      // uniform provider-discount policy must move the scalar with it — otherwise the panel
+      // shows the new policy while billing follows the stale multiplier. Non-uniform rules
+      // cannot be one scalar; they are enforced by the strict chain below instead.
       const multiplierBp = uniformProviderDiscountMultiplier(input.rules);
       if (multiplierBp !== null) {
         const synced = await syncBusinessClientScalar(client, {
@@ -1118,6 +1118,16 @@ export async function updateManagedPricingPolicy(database: Database, input: {
         });
         scalarSync = { ...synced, multiplierBp };
       }
+      // Every b2b_client policy save chains the per-account strict enforcement
+      // (docs/commerce/MULTI-DISCOUNT.md decision 14): an already-strict binding advances
+      // strict→strict via the delivery staged above, and a non-strict binding is flagged so
+      // the pricing worker sweep cuts it over as soon as this exact version confirms under
+      // shadow. Older versions, the legacy scalar, and B2C rules never price new charges again.
+      await client.query(`
+        UPDATE account_policy_bindings
+        SET strict_chain_pending = true, updated_at = now()
+        WHERE policy_id = $1 AND policy_enforcement <> 'strict'
+      `, [policyId]);
     }
     await client.query(`
       INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
@@ -1789,6 +1799,16 @@ export async function provisionBusinessClientPolicy(client: PoolClient, input: {
     // re-run that finds the policy and binding already in place.
     jobId = (await materializeBinding(client, bindingId, source, catalogGeneration)).jobId;
   }
+  // The conversion contract (docs/commerce/MULTI-DISCOUNT.md decision 13) chains the
+  // per-account strict cutover automatically: as soon as the staged shadow delivery confirms,
+  // the pricing worker sweep flips enforcement to the client's own policy without a second
+  // operator action. An already-strict binding is left untouched — its saves advance
+  // strict→strict directly.
+  await client.query(`
+    UPDATE account_policy_bindings
+    SET strict_chain_pending = true, updated_at = now()
+    WHERE id = $1 AND policy_enforcement <> 'strict'
+  `, [bindingId]);
   return {
     policyId: source.policy_id,
     policyVersion: source.version,

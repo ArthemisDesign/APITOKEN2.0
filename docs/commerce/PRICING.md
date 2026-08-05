@@ -76,27 +76,44 @@ of two paths: invitation redemption copies the invitation snapshot at registrati
 admin conversion of an existing B2C customer provisions a fresh policy with a single Anthropic
 discount rule derived from the negotiated multiplier and re-points the customer's single account
 binding (the Stage 5 backfill already bound it to the global B2C policy) at that policy.
-Re-running the conversion on a customer who
-is already B2B repairs a missing policy (customers converted before this provisioning existed)
-against the multiplier already in effect, and is otherwise a no-op — it never rewrites an existing
-policy or the active scalar.
+Re-running the conversion on a customer who is already B2B repairs a missing policy (customers
+converted before this provisioning existed) against the multiplier already in effect, and is
+otherwise a no-op — it never rewrites an existing policy.
+
+Conversion and every later B2B policy save are enforced per account without waiting for the fleet
+Stage 9 CAS: the flow automatically chains the per-account strict cutover (first enforcement) or
+a strict→strict advance (already strict), so the client's own policy becomes the only enforced
+price and every B2C input — the global default, its provider/model overrides, the legacy scalar,
+any progressive remnant — dies for that account's new charges. The chain is durable and
+idempotent: staged atomically with the conversion/save, delivered by the worker within seconds;
+a replay reports the already-enforced state, and a failed precondition (blocked funding
+normalization, an unstamped key, engine-side guards) fails loudly with a typed error, never a
+partial silent state. In-flight reservations keep their reserve-time pinned price; only new
+reserves resolve the newest policy version. Remaining welcome-bonus funds stay spendable under
+the B2B policy (funding, not pricing), and B2B charges carry no referral commission basis.
 
 The legacy engine delivery lane keeps an immutable policy lineage per strict account and rejects
 any prepare that switches identity (global B2C → client policy) with `version_conflict`; a shadow
-account accepts the same switch as a shadow rebind pre-cutover. Conversion and later policy edits
-therefore stage the identity switch as a normal delivery for the backfilled shadow binding, while
-for a strict binding nothing is staged: the engine keeps running the confirmed lineage, the scalar
-multiplier stays authoritative, and any drifted staged-but-undeliverable desired state is folded
-back to the engine-confirmed applied state. Until the cutover the scalar remains the only
-engine-enforced price for shadow accounts too.
+account accepts the same switch as a shadow rebind pre-cutover. The conversion/save therefore
+delivers the identity switch as a normal shadow delivery first, and the chained strict cutover
+flips enforcement only after the exact client policy version is shadow-confirmed and the binding
+is reconciliation-verified — the state the Stage 7 shadow rollout delivers for backfilled
+accounts; until then the chain keeps waiting without touching the enforced price. After the
+flip, the scalar is dead for the
+account and any drifted staged-but-undeliverable legacy desired state is folded back to the
+engine-confirmed applied state.
 
 ## Per-account strict cutover
 
 The default strict transition is the fleet-wide Stage 9 release CAS (see
-`docs/commerce/MULTI_DISCOUNT_STAGE9.md`). One individually negotiated B2B client can be cut
-over earlier through `POST /v1/admin/users/:id/policy-enforcement-cutover`
-(`AdminOperationsService.cutoverUserPolicyToStrict`), which makes the client's confirmed
-per-provider policy the enforced price instead of the legacy scalar. The endpoint orchestrates
+`docs/commerce/MULTI_DISCOUNT_STAGE9.md`). For B2B clients the per-account lane runs
+automatically: a B2C→B2B conversion and every `b2b_client` policy save chain this cutover (or
+the strict→strict advance once the account is strict), so the client's confirmed policy becomes
+the only enforced price without a second operator action. The manual endpoint
+`POST /v1/admin/users/:id/policy-enforcement-cutover`
+(`AdminOperationsService.cutoverUserPolicyToStrict`) remains for repair, replay, and accounts
+converted before this chaining existed; it makes the client's confirmed
+per-provider policy the enforced price instead of the legacy scalar. The flow orchestrates
 the full precondition set the engine enforces atomically at the flip:
 
 1. funding buckets are normalized to equal the account aggregates
@@ -126,18 +143,20 @@ discount_bps = 10000 - mult_bp
 ```
 
 OpenAI/Gemini do not appear for an existing B2B automatically. The operator adds them via explicit
-provider/model rules. Until the release cutover the engine enforces only the legacy scalar, so a
+provider/model rules; every save chains the strict enforcement for any rule shape, so a
+mixed-scope policy is enforced as soon as the chain delivers and never waits for the fleet
+cutover. During the short pre-delivery window the legacy scalar is still the enforced bridge, so a
 saved b2b_client policy whose rules are a uniform set of provider-level discounts also moves the
 scalar (`mult_bp = 10000 - discount_bps` on `customer_profiles` and `engine_accounts`, plus the
 durable scalar delivery job) — otherwise the panel would show the new policy while billing follows
 the stale multiplier. A policy that cannot be one scalar (mixed scopes, track rules, per-provider
-differences) leaves the scalar untouched and activates only with the cutover. The customer
+differences) leaves the scalar untouched for the window and is enforced by the chain. The customer
 dashboard prices each provider by the same honesty rule: while the binding's policy is not
 engine-enforced (`legacy_scalar`/`shadow`), the usage page shows the materialized per-provider
 policy discount clamped to never exceed the discount the legacy scalar actually bills — a
 tighter negotiated provider rate (say 60% on Google against a 70% scalar) shows as configured,
-a looser one shows the scalar. Billing can only over-deliver against the badge until the
-cutover, never overcharge it; providers the policy does not cover stay unavailable exactly as
+a looser one shows the scalar. Billing can only over-deliver against the badge until the chain
+delivers, never overcharge it; providers the policy does not cover stay unavailable exactly as
 the materialized rules say.
 
 B2B spend IS ingested by the pricing usage sync: `listPricingSyncTargets` selects both

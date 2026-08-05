@@ -7,7 +7,12 @@ Exception: an individually negotiated B2B client may be cut to strict per-accoun
 fleet CAS through the documented lane in `docs/commerce/PRICING.md` ("Per-account strict
 cutover"). That lane normalizes the account's funding, stamps its keys, and delivers a durable
 strict activation under the engine's atomic guards; it is not a canary for this runbook — the
-fleet transition below is unchanged and still moves every remaining customer in one CAS.
+fleet transition below is unchanged and still moves every remaining customer in one CAS. For
+converted B2B clients the lane runs automatically: a B2C→B2B conversion and every `b2b_client`
+policy save arm the durable `strict_chain_pending` intent, and the pricing worker advances the
+same guarded cutover as soon as the exact saved version confirms under shadow
+(`docs/commerce/MULTI-DISCOUNT.md` decisions 13–14); the manual endpoint remains only for
+repair, replay, and clients converted before the chaining existed.
 
 Commerce migration `0031_pricing_activation_evidence_capture.sql` is a separate expand-only
 checkpoint ahead of the consumer code. It adds nullable storage of the source engine evidence

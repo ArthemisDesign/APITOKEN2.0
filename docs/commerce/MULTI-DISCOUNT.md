@@ -36,6 +36,21 @@ ladder, and no 30-day retention.
 12. Manual financial classification in Stage 6 is not required. Known unused welcome credit is
     preserved as bonus; all other existing balance is, by explicit owner decision, considered paid.
     The amounts still pass the automatic structural invariants.
+13. Converting a customer from B2C to B2B disables every B2C pricing policy for that customer at
+    once — the global B2C default, its provider/model overrides, the legacy scalar, and any
+    progressive remnant. From the conversion on, only the customer's own B2B policy governs model
+    admission and price. The conversion and the per-account strict enforcement cutover are one
+    durable flow, not two separate operator steps.
+14. Every B2B policy save is enforced immediately: it automatically chains the per-account strict
+    cutover (first enforcement) or a strict→strict advance (already strict), overwriting all other
+    pricing state for the account — the legacy scalar, every B2C rule, and older policy versions.
+    "All past price multipliers are declined" covers new charges only: the immutable ledger and
+    in-flight reservations keep their reserve-time pinned price, and every new reserve after the
+    flip resolves only the newest B2B policy version. Enforcement never waits for the global
+    Stage 9 CAS.
+15. Converting a B2C customer keeps his remaining welcome-bonus funds spendable under the new B2B
+    policy: the bonus is funding, not a pricing policy. Referral commissions stop at conversion
+    because a B2B charge has no commission basis.
 
 `fixed discount` in this contract means a static percentage in basis points. A literal fixed
 tariff such as "this model always costs $0.01" is not part of the contract.
@@ -106,6 +121,39 @@ policy CAS propagates to the live release-v2 authority through an append-only as
 extension: a strictly newer version of the account's release policy is prepared and pinned for the
 exact current head and its paired recovery, and the runtime resolver prefers the extension over the
 immutable base assignment. The base manifest is never rewritten.
+
+### B2C→B2B conversion and immediate policy enforcement
+
+Conversion and B2B policy edits are enforced per account, without waiting for the global
+Stage 9 CAS:
+
+- Converting a B2C customer to B2B is one durable flow. It provisions the customer's own policy
+  (a single `provider:anthropic` rule derived from the negotiated multiplier unless the operator
+  supplies a full rule set), disables every B2C pricing input for the account — the global B2C
+  default, its provider/model overrides, the legacy scalar, and any progressive remnant — and
+  automatically chains the per-account strict cutover. From the strict flip on, model admission
+  and price resolve only against the customer's B2B policy; the flip itself never rewrites the
+  immutable ledger and never reprices an in-flight reservation.
+- Every B2B policy save overwrites all other pricing state for the account. The first
+  enforcement performs the strict cutover; every later save performs a strict→strict advance to
+  the new immutable policy version. Older versions, the legacy scalar, and B2C rules never apply
+  to new charges again. Enforcement is staged atomically with the save and lands with the
+  durable delivery (seconds), not with Stage 9. A policy of any shape — mixed provider/model
+  rules included — is enforced by this chain; there is no scalar-only fallback path that would
+  leave a saved policy unenforced.
+- Before the global release head exists, the chain is the per-account strict lane: funding
+  normalization, exact active-policy ACK stamps on every active key, and the atomic
+  strict+strict+verified binding job. After the head exists, the same operations propagate
+  through the append-only assignment extension pinned to the exact current head and its paired
+  recovery. In both eras an already started request settles against its reserve-time pinned
+  snapshot, and only new reserves see the newest policy.
+- Remaining welcome-bonus funds survive the conversion and stay spendable under the B2B policy
+  (funding, not pricing). Referral commissions stop at conversion: a B2B charge carries no
+  commission basis, so under-paying commission is impossible by construction.
+- The chain is idempotent: replaying a conversion or a save reports the already-enforced state
+  instead of staging a duplicate, and a failed precondition (blocked funding normalization, an
+  unstamped key, engine-side guards) fails the flow loudly with a typed error, never a partial
+  silent state.
 
 ### OpenKeys
 
@@ -568,6 +616,8 @@ The admin pricing editor must:
 - not offer `track`/tier controls;
 - not apply B2C rules to B2B/OpenKeys/service;
 - manage the B2B full policy;
+- enforce a B2B policy save and a B2C→B2B conversion immediately through the automatic strict
+  chain and surface the enforcement state (staged/delivered/failed);
 - show service as all-model `meter_only`;
 - show the prepared/active/recovery release and Stage 8 freshness.
 
@@ -580,6 +630,12 @@ step.
 
 - B2C: global 50%, provider override, model override, model-over-provider precedence.
 - B2B: scalar migration only into `anthropic`; no B2C inheritance.
+- Conversion: B2C→B2B disables the global B2C default, overrides, and the legacy scalar for the
+  account, chains the strict cutover automatically, and only the B2B policy prices new reserves;
+  remaining welcome bonus stays spendable; the charge carries no commission basis.
+- B2B policy save: first enforcement cuts over, later saves advance strict→strict; a mixed
+  provider/model policy is enforced without a scalar bridge; in-flight settlement keeps the
+  reserve-time pinned snapshot; older policy versions never resolve again; replay is idempotent.
 - OpenKeys: existing/new 1:1; any discount override is rejected.
 - Service: all runtime models are available; a zero balance does not produce a 402; official usage
   is durable.
@@ -619,6 +675,11 @@ The work is complete only when all of the following hold simultaneously:
 13. Post-activation smoke and monetary invariants are green on the exact deployed SHA.
 14. Public/admin/customer/sales documents and UI no longer promise tiers or a track-only bonus.
 15. `deploy/watchdog` is green on the final SHA.
+16. B2C enforcement is audited against the global 50% default plus provider/model overrides; any
+    deviation that bills a B2C customer off-policy is fixed.
+17. Conversion and every B2B policy save enforce the customer's own B2B policy per account
+    through the automatic strict chain; no B2C rule or legacy scalar prices a converted
+    account's new charges, and past multipliers survive only in immutable history.
 
 Production mutation must not be performed from a research or documentation task. Applying Stage
 6/8/9 happens only after the implementation, tests, and standard delivery of each expand-only

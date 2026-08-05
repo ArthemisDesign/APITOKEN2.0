@@ -40,7 +40,17 @@ test("wakes control-job delivery from LISTEN/NOTIFY with the sweep as recovery",
   assert.match(source, /this\.controlFlushQueued = true/);
   assert.match(source, /while \(this\.controlFlushQueued && !this\.stopped\)/);
   // The periodic sweep keeps its own flush call as the recovery path.
-  assert.match(source, /await this\.flushPricingControlJobs\(\);\s*\n\s*await this\.flushPricingJobs\(\);/);
+  assert.match(source, /await this\.flushPricingControlJobs\(\);\s*\n\s*await this\.flushPendingStrictChains\(\);\s*\n\s*await this\.flushPricingJobs\(\);/);
+});
+
+test("advances flagged strict chains once the shadow delivery confirms", () => {
+  // A conversion/policy save flags the binding strict_chain_pending; the sweep runs the shared
+  // preflight + durable staging from the canonical database module and logs failures loudly.
+  assert.match(source, /STRICT_CHAIN_MAX_ACCOUNTS_PER_SWEEP = 25/);
+  assert.match(source, /listPendingStrictChainAccounts\(\s*this\.database,\s*STRICT_CHAIN_MAX_ACCOUNTS_PER_SWEEP,?\s*\)/);
+  assert.match(source, /await advanceAccountStrictChain\(this\.database, this\.engine, candidate\)/);
+  assert.match(source, /strict chain for \$\{candidate\.userId\} cannot advance/);
+  assert.doesNotMatch(source, /UPDATE account_policy_bindings/);
 });
 
 test("re-stamps active keys with the exact new ACK after every strict policy activation", () => {

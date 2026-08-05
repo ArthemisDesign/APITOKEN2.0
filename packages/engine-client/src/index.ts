@@ -97,6 +97,13 @@ export {
   type PricingReleaseProvisioningTransportV2,
 } from "./release-provisioning.js";
 
+export {
+  AccountStrictCutoverPreflightError,
+  ensureAccountStrictCutoverPreflight,
+  type AccountStrictCutoverPreflight,
+  type AccountStrictCutoverPreflightTransport,
+} from "./strict-cutover-preflight.js";
+
 const JSONbig = JSONbigFactory({ storeAsString: true, useNativeBigInt: false });
 
 export class EngineClientError extends Error {
