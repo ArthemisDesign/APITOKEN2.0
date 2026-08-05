@@ -4,11 +4,17 @@
 // (строки 108-131): фиксированный список в правом верхнем углу с per-source
 // статусом, кнопками «повторить» (↻ — рефetch конкретного poller'а) и «скрыть»
 // (×). Источник данных — реестр ошибок usePoll (subscribeErrors/getErrors);
-// poller'ы сами снимают ошибку при первом успешном fetch, поэтому отдельный
-// recovery-таймер легаси не нужен. Когда последняя ошибка снялась — тост
-// «Соединение восстановлено» (без location.reload: poller'ы уже обновились).
+// он показывает только живые poller'ы, а отдельная recovery-версия отличает
+// успешное восстановление от unmount/deactivate/dismiss.
 import { useEffect, useRef, useSyncExternalStore, type ReactElement } from "react";
-import { dismissError, getErrors, refreshPoller, subscribeErrors, type PollError } from "@/lib/usePoll";
+import {
+  dismissError,
+  getErrorRecoveryVersion,
+  getErrors,
+  refreshPoller,
+  subscribeErrors,
+  type PollError,
+} from "@/lib/usePoll";
 import { sourceName } from "@/lib/sources";
 import { toast } from "@/lib/toast";
 import { Dot } from "@/components/ui";
@@ -17,19 +23,15 @@ const SERVER_ERRORS: PollError[] = [];
 
 export function ErrorCenter(): ReactElement | null {
   const errors = useSyncExternalStore(subscribeErrors, getErrors, () => SERVER_ERRORS);
+  const recoveryVersion = useSyncExternalStore(subscribeErrors, getErrorRecoveryVersion, () => 0);
+  const initialRecoveryVersion = useRef(recoveryVersion);
 
-  // Тост восстановления — один раз, когда список ошибок опустел после непустого.
-  const hadErrors = useRef(false);
   useEffect(() => {
-    if (errors.length) {
-      hadErrors.current = true;
-      return;
-    }
-    if (hadErrors.current) {
-      hadErrors.current = false;
+    if (recoveryVersion > initialRecoveryVersion.current) {
+      initialRecoveryVersion.current = recoveryVersion;
       toast("Соединение восстановлено. Панель сейчас обновится.");
     }
-  }, [errors.length]);
+  }, [recoveryVersion]);
 
   if (!errors.length) return null;
   return (

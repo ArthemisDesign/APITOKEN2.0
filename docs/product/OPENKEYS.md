@@ -243,9 +243,9 @@ and all token counters. A failed account usage call is row-local
 `{status:"unavailable",window}`; a real zero remains `status:"available"` with exact zero
 usage. Responses, including auth/query errors, are `no-store`; invalid auth is hidden as
 `404`, invalid query is `400`. The contract excludes the full secret, view token, engine
-key id, digest and warehouse ciphertext/nonce. This is the producer checkpoint only:
-`apps/admin` must consume it in a separate change after the exact producer SHA has a GREEN
-`deploy/watchdog`.
+key id, digest and warehouse ciphertext/nonce. After GREEN exact producer SHA
+`558d4b34896792cfaed5760852f9001feb0d0443`, `apps/admin` consumes the endpoint in the
+OpenKeys cohort of `/paying-users`; only the visible cohort mounts its poller.
 
 ## First launch on the server
 

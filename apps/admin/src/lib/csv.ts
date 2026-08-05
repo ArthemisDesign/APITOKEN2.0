@@ -10,6 +10,24 @@ export function csvCell(value: unknown): string {
   return /[";\n\r]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
 }
 
+/** Защищает недоверенный текст от формул в таблицах, сохраняя обычные строки как есть. */
+export function spreadsheetSafeText(value: unknown): string {
+  const text = String(value ?? "");
+  return /^[ \t]*[=+\-@]/.test(text) ? `'${text}` : text;
+}
+
+/**
+ * Сериализует точную десятичную integer-строку как spreadsheet text (с апострофом).
+ * Невалидный ввод остаётся безопасным текстом; пустое недоступное значение остаётся пустым.
+ */
+export function spreadsheetExactInteger(value: unknown): string {
+  const text = String(value ?? "");
+  if (!text) return "";
+  // Даже нарушивший producer-контракт ввод остаётся явным текстом, а не формулой/числом.
+  if (!/^\d+$/.test(text)) return `'${text}`;
+  return `'${text}`;
+}
+
 // Весь CSV целиком: строки через CRLF, BOM (\uFEFF) в начале.
 export function buildCsv(header: unknown[], rows: unknown[][]): string {
   return "\uFEFF" + [header, ...rows].map((row) => row.map(csvCell).join(";")).join("\r\n");

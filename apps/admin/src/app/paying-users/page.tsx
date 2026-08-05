@@ -1,19 +1,38 @@
 "use client";
 
 import {
+  Fragment,
   memo,
   startTransition,
   useCallback,
   useEffect,
   useState,
+  type Dispatch,
   type FormEvent,
+  type KeyboardEvent,
   type ReactElement,
+  type SetStateAction,
 } from "react";
 import { api } from "@/lib/api";
 import { csvDate, downloadCsv } from "@/lib/csv";
-import { ago, count, nanoMoney } from "@/lib/format";
+import { ago, count, formatDate, nanoMoney } from "@/lib/format";
 import { usePoll } from "@/lib/usePoll";
 import { Dot, EmptyRow, LoadingGrid, PageHead, Pill, SectionHeader, TableCard } from "@/components/ui";
+import {
+  buildOpenkeysPayingCsvRows,
+  clampOpenkeysPayingOffset,
+  INITIAL_OPENKEYS_PAYING_PAGE,
+  OPENKEYS_PAYING_CSV_HEADER,
+  OPENKEYS_PAYING_MAX_OFFSET,
+  openkeysChargedNano,
+  openkeysPayingQuery,
+  providerLabel,
+  type OpenkeysPayingDays,
+  type OpenkeysPayingPageState,
+  type OpenkeysPayingResponse,
+  type OpenkeysPayingRow,
+  type OpenkeysUsageModel,
+} from "./openkeys-paying-lib";
 import {
   buildPayingUsersCsvRows,
   INITIAL_PAYING_USERS_PAGE,
@@ -21,6 +40,7 @@ import {
   PAYING_USER_FUNDINGS,
   PAYING_USER_SORTS,
   PAYING_USERS_CSV_HEADER,
+  payingCohortUsers,
   payingTierLabel,
   payingUsersQuery,
   providerNano,
@@ -45,6 +65,86 @@ const WINDOWS: Array<{ days: PayingUserDays; label: string }> = [
   { days: 30, label: "30 дней" },
 ];
 
+type PayingCohort = "customers" | "openkeys";
+
+type CohortControlsProps = {
+  cohort: PayingCohort;
+  days: PayingUserDays;
+  customerTotal?: number;
+  openkeysTotal?: number;
+  onCohortChange: (cohort: PayingCohort) => void;
+  onDaysChange: (days: PayingUserDays) => void;
+};
+
+function CohortControls({ cohort, days, customerTotal, openkeysTotal, onCohortChange, onDaysChange }: CohortControlsProps): ReactElement {
+  const onTabsKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const next = cohort === "customers" ? "openkeys" : "customers";
+    onCohortChange(next);
+    requestAnimationFrame(() => document.getElementById(`paying-tab-${next}`)?.focus());
+  };
+  return (
+    <>
+      <PageHead
+        title="Платящие"
+        sub={cohort === "customers"
+          ? "единая когорта клиентов с денежным финансированием и строгим бонусным расходом · точный расход Claude, GPT и Gemini"
+          : "выданные OpenKeys · номинал и live usage движка остаются отдельной денежной властью"}
+        badge={cohort === "customers"
+          ? (customerTotal == null ? undefined : <Pill kind="ok">{count(customerTotal, "клиент", "клиента", "клиентов")}</Pill>)
+          : (openkeysTotal == null ? undefined : <Pill kind="info">{count(openkeysTotal, "ключ", "ключа", "ключей")}</Pill>)}
+      />
+      <div className="paying-controls">
+        <div className="paying-cohort-tabs" role="tablist" aria-label="Денежная когорта" onKeyDown={onTabsKeyDown}>
+          <button
+            type="button"
+            role="tab"
+            id="paying-tab-customers"
+            aria-controls={cohort === "customers" ? "paying-panel-customers" : undefined}
+            aria-selected={cohort === "customers"}
+            tabIndex={cohort === "customers" ? 0 : -1}
+            className={cohort === "customers" ? "on" : ""}
+            onClick={() => onCohortChange("customers")}
+          >
+            <span aria-hidden="true">C</span>
+            <b>Клиенты</b>
+            <small>commerce ledger</small>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="paying-tab-openkeys"
+            aria-controls={cohort === "openkeys" ? "paying-panel-openkeys" : undefined}
+            aria-selected={cohort === "openkeys"}
+            tabIndex={cohort === "openkeys" ? 0 : -1}
+            className={cohort === "openkeys" ? "on" : ""}
+            onClick={() => onCohortChange("openkeys")}
+          >
+            <span aria-hidden="true">O</span>
+            <b>OpenKeys</b>
+            <small>prepaid authority</small>
+          </button>
+        </div>
+        <div className="paying-window-switch" role="group" aria-label="Окно расхода">
+          <span>Окно расхода</span>
+          {WINDOWS.map((window) => (
+            <button
+              type="button"
+              key={window.days}
+              className={days === window.days ? "on" : ""}
+              aria-pressed={days === window.days}
+              onClick={() => onDaysChange(window.days)}
+            >
+              {window.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
 const shareText = (basisPoints: number): string =>
   basisPoints <= 0 ? "0%" : `${(basisPoints / 100).toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
 
@@ -67,9 +167,17 @@ function ProviderCell({ row, provider }: { row: PayingUserRow; provider: (typeof
   );
 }
 
-const PayingRow = memo(function PayingRow({ row, rank, days }: { row: PayingUserRow; rank: number; days: PayingUserDays }) {
+export const PayingRow = memo(function PayingRow({ row, rank, days }: { row: PayingUserRow; rank: number; days: PayingUserDays }) {
   const other = providerNano(row.provider_spend, "other");
   const discount = row.multiplier_bp == null ? null : 100 - row.multiplier_bp / 100;
+  const fundingLabel = row.funding_kind === "payments"
+    ? "платёжный провайдер"
+    : row.funding_kind === "payments_and_manual"
+      ? "платёж + ручное"
+      : row.funding_kind === "manual"
+        ? "ручное пополнение"
+        : null;
+  const bonusOnly = row.funding_kind === "bonus_only";
   return (
     <tr>
       <td className="left paying-customer-cell">
@@ -85,14 +193,24 @@ const PayingRow = memo(function PayingRow({ row, rank, days }: { row: PayingUser
         </span>
       </td>
       <td className="paying-money-cell">
-        <b>{nanoMoney(row.paid_nano)}</b>
-        <span className="sub">
-          {row.payments_count ?? 0} платежей
-          {(row.manual_topups_count ?? 0) > 0 ? ` · ${row.manual_topups_count} ручных` : ""} · {ago(row.last_paid_at)}
-        </span>
-        {isPositiveNano(row.manual_paid_nano) ? (
-          <span className="sub">вручную {nanoMoney(row.manual_paid_nano)}</span>
-        ) : null}
+        {bonusOnly ? (
+          <>
+            <Pill kind="info">только бонус</Pill>
+            <b>{nanoMoney(row.bonus_funded_spent_nano)}</b>
+            <span className="sub">денежных пополнений нет</span>
+          </>
+        ) : (
+          <>
+            {fundingLabel ? <Pill kind="ok">{fundingLabel}</Pill> : null}
+            <b>{nanoMoney(row.paid_nano)}</b>
+            <span className="sub">
+              {row.funding_kind === "manual"
+                ? `${count(row.manual_topups_count ?? 0, "ручное пополнение", "ручных пополнения", "ручных пополнений")} · ${ago(row.last_paid_at)}`
+                : `${row.payments_count ?? 0} платежей${(row.manual_topups_count ?? 0) > 0 ? ` · ${row.manual_topups_count} ручных` : ""} · ${ago(row.last_paid_at)}`}
+            </span>
+            {isPositiveNano(row.manual_paid_nano) ? <span className="sub">вручную {nanoMoney(row.manual_paid_nano)}</span> : null}
+          </>
+        )}
       </td>
       <td className="paying-money-cell paying-window-total">
         <b>{nanoMoney(row.spent_nano)}</b>
@@ -108,7 +226,7 @@ const PayingRow = memo(function PayingRow({ row, rank, days }: { row: PayingUser
   );
 });
 
-function PayingLedger({
+export function PayingLedger({
   data,
   activeProvider,
   onProviderSelect,
@@ -121,18 +239,24 @@ function PayingLedger({
   const spend = summary.provider_spend;
   const spentTotal = summary.spent_nano ?? "0";
   const other = providerNano(spend, "other");
+  const days = data.days ?? 30;
   return (
-    <section className="paying-ledger" aria-label="Сводка платящих клиентов">
+    <section className="paying-ledger" aria-label="Сводка клиентской когорты">
       <div className="paying-ledger-lead">
-        <span>Оплачено клиентами</span>
+        <span>Получено денег</span>
         <strong>{nanoMoney(summary.paid_nano)}</strong>
         <small>
-          за всё время · {count(summary.paying_users ?? 0, "клиент", "клиента", "клиентов")}
-          {isPositiveNano(summary.manual_paid_nano) ? ` · вручную ${nanoMoney(summary.manual_paid_nano)}` : ""}
+          за всё время · платежи и ручные пополнения · {count(summary.paying_users ?? 0, "денежный клиент", "денежных клиента", "денежных клиентов")}
+          {summary.manual_paid_nano == null ? "" : ` · вручную ${nanoMoney(summary.manual_paid_nano)}`}
         </small>
       </div>
+      <div className="paying-ledger-bonus">
+        <span>Списано бонуса · {spendWindowLabel(days)}</span>
+        <strong>{nanoMoney(summary.bonus_only_spent_nano)}</strong>
+        <small>{count(summary.bonus_only_users ?? 0, "bonus-only клиент", "bonus-only клиента", "bonus-only клиентов")} · не выручка</small>
+      </div>
       <div className="paying-ledger-window">
-        <span>Расход · {spendWindowLabel(data.days ?? 30)}</span>
+        <span>Расход когорты · {spendWindowLabel(days)}</span>
         <strong>{nanoMoney(spentTotal)}</strong>
         <small>{summary.active_spenders ?? 0} клиентов тратили · обновлено {ago(data.generated_at)}</small>
       </div>
@@ -142,9 +266,7 @@ function PayingLedger({
             const share = providerShareBp(providerNano(spend, provider.id), spentTotal);
             return <i key={provider.id} className={provider.className} style={{ width: `${share / 100}%` }} />;
           })}
-          {isPositiveNano(other) ? (
-            <i className="other" style={{ width: `${providerShareBp(other, spentTotal) / 100}%` }} />
-          ) : null}
+          {isPositiveNano(other) ? <i className="other" style={{ width: `${providerShareBp(other, spentTotal) / 100}%` }} /> : null}
         </div>
         <div className="paying-provider-summaries">
           {PROVIDERS.map((provider) => {
@@ -177,167 +299,264 @@ function PayingLedger({
   );
 }
 
-export default function PayingUsersPage() {
-  const [page, setPage] = useState<PayingUsersPageState>(INITIAL_PAYING_USERS_PAGE);
-  const [search, setSearch] = useState("");
+type CustomerCohortProps = {
+  page: PayingUsersPageState;
+  search: string;
+  setPage: Dispatch<SetStateAction<PayingUsersPageState>>;
+  setSearch: Dispatch<SetStateAction<string>>;
+  onTotalChange: (total: number) => void;
+};
+
+function CustomerCohort({ page, search, setPage, setSearch, onTotalChange }: CustomerCohortProps): ReactElement {
   const query = payingUsersQuery(page);
   const { data } = usePoll(
     `/admin/finance/paying-users?${query}`,
     () => api<PayingUsersResponse>(`/admin/finance/paying-users?${query}`),
     { interval: 30_000 },
   );
-
   const patchPage = useCallback((patch: Partial<PayingUsersPageState>, resetOffset = true) => {
     startTransition(() => setPage((current) => ({ ...current, ...patch, ...(resetOffset ? { offset: 0 } : {}) })));
-  }, []);
+  }, [setPage]);
 
   useEffect(() => {
-    const total = data?.total ?? 0;
+    if (!data) return;
+    onTotalChange(payingCohortUsers(data.summary));
+    const total = data.total ?? 0;
     if (total > 0 && page.offset >= total) {
       const offset = Math.max(0, Math.floor((total - 1) / page.limit) * page.limit);
       startTransition(() => setPage((current) => current.offset === offset ? current : { ...current, offset }));
     }
-  }, [data, page.limit, page.offset]);
+  }, [data, onTotalChange, page.limit, page.offset, setPage]);
 
   const submitSearch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     patchPage({ q: search.trim() });
   };
 
-  if (!data) {
-    return (
-      <>
-        <PageHead title="Платящие" sub="денежный радар по клиентам и провайдерам" />
-        <LoadingGrid count={6} />
-      </>
-    );
-  }
+  return (
+    <div id="paying-panel-customers" role="tabpanel" aria-labelledby="paying-tab-customers">
+      {!data ? <LoadingGrid count={6} /> : (
+        <>
+          <PayingLedger
+            data={data}
+            activeProvider={page.provider}
+            onProviderSelect={(provider) => patchPage({ provider })}
+          />
+          <SectionHeader title="Клиенты: деньги и бонус" sub={`${data.total ?? 0} по текущему фильтру · суммы в выбранном окне`} />
+          <form className="paying-toolbar" onSubmit={submitSearch}>
+            <label className="sr-only" htmlFor="paying-search">Поиск клиентов денежной и бонусной когорты</label>
+            <input id="paying-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="email, имя или UUID…" />
+            <label className="sr-only" htmlFor="paying-status">Статус</label>
+            <select id="paying-status" value={page.status} onChange={(event) => patchPage({ status: event.target.value as PayingUsersPageState["status"] })}>
+              <option value="">все статусы</option><option value="active">активные</option><option value="disabled">отключённые</option>
+            </select>
+            <label className="sr-only" htmlFor="paying-provider">Провайдер</label>
+            <select id="paying-provider" value={page.provider} onChange={(event) => patchPage({ provider: event.target.value as PayingUsersPageState["provider"] })}>
+              <option value="">все провайдеры</option><option value="anthropic">Claude</option><option value="openai">GPT</option><option value="google">Gemini</option><option value="other">другое / legacy</option>
+            </select>
+            <label className="sr-only" htmlFor="paying-funding">Финансирование клиентской когорты</label>
+            <select id="paying-funding" value={page.funding} title="Выберите денежное финансирование, строгий bonus-only расход или объединённую когорту" onChange={(event) => patchPage({ funding: event.target.value as PayingUsersPageState["funding"] })}>
+              {PAYING_USER_FUNDINGS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+            <label className="sr-only" htmlFor="paying-sort">Сортировка</label>
+            <select id="paying-sort" value={page.sort} onChange={(event) => patchPage({ sort: event.target.value as PayingUsersPageState["sort"] })}>
+              {PAYING_USER_SORTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+            <button type="button" className="paying-dir" aria-label={page.dir === "desc" ? "Сейчас по убыванию; переключить на возрастание" : "Сейчас по возрастанию; переключить на убывание"} title={page.dir === "desc" ? "По убыванию" : "По возрастанию"} onClick={() => patchPage({ dir: page.dir === "desc" ? "asc" : "desc" })}>
+              {page.dir === "desc" ? "↓" : "↑"}
+            </button>
+            <button className="btn" type="submit">Найти</button>
+            <button className="btn ghost" type="button" title="Выгрузить текущую страницу в CSV" onClick={() => downloadCsv(`paying-users-${page.days}d-${csvDate()}.csv`, PAYING_USERS_CSV_HEADER, buildPayingUsersCsvRows(data.rows ?? []))}>CSV</button>
+          </form>
+          <TableCard>
+            <table className="paying-table">
+              <thead><tr><th className="left">клиент</th><th>финансирование</th><th>расход · {page.days === 1 ? "24ч" : `${page.days}д`}</th>{PROVIDERS.map((provider) => <th key={provider.id} className={`paying-provider-head ${provider.className}`}><i />{provider.label}</th>)}<th>активность</th></tr></thead>
+              <tbody>
+                {(data.rows ?? []).length ? (data.rows ?? []).map((row, index) => <PayingRow key={row.user_id ?? row.email ?? index} row={row} rank={(data.offset ?? page.offset) + index + 1} days={page.days} />) : <EmptyRow columns={7} text="клиентов выбранной когорты по этому фильтру нет" />}
+              </tbody>
+            </table>
+          </TableCard>
+          <div className="pager">
+            <span>{data.total ? (data.offset ?? page.offset) + 1 : 0}–{Math.min((data.offset ?? page.offset) + (data.limit ?? page.limit), data.total ?? 0)} из {data.total ?? 0}</span>
+            <button type="button" className="btn ghost" disabled={(data.offset ?? page.offset) <= 0} onClick={() => patchPage({ offset: Math.max(0, (data.offset ?? page.offset) - (data.limit ?? page.limit)) }, false)}>Назад</button>
+            <button type="button" className="btn ghost" disabled={(data.offset ?? page.offset) + (data.limit ?? page.limit) >= (data.total ?? 0)} onClick={() => patchPage({ offset: (data.offset ?? page.offset) + (data.limit ?? page.limit) }, false)}>Дальше</button>
+          </div>
+          <footer>
+            Режим «деньги + бонусный расход» объединяет клиентов с lifetime payment/manual funding и строгих bonus-only клиентов. Bonus-only требует положительный расход окна и полную immutable modern-атрибуцию policy_v1|release_v2: paid=0, bonus=spent, other=0, unattributed=0; legacy, mixed и incomplete события исключены. Бонусный расход не является выручкой. Расход аккаунтов без клиента — на странице «Расход движка».
+          </footer>
+        </>
+      )}
+    </div>
+  );
+}
 
-  const rows = data.rows ?? [];
-  const total = data.total ?? 0;
-  const effectiveOffset = data.offset ?? page.offset;
-  const effectiveLimit = data.limit ?? page.limit;
-  const payingTotal = data.summary?.paying_users ?? 0;
+function tokenSummary(model: OpenkeysUsageModel): string {
+  return `вх ${model.input_tokens} · вых ${model.output_tokens} · cache read ${model.cache_read_tokens} · write 5m ${model.cache_write_5m_tokens} · write 1h ${model.cache_write_1h_tokens}${model.web_search_requests ? ` · web ${model.web_search_requests}` : ""}`;
+}
+
+const OpenkeysModelTable = memo(function OpenkeysModelTable({ row }: { row: OpenkeysPayingRow }): ReactElement {
+  if (row.usage.status === "unavailable") {
+    return <p className="openkeys-usage-unavailable"><Pill kind="warn">usage недоступен</Pill> Движок не вернул данные за окно {row.usage.window}; это не нулевой расход.</p>;
+  }
+  if (!row.usage.models.length) {
+    return <p className="openkeys-usage-empty">Доступный отчёт: {row.usage.requests} запросов, моделей в окне нет. Official {nanoMoney(row.usage.total_official_nano)} · charged {nanoMoney(row.usage.total_charged_nano)}.</p>;
+  }
+  return (
+    <div className="openkeys-model-scroll">
+      <table className="openkeys-model-table">
+        <thead><tr><th className="left">провайдер</th><th className="left">модель</th><th>запросы</th><th className="left">токены</th><th>official</th><th>charged</th></tr></thead>
+        <tbody>{row.usage.models.map((model, index) => (
+          <tr key={`${model.provider ?? ""}:${model.model}:${index}`}>
+            <td className="left"><b>{providerLabel(model.provider)}</b></td>
+            <td className="left mono">{model.model}</td>
+            <td>{model.requests}</td>
+            <td className="left openkeys-token-data">{tokenSummary(model)}</td>
+            <td className="openkeys-official-money">{nanoMoney(model.official_nano)}</td>
+            <td className="openkeys-charged-money">{nanoMoney(model.charged_nano)}</td>
+          </tr>
+        ))}</tbody>
+      </table>
+    </div>
+  );
+});
+
+export function OpenkeysPayingTable({ data }: { data: OpenkeysPayingResponse }): ReactElement {
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const toggle = (id: string) => setExpanded((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  return (
+    <TableCard>
+      <table className="openkeys-paying-table">
+        <thead><tr><th className="left">ключ / партия / продавец</th><th>статус</th><th>номинал</th><th>charged · {data.days === 1 ? "24ч" : `${data.days}д`}</th><th>выдан</th></tr></thead>
+        <tbody>
+          {data.rows.length ? data.rows.map((row) => {
+            const detailsId = `openkeys-paying-details-${row.id}`;
+            const isExpanded = expanded.has(row.id);
+            const charged = openkeysChargedNano(row.usage);
+            return (
+              <Fragment key={row.id}>
+                <tr>
+                  <td className="left openkeys-key-register">
+                    <button type="button" className="openkeys-row-toggle" aria-expanded={isExpanded} aria-controls={isExpanded ? detailsId : undefined} onClick={() => toggle(row.id)}>
+                      <span aria-hidden="true">{isExpanded ? "−" : "+"}</span>
+                      <b className="mono">{row.keyMasked}</b>
+                    </button>
+                    <small><b>{row.batchLabel || "Без метки"}</b> · <span className="mono">{row.batchId}</span> · {row.createdBy}</small>
+                    <small className="mono">{row.engineAccountId} · {row.apiType}</small>
+                  </td>
+                  <td><Pill kind={row.enabled ? "ok" : "bad"}>{row.enabled ? "активен" : "отключён"}</Pill></td>
+                  <td className="openkeys-nominal-money"><b>{nanoMoney(row.faceValueNano)}</b><small>{row.pricingContract}</small></td>
+                  <td className="openkeys-charged-total">{charged === null ? <><Pill kind="warn">недоступен</Pill><small>не $0</small></> : <><b>{nanoMoney(charged)}</b><small>списано с ключа</small></>}</td>
+                  <td>{formatDate(row.deliveredAt, true)}</td>
+                </tr>
+                {isExpanded ? <tr id={detailsId} className="openkeys-model-row"><td colSpan={5}><OpenkeysModelTable row={row} /></td></tr> : null}
+              </Fragment>
+            );
+          }) : <EmptyRow columns={5} text="выданных OpenKeys по этому фильтру нет" />}
+        </tbody>
+      </table>
+    </TableCard>
+  );
+}
+
+type OpenkeysCohortProps = {
+  page: OpenkeysPayingPageState;
+  search: string;
+  setPage: Dispatch<SetStateAction<OpenkeysPayingPageState>>;
+  setSearch: Dispatch<SetStateAction<string>>;
+  onTotalChange: (total: number) => void;
+};
+
+function OpenkeysCohort({ page, search, setPage, setSearch, onTotalChange }: OpenkeysCohortProps): ReactElement {
+  const query = openkeysPayingQuery(page);
+  const { data } = usePoll(
+    `/openkeys-admin/paying-keys?${query}`,
+    () => api<OpenkeysPayingResponse>(`/openkeys-admin/paying-keys?${query}`),
+    { interval: 30_000 },
+  );
+  const patchPage = useCallback((patch: Partial<OpenkeysPayingPageState>, resetOffset = true) => {
+    startTransition(() => setPage((current) => ({ ...current, ...patch, ...(resetOffset ? { offset: 0 } : {}) })));
+  }, [setPage]);
+
+  useEffect(() => {
+    if (!data) return;
+    onTotalChange(data.total);
+    if (page.offset > 0 && page.offset >= data.total) {
+      const offset = clampOpenkeysPayingOffset(
+        data.total > 0 ? Math.floor((data.total - 1) / page.limit) * page.limit : 0,
+      );
+      startTransition(() => setPage((current) => current.offset === offset ? current : { ...current, offset }));
+    }
+  }, [data, onTotalChange, page.limit, page.offset, setPage]);
+
+  const submitSearch = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    patchPage({ q: search.trim().slice(0, 80) });
+  };
 
   return (
+    <div id="paying-panel-openkeys" role="tabpanel" aria-labelledby="paying-tab-openkeys">
+      {!data ? <LoadingGrid count={5} /> : (
+        <>
+          <SectionHeader title="OpenKeys" sub={`${data.total} выдано по текущему фильтру · usage не входит в commerce ledger`} />
+          <form className="paying-toolbar openkeys-paying-toolbar" onSubmit={submitSearch}>
+            <label className="sr-only" htmlFor="openkeys-paying-search">Поиск платящих OpenKeys</label>
+            <input id="openkeys-paying-search" type="search" maxLength={80} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="маска, партия, продавец или account…" />
+            <label className="sr-only" htmlFor="openkeys-paying-status">Статус OpenKeys</label>
+            <select id="openkeys-paying-status" value={page.status} onChange={(event) => patchPage({ status: event.target.value as OpenkeysPayingPageState["status"] })}>
+              <option value="all">все статусы</option><option value="active">активные</option><option value="disabled">отключённые</option>
+            </select>
+            <button className="btn" type="submit">Найти</button>
+            <button className="btn ghost" type="button" title="Выгрузить текущую страницу: одна строка на provider/model" onClick={() => downloadCsv(`openkeys-paying-${page.days}d-${csvDate()}.csv`, OPENKEYS_PAYING_CSV_HEADER, buildOpenkeysPayingCsvRows(data.rows))}>CSV</button>
+          </form>
+          <OpenkeysPayingTable data={data} />
+          <div className="pager">
+            <span>{data.total ? data.offset + 1 : 0}–{Math.min(data.offset + data.limit, data.total)} из {data.total}</span>
+            <button type="button" className="btn ghost" disabled={data.offset <= 0} onClick={() => patchPage({ offset: Math.max(0, data.offset - data.limit) }, false)}>Назад</button>
+            <button type="button" className="btn ghost" disabled={data.offset >= OPENKEYS_PAYING_MAX_OFFSET || data.offset + data.limit >= data.total} onClick={() => patchPage({ offset: clampOpenkeysPayingOffset(data.offset + data.limit) }, false)}>Дальше</button>
+          </div>
+          <footer>OpenKeys — отдельная prepaid-когорта. Номинал ключа и charged usage движка показаны отдельно; недоступный отчёт никогда не подменяется нулём и не добавляется в сводку commerce.</footer>
+        </>
+      )}
+    </div>
+  );
+}
+
+export default function PayingUsersPage(): ReactElement {
+  const [cohort, setCohort] = useState<PayingCohort>("customers");
+  const [days, setDays] = useState<PayingUserDays>(30);
+  const [customerPage, setCustomerPage] = useState<PayingUsersPageState>(INITIAL_PAYING_USERS_PAGE);
+  const [openkeysPage, setOpenkeysPage] = useState<OpenkeysPayingPageState>(INITIAL_OPENKEYS_PAYING_PAGE);
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [openkeysSearch, setOpenkeysSearch] = useState("");
+  const [customerTotal, setCustomerTotal] = useState<number>();
+  const [openkeysTotal, setOpenkeysTotal] = useState<number>();
+
+  const changeDays = useCallback((nextDays: PayingUserDays) => {
+    setDays(nextDays);
+    startTransition(() => {
+      setCustomerPage((current) => ({ ...current, days: nextDays, offset: 0 }));
+      setOpenkeysPage((current) => ({ ...current, days: nextDays as OpenkeysPayingDays, offset: 0 }));
+    });
+  }, []);
+  return (
     <div className="paying-page">
-      <PageHead
-        title="Платящие"
-        sub="клиенты с подтверждённой оплатой или ручным пополнением движка · фильтр источника денег · точный расход Claude, GPT и Gemini"
-        badge={<Pill kind="ok">{count(payingTotal, "клиент", "клиента", "клиентов")}</Pill>}
+      <CohortControls
+        cohort={cohort}
+        days={days}
+        customerTotal={customerTotal}
+        openkeysTotal={openkeysTotal}
+        onCohortChange={setCohort}
+        onDaysChange={changeDays}
       />
-
-      <div className="paying-window-switch" role="group" aria-label="Окно расхода">
-        <span>Окно расхода</span>
-        {WINDOWS.map((window) => (
-          <button
-            type="button"
-            key={window.days}
-            className={page.days === window.days ? "on" : ""}
-            aria-pressed={page.days === window.days}
-            onClick={() => patchPage({ days: window.days })}
-          >
-            {window.label}
-          </button>
-        ))}
-      </div>
-
-      <PayingLedger
-        data={data}
-        activeProvider={page.provider}
-        onProviderSelect={(provider) => patchPage({ provider })}
-      />
-
-      <SectionHeader title="Клиенты" sub={`${total} по текущему фильтру · суммы в выбранном окне`} />
-      <form className="paying-toolbar" onSubmit={submitSearch}>
-        <label className="sr-only" htmlFor="paying-search">Поиск платящих клиентов</label>
-        <input
-          id="paying-search"
-          type="search"
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="email, имя или UUID…"
-        />
-        <label className="sr-only" htmlFor="paying-status">Статус</label>
-        <select id="paying-status" value={page.status} onChange={(event) => patchPage({ status: event.target.value as PayingUsersPageState["status"] })}>
-          <option value="">все статусы</option>
-          <option value="active">активные</option>
-          <option value="disabled">отключённые</option>
-        </select>
-        <label className="sr-only" htmlFor="paying-provider">Провайдер</label>
-        <select id="paying-provider" value={page.provider} onChange={(event) => patchPage({ provider: event.target.value as PayingUsersPageState["provider"] })}>
-          <option value="">все провайдеры</option>
-          <option value="anthropic">Claude</option>
-          <option value="openai">GPT</option>
-          <option value="google">Gemini</option>
-          <option value="other">другое / legacy</option>
-        </select>
-        <label className="sr-only" htmlFor="paying-funding">Источник денег</label>
-        <select
-          id="paying-funding"
-          value={page.funding}
-          title="«Реальные пополнения» — есть подтверждённый платёж; «начисленные админом» — баланс выдан вручную"
-          onChange={(event) => patchPage({ funding: event.target.value as PayingUsersPageState["funding"] })}
-        >
-          {PAYING_USER_FUNDINGS.map(([value, label]) => <option key={value || "any"} value={value}>{label}</option>)}
-        </select>
-        <label className="sr-only" htmlFor="paying-sort">Сортировка</label>
-        <select id="paying-sort" value={page.sort} onChange={(event) => patchPage({ sort: event.target.value as PayingUsersPageState["sort"] })}>
-          {PAYING_USER_SORTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-        </select>
-        <button
-          type="button"
-          className="paying-dir"
-          aria-label={page.dir === "desc" ? "Сейчас по убыванию; переключить на возрастание" : "Сейчас по возрастанию; переключить на убывание"}
-          title={page.dir === "desc" ? "По убыванию" : "По возрастанию"}
-          onClick={() => patchPage({ dir: page.dir === "desc" ? "asc" : "desc" })}
-        >
-          {page.dir === "desc" ? "↓" : "↑"}
-        </button>
-        <button className="btn" type="submit">Найти</button>
-        <button
-          className="btn ghost"
-          type="button"
-          title="Выгрузить текущую страницу в CSV"
-          onClick={() => downloadCsv(`paying-users-${page.days}d-${csvDate()}.csv`, PAYING_USERS_CSV_HEADER, buildPayingUsersCsvRows(rows))}
-        >
-          CSV
-        </button>
-      </form>
-
-      <TableCard>
-        <table className="paying-table">
-          <thead>
-            <tr>
-              <th className="left">клиент</th>
-              <th>оплачено</th>
-              <th>расход · {page.days === 1 ? "24ч" : `${page.days}д`}</th>
-              {PROVIDERS.map((provider) => <th key={provider.id} className={`paying-provider-head ${provider.className}`}><i />{provider.label}</th>)}
-              <th>активность</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length ? rows.map((row, index) => (
-              <PayingRow key={row.user_id ?? row.email ?? index} row={row} rank={effectiveOffset + index + 1} days={page.days} />
-            )) : <EmptyRow columns={7} text="платящих клиентов по этому фильтру нет" />}
-          </tbody>
-        </table>
-      </TableCard>
-
-      <div className="pager">
-        <span>{total ? effectiveOffset + 1 : 0}–{Math.min(effectiveOffset + effectiveLimit, total)} из {total}</span>
-        <button type="button" className="btn ghost" disabled={effectiveOffset <= 0} onClick={() => patchPage({ offset: Math.max(0, effectiveOffset - effectiveLimit) }, false)}>
-          Назад
-        </button>
-        <button type="button" className="btn ghost" disabled={effectiveOffset + effectiveLimit >= total} onClick={() => patchPage({ offset: effectiveOffset + effectiveLimit }, false)}>
-          Дальше
-        </button>
-      </div>
-      <footer>
-        Платящий клиент — пользователь с подтверждённым платежом ИЛИ ручным пополнением баланса
-        движка (admin-credit); welcome-бонусы и промо деньгами не считаются. Расход взят из
-        immutable usage events коммерции; расход аккаунтов без клиента — на странице «Расход движка».
-      </footer>
+      {cohort === "customers" ? (
+        <CustomerCohort page={customerPage} search={customerSearch} setPage={setCustomerPage} setSearch={setCustomerSearch} onTotalChange={setCustomerTotal} />
+      ) : (
+        <OpenkeysCohort page={openkeysPage} search={openkeysSearch} setPage={setOpenkeysPage} setSearch={setOpenkeysSearch} onTotalChange={setOpenkeysTotal} />
+      )}
     </div>
   );
 }

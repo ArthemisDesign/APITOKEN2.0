@@ -177,25 +177,51 @@ does not switch clients over.
 ## Paying customers
 
 The `/paying-users` page is a separate compact read-only control room, not a filter of the
-general `/users` table. It receives an expand-only snapshot from commerce
-`GET /admin/finance/paying-users?days=1|7|30`: the selection includes only users with at
-least one `payments.status='paid'`, and search, provider/status filters, sorting and
-pagination stay on the server and therefore do not degrade as the customer base grows.
+general `/users` table. It receives an expand-only snapshot from commerce and explicitly
+requests `GET /admin/finance/paying-users?days=1|7|30&funding=all`. This combines the
+lifetime money-funded cohort (confirmed payments and admin-issued manual engine top-ups)
+with strict bonus-only spenders in the selected window. A bonus-only user has no lifetime
+payment/manual funding, positive window spend, and every event is complete immutable modern
+`policy_v1|release_v2` attribution with `paid=0`, `bonus=spent`, `other=0` and
+`unattributed=0`; legacy, mixed and incomplete rows are excluded. Search,
+provider/status/funding filters, sorting and pagination stay on the server and therefore do
+not degrade as the customer base grows. The additive bonus contract is consumed only after
+GREEN exact producer SHA `b12a08fe872fb08a88943d7ade0a75a3e567b579`.
 
-The top ledger shows the lifetime paid total, the spend of the selected window, the number
-of active spenders and a single proportional Claude/GPT/Gemini rail. The provider segments
-simultaneously serve as quick filters. The table below ranks customers and in one row
-shows the paid total, window spend and exact charged nanoUSD separately for
-Anthropic/OpenAI/Google. Provider authority is taken from the immutable
-pricing-attribution, and for legacy pricing — from the stored top-level provider engine
-ledger; the worker also reprocesses previously provisional `unattributed` rows after
-producer evidence appears. Versioned recovery v2 also re-selects old `unavailable` rows
-created by the weak request-ID-only algorithm, recovers still-available 30-day rows by the
-strict settlement fingerprint and marks each exact/exhausted result with version `2`. A
-model ID is never converted into a provider; remaining ambiguity is not lost and is shown
-as `другое` ("other"). All money computations and CSV exports keep decimal nanoUSD
-strings; JS `number` is used only for the bounded 0–10000 basis-points fraction. The page
-polls every 30 seconds and performs no money mutations.
+The top ledger separates lifetime money received (`paid_nano`, including the manual amount
+in its copy) from the neutral selected-window bonus-only card (`bonus_only_spent_nano` and
+`bonus_only_users`); bonus spend is not revenue. Window spend and the proportional
+Claude/GPT/Gemini rail cover the whole selected cohort, and provider segments also serve as
+quick filters. The table branches bonus rows only on producer-authored
+`funding_kind='bonus_only'`, never by inferring from zero money, while money rows distinguish
+payments, payment plus manual, and manual funding. It shows exact charged nanoUSD separately
+for Anthropic/OpenAI/Google. Provider authority is taken from immutable pricing attribution,
+and for legacy pricing — from the stored top-level provider engine ledger; the worker also
+reprocesses previously provisional `unattributed` rows after producer evidence appears.
+Versioned recovery v2 re-selects old `unavailable` rows created by the weak request-ID-only
+algorithm, recovers still-available 30-day rows by the strict settlement fingerprint and
+marks each exact/exhausted result with version `2`. A model ID is never converted into a
+provider; remaining ambiguity is not lost and is shown as `другое` ("other"). Commerce CSV
+keeps raw decimal nanoUSD strings and adds `funding_kind` plus the exact
+`paid_funded_spent_nano`, `bonus_funded_spent_nano`, `other_funded_spent_nano` and
+`unattributed_spent_nano` legs; JS `number` is used only for the bounded 0–10000
+basis-points fraction.
+
+The same page has a separate `OpenKeys` cohort backed by the same-origin read-only
+`GET /openkeys-admin/paying-keys?days=1|7|30&limit&offset&q&status`. It shows only delivered,
+non-removed keys, with mask/batch/seller, enabled state, face value, exact charged window total
+and delivery time. Expanding a key shows the producer-authored provider and model rows, token
+counters, and official versus charged nanoUSD separately; provider is never inferred from model
+or API type. A row-local unavailable report is explicit and is never displayed as `$0`. CSV keeps
+one row per key × provider × model (and one row for a key without models), includes stable key and
+engine-account IDs, and labels money columns `*_nanoUSD_text`; their decimal integers carry a leading
+apostrophe so spreadsheets preserve every digit. Untrusted text that could start a spreadsheet formula
+is apostrophe-prefixed as well. OpenKeys totals do not enter the commerce ledger summary.
+
+The window switch is shared, while search/status/pagination state is independent per cohort and
+an interval change resets offsets without clearing filters. Only the visible cohort component and
+its 30-second poller are mounted; the hidden producer is not called, including by the global
+refresh control. The page performs no money mutations.
 
 ## GPT capacity board on the subscriptions page
 

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __clearPollersForTests,
   dismissError,
+  getErrorRecoveryVersion,
   getErrors,
   getPoller,
   refreshPoller,
@@ -77,6 +78,47 @@ describe("getPoller", () => {
     expect(fetcher).toHaveBeenCalledTimes(5); // таймер остановлен после отписки
   });
 
+  it("stale snapshot немедленно обновляется при remount, свежий cache сеть не вызывает", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn(async () => fetcher.mock.calls.length);
+    const poller = getPoller("remount", fetcher, { interval: 1000 });
+    const unsubscribe = poller.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    const unsubscribeFresh = poller.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    unsubscribeFresh();
+
+    await vi.advanceTimersByTimeAsync(1000);
+    const unsubscribeStale = poller.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    unsubscribeStale();
+  });
+
+  it("error snapshot немедленно повторяется при remount", async () => {
+    let fail = true;
+    const fetcher = vi.fn(async () => {
+      if (fail) throw new Error("HTTP 503");
+      return "восстановлено";
+    });
+    const poller = getPoller<string>("error-remount", fetcher, { interval: 30_000 });
+    const unsubscribe = poller.subscribe(() => {});
+    await flush();
+    expect(poller.getSnapshot().error?.message).toBe("HTTP 503");
+    unsubscribe();
+
+    fail = false;
+    const unsubscribeRecovered = poller.subscribe(() => {});
+    await flush();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(poller.getSnapshot()).toMatchObject({ data: "восстановлено", error: undefined });
+    unsubscribeRecovered();
+  });
+
   it("ошибка попадает в snapshot, старые данные сохраняются", async () => {
     let fail = false;
     const fetcher = vi.fn(async () => {
@@ -97,24 +139,25 @@ describe("getPoller", () => {
     expect(snapshot.isLoading).toBe(false);
   });
 
-  it("revalidateAll перезагружает все живые poller'ы", async () => {
+  it("revalidateAll перезагружает только poller'ы с живыми подписчиками", async () => {
     const a = vi.fn(async () => "a");
     const b = vi.fn(async () => "b");
-    getPoller("ra-a", a).subscribe(() => {});
+    const unsubscribeA = getPoller("ra-a", a).subscribe(() => {});
     getPoller("ra-b", b).subscribe(() => {});
     await flush();
     expect(a).toHaveBeenCalledTimes(1);
     expect(b).toHaveBeenCalledTimes(1);
 
+    unsubscribeA();
     revalidateAll();
     await flush();
-    expect(a).toHaveBeenCalledTimes(2);
+    expect(a).toHaveBeenCalledTimes(1);
     expect(b).toHaveBeenCalledTimes(2);
   });
 });
 
 describe("реестр ошибок источников (ErrorCenter)", () => {
-  it("ошибка fetch попадает в getErrors, успех её снимает", async () => {
+  it("успешный retry живого источника снимает ошибку и увеличивает recovery version", async () => {
     let fail = true;
     const fetcher = vi.fn(async () => {
       if (fail) throw new Error("HTTP 503");
@@ -124,16 +167,20 @@ describe("реестр ошибок источников (ErrorCenter)", () => {
     poller.subscribe(() => {});
     await flush();
     expect(getErrors()).toEqual([{ key: "src-a", message: "HTTP 503", dismissed: false }]);
+    expect(getErrorRecoveryVersion()).toBe(0);
 
     fail = false;
     poller.refresh();
     await flush();
     expect(getErrors()).toEqual([]);
+    expect(getErrorRecoveryVersion()).toBe(1);
   });
 
-  it("dismissError скрывает ошибку; при повторном падении dismissed сохраняется", async () => {
+  it("dismissError скрывает ошибку; повторное падение и успех не создают recovery", async () => {
+    let fail = true;
     const fetcher = vi.fn(async () => {
-      throw new Error("HTTP 500");
+      if (fail) throw new Error("HTTP 500");
+      return "данные";
     });
     const poller = getPoller<string>("src-b", fetcher);
     poller.subscribe(() => {});
@@ -147,6 +194,10 @@ describe("реестр ошибок источников (ErrorCenter)", () => {
     await flush();
     // Ошибка обновилась в реестре, но остаётся скрытой (как в admin-panel.js).
     expect(getErrors()).toEqual([]);
+    fail = false;
+    poller.refresh();
+    await flush();
+    expect(getErrorRecoveryVersion()).toBe(0);
   });
 
   it("subscribeErrors уведомляет о появлении и снятии ошибок", async () => {
@@ -167,14 +218,58 @@ describe("реестр ошибок источников (ErrorCenter)", () => {
     unsubscribe();
   });
 
-  it("refreshPoller перезапрашивает конкретный источник (кнопка ↻)", async () => {
+  it("refreshPoller перезапрашивает только смонтированный источник (кнопка ↻)", async () => {
     const fetcher = vi.fn(async () => "x");
-    getPoller("src-d", fetcher).subscribe(() => {});
+    const unsubscribe = getPoller("src-d", fetcher).subscribe(() => {});
     await flush();
     expect(fetcher).toHaveBeenCalledTimes(1);
     refreshPoller("src-d");
     await flush();
     expect(fetcher).toHaveBeenCalledTimes(2);
-    refreshPoller("нет-такого"); // no-op, не падает
+
+    unsubscribe();
+    refreshPoller("src-d");
+    refreshPoller("нет-такого");
+    await flush();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("deactivate скрывает ошибку без recovery, remount показывает cache и повторяет fetch", async () => {
+    const fetcher = vi.fn(async () => {
+      throw new Error("скрытый сбой");
+    });
+    const poller = getPoller("src-unmounted", fetcher);
+    const unsubscribe = poller.subscribe(() => {});
+    await flush();
+    expect(getErrors()).toHaveLength(1);
+
+    unsubscribe();
+    expect(getErrors()).toEqual([]);
+    expect(getErrorRecoveryVersion()).toBe(0);
+    expect(poller.getSnapshot().error?.message).toBe("скрытый сбой");
+
+    const unsubscribeRemount = poller.subscribe(() => {});
+    expect(getErrors()).toHaveLength(1);
+    await flush();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(getErrors()).toHaveLength(1);
+    expect(getErrorRecoveryVersion()).toBe(0);
+    unsubscribeRemount();
+  });
+
+  it("pending rejection после последней отписки обновляет snapshot, но не публикует ошибку", async () => {
+    let rejectFetch!: (error: Error) => void;
+    const poller = getPoller(
+      "src-race",
+      () => new Promise<never>((_resolve, reject) => (rejectFetch = reject)),
+    );
+    const unsubscribe = poller.subscribe(() => {});
+    unsubscribe();
+
+    rejectFetch(new Error("поздний сбой"));
+    await flush();
+    expect(poller.getSnapshot().error?.message).toBe("поздний сбой");
+    expect(getErrors()).toEqual([]);
+    expect(getErrorRecoveryVersion()).toBe(0);
   });
 });

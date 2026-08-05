@@ -16,11 +16,12 @@ No secrets, and there never will be: the browser uses same-origin relative paths
 - `src/lib/api.ts` — `api<T>(path, opts)` / `send<T>(path, method, body)`: typed fetch
   for same-origin JSON, `ApiError` with the status and the message from the body.
 - `src/lib/usePoll.ts` — `usePoll(key, fetcher, { interval })`: SWR-like polling
-  (deduplication by key, pause on a hidden tab, revalidation on focus,
-  stale-while-revalidate). `revalidateAll()` — the ↻ button in the sidebar.
-  Source error registry: `subscribeErrors(listener)` / `getErrors()`
-  (`PollError { key, message, dismissed }`), `dismissError(key)`,
-  `refreshPoller(key)` — appears/clears itself based on the outcome of each fetch.
+  (deduplication by key, pause on a hidden tab, revalidation on focus/remount,
+  stale-while-revalidate). `revalidateAll()` — the ↻ button in the sidebar; global refresh
+  and `refreshPoller(key)` call only sources with live subscribers, so an unmounted cohort
+  never performs a hidden request; its stale error card is removed on unsubscribe. Source
+  error registry: `subscribeErrors(listener)` / `getErrors()`
+  (`PollError { key, message, dismissed }`), `dismissError(key)`.
 - `src/lib/toast.ts` — `toast(message, kind?)` (`kind: "ok" | "bad"`, defaults to
   `"ok"`; bad lives 9 s and has a ×, ok — 5 s) + `<Toaster/>` (mounted in the layout).
 - `src/lib/dialog.tsx` — `dialog(options): Promise<Record<string,string> | null>`,
@@ -51,8 +52,15 @@ No secrets, and there never will be: the browser uses same-origin relative paths
   `{spendStatsModal}` — at the end of the page. The `SpendStatsResponse`, `SpendPeriod`
   types and the `isOpenkeys` helper are exported.
 - `src/app/page.tsx` — Overview (the reference page; port the others following it).
-- `src/app/paying-users/page.tsx` — a separate read-only control room for paying customers only:
-  fleet-wide paid/spend summary, Claude/GPT/Gemini provider rail, and a server-paginated table.
+- `src/app/paying-users/page.tsx` — one read-only control room with independently filtered
+  `Клиенты` and `OpenKeys` cohorts. Only the active cohort mounts its 30-second poller. Commerce
+  explicitly requests `funding=all`, combining lifetime payment/manual users with strict selected-window
+  bonus-only spenders. Its ledger separates lifetime money, a neutral bonus-only amount/count and the
+  whole-cohort provider rail; commerce CSV keeps raw decimal strings and exports `funding_kind` plus all
+  four exact funding legs. OpenKeys uses same-origin `/openkeys-admin/paying-keys`, exact local wire types
+  and an expandable key → provider/model usage table. OpenKeys CSV money columns end in
+  `*_nanoUSD_text`: values carry a leading apostrophe so spreadsheets preserve exact integers, while
+  untrusted text is apostrophe-prefixed when it could be interpreted as a formula.
 - `src/app/subscriptions/codex-capacity-board.tsx` — compact GPT summary of shared-plan capacity,
   native-credit/API-$ windows, and masked-email homes. Raw calibration, token-capacity, and
   profitability matrices are intentionally not surfaced in the operator UI.
@@ -73,8 +81,8 @@ No secrets, and there never will be: the browser uses same-origin relative paths
 1. A page is `'use client'`, data via `usePoll("page-key", load, { interval })`;
    all sources in a single `Promise.all` with `.catch(() => null)` per source
    (degradation is silent, blocks show "—" / "источник недоступен" ("source unavailable")).
-   Intervals as in `admin-panel.js`: Overview — 30 s, Subscriptions and System — 10 s,
-   the rest — no automatic polling (focus/↻ button only).
+   Intervals as in `admin-panel.js`: Overview and the active `/paying-users` cohort — 30 s,
+   Subscriptions and System — 10 s; the rest — no automatic polling (focus/↻ button only).
 2. Russian labels — verbatim from `admin-panel.js`.
 3. Money — only `nanoMoney` over integer strings; JS number for amounts is forbidden.
 4. While there is no data (`data === undefined`) — `PageHead` + `LoadingGrid`.
@@ -87,8 +95,9 @@ No secrets, and there never will be: the browser uses same-origin relative paths
 8. Table export — `downloadCsv(filename, header, rows)`, file name with a date
    via `csvDate()` (e.g. `users-2026-07-31.csv`).
 9. The `/paying-users` page uses only the exact nanoUSD fields of
-   `/admin/finance/paying-users`; provider amounts must not be reconstructed from float USD or
-   the top-50 `/spend-stats`.
+   `/admin/finance/paying-users`; bonus-only classification comes only from `funding_kind`, and
+   provider/funding amounts must not be reconstructed from zero totals, float USD or the top-50
+   `/spend-stats`.
 
 ## Commands
 

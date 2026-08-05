@@ -7,13 +7,15 @@ export const PAYING_USER_SORTS = [
 
 export type PayingUserSort = (typeof PAYING_USER_SORTS)[number][0];
 export type PayingUserProvider = "anthropic" | "openai" | "google" | "other";
-export type PayingUserFunding = "" | "payments" | "manual";
+export type PayingUserFunding = "all" | "payments" | "manual" | "bonus";
+export type PayingUserFundingKind = "payments" | "payments_and_manual" | "manual" | "bonus_only";
 
-/** Источник денег клиента: подписи для селектора когорты. */
+/** Источник финансирования клиента: подписи для селектора когорты. */
 export const PAYING_USER_FUNDINGS: Array<[PayingUserFunding, string]> = [
-  ["", "любой источник денег"],
-  ["payments", "только реальные пополнения"],
-  ["manual", "только начисленные админом"],
+  ["all", "деньги + бонусный расход"],
+  ["payments", "платёжный провайдер"],
+  ["manual", "ручное денежное пополнение"],
+  ["bonus", "только бонусный расход"],
 ];
 export type PayingUserDays = 1 | 7 | 30;
 
@@ -38,6 +40,11 @@ export interface PayingUserRow {
   manual_topups_count?: number;
   last_paid_at?: string | null;
   spent_nano?: string;
+  funding_kind?: PayingUserFundingKind;
+  paid_funded_spent_nano?: string;
+  bonus_funded_spent_nano?: string;
+  other_funded_spent_nano?: string;
+  unattributed_spent_nano?: string;
   provider_spend?: ProviderSpend;
   active_api_keys?: number;
   last_seen_at?: string | null;
@@ -46,10 +53,13 @@ export interface PayingUserRow {
 
 export interface PayingUsersSummary {
   paying_users?: number;
+  cohort_users?: number;
+  bonus_only_users?: number;
   active_spenders?: number;
   paid_nano?: string;
   manual_paid_nano?: string;
   spent_nano?: string;
+  bonus_only_spent_nano?: string;
   provider_spend?: ProviderSpend;
   provider_users?: Partial<Record<PayingUserProvider, number>>;
 }
@@ -83,7 +93,7 @@ export const INITIAL_PAYING_USERS_PAGE: PayingUsersPageState = {
   q: "",
   status: "",
   provider: "",
-  funding: "",
+  funding: "all",
   sort: "spent",
   dir: "desc",
 };
@@ -95,11 +105,11 @@ export function payingUsersQuery(state: PayingUsersPageState): string {
     offset: String(state.offset),
     sort: state.sort,
     dir: state.dir,
+    funding: state.funding,
   });
   if (state.q) params.set("q", state.q);
   if (state.status) params.set("status", state.status);
   if (state.provider) params.set("provider", state.provider);
-  if (state.funding) params.set("funding", state.funding);
   return params.toString();
 }
 
@@ -137,16 +147,25 @@ export function spendWindowLabel(days: PayingUserDays): string {
   return days === 1 ? "24 часа" : `${days} дней`;
 }
 
+export function payingCohortUsers(summary: PayingUsersSummary | undefined): number {
+  return summary?.cohort_users ?? summary?.paying_users ?? 0;
+}
+
 export const PAYING_USERS_CSV_HEADER = [
   "email",
   "имя",
   "статус",
   "тариф",
+  "funding_kind",
   "оплачено_nanoUSD",
   "платежей",
   "ручных_пополнений",
   "ручные_nanoUSD",
   "расход_окна_nanoUSD",
+  "paid_funded_spent_nano",
+  "bonus_funded_spent_nano",
+  "other_funded_spent_nano",
+  "unattributed_spent_nano",
   "claude_nanoUSD",
   "gpt_nanoUSD",
   "gemini_nanoUSD",
@@ -162,11 +181,16 @@ export function buildPayingUsersCsvRows(rows: PayingUserRow[]): unknown[][] {
     row.display_name ?? "",
     row.status ?? "",
     payingTierLabel(row),
+    row.funding_kind ?? "",
     row.paid_nano ?? "0",
     row.payments_count ?? 0,
     row.manual_topups_count ?? 0,
     row.manual_paid_nano ?? "0",
     row.spent_nano ?? "0",
+    row.paid_funded_spent_nano ?? "0",
+    row.bonus_funded_spent_nano ?? "0",
+    row.other_funded_spent_nano ?? "0",
+    row.unattributed_spent_nano ?? "0",
     providerNano(row.provider_spend, "anthropic"),
     providerNano(row.provider_spend, "openai"),
     providerNano(row.provider_spend, "google"),

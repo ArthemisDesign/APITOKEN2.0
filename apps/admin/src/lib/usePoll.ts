@@ -9,7 +9,8 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 // - интервал: setInterval, тик пропускается, пока document.hidden;
 // - ревалидация при возвращении на вкладку (visibilitychange/focus), если данные
 //   старше interval;
-// - revalidateAll() дергает все живые poller'ы (кнопка ↻ в сайдбаре);
+// - revalidateAll()/refreshPoller() дергают только poller'ы с живыми подписчиками;
+// - remount немедленно ревалидирует stale/error snapshot, но сохраняет свежий cache;
 // - состояние хранится снаружи React и читается через useSyncExternalStore —
 //   данные переживают навигацию между страницами (stale-while-revalidate).
 
@@ -58,17 +59,23 @@ class Poller<T> {
 
   subscribe = (listener: Listener): (() => void) => {
     this.listeners.add(listener);
-    if (this.listeners.size === 1) this.start();
+    if (this.listeners.size === 1) {
+      activatePollError(this.key);
+      this.start();
+    }
     return () => {
       this.listeners.delete(listener);
-      if (this.listeners.size === 0) this.stop();
+      if (this.listeners.size === 0) {
+        this.stop();
+        deactivatePollError(this.key);
+      }
     };
   };
 
   getSnapshot = (): PollSnapshot<T> => this.snapshot;
 
   refresh = (): void => {
-    void this.load();
+    if (this.listeners.size > 0) void this.load();
   };
 
   private start(): void {
@@ -81,7 +88,10 @@ class Poller<T> {
         if (!isHidden()) void this.load();
       }, this.options.interval);
     }
-    if (this.lastFetchAt === 0) void this.load();
+    const staleAfter = this.options.interval ?? 30_000;
+    if (this.lastFetchAt === 0 || this.snapshot.error || Date.now() - this.lastFetchAt >= staleAfter) {
+      void this.load();
+    }
   }
 
   private stop(): void {
@@ -101,13 +111,13 @@ class Poller<T> {
       try {
         const data = await this.fetcher();
         this.snapshot = { data, error: undefined, isLoading: false };
-        clearPollError(this.key);
+        clearPollError(this.key, this.listeners.size > 0);
       } catch (cause) {
         const error = cause instanceof Error ? cause : new Error(String(cause));
         // stale-while-revalidate: старые данные сохраняем, показываем ошибку.
         this.snapshot = { ...this.snapshot, error, isLoading: false };
         // AbortError — штатная отмена запроса, не сбой источника (как в admin-panel.js).
-        if (error.name !== "AbortError") trackPollError(this.key, error);
+        if (error.name !== "AbortError" && this.listeners.size > 0) trackPollError(this.key, error);
       } finally {
         this.lastFetchAt = Date.now();
       }
@@ -130,8 +140,9 @@ class Poller<T> {
 const registry = new Map<string, Poller<any>>();
 
 // ── Реестр ошибок источников (аддитивно; аналог failures Map из admin-panel.js) ──
-// Poller записывает сюда ошибку своего ключа при падении fetch и снимает её при
-// первом успехе. ErrorCenter читает реестр через useSyncExternalStore.
+// Ошибка хранится вместе со snapshot poller'а, но ErrorCenter показывает её только
+// пока у источника есть живые подписчики. Версия recovery меняется лишь при успехе,
+// который действительно снял видимую ошибку активного источника.
 export type PollError = {
   /** Ключ poller'а (первый аргумент usePoll/getPoller). */
   key: string;
@@ -141,18 +152,32 @@ export type PollError = {
 };
 
 const errorRegistry = new Map<string, PollError>();
+const activeErrorKeys = new Set<string>();
 const errorListeners = new Set<Listener>();
 // Кэшированный snapshot: ссылка меняется только при изменении реестра — иначе
 // useSyncExternalStore уйдёт в бесконечный ререндер.
 let errorsSnapshot: PollError[] = [];
+let errorRecoveryVersion = 0;
 
 function rebuildErrors(): void {
-  errorsSnapshot = [...errorRegistry.values()].filter((entry) => !entry.dismissed);
+  errorsSnapshot = [...errorRegistry.values()].filter(
+    (entry) => activeErrorKeys.has(entry.key) && !entry.dismissed,
+  );
 }
 
 function emitErrors(): void {
   rebuildErrors();
   for (const listener of errorListeners) listener();
+}
+
+function activatePollError(key: string): void {
+  activeErrorKeys.add(key);
+  if (errorRegistry.has(key)) emitErrors();
+}
+
+function deactivatePollError(key: string): void {
+  activeErrorKeys.delete(key);
+  if (errorRegistry.has(key)) emitErrors();
 }
 
 function trackPollError(key: string, error: Error): void {
@@ -165,8 +190,11 @@ function trackPollError(key: string, error: Error): void {
   emitErrors();
 }
 
-function clearPollError(key: string): void {
-  if (!errorRegistry.delete(key)) return;
+function clearPollError(key: string, live: boolean): void {
+  const previous = errorRegistry.get(key);
+  if (!previous) return;
+  if (live && activeErrorKeys.has(key) && !previous.dismissed) errorRecoveryVersion += 1;
+  errorRegistry.delete(key);
   emitErrors();
 }
 
@@ -177,9 +205,17 @@ export function subscribeErrors(listener: () => void): () => void {
   };
 }
 
-/** Текущие нескрытые ошибки источников (стабильная ссылка между изменениями). */
+/** Текущие нескрытые ошибки активных источников (стабильная ссылка между изменениями). */
 export function getErrors(): PollError[] {
   return errorsSnapshot;
+}
+
+/**
+ * Версия подтверждённого восстановления: растёт только после успешного fetch,
+ * снявшего видимую ошибку живого источника. Использует подписку subscribeErrors.
+ */
+export function getErrorRecoveryVersion(): number {
+  return errorRecoveryVersion;
 }
 
 /** Скрыть ошибку кнопкой ×: из списка пропадёт, но при повторном падении вернётся скрытой. */
@@ -190,7 +226,7 @@ export function dismissError(key: string): void {
   emitErrors();
 }
 
-/** Повторить запрос конкретного источника (кнопка ↻ в ErrorCenter). */
+/** Повторить запрос живого источника; размонтированный poller осознанно остаётся без сети. */
 export function refreshPoller(key: string): void {
   registry.get(key)?.refresh();
 }
@@ -222,6 +258,8 @@ export function revalidateAll(): void {
 export function __clearPollersForTests(): void {
   registry.clear();
   errorRegistry.clear();
+  activeErrorKeys.clear();
+  errorRecoveryVersion = 0;
   rebuildErrors();
 }
 
