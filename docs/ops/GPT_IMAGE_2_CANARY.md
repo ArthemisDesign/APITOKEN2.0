@@ -170,28 +170,24 @@ internal and external evidence. That immutable `generation.png` and its successf
 only accepted reference provenance for the edit gate; withdrawn attempts remain ineligible.
 
 Edit-capable implementation SHA `1c48e3769f0fe775e650f60ea3c5839458e5dfe2` is independently
-watchdog-GREEN. The pending one-shot edit controller is pinned to that exact active binary and a fresh
-SHA-keyed root. Before credentials or dispatch it verifies the generation artifact's regular-file modes,
-PNG signature, exact generation SHA/budget/success journal, internal/external byte equality, and
-checkpoint digest. It then authorizes exactly `64_022_330_000` nanoUSD, supplies that one PNG reference,
-forces both ClaudeStore fallbacks off, performs the free `/wham/usage` preflight, and may dispatch one
-exact-home `opaque/low/auto` edit. GREEN additionally requires positive terminal
-`input_tokens_details.image_tokens` and `output_tokens_details.image_tokens`, consistent input/output/
-total token sums, a bounded PNG, and exact turn/SHA evidence. A parsed mismatch, provider rejection, or
-ambiguous outcome is a terminal withdrawal with no image artifacts and cannot be replayed. The follow-up
-verdict pass is non-network: it accepts an existing exact checkpoint as GREEN, but validates and then
-fails overall delivery for any terminal withdrawal so a closed fence cannot be mistaken for successful
-edit evidence.
+watchdog-GREEN. The one-shot edit delivery `8357ec764d1cdddff652ae4b5d6221267eb14f4e` closed the exact
+attempt fence, and fail-closed corrective verifier SHA `354832bc86c3a8365e713faf0f35ad2c239c7087`
+is watchdog-GREEN. The corrective path is non-network and accepts only the existing exact success
+checkpoint; it would instead validate and fail overall delivery for a terminal withdrawal. Therefore the
+owned generation PNG was consumed exactly once as one strict data-URL reference and produced a bounded,
+byte-different edited PNG with positive terminal image-input/image-output usage, consistent sums,
+returned controls, and exact home/turn/SHA attribution. Exact edit token values were not extracted from
+the retained summary and are not inferred here.
 
 ## Publication gate
 
-Production generation is GREEN, but the separately bounded live edit is still pending. Publication
-remains blocked until that edit proves the data-URL reference wire, a real edited PNG, terminal
-image-input and image-output usage, returned controls, local turn attribution, and non-duplicating
-failure semantics.
+Private generation and edit gates are GREEN. The producer-first authenticated customer Images API and
+exact settlement may now deploy, followed by exactly one public generation and one public edit smoke.
+The model remains excluded from `/v1/models`, pricing/product catalogs, router, OpenKeys, site, admin and
+public documentation until that public smoke is GREEN.
 
-The public Image API guide documents partial-image streaming, masks, output formats and Responses API
-multi-turn editing, but the current native Codex subscription client does not expose those request
-fields. They cannot be claimed for this pool without separate native-wire and live proof. Until every
-applicable gate closes, do not add GPT Image 2 to customer routes, public models/catalogs, pricing
-releases, router presets, OpenKeys, the website, public docs, admin, systemd defaults, or billing.
+The official model contract is non-streaming. The public Image API guide also describes masks, output
+formats and Responses multi-turn editing, but the actual native subscription wire has not proved masks,
+transparent backgrounds, exact dimensions, medium/high quality, multiple references/outputs,
+partial-image streaming, JPEG/WebP/compression, or Responses image state. The producer rejects those
+controls rather than simulating or advertising them.

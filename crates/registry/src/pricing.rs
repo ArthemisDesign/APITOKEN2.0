@@ -56,9 +56,9 @@ pub use snapshots::{
     LegacyScalarAdmissionSnapshotInput, LegacyScalarIdempotencyWindowError,
     LegacyScalarReserveConflict, LegacyScalarReserveOutcome, LegacyScalarReserveReceipt,
     SnapshotAnthropicInferenceGeo, SnapshotAnthropicSpeed, SnapshotGeminiContextRate,
-    SnapshotGeminiSearchBilling, SnapshotOpenAiContextTier, SnapshotOpenAiServiceTier,
-    SnapshotProvider, LEGACY_SCALAR_REPLAY_MAX_AGE_SECS, LEGACY_SCALAR_SNAPSHOT_SCHEMA_VERSION,
-    PRICING_REQUEST_LIFECYCLE_MIN_RETENTION_SECS,
+    SnapshotGeminiSearchBilling, SnapshotOpenAiContextTier, SnapshotOpenAiImageOperation,
+    SnapshotOpenAiServiceTier, SnapshotProvider, LEGACY_SCALAR_REPLAY_MAX_AGE_SECS,
+    LEGACY_SCALAR_SNAPSHOT_SCHEMA_VERSION, PRICING_REQUEST_LIFECYCLE_MIN_RETENTION_SECS,
 };
 pub(crate) use sqlite::{
     sqlite_insert_legacy_scalar_admission_snapshot, sqlite_insert_policy_admission_snapshot,

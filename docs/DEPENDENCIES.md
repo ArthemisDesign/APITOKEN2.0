@@ -271,40 +271,23 @@ is only what is needed to walk the relationships when making changes:
   the target provider label; the failure alert and rollback are described in
   `docs/ops/MONITORING.md#claudestorefallbackfailing`. Contract and evidence —
   `docs/engine/CLAUDESTORE_FALLBACK.md` and `research/CLAUDESTORE_GPT_FALLBACK_EVIDENCE.md`.
-- **Private GPT Image 2 live gate (`crates/server` canary CLI →
-  `crates/forward::codex::images` → existing Codex OAuth pool).** The transport posts typed JSON to
-  `{CodexConfig.base_url}/images/generations|edits` with the existing bearer/account/originator/UA/
-  version identity plus `x-codex-image-turn-id`; edit references are one to five PNG data URLs.
-  Automatic library calls reuse normal pool selection/`TurnSlot`, refresh once, and rotate only on a
-  final pre-execution auth/quota rejection; ambiguous outcomes are never replayed. The CLI freezes an
-  explicit or first admitted opaque profile, performs the free `/wham/usage` preflight and one
-  exact-home attempt. Generation requires an exact SHA and at least `22_330_000` nanoUSD for native
-  `opaque/low/auto`; the official GPT Image 2 low-output formula is bounded at 659 image tokens over the
-  request-valid size domain. Paid edit is limited to exactly one reference and requires an absolute
-  `64_022_330_000` nanoUSD authorization envelope: because no input formula is published, the entire
-  official maximum Tier-5 8,000,000 TPM is conservatively charged at the fresh image-input rate before
-  adding the generation ceiling. This is not an expected price or customer reserve. The one-shot
-  watchdog attempt against exact deployed engine SHA `012fccc471142fc51a46563da3a87564d674b39f`
-  returned a parsed image with mismatched control metadata, published no artifact, and is permanently
-  fenced. Diagnostic implementation SHA `8fcd7c3c6f5dc968bedb7260433f2eaff23f8931` is separately
-  watchdog-GREEN. Active watchdog-GREEN descendant `3c17b31b6dfdcb8867d8def57e7aedc4ebc87644`
-  has no image canary or Codex image transport diff from that diagnostic SHA. The new controller is
-  pinned to that exact active binary. Its bounded exact-home generation returned terminal usage and an
-  opaque/low `1254x1254` result for the requested `1024x1024`; the controller retained only a terminal
-  sanitized mismatch journal and no image artifacts. The corrective verifier consumes that existing
-  journal before environment loading and cannot replay the request or reinterpret the withdrawal as
-  publication evidence. Auto-size implementation SHA `df58715abb4f1ac52b6c46b1ea6f830c6e11178f` and its one-shot
-  controller are watchdog-GREEN with a bounded PNG, terminal usage and exact SHA/turn evidence.
-  Edit-capable implementation SHA `1c48e3769f0fe775e650f60ea3c5839458e5dfe2` is independently
-  watchdog-GREEN. Its pending one-shot is pinned to that exact binary and can consume only the
-  digest-matched successful generation PNG after verifying its private modes, checkpoint, success
-  journal and internal recovery copy. One reference edit is authorized at `64_022_330_000` nanoUSD;
-  GREEN additionally requires positive terminal image-input and image-output token details. Its
-  non-network verdict pass accepts a checkpoint but deliberately fails delivery after validating any
-  terminal withdrawal, so fence closure cannot authorize publication. It introduces no image
-  key/origin/env. There is no `AppState`, HTTP/customer, router, catalog, defaults,
-  billing/settlement, public-doc or publication consumer. Contract and blockers — `docs/engine/CODEX_PROVIDER.md`,
-  `docs/ops/GPT_IMAGE_2_CANARY.md`, and `research/GPT_IMAGE_2_EVIDENCE.md`.
+- **GPT Image 2 producer chain (`crates/server` OpenAI routes → `crates/forward::codex` →
+  existing sealed Codex OAuth pool → `crates/metering`/`registry` settlement).** The native transport
+  posts typed JSON to `{CodexConfig.base_url}/images/generations|edits` with the existing bearer,
+  account and first-party client identity; no image API key, reseller origin, or new env exists.
+  Private generation SHA `df58715abb4f1ac52b6c46b1ea6f830c6e11178f` and one-reference edit SHA
+  `1c48e3769f0fe775e650f60ea3c5839458e5dfe2` have watchdog-GREEN exact-home PNG/usage evidence;
+  edit delivery `8357ec764d1cdddff652ae4b5d6221267eb14f4e` is accepted only by watchdog-GREEN non-network
+  verifier `354832bc86c3a8365e713faf0f35ad2c239c7087`, which would fail a terminal withdrawal.
+  The producer-first `POST /v1/images/generations|edits` authenticates before buffering, freezes and
+  preflights one home, permits only one `opaque/low/auto` PNG (edit: exactly one strict PNG reference),
+  reserves a typed immutable image snapshot, and settles authoritative five-leg token cost. Successful
+  malformed evidence and ambiguous post-dispatch errors retain the hold and never claim `not_started`.
+  The direct OpenAI plane and header-gated Combined bridge produce these routes; the future router is a
+  separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
+  OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —
+  `docs/engine/CODEX_PROVIDER.md`, `docs/ops/GPT_IMAGE_2_CANARY.md`, and
+  `research/GPT_IMAGE_2_EVIDENCE.md`.
 - **Policy preflight contract (provider planes → router, phase 6.4a).** The producer is
   the identical `crates/server::router_policy` on every fixed runtime: an authenticated
   loopback-only `POST /internal/router/policy/preflight` reads the customer key and one

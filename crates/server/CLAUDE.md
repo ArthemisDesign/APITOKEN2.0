@@ -138,9 +138,12 @@ background loops and the HTTP router. Here — and only here — everything is w
   GPT Image 2 high-fidelity input formula, so this is an absolute authorization envelope rather than an
   expected price: the published Tier-5 maximum of 8,000,000 TPM is charged wholly at the fresh image-input
   rate, then the generation ceiling is added. More than one reference remains blocked. Output/checkpoint
-  publication uses exclusive mode-`0600` files. The command remains outside `AppState`, HTTP, customer
-  routes, catalog, defaults and billing; no live edit proof was performed in this worktree. Full contract —
-  `docs/ops/GPT_IMAGE_2_CANARY.md`.
+  publication uses exclusive mode-`0600` files. The private command remains outside `AppState`, while
+  `http.rs` now mounts producer-first `/v1/images/generations|edits` only on the OpenAI plane (and the
+  header-gated Combined bridge), with 256 KiB JSON and 17 MiB multipart route limits. The model remains
+  absent from discovery/catalog/defaults until the authenticated public smoke passes. Image auth runs
+  inside the handler before JSON or multipart extraction, so unauthenticated bodies are never buffered.
+  Generation and edit evidence are watchdog-GREEN; full contract — `docs/ops/GPT_IMAGE_2_CANARY.md`.
 - ClaudeStore emergency transport: `CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED` strict default-off
   (`0|1|false|true`), the secret `CLAUDE_API_CLAUDESTORE_API_KEY` is required only when enabled and undergoes
   shape-validation/redacted Debug. Enable is allowed only for `Combined|Anthropic`; the production base

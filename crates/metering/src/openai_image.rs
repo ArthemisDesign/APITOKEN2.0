@@ -1,4 +1,4 @@
-//! Dormant GPT Image 2 tariff identity and pure token-cost arithmetic.
+//! GPT Image 2 tariff identity and pure token-cost arithmetic.
 //!
 //! This module does not publish a model or grant product access. It pins the official OpenAI rate
 //! card for the alias and immutable snapshot reviewed in `research/GPT_IMAGE_2_EVIDENCE.md`.
@@ -7,6 +7,7 @@
 use crate::TariffScheduleId;
 
 pub const OPENAI_IMAGE_TARIFF_SCHEDULE_ID: &str = "openai/gpt-image-2/2026-04-21/v1";
+pub const OPENAI_IMAGE_ALIAS_GENERATION: i64 = 1;
 pub const GPT_IMAGE_2_ALIAS: &str = "gpt-image-2";
 pub const GPT_IMAGE_2_SNAPSHOT: &str = "gpt-image-2-2026-04-21";
 

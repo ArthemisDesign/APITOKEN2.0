@@ -17,7 +17,7 @@ kimi-credential = { path = "../kimi-credential" }
 glm-credential = { path = "../glm-credential" }
 tokio = { version = "1", features = ["sync", "rt", "time", "process", "io-util", "macros"] }
 anyhow = "1"
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 # TLS-транспорт: wreq (форк reqwest на BoringSSL/boring2). Claude Code 2.1.195 = Bun 1.4.0 = BoringSSL,
 # поэтому наш ClientHello делаем БАЙТ-В-БАЙТ как у Claude Code (JA3=d871d02c…, JA4 совпадают): кастомный
 # TlsConfig — grease off, Bun cipher-list (IANA), OCSP+SCT расширения, curves x25519/P256/P384, ALPN http/1.1

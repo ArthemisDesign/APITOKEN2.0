@@ -131,6 +131,22 @@ pub enum SnapshotOpenAiContextTier {
     Long,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotOpenAiImageOperation {
+    Generation,
+    Edit,
+}
+
+impl SnapshotOpenAiImageOperation {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Generation => "generation",
+            Self::Edit => "edit",
+        }
+    }
+}
+
 /// Gemini reserves with the largest applicable context rates because exact modality/context
 /// usage is known only after the provider returns authoritative usage metadata.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +210,14 @@ pub enum LegacyPremiumModifiers {
         input_multiplier_basis_points: i64,
         output_multiplier_basis_points: i64,
     },
+    #[serde(rename = "openai_image_v1")]
+    OpenAiImageV1 {
+        operation: SnapshotOpenAiImageOperation,
+        background: String,
+        quality: String,
+        size: String,
+        reference_count: i64,
+    },
     #[serde(rename = "gemini_v1")]
     GeminiV1 {
         context_rate: SnapshotGeminiContextRate,
@@ -255,6 +279,28 @@ impl LegacyPremiumModifiers {
                 };
                 if !context_tier_valid {
                     bail!("invalid OpenAI context-tier multipliers");
+                }
+            }
+            (
+                SnapshotProvider::OpenAi,
+                Self::OpenAiImageV1 {
+                    operation,
+                    background,
+                    quality,
+                    size,
+                    reference_count,
+                },
+            ) => {
+                let expected_references = match operation {
+                    SnapshotOpenAiImageOperation::Generation => 0,
+                    SnapshotOpenAiImageOperation::Edit => 1,
+                };
+                if background != "opaque"
+                    || quality != "low"
+                    || size != "auto"
+                    || *reference_count != expected_references
+                {
+                    bail!("invalid OpenAI image operation modifiers");
                 }
             }
             (
@@ -327,6 +373,21 @@ impl LegacyPremiumModifiers {
                 encoder.string(24, context_tier.as_str());
                 encoder.i64(25, *input_multiplier_basis_points);
                 encoder.i64(26, *output_multiplier_basis_points);
+            }
+            Self::OpenAiImageV1 {
+                operation,
+                background,
+                quality,
+                size,
+                reference_count,
+            } => {
+                // Tags 31+ extend the frozen v1 digest without changing prior provider vectors.
+                encoder.string(18, "openai_image_v1");
+                encoder.string(31, operation.as_str());
+                encoder.string(32, background);
+                encoder.string(33, quality);
+                encoder.string(34, size);
+                encoder.i64(35, *reference_count);
             }
             Self::GeminiV1 {
                 context_rate,
@@ -756,6 +817,30 @@ mod tests {
         }
     }
 
+    fn openai_image_input() -> LegacyScalarAdmissionSnapshotInput {
+        LegacyScalarAdmissionSnapshotInput {
+            request_id: "request-openai-image-1".into(),
+            account_id: "account-openai-image-1".into(),
+            provider: SnapshotProvider::OpenAi,
+            requested_model_id: "gpt-image-2".into(),
+            canonical_model_id: "gpt-image-2-2026-04-21".into(),
+            alias_generation: 1,
+            tariff_schedule_id: "openai/gpt-image-2/2026-04-21/v1".into(),
+            tariff_priced_ts: 1_788_220_799,
+            admission_ts: 1_788_220_800,
+            payable_multiplier_bp: 10_000,
+            official_hold_nano: 675_130_000,
+            charged_hold_nano: 675_130_000,
+            premium_modifiers: LegacyPremiumModifiers::OpenAiImageV1 {
+                operation: SnapshotOpenAiImageOperation::Generation,
+                background: "opaque".into(),
+                quality: "low".into(),
+                size: "auto".into(),
+                reference_count: 0,
+            },
+        }
+    }
+
     fn google_input() -> LegacyScalarAdmissionSnapshotInput {
         LegacyScalarAdmissionSnapshotInput {
             request_id: "request-google-1".into(),
@@ -797,6 +882,48 @@ mod tests {
             "sha256:v1:e0a2d6d1053f0de667fcf9cadf159ddd0a085c271418c10c1cd1fd9c92ae8227"
         );
         snapshot.validate().unwrap();
+    }
+
+    #[test]
+    fn openai_image_snapshot_is_typed_provider_bound_and_digest_stable() {
+        let snapshot = LegacyScalarAdmissionSnapshot::new(openai_image_input()).unwrap();
+        assert_eq!(
+            snapshot.snapshot_digest().as_str(),
+            "sha256:v1:fa60db1752d28fdd9577004ccc453e91dcb6d5c974166ee3f96052a1a725e9fb"
+        );
+        snapshot.validate().unwrap();
+
+        let encoded = snapshot.premium_modifiers_json().unwrap();
+        assert_eq!(
+            LegacyPremiumModifiers::from_json(&encoded).unwrap(),
+            snapshot.premium_modifiers().clone()
+        );
+        assert!(encoded.contains(r#""kind":"openai_image_v1""#));
+        assert!(snapshot
+            .premium_modifiers()
+            .validate_for_provider(SnapshotProvider::Anthropic)
+            .is_err());
+
+        let mut invalid_reference_count = openai_image_input();
+        invalid_reference_count.premium_modifiers = LegacyPremiumModifiers::OpenAiImageV1 {
+            operation: SnapshotOpenAiImageOperation::Edit,
+            background: "opaque".into(),
+            quality: "low".into(),
+            size: "auto".into(),
+            reference_count: 0,
+        };
+        assert!(LegacyScalarAdmissionSnapshot::new(invalid_reference_count).is_err());
+
+        let mut changed = openai_image_input();
+        changed.premium_modifiers = LegacyPremiumModifiers::OpenAiImageV1 {
+            operation: SnapshotOpenAiImageOperation::Edit,
+            background: "opaque".into(),
+            quality: "low".into(),
+            size: "auto".into(),
+            reference_count: 1,
+        };
+        let changed = LegacyScalarAdmissionSnapshot::new(changed).unwrap();
+        assert_ne!(snapshot.snapshot_digest(), changed.snapshot_digest());
     }
 
     #[test]

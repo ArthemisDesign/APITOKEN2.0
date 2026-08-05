@@ -1,5 +1,8 @@
 //! Shared customer admission and exact API-equivalent settlement for Codex turns.
 
+use super::openai_image_snapshot::{
+    openai_image_quote, OpenAiImageOperation, OpenAiImageQuoteInput,
+};
 use super::openai_snapshot::{prepare_codex_legacy_quote, CodexLegacyQuoteInput};
 use super::{CodexModel, CodexUsage};
 use crate::metrics::{Metrics, StrictPricingProvider, StrictPricingRejectionReason};
@@ -58,6 +61,10 @@ struct Reservation {
 /// upstream task fully finishes. Codex capacity is governed by its upstream subscription pool;
 /// local global/per-key concurrency ceilings are intentionally not applied to this provider.
 pub(crate) struct CodexAdmission {
+    reservation: Option<Reservation>,
+}
+
+pub(crate) struct OpenAiImageAdmission {
     reservation: Option<Reservation>,
 }
 
@@ -136,6 +143,323 @@ impl PendingCodexAdmission {
             _ => None,
         };
         Ok(CodexAdmission { reservation })
+    }
+
+    pub(crate) async fn reserve_image(
+        self,
+        app: &AppState,
+        requested_model_id: &str,
+        operation: OpenAiImageOperation,
+    ) -> Result<OpenAiImageAdmission, AdmissionError> {
+        let reservation = match (&self.authz, &app.billing) {
+            (
+                Authz::Metered {
+                    account_id,
+                    key,
+                    mult_bp,
+                    available_nano,
+                    strict_policy,
+                    paid_available_nano,
+                    track_available_nano,
+                    ..
+                },
+                Some(billing),
+            ) => Some(
+                reserve_openai_image_metered(
+                    app,
+                    billing,
+                    account_id,
+                    key,
+                    requested_model_id,
+                    operation,
+                    *mult_bp,
+                    *available_nano,
+                    *strict_policy,
+                    *paid_available_nano,
+                    *track_available_nano,
+                    &self.execution,
+                )
+                .await?,
+            ),
+            _ => None,
+        };
+        Ok(OpenAiImageAdmission { reservation })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn reserve_openai_image_metered(
+    app: &AppState,
+    billing: &std::sync::Arc<crate::billing::AsyncBilling>,
+    account_id: &str,
+    key: &str,
+    requested_model_id: &str,
+    operation: OpenAiImageOperation,
+    legacy_mult_bp: i64,
+    available_nano: i64,
+    strict_policy: bool,
+    paid_available_nano: Option<i64>,
+    track_available_nano: Option<i64>,
+    execution: &registry::ExecutionAttempt,
+) -> Result<Reservation, AdmissionError> {
+    let request_id = crate::upstream::fresh_request_id();
+    let typed_request_id = EnginePricingRequestId::from_engine_uuid_v4(&request_id)
+        .ok_or(AdmissionError::Unavailable)?;
+    let tariff = metering::openai_image_tariff(requested_model_id)
+        .map_err(|_| AdmissionError::Unavailable)?;
+
+    for pass in 0..2 {
+        let resolution = billing
+            .pricing_release_resolution_v2(
+                account_id,
+                SnapshotProvider::OpenAi.as_str(),
+                tariff.canonical_model_id,
+            )
+            .await
+            .map_err(|error| {
+                eprintln!("OpenAI image pricing release resolution failed: {error:#}");
+                AdmissionError::Unavailable
+            })?;
+        if let Some(resolution) = resolution {
+            let multiplier = resolution.payable_multiplier_bp().unwrap_or(10_000);
+            let quote_budget = match resolution.billing_mode() {
+                BillingModeV2::Balance => available_nano,
+                BillingModeV2::MeterOnly => i64::MAX,
+            };
+            if resolution.billing_mode() == BillingModeV2::Balance && quote_budget <= 0 {
+                return Err(AdmissionError::LowBalance);
+            }
+            let quote = openai_image_quote(OpenAiImageQuoteInput {
+                request_id: typed_request_id.clone(),
+                account_id: account_id.to_owned(),
+                requested_model_id: requested_model_id.to_owned(),
+                quote_ts: pool::now(),
+                payable_multiplier_bp: multiplier,
+                operation,
+                available_nano: quote_budget,
+            })
+            .map_err(|error| {
+                eprintln!("OpenAI image release quote failed: {error:#}");
+                AdmissionError::Unavailable
+            })?
+            .ok_or(AdmissionError::LowBalance)?;
+            let release_quote =
+                PricingReleaseQuoteV2::from_legacy_snapshot(&quote).map_err(|error| {
+                    eprintln!("OpenAI image release quote conversion failed: {error:#}");
+                    AdmissionError::Unavailable
+                })?;
+            match billing
+                .reserve_request_with_pricing_release_v2_for_execution(
+                    key,
+                    resolution,
+                    release_quote,
+                    execution.clone(),
+                )
+                .await
+            {
+                Ok(PricingReleaseReserveOutcomeV2::Inserted(receipt))
+                | Ok(PricingReleaseReserveOutcomeV2::Unchanged(receipt)) => {
+                    let snapshot = receipt.snapshot;
+                    return Ok(image_reservation(
+                        billing,
+                        account_id,
+                        key,
+                        request_id,
+                        snapshot.charged_hold_nano,
+                        snapshot
+                            .rule
+                            .as_ref()
+                            .map(|rule| rule.payable_multiplier_bp)
+                            .unwrap_or(0),
+                        Some(snapshot.tariff_priced_ts),
+                        CodexSettlementPricing::ReleaseV2,
+                    ));
+                }
+                Ok(PricingReleaseReserveOutcomeV2::NotReserved) => {
+                    return Err(AdmissionError::LowBalance)
+                }
+                Ok(PricingReleaseReserveOutcomeV2::Conflict(
+                    PricingReleaseReserveConflictV2::ActiveReleaseChanged,
+                ))
+                | Ok(PricingReleaseReserveOutcomeV2::NoActiveRelease) => continue,
+                Ok(PricingReleaseReserveOutcomeV2::Conflict(
+                    PricingReleaseReserveConflictV2::ExistingReservationWithoutReleaseSnapshot,
+                )) if pass == 0 => {}
+                Ok(PricingReleaseReserveOutcomeV2::Conflict(conflict)) => {
+                    eprintln!("OpenAI image release reserve conflict: {conflict:?}");
+                    return Err(AdmissionError::Unavailable);
+                }
+                Ok(PricingReleaseReserveOutcomeV2::AbortedBeforeCommit) => {
+                    return Err(AdmissionError::Unavailable)
+                }
+                Err(error) => {
+                    eprintln!("OpenAI image release reserve failed: {error:#}");
+                    return Err(AdmissionError::Unavailable);
+                }
+            }
+        }
+
+        if available_nano <= 0 {
+            return Err(AdmissionError::LowBalance);
+        }
+        if strict_policy {
+            let bundle = billing
+                .pricing_read_bundle(account_id)
+                .await
+                .map_err(|error| {
+                    eprintln!("strict OpenAI image pricing bundle read failed: {error:#}");
+                    AdmissionError::Unavailable
+                })?;
+            let resolved = match crate::pricing::resolve_pricing(
+                &bundle,
+                &PricingResolutionRequest {
+                    account_id: account_id.to_owned(),
+                    provider_id: SnapshotProvider::OpenAi.as_str().to_owned(),
+                    requested_model_id: requested_model_id.to_owned(),
+                    canonical_model_id: tariff.canonical_model_id.to_owned(),
+                },
+                &RuntimePricingManifest::from_evidence(&app.pricing_manifest),
+            ) {
+                PricingResolution::Resolved(resolved) => resolved,
+                PricingResolution::Rejected(reason) => {
+                    eprintln!("strict OpenAI image pricing rejected: {}", reason.code());
+                    return Err(AdmissionError::Unavailable);
+                }
+            };
+            let strict_available = match resolved.rule.pricing_mode {
+                PricingMode::Track => track_available_nano.unwrap_or(0),
+                PricingMode::Discount => paid_available_nano.unwrap_or(0),
+            };
+            if strict_available <= 0 {
+                return Err(AdmissionError::LowBalance);
+            }
+            let quote_ts = pool::now();
+            let quote = openai_image_quote(OpenAiImageQuoteInput {
+                request_id: typed_request_id.clone(),
+                account_id: account_id.to_owned(),
+                requested_model_id: requested_model_id.to_owned(),
+                quote_ts,
+                payable_multiplier_bp: resolved.rule.payable_multiplier_bp,
+                operation,
+                available_nano: strict_available,
+            })
+            .map_err(|error| {
+                eprintln!("strict OpenAI image quote failed: {error:#}");
+                AdmissionError::Unavailable
+            })?
+            .ok_or(AdmissionError::LowBalance)?;
+            let policy = build_policy_admission_snapshot(account_id, resolved.clone(), quote)
+                .map_err(|error| {
+                    eprintln!("strict OpenAI image snapshot build failed: {error:#}");
+                    AdmissionError::Unavailable
+                })?;
+            match billing
+                .reserve_request_with_policy_snapshot_for_execution(key, policy, execution.clone())
+                .await
+            {
+                Ok(PolicyReserveOutcome::Inserted(receipt))
+                | Ok(PolicyReserveOutcome::Unchanged(receipt)) => {
+                    return Ok(image_reservation(
+                        billing,
+                        account_id,
+                        key,
+                        request_id,
+                        receipt.snapshot.charged_hold_nano(),
+                        resolved.rule.payable_multiplier_bp,
+                        Some(quote_ts),
+                        CodexSettlementPricing::LegacyStrict,
+                    ));
+                }
+                Ok(PolicyReserveOutcome::NotReserved) => return Err(AdmissionError::LowBalance),
+                Ok(PolicyReserveOutcome::Conflict(PolicyReserveConflict::ActivePricingRelease)) => {
+                    continue
+                }
+                Ok(PolicyReserveOutcome::Conflict(conflict)) => {
+                    eprintln!("strict OpenAI image reserve conflict: {conflict:?}");
+                    return Err(AdmissionError::Unavailable);
+                }
+                Ok(PolicyReserveOutcome::AbortedBeforeCommit) | Err(_) => {
+                    return Err(AdmissionError::Unavailable)
+                }
+            }
+        }
+
+        let quote = openai_image_quote(OpenAiImageQuoteInput {
+            request_id: typed_request_id.clone(),
+            account_id: account_id.to_owned(),
+            requested_model_id: requested_model_id.to_owned(),
+            quote_ts: pool::now(),
+            payable_multiplier_bp: legacy_mult_bp,
+            operation,
+            available_nano,
+        })
+        .map_err(|error| {
+            eprintln!("OpenAI image legacy quote failed: {error:#}");
+            AdmissionError::Unavailable
+        })?
+        .ok_or(AdmissionError::LowBalance)?;
+        match billing
+            .reserve_request_with_legacy_snapshot_for_execution(key, quote, execution.clone())
+            .await
+        {
+            Ok(LegacyScalarReserveOutcome::Inserted(receipt))
+            | Ok(LegacyScalarReserveOutcome::Unchanged(receipt)) => {
+                let snapshot = receipt.snapshot;
+                return Ok(image_reservation(
+                    billing,
+                    account_id,
+                    key,
+                    request_id,
+                    snapshot.charged_hold_nano(),
+                    snapshot.payable_multiplier_bp(),
+                    None,
+                    CodexSettlementPricing::LegacyScalar,
+                ));
+            }
+            Ok(LegacyScalarReserveOutcome::Conflict(
+                LegacyScalarReserveConflict::ActivePricingRelease,
+            )) => continue,
+            Ok(LegacyScalarReserveOutcome::NotReserved) => return Err(AdmissionError::LowBalance),
+            Ok(LegacyScalarReserveOutcome::Conflict(conflict)) => {
+                eprintln!("OpenAI image legacy reserve conflict: {conflict:?}");
+                return Err(AdmissionError::Unavailable);
+            }
+            Ok(LegacyScalarReserveOutcome::AbortedBeforeCommit) | Err(_) => {
+                return Err(AdmissionError::Unavailable)
+            }
+        }
+    }
+    Err(AdmissionError::Unavailable)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn image_reservation(
+    billing: &std::sync::Arc<crate::billing::AsyncBilling>,
+    account_id: &str,
+    key: &str,
+    request_id: String,
+    hold: i64,
+    mult_bp: i64,
+    tariff_priced_ts: Option<i64>,
+    settlement_pricing: CodexSettlementPricing,
+) -> Reservation {
+    Reservation {
+        billing: billing.clone(),
+        account_id: account_id.to_owned(),
+        key: key.to_owned(),
+        mult_bp,
+        hold,
+        tariff_priced_ts,
+        policy_fast: None,
+        settlement_pricing,
+        guard: HoldGuard::new(
+            Some(billing.clone()),
+            account_id.to_owned(),
+            key.to_owned(),
+            hold,
+            request_id.clone(),
+        ),
+        request_id,
     }
 }
 
@@ -765,6 +1089,132 @@ async fn reserve_codex_legacy(
             Err(AdmissionError::Unavailable)
         }
     }
+}
+
+impl OpenAiImageAdmission {
+    pub(crate) async fn mark_delivering(&mut self) -> Result<(), AdmissionError> {
+        let Some(reservation) = &mut self.reservation else {
+            return Ok(());
+        };
+        match reservation
+            .billing
+            .mark_delivering(&reservation.request_id, 3_600)
+            .await
+        {
+            Ok(true) => {
+                // From this point a cancellation or transport loss is ambiguous: normal durable
+                // recovery must charge the full hold instead of HoldGuard refunding an executed turn.
+                reservation.guard.disarm();
+                Ok(())
+            }
+            Ok(false) | Err(_) => Err(AdmissionError::Unavailable),
+        }
+    }
+
+    pub(crate) fn settle(mut self, model_id: &str, usage: &metering::OpenAiImageUsage) {
+        let Some(mut reservation) = self.reservation.take() else {
+            return;
+        };
+        let priced_ts = reservation.tariff_priced_ts.unwrap_or_else(pool::now);
+        let strict = reservation.settlement_pricing == CodexSettlementPricing::LegacyStrict;
+        let (charge, usage_event) = settled_openai_image_charge(
+            model_id,
+            usage,
+            reservation.hold,
+            reservation.mult_bp,
+            priced_ts,
+        );
+        if strict && charge > reservation.hold {
+            eprintln!(
+                "strict OpenAI image usage exceeded its admission hold; leaving reservation for full-hold recovery"
+            );
+            reservation.guard.disarm();
+            return;
+        }
+        reservation.billing.settle_detached(
+            &reservation.request_id,
+            &reservation.account_id,
+            &reservation.key,
+            reservation.hold,
+            charge,
+            None,
+            usage_event,
+        );
+        reservation.guard.disarm();
+        if charge > 0 {
+            eprintln!(
+                "OpenAI image request charged {} [{}]",
+                metering::nano_to_usd_string(charge as i128),
+                model_id
+            );
+        }
+    }
+
+    /// A successful provider turn with malformed terminal usage cannot be refunded: execution is
+    /// already authoritative. Leave the reservation for normal full-hold recovery rather than
+    /// inventing token counts or making an executed image free.
+    pub(crate) fn retain_full_hold(mut self) {
+        if let Some(mut reservation) = self.reservation.take() {
+            reservation.guard.disarm();
+        }
+    }
+}
+
+fn settled_openai_image_charge(
+    model_id: &str,
+    usage: &metering::OpenAiImageUsage,
+    hold: i64,
+    mult_bp: i64,
+    priced_ts: i64,
+) -> (i64, Option<registry::UsageEventInput>) {
+    let Ok(tariff) = metering::openai_image_tariff(model_id) else {
+        return (hold.max(0), None);
+    };
+    let Ok(real_nano) = metering::openai_image_cost_nanodollars(usage, &tariff.prices) else {
+        return (hold.max(0), None);
+    };
+    let computed_charge = metering::apply_multiplier(real_nano, mult_bp);
+    let ceiling = i128::from(hold.max(0)) + metering::OVERDRAFT_NANO;
+    let charge = computed_charge.clamp(0, ceiling).min(i64::MAX as i128) as i64;
+    let fresh_text = usage
+        .total_text_input_tokens
+        .saturating_sub(usage.cached_text_input_tokens);
+    let fresh_image = usage
+        .total_image_input_tokens
+        .saturating_sub(usage.cached_image_input_tokens);
+    let input_nano = i128::from(fresh_text) * tariff.prices.fresh_text_input
+        + i128::from(fresh_image) * tariff.prices.fresh_image_input;
+    let cache_read_nano = i128::from(usage.cached_text_input_tokens)
+        * tariff.prices.cached_text_input
+        + i128::from(usage.cached_image_input_tokens) * tariff.prices.cached_image_input;
+    let output_nano = i128::from(usage.image_output_tokens) * tariff.prices.image_output;
+    let input_tokens = usage
+        .total_text_input_tokens
+        .saturating_add(usage.total_image_input_tokens);
+    let cache_read_tokens = usage
+        .cached_text_input_tokens
+        .saturating_add(usage.cached_image_input_tokens);
+    let usage_event = (real_nano > 0).then(|| registry::UsageEventInput {
+        model: model_id.to_owned(),
+        provider: registry::PROVIDER_OPENAI.to_owned(),
+        input_tokens: input_tokens.min(i64::MAX as u64) as i64,
+        output_tokens: usage.image_output_tokens.min(i64::MAX as u64) as i64,
+        cache_read_tokens: cache_read_tokens.min(i64::MAX as u64) as i64,
+        cache_write_5m_tokens: 0,
+        cache_write_1h_tokens: 0,
+        web_search_requests: 0,
+        real_nano: real_nano.min(i64::MAX as i128) as i64,
+        speed: "standard".to_owned(),
+        inference_geo: String::new(),
+        input_nano: input_nano.min(i64::MAX as i128) as i64,
+        output_nano: output_nano.min(i64::MAX as i128) as i64,
+        cache_read_nano: cache_read_nano.min(i64::MAX as i128) as i64,
+        cache_write_5m_nano: 0,
+        cache_write_1h_nano: 0,
+        web_search_nano: 0,
+        priced_ts,
+    });
+    (charge, usage_event)
 }
 
 impl CodexAdmission {
@@ -2282,6 +2732,107 @@ mod tests {
         assert_eq!(providers[0].provider, registry::PROVIDER_OPENAI);
         assert_eq!(providers[0].requests, 1);
         assert_eq!(providers[0].charge_nano, 1_962_500);
+
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn openai_image_settlement_preserves_modality_cost_buckets() {
+        let usage = metering::OpenAiImageUsage {
+            total_text_input_tokens: 100,
+            cached_text_input_tokens: 40,
+            total_image_input_tokens: 200,
+            cached_image_input_tokens: 50,
+            image_output_tokens: 10,
+        };
+        let (charge, event) = settled_openai_image_charge(
+            metering::GPT_IMAGE_2_ALIAS,
+            &usage,
+            10_000_000,
+            5_000,
+            1_800_000_000,
+        );
+        assert_eq!(charge, 975_000);
+        let event = event.unwrap();
+        assert_eq!(event.provider, registry::PROVIDER_OPENAI);
+        assert_eq!(event.model, metering::GPT_IMAGE_2_ALIAS);
+        assert_eq!(event.input_tokens, 300);
+        assert_eq!(event.output_tokens, 10);
+        assert_eq!(event.cache_read_tokens, 90);
+        assert_eq!(event.input_nano, 1_500_000);
+        assert_eq!(event.cache_read_nano, 150_000);
+        assert_eq!(event.output_nano, 300_000);
+        assert_eq!(event.real_nano, 1_950_000);
+        assert_eq!(event.priced_ts, 1_800_000_000);
+    }
+
+    #[tokio::test]
+    async fn image_settlement_closes_hold_and_persists_exact_usage() {
+        const TOPUP: i64 = 20_000_000;
+        const HOLD: i64 = 10_000_000;
+        let (mut codex_admission, billing, path) =
+            reserved_admission(5_000, TOPUP, HOLD, "image-exact-settlement").await;
+        let mut admission = OpenAiImageAdmission {
+            reservation: codex_admission.reservation.take(),
+        };
+        admission.mark_delivering().await.unwrap();
+        admission.settle(
+            metering::GPT_IMAGE_2_ALIAS,
+            &metering::OpenAiImageUsage {
+                total_text_input_tokens: 100,
+                cached_text_input_tokens: 40,
+                total_image_input_tokens: 200,
+                cached_image_input_tokens: 50,
+                image_output_tokens: 10,
+            },
+        );
+        billing.flush().await.unwrap();
+
+        let account = billing
+            .account("codex-settlement-account")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(account.balance_nano, TOPUP - 975_000);
+        assert_eq!(account.spent_nano, 975_000);
+        assert_eq!(account.reserved_nano, 0);
+        let usage = billing
+            .usage_by_model("codex-settlement-account", 0)
+            .await
+            .unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].provider, registry::PROVIDER_OPENAI);
+        assert_eq!(usage[0].model, metering::GPT_IMAGE_2_ALIAS);
+        assert_eq!(usage[0].charge_nano, 975_000);
+        assert_eq!(usage[0].real_nano, 1_950_000);
+
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn image_delivery_fence_prevents_cancellation_refund() {
+        const TOPUP: i64 = 20_000_000;
+        const HOLD: i64 = 10_000_000;
+        let (mut codex_admission, billing, path) =
+            reserved_admission(10_000, TOPUP, HOLD, "image-delivery-fence").await;
+        let mut admission = OpenAiImageAdmission {
+            reservation: codex_admission.reservation.take(),
+        };
+
+        admission.mark_delivering().await.unwrap();
+        drop(admission);
+        billing.flush().await.unwrap();
+
+        let account = billing
+            .account("codex-settlement-account")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(account.balance_nano, TOPUP - HOLD);
+        assert_eq!(account.spent_nano, 0);
+        assert_eq!(account.reserved_nano, HOLD);
 
         drop(billing);
         let _ = std::fs::remove_file(path);

@@ -42,7 +42,7 @@ pub use kimi::{
 pub use openai_image::{
     openai_image_cost_nanodollars, openai_image_tariff, OpenAiImageMeteringError,
     OpenAiImagePrices, OpenAiImageTariffIdentity, OpenAiImageUsage, GPT_IMAGE_2_ALIAS,
-    GPT_IMAGE_2_SNAPSHOT, OPENAI_IMAGE_TARIFF_SCHEDULE_ID,
+    GPT_IMAGE_2_SNAPSHOT, OPENAI_IMAGE_ALIAS_GENERATION, OPENAI_IMAGE_TARIFF_SCHEDULE_ID,
 };
 
 pub const NANO_PER_USD: i128 = 1_000_000_000;

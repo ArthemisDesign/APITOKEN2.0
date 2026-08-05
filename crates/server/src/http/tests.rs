@@ -2314,6 +2314,75 @@ fn api_plane_is_hostname_selected_and_auth_header_agnostic() {
 }
 
 #[tokio::test]
+async fn image_routes_authenticate_before_body_parsing_or_gateway_discovery() {
+    let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+
+    for provider in [
+        forward::ProviderMode::OpenAi,
+        forward::ProviderMode::Combined,
+    ] {
+        for (path, content_type) in [
+            ("/v1/images/generations", "application/json"),
+            ("/v1/images/edits", "multipart/form-data; boundary=missing"),
+        ] {
+            let mut request = Request::builder()
+                .method(Method::POST)
+                .uri(path)
+                .header("content-type", content_type)
+                .body(Body::from(vec![b'x'; 300 * 1024]))
+                .unwrap();
+            if provider == forward::ProviderMode::Combined {
+                request
+                    .headers_mut()
+                    .insert(API_PLANE_HEADER, "openai".parse().unwrap());
+            }
+            request.extensions_mut().insert(peer);
+
+            let response = router(provider_test_app(provider), Arc::new(AtomicBool::new(true)))
+                .oneshot(request)
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{provider:?} {path} parsed or buffered an unauthenticated body"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn image_routes_are_openai_plane_only_and_not_published_as_models() {
+    let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+    let service = router(
+        provider_test_app(forward::ProviderMode::Combined),
+        Arc::new(AtomicBool::new(true)),
+    );
+
+    let mut marked = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/images/generations")
+        .header("x-api-key", "admin-key")
+        .header(API_PLANE_HEADER, "openai")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"model":"gpt-image-2","prompt":"test"}"#))
+        .unwrap();
+    marked.extensions_mut().insert(peer);
+    let marked = service.clone().oneshot(marked).await.unwrap();
+    assert_eq!(marked.status(), StatusCode::NOT_FOUND);
+
+    let mut models = Request::builder()
+        .uri("/v1/models/gpt-image-2")
+        .header("x-api-key", "admin-key")
+        .header(API_PLANE_HEADER, "openai")
+        .body(Body::empty())
+        .unwrap();
+    models.extensions_mut().insert(peer);
+    let models = service.oneshot(models).await.unwrap();
+    assert_eq!(models.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn fixed_provider_routers_ignore_the_legacy_plane_header() {
     let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
 
@@ -3917,6 +3986,11 @@ fn customer_error_event_is_structured_and_redacts_request_data() {
 #[test]
 fn audit_path_allows_only_fixed_route_templates() {
     assert_eq!(audit_path("/v1/messages"), "/v1/messages");
+    assert_eq!(
+        audit_path("/v1/images/generations"),
+        "/v1/images/generations"
+    );
+    assert_eq!(audit_path("/v1/images/edits"), "/v1/images/edits");
     assert_eq!(
         audit_path("/v1/models/client-controlled"),
         "/v1/models/{id}"

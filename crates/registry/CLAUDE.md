@@ -197,8 +197,11 @@ side effect. `serve` may only perform the read-only schema verification before c
   error do not invoke the gate. The old reserve APIs are unchanged and create no snapshot. No migrations were
   added: the actual schema `0006` is used. The default-off live sampler and the atomic caller
   serve Anthropic/OpenAI/Google; Google stores typed `gemini_v1` reserve modifiers and the durable
-  provider ID `google`, not the deprecated `gemini`. Only snapshot-bearing success may hand the
-  work to the bounded shadow producer. Production config remains off.
+  provider ID `google`, not the deprecated `gemini`. OpenAI image generation/edit uses the typed
+  `openai_image_v1` modifier with the exact operation, `opaque/low/auto` controls and reference count;
+  provider mismatch or any other control shape fails closed, and the canonical digest covers every
+  field. Only snapshot-bearing success may hand the work to the bounded shadow producer. Production
+  config remains off.
   The new PostgreSQL writer, after a potential request-lock wait, re-checks the owner via
   `FOR UPDATE`, holds the epoch row until commit and uses a fresh reservation timestamp; the real-PG
   race test proves rollback of a stale epoch without money/orphan writes. The snapshot constructor

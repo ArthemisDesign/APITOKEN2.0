@@ -15,7 +15,9 @@ Public contract (unchanged from the app-server era):
 | `GET /v1/responses/{id}/input_items` | supported |
 | `POST /v1/responses/input_tokens` | supported; estimates input tokens without running a turn |
 | `POST /v1/chat/completions` | supported adapter, streaming and non-streaming |
-| `GET /v1/models`, `GET /v1/models/{model}` | supported; last-good live intersection with the pinned billing catalog |
+| `POST /v1/images/generations` | producer deployed for authenticated canary; one `opaque/low/auto` PNG, non-streaming |
+| `POST /v1/images/edits` | producer deployed for authenticated canary; one strict PNG reference, one edited PNG, non-streaming |
+| `GET /v1/models`, `GET /v1/models/{model}` | supported; last-good live intersection with the pinned billing catalog; GPT Image 2 stays absent until public smoke is GREEN |
 
 Everything else on the OpenAI hostname returns an OpenAI-shaped `404`; nothing is ever forwarded
 to Anthropic from it. The lenient SDK-compatibility rules (ignored sampling/store/unknown
@@ -102,51 +104,41 @@ token on every refresh with strict family reuse detection. The pool therefore:
 There is deliberately no GPT Image 2 key, origin, or environment variable. The private image canary
 reuses this same Codex configuration and sealed OAuth roster.
 
-## Private GPT Image 2 live gate
+## GPT Image 2 producer-first Images API
 
-`forward::codex::images` contains a private native Images subset for `gpt-image-2`. It follows the
-current official Codex wire rather than an OpenAI API-key lane:
+`forward::codex::images` follows the current native Codex wire rather than an OpenAI API-key lane:
+JSON POSTs to `{CodexConfig.base_url}/images/generations|edits` carry the existing OAuth bearer,
+`ChatGPT-Account-ID`, originator, pinned Codex UA/version and a fresh local image-turn id. The HTTP
+producer exposes authenticated `POST /v1/images/generations` and multipart
+`POST /v1/images/edits`, but keeps the model out of discovery and product catalogs until the separate
+public production smoke succeeds.
 
-- JSON `POST {CodexConfig.base_url}/images/generations` with `model`, prompt, and typed
-  `background`, `quality`, and `size`;
-- JSON `POST {CodexConfig.base_url}/images/edits` with the same fields plus one to five strict PNG
-  data URLs in `images[].image_url`;
-- the existing OAuth bearer, `ChatGPT-Account-ID`, `originator`, pinned Codex UA and `version`, plus a
-  fresh `x-codex-image-turn-id`.
+The customer contract is intentionally narrower than the native structs and official API guide because
+it contains only controls proved on this subscription wire:
 
-The reusable automatic API uses existing pool selection and a normal `TurnSlot`. It permits one forced
-refresh after the first received `401`; only a final pre-execution `401/403` or `429` can rotate
-automatically. Timeouts, transport/body ambiguity, client errors, other statuses and invalid success
-responses are terminal and never replayed. The private CLI freezes either a supplied opaque profile or
-the first currently admitted profile, so its paid call never rotates.
+- alias or immutable snapshot model id; exactly one output;
+- `background=opaque`, `quality=low`, `size=auto`, PNG and `b64_json` only;
+- generation with one bounded prompt; edit with exactly one strict bounded PNG reference;
+- one non-streaming OpenAI-shaped response with one base64 PNG and allow-listed terminal usage.
 
-The only operator surface is `claude-api openai-image-canary`. Dry-run validates private files and
-prints a sanitized plan without reading configuration or using the network. Generation is executable
-only with an exact implementation SHA and an explicit `22_330_000` nanoUSD budget for the native
-`background=opaque,quality=low,size=auto` request. The ceiling combines at most 659 low-quality image
-output tokens from the official GPT Image 2 calculator with a conservative 512 text tokens. Execution
-uses the existing free profile `/wham/usage` preflight, one exact-home attempt, and exclusive mode-`0600`
-PNG/checkpoint publication; the checkpoint requires opaque/low metadata, a bounded native auto-size
-PNG, terminal usage, and the locally generated image turn identity. A sanitized provider request-id
-header is retained when present but is not required: the official Codex `ImageResponse` has no
-request-id field and the endpoint fixture succeeds without that
-header. A parsed mismatch persists only sanitized returned identity flags, metadata, numeric usage,
-optional request id, and image digest in the private journal; it never retains the rejected image bytes.
-Edit validates one to five PNG references, but paid canary execution is restricted to exactly one and
-requires `64_022_330_000` nanoUSD. There is no published GPT Image 2 input formula: the bound instead
-charges the entire official maximum Tier-5 8,000,000 TPM at the fresh image-input rate, then adds the
-prompt/output generation ceiling. It is an absolute authorization envelope, not expected cost or a
-customer reserve; two to five references remain blocked. The preflight is not image `countTokens` or
-reserve proof, and this private path does not invent ChatGPT credits, metering, billing or settlement.
+Authentication happens before JSON or multipart buffering. Each request freezes one admitted pool home,
+runs its free `/wham/usage` preflight, reserves a typed immutable image snapshot, and dispatches only to
+that home. Generation reserves the worst-case 128 KiB prompt plus proven low-output ceiling. Edit adds
+the conservative whole official 8,000,000 TPM envelope at the fresh image-input rate because no
+normative high-fidelity reference formula exists. This may produce a conservative 402 for small balances;
+it never weakens authorization by guessing a cheaper input size. Settlement uses authoritative text/image
+input and image-output details with the official five-leg tariff. Aggregate nonzero cached usage without a
+modality split, inconsistent sums, malformed controls, or malformed success evidence fails closed. An
+already executed result with invalid terminal evidence retains the full hold for recovery and never emits
+the router `not_started` proof.
 
-This remains private and unpublished: no `AppState`, HTTP/customer route, catalog, router preset,
-public docs, defaults/systemd or product availability. A sealed-pool `opaque/low/auto` generation is
-watchdog-GREEN with a real PNG and terminal usage. The separately bounded one-reference edit gate is
-pending against watchdog-GREEN implementation SHA `1c48e3769f0fe775e650f60ea3c5839458e5dfe2`; it accepts
-GREEN only for a new PNG whose bytes differ from the owned reference and whose terminal usage contains
-positive image-input and image-output token details. The native request still proves no masks,
-partial-image streaming, JPEG/WebP or multi-turn Responses image state. The exact run contract and
-remaining publication blockers are `docs/ops/GPT_IMAGE_2_CANARY.md` and
+Generation and the separately bounded one-reference edit are watchdog-GREEN with real PNGs, terminal
+usage, exact local turn/home/SHA attribution, and non-replay semantics. The edit corrective verdict is
+non-network and would have failed a terminal withdrawal. The native wire still proves no masks,
+transparent backgrounds, exact dimensions, medium/high quality, multiple references/outputs,
+partial-image streaming, JPEG/WebP/compression, or Responses multi-turn image state; those fields are
+explicitly rejected. No image key, reseller origin, reseller schema, or new environment variable exists.
+The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANARY.md` and
 `research/GPT_IMAGE_2_EVIDENCE.md`.
 
 ## Runtime behavior

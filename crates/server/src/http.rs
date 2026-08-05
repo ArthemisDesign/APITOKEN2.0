@@ -16,9 +16,10 @@ use forward::{
     anthropic_chat_completions, anthropic_responses, authed, client_keys,
     codex_messages_count_tokens, codex_messages_skin, control_authed, forward, gemini_api,
     gemini_chat_completions, gemini_messages_count_tokens, gemini_messages_skin, gemini_responses,
-    openai_chat_completions, openai_delete_response, openai_get_response, openai_input_tokens,
-    openai_model, openai_models, openai_response_input_items, openai_responses, readonly_authed,
-    resolve_client_key, resolve_client_keys, AppState, Metrics, PricingBridgeFallbackReason,
+    openai_chat_completions, openai_delete_response, openai_get_response, openai_image_edits,
+    openai_image_generations, openai_input_tokens, openai_model, openai_models,
+    openai_response_input_items, openai_responses, readonly_authed, resolve_client_key,
+    resolve_client_keys, AppState, Metrics, PricingBridgeFallbackReason,
     PricingShadowEnqueueResult, PricingShadowProcessingResult, StrictPricingProvider,
     StrictPricingRejectionReason, TerminalErrorReason, PRICING_BRIDGE_LATENCY_BUCKETS_MS,
     PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS,
@@ -497,6 +498,16 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
                 get(response_input_items_dispatch),
             )
             .route("/v1/chat/completions", post(chat_completions_dispatch))
+            .route(
+                "/v1/images/generations",
+                post(image_generations_dispatch)
+                    .layer(axum::extract::DefaultBodyLimit::max(256 * 1024)),
+            )
+            .route(
+                "/v1/images/edits",
+                post(image_edits_dispatch)
+                    .layer(axum::extract::DefaultBodyLimit::max(17 * 1024 * 1024)),
+            )
             .route("/v1/models", get(models_dispatch))
             .route("/v1/models/{model_id}", get(model_dispatch))
             .fallback(provider_fallback_dispatch)
@@ -533,6 +544,16 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
                 get(openai_response_input_items),
             )
             .route("/v1/chat/completions", post(openai_chat_completions))
+            .route(
+                "/v1/images/generations",
+                post(openai_image_generations)
+                    .layer(axum::extract::DefaultBodyLimit::max(256 * 1024)),
+            )
+            .route(
+                "/v1/images/edits",
+                post(openai_image_edits)
+                    .layer(axum::extract::DefaultBodyLimit::max(17 * 1024 * 1024)),
+            )
             // Anthropic Skin (этап 5.1 UNIFIED_ROUTER.md): Messages→Responses адаптер
             // на Codex-плоскости. Dispatch по модели (`openai/*` сюда, остальное на
             // Claude-плоскость) выполняет router; сюда попадают только openai-модели.
@@ -737,6 +758,8 @@ fn audit_path(path: &str) -> &'static str {
         "/v1/responses" => "/v1/responses",
         "/v1/responses/input_tokens" => "/v1/responses/input_tokens",
         "/v1/chat/completions" => "/v1/chat/completions",
+        "/v1/images/generations" => "/v1/images/generations",
+        "/v1/images/edits" => "/v1/images/edits",
         _ if path.starts_with("/v1/responses/") && path.ends_with("/input_items") => {
             "/v1/responses/{id}/input_items"
         }
@@ -772,6 +795,28 @@ async fn chat_completions_dispatch(
         return forward(State(app), ConnectInfo(peer), request).await;
     }
     openai_chat_completions(State(app), ConnectInfo(peer), request).await
+}
+
+async fn image_generations_dispatch(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: axum::extract::Request,
+) -> Response {
+    if !is_openai_plane(request.headers()) {
+        return forward(State(app), ConnectInfo(peer), request).await;
+    }
+    openai_image_generations(State(app), ConnectInfo(peer), request).await
+}
+
+async fn image_edits_dispatch(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: axum::extract::Request,
+) -> Response {
+    if !is_openai_plane(request.headers()) {
+        return forward(State(app), ConnectInfo(peer), request).await;
+    }
+    openai_image_edits(State(app), ConnectInfo(peer), request).await
 }
 
 async fn models_dispatch(

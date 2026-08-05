@@ -1092,31 +1092,35 @@ plans anyway). Privacy by construction: the subject (keyed digest of the key) st
 PostgreSQL-only `PgStore::list_glm_calibrations`, an empty report on the SQLite authority) are joined
 to the opaque id only through `profile_id_for_subject`, and a foreign subject is never serialized outward.
 
-**Private GPT Image 2 live gate — no customer/public surface:** `codex::images` owns the strict
-native Codex OAuth generation/edit wire. It posts JSON to
-`{CodexConfig.base_url}/images/generations|edits` through an existing sealed Codex home, with the
-existing bearer/account/originator/UA/version headers plus a fresh `x-codex-image-turn-id`. Requests
-have typed `background` (`auto|opaque`), `quality` (`low|medium|high|auto`) and `size` (`auto` or an
-exact GPT Image 2-valid resolution) controls. The private canary alone pins
-`model=gpt-image-2,background=opaque,quality=low,size=auto`; edit adds one to five strict PNG data
-URLs under `images[].image_url`. Native Codex OAuth does not preserve requested exact dimensions, so
-this path deliberately exposes no deterministic size claim. There are no masks, partial-image streaming,
-JPEG/WebP, batches or public arbitrary controls. The response path is bounded and validates one real PNG; provider usage is
-optional at the transport layer but mandatory for a successful canary checkpoint and is not turned
-into invented customer metering or settlement.
+**GPT Image 2 native wire and producer-first Images API:** `codex::images` owns the strict native
+Codex OAuth generation/edit wire. It posts JSON to `{CodexConfig.base_url}/images/generations|edits`
+through one existing sealed Codex home, with the existing bearer/account/originator/UA/version headers
+plus a fresh `x-codex-image-turn-id`. The native library keeps typed controls for private evidence, but
+the customer producer deliberately accepts only the live-proven contract:
+`model=gpt-image-2|gpt-image-2-2026-04-21`, `n=1`, `background=opaque`, `quality=low`, `size=auto`,
+`output_format=png`, and base64 JSON output. `POST /v1/images/generations` accepts bounded JSON;
+`POST /v1/images/edits` accepts multipart with exactly one strict PNG `image`. Authentication precedes
+body buffering. Masks, multiple references/outputs, exact sizes, transparent background, medium/high,
+JPEG/WebP/compression, partial-image streaming, and Responses multi-turn image state fail closed.
+The response contains exactly one bounded PNG and reconstructed allow-listed terminal usage.
 
-Automatic calls reuse the existing pool selection and hold a normal `TurnSlot`. A received first
-`401` gets the existing forced refresh once and one same-home replay; only a final pre-execution
-`401/403` or `429` may rotate automatically. A client rejection, other status, invalid success,
-timeout, connection/body failure or any ambiguous outcome is terminal and never replayed. The private
-CLI optionally names an opaque profile; otherwise it selects one currently admitted profile without
-dispatch, freezes that id, runs the free `/wham/usage` preflight and uses exact-home methods, so the
-paid attempt never rotates. Generation execution requires an exact implementation SHA and an explicit
-budget of at least `22_330_000` nanoUSD, the conservative auto-size replacement ceiling. Edit stays
-blocked because no normative input-image ceiling has been established. This module reads no env and
-has no route, `AppState`, catalog, router, defaults or billing integration. The controlled procedure is
-`docs/ops/GPT_IMAGE_2_CANARY.md`; no live proof was performed in this worktree, and publication
-blockers remain in `research/GPT_IMAGE_2_EVIDENCE.md`.
+Each customer operation freezes one admitted home, performs the existing free `/wham/usage` preflight,
+reserves a typed immutable OpenAI image snapshot, and dispatches only to that exact home. Generation
+holds the conservative prompt+low-output ceiling; edit additionally holds the official Tier-5 whole-minute
+8M-token image-input envelope because OpenAI publishes no normative high-fidelity input formula. A
+successful result must return internally consistent text/image input and image-output token details;
+cached input is accepted only when its modality split is authoritative, so the current aggregate-only
+nonzero cache counter is rejected rather than guessed. Exact official replacement cost is settled across
+fresh/cached text, fresh/cached image, and image output legs. A successful provider turn with malformed
+usage or controls keeps its full hold for recovery instead of becoming free; ambiguous post-dispatch
+errors never advertise `not_started` and are never replayed. The model remains absent from `/v1/models`,
+router, product catalogs, defaults, and public docs until the authenticated production generation+edit
+smoke is GREEN. There is no image API key, reseller origin, or environment variable.
+
+The private canary still freezes an explicit or admitted profile and publishes only mode-`0600` evidence.
+Generation and one-reference edit are watchdog-GREEN under the exact procedure in
+`docs/ops/GPT_IMAGE_2_CANARY.md`; unsupported controls remain blockers described in
+`research/GPT_IMAGE_2_EVIDENCE.md`.
 
 **Tuning for live Anthropic** (identity/beta/UA/version) — via `ProxyConfig` fields, which
 `server` takes from env. Default values — in `config.rs`.

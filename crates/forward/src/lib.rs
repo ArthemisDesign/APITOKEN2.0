@@ -48,12 +48,12 @@ pub use billing::{
 pub use breaker::Breaker;
 pub use codex::{
     codex_messages_count_tokens, codex_messages_skin, openai_chat_completions,
-    openai_delete_response, openai_get_response, openai_input_tokens, openai_model, openai_models,
-    openai_response_input_items, openai_responses, CodexConfig, CodexGateway, CodexImageError,
-    CodexImageResult, CodexModel, CodexOperationalStatus, CodexPrices, CodexProfileSpec,
-    CodexProfilesFile, CodexRateLimitWindow, CodexRateLimits, GptImage2, ImageBackground,
-    ImageEditRequest, ImageErrorContext, ImageGenerationRequest, ImageQuality, ImageReference,
-    ImageSize, ImageTurnId, GPT_IMAGE_2,
+    openai_delete_response, openai_get_response, openai_image_edits, openai_image_generations,
+    openai_input_tokens, openai_model, openai_models, openai_response_input_items,
+    openai_responses, CodexConfig, CodexGateway, CodexImageError, CodexImageResult, CodexModel,
+    CodexOperationalStatus, CodexPrices, CodexProfileSpec, CodexProfilesFile, CodexRateLimitWindow,
+    CodexRateLimits, GptImage2, ImageBackground, ImageEditRequest, ImageErrorContext,
+    ImageGenerationRequest, ImageQuality, ImageReference, ImageSize, ImageTurnId, GPT_IMAGE_2,
 };
 pub use config::{
     ClaudeStoreFallbackConfig, ProxyConfig, CLAUDESTORE_FALLBACK_BASE_URL, CLAUDE_CODE_IDENTITY,

@@ -14,7 +14,9 @@ mod config;
 mod discovery;
 mod health;
 pub mod history;
+mod image_api;
 mod images;
+mod openai_image_snapshot;
 mod openai_snapshot;
 mod runner;
 mod skin;
@@ -30,6 +32,7 @@ pub use calibration::{fraction_resolution_units, WindowCalibration};
 pub use chat::completions as openai_chat_completions;
 pub use config::{CodexConfig, CodexModel, CodexPrices, CodexProfileSpec, CodexProfilesFile};
 pub use history::{HistoryError, StoredHistory};
+pub use image_api::{edits as openai_image_edits, generations as openai_image_generations};
 pub use images::{
     CodexImageError, CodexImageResult, GptImage2, ImageBackground, ImageEditRequest,
     ImageErrorContext, ImageGenerationRequest, ImageQuality, ImageReference, ImageSize,

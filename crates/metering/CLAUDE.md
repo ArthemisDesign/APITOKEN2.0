@@ -18,12 +18,12 @@
 - The Codex catalog and the ChatGPT Fast credit multiplier also live only here. Fast is a tier of an
   existing model, not a separate model id: GPT-5.6/5.5 = 2.5x, GPT-5.4 = 2x. Change it only per the
   published OpenAI table with an exact-multiplier test.
-- Dormant GPT Image 2 metering lives in `openai_image`: exact alias/snapshot tariff identity and five
-  disjoint legs (fresh/cached text input, fresh/cached image input, image output). It is only the
-  official OpenAI API replacement tariff, not ChatGPT native credits, subscription quota or billing.
-  If authoritative cached subsets are present, validate each subset and derive fresh input by
-  subtraction; if absent, charge all corresponding input as fresh. Use checked i128 arithmetic. This
-  pure authority does not publish a model, grant route/catalog access, or authorize settlement.
+- GPT Image 2 metering lives in `openai_image`: exact alias/snapshot tariff identity and five
+  disjoint legs (fresh/cached text input, fresh/cached image input, image output). It is the official
+  OpenAI API replacement tariff used by `forward` for customer image settlement, not ChatGPT native
+  credits or subscription quota. If authoritative cached subsets are present, validate each subset
+  and derive fresh input by subtraction; if absent, charge all corresponding input as fresh. Use
+  checked i128 arithmetic. This pure authority does not itself publish a model or grant catalog access.
 - Versioned model/tariff identity is capability only, not product access. The exact canonical map,
   alias generation, immutable schedule ID/epoch and typed reserve modifiers live here; access still
   requires a separate product catalog and account policy. An unknown/historical ID is not turned into

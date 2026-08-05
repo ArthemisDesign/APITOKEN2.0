@@ -161,16 +161,17 @@ requirement to generate only through our existing OAuth pool. No third-party ima
    `afcfca46e22d3b123540462c9b20a2249dc9a56b` are watchdog-GREEN. The sealed-pool call produced the
    durable bounded generation PNG, terminal usage, and exact home/turn/SHA evidence.
 5. Edit-capable implementation SHA `1c48e3769f0fe775e650f60ea3c5839458e5dfe2` is independently
-   watchdog-GREEN. Its pending one-shot validates the successful generation artifact and recovery digest
-   before credentials, then authorizes one `64_022_330_000` nanoUSD exact-home edit. GREEN requires a
-   bounded edited PNG and positive terminal image-input/image-output token details; every other terminal
-   outcome is withdrawn without replay.
-6. Resolve partial-image streaming for the actual native subscription wire before claiming it. Public
-   API documentation alone is insufficient.
-7. Only after GREEN generation and edit implement producer-first image billing/customer routes, then a
-   separate authenticated public production smoke.
-8. Only in a later publication commit update contracts, model catalogs, router presets, pricing
-   releases, OpenKeys, website, public docs, admin and production defaults. Unsupported mask, streaming,
-   format, and multi-turn controls remain absent and explicitly rejected.
+   watchdog-GREEN. Edit delivery `8357ec764d1cdddff652ae4b5d6221267eb14f4e` closed the exact attempt;
+   the watchdog-GREEN corrective verifier SHA `354832bc86c3a8365e713faf0f35ad2c239c7087` is non-network and
+   accepts only its exact success checkpoint while failing a validated withdrawal. This proves one strict
+   reference, a bounded byte-different edit, positive image-input/image-output usage, exact controls and
+   non-replay semantics. The retained summary does not contain exact edit token values, so none are claimed.
+6. Producer-first customer generation/edit routes and exact five-leg settlement are the next deployment.
+   They stay absent from model discovery and product catalogs during the authenticated public smoke.
+7. Only after one real public generation plus one edit is GREEN may a later publication commit update
+   contracts, model catalogs, router, pricing releases, OpenKeys, website, public docs, admin and defaults.
+8. The official GPT Image 2 model contract marks streaming unsupported. Masks, transparent output, exact
+   dimensions, medium/high quality, multiple references/outputs, JPEG/WebP/compression and Responses
+   multi-turn image state remain unproved on the native subscription wire and must be explicitly rejected.
 
-Until every applicable gate closes, GPT Image 2 remains private and unpublished.
+Until the public generation+edit smoke closes, GPT Image 2 remains unpublished.
