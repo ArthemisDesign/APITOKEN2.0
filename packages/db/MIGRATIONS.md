@@ -173,3 +173,14 @@ delivered after the migration and strict engine producer were both green, select
 and exhausted attempts both advance the version, while new rows with an exact provider start at the
 current version. This retries terminal rows from the weaker request-ID-only algorithm exactly once
 without turning idle polling into an unbounded rescan.
+
+Migration `0041_pricing_control_notify.sql` adds `AFTER INSERT` triggers on the three
+pricing-control job tables (`engine_catalog_jobs`, `engine_switch_jobs`, `engine_policy_jobs`) that
+emit `pg_notify('pricing_control_jobs', TG_TABLE_NAME)` per new durable job row. `pg_notify` is
+delivered on COMMIT of the inserting transaction, so a notification can never reference a job that
+rolled back, and every existing and future enqueue path is covered without call-site changes. The
+migration changes no job, binding, policy, catalog or switch row and does not wake any worker by
+itself: delivery remains owned by the periodic worker sweep until the separately delivered LISTEN
+consumer ships, and that consumer treats the sweep as the recovery path for notifications missed
+while no listener was connected. The LISTEN consumer may be delivered only after this migration SHA
+has green `deploy/migration` and `deploy/watchdog` in production.
