@@ -128,9 +128,12 @@ background loops and the HTTP router. Here — and only here — everything is w
   free `/wham/usage` auth/quota preflight, and performs one exact-home attempt. A successful checkpoint
   requires exact returned controls, a strict PNG and terminal usage; the provider request-id header is
   optional because the official Codex Images response contract does not require it, while the local
-  image turn id remains mandatory. Edit planning accepts one to five
-  PNG references but paid edit execution remains blocked until a normative input-image ceiling is
-  proved. Output/checkpoint publication uses exclusive mode-`0600` files. The command remains outside
+  image turn id remains mandatory. A parsed result that fails exact evidence persists only sanitized
+  returned identity flags, controls, dimensions, timestamp, numeric usage, optional request id, and the
+  image SHA-256 in the private mode-`0600` journal; it never persists or publishes the rejected image.
+  Edit planning accepts one to five PNG references but paid edit execution remains blocked until a
+  normative input-image ceiling is proved. Output/checkpoint publication uses exclusive mode-`0600`
+  files. The command remains outside
   `AppState`, HTTP, customer routes, catalog, defaults and billing; no live proof was performed in this
   worktree. Full contract — `docs/ops/GPT_IMAGE_2_CANARY.md`.
 - ClaudeStore emergency transport: `CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED` strict default-off

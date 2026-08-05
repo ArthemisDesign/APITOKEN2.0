@@ -128,8 +128,10 @@ only with an exact implementation SHA and an explicit `8_560_000` nanoUSD budget
 the checkpoint requires exact returned controls, terminal usage, and the locally generated image turn
 identity. A sanitized provider request-id header is retained when present but is not required: the
 official Codex `ImageResponse` has no request-id field and the endpoint fixture succeeds without that
-header. Edit validates one to five PNG references but remains blocked because no normative input-image
-ceiling exists. The preflight is not
+header. A parsed mismatch persists only sanitized returned identity flags, metadata, numeric usage,
+optional request id, and image digest in the private journal; it never retains the rejected image bytes.
+Edit validates one to five PNG references but remains blocked because no normative input-image ceiling
+exists. The preflight is not
 image `countTokens` or reserve proof, and this private path does not invent ChatGPT credits, metering,
 billing or settlement.
 

@@ -86,8 +86,12 @@ Paid generation additionally requires an exact lowercase 40-hex compile-time
   but is optional because the official Codex `ImageResponse` contract does not require one;
 - output SHA-256 and exact implementation SHA.
 
-Missing usage or mismatched home, local turn, or controls receive a specific `evidence_*` journal state;
-the result is kept only in the private recovery directory and is not publication evidence.
+Missing usage or mismatched home, local turn, or controls receive a specific `evidence_*` journal state.
+For a parsed mismatch, the private mode-`0600` journal retains only returned exact-home/turn flags,
+dimensions, timestamp, controls, allow-listed numeric usage, sanitized optional request id, and image
+SHA-256. The rejected image bytes are neither persisted nor published, and the journal is diagnostic—not
+publication evidence. Prepared, transport-error, and success journals do not contain this `returned`
+object; successful authoritative evidence remains in the separate checkpoint.
 
 ## Commands
 
@@ -113,10 +117,11 @@ watchdog-GREEN. Delivery `d7b394fc5e6b9b603e1e0ab3982038f5479ba2e8` then made it
 authorized `$0.00856` generation through the sealed pool. The endpoint returned a parsed image, but the
 returned metadata did not exactly echo `opaque/low/1024x1024`; the canary recorded
 `evidence_controls_mismatch`, published neither PNG nor checkpoint, and permanently fenced the attempt.
-The recovery journal intentionally contains no returned controls or usage, so this attempt cannot prove
-which field differed and cannot be promoted as partial evidence. The controller now performs only a
+That older recovery journal intentionally contains no returned controls or usage, so the attempt cannot
+prove which field differed and cannot be promoted as partial evidence. The controller now performs only a
 non-network verification of that exact SHA/budget/journal and the absence of all output artifacts; it
-cannot replay the paid call.
+cannot replay the paid call. The diagnostic journal contract described above applies only to a future
+attempt running an implementation that contains it; it does not retroactively enrich this fenced journal.
 
 Edit can be validated as a blocked plan by repeating `--reference` up to five times. Do not add
 `--execute` until a reviewed normative input-image ceiling and separate numeric authorization exist.

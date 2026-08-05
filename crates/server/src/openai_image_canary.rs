@@ -98,6 +98,22 @@ struct CanaryJournal<'a> {
     image_turn_id: &'a str,
     implementation_sha: &'a str,
     authorization_budget_nanousd: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    returned: Option<ReturnedEvidence<'a>>,
+}
+
+#[derive(Serialize)]
+struct ReturnedEvidence<'a> {
+    exact_home: bool,
+    exact_turn: bool,
+    width: u32,
+    height: u32,
+    created: u64,
+    provider: ProviderMetadata<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<Value>,
+    request_id: Option<String>,
+    output_sha256: String,
 }
 
 #[derive(Serialize)]
@@ -325,6 +341,7 @@ async fn execute_with_gateway(
         &image_turn_id,
         implementation_sha,
         "prepared",
+        None,
     )?;
 
     let result = match &request {
@@ -356,6 +373,7 @@ async fn execute_with_gateway(
                 &image_turn_id,
                 implementation_sha,
                 journal_state_for_error(&error),
+                None,
             )?;
             Err(error).context("execute exact-home image operation")
         }
@@ -415,18 +433,34 @@ fn persist_result(
 ) -> Result<()> {
     let usage = sanitize_usage(result.usage());
     let request_id = result.request_id().and_then(sanitize_request_id);
+    let exact_home = result.home_id() == profile;
+    let exact_turn = result.image_turn_id() == image_turn_id;
     let exact_metadata = result.width() == u32::from(IMAGE_WIDTH)
         && result.height() == u32::from(IMAGE_HEIGHT)
         && result.background() == "opaque"
         && result.quality() == "low"
         && result.size() == "1024x1024"
         && result.output_format().is_none_or(|format| format == "png");
-    if let Some(state) = evidence_incomplete_state(
-        result.home_id() == profile,
-        result.image_turn_id() == image_turn_id,
-        exact_metadata,
-        usage.is_some(),
-    ) {
+    let output_sha256 = format!("sha256:{}", sha256_hex(result.png()));
+    if let Some(state) =
+        evidence_incomplete_state(exact_home, exact_turn, exact_metadata, usage.is_some())
+    {
+        let returned = ReturnedEvidence {
+            exact_home,
+            exact_turn,
+            width: result.width(),
+            height: result.height(),
+            created: result.created(),
+            provider: ProviderMetadata {
+                background: result.background(),
+                quality: result.quality(),
+                size: result.size(),
+                output_format: result.output_format(),
+            },
+            usage,
+            request_id,
+            output_sha256,
+        };
         persist_journal(
             run_dir,
             validated,
@@ -434,10 +468,10 @@ fn persist_result(
             image_turn_id,
             implementation_sha,
             state,
+            Some(returned),
         )?;
         bail!("Codex image result did not provide complete exact canary evidence");
     }
-    let output_sha256 = format!("sha256:{}", sha256_hex(result.png()));
     let checkpoint = CanaryCheckpoint {
         schema_version: SCHEMA_VERSION,
         profile,
@@ -472,6 +506,7 @@ fn persist_result(
         image_turn_id,
         implementation_sha,
         "success",
+        None,
     )?;
     publish_external_artifact(&validated.output, result.png(), "output")?;
     publish_external_artifact(&validated.checkpoint, &checkpoint_bytes, "checkpoint")
@@ -713,13 +748,14 @@ fn revalidate_run_directory(run_dir: &ActiveRunDirectory) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn persist_journal(
+fn persist_journal<'a>(
     run_dir: &ActiveRunDirectory,
     validated: &ValidatedCanary,
-    profile: &str,
-    image_turn_id: &ImageTurnId,
-    implementation_sha: &str,
+    profile: &'a str,
+    image_turn_id: &'a ImageTurnId,
+    implementation_sha: &'a str,
     state: &'static str,
+    returned: Option<ReturnedEvidence<'a>>,
 ) -> Result<()> {
     let journal = CanaryJournal {
         schema_version: SCHEMA_VERSION,
@@ -730,6 +766,7 @@ fn persist_journal(
         image_turn_id: image_turn_id.as_str(),
         implementation_sha,
         authorization_budget_nanousd: validated.authorization_budget_nanousd,
+        returned,
     };
     let mut bytes =
         serde_json::to_vec_pretty(&journal).context("serialize image canary journal")?;
@@ -1158,6 +1195,7 @@ mod tests {
                 &turn_id,
                 EXACT_SHA,
                 state,
+                None,
             )
             .unwrap();
             let journal_path = run_dir.path.join("journal.json");
@@ -1169,12 +1207,85 @@ mod tests {
             assert_eq!(value["image_turn_id"], "stable-image-turn-123");
             assert_eq!(value["implementation_sha"], EXACT_SHA);
             assert_eq!(value["authorization_budget_nanousd"], 9_000_000);
+            assert!(value.get("returned").is_none());
             assert_eq!(file_mode(&journal_path), 0o600);
             assert!(!serialized.contains("private prompt secret"));
             assert!(!serialized.contains(dir.0.to_string_lossy().as_ref()));
             assert!(!serialized.contains("base64"));
             assert!(!serialized.contains("token"));
         }
+    }
+
+    #[test]
+    fn mismatch_journal_retains_only_sanitized_returned_evidence() {
+        let dir = TestDir::new();
+        let validated = validate(dir.args(true, 9_000_000)).unwrap();
+        let run_dir = create_run_directory(&validated.run_dir).unwrap();
+        let turn_id = ImageTurnId::new("stable-image-turn-123").unwrap();
+        let returned = ReturnedEvidence {
+            exact_home: true,
+            exact_turn: true,
+            width: 1024,
+            height: 1024,
+            created: 1_765_000_000,
+            provider: ProviderMetadata {
+                background: "auto",
+                quality: "low",
+                size: "1024x1024",
+                output_format: Some("png"),
+            },
+            usage: sanitize_usage(Some(&serde_json::json!({
+                "input_tokens": 5,
+                "input_tokens_details": {"text_tokens": 5, "unsafe": "secret"},
+                "output_tokens": 100,
+                "private": "secret"
+            }))),
+            request_id: sanitize_request_id("request/unsafe 1"),
+            output_sha256:
+                "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+        };
+
+        persist_journal(
+            &run_dir,
+            &validated,
+            "opaque_profile-1",
+            &turn_id,
+            EXACT_SHA,
+            "evidence_controls_mismatch",
+            Some(returned),
+        )
+        .unwrap();
+
+        let journal_path = run_dir.path.join("journal.json");
+        let bytes = std::fs::read(&journal_path).unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        let serialized = String::from_utf8(bytes).unwrap();
+        assert_eq!(file_mode(&journal_path), 0o600);
+        assert_eq!(value["returned"]["exact_home"], true);
+        assert_eq!(value["returned"]["exact_turn"], true);
+        assert_eq!(value["returned"]["width"], 1024);
+        assert_eq!(value["returned"]["height"], 1024);
+        assert_eq!(value["returned"]["created"], 1_765_000_000u64);
+        assert_eq!(value["returned"]["provider"]["background"], "auto");
+        assert_eq!(value["returned"]["provider"]["quality"], "low");
+        assert_eq!(value["returned"]["provider"]["size"], "1024x1024");
+        assert_eq!(value["returned"]["provider"]["output_format"], "png");
+        assert_eq!(value["returned"]["usage"]["input_tokens"], 5);
+        assert_eq!(value["returned"]["usage"]["output_tokens"], 100);
+        assert_eq!(value["returned"]["request_id"], "request_unsafe_1");
+        assert_eq!(
+            value["returned"]["output_sha256"],
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+        assert!(!serialized.contains("private prompt secret"));
+        assert!(!serialized.contains(dir.0.to_string_lossy().as_ref()));
+        assert!(!serialized.contains("unsafe\":\"secret"));
+        assert!(!serialized.contains("private"));
+        assert!(!serialized.contains("base64"));
+        assert!(!run_dir.path.join("result.png").exists());
+        assert!(!run_dir.path.join("checkpoint.json").exists());
+        assert!(!dir.path("output.png").exists());
+        assert!(!dir.path("checkpoint.json").exists());
     }
 
     #[test]

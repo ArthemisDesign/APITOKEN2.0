@@ -129,10 +129,11 @@ requirement to generate only through our existing OAuth pool. No third-party ima
 
 ## Remaining live and publication gates
 
-1. Close the RED production baseline with a non-network verifier for the terminal
+1. The RED production baseline is closed by a non-network verifier for the terminal
    `evidence_controls_mismatch` attempt; never replay that image turn or treat it as successful evidence.
-2. Before any separately authorized future generation, change private recovery so a rejected parsed
-   result retains sanitized returned controls and usage (but not the image) for root-cause diagnosis.
+2. Deploy the private recovery change that records a rejected parsed result's sanitized returned
+   controls, dimensions, identity flags, usage, optional request id, and digest—but not image bytes—in
+   the mode-0600 journal. This diagnostic evidence is not publication evidence.
 3. Use that separately reviewed implementation and a new evidence root to determine the real native
    response contract. Require 2xx, one real PNG, terminal usage, local turn attribution, private mode-0600
    evidence, and no ambiguous replay; do not require response echo fields the native contract omits.
