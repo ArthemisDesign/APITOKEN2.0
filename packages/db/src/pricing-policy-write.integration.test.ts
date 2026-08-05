@@ -22,7 +22,7 @@ import {
   confirmPricingControlJob,
   type ClaimedPricingControlJob,
 } from "./pricing-control-jobs.js";
-import { createBusinessInvite, convertCustomerToBusiness, rotateBusinessInvite } from "./pricing.js";
+import { createBusinessInvite, convertCustomerToBusiness, getCustomerPricingPolicyView, rotateBusinessInvite } from "./pricing.js";
 import { runStage5Backfill } from "./multi-discount-backfill.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -496,6 +496,126 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
       reason: "repair attempt with a fractional-percent scalar",
       multiplierBp: 3_750,
     })).rejects.toThrow("whole-percent");
+  });
+
+  it("syncs the legacy scalar on a uniform B2B policy save and prices the dashboard by the scalar", async () => {
+    const user = await createEmailUser(database, "scalar-sync@example.test", "password-hash");
+    const engineAccountId = `acct_scalar_${user.id.replaceAll("-", "")}`;
+    await seedClient.query(`
+      UPDATE engine_accounts SET engine_account_id = $2, status = 'active' WHERE user_id = $1
+    `, [user.id, engineAccountId]);
+    await convertCustomerToBusiness(database, {
+      userId: user.id,
+      actorId: "admin@example.test",
+      reason: "customer negotiated business terms",
+      multiplierBp: 2_000,
+    });
+    // The engine acknowledged the first delivery; pre-cutover the policy stays shadow and the
+    // legacy scalar remains the only enforced price.
+    await seedClient.query(`
+      UPDATE account_policy_bindings
+      SET applied_effective_version = desired_effective_version,
+          applied_digest = desired_digest,
+          last_ack_at = now(), sync_state = 'confirmed',
+          policy_enforcement = 'shadow'
+      WHERE user_id = $1
+    `, [user.id]);
+
+    const anthropic70: PricingPolicyEditorRule = { ...ANTHROPIC_60, discountBps: 7_000 };
+    const openai70: PricingPolicyEditorRule = { ...OPENAI_50, discountBps: 7_000 };
+    const saved = await updateManagedPricingPolicy(database, {
+      ownerType: "b2b_client",
+      ownerId: user.id,
+      expectedVersion: 1,
+      rules: [anthropic70, openai70],
+      actorId: "admin@example.test",
+      reason: "extend the negotiated 70% to every provider",
+    });
+    expect(saved.currentVersion).toBe(2);
+    const scalar = await seedClient.query<{ profile_mult: number; engine_mult: number }>(`
+      SELECT cp.multiplier_bp AS profile_mult, ea.mult_bp AS engine_mult
+      FROM customer_profiles cp JOIN engine_accounts ea ON ea.user_id = cp.user_id
+      WHERE cp.user_id = $1
+    `, [user.id]);
+    expect(scalar.rows[0]).toEqual({ profile_mult: 3_000, engine_mult: 3_000 });
+    const scalarJob = await seedClient.query<{ multiplier_bp: number; status: string; reason: string }>(`
+      SELECT multiplier_bp, status, reason FROM engine_pricing_jobs WHERE user_id = $1
+    `, [user.id]);
+    expect(scalarJob.rows).toEqual([{
+      multiplier_bp: 3_000,
+      status: "pending",
+      reason: `b2b_policy_scalar_sync:policy:main:b2b:${user.id}`,
+    }]);
+    const syncAudit = await seedClient.query<{ metadata: Record<string, unknown> }>(`
+      SELECT metadata FROM audit_log
+      WHERE action = 'pricing_policy.updated' AND target_id = $1
+      ORDER BY created_at DESC, id DESC LIMIT 1
+    `, [`policy:main:b2b:${user.id}`]);
+    expect(syncAudit.rows[0]?.metadata).toMatchObject({
+      scalarSync: { synced: true, multiplierBp: 3_000, previousMultiplierBp: 2_000 },
+    });
+
+    // The customer-facing projection prices a governed provider by the authoritative scalar,
+    // not by the materialized shadow rules that billing does not enforce yet. Providers the
+    // policy does not cover (openai here) stay unavailable exactly as the materialized rules say.
+    const views = await getCustomerPricingPolicyView(database, user.id);
+    expect(views).toHaveLength(1);
+    const applied = views[0]!.applied;
+    expect(applied).not.toBeNull();
+    const anthropic = applied!.providers.find((provider) => provider.providerId === "anthropic");
+    expect(anthropic).toBeDefined();
+    for (const model of anthropic!.models) {
+      expect(model.rule).toMatchObject({
+        pricingMode: "discount",
+        ruleOrigin: "legacy",
+        discountBps: 7_000,
+        payableMultiplierBp: 3_000,
+      });
+    }
+    const openai = applied!.providers.find((provider) => provider.providerId === "openai");
+    expect(openai).toBeDefined();
+    for (const model of openai!.models) {
+      expect(model.rule).toBeNull();
+      expect(model.unavailableReasons).toContain("missing_pricing_rule");
+    }
+
+    // Re-saving the same uniform policy leaves the scalar and the engine job untouched.
+    await updateManagedPricingPolicy(database, {
+      ownerType: "b2b_client",
+      ownerId: user.id,
+      expectedVersion: 2,
+      rules: [anthropic70, openai70],
+      actorId: "admin@example.test",
+      reason: "no-op resave",
+    });
+    const resaveJob = await seedClient.query<{ multiplier_bp: number; status: string }>(`
+      SELECT multiplier_bp, status FROM engine_pricing_jobs WHERE user_id = $1
+    `, [user.id]);
+    expect(resaveJob.rows).toEqual([{ multiplier_bp: 3_000, status: "pending" }]);
+
+    // A non-uniform policy cannot be one scalar: billing stays on the current multiplier and
+    // the custom policy activates only with the release cutover.
+    await updateManagedPricingPolicy(database, {
+      ownerType: "b2b_client",
+      ownerId: user.id,
+      expectedVersion: 3,
+      rules: [{ ...ANTHROPIC_60, discountBps: 7_000 }, OPENAI_50],
+      actorId: "admin@example.test",
+      reason: "per-provider custom discounts",
+    });
+    const afterCustom = await seedClient.query<{ profile_mult: number; engine_mult: number; jobs: string }>(`
+      SELECT cp.multiplier_bp AS profile_mult, ea.mult_bp AS engine_mult,
+             (SELECT count(*)::text FROM engine_pricing_jobs WHERE user_id = $1) AS jobs
+      FROM customer_profiles cp JOIN engine_accounts ea ON ea.user_id = cp.user_id
+      WHERE cp.user_id = $1
+    `, [user.id]);
+    expect(afterCustom.rows[0]).toEqual({ profile_mult: 3_000, engine_mult: 3_000, jobs: "1" });
+    const customAudit = await seedClient.query<{ metadata: Record<string, unknown> }>(`
+      SELECT metadata FROM audit_log
+      WHERE action = 'pricing_policy.updated' AND target_id = $1
+      ORDER BY created_at DESC, id DESC LIMIT 1
+    `, [`policy:main:b2b:${user.id}`]);
+    expect(customAudit.rows[0]?.metadata).not.toHaveProperty("scalarSync");
   });
 
   it("rotates a policy invitation as an independent exact snapshot with a neutral scalar placeholder", async () => {

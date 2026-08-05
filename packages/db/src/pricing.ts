@@ -12,6 +12,7 @@ import type { Database } from "./client.js";
 import {
   copyBusinessInvitationPolicyToReplacement,
   createBusinessInvitationPolicy,
+  enqueuePricingJob,
   getManagedPricingPolicy,
   PricingPolicyWriteError,
   provisionBusinessClientPolicy,
@@ -1146,6 +1147,7 @@ interface CustomerPricingBindingRow {
   reconciliation_state: CustomerPricingPolicyView["reconciliationState"];
   sync_state: CustomerPricingPolicyView["syncState"];
   last_ack_at: Date | null;
+  legacy_multiplier_bp: number;
 }
 
 interface CustomerPricingVersionRow {
@@ -1211,6 +1213,34 @@ function customerRuleView(row: CustomerPricingRuleRow): CustomerPricingRuleView 
     trackEligible: row.track_eligible,
     retentionEligible: row.retention_eligible,
     commissionEligible: row.commission_eligible,
+  };
+}
+
+/**
+ * The customer-facing rule for a binding whose policy is not engine-enforced yet: a plain
+ * provider discount mirroring the legacy scalar that billing actually applies. trackEligible and
+ * the other capability flags stay false — the legacy lane has no track/retention/commission
+ * semantics of its own.
+ */
+function legacyScalarRule(
+  binding: CustomerPricingBindingRow,
+  version: CustomerPricingVersionRow,
+  providerId: string,
+): CustomerPricingRuleRow {
+  return {
+    binding_id: binding.id,
+    effective_version: version.effective_version,
+    rule_id: `provider:${providerId}:legacy-scalar`,
+    scope_type: "provider",
+    provider_id: providerId,
+    canonical_model_id: null,
+    pricing_mode: "discount",
+    rule_origin: "legacy",
+    discount_bps: 10_000 - binding.legacy_multiplier_bp,
+    payable_multiplier_bp: binding.legacy_multiplier_bp,
+    track_eligible: false,
+    retention_eligible: false,
+    commission_eligible: false,
   };
 }
 
@@ -1281,7 +1311,19 @@ function customerPricingVersionView(input: {
     const providerRule = input.rules.find((rule) => (
       rule.provider_id === identity.providerId && rule.scope_type === "provider"
     ));
-    const rule = exactRule ?? providerRule ?? null;
+    // While the binding's policy is not engine-enforced (legacy_scalar or shadow), the price
+    // the customer actually pays is the legacy scalar on the engine account — the materialized
+    // policy rules are a snapshot that can diverge from it (a converted B2C→B2B customer keeps
+    // the backfilled lineage until the release cutover). Where the policy governs a provider at
+    // all, present the authoritative scalar price so the dashboard never advertises a discount
+    // billing does not apply, or hides one it does; providers the policy does not cover stay
+    // unavailable exactly as the materialized rules say.
+    const materialized = exactRule ?? providerRule ?? null;
+    const legacyScalarActive = binding.account_class === "b2b"
+      && binding.policy_enforcement !== "strict";
+    const rule = legacyScalarActive && materialized !== null
+      ? legacyScalarRule(binding, version, identity.providerId)
+      : materialized;
     const reasons: CustomerPricingUnavailableReason[] = [];
     if (policyModel?.enabled !== true) reasons.push("policy_catalog_disabled");
     if (admissionModel?.enabled !== true) reasons.push("admission_catalog_disabled");
@@ -1345,7 +1387,8 @@ export async function getCustomerPricingPolicyView(
              binding.funding_enforcement,
              binding.reconciliation_state,
              binding.sync_state,
-             binding.last_ack_at
+             binding.last_ack_at,
+             account.mult_bp AS legacy_multiplier_bp
       FROM account_policy_bindings binding
       JOIN engine_accounts account
         ON account.id = binding.engine_account_record_id
@@ -2870,40 +2913,6 @@ async function applyTierChange(
     multiplierBp,
     reason,
   });
-}
-
-async function enqueuePricingJob(client: PoolClient, input: {
-  userId: string; engineAccountId: string; multiplierBp: number; reason: string;
-}): Promise<string> {
-  const existing = await client.query<{ id: string; status: "pending" | "processing" | "retry" | "confirmed" }>(`
-    SELECT id, status FROM engine_pricing_jobs WHERE user_id = $1 FOR UPDATE
-  `, [input.userId]);
-  const row = existing.rows[0];
-  if (row?.status === "processing") {
-    // Do not revoke an active lease or let a newer generation run concurrently. The desired
-    // multiplier is already durable on customer_profiles; confirmPricingJob requeues this row
-    // after the in-flight engine request completes if that desired value changed.
-    return row.id;
-  }
-  if (row) {
-    const updated = await client.query<{ id: string }>(`
-      UPDATE engine_pricing_jobs SET
-        engine_account_id = $2, multiplier_bp = $3, reason = $4,
-        status = 'pending', attempts = 0, next_attempt_at = now(),
-        locked_at = NULL, locked_by = NULL, last_error = NULL,
-        confirmed_at = NULL, updated_at = now()
-      WHERE id = $1
-      RETURNING id
-    `, [row.id, input.engineAccountId, input.multiplierBp, input.reason]);
-    return updated.rows[0]!.id;
-  }
-  const id = randomUUID();
-  await client.query(`
-    INSERT INTO engine_pricing_jobs (
-      id, user_id, engine_account_id, multiplier_bp, reason
-    ) VALUES ($1, $2, $3, $4, $5)
-  `, [id, input.userId, input.engineAccountId, input.multiplierBp, input.reason]);
-  return id;
 }
 
 async function reconcileTopupTier(

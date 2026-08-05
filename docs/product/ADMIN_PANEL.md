@@ -121,7 +121,12 @@ without touching the active discount. For a converted customer the binding is re
 client policy but the engine keeps running the confirmed backfilled lineage: the legacy delivery
 lane rejects identity switches, so no new delivery is staged, a drifted desired state is healed
 back to the confirmed one, and the scalar multiplier stays authoritative until the release
-cutover delivers the identity switch. Post-cutover, a saved B2B policy also advances the live release-v2 authority:
+cutover delivers the identity switch. Saving a B2B client policy whose rules are a uniform
+provider-level discount (for example 70% on every provider) also moves that authoritative
+scalar and enqueues its engine delivery, so the edit actually changes the price the customer
+pays today; the customer's usage page shows that scalar price wherever the policy governs the
+provider while the policy is not engine-enforced. A non-uniform policy (per-provider or per-model differences) cannot be
+one scalar — it leaves today's price unchanged and activates with the cutover. Post-cutover, a saved B2B policy also advances the live release-v2 authority:
 a strictly newer release policy version is pinned through the append-only assignment
 extension under the exact current head, and the CAS response reports that outcome. A new invitation is created immediately with a full provider/model policy; a
 scalar discount editor does not exist in the active UI. An unredeemed invitation is edited

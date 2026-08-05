@@ -915,6 +915,105 @@ export async function createBusinessInvitationPolicy(
   return policy;
 }
 
+/**
+ * Enqueues (or re-arms) the durable legacy-scalar delivery job for an account. The scalar on
+ * customer_profiles is the desired state; this job carries it to the engine exactly once per
+ * change. Shared by the commerce pricing flows and the managed-policy writer.
+ */
+export async function enqueuePricingJob(client: PoolClient, input: {
+  userId: string; engineAccountId: string; multiplierBp: number; reason: string;
+}): Promise<string> {
+  const existing = await client.query<{ id: string; status: "pending" | "processing" | "retry" | "confirmed" }>(`
+    SELECT id, status FROM engine_pricing_jobs WHERE user_id = $1 FOR UPDATE
+  `, [input.userId]);
+  const row = existing.rows[0];
+  if (row?.status === "processing") {
+    // Do not revoke an active lease or let a newer generation run concurrently. The desired
+    // multiplier is already durable on customer_profiles; confirmPricingJob requeues this row
+    // after the in-flight engine request completes if that desired value changed.
+    return row.id;
+  }
+  if (row) {
+    const updated = await client.query<{ id: string }>(`
+      UPDATE engine_pricing_jobs SET
+        engine_account_id = $2, multiplier_bp = $3, reason = $4,
+        status = 'pending', attempts = 0, next_attempt_at = now(),
+        locked_at = NULL, locked_by = NULL, last_error = NULL,
+        confirmed_at = NULL, updated_at = now()
+      WHERE id = $1
+      RETURNING id
+    `, [row.id, input.engineAccountId, input.multiplierBp, input.reason]);
+    return updated.rows[0]!.id;
+  }
+  const id = randomUUID();
+  await client.query(`
+    INSERT INTO engine_pricing_jobs (
+      id, user_id, engine_account_id, multiplier_bp, reason
+    ) VALUES ($1, $2, $3, $4, $5)
+  `, [id, input.userId, input.engineAccountId, input.multiplierBp, input.reason]);
+  return id;
+}
+
+/**
+ * A saved b2b_client policy whose rules are a uniform set of provider-level discounts expresses
+ * exactly one payable multiplier — and pre-cutover the legacy scalar is the ONLY price the
+ * engine enforces (the policy itself ships as shadow). Keeping the two apart made policy edits
+ * silently ineffective: the panel showed the new policy while billing followed the stale scalar.
+ * Returns the multiplier when the rules are uniform, or null when they cannot be represented as
+ * one scalar (mixed scopes, track rules, per-provider differences) — in that case the scalar
+ * stays untouched and the custom policy activates with the release cutover.
+ */
+function uniformProviderDiscountMultiplier(rules: readonly PricingPolicyEditorRule[]): number | null {
+  if (rules.length === 0) return null;
+  let discountBps: number | null = null;
+  for (const rule of rules) {
+    if (!("provider" in rule.scope) || rule.pricingMode !== "discount" || rule.discountBps === null) {
+      return null;
+    }
+    if (discountBps === null) discountBps = rule.discountBps;
+    else if (discountBps !== rule.discountBps) return null;
+  }
+  return 10_000 - discountBps!;
+}
+
+/**
+ * Syncs the authoritative legacy scalar (customer_profiles + engine_accounts + the durable
+ * engine delivery job) with a uniform b2b_client policy. A no-op when the scalar already
+ * matches, so re-saving an unchanged policy never churns the engine job.
+ */
+async function syncBusinessClientScalar(
+  client: PoolClient,
+  input: { userId: string; multiplierBp: number; reason: string },
+): Promise<{ synced: boolean; jobId: string | null; previousMultiplierBp: number | null }> {
+  const account = await client.query<{
+    multiplier_bp: number;
+    engine_account_id: string | null;
+  }>(`
+    SELECT cp.multiplier_bp, ea.engine_account_id
+    FROM customer_profiles cp
+    JOIN engine_accounts ea ON ea.user_id = cp.user_id
+    WHERE cp.user_id = $1
+    FOR UPDATE OF cp, ea
+  `, [input.userId]);
+  const row = account.rows[0];
+  if (!row || row.engine_account_id === null || row.multiplier_bp === input.multiplierBp) {
+    return { synced: false, jobId: null, previousMultiplierBp: row?.multiplier_bp ?? null };
+  }
+  await client.query(`
+    UPDATE customer_profiles SET multiplier_bp = $2, updated_at = now() WHERE user_id = $1
+  `, [input.userId, input.multiplierBp]);
+  await client.query(`
+    UPDATE engine_accounts SET mult_bp = $2, updated_at = now() WHERE user_id = $1
+  `, [input.userId, input.multiplierBp]);
+  const jobId = await enqueuePricingJob(client, {
+    userId: input.userId,
+    engineAccountId: row.engine_account_id,
+    multiplierBp: input.multiplierBp,
+    reason: input.reason,
+  });
+  return { synced: true, jobId, previousMultiplierBp: row.multiplier_bp };
+}
+
 export async function updateManagedPricingPolicy(database: Database, input: {
   ownerType: ManagedOwnerType;
   ownerId: string;
@@ -1000,6 +1099,22 @@ export async function updateManagedPricingPolicy(database: Database, input: {
         await materializeBinding(client, binding.id, next, catalog.generation);
       }
     }
+    let scalarSync: { synced: boolean; jobId: string | null; previousMultiplierBp: number | null; multiplierBp: number } | null = null;
+    if (input.ownerType === "b2b_client") {
+      // Pre-cutover the engine enforces only the legacy scalar, so a uniform provider-discount
+      // policy must move the scalar with it — otherwise the panel shows the new policy while
+      // billing follows the stale multiplier. Non-uniform rules cannot be one scalar; they stay
+      // shadow-only until the release cutover.
+      const multiplierBp = uniformProviderDiscountMultiplier(input.rules);
+      if (multiplierBp !== null) {
+        const synced = await syncBusinessClientScalar(client, {
+          userId: input.ownerId,
+          multiplierBp,
+          reason: `b2b_policy_scalar_sync:${policyId}`,
+        });
+        scalarSync = { ...synced, multiplierBp };
+      }
+    }
     await client.query(`
       INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
       VALUES ('admin', $1, 'pricing_policy.updated', 'pricing_policy', $2, $3::jsonb)
@@ -1010,6 +1125,14 @@ export async function updateManagedPricingPolicy(database: Database, input: {
       version: next.version,
       digest: next.content_digest,
       reason: input.reason,
+      ...(scalarSync === null ? {} : {
+        scalarSync: {
+          synced: scalarSync.synced,
+          multiplierBp: scalarSync.multiplierBp,
+          previousMultiplierBp: scalarSync.previousMultiplierBp,
+          jobId: scalarSync.jobId,
+        },
+      }),
     })]);
     const view = await managedPolicyView(client, policyId);
     await client.query("COMMIT");
