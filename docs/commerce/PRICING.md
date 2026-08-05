@@ -87,9 +87,36 @@ account accepts the same switch as a shadow rebind pre-cutover. Conversion and l
 therefore stage the identity switch as a normal delivery for the backfilled shadow binding, while
 for a strict binding nothing is staged: the engine keeps running the confirmed lineage, the scalar
 multiplier stays authoritative, and any drifted staged-but-undeliverable desired state is folded
-back to the engine-confirmed applied state. The strict identity switch itself is delivered by the
-release-cutover locked transition, never by rewriting or retrying legacy jobs. Until the cutover
-the scalar remains the only engine-enforced price for shadow accounts too.
+back to the engine-confirmed applied state. Until the cutover the scalar remains the only
+engine-enforced price for shadow accounts too.
+
+## Per-account strict cutover
+
+The default strict transition is the fleet-wide Stage 9 release CAS (see
+`docs/commerce/MULTI_DISCOUNT_STAGE9.md`). One individually negotiated B2B client can be cut
+over earlier through `POST /v1/admin/users/:id/policy-enforcement-cutover`
+(`AdminOperationsService.cutoverUserPolicyToStrict`), which makes the client's confirmed
+per-provider policy the enforced price instead of the legacy scalar. The endpoint orchestrates
+the full precondition set the engine enforces atomically at the flip:
+
+1. funding buckets are normalized to equal the account aggregates
+   (`GET|POST /admin/pricing/v2/funding/{account}/normalization`; a blocked plan aborts with 409);
+2. every active API key is stamped with the exact active-policy ACK
+   (`POST /admin/key-id/{key_id}/status` with `activation_policy_ack`) — the cutover trigger
+   rejects the flip over an unstamped key;
+3. the durable strict control job is staged via `stageAccountStrictCutoverJob`
+   (strict policy + strict funding + verified, targeting exactly the shadow-confirmed version).
+
+The worker delivers the activation and immediately re-stamps the account's active keys with the
+new head — request auth on a strict account admits only keys stamped with the current policy
+version+digest, so without that hook every strict activation (the cutover and each later policy
+save) would break the client's keys. Key issue attaches the ACK too: `createApiKey` sends
+`activation_policy_ack` whenever the account is strict. A strict→strict policy advance keeps
+keys working through the same re-stamp in the delivery job; the engine identity stays frozen
+(no rebind) once strict. The endpoint is idempotent — a replay reports `already_strict` with the
+original job id and status instead of staging a duplicate. Engine-side guards that cannot be
+pre-flighted from commerce (drained legacy reservations, policy-capable engine instances) fail
+the delivery job loudly with the trigger error, never a partial state.
 
 The existing scalar `mult_bp` becomes only an Anthropic provider rule at migration:
 

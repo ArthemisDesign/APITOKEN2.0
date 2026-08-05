@@ -93,6 +93,11 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
       fetch: async (input, init) => {
         const path = new URL(String(input)).pathname;
         if (path === "/admin/pricing/v2/head") return Response.json({ head: null });
+        if (path.includes("/pricing/policy/") && path.endsWith("/state")) {
+          return Response.json({
+            state: { account_id: decodeURIComponent(path.split("/")[4] ?? ""), policy: "unbound" },
+          });
+        }
         if (path === "/admin/key" && init?.method === "POST") {
           issued += 1;
           const client = await database.pool.connect();
@@ -163,6 +168,11 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
         if (path === "/admin/pricing/v2/head") {
           return Response.json({
             head: { active_generation: 10, active_digest: releaseDigest, head_version: 1, updated_ts: 1 },
+          });
+        }
+        if (path.includes("/pricing/policy/") && path.endsWith("/state")) {
+          return Response.json({
+            state: { account_id: decodeURIComponent(path.split("/")[4] ?? ""), policy: "unbound" },
           });
         }
         if (path === "/admin/pricing/v2/release/10") {
@@ -248,6 +258,11 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
       fetch: async (input, init) => {
         const path = new URL(String(input)).pathname;
         if (path === "/admin/pricing/v2/head") return Response.json({ head: null });
+        if (path.includes("/pricing/policy/") && path.endsWith("/state")) {
+          return Response.json({
+            state: { account_id: decodeURIComponent(path.split("/")[4] ?? ""), policy: "unbound" },
+          });
+        }
         if (path === "/admin/account" && init?.method === "POST") {
           createdAccounts += 1;
           return Response.json({ account: engineAccountId, mult_bp: 10_000, handle: `user:${userId}` });
@@ -325,6 +340,11 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
       fetch: async (input, init) => {
         const path = new URL(String(input)).pathname;
         if (path === "/admin/pricing/v2/head") return Response.json({ head: null });
+        if (path.includes("/pricing/policy/") && path.endsWith("/state")) {
+          return Response.json({
+            state: { account_id: decodeURIComponent(path.split("/")[4] ?? ""), policy: "unbound" },
+          });
+        }
         if (path === "/admin/account" && init?.method === "POST") {
           const body = JSON.parse(String(init.body)) as { handle: string; mult_bp: number };
           createdAccountId = `acct_invited_${body.handle.slice("user:".length).replaceAll("-", "")}`;

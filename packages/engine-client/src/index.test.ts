@@ -271,6 +271,42 @@ describe("EngineClient", () => {
     expect(requests.at(-1)?.body).not.toContain("sk-pool-secret");
   });
 
+  it("sends the exact activation policy ACK on key issue and reactivation", async () => {
+    const requests: { url: string; body: string }[] = [];
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async (input, init) => {
+        const url = String(input);
+        requests.push({ url, body: String(init?.body ?? "") });
+        if (url.includes("/key-id/")) {
+          return Response.json({ key_id: "key_public", status: "active", updated: 1 });
+        }
+        return Response.json({
+          key: "sk-pool-secret",
+          key_id: "key_public",
+          account: "acct_test",
+          label: null,
+          spend_limit_nano: null,
+          expires_ts: null,
+        });
+      },
+    });
+    const ack = { effectivePolicyVersion: 6, policyDigest: "policy-digest-v6" };
+    await client.issueKey("acct_test", { activationPolicyAck: ack });
+    expect(JSON.parse(requests[0]!.body)).toEqual({
+      account_id: "acct_test",
+      activation_policy_ack: { effective_policy_version: 6, policy_digest: "policy-digest-v6" },
+    });
+    await client.setKeyStatus("key_public", "active", ack);
+    expect(JSON.parse(requests[1]!.body)).toEqual({
+      status: "active",
+      activation_policy_ack: { effective_policy_version: 6, policy_digest: "policy-digest-v6" },
+    });
+    await client.setKeyStatus("key_public", "active");
+    expect(JSON.parse(requests[2]!.body)).toEqual({ status: "active" });
+  });
+
   it("validates replacement policies before contacting the engine", async () => {
     const client = new EngineClient({
       baseUrl: "http://engine.test",

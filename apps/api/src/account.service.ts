@@ -15,7 +15,7 @@ import {
   type Database,
   type StoredApiKey,
 } from "@claude-api/db";
-import { EngineClient, EngineClientError } from "@claude-api/engine-client";
+import { EngineClient, EngineClientError, type EngineKeyActivationPolicyAck } from "@claude-api/engine-client";
 import {
   B2C_LEGACY_SIGNUP_BONUS_BALANCE_NANO,
   type CreateApiKey,
@@ -318,6 +318,7 @@ export class AccountService {
           ...(input.label !== undefined ? { label: input.label } : {}),
           ...(spendLimitNano !== undefined ? { spendLimitNano } : {}),
           ...(expiresAt !== undefined ? { expiresAt } : {}),
+          ...(await this.strictKeyActivationAck(id)),
         });
       },
     );
@@ -456,6 +457,28 @@ export class AccountService {
 
   private async withEngineAccount<T>(userId: string, action: (accountId: string) => Promise<T>): Promise<T> {
     return (await this.withEngineAccountId(userId, action)).value;
+  }
+
+  /**
+   * A strict binding makes the engine reject key writes without the exact active-policy ACK
+   * (request auth requires every key stamped with the current policy head). Shadow and legacy
+   * accounts take no ACK at all — attaching one would only add a new failure mode on a racing
+   * policy delivery, so the ACK is fetched and sent only when the account is strict today.
+   */
+  private async strictKeyActivationAck(
+    accountId: string,
+  ): Promise<{ activationPolicyAck: EngineKeyActivationPolicyAck } | Record<string, never>> {
+    const state = await this.engine.getAccountPricingState(accountId);
+    if (typeof state === "object" && state !== null && "active" in state
+      && state.active.binding.policy_enforcement === "strict") {
+      return {
+        activationPolicyAck: {
+          effectivePolicyVersion: state.active.policy.effective_version,
+          policyDigest: state.active.policy.content_digest,
+        },
+      };
+    }
+    return {};
   }
 
   private async ensurePolicyReadyForKey(userId: string): Promise<void> {

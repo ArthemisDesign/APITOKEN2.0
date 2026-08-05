@@ -43,7 +43,7 @@ import type {
   PricingMutationAck,
   PricingReleaseActivationAckV2,
 } from "@claude-api/contracts";
-import { EngineClient, EngineClientError } from "@claude-api/engine-client";
+import { EngineClient, EngineClientError, type EngineKeyActivationPolicyAck } from "@claude-api/engine-client";
 import type { Environment } from "./config.js";
 import { DATABASE, ENGINE_CLIENT, WORKER_ID } from "./tokens.js";
 
@@ -406,7 +406,33 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
     }
     const ack = await this.engine.activateAccountPolicy(job.spec, job.binding, expectation);
     requirePricingMutation(ack, ["applied", "unchanged"], "account-policy activation");
+    if (job.binding.policy_enforcement === "strict") {
+      await this.restampActiveKeysForStrictPolicy(job.spec.account_id, {
+        effectivePolicyVersion: job.spec.effective_version,
+        policyDigest: job.spec.content_digest,
+      });
+    }
     return ack;
+  }
+
+  /**
+   * Request auth on a strict account admits only keys stamped with the exact active policy
+   * head, so every strict activation — the shadow→strict cutover and each later strict→strict
+   * policy advance — must re-stamp the account's active keys with the new ACK before the job
+   * confirms; a failure retries the job (the engine replays the activation as `unchanged`)
+   * until the stamps converge. Keys the customer disabled are left untouched. A key disabled
+   * in the race between the list and the write would be re-enabled once; the customer can
+   * disable it again immediately (disabling needs no ACK), and the next delivery re-stamps.
+   */
+  private async restampActiveKeysForStrictPolicy(
+    accountId: string,
+    ack: EngineKeyActivationPolicyAck,
+  ): Promise<void> {
+    const keys = await this.engine.listKeys(accountId);
+    for (const key of keys) {
+      if (key.status !== "active") continue;
+      await this.engine.setKeyStatus(key.key_id, "active", ack);
+    }
   }
 
   private async flushPricingReleaseActivationJobs(): Promise<void> {

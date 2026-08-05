@@ -364,6 +364,104 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
     })).resolves.toMatchObject({ converted: false, sync_status: "unchanged" });
   });
 
+  it("cuts a converted client over to strict policy enforcement and reports replays", async () => {
+    await service.convertToBusiness({
+      userId: passwordUserId,
+      reason: "customer negotiated business terms",
+      actorId: "admin-q",
+      discountPercent: 60,
+    });
+    // The engine confirmed the first policy delivery: the binding is shadow with applied v1
+    // and the durable delivery job is terminal-confirmed.
+    await database.pool.query(`
+      UPDATE account_policy_bindings
+      SET applied_effective_version = desired_effective_version,
+          applied_digest = desired_digest,
+          policy_enforcement = 'shadow', last_ack_at = now(), sync_state = 'confirmed'
+      WHERE user_id = $1
+    `, [passwordUserId]);
+    await database.pool.query(`
+      UPDATE engine_policy_jobs
+      SET status = 'confirmed', last_error = NULL, confirmed_at = now(),
+          ack_effective_version = effective_version,
+          ack_policy_version = policy_version,
+          ack_catalog_generation = catalog_generation,
+          ack_switch_generation = switch_generation,
+          ack_schema_version = schema_version,
+          ack_content_digest = content_digest,
+          ack_payload = payload
+    `);
+
+    const result = await service.cutoverUserPolicyToStrict({
+      userId: passwordUserId,
+      reason: "enforce the negotiated per-provider rates",
+      actorId: "admin-q",
+    }) as { job_id?: unknown };
+    expect(result).toMatchObject({
+      user_id: passwordUserId,
+      account_id: "acct_password",
+      cutover: "staged",
+      job_status: "pending",
+      effective_version: 1,
+      funding: "nothing_to_normalize",
+    });
+    expect(result.job_id).toEqual(expect.any(String));
+
+    // Every active key is stamped with the exact active-policy ACK the engine reported;
+    // the disabled key is left untouched.
+    expect(engine.keyStamps).toEqual([{
+      keyId: "key_active",
+      status: "active",
+      ack: { effective_policy_version: 1, policy_digest: "engine-digest-v1" },
+    }]);
+
+    const binding = await database.pool.query(`
+      SELECT policy_enforcement, funding_enforcement, reconciliation_state, sync_state,
+             desired_effective_version::text, applied_effective_version::text
+      FROM account_policy_bindings WHERE user_id = $1
+    `, [passwordUserId]);
+    expect(binding.rows).toEqual([{
+      policy_enforcement: "strict",
+      funding_enforcement: "strict",
+      reconciliation_state: "verified",
+      sync_state: "confirmed",
+      desired_effective_version: "1",
+      applied_effective_version: "1",
+    }]);
+    const job = await database.pool.query<{ status: string; binding: unknown }>(`
+      SELECT status, payload->'binding' AS binding FROM engine_policy_jobs WHERE id = $1
+    `, [result.job_id]);
+    expect(job.rows[0]).toMatchObject({
+      status: "pending",
+      binding: {
+        policy_enforcement: "strict",
+        funding_enforcement: "strict",
+        reconciliation_state: "verified",
+      },
+    });
+
+    // A replay stamps keys again (idempotent) and reports the already-strict state with the
+    // original job instead of staging a duplicate.
+    const replay = await service.cutoverUserPolicyToStrict({
+      userId: passwordUserId,
+      reason: "operator replay",
+      actorId: "admin-q",
+    });
+    expect(replay).toMatchObject({
+      cutover: "already_strict",
+      job_id: result.job_id,
+      job_status: "pending",
+    });
+  });
+
+  it("rejects the strict cutover when the user has no account policy binding", async () => {
+    await expect(service.cutoverUserPolicyToStrict({
+      userId: oauthUserId,
+      reason: "no policy exists",
+      actorId: "admin-q",
+    })).rejects.toMatchObject({ status: 404 });
+  });
+
   it("resets TOTP and revokes active sessions with an audit event", async () => {
     const result = await service.resetTotp({
       userId: passwordUserId,
@@ -385,6 +483,16 @@ class FakeAdminEngine {
   readonly debits: Array<{ account: string; amountNano: string; ref: string }> = [];
   readonly statusChanges: Array<{ account: string; status: string }> = [];
   readonly accountBatchRequests: string[][] = [];
+  readonly keyStamps: Array<{
+    keyId: string;
+    status: string;
+    ack: { effective_policy_version: number; policy_digest: string } | null;
+  }> = [];
+  pricingStateBinding: { policy_enforcement: string; funding_enforcement: string; reconciliation_state: string } = {
+    policy_enforcement: "shadow",
+    funding_enforcement: "legacy_single",
+    reconciliation_state: "verified",
+  };
   readonly client = new EngineClient({
     baseUrl: "http://engine.test",
     controlKey: "test-control",
@@ -407,6 +515,78 @@ class FakeAdminEngine {
             handle: null,
           })),
         });
+      }
+      if (url.pathname.endsWith("/normalization")) {
+        return Response.json({ error: "no normalization plan" }, { status: 404 });
+      }
+      if (url.pathname.includes("/pricing/policy/") && url.pathname.endsWith("/state")) {
+        const stateAccount = decodeURIComponent(url.pathname.split("/")[4] ?? "");
+        return Response.json({
+          state: {
+            account_id: stateAccount,
+            policy: {
+              active: {
+                policy: {
+                  account_id: stateAccount,
+                  effective_version: 1,
+                  policy_id: "policy:main:b2b:test",
+                  policy_version: 1,
+                  source_policy_digest: "source-digest-v1",
+                  owner_type: "b2b_client",
+                  owner_id: "user-1",
+                  account_class: "b2b",
+                  product_id: "main",
+                  schema_version: 1,
+                  catalog_generation: 1,
+                  switch_generation: 1,
+                  content_digest: "engine-digest-v1",
+                  replacement_locked: false,
+                  rules: [{
+                    rule_id: "provider:anthropic:legacy-scalar",
+                    rule_digest: "rule-digest-v1",
+                    scope: { provider: { provider_id: "anthropic" } },
+                    pricing_mode: "discount",
+                    rule_origin: "legacy",
+                    discount_bps: 2000,
+                    payable_multiplier_bp: 8_000,
+                    track_eligible: false,
+                    retention_eligible: false,
+                    commission_eligible: false,
+                  }],
+                },
+                binding: this.pricingStateBinding,
+              },
+            },
+          },
+        });
+      }
+      if (url.pathname.endsWith("/keys")) {
+        const keysAccount = decodeURIComponent(url.pathname.split("/")[3] ?? "");
+        return Response.json({
+          account: keysAccount,
+          keys: [{
+            key_id: "key_active", key_masked: "sk-pool-act…ive", label: "prod",
+            status: "active", spent_nano: "0", spent: "$0.000000000",
+          }, {
+            key_id: "key_disabled", key_masked: "sk-pool-dis…ed", label: null,
+            status: "disabled", spent_nano: "0", spent: "$0.000000000",
+          }],
+        });
+      }
+      if (url.pathname.includes("/key-id/")) {
+        const keyId = decodeURIComponent(url.pathname.split("/")[3] ?? "");
+        const ack = (body as Record<string, unknown>).activation_policy_ack as {
+          effective_policy_version: number; policy_digest: string;
+        } | undefined;
+        this.keyStamps.push({
+          keyId,
+          status: body.status!,
+          ack: ack === undefined ? null : {
+            effective_policy_version: Number(ack.effective_policy_version),
+            policy_digest: String(ack.policy_digest),
+          },
+        });
+        return Response.json({ key_id: keyId, status: body.status, updated: 1 });
       }
       if (url.pathname.endsWith("/credit")) {
         const signedAmountNano = BigInt(body.amount_nano!);

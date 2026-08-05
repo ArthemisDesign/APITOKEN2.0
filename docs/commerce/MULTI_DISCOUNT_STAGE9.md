@@ -3,6 +3,12 @@
 Stage 9 moves all customers simultaneously, without canary and without stopping production. The only
 live mutation is a compare-and-set of a single global active pricing release head.
 
+Exception: an individually negotiated B2B client may be cut to strict per-account ahead of the
+fleet CAS through the documented lane in `docs/commerce/PRICING.md` ("Per-account strict
+cutover"). That lane normalizes the account's funding, stamps its keys, and delivers a durable
+strict activation under the engine's atomic guards; it is not a canary for this runbook — the
+fleet transition below is unchanged and still moves every remaining customer in one CAS.
+
 Commerce migration `0031_pricing_activation_evidence_capture.sql` is a separate expand-only
 checkpoint ahead of the consumer code. It adds nullable storage of the source engine evidence
 digest/exact capture time, the immutable activation request, and the full validated engine receipt.

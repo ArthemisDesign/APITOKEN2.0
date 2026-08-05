@@ -555,6 +555,130 @@ export async function stageProviderSwitchControlJob(
   }
 }
 
+export interface LoadedAccountPolicySpec {
+  bindingId: string;
+  engineAccountId: string;
+  accountClass: AccountPolicySpec["account_class"];
+  productId: string;
+  policyId: string;
+  desiredEffectiveVersion: string | null;
+  desiredDigest: string | null;
+  spec: AccountPolicySpec;
+}
+
+/**
+ * Loads one immutable account-policy version row joined to its binding and rebuilds the exact
+ * engine-facing spec. This is the single construction site: delivery staging validates caller
+ * payloads against it byte-for-byte, and the per-account strict cutover reuses it so a staged
+ * strict job can never drift from the commerce-confirmed version.
+ */
+export async function loadAccountPolicySpecByVersion(
+  client: PoolClient,
+  engineAccountId: string,
+  effectiveVersion: number,
+): Promise<LoadedAccountPolicySpec | null> {
+  const target = await client.query<{
+    binding_id: string;
+    engine_account_id: string;
+    account_class: AccountPolicySpec["account_class"];
+    product_id: string;
+    policy_id: string;
+    effective_version: string;
+    policy_version: string;
+    policy_digest: string;
+    schema_version: string;
+    catalog_generation: string;
+    switch_generation: string;
+    content_digest: string;
+    replacement_locked: boolean;
+    owner_type: AccountPolicySpec["owner_type"];
+    owner_id: string;
+    desired_effective_version: string | null;
+    desired_digest: string | null;
+  }>(`
+    SELECT binding.id AS binding_id, binding.engine_account_id,
+           binding.account_class, binding.product_id, binding.policy_id,
+           version.effective_version::text, version.policy_version::text,
+           version.policy_digest, version.schema_version::text,
+           version.catalog_generation::text, version.switch_generation::text,
+           version.content_digest, version.replacement_locked,
+           source.owner_type, source.owner_id,
+           binding.desired_effective_version::text, binding.desired_digest
+    FROM account_policy_bindings binding
+    JOIN account_policy_versions version
+      ON version.binding_id = binding.id AND version.effective_version = $2
+    JOIN pricing_policies source ON source.id = version.policy_id
+    WHERE binding.engine_account_id = $1
+    FOR UPDATE OF binding
+  `, [engineAccountId, effectiveVersion]);
+  const row = target.rows[0];
+  if (!row) return null;
+  const rules = await client.query<{
+    rule_id: string;
+    rule_digest: string;
+    scope_type: "provider" | "model";
+    provider_id: string;
+    canonical_model_id: string | null;
+    pricing_mode: "track" | "discount";
+    rule_origin: "managed" | "legacy";
+    discount_bps: number | null;
+    payable_multiplier_bp: number;
+    track_eligible: boolean;
+    retention_eligible: boolean;
+    commission_eligible: boolean;
+  }>(`
+    SELECT rule_id, rule_digest, scope_type, provider_id, canonical_model_id,
+           pricing_mode, rule_origin, discount_bps, payable_multiplier_bp,
+           track_eligible, retention_eligible, commission_eligible
+    FROM account_policy_rules
+    WHERE binding_id = $1 AND effective_version = $2
+    ORDER BY provider_id, scope_type, COALESCE(canonical_model_id, ''), rule_id
+  `, [row.binding_id, effectiveVersion]);
+  const spec = accountPolicySpecSchema.parse({
+    account_id: row.engine_account_id,
+    effective_version: safeVersion(row.effective_version, "effective policy version"),
+    policy_id: row.policy_id,
+    policy_version: safeVersion(row.policy_version, "source policy version"),
+    source_policy_digest: row.policy_digest,
+    owner_type: row.owner_type,
+    owner_id: row.owner_id,
+    account_class: row.account_class,
+    product_id: row.product_id,
+    schema_version: safeVersion(row.schema_version, "policy schema version"),
+    catalog_generation: safeVersion(row.catalog_generation, "policy catalog generation"),
+    switch_generation: safeVersion(row.switch_generation, "policy switch generation"),
+    content_digest: row.content_digest,
+    replacement_locked: row.replacement_locked,
+    rules: rules.rows.map((rule) => ({
+      rule_id: rule.rule_id,
+      rule_digest: rule.rule_digest,
+      scope: rule.scope_type === "provider"
+        ? { provider: { provider_id: rule.provider_id } }
+        : { model: {
+            provider_id: rule.provider_id,
+            canonical_model_id: rule.canonical_model_id,
+          } },
+      pricing_mode: rule.pricing_mode,
+      rule_origin: rule.rule_origin,
+      discount_bps: rule.discount_bps,
+      payable_multiplier_bp: rule.payable_multiplier_bp,
+      track_eligible: rule.track_eligible,
+      retention_eligible: rule.retention_eligible,
+      commission_eligible: rule.commission_eligible,
+    })),
+  });
+  return {
+    bindingId: row.binding_id,
+    engineAccountId: row.engine_account_id,
+    accountClass: row.account_class,
+    productId: row.product_id,
+    policyId: row.policy_id,
+    desiredEffectiveVersion: row.desired_effective_version,
+    desiredDigest: row.desired_digest,
+    spec,
+  };
+}
+
 export async function stageAccountPolicyControlJob(
   database: Database,
   input: { policy: AccountPolicySpec; binding: AccountPolicyBinding },
@@ -564,96 +688,25 @@ export async function stageAccountPolicyControlJob(
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
-    const target = await client.query<{
-      binding_id: string;
-      engine_account_id: string;
-      account_class: AccountPolicySpec["account_class"];
-      product_id: string;
-      policy_id: string;
-      effective_version: string;
-      policy_version: string;
-      policy_digest: string;
-      schema_version: string;
-      catalog_generation: string;
-      switch_generation: string;
-      content_digest: string;
-      replacement_locked: boolean;
-      owner_type: AccountPolicySpec["owner_type"];
-      owner_id: string;
-      desired_effective_version: string | null;
-      desired_digest: string | null;
-    }>(`
-      SELECT binding.id AS binding_id, binding.engine_account_id,
-             binding.account_class, binding.product_id, binding.policy_id,
-             version.effective_version::text, version.policy_version::text,
-             version.policy_digest, version.schema_version::text,
-             version.catalog_generation::text, version.switch_generation::text,
-             version.content_digest, version.replacement_locked,
-             source.owner_type, source.owner_id,
-             binding.desired_effective_version::text, binding.desired_digest
-      FROM account_policy_bindings binding
-      JOIN account_policy_versions version
-        ON version.binding_id = binding.id AND version.effective_version = $2
-      JOIN pricing_policies source ON source.id = version.policy_id
-      WHERE binding.engine_account_id = $1
-      FOR UPDATE OF binding
-    `, [policy.account_id, policy.effective_version]);
-    const row = target.rows[0];
-    if (!row) throw new Error("account policy version and binding must exist before its job is staged");
-    const rules = await client.query<{
-      rule_id: string;
-      rule_digest: string;
-      scope_type: "provider" | "model";
-      provider_id: string;
-      canonical_model_id: string | null;
-      pricing_mode: "track" | "discount";
-      rule_origin: "managed" | "legacy";
-      discount_bps: number | null;
-      payable_multiplier_bp: number;
-      track_eligible: boolean;
-      retention_eligible: boolean;
-      commission_eligible: boolean;
-    }>(`
-      SELECT rule_id, rule_digest, scope_type, provider_id, canonical_model_id,
-             pricing_mode, rule_origin, discount_bps, payable_multiplier_bp,
-             track_eligible, retention_eligible, commission_eligible
-      FROM account_policy_rules
-      WHERE binding_id = $1 AND effective_version = $2
-      ORDER BY provider_id, scope_type, COALESCE(canonical_model_id, ''), rule_id
-    `, [row.binding_id, policy.effective_version]);
-    const stored = accountPolicySpecSchema.parse({
-      account_id: row.engine_account_id,
-      effective_version: safeVersion(row.effective_version, "effective policy version"),
-      policy_id: row.policy_id,
-      policy_version: safeVersion(row.policy_version, "source policy version"),
-      source_policy_digest: row.policy_digest,
-      owner_type: row.owner_type,
-      owner_id: row.owner_id,
-      account_class: row.account_class,
-      product_id: row.product_id,
-      schema_version: safeVersion(row.schema_version, "policy schema version"),
-      catalog_generation: safeVersion(row.catalog_generation, "policy catalog generation"),
-      switch_generation: safeVersion(row.switch_generation, "policy switch generation"),
-      content_digest: row.content_digest,
-      replacement_locked: row.replacement_locked,
-      rules: rules.rows.map((rule) => ({
-        rule_id: rule.rule_id,
-        rule_digest: rule.rule_digest,
-        scope: rule.scope_type === "provider"
-          ? { provider: { provider_id: rule.provider_id } }
-          : { model: {
-              provider_id: rule.provider_id,
-              canonical_model_id: rule.canonical_model_id,
-            } },
-        pricing_mode: rule.pricing_mode,
-        rule_origin: rule.rule_origin,
-        discount_bps: rule.discount_bps,
-        payable_multiplier_bp: rule.payable_multiplier_bp,
-        track_eligible: rule.track_eligible,
-        retention_eligible: rule.retention_eligible,
-        commission_eligible: rule.commission_eligible,
-      })),
-    });
+    const jobId = await stageAccountPolicyControlJobTx(client, policy, binding);
+    await client.query("COMMIT");
+    return jobId;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function stageAccountPolicyControlJobTx(
+  client: PoolClient,
+  policy: AccountPolicySpec,
+  binding: AccountPolicyBinding,
+): Promise<string> {
+    const loaded = await loadAccountPolicySpecByVersion(client, policy.account_id, policy.effective_version);
+    if (!loaded) throw new Error("account policy version and binding must exist before its job is staged");
+    const stored = loaded.spec;
     const normalized = { ...policy, rules: [...policy.rules].sort((left, right) =>
       compareStringTuples(policyRuleKey(left), policyRuleKey(right))) };
     stored.rules.sort((left, right) =>
@@ -661,15 +714,15 @@ export async function stageAccountPolicyControlJob(
     if (!sameJson(stored, normalized)) {
       throw new Error("policy control payload does not match the immutable commerce version");
     }
-    const desiredVersion = row.desired_effective_version === null
+    const desiredVersion = loaded.desiredEffectiveVersion === null
       ? null
-      : safeVersion(row.desired_effective_version, "desired effective policy version");
+      : safeVersion(loaded.desiredEffectiveVersion, "desired effective policy version");
     if (desiredVersion !== null && desiredVersion > policy.effective_version) {
       throw new Error("account policy control target is stale");
     }
     if (
       desiredVersion === policy.effective_version &&
-      row.desired_digest !== null && row.desired_digest !== policy.content_digest
+      loaded.desiredDigest !== null && loaded.desiredDigest !== policy.content_digest
     ) {
       throw new Error("account policy effective version already has a different desired digest");
     }
@@ -685,41 +738,216 @@ export async function stageAccountPolicyControlJob(
           last_error = NULL, updated_at = now()
       WHERE id = $1
     `, [
-      row.binding_id,
+      loaded.bindingId,
       policy.effective_version,
       policy.content_digest,
       binding.policy_enforcement,
       binding.funding_enforcement,
       binding.reconciliation_state,
     ]);
-    const jobId = await insertImmutableJob(client, {
-      table: "engine_policy_jobs",
-      lookup: "binding_id = $1 AND effective_version = $2",
-      lookupValues: [row.binding_id, policy.effective_version],
-      insertSql: `
-        INSERT INTO engine_policy_jobs (
-          id, binding_id, effective_version, engine_account_id, policy_id,
-          policy_version, catalog_generation, switch_generation, schema_version,
-          content_digest, payload
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
-      `,
-      insertValues: [
-        randomUUID(),
-        row.binding_id,
-        policy.effective_version,
-        policy.account_id,
-        policy.policy_id,
-        policy.policy_version,
-        policy.catalog_generation,
-        policy.switch_generation,
-        policy.schema_version,
-        policy.content_digest,
-        JSON.stringify({ policy: stored, binding }),
-      ],
-      payload: { policy: stored, binding },
+    const jobId = await insertOrRearmPolicyJob(client, {
+      bindingId: loaded.bindingId,
+      policy,
+      binding,
+      storedPolicy: stored,
+    });
+    return jobId;
+}
+
+/**
+ * Inserts the durable delivery for (binding, effective version), or re-arms the terminal
+ * delivery already recorded there when only the enforcement binding advanced: the shadow→strict
+ * cutover re-delivers the byte-identical policy under the strict binding class, and the unique
+ * target index leaves exactly one row per (binding, version). The immutable policy half never
+ * changes — a different policy payload for the same target stays a hard error; a different
+ * binding on a non-terminal job means a delivery is still in flight and the caller retries
+ * after it lands. A re-arm resets the lease/ack state for the new delivery and writes an audit
+ * event carrying the superseded status and binding, so the terminal delivery's evidence is not
+ * silently destroyed.
+ */
+async function insertOrRearmPolicyJob(client: PoolClient, input: {
+  bindingId: string;
+  policy: AccountPolicySpec;
+  binding: AccountPolicyBinding;
+  storedPolicy: AccountPolicySpec;
+}): Promise<string> {
+  const { policy, binding, storedPolicy } = input;
+  const payload = { policy: storedPolicy, binding };
+  const existing = await client.query<{ id: string; status: string; payload: unknown }>(`
+    SELECT id::text, status, payload FROM engine_policy_jobs
+    WHERE binding_id = $1 AND effective_version = $2 FOR UPDATE
+  `, [input.bindingId, policy.effective_version]);
+  const row = existing.rows[0];
+  if (row) {
+    const recorded = row.payload as { policy?: unknown; binding?: unknown } | null;
+    if (sameJson(recorded, payload)) return row.id;
+    if (!sameJson(recorded?.policy ?? null, storedPolicy)) {
+      throw new Error("engine_policy_jobs target already has a different immutable payload");
+    }
+    if (row.status !== "confirmed" && row.status !== "dead") {
+      throw new Error(
+        `engine_policy_jobs target has an in-flight ${row.status} delivery with a different binding`,
+      );
+    }
+    await client.query(`
+      UPDATE engine_policy_jobs
+      SET payload = $2::jsonb, status = 'pending', attempts = 0, next_attempt_at = now(),
+          locked_at = NULL, locked_by = NULL, last_error = NULL, confirmed_at = NULL,
+          ack_effective_version = NULL, ack_policy_version = NULL,
+          ack_catalog_generation = NULL, ack_switch_generation = NULL,
+          ack_schema_version = NULL, ack_content_digest = NULL, ack_payload = NULL,
+          updated_at = now()
+      WHERE id = $1
+    `, [row.id, JSON.stringify(payload)]);
+    await client.query(`
+      INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ('system', 'pricing-control', 'pricing.policy_delivery_rearmed', 'engine_policy_job', $1, $2::jsonb)
+    `, [row.id, JSON.stringify({
+      previousStatus: row.status,
+      previousBinding: recorded?.binding ?? null,
+      binding,
+    })]);
+    return row.id;
+  }
+  const id = randomUUID();
+  await client.query(`
+    INSERT INTO engine_policy_jobs (
+      id, binding_id, effective_version, engine_account_id, policy_id,
+      policy_version, catalog_generation, switch_generation, schema_version,
+      content_digest, payload
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+  `, [
+    id,
+    input.bindingId,
+    policy.effective_version,
+    policy.account_id,
+    policy.policy_id,
+    policy.policy_version,
+    policy.catalog_generation,
+    policy.switch_generation,
+    policy.schema_version,
+    policy.content_digest,
+    JSON.stringify(payload),
+  ]);
+  return id;
+}
+
+export class AccountStrictCutoverError extends Error {
+  constructor(
+    readonly code: "no_binding" | "not_b2b" | "not_shadow" | "no_confirmed_version" | "unverified",
+    message: string,
+  ) {
+    super(message);
+    this.name = "AccountStrictCutoverError";
+  }
+}
+
+export type AccountStrictCutoverStageResult = {
+  status: "staged" | "already_strict";
+  jobId: string | null;
+  jobStatus: string | null;
+  engineAccountId: string;
+  effectiveVersion: number | null;
+  contentDigest: string | null;
+};
+
+/**
+ * Stages the per-account shadow→strict cutover for one converted B2B client: a durable
+ * account-policy control job carrying the atomic strict policy + strict funding + verified
+ * binding for exactly the version the engine already confirmed under shadow. Stage 9 keeps the
+ * fleet-wide release CAS as the default transition; this lane exists for individually
+ * negotiated clients whose per-provider policy must be enforced before the fleet cutover.
+ *
+ * The engine enforces the flip atomically: funding buckets must equal the account aggregates
+ * and every active key must carry the exact active-policy ACK at flip time. The caller (the
+ * admin cutover endpoint) arranges both before this job is staged; the delivery worker
+ * re-stamps keys on the new head after a successful strict activation. Idempotent: an exact
+ * replay returns the already-staged job, and an already-strict binding is a reported no-op.
+ */
+export async function stageAccountStrictCutoverJob(
+  database: Database,
+  input: { userId: string },
+): Promise<AccountStrictCutoverStageResult> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const binding = await client.query<{
+      id: string;
+      engine_account_id: string;
+      account_class: string;
+      policy_enforcement: string;
+      applied_effective_version: string | null;
+      reconciliation_state: string;
+    }>(`
+      SELECT id::text, engine_account_id, account_class, policy_enforcement,
+             applied_effective_version::text, reconciliation_state
+      FROM account_policy_bindings WHERE user_id = $1 FOR UPDATE
+    `, [input.userId]);
+    const row = binding.rows[0];
+    if (!row) {
+      throw new AccountStrictCutoverError("no_binding", "user has no account policy binding");
+    }
+    if (row.policy_enforcement === "strict") {
+      // Report the durable job behind the strict state so an operator replaying the cutover
+      // sees whether it is still pending, failed (and needs repair, not restaging), or done.
+      const existing = await client.query<{ id: string; status: string }>(`
+        SELECT id::text, status FROM engine_policy_jobs
+        WHERE binding_id = $1 AND effective_version = $2
+        ORDER BY created_at DESC LIMIT 1
+      `, [row.id, row.applied_effective_version]);
+      await client.query("COMMIT");
+      return {
+        status: "already_strict",
+        jobId: existing.rows[0]?.id ?? null,
+        jobStatus: existing.rows[0]?.status ?? null,
+        engineAccountId: row.engine_account_id,
+        effectiveVersion: row.applied_effective_version === null
+          ? null
+          : safeVersion(row.applied_effective_version, "applied effective policy version"),
+        contentDigest: null,
+      };
+    }
+    if (row.account_class !== "b2b") {
+      throw new AccountStrictCutoverError(
+        "not_b2b",
+        "per-account strict cutover is supported for converted B2B clients only",
+      );
+    }
+    if (row.policy_enforcement !== "shadow") {
+      throw new AccountStrictCutoverError(
+        "not_shadow",
+        `binding enforcement ${row.policy_enforcement} has no engine-confirmed policy to cut over`,
+      );
+    }
+    if (row.applied_effective_version === null) {
+      throw new AccountStrictCutoverError(
+        "no_confirmed_version",
+        "binding has no engine-confirmed applied policy version",
+      );
+    }
+    if (row.reconciliation_state !== "verified") {
+      throw new AccountStrictCutoverError(
+        "unverified",
+        "strict cutover requires reconciliation_state 'verified'",
+      );
+    }
+    const effectiveVersion = safeVersion(row.applied_effective_version, "applied effective policy version");
+    const loaded = await loadAccountPolicySpecByVersion(client, row.engine_account_id, effectiveVersion);
+    if (!loaded) throw new Error("account policy version and binding must exist before its job is staged");
+    const jobId = await stageAccountPolicyControlJobTx(client, loaded.spec, {
+      policy_enforcement: "strict",
+      funding_enforcement: "strict",
+      reconciliation_state: "verified",
     });
     await client.query("COMMIT");
-    return jobId;
+    return {
+      status: "staged",
+      jobId,
+      jobStatus: "pending",
+      engineAccountId: row.engine_account_id,
+      effectiveVersion,
+      contentDigest: loaded.spec.content_digest,
+    };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;

@@ -160,7 +160,12 @@ pays today; the customer's usage page shows each provider at the policy's per-pr
 discount, clamped to never exceed the discount the scalar actually bills while the policy is
 not engine-enforced (a tighter negotiated rate shows as configured, a looser one shows the
 scalar). A non-uniform policy (per-provider or per-model differences) cannot be
-one scalar — it leaves today's price unchanged and activates with the cutover. Post-cutover, a saved B2B policy also advances the live release-v2 authority:
+one scalar — it leaves today's price unchanged and activates with the cutover. One client can be
+cut over to strict per-provider enforcement ahead of the fleet cutover through
+`POST /v1/admin/users/:id/policy-enforcement-cutover` (funding normalization + exact key ACKs +
+durable strict delivery, worker re-stamps keys on the new head; runbook in
+`docs/commerce/PRICING.md`, "Per-account strict cutover") — from the engine ACK on, billing and
+the customer's badge both follow the materialized per-provider policy. Post-cutover, a saved B2B policy also advances the live release-v2 authority:
 a strictly newer release policy version is pinned through the append-only assignment
 extension under the exact current head, and the CAS response reports that outcome. A new invitation is created immediately with a full provider/model policy; a
 scalar discount editor does not exist in the active UI. An unredeemed invitation is edited

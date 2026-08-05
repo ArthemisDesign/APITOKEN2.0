@@ -311,6 +311,11 @@ class FakeEngine {
       this.releaseHeadReads += 1;
       return Response.json({ head: null });
     }
+    if (path.includes("/pricing/policy/") && path.endsWith("/state")) {
+      return Response.json({
+        state: { account_id: decodeURIComponent(path.split("/")[4] ?? ""), policy: "unbound" },
+      });
+    }
     if (path === "/admin/account" && init?.method === "POST") {
       return Response.json({ account: this.recoveredAccountId, mult_bp: 2000, handle: "user:test" });
     }

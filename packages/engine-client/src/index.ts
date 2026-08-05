@@ -121,6 +121,18 @@ export interface IssueEngineKeyOptions {
   label?: string;
   spendLimitNano?: bigint;
   expiresAt?: Date;
+  activationPolicyAck?: EngineKeyActivationPolicyAck;
+}
+
+/**
+ * The exact active policy a strict account's key acknowledges at issue/reactivation time
+ * (`POST /admin/key`, `POST /admin/key-id/{key_id}/status`). The engine validates it against
+ * the account's current active policy version and digest; a strict binding rejects key writes
+ * without it, while shadow/legacy bindings accept and store it for the eventual cutover.
+ */
+export interface EngineKeyActivationPolicyAck {
+  effectivePolicyVersion: number;
+  policyDigest: string;
 }
 
 export interface ReplaceEngineKeyPolicyOptions {
@@ -328,6 +340,12 @@ export class EngineClient {
     if (options.label !== undefined) body.label = options.label;
     if (options.spendLimitNano !== undefined) body.spend_limit_nano = options.spendLimitNano.toString();
     if (options.expiresAt !== undefined) body.expires_ts = Math.floor(options.expiresAt.getTime() / 1000);
+    if (options.activationPolicyAck !== undefined) {
+      body.activation_policy_ack = {
+        effective_policy_version: options.activationPolicyAck.effectivePolicyVersion,
+        policy_digest: options.activationPolicyAck.policyDigest,
+      };
+    }
     const { response, payload } = await this.request("/admin/key", {
       method: "POST",
       body: JSON.stringify(body),
@@ -338,10 +356,21 @@ export class EngineClient {
   }
 
   /** Движок принимает active|disabled, поэтому отключение обратимо. */
-  async setKeyStatus(keyId: string, status: "active" | "disabled"): Promise<void> {
+  async setKeyStatus(
+    keyId: string,
+    status: "active" | "disabled",
+    activationPolicyAck?: EngineKeyActivationPolicyAck,
+  ): Promise<void> {
+    const body: Record<string, unknown> = { status };
+    if (activationPolicyAck !== undefined) {
+      body.activation_policy_ack = {
+        effective_policy_version: activationPolicyAck.effectivePolicyVersion,
+        policy_digest: activationPolicyAck.policyDigest,
+      };
+    }
     const { response, payload } = await this.request(`/admin/key-id/${encodeURIComponent(keyId)}/status`, {
       method: "POST",
-      body: JSON.stringify({ status }),
+      body: JSON.stringify(body),
     });
     const result = payload as Record<string, unknown>;
     if (result.key_id !== keyId || result.status !== status || result.updated !== 1) {

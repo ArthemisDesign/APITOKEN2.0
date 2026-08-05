@@ -199,6 +199,23 @@ export class AdminOperationsController {
     }));
   }
 
+  @Post("users/:id/policy-enforcement-cutover")
+  @Header("Cache-Control", "no-store")
+  async cutoverPolicyEnforcement(
+    @Param("id") id: string,
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<Record<string, unknown>> {
+    assertUserId(id);
+    const parsed = securityActionSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    return this.mapErrors(() => this.operations.cutoverUserPolicyToStrict({
+      userId: id,
+      reason: parsed.data.reason,
+      actorId: adminActor(actorHeader),
+    }));
+  }
+
   @Post("users/:id/sessions/revoke")
   @Header("Cache-Control", "no-store")
   async revokeSessions(

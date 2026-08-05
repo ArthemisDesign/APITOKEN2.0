@@ -43,6 +43,18 @@ test("wakes control-job delivery from LISTEN/NOTIFY with the sweep as recovery",
   assert.match(source, /await this\.flushPricingControlJobs\(\);\s*\n\s*await this\.flushPricingJobs\(\);/);
 });
 
+test("re-stamps active keys with the exact new ACK after every strict policy activation", () => {
+  // Strict request auth admits only keys stamped with the current policy head, so the delivery
+  // worker must re-stamp before the job confirms — otherwise each strict activation (the
+  // cutover and every later policy save) would break the account's keys.
+  assert.match(source, /job\.binding\.policy_enforcement === "strict"/);
+  assert.match(source, /restampActiveKeysForStrictPolicy\(job\.spec\.account_id, \{/);
+  assert.match(source, /effectivePolicyVersion: job\.spec\.effective_version/);
+  assert.match(source, /policyDigest: job\.spec\.content_digest/);
+  assert.match(source, /if \(key\.status !== "active"\) continue;/);
+  assert.match(source, /await this\.engine\.setKeyStatus\(key\.key_id, "active", ack\)/);
+});
+
 test("classifies typed pricing rejections without retrying permanent failures", () => {
   const cases: Array<{ ack: PricingMutationAck; expected: "retry" | "superseded" | "dead" }> = [
     {
