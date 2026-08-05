@@ -280,8 +280,11 @@ is only what is needed to walk the relationships when making changes:
   explicit or first admitted opaque profile, performs the free `/wham/usage` preflight and one
   exact-home attempt. Generation requires an exact SHA and at least `22_330_000` nanoUSD for native
   `opaque/low/auto`; the official GPT Image 2 low-output formula is bounded at 659 image tokens over the
-  request-valid size domain. Edit remains blocked until a normative input-image ceiling exists. The
-  one-shot watchdog attempt against exact deployed engine SHA `012fccc471142fc51a46563da3a87564d674b39f`
+  request-valid size domain. Paid edit is limited to exactly one reference and requires an absolute
+  `64_022_330_000` nanoUSD authorization envelope: because no input formula is published, the entire
+  official maximum Tier-5 8,000,000 TPM is conservatively charged at the fresh image-input rate before
+  adding the generation ceiling. This is not an expected price or customer reserve. The one-shot
+  watchdog attempt against exact deployed engine SHA `012fccc471142fc51a46563da3a87564d674b39f`
   returned a parsed image with mismatched control metadata, published no artifact, and is permanently
   fenced. Diagnostic implementation SHA `8fcd7c3c6f5dc968bedb7260433f2eaff23f8931` is separately
   watchdog-GREEN. Active watchdog-GREEN descendant `3c17b31b6dfdcb8867d8def57e7aedc4ebc87644`

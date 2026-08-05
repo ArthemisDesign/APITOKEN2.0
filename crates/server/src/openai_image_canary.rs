@@ -24,11 +24,20 @@ const LOW_OUTPUT_TOKEN_LIMIT: u64 = match low_output_tokens(2_880, 2_880) {
     None => panic!("valid GPT Image 2 maximum-token resolution"),
 };
 const TEXT_INPUT_NANOUSD_PER_TOKEN: u64 = 5_000;
+const IMAGE_INPUT_NANOUSD_PER_TOKEN: u64 = 8_000;
 const IMAGE_OUTPUT_NANOUSD_PER_TOKEN: u64 = 30_000;
 const GENERATION_CEILING_NANOUSD: u64 = LOW_OUTPUT_TOKEN_LIMIT * IMAGE_OUTPUT_NANOUSD_PER_TOKEN
     + MAX_PROMPT_BYTES as u64 * TEXT_INPUT_NANOUSD_PER_TOKEN;
+// OpenAI publishes no GPT Image 2 high-fidelity input-token formula. Its model page does publish
+// 8,000,000 TPM as the highest tier, which is an absolute per-minute token admission envelope and
+// therefore a conservative bound for one request. Charge the whole envelope at the more expensive
+// fresh image-input rate, then add the independently bounded prompt and low output.
+const MAX_PUBLISHED_MODEL_TPM: u64 = 8_000_000;
+const EDIT_CEILING_NANOUSD: u64 =
+    MAX_PUBLISHED_MODEL_TPM * IMAGE_INPUT_NANOUSD_PER_TOKEN + GENERATION_CEILING_NANOUSD;
 const GENERATION_BUDGET_BLOCKER: &str = "paid_dispatch_requires_generation_ceiling_authorization";
-const EDIT_CEILING_BLOCKER: &str = "paid_dispatch_requires_edit_ceiling_proof";
+const EDIT_BUDGET_BLOCKER: &str = "paid_dispatch_requires_edit_ceiling_authorization";
+const EDIT_REFERENCE_BLOCKER: &str = "paid_dispatch_requires_exactly_one_reference";
 
 pub(crate) struct OpenAiImageCanaryArgs {
     pub profile: Option<String>,
@@ -250,17 +259,22 @@ fn plan(validated: &ValidatedCanary) -> CanaryPlan<'_> {
 }
 
 fn operation_gate(validated: &ValidatedCanary) -> (bool, Option<&'static str>, Option<u64>) {
-    if !validated.references.is_empty() {
-        return (false, Some(EDIT_CEILING_BLOCKER), None);
-    }
-    if validated.authorization_budget_nanousd < GENERATION_CEILING_NANOUSD {
+    if validated.references.len() > 1 {
         return (
             false,
-            Some(GENERATION_BUDGET_BLOCKER),
-            Some(GENERATION_CEILING_NANOUSD),
+            Some(EDIT_REFERENCE_BLOCKER),
+            Some(EDIT_CEILING_NANOUSD),
         );
     }
-    (true, None, Some(GENERATION_CEILING_NANOUSD))
+    let (ceiling, blocker) = if validated.references.is_empty() {
+        (GENERATION_CEILING_NANOUSD, GENERATION_BUDGET_BLOCKER)
+    } else {
+        (EDIT_CEILING_NANOUSD, EDIT_BUDGET_BLOCKER)
+    };
+    if validated.authorization_budget_nanousd < ceiling {
+        return (false, Some(blocker), Some(ceiling));
+    }
+    (true, None, Some(ceiling))
 }
 
 fn implementation_sha_source() -> Option<&'static str> {
@@ -1142,7 +1156,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_profile_and_edit_gate_are_explicit() {
+    fn auto_profile_and_single_reference_edit_gate_are_explicit() {
         let dir = TestDir::new();
         let mut args = dir.args(false, GENERATION_CEILING_NANOUSD);
         args.profile = None;
@@ -1160,11 +1174,28 @@ mod tests {
             b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
         )
         .unwrap();
+        validated
+            .references
+            .push(ImageReference::new(png.clone()).unwrap());
+        let blocked = serde_json::to_value(plan(&validated)).unwrap();
+        assert_eq!(blocked["state"], "blocked");
+        assert_eq!(blocked["execution_blocker"], EDIT_BUDGET_BLOCKER);
+        assert_eq!(blocked["required_ceiling_nanousd"], EDIT_CEILING_NANOUSD);
+
+        validated.authorization_budget_nanousd = EDIT_CEILING_NANOUSD;
+        let ready = serde_json::to_value(plan(&validated)).unwrap();
+        assert_eq!(ready["state"], "ready");
+        assert_eq!(ready["executable"], true);
+        assert!(ready["execution_blocker"].is_null());
+        assert_eq!(ready["required_ceiling_nanousd"], EDIT_CEILING_NANOUSD);
+        assert_eq!(ready["operation"], "edit");
+        assert_eq!(ready["reference_count"], 1);
+
         validated.references.push(ImageReference::new(png).unwrap());
-        let value = serde_json::to_value(plan(&validated)).unwrap();
-        assert_eq!(value["state"], "blocked");
-        assert_eq!(value["execution_blocker"], EDIT_CEILING_BLOCKER);
-        assert!(value["required_ceiling_nanousd"].is_null());
+        let multiple = serde_json::to_value(plan(&validated)).unwrap();
+        assert_eq!(multiple["state"], "blocked");
+        assert_eq!(multiple["execution_blocker"], EDIT_REFERENCE_BLOCKER);
+        assert_eq!(multiple["required_ceiling_nanousd"], EDIT_CEILING_NANOUSD);
     }
 
     #[test]
@@ -1198,6 +1229,7 @@ mod tests {
         }
         assert_eq!(maximum, LOW_OUTPUT_TOKEN_LIMIT);
         assert_eq!(GENERATION_CEILING_NANOUSD, 22_330_000);
+        assert_eq!(EDIT_CEILING_NANOUSD, 64_022_330_000);
     }
 
     #[test]

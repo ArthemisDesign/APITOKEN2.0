@@ -132,10 +132,12 @@ header is retained when present but is not required: the official Codex `ImageRe
 request-id field and the endpoint fixture succeeds without that
 header. A parsed mismatch persists only sanitized returned identity flags, metadata, numeric usage,
 optional request id, and image digest in the private journal; it never retains the rejected image bytes.
-Edit validates one to five PNG references but remains blocked because no normative input-image ceiling
-exists. The preflight is not
-image `countTokens` or reserve proof, and this private path does not invent ChatGPT credits, metering,
-billing or settlement.
+Edit validates one to five PNG references, but paid canary execution is restricted to exactly one and
+requires `64_022_330_000` nanoUSD. There is no published GPT Image 2 input formula: the bound instead
+charges the entire official maximum Tier-5 8,000,000 TPM at the fresh image-input rate, then adds the
+prompt/output generation ceiling. It is an absolute authorization envelope, not expected cost or a
+customer reserve; two to five references remain blocked. The preflight is not image `countTokens` or
+reserve proof, and this private path does not invent ChatGPT credits, metering, billing or settlement.
 
 This remains private and unpublished: no `AppState`, HTTP/customer route, catalog, router preset,
 public docs, defaults/systemd or product availability. The native request proves no masks,

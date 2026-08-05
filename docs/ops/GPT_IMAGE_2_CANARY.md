@@ -51,11 +51,25 @@ ChatGPT native-credit pricing, a customer reserve, or settlement authority. The 
 integer `--budget-nanousd`, requires it to exceed the repository default `100000` nanoUSD, and permits
 paid generation only when it is at least `22330000`.
 
-There is no corresponding normative edit ceiling yet. GPT Image 2 processes image inputs at high
-fidelity, but the native wire has no free image token counter and stored PNG bytes are not a valid token
-bound. Any request with references therefore reports
-`paid_dispatch_requires_edit_ceiling_proof` and fails before configuration or network access even when
-the caller supplies a larger budget.
+OpenAI publishes no GPT Image 2 high-fidelity input-token formula, so PNG bytes are still not treated as
+tokens and no expected edit price is invented. The official model page does publish a maximum Tier-5
+rate limit of 8,000,000 TPM. One accepted request cannot exceed that whole minute's token admission
+envelope; the canary conservatively charges all 8,000,000 tokens at the more expensive fresh image-input
+rate and then adds the independently bounded prompt and low output:
+
+```text
+8,000,000 tokens × $8 / 1M, all treated as image input   $64.00000
+maximum prompt + low image output                          0.02233
+                                                           --------
+absolute one-reference authorization envelope            $64.02233
+```
+
+Paid edit therefore requires exactly one PNG reference and at least `64_022_330_000` nanoUSD. This is a
+fail-closed authorization ceiling, not an expected charge, ChatGPT native-credit price, customer reserve,
+or assertion that a real edit uses eight million tokens. Two to five references remain valid for dry-run
+transport validation but report `paid_dispatch_requires_exactly_one_reference`; a one-reference request
+below the ceiling reports `paid_dispatch_requires_edit_ceiling_authorization` before configuration or
+network access.
 
 ## Local file and evidence contract
 

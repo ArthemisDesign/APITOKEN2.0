@@ -108,10 +108,15 @@ This is an auto-size replacement-price ceiling, not a ChatGPT native-credit rese
 requires that concrete integer budget and an exact compile-time implementation SHA. A free
 `/wham/usage` preflight precedes dispatch but is not image tokenization or generation evidence.
 
-Edit remains blocked. GPT Image 2 always processes references at high fidelity, and neither PNG bytes
-nor the generation fixture provides a normative maximum input-token formula. A larger arbitrary
-budget cannot unlock edit. First obtain real terminal auto-size generation evidence and a reviewed edit
-ceiling; then authorize one owned-reference edit separately.
+GPT Image 2 always processes references at high fidelity, and neither PNG bytes nor the generation
+fixture provides a normative input-token formula. The official model page does provide the maximum
+Tier-5 rate limit of 8,000,000 TPM. An accepted request cannot consume more than the whole published
+minute envelope, so the private canary bounds exactly one reference by charging all 8,000,000 tokens at
+the higher fresh image-input rate ($64), then adds the independently bounded prompt and low output
+($0.02233). The resulting `64_022_330_000` nanoUSD is an absolute authorization envelope, not an
+expected price, ChatGPT native-credit claim, or customer reserve. More than one reference remains
+blocked from paid execution. A separately deployed one-shot must still prove real edit output and
+terminal authoritative image-input usage before this path can progress.
 
 ## Chinese reseller audit
 

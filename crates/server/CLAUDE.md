@@ -133,11 +133,14 @@ background loops and the HTTP router. Here — and only here — everything is w
   image turn id remains mandatory. A parsed result that fails exact evidence persists only sanitized
   returned identity flags, controls, dimensions, timestamp, numeric usage, optional request id, and the
   image SHA-256 in the private mode-`0600` journal; it never persists or publishes the rejected image.
-  Edit planning accepts one to five PNG references but paid edit execution remains blocked until a
-  normative input-image ceiling is proved. Output/checkpoint publication uses exclusive mode-`0600`
-  files. The command remains outside
-  `AppState`, HTTP, customer routes, catalog, defaults and billing; no live proof was performed in this
-  worktree. Full contract — `docs/ops/GPT_IMAGE_2_CANARY.md`.
+  Edit validation still accepts one to five PNG references, but paid canary execution is deliberately
+  restricted to exactly one reference and requires `64_022_330_000` nanoUSD. OpenAI publishes no
+  GPT Image 2 high-fidelity input formula, so this is an absolute authorization envelope rather than an
+  expected price: the published Tier-5 maximum of 8,000,000 TPM is charged wholly at the fresh image-input
+  rate, then the generation ceiling is added. More than one reference remains blocked. Output/checkpoint
+  publication uses exclusive mode-`0600` files. The command remains outside `AppState`, HTTP, customer
+  routes, catalog, defaults and billing; no live edit proof was performed in this worktree. Full contract —
+  `docs/ops/GPT_IMAGE_2_CANARY.md`.
 - ClaudeStore emergency transport: `CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED` strict default-off
   (`0|1|false|true`), the secret `CLAUDE_API_CLAUDESTORE_API_KEY` is required only when enabled and undergoes
   shape-validation/redacted Debug. Enable is allowed only for `Combined|Anthropic`; the production base
