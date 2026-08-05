@@ -27,7 +27,7 @@ const payingUsersSchema = z.object({  days: z.enum(["1", "7", "30"]).default("30
   q: z.string().trim().max(200).optional(),
   status: z.enum(["active", "disabled"]).optional(),
   provider: z.enum(["anthropic", "openai", "google", "other"]).optional(),
-  funding: z.enum(["payments", "manual"]).optional(),
+  funding: z.enum(["payments", "manual", "bonus", "all"]).optional(),
   sort: z.enum(["spent", "paid", "last_paid", "last_seen"]).default("spent"),
   dir: z.enum(["asc", "desc"]).default("desc"),
 });

@@ -178,7 +178,7 @@ GET       /admin/pricing-stage8-capture-v2
 POST      /admin/pricing-stage8-capture-v2/stage
 GET       /admin/pricing-release-activation-v2
 POST      /admin/pricing-release-activation-v2/stage
-GET       /admin/finance/paying-users?days=1|7|30&limit=...&offset=...&funding=payments|manual
+GET       /admin/finance/paying-users?days=1|7|30&limit=...&offset=...&funding=payments|manual|bonus|all
 GET       /admin/finance/engine-spend?days=1|7|30
 ```
 
@@ -202,16 +202,31 @@ expose `manual_paid_nano`/`manual_topups_count` next to the payment counters.
 `pricing_usage_topups` is an immutable reporting copy of engine top-ups; it is not a balance and
 never drives one. Commission classification keeps using the stricter `isFreeCreditRef` whitelist.
 
-`funding` selects the cohort by money origin: `payments` keeps only customers with a confirmed
-provider payment (admin-granted balances leave the report entirely), `manual` keeps only customers
-whose balance was granted by hand. Unlike the row filters it narrows the summary as well, because it
-redefines who is counted rather than which rows are listed.
-server, and returns lifetime paid totals plus the selected-window charged spend split into
-`anthropic`, `openai`, `google`, and `other`. All money is a decimal nanoUSD string; `other` keeps
-legacy usage without an attribution and unknown future provider IDs visible instead of silently
-dropping them. The unfiltered summary remains fleet-wide while row filters narrow only the paged
-directory. `apps/admin` must consume this expand-only contract only after the producer SHA has a
-green `deploy/watchdog` verdict.
+`funding` selects the cohort by funding authority: omitted preserves the historical payment/manual
+union; `payments` requires a lifetime confirmed provider payment; `manual` requires lifetime manual
+top-up(s) and no provider payment. `bonus` instead requires no lifetime paid payment, no lifetime
+manual top-up, and positive spend in the selected window where **every** event has a complete
+`policy_v1` or `release_v2` funding split equal to the immutable charged amount, with the complete
+window equal to bonus (`paid=0`, `other=0`, unknown/unattributed `=0`). A bonus top-up is neither
+required nor sufficient. Current balance, `real_funded_nano`, model names and other heuristics never
+classify this cohort. `all` is the union of the historical money cohort and strict bonus-only. As a
+cohort selector, `funding` narrows both rows and summary.
+
+Rows add `funding_kind` (`payments|payments_and_manual|manual|bonus_only`) and exact selected-window
+`paid_funded_spent_nano`, `bonus_funded_spent_nano`, `other_funded_spent_nano`, and
+`unattributed_spent_nano`. Bonus-only rows therefore have `paid_nano="0"`, `last_paid_at=null`, and a
+full bonus-funded split. Summary adds `bonus_only_users`, `bonus_only_spent_nano`, and
+`cohort_users`. Backward-compatible `paying_users` continues to count only money-funded users; for
+`funding=all`, `cohort_users` is the complete listed cohort count. Existing lifetime paid/manual and
+provider summary fields keep their semantics.
+
+Provider attribution remains `COALESCE(pricing_usage_attributions.provider_id,
+pricing_usage_events.provider_id)` with no model inference. All money is a decimal nanoUSD string;
+provider `other` still retains missing/unknown provider evidence, independently from the new funding
+`unattributed_spent_nano`. Search, status and provider filters continue to narrow only the paged
+rows/count; the cohort-selected summary remains fleet-wide. `apps/admin` must consume this
+expand-only producer contract only after the exact producer SHA has a green `deploy/watchdog`
+verdict.
 
 The Stage 8 capture GET returns a bounded read-only view of durable job/artifact identities,
 status counts, freshness and sanitized combined blockers (`source/code/count` plus already-hashed

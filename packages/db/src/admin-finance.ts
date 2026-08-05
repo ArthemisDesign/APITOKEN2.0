@@ -84,8 +84,8 @@ export interface AdminFinanceChurnRow {
 
 export type AdminPayingUserProvider = "anthropic" | "openai" | "google" | "other";
 export type AdminPayingUserSort = "spent" | "paid" | "last_paid" | "last_seen";
-
-export type AdminPayingUserFunding = "payments" | "manual";
+export type AdminPayingUserFunding = "payments" | "manual" | "bonus" | "all";
+export type AdminPayingUserFundingKind = "payments" | "payments_and_manual" | "manual" | "bonus_only";
 
 export interface AdminPayingUsersQuery {
   days: 1 | 7 | 30;
@@ -95,10 +95,9 @@ export interface AdminPayingUsersQuery {
   status?: "active" | "disabled";
   provider?: AdminPayingUserProvider;
   /**
-   * Когорта по ИСТОЧНИКУ денег: "" — все платящие, `payments` — только клиенты с подтверждённым
-   * платежом (админские зачисления из выборки уходят), `manual` — только те, чей баланс целиком
-   * начислен вручную/админом. В отличие от остальных фильтров сужает и сводку: это определение
-   * когорты, а не подсветка строк.
+   * Когорта по источнику денег. Отсутствующий фильтр сохраняет прежний payment/manual union;
+   * `bonus` означает строгий bonus-only расход выбранного окна, `all` объединяет обе когорты.
+   * Как определение когорты фильтр сужает и строки, и сводку.
    */
   funding?: AdminPayingUserFunding;
   sort?: AdminPayingUserSort;
@@ -113,6 +112,7 @@ export interface AdminPayingUserRow {
   customerType: "b2c" | "b2b" | null;
   tier: number | null;
   multiplierBp: number | null;
+  fundingKind: AdminPayingUserFundingKind;
   paidNano: string;
   paymentsCount: number;
   /** Часть paidNano, зачисленная напрямую в движке (admin-credit/ручное), без платёжной системы. */
@@ -120,6 +120,10 @@ export interface AdminPayingUserRow {
   manualTopupsCount: number;
   lastPaidAt: Date | null;
   spentNano: string;
+  paidFundedSpentNano: string;
+  bonusFundedSpentNano: string;
+  otherFundedSpentNano: string;
+  unattributedSpentNano: string;
   providerSpendNano: Record<AdminPayingUserProvider, string>;
   activeApiKeys: number;
   lastSeenAt: Date | null;
@@ -127,11 +131,15 @@ export interface AdminPayingUserRow {
 }
 
 export interface AdminPayingUsersSummary {
+  /** Backward-compatible money-funded count; use cohortUsers for `funding=all`. */
   payingUsers: number;
+  cohortUsers: number;
+  bonusOnlyUsers: number;
   activeSpenders: number;
   paidNano: string;
   manualPaidNano: string;
   spentNano: string;
+  bonusOnlySpentNano: string;
   providerSpendNano: Record<AdminPayingUserProvider, string>;
   providerUsers: Record<AdminPayingUserProvider, number>;
 }
@@ -342,10 +350,10 @@ const PAYING_USER_SORT_SQL: Record<AdminPayingUserSort, string> = {
 };
 
 /**
- * Пагинированный список только когда-либо плативших клиентов. Расход берётся из immutable
+ * Пагинированный money-funded или строгий bonus-only cohort. Расход берётся из immutable
  * pricing_usage_events за выбранное окно, а провайдер — из exact attribution snapshot либо
- * authoritative top-level engine ledger evidence на событии. Неатрибутированные старые события
- * и неизвестные будущие provider_id не теряются: они попадают в other.
+ * authoritative top-level engine ledger evidence на событии. Bonus-only требует modern split
+ * для каждого события окна; legacy/неполная атрибуция остаётся видимой как unattributed.
  */
 export async function listAdminPayingUsers(
   database: Database,
@@ -370,17 +378,16 @@ export async function listAdminPayingUsers(
   if (status && status !== "active" && status !== "disabled") {
     throw new Error(`unsupported paying users status: ${String(query.status)}`);
   }
-  if (funding && funding !== "payments" && funding !== "manual") {
+  if (funding && !["payments", "manual", "bonus", "all"].includes(funding)) {
     throw new Error(`unsupported paying users funding: ${String(query.funding)}`);
   }
 
-  // «Оплачено» = подтверждённые платежи + РУЧНЫЕ пополнения баланса движка (admin-credit и
-  // прочие зачисления мимо платёжной системы): это тоже реальные деньги клиента, и без них
-  // клиент, оплативший вне сайта, вообще не считался платящим. Пополнения с источником
-  // `payment` намеренно исключены — их авторитет payments, иначе платёж был бы посчитан дважды;
-  // `bonus` (welcome/промо) деньгами не является.
-  const commonCtes = `
-    WITH paid AS (
+  // `money` is lifetime payment/manual authority. `usage` is selected-window charge authority.
+  // Exact modern funding requires policy_v1/release_v2, complete non-negative split, and equality
+  // to both attribution charged_nano and the immutable event amount. No balance/model/top-up proxy
+  // participates in bonus-only classification.
+  const commonCtes = (fundingParameter: number) => `
+    WITH money AS (
       SELECT user_id,
              sum(payments_count)::bigint AS payments_count,
              sum(manual_count)::bigint AS manual_topups_count,
@@ -402,29 +409,80 @@ export async function listAdminPayingUsers(
         GROUP BY user_id
       ) sources
       GROUP BY user_id
-      HAVING ($5::text = ''
-        OR ($5 = 'payments' AND sum(payments_count) > 0)
-        OR ($5 = 'manual' AND sum(manual_count) > 0 AND sum(payments_count) = 0))
-    ), usage AS (
-      SELECT e.user_id,
-        sum(e.amount_nano) AS spent_nano,
-        COALESCE(sum(e.amount_nano) FILTER (
-          WHERE COALESCE(a.provider_id, e.provider_id) = 'anthropic'
-        ), 0) AS anthropic_nano,
-        COALESCE(sum(e.amount_nano) FILTER (
-          WHERE COALESCE(a.provider_id, e.provider_id) = 'openai'
-        ), 0) AS openai_nano,
-        COALESCE(sum(e.amount_nano) FILTER (
-          WHERE COALESCE(a.provider_id, e.provider_id) = 'google'
-        ), 0) AS google_nano,
-        COALESCE(sum(e.amount_nano) FILTER (
-          WHERE COALESCE(a.provider_id, e.provider_id) IS NULL
-            OR COALESCE(a.provider_id, e.provider_id) NOT IN ('anthropic', 'openai', 'google')
-        ), 0) AS other_nano
+    ), attributed_window_events AS (
+      SELECT e.user_id, e.amount_nano,
+        COALESCE(a.provider_id, e.provider_id) AS provider_id,
+        a.paid_funded_nano, a.bonus_funded_nano, a.other_funded_nano,
+        COALESCE(
+          a.snapshot_kind IN ('policy_v1', 'release_v2')
+            AND a.paid_funded_nano IS NOT NULL AND a.paid_funded_nano >= 0
+            AND a.bonus_funded_nano IS NOT NULL AND a.bonus_funded_nano >= 0
+            AND a.other_funded_nano IS NOT NULL AND a.other_funded_nano >= 0
+            AND a.charged_nano = e.amount_nano
+            AND a.paid_funded_nano + a.bonus_funded_nano + a.other_funded_nano = e.amount_nano,
+          false
+        ) AS exact_modern_funding
       FROM pricing_usage_events e
       LEFT JOIN pricing_usage_attributions a ON a.pricing_usage_event_id = e.id
       WHERE e.occurred_at >= now() - make_interval(days => $1)
-      GROUP BY e.user_id
+    ), window_events AS (
+      SELECT user_id, amount_nano, provider_id, exact_modern_funding,
+        CASE WHEN exact_modern_funding THEN paid_funded_nano ELSE 0 END AS paid_funded_nano,
+        CASE WHEN exact_modern_funding THEN bonus_funded_nano ELSE 0 END AS bonus_funded_nano,
+        CASE WHEN exact_modern_funding THEN other_funded_nano ELSE 0 END AS other_funded_nano
+      FROM attributed_window_events
+    ), usage AS (
+      SELECT user_id,
+        sum(amount_nano) AS spent_nano,
+        count(*) AS event_count,
+        count(*) FILTER (WHERE exact_modern_funding) AS exact_modern_event_count,
+        sum(paid_funded_nano) AS paid_funded_nano,
+        sum(bonus_funded_nano) AS bonus_funded_nano,
+        sum(other_funded_nano) AS other_funded_nano,
+        COALESCE(sum(amount_nano) FILTER (WHERE NOT exact_modern_funding), 0) AS unattributed_nano,
+        COALESCE(sum(amount_nano) FILTER (WHERE provider_id = 'anthropic'), 0) AS anthropic_nano,
+        COALESCE(sum(amount_nano) FILTER (WHERE provider_id = 'openai'), 0) AS openai_nano,
+        COALESCE(sum(amount_nano) FILTER (WHERE provider_id = 'google'), 0) AS google_nano,
+        COALESCE(sum(amount_nano) FILTER (
+          WHERE provider_id IS NULL OR provider_id NOT IN ('anthropic', 'openai', 'google')
+        ), 0) AS other_nano
+      FROM window_events
+      GROUP BY user_id
+    ), paid AS (
+      SELECT u.id AS user_id,
+        COALESCE(money.payments_count, 0) AS payments_count,
+        COALESCE(money.manual_topups_count, 0) AS manual_topups_count,
+        COALESCE(money.payments_nano, 0) AS payments_nano,
+        COALESCE(money.manual_nano, 0) AS manual_nano,
+        COALESCE(money.paid_nano, 0) AS paid_nano,
+        money.last_paid_at,
+        CASE
+          WHEN COALESCE(money.payments_count, 0) > 0 AND COALESCE(money.manual_topups_count, 0) > 0
+            THEN 'payments_and_manual'
+          WHEN COALESCE(money.payments_count, 0) > 0 THEN 'payments'
+          WHEN COALESCE(money.manual_topups_count, 0) > 0 THEN 'manual'
+          ELSE 'bonus_only'
+        END AS funding_kind
+      FROM users u
+      LEFT JOIN money ON money.user_id = u.id
+      LEFT JOIN usage ON usage.user_id = u.id
+      WHERE (
+        ($${fundingParameter}::text IN ('', 'all')
+          AND (COALESCE(money.payments_count, 0) > 0 OR COALESCE(money.manual_topups_count, 0) > 0))
+        OR ($${fundingParameter} = 'payments' AND COALESCE(money.payments_count, 0) > 0)
+        OR ($${fundingParameter} = 'manual'
+          AND COALESCE(money.manual_topups_count, 0) > 0
+          AND COALESCE(money.payments_count, 0) = 0)
+        OR ($${fundingParameter} IN ('bonus', 'all')
+          AND COALESCE(money.payments_count, 0) = 0
+          AND COALESCE(money.manual_topups_count, 0) = 0
+          AND COALESCE(usage.spent_nano, 0) > 0
+          AND usage.event_count = usage.exact_modern_event_count
+          AND usage.paid_funded_nano = 0
+          AND usage.bonus_funded_nano = usage.spent_nano
+          AND usage.other_funded_nano = 0
+          AND usage.unattributed_nano = 0)
+      )
     ), sessions AS (
       SELECT user_id, max(last_seen_at) AS last_seen_at
       FROM auth_sessions
@@ -450,18 +508,24 @@ export async function listAdminPayingUsers(
     database.pool.query<{
       user_id: string; email: string; display_name: string; status: "active" | "disabled";
       customer_type: "b2c" | "b2b" | null; current_tier: number | null; multiplier_bp: number | null;
-      paid_nano: string; payments_count: string; last_paid_at: Date | null;
-      manual_paid_nano: string; manual_topups_count: string; spent_nano: string;
+      funding_kind: AdminPayingUserFundingKind; paid_nano: string; payments_count: string;
+      last_paid_at: Date | null; manual_paid_nano: string; manual_topups_count: string;
+      spent_nano: string; paid_funded_nano: string; bonus_funded_nano: string;
+      other_funded_nano: string; unattributed_nano: string;
       anthropic_nano: string; openai_nano: string; google_nano: string; other_nano: string;
       active_api_keys: string; last_seen_at: Date | null; created_at: Date;
     }>(`
       /* admin-finance:paying-users */
-      ${commonCtes}
+      ${commonCtes(5)}
       SELECT u.id AS user_id, u.email, u.display_name, u.status,
-        cp.customer_type, cp.current_tier, cp.multiplier_bp,
+        cp.customer_type, cp.current_tier, cp.multiplier_bp, paid.funding_kind,
         paid.paid_nano::text, paid.payments_count::text, paid.last_paid_at,
         paid.manual_nano::text AS manual_paid_nano, paid.manual_topups_count::text,
         COALESCE(usage.spent_nano, 0)::text AS spent_nano,
+        COALESCE(usage.paid_funded_nano, 0)::text AS paid_funded_nano,
+        COALESCE(usage.bonus_funded_nano, 0)::text AS bonus_funded_nano,
+        COALESCE(usage.other_funded_nano, 0)::text AS other_funded_nano,
+        COALESCE(usage.unattributed_nano, 0)::text AS unattributed_nano,
         COALESCE(usage.anthropic_nano, 0)::text AS anthropic_nano,
         COALESCE(usage.openai_nano, 0)::text AS openai_nano,
         COALESCE(usage.google_nano, 0)::text AS google_nano,
@@ -480,7 +544,7 @@ export async function listAdminPayingUsers(
     `, [days, q, status, provider, funding, limit, offset]),
     database.pool.query<{ total: string }>(`
       /* admin-finance:paying-users-count */
-      ${commonCtes}
+      ${commonCtes(5)}
       SELECT count(*)::text AS total
       FROM users u
       JOIN paid ON paid.user_id = u.id
@@ -488,52 +552,23 @@ export async function listAdminPayingUsers(
       WHERE ${filters}
     `, [days, q, status, provider, funding]),
     database.pool.query<{
-      paying_users: string; active_spenders: string; paid_nano: string; manual_paid_nano: string;
-      spent_nano: string;
+      paying_users: string; cohort_users: string; bonus_only_users: string;
+      active_spenders: string; paid_nano: string; manual_paid_nano: string;
+      spent_nano: string; bonus_only_spent_nano: string;
       anthropic_nano: string; openai_nano: string; google_nano: string; other_nano: string;
       anthropic_users: string; openai_users: string; google_users: string; other_users: string;
     }>(`
       /* admin-finance:paying-users-summary */
-      WITH paid AS (
-        SELECT user_id, sum(paid_nano) AS paid_nano, sum(manual_nano) AS manual_nano
-        FROM (
-          SELECT user_id, sum(amount_nano) AS paid_nano, 0::numeric AS manual_nano,
-                 count(*) AS payments_count, 0::bigint AS manual_count
-          FROM payments WHERE status = 'paid' GROUP BY user_id
-          UNION ALL
-          SELECT user_id, sum(amount_nano), sum(amount_nano), 0::bigint, count(*)
-          FROM pricing_usage_topups WHERE source = 'manual' GROUP BY user_id
-        ) sources
-        GROUP BY user_id
-        HAVING ($2::text = ''
-          OR ($2 = 'payments' AND sum(payments_count) > 0)
-          OR ($2 = 'manual' AND sum(manual_count) > 0 AND sum(payments_count) = 0))
-      ), usage AS (
-        SELECT e.user_id,
-          sum(e.amount_nano) AS spent_nano,
-          COALESCE(sum(e.amount_nano) FILTER (
-            WHERE COALESCE(a.provider_id, e.provider_id) = 'anthropic'
-          ), 0) AS anthropic_nano,
-          COALESCE(sum(e.amount_nano) FILTER (
-            WHERE COALESCE(a.provider_id, e.provider_id) = 'openai'
-          ), 0) AS openai_nano,
-          COALESCE(sum(e.amount_nano) FILTER (
-            WHERE COALESCE(a.provider_id, e.provider_id) = 'google'
-          ), 0) AS google_nano,
-          COALESCE(sum(e.amount_nano) FILTER (
-            WHERE COALESCE(a.provider_id, e.provider_id) IS NULL
-              OR COALESCE(a.provider_id, e.provider_id) NOT IN ('anthropic', 'openai', 'google')
-          ), 0) AS other_nano
-        FROM pricing_usage_events e
-        LEFT JOIN pricing_usage_attributions a ON a.pricing_usage_event_id = e.id
-        WHERE e.occurred_at >= now() - make_interval(days => $1)
-        GROUP BY e.user_id
-      )
-      SELECT count(*)::text AS paying_users,
+      ${commonCtes(2)}
+      SELECT count(*) FILTER (WHERE paid.funding_kind <> 'bonus_only')::text AS paying_users,
+        count(*)::text AS cohort_users,
+        count(*) FILTER (WHERE paid.funding_kind = 'bonus_only')::text AS bonus_only_users,
         count(*) FILTER (WHERE COALESCE(usage.spent_nano, 0) > 0)::text AS active_spenders,
         COALESCE(sum(paid.paid_nano), 0)::text AS paid_nano,
         COALESCE(sum(paid.manual_nano), 0)::text AS manual_paid_nano,
         COALESCE(sum(usage.spent_nano), 0)::text AS spent_nano,
+        COALESCE(sum(usage.spent_nano) FILTER (WHERE paid.funding_kind = 'bonus_only'), 0)::text
+          AS bonus_only_spent_nano,
         COALESCE(sum(usage.anthropic_nano), 0)::text AS anthropic_nano,
         COALESCE(sum(usage.openai_nano), 0)::text AS openai_nano,
         COALESCE(sum(usage.google_nano), 0)::text AS google_nano,
@@ -548,7 +583,8 @@ export async function listAdminPayingUsers(
   ]);
 
   const summary = summaryResult.rows[0] ?? {
-    paying_users: "0", active_spenders: "0", paid_nano: "0", manual_paid_nano: "0", spent_nano: "0",
+    paying_users: "0", cohort_users: "0", bonus_only_users: "0", active_spenders: "0",
+    paid_nano: "0", manual_paid_nano: "0", spent_nano: "0", bonus_only_spent_nano: "0",
     anthropic_nano: "0", openai_nano: "0", google_nano: "0", other_nano: "0",
     anthropic_users: "0", openai_users: "0", google_users: "0", other_users: "0",
   };
@@ -561,12 +597,17 @@ export async function listAdminPayingUsers(
       customerType: row.customer_type,
       tier: row.current_tier,
       multiplierBp: row.multiplier_bp,
+      fundingKind: row.funding_kind,
       paidNano: row.paid_nano,
       paymentsCount: Number(row.payments_count),
       manualPaidNano: row.manual_paid_nano,
       manualTopupsCount: Number(row.manual_topups_count),
       lastPaidAt: row.last_paid_at,
       spentNano: row.spent_nano,
+      paidFundedSpentNano: row.paid_funded_nano,
+      bonusFundedSpentNano: row.bonus_funded_nano,
+      otherFundedSpentNano: row.other_funded_nano,
+      unattributedSpentNano: row.unattributed_nano,
       providerSpendNano: {
         anthropic: row.anthropic_nano,
         openai: row.openai_nano,
@@ -583,10 +624,13 @@ export async function listAdminPayingUsers(
     days,
     summary: {
       payingUsers: Number(summary.paying_users),
+      cohortUsers: Number(summary.cohort_users),
+      bonusOnlyUsers: Number(summary.bonus_only_users),
       activeSpenders: Number(summary.active_spenders),
       paidNano: summary.paid_nano,
       manualPaidNano: summary.manual_paid_nano,
       spentNano: summary.spent_nano,
+      bonusOnlySpentNano: summary.bonus_only_spent_nano,
       providerSpendNano: {
         anthropic: summary.anthropic_nano,
         openai: summary.openai_nano,
