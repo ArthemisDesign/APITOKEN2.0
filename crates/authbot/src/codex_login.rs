@@ -26,6 +26,18 @@ const AUTH_STORE: &str = "auth.json";
 /// Одноразовый код живёт 15 минут — дальше ждать нечего.
 const DEVICE_FLOW_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct LifecycleProfile {
+    pub profile_id: String,
+    pub order_id: i64,
+    pub issued_at: i64,
+    pub canonical_plan: String,
+    pub canonical_ip: Option<std::net::IpAddr>,
+}
+
+/// Backward-compatible name for the projection consumed by the existing proxy-admin integration.
+pub type IproyalLease = LifecycleProfile;
+
 /// Конфигурация encrypted roster, в который запечатываются купленные аккаунты.
 #[derive(Clone)]
 pub struct RosterConfig {
@@ -35,11 +47,85 @@ pub struct RosterConfig {
     pub active_key_id: String,
 }
 
+impl RosterConfig {
+    /// Read every sealed roster profile without exposing account, email, token or proxy credentials.
+    /// Only a literal host from the canonical proxy URL is projected; hostnames are never resolved.
+    pub fn lifecycle_profiles(&self) -> Result<Vec<LifecycleProfile>> {
+        let roster_path = self.dir.join("profiles.json");
+        if !roster_path.exists() {
+            return Ok(Vec::new());
+        }
+        let credentials_dir = self.dir.join("credentials");
+        let roster: ProfilesFile = serde_json::from_slice(&std::fs::read(&roster_path)?)
+            .context("разобрать Codex roster для proxy lifecycle")?;
+        let mut profile_ids = std::collections::HashSet::new();
+        let mut account_ids = std::collections::HashSet::new();
+        let mut exact_managed_bindings = std::collections::HashSet::new();
+        let mut profiles = Vec::new();
+        for profile in roster.profiles {
+            codex_credential::validate_profile_id(&profile.id)?;
+            if !profile_ids.insert(profile.id.clone()) {
+                return Err(anyhow!("дубликат Codex profile id в proxy lifecycle"));
+            }
+            let expected = credentials_dir.join(format!("{}.json", profile.id));
+            if Path::new(&profile.credential_file) != expected {
+                return Err(anyhow!("credential path вне Codex lifecycle roster"));
+            }
+            let envelope = codex_credential::decode_envelope(&std::fs::read(&expected)?)?;
+            let credential = self.keyring.open(&profile.id, &envelope)?;
+            credential.validate()?;
+            if !account_ids.insert(credential.account_id.clone()) {
+                return Err(anyhow!("дубликат Codex account id в proxy lifecycle"));
+            }
+            let canonical_ip = if credential.proxy.is_empty() {
+                None
+            } else {
+                canonical_proxy_ip(&codex_credential::normalize_proxy_url(&credential.proxy)?)?
+            };
+            if credential.proxy_order_id > 0
+                && canonical_ip.is_some()
+                && !exact_managed_bindings.insert((credential.proxy_order_id, canonical_ip))
+            {
+                return Err(anyhow!(
+                    "неоднозначный дубликат Codex IPRoyal order и proxy IP"
+                ));
+            }
+            profiles.push(LifecycleProfile {
+                profile_id: profile.id,
+                order_id: credential.proxy_order_id,
+                issued_at: credential.issued_at,
+                canonical_plan: credential.plan.clone(),
+                canonical_ip,
+            });
+        }
+        Ok(profiles)
+    }
+
+    /// Preserve the existing integration contract: only managed profiles with a literal IP can be
+    /// bound automatically. The complete, order-zero-inclusive view is [`Self::lifecycle_profiles`].
+    pub fn iproyal_leases(&self) -> Result<Vec<IproyalLease>> {
+        Ok(self
+            .lifecycle_profiles()?
+            .into_iter()
+            .filter(|profile| profile.order_id > 0 && profile.canonical_ip.is_some())
+            .collect())
+    }
+}
+
+fn canonical_proxy_ip(proxy: &str) -> Result<Option<std::net::IpAddr>> {
+    Ok(reqwest::Url::parse(proxy)
+        .context("разобрать canonical Codex proxy URL")?
+        .host_str()
+        .map(|host| host.trim_matches(['[', ']']))
+        .and_then(|host| host.parse().ok()))
+}
+
 struct Session {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     /// Hidden staging directory. The roster never points at it.
     home: PathBuf,
     proxy: String,
+    proxy_order_id: i64,
     label: String,
     _master: Box<dyn portable_pty::MasterPty + Send>,
 }
@@ -65,6 +151,11 @@ fn sessions() -> &'static Mutex<HashMap<i64, Session>> {
     S.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn publication_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 /// Что показать продавцу: ссылка + одноразовый код.
 pub struct DeviceAuth {
     pub url: String,
@@ -76,6 +167,10 @@ pub enum Outcome {
     Authorized {
         label: String,
         has_proxy: bool,
+        profile_id: String,
+        proxy_order_id: i64,
+        issued_at: i64,
+        canonical_ip: Option<std::net::IpAddr>,
     },
     /// Продавец не завершил флоу за отведённое время.
     Expired,
@@ -207,9 +302,13 @@ pub fn start(
     chat: i64,
     label: &str,
     proxy: &str,
+    proxy_order_id: i64,
     codex_bin: &str,
     staging_dir: &str,
 ) -> Result<DeviceAuth> {
+    if proxy_order_id < 0 {
+        return Err(anyhow!("proxy order id не может быть отрицательным"));
+    }
     cancel(chat);
     let slug = slug(label);
     if slug.is_empty() {
@@ -288,6 +387,7 @@ pub fn start(
             child,
             home: home.clone(),
             proxy: proxy.trim().to_string(),
+            proxy_order_id,
             label: label.to_string(),
             _master: pair.master,
         },
@@ -361,7 +461,11 @@ fn jwt_claims(token: &str) -> Option<serde_json::Value> {
 fn credential_from_auth_store(
     home: &Path,
     proxy: &str,
+    proxy_order_id: i64,
 ) -> Result<(String, codex_credential::CodexCredential)> {
+    if proxy_order_id < 0 {
+        return Err(anyhow!("proxy order id не может быть отрицательным"));
+    }
     let raw = std::fs::read_to_string(home.join(AUTH_STORE)).context("прочитать auth store")?;
     let raw = zeroize::Zeroizing::new(raw);
     let store: serde_json::Value = serde_json::from_str(&raw).context("разобрать auth store")?;
@@ -425,47 +529,149 @@ fn credential_from_auth_store(
         email,
         plan,
         proxy: proxy.to_string(),
-        proxy_order_id: 0,
+        proxy_order_id,
         issued_at: now(),
     };
     Ok((profile_id, credential))
 }
 
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProfilesFile {
+    profiles: Vec<ProfileSpec>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileSpec {
+    id: String,
+    credential_file: String,
+}
+
+#[derive(Debug)]
+struct Publication {
+    profile_id: String,
+    proxy_order_id: i64,
+    issued_at: i64,
+    canonical_ip: Option<std::net::IpAddr>,
+}
+
+fn opaque_profile_id(account_id: &str) -> String {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+    format!(
+        "cx_{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(Sha256::digest(account_id.as_bytes()))
+    )
+}
+
 /// Запечатать credential в roster и атомарно обновить `profiles.json`.
 fn publish_credential(
     roster: &RosterConfig,
-    profile_id: &str,
-    credential: &codex_credential::CodexCredential,
-) -> Result<()> {
-    codex_credential::validate_profile_id(profile_id)?;
+    mut credential: codex_credential::CodexCredential,
+) -> Result<Publication> {
+    let _publication = publication_lock()
+        .lock()
+        .map_err(|_| anyhow!("Codex publication lock is unavailable"))?;
+    credential.validate()?;
     let credentials_dir = roster.dir.join("credentials");
+    std::fs::create_dir_all(&roster.dir)?;
+    secure_dir(&roster.dir)?;
     std::fs::create_dir_all(&credentials_dir)?;
     secure_dir(&credentials_dir)?;
+    let profiles_path = roster.dir.join("profiles.json");
+    let mut roster_file = if profiles_path.exists() {
+        serde_json::from_slice::<ProfilesFile>(&std::fs::read(&profiles_path)?)
+            .context("разобрать Codex roster")?
+    } else {
+        ProfilesFile {
+            profiles: Vec::new(),
+        }
+    };
+
+    let mut existing_profile_id = None;
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut seen_accounts = std::collections::HashSet::new();
+    for profile in &roster_file.profiles {
+        codex_credential::validate_profile_id(&profile.id)?;
+        if !seen_ids.insert(profile.id.clone()) {
+            return Err(anyhow!("дубликат profile id в Codex roster"));
+        }
+        let expected = credentials_dir.join(format!("{}.json", profile.id));
+        if Path::new(&profile.credential_file) != expected {
+            return Err(anyhow!("credential path вне Codex roster"));
+        }
+        let envelope = codex_credential::decode_envelope(&std::fs::read(&expected)?)?;
+        let existing = roster.keyring.open(&profile.id, &envelope)?;
+        existing.validate()?;
+        if !seen_accounts.insert(existing.account_id.clone()) {
+            return Err(anyhow!("дубликат account id в Codex roster"));
+        }
+        if existing.account_id == credential.account_id {
+            if existing.proxy_order_id > 0 {
+                let existing_proxy = codex_credential::normalize_proxy_url(&existing.proxy)
+                    .map_err(|_| anyhow!("конфликт Codex proxy при re-login"))?;
+                let replacement_proxy = codex_credential::normalize_proxy_url(&credential.proxy)
+                    .map_err(|_| anyhow!("конфликт Codex proxy при re-login"))?;
+                if existing_proxy != replacement_proxy {
+                    return Err(anyhow!("конфликт Codex proxy при re-login"));
+                }
+                if credential.proxy_order_id > 0
+                    && existing.proxy_order_id != credential.proxy_order_id
+                {
+                    return Err(anyhow!("конфликт IPRoyal order при Codex re-login"));
+                }
+                credential.proxy_order_id = existing.proxy_order_id;
+                credential.proxy = existing_proxy;
+            }
+            credential.issued_at = existing.issued_at;
+            existing_profile_id = Some(profile.id.clone());
+        }
+    }
+
+    let profile_id = match existing_profile_id {
+        Some(profile_id) => profile_id,
+        None => {
+            let profile_id = opaque_profile_id(&credential.account_id);
+            if seen_ids.contains(&profile_id) {
+                return Err(anyhow!("opaque Codex profile id уже занят"));
+            }
+            profile_id
+        }
+    };
+    codex_credential::validate_profile_id(&profile_id)?;
     let envelope = roster
         .keyring
-        .seal(&roster.active_key_id, profile_id, credential)
+        .seal(&roster.active_key_id, &profile_id, &credential)
         .context("запечатать credential")?;
     let encoded = codex_credential::encode_envelope(&envelope)?;
     let credential_file = credentials_dir.join(format!("{profile_id}.json"));
     publish(&credential_file, &encoded, true)?;
 
-    // Republish the roster with this profile present (replace on re-login of the same account).
-    let profiles_path = roster.dir.join("profiles.json");
-    let mut profiles: Vec<serde_json::Value> = std::fs::read(&profiles_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|value| value.get("profiles")?.as_array().cloned())
-        .unwrap_or_default();
-    let credential_file = credential_file.to_string_lossy().to_string();
-    profiles
-        .retain(|entry| entry.get("id").and_then(serde_json::Value::as_str) != Some(profile_id));
-    profiles.push(serde_json::json!({
-        "id": profile_id,
-        "credential_file": credential_file,
-    }));
-    let document = serde_json::to_vec(&serde_json::json!({ "profiles": profiles }))?;
-    publish(&profiles_path, &document, false)?;
-    Ok(())
+    if !roster_file
+        .profiles
+        .iter()
+        .any(|profile| profile.id == profile_id)
+    {
+        roster_file.profiles.push(ProfileSpec {
+            id: profile_id.clone(),
+            credential_file: credential_file.to_string_lossy().into_owned(),
+        });
+        let document = serde_json::to_vec(&roster_file)?;
+        publish(&profiles_path, &document, true)?;
+    }
+    let canonical_ip = if credential.proxy.is_empty() {
+        None
+    } else {
+        canonical_proxy_ip(&codex_credential::normalize_proxy_url(&credential.proxy)?)?
+    };
+    Ok(Publication {
+        profile_id,
+        proxy_order_id: credential.proxy_order_id,
+        issued_at: credential.issued_at,
+        canonical_ip,
+    })
 }
 
 /// Дождаться, пока продавец подтвердит вход. CLI сам опрашивает OpenAI и завершается —
@@ -516,15 +722,19 @@ pub fn wait(chat: i64, codex_bin: &str, roster: &RosterConfig) -> Outcome {
     }
     let has_proxy = !s.proxy.is_empty();
     let outcome = (|| {
-        let (profile_id, credential) = credential_from_auth_store(&s.home, &s.proxy)?;
-        publish_credential(roster, &profile_id, &credential)
+        let (_, credential) = credential_from_auth_store(&s.home, &s.proxy, s.proxy_order_id)?;
+        publish_credential(roster, credential)
     })();
     // С этого момента открытый auth store не нужен ни при каком исходе.
     let _ = std::fs::remove_dir_all(&s.home);
     match outcome {
-        Ok(()) => Outcome::Authorized {
+        Ok(publication) => Outcome::Authorized {
             label: s.label,
             has_proxy,
+            profile_id: publication.profile_id,
+            proxy_order_id: publication.proxy_order_id,
+            issued_at: publication.issued_at,
+            canonical_ip: publication.canonical_ip,
         },
         Err(error) => {
             let message = error.to_string();
@@ -690,7 +900,7 @@ Follow these steps to sign in with ChatGPT using device code authorization:\n\n\
         )
         .unwrap();
         let (profile_id, credential) =
-            credential_from_auth_store(&home, "http://user:pass@127.0.0.1:8080").unwrap();
+            credential_from_auth_store(&home, "http://user:pass@127.0.0.1:8080", 4242).unwrap();
         assert_eq!(profile_id, "acct-test-0001");
         assert_eq!(credential.plan, "chatgpt_plus");
         assert_eq!(credential.account_id, "acct_test_0001");
@@ -707,16 +917,268 @@ Follow these steps to sign in with ChatGPT using device code authorization:\n\n\
             .unwrap(),
             active_key_id: "current".to_string(),
         };
-        publish_credential(&roster, &profile_id, &credential).unwrap();
-        let sealed = std::fs::read(roster.dir.join("credentials/acct-test-0001.json")).unwrap();
+        let publication = publish_credential(&roster, credential).unwrap();
+        assert_eq!(publication.profile_id, opaque_profile_id("acct_test_0001"));
+        assert_eq!(publication.proxy_order_id, 4242);
+        let sealed = std::fs::read(
+            roster
+                .dir
+                .join("credentials")
+                .join(format!("{}.json", publication.profile_id)),
+        )
+        .unwrap();
         assert!(!String::from_utf8_lossy(&sealed).contains("refresh-material"));
         let envelope = codex_credential::decode_envelope(&sealed).unwrap();
-        let opened = roster.keyring.open(&profile_id, &envelope).unwrap();
+        let opened = roster
+            .keyring
+            .open(&publication.profile_id, &envelope)
+            .unwrap();
         assert_eq!(opened.refresh_token, "refresh-material");
         let profiles: serde_json::Value =
             serde_json::from_slice(&std::fs::read(roster.dir.join("profiles.json")).unwrap())
                 .unwrap();
-        assert_eq!(profiles["profiles"][0]["id"], "acct-test-0001");
+        assert_eq!(
+            profiles["profiles"][0]["id"],
+            opaque_profile_id("acct_test_0001")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn roster(root: &Path) -> RosterConfig {
+        RosterConfig {
+            dir: root.join("roster"),
+            keyring: codex_credential::CredentialKeyring::parse(&format!(
+                "current:{}",
+                "ab".repeat(32)
+            ))
+            .unwrap(),
+            active_key_id: "current".to_string(),
+        }
+    }
+
+    fn test_credential(
+        account_id: &str,
+        order_id: i64,
+        issued_at: i64,
+    ) -> codex_credential::CodexCredential {
+        codex_credential::CodexCredential {
+            version: 1,
+            access_token: "access-material".into(),
+            refresh_token: "refresh-material".into(),
+            expires_at: 4_102_444_800,
+            oauth_client_id: codex_credential::CODEX_OFFICIAL_OAUTH_CLIENT_ID.into(),
+            token_uri: codex_credential::CODEX_OFFICIAL_TOKEN_URI.into(),
+            account_id: account_id.into(),
+            email: "private@example.com".into(),
+            plan: "chatgpt_plus".into(),
+            proxy: "http://user:pass@127.0.0.1:8080".into(),
+            proxy_order_id: order_id,
+            issued_at,
+        }
+    }
+
+    #[test]
+    fn lifecycle_profiles_include_all_orders_and_export_only_canonical_metadata() {
+        let root = temp_dir();
+        let roster = roster(&root);
+        assert!(roster.lifecycle_profiles().unwrap().is_empty());
+
+        let first =
+            publish_credential(&roster, test_credential("private-account-first", 42, 100)).unwrap();
+        let mut external = test_credential("private-account-external", 0, 150);
+        external.plan = "chatgpt_pro".into();
+        external.proxy = "http://user:pass@proxy.example:8080".into();
+        let external = publish_credential(&roster, external).unwrap();
+        let mut ipv6 = test_credential("private-account-ipv6", 7, 200);
+        ipv6.proxy = "http://user:pass@[2001:db8::7]:8080".into();
+        let ipv6 = publish_credential(&roster, ipv6).unwrap();
+        let mut managed_hostname = test_credential("private-account-managed-hostname", 8, 250);
+        managed_hostname.proxy = "http://user:pass@managed.example:8080".into();
+        let managed_hostname = publish_credential(&roster, managed_hostname).unwrap();
+        let mut same_order_different_ip =
+            test_credential("private-account-same-order-different-ip", 42, 300);
+        same_order_different_ip.proxy = "http://user:pass@127.0.0.2:8080".into();
+        let same_order_different_ip = publish_credential(&roster, same_order_different_ip).unwrap();
+
+        let profiles = roster.lifecycle_profiles().unwrap();
+        assert_eq!(profiles.len(), 5);
+        let first = profiles
+            .iter()
+            .find(|profile| profile.profile_id == first.profile_id)
+            .unwrap();
+        assert_eq!(first.order_id, 42);
+        assert_eq!(first.issued_at, 100);
+        assert_eq!(first.canonical_plan, "chatgpt_plus");
+        assert_eq!(first.canonical_ip, Some("127.0.0.1".parse().unwrap()));
+        let external = profiles
+            .iter()
+            .find(|profile| profile.profile_id == external.profile_id)
+            .unwrap();
+        assert_eq!(external.order_id, 0);
+        assert_eq!(external.issued_at, 150);
+        assert_eq!(external.canonical_plan, "chatgpt_pro");
+        assert_eq!(external.canonical_ip, None);
+        let ipv6 = profiles
+            .iter()
+            .find(|profile| profile.profile_id == ipv6.profile_id)
+            .unwrap();
+        assert_eq!(ipv6.canonical_ip, Some("2001:db8::7".parse().unwrap()));
+        let managed_hostname = profiles
+            .iter()
+            .find(|profile| profile.profile_id == managed_hostname.profile_id)
+            .unwrap();
+        assert_eq!(managed_hostname.order_id, 8);
+        assert_eq!(managed_hostname.canonical_ip, None);
+        let same_order_different_ip = profiles
+            .iter()
+            .find(|profile| profile.profile_id == same_order_different_ip.profile_id)
+            .unwrap();
+        assert_eq!(same_order_different_ip.order_id, 42);
+        assert_eq!(
+            same_order_different_ip.canonical_ip,
+            Some("127.0.0.2".parse().unwrap())
+        );
+        assert_eq!(roster.iproyal_leases().unwrap().len(), 3);
+
+        fn consume_without_formatting(
+            profile: &LifecycleProfile,
+        ) -> (&str, i64, i64, &str, Option<std::net::IpAddr>) {
+            let LifecycleProfile {
+                profile_id,
+                order_id,
+                issued_at,
+                canonical_plan,
+                canonical_ip,
+            } = profile;
+            (
+                profile_id,
+                *order_id,
+                *issued_at,
+                canonical_plan,
+                *canonical_ip,
+            )
+        }
+        assert_eq!(consume_without_formatting(first).1, 42);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn iproyal_lifecycle_rejects_invalid_and_duplicate_roster_state() {
+        let root = temp_dir();
+        let roster = roster(&root);
+        assert!(publish_credential(&roster, test_credential("negative-order", -1, 50)).is_err());
+        let first = publish_credential(&roster, test_credential("first-account", 55, 100)).unwrap();
+        let roster_path = roster.dir.join("profiles.json");
+        let original_roster = std::fs::read(&roster_path).unwrap();
+        let credential_path = roster
+            .dir
+            .join("credentials")
+            .join(format!("{}.json", first.profile_id));
+        let original_credential = std::fs::read(&credential_path).unwrap();
+
+        let mut document: serde_json::Value = serde_json::from_slice(&original_roster).unwrap();
+        document["profiles"][0]["id"] = serde_json::json!("../invalid");
+        std::fs::write(&roster_path, serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(roster.iproyal_leases().is_err());
+
+        let mut document: serde_json::Value = serde_json::from_slice(&original_roster).unwrap();
+        document["profiles"][0]["credential_file"] = serde_json::json!("credentials/other.json");
+        std::fs::write(&roster_path, serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(roster.iproyal_leases().is_err());
+
+        std::fs::write(&roster_path, &original_roster).unwrap();
+        std::fs::write(&credential_path, b"not-an-envelope").unwrap();
+        assert!(roster.iproyal_leases().is_err());
+        std::fs::write(&credential_path, &original_credential).unwrap();
+
+        let mut document: serde_json::Value = serde_json::from_slice(&original_roster).unwrap();
+        let duplicate = document["profiles"][0].clone();
+        document["profiles"].as_array_mut().unwrap().push(duplicate);
+        std::fs::write(&roster_path, serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(roster.iproyal_leases().is_err());
+
+        std::fs::write(&roster_path, &original_roster).unwrap();
+        let second =
+            publish_credential(&roster, test_credential("second-account", 55, 200)).unwrap();
+        assert!(roster.iproyal_leases().is_err());
+
+        let second_path = roster
+            .dir
+            .join("credentials")
+            .join(format!("{}.json", second.profile_id));
+        std::fs::write(&second_path, &original_credential).unwrap();
+        assert!(roster.iproyal_leases().is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn relogin_preserves_issued_at_order_and_canonical_proxy() {
+        let root = temp_dir();
+        let roster = roster(&root);
+        let first = publish_credential(&roster, test_credential("acct-relogin", 77, 100)).unwrap();
+        let mut equivalent = test_credential("acct-relogin", 0, 999);
+        equivalent.proxy = "HTTP://u%73er:pa%73s@127.0.0.1:8080".into();
+        let preserved = publish_credential(&roster, equivalent).unwrap();
+        assert_eq!(preserved.profile_id, first.profile_id);
+        assert_eq!(preserved.proxy_order_id, 77);
+        assert_eq!(preserved.issued_at, 100);
+
+        let mut wrong_order = test_credential("acct-relogin", 88, 1_000);
+        assert!(publish_credential(&roster, wrong_order.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("конфликт IPRoyal order"));
+        wrong_order.proxy = "http://user:pass@127.0.0.2:8080".into();
+        assert!(publish_credential(&roster, wrong_order)
+            .unwrap_err()
+            .to_string()
+            .contains("конфликт Codex proxy"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_publications_preserve_both_profiles() {
+        let root = temp_dir();
+        let roster = roster(&root);
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        for (account, order) in [("concurrent-first", 71), ("concurrent-second", 72)] {
+            let roster = roster.clone();
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                publish_credential(&roster, test_credential(account, order, 100)).unwrap()
+            }));
+        }
+        barrier.wait();
+        let publications = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        let leases = roster.iproyal_leases().unwrap();
+        assert_eq!(leases.len(), 2);
+        for publication in publications {
+            assert!(leases.iter().any(|lease| {
+                lease.profile_id == publication.profile_id
+                    && lease.order_id == publication.proxy_order_id
+            }));
+        }
+        assert!(!roster.dir.join("profiles.tmp").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_existing_roster_fails_closed() {
+        let root = temp_dir();
+        let roster = roster(&root);
+        std::fs::create_dir_all(&roster.dir).unwrap();
+        std::fs::write(roster.dir.join("profiles.json"), b"not-json").unwrap();
+        assert!(publish_credential(&roster, test_credential("acct-new", 0, 100)).is_err());
+        assert!(!roster
+            .dir
+            .join("credentials")
+            .join(format!("{}.json", opaque_profile_id("acct-new")))
+            .exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -744,7 +1206,7 @@ Follow these steps to sign in with ChatGPT using device code authorization:\n\n\
             .unwrap(),
         )
         .unwrap();
-        let error = credential_from_auth_store(&home, "").unwrap_err();
+        let error = credential_from_auth_store(&home, "", 0).unwrap_err();
         assert!(error.to_string().contains("платной подпиской"));
         std::fs::remove_dir_all(root).unwrap();
     }

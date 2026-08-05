@@ -80,6 +80,14 @@ engine control credential under the dedicated `X-OpenKeys-Control-Key` header; t
 receives it. The public OpenKeys vhost returns `404` for `/api/internal/*`, so the internal catalog
 cannot be reached through the customer-facing hostname even with a forged actor header.
 
+The same admin vhost preserves `/proxy-admin/*` and routes it to authbot's loopback-only listener on
+`127.0.0.1:8806`. Caddy injects the server-side `x-api-key` and forwards the `X-Admin-Actor` copied by
+`managed_admin_auth`; a client-supplied actor is removed before authentication. `GET inventory` is a
+sanitized read, while `POST renew` is the only paid mutation and requires that verified actor plus a
+UUID idempotency key. No public provider hostname routes this listener. The authbot unit reads the
+shared control key from `/srv/claude-api/data/server.env`; proxy credentials and IPRoyal keys remain
+in its private environment/state and never enter Caddy or the browser.
+
 Gemini is an independent active/passive pair: `gemini.api.apitoken.sale` targets stable loopback
 origin `127.0.0.1:8794`, which health-gates slots `127.0.0.1:8795` and `127.0.0.1:8799`. Its
 `lb_policy first` prevents two healthy generations from round-robining the same OAuth roster during

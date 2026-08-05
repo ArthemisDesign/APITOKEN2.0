@@ -8,6 +8,7 @@ describe("sourceName", () => {
     expect(sourceName("/settlement-health")).toBe("Settlement движка");
     expect(sourceName("/kimi-subs")).toBe("KIMI-подписки");
     expect(sourceName("/glm-subs")).toBe("GLM-подписки");
+    expect(sourceName("/proxy-admin/inventory")).toBe("Реестр прокси");
   });
 
   it("query-строка отрезается", () => {

@@ -19,6 +19,7 @@ struct Session {
     buf: Arc<Mutex<Vec<u8>>>,
     pub email: String,
     pub proxy: String,
+    pub proxy_order_id: i64,
     pub job: Option<SellerJobRef>,
     // локальный http→socks5 мост (gost), если прокси SOCKS — claude CLI умеет только CONNECT
     bridge: Option<std::process::Child>,
@@ -119,12 +120,23 @@ fn scan_token(s: &str) -> Option<String> {
     }
 }
 
-fn has_error(s: &str) -> bool {
-    let l = s.to_lowercase();
-    l.contains("oauth error")
-        || l.contains("request failed with status code")
-        || l.contains("invalid")
-        || l.contains("expired")
+fn error_class(s: &str) -> Option<&'static str> {
+    let lower = s.to_lowercase();
+    if lower.contains("oauth error") {
+        Some("oauth_error")
+    } else if lower.contains("request failed with status code") {
+        Some("http_error")
+    } else if lower.contains("expired") {
+        Some("expired")
+    } else if lower.contains("invalid") {
+        Some("invalid_response")
+    } else {
+        None
+    }
+}
+
+fn bounded_output_size(s: &str) -> usize {
+    s.len().min(64 * 1024)
 }
 
 pub fn kill(chat: i64) {
@@ -166,10 +178,14 @@ pub fn start(
     chat: i64,
     email: &str,
     proxy: &str,
+    proxy_order_id: i64,
     claude_bin: &str,
     config_root: &str,
     job: Option<SellerJobRef>,
 ) -> Result<String> {
+    if proxy_order_id < 0 {
+        return Err(anyhow!("proxy order id не может быть отрицательным"));
+    }
     kill(chat);
     let pty = native_pty_system();
     let pair = pty.openpty(PtySize {
@@ -233,6 +249,7 @@ pub fn start(
             buf: buf.clone(),
             email: email.to_string(),
             proxy: proxy.to_string(),
+            proxy_order_id,
             job,
             bridge,
             _master: pair.master,
@@ -267,17 +284,54 @@ mod tests {
             root.join(".claude-bot-seller-test-example-com")
         );
     }
+
+    #[test]
+    fn token_outcome_metadata_keeps_proxy_order() {
+        let outcome = Outcome::Token {
+            token: "secret".into(),
+            email: "private@example.com".into(),
+            proxy: "http://private-proxy".into(),
+            proxy_order_id: 4242,
+            job: None,
+        };
+        assert!(matches!(
+            outcome,
+            Outcome::Token {
+                proxy_order_id: 4242,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn setup_token_diagnostics_are_bounded_classes_only() {
+        assert_eq!(error_class("OAuth Error: denied"), Some("oauth_error"));
+        assert_eq!(
+            error_class("request failed with status code 403"),
+            Some("http_error")
+        );
+        assert_eq!(error_class("the code expired"), Some("expired"));
+        assert_eq!(error_class("invalid state"), Some("invalid_response"));
+        assert_eq!(error_class("still waiting"), None);
+        assert_eq!(bounded_output_size(&"x".repeat(70_000)), 64 * 1024);
+    }
 }
 
 pub enum Outcome {
-    Token(String, String, String, Option<SellerJobRef>), // token, email, proxy, exact job
+    Token {
+        token: String,
+        email: String,
+        proxy: String,
+        proxy_order_id: i64,
+        job: Option<SellerJobRef>,
+    },
     BadCode(Option<SellerJobRef>),
     NoToken(Option<SellerJobRef>),
 }
 
 /// Докормить code#state, извлечь токен.
 pub fn feed(chat: i64, codestate: &str) -> Result<Outcome> {
-    let (email, proxy, job, buf) = {
+    let (email, proxy, proxy_order_id, job, buf) = {
         let mut g = sessions().lock().unwrap();
         let s = g
             .get_mut(&chat)
@@ -290,6 +344,7 @@ pub fn feed(chat: i64, codestate: &str) -> Result<Outcome> {
         (
             s.email.clone(),
             s.proxy.clone(),
+            s.proxy_order_id,
             s.job.clone(),
             s.buf.clone(),
         )
@@ -305,33 +360,29 @@ pub fn feed(chat: i64, codestate: &str) -> Result<Outcome> {
     let deadline = Instant::now() + Duration::from_secs(120); // токен ~до 120с (как в Python)
     loop {
         let out = buf_string(&buf);
-        if let Some(tok) = scan_token(&out) {
+        if let Some(token) = scan_token(&out) {
             kill(chat);
-            return Ok(Outcome::Token(tok, email, proxy, job));
+            return Ok(Outcome::Token {
+                token,
+                email,
+                proxy,
+                proxy_order_id,
+                job,
+            });
         }
-        if has_error(&out) {
-            let tail: String = out
-                .chars()
-                .rev()
-                .take(400)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            eprintln!("setup-token BAD CODE, хвост вывода claude: {:?}", tail); // диагностика отказа
+        if let Some(class) = error_class(&out) {
+            eprintln!(
+                "[setup-token] outcome=bad_code class={class} output_bytes={}",
+                bounded_output_size(&out)
+            );
             kill(chat);
             return Ok(Outcome::BadCode(job));
         }
         if Instant::now() > deadline {
-            let tail: String = out
-                .chars()
-                .rev()
-                .take(700)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            eprintln!("setup-token NO TOKEN, хвост вывода claude: {:?}", tail); // для дебага
+            eprintln!(
+                "[setup-token] outcome=no_token class=timeout output_bytes={}",
+                bounded_output_size(&out)
+            );
             kill(chat);
             return Ok(Outcome::NoToken(job));
         }

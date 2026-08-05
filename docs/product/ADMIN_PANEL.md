@@ -89,6 +89,36 @@ the server keys; the browser never receives control keys, full email, OAuth, Goo
 project, KIMI/GLM subject, keys or proxy. The protection applies to all pages, including
 `/sales/calculator`.
 
+## Proxy lifecycle
+
+The separate `/proxies` page reads the authbot-owned `GET /proxy-admin/inventory` route on
+loopback `127.0.0.1:8806`. Caddy preserves the `/proxy-admin/*` path, injects the shared control
+key and forwards only the actor established by `managed_admin_auth`; neither value exists in the
+Next.js environment or browser bundle. The wire response is allowlisted and contains no proxy IP,
+credentials, account email, subject, project or token. Rows use opaque inventory IDs plus stable
+hashed proxy hints, masked order hints, provider/plan, subscription and proxy expiry, liveness,
+binding status and a fail-closed renewal reason.
+
+The inventory is a union of every Claude/GPT/Gemini subscription with a literal proxy and every
+IPRoyal ISP allocation. A positive order+IP is accepted only when that allocation still exists in
+the exact provider order. Legacy order-zero profiles may be reconciled only when their IP has one
+unique IPRoyal candidate; duplicate or missing candidates stay unbound rather than being guessed.
+Unmatched IPRoyal allocations are shown as `unassigned` and cannot be renewed from the panel.
+Claude and GPT subscriptions expire 30 days after acquisition. Gemini `google_ai_pro` expires after
+18 Gregorian UTC calendar months; Ultra and all other Gemini plans expire after 30 days.
+
+Renewal is never automatic. New IPRoyal purchases set `auto_extend=false`, and authbot's free
+background guard disables unexpected auto-extend on every ISP order. A paid extension happens only
+after the operator selects one or more renewable rows, confirms the action and submits a fresh UUID
+idempotency key to `POST /proxy-admin/renew`. Authbot snapshots exact allocation IPs privately,
+groups selected allocations by order and performs one selective extend call per order. Ambiguous
+provider outcomes are reported as `uncertain` and are not automatically replayed. The page can show
+the exact IPRoyal reseller balance as nanoUSD, but never card metadata.
+
+The existing `/subscriptions` page additionally shows acquisition/expiry/days-left lifecycle fields
+from `/capacity`, `/codex-subs` and `/gemini-subs`; these are display data and do not by themselves
+make a proxy renewable.
+
 ## Pricing configurators and B2B policies
 
 The `/pricing` page is the operator surface of the versioned multi-discount authority:

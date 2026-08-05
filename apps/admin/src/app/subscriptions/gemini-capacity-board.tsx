@@ -7,6 +7,7 @@ import { duration, nanoMoney } from "@/lib/format";
 import { providerInteger, usedPercentFromNano } from "./provider-calibration";
 import { ProviderCapacityStrip, ProviderQuotaMeter, ProviderSection } from "./provider-board-ui";
 import { geminiProfileStatus } from "./logic";
+import { SubscriptionExpiry } from "./subscription-lifecycle";
 import type {
   GeminiProfile,
   GeminiProfileWindow,
@@ -157,6 +158,7 @@ function GeminiSubscriptions({ profiles: allProfiles, modelCount, nowSec, author
             <tr>
               <th className="left">Почта</th>
               <th className="left">Состояние</th>
+              <th>Окончание</th>
               <th>Quota 5ч / reset</th>
               <th className="provider-five-hour-money">Доступно $ · 5ч</th>
               <th>Quota 7д / reset</th>
@@ -182,6 +184,7 @@ function GeminiSubscriptions({ profiles: allProfiles, modelCount, nowSec, author
                 <tr key={profile.id ?? index}>
                   <td className="left"><b>{profile.email?.trim() || "—"}</b><small>{profile.plan ?? "—"}</small></td>
                   <td className="left"><Pill kind={health.kind}>{health.label}</Pill></td>
+                  <SubscriptionExpiry lifecycle={profile} nowSeconds={nowSec} />
                   <td><ProviderQuotaMeter usedPercent={five.value} label={five.label} reset={fiveWindow?.resets_at ? duration(Math.max(0, fiveWindow.resets_at - nowSec)) : "—"} /></td>
                   <GeminiMoney window={fiveWindow} authorityReady={authorityReady} inactive={inactive} fiveHour />
                   <td><ProviderQuotaMeter usedPercent={weekly.value} label={weekly.label} reset={weeklyWindow?.resets_at ? duration(Math.max(0, weeklyWindow.resets_at - nowSec)) : "—"} /></td>

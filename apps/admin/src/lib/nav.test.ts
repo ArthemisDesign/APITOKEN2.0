@@ -7,7 +7,7 @@ import { NAV, isNavItemActive, navLabelForPath } from "./nav";
 // с ними — запрос уйдёт в backend раньше Next.js (регрессия: страница
 // «Подписки» жила на /subs и отдавала сырой JSON движка).
 const RESERVED_EXACT = ["/overview", "/capacity", "/metrics", "/subs", "/spend-stats", "/codex-subs", "/gemini-subs", "/kimi-subs", "/glm-subs"];
-const RESERVED_PREFIXES = ["/admin/", "/openkeys-admin/", "/partner-admin/"];
+const RESERVED_PREFIXES = ["/admin/", "/openkeys-admin/", "/partner-admin/", "/proxy-admin/"];
 
 describe("NAV", () => {
   const hrefs = NAV.flatMap((group) => group.items.map((item) => item.href));
@@ -33,6 +33,7 @@ describe("NAV", () => {
 
   it("navLabelForPath возвращает подпись активного раздела", () => {
     expect(navLabelForPath("/subscriptions")).toBe("Подписки");
+    expect(navLabelForPath("/proxies")).toBe("Прокси");
     expect(navLabelForPath("/paying-users")).toBe("Платящие");
     expect(navLabelForPath("/engine-spend")).toBe("Расход движка");
     expect(navLabelForPath("/sales/calculator")).toBe("Калькулятор");

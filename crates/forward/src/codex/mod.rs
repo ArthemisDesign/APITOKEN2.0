@@ -259,6 +259,11 @@ pub struct CodexHomeStatus {
     pub masked_email: String,
     /// Reviewed paid-plan identity from the sealed credential; safe for commercial aggregation.
     pub plan: String,
+    /// Immutable credential issue time and the derived 30-day subscription horizon. Invalid or
+    /// unavailable source values remain `None` rather than becoming sentinel timestamps.
+    pub acquired_at: Option<i64>,
+    pub subscription_expires_at: Option<i64>,
+    pub subscription_days_left: Option<f64>,
     /// The profile's credential opened and its transport was built.
     pub process_live: bool,
     /// This generation has proved the profile works (token plus one usage read or served turn).
@@ -826,6 +831,7 @@ impl CodexHome {
             || fresh.proxy != credential.proxy
             || fresh.email != credential.email
             || fresh.plan != credential.plan
+            || fresh.issued_at != credential.issued_at
         {
             let masked_email = mask_codex_email(&fresh.email);
             let plan = fresh.plan.clone();
@@ -1404,6 +1410,10 @@ impl CodexHome {
             now,
             self.probe_interval_secs(),
         );
+        // Read issued_at from the active sealed credential so a republished envelope updates the
+        // lifecycle atomically with the material it describes.
+        let lifecycle =
+            crate::lifecycle::fixed_days(self.credential.lock().await.issued_at, 30, now);
         CodexHomeStatus {
             id: self.spec.id.clone(),
             masked_email: self
@@ -1412,6 +1422,9 @@ impl CodexHome {
                 .expect("Codex masked email lock")
                 .clone(),
             plan: self.plan.read().expect("Codex plan lock").clone(),
+            acquired_at: lifecycle.acquired_at,
+            subscription_expires_at: lifecycle.subscription_expires_at,
+            subscription_days_left: lifecycle.subscription_days_left,
             process_live: true,
             ready_published: self.ready.load(Ordering::Acquire),
             auth_ok: health.account != health::AccountState::Dead,

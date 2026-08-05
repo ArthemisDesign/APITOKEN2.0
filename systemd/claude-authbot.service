@@ -20,6 +20,9 @@ Environment=HOME=/srv/claude-api/data/authbot
 Environment=AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude
 EnvironmentFile=/srv/claude-api/data/authbot.env
 EnvironmentFile=/srv/claude-api/data/engine-postgres.env
+# Reuse the engine control key for the loopback-only proxy-admin listener. The leading dash keeps
+# rollback to an older release possible while the shared environment is first being provisioned.
+EnvironmentFile=-/srv/claude-api/data/server.env
 # Command assignments override legacy values from EnvironmentFile even for the old binary that may
 # still be current when an infrastructure transaction restarts this unit before promotion.
 ExecStart=/usr/bin/env CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CODEX_HOMES_DIR=/srv/claude-api/data/codex-staging AUTH_BOT_CODEX_ROSTER_DIR=/srv/claude-api/data/codex /srv/claude-api/releases/current/authbot

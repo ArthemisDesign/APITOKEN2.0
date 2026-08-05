@@ -13,6 +13,331 @@ fn tmp() -> String {
     format!("{dir}/authbot.db")
 }
 
+fn lifecycle_conflict(error: &anyhow::Error) -> Option<&ProxyLifecycleConflict> {
+    error.downcast_ref::<ProxyLifecycleConflict>()
+}
+
+fn inventory_id(marker: char) -> String {
+    format!("inv_{}", marker.to_string().repeat(32))
+}
+
+fn selection(marker: char, order_id: i64, allocation_ip: &str) -> RenewalSelection {
+    RenewalSelection {
+        inventory_id: inventory_id(marker),
+        order_id,
+        allocation_ip: allocation_ip.parse().unwrap(),
+    }
+}
+
+#[test]
+fn proxy_bindings_allow_multi_ip_order_and_keep_stable_ids_across_reopen() {
+    let p = tmp();
+    let first_id;
+    {
+        let s = Store::open(&p).unwrap();
+        let first = s
+            .upsert_proxy_binding_allocation(
+                "gemini",
+                "profile-a",
+                41,
+                "2001:0db8::1",
+                100,
+                ProxyAuthorityStatus::Local,
+            )
+            .unwrap();
+        let second = s
+            .upsert_proxy_binding_allocation(
+                "gemini",
+                "profile-b",
+                41,
+                "2001:db8::2",
+                101,
+                ProxyAuthorityStatus::Local,
+            )
+            .unwrap();
+        assert_eq!(first.allocation_ip.unwrap().to_string(), "2001:db8::1");
+        assert_ne!(first.inventory_id, second.inventory_id);
+        first_id = first.inventory_id.clone();
+        let replay = s
+            .upsert_proxy_binding_allocation(
+                "gemini",
+                "profile-a",
+                41,
+                "2001:db8::1",
+                999,
+                ProxyAuthorityStatus::Unknown,
+            )
+            .unwrap();
+        assert_eq!(replay.inventory_id, first_id);
+        assert_eq!(replay.issued_at, 100);
+        let duplicate = s
+            .upsert_proxy_binding_allocation(
+                "kimi",
+                "profile-c",
+                41,
+                "2001:db8::1",
+                102,
+                ProxyAuthorityStatus::Local,
+            )
+            .unwrap_err();
+        assert_eq!(
+            lifecycle_conflict(&duplicate),
+            Some(&ProxyLifecycleConflict::OrderAlreadyBound)
+        );
+    }
+    let reopened = Store::open(&p).unwrap();
+    assert_eq!(
+        reopened
+            .get_proxy_binding_by_inventory_id(&first_id)
+            .unwrap()
+            .unwrap()
+            .inventory_id,
+        first_id
+    );
+    let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+}
+
+#[test]
+fn exact_request_snapshot_allows_duplicate_order_for_different_allocations() {
+    let s = Store::open(":memory:").unwrap();
+    let a = selection('a', 7, "192.0.2.1");
+    let b = selection('b', 7, "192.0.2.2");
+    let first = s
+        .create_or_get_renewal_request_exact(
+            "exact-request",
+            &[b.clone(), a.clone()],
+            "first-admin",
+        )
+        .unwrap();
+    assert_eq!(
+        first.inventory_ids,
+        vec![a.inventory_id.clone(), b.inventory_id.clone()]
+    );
+    assert_eq!(first.order_ids, vec![7, 7]);
+    let replay = s
+        .create_or_get_renewal_request_exact(
+            "exact-request",
+            &[a.clone(), b.clone()],
+            "other-admin",
+        )
+        .unwrap();
+    assert_eq!(replay, first);
+    let conflict = s
+        .create_or_get_renewal_request_exact(
+            "exact-request",
+            &[a.clone(), selection('b', 7, "192.0.2.3")],
+            "third-admin",
+        )
+        .unwrap_err();
+    assert_eq!(
+        lifecycle_conflict(&conflict),
+        Some(&ProxyLifecycleConflict::IdempotencyKeyReused)
+    );
+    assert!(s
+        .create_or_get_renewal_request_exact(
+            "duplicate-inventory",
+            &[a.clone(), a.clone()],
+            "admin",
+        )
+        .is_err());
+    assert!(s
+        .create_or_get_renewal_request_exact(
+            "duplicate-exact-allocation",
+            &[a, selection('c', 7, "192.0.2.1")],
+            "admin",
+        )
+        .is_err());
+}
+
+#[test]
+fn renewal_events_are_inventory_identified_for_two_allocations_of_one_order() {
+    let s = Store::open(":memory:").unwrap();
+    let a = selection('a', 11, "198.51.100.1");
+    let b = selection('b', 11, "198.51.100.2");
+    let request = s
+        .create_or_get_renewal_request_exact("event-request", &[a.clone(), b.clone()], "admin")
+        .unwrap();
+    s.claim_renewal_request(request.id).unwrap().unwrap();
+    assert!(s
+        .record_renewal_event(request.id, 11, RenewalEventOutcome::Renewed, 100, Some(200),)
+        .is_err());
+    let event = s
+        .record_renewal_event_for_inventory(
+            request.id,
+            &a.inventory_id,
+            RenewalEventOutcome::Renewed,
+            100,
+            Some(200),
+        )
+        .unwrap();
+    assert_eq!(
+        s.record_renewal_event_for_inventory(
+            request.id,
+            &a.inventory_id,
+            RenewalEventOutcome::Renewed,
+            100,
+            Some(200),
+        )
+        .unwrap(),
+        event
+    );
+    let changed = s
+        .record_renewal_event_for_inventory(
+            request.id,
+            &a.inventory_id,
+            RenewalEventOutcome::Rejected,
+            100,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(
+        lifecycle_conflict(&changed),
+        Some(&ProxyLifecycleConflict::RenewalEventChanged)
+    );
+    assert!(s.complete_renewal_request(request.id).is_err());
+    s.record_renewal_event_for_inventory(
+        request.id,
+        &b.inventory_id,
+        RenewalEventOutcome::Unchanged,
+        101,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        s.complete_renewal_request(request.id).unwrap().state,
+        RenewalRequestState::Completed
+    );
+    let events = s.get_exact_renewal_events(request.id).unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| (
+                event.inventory_id.as_str(),
+                event.event.order_id,
+                event.allocation_ip,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (a.inventory_id.as_str(), 11, "198.51.100.1".parse().unwrap()),
+            (b.inventory_id.as_str(), 11, "198.51.100.2".parse().unwrap())
+        ]
+    );
+}
+
+#[test]
+fn exact_snapshot_and_actor_survive_restart_while_in_progress_is_fenced() {
+    let p = tmp();
+    let request_id;
+    let pending_id;
+    {
+        let s = Store::open(&p).unwrap();
+        let request = s
+            .create_or_get_renewal_request_exact(
+                "restart-request",
+                &[selection('r', 71, "203.0.113.71")],
+                "ops@example.com/primary",
+            )
+            .unwrap();
+        request_id = request.id;
+        s.claim_renewal_request(request_id).unwrap().unwrap();
+        pending_id = s
+            .create_or_get_renewal_request_exact(
+                "pending-replay",
+                &[selection('p', 72, "203.0.113.72")],
+                "ops@example.com/primary",
+            )
+            .unwrap()
+            .id;
+    }
+    let reopened = Store::open(&p).unwrap();
+    let request = reopened.get_renewal_request(request_id).unwrap().unwrap();
+    assert_eq!(request.state, RenewalRequestState::Indeterminate);
+    assert_eq!(request.requested_by, "ops@example.com/primary");
+    assert_eq!(request.inventory_ids, vec![inventory_id('r')]);
+    assert_eq!(request.order_ids, vec![71]);
+    assert_eq!(
+        reopened.get_renewal_selections(request_id).unwrap(),
+        vec![selection('r', 71, "203.0.113.71")]
+    );
+    let pending = reopened.claim_next_renewal_request().unwrap().unwrap();
+    assert_eq!(pending.id, pending_id);
+    assert_eq!(
+        reopened.get_renewal_selections(pending_id).unwrap(),
+        vec![selection('p', 72, "203.0.113.72")]
+    );
+    assert!(reopened.claim_next_renewal_request().unwrap().is_none());
+    let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+}
+
+#[test]
+fn legacy_binding_rebuild_preserves_identity_and_exact_backfill() {
+    let p = tmp();
+    let parent = std::path::Path::new(&p).parent().unwrap();
+    std::fs::create_dir_all(parent).unwrap();
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let legacy_id = inventory_id('l');
+    {
+        let c = Connection::open(&p).unwrap();
+        c.execute_batch(&format!(
+            "CREATE TABLE proxy_bindings(
+                inventory_id TEXT, provider TEXT NOT NULL, local_id TEXT NOT NULL,
+                order_id INTEGER NOT NULL UNIQUE, issued_at INTEGER NOT NULL,
+                authority_status TEXT NOT NULL, updated_at INTEGER NOT NULL,
+                PRIMARY KEY(provider,local_id));
+             INSERT INTO proxy_bindings VALUES(
+                '{legacy_id}','gemini','legacy-profile',91,11,'local',12);
+             CREATE TABLE proxy_renewal_requests(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, idempotency_key TEXT NOT NULL UNIQUE,
+                order_ids TEXT NOT NULL, state TEXT NOT NULL,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             INSERT INTO proxy_renewal_requests(
+                idempotency_key,order_ids,state,created_at,updated_at)
+             VALUES('legacy-pending','91','pending',1,1),
+                   ('legacy-completed','91','completed',1,1);"
+        ))
+        .unwrap();
+    }
+    let s = Store::open(&p).unwrap();
+    let legacy = s.list_proxy_bindings().unwrap().remove(0);
+    assert_eq!(legacy.inventory_id, legacy_id);
+    assert_eq!(legacy.issued_at, 11);
+    assert!(legacy.allocation_ip.is_none());
+    let backfilled = s
+        .upsert_proxy_binding_allocation(
+            "gemini",
+            "legacy-profile",
+            91,
+            "192.0.2.91",
+            99,
+            ProxyAuthorityStatus::Local,
+        )
+        .unwrap();
+    assert_eq!(backfilled.inventory_id, legacy_id);
+    assert_eq!(backfilled.issued_at, 11);
+    assert_eq!(backfilled.allocation_ip.unwrap().to_string(), "192.0.2.91");
+    assert_eq!(
+        s.get_renewal_request_by_key("legacy-pending")
+            .unwrap()
+            .unwrap()
+            .state,
+        RenewalRequestState::Indeterminate
+    );
+    assert_eq!(
+        s.get_renewal_request_by_key("legacy-completed")
+            .unwrap()
+            .unwrap()
+            .state,
+        RenewalRequestState::Completed
+    );
+    drop(s);
+    assert_eq!(
+        Store::open(&p).unwrap().list_proxy_bindings().unwrap()[0].inventory_id,
+        legacy_id
+    );
+    let _ = std::fs::remove_dir_all(parent);
+}
+
 #[test]
 fn parked_gemini_verification_is_generation_fenced_and_counts_every_press() {
     let p = tmp();

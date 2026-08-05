@@ -14,6 +14,7 @@ import {
   type CodexTokenKind,
 } from "./codex-calibration";
 import { barFromPercent, homeStatus } from "./logic";
+import { SubscriptionExpiry } from "./subscription-lifecycle";
 import type {
   CodexConversionModel,
   CodexHome,
@@ -272,6 +273,7 @@ function HomeCapacityTable({
             <tr>
               <th className="left">Почта</th>
               <th className="left">Состояние</th>
+              <th>Окончание</th>
               <th>Quota / reset</th>
               <th>Доступно credits</th>
               <th>API Standard</th>
@@ -293,6 +295,7 @@ function HomeCapacityTable({
                 <tr key={home.id ?? index}>
                   <td className="left"><b>{home.email?.trim() || "—"}</b><small>{home.plan ?? "—"}</small></td>
                   <td className="left"><Pill kind={health.kind}>{health.label}</Pill></td>
+                  <SubscriptionExpiry lifecycle={home} nowSeconds={nowSec} />
                   <td><QuotaBar window={matching} reset={reset} /></td>
                   <td className="credit-ink"><b>{remaining == null ? "—" : compactCredits(remaining)}</b></td>
                   <td className="usd-ink"><b>{nanoMoney(codexApiValueForCredits(remaining, standard))}</b></td>
@@ -349,7 +352,7 @@ export function CodexCapacityBoard({
         homes={response.homes ?? []}
         window={weekly}
         cohortWindows={cohortWindows}
-        nowMs={nowMs}
+        nowMs={(response.now ?? Math.floor(nowMs / 1000)) * 1000}
         standard={standard}
         maximum={maximum}
       />

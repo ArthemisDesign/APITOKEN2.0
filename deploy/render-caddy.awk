@@ -46,8 +46,8 @@ NR == FNR {
 }
 { print }
 END {
-  # Control-ключ обслуживает три admin-data upstream'а и переиспользуется закрытым OpenKeys bridge
-  # под отдельным header name; остальные service credentials встречаются ровно один раз.
+  # Control-ключ обслуживает admin-data upstream'ы, proxy lifecycle и переиспользуется закрытым
+  # OpenKeys bridge под отдельным header name; остальные service credentials встречаются ровно раз.
   if (admin_control_used < 1 || openkeys_internal_used != 1 || authkey_used != 1 || commadmin_used != 1 ||
       admin_commadmin_used != 1 || salesadmin_used != 1) exit 43
 }

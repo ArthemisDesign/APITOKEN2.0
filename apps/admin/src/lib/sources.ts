@@ -5,6 +5,7 @@ const SOURCE_NAMES: Record<string, string> = {
   "/admin/dashboard": "Коммерческая сводка",
   "/overview": "Движок",
   "/capacity": "Ёмкость флота",
+  "/proxy-admin/inventory": "Реестр прокси",
   "/subs": "Claude-подписки",
   "/codex-subs": "GPT-подписки",
   "/gemini-subs": "Gemini-подписки",

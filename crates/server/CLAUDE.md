@@ -223,8 +223,12 @@ background loops and the HTTP router. Here — and only here — everything is w
   characters of the local part without the domain), never the full ChatGPT email/account id/OAuth/proxy. Windows explicitly
   publish the provider measurement resolution, and `plan_cohorts` merges only exact paid plan +
   duration into a shared native-credit capacity per home/fleet; per-home evidence and workload-dependent
-  API USD are not replaced by this aggregate. `/capacity` publishes Claude 5h/7d and horizon money as
-  decimal nanoUSD strings, per-sub remaining and the authoritative conversion catalogue from `metering`:
+  API USD are not replaced by this aggregate. Provider subscription objects also expose nullable
+  `acquired_at`/`subscription_expires_at`/`subscription_days_left`: Claude comes from registry `added_ts`
+  joined by full identity before masking, Codex from sealed `issued_at` +30 days, and Gemini from sealed
+  `issued_at` (+18 UTC calendar months for `google_ai_pro`, +30 days for other canonical plans).
+  `/capacity` publishes Claude 5h/7d and horizon money as decimal nanoUSD strings, per-sub remaining and
+  the authoritative conversion catalogue from `metering`:
   Standard for the seven canonical models, Fast only for the actually supported Opus 5/4.8.
   Claude full-window capacity is pooled only within an exact plan+duration by the formula
   `10^8*Σspend/Σfraction`; a different routable plan without evidence, a snapshot older than 900s or pending/

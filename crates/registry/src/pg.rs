@@ -5,17 +5,17 @@
 
 use crate::{
     mask_proxy, AccountFundingSnapshot, AccountRow, AnthropicCalibrationRow,
-    AnthropicWindowObservation, BillingTotals, CodexCalibrationRow, CodexHomeCalibrationSpend,
-    CodexTurnCalibrationAggregate, CodexTurnCalibrationEvent, CodexWindowObservation,
-    GeminiCalibrationRow, GeminiExactCalibrationRow, GeminiExactWindowObservation,
-    GeminiWindowObservation, GlmCalibrationRow, GlmSubjectSpend, GlmTurnCalibrationEvent,
-    GlmWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow, KimiCalibrationRow,
-    KimiTurnCalibrationEvent, KimiWindowObservation, LedgerAttribution, LedgerConsumerLag,
-    LedgerFundingAllocation, LedgerRow, PoolStateRow, ProviderCalibrationSubjectSpend,
-    ProviderTurnCalibrationAggregate, ProviderTurnCalibrationEvent, SettlementFailure,
-    SettlementHealth, SpendAccountAgg, SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth,
-    SubRow, UsageDailyAgg, UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg,
-    UsageReport,
+    AnthropicWindowObservation, BillingTotals, ClaudeLifecycleProfile, CodexCalibrationRow,
+    CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate, CodexTurnCalibrationEvent,
+    CodexWindowObservation, GeminiCalibrationRow, GeminiExactCalibrationRow,
+    GeminiExactWindowObservation, GeminiWindowObservation, GlmCalibrationRow, GlmSubjectSpend,
+    GlmTurnCalibrationEvent, GlmWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow,
+    KimiCalibrationRow, KimiTurnCalibrationEvent, KimiWindowObservation, LedgerAttribution,
+    LedgerConsumerLag, LedgerFundingAllocation, LedgerRow, PoolStateRow,
+    ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
+    ProviderTurnCalibrationEvent, SettlementFailure, SettlementHealth, SpendAccountAgg,
+    SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, UsageDailyAgg,
+    UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
 };
 use anyhow::{bail, Context, Result};
 use postgres::config::{Host, SslMode};
@@ -3806,6 +3806,17 @@ impl PgStore {
         )?.into_iter().map(|row| SubRow {
             email: row.get(0), status: row.get(1), fleet: row.get(2), plan: row.get(3),
             has_token: row.get::<_, Option<String>>(4).is_some_and(|s| !s.is_empty()), proxy: row.get(5),
+        }).collect())
+    }
+    pub fn load_claude_lifecycle(&mut self) -> Result<Vec<ClaudeLifecycleProfile>> {
+        Ok(self.client.query(
+            "SELECT email,status,fleet,COALESCE(NULLIF(token,''),NULLIF(token_file,'')),proxy, \
+             plan,added_ts,COALESCE(auth_state,'healthy') FROM subs ORDER BY added_ts,email",
+            &[],
+        )?.into_iter().map(|row| ClaudeLifecycleProfile {
+            email: row.get(0), status: row.get(1), fleet: row.get(2),
+            has_token: row.get::<_, Option<String>>(3).is_some_and(|value| !value.is_empty()),
+            proxy: row.get(4), plan: row.get(5), added_ts: row.get(6), auth_state: row.get(7),
         }).collect())
     }
     pub fn subs_admin(&mut self) -> Result<Vec<SubAdmin>> {

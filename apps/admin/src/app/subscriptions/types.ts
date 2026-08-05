@@ -26,8 +26,16 @@ export interface SubsResponse {
   lifetime_days?: number | string;
 }
 
+// Общая expand-only lifecycle-проекция operational payload'ов.
+// Времена — Unix epoch seconds; remaining уже вычислен producer'ом и может быть отрицательным.
+export interface SubscriptionLifecycle {
+  acquired_at?: number | null;
+  subscription_expires_at?: number | null;
+  subscription_days_left?: number | null;
+}
+
 // GET /capacity — live ёмкость Claude-флота (ключуется по маскированному email)
-export interface CapacitySub {
+export interface CapacitySub extends SubscriptionLifecycle {
   email?: string;
   plan?: string;
   cooling?: boolean;
@@ -255,7 +263,7 @@ export interface CodexRateLimit {
   used_fraction?: number;
 }
 
-export interface CodexHome {
+export interface CodexHome extends SubscriptionLifecycle {
   id?: string;
   plan?: string;
   /** Маскированная подсказка аккаунта из control API; полный ChatGPT email не покидает runtime. */
@@ -385,6 +393,8 @@ export interface CodexConversionModel {
 }
 
 export interface CodexSubsResponse {
+  /** epoch-секунды «сейчас» по часам runtime. */
+  now?: number;
   enabled?: boolean;
   available?: number;
   /** epoch-секунды ближайшего освобождения home. */
@@ -450,7 +460,7 @@ export interface GeminiProfileWindow {
   resets_at?: number;
 }
 
-export interface GeminiProfile {
+export interface GeminiProfile extends SubscriptionLifecycle {
   id?: string;
   /** Маскированная подсказка аккаунта; полный Google email не покидает runtime. */
   email?: string;

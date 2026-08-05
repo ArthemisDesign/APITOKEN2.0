@@ -59,6 +59,31 @@ static SUBS_CACHE: DashCache = std::sync::OnceLock::new();
 /// Планируемый срок жизни подписки — ровно N дней от добавления токена (`added_ts`). Это НЕ срок
 /// самого OAuth-токена (opaque, недоступен), а наш горизонт планирования замены.
 const SUB_LIFETIME_DAYS: i64 = 30;
+const SECONDS_PER_DAY: i64 = 86_400;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct SubscriptionLifecycle {
+    acquired_at: Option<i64>,
+    subscription_expires_at: Option<i64>,
+    subscription_days_left: Option<f64>,
+}
+
+fn fixed_subscription_lifecycle(acquired_at: i64, days: i64, now: i64) -> SubscriptionLifecycle {
+    if acquired_at <= 0 {
+        return SubscriptionLifecycle::default();
+    }
+    let subscription_expires_at = days
+        .checked_mul(SECONDS_PER_DAY)
+        .and_then(|lifetime| acquired_at.checked_add(lifetime));
+    SubscriptionLifecycle {
+        acquired_at: Some(acquired_at),
+        subscription_expires_at,
+        subscription_days_left: subscription_expires_at.map(|expires_at| {
+            (i128::from(expires_at) - i128::from(now)) as f64 / SECONDS_PER_DAY as f64
+        }),
+    }
+}
+
 fn cache_get(cell: &DashCache) -> Option<serde_json::Value> {
     cache_get_ttl(cell, DASH_TTL)
 }
@@ -3224,8 +3249,29 @@ async fn capacity(
         .billing
         .as_ref()
         .map(|billing| billing.anthropic_calibration_delivery_status());
+    let authority = app.authority.as_ref().clone();
+    let lifecycle_by_email = tokio::task::spawn_blocking(move || {
+        authority
+            .connect()
+            .and_then(|mut connection| connection.subs_admin())
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .map(|rows| {
+        rows.into_iter()
+            .map(|row| (row.email, row.added_ts))
+            .collect::<BTreeMap<_, _>>()
+    });
     let caps = app.pool.capacity();
-    let v = capacity_value(&caps, report.as_ref(), delivery, pool::now());
+    let now = pool::now();
+    let v = capacity_value_with_lifecycle(
+        &caps,
+        report.as_ref(),
+        delivery,
+        now,
+        lifecycle_by_email.as_ref(),
+    );
     cache_put(&CAPACITY_CACHE, &v);
     Json(v).into_response()
 }
@@ -3239,6 +3285,20 @@ pub(crate) fn capacity_value(
     )>,
     delivery: Option<forward::AnthropicCalibrationDeliveryStatus>,
     now: i64,
+) -> serde_json::Value {
+    capacity_value_with_lifecycle(caps, report, delivery, now, None)
+}
+
+fn capacity_value_with_lifecycle(
+    caps: &[pool::Cap],
+    report: Option<&(
+        Vec<registry::AnthropicCalibrationRow>,
+        Vec<registry::ProviderTurnCalibrationAggregate>,
+        Vec<registry::ProviderTurnCalibrationEvent>,
+    )>,
+    delivery: Option<forward::AnthropicCalibrationDeliveryStatus>,
+    now: i64,
+    lifecycle_by_email: Option<&BTreeMap<String, i64>>,
 ) -> serde_json::Value {
     let rows = report.map_or(&[][..], |(rows, _, _)| rows.as_slice());
     let delivery_missing_reason = match delivery {
@@ -3390,9 +3450,19 @@ pub(crate) fn capacity_value(
             let sub_available = horizons.map(|horizon| {
                 claude_sub_horizon_available(cap, rows, &cohorts, now, horizon)
             });
+            // Join registry authority by the full in-memory identity before serializing only the
+            // masked hint. Masked emails are deliberately non-unique and must never be join keys.
+            let lifecycle = lifecycle_by_email
+                .and_then(|by_email| by_email.get(&cap.email))
+                .map_or_else(SubscriptionLifecycle::default, |acquired_at| {
+                    fixed_subscription_lifecycle(*acquired_at, SUB_LIFETIME_DAYS, now)
+                });
             json!({
                 "email": mask_claude_email(&cap.email),
                 "plan": cap.plan,
+                "acquired_at": lifecycle.acquired_at,
+                "subscription_expires_at": lifecycle.subscription_expires_at,
+                "subscription_days_left": lifecycle.subscription_days_left,
                 "calibrated": five_capacity.is_some() && weekly_capacity.is_some(),
                 "calibration_source": "durable_plan_pooled_workload",
                 "routable": cap.routable,
@@ -4789,6 +4859,9 @@ fn codex_subs_value_with_report(
                 "id": h.id,
                 "email": h.masked_email,
                 "plan": h.plan,
+                "acquired_at": h.acquired_at,
+                "subscription_expires_at": h.subscription_expires_at,
+                "subscription_days_left": h.subscription_days_left,
                 "process_live": h.process_live,
                 "auth_ok": h.auth_ok,
                 "account_state": h.account_state,
@@ -5261,7 +5334,7 @@ fn gemini_profile_values(
         .map(|profile| {
             let profile_capacity_available =
                 capacity_available && gemini_profile_routable(profile, now);
-            json!({
+            let mut value = json!({
                 "id": profile.id,
                 "email": profile.masked_email,
                 "plan": profile.plan,
@@ -5290,7 +5363,11 @@ fn gemini_profile_values(
                     "reset_time": quota.reset_time,
                     "token_type": quota.token_type,
                 })).collect::<Vec<_>>(),
-            })
+            });
+            value["acquired_at"] = json!(profile.acquired_at);
+            value["subscription_expires_at"] = json!(profile.subscription_expires_at);
+            value["subscription_days_left"] = json!(profile.subscription_days_left);
+            value
         })
         .collect()
 }

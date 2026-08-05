@@ -10,6 +10,9 @@ fn unknown_codex_status() -> forward::codex::CodexOperationalStatus {
             id: "home-1".to_string(),
             masked_email: "owne…".to_string(),
             plan: "chatgpt_pro".to_string(),
+            acquired_at: Some(105),
+            subscription_expires_at: Some(2_592_105),
+            subscription_days_left: Some(30.0),
             process_live: true,
             auth_ok: true,
             account_state: "healthy",
@@ -114,6 +117,9 @@ fn unknown_gemini_status() -> forward::GeminiOperationalStatus {
             id: "profile-opaque".to_string(),
             masked_email: "owne…".to_string(),
             plan: "google_ai_pro".to_string(),
+            acquired_at: Some(105),
+            subscription_expires_at: Some(47_174_505),
+            subscription_days_left: Some(546.0),
             authenticated: true,
             disabled: false,
             hidden: false,
@@ -143,6 +149,9 @@ fn codex_subscription_contract_publishes_the_admission_verdict() {
     let value = codex_subs_value(&status, 105);
     assert_eq!(value["homes"][0]["email"], "owne…");
     assert_eq!(value["homes"][0]["plan"], "chatgpt_pro");
+    assert_eq!(value["homes"][0]["acquired_at"], 105);
+    assert_eq!(value["homes"][0]["subscription_expires_at"], 2_592_105);
+    assert_eq!(value["homes"][0]["subscription_days_left"], 30.0);
     assert_eq!(value["homes"][0]["limit_reached"], false);
     assert_eq!(value["homes"][0]["spend_nanocredits_total"], "1250000000");
     assert_eq!(value["homes"][0]["credit_tracking_started_ts"], 90);
@@ -551,6 +560,41 @@ fn claude_email_hint_never_includes_the_domain_for_a_short_local_part() {
 }
 
 #[test]
+fn claude_lifecycle_joins_full_identity_before_equal_masks_are_serialized() {
+    let caps = vec![
+        capacity("owner.one@example.com", 1.0, true, false),
+        capacity("owner.two@example.com", 1.0, true, false),
+    ];
+    let lifecycle = BTreeMap::from([
+        ("owner.one@example.com".to_string(), 100),
+        ("owner.two@example.com".to_string(), 200),
+    ]);
+    let value = capacity_value_with_lifecycle(&caps, None, None, 300, Some(&lifecycle));
+
+    assert_eq!(value["per_sub"][0]["email"], "owne…");
+    assert_eq!(value["per_sub"][1]["email"], "owne…");
+    assert_eq!(value["per_sub"][0]["acquired_at"], 100);
+    assert_eq!(value["per_sub"][1]["acquired_at"], 200);
+    assert_eq!(
+        value["per_sub"][0]["subscription_expires_at"],
+        100 + SUB_LIFETIME_DAYS * SECONDS_PER_DAY
+    );
+}
+
+#[test]
+fn claude_lifecycle_stays_null_without_valid_registry_authority() {
+    let cap = capacity("owner@example.com", 1.0, true, false);
+    let missing = capacity_value_with_lifecycle(&[cap.clone()], None, None, 300, None);
+    assert!(missing["per_sub"][0]["acquired_at"].is_null());
+    assert!(missing["per_sub"][0]["subscription_expires_at"].is_null());
+    assert!(missing["per_sub"][0]["subscription_days_left"].is_null());
+
+    let invalid = BTreeMap::from([("owner@example.com".to_string(), 0)]);
+    let value = capacity_value_with_lifecycle(&[cap], None, None, 300, Some(&invalid));
+    assert!(value["per_sub"][0]["acquired_at"].is_null());
+}
+
+#[test]
 fn gemini_conversion_catalogue_keeps_long_context_media_and_quota_aliases() {
     let spec = metering::gemini_catalog_at(1_785_369_601)
         .into_iter()
@@ -619,6 +663,9 @@ fn gemini_subscription_contract_keeps_five_hour_and_weekly_unknown_independently
     let profiles = gemini_profile_values(&status, true, 105);
     assert_eq!(profiles[0]["email"], "owne…");
     assert_eq!(profiles[0]["plan"], "google_ai_pro");
+    assert_eq!(profiles[0]["acquired_at"], 105);
+    assert_eq!(profiles[0]["subscription_expires_at"], 47_174_505);
+    assert_eq!(profiles[0]["subscription_days_left"], 546.0);
     assert_eq!(profiles[0]["windows"][0]["bucket_id"], "gemini-5h");
     assert_eq!(profiles[0]["windows"][1]["bucket_id"], "gemini-weekly");
     assert!(profiles[0]["windows"][0]["cap_usd"].is_null());

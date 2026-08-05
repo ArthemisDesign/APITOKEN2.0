@@ -122,12 +122,17 @@ struct PreparedOAuth {
     submit_url: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IproyalLease {
+#[derive(Clone, PartialEq, Eq)]
+pub struct LifecycleProfile {
     pub profile_id: String,
     pub order_id: i64,
     pub issued_at: i64,
+    pub canonical_plan: String,
+    pub canonical_ip: Option<std::net::IpAddr>,
 }
+
+/// Backward-compatible name for the projection consumed by the existing proxy-admin integration.
+pub type IproyalLease = LifecycleProfile;
 
 #[derive(Clone)]
 pub struct Config {
@@ -295,23 +300,24 @@ impl Config {
         Ok(())
     }
 
-    /// Expose only opaque lifecycle data needed to retain the exact IPRoyal allocation. Google
-    /// subject/email/project and proxy credentials never leave this module.
-    pub fn iproyal_leases(&self) -> anyhow::Result<Vec<IproyalLease>> {
+    /// Read every sealed roster profile without exposing Google identity, project, tokens or proxy
+    /// credentials. Only a literal host from the canonical proxy URL is projected; no DNS occurs.
+    pub fn lifecycle_profiles(&self) -> anyhow::Result<Vec<LifecycleProfile>> {
         let roster_path = self.root.join("profiles.json");
         if !roster_path.exists() {
             return Ok(Vec::new());
         }
         let credentials_dir = self.root.join("credentials");
         let roster: ProfilesFile = serde_json::from_slice(&read_private(&roster_path)?)
-            .context("parse Gemini roster for IPRoyal lifecycle")?;
+            .context("parse Gemini roster for proxy lifecycle")?;
         let mut ids = HashSet::new();
-        let mut order_ids = HashSet::new();
-        let mut leases = Vec::new();
+        let mut subjects = HashSet::new();
+        let mut exact_managed_bindings = HashSet::new();
+        let mut profiles = Vec::new();
         for profile in roster.profiles {
             gemini_credential::validate_profile_id(&profile.id)?;
             if !ids.insert(profile.id.clone()) {
-                bail!("duplicate Gemini profile id in IPRoyal lifecycle");
+                bail!("duplicate Gemini profile id in proxy lifecycle");
             }
             let expected = credentials_dir.join(format!("{}.json", profile.id));
             if Path::new(&profile.credential_file) != expected {
@@ -319,18 +325,37 @@ impl Config {
             }
             let envelope = decode_envelope(&read_private(&expected)?)?;
             let credential = self.keyring.open(&profile.id, &envelope)?;
-            if credential.proxy_order_id > 0 {
-                if !order_ids.insert(credential.proxy_order_id) {
-                    bail!("duplicate Gemini IPRoyal order id");
-                }
-                leases.push(IproyalLease {
-                    profile_id: profile.id,
-                    order_id: credential.proxy_order_id,
-                    issued_at: credential.issued_at,
-                });
+            credential.validate()?;
+            if !subjects.insert(credential.subject.clone()) {
+                bail!("duplicate Gemini subscription in proxy lifecycle");
             }
+            let canonical = gemini_credential::normalize_proxy_url(&credential.proxy)?;
+            let canonical_ip = canonical_proxy_ip(&canonical)?;
+            if credential.proxy_order_id > 0
+                && canonical_ip.is_some()
+                && !exact_managed_bindings.insert((credential.proxy_order_id, canonical_ip))
+            {
+                bail!("ambiguous duplicate Gemini managed order and proxy IP");
+            }
+            profiles.push(LifecycleProfile {
+                profile_id: profile.id,
+                order_id: credential.proxy_order_id,
+                issued_at: credential.issued_at,
+                canonical_plan: credential.plan.clone(),
+                canonical_ip,
+            });
         }
-        Ok(leases)
+        Ok(profiles)
+    }
+
+    /// Preserve the existing integration contract: only managed profiles with a literal IP can be
+    /// bound automatically. The complete, order-zero-inclusive view is [`Self::lifecycle_profiles`].
+    pub fn iproyal_leases(&self) -> anyhow::Result<Vec<IproyalLease>> {
+        Ok(self
+            .lifecycle_profiles()?
+            .into_iter()
+            .filter(|profile| profile.order_id > 0 && profile.canonical_ip.is_some())
+            .collect())
     }
 
     /// Stage a manual proxy replacement for one opaque profile while retaining an encrypted,
@@ -477,6 +502,14 @@ impl Config {
             proxy_rollback_path(&credentials_dir, profile_id),
         ))
     }
+}
+
+fn canonical_proxy_ip(proxy: &str) -> anyhow::Result<Option<std::net::IpAddr>> {
+    Ok(reqwest::Url::parse(proxy)
+        .context("parse canonical Gemini proxy URL")?
+        .host_str()
+        .map(|host| host.trim_matches(['[', ']']))
+        .and_then(|host| host.parse().ok()))
 }
 
 fn proxy_rollback_path(credentials_dir: &Path, profile_id: &str) -> PathBuf {
@@ -1125,6 +1158,37 @@ pub(crate) async fn announce_publication(
     job: Option<SellerJobRef>,
     profile: &PublishedProfile,
 ) {
+    let binding = match (profile.proxy_order_id, profile.canonical_ip) {
+        (0, _) => Ok(()),
+        (_, Some(allocation_ip)) => store
+            .upsert_proxy_binding_allocation(
+                "gemini",
+                &profile.id,
+                profile.proxy_order_id,
+                &allocation_ip.to_string(),
+                profile.issued_at,
+                crate::db::ProxyAuthorityStatus::Local,
+            )
+            .map(|_| ()),
+        (_, None) => Err(anyhow::anyhow!(
+            "managed Gemini proxy host is not a literal allocation IP"
+        )),
+    };
+    if binding.is_err() {
+        eprintln!(
+            "[gemini-oauth] chat={chat_id} profile {} is published but lifecycle binding needs reconciliation",
+            profile.id
+        );
+        for admin in &config.admins_id {
+            let _ = bot
+                .send(
+                    *admin,
+                    "⚠️ Gemini опубликован в roster, но lifecycle binding не записан. Сделка оставлена незавершённой; публикацию не откатывать, требуется reconciliation.",
+                )
+                .await;
+        }
+        return;
+    }
     if handoff_is_current(store, chat_id, job.as_ref()) {
         let seller_outcome = if profile.reauthorized {
             "переподключена"
@@ -1823,6 +1887,9 @@ struct PublishedProfile {
     id: String,
     plan: String,
     has_proxy: bool,
+    proxy_order_id: i64,
+    issued_at: i64,
+    canonical_ip: Option<std::net::IpAddr>,
     migrated: bool,
     /// Тот же subject переавторизован свежим согласием: конверт заменён, профиль сохранён.
     reauthorized: bool,
@@ -2194,7 +2261,13 @@ async fn complete(
         proxy_order_id,
         issued_at: now(),
     };
-    park_verification(store, config, session.chat_id, session.job.as_ref(), &credential);
+    park_verification(
+        store,
+        config,
+        session.chat_id,
+        session.job.as_ref(),
+        &credential,
+    );
     // Resolution and the paid probe share one code path with every later automatic attempt, so a
     // credential admitted at 03:00 by the sweep goes through exactly the checks the callback would
     // have applied.
@@ -3604,14 +3677,18 @@ fn publish(
         if candidate_proxy != existing_proxy {
             return Err(Failure::MigrationProxyMismatch);
         }
-        if existing.proxy_order_id > 0 {
-            if credential.proxy_order_id > 0 && credential.proxy_order_id != existing.proxy_order_id
-            {
-                return Err(Failure::MigrationProxyMismatch);
-            }
-            credential.proxy_order_id = existing.proxy_order_id;
-            credential.issued_at = existing.issued_at;
+        if existing.proxy_order_id > 0
+            && credential.proxy_order_id > 0
+            && credential.proxy_order_id != existing.proxy_order_id
+        {
+            return Err(Failure::MigrationProxyMismatch);
         }
+        if existing.proxy_order_id > 0 {
+            credential.proxy_order_id = existing.proxy_order_id;
+        }
+        // Reauthorization preserves the lifecycle age regardless of whether the egress is managed
+        // (`order > 0`) or manual (`order == 0`).
+        credential.issued_at = existing.issued_at;
         if !proxies.remove(&existing_proxy) {
             return Err(Failure::Storage);
         }
@@ -3629,10 +3706,14 @@ fn publish(
             .map_err(|_| Failure::Storage)?;
         let encoded = encode_envelope(&envelope).map_err(|_| Failure::Storage)?;
         atomic_private_replace(&credential_path, &encoded).map_err(|_| Failure::Storage)?;
+        let canonical_ip = canonical_proxy_ip(&candidate_proxy).map_err(|_| Failure::Storage)?;
         return Ok(PublishedProfile {
             id: profile_id,
             plan: credential.plan.clone(),
             has_proxy: !credential.proxy.is_empty(),
+            proxy_order_id: credential.proxy_order_id,
+            issued_at: credential.issued_at,
+            canonical_ip,
             migrated: !reauthorized,
             reauthorized,
         });
@@ -3666,10 +3747,14 @@ fn publish(
         let _ = fs::File::open(&credentials_dir).and_then(|directory| directory.sync_all());
         return Err(Failure::Storage);
     }
+    let canonical_ip = canonical_proxy_ip(&candidate_proxy).map_err(|_| Failure::Storage)?;
     Ok(PublishedProfile {
         id: profile_id,
         plan: credential.plan.clone(),
         has_proxy: !credential.proxy.is_empty(),
+        proxy_order_id: credential.proxy_order_id,
+        issued_at: credential.issued_at,
+        canonical_ip,
         migrated: false,
         reauthorized: false,
     })

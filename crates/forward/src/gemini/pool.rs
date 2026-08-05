@@ -56,6 +56,11 @@ pub struct GeminiProfileStatus {
     pub masked_email: String,
     /// Reviewed paid-plan identity from the sealed credential; contains no Google identity.
     pub plan: String,
+    /// Immutable credential issue time and the plan-specific subscription horizon. Invalid source
+    /// values stay absent instead of being exposed as sentinel timestamps.
+    pub acquired_at: Option<i64>,
+    pub subscription_expires_at: Option<i64>,
+    pub subscription_days_left: Option<f64>,
     pub authenticated: bool,
     /// Operator pulled this profile out of rotation (`pool_member_disables`). Reported so the
     /// panel can show it and offer to put it back; a disabled profile is still listed, it just
@@ -167,6 +172,9 @@ pub(crate) struct GeminiProfile {
     id: String,
     masked_email: String,
     plan: String,
+    /// Immutable metadata copied from the validated credential. Profile reload replaces this whole
+    /// object when the sealed credential fingerprint changes.
+    issued_at: i64,
     oauth_kind: OAuthKind,
     credential: tokio::sync::Mutex<GeminiCredential>,
     transport: ProfileTransport,
@@ -231,6 +239,7 @@ impl GeminiProfile {
         let oauth_kind = loaded.credential.oauth_kind()?;
         let masked_email = mask_gemini_email(&loaded.credential.email);
         let plan = loaded.credential.plan.clone();
+        let issued_at = loaded.credential.issued_at;
         if loaded.credential.proxy.trim().is_empty() && cfg.upstream.starts_with("https://") {
             bail!("Gemini production profile requires a dedicated proxy");
         }
@@ -243,6 +252,7 @@ impl GeminiProfile {
             id: loaded.source.id.clone(),
             masked_email,
             plan,
+            issued_at,
             source: loaded.source,
             fingerprint: loaded.fingerprint,
             oauth_kind,
@@ -896,10 +906,14 @@ impl GeminiProfile {
                 }
             })
             .collect();
+        let lifecycle = crate::lifecycle::gemini(self.issued_at, &self.plan, now);
         GeminiProfileStatus {
             id: self.id.clone(),
             masked_email: self.masked_email.clone(),
             plan: self.plan.clone(),
+            acquired_at: lifecycle.acquired_at,
+            subscription_expires_at: lifecycle.subscription_expires_at,
+            subscription_days_left: lifecycle.subscription_days_left,
             authenticated: self.authenticated.load(Ordering::Acquire),
             disabled,
             hidden,

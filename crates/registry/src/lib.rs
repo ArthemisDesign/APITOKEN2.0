@@ -2645,6 +2645,43 @@ pub fn list(conn: &Connection) -> Result<Vec<SubRow>> {
     Ok(rows.filter_map(|x| x.ok()).collect())
 }
 
+/// Internal Claude lifecycle authority projection. It intentionally has no `Serialize` or `Debug`:
+/// the complete row contains both the account email and the raw credentialed proxy URL.
+pub struct ClaudeLifecycleProfile {
+    pub email: String,
+    pub status: String,
+    pub fleet: String,
+    pub has_token: bool,
+    pub proxy: String,
+    pub plan: String,
+    pub added_ts: i64,
+    pub auth_state: String,
+}
+
+pub fn load_claude_lifecycle(conn: &Connection) -> Result<Vec<ClaudeLifecycleProfile>> {
+    let mut stmt = conn.prepare(
+        "SELECT email, COALESCE(status,'active'), COALESCE(fleet,'prod'), \
+         COALESCE(NULLIF(token,''), NULLIF(token_file,'')), COALESCE(proxy,''), \
+         COALESCE(plan,''), COALESCE(added_ts,0), COALESCE(auth_state,'healthy') \
+         FROM subs ORDER BY COALESCE(added_ts,0), email",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ClaudeLifecycleProfile {
+            email: row.get(0)?,
+            status: row.get(1)?,
+            fleet: row.get(2)?,
+            has_token: row
+                .get::<_, Option<String>>(3)?
+                .is_some_and(|value| !value.is_empty()),
+            proxy: row.get(4)?,
+            plan: row.get(5)?,
+            added_ts: row.get(6)?,
+            auth_state: row.get(7)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// Строка админ-обзора подписок (движок → панель): БЕЗ токена, прокси — маска host:port + метаданные.
 pub struct SubAdmin {
     pub email: String,

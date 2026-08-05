@@ -671,8 +671,8 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    a turn also carries first-party-shaped session/thread/window/turn metadata in headers and body.
    Tokens/account_id/proxy and the full email are decrypted only into memory and never reach a
    log/metric/response. Control-authenticated `/codex-subs` may receive only a bounded email hint
-   (the first four characters of the local-part without the domain) and reviewed paid-plan identity for operator
-   matching/aggregation; homes are still
+   (the first four characters of the local-part without the domain), reviewed paid-plan identity and nullable
+   lifecycle fields derived from immutable credential `issued_at` with a fixed 30-day horizon; homes are still
    addressed by opaque id (no paths or identity in logs/metrics). The client version moves only by a
    reviewed commit after a live probe
    (`research/CODEX_NATIVE_WIRE.md`).
@@ -767,7 +767,8 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    the paid-plan allowlist and canonical proxy uniqueness (including equivalent percent encoding).
    Tokens/full email/domain/project/tier/proxy are decrypted only into memory and never reach a
    log/metric/response; the protected `/gemini-subs` receives only a pre-derived bounded hint of
-   four characters of the local-part.
+   four characters of the local-part plus nullable lifecycle fields from immutable `issued_at`.
+   `google_ai_pro` uses 18 UTC calendar months with month-end clamp; other canonical plans use 30 days.
 1a. **Only Google declares a credential dead, and only with the word `invalid_grant`.** A refresh
    failure is classified by the response body, not the code: `400 invalid_grant` → `TokenError::Invalid`
    (the profile is removed from rotation), `401`/`403` → `TokenError::Blocked` (the grant is intact, the

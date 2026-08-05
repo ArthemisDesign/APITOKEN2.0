@@ -1219,6 +1219,8 @@ fn publication_reauthorizes_an_existing_antigravity_profile_in_place() {
     let mut duplicate = credential("antigravity-duplicate");
     duplicate.access_token = "replacement-access-token".into();
     duplicate.refresh_token = "replacement-refresh-token".into();
+    duplicate.proxy_order_id = 0;
+    duplicate.issued_at = 999;
     let reauthorized = publish(&root, &ring, "current", duplicate).unwrap();
     assert_eq!(reauthorized.id, published.id);
     assert!(reauthorized.reauthorized);
@@ -1232,6 +1234,8 @@ fn publication_reauthorizes_an_existing_antigravity_profile_in_place() {
         )
         .unwrap();
     assert_eq!(opened.refresh_token, "replacement-refresh-token");
+    assert_eq!(opened.proxy_order_id, 42);
+    assert_eq!(opened.issued_at, 100);
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1315,9 +1319,44 @@ fn startup_prepares_a_private_empty_layout_for_the_runtime_mount() {
 }
 
 #[test]
-fn iproyal_lifecycle_exports_only_opaque_order_metadata() {
+fn lifecycle_profiles_include_external_and_same_order_different_ip_profiles() {
     let (root, ring) = fixture();
-    let published = publish(&root, &ring, "current", credential("private-subject")).unwrap();
+    let first = publish(&root, &ring, "current", credential("private-subject")).unwrap();
+
+    let mut external = credential("external-subject");
+    external.proxy = "http://user:pass@proxy.example:8080".into();
+    external.proxy_order_id = 0;
+    external.plan = "google_ai_ultra".into();
+    external.tier_id = "g1-ultra-tier".into();
+    external.tier_name = "Google AI Ultra".into();
+    external.issued_at = 200;
+    let external = publish(&root, &ring, "current", external).unwrap();
+
+    let mut second = credential("second-managed-subject");
+    second.proxy = "http://user:pass@[2001:db8::9]:8080".into();
+    second.proxy_order_id = 43;
+    second.issued_at = 300;
+    let second = publish(&root, &ring, "current", second).unwrap();
+
+    let mut managed_hostname = credential("managed-hostname-subject");
+    managed_hostname.proxy = "http://user:pass@managed.example:8080".into();
+    managed_hostname.proxy_order_id = 44;
+    managed_hostname.issued_at = 400;
+    let managed_hostname = publish(&root, &ring, "current", managed_hostname).unwrap();
+
+    let second_path = root.join("credentials").join(format!("{}.json", second.id));
+    let mut second_credential = ring
+        .open(
+            &second.id,
+            &decode_envelope(&read_private(&second_path).unwrap()).unwrap(),
+        )
+        .unwrap();
+    second_credential.proxy_order_id = 42;
+    let second_envelope = ring
+        .seal("current", &second.id, &second_credential)
+        .unwrap();
+    atomic_private_replace(&second_path, &encode_envelope(&second_envelope).unwrap()).unwrap();
+
     let config = Config::new(
         "https://gemini.example/oauth/callback".into(),
         "127.0.0.1:8796".parse().unwrap(),
@@ -1326,24 +1365,105 @@ fn iproyal_lifecycle_exports_only_opaque_order_metadata() {
         "current".into(),
     )
     .unwrap();
-    let leases = config.iproyal_leases().unwrap();
-    assert_eq!(
-        leases,
-        vec![IproyalLease {
-            profile_id: published.id,
-            order_id: 42,
-            issued_at: 100,
-        }]
-    );
-    let debug = format!("{leases:?}");
-    for private in [
-        "private-subject",
-        "owner@example.com",
-        "user:pass",
-        "managed-project",
-    ] {
-        assert!(!debug.contains(private));
+    let profiles = config.lifecycle_profiles().unwrap();
+    assert_eq!(profiles.len(), 4);
+    let first = profiles
+        .iter()
+        .find(|profile| profile.profile_id == first.id)
+        .unwrap();
+    assert_eq!(first.order_id, 42);
+    assert_eq!(first.issued_at, 100);
+    assert_eq!(first.canonical_plan, "google_ai_pro");
+    assert_eq!(first.canonical_ip, Some("127.0.0.1".parse().unwrap()));
+    let external = profiles
+        .iter()
+        .find(|profile| profile.profile_id == external.id)
+        .unwrap();
+    assert_eq!(external.order_id, 0);
+    assert_eq!(external.issued_at, 200);
+    assert_eq!(external.canonical_plan, "google_ai_ultra");
+    assert_eq!(external.canonical_ip, None);
+    let second = profiles
+        .iter()
+        .find(|profile| profile.profile_id == second.id)
+        .unwrap();
+    assert_eq!(second.order_id, 42);
+    assert_eq!(second.canonical_ip, Some("2001:db8::9".parse().unwrap()));
+    let managed_hostname = profiles
+        .iter()
+        .find(|profile| profile.profile_id == managed_hostname.id)
+        .unwrap();
+    assert_eq!(managed_hostname.order_id, 44);
+    assert_eq!(managed_hostname.canonical_ip, None);
+    assert_eq!(config.iproyal_leases().unwrap().len(), 2);
+
+    fn consume_without_formatting(
+        profile: &LifecycleProfile,
+    ) -> (&str, i64, i64, &str, Option<std::net::IpAddr>) {
+        let LifecycleProfile {
+            profile_id,
+            order_id,
+            issued_at,
+            canonical_plan,
+            canonical_ip,
+        } = profile;
+        (
+            profile_id,
+            *order_id,
+            *issued_at,
+            canonical_plan,
+            *canonical_ip,
+        )
     }
+    assert_eq!(consume_without_formatting(first).1, 42);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn lifecycle_reader_fails_closed_on_corruption_and_exact_binding_ambiguity() {
+    let (root, ring) = fixture();
+    let first = publish(&root, &ring, "current", credential("first-subject")).unwrap();
+    let mut second = credential("second-subject");
+    second.proxy = "http://user:pass@127.0.0.2:8080".into();
+    second.proxy_order_id = 43;
+    let second = publish(&root, &ring, "current", second).unwrap();
+    let config = Config::new(
+        "https://gemini.example/oauth/callback".into(),
+        "127.0.0.1:8796".parse().unwrap(),
+        root.to_string_lossy().into_owned(),
+        ring,
+        "current".into(),
+    )
+    .unwrap();
+    let roster_path = root.join("profiles.json");
+    let original_roster = read_private(&roster_path).unwrap();
+    let mut roster: serde_json::Value = serde_json::from_slice(&original_roster).unwrap();
+    let duplicate = roster["profiles"][0].clone();
+    roster["profiles"].as_array_mut().unwrap().push(duplicate);
+    atomic_private_replace(&roster_path, &serde_json::to_vec(&roster).unwrap()).unwrap();
+    assert!(config.lifecycle_profiles().is_err());
+    atomic_private_replace(&roster_path, &original_roster).unwrap();
+
+    let second_path = root.join("credentials").join(format!("{}.json", second.id));
+    let mut ambiguous = config
+        .keyring
+        .open(
+            &second.id,
+            &decode_envelope(&read_private(&second_path).unwrap()).unwrap(),
+        )
+        .unwrap();
+    ambiguous.proxy_order_id = 42;
+    ambiguous.proxy = "http://other:secret@127.0.0.1:9000".into();
+    let ambiguous = config
+        .keyring
+        .seal("current", &second.id, &ambiguous)
+        .unwrap();
+    atomic_private_replace(&second_path, &encode_envelope(&ambiguous).unwrap()).unwrap();
+    assert!(config.lifecycle_profiles().is_err());
+    assert!(root
+        .join("credentials")
+        .join(format!("{}.json", first.id))
+        .exists());
     let _ = fs::remove_dir_all(root);
 }
 

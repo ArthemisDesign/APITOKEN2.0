@@ -1356,9 +1356,8 @@ fn handoff_back_callback_data_covers_exactly_the_reversible_steps() {
     }
 }
 
-/// `hproxy_order` не может отвечать за закреплённость у Claude/Codex: `deliver_issued_proxy`
-/// пишет туда номер заказа только для Gemini. Legacy-оффер с оплаченным лизом обязан остаться
-/// закреплённым, иначе откат осиротит прокси, за который уже заплачено.
+/// Старый legacy-оффер мог получить IPRoyal lease до provider-wide propagation order id.
+/// Durable `proxy_issued` обязан по-прежнему закреплять такой egress.
 #[test]
 fn legacy_claude_offer_with_an_issued_lease_is_not_proxy_replaceable() {
     let store = store();
@@ -1376,7 +1375,7 @@ fn legacy_claude_offer_with_an_issued_lease_is_not_proxy_replaceable() {
     // До выдачи прокси legacy-оффер заменяем: продавец сам присылает egress.
     assert!(job_accepts_seller_proxy(&store, &reference, 0));
     store.mark_offer_proxy_issued(offer).unwrap();
-    // После выдачи — закреплён, хотя `hproxy_order` у Claude так и остался нулём.
+    // Legacy-строка без propagated order всё равно закреплена durable-флагом.
     assert!(!job_accepts_seller_proxy(&store, &reference, 0));
 
     // Gemini-путь не меняется: там закреплённость видна и по номеру заказа.
@@ -1452,6 +1451,22 @@ fn seller_proxy_forms_normalise_to_a_url() {
     );
     assert_eq!(proxy_url("  "), "");
     assert_eq!(proxy_url("не прокси"), "");
+}
+
+#[test]
+fn lifecycle_allocation_comes_only_from_a_literal_proxy_host() {
+    assert_eq!(
+        literal_proxy_ip("http://user:pass@192.0.2.7:8080").unwrap(),
+        Some("192.0.2.7".parse().unwrap())
+    );
+    assert_eq!(
+        literal_proxy_ip("http://user:pass@[2001:db8::7]:8080").unwrap(),
+        Some("2001:db8::7".parse().unwrap())
+    );
+    assert_eq!(
+        literal_proxy_ip("http://user:pass@managed.example:8080").unwrap(),
+        None
+    );
 }
 
 /// Пароль продавца — произвольная строка. Любая потеря здесь уходит в CONNECT как ЧУЖОЙ

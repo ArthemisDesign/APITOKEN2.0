@@ -2,8 +2,9 @@
 
 use crate::{
     pg::{Owner, PgStore},
-    AccountFundingSnapshot, AccountRow, BillingTotals, KeyAuth, KeyPolicyUpdate, KeyRow, LedgerRow,
-    PoolStateRow, SpendAccountAgg, Sub, SubAdmin, SubHealth, SubRow, UsageModelAgg, UsageReport,
+    AccountFundingSnapshot, AccountRow, BillingTotals, ClaudeLifecycleProfile, KeyAuth,
+    KeyPolicyUpdate, KeyRow, LedgerRow, PoolStateRow, SpendAccountAgg, Sub, SubAdmin, SubHealth,
+    SubRow, UsageModelAgg, UsageReport,
 };
 use anyhow::{bail, Result};
 use rusqlite::Connection;
@@ -228,6 +229,12 @@ impl Authority {
         match self {
             Self::Sqlite(c) => crate::list(c),
             Self::Postgres(pg) => pg.list_subs(),
+        }
+    }
+    pub fn load_claude_lifecycle(&mut self) -> Result<Vec<ClaudeLifecycleProfile>> {
+        match self {
+            Self::Sqlite(c) => crate::load_claude_lifecycle(c),
+            Self::Postgres(pg) => pg.load_claude_lifecycle(),
         }
     }
     pub fn subs_admin(&mut self) -> Result<Vec<SubAdmin>> {

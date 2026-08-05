@@ -12,6 +12,7 @@ export const NAV: NavGroup[] = [
     group: "Инфраструктура",
     items: [
       { href: "/subscriptions", label: "Подписки", icon: "◍" },
+      { href: "/proxies", label: "Прокси", icon: "◎" },
       { href: "/system", label: "Система", icon: "⌘" },
       { href: "/trends", label: "Тренды", icon: "∿" },
     ],

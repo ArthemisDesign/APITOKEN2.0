@@ -5,7 +5,12 @@
 //! `.await` под локом не держим.
 
 use anyhow::{bail, Context, Result};
-use rusqlite::{Connection, OptionalExtension};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::net::IpAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Mutex;
 
@@ -143,12 +148,747 @@ pub struct GeminiPendingVerification {
     pub job: Option<SellerJobRef>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyAuthorityStatus {
+    Local,
+    Unknown,
+}
+
+impl ProxyAuthorityStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn from_db(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "local" => Ok(Self::Local),
+            "unknown" => Ok(Self::Unknown),
+            _ => Err(rusqlite::Error::InvalidColumnType(
+                0,
+                "authority_status".into(),
+                rusqlite::types::Type::Text,
+            )),
+        }
+    }
+}
+
+/// Durable link created only after a credential has been published or reconciled. This is a
+/// private database projection: only `inventory_id` may be copied into a public API response.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProxyBinding {
+    pub inventory_id: String,
+    pub provider: String,
+    pub local_id: String,
+    pub order_id: i64,
+    /// Canonical provider allocation address. `None` exists only for unresolved legacy rows.
+    pub allocation_ip: Option<IpAddr>,
+    pub issued_at: i64,
+    pub authority_status: ProxyAuthorityStatus,
+    pub updated_at: i64,
+}
+
+/// Exact immutable renewal target. Multiple selections may share an order, but neither an inventory
+/// allocation nor the exact `(order_id, allocation_ip)` pair may appear twice.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RenewalSelection {
+    pub inventory_id: String,
+    pub order_id: i64,
+    pub allocation_ip: IpAddr,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RenewalRequestState {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+    Indeterminate,
+}
+
+impl RenewalRequestState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::InProgress => "in_progress",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Indeterminate => "indeterminate",
+        }
+    }
+
+    fn from_db(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "in_progress" => Ok(Self::InProgress),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "indeterminate" => Ok(Self::Indeterminate),
+            _ => Err(rusqlite::Error::InvalidColumnType(
+                0,
+                "state".into(),
+                rusqlite::types::Type::Text,
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RenewalEventOutcome {
+    Renewed,
+    Unchanged,
+    NotFound,
+    Rejected,
+    ProviderUnavailable,
+    Indeterminate,
+}
+
+impl RenewalEventOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Renewed => "renewed",
+            Self::Unchanged => "unchanged",
+            Self::NotFound => "not_found",
+            Self::Rejected => "rejected",
+            Self::ProviderUnavailable => "provider_unavailable",
+            Self::Indeterminate => "indeterminate",
+        }
+    }
+
+    fn from_db(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "renewed" => Ok(Self::Renewed),
+            "unchanged" => Ok(Self::Unchanged),
+            "not_found" => Ok(Self::NotFound),
+            "rejected" => Ok(Self::Rejected),
+            "provider_unavailable" => Ok(Self::ProviderUnavailable),
+            "indeterminate" => Ok(Self::Indeterminate),
+            _ => Err(rusqlite::Error::InvalidColumnType(
+                0,
+                "outcome".into(),
+                rusqlite::types::Type::Text,
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RenewalRequest {
+    pub id: i64,
+    pub idempotency_key: String,
+    /// Compatibility projection for the public lifecycle handler.
+    pub inventory_ids: Vec<String>,
+    /// Compatibility projection for provider calls. Repeated order IDs are valid.
+    pub order_ids: Vec<i64>,
+    /// Private validated actor that originally created the request.
+    pub requested_by: String,
+    pub state: RenewalRequestState,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RenewalEvent {
+    pub id: i64,
+    pub request_id: i64,
+    pub order_id: i64,
+    pub outcome: RenewalEventOutcome,
+    pub observed_at: i64,
+    pub new_expiry_at: Option<i64>,
+}
+
+/// Exact durable event identity used by replay. Retrieval fails closed for migrated legacy events
+/// that predate allocation-level snapshots.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExactRenewalEvent {
+    pub event: RenewalEvent,
+    pub inventory_id: String,
+    pub allocation_ip: IpAddr,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyLifecycleConflict {
+    BindingOrderChanged,
+    OrderAlreadyBound,
+    IdempotencyKeyReused,
+    RenewalEventChanged,
+}
+
+impl std::fmt::Display for ProxyLifecycleConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::BindingOrderChanged => {
+                "proxy binding already has a different order or allocation"
+            }
+            Self::OrderAlreadyBound => {
+                "proxy order and allocation already belong to another binding"
+            }
+            Self::IdempotencyKeyReused => {
+                "renewal idempotency key already has a different exact selection"
+            }
+            Self::RenewalEventChanged => "renewal inventory already has a different result",
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for ProxyLifecycleConflict {}
+
+const INVENTORY_ID_PREFIX: &str = "inv_";
+const INVENTORY_RANDOM_BYTES: usize = 24;
+const INVENTORY_ID_LEN: usize = INVENTORY_ID_PREFIX.len() + 32;
+const INVENTORY_ID_MAX_LEN: usize = 160;
+const INVENTORY_ID_ATTEMPTS: usize = 16;
+const REQUESTED_BY_MAX_LEN: usize = 128;
+const LEGACY_REQUESTED_BY: &str = "legacy";
+
+fn valid_requested_by(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= REQUESTED_BY_MAX_LEN
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'@' | b'.' | b'_' | b':' | b'/' | b'+' | b'-')
+        })
+}
+
+fn new_inventory_id() -> Result<String> {
+    let mut random = [0u8; INVENTORY_RANDOM_BYTES];
+    getrandom::fill(&mut random).map_err(|_| anyhow::anyhow!("CSPRNG unavailable"))?;
+    Ok(format!(
+        "{INVENTORY_ID_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(random)
+    ))
+}
+
+fn valid_inventory_id(value: &str) -> bool {
+    value.len() == INVENTORY_ID_LEN
+        && value.len() <= INVENTORY_ID_MAX_LEN
+        && value.starts_with(INVENTORY_ID_PREFIX)
+        && value[INVENTORY_ID_PREFIX.len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+fn parse_db_ip(value: Option<String>, column: usize) -> rusqlite::Result<Option<IpAddr>> {
+    value
+        .map(|value| {
+            value.parse().map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    column,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })
+        .transpose()
+}
+
+fn proxy_binding_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProxyBinding> {
+    Ok(ProxyBinding {
+        inventory_id: row.get(0)?,
+        provider: row.get(1)?,
+        local_id: row.get(2)?,
+        order_id: row.get(3)?,
+        allocation_ip: parse_db_ip(row.get(4)?, 4)?,
+        issued_at: row.get(5)?,
+        authority_status: ProxyAuthorityStatus::from_db(&row.get::<_, String>(6)?)?,
+        updated_at: row.get(7)?,
+    })
+}
+
+fn canonical_selections(
+    selections: &[RenewalSelection],
+) -> Result<(
+    Vec<RenewalSelection>,
+    Vec<String>,
+    Vec<i64>,
+    String,
+    String,
+    String,
+)> {
+    if selections.is_empty() {
+        bail!("renewal request must contain at least one inventory id");
+    }
+    let mut canonical = selections.to_vec();
+    if canonical
+        .iter()
+        .any(|selection| !valid_inventory_id(&selection.inventory_id) || selection.order_id <= 0)
+    {
+        bail!("renewal selections contain an invalid inventory or order id");
+    }
+    canonical.sort_by(|left, right| left.inventory_id.cmp(&right.inventory_id));
+    if canonical
+        .windows(2)
+        .any(|pair| pair[0].inventory_id == pair[1].inventory_id)
+    {
+        bail!("renewal inventory ids must be unique");
+    }
+    let mut allocations = HashSet::with_capacity(canonical.len());
+    if canonical
+        .iter()
+        .any(|selection| !allocations.insert((selection.order_id, selection.allocation_ip)))
+    {
+        bail!("renewal order and allocation pairs must be unique");
+    }
+    let inventory_ids = canonical
+        .iter()
+        .map(|selection| selection.inventory_id.clone())
+        .collect::<Vec<_>>();
+    let order_ids = canonical
+        .iter()
+        .map(|selection| selection.order_id)
+        .collect::<Vec<_>>();
+    let encoded_selections = serde_json::to_string(&canonical)?;
+    let encoded_inventory_ids = serde_json::to_string(&inventory_ids)?;
+    let encoded_order_ids = serde_json::to_string(&order_ids)?;
+    if encoded_selections.len() > 32768
+        || encoded_inventory_ids.len() > 16384
+        || encoded_order_ids.len() > 8192
+    {
+        bail!("renewal selections exceed storage limits");
+    }
+    Ok((
+        canonical,
+        inventory_ids,
+        order_ids,
+        encoded_selections,
+        encoded_inventory_ids,
+        encoded_order_ids,
+    ))
+}
+
+fn from_sql_json_error(error: serde_json::Error) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+}
+
+fn decode_order_ids(encoded: &str) -> rusqlite::Result<Vec<i64>> {
+    if encoded.starts_with('[') {
+        return serde_json::from_str(encoded).map_err(from_sql_json_error);
+    }
+    encoded
+        .split(',')
+        .map(|value| {
+            value.parse::<i64>().map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })
+        .collect()
+}
+
+fn renewal_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RenewalRequest> {
+    let requested_by = row.get::<_, String>(5)?;
+    if !valid_requested_by(&requested_by) {
+        return Err(rusqlite::Error::InvalidColumnType(
+            5,
+            "requested_by".into(),
+            rusqlite::types::Type::Text,
+        ));
+    }
+    let state = RenewalRequestState::from_db(&row.get::<_, String>(6)?)?;
+    let selections = match row.get::<_, Option<String>>(2)? {
+        Some(value) if !value.is_empty() => {
+            serde_json::from_str::<Vec<RenewalSelection>>(&value).map_err(from_sql_json_error)?
+        }
+        _ if matches!(
+            state,
+            RenewalRequestState::Completed
+                | RenewalRequestState::Failed
+                | RenewalRequestState::Indeterminate
+        ) =>
+        {
+            Vec::new()
+        }
+        _ => {
+            return Err(rusqlite::Error::InvalidColumnType(
+                2,
+                "selections".into(),
+                rusqlite::types::Type::Null,
+            ));
+        }
+    };
+    let (inventory_ids, order_ids) = if selections.is_empty() {
+        let inventory_ids = row
+            .get::<_, Option<String>>(3)?
+            .filter(|value| !value.is_empty())
+            .map(|value| serde_json::from_str(&value).map_err(from_sql_json_error))
+            .transpose()?
+            .unwrap_or_default();
+        let order_ids = decode_order_ids(&row.get::<_, String>(4)?)?;
+        (inventory_ids, order_ids)
+    } else {
+        let (_, inventory_ids, order_ids, _, _, _) =
+            canonical_selections(&selections).map_err(|_| {
+                rusqlite::Error::InvalidColumnType(
+                    2,
+                    "selections".into(),
+                    rusqlite::types::Type::Text,
+                )
+            })?;
+        (inventory_ids, order_ids)
+    };
+    Ok(RenewalRequest {
+        id: row.get(0)?,
+        idempotency_key: row.get(1)?,
+        inventory_ids,
+        order_ids,
+        requested_by,
+        state,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
+}
+
+fn request_selections(c: &Connection, request_id: i64) -> Result<Vec<RenewalSelection>> {
+    let encoded = c
+        .query_row(
+            "SELECT selections FROM proxy_renewal_requests WHERE id=?1",
+            rusqlite::params![request_id],
+            |row| row.get::<_, Option<String>>(0),
+        )?
+        .context("renewal request has no exact selection snapshot")?;
+    let selections: Vec<RenewalSelection> = serde_json::from_str(&encoded)?;
+    Ok(canonical_selections(&selections)?.0)
+}
+
+fn renewal_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RenewalEvent> {
+    let _: Option<String> = row.get(2)?;
+    let _: Option<IpAddr> = parse_db_ip(row.get(4)?, 4)?;
+    Ok(RenewalEvent {
+        id: row.get(0)?,
+        request_id: row.get(1)?,
+        order_id: row.get(3)?,
+        outcome: RenewalEventOutcome::from_db(&row.get::<_, String>(5)?)?,
+        observed_at: row.get(6)?,
+        new_expiry_at: row.get(7)?,
+    })
+}
+
+fn exact_renewal_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExactRenewalEvent> {
+    let event = renewal_event_from_row(row)?;
+    let allocation_ip = parse_db_ip(row.get(4)?, 4)?.ok_or_else(|| {
+        rusqlite::Error::InvalidColumnType(4, "allocation_ip".into(), rusqlite::types::Type::Null)
+    })?;
+    Ok(ExactRenewalEvent {
+        event,
+        inventory_id: row.get(2)?,
+        allocation_ip,
+    })
+}
+
 fn now() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+fn table_has_column(c: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut statement = c.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for existing in columns {
+        if existing? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn migrate_proxy_lifecycle(c: &mut Connection) -> Result<()> {
+    // Probe the OS CSPRNG before taking the migration lock. Public IDs never fall back to order,
+    // local identity, timestamps, or SQLite's non-contractual random functions.
+    let _ = new_inventory_id()?;
+    let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let binding_has_inventory = table_has_column(&tx, "proxy_bindings", "inventory_id")?;
+    let binding_has_allocation = table_has_column(&tx, "proxy_bindings", "allocation_ip")?;
+    let binding_inventory = if binding_has_inventory {
+        "inventory_id"
+    } else {
+        "NULL"
+    };
+    let binding_allocation = if binding_has_allocation {
+        "allocation_ip"
+    } else {
+        "NULL"
+    };
+    let binding_rows = {
+        let sql = format!(
+            "SELECT {binding_inventory},provider,local_id,order_id,{binding_allocation},\
+                    issued_at,authority_status,updated_at FROM proxy_bindings ORDER BY rowid"
+        );
+        let mut statement = tx.prepare(&sql)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let mut assigned = HashSet::with_capacity(binding_rows.len());
+    let mut bindings = Vec::with_capacity(binding_rows.len());
+    for (current, provider, local_id, order_id, allocation, issued_at, authority, updated_at) in
+        binding_rows
+    {
+        let inventory_id = if current
+            .as_deref()
+            .is_some_and(|value| valid_inventory_id(value) && assigned.insert(value.to_owned()))
+        {
+            current.unwrap()
+        } else {
+            let mut replacement = None;
+            for _ in 0..INVENTORY_ID_ATTEMPTS {
+                let candidate = new_inventory_id()?;
+                if assigned.insert(candidate.clone()) {
+                    replacement = Some(candidate);
+                    break;
+                }
+            }
+            replacement.context("could not allocate unique proxy inventory id")?
+        };
+        // An old row has no allocation evidence. A malformed value is equally unresolved; neither
+        // case is guessed from local identifiers or current provider inventory.
+        let allocation = allocation.and_then(|value| value.parse::<IpAddr>().ok());
+        bindings.push((
+            inventory_id,
+            provider,
+            local_id,
+            order_id,
+            allocation,
+            issued_at,
+            authority,
+            updated_at,
+        ));
+    }
+
+    let request_has_selections = table_has_column(&tx, "proxy_renewal_requests", "selections")?;
+    let request_has_inventory = table_has_column(&tx, "proxy_renewal_requests", "inventory_ids")?;
+    let request_has_actor = table_has_column(&tx, "proxy_renewal_requests", "requested_by")?;
+    let request_selections = if request_has_selections {
+        "selections"
+    } else {
+        "NULL"
+    };
+    let request_inventory = if request_has_inventory {
+        "inventory_ids"
+    } else {
+        "NULL"
+    };
+    let request_actor = if request_has_actor {
+        "requested_by"
+    } else {
+        "NULL"
+    };
+    let requests = {
+        let sql = format!(
+            "SELECT id,idempotency_key,{request_selections},{request_inventory},order_ids,\
+                    {request_actor},state,created_at,updated_at \
+             FROM proxy_renewal_requests ORDER BY id"
+        );
+        let mut statement = tx.prepare(&sql)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
+    let event_has_inventory = table_has_column(&tx, "proxy_renewal_events", "inventory_id")?;
+    let event_has_allocation = table_has_column(&tx, "proxy_renewal_events", "allocation_ip")?;
+    let event_inventory = if event_has_inventory {
+        "inventory_id"
+    } else {
+        "NULL"
+    };
+    let event_allocation = if event_has_allocation {
+        "allocation_ip"
+    } else {
+        "NULL"
+    };
+    let events = {
+        let sql = format!(
+            "SELECT id,request_id,{event_inventory},order_id,{event_allocation},outcome,\
+                    observed_at,new_expiry_at FROM proxy_renewal_events ORDER BY id"
+        );
+        let mut statement = tx.prepare(&sql)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
+    tx.execute_batch(
+        "DROP INDEX IF EXISTS proxy_bindings_authority_idx;
+         DROP INDEX IF EXISTS proxy_bindings_inventory_id_idx;
+         DROP INDEX IF EXISTS proxy_renewal_requests_state_idx;
+         DROP INDEX IF EXISTS proxy_renewal_events_request_idx;
+         ALTER TABLE proxy_bindings RENAME TO proxy_bindings_legacy;
+         ALTER TABLE proxy_renewal_requests RENAME TO proxy_renewal_requests_legacy;
+         ALTER TABLE proxy_renewal_events RENAME TO proxy_renewal_events_legacy;
+         CREATE TABLE proxy_bindings(
+            inventory_id TEXT NOT NULL UNIQUE CHECK(length(inventory_id) BETWEEN 1 AND 160),
+            provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 64),
+            local_id TEXT NOT NULL CHECK(length(local_id) BETWEEN 1 AND 255),
+            order_id INTEGER NOT NULL CHECK(order_id > 0), allocation_ip TEXT,
+            issued_at INTEGER NOT NULL CHECK(issued_at > 0),
+            authority_status TEXT NOT NULL CHECK(authority_status IN ('local','unknown')),
+            updated_at INTEGER NOT NULL CHECK(updated_at > 0),
+            PRIMARY KEY(provider,local_id), UNIQUE(order_id,allocation_ip));
+         CREATE TABLE proxy_renewal_requests(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idempotency_key TEXT NOT NULL UNIQUE CHECK(length(idempotency_key) BETWEEN 1 AND 255),
+            selections TEXT CHECK(length(selections) BETWEEN 1 AND 32768),
+            inventory_ids TEXT CHECK(length(inventory_ids) BETWEEN 1 AND 16384),
+            order_ids TEXT NOT NULL CHECK(length(order_ids) BETWEEN 1 AND 8192),
+            requested_by TEXT NOT NULL CHECK(length(requested_by) BETWEEN 1 AND 128),
+            state TEXT NOT NULL CHECK(state IN
+                ('pending','in_progress','completed','failed','indeterminate')),
+            created_at INTEGER NOT NULL CHECK(created_at > 0),
+            updated_at INTEGER NOT NULL CHECK(updated_at > 0));
+         CREATE TABLE proxy_renewal_events(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER NOT NULL REFERENCES proxy_renewal_requests(id),
+            inventory_id TEXT, order_id INTEGER NOT NULL CHECK(order_id > 0), allocation_ip TEXT,
+            outcome TEXT NOT NULL CHECK(outcome IN
+                ('renewed','unchanged','not_found','rejected','provider_unavailable','indeterminate')),
+            observed_at INTEGER NOT NULL CHECK(observed_at > 0),
+            new_expiry_at INTEGER CHECK(new_expiry_at IS NULL OR new_expiry_at > 0),
+            UNIQUE(request_id,inventory_id));"
+    )?;
+    for (
+        inventory_id,
+        provider,
+        local_id,
+        order_id,
+        allocation,
+        issued_at,
+        authority,
+        updated_at,
+    ) in bindings
+    {
+        tx.execute(
+            "INSERT INTO proxy_bindings VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            rusqlite::params![
+                inventory_id,
+                provider,
+                local_id,
+                order_id,
+                allocation.map(|ip| ip.to_string()),
+                issued_at,
+                authority,
+                updated_at
+            ],
+        )?;
+    }
+    for (id, key, selections, inventory_ids, order_ids, actor, state, created_at, updated_at) in
+        requests
+    {
+        let exact = selections
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .and_then(|value| serde_json::from_str::<Vec<RenewalSelection>>(value).ok())
+            .and_then(|value| canonical_selections(&value).ok())
+            .is_some();
+        let selections = exact.then_some(selections).flatten();
+        let state = if state == "in_progress" || (!exact && state == "pending") {
+            "indeterminate"
+        } else {
+            state.as_str()
+        };
+        let updated_at = if state == "indeterminate" {
+            now().max(1)
+        } else {
+            updated_at
+        };
+        let actor = actor
+            .filter(|value| valid_requested_by(value))
+            .unwrap_or_else(|| LEGACY_REQUESTED_BY.to_string());
+        tx.execute(
+            "INSERT INTO proxy_renewal_requests VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            rusqlite::params![
+                id,
+                key,
+                selections,
+                inventory_ids,
+                order_ids,
+                actor,
+                state,
+                created_at,
+                updated_at
+            ],
+        )?;
+    }
+    for (id, request_id, inventory_id, order_id, allocation, outcome, observed_at, expiry) in events
+    {
+        let allocation = allocation.and_then(|value| value.parse::<IpAddr>().ok());
+        tx.execute(
+            "INSERT INTO proxy_renewal_events VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            rusqlite::params![
+                id,
+                request_id,
+                inventory_id.filter(|value| valid_inventory_id(value)),
+                order_id,
+                allocation.map(|ip| ip.to_string()),
+                outcome,
+                observed_at,
+                expiry
+            ],
+        )?;
+    }
+    tx.execute_batch(
+        "DROP TABLE proxy_renewal_events_legacy;
+         DROP TABLE proxy_renewal_requests_legacy;
+         DROP TABLE proxy_bindings_legacy;
+         CREATE INDEX proxy_bindings_authority_idx
+            ON proxy_bindings(authority_status,provider,local_id);
+         CREATE INDEX proxy_renewal_requests_state_idx
+            ON proxy_renewal_requests(state,created_at,id);
+         CREATE INDEX proxy_renewal_events_request_idx
+            ON proxy_renewal_events(request_id,id);",
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 fn seller_job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SellerJob> {
@@ -193,7 +933,7 @@ impl Store {
                 }
             }
         }
-        let c = Connection::open(path)?;
+        let mut c = Connection::open(path)?;
         if path != ":memory:" {
             std::fs::set_permissions(path_ref, std::fs::Permissions::from_mode(0o600))?;
         }
@@ -267,7 +1007,48 @@ impl Store {
                 batch_id INTEGER NOT NULL DEFAULT 0, item_no INTEGER NOT NULL DEFAULT 0,
                 job_token TEXT NOT NULL DEFAULT '',
                 product TEXT NOT NULL, phase TEXT NOT NULL,
-                ts INTEGER NOT NULL DEFAULT 0);",
+                ts INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE IF NOT EXISTS proxy_bindings(
+                inventory_id TEXT NOT NULL UNIQUE CHECK(length(inventory_id) BETWEEN 1 AND 160),
+                provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 64),
+                local_id TEXT NOT NULL CHECK(length(local_id) BETWEEN 1 AND 255),
+                order_id INTEGER NOT NULL CHECK(order_id > 0),
+                allocation_ip TEXT,
+                issued_at INTEGER NOT NULL CHECK(issued_at > 0),
+                authority_status TEXT NOT NULL
+                    CHECK(authority_status IN ('local','unknown')),
+                updated_at INTEGER NOT NULL CHECK(updated_at > 0),
+                PRIMARY KEY(provider,local_id), UNIQUE(order_id,allocation_ip));
+             CREATE INDEX IF NOT EXISTS proxy_bindings_authority_idx
+                ON proxy_bindings(authority_status,provider,local_id);
+             CREATE TABLE IF NOT EXISTS proxy_renewal_requests(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                idempotency_key TEXT NOT NULL UNIQUE
+                    CHECK(length(idempotency_key) BETWEEN 1 AND 255),
+                selections TEXT CHECK(length(selections) BETWEEN 1 AND 32768),
+                inventory_ids TEXT CHECK(length(inventory_ids) BETWEEN 1 AND 16384),
+                order_ids TEXT NOT NULL CHECK(length(order_ids) BETWEEN 1 AND 8192),
+                requested_by TEXT NOT NULL CHECK(length(requested_by) BETWEEN 1 AND 128),
+                state TEXT NOT NULL CHECK(state IN
+                    ('pending','in_progress','completed','failed','indeterminate')),
+                created_at INTEGER NOT NULL CHECK(created_at > 0),
+                updated_at INTEGER NOT NULL CHECK(updated_at > 0));
+             CREATE INDEX IF NOT EXISTS proxy_renewal_requests_state_idx
+                ON proxy_renewal_requests(state,created_at,id);
+             CREATE TABLE IF NOT EXISTS proxy_renewal_events(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id INTEGER NOT NULL REFERENCES proxy_renewal_requests(id),
+                inventory_id TEXT,
+                order_id INTEGER NOT NULL CHECK(order_id > 0),
+                allocation_ip TEXT,
+                outcome TEXT NOT NULL CHECK(outcome IN
+                    ('renewed','unchanged','not_found','rejected',
+                     'provider_unavailable','indeterminate')),
+                observed_at INTEGER NOT NULL CHECK(observed_at > 0),
+                new_expiry_at INTEGER CHECK(new_expiry_at IS NULL OR new_expiry_at > 0),
+                UNIQUE(request_id,inventory_id));
+             CREATE INDEX IF NOT EXISTS proxy_renewal_events_request_idx
+                ON proxy_renewal_events(request_id,id);",
         )?;
         let _ = c.execute("ALTER TABLE users ADD COLUMN hproxy TEXT DEFAULT ''", []); // мягкая миграция
                                                                                       // Legacy Developer-API builds added `hproject`. It is intentionally ignored: OAuth
@@ -372,6 +1153,7 @@ impl Store {
             "UPDATE seller_jobs SET job_token=lower(hex(randomblob(16))) WHERE job_token=''",
             [],
         )?;
+        migrate_proxy_lifecycle(&mut c)?;
         Ok(Store { c: Mutex::new(c) })
     }
 
@@ -3048,6 +3830,639 @@ impl Store {
             ))
         })?;
         Ok(rows.filter_map(|row| row.ok()).collect())
+    }
+
+    /// Compatibility path for callers that have not integrated allocation evidence yet. New rows
+    /// remain unresolved and therefore cannot be selected for an exact renewal.
+    pub fn upsert_proxy_binding(
+        &self,
+        provider: &str,
+        local_id: &str,
+        order_id: i64,
+        issued_at: i64,
+        authority_status: ProxyAuthorityStatus,
+    ) -> Result<ProxyBinding> {
+        self.upsert_proxy_binding_inner(
+            provider,
+            local_id,
+            order_id,
+            None,
+            issued_at,
+            authority_status,
+        )
+    }
+
+    /// Allocation-level upsert for integration. The IP is parsed through `IpAddr` and stored in its
+    /// canonical text form. Replaying or exactly backfilling a legacy unresolved row preserves its
+    /// opaque inventory ID and original issuance timestamp.
+    pub fn upsert_proxy_binding_allocation(
+        &self,
+        provider: &str,
+        local_id: &str,
+        order_id: i64,
+        allocation_ip: &str,
+        issued_at: i64,
+        authority_status: ProxyAuthorityStatus,
+    ) -> Result<ProxyBinding> {
+        let allocation_ip = allocation_ip
+            .parse::<IpAddr>()
+            .context("proxy allocation IP is invalid")?;
+        self.upsert_proxy_binding_inner(
+            provider,
+            local_id,
+            order_id,
+            Some(allocation_ip),
+            issued_at,
+            authority_status,
+        )
+    }
+
+    fn upsert_proxy_binding_inner(
+        &self,
+        provider: &str,
+        local_id: &str,
+        order_id: i64,
+        allocation_ip: Option<IpAddr>,
+        issued_at: i64,
+        authority_status: ProxyAuthorityStatus,
+    ) -> Result<ProxyBinding> {
+        if provider.is_empty() || provider.len() > 64 || local_id.is_empty() || local_id.len() > 255
+        {
+            bail!("proxy binding identifiers are empty or exceed storage limits");
+        }
+        if order_id <= 0 || issued_at <= 0 {
+            bail!("proxy binding order and issuance time must be positive");
+        }
+        let allocation = allocation_ip.map(|ip| ip.to_string());
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = tx
+            .query_row(
+                "SELECT inventory_id,provider,local_id,order_id,allocation_ip,issued_at,
+                        authority_status,updated_at
+                 FROM proxy_bindings WHERE provider=?1 AND local_id=?2",
+                rusqlite::params![provider, local_id],
+                proxy_binding_from_row,
+            )
+            .optional()?;
+        if let Some(existing) = existing {
+            if existing.order_id != order_id
+                || (existing.allocation_ip.is_some() && existing.allocation_ip != allocation_ip)
+            {
+                return Err(ProxyLifecycleConflict::BindingOrderChanged.into());
+            }
+            tx.execute(
+                "UPDATE proxy_bindings
+                 SET allocation_ip=COALESCE(allocation_ip,?3),authority_status=?4,updated_at=?5
+                 WHERE provider=?1 AND local_id=?2",
+                rusqlite::params![
+                    provider,
+                    local_id,
+                    allocation,
+                    authority_status.as_str(),
+                    now()
+                ],
+            )?;
+            let binding = tx.query_row(
+                "SELECT inventory_id,provider,local_id,order_id,allocation_ip,issued_at,
+                        authority_status,updated_at
+                 FROM proxy_bindings WHERE provider=?1 AND local_id=?2",
+                rusqlite::params![provider, local_id],
+                proxy_binding_from_row,
+            )?;
+            tx.commit()?;
+            return Ok(binding);
+        }
+        if allocation.is_some()
+            && tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM proxy_bindings
+                 WHERE order_id=?1 AND allocation_ip=?2)",
+                rusqlite::params![order_id, allocation],
+                |row| row.get::<_, i64>(0),
+            )? == 1
+        {
+            return Err(ProxyLifecycleConflict::OrderAlreadyBound.into());
+        }
+        let timestamp = now();
+        let mut inserted = false;
+        for _ in 0..INVENTORY_ID_ATTEMPTS {
+            let inventory_id = new_inventory_id()?;
+            match tx.execute(
+                "INSERT INTO proxy_bindings(inventory_id,provider,local_id,order_id,allocation_ip,
+                                             issued_at,authority_status,updated_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                rusqlite::params![
+                    inventory_id,
+                    provider,
+                    local_id,
+                    order_id,
+                    allocation,
+                    issued_at,
+                    authority_status.as_str(),
+                    timestamp
+                ],
+            ) {
+                Ok(_) => {
+                    inserted = true;
+                    break;
+                }
+                Err(error)
+                    if error.sqlite_error_code()
+                        == Some(rusqlite::ErrorCode::ConstraintViolation)
+                        && tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM proxy_bindings WHERE inventory_id=?1)",
+                            rusqlite::params![inventory_id],
+                            |row| row.get::<_, i64>(0),
+                        )? == 1 => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if !inserted {
+            bail!("could not allocate unique proxy inventory id");
+        }
+        let binding = tx.query_row(
+            "SELECT inventory_id,provider,local_id,order_id,allocation_ip,issued_at,
+                    authority_status,updated_at
+             FROM proxy_bindings WHERE provider=?1 AND local_id=?2",
+            rusqlite::params![provider, local_id],
+            proxy_binding_from_row,
+        )?;
+        tx.commit()?;
+        Ok(binding)
+    }
+
+    pub fn get_proxy_binding_by_inventory_id(
+        &self,
+        inventory_id: &str,
+    ) -> Result<Option<ProxyBinding>> {
+        if !valid_inventory_id(inventory_id) {
+            bail!("invalid proxy inventory id");
+        }
+        Ok(self
+            .c
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT inventory_id,provider,local_id,order_id,allocation_ip,issued_at,
+                        authority_status,updated_at
+                 FROM proxy_bindings WHERE inventory_id=?1",
+                rusqlite::params![inventory_id],
+                proxy_binding_from_row,
+            )
+            .optional()?)
+    }
+
+    pub fn list_proxy_bindings(&self) -> Result<Vec<ProxyBinding>> {
+        let c = self.c.lock().unwrap();
+        let mut statement = c.prepare(
+            "SELECT inventory_id,provider,local_id,order_id,allocation_ip,issued_at,
+                    authority_status,updated_at
+             FROM proxy_bindings ORDER BY provider,local_id",
+        )?;
+        let rows = statement
+            .query_map([], proxy_binding_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Compatibility adapter for existing callers. It resolves each opaque inventory ID back to the
+    /// durable binding and refuses unresolved legacy allocations rather than inventing a snapshot.
+    pub fn create_or_get_renewal_request(
+        &self,
+        idempotency_key: &str,
+        selections: &[(String, i64)],
+        requested_by: &str,
+    ) -> Result<RenewalRequest> {
+        let exact = selections
+            .iter()
+            .map(|(inventory_id, order_id)| {
+                let binding = self
+                    .get_proxy_binding_by_inventory_id(inventory_id)?
+                    .context("renewal selection contains an unknown inventory id")?;
+                if binding.order_id != *order_id {
+                    bail!("renewal selection order does not match durable binding");
+                }
+                Ok(RenewalSelection {
+                    inventory_id: inventory_id.clone(),
+                    order_id: *order_id,
+                    allocation_ip: binding
+                        .allocation_ip
+                        .context("renewal selection allocation is unresolved")?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.create_or_get_renewal_request_exact(idempotency_key, &exact, requested_by)
+    }
+
+    pub fn create_or_get_renewal_request_exact(
+        &self,
+        idempotency_key: &str,
+        selections: &[RenewalSelection],
+        requested_by: &str,
+    ) -> Result<RenewalRequest> {
+        if idempotency_key.is_empty() || idempotency_key.len() > 255 {
+            bail!("renewal idempotency key is empty or exceeds storage limit");
+        }
+        if !valid_requested_by(requested_by) {
+            bail!("renewal request actor is invalid");
+        }
+        let (
+            selections,
+            _inventory_ids,
+            _order_ids,
+            encoded_selections,
+            encoded_inventory_ids,
+            encoded_order_ids,
+        ) = canonical_selections(selections)?;
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = tx
+            .query_row(
+                "SELECT id,idempotency_key,selections,inventory_ids,order_ids,requested_by,state,
+                        created_at,updated_at
+                 FROM proxy_renewal_requests WHERE idempotency_key=?1",
+                rusqlite::params![idempotency_key],
+                renewal_request_from_row,
+            )
+            .optional()?;
+        if let Some(existing) = existing {
+            if request_selections(&tx, existing.id)? != selections {
+                return Err(ProxyLifecycleConflict::IdempotencyKeyReused.into());
+            }
+            tx.commit()?;
+            return Ok(existing);
+        }
+        let timestamp = now();
+        tx.execute(
+            "INSERT INTO proxy_renewal_requests(idempotency_key,selections,inventory_ids,order_ids,
+                                                requested_by,state,created_at,updated_at)
+             VALUES(?1,?2,?3,?4,?5,'pending',?6,?6)",
+            rusqlite::params![
+                idempotency_key,
+                encoded_selections,
+                encoded_inventory_ids,
+                encoded_order_ids,
+                requested_by,
+                timestamp
+            ],
+        )?;
+        let request = tx.query_row(
+            "SELECT id,idempotency_key,selections,inventory_ids,order_ids,requested_by,state,
+                    created_at,updated_at
+             FROM proxy_renewal_requests WHERE id=last_insert_rowid()",
+            [],
+            renewal_request_from_row,
+        )?;
+        tx.commit()?;
+        Ok(request)
+    }
+
+    pub fn get_renewal_request_by_key(
+        &self,
+        idempotency_key: &str,
+    ) -> Result<Option<RenewalRequest>> {
+        if idempotency_key.is_empty() || idempotency_key.len() > 255 {
+            bail!("renewal idempotency key is empty or exceeds storage limit");
+        }
+        Ok(self
+            .c
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id,idempotency_key,selections,inventory_ids,order_ids,requested_by,state,created_at,updated_at
+                 FROM proxy_renewal_requests WHERE idempotency_key=?1",
+                rusqlite::params![idempotency_key],
+                renewal_request_from_row,
+            )
+            .optional()?)
+    }
+
+    pub fn claim_renewal_request(&self, request_id: i64) -> Result<Option<RenewalRequest>> {
+        if request_id <= 0 {
+            bail!("renewal request id must be positive");
+        }
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE proxy_renewal_requests SET state='in_progress',updated_at=?2
+             WHERE id=?1 AND state='pending'",
+            rusqlite::params![request_id, now()],
+        )?;
+        let request = if changed == 1 {
+            tx.query_row(
+                "SELECT id,idempotency_key,selections,inventory_ids,order_ids,requested_by,state,created_at,updated_at
+                 FROM proxy_renewal_requests WHERE id=?1",
+                rusqlite::params![request_id],
+                renewal_request_from_row,
+            )
+            .optional()?
+        } else {
+            None
+        };
+        tx.commit()?;
+        Ok(request)
+    }
+
+    pub fn claim_next_renewal_request(&self) -> Result<Option<RenewalRequest>> {
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let request_id = tx
+            .query_row(
+                "SELECT id FROM proxy_renewal_requests
+                 WHERE state='pending' ORDER BY created_at,id LIMIT 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let request = if let Some(request_id) = request_id {
+            let changed = tx.execute(
+                "UPDATE proxy_renewal_requests SET state='in_progress',updated_at=?2
+                 WHERE id=?1 AND state='pending'",
+                rusqlite::params![request_id, now()],
+            )?;
+            if changed != 1 {
+                bail!("pending renewal request changed while claiming");
+            }
+            tx.query_row(
+                "SELECT id,idempotency_key,selections,inventory_ids,order_ids,requested_by,state,created_at,updated_at
+                 FROM proxy_renewal_requests WHERE id=?1",
+                rusqlite::params![request_id],
+                renewal_request_from_row,
+            )
+            .optional()?
+        } else {
+            None
+        };
+        tx.commit()?;
+        Ok(request)
+    }
+
+    /// Compatibility adapter for order-oriented callers. It is accepted only when that order names
+    /// exactly one request item; duplicate-order requests must use inventory identity explicitly.
+    pub fn record_renewal_event(
+        &self,
+        request_id: i64,
+        order_id: i64,
+        outcome: RenewalEventOutcome,
+        observed_at: i64,
+        new_expiry_at: Option<i64>,
+    ) -> Result<RenewalEvent> {
+        let c = self.c.lock().unwrap();
+        let selections = request_selections(&c, request_id)?;
+        drop(c);
+        let matches = selections
+            .iter()
+            .filter(|selection| selection.order_id == order_id)
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            bail!("renewal order does not identify exactly one selected allocation");
+        }
+        self.record_renewal_event_for_inventory(
+            request_id,
+            &matches[0].inventory_id,
+            outcome,
+            observed_at,
+            new_expiry_at,
+        )
+    }
+
+    pub fn record_renewal_event_for_inventory(
+        &self,
+        request_id: i64,
+        inventory_id: &str,
+        outcome: RenewalEventOutcome,
+        observed_at: i64,
+        new_expiry_at: Option<i64>,
+    ) -> Result<RenewalEvent> {
+        if request_id <= 0 || !valid_inventory_id(inventory_id) || observed_at <= 0 {
+            bail!("renewal event identity and timestamp are invalid");
+        }
+        if new_expiry_at.is_some_and(|expiry| expiry <= 0) {
+            bail!("renewal event expiry must be positive");
+        }
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let request = tx
+            .query_row(
+                "SELECT id,idempotency_key,selections,inventory_ids,order_ids,requested_by,state,
+                        created_at,updated_at
+                 FROM proxy_renewal_requests WHERE id=?1",
+                rusqlite::params![request_id],
+                renewal_request_from_row,
+            )
+            .optional()?
+            .context("renewal request not found")?;
+        let selection = request_selections(&tx, request_id)?
+            .into_iter()
+            .find(|selection| selection.inventory_id == inventory_id)
+            .context("renewal event inventory does not belong to exact request")?;
+        let existing = tx
+            .query_row(
+                "SELECT id,request_id,inventory_id,order_id,allocation_ip,outcome,observed_at,
+                        new_expiry_at
+                 FROM proxy_renewal_events WHERE request_id=?1 AND inventory_id=?2",
+                rusqlite::params![request_id, inventory_id],
+                |row| {
+                    let event = renewal_event_from_row(row)?;
+                    Ok((
+                        event,
+                        row.get::<_, Option<String>>(2)?,
+                        parse_db_ip(row.get(4)?, 4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        if let Some((existing, existing_inventory, existing_allocation)) = existing {
+            if existing_inventory.as_deref() != Some(inventory_id)
+                || existing.order_id != selection.order_id
+                || existing_allocation != Some(selection.allocation_ip)
+                || existing.outcome != outcome
+                || existing.observed_at != observed_at
+                || existing.new_expiry_at != new_expiry_at
+            {
+                return Err(ProxyLifecycleConflict::RenewalEventChanged.into());
+            }
+            tx.commit()?;
+            return Ok(existing);
+        }
+        if request.state != RenewalRequestState::InProgress {
+            bail!("new renewal events require an in-progress request");
+        }
+        tx.execute(
+            "INSERT INTO proxy_renewal_events(request_id,inventory_id,order_id,allocation_ip,outcome,
+                                               observed_at,new_expiry_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params![
+                request_id,
+                inventory_id,
+                selection.order_id,
+                selection.allocation_ip.to_string(),
+                outcome.as_str(),
+                observed_at,
+                new_expiry_at
+            ],
+        )?;
+        let event = tx.query_row(
+            "SELECT id,request_id,inventory_id,order_id,allocation_ip,outcome,observed_at,
+                    new_expiry_at
+             FROM proxy_renewal_events WHERE id=last_insert_rowid()",
+            [],
+            renewal_event_from_row,
+        )?;
+        tx.commit()?;
+        Ok(event)
+    }
+
+    pub fn complete_renewal_request(&self, request_id: i64) -> Result<RenewalRequest> {
+        self.finish_renewal_request(request_id, RenewalRequestState::Completed)
+    }
+
+    pub fn fail_renewal_request(&self, request_id: i64) -> Result<RenewalRequest> {
+        self.finish_renewal_request(request_id, RenewalRequestState::Failed)
+    }
+
+    pub fn indeterminate_renewal_request(&self, request_id: i64) -> Result<RenewalRequest> {
+        self.finish_renewal_request(request_id, RenewalRequestState::Indeterminate)
+    }
+
+    fn finish_renewal_request(
+        &self,
+        request_id: i64,
+        terminal: RenewalRequestState,
+    ) -> Result<RenewalRequest> {
+        if request_id <= 0 {
+            bail!("renewal request id must be positive");
+        }
+        if !matches!(
+            terminal,
+            RenewalRequestState::Completed
+                | RenewalRequestState::Failed
+                | RenewalRequestState::Indeterminate
+        ) {
+            bail!("renewal request target state must be terminal");
+        }
+        let mut c = self.c.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let request = tx
+            .query_row(
+                "SELECT id,idempotency_key,selections,inventory_ids,order_ids,requested_by,state,created_at,updated_at
+                 FROM proxy_renewal_requests WHERE id=?1",
+                rusqlite::params![request_id],
+                renewal_request_from_row,
+            )
+            .optional()?
+            .context("renewal request not found")?;
+        if request.state == terminal {
+            tx.commit()?;
+            return Ok(request);
+        }
+        if request.state != RenewalRequestState::InProgress {
+            bail!("renewal request is not in progress");
+        }
+        if terminal == RenewalRequestState::Completed {
+            let event_ids = {
+                let mut statement = tx.prepare(
+                    "SELECT inventory_id FROM proxy_renewal_events
+                     WHERE request_id=?1 AND inventory_id IS NOT NULL ORDER BY inventory_id",
+                )?;
+                let rows = statement
+                    .query_map(rusqlite::params![request_id], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            let selected_ids = request_selections(&tx, request_id)?
+                .into_iter()
+                .map(|selection| selection.inventory_id)
+                .collect::<Vec<_>>();
+            if event_ids != selected_ids {
+                bail!("completed renewal request requires one event per selected inventory");
+            }
+        }
+        tx.execute(
+            "UPDATE proxy_renewal_requests SET state=?2,updated_at=?3
+             WHERE id=?1 AND state='in_progress'",
+            rusqlite::params![request_id, terminal.as_str(), now()],
+        )?;
+        let request = tx.query_row(
+            "SELECT id,idempotency_key,selections,inventory_ids,order_ids,requested_by,state,created_at,updated_at
+             FROM proxy_renewal_requests WHERE id=?1",
+            rusqlite::params![request_id],
+            renewal_request_from_row,
+        )?;
+        tx.commit()?;
+        Ok(request)
+    }
+
+    pub fn get_renewal_request(&self, request_id: i64) -> Result<Option<RenewalRequest>> {
+        Ok(self
+            .c
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id,idempotency_key,selections,inventory_ids,order_ids,requested_by,state,created_at,updated_at
+                 FROM proxy_renewal_requests WHERE id=?1",
+                rusqlite::params![request_id],
+                renewal_request_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Exact durable targets for processing/replay integration. Unresolved legacy requests return an
+    /// error and therefore cannot be renewed through an order-only guess.
+    pub fn get_renewal_selections(&self, request_id: i64) -> Result<Vec<RenewalSelection>> {
+        if request_id <= 0 {
+            bail!("renewal request id must be positive");
+        }
+        request_selections(&self.c.lock().unwrap(), request_id)
+    }
+
+    pub fn list_renewal_requests(&self) -> Result<Vec<RenewalRequest>> {
+        let c = self.c.lock().unwrap();
+        let mut statement = c.prepare(
+            "SELECT id,idempotency_key,selections,inventory_ids,order_ids,requested_by,state,created_at,updated_at
+             FROM proxy_renewal_requests ORDER BY created_at,id",
+        )?;
+        let rows = statement
+            .query_map([], renewal_request_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn get_renewal_events(&self, request_id: i64) -> Result<Vec<RenewalEvent>> {
+        Ok(self
+            .get_exact_renewal_events(request_id)?
+            .into_iter()
+            .map(|event| event.event)
+            .collect())
+    }
+
+    pub fn get_exact_renewal_events(&self, request_id: i64) -> Result<Vec<ExactRenewalEvent>> {
+        if request_id <= 0 {
+            bail!("renewal request id must be positive");
+        }
+        let c = self.c.lock().unwrap();
+        let mut statement = c.prepare(
+            "SELECT id,request_id,inventory_id,order_id,allocation_ip,outcome,observed_at,
+                    new_expiry_at
+             FROM proxy_renewal_events WHERE request_id=?1 ORDER BY inventory_id,id",
+        )?;
+        let rows = statement
+            .query_map(rusqlite::params![request_id], exact_renewal_event_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn list_renewal_events(&self) -> Result<Vec<RenewalEvent>> {
+        let c = self.c.lock().unwrap();
+        let mut statement = c.prepare(
+            "SELECT id,request_id,inventory_id,order_id,allocation_ip,outcome,observed_at,
+                    new_expiry_at
+             FROM proxy_renewal_events ORDER BY request_id,inventory_id,id",
+        )?;
+        let rows = statement
+            .query_map([], renewal_event_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     pub fn counts(&self) -> (i64, i64) {

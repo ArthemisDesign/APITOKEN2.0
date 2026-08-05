@@ -16,6 +16,7 @@ mod glm_roster;
 mod iproyal;
 mod kimi_oauth;
 mod kimi_roster;
+mod proxy_admin;
 mod setup_token;
 mod tg;
 
@@ -267,67 +268,6 @@ async fn dispatch(bot: Bot, store: Arc<Store>, cfg: Arc<Config>, upd: tg::Update
     }
 }
 
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-/// IP (host) из строки прокси: `scheme://user:pass@ip:port` → `ip`.
-fn proxy_ip(p: &str) -> String {
-    if p.is_empty() {
-        return String::new();
-    }
-    let after_scheme = p.rsplit("://").next().unwrap_or(p);
-    let host_port = after_scheme.rsplit('@').next().unwrap_or(after_scheme);
-    host_port.split(':').next().unwrap_or("").to_string()
-}
-
-/// "YYYY-MM-DD HH:MM:SS" → unix (UTC). 0 при ошибке. Без chrono (civil-from-date, Хиннант).
-fn iso_to_unix(s: &str) -> i64 {
-    let n: Vec<i64> = s
-        .trim()
-        .split(|c| c == '-' || c == ' ' || c == ':' || c == 'T')
-        .filter_map(|p| p.parse().ok())
-        .collect();
-    if n.len() < 3 {
-        return 0;
-    }
-    let (mut y, mo, d) = (n[0], n[1], n[2]);
-    let (h, mi, se) = (
-        n.get(3).copied().unwrap_or(0),
-        n.get(4).copied().unwrap_or(0),
-        n.get(5).copied().unwrap_or(0),
-    );
-    if mo <= 2 {
-        y -= 1;
-    }
-    let era = (if y >= 0 { y } else { y - 399 }) / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
-    days * 86400 + h * 3600 + mi * 60 + se
-}
-
-/// Stable-egress контроль прокси: маппит IP прокси подписки → срок из IPRoyal (список заказов),
-/// пишет `proxy_expire` в реестр и продлевает истекающие allocations без смены IP.
-/// Provider traffic и Telegram-уведомления эта проверка не создаёт.
-async fn proxy_lifecycle_loop(cfg: Arc<Config>) {
-    if cfg.iproyal_key.is_empty() {
-        eprintln!("proxy-lifecycle: AUTH_BOT_IPROYAL_KEY пуст — контроль прокси выключен");
-        return;
-    }
-    let ipr = iproyal::Iproyal::new(&cfg.iproyal_key);
-    loop {
-        proxy_check_once(&cfg, &ipr).await;
-        tokio::time::sleep(std::time::Duration::from_secs(1800)).await; // 30 мин (IPRoyal API, не Anthropic)
-    }
-}
-
-const SUB_LIFETIME_DAYS: i64 = 30; // срок жизни подписки = added_ts + 30д (совпадает с движком)
-
 /// Автоматическое окно допуска Gemini: раз в минуту забираем аккаунты, у которых наступил срок
 /// следующей пробы. Само расписание (каждые 5 минут в течение 24 часов) живёт в SQLite, поэтому
 /// перезапуск бота его не сбрасывает и не устраивает залп проб на старте.
@@ -359,195 +299,6 @@ async fn preflight_authority(authority: registry::authority::AuthorityConfig) ->
     .context("authbot PostgreSQL preflight task failed")?
 }
 
-/// Записать proxy_expire/checked в PostgreSQL authority движка.
-async fn write_proxy_expire(
-    auth: registry::authority::AuthorityConfig,
-    email: String,
-    expire: String,
-    now: i64,
-    ok: bool,
-) {
-    let _ = tokio::task::spawn_blocking(move || {
-        if let Ok(mut a) = auth.connect_with_application_name("claude-authbot") {
-            let _ = a.set_proxy_meta(&email, &expire, now, ok);
-        }
-    })
-    .await;
-}
-
-async fn proxy_check_once(cfg: &Config, ipr: &iproyal::Iproyal) {
-    let orders = match ipr.list_isp_orders().await {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("proxy-lifecycle: IPRoyal {e}");
-            return;
-        }
-    };
-    let by_ip: std::collections::HashMap<String, (String, i64)> = orders
-        .iter()
-        .cloned()
-        .map(|(ip, exp, oid)| (ip, (exp, oid)))
-        .collect();
-    let by_order: std::collections::HashMap<i64, String> = orders
-        .into_iter()
-        .filter(|(_, _, order_id)| *order_id > 0)
-        .map(|(_, expire, order_id)| (order_id, expire))
-        .collect();
-    let now = unix_now();
-    // подписки (email, proxy_host, added_ts) — из authority движка (Postgres/SQLite) на blocking-потоке.
-    // subs_admin отдаёт proxy_host без user:pass — proxy_ip это переваривает.
-    let ac = authority_cfg(cfg);
-    let subs: Vec<(String, String, i64)> = tokio::task::spawn_blocking(move || {
-        ac.connect_with_application_name("claude-authbot")
-            .ok()
-            .and_then(|mut a| a.subs_admin().ok())
-            .map(|rows| {
-                rows.into_iter()
-                    .map(|s| (s.email, s.proxy_host, s.added_ts))
-                    .collect()
-            })
-            .unwrap_or_default()
-    })
-    .await
-    .unwrap_or_default();
-
-    let mut alerts: Vec<(String, String)> = Vec::new();
-    for (email, proxy, added_ts) in subs {
-        let ip = proxy_ip(&proxy);
-        if ip.is_empty() {
-            continue;
-        }
-        let sub_days_left = if added_ts > 0 {
-            (added_ts + SUB_LIFETIME_DAYS * 86400 - now) as f64 / 86400.0
-        } else {
-            999.0
-        };
-        match by_ip.get(&ip) {
-            Some((exp, oid)) => {
-                let t = iso_to_unix(exp);
-                let prox_days = if t > 0 {
-                    (t - now) as f64 / 86400.0
-                } else {
-                    999.0
-                };
-                // Прокси истекает <3д, а подписка жить ещё >5д → ПРОДЛИТЬ тот же IP (extend), а не менять.
-                if t > 0 && prox_days < 3.0 && sub_days_left > 5.0 && *oid > 0 {
-                    match ipr.extend_order(*oid).await {
-                        Ok(ne) => {
-                            let show = ne.get(..10).unwrap_or(&ne).to_string();
-                            alerts.push((
-                                email.clone(),
-                                format!("✅ авто-продлён (тот же IP) до {show}"),
-                            ));
-                            write_proxy_expire(authority_cfg(cfg), email.clone(), ne, now, true)
-                                .await;
-                        }
-                        Err(e) => {
-                            alerts.push((
-                                email.clone(),
-                                format!("❌ продление не удалось (баланс IPRoyal?): {e}"),
-                            ));
-                            write_proxy_expire(
-                                authority_cfg(cfg),
-                                email.clone(),
-                                exp.clone(),
-                                now,
-                                true,
-                            )
-                            .await;
-                        }
-                    }
-                } else {
-                    if t > 0 && prox_days < 3.0 && sub_days_left <= 5.0 {
-                        let show = exp.get(..10).unwrap_or(exp).to_string();
-                        alerts.push((
-                            email.clone(),
-                            format!(
-                                "истекает {show} — подписка тоже на исходе, продление пропущено"
-                            ),
-                        ));
-                    }
-                    write_proxy_expire(authority_cfg(cfg), email.clone(), exp.clone(), now, true)
-                        .await;
-                }
-            }
-            None => {
-                alerts.push((
-                    email.clone(),
-                    format!("прокси {ip} НЕ найден в IPRoyal (осиротел?)"),
-                ));
-                write_proxy_expire(authority_cfg(cfg), email.clone(), String::new(), now, false)
-                    .await;
-            }
-        }
-    }
-    if let Some(oauth) = cfg.gemini_oauth.as_ref() {
-        match oauth.iproyal_leases() {
-            Ok(leases) => {
-                for lease in leases {
-                    let label = format!("Gemini {}", lease.profile_id);
-                    let sub_days_left = if lease.issued_at > 0 {
-                        (lease.issued_at + SUB_LIFETIME_DAYS * 86400 - now) as f64 / 86400.0
-                    } else {
-                        999.0
-                    };
-                    match by_order.get(&lease.order_id) {
-                        Some(expire) => {
-                            let expiry_ts = iso_to_unix(expire);
-                            let proxy_days_left = if expiry_ts > 0 {
-                                (expiry_ts - now) as f64 / 86400.0
-                            } else {
-                                999.0
-                            };
-                            if expiry_ts > 0 && proxy_days_left < 3.0 && sub_days_left > 5.0 {
-                                match ipr.extend_order(lease.order_id).await {
-                                    Ok(new_expiry) => {
-                                        let show = new_expiry
-                                            .get(..10)
-                                            .unwrap_or(&new_expiry)
-                                            .to_string();
-                                        alerts.push((
-                                            label,
-                                            format!(
-                                                "✅ IPRoyal allocation продлён без смены egress до {show}"
-                                            ),
-                                        ));
-                                    }
-                                    Err(_) => alerts.push((
-                                        label,
-                                        "❌ IPRoyal allocation не продлён; provider response redacted"
-                                            .into(),
-                                    )),
-                                }
-                            } else if expiry_ts > 0 && proxy_days_left < 3.0 && sub_days_left <= 5.0
-                            {
-                                let show = expire.get(..10).unwrap_or(expire);
-                                alerts.push((
-                                    label,
-                                    format!(
-                                        "IPRoyal allocation истекает {show}; подписка тоже на исходе"
-                                    ),
-                                ));
-                            }
-                        }
-                        None => alerts.push((
-                            label,
-                            "IPRoyal order отсутствует; egress автоматически не заменялся".into(),
-                        )),
-                    }
-                }
-            }
-            Err(_) => eprintln!("proxy-lifecycle: encrypted Gemini lease scan skipped"),
-        }
-    }
-    if !alerts.is_empty() {
-        eprintln!(
-            "proxy-lifecycle: suppressed {} Telegram notification item(s)",
-            alerts.len()
-        );
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = env::args().skip(1);
@@ -563,6 +314,10 @@ async fn main() -> Result<()> {
         return run_gemini_proxy_operator(&command, &profile_id);
     }
     let token = env_opt("AUTH_BOT_TOKEN").ok_or_else(|| anyhow!("AUTH_BOT_TOKEN не задан"))?;
+    let proxy_admin_control_key = env_opt("CLAUDE_API_CONTROL_KEY")
+        .ok_or_else(|| anyhow!("CLAUDE_API_CONTROL_KEY обязателен для proxy admin API"))?;
+    let proxy_admin_bind_raw = env_opt("AUTH_BOT_PROXY_ADMIN_BIND");
+    let proxy_admin_bind = proxy_admin::parse_bind(proxy_admin_bind_raw.as_deref())?;
     let (admins_id, admins_name) = parse_admins(&env_opt("AUTH_BOT_ADMIN").unwrap_or_default());
     let home = env::var("HOME").unwrap_or_default();
     let database_url = env_opt("CLAUDE_API_DATABASE_URL")
@@ -644,12 +399,23 @@ async fn main() -> Result<()> {
         eprintln!("⚠️ AUTH_BOT_ADMIN пуст — админ не задан");
     }
 
-    // Stable-egress контроль прокси: срок из IPRoyal → реестр (панель показывает «прокси до»)
-    // и продление того же IP. Telegram-уведомления не отправляет. Раз в 30 мин.
-    tokio::spawn(proxy_lifecycle_loop(cfg.clone()));
-    eprintln!(
-        "proxy-lifecycle: контроль прокси запущен без Telegram-уведомлений (IPRoyal, 30 мин)"
-    );
+    let proxy_admin_iproyal = if cfg.iproyal_key.is_empty() {
+        None
+    } else {
+        Some(Arc::new(iproyal::Iproyal::new(&cfg.iproyal_key)))
+    };
+    let proxy_admin = proxy_admin::Service::new(
+        proxy_admin_bind,
+        proxy_admin_control_key,
+        store.clone(),
+        proxy_admin_iproyal,
+        authority_cfg(&cfg),
+        cfg.fleet.clone(),
+        cfg.codex_roster.clone(),
+        cfg.gemini_oauth.clone(),
+    )?;
+    let mut proxy_admin_runtime = tokio::spawn(proxy_admin.run());
+    eprintln!("proxy-admin: loopback listener and lifecycle actor enabled");
 
     let mut gemini_callback = if cfg.gemini_oauth.is_some() {
         let (oauth_bot, oauth_store, oauth_cfg) = (bot.clone(), store.clone(), cfg.clone());
@@ -660,7 +426,9 @@ async fn main() -> Result<()> {
         eprintln!("Gemini OAuth callback enabled");
         let (sweep_bot, sweep_store, sweep_cfg) = (bot.clone(), store.clone(), cfg.clone());
         tokio::spawn(gemini_verification_sweep_loop(
-            sweep_bot, sweep_store, sweep_cfg,
+            sweep_bot,
+            sweep_store,
+            sweep_cfg,
         ));
         eprintln!(
             "Gemini acceptance sweep enabled: recorded accounts are retried every 5 min for 24 h"
@@ -676,6 +444,10 @@ async fn main() -> Result<()> {
         let updates = match gemini_callback.as_mut() {
             Some(callback) => {
                 tokio::select! {
+                    result = &mut proxy_admin_runtime => {
+                        let _ = result;
+                        return Err(anyhow!("Proxy admin runtime stopped"));
+                    }
                     result = callback => {
                         let _ = result;
                         // A configured callback is part of intake readiness. Exit with one generic
@@ -686,7 +458,15 @@ async fn main() -> Result<()> {
                     updates = bot.get_updates(offset, 50) => updates,
                 }
             }
-            None => bot.get_updates(offset, 50).await,
+            None => {
+                tokio::select! {
+                    result = &mut proxy_admin_runtime => {
+                        let _ = result;
+                        return Err(anyhow!("Proxy admin runtime stopped"));
+                    }
+                    updates = bot.get_updates(offset, 50) => updates,
+                }
+            }
         };
         match updates {
             Ok(updates) => {

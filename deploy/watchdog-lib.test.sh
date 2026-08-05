@@ -1908,6 +1908,11 @@ grep -Fq 'handle_path /openkeys-admin/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'handle /api/internal/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up X-OpenKeys-Control-Key "<OPENKEYS_INTERNAL_KEY_PLACEHOLDER>"' "$ROOT/deploy/Caddyfile"
 grep -Fq 'handle_path /partner-admin/*' "$ROOT/deploy/Caddyfile"
+grep -Fq 'handle /proxy-admin/* {' "$ROOT/deploy/Caddyfile"
+grep -Fq 'reverse_proxy 127.0.0.1:8806' "$ROOT/deploy/Caddyfile"
+grep -Fq 'header_up Host 127.0.0.1:8806' "$ROOT/deploy/Caddyfile"
+grep -Fq 'header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"' "$ROOT/deploy/Caddyfile"
+grep -Fq 'header_up X-Admin-Actor {http.request.header.X-Admin-Actor}' "$ROOT/deploy/Caddyfile"
 grep -Fq 'copy_headers X-Admin-Actor X-Admin-Account-Id' "$ROOT/deploy/Caddyfile"
 grep -Fq 'encode zstd gzip' "$ROOT/deploy/Caddyfile"
 grep -Fq 'Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"' \
@@ -2029,6 +2034,8 @@ grep -Fq 'Environment=HOME=/srv/claude-api/data/authbot' "$ROOT/systemd/claude-a
   || wd_die "the protected authbot has no writable home for an already-running old binary"
 grep -Fq 'EnvironmentFile=/srv/claude-api/data/engine-postgres.env' "$ROOT/systemd/claude-authbot.service" \
   || wd_die "the authbot can silently fall back from the engine PostgreSQL authority"
+grep -Fq 'EnvironmentFile=-/srv/claude-api/data/server.env' "$ROOT/systemd/claude-authbot.service" \
+  || wd_die "the authbot proxy-admin listener cannot receive the shared control key"
 grep -Fq 'AuthorityConfig::Postgres' "$ROOT/crates/authbot/src/main.rs" \
   || wd_die "the authbot registry is not pinned to PostgreSQL"
 ! grep -Fq 'subscriptions.db' "$ROOT/crates/authbot/src/main.rs" \
@@ -2842,7 +2849,7 @@ for rendered in "$rendered_once" "$rendered_twice"; do
   ! grep -Fq 'basic_auth' "$rendered"
   ! grep -Fq '$2y$' "$rendered"
   grep -Fq 'forward_auth 127.0.0.1:8791' "$rendered"
-  [[ $(grep -Fc 'header_up x-api-key "test-control-secret"' "$rendered") == 4 ]]
+  [[ $(grep -Fc 'header_up x-api-key "test-control-secret"' "$rendered") == 5 ]]
   [[ $(grep -Fc 'header_up X-OpenKeys-Control-Key "test-control-secret"' "$rendered") == 1 ]]
   [[ $(grep -Fc 'header_up x-admin-key "test-commerce-secret"' "$rendered") == 2 ]]
   [[ $(grep -Fc 'header_up X-Admin-Key "test-commerce-secret"' "$rendered") == 1 ]]

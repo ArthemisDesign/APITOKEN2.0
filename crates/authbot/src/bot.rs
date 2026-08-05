@@ -1,7 +1,9 @@
 //! Логика бота: команды, машина создания оффера, флоу продавца. Состояние — в SQLite (db).
 //! Выплаты (Фаза 2) и выпуск setup-token (Фаза 3) пока заглушены — помечены TODO.
 
-use crate::db::{AdminState, BatchOverview, PurchaseBatch, SellerJob, SellerJobRef, Store};
+use crate::db::{
+    AdminState, BatchOverview, ProxyAuthorityStatus, PurchaseBatch, SellerJob, SellerJobRef, Store,
+};
 use crate::gemini_oauth;
 use crate::glm_key;
 use crate::glm_roster;
@@ -2027,8 +2029,36 @@ fn looks_like_email(s: &str) -> bool {
     !user.is_empty() && dom.contains('.') && !dom.starts_with('.') && !dom.ends_with('.')
 }
 
-async fn register_sub(cfg: &Config, email: &str, token: &str, proxy: &str) -> anyhow::Result<()> {
+fn opaque_claude_local_id(email: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("claude_{:x}", Sha256::digest(email.as_bytes()))
+}
+
+struct ClaudePublication {
+    added_ts: i64,
+    canonical_ip: Option<std::net::IpAddr>,
+}
+
+fn literal_proxy_ip(proxy: &str) -> anyhow::Result<Option<std::net::IpAddr>> {
+    if proxy.is_empty() {
+        return Ok(None);
+    }
+    Ok(reqwest::Url::parse(proxy)
+        .map_err(|_| anyhow::anyhow!("invalid canonical proxy URL"))?
+        .host_str()
+        .map(|host| host.trim_matches(['[', ']']))
+        .and_then(|host| host.parse().ok()))
+}
+
+async fn register_sub(
+    cfg: &Config,
+    email: &str,
+    token: &str,
+    proxy: &str,
+    _proxy_order_id: i64,
+) -> anyhow::Result<ClaudePublication> {
     // Пишем прямо в PostgreSQL authority движка; reload_loop подхватит подписку за ~30с.
+    let canonical_ip = literal_proxy_ip(proxy)?;
     let (authority, email, token, proxy, fleet) = (
         crate::authority_cfg(cfg),
         email.to_string(),
@@ -2036,12 +2066,22 @@ async fn register_sub(cfg: &Config, email: &str, token: &str, proxy: &str) -> an
         proxy.to_string(),
         cfg.fleet.clone(),
     );
-    tokio::task::spawn_blocking(move || {
+    let added_ts = tokio::task::spawn_blocking(move || {
         let mut auth = authority.connect_with_application_name("claude-authbot")?;
-        auth.add(&email, &token, &proxy, &fleet)
+        auth.add(&email, &token, &proxy, &fleet)?;
+        auth.load_claude_lifecycle()?
+            .into_iter()
+            .find(|profile| profile.email == email)
+            .map(|profile| profile.added_ts)
+            .filter(|timestamp| *timestamp > 0)
+            .ok_or_else(|| anyhow::anyhow!("registered Claude lifecycle row is unavailable"))
     })
     .await
-    .map_err(|e| anyhow::anyhow!("PostgreSQL registration worker failed: {e}"))?
+    .map_err(|e| anyhow::anyhow!("PostgreSQL registration worker failed: {e}"))??;
+    Ok(ClaudePublication {
+        added_ts,
+        canonical_ip,
+    })
 }
 
 /// Разобранный ввод прокси: канонический URL плюс факт наличия учётных данных.
@@ -2218,6 +2258,16 @@ async fn do_start_token(
         };
         Some(rotated)
     };
+    let proxy_order_id = if standalone {
+        0
+    } else {
+        store
+            .get_user(chat)
+            .ok()
+            .flatten()
+            .map(|user| user.hproxy_order)
+            .unwrap_or(0)
+    };
     let (cb, config_dir, em, px) = (
         cfg.claude_bin.clone(),
         cfg.claude_config_dir.clone(),
@@ -2227,7 +2277,15 @@ async fn do_start_token(
     let session_job = expected_job.clone();
     let _ = bot.send(chat, "⏳ Готовлю авторизацию Claude…").await;
     match tokio::task::spawn_blocking(move || {
-        setup_token::start(chat, &em, &px, &cb, &config_dir, session_job)
+        setup_token::start(
+            chat,
+            &em,
+            &px,
+            proxy_order_id,
+            &cb,
+            &config_dir,
+            session_job,
+        )
     })
     .await
     {
@@ -2276,9 +2334,51 @@ async fn do_feed_token(
     let cs = codestate.trim().to_string();
     let _ = bot.send(chat, "⏳ Проверяю авторизацию…").await;
     match tokio::task::spawn_blocking(move || setup_token::feed(chat, &cs)).await {
-        Ok(Ok(Outcome::Token(tok, email, proxy, expected_job))) => {
-            match register_sub(cfg, &email, &tok, &proxy).await {
-                Ok(_) => {
+        Ok(Ok(Outcome::Token {
+            token,
+            email,
+            proxy,
+            proxy_order_id,
+            job: expected_job,
+        })) => {
+            let current = expected_job.is_none()
+                || seller_handoff_is_current(
+                    store,
+                    chat,
+                    expected_job.as_ref(),
+                    HandoffKind::Claude,
+                );
+            if !current {
+                return;
+            }
+            match register_sub(cfg, &email, &token, &proxy, proxy_order_id).await {
+                Ok(publication) => {
+                    let binding = match (proxy_order_id, publication.canonical_ip) {
+                        (0, _) => Ok(()),
+                        (_, Some(allocation_ip)) => store
+                            .upsert_proxy_binding_allocation(
+                                "claude",
+                                &opaque_claude_local_id(&email),
+                                proxy_order_id,
+                                &allocation_ip.to_string(),
+                                publication.added_ts,
+                                ProxyAuthorityStatus::Local,
+                            )
+                            .map(|_| ()),
+                        (_, None) => Err(anyhow::anyhow!(
+                            "managed Claude proxy host is not a literal allocation IP"
+                        )),
+                    };
+                    if binding.is_err() {
+                        notify_admins(
+                            bot,
+                            cfg,
+                            "⚠️ Claude опубликован в registry, но lifecycle binding не записан. Сделка оставлена незавершённой; публикацию не откатывать, требуется reconciliation.",
+                            None,
+                        )
+                        .await;
+                        return;
+                    }
                     let current = expected_job.is_none()
                         || seller_handoff_is_current(
                             store,
@@ -4098,10 +4198,9 @@ async fn send_handoff_step_card(
 /// A seller-proxy job may replace its proxy after a failed OAuth transaction. Buyer-proxy jobs
 /// and legacy jobs backed by an issued IPRoyal order remain pinned to their assigned egress.
 ///
-/// `hproxy_order` alone cannot answer this for Claude and Codex: `deliver_issued_proxy` records the
-/// IPRoyal order id only for Gemini and writes a literal `0` otherwise, so a Claude or Codex legacy
-/// offer holding a paid 30-day lease would look replaceable and a rewind would orphan it. The
-/// product-independent durable flag is `offers.proxy_issued`, and an unreadable offer fails closed.
+/// New bot-issued handoffs persist `hproxy_order` for every provider. The durable
+/// `offers.proxy_issued` flag remains the fail-closed authority for legacy rows created before that
+/// propagation existed, and an unreadable offer is never treated as replaceable.
 pub(crate) fn job_accepts_seller_proxy(
     store: &Store,
     expected: &SellerJobRef,
@@ -4647,6 +4746,12 @@ async fn start_codex_handoff(
             .await;
         return;
     };
+    let proxy_order_id = store
+        .get_user(chat)
+        .ok()
+        .flatten()
+        .map(|user| user.hproxy_order)
+        .unwrap_or(0);
     let (bin, dir, em, px) = (
         cfg.codex_bin.clone(),
         cfg.codex_homes_dir.clone(),
@@ -4656,7 +4761,7 @@ async fn start_codex_handoff(
     let _ = bot.send(chat, "⏳ Готовлю авторизацию ChatGPT…").await;
     let started = tokio::task::spawn_blocking({
         let (em, px, bin, dir) = (em.clone(), px.clone(), bin.clone(), dir.clone());
-        move || crate::codex_login::start(chat, &em, &px, &bin, &dir)
+        move || crate::codex_login::start(chat, &em, &px, proxy_order_id, &bin, &dir)
     })
     .await;
     let auth = match started {
@@ -4704,7 +4809,40 @@ async fn start_codex_handoff(
             tokio::task::spawn_blocking(move || crate::codex_login::wait(chat, &bin, &roster))
                 .await;
         match outcome {
-            Ok(crate::codex_login::Outcome::Authorized { label, has_proxy }) => {
+            Ok(crate::codex_login::Outcome::Authorized {
+                label,
+                has_proxy,
+                profile_id,
+                proxy_order_id,
+                issued_at,
+                canonical_ip,
+            }) => {
+                let binding = match (proxy_order_id, canonical_ip) {
+                    (0, _) => Ok(()),
+                    (_, Some(allocation_ip)) => store2
+                        .upsert_proxy_binding_allocation(
+                            "codex",
+                            &profile_id,
+                            proxy_order_id,
+                            &allocation_ip.to_string(),
+                            issued_at,
+                            ProxyAuthorityStatus::Local,
+                        )
+                        .map(|_| ()),
+                    (_, None) => Err(anyhow::anyhow!(
+                        "managed Codex proxy host is not a literal allocation IP"
+                    )),
+                };
+                if binding.is_err() {
+                    notify_admins(
+                        &bot2,
+                        &cfg2,
+                        "⚠️ Codex опубликован в roster, но lifecycle binding не записан. Сделка оставлена незавершённой; публикацию не откатывать, требуется reconciliation.",
+                        None,
+                    )
+                    .await;
+                    return;
+                }
                 let current = seller_handoff_is_current(
                     &store2,
                     chat,
@@ -4837,7 +4975,7 @@ async fn deliver_issued_proxy(
                     &expected_job,
                     next_step,
                     &issued_proxy,
-                    if gemini { px.order_id } else { 0 },
+                    px.order_id,
                 )
                 .unwrap_or(false)
             {

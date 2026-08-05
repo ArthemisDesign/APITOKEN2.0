@@ -293,14 +293,29 @@ are preserved in `offer_archive_events`. The `paying` phase is not subject to de
 - `AUTH_BOT_GEMINI_TIER_EVIDENCE` — `1` enables bounded raw tier id/name in the Gemini admission
   log (diagnostics for a new Google plan). Off by default.
 - `AUTH_BOT_IPROYAL_KEY` — automatic proxy issuance (empty = manual input).
+- `AUTH_BOT_PROXY_ADMIN_BIND` — loopback-only proxy lifecycle API bind (default
+  `127.0.0.1:8806`; non-loopback addresses are rejected).
+- `CLAUDE_API_CONTROL_KEY` — required exact `x-api-key` for both proxy lifecycle endpoints;
+  `POST /proxy-admin/renew` additionally requires the verified `X-Admin-Actor` header.
 
-The background lifecycle check refreshes the proxy expiry and, when needed, renews the same
-IPRoyal allocation, but does not send periodic "Контроль прокси" ("Proxy check") reports to
-Telegram. A second background loop ticks once a minute over `gemini_pending_verifications` and runs
-the automatic Gemini acceptance window (Gemini invariant 4): due accounts are probed sequentially —
-never in parallel, since each attempt is a real paid generation through a per-account authenticated
-CONNECT — a late success publishes and settles the deal on its own, and a closed window notifies
-once.
+The background proxy lifecycle check refreshes bounded inventory/balance state and disables any
+unexpected IPRoyal auto-extend setting, but it never extends a lease or spends reseller balance.
+`GET /proxy-admin/inventory`, refresh and guard paths are read-only with respect to paid renewal.
+Only an authenticated `POST /proxy-admin/renew` may manually extend selected durable opaque
+inventory IDs, after the idempotency request has been committed to private SQLite. The exact
+allocation IP is snapshotted privately; selected allocations sharing an order are sent in one
+selective extension call and receive separate per-inventory events. Inventory includes every
+Claude/GPT/Gemini subscription with a literal proxy plus every unmatched IPRoyal allocation. Exact
+order+IP evidence wins; an order-zero legacy profile is bound only when the IP has one unique
+provider candidate, while ambiguity stays unbound. Public rows contain only opaque/hash hints and
+never the IP, email, subject, project, proxy URL or credentials. A committed
+`pending` request resumes on exact-key replay after a restart; `in_progress` and indeterminate work
+never replays automatically. No periodic "Контроль прокси" ("Proxy check") reports are sent to
+Telegram. A separate background loop ticks once a minute over `gemini_pending_verifications` and
+runs the automatic Gemini acceptance window (Gemini invariant 4): due accounts are probed
+sequentially — never in parallel, since each attempt is a real paid generation through a per-account
+authenticated CONNECT — a late success publishes and settles the deal on its own, and a closed
+window notifies once.
 
 **Deploy:** the watchdog builds the bot together with the engine and places the tested binary in
 the immutable engine release; `claude-authbot.service` runs

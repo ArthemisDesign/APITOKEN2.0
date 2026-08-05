@@ -5,6 +5,7 @@ import { Pill, TableCard } from "@/components/ui";
 import { duration, nanoMoney } from "@/lib/format";
 import { providerInteger } from "./provider-calibration";
 import { ProviderQuotaMeter, ProviderSection } from "./provider-board-ui";
+import { SubscriptionExpiry } from "./subscription-lifecycle";
 import type { CapacityResponse, CapacitySub, ClaudeSubWindow } from "./types";
 
 function moneyOrDash(value: string | null | undefined): string {
@@ -162,6 +163,7 @@ function ClaudeSubscriptions({ items, now }: { items: CapacitySub[]; now: number
             <tr>
               <th className="left">Почта</th>
               <th className="left">Состояние</th>
+              <th>Окончание</th>
               <th>Quota 5ч / reset</th>
               <th className="provider-five-hour-money">Доступно $ · 5ч</th>
               <th>Quota 7д / reset</th>
@@ -177,6 +179,7 @@ function ClaudeSubscriptions({ items, now }: { items: CapacitySub[]; now: number
                 <tr key={`${item.email ?? "claude"}-${index}`}>
                   <td className="left"><b>{item.email || "—"}</b><small>{item.plan ?? "—"}</small></td>
                   <td className="left"><Pill kind={health.kind}>{health.label}</Pill></td>
+                  <SubscriptionExpiry lifecycle={item} nowSeconds={now} />
                   <td><ProviderQuotaMeter usedPercent={five.quota.value} label={five.quota.label} reset={five.reset} /></td>
                   <ClaudeMoney view={five} fiveHour />
                   <td><ProviderQuotaMeter usedPercent={weekly.quota.value} label={weekly.quota.label} reset={weekly.reset} /></td>

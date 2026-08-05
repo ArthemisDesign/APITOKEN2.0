@@ -37,6 +37,9 @@ content-studio.apitoken.sale ---------------> Caddy managed auth
                                                 |-> Next.js workspace 127.0.0.1:3500
                                                 `-> commerce balancer 127.0.0.1:8791
 
+admin.apitoken.sale /proxy-admin/* ---------> Caddy managed auth
+                                                `-> authbot proxy lifecycle 127.0.0.1:8806
+
 commercial host -- encrypted Borg/SSH --> 84.32.109.82:2223/backup/.repo
 ```
 

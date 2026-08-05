@@ -44,6 +44,26 @@ The same-origin admin panel additionally reads `GET /capacity`, `GET /codex-subs
 These routes are protected by server-side control/panel auth; the browser reaches them only through the closed
 `admin.apitoken.sale`, and no keys are issued to it.
 
+Authbot owns a separate loopback proxy-lifecycle contract, also exposed only through that closed
+admin vhost:
+
+- `GET /proxy-admin/inventory` returns schema version, observation time, IPRoyal balance as an exact
+  decimal nanoUSD string, an aggregate auto-extend warning, and sanitized rows. The item key set is
+  `inventory_id`, `proxy_hint`, `order_hint`, `provider`, `subscription_plan`, `liveness`,
+  `subscription_expires_at`, `proxy_expires_at`, `binding_status`, `renewable`,
+  `renew_block_code`. Full IP/email/subject/project/proxy URL/credentials/tokens are forbidden.
+- `POST /proxy-admin/renew` accepts only `{idempotency_key: UUID, inventory_ids: string[1..100]}`
+  and additionally requires the verified `X-Admin-Actor`. It renews only durable exact
+  order+allocation bindings, groups allocations by order, and reports per-inventory
+  `renewed|failed|uncertain`. An uncertain paid POST is never automatically replayed.
+
+Every IPRoyal purchase has `auto_extend=false`; a free background guard disables unexpected
+order-level auto-extend across the complete inventory and confirms the state by exact refetch. No
+background task performs a paid extension. Legacy order-zero subscriptions are matched only by one
+unique literal-IP candidate; ambiguity remains visibly unbound. Subscription lifecycle is 30 days
+for Claude/GPT, 18 Gregorian UTC calendar months for Gemini `google_ai_pro`, and 30 days for other
+Gemini plans.
+
 `GET /spend-stats` (windows `d1`/`d7`/`d30` plus an optional `from`/`to` range) is additionally consumed
 server-side by the commercial backend for `GET /admin/finance/engine-spend`: it is the only source that
 also covers engine accounts with no commerce user (OpenKeys, service/manual accounts). It stays a
@@ -53,7 +73,10 @@ read-only operator projection in engine USD numbers — never a money authority 
 `conversion_models`. Money fields for calculations are decimal nanoUSD strings. The catalog comes from
 `metering` and separates Standard/Fast input, cache-read, cache-write 5m/1h and output; Web Search has
 a separate per-request rate. Per-sub `rem5h_nano`/`rem7d_nano` and email mask let the panel
-draw compact windows without float money and without exposing the account.
+draw compact windows without float money and without exposing the account. Each `per_sub` object also
+has nullable `acquired_at`, `subscription_expires_at` (Unix seconds) and `subscription_days_left`
+(fractional days at response `now`, negative after expiry). These values come from registry `added_ts`;
+the server joins by the full internal email before serializing the mask, never by the non-unique mask.
 
 Claude capacity is the exact realized API-dollar equivalent of the actually served mixture, not the
 Max/Pro price and not a promise of a fixed number of tokens. Every successful turn (customer or admin)
@@ -154,7 +177,9 @@ via the conversion formula below.
 
 The response root also publishes `conversion_models`: versioned API/credit rates, independent Fast
 multipliers and long-context modifiers. All money and credits are serialized as decimal strings; tokens,
-percentages, timestamps and counters are numbers. Email is only a bounded mask without a domain. The UI must compute
+percentages, timestamps and counters are numbers. Email is only a bounded mask without a domain. Every home
+also publishes nullable `acquired_at`, `subscription_expires_at` and `subscription_days_left` from the
+sealed credential's immutable `issued_at`; Codex expiry is exactly 30×86400 seconds later. The UI must compute
 workload conversion via BigInt:
 
 ```text
@@ -168,8 +193,12 @@ rate but is included in fresh input on the credit card.
 `conversion_models` from `metering::gemini` and `quota_model_ids` for joining a public model with its
 Antigravity effort buckets. `remaining_amount` is serialized as a decimal string; if Google returns
 only `remaining_fraction`, the token/unit quantity remains unknown and is not derived from a
-workload-dollar blend. The profile contains only a bounded email hint (four characters of the local part without
-the domain); full email, subject, project, private tier, proxy and OAuth are not serialized.
+workload-dollar blend. Profiles add the same nullable lifecycle fields from immutable credential `issued_at`:
+canonical `google_ai_pro` expires after 18 Gregorian UTC calendar months (time-of-day preserved and an invalid
+month-end clamped), while every other canonical Gemini plan expires after exactly 30×86400 seconds.
+`subscription_days_left` is fractional at response `now` and may be negative. The profile contains only a
+bounded email hint (four characters of the local part without the domain); full email, subject, project,
+private tier, proxy and OAuth are not serialized.
 
 `GET /kimi-subs` is a read-only operational projection of the backend-only KIMI plane. Production
 is served by a dedicated default-off KIMI plane via the stable loopback origin 8803

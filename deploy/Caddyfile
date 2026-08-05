@@ -367,6 +367,15 @@ admin.apitoken.sale {
 			header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"
 		}
 	}
+	# Proxy lifecycle is owned by authbot. Keep the URI intact, inject the same server-side control
+	# credential as other admin data routes, and forward the verified managed-admin actor for audit.
+	handle /proxy-admin/* {
+		reverse_proxy 127.0.0.1:8806 {
+			header_up Host 127.0.0.1:8806
+			header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"
+			header_up X-Admin-Actor {http.request.header.X-Admin-Actor}
+		}
+	}
 	# GPT-подписки живут в отдельном OpenAI-runtime: его operational status отдаёт только
 	# стабильный OpenAI origin; на Anthropic-процессе /codex-subs вернул бы enabled:false.
 	@admin_openai_data path /codex-subs
