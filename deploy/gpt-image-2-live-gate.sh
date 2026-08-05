@@ -9,8 +9,8 @@ source "$LIB"
 STATE_ROOT=/var/lib/apitoken/watchdog
 ENGINE_RELEASE_ROOT=/srv/claude-api/releases
 ENGINE_DATA_ROOT=/srv/claude-api/data
-EXPECTED_IMPLEMENTATION_SHA=3c17b31b6dfdcb8867d8def57e7aedc4ebc87644
-GENERATION_BUDGET_NANOUSD=8560000
+EXPECTED_IMPLEMENTATION_SHA=df58715abb4f1ac52b6c46b1ea6f830c6e11178f
+GENERATION_BUDGET_NANOUSD=22330000
 
 [[ $# -eq 1 ]] || wd_die "usage: gpt-image-2-live-gate.sh <exact-engine-sha>"
 SHA=$1
@@ -69,10 +69,13 @@ verify_checkpoint() {
     .model == "gpt-image-2" and
     (.profile | type == "string" and length > 0) and
     (.image_turn_id | type == "string" and length > 0) and
-    .width == 1024 and .height == 1024 and
+    (.width | type == "number" and . >= 1 and . <= 3840 and floor == .) and
+    (.height | type == "number" and . >= 1 and . <= 3840 and floor == .) and
+    ((.width * .height) >= 655360 and (.width * .height) <= 8294400) and
+    ((.width <= 3 * .height) and (.height <= 3 * .width)) and
     .provider.background == "opaque" and
     .provider.quality == "low" and
-    .provider.size == "1024x1024" and
+    (.provider.size == "auto" or .provider.size == "\(.width)x\(.height)") and
     ((.provider.output_format == null) or (.provider.output_format == "png")) and
     (.usage | type == "object" and length > 0) and
     ((.usage | [.. | numbers]) as $values |
@@ -108,7 +111,8 @@ verify_checkpoint() {
   [[ $png_signature == 89504e470d0a1a0a ]] || return 1
 
   usage_summary=$(jq -c '.usage' "$checkpoint")
-  printf 'GPT Image 2 generation GREEN: 1024x1024 opaque/low; usage=%s; png=%s; provider_request_id=%s\n' \
+  printf 'GPT Image 2 generation GREEN: %sx%s opaque/low/auto; usage=%s; png=%s; provider_request_id=%s\n' \
+    "$(jq -r '.width' "$checkpoint")" "$(jq -r '.height' "$checkpoint")" \
     "$usage_summary" "${actual_sha:0:16}" \
     "$(jq -r 'if .request_id == null then "absent" else "present" end' "$checkpoint")"
 }

@@ -290,7 +290,9 @@ is only what is needed to walk the relationships when making changes:
   opaque/low `1254x1254` result for the requested `1024x1024`; the controller retained only a terminal
   sanitized mismatch journal and no image artifacts. The corrective verifier consumes that existing
   journal before environment loading and cannot replay the request or reinterpret the withdrawal as
-  publication evidence.
+  publication evidence. Auto-size implementation SHA `df58715abb4f1ac52b6c46b1ea6f830c6e11178f`
+  is independently watchdog-GREEN; its separate controller is pinned to that exact binary, a fresh
+  evidence root, and `22_330_000` nanoUSD for one `opaque/low/auto` exact-home generation.
   It introduces no image key/origin/env. There is no
   `AppState`, HTTP/customer,
   router, catalog, defaults, billing/settlement,

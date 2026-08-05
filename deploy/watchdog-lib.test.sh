@@ -3188,11 +3188,17 @@ if wd_path_is_gpt_image_2_live_gate_trigger deploy/watchdog.sh; then
 fi
 grep -Fq '"$ROOT/deploy/gpt-image-2-live-gate.sh"' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'GPT Image 2 live gate is not installed as a fixed controller'
-grep -Fxq 'EXPECTED_IMPLEMENTATION_SHA=3c17b31b6dfdcb8867d8def57e7aedc4ebc87644' \
+grep -Fxq 'EXPECTED_IMPLEMENTATION_SHA=df58715abb4f1ac52b6c46b1ea6f830c6e11178f' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 live gate is not pinned to the watchdog-green active implementation SHA'
-grep -Fxq 'GENERATION_BUDGET_NANOUSD=8560000' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+grep -Fxq 'GENERATION_BUDGET_NANOUSD=22330000' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 live gate lost its numeric authorization ceiling'
+grep -Fq '(.provider.size == "auto" or .provider.size == "\(.width)x\(.height)")' \
+  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 live gate does not enforce the bounded auto-size contract'
+grep -Fq '(.width * .height) >= 655360 and (.width * .height) <= 8294400' \
+  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 live gate does not enforce the output pixel envelope'
 grep -Fq '.state == "evidence_home_mismatch"' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 diagnostic omits a terminal evidence state'
 grep -Fq '(.returned.output_sha256 | type == "string"' \
@@ -3224,14 +3230,14 @@ grep -Fq 'CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0' \
 ! grep -Eiq 'apiyi|laozhang|aihubproxy|apixo|whataicc' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 live gate contains a third-party image relay'
-grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-live-gate.sh 3c17b31b6dfdcb8867d8def57e7aedc4ebc87644' \
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-live-gate.sh df58715abb4f1ac52b6c46b1ea6f830c6e11178f' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die 'GPT Image 2 live gate lacks an exact-SHA sudo bridge'
 grep -A2 -F "require_permitted 'GPT Image 2 exact-SHA live gate'" \
   "$ROOT/deploy/install-sudoers.sh" \
-  | grep -Fq '3c17b31b6dfdcb8867d8def57e7aedc4ebc87644' \
+  | grep -Fq 'df58715abb4f1ac52b6c46b1ea6f830c6e11178f' \
   || wd_die 'GPT Image 2 exact-SHA sudo bridge self-check is not aligned with policy'
-grep -Fxq 'GPT_IMAGE_2_IMPLEMENTATION_SHA=3c17b31b6dfdcb8867d8def57e7aedc4ebc87644' \
+grep -Fxq 'GPT_IMAGE_2_IMPLEMENTATION_SHA=df58715abb4f1ac52b6c46b1ea6f830c6e11178f' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'watchdog does not pin the GPT Image 2 gate to its immutable implementation release'
 live_gate_line=$(grep -nF \

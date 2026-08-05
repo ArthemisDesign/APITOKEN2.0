@@ -148,6 +148,14 @@ accepting that valid terminal journal. The corrective controller is strictly non
 it verifies the existing journal and absence of artifacts before loading runtime credentials or reaching
 the dispatch path. The paid image turn remains permanently non-replayable.
 
+Auto-size implementation SHA `df58715abb4f1ac52b6c46b1ea6f830c6e11178f` is independently
+watchdog-GREEN. Its separate one-shot controller is pinned to that exact active binary and a fresh
+SHA-keyed private root, with an explicit `22_330_000` nanoUSD authorization. It requests only
+`opaque/low/auto`, forces both ClaudeStore fallbacks off, runs the existing free `/wham/usage` preflight,
+and can dispatch one exact-home generation. GREEN requires a real bounded PNG, matching auto-size
+metadata, terminal numeric usage, exact home/turn/SHA attribution, and durable digest-matched internal
+and external evidence. Any terminal mismatch is fenced without image artifacts and cannot be replayed.
+
 Edit can be validated as a blocked plan by repeating `--reference` up to five times. Do not add
 `--execute` until a reviewed normative input-image ceiling and separate numeric authorization exist.
 

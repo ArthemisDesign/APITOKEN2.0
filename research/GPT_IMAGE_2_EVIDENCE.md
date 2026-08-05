@@ -156,13 +156,18 @@ requirement to generate only through our existing OAuth pool. No third-party ima
    itself to report RED; its correction may only consume this existing journal before credential loading
    and network dispatch. This proves native generation reachability and authoritative usage, but not the
    deterministic size control required for publication.
-4. Derive and review a normative edit ceiling, authorize it separately, and run an exact-home edit with
+4. Auto-size implementation SHA `df58715abb4f1ac52b6c46b1ea6f830c6e11178f` is independently
+   watchdog-GREEN. Its separate one-shot controller is pinned to that exact active binary, a fresh
+   SHA-keyed root and `22_330_000` nanoUSD. It can make one `opaque/low/auto` exact-home generation
+   through the sealed pool after the free `/wham/usage` preflight; both external fallbacks remain forced
+   off. Only a bounded PNG with terminal usage and exact home/turn/SHA evidence is GREEN.
+5. Derive and review a normative edit ceiling, authorize it separately, and run an exact-home edit with
    an owned generated PNG. Verify every claimed reference/edit behavior.
-5. Resolve partial-image streaming for the actual native subscription wire before claiming it. Public
+6. Resolve partial-image streaming for the actual native subscription wire before claiming it. Public
    API documentation alone is insufficient.
-6. Only after GREEN generation and edit implement producer-first image billing/customer routes, then a
+7. Only after GREEN generation and edit implement producer-first image billing/customer routes, then a
    separate authenticated public production smoke.
-7. Only in a later publication commit update contracts, model catalogs, router presets, pricing
+8. Only in a later publication commit update contracts, model catalogs, router presets, pricing
    releases, OpenKeys, website, public docs, admin and production defaults. Unsupported mask, streaming,
    format, and multi-turn controls remain absent and explicitly rejected.
 
