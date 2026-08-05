@@ -237,51 +237,6 @@ validate_engine_stage() {
     || die "staged engine KIMI blue-green capability marker is invalid"
 }
 
-# Restart the subscription bot only when the binary it is running differs from the one just shipped.
-#
-# Comparing against the RUNNING process rather than the previous release avoids restarts on unrelated
-# engine deploys while guaranteeing that changed authbot code is actually adopted. Its persisted
-# state machine resets an interrupted Claude `ho_code` session to `ho_email` on startup; Codex already
-# remains at `cx_email`, so a seller can safely start a fresh child after a code deployment.
-#
-# A changed bot is part of the tested engine release. Promotion is incomplete unless that exact
-# binary stays active after restart; otherwise fail the release instead of reporting a false green.
-restart_authbot_if_changed() {
-  local current=$1
-  local unit=claude-authbot.service
-  if [[ "$DRY_RUN" == "1" ]]; then
-    log "dry-run: would restart $unit unless it already runs $current/authbot"
-    return 0
-  fi
-  # Unit files are world-readable; asking for this under sudo only earns a policy denial that
-  # would look exactly like "the unit is absent".
-  if [[ ! -f "/etc/systemd/system/$unit" ]]; then
-    log "$unit is not installed on this host; skipping the authbot restart"
-    return 0
-  fi
-  local pid exe
-  pid=$(systemctl show "$unit" -p MainPID --value 2>/dev/null || true)
-  if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
-    exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)
-    if [[ -n "$exe" && -f "$exe" ]] && cmp -s "$exe" "$current/authbot"; then
-      log "authbot already runs this exact binary; leaving $unit and any in-flight authorization alone"
-      return 0
-    fi
-    log "$unit runs a different binary; restarting onto the tested release"
-  fi
-  log "restarting $unit onto the freshly released authbot"
-  if ! privileged_command systemctl restart "$unit"; then
-    die "$unit did not restart onto the tested release"
-  fi
-  sleep 1
-  pid=$(systemctl show "$unit" -p MainPID --value 2>/dev/null || true)
-  [[ "$pid" =~ ^[1-9][0-9]*$ ]] \
-    || die "$unit is not active after restart"
-  exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)
-  [[ -n "$exe" && -f "$exe" ]] && cmp -s "$exe" "$current/authbot" \
-    || die "$unit failed exact-release verification after restart"
-}
-
 fetch_release_commit() {
   log "fetching tested commit $SHA from origin"
   run git -C "$SOURCE_REPO" fetch --no-tags origin "$SHA"
@@ -458,6 +413,11 @@ restart_selected_services() {
 
 recovery_restart_selected_services() {
   local failed=0
+  if [[ "$DEPLOY_ENGINE" == "1" && -n "$ENGINE_ORIGINAL" ]]; then
+    # Reconcile only after verifying activation_abort actually restored engine current. If restoration
+    # failed, leave authbot aligned with the still-selected candidate and report incomplete recovery.
+    reconcile_authbot_after_engine_restore "$ENGINE_RELEASE_ROOT" "$ENGINE_ORIGINAL" || failed=1
+  fi
   if [[ "$DEPLOY_ENGINE" == "1" && "$RESTART_ENGINE" == "1" ]]; then
     best_effort_restart_units "$ENGINE_SERVICE" || failed=1
   fi
@@ -688,7 +648,8 @@ activate_release_links() {
   fi
 
   if [[ "$DEPLOY_ENGINE" == "1" ]]; then
-    restart_authbot_if_changed "$ENGINE_RELEASE"
+    reconcile_authbot_release "$ENGINE_RELEASE" \
+      || die "claude-authbot.service failed exact-release reconciliation"
     # The public router is deliberately not restarted here. deploy/router-bluegreen.sh starts an
     # inactive exact-binary slot and promotes it after this release-selection transaction commits.
   fi

@@ -305,9 +305,10 @@ A normal deploy:
 4. runs the locked, prebuilt commerce migration before moving the API release link;
 5. installs `ERR`, `EXIT`, `INT`, and `TERM` recovery traps before the first link mutation;
 6. when the target differs from `current`, records the old `current` as `previous` and atomically changes `current`;
-7. in legacy mode, restarts the selected Rust engine and exact-unit gates it; in PostgreSQL mode, `--engine-bluegreen` leaves serving slots untouched for `engine-bluegreen.sh`;
-8. does **not** start, stop, restart, or readiness-probe a commerce API slot—the old API process keeps serving the immutable release from which it was started;
-9. disables recovery traps after link activation and any selected legacy restart succeeds, then instructs the operator to run the matching blue-green controller.
+7. reconciles authbot to the selected engine release through the fixed exact-runtime helper, preserving an exact process and restarting plus exact-verifying a changed or inactive one;
+8. in legacy mode, restarts the selected Rust engine and exact-unit gates it; in PostgreSQL mode, `--engine-bluegreen` leaves serving slots untouched for `engine-bluegreen.sh`;
+9. does **not** start, stop, restart, or readiness-probe a commerce API slot—the old API process keeps serving the immutable release from which it was started;
+10. disables recovery traps after link activation and any selected legacy restart succeeds, then instructs the operator to run the matching blue-green controller. If activation aborts after engine selection, recovery first restores the links and reconciles authbot to the captured original engine release only after verifying engine `current` resolves there. A failed or mismatched `current` restoration leaves authbot untouched and is reported as incomplete recovery.
 
 A same-SHA deploy does not rewrite `previous`. Legacy engine mode may restart its unit; PostgreSQL
 engine and commerce selection leave slot lifecycle to their blue-green controllers.
@@ -361,9 +362,9 @@ deploy/router-bluegreen.sh
 
 The first command selects the immutable rollback release without touching either running API slot. The second starts and verifies the inactive slot from that release, lets Caddy admit it, pre-drains the old slot, and then stops the old process. Do not insert an API restart between these commands.
 
-Rollback fully preflights every selected target before mutating anything: release directory, `.release-sha`, API and migration artifacts or engine binary, plus original `current` and `previous` states for all selected components. It activates links under the same `ERR`/`EXIT`/`INT`/`TERM` recovery trap. PostgreSQL engine and commerce slot lifecycles remain exclusively owned by their blue-green controllers.
+Rollback fully preflights every selected target before mutating anything: release directory, `.release-sha`, API and migration artifacts or engine binary, plus original `current` and `previous` states for all selected components. It activates links under the same `ERR`/`EXIT`/`INT`/`TERM` recovery trap. PostgreSQL engine and commerce slot lifecycles remain exclusively owned by their blue-green controllers, but authbot is an engine-release singleton: `--engine-bluegreen` reconciles it to the selected rollback release before the later provider-slot cutover.
 
-If the target equals `current`, rollback is a link-bookkeeping no-op and does not overwrite `previous`. If activation, engine restart/readiness, or a signal fails, every changed link is restored to its captured original state and selected engine services are restarted best-effort. Rollback never changes database state.
+If the target equals `current`, rollback is a link-bookkeeping no-op and does not overwrite `previous`. If activation, authbot reconciliation, engine restart/readiness, or a signal fails, recovery attempts to restore every changed link, reconciles authbot to the original engine release only when engine `current` verifies there, and restarts selected legacy engine services best-effort. A failed link restoration or reconciliation is reported as incomplete recovery; authbot remains untouched when engine `current` cannot be verified at the original release. Rollback never changes database state.
 
 ## Overrides and dry-run safety
 

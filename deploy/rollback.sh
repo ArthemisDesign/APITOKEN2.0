@@ -106,6 +106,11 @@ restart_selected_services() {
 
 recovery_restart_selected_services() {
   local failed=0
+  if [[ "$ROLLBACK_ENGINE" == "1" && -n "$ENGINE_ORIGINAL" ]]; then
+    # Undo target adoption only if activation_abort actually restored engine current. Otherwise leave
+    # authbot aligned with the still-selected rollback target and report incomplete recovery.
+    reconcile_authbot_after_engine_restore "$ENGINE_RELEASE_ROOT" "$ENGINE_ORIGINAL" || failed=1
+  fi
   if [[ "$ROLLBACK_ENGINE" == "1" && "$RESTART_ENGINE" == "1" ]]; then
     best_effort_restart_units "$ENGINE_SERVICE" || failed=1
   fi
@@ -177,6 +182,14 @@ activate_rollback_links() {
     log "commerce API current -> $(basename -- "$API_TARGET")"
   elif [[ "$ROLLBACK_API" == "1" ]]; then
     log "commerce API already runs $(basename -- "$API_TARGET"); preserving the real previous link"
+  fi
+
+  if [[ "$ROLLBACK_ENGINE" == "1" ]]; then
+    # Authbot is a singleton outside provider slots, so selecting an engine rollback release must
+    # converge it now even in --engine-bluegreen mode. On a later failure, recovery moves authbot to
+    # ENGINE_ORIGINAL only after verifying engine current was restored there.
+    reconcile_authbot_release "$ENGINE_TARGET" \
+      || die "engine rollback failed exact-release authbot reconciliation"
   fi
 
   if [[ "$DRY_RUN" != "1" ]]; then

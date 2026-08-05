@@ -930,6 +930,7 @@ for controller_definition in \
   deploy/gpt-image-2-live-gate.sh \
   deploy/watchdog-infrastructure.sh \
   deploy/deploy.sh \
+  deploy/authbot-runtime-state.sh \
   deploy/lib.sh \
   deploy/commerce-release-bundle.sh \
   deploy/release-tree-digest.mjs \
@@ -2157,17 +2158,254 @@ grep -Fq 'claude-authbot.service' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die "the authbot unit is never installed"
 grep -Fq '/usr/bin/systemctl restart claude-authbot.service' "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die "the deploy user cannot restart the authbot"
-# Unchanged authbot binaries preserve live handoffs; changed ones restart and recover persisted state.
-grep -Fq 'cmp -s "$exe" "$current/authbot"' "$ROOT/deploy/deploy.sh" \
-  || wd_die "the authbot restart must compare the running binary, not release paths"
-grep -Fq '$unit failed exact-release verification after restart' "$ROOT/deploy/deploy.sh" \
+# Non-dumpability intentionally prevents same-UID /proc executable inspection. A fixed root helper
+# exposes only a bounded comparison result, while deploy computes the expected release digest itself.
+authbot_runtime_helper="$ROOT/deploy/authbot-runtime-state.sh"
+grep -Fq 'UNIT=claude-authbot.service' "$authbot_runtime_helper" \
+  || wd_die 'authbot runtime verification does not hard-code its unit'
+grep -Fq '/usr/bin/systemctl' "$authbot_runtime_helper" \
+  || wd_die 'authbot runtime verification does not pin systemctl'
+grep -Fq '/usr/bin/sha256sum -- "/proc/$pid/exe"' "$authbot_runtime_helper" \
+  || wd_die 'authbot runtime verification does not hash only the live procfs executable'
+grep -Fq '[[ $# -eq 1 && $1 =~ ^[0-9a-f]{64}$ ]]' "$authbot_runtime_helper" \
+  || wd_die 'authbot runtime verification does not require one exact SHA-256'
+grep -Fq '[[ $final_state == active && $final_pid == "$pid" ]]' "$authbot_runtime_helper" \
+  || wd_die 'authbot runtime verification accepts service churn around hashing'
+[[ $(grep -Ec "printf '%s\\\\n' (exact|different|inactive)" "$authbot_runtime_helper") -eq 3 ]] \
+  || wd_die 'authbot runtime verification exposes an unexpected result vocabulary'
+! grep -Eq '(readlink|cmp)[[:space:]]' "$ROOT/deploy/deploy.sh" \
+  || wd_die 'deploy still dereferences a non-dumpable authbot process as deploy'
+grep -Fq 'reconcile_authbot_release()' "$ROOT/deploy/lib.sh" \
+  || wd_die 'authbot release reconciliation is not shared by deploy and rollback'
+grep -Fq 'expected=$(sha256_file "$release/authbot")' "$ROOT/deploy/lib.sh" \
+  || wd_die 'release reconciliation does not compute the expected authbot digest unprivileged'
+grep -Fq 'privileged_command "$state_helper" "$expected"' "$ROOT/deploy/lib.sh" \
+  || wd_die 'release reconciliation does not use the narrow root runtime verifier'
+[[ $(grep -Fc 'privileged_command "$state_helper" "$expected"' "$ROOT/deploy/lib.sh") -eq 2 ]] \
+  || wd_die 'authbot runtime verification must run exactly before and after a changed restart'
+grep -Fq 'if [[ "$state" != exact ]]' "$ROOT/deploy/lib.sh" \
+  || wd_die 'authbot post-restart verification is not exact-release only'
+grep -Fq '$unit failed exact-release verification after restart' "$ROOT/deploy/lib.sh" \
   || wd_die "a crashed authbot can still produce a green deployment"
+[[ $(grep -Fc 'reconcile_authbot_release "$ENGINE_RELEASE"' "$ROOT/deploy/deploy.sh") -eq 1 ]] \
+  || wd_die 'normal engine activation does not use the shared authbot reconciliation'
+[[ $(grep -Fc 'reconcile_authbot_after_engine_restore "$ENGINE_RELEASE_ROOT" "$ENGINE_ORIGINAL"' \
+  "$ROOT/deploy/deploy.sh") -eq 1 ]] \
+  || wd_die 'failed deploy activation does not guard original authbot reconciliation by restored current'
+[[ $(grep -Fc 'reconcile_authbot_release "$ENGINE_TARGET"' "$ROOT/deploy/rollback.sh") -eq 1 ]] \
+  || wd_die 'engine blue-green rollback does not reconcile authbot to its selected target'
+[[ $(grep -Fc 'reconcile_authbot_after_engine_restore "$ENGINE_RELEASE_ROOT" "$ENGINE_ORIGINAL"' \
+  "$ROOT/deploy/rollback.sh") -eq 1 ]] \
+  || wd_die 'failed rollback selection does not guard original authbot reconciliation by restored current'
+restore_links_line=$(grep -nF 'restore_activation_links || recovery_failed=1' "$ROOT/deploy/lib.sh" | cut -d: -f1)
+recovery_callback_line=$(grep -nF 'if ! "$ACTIVATION_RECOVERY_CALLBACK"' "$ROOT/deploy/lib.sh" | cut -d: -f1)
+[[ -n $restore_links_line && -n $recovery_callback_line && $restore_links_line -lt $recovery_callback_line ]] \
+  || wd_die 'activation recovery can reconcile authbot before restoring engine links'
+grep -Fq 'install -o root -g root -m 0755 "$ROOT/deploy/authbot-runtime-state.sh"' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the root authbot runtime verifier is not installed with controller definitions'
+authbot_helper_install_line=$(grep -nF '"$ROOT/deploy/authbot-runtime-state.sh"' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+authbot_deploy_install_line=$(grep -nF '"$ROOT/deploy/deploy.sh"' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+[[ -n $authbot_helper_install_line && -n $authbot_deploy_install_line \
+    && $authbot_helper_install_line -lt $authbot_deploy_install_line ]] \
+  || wd_die 'deploy controller is installed before its authbot runtime verifier'
 ! grep -Fq 'deferring adoption until the service is already inactive' "$ROOT/deploy/deploy.sh" \
   || wd_die "changed authbot code can remain undeployed forever"
 # Asking for a world-readable unit file under sudo earns a policy denial that is indistinguishable
 # from the unit being absent — which is exactly how the first attempt silently skipped the restart.
 ! grep -Fq 'privileged_command test -f "/etc/systemd/system/$unit"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the authbot unit check must not require sudo"
+
+# Execute the helper with fixed command stubs: malformed arguments and inspection failures are silent,
+# only the three bounded states are emitted, and an active PID/state change rejects the observation.
+authbot_helper_fixture="$TEMP/authbot-runtime-state.sh"
+sed \
+  -e 's#\[\[ ${EUID:-$(id -u)} -eq 0 \]\] || exit 1#:#' \
+  -e 's#/usr/bin/systemctl#"$AUTHBOT_TEST_SYSTEMCTL"#g' \
+  -e 's#/usr/bin/sha256sum#"$AUTHBOT_TEST_SHA256SUM"#g' \
+  "$authbot_runtime_helper" >"$authbot_helper_fixture"
+chmod +x "$authbot_helper_fixture"
+authbot_systemctl_stub="$TEMP/authbot-systemctl"
+authbot_sha_stub="$TEMP/authbot-sha256sum"
+cat >"$authbot_systemctl_stub" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+property=
+for arg in "$@"; do
+  case "$arg" in
+    --property=*) property=${arg#--property=} ;;
+  esac
+done
+case "$property" in
+  ActiveState)
+    count=$(cat "$AUTHBOT_TEST_ACTIVE_COUNT")
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$AUTHBOT_TEST_ACTIVE_COUNT"
+    if [[ ${AUTHBOT_TEST_MODE:-exact} == churn && $count -gt 1 ]]; then
+      printf '%s\n' inactive
+    else
+      printf '%s\n' "${AUTHBOT_TEST_ACTIVE_STATE:-active}"
+    fi
+    ;;
+  MainPID) printf '%s\n' "${AUTHBOT_TEST_PID:-4242}" ;;
+  *) exit 1 ;;
+esac
+EOF
+cat >"$authbot_sha_stub" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ ${AUTHBOT_TEST_HASH_FAIL:-0} != 1 ]] || exit 1
+[[ $# -eq 2 && $1 == -- && $2 == /proc/4242/exe ]] || exit 1
+printf '%s  %s\n' "$AUTHBOT_TEST_OBSERVED" "$2"
+EOF
+chmod +x "$authbot_systemctl_stub" "$authbot_sha_stub"
+authbot_expected=$(printf expected | wd_sha256_stdin)
+authbot_different=$(printf different | wd_sha256_stdin)
+authbot_active_count="$TEMP/authbot-active-count"
+run_authbot_helper() {
+  printf '0\n' >"$authbot_active_count"
+  AUTHBOT_TEST_SYSTEMCTL=$authbot_systemctl_stub \
+    AUTHBOT_TEST_SHA256SUM=$authbot_sha_stub \
+    AUTHBOT_TEST_ACTIVE_COUNT=$authbot_active_count \
+    AUTHBOT_TEST_OBSERVED=$authbot_expected "$authbot_helper_fixture" "$@"
+}
+[[ $(run_authbot_helper "$authbot_expected") == exact ]] \
+  || wd_die 'authbot runtime helper did not recognize the exact live binary'
+AUTHBOT_TEST_OBSERVED=$authbot_different
+printf '0\n' >"$authbot_active_count"
+[[ $(AUTHBOT_TEST_SYSTEMCTL=$authbot_systemctl_stub \
+  AUTHBOT_TEST_SHA256SUM=$authbot_sha_stub AUTHBOT_TEST_ACTIVE_COUNT=$authbot_active_count \
+  AUTHBOT_TEST_OBSERVED=$authbot_different "$authbot_helper_fixture" "$authbot_expected") == different ]] \
+  || wd_die 'authbot runtime helper did not report a changed live binary'
+printf '0\n' >"$authbot_active_count"
+[[ $(AUTHBOT_TEST_SYSTEMCTL=$authbot_systemctl_stub \
+  AUTHBOT_TEST_SHA256SUM=$authbot_sha_stub AUTHBOT_TEST_ACTIVE_COUNT=$authbot_active_count \
+  AUTHBOT_TEST_OBSERVED=$authbot_expected AUTHBOT_TEST_ACTIVE_STATE=inactive \
+  "$authbot_helper_fixture" "$authbot_expected") == inactive ]] \
+  || wd_die 'authbot runtime helper did not report an inactive service'
+for malformed_args in '' 'abc' "$authbot_expected extra"; do
+  read -r -a helper_args <<<"$malformed_args"
+  helper_log="$TEMP/authbot-helper-malformed.log"
+  if run_authbot_helper "${helper_args[@]}" >"$helper_log" 2>&1; then
+    wd_die "authbot runtime helper accepted malformed arguments: $malformed_args"
+  fi
+  [[ ! -s $helper_log ]] || wd_die 'authbot runtime helper leaked malformed input details'
+done
+for helper_failure in hash churn; do
+  printf '0\n' >"$authbot_active_count"
+  helper_log="$TEMP/authbot-helper-$helper_failure.log"
+  if AUTHBOT_TEST_SYSTEMCTL=$authbot_systemctl_stub \
+      AUTHBOT_TEST_SHA256SUM=$authbot_sha_stub AUTHBOT_TEST_ACTIVE_COUNT=$authbot_active_count \
+      AUTHBOT_TEST_OBSERVED=$authbot_expected AUTHBOT_TEST_HASH_FAIL=$([[ $helper_failure == hash ]] && printf 1 || printf 0) \
+      AUTHBOT_TEST_MODE=$helper_failure "$authbot_helper_fixture" "$authbot_expected" \
+      >"$helper_log" 2>&1; then
+    wd_die "authbot runtime helper accepted $helper_failure during inspection"
+  fi
+  [[ ! -s $helper_log ]] || wd_die 'authbot runtime helper leaked a digest or procfs path on failure'
+done
+
+# Exercise the shared reconciliation state machine independently from host systemd. Exact state
+# preserves the process; changed/inactive state restarts once; helper errors, unknown states, and
+# non-exact post verification all fail closed.
+authbot_reconcile_body=$(sed -n '/^reconcile_authbot_release()/,/^}/p' "$ROOT/deploy/lib.sh" \
+  | sed \
+      -e 's#local state_helper=/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh#local state_helper=fixed-helper#' \
+      -e 's#\[\[ ! -f /etc/systemd/system/$unit \]\]#\[\[ ! -f "$AUTHBOT_TEST_UNIT" \]\]#')
+eval "$authbot_reconcile_body"
+authbot_test_unit="$TEMP/claude-authbot.service"
+authbot_state_queue="$TEMP/authbot-state-queue"
+authbot_restart_log="$TEMP/authbot-restart.log"
+authbot_release="$TEMP/release"
+mkdir -p "$authbot_release"
+printf '#!/usr/bin/env bash\n' >"$authbot_release/authbot"
+chmod +x "$authbot_release/authbot"
+touch "$authbot_test_unit"
+log() { :; }
+warn() { :; }
+sha256_file() { printf '%s\n' "$authbot_expected"; }
+sleep() { :; }
+privileged_command() {
+  if [[ $1 == systemctl ]]; then
+    [[ $# -eq 3 && $2 == restart && $3 == claude-authbot.service ]] || return 1
+    printf 'restart\n' >>"$authbot_restart_log"
+    return "${AUTHBOT_TEST_RESTART_FAIL:-0}"
+  fi
+  [[ $1 == fixed-helper && $# -eq 2 && $2 == "$authbot_expected" ]] || return 1
+  local response
+  IFS= read -r response <"$authbot_state_queue" || return 1
+  tail -n +2 "$authbot_state_queue" >"$authbot_state_queue.next"
+  mv -- "$authbot_state_queue.next" "$authbot_state_queue"
+  [[ $response != failure ]] || return 1
+  printf '%s\n' "$response"
+}
+run_authbot_reconcile_case() {
+  local responses=$1 expected_status=$2 expected_restarts=$3
+  : >"$authbot_restart_log"
+  printf '%b' "$responses" >"$authbot_state_queue"
+  if (DRY_RUN=0 AUTHBOT_TEST_UNIT=$authbot_test_unit \
+      reconcile_authbot_release "$authbot_release") >"$TEMP/authbot-reconcile-case.log" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  restarts=$(wc -l <"$authbot_restart_log" | tr -d '[:space:]')
+  [[ $status == "$expected_status" && $restarts == "$expected_restarts" ]] \
+    || wd_die "authbot reconciliation mismatch for $responses: status=$status restarts=$restarts"
+}
+run_authbot_reconcile_case 'exact\n' 0 0
+run_authbot_reconcile_case 'different\nexact\n' 0 1
+run_authbot_reconcile_case 'inactive\nexact\n' 0 1
+run_authbot_reconcile_case 'failure\n' 1 0
+run_authbot_reconcile_case 'unexpected\n' 1 0
+run_authbot_reconcile_case 'different\ndifferent\n' 1 1
+run_authbot_reconcile_case 'different\nfailure\n' 1 1
+unset -f reconcile_authbot_release log warn sha256_file sleep privileged_command run_authbot_reconcile_case
+
+# Both recovery callbacks must guard ENGINE_ORIGINAL reconciliation with exact restoration of engine
+# current, including blue-green mode where provider services are deliberately untouched.
+deploy_authbot_recovery=$(sed -n '/^recovery_restart_selected_services()/,/^}/p' \
+  "$ROOT/deploy/deploy.sh" | sed '1s/recovery_restart_selected_services/deploy_authbot_recovery/')
+rollback_authbot_recovery=$(sed -n '/^recovery_restart_selected_services()/,/^}/p' \
+  "$ROOT/deploy/rollback.sh" | sed '1s/recovery_restart_selected_services/rollback_authbot_recovery/')
+eval "$deploy_authbot_recovery"
+eval "$rollback_authbot_recovery"
+reconcile_authbot_after_engine_restore() { printf '%s|%s\n' "$1" "$2" >>"$TEMP/authbot-recovery"; }
+best_effort_restart_units() { wd_die 'blue-green authbot recovery restarted provider services'; }
+DEPLOY_ENGINE=1 ROLLBACK_ENGINE=1 RESTART_ENGINE=0
+ENGINE_RELEASE_ROOT="$TEMP/engine-root" ENGINE_ORIGINAL="$TEMP/original-engine"
+deploy_authbot_recovery || wd_die 'deploy authbot recovery rejected its restored original release'
+rollback_authbot_recovery || wd_die 'rollback authbot recovery rejected its restored original release'
+[[ $(grep -Fc "$ENGINE_RELEASE_ROOT|$ENGINE_ORIGINAL" "$TEMP/authbot-recovery") == 2 ]] \
+  || wd_die 'deploy and rollback recovery did not guard the captured original authbot by engine current'
+reconcile_authbot_after_engine_restore() { return 1; }
+if deploy_authbot_recovery || rollback_authbot_recovery; then
+  wd_die 'an activation recovery callback hid failed guarded authbot reconciliation'
+fi
+unset -f deploy_authbot_recovery rollback_authbot_recovery \
+  reconcile_authbot_after_engine_restore best_effort_restart_units
+
+# Explicit --engine-bluegreen rollback selects links without touching provider slots, but authbot is
+# a singleton and must converge to ENGINE_TARGET in that same activation transaction.
+rollback_activate_body=$(sed -n '/^activate_rollback_links()/,/^}/p' "$ROOT/deploy/rollback.sh" \
+  | sed '1s/activate_rollback_links/test_activate_rollback_links/')
+eval "$rollback_activate_body"
+set_journaled_release_link() { :; }
+log() { :; }
+die() { exit 1; }
+reconcile_authbot_release() { printf '%s\n' "$1" >>"$TEMP/rollback-authbot-target"; }
+ROLLBACK_ENGINE=1 ROLLBACK_API=0 RESTART_ENGINE=0 DRY_RUN=1
+ENGINE_RELEASE_ROOT="$TEMP/engine-root"
+ENGINE_ORIGINAL="$TEMP/original-engine" ENGINE_TARGET="$TEMP/rollback-engine"
+test_activate_rollback_links || wd_die 'blue-green rollback rejected authbot target reconciliation'
+[[ $(cat "$TEMP/rollback-authbot-target") == "$ENGINE_TARGET" ]] \
+  || wd_die 'blue-green rollback did not reconcile authbot to ENGINE_TARGET'
+reconcile_authbot_release() { return 1; }
+if (test_activate_rollback_links) >"$TEMP/rollback-authbot-failure.log" 2>&1; then
+  wd_die 'blue-green rollback ignored failed authbot reconciliation'
+fi
+unset -f test_activate_rollback_links set_journaled_release_link log die reconcile_authbot_release
 
 # The unified router is a third engine artifact. It is promoted through two fixed slots only after
 # direct readiness and exact-binary checks; Caddy switches new requests atomically before the old
@@ -2490,8 +2728,8 @@ grep -Fq 'track_background_task' "$ROOT/crates/forward/src/codex/api.rs" \
   || wd_die "detached Codex response streams bypass the shutdown barrier"
 grep -Fq 'track_background_task' "$ROOT/crates/forward/src/codex/chat.rs" \
   || wd_die "detached Codex chat streams bypass the shutdown barrier"
-grep -Fq '$unit runs a different binary; restarting onto the tested release' \
-  "$ROOT/deploy/deploy.sh" \
+grep -Fq '$unit runs a different binary; restarting onto the selected release' \
+  "$ROOT/deploy/lib.sh" \
   || wd_die "deployment can leave changed authbot code unadopted"
 grep -Fq 'recover_interrupted_handoffs' "$ROOT/crates/authbot/src/main.rs" \
   || wd_die "an authbot code restart can strand sellers in a dead in-memory OAuth session"
@@ -2859,6 +3097,19 @@ grep -Fq '/usr/bin/systemctl enable apitoken-content-studio.service' "$sudoers_p
   || wd_die 'the sudo policy cannot enable the content studio during blue-green cutover'
 grep -Fq "require_permitted 'content studio enable'" "$ROOT/deploy/install-sudoers.sh" \
   || wd_die 'the sudoers installer does not live-verify content studio enablement'
+authbot_sudo_pattern=$(printf '[0-9a-f]%.0s' {1..64})
+grep -Fq "/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh $authbot_sudo_pattern" \
+  "$sudoers_policy" \
+  || wd_die 'the sudo policy does not restrict authbot runtime verification to one exact SHA-256'
+grep -Fq "require_permitted 'authbot exact-runtime verifier'" "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die 'the sudoers installer does not live-verify authbot runtime inspection'
+grep -Fq "require_denied 'malformed authbot runtime digest'" "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die 'the sudoers installer does not reject malformed authbot verifier arguments'
+grep -Fq "require_denied 'extra authbot runtime verifier argument'" \
+  "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die 'the sudoers installer does not reject extra authbot verifier arguments'
+! grep -Eq '(^|[[:space:],])(readlink|cmp|sha256sum)([[:space:],]|$)' "$sudoers_policy" \
+  || wd_die 'the sudo policy grants generic process or file comparison access'
 # Operator tooling must survive the restriction.
 grep -Fq '/usr/local/bin/apitoken-watchdog status' "$sudoers_policy" \
   || wd_die 'the sudo policy breaks apitoken-watchdog status'

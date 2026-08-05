@@ -79,8 +79,14 @@ nor credential path. On Linux, after any operator subcommand has returned and be
 are loaded, authbot calls `prctl(PR_SET_DUMPABLE, 0)`; this blocks same-UID `ptrace`,
 `process_vm_readv`, and sensitive `/proc` memory access. `ProtectProc=invisible` and `ProcSubset=pid`
 remain as service-level process-isolation layers. Code already executing inside authbot itself is in
-the same trust boundary, and no defense can protect secrets from code already executing there. The
-root-run Caddy installer is the only other intended raw-file consumer. The interim host keeps a cold pre-migration copy for forensics, not as a
+the same trust boundary, and no defense can protect secrets from code already executing there.
+Because non-dumpability also blocks same-UID `/proc/<MainPID>/exe` dereference, the root-owned
+`/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh` is the only deployment bridge
+for exact runtime verification. Its sudo rule accepts one SHA-256 argument; it hashes only the live
+procfs executable, rejects PID/active-state churn, and reveals only `exact`, `different`, or
+`inactive`. Engine rollout skips an exact binary and, after a changed restart, fails unless the exact
+tested digest remains active. The root-run Caddy installer is the only other intended raw-file
+consumer. The interim host keeps a cold pre-migration copy for forensics, not as a
 live rollback authority, and no longer runs any product unit. The `claude-api-fingerprint.timer` is intentionally not
 enabled here yet (it needs a live `claude` CLI on the host); the fingerprint values in `config.env`
 are current.

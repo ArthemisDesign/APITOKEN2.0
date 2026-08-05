@@ -112,8 +112,18 @@ before daemon secrets are loaded, authbot calls `prctl(PR_SET_DUMPABLE, 0)`; thi
 `ptrace`, `process_vm_readv`, and sensitive `/proc` memory access. `ProtectProc=invisible` and
 `ProcSubset=pid` remain as service-level process-isolation layers. Code already executing inside
 authbot itself is in the same trust boundary, and no defense can protect secrets from code already
-executing there. The root-run Caddy installer is the only other intended consumer of the canonical
-raw file. Any systemd
+executing there. This also prevents the `deploy` user from dereferencing `/proc/<MainPID>/exe`, so
+engine promotion uses the narrowly sudoed root-owned `authbot-runtime-state.sh`: it hashes only that
+procfs entry, rechecks active state and PID for churn, preserves an exact running binary, and after a
+changed restart accepts only the exact tested SHA-256. The helper emits only `exact`, `different`, or
+`inactive`; malformed input and unexpected inspection failures abort the rollout without paths or
+digests. Authbot reconciliation is part of the release-link transaction: an activation abort restores
+links first and converges authbot to the captured original engine release only if engine `current`
+strictly resolves there; a failed or mismatched `current` restoration leaves authbot untouched. Explicit
+`rollback.sh --engine-bluegreen` converges it to the selected rollback release before provider slots
+cut over. A reconciliation or restoration failure leaves recovery incomplete rather than reporting a
+complete rollback. The root-run Caddy installer is the only other intended consumer of the canonical raw file.
+Any systemd
 scope keeps `deploy/watchdog` pending until the next five-second poll because only a fresh manager
 invocation receives the updated service sandbox.
 The root `compose.yaml` is a local-development definition and does not reinstall production.
@@ -847,8 +857,11 @@ deploy/api-bluegreen.sh --dry-run
 deploy/api-bluegreen.sh
 ```
 
-An explicit existing SHA may follow the selector. Rollback changes links and slots but never reverses
-a database migration. A release whose migration breaks the prior binary is not rollout-safe.
+An explicit existing SHA may follow the selector. Engine release selection also reconciles the
+singleton authbot to that exact release before provider slots cut over; if selection aborts, link
+recovery then reconciles it back to the captured original release, and any failure is reported as an
+incomplete rollback. Rollback changes links and slots but never reverses a database migration. A
+release whose migration breaks the prior binary is not rollout-safe.
 Rolling back to a release predating the KIMI plane additionally stops and disables every
 `claude-api-kimi` incarnation (the 8804 singleton anchor and both slot units), mirroring the
 pre-Gemini rollback branch; the plane's default-off argv pin means this never interrupts traffic.

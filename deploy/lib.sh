@@ -526,6 +526,83 @@ privileged_command() {
   fi
 }
 
+# Converge authbot onto the exact binary in an immutable engine release. Authbot disables process
+# dumpability before loading secrets, so only the fixed root helper can hash its live procfs
+# executable. The helper reveals a bounded state and rejects PID/active-state churn.
+reconcile_authbot_release() {
+  local release=$1
+  local unit=claude-authbot.service
+  local state expected
+  local state_helper=/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
+
+  [[ "$release" == /* ]] \
+    || { warn "authbot reconciliation target must be absolute"; return 1; }
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    log "dry-run: would restart $unit unless it already runs $release/authbot"
+    return 0
+  fi
+  [[ -x "$release/authbot" ]] \
+    || { warn "authbot reconciliation target is missing or invalid: $release"; return 1; }
+  # Unit files are world-readable; asking for this under sudo only earns a policy denial that
+  # would look exactly like "the unit is absent".
+  if [[ ! -f /etc/systemd/system/$unit ]]; then
+    log "$unit is not installed on this host; skipping authbot reconciliation"
+    return 0
+  fi
+  expected=$(sha256_file "$release/authbot") \
+    || { warn "could not hash the selected authbot binary"; return 1; }
+  [[ "$expected" =~ ^[0-9a-f]{64}$ ]] \
+    || { warn "selected authbot binary returned an invalid digest"; return 1; }
+  if ! state=$(privileged_command "$state_helper" "$expected"); then
+    warn "$unit runtime state could not be verified; refusing to restart"
+    return 1
+  fi
+  case "$state" in
+    exact)
+      log "authbot already runs this exact binary; leaving $unit and any in-flight authorization alone"
+      return 0
+      ;;
+    different) log "$unit runs a different binary; restarting onto the selected release" ;;
+    inactive) log "$unit is inactive; starting it on the selected release" ;;
+    *)
+      warn "$unit runtime state helper returned an unknown result; refusing to restart"
+      return 1
+      ;;
+  esac
+  log "restarting $unit onto the selected authbot release"
+  if ! privileged_command systemctl restart "$unit"; then
+    warn "$unit did not restart onto the selected release"
+    return 1
+  fi
+  sleep 1
+  if ! state=$(privileged_command "$state_helper" "$expected"); then
+    warn "$unit failed exact-release verification after restart"
+    return 1
+  fi
+  if [[ "$state" != exact ]]; then
+    warn "$unit failed exact-release verification after restart"
+    return 1
+  fi
+}
+
+# Recovery must not move authbot independently if restoring engine current failed. Resolve current
+# through the same strict direct-release validation used by activation before selecting its binary.
+reconcile_authbot_after_engine_restore() {
+  local root=$1
+  local original=$2
+  local current
+
+  if ! current=$(release_path_from_link "$root" "$root/current"); then
+    warn "recovery could not verify restored engine current; leaving authbot untouched"
+    return 1
+  fi
+  if [[ "$current" != "$original" ]]; then
+    warn "engine current was not restored to $original; leaving authbot untouched"
+    return 1
+  fi
+  reconcile_authbot_release "$original"
+}
+
 restart_units() {
   local unit
   [[ $# -gt 0 ]] || return 0

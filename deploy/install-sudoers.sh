@@ -139,6 +139,7 @@ require_denied() {
 }
 
 sample_sha=0000000000000000000000000000000000000000
+sample_sha256=0000000000000000000000000000000000000000000000000000000000000000
 require_permitted 'daemon-reload' /usr/bin/systemctl daemon-reload
 require_permitted 'Anthropic slot start' /usr/bin/systemctl start claude-api-anthropic@8787.service
 require_permitted 'Anthropic slot stop' /usr/bin/systemctl stop claude-api-anthropic@8788.service
@@ -215,6 +216,8 @@ require_permitted 'backup runner' /usr/local/lib/apitoken-watchdog/watchdog-back
 require_permitted 'migration runner' /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh "$sample_sha"
 require_permitted 'engine schema migration runner' \
   /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh "$sample_sha"
+require_permitted 'authbot exact-runtime verifier' \
+  /usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh "$sample_sha256"
 require_permitted 'engine schema migration helper probe' \
   /usr/bin/test -x /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh
 require_permitted 'GPT Image 2 exact-SHA live gate' \
@@ -267,6 +270,10 @@ require_permitted 'deployment journal' /usr/bin/journalctl -u apitoken-deploy-wa
 # The privileges that must NOT be reachable. These are the reason the policy exists.
 require_denied 'reading the GitHub reporting credential' /usr/bin/cat /etc/apitoken/github-watchdog.env
 require_denied 'reading the commerce application secrets' /usr/bin/cat /etc/apitoken/api.env
+require_denied 'malformed authbot runtime digest' \
+  /usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh "$sample_sha"
+require_denied 'extra authbot runtime verifier argument' \
+  /usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh "$sample_sha256" extra
 require_denied 'arbitrary root shell' /bin/bash
 require_denied 'switching to root' /usr/bin/su -
 require_denied 'replacing a fixed controller' /usr/bin/install -m 0755 /tmp/x /usr/local/lib/apitoken-watchdog/watchdog.sh

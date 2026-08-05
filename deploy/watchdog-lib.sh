@@ -790,7 +790,7 @@ wd_path_is_controller_definition() {
     deploy/watchdog-backup.sh|deploy/watchdog-migrate.sh|deploy/watchdog-infrastructure.sh|\
     deploy/watchdog-retention.sh|\
     deploy/watchdog-github.sh|deploy/watchdog-control.sh|\
-    deploy/deploy.sh|deploy/lib.sh|deploy/commerce-release-bundle.sh|\
+    deploy/deploy.sh|deploy/authbot-runtime-state.sh|deploy/lib.sh|deploy/commerce-release-bundle.sh|\
     deploy/release-tree-digest.mjs|deploy/content-studio-start.sh|\
     deploy/api-bluegreen.sh|deploy/engine-bluegreen.sh|deploy/router-bluegreen.sh|deploy/router-promote.sh|deploy/engine-migrate.sh|deploy/codex-homes-migrate.sh|\
     deploy/rollback.sh|deploy/sales-deploy.sh|deploy/openkeys-deploy.sh|\

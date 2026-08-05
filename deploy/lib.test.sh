@@ -175,6 +175,8 @@ set +e
   set -eEuo pipefail
   source "$ROOT/deploy/lib.sh"
   recovery_callback() {
+    [[ $(realpath -- "$abort_root/current") == "$abort_root/$OLD_A" ]] \
+      || fail "activation recovery callback ran before current was restored"
     printf 'recovered\n' >>"$TEMP/recovery-calls"
   }
   eval "$(declare -f restore_target_link | sed '1s/restore_target_link/original_restore_target_link/')"
@@ -259,5 +261,37 @@ assert_link "$partial_root/previous" "$partial_root/$NEW_B"
   || fail "partial restoration skipped or repeated the recovery callback"
 grep -Fq 'automatic recovery was incomplete' "$TEMP/partial.out" \
   || fail "partial restoration did not surface the need for operator intervention"
+
+# If engine current itself cannot be restored, recovery must not move authbot back to the original
+# release and split it from the still-selected engine target. The callback failure must remain visible.
+current_failure_root="$TEMP/current-failure"
+make_releases "$current_failure_root"
+ln -s -- "$current_failure_root/$OLD_A" "$current_failure_root/current"
+set +e
+(
+  set -eEuo pipefail
+  source "$ROOT/deploy/lib.sh"
+  reconcile_authbot_release() {
+    printf 'reconciled\n' >>"$TEMP/current-failure-authbot"
+  }
+  guarded_authbot_recovery() {
+    reconcile_authbot_after_engine_restore "$current_failure_root" "$current_failure_root/$OLD_A"
+  }
+  capture_release_link "$current_failure_root" "$current_failure_root/current"
+  begin_activation guarded_authbot_recovery
+  set_journaled_release_link "$current_failure_root/$NEW_A" "$current_failure_root/current"
+  : >"${current_failure_root}/current.tmp.$$"
+  false
+) >"$TEMP/current-failure.out" 2>&1
+current_failure_status=$?
+set -e
+(( current_failure_status != 0 )) || fail "failed engine current restoration returned success"
+assert_link "$current_failure_root/current" "$current_failure_root/$NEW_A"
+[[ ! -e "$TEMP/current-failure-authbot" ]] \
+  || fail "authbot was reconciled after engine current restoration failed"
+grep -Fq 'leaving authbot untouched' "$TEMP/current-failure.out" \
+  || fail "failed engine current restoration did not explain why authbot was left aligned"
+grep -Fq 'automatic recovery was incomplete' "$TEMP/current-failure.out" \
+  || fail "failed engine current restoration did not report incomplete recovery"
 
 printf 'deploy/lib.sh activation journal tests passed\n'

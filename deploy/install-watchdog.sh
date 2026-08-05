@@ -208,6 +208,9 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/watchdog-github
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-control.sh" \
     /usr/local/bin/apitoken-watchdog
+  # deploy.sh calls this fixed root bridge during engine activation, so publish it first.
+  install -o root -g root -m 0755 "$ROOT/deploy/authbot-runtime-state.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
   install -o root -g root -m 0755 "$ROOT/deploy/deploy.sh" \
     /usr/local/lib/apitoken-watchdog/controller/deploy.sh
   install -o root -g root -m 0644 "$ROOT/deploy/lib.sh" \
