@@ -786,7 +786,7 @@ wd_path_is_monitoring_definition() {
 wd_path_is_controller_definition() {
   case "$1" in
     deploy/watchdog.sh|deploy/watchdog-lib.sh|deploy/validation-plan.sh|\
-    deploy/watchdog-test-db.sh|\
+    deploy/gpt-image-2-live-gate.sh|deploy/watchdog-test-db.sh|\
     deploy/watchdog-backup.sh|deploy/watchdog-migrate.sh|deploy/watchdog-infrastructure.sh|\
     deploy/watchdog-retention.sh|\
     deploy/watchdog-github.sh|deploy/watchdog-control.sh|\
@@ -799,6 +799,10 @@ wd_path_is_controller_definition() {
       ;;
     *) return 1 ;;
   esac
+}
+
+wd_path_is_gpt_image_2_live_gate_trigger() {
+  [[ $1 == deploy/gpt-image-2-live-gate.sh ]]
 }
 
 # Return the least expensive safe root-install transaction for an exact commit range. Independent

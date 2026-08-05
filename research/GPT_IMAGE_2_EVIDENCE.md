@@ -10,8 +10,9 @@
   image-specific environment variable.
 - The private transport and canary exist, but there is no customer HTTP route, catalog, router preset,
   billing/settlement, production default, storefront, or publication claim.
-- No owned live generation or edit was performed in this implementation checkpoint. Mock tests and
-  source review are not live proof.
+- Exact private implementation SHA `3f67d43c0ae541979fee66823d251e2e3eea33e0` is deployed and
+  watchdog-GREEN. The bounded one-shot production generation is prepared but has not yet produced live
+  evidence; no owned live edit was performed. Mock tests and source review are not live proof.
 
 ## Official and upstream sources
 
@@ -119,11 +120,12 @@ requirement to generate only through our existing OAuth pool. No third-party ima
 
 ## Remaining live and publication gates
 
-1. Land and deploy the exact private implementation SHA through the normal watchdog; it must be GREEN.
-2. Record concrete authorization for the `$0.00856` generation ceiling, then run the exact deployed
-   binary: free `/wham/usage` preflight followed by one minimal generation.
+1. Deliver the one-shot watchdog controller that is pinned to the already watchdog-GREEN private
+   implementation SHA `3f67d43c0ae541979fee66823d251e2e3eea33e0`.
+2. Let that exact controller consume the recorded `$0.00856` generation authorization: free
+   `/wham/usage` preflight followed by one minimal generation through the existing sealed pool.
 3. Require 2xx, one real 1024×1024 PNG, exact returned controls, terminal authoritative usage, request
-   attribution, private mode-0600 evidence, and no ambiguous replay.
+   attribution, private mode-0600 evidence, and no ambiguous replay before overall watchdog GREEN.
 4. Derive and review a normative edit ceiling, authorize it separately, and run an exact-home edit with
    the generated owned PNG. Verify every claimed reference/edit behavior.
 5. Resolve partial-image streaming for the actual native subscription wire before claiming it. Public

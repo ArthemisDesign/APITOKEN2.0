@@ -27,6 +27,7 @@ CI_TOOLCHAIN=/opt/apitoken-watchdog/rust-toolchain
 CONTROLLER_ROOT=/usr/local/lib/apitoken-watchdog/controller
 CONTROLLER_ENTRYPOINT=/usr/local/lib/apitoken-watchdog/watchdog.sh
 VALIDATION_PLANNER=$CONTROLLER_ROOT/validation-plan.sh
+GPT_IMAGE_2_LIVE_GATE=$CONTROLLER_ROOT/gpt-image-2-live-gate.sh
 TEST_DB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-test-db
 BACKUP_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-backup.sh
 MIGRATION_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
@@ -2327,8 +2328,8 @@ main() {
   local resume_sha=${1:-}
   local remote_ref rejected infra_scope=none delivery_infra_scope=none
   local infra_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
-  local openkeys_changed=0 admin_changed=0 devbot_changed=0 codex_changed=0 typescript_required=0 typescript_full=0 typescript_base=
-  local rust_required=0 static_required=0
+  local openkeys_changed=0 admin_changed=0 devbot_changed=0 codex_changed=0 gpt_image_2_live_gate=0
+  local typescript_required=0 typescript_full=0 typescript_base= rust_required=0 static_required=0
   local engine_artifacts_required=0 codex_artifacts_required=0
   local validation_policy_sha256='' validation_plan_sha256='' final_verification_plan=''
   local core_pid= sales_pid= openkeys_pid= admin_pid= devbot_pid= core_rc=0 sales_rc=0 openkeys_rc=0 admin_rc=0 devbot_rc=0
@@ -2352,6 +2353,7 @@ main() {
   require_fixed_file "$ADMIN_RUNNER"
   require_fixed_file "$DEVBOT_RUNNER"
   require_fixed_file "$VALIDATION_PLANNER"
+  require_fixed_file "$GPT_IMAGE_2_LIVE_GATE"
   require_fixed_file "$GITHUB_HELPER"
   require_fixed_directory "$CI_TOOLCHAIN"
   [[ -f $DB_MANIFEST && ! -L $DB_MANIFEST ]] || wd_die "database migration baseline is missing"
@@ -2416,6 +2418,8 @@ main() {
     "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA")
   wd_infrastructure_scope_is_valid "$delivery_infra_scope" \
     || wd_die "invalid delivery infrastructure scope: $delivery_infra_scope"
+  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
+    wd_path_is_gpt_image_2_live_gate_trigger && gpt_image_2_live_gate=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_engine \
     && engine_changed=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_codex_tooling \
@@ -2469,7 +2473,7 @@ main() {
   if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $infra_changed == 0 \
         && $engine_changed == 0 && $backend_changed == 0 \
         && $sales_changed == 0 && $openkeys_changed == 0 && $admin_changed == 0 \
-        && $devbot_changed == 0 && $codex_changed == 0 ]]; then
+        && $devbot_changed == 0 && $codex_changed == 0 && $gpt_image_2_live_gate == 0 ]]; then
     if idle_maintenance_due; then
       CURRENT_PHASE=maintaining
       status "running periodic retention and production-alignment checks"
@@ -2619,6 +2623,13 @@ main() {
     (( engine_changed == 0 )) || rollback_engine || true
     (( backend_changed == 0 )) || rollback_backend || true
     wd_die "selected final production verification failed after component admission"
+  fi
+
+  if (( gpt_image_2_live_gate == 1 )); then
+    CURRENT_PHASE=verifying-gpt-image-2
+    CURRENT_PHASE_BEFORE_FAILURE=verifying-gpt-image-2
+    status "running bounded GPT Image 2 generation through the sealed Codex OAuth pool"
+    sudo -n "$GPT_IMAGE_2_LIVE_GATE" "$ENGINE_SHA"
   fi
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"

@@ -101,6 +101,14 @@ root-owned controller, without another poll or validation pass. Caddy and monito
 continue in the same process. Any systemd scope keeps `deploy/watchdog` pending until the next
 five-second poll because only a fresh manager invocation receives the updated service sandbox.
 The root `compose.yaml` is a local-development definition and does not reinstall production.
+The private `deploy/gpt-image-2-live-gate.sh` is a one-shot exception within the controller transaction:
+only the delivery range adding that file invokes it, after selected production verification and before
+the processed SHA/overall GREEN. It is pinned to engine SHA `3f67d43c0ae541979fee66823d251e2e3eea33e0`,
+uses only the sealed Codex OAuth pool and an exact-SHA sudo rule, loads root-only engine env in that
+fixed bridge, then drops to `deploy` with `no_new_privs` before dispatch. It caps the single generation at
+`8_560_000` nanoUSD, stores private mode-`0600` evidence, and refuses to replay an ambiguous attempt. Its
+failure quarantines the delivery
+without publishing GPT Image 2 or advancing the processed baseline.
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane
 but do not reinstall the production controller. A changed Caddy template is rendered with the

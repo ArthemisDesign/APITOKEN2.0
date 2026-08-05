@@ -927,6 +927,7 @@ for controller_definition in \
   deploy/watchdog.sh \
   deploy/watchdog-lib.sh \
   deploy/validation-plan.sh \
+  deploy/gpt-image-2-live-gate.sh \
   deploy/watchdog-infrastructure.sh \
   deploy/deploy.sh \
   deploy/lib.sh \
@@ -3176,6 +3177,44 @@ grep -Fq 'TEST_DB_SLOT=$3' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'watchdog still fences a sidecar Codex runtime attestation'
 ! grep -Fq 'CODEX_APP_SERVERS_HELPER' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'watchdog still waits on a Codex daemon cohort before reporting green'
+
+# GPT Image 2 generation is one exact-SHA, bounded production gate. The root-owned controller reuses
+# only the sealed Codex OAuth environment, refuses ambiguous replay, and must complete before overall
+# GREEN advances the processed baseline.
+wd_path_is_gpt_image_2_live_gate_trigger deploy/gpt-image-2-live-gate.sh \
+  || wd_die 'GPT Image 2 live gate file does not trigger its one-shot delivery range'
+if wd_path_is_gpt_image_2_live_gate_trigger deploy/watchdog.sh; then
+  wd_die 'ordinary controller updates trigger a paid GPT Image 2 generation'
+fi
+grep -Fq '"$ROOT/deploy/gpt-image-2-live-gate.sh"' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'GPT Image 2 live gate is not installed as a fixed controller'
+grep -Fxq 'EXPECTED_IMPLEMENTATION_SHA=3f67d43c0ae541979fee66823d251e2e3eea33e0' \
+  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 live gate is not pinned to the watchdog-green engine SHA'
+grep -Fxq 'GENERATION_BUDGET_NANOUSD=8560000' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 live gate lost its numeric authorization ceiling'
+grep -Fq 'CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0' \
+  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 live gate can escape the sealed local Codex pool'
+grep -Fq 'prior GPT Image 2 generation attempt is non-replayable' \
+  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 live gate can replay an ambiguous prior attempt'
+! grep -Eiq 'laozhang|aihubproxy|apixo|whataicc' \
+  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 live gate contains a third-party image relay'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-live-gate.sh 3f67d43c0ae541979fee66823d251e2e3eea33e0' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'GPT Image 2 live gate lacks an exact-SHA sudo bridge'
+grep -Fq "require_permitted 'GPT Image 2 exact-SHA live gate'" \
+  "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die 'GPT Image 2 exact-SHA sudo bridge is not validated before installation'
+grep -Fq 'setpriv --reuid="$deploy_uid" --regid="$deploy_gid" --init-groups --no-new-privs' \
+  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 paid binary does not drop root before dispatch'
+live_gate_line=$(grep -nF 'sudo -n "$GPT_IMAGE_2_LIVE_GATE" "$ENGINE_SHA"' \
+  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+[[ -n $live_gate_line && -n $processed_line && $live_gate_line -lt $processed_line ]] \
+  || wd_die 'GPT Image 2 live generation is not fenced before processed/green'
 
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'
