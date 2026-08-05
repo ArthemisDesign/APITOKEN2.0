@@ -80,6 +80,7 @@ document, update this index.
 - [GEMINI_ROUTER_POOL_ACCEPTANCE_2026-08-03.md](audits/GEMINI_ROUTER_POOL_ACCEPTANCE_2026-08-03.md) — production acceptance of the Gemini pool through the unified router: sticky/cache/SSE, rotation, FIFO, budget, and fail-closed audio remediation.
 - [2026-08-03-UNIFIED_ROUTER_RESILIENCE_AUDIT.md](audits/2026-08-03-UNIFIED_ROUTER_RESILIENCE_AUDIT.md) — repeat resilience/scale audit: body admission, metadata authorities, Caddy fencing, startup probe, observability, and honest OpenCode image capability.
 - [2026-08-04-BACKEND-POSTGRES-PERFORMANCE-AUDIT.md](audits/2026-08-04-BACKEND-POSTGRES-PERFORMANCE-AUDIT.md) — full PostgreSQL communications and performance audit across engine, commerce, Sales, OpenKeys, pooling, indexes, and observability.
+- [2026-08-05-MULTI-DISCOUNT-IMPLEMENTATION-AUDIT.md](audits/2026-08-05-MULTI-DISCOUNT-IMPLEMENTATION-AUDIT.md) — implementation and production-readiness audit of the multi-provider discount contract, release-v2 rollout, customer/admin surfaces, OpenKeys, and referral attribution.
 
 ## Next to the code (do not move here)
 
