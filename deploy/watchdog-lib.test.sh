@@ -3199,6 +3199,27 @@ grep -Fq 'CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0' \
 grep -Fq 'prior GPT Image 2 generation attempt is non-replayable' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 live gate can replay an ambiguous prior attempt'
+grep -Fq 'done <"/proc/$pid/environ"' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 live gate does not reuse systemd-parsed OpenAI environment values'
+grep -Fq 'CLAUDE_API_CODEX_*) entries+=("$entry")' \
+  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 live gate does not use a narrow Codex runtime environment allowlist'
+for forbidden_name in \
+  CLAUDE_API_KEYS \
+  CLAUDE_API_CONTROL_KEY \
+  CLAUDE_API_PANEL_KEY \
+  CLAUDE_API_CLAUDESTORE_API_KEY \
+  CLAUDE_API_CLAUDESTORE_CODEX_API_KEY; do
+  ! grep -Fq "$forbidden_name" "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+    || wd_die "GPT Image 2 live gate imports forbidden credential: $forbidden_name"
+done
+! grep -Eq '(^|[[:space:];])\.[[:space:]]+"?\$path"?|source[[:space:]]+"?\$path"?' \
+  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 live gate evaluates systemd EnvironmentFile values as shell source'
+grep -Fq '[[ $executable == "$binary" ]]' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 live gate accepts environment from a different engine release'
+grep -Fq '[[ $provider == openai ]]' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 live gate accepts environment from a non-OpenAI provider process'
 ! grep -Eiq 'laozhang|aihubproxy|apixo|whataicc' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 live gate contains a third-party image relay'

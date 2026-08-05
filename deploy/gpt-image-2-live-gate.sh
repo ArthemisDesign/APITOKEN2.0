@@ -89,12 +89,44 @@ printf '%s\n' \
   'Create a simple flat illustration of a blue ceramic mug on a plain beige background. No text, logos, people, brands, or copyrighted characters.' \
   >"$prompt"
 
-for environment in config.env server.env engine-postgres.env; do
-  path=$ENGINE_DATA_ROOT/$environment
-  [[ -f $path && ! -L $path ]] || wd_die "required engine environment is missing: $environment"
-  # shellcheck disable=SC1090
-  set -a; . "$path"; set +a
-done
+load_openai_runtime_environment() {
+  local unit pid executable entry name provider
+  local entries=()
+  for unit in claude-api-openai@8793.service claude-api-openai@8797.service; do
+    [[ $(systemctl show "$unit" -p ActiveState --value 2>/dev/null) == active ]] || continue
+    pid=$(systemctl show "$unit" -p MainPID --value 2>/dev/null)
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || continue
+    executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null) || continue
+    [[ $executable == "$binary" ]] || continue
+
+    entries=()
+    provider=
+    while IFS= read -r -d '' entry; do
+      [[ $entry == *=* ]] || wd_die "running OpenAI slot contains an invalid environment entry"
+      name=${entry%%=*}
+      [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+        || wd_die "running OpenAI slot contains an invalid environment name"
+      case "$name" in
+        CLAUDE_API_PROVIDER) provider=${entry#*=}; entries+=("$entry") ;;
+        CLAUDE_API_DATABASE_URL|CLAUDE_API_AFFINITY_SECRET|CLAUDE_API_REDIS_URL|\
+          CLAUDE_API_AFFINITY_REDIS_URL|CLAUDE_API_CODEX_*) entries+=("$entry") ;;
+      esac
+    done <"/proc/$pid/environ"
+    [[ $provider == openai ]] || continue
+
+    for entry in "${entries[@]}"; do
+      export "$entry"
+    done
+    return 0
+  done
+  wd_die "no active exact-release OpenAI slot can supply the parsed production environment"
+}
+
+# Production EnvironmentFile values are systemd syntax, not shell syntax. Reuse the exact active
+# OpenAI slot's already parsed environment instead of evaluating root-only files as Bash. Values stay
+# in process environments (never argv or logs), and fixed canary overrides are applied afterwards.
+load_openai_runtime_environment
+export HOME=/home/deploy
 export SUB_CFG_DIR=$ENGINE_DATA_ROOT
 export CLAUDE_API_PROVIDER=openai
 export CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0

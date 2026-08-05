@@ -11,8 +11,11 @@
 - The private transport and canary exist, but there is no customer HTTP route, catalog, router preset,
   billing/settlement, production default, storefront, or publication claim.
 - Exact private implementation SHA `3f67d43c0ae541979fee66823d251e2e3eea33e0` is deployed and
-  watchdog-GREEN. The bounded one-shot production generation is prepared but has not yet produced live
-  evidence; no owned live edit was performed. Mock tests and source review are not live proof.
+  watchdog-GREEN. Controller delivery `7a334604f41c367e898073567a7aa0d481614839` stopped before network
+  access because systemd `EnvironmentFile` syntax was sourced as Bash. Host evidence contained only the
+  prompt and no recovery/output/checkpoint, so no paid dispatch occurred. The corrected bounded
+  production generation is still pending; no owned live edit was performed. Mock tests and source
+  review are not live proof.
 
 ## Official and upstream sources
 
