@@ -31,8 +31,9 @@ pub use chat::completions as openai_chat_completions;
 pub use config::{CodexConfig, CodexModel, CodexPrices, CodexProfileSpec, CodexProfilesFile};
 pub use history::{HistoryError, StoredHistory};
 pub use images::{
-    CodexImageError, CodexImageResult, GptImage2, ImageEditRequest, ImageErrorContext,
-    ImageGenerationRequest, ImageReference, ImageTurnId, GPT_IMAGE_2,
+    CodexImageError, CodexImageResult, GptImage2, ImageBackground, ImageEditRequest,
+    ImageErrorContext, ImageGenerationRequest, ImageQuality, ImageReference, ImageSize,
+    ImageTurnId, GPT_IMAGE_2,
 };
 pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdate};
 pub use skin::{count_tokens as codex_messages_count_tokens, messages as codex_messages_skin};

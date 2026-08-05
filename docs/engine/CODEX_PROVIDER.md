@@ -102,38 +102,39 @@ token on every refresh with strict family reuse detection. The pool therefore:
 There is deliberately no GPT Image 2 key, origin, or environment variable. The private image canary
 reuses this same Codex configuration and sealed OAuth roster.
 
-## Private GPT Image 2 Stage 1
+## Private GPT Image 2 live gate
 
-`forward::codex::images` contains a dormant native Images subset for `gpt-image-2`. It follows the
+`forward::codex::images` contains a private native Images subset for `gpt-image-2`. It follows the
 current official Codex wire rather than an OpenAI API-key lane:
 
-- JSON `POST {CodexConfig.base_url}/images/generations` with `model`, prompt, and automatic
+- JSON `POST {CodexConfig.base_url}/images/generations` with `model`, prompt, and typed
   `background`, `quality`, and `size`;
 - JSON `POST {CodexConfig.base_url}/images/edits` with the same fields plus one to five strict PNG
   data URLs in `images[].image_url`;
 - the existing OAuth bearer, `ChatGPT-Account-ID`, `originator`, pinned Codex UA and `version`, plus a
   fresh `x-codex-image-turn-id`.
 
-The reusable automatic API uses the existing pool selection and holds a normal `TurnSlot`. It permits
-the existing forced refresh once after the first received `401`; only a final pre-execution
-`401/403` or `429` can rotate automatically. Timeouts, transport/body ambiguity, client errors,
-other statuses and invalid success responses are terminal and never replayed. The private CLI pins one
-opaque profile, so its paid call never rotates to another home.
+The reusable automatic API uses existing pool selection and a normal `TurnSlot`. It permits one forced
+refresh after the first received `401`; only a final pre-execution `401/403` or `429` can rotate
+automatically. Timeouts, transport/body ambiguity, client errors, other statuses and invalid success
+responses are terminal and never replayed. The private CLI freezes either a supplied opaque profile or
+the first currently admitted profile, so its paid call never rotates.
 
-The only operator surface is `claude-api openai-image-canary`. It validates strict private files and
-prints a sanitized blocked dry-run plan. Although the dormant execution path contains the existing free
-profile `/wham/usage` preflight, an exact-profile request, and exclusive mode-`0600` PNG/checkpoint
-publication, `--execute` currently fails closed before configuration or network access. The fixed
-provider request uses `quality:auto,size:auto`, and neither the replacement-price estimate nor a caller
-budget proves an enforceable worst-case charge bound.
-The dormant preflight is not image `countTokens` or reserve proof. Optional response usage is evidence
-only; Stage 1 does not invent ChatGPT credits, metering, billing or settlement.
+The only operator surface is `claude-api openai-image-canary`. Dry-run validates private files and
+prints a sanitized plan without reading configuration or using the network. Generation is executable
+only with an exact implementation SHA and an explicit `8_560_000` nanoUSD budget for the fixed
+`background=opaque,quality=low,size=1024x1024` request. Execution uses the existing free profile
+`/wham/usage` preflight, one exact-home attempt, and exclusive mode-`0600` PNG/checkpoint publication;
+the checkpoint requires exact returned controls and terminal usage. Edit validates one to five PNG
+references but remains blocked because no normative input-image ceiling exists. The preflight is not
+image `countTokens` or reserve proof, and this private path does not invent ChatGPT credits, metering,
+billing or settlement.
 
-This remains private and dormant: no `AppState`, HTTP/customer route, catalog, router preset, public
-docs, defaults/systemd or product availability. It supports no masks, streaming, JPEG/WebP or
-arbitrary controls. No live image proof was performed in this worktree. The exact run contract and
-remaining publication blockers are `docs/ops/GPT_IMAGE_2_CANARY.md` and
-`research/GPT_IMAGE_2_EVIDENCE.md`.
+This remains private and unpublished: no `AppState`, HTTP/customer route, catalog, router preset,
+public docs, defaults/systemd or product availability. The native request proves no masks,
+partial-image streaming, JPEG/WebP or multi-turn Responses image state. No live image proof was
+performed in this worktree. The exact run contract and remaining publication blockers are
+`docs/ops/GPT_IMAGE_2_CANARY.md` and `research/GPT_IMAGE_2_EVIDENCE.md`.
 
 ## Runtime behavior
 

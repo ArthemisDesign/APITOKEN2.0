@@ -167,11 +167,11 @@ enum Cmd {
         #[arg(long)]
         delete_home: bool,
     },
-    /// Private exact-profile GPT Image 2 Stage 1 planner. Execution remains fail-closed.
+    /// Private GPT Image 2 live canary through the configured Codex subscription pool.
     OpenaiImageCanary {
-        /// Opaque Codex roster profile id; never an email or account id.
+        /// Optional opaque Codex roster profile id. Omit to freeze the first admitted profile.
         #[arg(long)]
-        profile: String,
+        profile: Option<String>,
         #[arg(long)]
         prompt_file: std::path::PathBuf,
         /// Strict PNG reference. Repeat 1..=5 times to select edit instead of generation.

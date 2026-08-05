@@ -252,7 +252,21 @@ fn constructors_enforce_prompt_png_and_aggregate_bounds_with_redaction() {
     let prompt = "private prompt material";
     let request = ImageGenerationRequest::new(prompt).unwrap();
     assert_eq!(request.model(), GptImage2);
+    assert_eq!(request.background(), ImageBackground::Auto);
+    assert_eq!(request.quality(), ImageQuality::Auto);
+    assert_eq!(request.size(), ImageSize::Auto);
     assert!(!format!("{request:?}").contains(prompt));
+    assert!(ImageSize::exact(1024, 1024).is_ok());
+    assert!(ImageSize::exact(3840, 2160).is_ok());
+    for invalid in [
+        (0, 1024),
+        (1000, 1024),
+        (3840, 1264),
+        (3840, 2176),
+        (512, 512),
+    ] {
+        assert!(ImageSize::exact(invalid.0, invalid.1).is_err());
+    }
     assert!(ImageTurnId::new("").is_err());
     assert!(ImageTurnId::new("bad turn id").is_err());
     assert!(ImageTurnId::new("x".repeat(129)).is_err());
@@ -417,7 +431,17 @@ async fn generation_and_edit_wire_are_exact_and_authenticated() {
         }
     });
     let test = test_gateway(&base_url, 1, None);
-    let generation = ImageGenerationRequest::new("draw private subject").unwrap();
+    assert_eq!(
+        test.gateway.select_image_canary_home().await.unwrap(),
+        "home-0"
+    );
+    let generation = ImageGenerationRequest::new("draw private subject")
+        .unwrap()
+        .with_controls(
+            ImageBackground::Opaque,
+            ImageQuality::Low,
+            ImageSize::exact(1024, 1024).unwrap(),
+        );
     let result = test.gateway.generate_image(&generation).await.unwrap();
     assert_eq!(result.home_id(), "home-0");
     assert_eq!(result.request_id(), Some("req_wire"));
@@ -428,7 +452,12 @@ async fn generation_and_edit_wire_are_exact_and_authenticated() {
             ImageReference::new(png_fixture(7, 9, png::ColorType::Grayscale)).unwrap(),
         ],
     )
-    .unwrap();
+    .unwrap()
+    .with_controls(
+        ImageBackground::Opaque,
+        ImageQuality::Low,
+        ImageSize::exact(1024, 1024).unwrap(),
+    );
     let exact_turn_id = stable_turn_id();
     let edit_result = test
         .gateway
@@ -478,18 +507,18 @@ async fn generation_and_edit_wire_are_exact_and_authenticated() {
                 wire,
                 json!({
                     "prompt": "draw private subject",
-                    "background": "auto",
+                    "background": "opaque",
                     "model": GPT_IMAGE_2,
-                    "quality": "auto",
-                    "size": "auto"
+                    "quality": "low",
+                    "size": "1024x1024"
                 })
             );
         } else {
             assert_eq!(wire["prompt"], "edit private subject");
-            assert_eq!(wire["background"], "auto");
+            assert_eq!(wire["background"], "opaque");
             assert_eq!(wire["model"], GPT_IMAGE_2);
-            assert_eq!(wire["quality"], "auto");
-            assert_eq!(wire["size"], "auto");
+            assert_eq!(wire["quality"], "low");
+            assert_eq!(wire["size"], "1024x1024");
             let images = wire["images"].as_array().unwrap();
             assert_eq!(images.len(), 2);
             for image in images {

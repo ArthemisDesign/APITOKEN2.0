@@ -51,8 +51,9 @@ pub use codex::{
     openai_delete_response, openai_get_response, openai_input_tokens, openai_model, openai_models,
     openai_response_input_items, openai_responses, CodexConfig, CodexGateway, CodexImageError,
     CodexImageResult, CodexModel, CodexOperationalStatus, CodexPrices, CodexProfileSpec,
-    CodexProfilesFile, CodexRateLimitWindow, CodexRateLimits, GptImage2, ImageEditRequest,
-    ImageErrorContext, ImageGenerationRequest, ImageReference, ImageTurnId, GPT_IMAGE_2,
+    CodexProfilesFile, CodexRateLimitWindow, CodexRateLimits, GptImage2, ImageBackground,
+    ImageEditRequest, ImageErrorContext, ImageGenerationRequest, ImageQuality, ImageReference,
+    ImageSize, ImageTurnId, GPT_IMAGE_2,
 };
 pub use config::{
     ClaudeStoreFallbackConfig, ProxyConfig, CLAUDESTORE_FALLBACK_BASE_URL, CLAUDE_CODE_IDENTITY,

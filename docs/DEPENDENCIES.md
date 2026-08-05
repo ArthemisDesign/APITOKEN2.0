@@ -271,20 +271,19 @@ is only what is needed to walk the relationships when making changes:
   the target provider label; the failure alert and rollback are described in
   `docs/ops/MONITORING.md#claudestorefallbackfailing`. Contract and evidence —
   `docs/engine/CLAUDESTORE_FALLBACK.md` and `research/CLAUDESTORE_GPT_FALLBACK_EVIDENCE.md`.
-- **Private dormant GPT Image 2 (`crates/server` exact-profile CLI →
-  `crates/forward::codex::images` → existing Codex OAuth pool).** The transport posts JSON to
+- **Private GPT Image 2 live gate (`crates/server` canary CLI →
+  `crates/forward::codex::images` → existing Codex OAuth pool).** The transport posts typed JSON to
   `{CodexConfig.base_url}/images/generations|edits` with the existing bearer/account/originator/UA/
   version identity plus `x-codex-image-turn-id`; edit references are one to five PNG data URLs.
   Automatic library calls reuse normal pool selection/`TurnSlot`, refresh once, and rotate only on a
-  final pre-execution auth/quota rejection; ambiguous outcomes are never replayed. The CLI validates a
-  private exact-profile plan but reports it blocked. Its dormant execution path contains the free
-  profile `/wham/usage` preflight, one exact-profile attempt and exclusive mode-`0600` evidence;
-  `--execute` currently fails closed before configuration/network because `quality:auto,size:auto` has
-  no proved enforceable worst-case charge bound. It introduces no image key/origin/env. There is no
-  `AppState`, HTTP/customer, router, catalog, defaults, billing/settlement, public-doc or publication
-  consumer. Contract and blockers —
-  `docs/engine/CODEX_PROVIDER.md`, `docs/ops/GPT_IMAGE_2_CANARY.md`, and
-  `research/GPT_IMAGE_2_EVIDENCE.md`.
+  final pre-execution auth/quota rejection; ambiguous outcomes are never replayed. The CLI freezes an
+  explicit or first admitted opaque profile, performs the free `/wham/usage` preflight and one
+  exact-home attempt. Generation requires an exact SHA and at least `8_560_000` nanoUSD for fixed
+  `opaque/low/1024x1024`; edit remains blocked until a normative input-image ceiling exists. Evidence is
+  exclusive mode-`0600` and requires exact controls plus terminal usage. It introduces no image
+  key/origin/env. There is no `AppState`, HTTP/customer, router, catalog, defaults, billing/settlement,
+  public-doc or publication consumer. Contract and blockers — `docs/engine/CODEX_PROVIDER.md`,
+  `docs/ops/GPT_IMAGE_2_CANARY.md`, and `research/GPT_IMAGE_2_EVIDENCE.md`.
 - **Policy preflight contract (provider planes → router, phase 6.4a).** The producer is
   the identical `crates/server::router_policy` on every fixed runtime: an authenticated
   loopback-only `POST /internal/router/policy/preflight` reads the customer key and one

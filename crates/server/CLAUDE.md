@@ -111,23 +111,24 @@ background loops and the HTTP router. Here — and only here — everything is w
   the gateway owns the idle/epoch boundary, the turn-before-quota ordering and the durable observation/CAS,
   server owns only the cadence.
 - `main.rs` — clap CLI: `serve`, `sub add/add-file/list/rm/status/proxy/fleet/set-plan/detect-plan/health`,
-  the PostgreSQL-only read evidence `db stage8-evidence`, and the private exact-profile
-  `openai-image-canary`. The canary is a blocked Stage 1 dry-run surface; `--execute` fails closed before
-  configuration or network access until an enforceable worst-case bound for the fixed provider
-  `quality:auto,size:auto` request is proved. It is not part of `AppState` or HTTP routing.
+  the PostgreSQL-only read evidence `db stage8-evidence`, and the private `openai-image-canary`.
+  The canary can freeze an explicitly named opaque Codex profile or the first currently admitted pool
+  profile. It is not part of `AppState` or HTTP routing.
 
 **Invariants:**
 - At startup the PostgreSQL authority only read-only verifies the applied schema; DDL is executed
   by the separate `db migrate-engine` before a blue-green slot is started.
 - Introduce a new env variable ONLY here and pass it further down through config structures.
 - `openai-image-canary` introduces no image key/origin/env. Dry-run validates the strict prompt,
-  optional one-to-five PNG references, exact opaque profile, private target paths and numeric budget,
-  then prints a sanitized blocked plan without reading env/network or creating artifacts. `--execute`
-  additionally requires an exact compile-time implementation SHA but remains blocked before loading
-  settings or sending `/wham/usage`; the dormant code behind that gate uses the existing Codex OAuth
-  roster/base URL/identity, a free profile auth/quota preflight, and one exact-profile attempt. The
-  budget and checked estimate are evidence only, not a reserve or maximum-charge proof.
-  Output/checkpoint publication code uses exclusive mode-`0600` files. The command remains outside
+  optional one-to-five PNG references, optional opaque profile, private target paths and numeric
+  budget, then prints a sanitized plan without reading env/network or creating artifacts. Generation
+  is ready only at an explicit budget of at least `8_560_000` nanoUSD for the fixed
+  `opaque/low/1024x1024` request. `--execute` additionally requires an exact compile-time implementation
+  SHA, reuses the existing Codex OAuth roster/base URL/identity, freezes one admitted profile, runs its
+  free `/wham/usage` auth/quota preflight, and performs one exact-home attempt. A successful checkpoint
+  requires exact returned controls, a strict PNG and terminal usage. Edit planning accepts one to five
+  PNG references but paid edit execution remains blocked until a normative input-image ceiling is
+  proved. Output/checkpoint publication uses exclusive mode-`0600` files. The command remains outside
   `AppState`, HTTP, customer routes, catalog, defaults and billing; no live proof was performed in this
   worktree. Full contract — `docs/ops/GPT_IMAGE_2_CANARY.md`.
 - ClaudeStore emergency transport: `CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED` strict default-off

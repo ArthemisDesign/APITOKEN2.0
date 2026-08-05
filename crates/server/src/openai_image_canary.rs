@@ -1,8 +1,8 @@
 use crate::config::Settings;
 use anyhow::{bail, Context, Result};
 use forward::{
-    CodexGateway, CodexImageError, CodexImageResult, ImageEditRequest, ImageGenerationRequest,
-    ImageReference, ImageTurnId, GPT_IMAGE_2,
+    CodexGateway, CodexImageError, CodexImageResult, ImageBackground, ImageEditRequest,
+    ImageGenerationRequest, ImageQuality, ImageReference, ImageSize, ImageTurnId, GPT_IMAGE_2,
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -16,12 +16,14 @@ const MAX_PROMPT_BYTES: usize = 512;
 const MAX_PROMPT_CHARS: usize = 512;
 const MAX_REFERENCE_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_CANARY_CAP_NANOUSD: u64 = 100_000;
-const STAGE1_EXECUTION_ENABLED: bool = false;
-const EXECUTION_BLOCKER: &str =
-    "stage1_paid_dispatch_blocked_until_quality_auto_size_auto_worst_case_is_proven";
+const GENERATION_CEILING_NANOUSD: u64 = 8_560_000;
+const IMAGE_WIDTH: u16 = 1024;
+const IMAGE_HEIGHT: u16 = 1024;
+const GENERATION_BUDGET_BLOCKER: &str = "paid_dispatch_requires_generation_ceiling_authorization";
+const EDIT_CEILING_BLOCKER: &str = "paid_dispatch_requires_edit_ceiling_proof";
 
 pub(crate) struct OpenAiImageCanaryArgs {
-    pub profile: String,
+    pub profile: Option<String>,
     pub prompt_file: PathBuf,
     pub references: Vec<PathBuf>,
     pub output: PathBuf,
@@ -31,7 +33,7 @@ pub(crate) struct OpenAiImageCanaryArgs {
 }
 
 struct ValidatedCanary {
-    profile: String,
+    profile: Option<String>,
     prompt: String,
     references: Vec<ImageReference>,
     output: ValidatedTarget,
@@ -69,15 +71,19 @@ struct CanaryPlan<'a> {
     schema_version: u8,
     state: &'static str,
     executable: bool,
-    execution_blocker: &'static str,
+    execution_blocker: Option<&'static str>,
     operation: &'static str,
     profile: &'a str,
     model: &'static str,
+    background: &'static str,
+    quality: &'static str,
+    size: &'static str,
     reference_count: usize,
     prompt_bytes: usize,
     prompt_chars: usize,
     reference_bytes: usize,
     authorization_budget_nanousd: u64,
+    required_ceiling_nanousd: Option<u64>,
     repository_default_cap_nanousd: u64,
     implementation_sha: Option<&'static str>,
 }
@@ -128,7 +134,7 @@ pub(crate) fn run(args: OpenAiImageCanaryArgs) -> Result<()> {
     }
 
     let (implementation_sha, settings) =
-        execution_prerequisites(implementation_sha_source(), || Settings::from_env())?;
+        execution_prerequisites(implementation_sha_source(), &validated, Settings::from_env)?;
     let codex = settings
         .codex
         .context("openai image canary requires the configured Codex provider")?;
@@ -155,8 +161,10 @@ fn validate(args: OpenAiImageCanaryArgs) -> Result<ValidatedCanary> {
 
     #[cfg(unix)]
     {
-        codex_credential::validate_profile_id(&args.profile)
-            .context("image canary profile must be an opaque Codex profile id")?;
+        if let Some(profile) = args.profile.as_deref() {
+            codex_credential::validate_profile_id(profile)
+                .context("image canary profile must be an opaque Codex profile id")?;
+        }
         if args.references.len() > 5 {
             bail!("image canary accepts at most five PNG references");
         }
@@ -194,22 +202,41 @@ fn validate(args: OpenAiImageCanaryArgs) -> Result<ValidatedCanary> {
 }
 
 fn plan(validated: &ValidatedCanary) -> CanaryPlan<'_> {
+    let (executable, execution_blocker, required_ceiling_nanousd) = operation_gate(validated);
     CanaryPlan {
         schema_version: SCHEMA_VERSION,
-        state: "blocked",
-        executable: false,
-        execution_blocker: EXECUTION_BLOCKER,
+        state: if executable { "ready" } else { "blocked" },
+        executable,
+        execution_blocker,
         operation: operation(validated),
-        profile: &validated.profile,
+        profile: validated.profile.as_deref().unwrap_or("auto-admitted"),
         model: GPT_IMAGE_2,
+        background: "opaque",
+        quality: "low",
+        size: "1024x1024",
         reference_count: validated.references.len(),
         prompt_bytes: validated.prompt_bytes,
         prompt_chars: validated.prompt_chars,
         reference_bytes: validated.reference_bytes,
         authorization_budget_nanousd: validated.authorization_budget_nanousd,
+        required_ceiling_nanousd,
         repository_default_cap_nanousd: DEFAULT_CANARY_CAP_NANOUSD,
         implementation_sha: implementation_sha_source().and_then(valid_implementation_sha),
     }
+}
+
+fn operation_gate(validated: &ValidatedCanary) -> (bool, Option<&'static str>, Option<u64>) {
+    if !validated.references.is_empty() {
+        return (false, Some(EDIT_CEILING_BLOCKER), None);
+    }
+    if validated.authorization_budget_nanousd < GENERATION_CEILING_NANOUSD {
+        return (
+            false,
+            Some(GENERATION_BUDGET_BLOCKER),
+            Some(GENERATION_CEILING_NANOUSD),
+        );
+    }
+    (true, None, Some(GENERATION_CEILING_NANOUSD))
 }
 
 fn implementation_sha_source() -> Option<&'static str> {
@@ -230,13 +257,14 @@ fn require_implementation_sha(value: Option<&str>) -> Result<&str> {
         .context("openai image canary execution requires exact lowercase 40-hex CLAUDE_API_IMPLEMENTATION_SHA")
 }
 
-fn execution_prerequisites<T>(
-    implementation_sha: Option<&str>,
+fn execution_prerequisites<'a, T>(
+    implementation_sha: Option<&'a str>,
+    validated: &ValidatedCanary,
     load_settings: impl FnOnce() -> T,
-) -> Result<(&str, T)> {
+) -> Result<(&'a str, T)> {
     let implementation_sha = require_implementation_sha(implementation_sha)?;
-    if !STAGE1_EXECUTION_ENABLED {
-        bail!("{EXECUTION_BLOCKER}");
+    if let (_, Some(blocker), _) = operation_gate(validated) {
+        bail!(blocker);
     }
     Ok((implementation_sha, load_settings()))
 }
@@ -257,8 +285,15 @@ async fn execute_with_gateway(
     gateway: &CodexGateway,
     implementation_sha: &str,
 ) -> Result<()> {
+    let profile = match validated.profile.as_deref() {
+        Some(profile) => profile.to_owned(),
+        None => gateway
+            .select_image_canary_home()
+            .await
+            .context("select admitted Codex image profile")?,
+    };
     gateway
-        .preflight_image_home(&validated.profile)
+        .preflight_image_home(&profile)
         .await
         .context("exact-profile Codex image preflight")?;
 
@@ -266,15 +301,19 @@ async fn execute_with_gateway(
         Generation(ImageGenerationRequest),
         Edit(ImageEditRequest),
     }
+    let size =
+        ImageSize::exact(IMAGE_WIDTH, IMAGE_HEIGHT).context("validate fixed image canary size")?;
     let request = if validated.references.is_empty() {
         Request::Generation(
             ImageGenerationRequest::new(validated.prompt.clone())
-                .context("validate image generation request")?,
+                .context("validate image generation request")?
+                .with_controls(ImageBackground::Opaque, ImageQuality::Low, size),
         )
     } else {
         Request::Edit(
             ImageEditRequest::new(validated.prompt.clone(), validated.references.clone())
-                .context("validate image edit request")?,
+                .context("validate image edit request")?
+                .with_controls(ImageBackground::Opaque, ImageQuality::Low, size),
         )
     };
     let image_turn_id = new_image_turn_id()?;
@@ -282,6 +321,7 @@ async fn execute_with_gateway(
     persist_journal(
         &run_dir,
         validated,
+        &profile,
         &image_turn_id,
         implementation_sha,
         "prepared",
@@ -290,18 +330,19 @@ async fn execute_with_gateway(
     let result = match &request {
         Request::Generation(request) => {
             gateway
-                .generate_image_on_home(&validated.profile, &image_turn_id, request)
+                .generate_image_on_home(&profile, &image_turn_id, request)
                 .await
         }
         Request::Edit(request) => {
             gateway
-                .edit_image_on_home(&validated.profile, &image_turn_id, request)
+                .edit_image_on_home(&profile, &image_turn_id, request)
                 .await
         }
     };
     match result {
         Ok(result) => persist_result(
             validated,
+            &profile,
             &run_dir,
             &image_turn_id,
             implementation_sha,
@@ -311,6 +352,7 @@ async fn execute_with_gateway(
             persist_journal(
                 &run_dir,
                 validated,
+                &profile,
                 &image_turn_id,
                 implementation_sha,
                 journal_state_for_error(&error),
@@ -346,25 +388,40 @@ fn journal_state_for_error(error: &CodexImageError) -> &'static str {
 
 fn persist_result(
     validated: &ValidatedCanary,
+    profile: &str,
     run_dir: &ActiveRunDirectory,
     image_turn_id: &ImageTurnId,
     implementation_sha: &str,
     result: &CodexImageResult,
 ) -> Result<()> {
-    if result.home_id() != validated.profile || result.image_turn_id() != image_turn_id {
+    let usage = sanitize_usage(result.usage());
+    let request_id = result.request_id().and_then(sanitize_request_id);
+    let exact_metadata = result.width() == u32::from(IMAGE_WIDTH)
+        && result.height() == u32::from(IMAGE_HEIGHT)
+        && result.background() == "opaque"
+        && result.quality() == "low"
+        && result.size() == "1024x1024"
+        && result.output_format().is_none_or(|format| format == "png");
+    if result.home_id() != profile
+        || result.image_turn_id() != image_turn_id
+        || !exact_metadata
+        || usage.is_none()
+        || request_id.is_none()
+    {
         persist_journal(
             run_dir,
             validated,
+            profile,
             image_turn_id,
             implementation_sha,
-            "outcome_unknown",
+            "evidence_incomplete",
         )?;
-        bail!("Codex image result identity did not match the exact requested turn");
+        bail!("Codex image result did not provide complete exact canary evidence");
     }
     let output_sha256 = format!("sha256:{}", sha256_hex(result.png()));
     let checkpoint = CanaryCheckpoint {
         schema_version: SCHEMA_VERSION,
-        profile: &validated.profile,
+        profile,
         operation: operation(validated),
         model: GPT_IMAGE_2,
         image_turn_id: image_turn_id.as_str(),
@@ -377,8 +434,8 @@ fn persist_result(
             size: result.size(),
             output_format: result.output_format(),
         },
-        usage: sanitize_usage(result.usage()),
-        request_id: result.request_id().and_then(sanitize_request_id),
+        usage,
+        request_id,
         output_sha256,
         implementation_sha,
         authorization_budget_nanousd: validated.authorization_budget_nanousd,
@@ -392,6 +449,7 @@ fn persist_result(
     persist_journal(
         run_dir,
         validated,
+        profile,
         image_turn_id,
         implementation_sha,
         "success",
@@ -639,6 +697,7 @@ fn revalidate_run_directory(run_dir: &ActiveRunDirectory) -> Result<()> {
 fn persist_journal(
     run_dir: &ActiveRunDirectory,
     validated: &ValidatedCanary,
+    profile: &str,
     image_turn_id: &ImageTurnId,
     implementation_sha: &str,
     state: &'static str,
@@ -646,7 +705,7 @@ fn persist_journal(
     let journal = CanaryJournal {
         schema_version: SCHEMA_VERSION,
         state,
-        profile: &validated.profile,
+        profile,
         operation: operation(validated),
         model: GPT_IMAGE_2,
         image_turn_id: image_turn_id.as_str(),
@@ -932,7 +991,7 @@ mod tests {
 
         fn args(&self, execute: bool, budget_nanousd: u64) -> OpenAiImageCanaryArgs {
             OpenAiImageCanaryArgs {
-                profile: "opaque_profile-1".to_owned(),
+                profile: Some("opaque_profile-1".to_owned()),
                 prompt_file: self.prompt(b"private prompt secret"),
                 references: Vec::new(),
                 output: self.path("output.png"),
@@ -954,23 +1013,56 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_is_blocked_sanitized_and_creates_no_artifacts() {
+    fn ready_generation_plan_is_sanitized_and_creates_no_artifacts() {
         let dir = TestDir::new();
         let validated = validate(dir.args(false, 9_000_000)).unwrap();
         let value = serde_json::to_value(plan(&validated)).unwrap();
         let serialized = serde_json::to_string(&value).unwrap();
-        assert_eq!(value["state"], "blocked");
-        assert_eq!(value["executable"], false);
-        assert_eq!(value["execution_blocker"], EXECUTION_BLOCKER);
+        assert_eq!(value["state"], "ready");
+        assert_eq!(value["executable"], true);
+        assert!(value["execution_blocker"].is_null());
         assert_eq!(value["authorization_budget_nanousd"], 9_000_000);
+        assert_eq!(
+            value["required_ceiling_nanousd"],
+            GENERATION_CEILING_NANOUSD
+        );
         assert_eq!(value["profile"], "opaque_profile-1");
         assert_eq!(value["model"], GPT_IMAGE_2);
         assert_eq!(value["operation"], "generation");
+        assert_eq!(value["background"], "opaque");
+        assert_eq!(value["quality"], "low");
+        assert_eq!(value["size"], "1024x1024");
         assert!(!serialized.contains("private prompt secret"));
         assert!(!serialized.contains(dir.0.to_string_lossy().as_ref()));
         assert!(!validated.run_dir.path.exists());
         assert!(!dir.path("output.png").exists());
         assert!(!dir.path("checkpoint.json").exists());
+    }
+
+    #[test]
+    fn auto_profile_and_edit_gate_are_explicit() {
+        let dir = TestDir::new();
+        let mut args = dir.args(false, 9_000_000);
+        args.profile = None;
+        args.references.push(dir.prompt(b"not a png"));
+        assert!(validate(args).is_err());
+
+        let mut validated = validate(dir.args(false, 9_000_000)).unwrap();
+        validated.profile = None;
+        assert_eq!(
+            serde_json::to_value(plan(&validated)).unwrap()["profile"],
+            "auto-admitted"
+        );
+        let png = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        )
+        .unwrap();
+        validated.references.push(ImageReference::new(png).unwrap());
+        let value = serde_json::to_value(plan(&validated)).unwrap();
+        assert_eq!(value["state"], "blocked");
+        assert_eq!(value["execution_blocker"], EDIT_CEILING_BLOCKER);
+        assert!(value["required_ceiling_nanousd"].is_null());
     }
 
     #[test]
@@ -997,15 +1089,25 @@ mod tests {
     }
 
     #[test]
-    fn identity_and_stage1_blocker_run_before_settings_loader() {
+    fn identity_and_operation_gate_run_before_settings_loader() {
+        let dir = TestDir::new();
+        let ready = validate(dir.args(true, GENERATION_CEILING_NANOUSD)).unwrap();
         let loads = Cell::new(0u8);
-        let missing = execution_prerequisites::<()>(None, || loads.set(loads.get() + 1));
+        let missing = execution_prerequisites::<()>(None, &ready, || loads.set(loads.get() + 1));
         assert!(missing.is_err());
         assert_eq!(loads.get(), 0);
 
-        let blocked = execution_prerequisites(Some(EXACT_SHA), || loads.set(loads.get() + 1));
+        let blocked = validate(dir.args(true, GENERATION_CEILING_NANOUSD - 1)).unwrap();
+        let blocked =
+            execution_prerequisites(Some(EXACT_SHA), &blocked, || loads.set(loads.get() + 1));
         assert!(blocked.is_err());
         assert_eq!(loads.get(), 0);
+
+        assert!(execution_prerequisites(Some(EXACT_SHA), &ready, || {
+            loads.set(loads.get() + 1)
+        })
+        .is_ok());
+        assert_eq!(loads.get(), 1);
     }
 
     #[test]
@@ -1030,7 +1132,15 @@ mod tests {
         assert_eq!(file_mode(&run_dir.path), 0o700);
 
         for state in ["prepared", "success", "rejected", "outcome_unknown"] {
-            persist_journal(&run_dir, &validated, &turn_id, EXACT_SHA, state).unwrap();
+            persist_journal(
+                &run_dir,
+                &validated,
+                "opaque_profile-1",
+                &turn_id,
+                EXACT_SHA,
+                state,
+            )
+            .unwrap();
             let journal_path = run_dir.path.join("journal.json");
             let bytes = std::fs::read(&journal_path).unwrap();
             let value: Value = serde_json::from_slice(&bytes).unwrap();

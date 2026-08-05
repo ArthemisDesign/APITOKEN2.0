@@ -72,16 +72,108 @@ impl ImageTurnId {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImageBackground {
+    #[default]
+    Auto,
+    Opaque,
+}
+
+impl ImageBackground {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Opaque => "opaque",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImageQuality {
+    Low,
+    Medium,
+    High,
+    #[default]
+    Auto,
+}
+
+impl ImageQuality {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImageSize {
+    #[default]
+    Auto,
+    Exact {
+        width: u16,
+        height: u16,
+    },
+}
+
+impl ImageSize {
+    pub fn exact(width: u16, height: u16) -> Result<Self, CodexImageError> {
+        let long = u32::from(width.max(height));
+        let short = u32::from(width.min(height));
+        let pixels = u64::from(width) * u64::from(height);
+        if width == 0
+            || height == 0
+            || long > 3_840
+            || width % 16 != 0
+            || height % 16 != 0
+            || long > short.saturating_mul(3)
+            || !(655_360..=8_294_400).contains(&pixels)
+        {
+            return Err(validation("image size is outside GPT Image 2 constraints"));
+        }
+        Ok(Self::Exact { width, height })
+    }
+
+    fn wire_value(self) -> String {
+        match self {
+            Self::Auto => "auto".to_owned(),
+            Self::Exact { width, height } => format!("{width}x{height}"),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ImageGenerationRequest {
     prompt: String,
+    background: ImageBackground,
+    quality: ImageQuality,
+    size: ImageSize,
 }
 
 impl ImageGenerationRequest {
     pub fn new(prompt: impl Into<String>) -> Result<Self, CodexImageError> {
         let prompt = prompt.into();
         validate_prompt(&prompt)?;
-        Ok(Self { prompt })
+        Ok(Self {
+            prompt,
+            background: ImageBackground::Auto,
+            quality: ImageQuality::Auto,
+            size: ImageSize::Auto,
+        })
+    }
+
+    pub fn with_controls(
+        mut self,
+        background: ImageBackground,
+        quality: ImageQuality,
+        size: ImageSize,
+    ) -> Self {
+        self.background = background;
+        self.quality = quality;
+        self.size = size;
+        self
     }
 
     pub fn model(&self) -> GptImage2 {
@@ -90,6 +182,18 @@ impl ImageGenerationRequest {
 
     pub fn prompt(&self) -> &str {
         &self.prompt
+    }
+
+    pub fn background(&self) -> ImageBackground {
+        self.background
+    }
+
+    pub fn quality(&self) -> ImageQuality {
+        self.quality
+    }
+
+    pub fn size(&self) -> ImageSize {
+        self.size
     }
 }
 
@@ -152,6 +256,9 @@ impl fmt::Debug for ImageReference {
 pub struct ImageEditRequest {
     prompt: String,
     images: Vec<ImageReference>,
+    background: ImageBackground,
+    quality: ImageQuality,
+    size: ImageSize,
 }
 
 impl ImageEditRequest {
@@ -162,7 +269,25 @@ impl ImageEditRequest {
         let prompt = prompt.into();
         validate_prompt(&prompt)?;
         validate_references(&images)?;
-        Ok(Self { prompt, images })
+        Ok(Self {
+            prompt,
+            images,
+            background: ImageBackground::Auto,
+            quality: ImageQuality::Auto,
+            size: ImageSize::Auto,
+        })
+    }
+
+    pub fn with_controls(
+        mut self,
+        background: ImageBackground,
+        quality: ImageQuality,
+        size: ImageSize,
+    ) -> Self {
+        self.background = background;
+        self.quality = quality;
+        self.size = size;
+        self
     }
 
     pub fn model(&self) -> GptImage2 {
@@ -175,6 +300,18 @@ impl ImageEditRequest {
 
     pub fn images(&self) -> &[ImageReference] {
         &self.images
+    }
+
+    pub fn background(&self) -> ImageBackground {
+        self.background
+    }
+
+    pub fn quality(&self) -> ImageQuality {
+        self.quality
+    }
+
+    pub fn size(&self) -> ImageSize {
+        self.size
     }
 }
 
@@ -454,6 +591,28 @@ impl From<CodexImageError> for ImageAttemptError {
 }
 
 impl CodexGateway {
+    /// Choose one currently admitted opaque profile without dispatching an image request.
+    /// The caller freezes this id and uses only exact-home methods for the paid attempt.
+    pub async fn select_image_canary_home(&self) -> Result<String, CodexImageError> {
+        if self
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(CodexImageError::Unavailable);
+        }
+        let now = pool::now();
+        let mut homes = self.homes().await;
+        homes.sort_by_key(|home| home.order());
+        for home in homes {
+            home.hydrate_health().await;
+            let limits = home.rate_limits().await;
+            if home.admission(limits.as_ref(), now).is_admitted() {
+                return Ok(home.id().to_owned());
+            }
+        }
+        Err(CodexImageError::Unavailable)
+    }
+
     /// Prove the exact opaque profile's OAuth and quota state without running an image turn.
     pub async fn preflight_image_home(&self, home_id: &str) -> Result<(), CodexImageError> {
         if self
@@ -737,20 +896,20 @@ impl CodexGateway {
 fn generation_body(request: &ImageGenerationRequest) -> Value {
     json!({
         "prompt": request.prompt,
-        "background": "auto",
+        "background": request.background.as_str(),
         "model": GPT_IMAGE_2,
-        "quality": "auto",
-        "size": "auto"
+        "quality": request.quality.as_str(),
+        "size": request.size.wire_value()
     })
 }
 
 fn edit_body(request: &ImageEditRequest) -> Value {
     json!({
         "prompt": request.prompt,
-        "background": "auto",
+        "background": request.background.as_str(),
         "model": GPT_IMAGE_2,
-        "quality": "auto",
-        "size": "auto",
+        "quality": request.quality.as_str(),
+        "size": request.size.wire_value(),
         "images": request.images.iter().map(|image| json!({
             "image_url": format!("data:image/png;base64,{}", STANDARD_BASE64.encode(&image.bytes))
         })).collect::<Vec<_>>()
