@@ -831,6 +831,10 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    `user_prompt_id=<session UUID>########<human-turn ordinal>`.
    Public Gemini allows an empty/omitted `contents[].role`; for the strict private Antigravity
    wire the wrapper derives only such roles by alternating `user`/`model`, never rewriting explicit values.
+   Native tool replay preserves any client-supplied opaque `thoughtSignature`; if the client drops
+   it before sending the matching `functionResponse` (Kimi Code 0.33 does this), the private wrapper
+   injects the same accepted stateless context-engineering marker used by the universal adapters.
+   The compatibility marker is private-wire-only and never creates server-side signature state.
    The public model ceiling 65,536 is preserved, but Antigravity wire `maxOutputTokens` is limited to 65,535.
    The canonical Gemini 3 model id is separate from the private effort/quota id: published support for
    3 Flash Preview maps public `gemini-3-flash-preview` to the live-verified private wire

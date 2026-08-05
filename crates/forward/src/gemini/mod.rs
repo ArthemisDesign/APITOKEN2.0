@@ -27,3 +27,10 @@ pub use pool::{
 };
 pub use responses::gemini_responses;
 pub use skin::{gemini_messages_count_tokens, gemini_messages_skin};
+
+/// Google Code Assist's accepted stateless marker for replayed Gemini function calls.
+///
+/// Both universal adapters and the native compatibility boundary use the same value so clients
+/// that do not retain opaque provider signatures can continue a tool loop without gateway state.
+pub(crate) const REPLAYED_FUNCTION_CALL_THOUGHT_SIGNATURE: &str =
+    "context_engineering_is_the_way_to_go";

@@ -483,7 +483,11 @@ For every request the runtime:
   on the canonical Developer API model id;
 - adapts valid public generation requests to Antigravity's stricter private wire contract: blank or
   omitted `contents[].role` values are inferred as alternating `user`/`model` turns, and the public
-  65,536-token model ceiling is clamped to the private endpoint's accepted boundary of 65,535;
+  65,536-token model ceiling is clamped to the private endpoint's accepted boundary of 65,535. A
+  replayed native `functionCall` keeps a client-supplied opaque `thoughtSignature` unchanged; when
+  a client such as Kimi Code 0.33 omits the signature from its next tool turn, the private wrapper
+  adds Google's accepted stateless context-engineering marker. The marker never appears in the
+  public request/response and requires no gateway-side conversation state;
 - reconstructs an allowlisted native response, adds a synthesized `responseId`, and discards Code
   Assist wrapper fields, credits, private trace ids, unknown top-level fields and headers;
 - surfaces a mid-stream upstream error as a sanitized native error element rather than a clean

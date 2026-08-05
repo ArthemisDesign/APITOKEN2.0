@@ -4,6 +4,7 @@ use super::billing::{begin_admission, AdmissionError, GeminiAdmission};
 use super::config::GeminiModel;
 use super::pool::{GeminiGateway, GeminiLease, GeminiProfile, TokenError};
 use super::transport::{TransportError, TransportResponse};
+use super::REPLAYED_FUNCTION_CALL_THOUGHT_SIGNATURE;
 use crate::metrics::Metrics;
 use crate::proxy::{with_not_started, TerminalErrorReason};
 use crate::state::AppState;
@@ -811,6 +812,37 @@ fn normalize_private_content_roles(request: &mut serde_json::Map<String, Value>)
     }
 }
 
+/// Make a native Gemini tool replay acceptable to the private Code Assist wire without retaining
+/// any gateway-side signature state.
+///
+/// Correct native clients replay Google's opaque `thoughtSignature`; keep that value byte-for-byte.
+/// Some clients (notably Kimi Code 0.33) consume the signature from SSE but discard it while
+/// rebuilding the next request. Code Assist rejects the otherwise valid functionResponse turn, so
+/// add Google's accepted stateless marker only when the replayed functionCall omitted the field.
+fn ensure_replayed_function_call_signatures(request: &mut serde_json::Map<String, Value>) {
+    let Some(contents) = request.get_mut("contents").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for content in contents {
+        let Some(parts) = content.get_mut("parts").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for part in parts {
+            let Some(part) = part.as_object_mut() else {
+                continue;
+            };
+            if part.get("functionCall").is_some_and(Value::is_object)
+                && !part.contains_key("thoughtSignature")
+            {
+                part.insert(
+                    "thoughtSignature".to_string(),
+                    json!(REPLAYED_FUNCTION_CALL_THOUGHT_SIGNATURE),
+                );
+            }
+        }
+    }
+}
+
 fn adapt_antigravity_generation_request(
     request: &mut serde_json::Map<String, Value>,
     image_generation: bool,
@@ -1428,6 +1460,7 @@ fn wrap_code_assist_request(
                     request.insert(field.to_string(), value.clone());
                 }
             }
+            ensure_replayed_function_call_signatures(&mut request);
             let image_generation = model == "gemini-3.1-flash-image";
             if oauth_kind == OAuthKind::Antigravity {
                 adapt_antigravity_generation_request(&mut request, image_generation);
@@ -1491,6 +1524,7 @@ fn wrap_code_assist_request(
                     request.insert(field.to_string(), value.clone());
                 }
             }
+            ensure_replayed_function_call_signatures(&mut request);
             json!({ "request": Value::Object(request) })
         }
         Operation::Models | Operation::Model => return Err(ApiError::not_found()),
@@ -4186,6 +4220,54 @@ mod tests {
             65_536
         );
         assert!(legacy["request"]["contents"][0].get("role").is_none());
+    }
+
+    #[test]
+    fn native_tool_replay_adds_private_marker_only_when_signature_is_missing() {
+        let native = json!({
+            "contents": [
+                {"role": "user", "parts": [{"text": "Use both tools."}]},
+                {"role": "model", "parts": [
+                    {"functionCall": {"name": "unsigned", "args": {}}},
+                    {
+                        "functionCall": {"name": "signed", "args": {"x": 1}},
+                        "thoughtSignature": "opaque-client-signature"
+                    }
+                ]},
+                {"role": "user", "parts": [
+                    {"functionResponse": {"name": "unsigned", "response": {"output": "a"}}},
+                    {"functionResponse": {"name": "signed", "response": {"output": "b"}}}
+                ]}
+            ]
+        });
+
+        for operation in [Operation::Generate, Operation::CountTokens] {
+            let wrapped = wrap_code_assist_request(
+                operation,
+                OAuthKind::Antigravity,
+                "gemini-3.1-flash-lite",
+                "paid-project",
+                &native,
+                "prompt-id",
+                Some("session-id"),
+                Some("request-id"),
+            )
+            .unwrap();
+            let wrapped: Value = serde_json::from_slice(&wrapped).unwrap();
+            let request = &wrapped["request"];
+            assert_eq!(
+                request["contents"][1]["parts"][0]["thoughtSignature"],
+                REPLAYED_FUNCTION_CALL_THOUGHT_SIGNATURE
+            );
+            assert_eq!(
+                request["contents"][1]["parts"][1]["thoughtSignature"],
+                "opaque-client-signature"
+            );
+        }
+
+        assert!(native["contents"][1]["parts"][0]
+            .get("thoughtSignature")
+            .is_none());
     }
 
     #[test]

@@ -54,6 +54,7 @@ use futures_util::{Stream, StreamExt};
 use serde_json::{json, Map, Value};
 
 use super::gemini_api;
+use super::REPLAYED_FUNCTION_CALL_THOUGHT_SIGNATURE;
 use crate::codex::new_id;
 use crate::gemini_schema;
 use crate::gemini_stream::GeminiStreamState;
@@ -71,15 +72,6 @@ pub(crate) const CHAT_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
 /// Верхняя граница буферизации error/non-stream тел ответа `gemini_api()`.
 pub(crate) const RESPONSE_BODY_LIMIT: usize = 32 * 1024 * 1024;
-
-/// Documented Gemini context-engineering marker for replayed function calls.
-///
-/// Code Assist requires a `thoughtSignature` on a model `functionCall` part
-/// when that call is replayed with its `functionResponse`. Universal clients
-/// do not preserve Gemini's opaque signatures, so the adapter uses Google's
-/// accepted stateless marker instead of exposing provider-private metadata.
-pub(crate) const REPLAYED_FUNCTION_CALL_THOUGHT_SIGNATURE: &str =
-    "context_engineering_is_the_way_to_go";
 
 /// Хендлер `POST /v1/chat/completions` (роут регистрируется в server только в
 /// `ProviderMode::Gemini`).
