@@ -1469,13 +1469,14 @@ enum WriteCmd {
         provider: &'static str,
         member_id: String,
         disabled: bool,
+        hidden: bool,
         actor: String,
         reason: String,
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
     PoolMemberDisabled {
         provider: &'static str,
-        reply: oneshot::Sender<anyhow::Result<std::collections::HashSet<String>>>,
+        reply: oneshot::Sender<anyhow::Result<std::collections::HashMap<String, bool>>>,
     },
     CodexSaveHealth {
         home_id: String,
@@ -2473,6 +2474,7 @@ impl AsyncBilling {
         provider: &'static str,
         member_id: &str,
         disabled: bool,
+        hidden: bool,
         actor: &str,
         reason: &str,
     ) -> anyhow::Result<()> {
@@ -2482,6 +2484,7 @@ impl AsyncBilling {
                 provider,
                 member_id: member_id.into(),
                 disabled,
+                hidden,
                 actor: actor.into(),
                 reason: reason.into(),
                 reply,
@@ -2493,10 +2496,11 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
 
-    pub async fn pool_member_disabled(
+    /// Disabled members mapped to whether the operator also hid them from the board.
+    pub async fn pool_member_disables(
         &self,
         provider: &'static str,
-    ) -> anyhow::Result<std::collections::HashSet<String>> {
+    ) -> anyhow::Result<std::collections::HashMap<String, bool>> {
         let (reply, result) = oneshot::channel();
         self.writer
             .send(WriteCmd::PoolMemberDisabled { provider, reply })
@@ -3805,6 +3809,7 @@ impl AsyncBilling {
                             provider,
                             member_id,
                             disabled,
+                            hidden,
                             actor,
                             reason,
                             reply,
@@ -3816,7 +3821,7 @@ impl AsyncBilling {
                                 "pool member disable write",
                                 |pg| {
                                     pg.pool_member_set_disabled(
-                                        provider, &member_id, disabled, &actor, &reason,
+                                        provider, &member_id, disabled, hidden, &actor, &reason,
                                     )
                                 },
                             );
@@ -3828,7 +3833,7 @@ impl AsyncBilling {
                                 &writer_url,
                                 &writer_owner,
                                 "pool member disable read",
-                                |pg| pg.pool_member_disabled(provider),
+                                |pg| pg.pool_member_disables(provider),
                             );
                             let _ = reply.send(result);
                         }

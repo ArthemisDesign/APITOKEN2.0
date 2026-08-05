@@ -1032,6 +1032,41 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(plain(html)).toContain("0/1 auth");
   });
 
+  it("GeminiCapacityBoard: скрытый профиль уходит из списка, но остаётся раскрываемым", () => {
+    const html = renderToString(
+      <GeminiCapacityBoard
+        nowMs={1_800_000_000_000}
+        response={{
+          calibration_authority_available: true,
+          calibration_delivery: { pending_events: 0, dropped_events: 0, persistence_ok: true },
+          profiles: [
+            {
+              id: "gemini_oauth_000001",
+              email: "live…",
+              authenticated: true,
+              windows: [{ window_kind: "5h", used_fraction_units: 10_000_000 }],
+            },
+            {
+              id: "gemini_oauth_000002",
+              email: "dead…",
+              authenticated: false,
+              disabled: true,
+              hidden: true,
+              windows: [{ window_kind: "5h", used_fraction_units: 40_000_000 }],
+            },
+          ],
+        }}
+      />,
+    );
+    // Строки скрытого профиля в таблице нет...
+    expect(plain(html)).not.toContain("dead…");
+    // ...но он посчитан и раскрывается — иначе скрытие было бы необратимым.
+    expect(plain(html)).toContain("1 скрыто");
+    expect(plain(html)).toContain("Показать скрытые (1)");
+    // Живой профиль остаётся на месте.
+    expect(plain(html)).toContain("live…");
+  });
+
   it("GeminiTable: одна строка на профиль, а не на каждую модель", () => {
     const nowMs = 1_700_000_000_000;
     const models = Array.from({ length: 7 }, (_, index) => ({

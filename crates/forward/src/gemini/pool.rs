@@ -61,6 +61,10 @@ pub struct GeminiProfileStatus {
     /// panel can show it and offer to put it back; a disabled profile is still listed, it just
     /// never routes and is never probed.
     pub disabled: bool,
+    /// Operator also took the (already disabled) profile out of the board's default view. Purely
+    /// presentational: it never affects routing, and the engine keeps reporting the row so the
+    /// panel can reveal and restore it.
+    pub hidden: bool,
     pub cooling_until: i64,
     pub inflight: usize,
     pub last_probe_at: i64,
@@ -859,7 +863,13 @@ impl GeminiProfile {
             .collect()
     }
 
-    fn status(&self, cfg: &GeminiConfig, now: i64, disabled: bool) -> GeminiProfileStatus {
+    fn status(
+        &self,
+        cfg: &GeminiConfig,
+        now: i64,
+        disabled: bool,
+        hidden: bool,
+    ) -> GeminiProfileStatus {
         // Clone the small sanitized snapshot before computing derived cooling. Holding this read
         // guard while `cooling_until_for` takes a second read can deadlock on writer-preferring
         // RwLock implementations when the quota refresh is already waiting for its write guard.
@@ -892,6 +902,7 @@ impl GeminiProfile {
             plan: self.plan.clone(),
             authenticated: self.authenticated.load(Ordering::Acquire),
             disabled,
+            hidden,
             cooling_until: self.cooling_until.load(Ordering::Acquire),
             inflight: self.inflight.load(Ordering::Acquire),
             last_probe_at: self.last_probe_at.load(Ordering::Acquire),
@@ -1578,6 +1589,9 @@ pub struct GeminiGateway {
     /// An empty set is the correct startup default — the first refresh fills it, and until then a
     /// disabled profile is merely probed once, not routed to, because selection re-checks.
     disabled: RwLock<HashSet<String>>,
+    /// Subset of `disabled` the operator also hid. Kept separate from routing state so a
+    /// presentation choice can never influence which profile serves a request.
+    hidden: RwLock<HashSet<String>>,
     /// Process-local reverse index for the affinity store's keyed opaque home ids. The key is
     /// secret-dependent, so it is built lazily once the shared AffinityStore is available and
     /// invalidated atomically with every roster generation change.
@@ -1639,6 +1653,7 @@ impl GeminiGateway {
             calibration_store,
             profiles: RwLock::new(profiles),
             disabled: RwLock::new(HashSet::new()),
+            hidden: RwLock::new(HashSet::new()),
             affinity_profiles: RwLock::new(HashMap::new()),
             cursor: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
@@ -1706,12 +1721,22 @@ impl GeminiGateway {
         let Some(store) = self.calibration_store.as_ref() else {
             return;
         };
-        match store.pool_member_disabled(registry::PROVIDER_GOOGLE).await {
-            Ok(disabled) => {
+        match store.pool_member_disables(registry::PROVIDER_GOOGLE).await {
+            Ok(disables) => {
+                let hidden = disables
+                    .iter()
+                    .filter(|(_, hidden)| **hidden)
+                    .map(|(id, _)| id.clone())
+                    .collect();
                 *self
                     .disabled
                     .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = disabled;
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    disables.into_keys().collect();
+                *self
+                    .hidden
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = hidden;
             }
             Err(error) => {
                 eprintln!("Gemini operator disable set refresh failed, keeping previous: {error:#}");
@@ -2049,9 +2074,21 @@ impl GeminiGateway {
         // rows from one generation and model aggregates from another.
         let snapshot = self.profiles_snapshot();
         let disabled = self.disabled_snapshot();
+        let hidden = self
+            .hidden
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let profiles: Vec<_> = snapshot
             .iter()
-            .map(|profile| profile.status(&self.cfg, now, disabled.contains(profile.id())))
+            .map(|profile| {
+                profile.status(
+                    &self.cfg,
+                    now,
+                    disabled.contains(profile.id()),
+                    hidden.contains(profile.id()),
+                )
+            })
             .collect();
         // Rows above list every profile so an operator can see and undo a disable. Aggregates
         // below must not: a disabled profile is not capacity, and counting it would report

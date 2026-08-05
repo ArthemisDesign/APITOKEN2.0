@@ -183,9 +183,10 @@ const MIGRATION_0030: &str =
 const MIGRATION_0031: &str =
     include_str!("../migrations_pg/0031_pricing_request_snapshots_extension_lineage.sql");
 const MIGRATION_0032: &str = include_str!("../migrations_pg/0032_pool_member_disables.sql");
+const MIGRATION_0033: &str = include_str!("../migrations_pg/0033_pool_member_hidden.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 32;
+pub const CURRENT_SCHEMA_VERSION: i64 = 33;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -221,6 +222,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (30, MIGRATION_0030),
     (31, MIGRATION_0031),
     (32, MIGRATION_0032),
+    (33, MIGRATION_0033),
 ];
 
 #[cfg(test)]
@@ -3673,6 +3675,7 @@ impl PgStore {
         provider: &str,
         member_id: &str,
         disabled: bool,
+        hidden: bool,
         actor: &str,
         reason: &str,
     ) -> Result<()> {
@@ -3680,18 +3683,27 @@ impl PgStore {
         if member_id.is_empty() {
             anyhow::bail!("pool member id must not be empty");
         }
+        // Hiding a member that still receives traffic would take live capacity out of the
+        // operator's view while it keeps serving. The row only exists for a disabled member, so
+        // the storage shape already prevents it; reject explicitly rather than silently coercing.
+        if hidden && !disabled {
+            anyhow::bail!("a pool member can only be hidden while it is disabled");
+        }
         if disabled {
             self.client.execute(
                 "INSERT INTO pool_member_disables
-                     (provider, member_id, reason, actor, updated_ts)
-                 VALUES ($1,$2,$3,$4,$5)
+                     (provider, member_id, reason, actor, updated_ts, hidden)
+                 VALUES ($1,$2,$3,$4,$5,$6)
                  ON CONFLICT (provider, member_id) DO UPDATE
                      SET reason=EXCLUDED.reason,
                          actor=EXCLUDED.actor,
-                         updated_ts=EXCLUDED.updated_ts",
-                &[&provider, &member_id, &reason, &actor, &now()],
+                         updated_ts=EXCLUDED.updated_ts,
+                         hidden=EXCLUDED.hidden",
+                &[&provider, &member_id, &reason, &actor, &now(), &hidden],
             )?;
         } else {
+            // Re-enabling drops the hidden flag with the row: a member back in rotation is always
+            // visible again.
             self.client.execute(
                 "DELETE FROM pool_member_disables WHERE provider=$1 AND member_id=$2",
                 &[&provider, &member_id],
@@ -3700,19 +3712,27 @@ impl PgStore {
         Ok(())
     }
 
-    /// Every disabled member of one fleet. Read on roster load and on the pools' refresh tick, so
-    /// it returns the set the selector filters against rather than a per-member lookup.
-    pub fn pool_member_disabled(&mut self, provider: &str) -> Result<HashSet<String>> {
+    /// Every disabled member of one fleet, mapped to whether the operator also hid it. One read
+    /// serves both axes so routability and presentation can never disagree about a member.
+    pub fn pool_member_disables(
+        &mut self,
+        provider: &str,
+    ) -> Result<std::collections::HashMap<String, bool>> {
         crate::require_roster_backed_provider(provider)?;
         Ok(self
             .client
             .query(
-                "SELECT member_id FROM pool_member_disables WHERE provider=$1",
+                "SELECT member_id, hidden FROM pool_member_disables WHERE provider=$1",
                 &[&provider],
             )?
             .into_iter()
-            .map(|row| row.get::<_, String>(0))
+            .map(|row| (row.get::<_, String>(0), row.get::<_, bool>(1)))
             .collect())
+    }
+
+    /// Just the routability axis, for callers that never present anything.
+    pub fn pool_member_disabled(&mut self, provider: &str) -> Result<HashSet<String>> {
+        Ok(self.pool_member_disables(provider)?.into_keys().collect())
     }
 
     pub fn set_plan(&mut self, email: &str, plan: &str) -> Result<usize> {

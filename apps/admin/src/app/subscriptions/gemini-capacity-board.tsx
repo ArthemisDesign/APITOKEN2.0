@@ -63,29 +63,26 @@ function GeminiMoney({
   );
 }
 
-/// Оператор выводит профиль из ротации или возвращает обратно. Запись durable на стороне движка
-/// (`pool_member_disables`), а не в запечатанный ростер authbot'а, поэтому переживает его
-/// перепубликацию. Обновление списка не делаем руками: страница поллится раз в 10 с.
-function GeminiDisableButton({ profile }: { profile: GeminiProfile }): ReactElement {
+/// Оператор выводит профиль из ротации, возвращает обратно и убирает окончательно мёртвый из
+/// списка. Запись durable на стороне движка (`pool_member_disables`), а не в запечатанный ростер
+/// authbot'а, поэтому переживает его перепубликацию. Список не обновляем руками: страница
+/// поллится раз в 10 с.
+function GeminiRotationActions({ profile }: { profile: GeminiProfile }): ReactElement {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const disabled = profile.disabled === true;
+  const hidden = profile.hidden === true;
   const id = profile.id;
 
-  async function toggle() {
+  async function apply(next: { disabled: boolean; hidden: boolean }, confirmText?: string) {
     if (!id || busy) return;
-    // Вывод из ротации уменьшает ёмкость пула — подтверждаем, чтобы это не случилось промахом.
-    if (!disabled && !window.confirm(`Вывести профиль ${id} из ротации?`)) return;
+    if (confirmText && !window.confirm(confirmText)) return;
     setBusy(true);
     setError(null);
     try {
-      await send(`/gemini-subs/${encodeURIComponent(id)}/disabled`, "POST", {
-        disabled: !disabled,
-      });
+      await send(`/gemini-subs/${encodeURIComponent(id)}/disabled`, "POST", next);
     } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : apiErrorMessage(cause, 0),
-      );
+      setError(cause instanceof Error ? cause.message : apiErrorMessage(cause, 0));
     } finally {
       setBusy(false);
     }
@@ -93,17 +90,67 @@ function GeminiDisableButton({ profile }: { profile: GeminiProfile }): ReactElem
 
   return (
     <td className="left">
-      <button type="button" onClick={toggle} disabled={busy || !id}>
-        {busy ? "…" : disabled ? "Вернуть" : "Отключить"}
-      </button>
+      <div className="actions">
+        {disabled ? (
+          <button
+            type="button"
+            className="btn"
+            disabled={busy || !id}
+            onClick={() => apply({ disabled: false, hidden: false })}
+            title="Вернуть профиль в ротацию"
+          >
+            {busy ? "…" : "Вернуть"}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn warn"
+            disabled={busy || !id}
+            // Вывод из ротации уменьшает ёмкость пула — подтверждаем, чтобы не случилось промахом.
+            onClick={() => apply({ disabled: true, hidden: false }, `Вывести профиль ${id} из ротации?`)}
+            title="Вывести профиль из ротации"
+          >
+            {busy ? "…" : "Отключить"}
+          </button>
+        )}
+        {disabled ? (
+          <button
+            type="button"
+            className="btn ghost"
+            disabled={busy || !id}
+            onClick={() => apply({ disabled: true, hidden: !hidden })}
+            title={hidden ? "Вернуть строку в список" : "Убрать строку из списка (профиль останется отключённым)"}
+          >
+            {hidden ? "Показать" : "Скрыть"}
+          </button>
+        ) : null}
+      </div>
       {error ? <small className="bad">{error}</small> : null}
     </td>
   );
 }
 
-function GeminiSubscriptions({ profiles, modelCount, nowSec, authorityReady }: { profiles: GeminiProfile[]; modelCount: number; nowSec: number; authorityReady: boolean }) {
+function GeminiSubscriptions({ profiles: allProfiles, modelCount, nowSec, authorityReady }: { profiles: GeminiProfile[]; modelCount: number; nowSec: number; authorityReady: boolean }) {
+  // Скрытые строки движок всё равно отдаёт — прятать их на сервере значило бы сделать скрытие
+  // необратимым из панели. Фильтруем здесь и всегда даём способ раскрыть обратно.
+  const [showHidden, setShowHidden] = useState(false);
+  const hiddenCount = allProfiles.filter((profile) => profile.hidden).length;
+  const profiles = showHidden ? allProfiles : allProfiles.filter((profile) => !profile.hidden);
+  const live = allProfiles.filter((profile) => profile.authenticated && !profile.disabled).length;
   return (
-    <ProviderSection overline="Подписки" title="Окна по аккаунтам" meta={`${profiles.filter((profile) => profile.authenticated && !profile.disabled).length}/${profiles.length} auth`}>
+    <ProviderSection
+      overline="Подписки"
+      title="Окна по аккаунтам"
+      meta={`${live}/${allProfiles.length} auth${hiddenCount ? ` · ${hiddenCount} скрыто` : ""}`}
+    >
+      {hiddenCount ? (
+        <div className="toolbar">
+          <button type="button" className="btn ghost" onClick={() => setShowHidden((on) => !on)}>
+            {showHidden ? "Спрятать скрытые" : `Показать скрытые (${hiddenCount})`}
+          </button>
+          <span className="note">Скрытые профили отключены и не входят в ёмкость.</span>
+        </div>
+      ) : null}
       <TableCard>
         <table className="provider-home-capacity-table provider-gemini-home-table">
           <thead>
@@ -140,7 +187,7 @@ function GeminiSubscriptions({ profiles, modelCount, nowSec, authorityReady }: {
                   <td><ProviderQuotaMeter usedPercent={weekly.value} label={weekly.label} reset={weeklyWindow?.resets_at ? duration(Math.max(0, weeklyWindow.resets_at - nowSec)) : "—"} /></td>
                   <GeminiMoney window={weeklyWindow} authorityReady={authorityReady} inactive={inactive} />
                   <td><b>{availableModels}/{modelCount}</b></td>
-                  <GeminiDisableButton profile={profile} />
+                  <GeminiRotationActions profile={profile} />
                 </tr>
               );
             })}

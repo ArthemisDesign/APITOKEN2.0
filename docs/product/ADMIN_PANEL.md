@@ -339,7 +339,8 @@ Gemini is built from `/gemini-subs` and preserves provider-specific semantics:
   backend as an audit/calculation contract. The UI does not divide workload-$ by a token
   price and does not invent Gemini token capacity from a fraction alone;
 - the profiles table carries the panel's one mutating control: a per-profile rotation
-  switch (`POST /gemini-subs/{profile_id}/disabled`, body `{"disabled": bool}`). It is
+  switch (`POST /gemini-subs/{profile_id}/disabled`, body
+  `{"disabled": bool, "hidden": bool, "reason": string?}`). It is
   gated by the control key, not the read-only panel key, and disabling asks for
   confirmation because it removes pool capacity. The write lands in the engine authority
   (`pool_member_disables`), NOT in the Auth Bot's sealed roster, so it survives the next
@@ -349,7 +350,16 @@ Gemini is built from `/gemini-subs` and preserves provider-specific semantics:
   operator") ahead of any automatic diagnosis, is never probed (so a revoked credential
   stops being retried), and leaves every capacity aggregate. Claude subscriptions do not
   use this path: they already carry `active|paused|disabled` and are switched through
-  `sub status`, so no subscription ever has two competing switches.
+  `sub status`, so no subscription ever has two competing switches;
+- a permanently dead profile can additionally be hidden from the board (`hidden: true`,
+  a `hidden` column on the same row). Hiding is presentation only and is accepted **only
+  for an already-disabled member**: hiding one that still serves traffic would remove live
+  capacity from the operator's view while it keeps working, so the engine rejects that
+  combination and re-enabling drops the flag with the row. The engine keeps reporting
+  hidden profiles — the panel filters them and offers "показать скрытые (N)", because an
+  endpoint that omitted the rows would make hiding irreversible from the UI. Buttons use
+  the shared `.btn` system (`warn` to disable, `ghost` to hide/reveal) so they inherit the
+  dark-theme treatment instead of falling back to unstyled browser controls.
 
 KIMI is built from `/kimi-subs` (an `enabled:false` envelope is shown as "KIMI-контур
 выключен" — "KIMI plane disabled") and repeats the same compact contract with two

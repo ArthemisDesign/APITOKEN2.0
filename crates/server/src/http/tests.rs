@@ -116,6 +116,7 @@ fn unknown_gemini_status() -> forward::GeminiOperationalStatus {
             plan: "google_ai_pro".to_string(),
             authenticated: true,
             disabled: false,
+            hidden: false,
             cooling_until: 0,
             inflight: 0,
             last_probe_at: 100,

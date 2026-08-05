@@ -146,14 +146,25 @@ impl Authority {
         provider: &str,
         member_id: &str,
         disabled: bool,
+        hidden: bool,
         actor: &str,
         reason: &str,
     ) -> Result<()> {
         match self {
             Self::Sqlite(_) => bail!("operation requires PostgreSQL authority"),
             Self::Postgres(pg) => {
-                pg.pool_member_set_disabled(provider, member_id, disabled, actor, reason)
+                pg.pool_member_set_disabled(provider, member_id, disabled, hidden, actor, reason)
             }
+        }
+    }
+    /// Disabled members mapped to whether they are also hidden from the operator's list.
+    pub fn pool_member_disables(
+        &mut self,
+        provider: &str,
+    ) -> Result<std::collections::HashMap<String, bool>> {
+        match self {
+            Self::Sqlite(_) => bail!("operation requires PostgreSQL authority"),
+            Self::Postgres(pg) => pg.pool_member_disables(provider),
         }
     }
     pub fn pool_member_disabled(

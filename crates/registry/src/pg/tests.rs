@@ -3554,7 +3554,7 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 32);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 33);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
@@ -3669,6 +3669,7 @@ fn pool_member_disable_postgres_roundtrip() {
         crate::PROVIDER_GOOGLE,
         "gemini_oauth_000002",
         true,
+        false,
         "operator",
         "refresh token revoked by Google",
     )
@@ -3678,6 +3679,7 @@ fn pool_member_disable_postgres_roundtrip() {
         crate::PROVIDER_GOOGLE,
         "gemini_oauth_000002",
         true,
+        false,
         "operator",
         "still revoked",
     )
@@ -3694,9 +3696,9 @@ fn pool_member_disable_postgres_roundtrip() {
         .is_empty());
 
     // Re-enabling is idempotent too.
-    pg.pool_member_set_disabled(crate::PROVIDER_GOOGLE, "gemini_oauth_000002", false, "", "")
+    pg.pool_member_set_disabled(crate::PROVIDER_GOOGLE, "gemini_oauth_000002", false, false, "", "")
         .unwrap();
-    pg.pool_member_set_disabled(crate::PROVIDER_GOOGLE, "gemini_oauth_000002", false, "", "")
+    pg.pool_member_set_disabled(crate::PROVIDER_GOOGLE, "gemini_oauth_000002", false, false, "", "")
         .unwrap();
     assert!(pg
         .pool_member_disabled(crate::PROVIDER_GOOGLE)
@@ -3705,12 +3707,41 @@ fn pool_member_disable_postgres_roundtrip() {
 
     // Claude can never be addressed through this store.
     assert!(pg
-        .pool_member_set_disabled(crate::PROVIDER_ANTHROPIC, "someone@example.com", true, "", "")
+        .pool_member_set_disabled(crate::PROVIDER_ANTHROPIC, "someone@example.com", true, false, "", "")
         .is_err());
     assert!(pg.pool_member_disabled(crate::PROVIDER_ANTHROPIC).is_err());
     assert!(pg
-        .pool_member_set_disabled(crate::PROVIDER_GOOGLE, "", true, "", "")
+        .pool_member_set_disabled(crate::PROVIDER_GOOGLE, "", true, false, "", "")
         .is_err());
+
+    // Hiding is a presentation choice layered on top of a disable, never a way to take a serving
+    // profile out of the operator's view while it keeps receiving traffic.
+    assert!(pg
+        .pool_member_set_disabled(crate::PROVIDER_GOOGLE, "gemini_oauth_000003", false, true, "", "")
+        .is_err());
+    pg.pool_member_set_disabled(
+        crate::PROVIDER_GOOGLE,
+        "gemini_oauth_000003",
+        true,
+        true,
+        "operator",
+        "dead credential",
+    )
+    .unwrap();
+    let disables = pg.pool_member_disables(crate::PROVIDER_GOOGLE).unwrap();
+    assert_eq!(disables.get("gemini_oauth_000003"), Some(&true));
+    // Routability does not care about the presentation axis.
+    assert!(pg
+        .pool_member_disabled(crate::PROVIDER_GOOGLE)
+        .unwrap()
+        .contains("gemini_oauth_000003"));
+    // Re-enabling drops the hidden flag with the row: a member back in rotation is visible again.
+    pg.pool_member_set_disabled(crate::PROVIDER_GOOGLE, "gemini_oauth_000003", false, false, "", "")
+        .unwrap();
+    assert!(pg
+        .pool_member_disables(crate::PROVIDER_GOOGLE)
+        .unwrap()
+        .is_empty());
 }
 
 /// Real PostgreSQL proof for immutable turn replay, cumulative spend, observation history and

@@ -2452,6 +2452,7 @@ async fn gemini_sub_set_disabled(
             registry::PROVIDER_GOOGLE,
             &profile_id,
             body.disabled,
+            body.hidden,
             "panel",
             &reason,
         )
@@ -2472,6 +2473,7 @@ async fn gemini_sub_set_disabled(
     Json(json!({
         "id": profile_id,
         "disabled": gemini.is_disabled(&profile_id),
+        "hidden": body.hidden && body.disabled,
     }))
     .into_response()
 }
@@ -2479,6 +2481,11 @@ async fn gemini_sub_set_disabled(
 #[derive(serde::Deserialize)]
 struct PoolMemberDisableRequest {
     disabled: bool,
+    /// Presentation only: keep an already-disabled profile out of the board's default view.
+    /// Absent means "leave as is" is NOT offered — the panel always sends the intended state, so
+    /// a missing field is the safe default of visible.
+    #[serde(default)]
+    hidden: bool,
     reason: Option<String>,
 }
 
@@ -5260,6 +5267,7 @@ fn gemini_profile_values(
                 "plan": profile.plan,
                 "authenticated": profile.authenticated,
                 "disabled": profile.disabled,
+                "hidden": profile.hidden,
                 "cooling_until": profile.cooling_until,
                 "inflight": profile.inflight,
                 "last_probe_at": profile.last_probe_at,
