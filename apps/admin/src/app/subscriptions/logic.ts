@@ -83,6 +83,9 @@ export function homeStatus(home: CodexHome, nowSec: number): StatusPill {
 // в статус всего профиля: routing допускает authenticated профиль, пока он не cooling.
 export function geminiProfileStatus(profile: GeminiProfile, nowSec: number): StatusPill {
   const coolingUntil = Number(profile.cooling_until || 0);
+  // Оператор вывел профиль вручную — это состояние важнее любого автоматического диагноза:
+  // «ошибка auth» на отключённом профиле сбивала бы с толку (он и не должен аутентифицироваться).
+  if (profile.disabled) return { label: "отключён оператором", kind: "warn" };
   if (!profile.authenticated) return { label: "ошибка auth", kind: "bad" };
   if (coolingUntil > nowSec) return { label: "cooling " + duration(coolingUntil - nowSec), kind: "warn" };
 

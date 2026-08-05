@@ -456,6 +456,9 @@ export interface GeminiProfile {
   email?: string;
   plan?: string;
   authenticated?: boolean;
+  /** Оператор вывел профиль из ротации (`pool_member_disables`). Он остаётся в списке — иначе
+   *  его нельзя было бы вернуть, — но не маршрутизируется и не пробится. */
+  disabled?: boolean;
   inflight?: number;
   spend_usd_total?: number;
   cooling_until?: number;

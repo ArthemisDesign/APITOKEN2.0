@@ -1,7 +1,8 @@
 "use client";
 
-import { type ReactElement } from "react";
+import { type ReactElement, useState } from "react";
 import { Pill, TableCard } from "@/components/ui";
+import { apiErrorMessage, send } from "@/lib/api";
 import { duration, nanoMoney } from "@/lib/format";
 import { providerInteger, usedPercentFromNano } from "./provider-calibration";
 import { ProviderCapacityStrip, ProviderQuotaMeter, ProviderSection } from "./provider-board-ui";
@@ -62,9 +63,47 @@ function GeminiMoney({
   );
 }
 
+/// Оператор выводит профиль из ротации или возвращает обратно. Запись durable на стороне движка
+/// (`pool_member_disables`), а не в запечатанный ростер authbot'а, поэтому переживает его
+/// перепубликацию. Обновление списка не делаем руками: страница поллится раз в 10 с.
+function GeminiDisableButton({ profile }: { profile: GeminiProfile }): ReactElement {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const disabled = profile.disabled === true;
+  const id = profile.id;
+
+  async function toggle() {
+    if (!id || busy) return;
+    // Вывод из ротации уменьшает ёмкость пула — подтверждаем, чтобы это не случилось промахом.
+    if (!disabled && !window.confirm(`Вывести профиль ${id} из ротации?`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await send(`/gemini-subs/${encodeURIComponent(id)}/disabled`, "POST", {
+        disabled: !disabled,
+      });
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : apiErrorMessage(cause, 0),
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <td className="left">
+      <button type="button" onClick={toggle} disabled={busy || !id}>
+        {busy ? "…" : disabled ? "Вернуть" : "Отключить"}
+      </button>
+      {error ? <small className="bad">{error}</small> : null}
+    </td>
+  );
+}
+
 function GeminiSubscriptions({ profiles, modelCount, nowSec, authorityReady }: { profiles: GeminiProfile[]; modelCount: number; nowSec: number; authorityReady: boolean }) {
   return (
-    <ProviderSection overline="Подписки" title="Окна по аккаунтам" meta={`${profiles.filter((profile) => profile.authenticated).length}/${profiles.length} auth`}>
+    <ProviderSection overline="Подписки" title="Окна по аккаунтам" meta={`${profiles.filter((profile) => profile.authenticated && !profile.disabled).length}/${profiles.length} auth`}>
       <TableCard>
         <table className="provider-home-capacity-table provider-gemini-home-table">
           <thead>
@@ -76,6 +115,7 @@ function GeminiSubscriptions({ profiles, modelCount, nowSec, authorityReady }: {
               <th>Quota 7д / reset</th>
               <th>Доступно $ · 7д</th>
               <th>Модели</th>
+              <th className="left">Ротация</th>
             </tr>
           </thead>
           <tbody>
@@ -87,8 +127,8 @@ function GeminiSubscriptions({ profiles, modelCount, nowSec, authorityReady }: {
               const five = windowQuota(fiveWindow);
               const weekly = windowQuota(weeklyWindow);
               const health = geminiProfileStatus(profile, nowSec);
-              const inactive = profile.authenticated !== true || Number(profile.cooling_until ?? 0) > nowSec;
-              const availableModels = profile.authenticated
+              const inactive = profile.disabled === true || profile.authenticated !== true || Number(profile.cooling_until ?? 0) > nowSec;
+              const availableModels = profile.authenticated && !profile.disabled
                 ? (profile.model_cooling ?? []).filter((model) => Number(model.cooling_until || 0) <= nowSec).length
                 : 0;
               return (
@@ -100,6 +140,7 @@ function GeminiSubscriptions({ profiles, modelCount, nowSec, authorityReady }: {
                   <td><ProviderQuotaMeter usedPercent={weekly.value} label={weekly.label} reset={weeklyWindow?.resets_at ? duration(Math.max(0, weeklyWindow.resets_at - nowSec)) : "—"} /></td>
                   <GeminiMoney window={weeklyWindow} authorityReady={authorityReady} inactive={inactive} />
                   <td><b>{availableModels}/{modelCount}</b></td>
+                  <GeminiDisableButton profile={profile} />
                 </tr>
               );
             })}

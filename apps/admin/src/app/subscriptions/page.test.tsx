@@ -997,6 +997,41 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(plain(html)).not.toContain("$50.00");
   });
 
+  it("GeminiCapacityBoard: отключённый оператором профиль виден, но не считается ёмкостью", () => {
+    const html = renderToString(
+      <GeminiCapacityBoard
+        nowMs={1_800_000_000_000}
+        response={{
+          calibration_authority_available: true,
+          calibration_delivery: { pending_events: 0, dropped_events: 0, persistence_ok: true },
+          profiles: [{
+            id: "gemini_oauth_000002",
+            email: "pull…",
+            // Отключённый профиль не аутентифицируется — его перестают пробить. Диагноз
+            // «ошибка auth» здесь ввёл бы в заблуждение, поэтому ручное состояние важнее.
+            authenticated: false,
+            disabled: true,
+            windows: [{
+              window_kind: "5h",
+              used_fraction_units: 40_000_000,
+              capacity_nano: "50000000000",
+              remaining_nano: "15000000000",
+            }],
+          }],
+        }}
+      />,
+    );
+    // Остаётся в списке — иначе его нельзя было бы вернуть, — и предлагает вернуть.
+    expect(plain(html)).toContain("отключён оператором");
+    expect(plain(html)).toContain("Вернуть");
+    expect(plain(html)).not.toContain("ошибка auth");
+    // Но деньги отключённого профиля продавать нельзя.
+    expect(plain(html)).not.toContain("$15.00");
+    expect(plain(html)).not.toContain("$50.00");
+    // И он не входит в счётчик auth.
+    expect(plain(html)).toContain("0/1 auth");
+  });
+
   it("GeminiTable: одна строка на профиль, а не на каждую модель", () => {
     const nowMs = 1_700_000_000_000;
     const models = Array.from({ length: 7 }, (_, index) => ({
