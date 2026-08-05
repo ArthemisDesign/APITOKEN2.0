@@ -1,7 +1,11 @@
 import type { NextConfig } from "next";
 
+const workspaceRoot = new URL("../..", import.meta.url).pathname;
+
 const nextConfig: NextConfig = {
   output: "standalone",
+  outputFileTracingRoot: workspaceRoot,
+  turbopack: { root: workspaceRoot },
   poweredByHeader: false,
   async headers() {
     return [{ source: "/:path*", headers: [

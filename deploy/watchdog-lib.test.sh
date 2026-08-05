@@ -3015,6 +3015,10 @@ grep -Fq -- '--reflink=auto' "$ROOT/deploy/deploy.sh" \
   || wd_die 'compact commerce promotion still traverses and rewrites every release mode'
 grep -Fq 'output: "standalone"' "$ROOT/apps/content-studio/next.config.ts" \
   || wd_die 'Content Studio no longer emits its minimal standalone runtime'
+grep -Fq 'outputFileTracingRoot: workspaceRoot' "$ROOT/apps/content-studio/next.config.ts" \
+  || wd_die 'Content Studio standalone trace is no longer rooted at the stable workspace path'
+grep -Fq 'turbopack: { root: workspaceRoot }' "$ROOT/apps/content-studio/next.config.ts" \
+  || wd_die 'Content Studio Turbopack root can drift with the checkout parent directory'
 grep -Fxq 'ExecStart=/usr/local/lib/apitoken-watchdog/controller/content-studio-start.sh' \
   "$ROOT/systemd/apitoken-content-studio.service" \
   || wd_die 'Content Studio does not use the standalone-compatible fixed launcher'

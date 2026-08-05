@@ -59,8 +59,11 @@ processes with exact-systemd-unit readiness gates. The automatic watchdog passes
 `--tested-candidate`: `deploy.sh` validates and promotes the frozen build instead of compiling it a
 second time. The commerce lane first reduces that candidate to a content-addressed production-only
 bundle: one shared pnpm virtual store, compiled API/worker/database files, migrations, and the
-Content Studio standalone trace. Production reflink-copies only that roughly 105 MiB tree rather
-than walking the full roughly 636 MiB candidate, then writes only the release marker; the bundle
+Content Studio standalone trace. Content Studio pins both `outputFileTracingRoot` and Turbopack to
+the repository workspace root, so Next emits the stable `apps/content-studio/server.js` trace path
+regardless of whether the candidate lives under a host cache, managed worktree, or primary clone.
+Production reflink-copies only that roughly 105 MiB tree rather than walking the full roughly 636 MiB
+candidate, then writes only the release marker; the bundle
 was already frozen before its digest entered the trusted marker. Manual/bootstrap use retains the
 standalone checkout-and-build fallback. Commerce and
 PostgreSQL-backed engine deploys are two-phase: `deploy.sh` selects the release without touching
