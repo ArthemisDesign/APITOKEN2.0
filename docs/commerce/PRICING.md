@@ -71,7 +71,13 @@ accounts switch via a single active release head, not a sequential update of bin
 ## B2B
 
 B2B does not inherit the global B2C policy or its provider/model overrides. The client has its own
-immutable policy, copied from the invitation snapshot and thereafter edited by full CAS replacement.
+immutable policy, thereafter edited by full CAS replacement. The policy originates from exactly one
+of two paths: invitation redemption copies the invitation snapshot at registration, while a manual
+admin conversion of an existing B2C customer provisions a fresh policy with a single Anthropic
+discount rule derived from the negotiated multiplier. Re-running the conversion on a customer who
+is already B2B repairs a missing policy (customers converted before this provisioning existed)
+against the multiplier already in effect, and is otherwise a no-op — it never rewrites an existing
+policy or the active scalar.
 
 The existing scalar `mult_bp` becomes only an Anthropic provider rule at migration:
 

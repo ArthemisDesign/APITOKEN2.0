@@ -22,7 +22,7 @@ import {
   confirmPricingControlJob,
   type ClaimedPricingControlJob,
 } from "./pricing-control-jobs.js";
-import { createBusinessInvite, rotateBusinessInvite } from "./pricing.js";
+import { createBusinessInvite, convertCustomerToBusiness, rotateBusinessInvite } from "./pricing.js";
 import { runStage5Backfill } from "./multi-discount-backfill.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -206,6 +206,133 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
       clientPolicyVersion: clientPolicy!.currentVersion,
       clientPolicyDigest: clientPolicy!.currentDigest,
     });
+  });
+
+  it("provisions a managed policy on manual B2B conversion and repairs pre-policy conversions", async () => {
+    const user = await createEmailUser(database, "convert-buyer@example.test", "password-hash");
+    await seedClient.query(`
+      UPDATE engine_accounts SET engine_account_id = $2, status = 'active' WHERE user_id = $1
+    `, [user.id, `acct_convert_${user.id.replaceAll("-", "")}`]);
+
+    const converted = await convertCustomerToBusiness(database, {
+      userId: user.id,
+      actorId: "admin@example.test",
+      reason: "customer negotiated business terms",
+      multiplierBp: 2_000,
+    });
+    expect(converted).toMatchObject({ converted: true, multiplierBp: 2_000 });
+    const policy = await getManagedPricingPolicy(database, {
+      ownerType: "b2b_client",
+      ownerId: user.id,
+    });
+    expect(policy).toMatchObject({
+      policyId: `policy:main:b2b:${user.id}`,
+      currentVersion: 1,
+      rules: [{
+        scope: { provider: { providerId: "anthropic" } },
+        pricingMode: "discount",
+        discountBps: 8_000,
+      }],
+    });
+    expect(policy!.targets).toHaveLength(1);
+    expect(policy!.targets[0]).toMatchObject({
+      accountClass: "b2b",
+      desiredVersion: 1,
+      syncState: "pending",
+      deliveryState: "pending",
+    });
+    const jobs = await seedClient.query<{ policy_jobs: string; legacy_jobs: string }>(`
+      SELECT
+        (SELECT count(*)::text FROM engine_policy_jobs) AS policy_jobs,
+        (SELECT count(*)::text FROM engine_pricing_jobs) AS legacy_jobs
+    `);
+    expect(jobs.rows[0]).toEqual({ policy_jobs: "1", legacy_jobs: "1" });
+    const conversionAudit = await seedClient.query<{ metadata: Record<string, unknown> }>(`
+      SELECT metadata FROM audit_log WHERE action = 'pricing.b2b_converted' AND target_id = $1
+    `, [user.id]);
+    expect(conversionAudit.rows[0]?.metadata).toMatchObject({
+      managedPolicyId: `policy:main:b2b:${user.id}`,
+      managedPolicyVersion: 1,
+    });
+
+    // Safe retry: a fully provisioned B2B customer stays an unchanged no-op.
+    const retry = await convertCustomerToBusiness(database, {
+      userId: user.id,
+      actorId: "admin@example.test",
+      reason: "safe retry",
+      multiplierBp: 3_000,
+    });
+    expect(retry).toMatchObject({ converted: false, multiplierBp: 2_000, jobId: null });
+    const afterRetry = await getManagedPricingPolicy(database, {
+      ownerType: "b2b_client",
+      ownerId: user.id,
+    });
+    expect(afterRetry!.currentVersion).toBe(1);
+
+    // A customer converted before managed-policy provisioning existed carries no b2b_client
+    // policy; re-running the conversion repairs exactly that gap against the multiplier already
+    // in effect and ignores the scalar passed with the retry.
+    const legacy = await createEmailUser(database, "legacy-b2b@example.test", "password-hash");
+    await seedClient.query(`
+      UPDATE engine_accounts SET engine_account_id = $2, status = 'active' WHERE user_id = $1
+    `, [legacy.id, `acct_legacy_${legacy.id.replaceAll("-", "")}`]);
+    await seedClient.query(`
+      UPDATE customer_profiles
+      SET customer_type = 'b2b', current_tier = NULL, multiplier_bp = 4_000
+      WHERE user_id = $1
+    `, [legacy.id]);
+    const repaired = await convertCustomerToBusiness(database, {
+      userId: legacy.id,
+      actorId: "admin@example.test",
+      reason: "repair missing managed policy",
+      multiplierBp: 9_000,
+    });
+    expect(repaired).toMatchObject({ converted: false, multiplierBp: 4_000 });
+    expect(repaired.jobId).not.toBeNull();
+    const repairedPolicy = await getManagedPricingPolicy(database, {
+      ownerType: "b2b_client",
+      ownerId: legacy.id,
+    });
+    expect(repairedPolicy).toMatchObject({
+      currentVersion: 1,
+      rules: [{
+        scope: { provider: { providerId: "anthropic" } },
+        pricingMode: "discount",
+        discountBps: 6_000,
+      }],
+    });
+    expect(repairedPolicy!.targets).toHaveLength(1);
+    const profile = await seedClient.query<{ multiplier_bp: number }>(`
+      SELECT multiplier_bp FROM customer_profiles WHERE user_id = $1
+    `, [legacy.id]);
+    expect(profile.rows[0]?.multiplier_bp).toBe(4_000);
+    const repairAudit = await seedClient.query<{ metadata: Record<string, unknown> }>(`
+      SELECT metadata FROM audit_log
+      WHERE action = 'pricing.b2b_policy_provisioned' AND target_id = $1
+    `, [legacy.id]);
+    expect(repairAudit.rows).toHaveLength(1);
+    expect(repairAudit.rows[0]?.metadata).toMatchObject({
+      multiplierBp: 4_000,
+      policyVersion: 1,
+    });
+
+    // A scalar that does not map to a whole-percent managed discount is rejected loudly instead
+    // of silently rounding money.
+    const odd = await createEmailUser(database, "odd-b2b@example.test", "password-hash");
+    await seedClient.query(`
+      UPDATE engine_accounts SET engine_account_id = $2, status = 'active' WHERE user_id = $1
+    `, [odd.id, `acct_odd_${odd.id.replaceAll("-", "")}`]);
+    await seedClient.query(`
+      UPDATE customer_profiles
+      SET customer_type = 'b2b', current_tier = NULL, multiplier_bp = 3_750
+      WHERE user_id = $1
+    `, [odd.id]);
+    await expect(convertCustomerToBusiness(database, {
+      userId: odd.id,
+      actorId: "admin@example.test",
+      reason: "repair attempt with a fractional-percent scalar",
+      multiplierBp: 3_750,
+    })).rejects.toThrow("whole-percent");
   });
 
   it("rotates a policy invitation as an independent exact snapshot with a neutral scalar placeholder", async () => {

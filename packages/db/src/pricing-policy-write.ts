@@ -1474,6 +1474,98 @@ export async function copyBusinessInvitationPolicyToReplacement(
   };
 }
 
+/**
+ * Provisions the managed B2B client policy for a manually converted customer, reaching the same
+ * end state as invitation redemption: an active source policy with a single Anthropic discount
+ * rule mirroring the negotiated scalar multiplier, a legacy account binding, and a staged engine
+ * delivery job. Idempotent: when both the policy and the binding already exist, nothing is
+ * written and the result reports provisioned=false.
+ */
+export async function provisionBusinessClientPolicy(client: PoolClient, input: {
+  userId: string;
+  engineAccountRecordId: string;
+  engineAccountId: string;
+  multiplierBp: number;
+  actorId: string;
+  reason: string;
+}): Promise<{
+  policyId: string;
+  policyVersion: number;
+  policyDigest: string;
+  jobId: string | null;
+  provisioned: boolean;
+}> {
+  const identity = await client.query<{ id: string }>(`
+    SELECT id FROM pricing_policies
+    WHERE owner_type = 'b2b_client' AND owner_id = $1 AND product_id = $2 AND status = 'active'
+    FOR UPDATE
+  `, [input.userId, MAIN_PRICING_PRODUCT_ID]);
+  let source: SourcePolicy;
+  let catalogGeneration: number;
+  let provisioned = false;
+  if (identity.rows[0]) {
+    const stored = await sourcePolicyById(client, identity.rows[0].id, "update");
+    source = stored.policy;
+    catalogGeneration = stored.catalogGeneration;
+  } else {
+    const discountBps = 10_000 - input.multiplierBp;
+    if (!Number.isInteger(discountBps) || discountBps < 0 || discountBps > 9_500 || discountBps % 100 !== 0) {
+      throw new RangeError("business multiplier does not map to a whole-percent managed policy discount");
+    }
+    await createPolicyIdentityAndVersion(client, {
+      policyId: `policy:main:b2b:${input.userId}`,
+      ownerType: "b2b_client",
+      ownerId: input.userId,
+      productId: MAIN_PRICING_PRODUCT_ID,
+      rules: [{
+        scope: { provider: { providerId: "anthropic" } },
+        pricingMode: "discount",
+        discountBps,
+      }],
+      actorId: input.actorId,
+      reason: input.reason,
+    });
+    const stored = await sourcePolicyById(client, `policy:main:b2b:${input.userId}`, "update");
+    source = stored.policy;
+    catalogGeneration = stored.catalogGeneration;
+    provisioned = true;
+  }
+  const existingBinding = await client.query<{ id: string }>(`
+    SELECT id::text FROM account_policy_bindings WHERE user_id = $1 FOR UPDATE
+  `, [input.userId]);
+  let bindingId = existingBinding.rows[0]?.id ?? null;
+  if (bindingId === null) {
+    bindingId = randomUUID();
+    await client.query(`
+      INSERT INTO account_policy_bindings (
+        id, user_id, engine_account_record_id, engine_account_id,
+        account_class, product_id, policy_id,
+        policy_enforcement, funding_enforcement, reconciliation_state, sync_state
+      ) VALUES ($1, $2, $3, $4, 'b2b', $5, $6,
+                'legacy_scalar', 'legacy_single', 'verified', 'legacy')
+    `, [
+      bindingId,
+      input.userId,
+      input.engineAccountRecordId,
+      input.engineAccountId,
+      MAIN_PRICING_PRODUCT_ID,
+      source.policy_id,
+    ]);
+    provisioned = true;
+  }
+  let jobId: string | null = null;
+  if (provisioned) {
+    jobId = (await materializeBinding(client, bindingId, source, catalogGeneration)).jobId;
+  }
+  return {
+    policyId: source.policy_id,
+    policyVersion: source.version,
+    policyDigest: source.content_digest,
+    jobId,
+    provisioned,
+  };
+}
+
 export async function materializeProvisionedUserPolicy(database: Database, input: {
   userId: string;
   engineAccountId: string;

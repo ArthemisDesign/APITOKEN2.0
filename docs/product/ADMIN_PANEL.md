@@ -113,7 +113,11 @@ The `/pricing` page is the operator surface of the versioned multi-discount auth
   actor, reason and the version time.
 
 The `/business` page uses the same policy editor for existing B2B clients and active
-invitations. Post-cutover, a saved B2B policy also advances the live release-v2 authority:
+invitations. Every B2B client owns a managed policy: invitation redemption copies the
+invitation snapshot, and a manual B2C→B2B conversion from `/users` provisions a single-rule
+Anthropic discount policy from the negotiated multiplier; re-running that conversion on a
+client who still lacks the policy (converted before this provisioning existed) repairs it
+without touching the active discount. Post-cutover, a saved B2B policy also advances the live release-v2 authority:
 a strictly newer release policy version is pinned through the append-only assignment
 extension under the exact current head, and the CAS response reports that outcome. A new invitation is created immediately with a full provider/model policy; a
 scalar discount editor does not exist in the active UI. An unredeemed invitation is edited

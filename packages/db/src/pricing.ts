@@ -14,6 +14,7 @@ import {
   createBusinessInvitationPolicy,
   getManagedPricingPolicy,
   PricingPolicyWriteError,
+  provisionBusinessClientPolicy,
 } from "./pricing-policy-write.js";
 
 export class InvalidBusinessInvitationError extends Error {}
@@ -1569,7 +1570,12 @@ export async function setBusinessPricing(database: Database, input: {
 /**
  * Converts an existing B2C customer to a supplied negotiated B2B multiplier atomically. B2C
  * progress remains historical data, while the live tier/window/floor controls are cleared so no
- * later B2C reconciliation can change the negotiated rate.
+ * later B2C reconciliation can change the negotiated rate. The conversion also provisions the
+ * managed b2b_client policy (single Anthropic discount rule mirroring the multiplier), its
+ * account binding, and a staged engine delivery job — the same end state invitation redemption
+ * reaches; without it the admin policy editor has nothing to manage. Re-running the conversion
+ * on an already-B2B customer repairs a missing policy (customers converted before this
+ * provisioning existed) and is otherwise an unchanged no-op.
  */
 export async function convertCustomerToBusiness(database: Database, input: {
   userId: string;
@@ -1585,10 +1591,11 @@ export async function convertCustomerToBusiness(database: Database, input: {
       current_tier: number | null;
       multiplier_bp: number;
       referral_floor_bps: number;
+      engine_account_record_id: string;
       engine_account_id: string | null;
     }>(`
       SELECT cp.customer_type, cp.current_tier, cp.multiplier_bp, cp.referral_floor_bps,
-             ea.engine_account_id
+             ea.id::text AS engine_account_record_id, ea.engine_account_id
       FROM customer_profiles cp
       JOIN engine_accounts ea ON ea.user_id = cp.user_id
       WHERE cp.user_id = $1
@@ -1598,12 +1605,44 @@ export async function convertCustomerToBusiness(database: Database, input: {
     if (!row) throw new CustomerProfileNotFoundError("customer profile or engine account not found");
     if (!row.engine_account_id) throw new BusinessCustomerNotFoundError("customer engine account is not provisioned");
     if (row.customer_type === "b2b") {
-      await client.query("ROLLBACK");
+      // Customers converted before managed-policy provisioning existed have no b2b_client
+      // policy, so the admin editor cannot manage them. Re-running the conversion repairs
+      // exactly that gap against the multiplier already in effect and stages the delivery;
+      // a fully provisioned customer stays an unchanged no-op.
+      const repaired = await provisionBusinessClientPolicy(client, {
+        userId: input.userId,
+        engineAccountRecordId: row.engine_account_record_id,
+        engineAccountId: row.engine_account_id,
+        multiplierBp: row.multiplier_bp,
+        actorId: input.actorId,
+        reason: input.reason,
+      });
+      if (!repaired.provisioned) {
+        await client.query("ROLLBACK");
+        return {
+          converted: false,
+          multiplierBp: row.multiplier_bp,
+          engineAccountId: row.engine_account_id,
+          jobId: null,
+        };
+      }
+      await client.query(`
+        INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+        VALUES ('admin', $1, 'pricing.b2b_policy_provisioned', 'user', $2, $3::jsonb)
+      `, [input.actorId, input.userId, JSON.stringify({
+        reason: input.reason,
+        multiplierBp: row.multiplier_bp,
+        policyId: repaired.policyId,
+        policyVersion: repaired.policyVersion,
+        policyDigest: repaired.policyDigest,
+        policyJobId: repaired.jobId,
+      })]);
+      await client.query("COMMIT");
       return {
         converted: false,
         multiplierBp: row.multiplier_bp,
         engineAccountId: row.engine_account_id,
-        jobId: null,
+        jobId: repaired.jobId,
       };
     }
 
@@ -1617,6 +1656,14 @@ export async function convertCustomerToBusiness(database: Database, input: {
     await client.query(`
       UPDATE engine_accounts SET mult_bp = $2, updated_at = now() WHERE user_id = $1
     `, [input.userId, input.multiplierBp]);
+    const policy = await provisionBusinessClientPolicy(client, {
+      userId: input.userId,
+      engineAccountRecordId: row.engine_account_record_id,
+      engineAccountId: row.engine_account_id,
+      multiplierBp: input.multiplierBp,
+      actorId: input.actorId,
+      reason: input.reason,
+    });
     const jobId = await enqueuePricingJob(client, {
       userId: input.userId,
       engineAccountId: row.engine_account_id,
@@ -1632,6 +1679,10 @@ export async function convertCustomerToBusiness(database: Database, input: {
       negotiatedMultiplierBp: input.multiplierBp,
       previousTier: row.current_tier,
       previousReferralFloorBps: row.referral_floor_bps,
+      managedPolicyId: policy.policyId,
+      managedPolicyVersion: policy.policyVersion,
+      managedPolicyDigest: policy.policyDigest,
+      managedPolicyJobId: policy.jobId,
     })]);
     await client.query("COMMIT");
     return {

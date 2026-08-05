@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createDatabase, type Database } from "@claude-api/db";
+import { createDatabase, getManagedPricingPolicy, runStage5Backfill, type Database } from "@claude-api/db";
 import { EngineClient } from "@claude-api/engine-client";
 import { AdminService } from "./admin.service.js";
 import { AdminOperationsService } from "./admin-operations.service.js";
@@ -20,13 +20,23 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query(`
-      TRUNCATE audit_log, api_keys, engine_credits, webhook_events, payments, email_outbox,
-               auth_rate_limits, auth_tokens, auth_sessions, auth_identities, oauth_transactions,
-               checkout_sessions, engine_pricing_jobs, pricing_usage_events, pricing_usage_cursors,
-               pricing_months, business_invites, customer_profiles, engine_accounts, users
-      RESTART IDENTITY CASCADE
+    const tables = await database.pool.query<{ tablename: string }>(`
+      SELECT tablename FROM pg_tables
+      WHERE schemaname = 'public' AND tablename <> '__drizzle_migrations'
+      ORDER BY tablename
     `);
+    if (tables.rows.length > 0) {
+      await database.pool.query(
+        `TRUNCATE TABLE ${tables.rows.map((row) => `"${row.tablename}"`).join(", ")} RESTART IDENTITY CASCADE`,
+      );
+    }
+    // The B2B conversion path provisions a managed pricing policy, so the versioned pricing
+    // foundation (catalog, switches, global policy) must exist just like in production.
+    await runStage5Backfill(database, {
+      schema_version: 1,
+      engine_accounts: [],
+      openkeys_accounts: [],
+    }, { mode: "safe" });
     passwordUserId = randomUUID();
     oauthUserId = randomUUID();
     await database.pool.query(`
@@ -274,8 +284,26 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
         negotiatedMultiplierBp: 2000,
         previousTier: 2,
         previousReferralFloorBps: 7250,
+        managedPolicyId: `policy:main:b2b:${passwordUserId}`,
+        managedPolicyVersion: 1,
       }),
     }]);
+
+    // The conversion provisions the managed b2b_client policy so the admin policy editor can
+    // manage the customer exactly like an invite-redeemed one.
+    const policy = await getManagedPricingPolicy(database, {
+      ownerType: "b2b_client",
+      ownerId: passwordUserId,
+    }) as { currentVersion: number; rules: unknown[]; targets: unknown[] } | null;
+    expect(policy).toMatchObject({
+      currentVersion: 1,
+      rules: [{
+        scope: { provider: { providerId: "anthropic" } },
+        pricingMode: "discount",
+        discountBps: 8000,
+      }],
+    });
+    expect(policy!.targets).toHaveLength(1);
 
     await expect(service.convertToBusiness({
       userId: passwordUserId,
@@ -283,6 +311,57 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
       actorId: "admin-q",
       discountPercent: 70,
     })).resolves.toMatchObject({ converted: false, multiplier_bp: 2000, sync_status: "unchanged" });
+  });
+
+  it("repairs the missing managed policy of a pre-provisioning B2B conversion", async () => {
+    // Simulates a customer converted before managed-policy provisioning existed: B2B profile
+    // with the negotiated scalar, but no b2b_client policy and no account binding.
+    await database.pool.query(`
+      UPDATE customer_profiles
+      SET customer_type = 'b2b', current_tier = NULL, multiplier_bp = 2000
+      WHERE user_id = $1
+    `, [passwordUserId]);
+
+    const result = await service.convertToBusiness({
+      userId: passwordUserId,
+      reason: "repair missing managed policy",
+      actorId: "admin-q",
+      discountPercent: 50,
+    });
+    // The scalar already in effect is kept (the passed discount is ignored on the repair path),
+    // while the policy provisioning job is staged for engine delivery.
+    expect(result).toMatchObject({ converted: false, multiplier_bp: 2000, sync_status: "pending" });
+    const policy = await getManagedPricingPolicy(database, {
+      ownerType: "b2b_client",
+      ownerId: passwordUserId,
+    }) as { currentVersion: number; rules: unknown[] } | null;
+    expect(policy).toMatchObject({
+      currentVersion: 1,
+      rules: [{
+        scope: { provider: { providerId: "anthropic" } },
+        pricingMode: "discount",
+        discountBps: 8000,
+      }],
+    });
+    const profile = await database.pool.query(`
+      SELECT multiplier_bp FROM customer_profiles WHERE user_id = $1
+    `, [passwordUserId]);
+    expect(profile.rows[0]).toEqual({ multiplier_bp: 2000 });
+    const repairAudit = await database.pool.query(`
+      SELECT actor_id, metadata FROM audit_log WHERE action = 'pricing.b2b_policy_provisioned'
+    `);
+    expect(repairAudit.rows).toEqual([{
+      actor_id: "admin-q",
+      metadata: expect.objectContaining({ multiplierBp: 2000, policyVersion: 1 }),
+    }]);
+
+    // Once repaired, the same action is an unchanged no-op again.
+    await expect(service.convertToBusiness({
+      userId: passwordUserId,
+      reason: "safe retry after repair",
+      actorId: "admin-q",
+      discountPercent: 50,
+    })).resolves.toMatchObject({ converted: false, sync_status: "unchanged" });
   });
 
   it("resets TOTP and revokes active sessions with an audit event", async () => {
