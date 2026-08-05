@@ -16,6 +16,7 @@ pub mod codex;
 pub mod gemini;
 pub mod glm;
 pub mod kimi;
+pub mod openai_image;
 pub use codex::{
     codex_catalog_at, codex_credit_cost_nano, codex_credit_rates, codex_prices_at,
     codex_subscription_fast_multiplier_basis_points, codex_tariff_capability_at,
@@ -37,6 +38,11 @@ pub use kimi::{
     kimi_catalog_at, kimi_prices_at, kimi_prices_for_served_model, kimi_resolve_subscription_model,
     kimi_subscription_models, KimiModelSpec, KimiPriceEpoch, KimiPrices, KimiSubscriptionModel,
     KimiUsage, KimiUsageError, KIMI_TARIFF_SCHEDULE_ID,
+};
+pub use openai_image::{
+    openai_image_cost_nanodollars, openai_image_tariff, OpenAiImageMeteringError,
+    OpenAiImagePrices, OpenAiImageTariffIdentity, OpenAiImageUsage, GPT_IMAGE_2_ALIAS,
+    GPT_IMAGE_2_SNAPSHOT, OPENAI_IMAGE_TARIFF_SCHEDULE_ID,
 };
 
 pub const NANO_PER_USD: i128 = 1_000_000_000;

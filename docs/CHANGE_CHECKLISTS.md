@@ -24,7 +24,9 @@ Publication is two-stage. The implementation/research merge lands first and stay
 at this step it is forbidden to add the model to production defaults/systemd, the public
 model catalog, router presets, the website, or public docs. After GREEN on the exact
 implementation SHA, a controlled production live run is performed on an owned credential.
-The free `countTokens` goes first, then a minimal generation; the default aggregate
+The free `countTokens` goes first, then a minimal generation; a provider surface without
+`countTokens` (such as Images) cannot silently skip this step and requires a separate reviewed,
+image-specific free-preflight admission exception before any paid attempt. The default aggregate
 admission budget is no more than `$0.0001` (0.01 of a cent). A quota/catalog row and
 `countTokens` do not prove generation. The publication gate requires simultaneously:
 generation 2xx, real output, terminal authoritative usage, incremental SSE, and every
@@ -34,7 +36,8 @@ and immutable/dormant artifacts are not rewritten.
 
 - [ ] Research/implementation commit: official model/price/control contract, exact private wire
       mapping, and a controlled canary path; runtime implementation is dormant by default.
-- [ ] `crates/metering/src/{lib,codex,gemini}.rs` — tariff table (price authority, nanoUSD).
+- [ ] `crates/metering/src/{lib,<provider>}.rs` (including `openai_image.rs`) — tariff table
+      (price authority, nanoUSD).
 - [ ] `packages/contracts` — `CURRENT_*_CANONICAL_MODELS` and/or pricing schemas.
 - [ ] GREEN exact implementation SHA + live gate: generation/output/usage/SSE/controls confirmed
       on every claimed subscription plan/model tier; sanitized evidence recorded in the provider doc.

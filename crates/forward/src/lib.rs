@@ -28,6 +28,7 @@ mod kimi_calibration;
 mod meter;
 mod metrics;
 pub mod nodetls;
+pub mod openai_image;
 mod openai_responses_stream;
 mod pricing;
 mod proxy;

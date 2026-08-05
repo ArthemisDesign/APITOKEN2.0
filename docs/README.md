@@ -65,6 +65,7 @@ document, update this index.
 - [GEMINI_CALIBRATION.md](ops/GEMINI_CALIBRATION.md) — exact-profile live calibration run of Gemini: immutable backend evidence, capability matrix, and a shared $40 limit.
 - [KIMI_CALIBRATION.md](ops/KIMI_CALIBRATION.md) — dry-run-by-default live calibration run of KIMI: exact request-id attribution, $0.0001 aggregate cap, paid only with explicit permission.
 - [GLM_CALIBRATION.md](ops/GLM_CALIBRATION.md) — fail-closed live calibration run of GLM Coding Plan directly against the provider: quota anchor, 3 models × stream/non-stream matrix, hard cap $0.05.
+- [GPT_IMAGE_2_CANARY.md](ops/GPT_IMAGE_2_CANARY.md) — locked dry-run-only APIYI planner with an official-list integer nanoUSD estimate; `--execute` is blocked and it is not live evidence or a publication surface.
 - [DEVBOT.md](ops/DEVBOT.md) — design of the Telegram dev bot (`apps/devbot`): topics, notifications, event sources (stages 1–3 implemented; stage 4 — business events — ahead).
 - [FRONTEND_VISUAL_QA.md](ops/FRONTEND_VISUAL_QA.md) — frontend visual QA.
 - [VERCEL_PRODUCT_ANALYTICS.md](ops/VERCEL_PRODUCT_ANALYTICS.md) — Vercel product analytics.

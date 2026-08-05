@@ -12,6 +12,7 @@ mod admin;
 mod config;
 mod http;
 mod metrics_store;
+mod openai_image_canary;
 mod poller;
 mod router_auth;
 mod router_policy;
@@ -165,6 +166,21 @@ enum Cmd {
         /// Delete the legacy home after a successful seal. Without this flag the home is kept.
         #[arg(long)]
         delete_home: bool,
+    },
+    /// Private dry-run-only GPT Image 2 planner. --execute remains blocked.
+    OpenaiImageCanary {
+        #[arg(long)]
+        prompt_file: std::path::PathBuf,
+        #[arg(long)]
+        output: std::path::PathBuf,
+        #[arg(long)]
+        checkpoint: std::path::PathBuf,
+        #[arg(long)]
+        budget_nanousd: u64,
+        #[arg(long)]
+        execute: bool,
+        #[arg(long, default_value = metering::GPT_IMAGE_2_ALIAS)]
+        model: String,
     },
 }
 
@@ -353,6 +369,21 @@ fn main() -> Result<()> {
             active_kid,
             delete_home,
         } => codex_seal_cmd(&home, &roster, &keys, &active_kid, delete_home),
+        Cmd::OpenaiImageCanary {
+            prompt_file,
+            output,
+            checkpoint,
+            budget_nanousd,
+            execute,
+            model,
+        } => openai_image_canary::run(openai_image_canary::OpenAiImageCanaryArgs {
+            prompt_file,
+            output,
+            checkpoint,
+            budget_nanousd,
+            execute,
+            model,
+        }),
     }
 }
 

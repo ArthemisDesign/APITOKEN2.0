@@ -184,9 +184,10 @@ Layers and invariants — `CLAUDE.md` (layer table) and `docs/engine/ARCHITECTUR
 is only what is needed to walk the relationships when making changes:
 
 - **`crates/metering` — the engine's price authority.** Hardcoded effective-dated tables
-  in nanoUSD: `src/lib.rs` (Anthropic), `src/codex.rs` (OpenAI), `src/gemini.rs` (Gemini).
-  A price/model change is a reviewable commit here. Consumers: `crates/forward` (main),
-  `crates/server` (types/tariff identifiers).
+  in nanoUSD: `src/lib.rs` (Anthropic), `src/codex.rs` (OpenAI text), `src/gemini.rs` (Gemini),
+  and dormant `src/openai_image.rs` (GPT Image 2). A price/model change is a reviewable commit
+  here. Consumers: `crates/forward` (main), `crates/server` (types/tariff identifiers). The
+  image tariff is pure dormant authority and has no product/runtime consumer.
 - `crates/registry/src/pricing/` — NOT a price list, but the durable identities of
   multi-discount: catalogs/switches/policies, admission snapshots
   (`docs/commerce/MULTI-DISCOUNT.md`). Fixed provider IDs actual/shadow contract —
@@ -268,6 +269,13 @@ is only what is needed to walk the relationships when making changes:
   the target provider label; the failure alert and rollback are described in
   `docs/ops/MONITORING.md#claudestorefallbackfailing`. Contract and evidence —
   `docs/engine/CLAUDESTORE_FALLBACK.md` and `research/CLAUDESTORE_GPT_FALLBACK_EVIDENCE.md`.
+- **Dormant GPT Image 2 candidate (`crates/server` planner → `crates/forward::openai_image`
+  → fixed `https://api.apiyi.com`).** `crates/forward` contains the private generation/edit wire
+  candidate and reads no env. The current `crates/server` CLI is dry-run-only: it validates and
+  prints a blocked plan, does not construct the production gateway or read the future key, and
+  rejects `--execute` before checkpoint/file/network work. There is no runtime, HTTP, customer,
+  router, catalog, or publication consumer. Contract and blockers —
+  `docs/ops/GPT_IMAGE_2_CANARY.md` and `research/GPT_IMAGE_2_EVIDENCE.md`.
 - **Policy preflight contract (provider planes → router, phase 6.4a).** The producer is
   the identical `crates/server::router_policy` on every fixed runtime: an authenticated
   loopback-only `POST /internal/router/policy/preflight` reads the customer key and one

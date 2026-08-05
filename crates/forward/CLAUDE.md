@@ -1091,6 +1091,18 @@ plans anyway). Privacy by construction: the subject (keyed digest of the key) st
 PostgreSQL-only `PgStore::list_glm_calibrations`, an empty report on the SQLite authority) are joined
 to the opaque id only through `profile_id_for_subject`, and a foreign subject is never serialized outward.
 
+**Dormant OpenAI Images candidate — no runtime/public surface:** `openai_image` owns the strict
+single-attempt APIYI transport for reviewed GPT Image 2 generation/edit wire candidates, bounded
+response and PNG validation (including the relay's strict mask size below 4 MiB), terminal usage
+reconciliation, cache accounting and privacy-safe evidence. A deadline or network failure after
+`.send()` begins is always `OutcomeUnknown` (with sanitized response context when headers arrived),
+never a retryable pre-dispatch timeout. It reads no env and has no route, `AppState`, catalog or router integration. Production
+configuration is pinned to `https://api.apiyi.com`, but the server's private `openai-image-canary`
+is a locked dry-run planner: it does not construct this gateway, read a key, or dispatch a request,
+and `--execute` remains blocked. The immutable snapshot is mock-only transport evidence; there is no
+live canary evidence. Operational contract — `docs/ops/GPT_IMAGE_2_CANARY.md`; unresolved publication
+gates — `research/GPT_IMAGE_2_EVIDENCE.md`.
+
 **Tuning for live Anthropic** (identity/beta/UA/version) — via `ProxyConfig` fields, which
 `server` takes from env. Default values — in `config.rs`.
 
