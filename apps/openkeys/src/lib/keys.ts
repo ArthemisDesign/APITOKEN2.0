@@ -332,6 +332,8 @@ function loadUsageReport(
 }
 
 export type PayingKeysDays = 1 | 7 | 30;
+export type PayingKeysSort = "spent" | "nominal" | "created" | "delivered" | "status";
+export type PayingKeysSortDirection = "asc" | "desc";
 
 export interface PayingKeysQuery {
   days: PayingKeysDays;
@@ -339,6 +341,8 @@ export interface PayingKeysQuery {
   offset: number;
   q: string;
   status: AdminKeyStatusFilter;
+  sort: PayingKeysSort;
+  dir: PayingKeysSortDirection;
 }
 
 export type PayingKeyUsage =
@@ -356,6 +360,7 @@ export interface PayingKeyRow {
   enabled: boolean;
   lifecycle: "stock" | "delivered";
   faceValueNano: string;
+  lifetimeSpentNano: string | null;
   pricingContract: "legacy" | "official_1_to_1";
   createdAt: string;
   deliveredAt: string | null;
@@ -367,14 +372,81 @@ export interface PayingKeysPage {
   total: number;
   limit: number;
   offset: number;
+  sort: PayingKeysSort;
+  dir: PayingKeysSortDirection;
   rows: PayingKeyRow[];
 }
 
 const PAYING_KEYS_USAGE_CONCURRENCY = 4;
+const PAYING_KEYS_COLUMNS = {
+  id: openkeysKeys.id,
+  batchId: openkeysKeys.batchId,
+  batchLabel: openkeysBatches.label,
+  createdBy: openkeysBatches.createdBy,
+  keyMasked: openkeysKeys.keyMasked,
+  engineAccountId: openkeysKeys.engineAccountId,
+  apiType: openkeysBatches.apiType,
+  enabled: openkeysKeys.status,
+  faceValueNano: openkeysKeys.faceValueNano,
+  pricingContract: openkeysKeys.pricingContract,
+  createdAt: openkeysKeys.createdAt,
+  deliveredAt: openkeysKeys.deliveredAt,
+} as const;
+
+type PayingKeySourceRow = {
+  id: string;
+  batchId: string;
+  batchLabel: string | null;
+  createdBy: string;
+  keyMasked: string;
+  engineAccountId: string;
+  apiType: string | null;
+  enabled: string;
+  faceValueNano: bigint;
+  pricingContract: string;
+  createdAt: Date;
+  deliveredAt: Date | null;
+};
+
+function payingKeysDbOrder(query: PayingKeysQuery) {
+  const direction = query.dir === "asc" ? asc : desc;
+  switch (query.sort) {
+    case "nominal":
+      return [direction(openkeysKeys.faceValueNano), asc(openkeysKeys.id)];
+    case "created":
+      return [direction(openkeysKeys.createdAt), asc(openkeysKeys.id)];
+    case "delivered":
+      return [asc(sql`${openkeysKeys.deliveredAt} is null`), direction(openkeysKeys.deliveredAt), asc(openkeysKeys.id)];
+    case "status":
+      return [direction(openkeysKeys.status), asc(openkeysKeys.id)];
+    default:
+      return [asc(openkeysKeys.id)];
+  }
+}
+
+function comparePayingKeysSpent(
+  left: PayingKeySourceRow,
+  right: PayingKeySourceRow,
+  accounts: Map<string, EngineAccount>,
+  direction: PayingKeysSortDirection,
+): number {
+  const leftAccount = accounts.get(left.engineAccountId);
+  const rightAccount = accounts.get(right.engineAccountId);
+  if (!leftAccount || !rightAccount) {
+    if (!leftAccount && !rightAccount) return left.id.localeCompare(right.id);
+    return leftAccount ? -1 : 1;
+  }
+  const leftSpent = BigInt(leftAccount.spent_nano);
+  const rightSpent = BigInt(rightAccount.spent_nano);
+  if (leftSpent === rightSpent) return left.id.localeCompare(right.id);
+  const order = leftSpent < rightSpent ? -1 : 1;
+  return direction === "asc" ? order : -order;
+}
 
 /**
- * Все живые OpenKeys с DB-пагинацией до live usage. Снятые ключи и соседние
- * страницы не создают Control API вызовов; сбой одного аккаунта не скрывает остальные.
+ * Все живые OpenKeys с глобальной серверной сортировкой. SQL-сортировки пагинируются
+ * в PostgreSQL; lifetime spend сортируется по batch-снимку всех отфильтрованных аккаунтов.
+ * Usage выбранного окна загружается только для итоговой страницы с concurrency четыре.
  */
 export async function loadPayingKeys(query: PayingKeysQuery): Promise<PayingKeysPage> {
   const { db } = getDatabase();
@@ -394,34 +466,39 @@ export async function loadPayingKeys(query: PayingKeysQuery): Promise<PayingKeys
       : undefined,
   );
 
-  const [rows, totals] = await Promise.all([
-    db
-      .select({
-        id: openkeysKeys.id,
-        batchId: openkeysKeys.batchId,
-        batchLabel: openkeysBatches.label,
-        createdBy: openkeysBatches.createdBy,
-        keyMasked: openkeysKeys.keyMasked,
-        engineAccountId: openkeysKeys.engineAccountId,
-        apiType: openkeysBatches.apiType,
-        enabled: openkeysKeys.status,
-        faceValueNano: openkeysKeys.faceValueNano,
-        pricingContract: openkeysKeys.pricingContract,
-        createdAt: openkeysKeys.createdAt,
-        deliveredAt: openkeysKeys.deliveredAt,
-      })
+  let rows: PayingKeySourceRow[];
+  let total: number;
+  let accounts: Map<string, EngineAccount>;
+  if (query.sort === "spent") {
+    const candidates = await db
+      .select(PAYING_KEYS_COLUMNS)
       .from(openkeysKeys)
       .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
-      .where(where)
-      .orderBy(desc(openkeysKeys.deliveredAt), desc(openkeysKeys.createdAt), asc(openkeysKeys.id))
-      .limit(query.limit)
-      .offset(query.offset),
-    db
-      .select({ value: count() })
-      .from(openkeysKeys)
-      .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
-      .where(where),
-  ]);
+      .where(where) as PayingKeySourceRow[];
+    accounts = await loadEngineAccountMap(candidates.map((row) => row.engineAccountId));
+    candidates.sort((left, right) => comparePayingKeysSpent(left, right, accounts, query.dir));
+    total = candidates.length;
+    rows = candidates.slice(query.offset, query.offset + query.limit);
+  } else {
+    const [pageRows, totals] = await Promise.all([
+      db
+        .select(PAYING_KEYS_COLUMNS)
+        .from(openkeysKeys)
+        .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
+        .where(where)
+        .orderBy(...payingKeysDbOrder(query))
+        .limit(query.limit)
+        .offset(query.offset),
+      db
+        .select({ value: count() })
+        .from(openkeysKeys)
+        .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
+        .where(where),
+    ]);
+    rows = pageRows as PayingKeySourceRow[];
+    total = totals[0]?.value ?? 0;
+    accounts = await loadEngineAccountMap(rows.map((row) => row.engineAccountId));
+  }
 
   const window = `${query.days}d`;
   const engine = getEngineClient();
@@ -441,9 +518,11 @@ export async function loadPayingKeys(query: PayingKeysQuery): Promise<PayingKeys
 
   return {
     days: query.days,
-    total: totals[0]?.value ?? 0,
+    total,
     limit: query.limit,
     offset: query.offset,
+    sort: query.sort,
+    dir: query.dir,
     rows: rows.map((row) => ({
       id: row.id,
       batchId: row.batchId,
@@ -455,6 +534,7 @@ export async function loadPayingKeys(query: PayingKeysQuery): Promise<PayingKeys
       enabled: row.enabled !== "disabled",
       lifecycle: row.deliveredAt ? "delivered" : "stock",
       faceValueNano: row.faceValueNano.toString(),
+      lifetimeSpentNano: accounts.get(row.engineAccountId)?.spent_nano ?? null,
       pricingContract: row.pricingContract as "legacy" | "official_1_to_1",
       createdAt: row.createdAt.toISOString(),
       deliveredAt: row.deliveredAt?.toISOString() ?? null,

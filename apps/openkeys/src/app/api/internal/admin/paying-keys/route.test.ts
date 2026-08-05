@@ -5,7 +5,15 @@ import { GET } from "./route";
 vi.mock("@/lib/keys", () => ({ loadPayingKeys: vi.fn() }));
 
 const controlKey = "openkeys-paying-keys-control";
-const payload: PayingKeysPage = { days: 30, total: 0, limit: 50, offset: 0, rows: [] };
+const payload: PayingKeysPage = {
+  days: 30,
+  total: 0,
+  limit: 50,
+  offset: 0,
+  sort: "spent",
+  dir: "desc",
+  rows: [],
+};
 
 function request(query = "", key = controlKey, actor = "operator"): Request {
   return new Request(`http://127.0.0.1:3410/api/internal/admin/paying-keys${query}`, {
@@ -36,7 +44,7 @@ describe("OpenKeys paying keys route", () => {
   });
 
   it("returns a no-store page and delegates normalized filters", async () => {
-    const response = await GET(request("?days=7&limit=25&offset=50&q=%20masked%20&status=disabled"));
+    const response = await GET(request("?days=7&limit=25&offset=50&q=%20masked%20&status=disabled&sort=nominal&dir=asc"));
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
@@ -47,12 +55,22 @@ describe("OpenKeys paying keys route", () => {
       offset: 50,
       q: "masked",
       status: "disabled",
+      sort: "nominal",
+      dir: "asc",
     });
   });
 
   it("uses documented defaults", async () => {
     await GET(request());
-    expect(loadPayingKeys).toHaveBeenCalledWith({ days: 30, limit: 50, offset: 0, q: "", status: "all" });
+    expect(loadPayingKeys).toHaveBeenCalledWith({
+      days: 30,
+      limit: 50,
+      offset: 0,
+      q: "",
+      status: "all",
+      sort: "spent",
+      dir: "desc",
+    });
   });
 
   it.each([
@@ -63,6 +81,8 @@ describe("OpenKeys paying keys route", () => {
     "?offset=100001",
     `?q=${"x".repeat(81)}`,
     "?status=removed",
+    "?sort=requests",
+    "?dir=sideways",
   ])("rejects invalid query %s before delegation", async (query) => {
     const response = await GET(request(query));
     expect(response.status).toBe(400);

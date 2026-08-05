@@ -3,6 +3,8 @@ import {
   loadPayingKeys,
   type AdminKeyStatusFilter,
   type PayingKeysDays,
+  type PayingKeysSort,
+  type PayingKeysSortDirection,
 } from "@/lib/keys";
 import { internalAdminActor } from "@/lib/internal-admin";
 
@@ -37,9 +39,17 @@ export async function GET(request: Request): Promise<NextResponse> {
   const status = (["all", "active", "disabled"] as const).includes(rawStatus as AdminKeyStatusFilter)
     ? rawStatus as AdminKeyStatusFilter
     : null;
-  if (days === null || limit === null || offset === null || q.length > 80 || status === null) {
+  const rawSort = params.get("sort") ?? "spent";
+  const sort = (["spent", "nominal", "created", "delivered", "status"] as const).includes(rawSort as PayingKeysSort)
+    ? rawSort as PayingKeysSort
+    : null;
+  const rawDir = params.get("dir") ?? "desc";
+  const dir = (["asc", "desc"] as const).includes(rawDir as PayingKeysSortDirection)
+    ? rawDir as PayingKeysSortDirection
+    : null;
+  if (days === null || limit === null || offset === null || q.length > 80 || status === null || sort === null || dir === null) {
     return json({ error: "invalid_query" }, 400);
   }
 
-  return json(await loadPayingKeys({ days, limit, offset, q, status }));
+  return json(await loadPayingKeys({ days, limit, offset, q, status, sort, dir }));
 }

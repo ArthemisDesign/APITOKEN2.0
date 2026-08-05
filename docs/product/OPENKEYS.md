@@ -236,14 +236,18 @@ non-removed key (`removed_at IS NULL`), including both warehouse stock and keys 
 delivered to buyers. Each row carries explicit `lifecycle=stock|delivered` and nullable
 `deliveredAt`, so an unissued key cannot disappear or look delivered. It accepts
 `days=1|7|30` (default `30`), `limit=1..100` (default `50`), `offset=0..100000`
-(default `0`), trimmed `q` up to 80 characters and `status=all|active|disabled`.
-PostgreSQL performs the cohort count, search and stable delivered-first, newest-first
-pagination before the selected page makes usage calls with concurrency four. Every row
+(default `0`), trimmed `q` up to 80 characters, `status=all|active|disabled`,
+`sort=spent|nominal|created|delivered|status` (default `spent`) and
+`dir=asc|desc` (default `desc`). `spent` means authoritative lifetime engine spend,
+not the selected usage window; the response therefore exposes it separately as exact nullable
+`lifetimeSpentNano`. This sort loads filtered accounts through bounded batches of 500,
+sorts exact `BigInt` amounts globally before pagination and always places unavailable accounts
+last. The other sorts execute directly in PostgreSQL before pagination. Every selected row
 carries safe batch/key metadata and the complete engine usage
 for the selected window, preserving exact nanoUSD strings, free-form provider/model names
-and all token counters. A failed account usage call is row-local
-`{status:"unavailable",window}`; a real zero remains `status:"available"` with exact zero
-usage. Responses, including auth/query errors, are `no-store`; invalid auth is hidden as
+and all token counters. Only the selected page makes usage calls with concurrency four. A failed
+account usage call is row-local `{status:"unavailable",window}`; a real zero remains
+`status:"available"` with exact zero usage. Responses, including auth/query errors, are `no-store`; invalid auth is hidden as
 `404`, invalid query is `400`. The contract excludes the full secret, view token, engine
 key id, digest and warehouse ciphertext/nonce. After GREEN exact producer SHA
 `558d4b34896792cfaed5760852f9001feb0d0443`, `apps/admin` consumes the endpoint in the
