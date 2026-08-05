@@ -16,6 +16,10 @@ const environmentSchema = z.object({
   PLATEGA_RECONCILE_MS: z.coerce.number().int().min(5_000).default(30_000),
   PLATEGA_RECONCILE_MIN_AGE_S: z.coerce.number().int().min(0).default(15),
   PRICING_POLL_MS: z.coerce.number().int().min(1000).default(60_000),
+  // Job delivery runs on its own short tick, decoupled from the heavy per-user sweep above it.
+  // A newly provisioned account's policy is what the customer's first dashboard load waits on, so
+  // that latency must not be a function of how many accounts the fleet already has.
+  PRICING_DISPATCH_MS: z.coerce.number().int().min(250).max(60_000).default(2_000),
   PRICING_CLOSE_GRACE_MS: z.coerce.number().int().min(0).default(3_600_000),
   FUNDING_NORMALIZATION_POLL_MS: z.coerce.number().int().min(1000).default(5_000),
   FUNDING_NORMALIZATION_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(25),

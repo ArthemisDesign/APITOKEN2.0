@@ -461,7 +461,9 @@ Gemini is built from `/gemini-subs` and preserves provider-specific semantics:
   a `hidden` column on the same row). Hiding is presentation only and is accepted **only
   for an already-disabled member**: hiding one that still serves traffic would remove live
   capacity from the operator's view while it keeps working, so the engine rejects that
-  combination and re-enabling drops the flag with the row. The engine keeps reporting
+  combination with `400` — the request can never succeed, so it must not come back as a
+  retryable `503`, and the check runs at the boundary before any gateway/roster lookup.
+  Re-enabling drops the flag with the row. The engine keeps reporting
   hidden profiles — the panel filters them and offers "показать скрытые (N)", because an
   endpoint that omitted the rows would make hiding irreversible from the UI. Buttons use
   the shared `.btn` system (`warn` to disable, `ghost` to hide/reveal) so they inherit the

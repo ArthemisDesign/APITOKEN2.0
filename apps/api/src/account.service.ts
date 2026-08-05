@@ -169,6 +169,18 @@ export class AccountService {
         throw new EngineAccountUnavailableError("engine account policy is temporarily unavailable", { cause: error });
       }
       if (!materialized.ready) {
+        // The policy is staged and the worker dispatches on a short tick, so this is a race of
+        // seconds, not a failure. Wait it out here instead of answering the customer's first ever
+        // dashboard load with an engine-outage error they can do nothing about. The wait is
+        // bounded and read-only: if it does not settle we fall through to the pending signal and
+        // the worker still owns delivery and retries.
+        materialized = await this.awaitPolicyConfirmation(
+          userId,
+          completed.rows[0].engine_account_id,
+          materialized,
+        );
+      }
+      if (!materialized.ready) {
         throw new EngineAccountPolicyPendingError("engine account policy is waiting for synchronization");
       }
       return completed.rows[0].engine_account_id;
@@ -178,6 +190,36 @@ export class AccountService {
     } finally {
       client.release();
     }
+  }
+
+  /// Bounded, read-only wait for the staged pricing policy to be confirmed. Retries the same
+  /// idempotent materialization the caller already ran; it observes the binding rather than
+  /// re-staging it, so repeating it cannot duplicate work. Deliberately short: the worker
+  /// dispatches jobs on its own fast tick, and a request must never hang on a background queue.
+  private async awaitPolicyConfirmation(
+    userId: string,
+    engineAccountId: string,
+    current: Awaited<ReturnType<typeof materializeProvisionedUserPolicy>>,
+  ): Promise<Awaited<ReturnType<typeof materializeProvisionedUserPolicy>>> {
+    let materialized = current;
+    for (let attempt = 0; attempt < PROVISIONING_CONFIRMATION_ATTEMPTS; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, PROVISIONING_CONFIRMATION_DELAY_MS));
+      try {
+        materialized = await materializeProvisionedUserPolicy(this.database, {
+          userId,
+          engineAccountId,
+        });
+      } catch (error) {
+        // A failure here is not worse than the pending state the caller already has: keep the
+        // last observation and let the worker finish the delivery.
+        this.logger.warn(
+          `policy confirmation poll failed for user ${userId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return materialized;
+      }
+      if (materialized.ready) return materialized;
+    }
+    return materialized;
   }
 
   async getAccount(userId: string): Promise<unknown> {
@@ -682,9 +724,18 @@ function maskApiKey(key: string): string {
   return `${key.slice(0, 12)}…${key.slice(-4)}`;
 }
 
+// Total bounded wait is attempts x delay. Kept close to the worker's dispatch tick so the common
+// case settles inside one request, without ever turning a dashboard load into a long hang.
+const PROVISIONING_CONFIRMATION_ATTEMPTS = 6;
+const PROVISIONING_CONFIRMATION_DELAY_MS = 500;
+
 export function isRetryableEngineFailure(error: unknown): boolean {
+  // A 404 is deliberately NOT here. "No such account" is a permanent answer, and reporting it as
+  // "engine is temporarily unavailable" tells the caller to retry something that can never
+  // succeed. Provisioning handles its own missing-account window through isMissingEngineAccount,
+  // which is the narrow case a 404 legitimately covers.
   return error instanceof EngineAccountUnavailableError ||
-    (error instanceof EngineClientError && (error.retryable || error.status === 404));
+    (error instanceof EngineClientError && error.retryable);
 }
 
 // One-line diagnostic for the 503 mapping in the account/payments controllers: keeps the

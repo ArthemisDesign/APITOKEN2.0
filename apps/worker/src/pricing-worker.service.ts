@@ -146,8 +146,33 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
 
   private async run(): Promise<void> {
     const pollMs = this.config.get("PRICING_POLL_MS", { infer: true });
-    this.logger.log(`pricing worker ${this.workerId} started`);
+    const dispatchMs = this.config.get("PRICING_DISPATCH_MS", { infer: true });
+    // Job delivery and the fleet sweep are different workloads on the same loop. Delivery is a
+    // cheap indexed claim and is what a newly provisioned account's first dashboard load blocks
+    // on; the sweep walks every pricing target doing per-user engine I/O. Running delivery only
+    // once per sweep made a signup wait for the whole sweep plus the poll interval, so the wait
+    // grew with the size of the fleet. Deliver on a short tick, sweep on the slow one. The short
+    // tick is also the bounded recovery for a missed LISTEN/NOTIFY wake: notifications are
+    // fire-and-forget, so without it a dropped event would hide until the next sweep.
+    let nextSweepAt = 0;
+    this.logger.log(
+      `pricing worker ${this.workerId} started (dispatch ${dispatchMs}ms, sweep ${pollMs}ms)`,
+    );
     while (!this.stopped) {
+      try {
+        // Delivery first and every tick: never behind the sweep. Control jobs go through the
+        // coalescing dispatcher so a tick never doubles a LISTEN/NOTIFY-triggered pass.
+        this.requestControlFlush();
+        await this.flushPricingJobs();
+        await this.flushPricingReleaseActivationJobs();
+      } catch (error) {
+        this.logger.error(message(error));
+      }
+      if (Date.now() < nextSweepAt) {
+        await this.sleep(dispatchMs);
+        continue;
+      }
+      nextSweepAt = Date.now() + pollMs;
       try {
         // C68: recovery is part of normal polling, so a failed retry-state write cannot strand a
         // processing lease until process restart.
@@ -195,14 +220,13 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
             this.logger.log(`closed ${closed} elapsed pricing windows`);
           }
         }
-        await this.flushPricingControlJobs();
+        // Strict chains stay inside the sweep: that flush is part of the recovery workload,
+        // not latency-sensitive delivery.
         await this.flushPendingStrictChains();
-        await this.flushPricingJobs();
-        await this.flushPricingReleaseActivationJobs();
       } catch (error) {
         this.logger.error(message(error));
       }
-      await this.sleep(pollMs);
+      await this.sleep(dispatchMs);
     }
   }
 

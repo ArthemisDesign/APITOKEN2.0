@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AuthUserView } from "@claude-api/contracts";
 import { EngineClientError } from "@claude-api/engine-client";
 import { AccountController } from "./account.controller.js";
-import { AccountService, EngineAccountUnavailableError } from "./account.service.js";
+import { AccountService, EngineAccountUnavailableError, isRetryableEngineFailure } from "./account.service.js";
 import type { RequestAuth } from "./auth.guard.js";
 import type { TotpService } from "./totp.service.js";
 
@@ -90,5 +90,22 @@ describe("engine failure mapping", () => {
     const logged = warn.mock.calls[0]?.[0] ?? "";
     expect(logged).toContain("engine account is temporarily unavailable");
     expect(logged).toContain("engine request timed out");
+  });
+});
+
+describe("engine failure classification", () => {
+  // "No such account" is a permanent answer. Calling it retryable turned it into
+  // "engine is temporarily unavailable", which asks the caller to retry forever — the same
+  // masking that made an unsupported model come back as a retryable 529 on the engine side.
+  it("does not treat a 404 as temporary", () => {
+    expect(isRetryableEngineFailure(new EngineClientError("not found", 404, false)))
+      .toBe(false);
+  });
+
+  it("still treats an explicitly retryable transport failure as temporary", () => {
+    expect(isRetryableEngineFailure(new EngineClientError("engine request timed out", undefined, true)))
+      .toBe(true);
+    expect(isRetryableEngineFailure(new EngineAccountUnavailableError("provisioning in flight")))
+      .toBe(true);
   });
 });
