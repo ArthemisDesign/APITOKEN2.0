@@ -122,12 +122,14 @@ the first currently admitted profile, so its paid call never rotates.
 
 The only operator surface is `claude-api openai-image-canary`. Dry-run validates private files and
 prints a sanitized plan without reading configuration or using the network. Generation is executable
-only with an exact implementation SHA and an explicit `8_560_000` nanoUSD budget for the fixed
-`background=opaque,quality=low,size=1024x1024` request. Execution uses the existing free profile
-`/wham/usage` preflight, one exact-home attempt, and exclusive mode-`0600` PNG/checkpoint publication;
-the checkpoint requires exact returned controls, terminal usage, and the locally generated image turn
-identity. A sanitized provider request-id header is retained when present but is not required: the
-official Codex `ImageResponse` has no request-id field and the endpoint fixture succeeds without that
+only with an exact implementation SHA and an explicit `22_330_000` nanoUSD budget for the native
+`background=opaque,quality=low,size=auto` request. The ceiling combines at most 659 low-quality image
+output tokens from the official GPT Image 2 calculator with a conservative 512 text tokens. Execution
+uses the existing free profile `/wham/usage` preflight, one exact-home attempt, and exclusive mode-`0600`
+PNG/checkpoint publication; the checkpoint requires opaque/low metadata, a bounded native auto-size
+PNG, terminal usage, and the locally generated image turn identity. A sanitized provider request-id
+header is retained when present but is not required: the official Codex `ImageResponse` has no
+request-id field and the endpoint fixture succeeds without that
 header. A parsed mismatch persists only sanitized returned identity flags, metadata, numeric usage,
 optional request id, and image digest in the private journal; it never retains the rejected image bytes.
 Edit validates one to five PNG references but remains blocked because no normative input-image ceiling

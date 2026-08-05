@@ -1098,9 +1098,10 @@ native Codex OAuth generation/edit wire. It posts JSON to
 existing bearer/account/originator/UA/version headers plus a fresh `x-codex-image-turn-id`. Requests
 have typed `background` (`auto|opaque`), `quality` (`low|medium|high|auto`) and `size` (`auto` or an
 exact GPT Image 2-valid resolution) controls. The private canary alone pins
-`model=gpt-image-2,background=opaque,quality=low,size=1024x1024`; edit adds one to five strict PNG data
-URLs under `images[].image_url`. There are no masks, partial-image streaming, JPEG/WebP, batches or
-public arbitrary controls. The response path is bounded and validates one real PNG; provider usage is
+`model=gpt-image-2,background=opaque,quality=low,size=auto`; edit adds one to five strict PNG data
+URLs under `images[].image_url`. Native Codex OAuth does not preserve requested exact dimensions, so
+this path deliberately exposes no deterministic size claim. There are no masks, partial-image streaming,
+JPEG/WebP, batches or public arbitrary controls. The response path is bounded and validates one real PNG; provider usage is
 optional at the transport layer but mandatory for a successful canary checkpoint and is not turned
 into invented customer metering or settlement.
 
@@ -1111,7 +1112,7 @@ timeout, connection/body failure or any ambiguous outcome is terminal and never 
 CLI optionally names an opaque profile; otherwise it selects one currently admitted profile without
 dispatch, freezes that id, runs the free `/wham/usage` preflight and uses exact-home methods, so the
 paid attempt never rotates. Generation execution requires an exact implementation SHA and an explicit
-budget of at least `8_560_000` nanoUSD, the conservative fixed-request replacement ceiling. Edit stays
+budget of at least `22_330_000` nanoUSD, the conservative auto-size replacement ceiling. Edit stays
 blocked because no normative input-image ceiling has been established. This module reads no env and
 has no route, `AppState`, catalog, router, defaults or billing integration. The controlled procedure is
 `docs/ops/GPT_IMAGE_2_CANARY.md`; no live proof was performed in this worktree, and publication

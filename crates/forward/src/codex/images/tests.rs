@@ -437,11 +437,7 @@ async fn generation_and_edit_wire_are_exact_and_authenticated() {
     );
     let generation = ImageGenerationRequest::new("draw private subject")
         .unwrap()
-        .with_controls(
-            ImageBackground::Opaque,
-            ImageQuality::Low,
-            ImageSize::exact(1024, 1024).unwrap(),
-        );
+        .with_controls(ImageBackground::Opaque, ImageQuality::Low, ImageSize::Auto);
     let result = test.gateway.generate_image(&generation).await.unwrap();
     assert_eq!(result.home_id(), "home-0");
     assert_eq!(result.request_id(), Some("req_wire"));
@@ -510,7 +506,7 @@ async fn generation_and_edit_wire_are_exact_and_authenticated() {
                     "background": "opaque",
                     "model": GPT_IMAGE_2,
                     "quality": "low",
-                    "size": "1024x1024"
+                    "size": "auto"
                 })
             );
         } else {

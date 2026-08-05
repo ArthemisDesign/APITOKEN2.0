@@ -16,9 +16,17 @@ const MAX_PROMPT_BYTES: usize = 512;
 const MAX_PROMPT_CHARS: usize = 512;
 const MAX_REFERENCE_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_CANARY_CAP_NANOUSD: u64 = 100_000;
-const GENERATION_CEILING_NANOUSD: u64 = 8_560_000;
-const IMAGE_WIDTH: u16 = 1024;
-const IMAGE_HEIGHT: u16 = 1024;
+const MAX_OUTPUT_EDGE: u32 = 3_840;
+const MIN_OUTPUT_PIXELS: u64 = 655_360;
+const MAX_OUTPUT_PIXELS: u64 = 8_294_400;
+const LOW_OUTPUT_TOKEN_LIMIT: u64 = match low_output_tokens(2_880, 2_880) {
+    Some(tokens) => tokens,
+    None => panic!("valid GPT Image 2 maximum-token resolution"),
+};
+const TEXT_INPUT_NANOUSD_PER_TOKEN: u64 = 5_000;
+const IMAGE_OUTPUT_NANOUSD_PER_TOKEN: u64 = 30_000;
+const GENERATION_CEILING_NANOUSD: u64 = LOW_OUTPUT_TOKEN_LIMIT * IMAGE_OUTPUT_NANOUSD_PER_TOKEN
+    + MAX_PROMPT_BYTES as u64 * TEXT_INPUT_NANOUSD_PER_TOKEN;
 const GENERATION_BUDGET_BLOCKER: &str = "paid_dispatch_requires_generation_ceiling_authorization";
 const EDIT_CEILING_BLOCKER: &str = "paid_dispatch_requires_edit_ceiling_proof";
 
@@ -229,7 +237,7 @@ fn plan(validated: &ValidatedCanary) -> CanaryPlan<'_> {
         model: GPT_IMAGE_2,
         background: "opaque",
         quality: "low",
-        size: "1024x1024",
+        size: "auto",
         reference_count: validated.references.len(),
         prompt_bytes: validated.prompt_bytes,
         prompt_chars: validated.prompt_chars,
@@ -317,19 +325,17 @@ async fn execute_with_gateway(
         Generation(ImageGenerationRequest),
         Edit(ImageEditRequest),
     }
-    let size =
-        ImageSize::exact(IMAGE_WIDTH, IMAGE_HEIGHT).context("validate fixed image canary size")?;
     let request = if validated.references.is_empty() {
         Request::Generation(
             ImageGenerationRequest::new(validated.prompt.clone())
                 .context("validate image generation request")?
-                .with_controls(ImageBackground::Opaque, ImageQuality::Low, size),
+                .with_controls(ImageBackground::Opaque, ImageQuality::Low, ImageSize::Auto),
         )
     } else {
         Request::Edit(
             ImageEditRequest::new(validated.prompt.clone(), validated.references.clone())
                 .context("validate image edit request")?
-                .with_controls(ImageBackground::Opaque, ImageQuality::Low, size),
+                .with_controls(ImageBackground::Opaque, ImageQuality::Low, ImageSize::Auto),
         )
     };
     let image_turn_id = new_image_turn_id()?;
@@ -423,6 +429,44 @@ fn evidence_incomplete_state(
     }
 }
 
+fn valid_auto_output_dimensions(width: u32, height: u32) -> bool {
+    let short = u64::from(width.min(height));
+    let long = u64::from(width.max(height));
+    let pixels = u64::from(width) * u64::from(height);
+    short > 0
+        && long <= u64::from(MAX_OUTPUT_EDGE)
+        && pixels >= MIN_OUTPUT_PIXELS
+        && pixels <= MAX_OUTPUT_PIXELS
+        && long <= short * 3
+}
+
+fn valid_auto_output_size_metadata(size: &str, width: u32, height: u32) -> bool {
+    size == "auto" || size == format!("{width}x{height}")
+}
+
+const fn low_output_tokens(width: u32, height: u32) -> Option<u64> {
+    if width == 0
+        || height == 0
+        || width > MAX_OUTPUT_EDGE
+        || height > MAX_OUTPUT_EDGE
+        || width % 16 != 0
+        || height % 16 != 0
+    {
+        return None;
+    }
+    let short = if width < height { width } else { height } as u64;
+    let long = if width > height { width } else { height } as u64;
+    let pixels = width as u64 * height as u64;
+    if pixels < MIN_OUTPUT_PIXELS || pixels > MAX_OUTPUT_PIXELS || long > short * 3 {
+        return None;
+    }
+
+    let short_grid = (16 * short + long / 2) / long;
+    let grid_cells = 16 * short_grid;
+    let numerator = grid_cells * (2_000_000 + pixels);
+    Some((numerator + 3_999_999) / 4_000_000)
+}
+
 fn persist_result(
     validated: &ValidatedCanary,
     profile: &str,
@@ -435,11 +479,10 @@ fn persist_result(
     let request_id = result.request_id().and_then(sanitize_request_id);
     let exact_home = result.home_id() == profile;
     let exact_turn = result.image_turn_id() == image_turn_id;
-    let exact_metadata = result.width() == u32::from(IMAGE_WIDTH)
-        && result.height() == u32::from(IMAGE_HEIGHT)
+    let exact_metadata = valid_auto_output_dimensions(result.width(), result.height())
         && result.background() == "opaque"
         && result.quality() == "low"
-        && result.size() == "1024x1024"
+        && valid_auto_output_size_metadata(result.size(), result.width(), result.height())
         && result.output_format().is_none_or(|format| format == "png");
     let output_sha256 = format!("sha256:{}", sha256_hex(result.png()));
     if let Some(state) =
@@ -1071,13 +1114,16 @@ mod tests {
     #[test]
     fn ready_generation_plan_is_sanitized_and_creates_no_artifacts() {
         let dir = TestDir::new();
-        let validated = validate(dir.args(false, 9_000_000)).unwrap();
+        let validated = validate(dir.args(false, GENERATION_CEILING_NANOUSD)).unwrap();
         let value = serde_json::to_value(plan(&validated)).unwrap();
         let serialized = serde_json::to_string(&value).unwrap();
         assert_eq!(value["state"], "ready");
         assert_eq!(value["executable"], true);
         assert!(value["execution_blocker"].is_null());
-        assert_eq!(value["authorization_budget_nanousd"], 9_000_000);
+        assert_eq!(
+            value["authorization_budget_nanousd"],
+            GENERATION_CEILING_NANOUSD
+        );
         assert_eq!(
             value["required_ceiling_nanousd"],
             GENERATION_CEILING_NANOUSD
@@ -1087,7 +1133,7 @@ mod tests {
         assert_eq!(value["operation"], "generation");
         assert_eq!(value["background"], "opaque");
         assert_eq!(value["quality"], "low");
-        assert_eq!(value["size"], "1024x1024");
+        assert_eq!(value["size"], "auto");
         assert!(!serialized.contains("private prompt secret"));
         assert!(!serialized.contains(dir.0.to_string_lossy().as_ref()));
         assert!(!validated.run_dir.path.exists());
@@ -1098,12 +1144,12 @@ mod tests {
     #[test]
     fn auto_profile_and_edit_gate_are_explicit() {
         let dir = TestDir::new();
-        let mut args = dir.args(false, 9_000_000);
+        let mut args = dir.args(false, GENERATION_CEILING_NANOUSD);
         args.profile = None;
         args.references.push(dir.prompt(b"not a png"));
         assert!(validate(args).is_err());
 
-        let mut validated = validate(dir.args(false, 9_000_000)).unwrap();
+        let mut validated = validate(dir.args(false, GENERATION_CEILING_NANOUSD)).unwrap();
         validated.profile = None;
         assert_eq!(
             serde_json::to_value(plan(&validated)).unwrap()["profile"],
@@ -1119,6 +1165,39 @@ mod tests {
         assert_eq!(value["state"], "blocked");
         assert_eq!(value["execution_blocker"], EDIT_CEILING_BLOCKER);
         assert!(value["required_ceiling_nanousd"].is_null());
+    }
+
+    #[test]
+    fn auto_output_contract_accepts_native_dimensions_and_rejects_unbounded_metadata() {
+        assert!(valid_auto_output_dimensions(1_254, 1_254));
+        assert!(valid_auto_output_dimensions(3_840, 2_160));
+        assert!(!valid_auto_output_dimensions(0, 1_024));
+        assert!(!valid_auto_output_dimensions(4_096, 2_048));
+        assert!(!valid_auto_output_dimensions(3_840, 1_024));
+        assert!(!valid_auto_output_dimensions(800, 800));
+        assert!(valid_auto_output_size_metadata("auto", 1_254, 1_254));
+        assert!(valid_auto_output_size_metadata("1254x1254", 1_254, 1_254));
+        assert!(!valid_auto_output_size_metadata("1024x1024", 1_254, 1_254));
+    }
+
+    #[test]
+    fn official_low_output_token_formula_is_bounded() {
+        assert_eq!(low_output_tokens(1_024, 1_024), Some(196));
+        assert_eq!(low_output_tokens(2_880, 2_880), Some(659));
+        assert_eq!(low_output_tokens(3_840, 2_160), Some(371));
+        assert_eq!(low_output_tokens(1_254, 1_254), None);
+        assert_eq!(low_output_tokens(3_840, 1_024), None);
+
+        let mut maximum = 0;
+        for width in (16..=MAX_OUTPUT_EDGE).step_by(16) {
+            for height in (16..=MAX_OUTPUT_EDGE).step_by(16) {
+                if let Some(tokens) = low_output_tokens(width, height) {
+                    maximum = maximum.max(tokens);
+                }
+            }
+        }
+        assert_eq!(maximum, LOW_OUTPUT_TOKEN_LIMIT);
+        assert_eq!(GENERATION_CEILING_NANOUSD, 22_330_000);
     }
 
     #[test]
@@ -1169,20 +1248,20 @@ mod tests {
     #[test]
     fn existing_run_directory_blocks_validation_even_when_empty() {
         let dir = TestDir::new();
-        let validated = validate(dir.args(false, 9_000_000)).unwrap();
+        let validated = validate(dir.args(false, GENERATION_CEILING_NANOUSD)).unwrap();
         std::fs::create_dir(&validated.run_dir.path).unwrap();
         std::fs::set_permissions(
             &validated.run_dir.path,
             std::fs::Permissions::from_mode(0o700),
         )
         .unwrap();
-        assert!(validate(dir.args(false, 9_000_000)).is_err());
+        assert!(validate(dir.args(false, GENERATION_CEILING_NANOUSD)).is_err());
     }
 
     #[test]
     fn journal_transitions_are_private_and_contain_no_request_secrets() {
         let dir = TestDir::new();
-        let validated = validate(dir.args(true, 9_000_000)).unwrap();
+        let validated = validate(dir.args(true, GENERATION_CEILING_NANOUSD)).unwrap();
         let run_dir = create_run_directory(&validated.run_dir).unwrap();
         let turn_id = ImageTurnId::new("stable-image-turn-123").unwrap();
         assert_eq!(file_mode(&run_dir.path), 0o700);
@@ -1206,7 +1285,10 @@ mod tests {
             assert_eq!(value["profile"], "opaque_profile-1");
             assert_eq!(value["image_turn_id"], "stable-image-turn-123");
             assert_eq!(value["implementation_sha"], EXACT_SHA);
-            assert_eq!(value["authorization_budget_nanousd"], 9_000_000);
+            assert_eq!(
+                value["authorization_budget_nanousd"],
+                GENERATION_CEILING_NANOUSD
+            );
             assert!(value.get("returned").is_none());
             assert_eq!(file_mode(&journal_path), 0o600);
             assert!(!serialized.contains("private prompt secret"));
@@ -1219,19 +1301,19 @@ mod tests {
     #[test]
     fn mismatch_journal_retains_only_sanitized_returned_evidence() {
         let dir = TestDir::new();
-        let validated = validate(dir.args(true, 9_000_000)).unwrap();
+        let validated = validate(dir.args(true, GENERATION_CEILING_NANOUSD)).unwrap();
         let run_dir = create_run_directory(&validated.run_dir).unwrap();
         let turn_id = ImageTurnId::new("stable-image-turn-123").unwrap();
         let returned = ReturnedEvidence {
             exact_home: true,
             exact_turn: true,
-            width: 1024,
-            height: 1024,
+            width: 1_254,
+            height: 1_254,
             created: 1_765_000_000,
             provider: ProviderMetadata {
                 background: "auto",
                 quality: "low",
-                size: "1024x1024",
+                size: "1254x1254",
                 output_format: Some("png"),
             },
             usage: sanitize_usage(Some(&serde_json::json!({
@@ -1263,12 +1345,12 @@ mod tests {
         assert_eq!(file_mode(&journal_path), 0o600);
         assert_eq!(value["returned"]["exact_home"], true);
         assert_eq!(value["returned"]["exact_turn"], true);
-        assert_eq!(value["returned"]["width"], 1024);
-        assert_eq!(value["returned"]["height"], 1024);
+        assert_eq!(value["returned"]["width"], 1_254);
+        assert_eq!(value["returned"]["height"], 1_254);
         assert_eq!(value["returned"]["created"], 1_765_000_000u64);
         assert_eq!(value["returned"]["provider"]["background"], "auto");
         assert_eq!(value["returned"]["provider"]["quality"], "low");
-        assert_eq!(value["returned"]["provider"]["size"], "1024x1024");
+        assert_eq!(value["returned"]["provider"]["size"], "1254x1254");
         assert_eq!(value["returned"]["provider"]["output_format"], "png");
         assert_eq!(value["returned"]["usage"]["input_tokens"], 5);
         assert_eq!(value["returned"]["usage"]["output_tokens"], 100);
@@ -1332,7 +1414,7 @@ mod tests {
     #[test]
     fn internal_recovery_precedes_separate_exclusive_external_publication() {
         let dir = TestDir::new();
-        let validated = validate(dir.args(true, 9_000_000)).unwrap();
+        let validated = validate(dir.args(true, GENERATION_CEILING_NANOUSD)).unwrap();
         let run_dir = create_run_directory(&validated.run_dir).unwrap();
         persist_internal_artifact(&run_dir, "result.png", b"png").unwrap();
         persist_internal_artifact(&run_dir, "checkpoint.json", b"{}\n").unwrap();

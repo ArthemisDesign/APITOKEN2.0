@@ -112,11 +112,11 @@ checkpoint was published, and the exact attempt is permanently fenced. That reco
 non-network withdrawal record and never permits replay. Diagnostic implementation SHA
 `8fcd7c3c6f5dc968bedb7260433f2eaff23f8931` is independently watchdog-GREEN. The active
 watchdog-GREEN engine SHA `3c17b31b6dfdcb8867d8def57e7aedc4ebc87644` is its descendant, and the
-image canary and Codex image transport files have no diff between those SHAs. A new one-shot controller
-is pinned to that exact active binary, a fresh SHA-keyed private root, and the same `8_560_000` nanoUSD
-authorization. It performs the free preflight and at most one exact-home generation. A complete
-checkpoint is accepted as GREEN; a parsed evidence mismatch is accepted only as a terminal withdrawal
-with a closed sanitized journal schema and no persisted or published image. Every other outcome fails
+image canary and Codex image transport files have no diff between those SHAs. Its completed one-shot
+controller was pinned to that exact active binary, a fresh SHA-keyed private root, and the then-applicable
+`8_560_000` nanoUSD fixed-size authorization. It performed the free preflight and at most one exact-home
+generation. A complete checkpoint was accepted as GREEN; a parsed evidence mismatch was accepted only
+as a terminal withdrawal with a closed sanitized journal schema and no persisted or published image. Every other outcome fails
 the delivery, and no attempt is replayed. Initial controller delivery
 `3ba2d941e95419748027bf5fc8a0759821095148` stopped during infrastructure installation before the gate
 could run because the sudo-policy installer self-check still named the predecessor SHA. Corrective

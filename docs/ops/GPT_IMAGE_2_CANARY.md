@@ -11,10 +11,11 @@ Generation and edit use the native subscription endpoints:
 - `POST {CodexConfig.base_url}/images/edits` when `--reference` is supplied one to five times.
 
 Both request `model: "gpt-image-2"`, `background: "opaque"`, `quality: "low"`, and
-`size: "1024x1024"`. Edit adds strict PNG data URLs under `images[].image_url`. The current native
-Codex request proves these controls and reference-guided edit; it does not prove masks, partial-image
-streaming, JPEG/WebP output, output compression, multiple outputs, or Responses API multi-turn image
-state. Those features remain absent rather than being silently ignored.
+`size: "auto"`. Edit adds strict PNG data URLs under `images[].image_url`. Production evidence shows
+that the native Codex OAuth endpoint converts an explicit request size to an automatic provider-selected
+size, so this path intentionally makes no deterministic-dimension claim. It does not prove masks,
+partial-image streaming, JPEG/WebP output, output compression, multiple outputs, or Responses API
+multi-turn image state. Those features remain absent rather than being silently ignored.
 
 ## Pool and retry contract
 
@@ -29,22 +30,26 @@ same `x-codex-image-turn-id`. The canary never rotates the paid call to another 
 rejection, client rejection, unexpected status, invalid success, timeout, connection/body failure, or
 other ambiguous outcome is terminal. An ambiguous attempt is never replayed.
 
-## Fixed generation ceiling
+## Auto-size generation ceiling
 
 The private generation request has a conservative OpenAI API replacement-price ceiling of
-`8_560_000` nanoUSD (`$0.00856`):
+`22_330_000` nanoUSD (`$0.02233`):
 
 ```text
-low 1024x1024 output                         $0.00600
-512 prompt bytes × $5 / 1M, treated as tokens  0.00256
+659 low image-output tokens × $30 / 1M          $0.01977
+512 prompt bytes × $5 / 1M, treated as tokens    0.00256
                                                     -------
-maximum authorized replacement estimate       $0.00856
+maximum authorized replacement estimate         $0.02233
 ```
 
-This deliberately treats every allowed UTF-8 prompt byte as one fresh text token. It is not ChatGPT
-native-credit pricing, a customer reserve, or settlement authority. The runner accepts only integer
-`--budget-nanousd`, requires it to exceed the repository default `100000` nanoUSD, and permits paid
-generation only when it is at least `8560000`.
+The 659-token output bound is the exhaustive maximum of the official GPT Image 2 low-quality token
+calculator over every request-valid size: both edges divisible by 16, maximum edge 3840, 655,360 to
+8,294,400 pixels, and aspect ratio at most 3:1. Returned native auto dimensions need not be divisible by
+16—the production endpoint returned `1254x1254`—but remain bounded by the same edge, pixel and aspect
+envelope. This deliberately treats every allowed UTF-8 prompt byte as one fresh text token. It is not
+ChatGPT native-credit pricing, a customer reserve, or settlement authority. The runner accepts only
+integer `--budget-nanousd`, requires it to exceed the repository default `100000` nanoUSD, and permits
+paid generation only when it is at least `22330000`.
 
 There is no corresponding normative edit ceiling yet. GPT Image 2 processes image inputs at high
 fidelity, but the native wire has no free image token counter and stored PNG bytes are not a valid token
@@ -77,10 +82,10 @@ Paid generation additionally requires an exact lowercase 40-hex compile-time
 `CLAUDE_API_IMPLEMENTATION_SHA`. A successful checkpoint requires all of:
 
 - exact frozen home and image turn identity;
-- one bounded, fully decoded PNG;
-- dimensions `1024x1024`;
-- returned `background=opaque`, `quality=low`, and `size=1024x1024`; `output_format`, when present,
-  must be `png`;
+- one bounded, fully decoded PNG within maximum edge 3840, 655,360–8,294,400 pixels and aspect ratio
+  at most 3:1;
+- returned `background=opaque`, `quality=low`, and `size=auto` or the decoded PNG's exact
+  `WIDTHxHEIGHT`; `output_format`, when present, must be `png`;
 - terminal numeric usage after allow-list sanitization;
 - the locally generated image turn id; a sanitized provider request-id header is retained when present
   but is optional because the official Codex `ImageResponse` contract does not require one;
@@ -102,7 +107,7 @@ claude-api openai-image-canary \
   --prompt-file /private/canary/prompt.txt \
   --output /private/canary/result.png \
   --checkpoint /private/canary/checkpoint.json \
-  --budget-nanousd 8560000
+  --budget-nanousd 22330000
 ```
 
 The first implementation SHA `3f67d43c0ae541979fee66823d251e2e3eea33e0` is deployed and
@@ -125,13 +130,13 @@ attempt running an implementation that contains it; it does not retroactively en
 
 Diagnostic implementation SHA `8fcd7c3c6f5dc968bedb7260433f2eaff23f8931` is independently
 watchdog-GREEN. Active watchdog-GREEN descendant `3c17b31b6dfdcb8867d8def57e7aedc4ebc87644`
-has an empty diff against that SHA across the image canary and Codex image transport files. Its separate
-one-shot delivery uses a fresh SHA-keyed root and the same explicit `8_560_000` nanoUSD ceiling. Before
-dispatch it requires that exact active binary, the existing free `/wham/usage` preflight path, the sealed
-pool environment from that running OpenAI slot, and both ClaudeStore fallback switches forced off. It can
-dispatch one exact-home generation only. Full exact evidence yields GREEN; a parsed mismatch yields a
-terminal sanitized journal with no image artifacts; all other outcomes fail the delivery. Neither branch
-can be replayed. Controller deliveries `3ba2d941e95419748027bf5fc8a0759821095148` and
+has an empty diff against that SHA across the image canary and Codex image transport files. Its completed
+one-shot delivery used a fresh SHA-keyed root and the then-applicable explicit `8_560_000` nanoUSD
+fixed-size ceiling. Before dispatch it required that exact active binary, the existing free `/wham/usage`
+preflight path, the sealed pool environment from that running OpenAI slot, and both ClaudeStore fallback
+switches forced off. It could dispatch one exact-home generation only. Full exact evidence would have
+produced GREEN; a parsed mismatch produced a terminal sanitized journal with no image artifacts. Neither
+branch can be replayed. Controller deliveries `3ba2d941e95419748027bf5fc8a0759821095148` and
 `e0618cca78b6b5a650f9a8399c5457572bb44568` stopped before preflight and paid dispatch; the latter passed
 policy installation but supplied a different mutable engine SHA to the exact-argument sudo bridge.
 Delivery `237a926b054a5fdd6833fca6668040ab6e0d55a7` made the authorized exact-home call through the sealed

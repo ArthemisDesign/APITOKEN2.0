@@ -122,12 +122,14 @@ background loops and the HTTP router. Here — and only here — everything is w
 - `openai-image-canary` introduces no image key/origin/env. Dry-run validates the strict prompt,
   optional one-to-five PNG references, optional opaque profile, private target paths and numeric
   budget, then prints a sanitized plan without reading env/network or creating artifacts. Generation
-  is ready only at an explicit budget of at least `8_560_000` nanoUSD for the fixed
-  `opaque/low/1024x1024` request. `--execute` additionally requires an exact compile-time implementation
-  SHA, reuses the existing Codex OAuth roster/base URL/identity, freezes one admitted profile, runs its
-  free `/wham/usage` auth/quota preflight, and performs one exact-home attempt. A successful checkpoint
-  requires exact returned controls, a strict PNG and terminal usage; the provider request-id header is
-  optional because the official Codex Images response contract does not require it, while the local
+  is ready only at an explicit budget of at least `22_330_000` nanoUSD for the native
+  `opaque/low/auto` request: the official GPT Image 2 low-output calculator is exhaustively bounded at
+  659 image tokens over every request-valid resolution, plus the conservative 512-text-token prompt
+  allowance. `--execute` additionally requires an exact compile-time implementation SHA, reuses the
+  existing Codex OAuth roster/base URL/identity, freezes one admitted profile, runs its free
+  `/wham/usage` auth/quota preflight, and performs one exact-home attempt. A successful checkpoint
+  requires opaque/low metadata, a bounded native auto-size PNG and terminal usage; the provider
+  request-id header is optional because the official Codex Images response contract does not require it, while the local
   image turn id remains mandatory. A parsed result that fails exact evidence persists only sanitized
   returned identity flags, controls, dimensions, timestamp, numeric usage, optional request id, and the
   image SHA-256 in the private mode-`0600` journal; it never persists or publishes the rejected image.

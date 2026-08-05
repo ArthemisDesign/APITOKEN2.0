@@ -35,6 +35,9 @@ The current upstream revision reviewed here is OpenAI Codex
 | [Codex typed image requests](https://github.com/openai/codex/blob/9d00bb01c0a712fb7c2f5b002bdf33bcc0fc352c/codex-rs/codex-api/src/images.rs) | Native generation/edit JSON fields are prompt/images, background, model, n, quality, size | No mask, output format/compression, partial images, or input-fidelity field |
 | [Codex Images endpoint client](https://github.com/openai/codex/blob/9d00bb01c0a712fb7c2f5b002bdf33bcc0fc352c/codex-rs/codex-api/src/endpoint/images.rs) | Ordinary JSON POST to provider-relative `images/generations|edits`; fixture includes base64 output and terminal usage and succeeds with an empty response-header map | Fixture is not an owned production result; client uses `execute`, not streaming, and provider request-id is not response authority |
 | [OpenAI API pricing](https://developers.openai.com/api/docs/pricing/) | Official text/image input and image output replacement rates | Not ChatGPT subscription credits, quota, or customer billing authority |
+| [GPT Image 2 token calculator](https://developers.openai.com/_astro/GptImage2TokenCalculator.react.Bs2iBXlE.js) | Exact output-token formula and request-valid dimension constraints used for the exhaustive low-quality ceiling | Published site implementation; replacement-price budgeting only |
+| [Codex issue #28723](https://github.com/openai/codex/issues/28723) | OAuth/Codex image generation silently normalizes explicit size and quality to auto; observed outputs include `1254x1254` | Upstream field report, corroborated by our owned production result; not an API guarantee |
+| [Codex issue #19175](https://github.com/openai/codex/issues/19175) | Built-in image generation lacks deterministic dimensions | Upstream limitation report; supports fail-closed omission of exact-size claims |
 
 The official guide currently says Image API and Responses API can stream 0–3 partial images. That does
 not contradict the local fail-closed decision: the native Codex client reviewed above has no
@@ -59,11 +62,14 @@ Typed local controls admit official GPT Image 2 values:
 - size: `auto` or exact dimensions with max edge 3840, edges divisible by 16, aspect at most 3:1, and
   655,360–8,294,400 pixels.
 
-The private canary narrows those controls to `opaque`, `low`, `1024x1024`, one PNG output. The reusable
-transport remains private. No mask, partial-image streaming, JPEG/WebP, compression, output count,
-moderation level, Responses image tool, file-id input, or multi-turn image state is exposed.
-`input_fidelity` is also absent: official GPT Image 2 always uses high fidelity and does not allow the
-caller to change it.
+The private canary narrows those controls to `opaque`, `low`, `auto`, one PNG output. Production
+returned `1254x1254` after an explicit `1024x1024` request, matching the upstream reports that native
+Codex OAuth converts image dimensions to automatic selection. The canary therefore validates only a
+bounded auto-size envelope and accepts returned `size` metadata of `auto` or the decoded PNG's exact
+`WIDTHxHEIGHT`; it does not claim deterministic dimensions. The reusable transport remains private.
+No mask, partial-image streaming, JPEG/WebP, compression, output count, moderation level, Responses
+image tool, file-id input, or multi-turn image state is exposed. `input_fidelity` is also absent:
+official GPT Image 2 always uses high fidelity and does not allow the caller to change it.
 
 ## Pool, refresh and replay
 
@@ -81,8 +87,9 @@ the response was not observed.
 
 The strict parser requires exactly one bounded base64 PNG, plausible `created`, and bounded
 `background`, `quality`, and `size`; optional `output_format` must be `png`. Transport retains optional
-usage as opaque provider evidence. The canary is stricter and accepts publication evidence only when
-usage is present and the returned controls exactly match `opaque/low/1024x1024`.
+usage as opaque provider evidence. The canary is stricter and accepts evidence only when usage is
+present, metadata is `opaque/low`, and the native auto output stays within maximum edge 3840,
+655,360–8,294,400 pixels and aspect ratio 3:1.
 
 The upstream fixture currently shows medium `1024x1536` usage with 1,474 input tokens (1,457 image,
 17 text) and 1,372 output tokens. This is useful schema evidence, not a live cost or quota claim.
@@ -90,18 +97,21 @@ Nothing here converts API replacement nanoUSD into ChatGPT credits or customer s
 
 ## Generation budget boundary
 
-The controlled generation fixes low 1024×1024. The official guide prices its output at `$0.006`.
-Treating all 512 allowed prompt bytes as fresh text tokens at `$5/M` adds a conservative `$0.00256`.
-The enforced generation authorization ceiling is therefore `$0.00856` (`8_560_000` nanoUSD).
+For low quality, the official GPT Image 2 calculator uses a 16-cell long-side grid, rounds the
+short-side grid by aspect ratio, and applies the pixel-dependent multiplier. Exhaustively evaluating
+all request-valid resolutions gives a maximum of 659 output tokens at `2880x2880`; reference vectors
+are `1024x1024 → 196` and `3840x2160 → 371`. At the official `$30/M` image-output rate this is
+`$0.01977`. Treating all 512 allowed prompt bytes as fresh text tokens at `$5/M` adds `$0.00256`, so
+the enforced generation authorization ceiling is `$0.02233` (`22_330_000` nanoUSD).
 
-This is a fixed-request replacement-price ceiling, not a ChatGPT native-credit reserve. Paid generation
+This is an auto-size replacement-price ceiling, not a ChatGPT native-credit reserve. Paid generation
 requires that concrete integer budget and an exact compile-time implementation SHA. A free
 `/wham/usage` preflight precedes dispatch but is not image tokenization or generation evidence.
 
 Edit remains blocked. GPT Image 2 always processes references at high fidelity, and neither PNG bytes
 nor the generation fixture provides a normative maximum input-token formula. A larger arbitrary
-budget cannot unlock edit. First obtain real terminal generation usage and a reviewed edit ceiling;
-then authorize one owned-reference edit separately.
+budget cannot unlock edit. First obtain real terminal auto-size generation evidence and a reviewed edit
+ceiling; then authorize one owned-reference edit separately.
 
 ## Chinese reseller audit
 

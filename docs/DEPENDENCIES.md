@@ -278,9 +278,10 @@ is only what is needed to walk the relationships when making changes:
   Automatic library calls reuse normal pool selection/`TurnSlot`, refresh once, and rotate only on a
   final pre-execution auth/quota rejection; ambiguous outcomes are never replayed. The CLI freezes an
   explicit or first admitted opaque profile, performs the free `/wham/usage` preflight and one
-  exact-home attempt. Generation requires an exact SHA and at least `8_560_000` nanoUSD for fixed
-  `opaque/low/1024x1024`; edit remains blocked until a normative input-image ceiling exists. The one-shot
-  watchdog attempt against exact deployed engine SHA `012fccc471142fc51a46563da3a87564d674b39f`
+  exact-home attempt. Generation requires an exact SHA and at least `22_330_000` nanoUSD for native
+  `opaque/low/auto`; the official GPT Image 2 low-output formula is bounded at 659 image tokens over the
+  request-valid size domain. Edit remains blocked until a normative input-image ceiling exists. The
+  one-shot watchdog attempt against exact deployed engine SHA `012fccc471142fc51a46563da3a87564d674b39f`
   returned a parsed image with mismatched control metadata, published no artifact, and is permanently
   fenced. Diagnostic implementation SHA `8fcd7c3c6f5dc968bedb7260433f2eaff23f8931` is separately
   watchdog-GREEN. Active watchdog-GREEN descendant `3c17b31b6dfdcb8867d8def57e7aedc4ebc87644`
