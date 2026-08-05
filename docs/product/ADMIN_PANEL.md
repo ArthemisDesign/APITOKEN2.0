@@ -317,7 +317,19 @@ Gemini is built from `/gemini-subs` and preserves provider-specific semantics:
   enter the fleet API-$;
 - `conversion_models`, official quotas and their integer amounts keep arriving from the
   backend as an audit/calculation contract. The UI does not divide workload-$ by a token
-  price and does not invent Gemini token capacity from a fraction alone.
+  price and does not invent Gemini token capacity from a fraction alone;
+- the profiles table carries the panel's one mutating control: a per-profile rotation
+  switch (`POST /gemini-subs/{profile_id}/disabled`, body `{"disabled": bool}`). It is
+  gated by the control key, not the read-only panel key, and disabling asks for
+  confirmation because it removes pool capacity. The write lands in the engine authority
+  (`pool_member_disables`), NOT in the Auth Bot's sealed roster, so it survives the next
+  roster publication as well as a slot restart — the roster stays the authority for
+  *credentials*, the engine for *routability*. A disabled profile keeps its row so it can
+  be put back, reports `disabled: true`, shows `отключён оператором` ("disabled by
+  operator") ahead of any automatic diagnosis, is never probed (so a revoked credential
+  stops being retried), and leaves every capacity aggregate. Claude subscriptions do not
+  use this path: they already carry `active|paused|disabled` and are switched through
+  `sub status`, so no subscription ever has two competing switches.
 
 KIMI is built from `/kimi-subs` (an `enabled:false` envelope is shown as "KIMI-контур
 выключен" — "KIMI plane disabled") and repeats the same compact contract with two
