@@ -102,7 +102,7 @@ describe("OpenKeys paying keys projection", () => {
     mocks.select.mockImplementationOnce(() => pageBuilder()).mockImplementationOnce(() => countBuilder());
   });
 
-  it("selects only the delivered cohort and paginates before loading usage", async () => {
+  it("selects every non-removed key and paginates before loading usage", async () => {
     mocks.pageRows = [row(2)];
     mocks.total = 17;
     mocks.getUsage.mockResolvedValue(usage("acct_paying_2"));
@@ -113,14 +113,32 @@ describe("OpenKeys paying keys projection", () => {
     const dialect = new PgDialect();
     const whereSql = dialect.sqlToQuery(mocks.pageWhere.mock.calls[0]![0]).sql;
     expect(whereSql).toContain('"openkeys_keys"."removed_at" is null');
-    expect(whereSql).toContain('"openkeys_keys"."delivered_at" is not null');
+    expect(whereSql).not.toContain('"openkeys_keys"."delivered_at" is not null');
     expect(whereSql).toContain('"openkeys_keys"."status" = $1');
     expect(mocks.pageLimit).toHaveBeenCalledWith(1);
     expect(mocks.pageOffset).toHaveBeenCalledWith(5);
     expect(mocks.pageOrderBy).toHaveBeenCalledTimes(1);
     expect(mocks.getUsage).toHaveBeenCalledTimes(1);
     expect(mocks.getUsage).toHaveBeenCalledWith("acct_paying_2", "7d");
-    expect(result).toMatchObject({ days: 7, total: 17, limit: 1, offset: 5 });
+    expect(result).toMatchObject({
+      days: 7,
+      total: 17,
+      limit: 1,
+      offset: 5,
+      rows: [{ lifecycle: "delivered", deliveredAt: "2026-07-08T00:00:00.000Z" }],
+    });
+  });
+
+  it("keeps an active warehouse key visible with explicit stock lifecycle", async () => {
+    mocks.pageRows = [{ ...row(1), deliveredAt: null }];
+    mocks.total = 1;
+    mocks.getUsage.mockResolvedValue(usage("acct_paying_1"));
+    const { loadPayingKeys } = await loadModule();
+
+    const result = await loadPayingKeys({ days: 30, limit: 50, offset: 0, q: "", status: "all" });
+
+    expect(result.rows[0]).toMatchObject({ lifecycle: "stock", deliveredAt: null, enabled: true });
+    expect(mocks.getUsage).toHaveBeenCalledWith("acct_paying_1", "30d");
   });
 
   it("bounds usage concurrency at four and keeps partial outages row-local", async () => {

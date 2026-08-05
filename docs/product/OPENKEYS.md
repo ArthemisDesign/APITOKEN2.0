@@ -231,13 +231,15 @@ success, and the panel shows those counters instead of "done" — a key the engi
 stays in its previous state and is picked up by the next click. In the UI `revoke` is the
 only red button and additionally requires typing the admin's name.
 
-The additive read-only producer `GET /api/internal/admin/paying-keys` projects only keys
-that were delivered and not removed (`delivered_at IS NOT NULL`, `removed_at IS NULL`).
-It accepts `days=1|7|30` (default `30`), `limit=1..100` (default `50`),
-`offset=0..100000` (default `0`), trimmed `q` up to 80 characters and
-`status=all|active|disabled`. PostgreSQL performs the cohort count, search and stable
-`delivered_at DESC, id ASC` pagination before the selected page makes usage calls with
-concurrency four. Every row carries safe batch/key metadata and the complete engine usage
+The additive read-only producer `GET /api/internal/admin/paying-keys` projects every
+non-removed key (`removed_at IS NULL`), including both warehouse stock and keys already
+delivered to buyers. Each row carries explicit `lifecycle=stock|delivered` and nullable
+`deliveredAt`, so an unissued key cannot disappear or look delivered. It accepts
+`days=1|7|30` (default `30`), `limit=1..100` (default `50`), `offset=0..100000`
+(default `0`), trimmed `q` up to 80 characters and `status=all|active|disabled`.
+PostgreSQL performs the cohort count, search and stable delivered-first, newest-first
+pagination before the selected page makes usage calls with concurrency four. Every row
+carries safe batch/key metadata and the complete engine usage
 for the selected window, preserving exact nanoUSD strings, free-form provider/model names
 and all token counters. A failed account usage call is row-local
 `{status:"unavailable",window}`; a real zero remains `status:"available"` with exact zero

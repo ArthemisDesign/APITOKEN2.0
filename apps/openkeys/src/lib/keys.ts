@@ -2,7 +2,7 @@ import "server-only";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { EngineAccount, EngineUsage } from "@claude-api/contracts";
 import { openkeysBatches, openkeysIssuanceJobs, openkeysKeys } from "@claude-api/openkeys-db";
-import { and, asc, count, desc, eq, ilike, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { apiTypeOf, type ApiType } from "./api-product";
 import {
   adminUsagePercent,
@@ -354,10 +354,11 @@ export interface PayingKeyRow {
   engineAccountId: string;
   apiType: ApiType;
   enabled: boolean;
+  lifecycle: "stock" | "delivered";
   faceValueNano: string;
   pricingContract: "legacy" | "official_1_to_1";
   createdAt: string;
-  deliveredAt: string;
+  deliveredAt: string | null;
   usage: PayingKeyUsage;
 }
 
@@ -372,15 +373,14 @@ export interface PayingKeysPage {
 const PAYING_KEYS_USAGE_CONCURRENCY = 4;
 
 /**
- * Выданные покупателям ключи с DB-пагинацией до live usage. Складские, снятые и
- * соседние страницы не создают Control API вызовов; сбой одного аккаунта не скрывает остальные.
+ * Все живые OpenKeys с DB-пагинацией до live usage. Снятые ключи и соседние
+ * страницы не создают Control API вызовов; сбой одного аккаунта не скрывает остальные.
  */
 export async function loadPayingKeys(query: PayingKeysQuery): Promise<PayingKeysPage> {
   const { db } = getDatabase();
   const search = query.q.trim().slice(0, 80);
   const where = and(
     isNull(openkeysKeys.removedAt),
-    isNotNull(openkeysKeys.deliveredAt),
     query.status === "active" ? eq(openkeysKeys.status, "active") : undefined,
     query.status === "disabled" ? eq(openkeysKeys.status, "disabled") : undefined,
     search
@@ -413,7 +413,7 @@ export async function loadPayingKeys(query: PayingKeysQuery): Promise<PayingKeys
       .from(openkeysKeys)
       .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
       .where(where)
-      .orderBy(desc(openkeysKeys.deliveredAt), asc(openkeysKeys.id))
+      .orderBy(desc(openkeysKeys.deliveredAt), desc(openkeysKeys.createdAt), asc(openkeysKeys.id))
       .limit(query.limit)
       .offset(query.offset),
     db
@@ -453,10 +453,11 @@ export async function loadPayingKeys(query: PayingKeysQuery): Promise<PayingKeys
       engineAccountId: row.engineAccountId,
       apiType: apiTypeOf(row.apiType),
       enabled: row.enabled !== "disabled",
+      lifecycle: row.deliveredAt ? "delivered" : "stock",
       faceValueNano: row.faceValueNano.toString(),
       pricingContract: row.pricingContract as "legacy" | "official_1_to_1",
       createdAt: row.createdAt.toISOString(),
-      deliveredAt: row.deliveredAt!.toISOString(),
+      deliveredAt: row.deliveredAt?.toISOString() ?? null,
       usage: usage.get(row.engineAccountId) ?? { status: "unavailable", window },
     })),
   };
