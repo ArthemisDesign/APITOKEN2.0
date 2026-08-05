@@ -27,14 +27,14 @@ import { buildUtcUsageSeries } from "@/lib/usage-series";
 import { aggregateUsageProviders, usageProviderOf } from "@/lib/usage-providers";
 import { UNIVERSAL_CONNECTIONS } from "@/lib/universal-key";
 import { PROVIDER_COLORS, PROVIDER_REGISTRY, type ProviderDescriptor } from "@/lib/providers";
-import { KEY_PROFILE_POLL_INTERVAL_MS } from "@/lib/usage-refresh-timing";
+import { KEY_PROFILE_FALLBACK_INTERVAL_MS } from "@/lib/usage-refresh-timing";
 
 const copy = {
   en: {
     titleBar: "Key usage", eyebrow: "CLAUDE + GPT + GEMINI · SHARED BALANCE", title: "Universal API key",
     lead: "One key and one balance work across the Claude, GPT/OpenAI-compatible, and Google Gemini APIs. Usage is combined below, while every request keeps the official price of the model that served it.",
     offline: "Offline — waiting for connection", syncing: "Syncing", updated: "Updated", loaded: "Data loaded",
-    automatic: "live balance every 6 seconds · detailed usage on the next report refresh", refresh: "Refresh data", copy: "Copy", copied: "Copied",
+    automatic: "live balance · updates arrive the moment anything changes", refresh: "Refresh data", copy: "Copy", copied: "Copied",
     balance: "Key balance", faceValue: "face value", remainingCompleted: "Remaining after completed requests",
     spent: "Actually spent", reserved: "Temporarily reserved", available: "Available for new requests",
     reserveNote: "After the response, the hold is replaced by the exact charge — it is not spent in full. The unused amount returns to available balance automatically.",
@@ -59,7 +59,7 @@ const copy = {
     titleBar: "Расход ключа", eyebrow: "CLAUDE + GPT + GEMINI · ОБЩИЙ БАЛАНС", title: "Универсальный API-ключ",
     lead: "Один ключ и один баланс работают на Claude, GPT/OpenAI-совместимом и Google Gemini API. Расход объединён, а каждый запрос сохраняет официальный прайс модели, которая его обработала.",
     offline: "Нет сети — ждём подключения", syncing: "Синхронизация", updated: "Обновлено", loaded: "Данные загружены",
-    automatic: "живой баланс каждые 6 секунд · детализация при следующем обновлении отчёта", refresh: "Обновить данные", copy: "Скопировать", copied: "Скопировано",
+    automatic: "живой баланс · обновления приходят сразу при изменениях", refresh: "Обновить данные", copy: "Скопировать", copied: "Скопировано",
     balance: "Баланс ключа", faceValue: "номинал", remainingCompleted: "Остаток после завершённых запросов",
     spent: "Фактически потрачено", reserved: "Временно в обработке", available: "Доступно новым запросам",
     reserveNote: "После ответа резерв заменится точной стоимостью, а не спишется целиком. Неиспользованная часть автоматически вернётся в доступный баланс.",
@@ -135,9 +135,13 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
     startRefresh(() => router.refresh());
   }, [isRefreshing, router]);
 
+  // Живой снапшот с SSE-канала; до первого кадра рендерим серверные props.
+  const [liveView, setLiveView] = useState<KeyUsageView | null>(null);
+  const effectiveView = liveView ?? view;
+
   useEffect(() => {
     setLastUpdatedAt(new Date());
-  }, [view]);
+  }, [effectiveView]);
 
   useEffect(() => {
     const syncNetworkState = () => {
@@ -147,25 +151,55 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
     const refreshWhenVisible = () => {
       if (document.visibilityState === "visible") refreshUsage();
     };
-    const interval = window.setInterval(refreshUsage, KEY_PROFILE_POLL_INTERVAL_MS);
     setIsOnline(navigator.onLine);
     window.addEventListener("online", syncNetworkState);
     window.addEventListener("offline", syncNetworkState);
     document.addEventListener("visibilitychange", refreshWhenVisible);
+
+    // Основной канал — SSE: сервер присылает кадр только при реальном изменении.
+    // Если поток не поднялся (древний прокси/браузер), возвращаемся к редкой
+    // полной перезагрузке страницы как запасному варианту.
+    let fallbackTimer: number | undefined;
+    const armFallback = () => {
+      if (fallbackTimer === undefined) {
+        fallbackTimer = window.setInterval(refreshUsage, KEY_PROFILE_FALLBACK_INTERVAL_MS);
+      }
+    };
+    let source: EventSource | undefined;
+    if (typeof EventSource !== "undefined") {
+      let failures = 0;
+      source = new EventSource(`/api/usage/stream?token=${encodeURIComponent(view.viewToken)}`);
+      source.onmessage = (event) => {
+        failures = 0;
+        try {
+          setLiveView(JSON.parse(event.data) as KeyUsageView);
+        } catch {
+          // битый кадр не роняет канал
+        }
+      };
+      source.onerror = () => {
+        failures += 1;
+        if (failures >= 3) armFallback();
+      };
+    } else {
+      armFallback();
+    }
+
     return () => {
-      window.clearInterval(interval);
+      source?.close();
+      if (fallbackTimer !== undefined) window.clearInterval(fallbackTimer);
       window.removeEventListener("online", syncNetworkState);
       window.removeEventListener("offline", syncNetworkState);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, [refreshUsage]);
+  }, [refreshUsage, view.viewToken]);
 
-  const usage = view.usage;
-  const faceValueNano = BigInt(view.faceValueNano);
-  const officialAvailable = BigInt(view.officialAvailableNano);
-  const officialReserved = BigInt(view.officialReservedNano);
-  const officialRemaining = BigInt(view.officialRemainingNano);
-  const officialSpent = BigInt(view.officialSpentNano);
+  const usage = effectiveView.usage;
+  const faceValueNano = BigInt(effectiveView.faceValueNano);
+  const officialAvailable = BigInt(effectiveView.officialAvailableNano);
+  const officialReserved = BigInt(effectiveView.officialReservedNano);
+  const officialRemaining = BigInt(effectiveView.officialRemainingNano);
+  const officialSpent = BigInt(effectiveView.officialSpentNano);
   const spentPercent = faceValueNano > 0n ? boundedPercent(officialSpent, faceValueNano) : 0;
   const reservedPercent = faceValueNano > 0n
     ? Math.min(boundedPercent(officialReserved, faceValueNano), 100 - spentPercent)
@@ -347,7 +381,7 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
             <div className="overview-balance-main">
               <div className="overview-balance-figure">
                 <span>{t.remainingCompleted}</span>
-                <strong key={view.officialRemainingNano} className="overview-balance-number">
+                <strong key={effectiveView.officialRemainingNano} className="overview-balance-number">
                   {formatNanoUsd(officialRemaining, 2, 2)}
                 </strong>
               </div>
@@ -374,8 +408,8 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
                   <p className="overview-reserve-note">{t.reserveNote}</p>
                 )}
                 <p className="overview-balance-rate">
-                  {t.key} {view.status === "active" ? t.active : t.disabled} · {t.issued}{" "}
-                  {view.createdAt.slice(0, 10)}
+                  {t.key} {effectiveView.status === "active" ? t.active : t.disabled} · {t.issued}{" "}
+                  {effectiveView.createdAt.slice(0, 10)}
                 </p>
                 <div className="overview-card-actions">
                   <Link className="btn btn-primary btn-sm" href={UNIVERSAL_CONNECTIONS.claude.docsPath}>

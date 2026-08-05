@@ -43,6 +43,14 @@ Anthropic gets the `Claude` prefix, GPT stays GPT, Gemini — Gemini, and unknow
 families are shown neutrally. The fallback has no right to attribute `Claude` to another
 provider.
 
+The spend page is live over Server-Sent Events instead of periodic reloads:
+`GET /api/usage/stream?token=<viewToken>` re-reads the cached usage snapshot every 5
+seconds and emits a frame only when the rendered data actually changed, with heartbeat
+comments in between so intermediaries keep the connection open. The per-key view token is
+the channel's only credential, so the stream inherits the access contour of the page
+itself. If the stream cannot be established (an ancient browser or a buffering proxy),
+the client falls back to a full page reload every 15 seconds.
+
 Key login at `/profile` keeps only a signed `__Host-` session cookie. A successful login
 atomically replaces the previous profile session, logout removes that same host-only cookie,
 and both transitions perform a document-level navigation. This makes a second login render
