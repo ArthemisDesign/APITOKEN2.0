@@ -105,10 +105,13 @@ scalar (`mult_bp = 10000 - discount_bps` on `customer_profiles` and `engine_acco
 durable scalar delivery job) — otherwise the panel would show the new policy while billing follows
 the stale multiplier. A policy that cannot be one scalar (mixed scopes, track rules, per-provider
 differences) leaves the scalar untouched and activates only with the cutover. The customer
-dashboard prices each provider by the same authority: while the binding's policy is not
-engine-enforced (`legacy_scalar`/`shadow`), the usage page shows the legacy scalar price wherever
-the policy governs the provider, never the not-yet-enforced materialized numbers; providers the
-policy does not cover stay unavailable exactly as the materialized rules say.
+dashboard prices each provider by the same honesty rule: while the binding's policy is not
+engine-enforced (`legacy_scalar`/`shadow`), the usage page shows the materialized per-provider
+policy discount clamped to never exceed the discount the legacy scalar actually bills — a
+tighter negotiated provider rate (say 60% on Google against a 70% scalar) shows as configured,
+a looser one shows the scalar. Billing can only over-deliver against the badge until the
+cutover, never overcharge it; providers the policy does not cover stay unavailable exactly as
+the materialized rules say.
 
 B2B spend IS ingested by the pricing usage sync: `listPricingSyncTargets` selects both
 `b2c` and `b2b`, so every charge lands in the immutable `pricing_usage_events` (with provider

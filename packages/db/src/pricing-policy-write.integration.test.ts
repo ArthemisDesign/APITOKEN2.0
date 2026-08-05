@@ -631,6 +631,34 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
       ORDER BY created_at DESC, id DESC LIMIT 1
     `, [`policy:main:b2b:${user.id}`]);
     expect(customAudit.rows[0]?.metadata).not.toHaveProperty("scalarSync");
+
+    // The customer-facing projection surfaces the per-provider policy discounts on the desired
+    // version, clamped to never advertise a discount beyond the scalar billing actually applies:
+    // anthropic matches the scalar (70%), openai shows its tighter negotiated 50% while billing
+    // stays at the scalar until the release cutover.
+    const customViews = await getCustomerPricingPolicyView(database, user.id);
+    const customDesired = customViews[0]!.desired;
+    expect(customDesired).not.toBeNull();
+    const customAnthropic = customDesired!.providers.find((provider) => provider.providerId === "anthropic");
+    expect(customAnthropic).toBeDefined();
+    for (const model of customAnthropic!.models) {
+      expect(model.rule).toMatchObject({
+        pricingMode: "discount",
+        ruleOrigin: "legacy",
+        discountBps: 7_000,
+        payableMultiplierBp: 3_000,
+      });
+    }
+    const customOpenai = customDesired!.providers.find((provider) => provider.providerId === "openai");
+    expect(customOpenai).toBeDefined();
+    for (const model of customOpenai!.models) {
+      expect(model.rule).toMatchObject({
+        pricingMode: "discount",
+        ruleOrigin: "legacy",
+        discountBps: 5_000,
+        payableMultiplierBp: 5_000,
+      });
+    }
   });
 
   it("rotates a policy invitation as an independent exact snapshot with a neutral scalar placeholder", async () => {

@@ -156,8 +156,10 @@ scalar multiplier stays the authoritative enforced price until the cutover. Savi
 policy whose rules are a uniform
 provider-level discount (for example 70% on every provider) also moves that authoritative
 scalar and enqueues its engine delivery, so the edit actually changes the price the customer
-pays today; the customer's usage page shows that scalar price wherever the policy governs the
-provider while the policy is not engine-enforced. A non-uniform policy (per-provider or per-model differences) cannot be
+pays today; the customer's usage page shows each provider at the policy's per-provider
+discount, clamped to never exceed the discount the scalar actually bills while the policy is
+not engine-enforced (a tighter negotiated rate shows as configured, a looser one shows the
+scalar). A non-uniform policy (per-provider or per-model differences) cannot be
 one scalar — it leaves today's price unchanged and activates with the cutover. Post-cutover, a saved B2B policy also advances the live release-v2 authority:
 a strictly newer release policy version is pinned through the append-only assignment
 extension under the exact current head, and the CAS response reports that outcome. A new invitation is created immediately with a full provider/model policy; a

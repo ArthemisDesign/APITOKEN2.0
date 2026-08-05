@@ -1217,10 +1217,11 @@ function customerRuleView(row: CustomerPricingRuleRow): CustomerPricingRuleView 
 }
 
 /**
- * The customer-facing rule for a binding whose policy is not engine-enforced yet: a plain
+ * The legacy scalar rule for a binding whose policy is not engine-enforced yet: a plain
  * provider discount mirroring the legacy scalar that billing actually applies. trackEligible and
  * the other capability flags stay false — the legacy lane has no track/retention/commission
- * semantics of its own.
+ * semantics of its own. Track-mode materialized rules are presented through this rule directly;
+ * discount-mode rules go through shadowPresentationRule, which uses it as the clamp ceiling.
  */
 function legacyScalarRule(
   binding: CustomerPricingBindingRow,
@@ -1238,6 +1239,34 @@ function legacyScalarRule(
     rule_origin: "legacy",
     discount_bps: 10_000 - binding.legacy_multiplier_bp,
     payable_multiplier_bp: binding.legacy_multiplier_bp,
+    track_eligible: false,
+    retention_eligible: false,
+    commission_eligible: false,
+  };
+}
+
+/**
+ * The customer-facing discount rule for a binding whose policy is not engine-enforced yet: the
+ * materialized per-provider policy discount, clamped so it never exceeds the discount the
+ * legacy scalar actually bills. A tighter negotiated provider rate (policy discount below the
+ * scalar's) is shown as configured — billing can only over-deliver on it until the release
+ * cutover; a looser one is clamped to the scalar so the dashboard never promises a discount
+ * billing does not apply. The rule keeps the "legacy" origin and no capability flags: the
+ * enforced price is still the scalar, not the engine-delivered policy.
+ */
+function shadowPresentationRule(
+  binding: CustomerPricingBindingRow,
+  version: CustomerPricingVersionRow,
+  materialized: CustomerPricingRuleRow,
+): CustomerPricingRuleRow {
+  const legacy = legacyScalarRule(binding, version, materialized.provider_id);
+  if (materialized.pricing_mode !== "discount" || materialized.discount_bps === null) return legacy;
+  const discountBps = Math.min(materialized.discount_bps, legacy.discount_bps ?? 0);
+  return {
+    ...materialized,
+    rule_origin: "legacy",
+    discount_bps: discountBps,
+    payable_multiplier_bp: 10_000 - discountBps,
     track_eligible: false,
     retention_eligible: false,
     commission_eligible: false,
@@ -1311,18 +1340,19 @@ function customerPricingVersionView(input: {
     const providerRule = input.rules.find((rule) => (
       rule.provider_id === identity.providerId && rule.scope_type === "provider"
     ));
-    // While the binding's policy is not engine-enforced (legacy_scalar or shadow), the price
-    // the customer actually pays is the legacy scalar on the engine account — the materialized
-    // policy rules are a snapshot that can diverge from it (a converted B2C→B2B customer keeps
-    // the backfilled lineage until the release cutover). Where the policy governs a provider at
-    // all, present the authoritative scalar price so the dashboard never advertises a discount
-    // billing does not apply, or hides one it does; providers the policy does not cover stay
-    // unavailable exactly as the materialized rules say.
+    // While the binding's policy is not engine-enforced (legacy_scalar or shadow), billing still
+    // applies the legacy scalar on the engine account to every provider. The customer-facing
+    // rule therefore surfaces the materialized per-provider policy discount, clamped to never
+    // advertise a discount beyond the scalar billing actually charges: a tighter negotiated
+    // provider rate shows as configured (billing can only over-deliver on it until the release
+    // cutover), a looser one is clamped to the scalar. Providers the policy does not cover stay
+    // unavailable exactly as the materialized rules say, and non-discount (track) rules keep the
+    // plain scalar presentation. Policy and scalar converge at the release cutover.
     const materialized = exactRule ?? providerRule ?? null;
     const legacyScalarActive = binding.account_class === "b2b"
       && binding.policy_enforcement !== "strict";
     const rule = legacyScalarActive && materialized !== null
-      ? legacyScalarRule(binding, version, identity.providerId)
+      ? shadowPresentationRule(binding, version, materialized)
       : materialized;
     const reasons: CustomerPricingUnavailableReason[] = [];
     if (policyModel?.enabled !== true) reasons.push("policy_catalog_disabled");
