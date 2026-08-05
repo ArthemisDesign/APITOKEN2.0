@@ -1102,7 +1102,9 @@ the customer producer deliberately accepts only the live-proven contract:
 `POST /v1/images/edits` accepts multipart with exactly one strict PNG `image`. Authentication precedes
 body buffering. Masks, multiple references/outputs, exact sizes, transparent background, medium/high,
 JPEG/WebP/compression, partial-image streaming, and Responses multi-turn image state fail closed.
-The response contains exactly one bounded PNG and reconstructed allow-listed terminal usage.
+The response contains exactly one bounded PNG and reconstructed allow-listed terminal usage. A metered
+success returns the engine reservation/money identity in `x-request-id`; an admin-only unmetered success
+keeps a generated opaque request id. Upstream request metadata is never substituted for this identity.
 
 Each customer operation freezes one admitted home, performs the existing free `/wham/usage` preflight,
 reserves a typed immutable OpenAI image snapshot, and dispatches only to that exact home. Generation

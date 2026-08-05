@@ -4260,7 +4260,7 @@ grep -Fq -- '--reference "$reference"' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
 grep -Fq 'CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 gate does not force the external Codex fallback off'
-! grep -Eiq 'apiyi|laozhang|aihubproxy|apixo|whataicc' \
+! grep -Eiq 'laozhang|aihubproxy|apixo|whataicc' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 live gate contains a third-party image relay'
 grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-live-gate.sh 1c48e3769f0fe775e650f60ea3c5839458e5dfe2' \

@@ -13,6 +13,7 @@ mod config;
 mod http;
 mod metrics_store;
 mod openai_image_canary;
+mod openai_image_public_smoke;
 mod poller;
 mod router_auth;
 mod router_policy;
@@ -183,6 +184,14 @@ enum Cmd {
         checkpoint: std::path::PathBuf,
         #[arg(long)]
         budget_nanousd: u64,
+        #[arg(long)]
+        execute: bool,
+    },
+    /// One-shot authenticated generation+edit smoke through our public Images API and sealed pool.
+    OpenaiImagePublicSmoke {
+        /// Absolute new directory under an existing mode-private parent for replay-fenced evidence.
+        #[arg(long)]
+        output: std::path::PathBuf,
         #[arg(long)]
         execute: bool,
     },
@@ -390,6 +399,12 @@ fn main() -> Result<()> {
             budget_nanousd,
             execute,
         }),
+        Cmd::OpenaiImagePublicSmoke { output, execute } => {
+            openai_image_public_smoke::run(openai_image_public_smoke::OpenAiImagePublicSmokeArgs {
+                output,
+                execute,
+            })
+        }
     }
 }
 

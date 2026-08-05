@@ -181,10 +181,34 @@ the retained summary and are not inferred here.
 
 ## Publication gate
 
-Private generation and edit gates are GREEN. The producer-first authenticated customer Images API and
-exact settlement may now deploy, followed by exactly one public generation and one public edit smoke.
-The model remains excluded from `/v1/models`, pricing/product catalogs, router, OpenKeys, site, admin and
-public documentation until that public smoke is GREEN.
+Private generation and edit gates are GREEN. Producer Images API SHA
+`5a3c21700ce74a024e7e6b933fccc3da7d44c5ff` is deployed and watchdog-GREEN, still dormant in every
+public catalog. Its metered success header must now carry the engine reservation identity so the next
+one-shot can correlate the exact release snapshot, reservation, outbox, usage event and terminal
+settlement.
+
+`claude-api openai-image-public-smoke --output <new-private-directory> --execute` is that one-shot. It:
+
+1. authenticates `GET https://openai.api.apitoken.sale/v1/models` and requires both image aliases to
+   remain absent before dispatch;
+2. selects only the existing active `crm-parsing` service assignment and requires exactly one active key;
+   no credential is created, logged, serialized, placed in argv or written to disk;
+3. sends one `opaque/low/auto/png/b64_json` public generation and, only after its exact settlement, one
+   public multipart edit using that generated PNG;
+4. never retries either paid operation after dispatch; an existing output directory/journal permanently
+   fences replay;
+5. requires one bounded PNG, exact modality sums, positive output usage, positive image-input usage for
+   edit, byte-different edit output, the canonical lowercase engine UUIDv4 reservation identity in
+   `x-request-id`, typed `openai_image_v1` snapshot controls, terminal `settled`/`done`, exact five-leg
+   official `real_nano > 0`, and `charge_nano=0` under release-v2 `meter_only`;
+6. proves account/key balance, spent and reserved aggregates are unchanged and writes only mode-`0600`
+   PNG/evidence files under a new mode-`0700` directory whose existing absolute parent is an actual
+   mode-private directory (no group/world permission).
+
+The command uses the same production public origin and the same sealed Codex OAuth pool behind it. There
+is no reseller image origin, image-specific API key, fallback, or environment variable. The model remains
+excluded from `/v1/models`, pricing/product catalogs, router, OpenKeys, site, admin and public documentation
+until this exact production generation+edit smoke and its delivery SHA are GREEN.
 
 The official model contract is non-streaming. The public Image API guide also describes masks, output
 formats and Responses multi-turn editing, but the actual native subscription wire has not proved masks,

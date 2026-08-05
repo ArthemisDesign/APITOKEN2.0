@@ -167,15 +167,30 @@ only validates the existing terminal journal before any environment load or netw
 replay the request. Auto-size implementation SHA `df58715abb4f1ac52b6c46b1ea6f830c6e11178f` and controller delivery
 `afcfca46e22d3b123540462c9b20a2249dc9a56b` are watchdog-GREEN; their immutable private evidence contains
 a bounded `opaque/low/auto` PNG, terminal usage, and exact SHA/turn attribution. Edit-capable SHA
-`1c48e3769f0fe775e650f60ea3c5839458e5dfe2` is independently watchdog-GREEN. The pending edit
-controller is pinned to that exact binary, verifies the successful generation checkpoint and byte digest
-before credentials, and authorizes one `64_022_330_000` nanoUSD reference edit. GREEN requires positive
-terminal image-input and image-output token details plus the same bounded PNG and exact identity evidence;
-all terminal failures are fenced without replay. A non-network verdict pass accepts an existing exact
-checkpoint as GREEN but deliberately makes overall delivery RED after validating a terminal withdrawal;
-this prevents fence closure from being mistaken for successful edit proof. The watchdog invokes the
-explicit immutable edit SHA rather than a mutable engine baseline and still requires that exact release
-and binary to be current.
+`1c48e3769f0fe775e650f60ea3c5839458e5dfe2` and one-shot delivery
+`8357ec764d1cdddff652ae4b5d6221267eb14f4e` are watchdog-GREEN; corrective verifier SHA
+`354832bc86c3a8365e713faf0f35ad2c239c7087` is also GREEN. The controller consumed the successful
+owned generation artifact exactly once under the `64_022_330_000` nanoUSD envelope and persisted a
+bounded, byte-different PNG with positive terminal image-input/image-output usage and exact home/turn/SHA
+identity. The corrective path is non-network: it accepts only that existing exact success checkpoint and
+would make overall delivery RED after validating any terminal withdrawal. The historical gate remains
+pinned to the explicit immutable edit SHA rather than a mutable engine baseline.
+
+The separate public Images API publication gate uses
+`claude-api openai-image-public-smoke --output <absolute-new-private-directory> --execute` from the exact
+production binary. Its parent must already be an actual absolute directory with no group/world permission;
+the leaf must not exist, becomes mode `0700`, and is the permanent no-replay fence. The controller copies
+only the running OpenAI process environment, forces both ClaudeStore fallback switches off, and pins the
+exact deployed implementation SHA. Before dispatch the CLI requires authenticated discovery to exclude
+both image aliases and selects exactly one existing active `crm-parsing` release-v2 meter-only key without
+creating or persisting a credential. It then makes exactly one public generation and, only after exact
+settlement, exactly one public edit using the generated PNG. GREEN requires two bounded byte-different
+PNGs, exact usage modality sums, lowercase UUIDv4 reservation identities, coherent terminal
+reservation/outbox/usage/snapshot evidence, exact official nanoUSD legs, zero customer charge and unchanged
+account/key money aggregates. Any post-dispatch ambiguity is terminal for that SHA/root; retry requires a
+new implementation and a new delivery. Catalog, router, OpenKeys, site, admin and public-documentation
+publication remains forbidden until this gate and overall watchdog status are GREEN.
+
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane
 but do not reinstall the production controller. A changed Caddy template is rendered with the

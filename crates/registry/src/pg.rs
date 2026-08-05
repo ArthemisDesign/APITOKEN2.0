@@ -16,6 +16,7 @@ use crate::{
     ProviderTurnCalibrationEvent, SettlementFailure, SettlementHealth, SpendAccountAgg,
     SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, UsageDailyAgg,
     UsageDailyProviderAgg, UsageEventInput, UsageKeyAgg, UsageModelAgg, UsageReport,
+    PROVIDER_OPENAI,
 };
 use anyhow::{bail, Context, Result};
 use postgres::config::{Host, SslMode};
@@ -441,6 +442,66 @@ pub struct ImportReport {
     pub balance_nano: i64,
     pub spent_nano: i64,
     pub reserved_nano: i64,
+}
+
+/// Existing service credential selected for one authenticated GPT Image 2 public smoke.
+///
+/// The raw API key deliberately has no public field and this type implements neither `Debug` nor
+/// serialization. Server composition may borrow it only long enough to call our own public origin.
+pub struct OpenAiImageSmokeCredential {
+    key: String,
+    pub key_id: String,
+    pub account_id: String,
+    pub purpose: String,
+    pub responsible: String,
+    pub balance_nano: i64,
+    pub spent_nano: i64,
+    pub reserved_nano: i64,
+    pub key_spent_nano: i64,
+    pub key_reserved_nano: i64,
+}
+
+impl OpenAiImageSmokeCredential {
+    pub fn authorization_key(&self) -> &str {
+        &self.key
+    }
+}
+
+/// Secret-free, authoritative terminal evidence for one public image request.
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct OpenAiImageSettlementEvidence {
+    pub request_id: String,
+    pub account_id: String,
+    pub key_id: String,
+    pub reservation_state: String,
+    pub reservation_hold_nano: i64,
+    pub reservation_actual_nano: Option<i64>,
+    pub outbox_state: String,
+    pub outbox_disposition: String,
+    pub release_generation: i64,
+    pub release_billing_mode: String,
+    pub provider_id: String,
+    pub canonical_model_id: String,
+    pub tariff_schedule_id: String,
+    pub official_hold_nano: i64,
+    pub charged_hold_nano: i64,
+    pub official_cost: serde_json::Value,
+    pub model: String,
+    pub provider: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub real_nano: i64,
+    pub charge_nano: i64,
+    pub input_nano: i64,
+    pub output_nano: i64,
+    pub cache_read_nano: i64,
+    pub priced_ts: i64,
+    pub balance_nano: i64,
+    pub spent_nano: i64,
+    pub reserved_nano: i64,
+    pub key_spent_nano: i64,
+    pub key_reserved_nano: i64,
 }
 
 pub struct PgStore {
@@ -7904,6 +7965,157 @@ impl PgStore {
             after_account_id,
             limit,
         )
+    }
+
+    /// Select the existing `crm-parsing` service/meter-only key for the one public smoke.
+    /// Ambiguous active keys are a hard error: the smoke never creates a credential or silently
+    /// borrows an unrelated operator workload.
+    pub fn openai_image_smoke_credential(&mut self) -> Result<OpenAiImageSmokeCredential> {
+        let rows = self.client.query(
+            "SELECT account.id,key.key,key.key_id,assignment.purpose,assignment.responsible,
+                    account.balance_nano,account.spent_nano,account.reserved_nano,
+                    key.spent_nano,key.reserved_nano
+               FROM pricing_release_head_v2 head
+               JOIN LATERAL (
+                   SELECT base.account_id,base.account_class,base.billing_mode,base.purpose,
+                          base.responsible,0 priority
+                     FROM pricing_release_assignments base
+                    WHERE base.release_generation=head.active_generation
+                   UNION ALL
+                   SELECT extension.account_id,extension.account_class,extension.billing_mode,
+                          extension.purpose,extension.responsible,1 priority
+                     FROM pricing_release_assignment_extensions_v2 extension
+                    WHERE extension.release_generation=head.active_generation
+               ) assignment ON TRUE
+               JOIN accounts account ON account.id=assignment.account_id
+               JOIN api_keys key ON key.account_id=account.id
+              WHERE head.singleton=1 AND assignment.account_class='service'
+                AND assignment.billing_mode='meter_only' AND account.id='crm-parsing'
+                AND account.status='active' AND key.status='active'
+                AND (key.expires_ts IS NULL OR key.expires_ts>$1)
+                AND NOT EXISTS (
+                    SELECT 1 FROM pricing_release_assignment_extensions_v2 newer
+                     WHERE newer.release_generation=head.active_generation
+                       AND newer.account_id=assignment.account_id
+                       AND assignment.priority=0
+                )
+              ORDER BY assignment.account_id,key.key_id",
+            &[&now()],
+        )?;
+        let mut candidates = Vec::new();
+        for row in rows {
+            let account_id: String = row.get(0);
+            match crate::pricing::postgres::postgres_pricing_release_resolution_v2(
+                &mut self.client,
+                &account_id,
+                PROVIDER_OPENAI,
+                "gpt-image-2",
+            ) {
+                Ok(Some(resolution))
+                    if resolution.billing_mode() == crate::pricing::BillingModeV2::MeterOnly =>
+                {
+                    candidates.push(OpenAiImageSmokeCredential {
+                        account_id,
+                        key: row.get(1),
+                        key_id: row.get(2),
+                        purpose: row.get(3),
+                        responsible: row.get(4),
+                        balance_nano: row.get(5),
+                        spent_nano: row.get(6),
+                        reserved_nano: row.get(7),
+                        key_spent_nano: row.get(8),
+                        key_reserved_nano: row.get(9),
+                    });
+                }
+                Ok(Some(_)) | Ok(None) => {}
+                Err(error) => {
+                    return Err(error).context("resolve GPT Image 2 smoke service candidate")
+                }
+            }
+        }
+        match candidates.len() {
+            1 => Ok(candidates.pop().expect("one candidate")),
+            0 => bail!("no active service meter-only key can resolve GPT Image 2"),
+            count => {
+                bail!("GPT Image 2 smoke service credential is ambiguous ({count} candidates)")
+            }
+        }
+    }
+
+    /// Read and revalidate one terminal release-v2 image settlement in a coherent snapshot.
+    pub fn openai_image_settlement_evidence(
+        &mut self,
+        request_id: &str,
+    ) -> Result<Option<OpenAiImageSettlementEvidence>> {
+        let mut tx = self
+            .client
+            .build_transaction()
+            .isolation_level(IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()?;
+        let Some(snapshot) = crate::pricing::postgres::pricing_request_snapshot_v2_in_transaction(
+            &mut tx, request_id,
+        )?
+        else {
+            tx.commit()?;
+            return Ok(None);
+        };
+        let Some(row) = tx.query_opt(
+            "SELECT reservation.account_id,key.key_id,reservation.state,reservation.hold_nano,
+                    reservation.actual_nano,outbox.state,outbox.disposition,
+                    usage.model,usage.provider,usage.input_tokens,usage.output_tokens,
+                    usage.cache_read_tokens,usage.real_nano,usage.charge_nano,usage.input_nano,
+                    usage.output_nano,usage.cache_read_nano,usage.priced_ts,
+                    account.balance_nano,account.spent_nano,account.reserved_nano,
+                    key.spent_nano,key.reserved_nano
+               FROM reservations reservation
+               JOIN settlement_outbox outbox USING(request_id)
+               JOIN usage_events usage USING(request_id)
+               JOIN accounts account ON account.id=reservation.account_id
+               JOIN api_keys key ON key.key=reservation.key AND key.account_id=reservation.account_id
+              WHERE reservation.request_id=$1",
+            &[&request_id],
+        )? else {
+            tx.commit()?;
+            return Ok(None);
+        };
+        let official_cost = snapshot.official_cost_json.clone();
+        let evidence = OpenAiImageSettlementEvidence {
+            request_id: request_id.to_owned(),
+            account_id: row.get(0),
+            key_id: row.get(1),
+            reservation_state: row.get(2),
+            reservation_hold_nano: row.get(3),
+            reservation_actual_nano: row.get(4),
+            outbox_state: row.get(5),
+            outbox_disposition: row.get(6),
+            release_generation: snapshot.release_generation,
+            release_billing_mode: snapshot.billing_mode.as_str().to_owned(),
+            provider_id: snapshot.provider_id,
+            canonical_model_id: snapshot.canonical_model_id,
+            tariff_schedule_id: snapshot.tariff_schedule_id,
+            official_hold_nano: snapshot.official_hold_nano,
+            charged_hold_nano: snapshot.charged_hold_nano,
+            official_cost,
+            model: row.get(7),
+            provider: row.get(8),
+            input_tokens: row.get(9),
+            output_tokens: row.get(10),
+            cache_read_tokens: row.get(11),
+            real_nano: row.get(12),
+            charge_nano: row.get(13),
+            input_nano: row.get(14),
+            output_nano: row.get(15),
+            cache_read_nano: row.get(16),
+            priced_ts: row.get(17),
+            balance_nano: row.get(18),
+            spent_nano: row.get(19),
+            reserved_nano: row.get(20),
+            key_spent_nano: row.get(21),
+            key_reserved_nano: row.get(22),
+        };
+        tx.commit()?;
+        Ok(Some(evidence))
     }
 }
 

@@ -1092,6 +1092,15 @@ async fn reserve_codex_legacy(
 }
 
 impl OpenAiImageAdmission {
+    /// Return the engine-owned money identity for a metered image request. Public success responses
+    /// expose this value as `x-request-id`, so an operator can correlate the exact reservation,
+    /// release snapshot, usage event, and terminal settlement without relying on upstream metadata.
+    pub(crate) fn request_id(&self) -> Option<&str> {
+        self.reservation
+            .as_ref()
+            .map(|reservation| reservation.request_id.as_str())
+    }
+
     pub(crate) async fn mark_delivering(&mut self) -> Result<(), AdmissionError> {
         let Some(reservation) = &mut self.reservation else {
             return Ok(());
@@ -2776,6 +2785,7 @@ mod tests {
         let mut admission = OpenAiImageAdmission {
             reservation: codex_admission.reservation.take(),
         };
+        assert_eq!(admission.request_id(), Some("image-exact-settlement"));
         admission.mark_delivering().await.unwrap();
         admission.settle(
             metering::GPT_IMAGE_2_ALIAS,

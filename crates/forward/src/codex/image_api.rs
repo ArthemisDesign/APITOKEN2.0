@@ -300,7 +300,10 @@ async fn completed_image(
             );
         }
     };
-    let request_id = new_id("img");
+    let request_id = admission
+        .request_id()
+        .map(str::to_owned)
+        .unwrap_or_else(|| new_id("img"));
     let body = json!({
         "created": result.created(),
         "data": [{"b64_json": STANDARD_BASE64.encode(result.png())}],

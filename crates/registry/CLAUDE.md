@@ -373,7 +373,11 @@ side effect. `serve` may only perform the read-only schema verification before c
   computed customer debit; registry verifies the provider, non-negative usage and the
   `hold+$1` ceiling, but does not recompute the debit from full official usage (Codex may honestly limit the billed
   output). The runtime itself does not invoke the activation producer: until a separate protected commerce consumer,
-  the head remains absent.
+  the head remains absent. The PostgreSQL-only public image smoke reader is deliberately narrower than
+  normal key CRUD: it can select only the existing active `crm-parsing` service/meter-only credential,
+  returns its raw key only in a non-`Debug`/non-serializable process-local type, and exposes separately a
+  secret-free exact request snapshot/reservation/outbox/usage settlement report. It never creates or
+  mutates a key, account, release, reservation, usage row, or balance.
 
 **Invariants:**
 - The token is resolved from the `token` column (inline) OR the `token_file` file. `import_sqlite` refuses a

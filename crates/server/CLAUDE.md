@@ -111,9 +111,10 @@ background loops and the HTTP router. Here — and only here — everything is w
   the gateway owns the idle/epoch boundary, the turn-before-quota ordering and the durable observation/CAS,
   server owns only the cadence.
 - `main.rs` — clap CLI: `serve`, `sub add/add-file/list/rm/status/proxy/fleet/set-plan/detect-plan/health`,
-  the PostgreSQL-only read evidence `db stage8-evidence`, and the private `openai-image-canary`.
-  The canary can freeze an explicitly named opaque Codex profile or the first currently admitted pool
-  profile. It is not part of `AppState` or HTTP routing.
+  the PostgreSQL-only read evidence `db stage8-evidence`, the private `openai-image-canary`, and the
+  one-shot `openai-image-public-smoke`. The private canary can freeze an explicitly named opaque Codex
+  profile or the first currently admitted pool profile. Neither command is part of `AppState` or HTTP
+  routing.
 
 **Invariants:**
 - At startup the PostgreSQL authority only read-only verifies the applied schema; DDL is executed
@@ -143,7 +144,16 @@ background loops and the HTTP router. Here — and only here — everything is w
   header-gated Combined bridge), with 256 KiB JSON and 17 MiB multipart route limits. The model remains
   absent from discovery/catalog/defaults until the authenticated public smoke passes. Image auth runs
   inside the handler before JSON or multipart extraction, so unauthenticated bodies are never buffered.
-  Generation and edit evidence are watchdog-GREEN; full contract — `docs/ops/GPT_IMAGE_2_CANARY.md`.
+  Generation and edit evidence are watchdog-GREEN. `openai-image-public-smoke` adds no key, origin,
+  fallback or env: dry-run reads no env/network, while `--execute` requires an exact compile-time SHA and
+  a new absolute output path under an existing actual mode-private directory. It borrows exactly one
+  existing active `crm-parsing` meter-only key from PostgreSQL without serializing it, requires image
+  aliases absent from authenticated discovery, sends one public generation and then one one-reference
+  edit with no post-dispatch retry, and correlates each lowercase UUIDv4 response identity to an exact
+  release-v2 snapshot, reservation, usage row, outbox completion and settlement. Success requires exact
+  official token/nanoUSD legs, `charge_nano=0`, unchanged account/key money aggregates, bounded
+  byte-different mode-`0600` PNGs and mode-`0600` evidence in a mode-`0700` replay-fenced directory.
+  Full contract — `docs/ops/GPT_IMAGE_2_CANARY.md`.
 - ClaudeStore emergency transport: `CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED` strict default-off
   (`0|1|false|true`), the secret `CLAUDE_API_CLAUDESTORE_API_KEY` is required only when enabled and undergoes
   shape-validation/redacted Debug. Enable is allowed only for `Combined|Anthropic`; the production base

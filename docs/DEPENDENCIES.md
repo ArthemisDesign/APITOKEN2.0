@@ -283,6 +283,9 @@ is only what is needed to walk the relationships when making changes:
   preflights one home, permits only one `opaque/low/auto` PNG (edit: exactly one strict PNG reference),
   reserves a typed immutable image snapshot, and settles authoritative five-leg token cost. Successful
   malformed evidence and ambiguous post-dispatch errors retain the hold and never claim `not_started`.
+  The server-only `openai-image-public-smoke` consumer borrows exactly one existing `crm-parsing`
+  meter-only key and correlates the public UUIDv4 response identity to a coherent terminal release-v2
+  snapshot/reservation/outbox/usage view; it creates no credential and cannot replay a dispatched call.
   The direct OpenAI plane and header-gated Combined bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —
