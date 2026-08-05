@@ -378,16 +378,19 @@ prepare_engine_release() {
   else
     prepare_engine_source
     log "building engine release $ENGINE_RELEASE"
-    run env CARGO_TARGET_DIR="$ENGINE_STAGE/target" cargo build --locked --release -p claude-api --manifest-path "$ENGINE_SOURCE_DIR/Cargo.toml"
+    run env CARGO_TARGET_DIR="$ENGINE_STAGE/target" CLAUDE_API_IMPLEMENTATION_SHA="$SHA" \
+      cargo build --locked --release -p claude-api --manifest-path "$ENGINE_SOURCE_DIR/Cargo.toml"
     run install -m 0755 -- "$ENGINE_STAGE/target/release/claude-api" "$ENGINE_STAGE/claude-api"
     # The authbot replenishes the pool the engine serves from. It used to be built by hand into a
     # scratch target directory, which meant the running bot could silently be months older than the
     # tested commit. Ship it from the same immutable release as the engine.
-    run env CARGO_TARGET_DIR="$ENGINE_STAGE/target" cargo build --locked --release -p authbot --manifest-path "$ENGINE_SOURCE_DIR/Cargo.toml"
+    run env -u CLAUDE_API_IMPLEMENTATION_SHA CARGO_TARGET_DIR="$ENGINE_STAGE/target" \
+      cargo build --locked --release -p authbot --manifest-path "$ENGINE_SOURCE_DIR/Cargo.toml"
     run install -m 0755 -- "$ENGINE_STAGE/target/release/authbot" "$ENGINE_STAGE/authbot"
     # The unified router fronts every provider plane on router.apitoken.sale. It ships from the
     # same immutable release so the public fan-in never runs code older than the planes behind it.
-    run env CARGO_TARGET_DIR="$ENGINE_STAGE/target" cargo build --locked --release -p claude-router --manifest-path "$ENGINE_SOURCE_DIR/Cargo.toml"
+    run env -u CLAUDE_API_IMPLEMENTATION_SHA CARGO_TARGET_DIR="$ENGINE_STAGE/target" \
+      cargo build --locked --release -p claude-router --manifest-path "$ENGINE_SOURCE_DIR/Cargo.toml"
     run install -m 0755 -- "$ENGINE_STAGE/target/release/claude-router" "$ENGINE_STAGE/claude-router"
     run rm -rf -- "$ENGINE_STAGE/target"
   fi

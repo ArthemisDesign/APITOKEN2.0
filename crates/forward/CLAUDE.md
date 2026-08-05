@@ -1092,17 +1092,26 @@ plans anyway). Privacy by construction: the subject (keyed digest of the key) st
 PostgreSQL-only `PgStore::list_glm_calibrations`, an empty report on the SQLite authority) are joined
 to the opaque id only through `profile_id_for_subject`, and a foreign subject is never serialized outward.
 
-**Dormant OpenAI Images candidate — no runtime/public surface:** `openai_image` owns the strict
-single-attempt APIYI transport for reviewed GPT Image 2 generation/edit wire candidates, bounded
-response and PNG validation (including the relay's strict mask size below 4 MiB), terminal usage
-reconciliation, cache accounting and privacy-safe evidence. A deadline or network failure after
-`.send()` begins is always `OutcomeUnknown` (with sanitized response context when headers arrived),
-never a retryable pre-dispatch timeout. It reads no env and has no route, `AppState`, catalog or router integration. Production
-configuration is pinned to `https://api.apiyi.com`, but the server's private `openai-image-canary`
-is a locked dry-run planner: it does not construct this gateway, read a key, or dispatch a request,
-and `--execute` remains blocked. The immutable snapshot is mock-only transport evidence; there is no
-live canary evidence. Operational contract — `docs/ops/GPT_IMAGE_2_CANARY.md`; unresolved publication
-gates — `research/GPT_IMAGE_2_EVIDENCE.md`.
+**Private GPT Image 2 Stage 1 — dormant, no runtime/public surface:** `codex::images` owns the
+strict native Codex OAuth generation/edit wire. It posts JSON to
+`{CodexConfig.base_url}/images/generations|edits` through an existing sealed Codex home, with the
+existing bearer/account/originator/UA/version headers plus a fresh `x-codex-image-turn-id`.
+Generation fixes `model=gpt-image-2` and `background|quality|size=auto`; edit adds one to five strict
+PNG data URLs under `images[].image_url`. There are no masks, streaming, JPEG/WebP, batches or
+arbitrary controls. The response path is bounded and validates one real PNG; provider usage is
+optional evidence and is not turned into invented metering or settlement.
+
+Automatic calls reuse the existing pool selection and hold a normal `TurnSlot`. A received first
+`401` gets the existing forced refresh once and one same-home replay; only a final pre-execution
+`401/403` or `429` may rotate automatically. A client rejection, other status, invalid success,
+timeout, connection/body failure or any ambiguous outcome is terminal and never replayed. The private
+CLI uses exact-home methods, so a future enabled paid attempt cannot rotate to another profile. This
+module reads no env and has no route, `AppState`, catalog, router, defaults or billing integration. The
+exact-profile CLI is currently blocked before configuration/network because the provider-fixed
+`quality:auto,size:auto` request has no proved enforceable worst-case charge bound; its dormant free
+profile `/wham/usage` preflight is documented in `docs/ops/GPT_IMAGE_2_CANARY.md`. No live proof was
+performed in this worktree, and publication blockers remain in
+`research/GPT_IMAGE_2_EVIDENCE.md`.
 
 **Tuning for live Anthropic** (identity/beta/UA/version) — via `ProxyConfig` fields, which
 `server` takes from env. Default values — in `config.rs`.

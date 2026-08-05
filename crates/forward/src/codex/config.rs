@@ -107,9 +107,19 @@ impl CodexConfig {
         self.models.iter().find(|model| model.id == public_id)
     }
 
-    /// `POST {base}/responses` — the only generation endpoint of the native backend.
+    /// `POST {base}/responses` — native text generation endpoint.
     pub fn responses_url(&self) -> String {
         format!("{}/responses", self.base_url)
+    }
+
+    /// `POST {base}/images/generations` — native image generation endpoint.
+    pub fn image_generations_url(&self) -> String {
+        format!("{}/images/generations", self.base_url)
+    }
+
+    /// `POST {base}/images/edits` — native image edit endpoint.
+    pub fn image_edits_url(&self) -> String {
+        format!("{}/images/edits", self.base_url)
     }
 
     /// `GET {origin}/backend-api/wham/usage` — plan and window utilisation for one account.
@@ -177,6 +187,14 @@ mod tests {
         assert_eq!(
             cfg.responses_url(),
             "https://chatgpt.com/backend-api/codex/responses"
+        );
+        assert_eq!(
+            cfg.image_generations_url(),
+            "https://chatgpt.com/backend-api/codex/images/generations"
+        );
+        assert_eq!(
+            cfg.image_edits_url(),
+            "https://chatgpt.com/backend-api/codex/images/edits"
         );
         assert_eq!(
             cfg.usage_url(),

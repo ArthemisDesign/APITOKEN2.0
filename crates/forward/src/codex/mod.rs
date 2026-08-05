@@ -14,6 +14,7 @@ mod config;
 mod discovery;
 mod health;
 pub mod history;
+mod images;
 mod openai_snapshot;
 mod runner;
 mod skin;
@@ -29,11 +30,16 @@ pub use calibration::{fraction_resolution_units, WindowCalibration};
 pub use chat::completions as openai_chat_completions;
 pub use config::{CodexConfig, CodexModel, CodexPrices, CodexProfileSpec, CodexProfilesFile};
 pub use history::{HistoryError, StoredHistory};
+pub use images::{
+    CodexImageError, CodexImageResult, GptImage2, ImageEditRequest, ImageErrorContext,
+    ImageGenerationRequest, ImageReference, ImageTurnId, GPT_IMAGE_2,
+};
 pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdate};
 pub use skin::{count_tokens as codex_messages_count_tokens, messages as codex_messages_skin};
 pub use transport::RATE_LIMIT_FRACTION_SCALE;
 pub(crate) use transport::{
-    AppServerEvent, AuthContext, CodexModelCatalog, ProfileTransport, TurnEvents,
+    AppServerEvent, AuthContext, CodexModelCatalog, ImageDispatchError, ProfileTransport,
+    TurnEvents,
 };
 pub use transport::{CodexRateLimitWindow, CodexRateLimits, ProcessError};
 

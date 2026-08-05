@@ -29,7 +29,6 @@ mod lifecycle;
 mod meter;
 mod metrics;
 pub mod nodetls;
-pub mod openai_image;
 mod openai_responses_stream;
 mod pricing;
 mod proxy;
@@ -50,9 +49,10 @@ pub use breaker::Breaker;
 pub use codex::{
     codex_messages_count_tokens, codex_messages_skin, openai_chat_completions,
     openai_delete_response, openai_get_response, openai_input_tokens, openai_model, openai_models,
-    openai_response_input_items, openai_responses, CodexConfig, CodexGateway, CodexModel,
-    CodexOperationalStatus, CodexPrices, CodexProfileSpec, CodexProfilesFile, CodexRateLimitWindow,
-    CodexRateLimits,
+    openai_response_input_items, openai_responses, CodexConfig, CodexGateway, CodexImageError,
+    CodexImageResult, CodexModel, CodexOperationalStatus, CodexPrices, CodexProfileSpec,
+    CodexProfilesFile, CodexRateLimitWindow, CodexRateLimits, GptImage2, ImageEditRequest,
+    ImageErrorContext, ImageGenerationRequest, ImageReference, ImageTurnId, GPT_IMAGE_2,
 };
 pub use config::{
     ClaudeStoreFallbackConfig, ProxyConfig, CLAUDESTORE_FALLBACK_BASE_URL, CLAUDE_CODE_IDENTITY,

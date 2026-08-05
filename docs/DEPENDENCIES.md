@@ -186,8 +186,10 @@ is only what is needed to walk the relationships when making changes:
 - **`crates/metering` — the engine's price authority.** Hardcoded effective-dated tables
   in nanoUSD: `src/lib.rs` (Anthropic), `src/codex.rs` (OpenAI text), `src/gemini.rs` (Gemini),
   and dormant `src/openai_image.rs` (GPT Image 2). A price/model change is a reviewable commit
-  here. Consumers: `crates/forward` (main), `crates/server` (types/tariff identifiers). The
-  image tariff is pure dormant authority and has no product/runtime consumer.
+  here. Consumers: `crates/forward` (main), `crates/server` (types/tariff identifiers). The image
+  tariff is pure dormant official OpenAI API replacement authority; the private CLI uses it only for
+  a conservative plan/authorization estimate. It is not ChatGPT native credits, customer billing,
+  settlement, product access or a runtime route.
 - `crates/registry/src/pricing/` — NOT a price list, but the durable identities of
   multi-discount: catalogs/switches/policies, admission snapshots
   (`docs/commerce/MULTI-DISCOUNT.md`). Fixed provider IDs actual/shadow contract —
@@ -269,13 +271,20 @@ is only what is needed to walk the relationships when making changes:
   the target provider label; the failure alert and rollback are described in
   `docs/ops/MONITORING.md#claudestorefallbackfailing`. Contract and evidence —
   `docs/engine/CLAUDESTORE_FALLBACK.md` and `research/CLAUDESTORE_GPT_FALLBACK_EVIDENCE.md`.
-- **Dormant GPT Image 2 candidate (`crates/server` planner → `crates/forward::openai_image`
-  → fixed `https://api.apiyi.com`).** `crates/forward` contains the private generation/edit wire
-  candidate and reads no env. The current `crates/server` CLI is dry-run-only: it validates and
-  prints a blocked plan, does not construct the production gateway or read the future key, and
-  rejects `--execute` before checkpoint/file/network work. There is no runtime, HTTP, customer,
-  router, catalog, or publication consumer. Contract and blockers —
-  `docs/ops/GPT_IMAGE_2_CANARY.md` and `research/GPT_IMAGE_2_EVIDENCE.md`.
+- **Private dormant GPT Image 2 (`crates/server` exact-profile CLI →
+  `crates/forward::codex::images` → existing Codex OAuth pool).** The transport posts JSON to
+  `{CodexConfig.base_url}/images/generations|edits` with the existing bearer/account/originator/UA/
+  version identity plus `x-codex-image-turn-id`; edit references are one to five PNG data URLs.
+  Automatic library calls reuse normal pool selection/`TurnSlot`, refresh once, and rotate only on a
+  final pre-execution auth/quota rejection; ambiguous outcomes are never replayed. The CLI validates a
+  private exact-profile plan but reports it blocked. Its dormant execution path contains the free
+  profile `/wham/usage` preflight, one exact-profile attempt and exclusive mode-`0600` evidence;
+  `--execute` currently fails closed before configuration/network because `quality:auto,size:auto` has
+  no proved enforceable worst-case charge bound. It introduces no image key/origin/env. There is no
+  `AppState`, HTTP/customer, router, catalog, defaults, billing/settlement, public-doc or publication
+  consumer. Contract and blockers —
+  `docs/engine/CODEX_PROVIDER.md`, `docs/ops/GPT_IMAGE_2_CANARY.md`, and
+  `research/GPT_IMAGE_2_EVIDENCE.md`.
 - **Policy preflight contract (provider planes → router, phase 6.4a).** The producer is
   the identical `crates/server::router_policy` on every fixed runtime: an authenticated
   loopback-only `POST /internal/router/policy/preflight` reads the customer key and one

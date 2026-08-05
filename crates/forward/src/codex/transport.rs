@@ -247,6 +247,13 @@ pub(crate) struct AuthContext {
     pub account_id: String,
 }
 
+pub(crate) enum ImageDispatchError {
+    /// No image request could have reached the provider.
+    PreDispatch(ProcessError),
+    /// The request may have reached the provider; execution cannot be ruled out.
+    Ambiguous(ProcessError),
+}
+
 /// Result of one OAuth refresh against the pinned token endpoint.
 pub(crate) struct TokenRefresh {
     pub access_token: String,
@@ -369,7 +376,40 @@ impl SseProtocolState {
 pub(crate) struct ProfileTransport {
     cfg: Arc<CodexConfig>,
     client: wreq::Client,
+    image_client: wreq::Client,
     installation_id: String,
+}
+
+fn build_client(
+    cfg: &CodexConfig,
+    proxy: Option<&str>,
+    retry: Option<wreq::retry::Policy>,
+) -> Result<wreq::Client, ProcessError> {
+    let mut builder = wreq::Client::builder()
+        // BoringSSL ClientHello with ALPN=http/1.1, same attested profile the Claude fleet
+        // presents (see nodetls). ChatGPT's backend is fronted by the same edge stack.
+        .emulation(crate::nodetls::bun_emulation())
+        .connect_timeout(std::time::Duration::from_millis(
+            cfg.request_timeout_ms.max(1).min(30_000),
+        ))
+        .pool_idle_timeout(std::time::Duration::from_secs(90))
+        .tcp_keepalive(std::time::Duration::from_secs(60))
+        // Silence between reads bounds a connected-but-mute stream; SSE activity resets it.
+        .read_timeout(std::time::Duration::from_millis(
+            cfg.turn_silence_timeout_ms.max(30_000),
+        ));
+    if let Some(retry) = retry {
+        builder = builder.retry(retry);
+    }
+    if let Some(proxy) = proxy {
+        builder = builder.proxy(
+            wreq::Proxy::all(proxy)
+                .map_err(|error| ProcessError::InvalidConfig(format!("profile proxy: {error}")))?,
+        );
+    }
+    builder
+        .build()
+        .map_err(|error| ProcessError::InvalidConfig(format!("http client: {error}")))
 }
 
 impl ProfileTransport {
@@ -387,28 +427,11 @@ impl ProfileTransport {
                     .or_else(|| cfg.default_proxy_env.get("all_proxy"))
                     .cloned()
             });
-        let mut builder = wreq::Client::builder()
-            // BoringSSL ClientHello with ALPN=http/1.1, same attested profile the Claude fleet
-            // presents (see nodetls). ChatGPT's backend is fronted by the same edge stack.
-            .emulation(crate::nodetls::bun_emulation())
-            .connect_timeout(std::time::Duration::from_millis(
-                cfg.request_timeout_ms.max(1).min(30_000),
-            ))
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .tcp_keepalive(std::time::Duration::from_secs(60))
-            // Silence between reads bounds a connected-but-mute stream; SSE activity resets it.
-            .read_timeout(std::time::Duration::from_millis(
-                cfg.turn_silence_timeout_ms.max(30_000),
-            ));
-        if let Some(proxy) = proxy {
-            builder =
-                builder.proxy(wreq::Proxy::all(&proxy).map_err(|error| {
-                    ProcessError::InvalidConfig(format!("profile proxy: {error}"))
-                })?);
-        }
-        let client = builder
-            .build()
-            .map_err(|error| ProcessError::InvalidConfig(format!("http client: {error}")))?;
+        let client = build_client(&cfg, proxy.as_deref(), None)?;
+        // Images are paid, non-idempotent operations. Isolate their no-retry policy instead of
+        // changing the established default retry behavior of text, usage, models and OAuth calls.
+        let image_client =
+            build_client(&cfg, proxy.as_deref(), Some(wreq::retry::Policy::never()))?;
         // The first-party installation id survives client restarts and account switches. Derive an
         // equally opaque stable UUID from the configured roster location instead of rotating it
         // whenever a profile transport generation is recycled.
@@ -416,6 +439,7 @@ impl ProfileTransport {
         Ok(Self {
             cfg,
             client,
+            image_client,
             installation_id,
         })
     }
@@ -502,6 +526,62 @@ impl ProfileTransport {
             }
         }
         headers
+    }
+
+    /// Dispatch one image JSON request through this profile's pinned no-retry client.
+    ///
+    /// Receiving headers proves dispatch. Before headers, wreq can reliably identify local builder
+    /// faults and connector/proxy-connector failures; every other request error remains ambiguous.
+    pub(crate) async fn run_image_request(
+        &self,
+        auth: &AuthContext,
+        url: String,
+        body: &Value,
+        image_turn_id: &str,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<wreq::Response, ImageDispatchError> {
+        let mut headers = self.wire_headers(auth);
+        headers.insert(
+            wreq::header::ACCEPT,
+            wreq::header::HeaderValue::from_static("application/json"),
+        );
+        headers.insert(
+            wreq::header::CONTENT_TYPE,
+            wreq::header::HeaderValue::from_static("application/json"),
+        );
+        let turn_id = wreq::header::HeaderValue::from_str(image_turn_id).map_err(|_| {
+            ImageDispatchError::PreDispatch(ProcessError::InvalidConfig(
+                "image turn id header".to_string(),
+            ))
+        })?;
+        headers.insert(
+            wreq::header::HeaderName::from_static("x-codex-image-turn-id"),
+            turn_id,
+        );
+        let send = self
+            .image_client
+            .post(url)
+            .headers(headers)
+            .json(body)
+            .send();
+        let response = match deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, send).await.map_err(|_| {
+                ImageDispatchError::Ambiguous(ProcessError::Timeout("image response headers"))
+            })?,
+            None => send.await,
+        };
+        response.map_err(|error| {
+            let process_error = if error.is_timeout() {
+                ProcessError::Timeout("image response headers")
+            } else {
+                ProcessError::Closed
+            };
+            if error.is_builder() || error.is_connect() || error.is_proxy_connect() {
+                ImageDispatchError::PreDispatch(process_error)
+            } else {
+                ImageDispatchError::Ambiguous(process_error)
+            }
+        })
     }
 
     /// Run one native generation, translating the SSE stream into runner notifications.
@@ -716,7 +796,7 @@ async fn bounded_body(response: wreq::Response) -> Option<Vec<u8>> {
     Some(body[..body.len().min(MAX_ERROR_BODY_BYTES)].to_vec())
 }
 
-fn retry_after_seconds(headers: &wreq::header::HeaderMap) -> Option<u64> {
+pub(crate) fn retry_after_seconds(headers: &wreq::header::HeaderMap) -> Option<u64> {
     headers
         .get(wreq::header::RETRY_AFTER)?
         .to_str()

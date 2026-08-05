@@ -655,7 +655,8 @@ test_typescript_lane() {
 }
 
 test_rust_lane() {
-  local candidate=$1 engine_dsn=$2 build_artifacts=$3 redis_url=$4
+  local candidate=$1 engine_dsn=$2 build_artifacts=$3 redis_url=$4 sha=$5
+  wd_validate_sha "$sha"
   wd_log "running the locked Rust workspace tests from the shared target cache"
   # CLAUDE_API_TEST_REDIS_URL is mandatory here, not optional. The shared cache-affinity L2 is the
   # only place where two engine slots agree on a prompt-cache home, and its single-winner and
@@ -665,13 +666,17 @@ test_rust_lane() {
   # CI=1 turns the suite's "no Redis configured" escape hatch into a hard failure. Locally that
   # escape hatch keeps `cargo test` usable without Docker; here it must never be reachable, or the
   # L2 coverage could silently regress to skipped without any lane turning red.
-  run_as_ci env CLAUDE_API_TEST_DATABASE_URL="$engine_dsn" \
+  run_as_ci env -u CLAUDE_API_IMPLEMENTATION_SHA \
+    CLAUDE_API_TEST_DATABASE_URL="$engine_dsn" \
     CLAUDE_API_TEST_REDIS_URL="$redis_url" \
     CI=1 \
     cargo test --locked --workspace --manifest-path "$candidate/Cargo.toml"
   if (( build_artifacts == 1 )); then
     wd_log "building the production engine, authbot and router once, from the tested candidate"
-    run_as_ci cargo build --locked --release -p claude-api -p authbot -p claude-router \
+    run_as_ci env CLAUDE_API_IMPLEMENTATION_SHA="$sha" \
+      cargo build --locked --release -p claude-api --manifest-path "$candidate/Cargo.toml"
+    run_as_ci env -u CLAUDE_API_IMPLEMENTATION_SHA \
+      cargo build --locked --release -p authbot -p claude-router \
       --manifest-path "$candidate/Cargo.toml"
     run_as_ci install -d -m 0755 "$candidate/.deploy-artifacts/engine"
     run_as_ci install -m 0755 "$CI_CARGO_TARGET/release/claude-api" \
@@ -788,7 +793,7 @@ prepare_and_test_candidate_unlocked() {
   fi
   if (( rust_required == 1 )); then
     run_candidate_lane test_rust_lane "$candidate" "$engine_dsn" "$engine_artifacts_required" \
-      "$redis_url" &
+      "$redis_url" "$sha" &
     rust_pid=$!
   fi
   run_candidate_lane test_static_lane "$candidate" "$sha" "$static_required" &

@@ -1,39 +1,95 @@
-# GPT Image 2 via APIYI official relay — dormant evidence
+# GPT Image 2 on the current OpenAI Codex OAuth wire — dormant evidence
 
 ## Review scope and verdict
 
-- Upstream model alias: `gpt-image-2`.
-- Immutable OpenAI snapshot: `gpt-image-2-2026-04-21`.
-- Direct Image API operations in scope: `POST /v1/images/generations` and
-  `POST /v1/images/edits`.
-- Candidate relay base: `https://api.apiyi.com` (OpenAI-compatible API base:
-  `https://api.apiyi.com/v1`).
-- Stage status: **Stage 1, default-off/dormant evidence, pure metering, strict private transport,
-  and locked dry-run-only planner**. The transport is not connected to runtime/customer routing, and
-  the current CLI cannot dispatch it.
-- Publication status: **not published**. No production default, route, model catalog, router preset,
-  website entry, or customer availability claim is authorized by this document.
-- Relay status: APIYI describes this lane as an OpenAI “official relay” built on the official
-  channel. This is a vendor claim, **not live verified by this project**. No owned generation,
-  edit, streaming, terminal usage, cache split, or billed amount has been observed yet. The private
-  planner contract and closed live blockers are in `docs/ops/GPT_IMAGE_2_CANARY.md`.
+- Model: `gpt-image-2`; official immutable snapshot: `gpt-image-2-2026-04-21`.
+- Current native Codex endpoints: `POST {CodexConfig.base_url}/images/generations` and
+  `POST {CodexConfig.base_url}/images/edits`.
+- Authentication: the existing sealed ChatGPT Codex OAuth profile, account id, proxy, refresh family,
+  official-client identity, and pool. There is no image API key, image origin, or image-specific env.
+- Stage status: **Stage 1 private/default-off and dormant**. The strict transport and exact-profile CLI
+  exist, but there is no `AppState`, HTTP/customer route, catalog, router preset, billing/settlement,
+  production default, public documentation, or publication claim.
+- Live status: **not performed in this worktree**. Mock tests and source review are implementation
+  evidence, not proof that an owned ChatGPT subscription currently completes either operation.
 
-## Sources reviewed
+## Official sources reviewed
 
-| Source | Relevant claim | Authority and limitation |
+The current upstream source revision reviewed here is OpenAI Codex
+[`c4f42d161ae44a8d696ee9fb595709661979d187`](https://github.com/openai/codex/tree/c4f42d161ae44a8d696ee9fb595709661979d187).
+
+| Source | Current evidence | Limitation |
 |---|---|---|
-| [OpenAI GPT Image 2 model](https://developers.openai.com/api/docs/models/gpt-image-2) | Alias, `gpt-image-2-2026-04-21` snapshot, image generations/edits endpoints; model page marks streaming unsupported | Official model reference; conflicts with the guide's Image API streaming statement and therefore does not prove framing |
-| [OpenAI image generation guide](https://developers.openai.com/api/docs/guides/image-generation) | Generations and edits, partial-image streaming, output token calculator, final cost legs | Official guide; does not provide a normative terminal usage JSON schema or reserve ceiling |
-| [OpenAI API pricing](https://developers.openai.com/api/docs/pricing/) | GPT Image 2 text/image input, cached input, and image output token rates | Official price authority; rates only, not proof of relay reporting semantics |
-| [APIYI GPT Image 2 overview](https://docs.apiyi.com/en/api-capabilities/gpt-image-2/overview) | Claims official relay compatibility, base URL, both endpoints, token usage fields, cached pricing, and default/enterprise groups | Vendor documentation; neither independent nor live evidence, and its operational claims remain unverified |
+| [OpenAI GPT Image 2 model reference](https://developers.openai.com/api/docs/models/gpt-image-2) | Alias/snapshot, text+image input, image output, generations/edits endpoints, and `Streaming: Not supported` | Public OpenAI API model contract; it does not prove ChatGPT subscription quota, native-credit accounting, or this pool's live acceptance |
+| [OpenAI Codex image extension backend](https://github.com/openai/codex/blob/c4f42d161ae44a8d696ee9fb595709661979d187/codex-rs/ext/image-generation/src/backend.rs) | Resolves the active provider/auth, creates `ImagesClient`, and adds `originator` plus `x-codex-image-turn-id` for both generation and edit | Source evidence, not an owned live request |
+| [OpenAI Codex Images endpoint client](https://github.com/openai/codex/blob/c4f42d161ae44a8d696ee9fb595709661979d187/codex-rs/codex-api/src/endpoint/images.rs) | JSON `POST` to provider-relative `images/generations` or `images/edits`; tests show edit `images: [{image_url: "data:image/png;base64,..."}]` and a response containing `data[].b64_json` plus token usage | Test fixtures do not prove every production response reports usage or that usage maps to ChatGPT credits |
+| [OpenAI image generation guide](https://developers.openai.com/api/docs/guides/image-generation) | Public API generation/edit concepts, controls, response images, and pricing dimensions | Broader than this strict Stage 1 subset; masks, arbitrary controls/formats, and streaming are not admitted here |
+| [OpenAI API pricing](https://developers.openai.com/api/docs/pricing/) | Official replacement rates for text/image input, cached subsets, and image output | API replacement tariff only; not ChatGPT native credits, subscription quota, or billing |
 
-## Official immutable tariff
+## Current native Codex mapping
 
-OpenAI lists prices per one million tokens. The pure metering schedule identity is
-`openai/gpt-image-2/2026-04-21/v1`, with `effective_from = 0`; both the alias and snapshot resolve
-to that one immutable schedule.
+The official Codex source now has a dedicated Images client instead of requiring a third-party relay or
+an API-key Images origin. The local Stage 1 implementation follows that current shape:
 
-| Disjoint billing leg | Official rate / 1M tokens | Engine rate (nanoUSD/token) |
+- generation: JSON `POST {CodexConfig.base_url}/images/generations`;
+- edit: JSON `POST {CodexConfig.base_url}/images/edits`;
+- shared headers: existing OAuth bearer, `ChatGPT-Account-ID`, `originator`, pinned Codex
+  `User-Agent`, and pinned `version`;
+- image-only correlation: one fresh `x-codex-image-turn-id` per logical attempt, retained across the
+  single same-home forced-refresh replay;
+- generation JSON: `model: "gpt-image-2"`, prompt, `background/quality/size: "auto"`;
+- edit JSON: the same fields plus one to five PNG data URLs in
+  `images[].image_url`.
+
+The implementation intentionally admits only PNG output and strict PNG edit references. It exposes no
+masks, streaming, JPEG/WebP, transparency, arbitrary size/quality/background, input fidelity, multiple
+outputs, or other public Image API controls. This is a narrow current-wire probe, not a general Images
+API adapter.
+
+## Pool, refresh, and replay semantics
+
+Image operations reuse the existing Codex pool rather than creating another provider:
+
+1. Existing selection chooses a currently admitted home and acquires the normal `TurnSlot`; the
+   exact-profile CLI instead names one opaque roster id and refuses to move the paid call elsewhere.
+2. The existing access-token path performs single-flight refresh and durable refresh-family rotation.
+3. A received `401` permits exactly one forced refresh and one same-home replay with the same image
+   turn id; a received `403` is already the final pre-execution auth classification.
+4. Only a final `401/403` or `429` is a proved pre-execution account/quota rejection eligible for
+   automatic rotation in the reusable automatic API. The exact-profile canary returns it directly.
+5. Client rejection, unexpected status, invalid success, timeout, connection/body failure, or other
+   outcome ambiguity is terminal. It is never replayed because image generation may already have been
+   accepted even when no response was observed.
+
+This policy is stricter than the ordinary text pre-byte retry rule because the JSON Images endpoint has
+no incremental client-visible boundary that proves the provider did not start work.
+
+## Response and usage authority
+
+The strict success parser requires one bounded base64 PNG in `data[0]`, a plausible `created` Unix
+timestamp, and nonempty bounded `background`, `quality`, and `size`; optional `output_format` must be
+`png`. Optional `usage` is retained as opaque provider evidence and the CLI checkpoint keeps only an
+allow-listed numeric projection. Missing usage remains missing.
+
+The current OpenAI Codex test fixture includes input/output token details, but source fixtures are not
+live authority. Stage 1 therefore does not:
+
+- require usage merely to return a private PNG;
+- infer cached text/image subsets;
+- apply `metering::openai_image` to a customer balance;
+- convert OpenAI API replacement nanoUSD into ChatGPT native credits;
+- claim ChatGPT subscription billing or settlement semantics.
+
+A controlled live run must determine whether the native subscription response reports stable terminal
+usage and whether `/wham/usage` moves at sufficient resolution to attribute native consumption. Until
+then, optional usage is evidence only.
+
+## Dormant official replacement tariff
+
+`crates/metering/src/openai_image.rs` remains pure dormant authority for the official OpenAI API
+replacement schedule `openai/gpt-image-2/2026-04-21/v1`:
+
+| Disjoint billing leg | Official rate / 1M tokens | Engine nanoUSD/token |
 |---|---:|---:|
 | fresh text input | $5.00 | 5,000 |
 | cached text input | $1.25 | 1,250 |
@@ -41,98 +97,55 @@ to that one immutable schedule.
 | cached image input | $2.00 | 2,000 |
 | image output | $30.00 | 30,000 |
 
-If upstream reports authoritative cached subsets, metering retains total text and image input plus
-those subsets, validates each cached count is no greater than its corresponding total, and derives
-fresh input by subtraction. If an authoritative subset is absent, all corresponding input is charged
-fresh; no discount is invented. The five priced legs are disjoint, so cached input is never charged
-once at the fresh rate and again at the cached rate. The candidate shape comes from the vendor usage
-description and must be replaced or confirmed by sanitized live terminal evidence before runtime
-settlement is enabled.
+The alias and immutable snapshot share this schedule. If a future authoritative usage shape contains
+cached subsets, each subset must be validated against its total and fresh input derived by subtraction;
+otherwise all corresponding input is fresh. These are replacement prices only. They are not a
+ChatGPT credit card, native subscription tariff, reserve proof, customer billing authority, or product
+publication.
 
-## Contract contradictions and unresolved authority
+## Free preflight and paid budget boundary
 
-### Streaming
+The dormant execution path constructs the configured Codex gateway, runs the existing free profile
+auth/quota preflight through `/wham/usage`, and then prepares one exact-profile image call. The preflight
+would prove roster OAuth/quota health and normal admission without spending an image turn. It is not
+image `countTokens`, does not tokenize references, and does not establish a request reserve.
 
-- The official GPT Image 2 model page says **Streaming: Not supported**.
-- The official image generation guide says the Responses API and Image API support streaming image
-  generation and documents `partial_images`.
-- APIYI describes synchronous Images endpoints and does not establish the exact streamed response
-  framing or terminal usage authority for this relay.
+The CLI validates integer `--budget-nanousd > 100000` (`$0.0001`) and at least its checked estimate:
 
-Chosen Stage 1 behavior: no streaming capability is claimed or published. A controlled live test
-must prove incremental partial-image delivery and a terminal authoritative usage record on the
-exact candidate transport before any streaming surface can be enabled.
+```text
+prompt UTF-8 bytes × fresh text-input rate
++ reference PNG bytes × fresh image-input rate
++ 196 × image-output rate
+```
 
-### Usage shape
+This estimate deliberately overstates image input by treating stored bytes as tokens, but it is still
+not a normative maximum and cannot stop an already dispatched request. Because the fixed provider wire
+uses `quality:auto,size:auto`, no enforceable worst-case charge bound has been proved. Stage 1 therefore
+reports `state: "blocked"`, `executable: false`; `--execute` fails before configuration, `/wham/usage`,
+or an image request. The plan records the budget and estimate without claiming a hold or settlement.
 
-- OpenAI pricing and the guide establish billable dimensions, but the reviewed official pages do
-  not define a complete Images API `usage` JSON schema or whether every successful response includes
-  it.
-- APIYI claims both endpoints return `usage`, with total input and separate text/image details, but
-  this is vendor documentation rather than owned wire evidence.
-- The vendor example says output detail mirrors image output and text output is zero; the model rate
-  card has no text-output leg. Any unexpected non-image output dimension must fail closed rather
-  than be silently ignored.
+## Remaining live and publication blockers
 
-Chosen Stage 1 behavior: the dormant transport implements a strict candidate parser for the documented
-terminal schema and rejects missing, malformed, contradictory, or unpriced dimensions. `created` is
-mandatory and must be a Unix timestamp between 2020-01-01 and 2100-01-01 inclusive. The optional
-`background`, `output_format`, `quality`, and `size` members may be absent, but an explicit `null` is
-invalid and any present value must exactly match the fixed request. Unknown success-envelope fields are
-also rejected. This is tested against mocks only. A future separately reviewed live probe must confirm or
-invalidate that schema with sanitized evidence before any runtime settlement is considered; the current
-CLI cannot run that probe.
+No live proof was produced in this worktree. Before any publication change, all of the following remain:
 
-### Cached-input split
+1. Build an exact clean implementation SHA and obtain GREEN repository/deployment validation for it.
+2. Prove an enforceable worst-case bound for the fixed `quality:auto,size:auto` request, land a
+   separate reviewed change enabling the Stage 1 execution gate, and obtain explicit authorization for
+   a concrete budget above `$0.0001`. Only then run the free `/wham/usage` profile preflight and one
+   minimal exact-profile generation, preserving only private `0600` PNG/checkpoint evidence.
+3. Prove a real successful generation response, PNG integrity, final metadata, request attribution,
+   and whatever terminal usage/native quota movement is actually authoritative. Do not invent missing
+   metering or settlement.
+4. Separately authorize and run an exact-profile edit with owned synthetic PNG references; verify the
+   current JSON data-URL wire up to five inputs and the same no-replay behavior.
+5. Establish a tested conservative reserve ceiling before any money admission. The CLI estimate is not
+   that ceiling, and `/wham/usage` is not image `countTokens`.
+6. Resolve the repository publication requirement for incremental SSE. The official model page says
+   streaming is unsupported and this Stage 1 implementation has none; therefore it cannot currently
+   pass that generic gate.
+7. Only in a later publication commit consider `AppState`/HTTP/customer routes, catalog/pricing
+   releases, router presets, defaults/systemd, public docs/storefronts, and real billing/settlement.
+   Masks, streaming, JPEG/WebP, and arbitrary controls remain out of scope unless separately proved and
+   reviewed.
 
-- OpenAI publishes distinct cached text and cached image rates.
-- The reviewed official guide does not show where cached text/image subsets appear in Image API
-  terminal usage.
-- APIYI says cached pricing is configured but cache hits can be limited by account fan-out; its
-  documented usage field list does not establish an authoritative cached text/image split.
-
-Chosen Stage 1 behavior: totals and cached subsets are explicit typed inputs; `cached > total` is
-invalid. Runtime integration remains blocked until live evidence identifies exact fields. If the
-provider reports no authoritative cached split, settlement must not invent a discount.
-
-### Reserve ceiling
-
-- Output cost depends on generated image tokens, which vary with requested size, quality, and partial
-  images. The official guide provides examples/calculators but no normative maximum output-token
-  ceiling for every valid GPT Image 2 request.
-- APIYI provides estimates and extrapolations, not an official hard token ceiling. It also documents
-  a `1.2x` enterprise group, while this Stage 1 tariff records only the official-list-price/default
-  `1.0x` lane.
-- Input image tokens depend on edit inputs and provider tokenization; no reviewed source supplies a
-  complete request-level maximum suitable for a guaranteed hold.
-
-Chosen Stage 1 behavior: no reserve formula or production admission is added. Enabling transport is
-blocked on a conservative, tested request-bound reserve ceiling (including image count, dimensions,
-quality, partial-image surcharge, and relay group) that provably bounds terminal settlement.
-
-## Stage gate and blockers
-
-The dormant tariff and dry-run plan are evidence only and grant no product access. The current CLI
-cannot advance this gate. A separate reviewed live-capable change requires an owned credential and an
-exact clean GREEN implementation SHA, and must then:
-
-1. Confirm APIYI's official-relay claim and exact `https://api.apiyi.com/v1` request path without
-   retaining credentials or private payloads.
-2. Close the admission blocker before any paid call. The Images surface has no reviewed free
-   `countTokens` equivalent, so it requires a separately reviewed image-specific free-preflight
-   exception or an actual free preflight; absence of one cannot silently skip this step. Because the
-   minimum official-list estimate is about `$0.005885`, obtain explicit approval above the default
-   aggregate `$0.0001` cap.
-3. Obtain successful generation with real image bytes and terminal authoritative usage; reconcile
-   every token leg, the APIYI group multiplier, and the charged relay amount.
-4. Obtain a successful edit with an owned synthetic reference image and prove text/image input
-   separation plus cached-subset behavior (or prove cache is absent and bill all input fresh).
-5. Resolve the streaming contradiction with an incremental partial-image run and terminal usage;
-   publication cannot waive the repository's incremental SSE requirement.
-6. Define and test a conservative reserve ceiling for all admitted controls before runtime billing.
-7. Verify retry/disconnect behavior does not duplicate generation or lose settlement after the
-   request becomes billable.
-8. Only after the full live gate is green may a separate publication change consider a route,
-   catalog, defaults, router presets, public docs, or storefront exposure.
-
-Until all blockers are closed, the model remains default-off, dormant, and unpublished.
+Until every applicable blocker closes, GPT Image 2 remains private, dormant, and unpublished.

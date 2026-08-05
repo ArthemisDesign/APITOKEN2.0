@@ -2002,6 +2002,19 @@ grep -Fq 'redis_url=$(test_db redis-url)' "$ROOT/deploy/watchdog.sh" \
 # coverage could regress to silently skipped while every lane stayed green.
 grep -Fq 'CI=1 \' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'the Rust lane does not mark itself as CI for the mandatory-Redis assertion'
+grep -Fq 'local candidate=$1 engine_dsn=$2 build_artifacts=$3 redis_url=$4 sha=$5' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the Rust lane does not accept the exact candidate SHA'
+grep -Fq '"$redis_url" "$sha" &' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the candidate gate does not pass its exact SHA into the Rust lane'
+grep -Fq 'run_as_ci env CLAUDE_API_IMPLEMENTATION_SHA="$sha" \' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the trusted claude-api build does not embed the validated candidate SHA'
+grep -Fq 'run env CARGO_TARGET_DIR="$ENGINE_STAGE/target" CLAUDE_API_IMPLEMENTATION_SHA="$SHA" \' \
+  "$ROOT/deploy/deploy.sh" \
+  || wd_die 'the manual fallback claude-api build does not embed the validated release SHA'
+[[ $(grep -Fc 'env -u CLAUDE_API_IMPLEMENTATION_SHA' "$ROOT/deploy/deploy.sh") -eq 2 ]] \
+  || wd_die 'manual authbot/router builds can inherit the claude-api implementation SHA'
 ! grep -Fq '#[ignore' "$ROOT/crates/forward/src/affinity.rs" \
   || wd_die 'the shared affinity Redis proof is ignored again and the gate would never run it'
 grep -Fq 'CLAUDE_API_TEST_REDIS_URL must be set in CI' "$ROOT/crates/forward/src/affinity.rs" \
@@ -2009,8 +2022,14 @@ grep -Fq 'CLAUDE_API_TEST_REDIS_URL must be set in CI' "$ROOT/crates/forward/src
 
 # The authbot produces the subscriptions the engine serves from, so the production watchdog builds
 # it once beside the tested engine and the release controller only promotes those exact binaries.
-grep -Fq 'cargo build --locked --release -p claude-api -p authbot -p claude-router' "$ROOT/deploy/watchdog.sh" \
-  || wd_die "the candidate gate does not build all production engine artifacts"
+grep -Fq 'cargo build --locked --release -p claude-api --manifest-path "$candidate/Cargo.toml"' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die "the candidate gate does not build the production engine"
+grep -Fq 'cargo build --locked --release -p authbot -p claude-router \' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die "the candidate gate does not build the authbot and router artifacts"
+grep -Fq 'run_as_ci env -u CLAUDE_API_IMPLEMENTATION_SHA \' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'authbot and router builds can inherit the claude-api implementation SHA'
 grep -Fq '"$TESTED_CANDIDATE/.deploy-artifacts/engine/authbot"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the release controller does not promote the tested authbot"
 grep -Fq '"$ENGINE_STAGE/authbot"' "$ROOT/deploy/deploy.sh" \
@@ -2063,7 +2082,7 @@ grep -Fq '$unit failed exact-release verification after restart' "$ROOT/deploy/d
 # The unified router is a third engine artifact. It is promoted through two fixed slots only after
 # direct readiness and exact-binary checks; Caddy switches new requests atomically before the old
 # process receives SIGTERM, so long SSE streams drain without a deployment 502 window.
-grep -Fq -- '-p claude-api -p authbot -p claude-router' "$ROOT/deploy/watchdog.sh" \
+grep -Fq -- '-p authbot -p claude-router' "$ROOT/deploy/watchdog.sh" \
   || wd_die "the candidate gate does not build the production router artifact"
 grep -Fq 'router_binary_sha256' "$ROOT/deploy/watchdog.sh" \
   || wd_die "the tested marker does not pin the router binary digest"

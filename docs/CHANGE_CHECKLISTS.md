@@ -24,12 +24,14 @@ Publication is two-stage. The implementation/research merge lands first and stay
 at this step it is forbidden to add the model to production defaults/systemd, the public
 model catalog, router presets, the website, or public docs. After GREEN on the exact
 implementation SHA, a controlled production live run is performed on an owned credential.
-The free `countTokens` goes first, then a minimal generation; a provider surface without
-`countTokens` (such as Images) cannot silently skip this step and requires a separate reviewed,
-image-specific free-preflight admission exception before any paid attempt. The default aggregate
-admission budget is no more than `$0.0001` (0.01 of a cent). A quota/catalog row and
-`countTokens` do not prove generation. The publication gate requires simultaneously:
-generation 2xx, real output, terminal authoritative usage, incremental SSE, and every
+A free authoritative preflight goes first, then a minimal generation. For text/provider surfaces this
+is normally `countTokens`. The private Codex image canary instead has a free profile OAuth/quota
+preflight through `/wham/usage`; that is not image `countTokens`, tokenization, reserve proof, or
+generation evidence. Any paid call above the default aggregate `$0.0001` (0.01 of a cent) cap still
+requires explicit authorization for the concrete larger numeric budget and a conservative estimate.
+A quota/catalog row, free profile preflight, or `countTokens` does not prove generation. The
+publication gate requires simultaneously: generation 2xx, real output, terminal authoritative usage,
+incremental SSE, and every
 claimed control. Only after that does a separate publication commit walk the public half
 of the checklist. Any failed generation means withdrawal: public surfaces are taken down,
 and immutable/dormant artifacts are not rewritten.

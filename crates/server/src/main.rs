@@ -167,10 +167,16 @@ enum Cmd {
         #[arg(long)]
         delete_home: bool,
     },
-    /// Private dry-run-only GPT Image 2 planner. --execute remains blocked.
+    /// Private exact-profile GPT Image 2 Stage 1 planner. Execution remains fail-closed.
     OpenaiImageCanary {
+        /// Opaque Codex roster profile id; never an email or account id.
+        #[arg(long)]
+        profile: String,
         #[arg(long)]
         prompt_file: std::path::PathBuf,
+        /// Strict PNG reference. Repeat 1..=5 times to select edit instead of generation.
+        #[arg(long = "reference")]
+        references: Vec<std::path::PathBuf>,
         #[arg(long)]
         output: std::path::PathBuf,
         #[arg(long)]
@@ -179,8 +185,6 @@ enum Cmd {
         budget_nanousd: u64,
         #[arg(long)]
         execute: bool,
-        #[arg(long, default_value = metering::GPT_IMAGE_2_ALIAS)]
-        model: String,
     },
 }
 
@@ -370,19 +374,21 @@ fn main() -> Result<()> {
             delete_home,
         } => codex_seal_cmd(&home, &roster, &keys, &active_kid, delete_home),
         Cmd::OpenaiImageCanary {
+            profile,
             prompt_file,
+            references,
             output,
             checkpoint,
             budget_nanousd,
             execute,
-            model,
         } => openai_image_canary::run(openai_image_canary::OpenAiImageCanaryArgs {
+            profile,
             prompt_file,
+            references,
             output,
             checkpoint,
             budget_nanousd,
             execute,
-            model,
         }),
     }
 }

@@ -111,20 +111,25 @@ background loops and the HTTP router. Here — and only here — everything is w
   the gateway owns the idle/epoch boundary, the turn-before-quota ordering and the durable observation/CAS,
   server owns only the cadence.
 - `main.rs` — clap CLI: `serve`, `sub add/add-file/list/rm/status/proxy/fleet/set-plan/detect-plan/health`,
-  the PostgreSQL-only read evidence `db stage8-evidence`, and the private dry-run-only
-  `openai-image-canary` planner. The planner is not part of `AppState` or HTTP routing.
+  the PostgreSQL-only read evidence `db stage8-evidence`, and the private exact-profile
+  `openai-image-canary`. The canary is a blocked Stage 1 dry-run surface; `--execute` fails closed before
+  configuration or network access until an enforceable worst-case bound for the fixed provider
+  `quality:auto,size:auto` request is proved. It is not part of `AppState` or HTTP routing.
 
 **Invariants:**
 - At startup the PostgreSQL authority only read-only verifies the applied schema; DDL is executed
   by the separate `db migrate-engine` before a blue-green slot is started.
 - Introduce a new env variable ONLY here and pass it further down through config structures.
-- `openai-image-canary` reads no APIYI key, constructs no production gateway, creates no output or
-  checkpoint, and performs no network request. It validates the complete local prompt/path/model and
-  proposed-budget contract, prints one blocked JSON plan in dry-run mode, and returns the generic
-  `GPT Image 2 live execution is blocked` error for `--execute`. Unlocking requires a separate reviewed
-  image-specific admission exception or free preflight, explicit authorization above the repository's
-  `$0.0001` default cap, an exact clean GREEN implementation SHA, and a proved reserve ceiling. The
-  command follows `docs/ops/GPT_IMAGE_2_CANARY.md`.
+- `openai-image-canary` introduces no image key/origin/env. Dry-run validates the strict prompt,
+  optional one-to-five PNG references, exact opaque profile, private target paths and numeric budget,
+  then prints a sanitized blocked plan without reading env/network or creating artifacts. `--execute`
+  additionally requires an exact compile-time implementation SHA but remains blocked before loading
+  settings or sending `/wham/usage`; the dormant code behind that gate uses the existing Codex OAuth
+  roster/base URL/identity, a free profile auth/quota preflight, and one exact-profile attempt. The
+  budget and checked estimate are evidence only, not a reserve or maximum-charge proof.
+  Output/checkpoint publication code uses exclusive mode-`0600` files. The command remains outside
+  `AppState`, HTTP, customer routes, catalog, defaults and billing; no live proof was performed in this
+  worktree. Full contract — `docs/ops/GPT_IMAGE_2_CANARY.md`.
 - ClaudeStore emergency transport: `CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED` strict default-off
   (`0|1|false|true`), the secret `CLAUDE_API_CLAUDESTORE_API_KEY` is required only when enabled and undergoes
   shape-validation/redacted Debug. Enable is allowed only for `Combined|Anthropic`; the production base
