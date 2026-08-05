@@ -377,8 +377,10 @@ admin.apitoken.sale {
 		}
 	}
 	# Gemini has its own fixed runtime and OAuth/profile lifecycle, so its sanitized fleet status is
-	# read from the stable Gemini origin instead of either of the other provider processes.
-	@admin_gemini_data path /gemini-subs
+	# read from the stable Gemini origin instead of either of the other provider processes. The
+	# nested path is the operator switch (POST .../disabled), which pulls one profile out of
+	# rotation; it rides the same origin and the same injected control key as the read.
+	@admin_gemini_data path /gemini-subs /gemini-subs/*
 	handle @admin_gemini_data {
 		reverse_proxy 127.0.0.1:8794 {
 			header_up Host 127.0.0.1:8794

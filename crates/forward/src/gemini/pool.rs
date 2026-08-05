@@ -1677,7 +1677,7 @@ impl GeminiGateway {
             .clone()
     }
 
-    pub(crate) fn is_disabled(&self, profile_id: &str) -> bool {
+    pub fn is_disabled(&self, profile_id: &str) -> bool {
         self.disabled
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

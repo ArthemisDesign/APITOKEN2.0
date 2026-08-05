@@ -522,6 +522,10 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             .method_not_allowed_fallback(fixed_openai_not_found),
         forward::ProviderMode::Gemini => common
             .route("/gemini-subs", get(gemini_subs))
+            .route(
+                "/gemini-subs/{profile_id}/disabled",
+                post(gemini_sub_set_disabled),
+            )
             // Universal lane (этап 3.3 UNIFIED_ROUTER.md): chat→generateContent адаптер.
             .route("/v1/chat/completions", post(gemini_chat_completions))
             // Universal Responses (этап 4.3 UNIFIED_ROUTER.md): Responses→generateContent
@@ -2395,8 +2399,92 @@ struct GeminiWindowTotal {
     high_profiles: usize,
 }
 
+/// Operator switch: pull one Gemini profile out of rotation, or put it back. Gated by
+/// `control_authed` rather than `readonly_authed` — the panel's low-privilege read key must not be
+/// able to change what the pool routes to.
+///
+/// The write goes to the engine authority (`pool_member_disables`), NOT to the sealed Auth Bot
+/// roster, so it survives the next roster publication. After the write we refresh the gateway's
+/// cached set immediately so the effect is visible on the very next request instead of on the next
+/// health tick.
+async fn gemini_sub_set_disabled(
+    State(app): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(profile_id): Path<String>,
+    Json(body): Json<PoolMemberDisableRequest>,
+) -> Response {
+    if !control_authed(&app, &headers, &peer) {
+        Metrics::inc(&app.metrics.auth_failures);
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+    let Some(gemini) = &app.gemini else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "gemini provider is not enabled on this slot"})),
+        )
+            .into_response();
+    };
+    let Some(billing) = &app.billing else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "billing authority unavailable"})),
+        )
+            .into_response();
+    };
+    // Reject an id the roster does not contain. Writing it would succeed silently and the operator
+    // would believe a profile was pulled when nothing was — a typo must fail loudly.
+    let status = gemini.operational_status().await;
+    if !status.profiles.iter().any(|p| p.id == profile_id) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown gemini profile"})),
+        )
+            .into_response();
+    }
+    let reason = body.reason.unwrap_or_default();
+    if let Err(error) = billing
+        .pool_member_set_disabled(
+            registry::PROVIDER_GOOGLE,
+            &profile_id,
+            body.disabled,
+            "panel",
+            &reason,
+        )
+        .await
+    {
+        eprintln!("Gemini operator disable write failed: {error:#}");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "pool member disable write failed"})),
+        )
+            .into_response();
+    }
+    gemini.refresh_disabled().await;
+    eprintln!(
+        "[gemini] profile={profile_id} {} by operator",
+        if body.disabled { "disabled" } else { "enabled" }
+    );
+    Json(json!({
+        "id": profile_id,
+        "disabled": gemini.is_disabled(&profile_id),
+    }))
+    .into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct PoolMemberDisableRequest {
+    disabled: bool,
+    reason: Option<String>,
+}
+
 fn gemini_profile_routable(profile: &forward::GeminiProfileStatus, now: i64) -> bool {
-    profile.authenticated
+    !profile.disabled
+        && profile.authenticated
         && profile.cooling_until <= now
         && (profile.model_cooling.is_empty()
             || profile
@@ -5101,13 +5189,65 @@ fn gemini_calibration_persistence_ok(
         .all(|profile| profile.calibration_persistence_ok)
 }
 
+/// Per-window capacity rows for one Gemini profile. Extracted from the profile document because
+/// that `json!` literal had grown past the macro's expansion depth; keeping it separate also means
+/// the capacity-gating rule (`profile_capacity_available`) is applied in exactly one place.
+fn gemini_window_values(
+    profile: &forward::GeminiProfileStatus,
+    profile_capacity_available: bool,
+) -> Vec<Value> {
+    let round = |x: f64| (x * 1_000_000.0).round() / 1_000_000.0;
+    let round_opt = |x: Option<f64>| x.map(round);
+    let gated_nano = |value: Option<i64>| {
+        value
+            .filter(|_| profile_capacity_available)
+            .map(|value| value.to_string())
+    };
+    profile
+        .capacities
+        .iter()
+        .map(|window| {
+            json!({
+                "bucket_id": window.bucket_id,
+                "window_kind": window.window_kind,
+                "window_minutes": window.window_minutes,
+                "resets_at": window.resets_at,
+                "observed_at": window.observed_at,
+                "data_age_seconds": window.data_age_seconds,
+                "remaining_fraction_units": window.remaining_fraction_units,
+                "used_fraction_units": window.used_fraction_units,
+                "remaining_fraction": window.remaining_fraction_units as f64 / 100_000_000.0,
+                "used_fraction": window.used_fraction_units as f64 / 100_000_000.0,
+                "capacity_nano": gated_nano(window.capacity_nano),
+                "remaining_nano": gated_nano(window.remaining_nano),
+                "low_nano": gated_nano(window.low_nano),
+                "high_nano": gated_nano(window.high_nano),
+                "remaining_low_nano": gated_nano(window.remaining_low_nano),
+                "remaining_high_nano": gated_nano(window.remaining_high_nano),
+                "cap_usd": round_opt(window.cap_usd.filter(|_| profile_capacity_available)),
+                "remaining_usd": round_opt(window.remaining_usd.filter(|_| profile_capacity_available)),
+                "low_usd": round_opt(window.low_usd.filter(|_| profile_capacity_available)),
+                "high_usd": round_opt(window.high_usd.filter(|_| profile_capacity_available)),
+                "remaining_low_usd": round_opt(window.remaining_low_usd.filter(|_| profile_capacity_available)),
+                "remaining_high_usd": round_opt(window.remaining_high_usd.filter(|_| profile_capacity_available)),
+                "observed_spend_nano": window.observed_spend_nano.to_string(),
+                "observed_spend_usd": round(window.observed_spend_nano as f64 / 1e9),
+                "observed_fraction_units": window.observed_fraction_units,
+                "workload_dependent": true,
+                "source": if profile_capacity_available { window.source } else { "unknown" },
+                "confidence": window.confidence,
+                "samples": window.samples,
+            })
+        })
+        .collect()
+}
+
 fn gemini_profile_values(
     status: &forward::GeminiOperationalStatus,
     capacity_available: bool,
     now: i64,
 ) -> Vec<Value> {
     let round = |x: f64| (x * 1_000_000.0).round() / 1_000_000.0;
-    let round_opt = |x: Option<f64>| x.map(round);
     status
         .profiles
         .iter()
@@ -5119,43 +5259,14 @@ fn gemini_profile_values(
                 "email": profile.masked_email,
                 "plan": profile.plan,
                 "authenticated": profile.authenticated,
+                "disabled": profile.disabled,
                 "cooling_until": profile.cooling_until,
                 "inflight": profile.inflight,
                 "last_probe_at": profile.last_probe_at,
                 "quota_updated_at": profile.quota_updated_at,
                 "spend_usd_total": round(profile.spend_usd_total),
                 "calibration_persistence_ok": profile.calibration_persistence_ok,
-                "windows": profile.capacities.iter().map(|window| json!({
-                    "bucket_id": window.bucket_id,
-                    "window_kind": window.window_kind,
-                    "window_minutes": window.window_minutes,
-                    "resets_at": window.resets_at,
-                    "observed_at": window.observed_at,
-                    "data_age_seconds": window.data_age_seconds,
-                    "remaining_fraction_units": window.remaining_fraction_units,
-                    "used_fraction_units": window.used_fraction_units,
-                    "remaining_fraction": window.remaining_fraction_units as f64 / 100_000_000.0,
-                    "used_fraction": window.used_fraction_units as f64 / 100_000_000.0,
-                    "capacity_nano": window.capacity_nano.filter(|_| profile_capacity_available).map(|value| value.to_string()),
-                    "remaining_nano": window.remaining_nano.filter(|_| profile_capacity_available).map(|value| value.to_string()),
-                    "low_nano": window.low_nano.filter(|_| profile_capacity_available).map(|value| value.to_string()),
-                    "high_nano": window.high_nano.filter(|_| profile_capacity_available).map(|value| value.to_string()),
-                    "remaining_low_nano": window.remaining_low_nano.filter(|_| profile_capacity_available).map(|value| value.to_string()),
-                    "remaining_high_nano": window.remaining_high_nano.filter(|_| profile_capacity_available).map(|value| value.to_string()),
-                    "cap_usd": round_opt(window.cap_usd.filter(|_| profile_capacity_available)),
-                    "remaining_usd": round_opt(window.remaining_usd.filter(|_| profile_capacity_available)),
-                    "low_usd": round_opt(window.low_usd.filter(|_| profile_capacity_available)),
-                    "high_usd": round_opt(window.high_usd.filter(|_| profile_capacity_available)),
-                    "remaining_low_usd": round_opt(window.remaining_low_usd.filter(|_| profile_capacity_available)),
-                    "remaining_high_usd": round_opt(window.remaining_high_usd.filter(|_| profile_capacity_available)),
-                    "observed_spend_nano": window.observed_spend_nano.to_string(),
-                    "observed_spend_usd": round(window.observed_spend_nano as f64 / 1e9),
-                    "observed_fraction_units": window.observed_fraction_units,
-                    "workload_dependent": true,
-                    "source": if profile_capacity_available { window.source } else { "unknown" },
-                    "confidence": window.confidence,
-                    "samples": window.samples,
-                })).collect::<Vec<_>>(),
+                "windows": gemini_window_values(profile, profile_capacity_available),
                 "model_cooling": profile.model_cooling.iter().map(|cooling| json!({
                     "model_id": cooling.model_id,
                     "cooling_until": cooling.cooling_until,

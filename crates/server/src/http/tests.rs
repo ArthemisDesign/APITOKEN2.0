@@ -115,6 +115,7 @@ fn unknown_gemini_status() -> forward::GeminiOperationalStatus {
             masked_email: "owne…".to_string(),
             plan: "google_ai_pro".to_string(),
             authenticated: true,
+            disabled: false,
             cooling_until: 0,
             inflight: 0,
             last_probe_at: 100,
