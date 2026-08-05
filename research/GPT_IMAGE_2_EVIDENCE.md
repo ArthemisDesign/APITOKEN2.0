@@ -137,12 +137,15 @@ requirement to generate only through our existing OAuth pool. No third-party ima
    the mode-0600 journal. This diagnostic evidence is not publication evidence. Active watchdog-GREEN
    descendant `3c17b31b6dfdcb8867d8def57e7aedc4ebc87644` has an empty diff from that SHA across
    `openai_image_canary.rs` and the three Codex image transport/config files.
-3. Run the separately authorized one-shot controller against the fresh SHA-keyed root for exact active
-   SHA `3c17b31b6dfdcb8867d8def57e7aedc4ebc87644` to determine the real native response contract.
-   Earlier controller deliveries `3ba2d941e95419748027bf5fc8a0759821095148` and
-   `e0618cca78b6b5a650f9a8399c5457572bb44568` stopped before free preflight or paid dispatch. Require
-   2xx, one real PNG, terminal usage, local turn attribution, private mode-0600 evidence, and no ambiguous
-   replay; do not require response echo fields the native contract omits.
+3. Delivery `237a926b054a5fdd6833fca6668040ab6e0d55a7` ran the separately authorized one-shot against
+   exact active SHA `3c17b31b6dfdcb8867d8def57e7aedc4ebc87644`. The sealed native endpoint returned exact
+   home and turn, opaque/low PNG metadata, terminal usage (`35` input, `229` image output, `264` total),
+   and `1254x1254` instead of requested `1024x1024`. No image or checkpoint was persisted or published;
+   the mode-0600 journal records `evidence_controls_mismatch` and the output digest. The attempt is
+   terminal and must not be replayed. A jq syntax error in the optional-usage verifier caused the delivery
+   itself to report RED; its correction may only consume this existing journal before credential loading
+   and network dispatch. This proves native generation reachability and authoritative usage, but not the
+   deterministic size control required for publication.
 4. Derive and review a normative edit ceiling, authorize it separately, and run an exact-home edit with
    an owned generated PNG. Verify every claimed reference/edit behavior.
 5. Resolve partial-image streaming for the actual native subscription wire before claiming it. Public

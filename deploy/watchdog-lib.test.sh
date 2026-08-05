@@ -3203,6 +3203,14 @@ grep -Fq '(.returned | keys | sort) == ([' "$ROOT/deploy/gpt-image-2-live-gate.s
 grep -Fq '[[ ${#recovery_entries[@]} -eq 1 && ${recovery_entries[0]} == journal.json ]]' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 diagnostic accepts unexpected recovery artifacts'
+grep -Fq '(([.. | numbers]) as $values |' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 diagnostic usage verifier lost valid jq value binding syntax'
+recovery_fence_line=$(grep -nF 'if [[ -e $recovery || -L $recovery ]]; then' \
+  "$ROOT/deploy/gpt-image-2-live-gate.sh" | cut -d: -f1)
+runtime_env_line=$(grep -nF 'load_openai_runtime_environment() {' \
+  "$ROOT/deploy/gpt-image-2-live-gate.sh" | cut -d: -f1)
+[[ -n $recovery_fence_line && -n $runtime_env_line && $recovery_fence_line -lt $runtime_env_line ]] \
+  || wd_die 'GPT Image 2 terminal recovery can reach runtime credentials or network dispatch'
 grep -Fq 'for forbidden in "$internal_output" "$internal_checkpoint"' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 diagnostic does not verify rejected image absence'

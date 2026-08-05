@@ -123,9 +123,16 @@ could run because the sudo-policy installer self-check still named the predecess
 delivery `e0618cca78b6b5a650f9a8399c5457572bb44568` installed and verified the exact policy, then stopped
 before the gate because the watchdog passed the newer unrelated engine baseline instead of the gate's
 pinned implementation SHA; sudo correctly rejected that different argument. Neither delivery performed
-the free preflight or a paid image dispatch. The watchdog invokes this one-shot gate with the explicit
-immutable active implementation SHA rather than a mutable engine baseline; the gate still requires that
-exact release and binary to be current.
+the free preflight or a paid image dispatch. Delivery
+`237a926b054a5fdd6833fca6668040ab6e0d55a7` performed the separately authorized exact-home request. The
+native Codex endpoint returned a parsed opaque/low PNG result with terminal usage but normalized the
+requested `1024x1024` size to `1254x1254`; no PNG or checkpoint was persisted or published, and the
+sanitized `evidence_controls_mismatch` journal permanently fences that image turn. Its first verifier run
+then failed because the optional-usage jq branch used an invalid binding expression. The corrective gate
+only validates the existing terminal journal before any environment load or network dispatch; it cannot
+replay the request. The watchdog invokes this one-shot gate with the explicit immutable active
+implementation SHA rather than a mutable engine baseline; the gate still requires that exact release and
+binary to be current.
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane
 but do not reinstall the production controller. A changed Caddy template is rendered with the

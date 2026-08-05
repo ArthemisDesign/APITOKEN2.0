@@ -285,9 +285,11 @@ is only what is needed to walk the relationships when making changes:
   fenced. Diagnostic implementation SHA `8fcd7c3c6f5dc968bedb7260433f2eaff23f8931` is separately
   watchdog-GREEN. Active watchdog-GREEN descendant `3c17b31b6dfdcb8867d8def57e7aedc4ebc87644`
   has no image canary or Codex image transport diff from that diagnostic SHA. The new controller is
-  pinned to that exact active binary and may run one fresh bounded exact-home generation; it accepts
-  either complete private checkpoint evidence or a terminal sanitized mismatch journal with no image
-  artifacts. It cannot replay either attempt or reinterpret a diagnostic withdrawal as evidence.
+  pinned to that exact active binary. Its bounded exact-home generation returned terminal usage and an
+  opaque/low `1254x1254` result for the requested `1024x1024`; the controller retained only a terminal
+  sanitized mismatch journal and no image artifacts. The corrective verifier consumes that existing
+  journal before environment loading and cannot replay the request or reinterpret the withdrawal as
+  publication evidence.
   It introduces no image key/origin/env. There is no
   `AppState`, HTTP/customer,
   router, catalog, defaults, billing/settlement,

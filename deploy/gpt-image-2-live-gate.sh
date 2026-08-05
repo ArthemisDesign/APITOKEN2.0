@@ -153,8 +153,8 @@ verify_diagnostic_mismatch() {
     ((.returned.provider.output_format == null) or (.returned.provider.output_format == "png")) and
     ((.returned.usage == null) or
       (.returned.usage | type == "object" and
-        ([.. | numbers]) as $values and
-        ($values | length) > 0 and all($values[]; . >= 0 and floor == .))) and
+        (([.. | numbers]) as $values |
+          ($values | length) > 0 and all($values[]; . >= 0 and floor == .)))) and
     ((.returned.request_id == null) or
       (.returned.request_id | type == "string" and length > 0 and length <= 128)) and
     (.returned.output_sha256 | type == "string" and test("^sha256:[0-9a-f]{64}$")) and

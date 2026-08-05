@@ -134,6 +134,14 @@ terminal sanitized journal with no image artifacts; all other outcomes fail the 
 can be replayed. Controller deliveries `3ba2d941e95419748027bf5fc8a0759821095148` and
 `e0618cca78b6b5a650f9a8399c5457572bb44568` stopped before preflight and paid dispatch; the latter passed
 policy installation but supplied a different mutable engine SHA to the exact-argument sudo bridge.
+Delivery `237a926b054a5fdd6833fca6668040ab6e0d55a7` made the authorized exact-home call through the sealed
+pool. The native endpoint returned an opaque/low PNG result with exact home and turn, terminal usage
+(`35` input, `229` image output, `264` total tokens), and `1254x1254` dimensions instead of requested
+`1024x1024`. The canary retained only the sanitized `evidence_controls_mismatch` journal and digest; it
+persisted and published no image or checkpoint. A jq syntax error initially prevented the controller from
+accepting that valid terminal journal. The corrective controller is strictly non-network for this SHA:
+it verifies the existing journal and absence of artifacts before loading runtime credentials or reaching
+the dispatch path. The paid image turn remains permanently non-replayable.
 
 Edit can be validated as a blocked plan by repeating `--reference` up to five times. Do not add
 `--execute` until a reviewed normative input-image ceiling and separate numeric authorization exist.
