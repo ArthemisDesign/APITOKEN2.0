@@ -280,9 +280,11 @@ is only what is needed to walk the relationships when making changes:
   explicit or first admitted opaque profile, performs the free `/wham/usage` preflight and one
   exact-home attempt. Generation requires an exact SHA and at least `8_560_000` nanoUSD for fixed
   `opaque/low/1024x1024`; edit remains blocked until a normative input-image ceiling exists. The one-shot
-  watchdog controller invokes exact deployed engine SHA `3f67d43c0ae541979fee66823d251e2e3eea33e0`
-  before advancing processed/overall GREEN. Evidence is exclusive mode-`0600` and requires exact controls
-  plus terminal usage. It introduces no image key/origin/env. There is no `AppState`, HTTP/customer,
+  watchdog controller invokes exact deployed engine SHA `012fccc471142fc51a46563da3a87564d674b39f`
+  before advancing processed/overall GREEN. Evidence is exclusive mode-`0600` and requires identical
+  private/published artifacts, exact controls and local turn, strict PNG/hash, and nonempty numeric
+  terminal usage; the provider request-id is optional. It introduces no image key/origin/env. There is no
+  `AppState`, HTTP/customer,
   router, catalog, defaults, billing/settlement,
   public-doc or publication consumer. Contract and blockers — `docs/engine/CODEX_PROVIDER.md`,
   `docs/ops/GPT_IMAGE_2_CANARY.md`, and `research/GPT_IMAGE_2_EVIDENCE.md`.

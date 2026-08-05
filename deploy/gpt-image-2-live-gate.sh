@@ -7,50 +7,184 @@ LIB=/usr/local/lib/apitoken-watchdog/watchdog-lib.sh
 source "$LIB"
 
 STATE_ROOT=/var/lib/apitoken/watchdog
-EXPECTED_IMPLEMENTATION_SHA=3f67d43c0ae541979fee66823d251e2e3eea33e0
+ENGINE_RELEASE_ROOT=/srv/claude-api/releases
+ENGINE_DATA_ROOT=/srv/claude-api/data
+EXPECTED_IMPLEMENTATION_SHA=012fccc471142fc51a46563da3a87564d674b39f
 GENERATION_BUDGET_NANOUSD=8560000
 
 [[ $# -eq 1 ]] || wd_die "usage: gpt-image-2-live-gate.sh <exact-engine-sha>"
 SHA=$1
 wd_validate_sha "$SHA"
 [[ $SHA == "$EXPECTED_IMPLEMENTATION_SHA" ]] \
-  || wd_die "GPT Image 2 recovery gate is pinned to $EXPECTED_IMPLEMENTATION_SHA"
-[[ $(id -u) == 0 ]] || wd_die "GPT Image 2 recovery gate must run through the fixed root bridge"
+  || wd_die "GPT Image 2 generation gate is pinned to $EXPECTED_IMPLEMENTATION_SHA"
+[[ $(id -u) == 0 ]] || wd_die "GPT Image 2 generation gate must run through the fixed root bridge"
+
+release=$ENGINE_RELEASE_ROOT/$SHA
+current=$(readlink -f -- "$ENGINE_RELEASE_ROOT/current")
+[[ $current == "$release" ]] || wd_die "GPT Image 2 gate requires current engine release $SHA"
+binary=$release/claude-api
+[[ -f $binary && ! -L $binary && -x $binary ]] \
+  || wd_die "exact GPT Image 2 canary binary is missing"
 
 root=$STATE_ROOT/gpt-image-2-live/$SHA
+[[ ! -L $STATE_ROOT/gpt-image-2-live ]] || wd_die "GPT Image 2 evidence root must not be a symlink"
+install -d -o deploy -g deploy -m 0700 -- "$STATE_ROOT/gpt-image-2-live" "$root"
+[[ -d $root && ! -L $root && $(stat -c '%U:%G:%a' -- "$root") == deploy:deploy:700 ]] \
+  || wd_die "GPT Image 2 evidence directory is not private and deploy-owned"
+
 prompt=$root/generation-prompt.txt
 output=$root/generation.png
 checkpoint=$root/generation.json
 recovery=$root/.generation.json.openai-image-canary-run
 journal=$recovery/journal.json
+internal_output=$recovery/result.png
+internal_checkpoint=$recovery/checkpoint.json
 
-[[ -d $root && ! -L $root && $(stat -c '%U:%G:%a' -- "$root") == deploy:deploy:700 ]] \
-  || wd_die "GPT Image 2 evidence directory is not private and deploy-owned"
-[[ -f $prompt && ! -L $prompt && $(stat -c '%U:%G:%a' -- "$prompt") == deploy:deploy:600 ]] \
-  || wd_die "GPT Image 2 prompt evidence is missing or unsafe"
-[[ ! -e $output && ! -L $output && ! -e $checkpoint && ! -L $checkpoint ]] \
-  || wd_die "GPT Image 2 withdrawal cannot coexist with published generation evidence"
-[[ -d $recovery && ! -L $recovery \
-    && $(stat -c '%U:%G:%a' -- "$recovery") == deploy:deploy:700 ]] \
-  || wd_die "GPT Image 2 non-replayable recovery directory is missing or unsafe"
-[[ -f $journal && ! -L $journal \
-    && $(stat -c '%U:%G:%a' -- "$journal") == deploy:deploy:600 ]] \
-  || wd_die "GPT Image 2 non-replayable journal is missing or unsafe"
+verify_checkpoint() {
+  local checkpoint_sha actual_sha usage_summary input_tokens input_text input_image
+  local output_tokens output_image total_tokens png_signature
+  [[ -f $checkpoint && ! -L $checkpoint \
+      && $(stat -c '%U:%G:%a' -- "$checkpoint") == deploy:deploy:600 ]] || return 1
+  [[ -f $output && ! -L $output \
+      && $(stat -c '%U:%G:%a' -- "$output") == deploy:deploy:600 ]] || return 1
+  [[ -d $recovery && ! -L $recovery \
+      && $(stat -c '%U:%G:%a' -- "$recovery") == deploy:deploy:700 ]] || return 1
+  [[ -f $journal && ! -L $journal \
+      && $(stat -c '%U:%G:%a' -- "$journal") == deploy:deploy:600 ]] || return 1
+  [[ -f $internal_output && ! -L $internal_output \
+      && $(stat -c '%U:%G:%a' -- "$internal_output") == deploy:deploy:600 ]] || return 1
+  [[ -f $internal_checkpoint && ! -L $internal_checkpoint \
+      && $(stat -c '%U:%G:%a' -- "$internal_checkpoint") == deploy:deploy:600 ]] || return 1
 
-mapfile -t recovery_entries < <(find "$recovery" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)
-[[ ${#recovery_entries[@]} -eq 1 && ${recovery_entries[0]} == journal.json ]] \
-  || wd_die "GPT Image 2 recovery contains unexpected artifacts"
+  mapfile -t recovery_entries < <(
+    find "$recovery" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort
+  )
+  [[ ${#recovery_entries[@]} -eq 3 \
+      && ${recovery_entries[0]} == checkpoint.json \
+      && ${recovery_entries[1]} == journal.json \
+      && ${recovery_entries[2]} == result.png ]] || return 1
 
-jq -e --arg sha "$SHA" --argjson budget "$GENERATION_BUDGET_NANOUSD" '
-  .schema_version == 1 and
-  .state == "evidence_incomplete" and
-  .operation == "generation" and
-  .model == "gpt-image-2" and
-  (.profile | type == "string" and length > 0) and
-  (.image_turn_id | type == "string" and length > 0) and
-  .implementation_sha == $sha and
-  .authorization_budget_nanousd == $budget
-' "$journal" >/dev/null \
-  || wd_die "GPT Image 2 non-replayable journal does not match the withdrawn attempt"
+  jq -e --arg sha "$SHA" --argjson budget "$GENERATION_BUDGET_NANOUSD" '
+    .schema_version == 1 and
+    .operation == "generation" and
+    .model == "gpt-image-2" and
+    (.profile | type == "string" and length > 0) and
+    (.image_turn_id | type == "string" and length > 0) and
+    .width == 1024 and .height == 1024 and
+    .provider.background == "opaque" and
+    .provider.quality == "low" and
+    .provider.size == "1024x1024" and
+    ((.provider.output_format == null) or (.provider.output_format == "png")) and
+    (.usage | type == "object" and length > 0) and
+    ((.usage | [.. | numbers]) as $values |
+      ($values | length) > 0 and
+      all($values[]; . >= 0 and floor == .) and
+      any($values[]; . > 0)) and
+    ((.request_id == null) or (.request_id | type == "string" and length > 0)) and
+    .implementation_sha == $sha and
+    .authorization_budget_nanousd == $budget and
+    (.output_sha256 | type == "string" and test("^sha256:[0-9a-f]{64}$"))
+  ' "$checkpoint" >/dev/null || return 1
+  jq -e --arg sha "$SHA" --argjson budget "$GENERATION_BUDGET_NANOUSD" \
+    --arg turn "$(jq -r '.image_turn_id' "$checkpoint")" '
+    .schema_version == 1 and
+    .state == "success" and
+    .operation == "generation" and
+    .model == "gpt-image-2" and
+    (.profile | type == "string" and length > 0) and
+    .image_turn_id == $turn and
+    .implementation_sha == $sha and
+    .authorization_budget_nanousd == $budget
+  ' "$journal" >/dev/null || return 1
+  cmp -s -- "$checkpoint" "$internal_checkpoint" || return 1
+  cmp -s -- "$output" "$internal_output" || return 1
+  checkpoint_sha=$(jq -r '.output_sha256 | sub("^sha256:"; "")' "$checkpoint")
+  actual_sha=$(sha256sum -- "$output" | awk '{print $1}')
+  [[ $checkpoint_sha == "$actual_sha" ]] || return 1
+  png_signature=$(od -An -tx1 -N8 -- "$output" | tr -d ' \n')
+  [[ $png_signature == 89504e470d0a1a0a ]] || return 1
 
-printf 'GPT Image 2 generation WITHDRAWN: parsed result lacked required publication evidence; exact attempt is fenced and was not replayed\n'
+  usage_summary=$(jq -r '[
+    .usage.input_tokens // "na",
+    .usage.input_tokens_details.text_tokens // "na",
+    .usage.input_tokens_details.image_tokens // "na",
+    .usage.output_tokens // "na",
+    .usage.output_tokens_details.image_tokens // "na",
+    .usage.total_tokens // "na"
+  ] | @tsv' "$checkpoint")
+  IFS=$'\t' read -r input_tokens input_text input_image output_tokens output_image total_tokens \
+    <<<"$usage_summary"
+  printf 'GPT Image 2 generation GREEN: 1024x1024 opaque/low; usage=input:%s,text:%s,image:%s,output:%s,output_image:%s,total:%s; png=%s; provider_request_id=%s\n' \
+    "$input_tokens" "$input_text" "$input_image" "$output_tokens" "$output_image" \
+    "$total_tokens" "${actual_sha:0:16}" \
+    "$(jq -r 'if .request_id == null then "absent" else "present" end' "$checkpoint")"
+}
+
+if [[ -e $checkpoint || -L $checkpoint || -e $output || -L $output ]]; then
+  verify_checkpoint || wd_die "existing GPT Image 2 generation evidence is incomplete or invalid"
+  exit 0
+fi
+[[ ! -e $recovery && ! -L $recovery ]] \
+  || wd_die "prior GPT Image 2 generation attempt is non-replayable; inspect private recovery evidence"
+
+umask 077
+install -o deploy -g deploy -m 0600 /dev/null "$prompt"
+printf '%s\n' \
+  'Create a simple flat illustration of a blue ceramic mug on a plain beige background. No text, logos, people, brands, or copyrighted characters.' \
+  >"$prompt"
+
+load_openai_runtime_environment() {
+  local unit pid executable entry name provider
+  local entries=()
+  for unit in claude-api-openai@8793.service claude-api-openai@8797.service; do
+    [[ $(systemctl show "$unit" -p ActiveState --value 2>/dev/null) == active ]] || continue
+    pid=$(systemctl show "$unit" -p MainPID --value 2>/dev/null)
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || continue
+    executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null) || continue
+    [[ $executable == "$binary" ]] || continue
+
+    entries=()
+    provider=
+    while IFS= read -r -d '' entry; do
+      [[ $entry == *=* ]] || wd_die "running OpenAI slot contains an invalid environment entry"
+      name=${entry%%=*}
+      [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+        || wd_die "running OpenAI slot contains an invalid environment name"
+      case "$name" in
+        CLAUDE_API_PROVIDER) provider=${entry#*=}; entries+=("$entry") ;;
+        CLAUDE_API_DATABASE_URL|CLAUDE_API_AFFINITY_SECRET|CLAUDE_API_REDIS_URL|\
+          CLAUDE_API_AFFINITY_REDIS_URL|CLAUDE_API_CODEX_*) entries+=("$entry") ;;
+      esac
+    done <"/proc/$pid/environ"
+    [[ $provider == openai ]] || continue
+
+    for entry in "${entries[@]}"; do
+      export "$entry"
+    done
+    return 0
+  done
+  wd_die "no active exact-release OpenAI slot can supply the parsed production environment"
+}
+
+# Production EnvironmentFile values are systemd syntax, not shell syntax. Reuse the exact active
+# OpenAI slot's already parsed environment instead of evaluating root-only files as Bash. Values stay
+# in process environments (never argv or logs), and fixed canary overrides are applied afterwards.
+load_openai_runtime_environment
+export HOME=/home/deploy
+export SUB_CFG_DIR=$ENGINE_DATA_ROOT
+export CLAUDE_API_PROVIDER=openai
+export CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0
+export CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0
+
+deploy_uid=$(id -u deploy)
+deploy_gid=$(id -g deploy)
+HOME=/home/deploy timeout --signal=TERM --kill-after=30s 300s \
+  setpriv --reuid="$deploy_uid" --regid="$deploy_gid" --init-groups --no-new-privs \
+  "$binary" openai-image-canary \
+  --prompt-file "$prompt" \
+  --output "$output" \
+  --checkpoint "$checkpoint" \
+  --budget-nanousd "$GENERATION_BUDGET_NANOUSD" \
+  --execute
+
+verify_checkpoint || wd_die "GPT Image 2 generation completed without valid exact-SHA evidence"

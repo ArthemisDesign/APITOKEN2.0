@@ -10,13 +10,15 @@
   image-specific environment variable.
 - The private transport and canary exist, but there is no customer HTTP route, catalog, router preset,
   billing/settlement, production default, storefront, or publication claim.
-- Exact private implementation SHA `3f67d43c0ae541979fee66823d251e2e3eea33e0` is deployed and
+- Initial implementation SHA `3f67d43c0ae541979fee66823d251e2e3eea33e0` is deployed and
   watchdog-GREEN. Controller delivery `7a334604f41c367e898073567a7aa0d481614839` stopped before network
   access because systemd `EnvironmentFile` syntax was sourced as Bash; no paid dispatch occurred.
-  Delivery `2c7dabcce85be9a691597d6b5ab765fe4868a3b6` then reached a parsed image result but withheld it as
-  `evidence_incomplete`; its exact attempt is now fenced by a non-network recovery controller and is
-  never replayed. A corrected implementation and a distinct bounded production generation are still
-  pending; no owned live edit was performed. Mock tests and source review are not live proof.
+  Delivery `2c7dabcce85be9a691597d6b5ab765fe4868a3b6` then reached a parsed image result but withheld it
+  because the provider supplied no optional request-id header; that exact attempt is permanently
+  fenced and never replayed. Corrected implementation SHA
+  `012fccc471142fc51a46563da3a87564d674b39f` is watchdog-GREEN, and its distinct bounded
+  production generation gate is prepared but not yet live-proven; no owned live edit was performed.
+  Mock tests and source review are not live proof.
 
 ## Official and upstream sources
 

@@ -28,7 +28,7 @@ Cmnd_Alias APITOKEN_HELPERS = \
     /usr/local/lib/apitoken-watchdog/watchdog-infrastructure.sh [0-9a-f]* --apply-caddy, \
     /usr/local/lib/apitoken-watchdog/controller/codex-homes-migrate.sh --apply, \
     /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh [0-9a-f]*, \
-    /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-live-gate.sh 3f67d43c0ae541979fee66823d251e2e3eea33e0, \
+    /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-live-gate.sh 012fccc471142fc51a46563da3a87564d674b39f, \
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8798, \
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8800, \
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8801, \

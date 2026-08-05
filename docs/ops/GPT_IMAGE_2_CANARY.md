@@ -101,23 +101,22 @@ claude-api openai-image-canary \
   --budget-nanousd 8560000
 ```
 
-The exact private implementation SHA `3f67d43c0ae541979fee66823d251e2e3eea33e0` is deployed and
-watchdog-GREEN. Its separately authorized `$0.00856` attempt is complete and withdrawn. Only a delivery
-range changing `deploy/gpt-image-2-live-gate.sh` invokes the root-owned recovery controller, after all
-selected production checks and before processed/overall GREEN. That controller reads only private state
-below `/var/lib/apitoken/watchdog/gpt-image-2-live/<engine-sha>`: it verifies the exact journal, modes,
-operation/model/SHA/budget identity, absence of output/checkpoint, and absence of unexpected recovery
-artifacts. It contains no credentials, executable invocation, or network path.
+The first implementation SHA `3f67d43c0ae541979fee66823d251e2e3eea33e0` is deployed and
+watchdog-GREEN, but its separately authorized `$0.00856` attempt is complete and withdrawn. Controller
+delivery `7a334604f41c367e898073567a7aa0d481614839` stopped before network access because it tried to source
+systemd syntax from `config.env` as Bash. Delivery
+`2c7dabcce85be9a691597d6b5ab765fe4868a3b6` reached a parsed image result but withheld it because the
+provider supplied no optional request-id header. Its exact recovery root is a terminal non-replay fence.
 
-The first controller delivery `7a334604f41c367e898073567a7aa0d481614839` stopped before network
-access because it tried to source systemd syntax from `config.env` as Bash. Production evidence proved
-that only `generation-prompt.txt` existed: there was no recovery directory, output, or checkpoint, so a
-new controller commit could safely make the single authorized attempt without replaying a paid dispatch.
-Controller delivery `2c7dabcce85be9a691597d6b5ab765fe4868a3b6` reached a parsed image result but
-withheld it as `evidence_incomplete`. Its private journal is now a terminal withdrawal fence: the
-controller only verifies that exact journal and the absence of published output/checkpoint, performs no
-network or binary invocation, and cannot replay the paid attempt. A corrected engine implementation and
-a separately authorized new exact-SHA gate are required before another generation.
+Corrected implementation SHA `012fccc471142fc51a46563da3a87564d674b39f` is independently
+watchdog-GREEN. A delivery range changing `deploy/gpt-image-2-live-gate.sh` invokes its root-owned
+one-shot controller after all selected production checks and before processed/overall GREEN. The
+controller uses a distinct SHA-keyed evidence root, imports only systemd-parsed Codex/DB/affinity values
+from an active exact-release OpenAI slot, forces both external fallbacks off, drops to `deploy` with
+`no_new_privs`, and authorizes one `$0.00856` generation. Valid evidence requires exact controls and
+local turn, nonempty numeric terminal usage, strict PNG/hash, identical private recovery and published
+artifacts, and the exact implementation SHA; the provider request-id remains optional. Any recovery
+without complete valid evidence is terminal and cannot be replayed.
 
 Edit can be validated as a blocked plan by repeating `--reference` up to five times. Do not add
 `--execute` until a reviewed normative input-image ceiling and separate numeric authorization exist.

@@ -103,13 +103,16 @@ five-second poll because only a fresh manager invocation receives the updated se
 The root `compose.yaml` is a local-development definition and does not reinstall production.
 The private `deploy/gpt-image-2-live-gate.sh` is a one-shot exception within the controller transaction:
 only the delivery range changing that file invokes it, after selected production verification and before
-the processed SHA/overall GREEN. The paid attempt pinned to engine SHA
-`3f67d43c0ae541979fee66823d251e2e3eea33e0` returned a parsed image result but lacked the then-required
-publication evidence. The installed controller is now a non-network recovery gate: it verifies the
-exact private mode-`0600` `evidence_incomplete` journal, requires that no output/checkpoint was published,
-and refuses unexpected recovery artifacts. It contains no binary invocation, pool credentials, or image
-dispatch, so the withdrawn paid attempt cannot be replayed. A mismatch quarantines the delivery without
-publishing GPT Image 2 or advancing the processed baseline.
+the processed SHA/overall GREEN. The withdrawn attempt under engine SHA
+`3f67d43c0ae541979fee66823d251e2e3eea33e0` remains fenced in its own recovery root and is never replayed.
+The current controller is pinned to watchdog-GREEN engine SHA
+`012fccc471142fc51a46563da3a87564d674b39f` and a distinct evidence root. It imports only the
+systemd-parsed Codex/DB/affinity environment from an active exact-release OpenAI slot, forces both
+external fallbacks off, drops to `deploy` with `no_new_privs`, and permits one `$0.00856` generation.
+Success requires matching private recovery and published artifacts, exact controls and local turn,
+nonempty numeric terminal usage, a strict PNG/hash, and the exact implementation SHA; the provider
+request-id remains optional. Any prior recovery without valid complete evidence is terminal and
+quarantines the delivery without publishing GPT Image 2 or advancing the processed baseline.
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane
 but do not reinstall the production controller. A changed Caddy template is rendered with the
