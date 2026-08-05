@@ -24,6 +24,7 @@ import {
   INITIAL_OPENKEYS_PAYING_PAGE,
   OPENKEYS_PAYING_CSV_HEADER,
   OPENKEYS_PAYING_MAX_OFFSET,
+  OPENKEYS_PAYING_SORTS,
   openkeysChargedNano,
   openkeysPayingQuery,
   providerLabel,
@@ -500,7 +501,7 @@ export function OpenkeysPayingTable({ data }: { data: OpenkeysPayingResponse }):
   return (
     <TableCard>
       <table className="openkeys-paying-table">
-        <thead><tr><th className="left">ключ / партия / продавец</th><th>состояние</th><th>номинал</th><th>charged · {data.days === 1 ? "24ч" : `${data.days}д`}</th><th>выдача</th></tr></thead>
+        <thead><tr><th className="left">ключ / партия / продавец</th><th>состояние</th><th>номинал</th><th>расход всего</th><th>charged · {data.days === 1 ? "24ч" : `${data.days}д`}</th><th>выдача</th></tr></thead>
         <tbody>
           {data.rows.length ? data.rows.map((row) => {
             const detailsId = `openkeys-paying-details-${row.id}`;
@@ -522,13 +523,14 @@ export function OpenkeysPayingTable({ data }: { data: OpenkeysPayingResponse }):
                     <span className="openkeys-lifecycle"><Pill kind={row.lifecycle === "delivered" ? "info" : "warn"}>{row.lifecycle === "delivered" ? "выдан" : "на складе"}</Pill></span>
                   </td>
                   <td className="openkeys-nominal-money"><b>{nanoMoney(row.faceValueNano)}</b><small>{row.pricingContract}</small></td>
-                  <td className="openkeys-charged-total">{charged === null ? <><Pill kind="warn">недоступен</Pill><small>не $0</small></> : <><b>{nanoMoney(charged)}</b><small>списано с ключа</small></>}</td>
+                  <td className="openkeys-charged-total">{row.lifetimeSpentNano === null ? <><Pill kind="warn">недоступен</Pill><small>не $0</small></> : <><b>{nanoMoney(row.lifetimeSpentNano)}</b><small>lifetime движка</small></>}</td>
+                  <td className="openkeys-charged-total">{charged === null ? <><Pill kind="warn">недоступен</Pill><small>не $0</small></> : <><b>{nanoMoney(charged)}</b><small>за выбранное окно</small></>}</td>
                   <td>{row.deliveredAt ? formatDate(row.deliveredAt, true) : <><b>ещё не выдан</b><span className="sub">создан {formatDate(row.createdAt, true)}</span></>}</td>
                 </tr>
-                {isExpanded ? <tr id={detailsId} className="openkeys-model-row"><td colSpan={5}><OpenkeysModelTable row={row} /></td></tr> : null}
+                {isExpanded ? <tr id={detailsId} className="openkeys-model-row"><td colSpan={6}><OpenkeysModelTable row={row} /></td></tr> : null}
               </Fragment>
             );
-          }) : <EmptyRow columns={5} text="живых OpenKeys по этому фильтру нет" />}
+          }) : <EmptyRow columns={6} text="живых OpenKeys по этому фильтру нет" />}
         </tbody>
       </table>
     </TableCard>
@@ -582,6 +584,13 @@ function OpenkeysCohort({ page, search, setPage, setSearch, onTotalChange }: Ope
             <select id="openkeys-paying-status" value={page.status} onChange={(event) => patchPage({ status: event.target.value as OpenkeysPayingPageState["status"] })}>
               <option value="all">все статусы</option><option value="active">активные</option><option value="disabled">отключённые</option>
             </select>
+            <label className="sr-only" htmlFor="openkeys-paying-sort">Сортировка OpenKeys</label>
+            <select id="openkeys-paying-sort" value={page.sort} onChange={(event) => patchPage({ sort: event.target.value as OpenkeysPayingPageState["sort"] })}>
+              {OPENKEYS_PAYING_SORTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+            <button type="button" className="paying-dir" aria-label={page.dir === "desc" ? "Сейчас по убыванию; переключить на возрастание" : "Сейчас по возрастанию; переключить на убывание"} title={page.dir === "desc" ? "По убыванию" : "По возрастанию"} onClick={() => patchPage({ dir: page.dir === "desc" ? "asc" : "desc" })}>
+              {page.dir === "desc" ? "↓" : "↑"}
+            </button>
             <button className="btn" type="submit">Найти</button>
             <button className="btn ghost" type="button" title="Выгрузить текущую страницу: одна строка на provider/model" onClick={() => downloadCsv(`openkeys-paying-${page.days}d-${csvDate()}.csv`, OPENKEYS_PAYING_CSV_HEADER, buildOpenkeysPayingCsvRows(data.rows))}>CSV</button>
           </form>

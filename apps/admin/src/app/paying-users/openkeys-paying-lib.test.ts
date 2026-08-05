@@ -71,6 +71,7 @@ function payingRow(overrides: Partial<OpenkeysPayingRow> = {}): OpenkeysPayingRo
     enabled: true,
     lifecycle: "delivered",
     faceValueNano: exact,
+    lifetimeSpentNano: `${exact}2`,
     pricingContract: "official_1_to_1",
     createdAt: "2026-08-01T00:00:00.000Z",
     deliveredAt: "2026-08-02T00:00:00.000Z",
@@ -82,7 +83,7 @@ function payingRow(overrides: Partial<OpenkeysPayingRow> = {}): OpenkeysPayingRo
 describe("openkeysPayingQuery", () => {
   it("строит documented defaults и опускает пустой поиск", () => {
     expect(openkeysPayingQuery(INITIAL_OPENKEYS_PAYING_PAGE)).toBe(
-      "days=30&limit=50&offset=0&status=all",
+      "days=30&limit=50&offset=0&status=all&sort=spent&dir=desc",
     );
   });
 
@@ -93,7 +94,9 @@ describe("openkeysPayingQuery", () => {
       offset: 50,
       q: "batch seller@example.com",
       status: "disabled",
-    })).toBe("days=7&limit=25&offset=50&status=disabled&q=batch+seller%40example.com");
+      sort: "nominal",
+      dir: "asc",
+    })).toBe("days=7&limit=25&offset=50&status=disabled&sort=nominal&dir=asc&q=batch+seller%40example.com");
   });
 
   it("ограничивает offset диапазоном producer", () => {
@@ -124,6 +127,7 @@ describe("OpenKeys exact money and CSV", () => {
       provider: "free-community-provider",
       model: "future-model",
       nominal_nanoUSD_text: `'${exact}`,
+      lifetime_spent_nanoUSD_text: `'${exact}2`,
       official_nanoUSD_text: `'${exact}`,
       charged_nanoUSD_text: `'${exact}1`,
       usage_total_official_nanoUSD_text: `'${exact}`,

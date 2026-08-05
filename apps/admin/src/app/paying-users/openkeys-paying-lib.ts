@@ -2,7 +2,17 @@ import { spreadsheetExactInteger, spreadsheetSafeText } from "@/lib/csv";
 
 export type OpenkeysPayingDays = 1 | 7 | 30;
 export type OpenkeysPayingStatus = "all" | "active" | "disabled";
+export type OpenkeysPayingSort = "spent" | "nominal" | "created" | "delivered" | "status";
+export type OpenkeysPayingSortDirection = "asc" | "desc";
 export type OpenkeysApiType = "anthropic" | "openai";
+
+export const OPENKEYS_PAYING_SORTS: Array<[OpenkeysPayingSort, string]> = [
+  ["spent", "расход всего"],
+  ["nominal", "номинал"],
+  ["created", "дата создания"],
+  ["delivered", "дата выдачи"],
+  ["status", "статус"],
+];
 
 export interface OpenkeysUsageModel {
   model: string;
@@ -76,6 +86,7 @@ export interface OpenkeysPayingRow {
   enabled: boolean;
   lifecycle: "stock" | "delivered";
   faceValueNano: string;
+  lifetimeSpentNano: string | null;
   pricingContract: "legacy" | "official_1_to_1";
   createdAt: string;
   deliveredAt: string | null;
@@ -87,6 +98,8 @@ export interface OpenkeysPayingResponse {
   total: number;
   limit: number;
   offset: number;
+  sort: OpenkeysPayingSort;
+  dir: OpenkeysPayingSortDirection;
   rows: OpenkeysPayingRow[];
 }
 
@@ -96,6 +109,8 @@ export interface OpenkeysPayingPageState {
   offset: number;
   q: string;
   status: OpenkeysPayingStatus;
+  sort: OpenkeysPayingSort;
+  dir: OpenkeysPayingSortDirection;
 }
 
 export const OPENKEYS_PAYING_MAX_OFFSET = 100_000;
@@ -106,6 +121,8 @@ export const INITIAL_OPENKEYS_PAYING_PAGE: OpenkeysPayingPageState = {
   offset: 0,
   q: "",
   status: "all",
+  sort: "spent",
+  dir: "desc",
 };
 
 export function clampOpenkeysPayingOffset(offset: number): number {
@@ -119,6 +136,8 @@ export function openkeysPayingQuery(state: OpenkeysPayingPageState): string {
     limit: String(state.limit),
     offset: String(clampOpenkeysPayingOffset(state.offset)),
     status: state.status,
+    sort: state.sort,
+    dir: state.dir,
   });
   if (state.q) params.set("q", state.q);
   return params.toString();
@@ -155,6 +174,7 @@ export const OPENKEYS_PAYING_CSV_HEADER = [
   "lifecycle",
   "api_type",
   "nominal_nanoUSD_text",
+  "lifetime_spent_nanoUSD_text",
   "pricing_contract",
   "delivered_at",
   "usage_status",
@@ -189,6 +209,7 @@ export function buildOpenkeysPayingCsvRows(rows: OpenkeysPayingRow[]): unknown[]
       row.lifecycle,
       row.apiType,
       spreadsheetExactInteger(row.faceValueNano),
+      spreadsheetExactInteger(row.lifetimeSpentNano ?? ""),
       spreadsheetSafeText(row.pricingContract),
       spreadsheetSafeText(row.deliveredAt),
       usage.status,

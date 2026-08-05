@@ -166,6 +166,8 @@ describe("Платящие (paying users page)", () => {
       total: 1,
       limit: 50,
       offset: 0,
+      sort: "spent",
+      dir: "desc",
       rows: [{
         id: "key-1",
         batchId: "batch-1",
@@ -177,6 +179,7 @@ describe("Платящие (paying users page)", () => {
         enabled: true,
         lifecycle: "stock",
         faceValueNano: "1000000000",
+        lifetimeSpentNano: null,
         pricingContract: "official_1_to_1",
         createdAt: "2026-08-01T00:00:00Z",
         deliveredAt: null,
@@ -187,8 +190,43 @@ describe("Платящие (paying users page)", () => {
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain("на складе");
     expect(html).toContain("ещё не выдан");
+    expect(html.match(/недоступен/g)).toHaveLength(2);
+    expect(html.match(/не \$0/g)).toHaveLength(2);
     expect(html).not.toContain("aria-controls=");
     expect(html).not.toContain('id="openkeys-paying-details-key-1"');
+  });
+
+  it("OpenKeys показывает lifetime spend отдельно от расхода окна", () => {
+    const data: OpenkeysPayingResponse = {
+      days: 30,
+      total: 1,
+      limit: 50,
+      offset: 0,
+      sort: "spent",
+      dir: "desc",
+      rows: [{
+        id: "key-2",
+        batchId: "batch-1",
+        batchLabel: "Batch",
+        createdBy: "seller",
+        keyMasked: "sk-pool-…efgh",
+        engineAccountId: "acct_openkeys_2",
+        apiType: "openai",
+        enabled: true,
+        lifecycle: "delivered",
+        faceValueNano: "10000000000",
+        lifetimeSpentNano: "7000000000",
+        pricingContract: "official_1_to_1",
+        createdAt: "2026-08-01T00:00:00Z",
+        deliveredAt: "2026-08-02T00:00:00Z",
+        usage: { status: "available", account: "acct_openkeys_2", window: "30d", since_ts: 1, until_ts: 2, requests: 1, total_official_nano: "3000000000", total_charged_nano: "3000000000", buckets: { input: { tokens: 1, official_nano: "1" }, output: { tokens: 1, official_nano: "1" }, cache_read: { tokens: 0, official_nano: "0" }, cache_write: { tokens: 0, official_nano: "0" }, web_search: { requests: 0, official_nano: "0" }, unattributed_legacy: { official_nano: "0" } }, models: [], daily: [], daily_providers: [], keys: [] },
+      }],
+    };
+    const html = renderToString(<OpenkeysPayingTable data={data} />);
+    expect(html).toContain("$7.00");
+    expect(html).toContain("lifetime движка");
+    expect(html).toContain("$3.00");
+    expect(html).toContain("за выбранное окно");
   });
 });
 

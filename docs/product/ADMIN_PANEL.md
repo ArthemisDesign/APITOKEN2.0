@@ -249,19 +249,22 @@ are serialized through `spreadsheetExactInteger`; user/provider/model and other 
 `spreadsheetSafeText`. Unavailable usage/model money remains empty rather than becoming a fake zero.
 
 The same page has a separate `OpenKeys` cohort backed by the same-origin read-only
-`GET /openkeys-admin/paying-keys?days=1|7|30&limit&offset&q&status`. It shows every non-removed
+`GET /openkeys-admin/paying-keys?days=1|7|30&limit&offset&q&status&sort&dir`, consumed only after
+GREEN exact producer SHA `65f2160f67f8662ec58fbf336444c0ca8b5ff76a`. It shows every non-removed
 warehouse or delivered key, with mask/batch/seller, enabled state, explicit `stock|delivered`
-lifecycle, face value, exact charged window total and nullable delivery time. Expanding a key
-shows the producer-authored provider and model rows, token
-counters, and official versus charged nanoUSD separately; provider is never inferred from model
-or API type. A row-local unavailable report is explicit and is never displayed as `$0`. CSV keeps
-one row per key × provider × model (and one row for a key without models), includes stable key and
-engine-account IDs, and labels money columns `*_nanoUSD_text`; their decimal integers carry a leading
-apostrophe so spreadsheets preserve every digit. Untrusted text that could start a spreadsheet formula
-is apostrophe-prefixed as well. OpenKeys totals do not enter the commerce ledger summary.
+lifecycle, face value, exact nullable lifetime engine spend, exact charged window total and nullable
+delivery time. The default global order is lifetime spend descending; the operator can switch
+`spent|nominal|created|delivered|status` and `asc|desc`. Expanding a key shows the producer-authored
+provider and model rows, token counters, and official versus charged nanoUSD separately; provider is
+never inferred from model or API type. A row-local unavailable report is explicit and is never
+displayed as `$0`. CSV keeps one row per key × provider × model (and one row for a key without models),
+includes stable key and engine-account IDs plus exact lifetime spend, and labels money columns
+`*_nanoUSD_text`; their decimal integers carry a leading apostrophe so spreadsheets preserve every
+digit. Untrusted text that could start a spreadsheet formula is apostrophe-prefixed as well. OpenKeys
+totals do not enter the commerce ledger summary.
 
-The window switch is shared, while search/status/pagination state is independent per cohort and
-an interval change resets offsets without clearing filters. Only the visible cohort component and
+The window switch is shared, while search/status/sort/direction/pagination state is independent per
+cohort and an interval change resets offsets without clearing filters. Only the visible cohort component and
 its 30-second poller are mounted; the hidden producer is not called, including by the global
 refresh control. The page performs no money mutations.
 

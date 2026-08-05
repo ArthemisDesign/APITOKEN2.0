@@ -63,8 +63,9 @@ No secrets, and there never will be: the browser uses same-origin relative paths
   never means zero. Commerce CSV emits one row per user × provider × model, or one status row when
   models are empty/unavailable, preserving exact counter/nanoUSD strings as spreadsheet text and
   formula-safing untrusted text. OpenKeys uses same-origin `/openkeys-admin/paying-keys`, lists every
-  non-removed warehouse and delivered key with an explicit lifecycle, exact local wire types and the
-  same expandable usage pattern.
+  non-removed warehouse and delivered key with an explicit lifecycle, shows lifetime spend separately
+  from selected-window usage, and provides global server sorting by spend/nominal/dates/status in both
+  directions. Exact local wire types and the same expandable model-usage pattern are mandatory.
 - `src/app/subscriptions/codex-capacity-board.tsx` — compact GPT summary of shared-plan capacity,
   native-credit/API-$ windows, and masked-email homes. Raw calibration, token-capacity, and
   profitability matrices are intentionally not surfaced in the operator UI.
