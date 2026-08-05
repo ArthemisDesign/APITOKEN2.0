@@ -30,6 +30,19 @@ test("delegates pricing money mutations to the canonical database module", () =>
   assert.doesNotMatch(source, /stagePricingReleaseActivationJobV2/);
 });
 
+test("wakes control-job delivery from LISTEN/NOTIFY with the sweep as recovery", () => {
+  assert.match(source, /new PricingControlNotifyListener\(/);
+  assert.match(source, /onWake: \(\) => this\.requestControlFlush\(\)/);
+  assert.match(source, /await this\.controlNotify\?\.stop\(\)/);
+  assert.match(source, /private controlFlushRunning = false/);
+  assert.match(source, /private controlFlushQueued = false/);
+  // A wake during an active flush schedules exactly one follow-up pass.
+  assert.match(source, /this\.controlFlushQueued = true/);
+  assert.match(source, /while \(this\.controlFlushQueued && !this\.stopped\)/);
+  // The periodic sweep keeps its own flush call as the recovery path.
+  assert.match(source, /await this\.flushPricingControlJobs\(\);\s*\n\s*await this\.flushPricingJobs\(\);/);
+});
+
 test("classifies typed pricing rejections without retrying permanent failures", () => {
   const cases: Array<{ ack: PricingMutationAck; expected: "retry" | "superseded" | "dead" }> = [
     {

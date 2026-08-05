@@ -17,6 +17,7 @@ import {
   getPricingProviderBackfillCursor,
   getPricingTopupBackfillCursor,
   listPricingSyncTargets,
+  PricingControlNotifyListener,
   reconcileTierLadderMultipliers,
   recoverStalePricingControlJobs,
   recoverStalePricingJobs,
@@ -59,6 +60,9 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
   private stopSleep!: () => void;
   private readonly stopSignal = new Promise<void>((resolve) => { this.stopSleep = resolve; });
   private readonly openkeys: Stage5V2OpenKeysReader;
+  private controlNotify: PricingControlNotifyListener | undefined;
+  private controlFlushRunning = false;
+  private controlFlushQueued = false;
 
   constructor(
     @Inject(DATABASE) private readonly database: Database,
@@ -88,13 +92,51 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
     // engine получает новые множители через обычные durable pricing jobs в flushPricingJobs.
     const reconciled = await reconcileTierLadderMultipliers(this.database);
     if (reconciled > 0) this.logger.warn(`reconciled ${reconciled} b2c profiles to current tier ladder`);
+    // LISTEN/NOTIFY (migration 0041) wakes the control-job flush on the committing
+    // transaction instead of waiting out the sweep. The sweep in run() stays as the
+    // recovery path for notifications missed while the listener was reconnecting.
+    this.controlNotify = new PricingControlNotifyListener(
+      this.config.get("DATABASE_URL", { infer: true }),
+      {
+        onWake: () => this.requestControlFlush(),
+        onError: (error) => this.logger.warn(`pricing-control notify listener reconnecting: ${error.message}`),
+      },
+    );
+    this.controlNotify.start();
     this.loop = this.run();
   }
 
   async onApplicationShutdown(): Promise<void> {
     this.stopped = true;
     this.stopSleep();
+    await this.controlNotify?.stop();
     await this.loop;
+  }
+
+  /**
+   * Event-driven dispatch of pricing-control jobs. Bursts coalesce: a wake during an
+   * active flush schedules exactly one follow-up pass, and concurrent passes are safe
+   * anyway because claiming uses FOR UPDATE SKIP LOCKED.
+   */
+  private requestControlFlush(): void {
+    if (this.stopped) return;
+    if (this.controlFlushRunning) {
+      this.controlFlushQueued = true;
+      return;
+    }
+    this.controlFlushRunning = true;
+    void (async () => {
+      try {
+        do {
+          this.controlFlushQueued = false;
+          await this.flushPricingControlJobs();
+        } while (this.controlFlushQueued && !this.stopped);
+      } catch (error) {
+        this.logger.error(message(error));
+      } finally {
+        this.controlFlushRunning = false;
+      }
+    })();
   }
 
   private async run(): Promise<void> {
