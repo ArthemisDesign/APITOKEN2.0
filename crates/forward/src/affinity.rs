@@ -1862,6 +1862,14 @@ mod tests {
         }
     }
 
+    /// Both Redis proofs below start by wiping the database, then assert on keys they wrote
+    /// themselves. Cargo runs them on separate threads against the SAME database, so without this
+    /// lock one test's `FLUSHDB` lands between the other's write and read and fails it with a
+    /// missing key — a failure that looks like a product bug and reproduces only in a full-suite
+    /// run. Namespacing by fleet secret does not help: `FLUSHDB` ignores namespaces. Any test that
+    /// flushes must hold this guard for its whole body.
+    static REDIS_DB_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// The shared keyspace is the one surface where a bug becomes a cross-tenant data leak, so the
     /// key shape is pinned without any infrastructure. A key may contain only the constant prefix,
     /// the hash-tag braces and hex digests — never an account scope, session id or prompt fragment.
@@ -1939,6 +1947,7 @@ mod tests {
         let Some(url) = test_redis_url() else {
             return;
         };
+        let _guard = REDIS_DB_GUARD.lock().await;
         let url = url.as_str();
         let client = redis::Client::open(url).unwrap();
         let mut connection = client.get_connection_manager().await.unwrap();
@@ -2114,6 +2123,7 @@ mod tests {
         let Some(url) = test_redis_url() else {
             return;
         };
+        let _guard = REDIS_DB_GUARD.lock().await;
         let url = url.as_str();
         let client = redis::Client::open(url).unwrap();
         let mut connection = client.get_connection_manager().await.unwrap();
