@@ -69,6 +69,7 @@ function payingRow(overrides: Partial<OpenkeysPayingRow> = {}): OpenkeysPayingRo
     engineAccountId: "acct_openkeys_1",
     apiType: "openai",
     enabled: true,
+    lifecycle: "delivered",
     faceValueNano: exact,
     pricingContract: "official_1_to_1",
     createdAt: "2026-08-01T00:00:00.000Z",
@@ -119,6 +120,7 @@ describe("OpenKeys exact money and CSV", () => {
       key_id: "key-1",
       key_masked: "sk-pool-…abcd",
       engine_account_id: "acct_openkeys_1",
+      lifecycle: "delivered",
       provider: "free-community-provider",
       model: "future-model",
       nominal_nanoUSD_text: `'${exact}`,
@@ -129,14 +131,16 @@ describe("OpenKeys exact money and CSV", () => {
     });
   });
 
-  it("оставляет отдельную однозначную строку ключу без моделей", () => {
-    const row = payingRow();
+  it("оставляет отдельную однозначную строку складскому ключу без моделей", () => {
+    const row = payingRow({ lifecycle: "stock", deliveredAt: null });
     if (row.usage.status === "available") row.usage.models = [];
     const [csv] = buildOpenkeysPayingCsvRows([row]);
     const record = Object.fromEntries(OPENKEYS_PAYING_CSV_HEADER.map((field, index) => [field, csv?.[index]]));
     expect(record).toMatchObject({
       key_id: "key-1",
       engine_account_id: "acct_openkeys_1",
+      lifecycle: "stock",
+      delivered_at: "",
       model: "",
       usage_total_charged_nanoUSD_text: `'${exact}1`,
     });

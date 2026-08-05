@@ -500,7 +500,7 @@ export function OpenkeysPayingTable({ data }: { data: OpenkeysPayingResponse }):
   return (
     <TableCard>
       <table className="openkeys-paying-table">
-        <thead><tr><th className="left">ключ / партия / продавец</th><th>статус</th><th>номинал</th><th>charged · {data.days === 1 ? "24ч" : `${data.days}д`}</th><th>выдан</th></tr></thead>
+        <thead><tr><th className="left">ключ / партия / продавец</th><th>состояние</th><th>номинал</th><th>charged · {data.days === 1 ? "24ч" : `${data.days}д`}</th><th>выдача</th></tr></thead>
         <tbody>
           {data.rows.length ? data.rows.map((row) => {
             const detailsId = `openkeys-paying-details-${row.id}`;
@@ -517,15 +517,18 @@ export function OpenkeysPayingTable({ data }: { data: OpenkeysPayingResponse }):
                     <small><b>{row.batchLabel || "Без метки"}</b> · <span className="mono">{row.batchId}</span> · {row.createdBy}</small>
                     <small className="mono">{row.engineAccountId} · {row.apiType}</small>
                   </td>
-                  <td><Pill kind={row.enabled ? "ok" : "bad"}>{row.enabled ? "активен" : "отключён"}</Pill></td>
+                  <td>
+                    <Pill kind={row.enabled ? "ok" : "bad"}>{row.enabled ? "активен" : "отключён"}</Pill>
+                    <span className="openkeys-lifecycle"><Pill kind={row.lifecycle === "delivered" ? "info" : "warn"}>{row.lifecycle === "delivered" ? "выдан" : "на складе"}</Pill></span>
+                  </td>
                   <td className="openkeys-nominal-money"><b>{nanoMoney(row.faceValueNano)}</b><small>{row.pricingContract}</small></td>
                   <td className="openkeys-charged-total">{charged === null ? <><Pill kind="warn">недоступен</Pill><small>не $0</small></> : <><b>{nanoMoney(charged)}</b><small>списано с ключа</small></>}</td>
-                  <td>{formatDate(row.deliveredAt, true)}</td>
+                  <td>{row.deliveredAt ? formatDate(row.deliveredAt, true) : <><b>ещё не выдан</b><span className="sub">создан {formatDate(row.createdAt, true)}</span></>}</td>
                 </tr>
                 {isExpanded ? <tr id={detailsId} className="openkeys-model-row"><td colSpan={5}><OpenkeysModelTable row={row} /></td></tr> : null}
               </Fragment>
             );
-          }) : <EmptyRow columns={5} text="выданных OpenKeys по этому фильтру нет" />}
+          }) : <EmptyRow columns={5} text="живых OpenKeys по этому фильтру нет" />}
         </tbody>
       </table>
     </TableCard>
@@ -571,9 +574,9 @@ function OpenkeysCohort({ page, search, setPage, setSearch, onTotalChange }: Ope
     <div id="paying-panel-openkeys" role="tabpanel" aria-labelledby="paying-tab-openkeys">
       {!data ? <LoadingGrid count={5} /> : (
         <>
-          <SectionHeader title="OpenKeys" sub={`${data.total} выдано по текущему фильтру · usage не входит в commerce ledger`} />
+          <SectionHeader title="OpenKeys" sub={`${data.total} живых ключей по текущему фильтру · складские и выданные · usage не входит в commerce ledger`} />
           <form className="paying-toolbar openkeys-paying-toolbar" onSubmit={submitSearch}>
-            <label className="sr-only" htmlFor="openkeys-paying-search">Поиск платящих OpenKeys</label>
+            <label className="sr-only" htmlFor="openkeys-paying-search">Поиск OpenKeys</label>
             <input id="openkeys-paying-search" type="search" maxLength={80} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="маска, партия, продавец или account…" />
             <label className="sr-only" htmlFor="openkeys-paying-status">Статус OpenKeys</label>
             <select id="openkeys-paying-status" value={page.status} onChange={(event) => patchPage({ status: event.target.value as OpenkeysPayingPageState["status"] })}>

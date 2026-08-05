@@ -74,10 +74,11 @@ export interface OpenkeysPayingRow {
   engineAccountId: string;
   apiType: OpenkeysApiType;
   enabled: boolean;
+  lifecycle: "stock" | "delivered";
   faceValueNano: string;
   pricingContract: "legacy" | "official_1_to_1";
   createdAt: string;
-  deliveredAt: string;
+  deliveredAt: string | null;
   usage: OpenkeysPayingUsage;
 }
 
@@ -151,6 +152,7 @@ export const OPENKEYS_PAYING_CSV_HEADER = [
   "batch_label",
   "seller",
   "status",
+  "lifecycle",
   "api_type",
   "nominal_nanoUSD_text",
   "pricing_contract",
@@ -184,6 +186,7 @@ export function buildOpenkeysPayingCsvRows(rows: OpenkeysPayingRow[]): unknown[]
       spreadsheetSafeText(row.batchLabel ?? ""),
       spreadsheetSafeText(row.createdBy),
       row.enabled ? "active" : "disabled",
+      row.lifecycle,
       row.apiType,
       spreadsheetExactInteger(row.faceValueNano),
       spreadsheetSafeText(row.pricingContract),

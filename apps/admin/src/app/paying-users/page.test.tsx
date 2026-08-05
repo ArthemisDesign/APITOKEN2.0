@@ -175,15 +175,18 @@ describe("Платящие (paying users page)", () => {
         engineAccountId: "acct_openkeys_1",
         apiType: "anthropic",
         enabled: true,
+        lifecycle: "stock",
         faceValueNano: "1000000000",
         pricingContract: "official_1_to_1",
         createdAt: "2026-08-01T00:00:00Z",
-        deliveredAt: "2026-08-02T00:00:00Z",
+        deliveredAt: null,
         usage: { status: "unavailable", window: "7d" },
       }],
     };
     const html = renderToString(<OpenkeysPayingTable data={data} />);
     expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain("на складе");
+    expect(html).toContain("ещё не выдан");
     expect(html).not.toContain("aria-controls=");
     expect(html).not.toContain('id="openkeys-paying-details-key-1"');
   });

@@ -231,7 +231,7 @@ background:var(--line2)}.paying-mini-meter>i{display:block;height:100%;border-ra
 .openkeys-key-register{min-width:320px}.openkeys-key-register>small,.openkeys-nominal-money>small,.openkeys-charged-total>small{display:block;margin-top:2px;color:var(--muted);font:10.5px/1.4 var(--mono)}
 .openkeys-row-toggle{display:flex;align-items:center;gap:8px;width:100%;padding:0;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer}
 .openkeys-row-toggle>span{display:grid;place-items:center;width:18px;height:18px;flex:0 0 18px;border:1px solid var(--line);border-radius:4px;color:var(--accent-text);font:750 12px/1 var(--mono)}
-.openkeys-row-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:2px}.openkeys-nominal-money>b,.openkeys-charged-total>b{font-size:12.5px}
+.openkeys-row-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:2px}.openkeys-lifecycle{display:block;margin-top:5px}.openkeys-nominal-money>b,.openkeys-charged-total>b{font-size:12.5px}
 .openkeys-charged-total{background:color-mix(in srgb,var(--paid-revenue-soft) 48%,var(--panel));border-left:1px solid var(--line2);border-right:1px solid var(--line2)}
 .openkeys-model-row>td,.paying-model-row>td{position:static!important;padding:0!important;background:var(--panel2)!important;white-space:normal}.openkeys-model-row:hover,.paying-model-row:hover{background:var(--panel2)}
 .openkeys-model-scroll{overflow:auto;padding:9px 14px 12px 37px}.openkeys-model-table{min-width:780px;border:1px solid var(--line);background:var(--panel)}

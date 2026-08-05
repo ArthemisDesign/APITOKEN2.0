@@ -219,9 +219,10 @@ are serialized through `spreadsheetExactInteger`; user/provider/model and other 
 `spreadsheetSafeText`. Unavailable usage/model money remains empty rather than becoming a fake zero.
 
 The same page has a separate `OpenKeys` cohort backed by the same-origin read-only
-`GET /openkeys-admin/paying-keys?days=1|7|30&limit&offset&q&status`. It shows only delivered,
-non-removed keys, with mask/batch/seller, enabled state, face value, exact charged window total
-and delivery time. Expanding a key shows the producer-authored provider and model rows, token
+`GET /openkeys-admin/paying-keys?days=1|7|30&limit&offset&q&status`. It shows every non-removed
+warehouse or delivered key, with mask/batch/seller, enabled state, explicit `stock|delivered`
+lifecycle, face value, exact charged window total and nullable delivery time. Expanding a key
+shows the producer-authored provider and model rows, token
 counters, and official versus charged nanoUSD separately; provider is never inferred from model
 or API type. A row-local unavailable report is explicit and is never displayed as `$0`. CSV keeps
 one row per key × provider × model (and one row for a key without models), includes stable key and

@@ -62,8 +62,9 @@ No secrets, and there never will be: the browser uses same-origin relative paths
   `complete|partial|unavailable` coverage; partial totals cover only available accounts and unavailable
   never means zero. Commerce CSV emits one row per user × provider × model, or one status row when
   models are empty/unavailable, preserving exact counter/nanoUSD strings as spreadsheet text and
-  formula-safing untrusted text. OpenKeys uses same-origin `/openkeys-admin/paying-keys`, exact local
-  wire types and the same expandable usage pattern.
+  formula-safing untrusted text. OpenKeys uses same-origin `/openkeys-admin/paying-keys`, lists every
+  non-removed warehouse and delivered key with an explicit lifecycle, exact local wire types and the
+  same expandable usage pattern.
 - `src/app/subscriptions/codex-capacity-board.tsx` — compact GPT summary of shared-plan capacity,
   native-credit/API-$ windows, and masked-email homes. Raw calibration, token-capacity, and
   profitability matrices are intentionally not surfaced in the operator UI.
