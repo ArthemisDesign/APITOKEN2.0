@@ -36,11 +36,11 @@ const claudeModelRows = [
 ] as const;
 
 const gptModelRows = [
-  ["GPT-5.6 Sol","gpt-5.6-sol","272K","$5","$30","m_gpt56sol"],
-  ["GPT-5.6 Terra","gpt-5.6-terra","272K","$2.50","$15","m_gpt56terra"],
-  ["GPT-5.6 Luna","gpt-5.6-luna","272K","$1","$6","m_gpt56luna"],
-  ["GPT-5.5","gpt-5.5","272K","$5","$30","m_gpt55"],
-  ["GPT-5.4","gpt-5.4","272K","$2.50","$15","m_gpt54"],
+  ["GPT-5.6 Sol","gpt-5.6-sol","400K","$5","$30","m_gpt56sol"],
+  ["GPT-5.6 Terra","gpt-5.6-terra","400K","$2","$12","m_gpt56terra"],
+  ["GPT-5.6 Luna","gpt-5.6-luna","400K","$0.20","$1.20","m_gpt56luna"],
+  ["GPT-5.5","gpt-5.5","400K","$5","$30","m_gpt55"],
+  ["GPT-5.4","gpt-5.4","400K","$2.50","$15","m_gpt54"],
 ] as const;
 
 const geminiModelRows = [

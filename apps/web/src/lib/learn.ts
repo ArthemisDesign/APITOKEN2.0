@@ -1617,8 +1617,8 @@ export const learnArticles: LearnArticle[] = [
         { type: "p", text: "The served set is pinned and priced in the engine; GET https://router.apitoken.sale/v1/models is always the live answer. Today the line covers three GPT-5.6 tiers and two previous-generation models:" },
         { type: "table", headers: ["Model ID", "Tier", "Official in / out ($ per 1M)", "Cached input"], rows: [
           ["gpt-5.6-sol (alias: gpt-5.6)", "Flagship", "$5 / $30", "$0.50"],
-          ["gpt-5.6-terra", "Balanced", "$2.50 / $15", "$0.25"],
-          ["gpt-5.6-luna", "Fast", "$1 / $6", "$0.10"],
+          ["gpt-5.6-terra", "Balanced", "$2 / $12", "$0.20"],
+          ["gpt-5.6-luna", "Fast", "$0.20 / $1.20", "$0.02"],
           ["gpt-5.5", "Previous flagship", "$5 / $30", "$0.50"],
           ["gpt-5.4", "Previous balanced", "$2.50 / $15", "$0.25"],
         ] },

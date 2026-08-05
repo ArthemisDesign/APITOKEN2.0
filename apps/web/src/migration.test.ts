@@ -322,11 +322,11 @@ describe("completed Next.js migration", () => {
     expect(marketing).toContain('["Claude Opus 4.7","claude-opus-4-7","1M","$5","$25"');
     expect(marketing).toContain('["Claude Sonnet 4.6","claude-sonnet-4-6","1M","$3","$15"');
     expect(marketing).toContain('["Claude Haiku 4.5","claude-haiku-4-5","200K","$1","$5"');
-    expect(marketing).toContain('["GPT-5.6 Sol","gpt-5.6-sol","272K","$5","$30"');
-    expect(marketing).toContain('["GPT-5.6 Terra","gpt-5.6-terra","272K","$2.50","$15"');
-    expect(marketing).toContain('["GPT-5.6 Luna","gpt-5.6-luna","272K","$1","$6"');
-    expect(marketing).toContain('["GPT-5.5","gpt-5.5","272K","$5","$30"');
-    expect(marketing).toContain('["GPT-5.4","gpt-5.4","272K","$2.50","$15"');
+    expect(marketing).toContain('["GPT-5.6 Sol","gpt-5.6-sol","400K","$5","$30"');
+    expect(marketing).toContain('["GPT-5.6 Terra","gpt-5.6-terra","400K","$2","$12"');
+    expect(marketing).toContain('["GPT-5.6 Luna","gpt-5.6-luna","400K","$0.20","$1.20"');
+    expect(marketing).toContain('["GPT-5.5","gpt-5.5","400K","$5","$30"');
+    expect(marketing).toContain('["GPT-5.4","gpt-5.4","400K","$2.50","$15"');
     expect(marketing).toContain('["Gemini 3.6 Flash","gemini-3.6-flash","1M","$1.50","$7.50"');
     expect(marketing).toContain('["Gemini 3.5 Flash","gemini-3.5-flash","1M","$1.50","$9.00"');
     expect(marketing).toContain('["Gemini 3 Flash Preview","gemini-3-flash-preview","1M","$0.50","$3.00"');
@@ -338,7 +338,7 @@ describe("completed Next.js migration", () => {
     for (const publicSurface of [marketing, seoModels, integrationModels, llms]) {
       expect(publicSurface).toContain("gemini-3-flash-preview");
     }
-    expect(seoModels).toContain("cachedInputPerM: 0.05");
+    expect(seoModels).toContain("cachedInputPerM: 0.5,\n    outputPerM: 3,\n    imageOutputPerM: 60");
     expect(seoModels).toContain("Supports minimal, low, medium and high thinking levels");
   });
 

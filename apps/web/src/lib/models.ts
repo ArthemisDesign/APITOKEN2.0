@@ -350,8 +350,10 @@ export const claudeModels: ClaudeModel[] = [
 // GPT rates mirror the pinned engine catalog (crates/metering/src/codex.rs): official OpenAI
 // standard token pricing, cached input at 10% of input, cache write at 125% of input for the
 // 5.6 line and 100% for 5.5/5.4, and long-context pricing (2× input, 1.5× output on the whole
-// request) above 272K input tokens. gpt-5.6 is a convenience alias of gpt-5.6-sol and is
-// deliberately not listed as a separate page — one canonical pricing identity per model.
+// request) above 272K input tokens. Terra and Luna carry the post-2026-07-30 official rates
+// ($2/$12 and $0.20/$1.20); gpt-5.6-sol is unchanged. gpt-5.6 is a convenience alias of
+// gpt-5.6-sol and is deliberately not listed as a separate page — one canonical pricing
+// identity per model.
 export const openaiModels: OpenAiModel[] = [
   {
     provider: "openai",
@@ -368,8 +370,8 @@ export const openaiModels: OpenAiModel[] = [
     cacheWritePerM: 6.25,
     outputPerM: 30,
     efforts: ["none", "low", "medium", "high", "xhigh", "max"],
-    context: "272K tokens",
-    maxOutput: "32K tokens",
+    context: "400K tokens",
+    maxOutput: "128K tokens",
     bestFor: [
       "Agentic coding in Codex CLI, opencode and OpenAI-compatible tools.",
       "Hard reasoning with adjustable effort, up to the max level.",
@@ -394,18 +396,18 @@ export const openaiModels: OpenAiModel[] = [
     name: "GPT-5.6 Terra",
     tier: "Balanced",
     title: "GPT-5.6 Terra API — Price per Token & Access",
-    description: "GPT-5.6 Terra API pricing: official $2.50/$15 per 1M tokens, $1.25/$7.50 with the flat 50% apiToken.sale discount. Balanced GPT-5.6 tier on one prepaid balance.",
+    description: "GPT-5.6 Terra API pricing: official $2/$12 per 1M tokens, $1/$6 with the flat 50% apiToken.sale discount. Balanced GPT-5.6 tier on one prepaid balance.",
     keywords: ["gpt-5.6 terra api", "gpt-5.6 terra price", "gpt-5.6-terra", "gpt-5.6 token pricing", "openai compatible api"],
-    dek: "GPT-5.6 Terra is the balanced tier of the GPT-5.6 line — half the flagship token price, with the same reasoning-effort controls and the full 272K context.",
-    inputPerM: 2.5,
-    cachedInputPerM: 0.25,
-    cacheWritePerM: 3.125,
-    outputPerM: 15,
+    dek: "GPT-5.6 Terra is the balanced tier of the GPT-5.6 line — 40% of the flagship token price, with the same reasoning-effort controls and the full 400K context.",
+    inputPerM: 2,
+    cachedInputPerM: 0.2,
+    cacheWritePerM: 2.5,
+    outputPerM: 12,
     efforts: ["none", "low", "medium", "high", "xhigh", "max"],
-    context: "272K tokens",
-    maxOutput: "32K tokens",
+    context: "400K tokens",
+    maxOutput: "128K tokens",
     bestFor: [
-      "Day-to-day coding and chat at half the flagship price.",
+      "Day-to-day coding and chat at 40% of the flagship price.",
       "Agentic workflows where flagship cost is not justified.",
       "High-volume production traffic on the OpenAI-compatible API.",
     ],
@@ -415,8 +417,8 @@ export const openaiModels: OpenAiModel[] = [
       "Requests above 272K input tokens bill at OpenAI long-context rates: 2× input and 1.5× output on the whole request.",
     ],
     faq: [
-      { q: "How much does the GPT-5.6 Terra API cost?", a: "Officially $2.50 per 1M input tokens and $15 per 1M output tokens, with cached input at $0.25. With the flat 50% apiToken.sale discount that is $1.25/$7.50." },
-      { q: "Terra or Sol?", a: "Terra is the balanced default for most workloads at half the price; route the hardest reasoning to gpt-5.6-sol. Both run on the same key, balance and endpoint." },
+      { q: "How much does the GPT-5.6 Terra API cost?", a: "Officially $2 per 1M input tokens and $12 per 1M output tokens, with cached input at $0.20. With the flat 50% apiToken.sale discount that is $1/$6." },
+      { q: "Terra or Sol?", a: "Terra is the balanced default for most workloads at 40% of the price; route the hardest reasoning to gpt-5.6-sol. Both run on the same key, balance and endpoint." },
       { q: "What is the model ID?", a: "gpt-5.6-terra. Point any OpenAI-compatible client at https://router.apitoken.sale/v1 and send it as the model parameter." },
     ],
     related: ["openai-api-quickstart", "codex-cli-setup", "how-billing-works", "why-choose-apitoken"],
@@ -428,16 +430,16 @@ export const openaiModels: OpenAiModel[] = [
     name: "GPT-5.6 Luna",
     tier: "Fast",
     title: "GPT-5.6 Luna API — Price per Token & Access",
-    description: "GPT-5.6 Luna API pricing: official $1/$6 per 1M tokens, $0.50/$3 with the flat 50% apiToken.sale discount. The fastest, cheapest GPT-5.6 tier.",
+    description: "GPT-5.6 Luna API pricing: official $0.20/$1.20 per 1M tokens, $0.10/$0.60 with the flat 50% apiToken.sale discount. The fastest, cheapest GPT-5.6 tier.",
     keywords: ["gpt-5.6 luna api", "gpt-5.6 luna price", "gpt-5.6-luna", "cheapest gpt model", "openai compatible api"],
-    dek: "GPT-5.6 Luna is the fast, economical tier of the GPT-5.6 line — built for high-volume, latency-sensitive work at one fifth of the flagship price.",
-    inputPerM: 1,
-    cachedInputPerM: 0.1,
-    cacheWritePerM: 1.25,
-    outputPerM: 6,
+    dek: "GPT-5.6 Luna is the fast, economical tier of the GPT-5.6 line — built for high-volume, latency-sensitive work at a fraction of the flagship price.",
+    inputPerM: 0.2,
+    cachedInputPerM: 0.02,
+    cacheWritePerM: 0.25,
+    outputPerM: 1.2,
     efforts: ["none", "low", "medium", "high", "xhigh", "max"],
-    context: "272K tokens",
-    maxOutput: "32K tokens",
+    context: "400K tokens",
+    maxOutput: "128K tokens",
     bestFor: [
       "Classification, extraction and summarization at scale.",
       "Latency-sensitive chat and routing layers.",
@@ -449,7 +451,7 @@ export const openaiModels: OpenAiModel[] = [
       "Requests above 272K input tokens bill at OpenAI long-context rates: 2× input and 1.5× output on the whole request.",
     ],
     faq: [
-      { q: "How much does the GPT-5.6 Luna API cost?", a: "Officially $1 per 1M input tokens and $6 per 1M output tokens, with cached input at $0.10. With the flat 50% apiToken.sale discount that is $0.50/$3 — the cheapest way to run GPT-5.6." },
+      { q: "How much does the GPT-5.6 Luna API cost?", a: "Officially $0.20 per 1M input tokens and $1.20 per 1M output tokens, with cached input at $0.02. With the flat 50% apiToken.sale discount that is $0.10/$0.60 — the cheapest way to run GPT-5.6." },
       { q: "What is Luna good for?", a: "High-volume, low-latency work: classification, extraction, summarization, routing and simple chat. For complex reasoning, step up to Terra or Sol." },
       { q: "What is the model ID?", a: "gpt-5.6-luna. It works on the same apiToken.sale key, balance and OpenAI-compatible endpoint as every other GPT model." },
     ],
@@ -470,8 +472,8 @@ export const openaiModels: OpenAiModel[] = [
     cacheWritePerM: 5,
     outputPerM: 30,
     efforts: ["none", "low", "medium", "high", "xhigh"],
-    context: "272K tokens",
-    maxOutput: "32K tokens",
+    context: "400K tokens",
+    maxOutput: "128K tokens",
     bestFor: [
       "Workloads pinned to GPT-5.5 for reproducibility.",
       "Agentic coding and multi-step reasoning.",
@@ -498,14 +500,14 @@ export const openaiModels: OpenAiModel[] = [
     title: "GPT-5.4 API — Price per Token & Access",
     description: "GPT-5.4 API pricing: official $2.50/$15 per 1M tokens, $1.25/$7.50 with the flat 50% apiToken.sale discount. Proven balanced tier on one prepaid balance.",
     keywords: ["gpt-5.4 api", "gpt-5.4 price", "gpt-5.4 api cost", "gpt-5.4 token pricing", "openai compatible api"],
-    dek: "GPT-5.4 is the proven balanced tier of the previous generation — a workhorse for coding and production pipelines, at the same list price as GPT-5.6 Terra.",
+    dek: "GPT-5.4 is the proven balanced tier of the previous generation — a workhorse for coding and production pipelines, priced just above the newer GPT-5.6 Terra.",
     inputPerM: 2.5,
     cachedInputPerM: 0.25,
     cacheWritePerM: 2.5,
     outputPerM: 15,
     efforts: ["none", "low", "medium", "high", "xhigh"],
-    context: "272K tokens",
-    maxOutput: "32K tokens",
+    context: "400K tokens",
+    maxOutput: "128K tokens",
     bestFor: [
       "Pipelines tuned and evaluated against GPT-5.4.",
       "Balanced coding and content workloads.",
@@ -513,12 +515,12 @@ export const openaiModels: OpenAiModel[] = [
     ],
     notes: [
       "Reasoning efforts none through xhigh; the max level is exclusive to the GPT-5.6 line.",
-      "Same list price as gpt-5.6-terra — new projects should usually start there.",
+      "gpt-5.6-terra is now the cheaper balanced tier ($2/$12 vs $2.50/$15) — new projects should usually start there.",
       "Requests above 272K input tokens bill at OpenAI long-context rates: 2× input and 1.5× output on the whole request.",
     ],
     faq: [
       { q: "How much does the GPT-5.4 API cost?", a: "Officially $2.50 per 1M input tokens and $15 per 1M output tokens. With the flat 50% apiToken.sale discount that is $1.25/$7.50." },
-      { q: "GPT-5.4 or GPT-5.6 Terra?", a: "They share a list price, and Terra is the newer balanced tier — prefer it for new projects. Stay on 5.4 when your prompts and evals are pinned to it." },
+      { q: "GPT-5.4 or GPT-5.6 Terra?", a: "Terra is newer and cheaper ($2/$12 vs $2.50/$15) — prefer it for new projects. Stay on 5.4 when your prompts and evals are pinned to it." },
       { q: "What is the model ID?", a: "gpt-5.4. One apiToken.sale key and balance covers it alongside every other Claude and GPT model." },
     ],
     related: ["openai-api-quickstart", "codex-cli-setup", "how-billing-works", "why-choose-apitoken"],
@@ -526,11 +528,12 @@ export const openaiModels: OpenAiModel[] = [
 ];
 
 // Gemini rates mirror the pinned engine catalog (crates/metering/src/gemini.rs): official
-// Google standard paid-tier token pricing, cached input at 10% of input, no cache-write
-// billing, and long-context pricing (2× input, 1.5× output on the whole request) above 200K
-// input tokens on gemini-3.1-pro-preview. gemini-3.1-flash-image (Nano Banana 2) bills image
-// output separately per image-output token. The native /v1beta generateContent surface is
-// served as-is, authenticated with x-goog-api-key.
+// Google standard paid-tier token pricing, cached input at 10% of input (exception:
+// gemini-3.1-flash-image has no cache discount — cached input bills at the full input rate),
+// no cache-write billing, and long-context pricing (2× input, 1.5× output on the whole
+// request) above 200K input tokens on gemini-3.1-pro-preview. gemini-3.1-flash-image (Nano
+// Banana 2) bills image output separately per image-output token. The native /v1beta
+// generateContent surface is served as-is, authenticated with x-goog-api-key.
 export const geminiModels: GeminiModel[] = [
   {
     provider: "gemini",
@@ -761,7 +764,7 @@ export const geminiModels: GeminiModel[] = [
     keywords: ["gemini 3.1 flash image api", "nano banana 2 api", "gemini image model price", "gemini-3.1-flash-image", "gemini image generation cost", "google gemini image api"],
     dek: "Gemini 3.1 Flash Image — Nano Banana 2 — is Google's image-generation Flash model: text and image in, rendered images out, billed per image-output token.",
     inputPerM: 0.5,
-    cachedInputPerM: 0.05,
+    cachedInputPerM: 0.5,
     outputPerM: 3,
     imageOutputPerM: 60,
     context: "128K tokens",
@@ -773,6 +776,7 @@ export const geminiModels: GeminiModel[] = [
     ],
     notes: [
       "Image output bills separately at $60 per 1M image-output tokens ($30 here); text output bills at the standard $3.00 rate.",
+      "Cached input bills at the full $0.50 rate — unlike text models, this image model has no cache discount.",
       "128K context window and 32K max output — smaller than the text Flash line.",
     ],
     faq: [

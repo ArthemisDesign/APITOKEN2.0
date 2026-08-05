@@ -206,7 +206,7 @@
     "m_provider_claude": "Claude · Anthropic Messages API",
     "m_provider_gpt": "GPT · OpenAI-compatible API",
     "m_gpt56sol": "Flagship reasoning and agentic coding",
-    "m_gpt56terra": "Balanced daily driver at half the flagship price",
+    "m_gpt56terra": "Balanced daily driver at 40% of the flagship price",
     "m_gpt56luna": "Fast, cheap, high-volume calls",
     "m_gpt55": "Previous-generation flagship",
     "m_gpt54": "Proven balanced tier",
