@@ -3554,12 +3554,133 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 31);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 32);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
         .map(|(_, sql)| *sql);
     assert_eq!(registered, Some(MIGRATION_0029));
+}
+
+/// The disable store is only reachable once its migration is actually in the applied set: the
+/// pools read it on every roster load, so a registered-but-missing table would fail closed for a
+/// whole fleet rather than for one member.
+#[test]
+fn pool_member_disable_migration_is_registered_at_the_current_schema_version() {
+    let registered = ENGINE_MIGRATIONS
+        .iter()
+        .find(|(version, _)| *version == 32)
+        .map(|(_, sql)| *sql);
+    assert_eq!(registered, Some(MIGRATION_0032));
+    assert_eq!(
+        ENGINE_MIGRATIONS.last().map(|(version, _)| *version),
+        Some(CURRENT_SCHEMA_VERSION)
+    );
+}
+
+/// Anthropic must never become addressable here. Claude subscriptions already carry
+/// `active|paused|disabled`, and a second switch for the same subscription is exactly the
+/// two-sources-of-truth bug this closed set exists to prevent.
+#[test]
+fn pool_member_disable_ddl_excludes_anthropic_and_covers_every_roster_fleet() {
+    let ddl = MIGRATION_0032
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for provider in crate::ROSTER_BACKED_PROVIDERS {
+        assert!(
+            ddl.contains(&format!("'{provider}'")),
+            "roster-backed provider {provider} is missing from the DDL CHECK"
+        );
+    }
+    assert!(!ddl.contains("'anthropic'"));
+}
+
+/// Real PostgreSQL proof that the operator switch is durable and idempotent in both directions.
+/// Skipped unless the destructive test database is supplied:
+/// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+/// pg::tests::pool_member_disable_postgres_roundtrip`
+#[test]
+fn pool_member_disable_postgres_roundtrip() {
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping pool member disable round-trip: test URL is unset");
+        return;
+    };
+    let mut lock_holder = PgStore::connect(&url).unwrap();
+    lock_holder
+        .client
+        .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+        .unwrap();
+    lock_holder
+        .client
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    lock_holder
+        .client
+        .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+        .unwrap();
+
+    let mut pg = PgStore::connect(&url).unwrap();
+    pg.migrate().unwrap();
+    pg.client
+        .batch_execute("TRUNCATE pool_member_disables RESTART IDENTITY CASCADE")
+        .unwrap();
+
+    assert!(pg
+        .pool_member_disabled(crate::PROVIDER_GOOGLE)
+        .unwrap()
+        .is_empty());
+
+    pg.pool_member_set_disabled(
+        crate::PROVIDER_GOOGLE,
+        "gemini_oauth_000002",
+        true,
+        "operator",
+        "refresh token revoked by Google",
+    )
+    .unwrap();
+    // Disabling twice must not fail and must not create a second row.
+    pg.pool_member_set_disabled(
+        crate::PROVIDER_GOOGLE,
+        "gemini_oauth_000002",
+        true,
+        "operator",
+        "still revoked",
+    )
+    .unwrap();
+
+    let disabled = pg.pool_member_disabled(crate::PROVIDER_GOOGLE).unwrap();
+    assert_eq!(disabled.len(), 1);
+    assert!(disabled.contains("gemini_oauth_000002"));
+
+    // Fleets are isolated: a Gemini disable must never hide a Codex home.
+    assert!(pg
+        .pool_member_disabled(crate::PROVIDER_OPENAI)
+        .unwrap()
+        .is_empty());
+
+    // Re-enabling is idempotent too.
+    pg.pool_member_set_disabled(crate::PROVIDER_GOOGLE, "gemini_oauth_000002", false, "", "")
+        .unwrap();
+    pg.pool_member_set_disabled(crate::PROVIDER_GOOGLE, "gemini_oauth_000002", false, "", "")
+        .unwrap();
+    assert!(pg
+        .pool_member_disabled(crate::PROVIDER_GOOGLE)
+        .unwrap()
+        .is_empty());
+
+    // Claude can never be addressed through this store.
+    assert!(pg
+        .pool_member_set_disabled(crate::PROVIDER_ANTHROPIC, "someone@example.com", true, "", "")
+        .is_err());
+    assert!(pg.pool_member_disabled(crate::PROVIDER_ANTHROPIC).is_err());
+    assert!(pg
+        .pool_member_set_disabled(crate::PROVIDER_GOOGLE, "", true, "", "")
+        .is_err());
 }
 
 /// Real PostgreSQL proof for immutable turn replay, cumulative spend, observation history and

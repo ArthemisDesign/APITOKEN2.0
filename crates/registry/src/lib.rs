@@ -3774,6 +3774,23 @@ pub const PROVIDER_KIMI: &str = "kimi";
 /// economics can never be blended with any other provider.
 pub const PROVIDER_GLM: &str = "glm";
 
+/// Fleets whose membership arrives as a sealed Auth Bot roster the engine may read but never
+/// write. Only these can carry an operator disable (`pool_member_disables`): Claude subscriptions
+/// live in this authority already and use their own `active|paused|disabled` status, so admitting
+/// them here would give one subscription two competing routability switches.
+pub const ROSTER_BACKED_PROVIDERS: &[&str] =
+    &[PROVIDER_GOOGLE, PROVIDER_OPENAI, PROVIDER_KIMI, PROVIDER_GLM];
+
+/// Fail closed on anything outside the fixed roster-backed plane. The DB CHECK enforces the same
+/// set, but rejecting here keeps a typo from reaching PostgreSQL as a constraint violation the
+/// caller would have to interpret.
+pub fn require_roster_backed_provider(provider: &str) -> Result<()> {
+    if !ROSTER_BACKED_PROVIDERS.contains(&provider) {
+        anyhow::bail!("pool member provider is outside the roster-backed plane: {provider}");
+    }
+    Ok(())
+}
+
 fn default_provider() -> String {
     PROVIDER_ANTHROPIC.to_string()
 }

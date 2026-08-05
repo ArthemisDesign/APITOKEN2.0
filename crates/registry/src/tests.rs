@@ -4,6 +4,20 @@ fn db() -> Connection {
     open(":memory:").unwrap()
 }
 
+/// The roster-backed plane is a closed set. Anthropic is the one that matters: Claude
+/// subscriptions already carry `active|paused|disabled`, so letting them through here would give
+/// a single subscription two switches that can disagree.
+#[test]
+fn only_roster_backed_fleets_accept_an_operator_disable() {
+    for provider in ROSTER_BACKED_PROVIDERS {
+        require_roster_backed_provider(provider).unwrap();
+    }
+    assert!(require_roster_backed_provider(PROVIDER_ANTHROPIC).is_err());
+    assert!(require_roster_backed_provider("").is_err());
+    assert!(require_roster_backed_provider("gemini").is_err());
+    assert!(require_roster_backed_provider("codex").is_err());
+}
+
 #[test]
 fn pricing_policy_schema_is_idempotent_and_preserves_legacy_money() {
     let c = db();

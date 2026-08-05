@@ -1463,6 +1463,20 @@ enum WriteCmd {
         home_id: String,
         reply: oneshot::Sender<anyhow::Result<registry::CodexHomeHealthRow>>,
     },
+    /// Operator routability switch for roster-backed fleets. Read on roster load and on the
+    /// pools' refresh tick; written from the admin route.
+    PoolMemberSetDisabled {
+        provider: &'static str,
+        member_id: String,
+        disabled: bool,
+        actor: String,
+        reason: String,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    PoolMemberDisabled {
+        provider: &'static str,
+        reply: oneshot::Sender<anyhow::Result<std::collections::HashSet<String>>>,
+    },
     CodexSaveHealth {
         home_id: String,
         row: registry::CodexHomeHealthRow,
@@ -2452,6 +2466,47 @@ impl AsyncBilling {
             .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
     }
 
+    /// Pull a roster-backed pool member out of rotation, or put it back. The roster itself stays
+    /// the Auth Bot's authority; this is the engine's separate, durable say over routability.
+    pub async fn pool_member_set_disabled(
+        &self,
+        provider: &'static str,
+        member_id: &str,
+        disabled: bool,
+        actor: &str,
+        reason: &str,
+    ) -> anyhow::Result<()> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::PoolMemberSetDisabled {
+                provider,
+                member_id: member_id.into(),
+                disabled,
+                actor: actor.into(),
+                reason: reason.into(),
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    pub async fn pool_member_disabled(
+        &self,
+        provider: &'static str,
+    ) -> anyhow::Result<std::collections::HashSet<String>> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::PoolMemberDisabled { provider, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
     /// Persist the account-level verdict so it survives restart and blue-green handoff.
     pub async fn save_codex_health(
         &self,
@@ -2901,6 +2956,19 @@ impl AsyncBilling {
                     }
                     WriteCmd::CodexLoadHealth { home_id, reply } => {
                         let _ = reply.send(registry::load_codex_home_health(&conn, &home_id));
+                    }
+                    // The disable store is Stage 2 authority only: the SQLite importer path has no
+                    // such table, and silently reporting "nothing disabled" would put a member the
+                    // operator pulled straight back into rotation. Fail closed instead.
+                    WriteCmd::PoolMemberSetDisabled { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "pool member disable requires PostgreSQL authority"
+                        )));
+                    }
+                    WriteCmd::PoolMemberDisabled { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "pool member disable requires PostgreSQL authority"
+                        )));
                     }
                     WriteCmd::CodexSaveHealth { home_id, row, updated_ts, reply } => {
                         let _ = reply.send(registry::save_codex_home_health(
@@ -3730,6 +3798,37 @@ impl AsyncBilling {
                                 &writer_owner,
                                 "Codex health read",
                                 |pg| pg.load_codex_home_health(&home_id),
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::PoolMemberSetDisabled {
+                            provider,
+                            member_id,
+                            disabled,
+                            actor,
+                            reason,
+                            reply,
+                        } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "pool member disable write",
+                                |pg| {
+                                    pg.pool_member_set_disabled(
+                                        provider, &member_id, disabled, &actor, &reason,
+                                    )
+                                },
+                            );
+                            let _ = reply.send(result);
+                        }
+                        WriteCmd::PoolMemberDisabled { provider, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "pool member disable read",
+                                |pg| pg.pool_member_disabled(provider),
                             );
                             let _ = reply.send(result);
                         }

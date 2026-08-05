@@ -138,6 +138,33 @@ impl Authority {
             Self::Postgres(pg) => pg.set_sub_status(email, status),
         }
     }
+    /// Operator routability switch for roster-backed fleets (Gemini/Codex/KIMI/GLM). Claude
+    /// subscriptions do NOT go through here — they carry `active|paused|disabled` and are served
+    /// by `set_sub_status` above, so a subscription never has two competing switches.
+    pub fn pool_member_set_disabled(
+        &mut self,
+        provider: &str,
+        member_id: &str,
+        disabled: bool,
+        actor: &str,
+        reason: &str,
+    ) -> Result<()> {
+        match self {
+            Self::Sqlite(_) => bail!("operation requires PostgreSQL authority"),
+            Self::Postgres(pg) => {
+                pg.pool_member_set_disabled(provider, member_id, disabled, actor, reason)
+            }
+        }
+    }
+    pub fn pool_member_disabled(
+        &mut self,
+        provider: &str,
+    ) -> Result<std::collections::HashSet<String>> {
+        match self {
+            Self::Sqlite(_) => bail!("operation requires PostgreSQL authority"),
+            Self::Postgres(pg) => pg.pool_member_disabled(provider),
+        }
+    }
     pub fn set_plan(&mut self, email: &str, plan: &str) -> Result<usize> {
         match self {
             Self::Sqlite(c) => crate::set_plan(c, email, plan),

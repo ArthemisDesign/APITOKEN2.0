@@ -57,6 +57,10 @@ pub struct GeminiProfileStatus {
     /// Reviewed paid-plan identity from the sealed credential; contains no Google identity.
     pub plan: String,
     pub authenticated: bool,
+    /// Operator pulled this profile out of rotation (`pool_member_disables`). Reported so the
+    /// panel can show it and offer to put it back; a disabled profile is still listed, it just
+    /// never routes and is never probed.
+    pub disabled: bool,
     pub cooling_until: i64,
     pub inflight: usize,
     pub last_probe_at: i64,
@@ -855,7 +859,7 @@ impl GeminiProfile {
             .collect()
     }
 
-    fn status(&self, cfg: &GeminiConfig, now: i64) -> GeminiProfileStatus {
+    fn status(&self, cfg: &GeminiConfig, now: i64, disabled: bool) -> GeminiProfileStatus {
         // Clone the small sanitized snapshot before computing derived cooling. Holding this read
         // guard while `cooling_until_for` takes a second read can deadlock on writer-preferring
         // RwLock implementations when the quota refresh is already waiting for its write guard.
@@ -887,6 +891,7 @@ impl GeminiProfile {
             masked_email: self.masked_email.clone(),
             plan: self.plan.clone(),
             authenticated: self.authenticated.load(Ordering::Acquire),
+            disabled,
             cooling_until: self.cooling_until.load(Ordering::Acquire),
             inflight: self.inflight.load(Ordering::Acquire),
             last_probe_at: self.last_probe_at.load(Ordering::Acquire),
@@ -1567,6 +1572,12 @@ pub struct GeminiGateway {
     cfg: Arc<GeminiConfig>,
     calibration_store: Option<Arc<AsyncBilling>>,
     profiles: RwLock<Vec<Arc<GeminiProfile>>>,
+    /// Operator disables from `pool_member_disables`, refreshed from the engine authority. Kept
+    /// beside the roster rather than inside it: the roster is the Auth Bot's sealed artifact and
+    /// is replaced wholesale on every publication, so a disable written into it would not survive.
+    /// An empty set is the correct startup default — the first refresh fills it, and until then a
+    /// disabled profile is merely probed once, not routed to, because selection re-checks.
+    disabled: RwLock<HashSet<String>>,
     /// Process-local reverse index for the affinity store's keyed opaque home ids. The key is
     /// secret-dependent, so it is built lazily once the shared AffinityStore is available and
     /// invalidated atomically with every roster generation change.
@@ -1627,6 +1638,7 @@ impl GeminiGateway {
             cfg,
             calibration_store,
             profiles: RwLock::new(profiles),
+            disabled: RwLock::new(HashSet::new()),
             affinity_profiles: RwLock::new(HashMap::new()),
             cursor: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
@@ -1656,6 +1668,55 @@ impl GeminiGateway {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    fn disabled_snapshot(&self) -> HashSet<String> {
+        self.disabled
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn is_disabled(&self, profile_id: &str) -> bool {
+        self.disabled
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(profile_id)
+    }
+
+    /// Profiles that may actually receive traffic. Every selection, readiness and probe path uses
+    /// this; only reporting and roster diffing use the raw snapshot, because an operator has to be
+    /// able to see a disabled profile in order to put it back.
+    fn routable_profiles(&self) -> Vec<Arc<GeminiProfile>> {
+        let disabled = self.disabled_snapshot();
+        if disabled.is_empty() {
+            return self.profiles_snapshot();
+        }
+        self.profiles_snapshot()
+            .into_iter()
+            .filter(|profile| !disabled.contains(profile.id()))
+            .collect()
+    }
+
+    /// Pull the operator disable set from the engine authority. Called on startup, on every roster
+    /// reload and on the roster refresh tick, so the button takes effect without a slot restart.
+    /// A read failure leaves the previous set in place: forgetting a disable would silently put a
+    /// revoked or quarantined credential back into rotation, which is the failure we cannot have.
+    pub async fn refresh_disabled(&self) {
+        let Some(store) = self.calibration_store.as_ref() else {
+            return;
+        };
+        match store.pool_member_disabled(registry::PROVIDER_GOOGLE).await {
+            Ok(disabled) => {
+                *self
+                    .disabled
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = disabled;
+            }
+            Err(error) => {
+                eprintln!("Gemini operator disable set refresh failed, keeping previous: {error:#}");
+            }
+        }
     }
 
     fn reload_profiles(&self) -> anyhow::Result<bool> {
@@ -1763,7 +1824,7 @@ impl GeminiGateway {
         if self.shutting_down.load(Ordering::Acquire) {
             return None;
         }
-        let profiles = self.profiles_snapshot();
+        let profiles = self.routable_profiles();
         let now = pool::now();
         let quota_stale_secs = self
             .cfg
@@ -1890,7 +1951,7 @@ impl GeminiGateway {
             return None;
         }
         let now = pool::now();
-        let profiles = self.profiles_snapshot();
+        let profiles = self.routable_profiles();
         let mut matches = profiles
             .into_iter()
             .filter(|profile| profile.id() == target_profile_id);
@@ -1935,7 +1996,7 @@ impl GeminiGateway {
         generation: bool,
     ) -> Option<i64> {
         let now = pool::now();
-        self.profiles_snapshot()
+        self.routable_profiles()
             .iter()
             .filter(|profile| {
                 !excluded.contains(profile.id()) && profile.authenticated.load(Ordering::Acquire)
@@ -1952,7 +2013,7 @@ impl GeminiGateway {
     }
 
     pub(crate) fn has_authenticated_profiles(&self) -> bool {
-        self.profiles_snapshot()
+        self.routable_profiles()
             .iter()
             .any(|profile| profile.authenticated.load(Ordering::Acquire))
     }
@@ -1987,9 +2048,17 @@ impl GeminiGateway {
         // publication must appear wholly before or wholly after this snapshot, never as profile
         // rows from one generation and model aggregates from another.
         let snapshot = self.profiles_snapshot();
+        let disabled = self.disabled_snapshot();
         let profiles: Vec<_> = snapshot
             .iter()
-            .map(|profile| profile.status(&self.cfg, now))
+            .map(|profile| profile.status(&self.cfg, now, disabled.contains(profile.id())))
+            .collect();
+        // Rows above list every profile so an operator can see and undo a disable. Aggregates
+        // below must not: a disabled profile is not capacity, and counting it would report
+        // readiness the pool will never actually route to.
+        let snapshot: Vec<_> = snapshot
+            .into_iter()
+            .filter(|profile| !disabled.contains(profile.id()))
             .collect();
         let models = self
             .cfg
@@ -2034,7 +2103,8 @@ impl GeminiGateway {
             available: profiles
                 .iter()
                 .filter(|profile| {
-                    profile.authenticated
+                    !profile.disabled
+                        && profile.authenticated
                         && self.cfg.models.iter().any(|model| {
                             profile
                                 .model_cooling
@@ -2047,7 +2117,7 @@ impl GeminiGateway {
                 .count(),
             authenticated: profiles
                 .iter()
-                .filter(|profile| profile.authenticated)
+                .filter(|profile| !profile.disabled && profile.authenticated)
                 .count(),
             soonest_ready: models.iter().filter_map(|model| model.soonest_ready).min(),
             models,
@@ -2056,9 +2126,18 @@ impl GeminiGateway {
     }
 
     pub async fn preflight(&self) -> anyhow::Result<()> {
-        let profile_count = self.profiles_snapshot().len();
-        if profile_count == 0 {
+        if self.profiles_snapshot().is_empty() {
             eprintln!("Gemini OAuth provider starting with an empty encrypted roster");
+            return Ok(());
+        }
+        // Load the operator disables before the first probe, so a revoked credential that was
+        // already pulled is never re-authenticated on boot.
+        self.refresh_disabled().await;
+        let profile_count = self.routable_profiles().len();
+        if profile_count == 0 {
+            // Every profile is disabled. That is a deliberate operator state, not a broken slot:
+            // failing preflight here would make the switch able to prevent the slot from starting.
+            eprintln!("Gemini OAuth provider starting with every profile disabled by an operator");
             return Ok(());
         }
         let healthy = self.probe_profiles().await;
@@ -2082,6 +2161,9 @@ impl GeminiGateway {
                 let _ = error;
                 eprintln!("Gemini encrypted roster reload skipped");
             }
+            // Re-read the operator switch on the same tick as the roster, so pressing the button
+            // takes effect within one health interval instead of needing a slot restart.
+            self.refresh_disabled().await;
             self.probe_profiles().await;
         }
     }
@@ -2106,7 +2188,10 @@ impl GeminiGateway {
     async fn probe_profiles(&self) -> usize {
         let mut healthy = 0usize;
         let now = pool::now();
-        let profiles = self.profiles_snapshot();
+        // Disabled profiles are not probed at all. Probing refreshes the OAuth token, so a
+        // credential the provider has revoked would otherwise be re-attempted on every sweep
+        // forever — the exact churn this switch exists to stop.
+        let profiles = self.routable_profiles();
         if profiles.is_empty() {
             return 0;
         }
@@ -2830,6 +2915,75 @@ mod tests {
             .select("gemini-test", &HashSet::new(), None, true)
             .unwrap();
         assert_eq!(next.profile().id(), "profile_a");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The operator switch has to hold every path that could put a pulled profile back to work:
+    /// selection, pinned-route selection, readiness, and — the reason it exists — the probe sweep,
+    /// which refreshes OAuth tokens and would otherwise retry a revoked credential forever.
+    #[tokio::test]
+    async fn a_disabled_profile_leaves_rotation_without_leaving_the_report() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let second = write_credential(&dir, &ring, "profile_b", "subject-b");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first), ("profile_b", &second)]);
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        for profile in gateway.profiles_snapshot() {
+            profile.mark_authenticated();
+        }
+        assert_eq!(gateway.routable_profiles().len(), 2);
+
+        gateway
+            .disabled
+            .write()
+            .unwrap()
+            .insert("profile_a".to_string());
+
+        // Out of every selection path.
+        assert!(gateway.is_disabled("profile_a"));
+        assert!(!gateway.is_disabled("profile_b"));
+        let routable = gateway.routable_profiles();
+        assert_eq!(routable.len(), 1);
+        assert_eq!(routable[0].id(), "profile_b");
+        for _ in 0..8 {
+            let lease = gateway
+                .select("gemini-test", &HashSet::new(), None, true)
+                .unwrap();
+            assert_eq!(lease.profile().id(), "profile_b");
+        }
+        // Even an explicit pinned route must not resurrect it.
+        assert!(gateway
+            .select_operator_target("gemini-test", "profile_a", &HashSet::new(), true)
+            .is_none());
+
+        // Still listed, and flagged, so the panel can offer to put it back.
+        let status = gateway.operational_status().await;
+        assert_eq!(status.profiles.len(), 2);
+        let row = status
+            .profiles
+            .iter()
+            .find(|profile| profile.id == "profile_a")
+            .unwrap();
+        assert!(row.disabled);
+        // But it is not counted as capacity.
+        assert_eq!(status.authenticated, 1);
+
+        // Disabling the last one leaves no routable profile and no readiness claim.
+        gateway
+            .disabled
+            .write()
+            .unwrap()
+            .insert("profile_b".to_string());
+        assert!(gateway.routable_profiles().is_empty());
+        assert!(!gateway.has_authenticated_profiles());
+        assert!(gateway
+            .select("gemini-test", &HashSet::new(), None, true)
+            .is_none());
+        assert!(gateway
+            .soonest_ready("gemini-test", &HashSet::new(), true)
+            .is_none());
+        assert_eq!(gateway.operational_status().await.profiles.len(), 2);
         let _ = fs::remove_dir_all(dir);
     }
 
