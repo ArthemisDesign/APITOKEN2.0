@@ -1639,6 +1639,9 @@ pub fn sqlite_prepare_account_policy(
 
     let transaction = immediate(conn)?;
     let current_binding = stored_policy_binding(&transaction, &incoming.account_id)?;
+    let rebind = current_binding
+        .as_ref()
+        .is_some_and(|binding| binding.shadow_rebind(&incoming));
     if let Some(stored) = sqlite_account_policy_by_version(
         &transaction,
         &incoming.account_id,
@@ -1647,6 +1650,7 @@ pub fn sqlite_prepare_account_policy(
         let result = if current_binding
             .as_ref()
             .is_some_and(|binding| !binding.identity_matches(&incoming))
+            && !rebind
         {
             PricingMutation::Rejected(PricingRejection::VersionConflict)
         } else if stored == incoming {
@@ -1659,7 +1663,7 @@ pub fn sqlite_prepare_account_policy(
 
     if let Some(latest) = latest_account_policy(&transaction, &incoming.account_id)? {
         if incoming.effective_version < latest.effective_version
-            || incoming.policy_version < latest.policy_version
+            || (!rebind && incoming.policy_version < latest.policy_version)
         {
             return finish(
                 transaction,
@@ -1668,29 +1672,32 @@ pub fn sqlite_prepare_account_policy(
                 }),
             );
         }
-        if incoming.policy_id != latest.policy_id
-            || incoming.owner_type != latest.owner_type
-            || incoming.owner_id != latest.owner_id
-            || incoming.account_class != latest.account_class
-            || incoming.product_id != latest.product_id
-        {
-            return finish(
-                transaction,
-                PricingMutation::Rejected(PricingRejection::VersionConflict),
-            );
-        }
-        if incoming.policy_version == latest.policy_version
-            && incoming.source_policy_digest != latest.source_policy_digest
-        {
-            return finish(
-                transaction,
-                PricingMutation::Rejected(PricingRejection::VersionConflict),
-            );
+        if !rebind {
+            if incoming.policy_id != latest.policy_id
+                || incoming.owner_type != latest.owner_type
+                || incoming.owner_id != latest.owner_id
+                || incoming.account_class != latest.account_class
+                || incoming.product_id != latest.product_id
+            {
+                return finish(
+                    transaction,
+                    PricingMutation::Rejected(PricingRejection::VersionConflict),
+                );
+            }
+            if incoming.policy_version == latest.policy_version
+                && incoming.source_policy_digest != latest.source_policy_digest
+            {
+                return finish(
+                    transaction,
+                    PricingMutation::Rejected(PricingRejection::VersionConflict),
+                );
+            }
         }
     }
     if current_binding
         .as_ref()
         .is_some_and(|binding| !binding.identity_matches(&incoming))
+        && !rebind
     {
         return finish(
             transaction,
@@ -2032,9 +2039,16 @@ pub fn sqlite_activate_account_policy(
             PricingMutation::Rejected(PricingRejection::VersionConflict),
         );
     }
+    // A shadow rebind may change the lineage identity, but never together with the strict
+    // cutover: the target binding must stay shadow for the rebind to be accepted.
+    let rebind = current_binding.as_ref().is_some_and(|binding| {
+        binding.shadow_rebind(&policy)
+            && activation.binding.policy_enforcement == PolicyEnforcement::Shadow
+    });
     if current_binding
         .as_ref()
         .is_some_and(|binding| !binding.identity_matches(&policy))
+        && !rebind
     {
         return finish(
             transaction,
@@ -2185,41 +2199,89 @@ pub fn sqlite_activate_account_policy(
                 expected.reconciliation_state.as_str(),
             ],
         )?,
-        PolicyActiveExpectation::Exact(expected) => transaction.execute(
-            "UPDATE account_policy_bindings
-                SET active_effective_version=?1, policy_enforcement=?2,
-                    funding_enforcement=?3, reconciliation_state=?4, updated_ts=?5
-              WHERE account_id=?6
-                AND product_id=?7
-                AND account_class=?8
-                AND active_effective_version=?9
-                AND policy_enforcement=?10
-                AND funding_enforcement=?11
-                AND reconciliation_state=?12
-                AND EXISTS (
-                    SELECT 1
-                      FROM account_policy_versions v
-                     WHERE v.account_id=account_policy_bindings.account_id
-                       AND v.effective_version=account_policy_bindings.active_effective_version
-                       AND v.product_id=account_policy_bindings.product_id
-                       AND v.content_digest=?13
-                )",
-            params![
-                activation.effective_version,
-                activation.binding.policy_enforcement.as_str(),
-                activation.binding.funding_enforcement.as_str(),
-                activation.binding.reconciliation_state.as_str(),
-                now(),
-                &activation.account_id,
-                &policy.product_id,
-                policy.account_class.as_str(),
-                expected.target.version,
-                expected.binding.policy_enforcement.as_str(),
-                expected.binding.funding_enforcement.as_str(),
-                expected.binding.reconciliation_state.as_str(),
-                &expected.target.content_digest,
-            ],
-        )?,
+        PolicyActiveExpectation::Exact(expected) => {
+            if rebind {
+                let stored = current_binding
+                    .as_ref()
+                    .expect("shadow rebind implies a stored binding");
+                // The rebind CAS pins the OLD lineage identity and atomically moves the binding
+                // row to the new policy's class/product.
+                transaction.execute(
+                    "UPDATE account_policy_bindings
+                        SET active_effective_version=?1, policy_enforcement=?2,
+                            funding_enforcement=?3, reconciliation_state=?4, updated_ts=?5,
+                            product_id=?14, account_class=?15
+                      WHERE account_id=?6
+                        AND product_id=?7
+                        AND account_class=?8
+                        AND active_effective_version=?9
+                        AND policy_enforcement=?10
+                        AND funding_enforcement=?11
+                        AND reconciliation_state=?12
+                        AND EXISTS (
+                            SELECT 1
+                              FROM account_policy_versions v
+                             WHERE v.account_id=account_policy_bindings.account_id
+                               AND v.effective_version=account_policy_bindings.active_effective_version
+                               AND v.product_id=?7
+                               AND v.content_digest=?13
+                        )",
+                    params![
+                        activation.effective_version,
+                        activation.binding.policy_enforcement.as_str(),
+                        activation.binding.funding_enforcement.as_str(),
+                        activation.binding.reconciliation_state.as_str(),
+                        now(),
+                        &activation.account_id,
+                        &stored.product_id,
+                        stored.account_class.as_str(),
+                        expected.target.version,
+                        expected.binding.policy_enforcement.as_str(),
+                        expected.binding.funding_enforcement.as_str(),
+                        expected.binding.reconciliation_state.as_str(),
+                        &expected.target.content_digest,
+                        &policy.product_id,
+                        policy.account_class.as_str(),
+                    ],
+                )?
+            } else {
+                transaction.execute(
+                    "UPDATE account_policy_bindings
+                        SET active_effective_version=?1, policy_enforcement=?2,
+                            funding_enforcement=?3, reconciliation_state=?4, updated_ts=?5
+                      WHERE account_id=?6
+                        AND product_id=?7
+                        AND account_class=?8
+                        AND active_effective_version=?9
+                        AND policy_enforcement=?10
+                        AND funding_enforcement=?11
+                        AND reconciliation_state=?12
+                        AND EXISTS (
+                            SELECT 1
+                              FROM account_policy_versions v
+                             WHERE v.account_id=account_policy_bindings.account_id
+                               AND v.effective_version=account_policy_bindings.active_effective_version
+                               AND v.product_id=account_policy_bindings.product_id
+                               AND v.content_digest=?13
+                        )",
+                    params![
+                        activation.effective_version,
+                        activation.binding.policy_enforcement.as_str(),
+                        activation.binding.funding_enforcement.as_str(),
+                        activation.binding.reconciliation_state.as_str(),
+                        now(),
+                        &activation.account_id,
+                        &policy.product_id,
+                        policy.account_class.as_str(),
+                        expected.target.version,
+                        expected.binding.policy_enforcement.as_str(),
+                        expected.binding.funding_enforcement.as_str(),
+                        expected.binding.reconciliation_state.as_str(),
+                        &expected.target.content_digest,
+                    ],
+                )?
+            }
+        }
     };
     if changed != 1 {
         transaction
@@ -2345,6 +2407,17 @@ impl StoredPolicyBinding {
 
     fn identity_matches(&self, policy: &AccountPolicySpec) -> bool {
         self.product_id == policy.product_id && self.account_class == policy.account_class
+    }
+
+    /// A shadow (pre-strict) binding that already has an active lineage may be replaced by a
+    /// new policy lineage with a different class/product identity — e.g. a B2C→B2B conversion
+    /// moves the account from the shared global-b2c policy to its own b2b_client policy. Once
+    /// enforcement is strict the identity is immutable, so a rebind is only possible before the
+    /// strict cutover.
+    fn shadow_rebind(&self, policy: &AccountPolicySpec) -> bool {
+        self.active_target.is_some()
+            && self.binding.policy_enforcement == PolicyEnforcement::Shadow
+            && !self.identity_matches(policy)
     }
 }
 
@@ -2558,6 +2631,39 @@ mod tests {
                 RuleOrigin::Managed,
                 9_000,
             )],
+        }
+    }
+
+    fn b2c_policy(account_id: &str, effective_version: i64, digest: &str) -> AccountPolicySpec {
+        AccountPolicySpec {
+            account_id: account_id.to_owned(),
+            effective_version,
+            policy_id: "global-b2c".to_owned(),
+            policy_version: effective_version,
+            source_policy_digest: format!("b2c-source-{effective_version}"),
+            owner_type: PolicyOwnerType::GlobalB2c,
+            owner_id: "global".to_owned(),
+            account_class: AccountClass::B2c,
+            product_id: "main".to_owned(),
+            schema_version: 1,
+            catalog_generation: 1,
+            switch_generation: 1,
+            content_digest: digest.to_owned(),
+            replacement_locked: false,
+            rules: vec![AccountPolicyRuleSpec {
+                rule_id: "anthropic-track".to_owned(),
+                rule_digest: "anthropic-track-digest".to_owned(),
+                scope: PolicyRuleScope::Provider {
+                    provider_id: "anthropic".to_owned(),
+                },
+                pricing_mode: PricingMode::Track,
+                rule_origin: RuleOrigin::Managed,
+                discount_bps: None,
+                payable_multiplier_bp: 10_000,
+                track_eligible: true,
+                retention_eligible: true,
+                commission_eligible: true,
+            }],
         }
     }
 
@@ -3329,6 +3435,190 @@ mod tests {
             sqlite_activate_account_policy(&conn, &activation, &PolicyActiveExpectation::Unbound,)
                 .unwrap(),
             PricingMutation::Unchanged
+        );
+    }
+
+    #[test]
+    fn shadow_binding_rebinds_to_a_new_lineage_but_strict_identity_is_immutable() {
+        let conn = crate::open(":memory:").unwrap();
+        account_create(&conn, "acct", None, 8_000).unwrap();
+        let catalog = catalog("main", 1, "main-catalog-1");
+        assert_eq!(
+            sqlite_prepare_pricing_catalog(&conn, &catalog).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            sqlite_activate_pricing_catalog(&conn, "main", &catalog.target(), &ActiveExpectation::Absent)
+                .unwrap(),
+            PricingMutation::Applied
+        );
+        // The switches must pin both segments: the account starts b2c and rebinds to b2b.
+        let switches = ProviderSwitchSpec {
+            generation: 1,
+            schema_version: 1,
+            capability_generation: CAPABILITY_GENERATION,
+            capability_digest: CAPABILITY_DIGEST.to_owned(),
+            content_digest: "main-switches-1".to_owned(),
+            entries: vec![
+                ProviderSwitchEntrySpec {
+                    provider_id: "anthropic".to_owned(),
+                    scope: ProviderSwitchScope::Segment {
+                        product_id: "main".to_owned(),
+                        segment: super::super::PolicySegment::B2c,
+                    },
+                    catalog_generation: Some(1),
+                    enabled: true,
+                },
+                ProviderSwitchEntrySpec {
+                    provider_id: "anthropic".to_owned(),
+                    scope: ProviderSwitchScope::Segment {
+                        product_id: "main".to_owned(),
+                        segment: super::super::PolicySegment::B2b,
+                    },
+                    catalog_generation: Some(1),
+                    enabled: true,
+                },
+                ProviderSwitchEntrySpec {
+                    provider_id: "anthropic".to_owned(),
+                    scope: ProviderSwitchScope::Master,
+                    catalog_generation: None,
+                    enabled: true,
+                },
+            ],
+        };
+        assert_eq!(
+            sqlite_prepare_provider_switches(&conn, &switches).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            sqlite_activate_provider_switches(&conn, &switches.target(), &ActiveExpectation::Absent)
+                .unwrap(),
+            PricingMutation::Applied
+        );
+
+        // v1: the account starts on the shared global-b2c lineage, as every B2C signup does.
+        let b2c_v1 = b2c_policy("acct", 1, "b2c-policy-1");
+        assert_eq!(
+            sqlite_prepare_account_policy(&conn, &b2c_v1).unwrap(),
+            PricingMutation::Stored
+        );
+        let b2c_activation = AccountPolicyActivationSpec {
+            account_id: "acct".to_owned(),
+            effective_version: 1,
+            content_digest: b2c_v1.content_digest.clone(),
+            binding: shadow_binding(),
+        };
+        assert_eq!(
+            sqlite_activate_account_policy(&conn, &b2c_activation, &PolicyActiveExpectation::Unbound)
+                .unwrap(),
+            PricingMutation::Applied
+        );
+
+        // A B2C→B2B conversion stages a new lineage under the same account: different
+        // policy_id/owner/class, policy_version restarting at 1, effective_version monotonic.
+        let mut b2b_v2 = b2b_policy("acct", 2, "b2b-policy-2");
+        b2b_v2.policy_version = 1;
+        b2b_v2.source_policy_digest = "b2b-source-1".to_owned();
+        assert_eq!(
+            sqlite_prepare_account_policy(&conn, &b2b_v2).unwrap(),
+            PricingMutation::Stored
+        );
+        // Idempotent re-prepare of the pending rebind stays unchanged.
+        assert_eq!(
+            sqlite_prepare_account_policy(&conn, &b2b_v2).unwrap(),
+            PricingMutation::Unchanged
+        );
+
+        let b2b_activation = AccountPolicyActivationSpec {
+            account_id: "acct".to_owned(),
+            effective_version: 2,
+            content_digest: b2b_v2.content_digest.clone(),
+            binding: shadow_binding(),
+        };
+        // The CAS still pins the exact old lineage target.
+        assert_eq!(
+            sqlite_activate_account_policy(&conn, &b2b_activation, &PolicyActiveExpectation::Unbound)
+                .unwrap(),
+            PricingMutation::Rejected(PricingRejection::PolicyCasMismatch {
+                actual: PolicyBindingState::Active(ActivePolicyTarget {
+                    target: b2c_v1.target(),
+                    binding: shadow_binding(),
+                }),
+            })
+        );
+        assert_eq!(
+            sqlite_activate_account_policy(
+                &conn,
+                &b2b_activation,
+                &PolicyActiveExpectation::Exact(ActivePolicyTarget {
+                    target: b2c_v1.target(),
+                    binding: shadow_binding(),
+                }),
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT account_class FROM account_policy_bindings WHERE account_id='acct'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "b2b"
+        );
+        assert_eq!(
+            sqlite_active_account_policy(&conn, "acct").unwrap(),
+            Some(ActiveAccountPolicy {
+                policy: normalize_policy(&b2b_v2),
+                binding: shadow_binding(),
+            })
+        );
+
+        // Within the new lineage a same-class policy_id change is still an identity conflict.
+        let mut alien = b2b_policy("acct", 3, "alien-policy-3");
+        alien.policy_id = "b2b:someone-else".to_owned();
+        alien.owner_id = "someone-else".to_owned();
+        assert_eq!(
+            sqlite_prepare_account_policy(&conn, &alien).unwrap(),
+            PricingMutation::Rejected(PricingRejection::VersionConflict)
+        );
+
+        // The new lineage advances normally.
+        let mut b2b_v3 = b2b_policy("acct", 3, "b2b-policy-3");
+        b2b_v3.policy_version = 2;
+        b2b_v3.source_policy_digest = "b2b-source-2".to_owned();
+        assert_eq!(
+            sqlite_prepare_account_policy(&conn, &b2b_v3).unwrap(),
+            PricingMutation::Stored
+        );
+        // Once enforcement flips to strict, the class identity is immutable again.
+        let strict_activation = AccountPolicyActivationSpec {
+            account_id: "acct".to_owned(),
+            effective_version: 3,
+            content_digest: b2b_v3.content_digest.clone(),
+            binding: binding(
+                PolicyEnforcement::Strict,
+                FundingEnforcement::Strict,
+                ReconciliationState::Verified,
+            ),
+        };
+        assert_eq!(
+            sqlite_activate_account_policy(
+                &conn,
+                &strict_activation,
+                &PolicyActiveExpectation::Exact(ActivePolicyTarget {
+                    target: b2b_v2.target(),
+                    binding: shadow_binding(),
+                }),
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+        let b2c_v4 = b2c_policy("acct", 4, "b2c-policy-4");
+        assert_eq!(
+            sqlite_prepare_account_policy(&conn, &b2c_v4).unwrap(),
+            PricingMutation::Rejected(PricingRejection::VersionConflict)
         );
     }
 

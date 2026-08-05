@@ -148,6 +148,13 @@ side effect. `serve` may only perform the read-only schema verification before c
   counters must be preserved/advance once; the successor's exact catalog and switches must already
   be active. Generic prepare/activate remain locked, any model rule/discount/eligibility flag is
   invalid, a lost-ACK exact replay is `Unchanged`, and any failed insert/CAS rolls back all rows.
+  Separately, a **shadow lineage rebind** is the one accepted identity change on the generic
+  prepare/activate path: while the stored binding is `shadow` and already active, a spec with a
+  different class/product identity (B2C→B2B conversion) prepares as a new lineage — own
+  `policy_version` sequence, `effective_version` stays account-monotonic — and activation
+  CAS-pins the exact old lineage target, requires a shadow target binding, and atomically moves
+  the binding row's class/product. Strict bindings keep full identity immutability; a same-class
+  policy_id/owner change is never a rebind.
 - **Stage 3B0/3B1b snapshot read — dormant:** `pricing_read_bundle(account_id)` returns in one read-only
   transaction the live `accounts.mult_bp`, binding/active policy, exact immutable
   `policy_catalog/policy_switches` and the current `admission_catalog/admission_switches`: SQLite via a

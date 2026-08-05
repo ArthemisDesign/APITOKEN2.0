@@ -500,6 +500,21 @@ typed and retain evidence:
   the actual durable state;
 - `423 locked` — immutable legacy policy cannot be replaced.
 
+#### Shadow lineage rebind (B2C↔B2B class change)
+
+An account's policy lineage identity (`policy_id`, owner, `account_class`, `product_id`) is
+immutable once established — with one additive exception. While the account's stored binding is
+`policy_enforcement="shadow"` (pre-strict rehearsal, where billing still runs off the legacy
+scalar), a prepare whose spec carries a different class/product identity is accepted as a rebind:
+the new lineage starts its own `policy_version` sequence while `effective_version` must stay
+monotonic across the whole account history. Activation of a rebind version still CAS-pins the
+exact OLD lineage target and requires the target binding to remain `shadow`; it atomically moves
+the binding row to the new class/product. This is the delivery path for B2C→B2B conversions,
+which move the account from the shared `global-b2c` policy to its own `b2b_client` policy. Once
+enforcement is `strict`, identity is fully immutable and a class/product change is
+`409 version_conflict`. A same-class lineage change (different `policy_id`/owner without a
+class/product change) is never a rebind and stays `409 version_conflict` even under `shadow`.
+
 `GET .../state` reads the live scalar, policy binding, pinned policy catalog/switches, and current
 admission catalog/switches in one database snapshot. Stage 3C does not backfill data, issue keys,
 enable strict enforcement, or bypass the catalog → switches → policy order.

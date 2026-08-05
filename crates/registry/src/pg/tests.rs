@@ -8961,6 +8961,241 @@ fn stage2_fault_matrix() {
         .unwrap();
 }
 
+/// PostgreSQL contract of the shadow lineage rebind (B2C→B2B conversion). Skipped without a
+/// live database:
+/// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+/// pg::tests::postgres_shadow_lineage_rebind_contract`
+#[test]
+fn postgres_shadow_lineage_rebind_contract() {
+    use crate::pricing::{
+        AccountPolicyActivationSpec, AccountPolicyBindingSpec, ActiveExpectation,
+        ActivePolicyTarget, FundingEnforcement, PolicyActiveExpectation, PolicyEnforcement,
+        PricingMutation, PricingRejection, ReconciliationState,
+    };
+
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!(
+            "skipping PostgreSQL shadow lineage rebind contract: \
+             CLAUDE_API_TEST_DATABASE_URL is unset"
+        );
+        return;
+    };
+    let mut pg = PgStore::connect(&url).unwrap();
+    pg.client
+        .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+        .unwrap();
+    pg.client
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    pg.client
+        .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+        .unwrap();
+    pg.migrate().unwrap();
+    pg.client
+        .batch_execute(
+            "TRUNCATE account_policy_bindings,account_policy_rules,account_policy_versions,
+             provider_switch_head,provider_switch_entries,provider_switch_versions,
+             pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
+             execution_group_winner,settlement_outbox,reservations,capacity_leases,leader_leases,engine_instances,
+             usage_events,ledger,api_keys,accounts,pool_state,subs RESTART IDENTITY CASCADE",
+        )
+        .unwrap();
+
+    pg.account_create("rebind-pg-account", None, 2_000).unwrap();
+    let catalog = shadow_pg_catalog(1, "rebind-catalog-1");
+    assert_eq!(
+        pg.prepare_pricing_catalog(&catalog).unwrap(),
+        PricingMutation::Stored
+    );
+    assert_eq!(
+        pg.activate_pricing_catalog("main", &catalog.target(), &ActiveExpectation::Absent)
+            .unwrap(),
+        PricingMutation::Applied
+    );
+    // The switches must pin both segments: the account starts b2c and rebinds to b2b.
+    let mut switches = shadow_pg_switches(1, 1, "rebind-switches-1");
+    switches.entries.push(crate::pricing::ProviderSwitchEntrySpec {
+        provider_id: "anthropic".into(),
+        scope: crate::pricing::ProviderSwitchScope::Segment {
+            product_id: "main".into(),
+            segment: crate::pricing::PolicySegment::B2c,
+        },
+        catalog_generation: Some(1),
+        enabled: true,
+    });
+    assert_eq!(
+        pg.prepare_provider_switches(&switches).unwrap(),
+        PricingMutation::Stored
+    );
+    assert_eq!(
+        pg.activate_provider_switches(&switches.target(), &ActiveExpectation::Absent).unwrap(),
+        PricingMutation::Applied
+    );
+
+    let shadow_binding = || AccountPolicyBindingSpec {
+        policy_enforcement: PolicyEnforcement::Shadow,
+        funding_enforcement: FundingEnforcement::Shadow,
+        reconciliation_state: ReconciliationState::Pending,
+    };
+    let activate = |version: i64, digest: &str, binding: AccountPolicyBindingSpec| {
+        AccountPolicyActivationSpec {
+            account_id: "rebind-pg-account".into(),
+            effective_version: version,
+            content_digest: digest.into(),
+            binding,
+        }
+    };
+
+    // v1: the account starts on the shared global-b2c lineage, as every B2C signup does.
+    let b2c_v1 = crate::pricing::AccountPolicySpec {
+        account_id: "rebind-pg-account".into(),
+        effective_version: 1,
+        policy_id: "global-b2c".into(),
+        policy_version: 1,
+        source_policy_digest: "b2c-source-1".into(),
+        owner_type: crate::pricing::PolicyOwnerType::GlobalB2c,
+        owner_id: "global".into(),
+        account_class: crate::pricing::AccountClass::B2c,
+        product_id: "main".into(),
+        schema_version: crate::pricing::PRICING_SCHEMA_VERSION,
+        catalog_generation: 1,
+        switch_generation: 1,
+        content_digest: "rebind-b2c-1".into(),
+        replacement_locked: false,
+        rules: vec![crate::pricing::AccountPolicyRuleSpec {
+            rule_id: "anthropic-track".into(),
+            rule_digest: "anthropic-track-digest".into(),
+            scope: crate::pricing::PolicyRuleScope::Provider {
+                provider_id: "anthropic".into(),
+            },
+            pricing_mode: crate::pricing::PricingMode::Track,
+            rule_origin: crate::pricing::RuleOrigin::Managed,
+            discount_bps: None,
+            payable_multiplier_bp: 10_000,
+            track_eligible: true,
+            retention_eligible: true,
+            commission_eligible: true,
+        }],
+    };
+    assert_eq!(
+        pg.prepare_account_policy(&b2c_v1).unwrap(),
+        PricingMutation::Stored
+    );
+    assert_eq!(
+        pg.activate_account_policy(
+            &activate(1, "rebind-b2c-1", shadow_binding()),
+            &PolicyActiveExpectation::Unbound,
+        )
+        .unwrap(),
+        PricingMutation::Applied
+    );
+
+    // B2C→B2B conversion: new policy_id/owner/class lineage, policy_version restarts at 1,
+    // effective_version stays monotonic.
+    let mut b2b_v2 = shadow_pg_policy();
+    b2b_v2.account_id = "rebind-pg-account".into();
+    b2b_v2.effective_version = 2;
+    b2b_v2.policy_id = "b2b:rebind-pg-account".into();
+    b2b_v2.policy_version = 1;
+    b2b_v2.owner_id = "rebind-pg-account".into();
+    b2b_v2.source_policy_digest = "b2b-source-1".into();
+    b2b_v2.content_digest = "rebind-b2b-2".into();
+    assert_eq!(
+        pg.prepare_account_policy(&b2b_v2).unwrap(),
+        PricingMutation::Stored
+    );
+    // Idempotent re-prepare of the pending rebind stays unchanged.
+    assert_eq!(
+        pg.prepare_account_policy(&b2b_v2).unwrap(),
+        PricingMutation::Unchanged
+    );
+    // The CAS pins the exact OLD lineage target and moves the binding row to class b2b.
+    assert_eq!(
+        pg.activate_account_policy(
+            &activate(2, "rebind-b2b-2", shadow_binding()),
+            &PolicyActiveExpectation::Unbound,
+        )
+        .unwrap(),
+        PricingMutation::Rejected(PricingRejection::PolicyCasMismatch {
+            actual: crate::pricing::PolicyBindingState::Active(ActivePolicyTarget {
+                target: b2c_v1.target(),
+                binding: shadow_binding(),
+            }),
+        })
+    );
+    assert_eq!(
+        pg.activate_account_policy(
+            &activate(2, "rebind-b2b-2", shadow_binding()),
+            &PolicyActiveExpectation::Exact(ActivePolicyTarget {
+                target: b2c_v1.target(),
+                binding: shadow_binding(),
+            }),
+        )
+        .unwrap(),
+        PricingMutation::Applied
+    );
+    let binding_row = pg
+        .client
+        .query_one(
+            "SELECT account_class, active_effective_version
+               FROM account_policy_bindings WHERE account_id='rebind-pg-account'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(binding_row.get::<_, String>(0), "b2b");
+    assert_eq!(binding_row.get::<_, i64>(1), 2);
+
+    // The new lineage advances normally, then strict enforcement makes the identity
+    // immutable again.
+    let mut b2b_v3 = b2b_v2.clone();
+    b2b_v3.effective_version = 3;
+    b2b_v3.policy_version = 2;
+    b2b_v3.source_policy_digest = "b2b-source-2".into();
+    b2b_v3.content_digest = "rebind-b2b-3".into();
+    assert_eq!(
+        pg.prepare_account_policy(&b2b_v3).unwrap(),
+        PricingMutation::Stored
+    );
+    assert_eq!(
+        pg.activate_account_policy(
+            &activate(
+                3,
+                "rebind-b2b-3",
+                AccountPolicyBindingSpec {
+                    policy_enforcement: PolicyEnforcement::Strict,
+                    funding_enforcement: FundingEnforcement::Strict,
+                    reconciliation_state: ReconciliationState::Verified,
+                },
+            ),
+            &PolicyActiveExpectation::Exact(ActivePolicyTarget {
+                target: b2b_v2.target(),
+                binding: shadow_binding(),
+            }),
+        )
+        .unwrap(),
+        PricingMutation::Applied
+    );
+    let mut b2c_v4 = b2c_v1.clone();
+    b2c_v4.effective_version = 4;
+    b2c_v4.policy_version = 2;
+    b2c_v4.source_policy_digest = "b2c-source-2".into();
+    b2c_v4.content_digest = "rebind-b2c-4".into();
+    assert_eq!(
+        pg.prepare_account_policy(&b2c_v4).unwrap(),
+        PricingMutation::Rejected(PricingRejection::VersionConflict)
+    );
+
+    pg.client
+        .query_one(
+            "SELECT pg_advisory_unlock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+}
+
 /// PostgreSQL contract of the panel health read. Skipped without a live database:
 /// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
 /// pg::tests::postgres_settlement_health_contract`

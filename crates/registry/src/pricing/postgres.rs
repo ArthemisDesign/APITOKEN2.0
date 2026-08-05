@@ -1881,6 +1881,16 @@ fn binding_identity_matches(binding: &StoredPolicyBinding, policy: &AccountPolic
     binding.product_id == policy.product_id && binding.account_class == policy.account_class
 }
 
+/// A shadow (pre-strict) binding that already has an active lineage may be replaced by a new
+/// policy lineage with a different class/product identity — e.g. a B2C→B2B conversion moves the
+/// account from the shared global-b2c policy to its own b2b_client policy. Once enforcement is
+/// strict the identity is immutable, so a rebind is only possible before the strict cutover.
+fn shadow_rebind(binding: &StoredPolicyBinding, policy: &AccountPolicySpec) -> bool {
+    binding.active_target.is_some()
+        && binding.binding.policy_enforcement == PolicyEnforcement::Shadow
+        && !binding_identity_matches(binding, policy)
+}
+
 #[derive(Clone, Debug)]
 struct PolicyDependencies {
     catalog: PricingCatalogSpec,
@@ -2035,9 +2045,12 @@ pub(crate) fn postgres_prepare_account_policy(
         .context("begin PostgreSQL account policy prepare")?;
     advisory_lock(&mut transaction, &policy_lock_key(&incoming.account_id))?;
     let current_binding = policy_binding_locked(&mut transaction, &incoming.account_id)?;
+    let rebind = current_binding
+        .as_ref()
+        .is_some_and(|binding| shadow_rebind(binding, &incoming));
 
     if let Some(binding) = &current_binding {
-        if !binding_identity_matches(binding, &incoming) {
+        if !binding_identity_matches(binding, &incoming) && !rebind {
             return commit_mutation(transaction, version_conflict(), "account policy prepare");
         }
     }
@@ -2058,7 +2071,7 @@ pub(crate) fn postgres_prepare_account_policy(
     let newest = newest_policy_lineage(&mut transaction, &incoming.account_id)?;
     if let Some(newest) = &newest {
         if incoming.effective_version < newest.target.version
-            || incoming.policy_version < newest.policy_version
+            || (!rebind && incoming.policy_version < newest.policy_version)
         {
             return commit_mutation(
                 transaction,
@@ -2066,9 +2079,10 @@ pub(crate) fn postgres_prepare_account_policy(
                 "account policy prepare",
             );
         }
-        if !policy_identity_matches(newest, &incoming)
-            || (incoming.policy_version == newest.policy_version
-                && incoming.source_policy_digest != newest.source_policy_digest)
+        if !rebind
+            && (!policy_identity_matches(newest, &incoming)
+                || (incoming.policy_version == newest.policy_version
+                    && incoming.source_policy_digest != newest.source_policy_digest))
         {
             return commit_mutation(transaction, version_conflict(), "account policy prepare");
         }
@@ -2335,8 +2349,14 @@ pub(crate) fn postgres_activate_account_policy(
     if policy.content_digest != activation.content_digest {
         return commit_mutation(transaction, version_conflict(), "account policy activation");
     }
+    // A shadow rebind may change the lineage identity, but never together with the strict
+    // cutover: the target binding must stay shadow for the rebind to be accepted.
+    let rebind = current_binding.as_ref().is_some_and(|binding| {
+        shadow_rebind(binding, &policy)
+            && activation.binding.policy_enforcement == PolicyEnforcement::Shadow
+    });
     if let Some(binding) = &current_binding {
-        if !binding_identity_matches(binding, &policy) {
+        if !binding_identity_matches(binding, &policy) && !rebind {
             return commit_mutation(transaction, version_conflict(), "account policy activation");
         }
     }
@@ -2431,44 +2451,96 @@ pub(crate) fn postgres_activate_account_policy(
                 &policy.account_class.as_str(),
             ],
         )?,
-        PolicyActiveExpectation::Exact(expected) => transaction.execute(
-            "UPDATE account_policy_bindings b
-             SET active_effective_version=$2,
-                 policy_enforcement=$3,
-                 funding_enforcement=$4,
-                 reconciliation_state=$5,
-                 updated_ts=$6
-             WHERE b.account_id=$1
-               AND b.active_effective_version=$7
-               AND b.policy_enforcement=$8
-               AND b.funding_enforcement=$9
-               AND b.reconciliation_state=$10
-               AND EXISTS (
-                   SELECT 1
-                   FROM account_policy_versions v
-                   WHERE v.account_id=b.account_id
-                     AND v.effective_version=b.active_effective_version
-                     AND v.product_id=b.product_id
-                     AND v.content_digest=$11
-               )
-               AND b.product_id=$12
-               AND b.account_class=$13",
-            &[
-                &activation.account_id,
-                &activation.effective_version,
-                &activation.binding.policy_enforcement.as_str(),
-                &activation.binding.funding_enforcement.as_str(),
-                &activation.binding.reconciliation_state.as_str(),
-                &updated_ts,
-                &expected.target.version,
-                &expected.binding.policy_enforcement.as_str(),
-                &expected.binding.funding_enforcement.as_str(),
-                &expected.binding.reconciliation_state.as_str(),
-                &expected.target.content_digest,
-                &policy.product_id,
-                &policy.account_class.as_str(),
-            ],
-        )?,
+        PolicyActiveExpectation::Exact(expected) => {
+            if rebind {
+                let stored = current_binding
+                    .as_ref()
+                    .expect("shadow rebind implies a stored binding");
+                // The rebind CAS pins the OLD lineage identity and atomically moves the binding
+                // row to the new policy's class/product.
+                transaction.execute(
+                    "UPDATE account_policy_bindings b
+                     SET active_effective_version=$2,
+                         policy_enforcement=$3,
+                         funding_enforcement=$4,
+                         reconciliation_state=$5,
+                         updated_ts=$6,
+                         product_id=$12,
+                         account_class=$13
+                     WHERE b.account_id=$1
+                       AND b.active_effective_version=$7
+                       AND b.policy_enforcement=$8
+                       AND b.funding_enforcement=$9
+                       AND b.reconciliation_state=$10
+                       AND EXISTS (
+                           SELECT 1
+                           FROM account_policy_versions v
+                           WHERE v.account_id=b.account_id
+                             AND v.effective_version=b.active_effective_version
+                             AND v.product_id=$14
+                             AND v.content_digest=$11
+                       )
+                       AND b.product_id=$14
+                       AND b.account_class=$15",
+                    &[
+                        &activation.account_id,
+                        &activation.effective_version,
+                        &activation.binding.policy_enforcement.as_str(),
+                        &activation.binding.funding_enforcement.as_str(),
+                        &activation.binding.reconciliation_state.as_str(),
+                        &updated_ts,
+                        &expected.target.version,
+                        &expected.binding.policy_enforcement.as_str(),
+                        &expected.binding.funding_enforcement.as_str(),
+                        &expected.binding.reconciliation_state.as_str(),
+                        &expected.target.content_digest,
+                        &policy.product_id,
+                        &policy.account_class.as_str(),
+                        &stored.product_id,
+                        &stored.account_class.as_str(),
+                    ],
+                )?
+            } else {
+                transaction.execute(
+                    "UPDATE account_policy_bindings b
+                     SET active_effective_version=$2,
+                         policy_enforcement=$3,
+                         funding_enforcement=$4,
+                         reconciliation_state=$5,
+                         updated_ts=$6
+                     WHERE b.account_id=$1
+                       AND b.active_effective_version=$7
+                       AND b.policy_enforcement=$8
+                       AND b.funding_enforcement=$9
+                       AND b.reconciliation_state=$10
+                       AND EXISTS (
+                           SELECT 1
+                           FROM account_policy_versions v
+                           WHERE v.account_id=b.account_id
+                             AND v.effective_version=b.active_effective_version
+                             AND v.product_id=b.product_id
+                             AND v.content_digest=$11
+                       )
+                       AND b.product_id=$12
+                       AND b.account_class=$13",
+                    &[
+                        &activation.account_id,
+                        &activation.effective_version,
+                        &activation.binding.policy_enforcement.as_str(),
+                        &activation.binding.funding_enforcement.as_str(),
+                        &activation.binding.reconciliation_state.as_str(),
+                        &updated_ts,
+                        &expected.target.version,
+                        &expected.binding.policy_enforcement.as_str(),
+                        &expected.binding.funding_enforcement.as_str(),
+                        &expected.binding.reconciliation_state.as_str(),
+                        &expected.target.content_digest,
+                        &policy.product_id,
+                        &policy.account_class.as_str(),
+                    ],
+                )?
+            }
+        }
     };
     if affected != 1 {
         transaction
