@@ -23,6 +23,7 @@ import {
   claimNextPricingControlJob,
   claimNextPricingJob,
   confirmPricingControlJob,
+  confirmPricingJob,
   createDatabase,
   getCustomerPricingPolicyView,
   recoverStalePricingControlJobs,
@@ -1235,7 +1236,48 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
       });
 
       await expect(claimNextPricingControlJob(database, "worker-control")).resolves.toBeNull();
-      await expect(claimNextPricingJob(database, "worker-scalar")).resolves.toBeNull();
+
+      // A shadow binding does NOT gate the legacy scalar stream: pre-cutover the engine still
+      // bills off accounts.mult_bp, which only this stream delivers. The job must be claimed
+      // and confirmed normally.
+      await temporary.client.query(`
+        INSERT INTO customer_profiles (
+          user_id, customer_type, current_tier, multiplier_bp, pricing_month_start,
+          cumulative_topup_nano, tier_window_start, tier_window_spent_nano,
+          referral_floor_bps, free_balance_nano
+        ) VALUES ($1, 'b2b', NULL, 3750, now(), 0, NULL, 0, 0, 0)
+      `, [graph.b2bUserId]);
+      const scalarJob = await claimNextPricingJob(database, "worker-scalar");
+      expect(scalarJob).toMatchObject({
+        userId: graph.b2bUserId,
+        engineAccountId: graph.b2bEngineAccountId,
+        multiplierBp: 3750,
+        attempts: 1,
+      });
+      if (!scalarJob) throw new Error("scalar job was not claimed for a shadow-bound account");
+      await confirmPricingJob(database, scalarJob);
+      const shadowScalar = await temporary.client.query(`
+        SELECT status, reason FROM engine_pricing_jobs WHERE user_id = $1
+      `, [graph.b2bUserId]);
+      expect(shadowScalar.rows).toEqual([{ status: "confirmed", reason: "legacy_pending" }]);
+
+      // Once the binding flips to strict, the versioned policy owns the account and pending
+      // scalar rows are drained without another engine write. engine_pricing_jobs allows one
+      // row per user, so the strict-phase job re-arms the same row.
+      await temporary.client.query(`
+        UPDATE account_policy_bindings
+        SET policy_enforcement = 'strict', reconciliation_state = 'verified', updated_at = now()
+        WHERE id = $1
+      `, [graph.b2bBindingId]);
+      await temporary.client.query(`
+        UPDATE engine_pricing_jobs
+        SET status = 'pending', multiplier_bp = 3000, reason = 'legacy_pending_strict',
+            attempts = 0, next_attempt_at = now(), locked_at = NULL, locked_by = NULL,
+            last_error = NULL, confirmed_at = NULL, updated_at = now()
+        WHERE user_id = $1
+      `, [graph.b2bUserId]);
+      await expect(claimNextPricingJob(database, "worker-scalar-strict")).resolves.toBeNull();
+
       const state = await temporary.client.query(`
         SELECT
           (SELECT status FROM engine_catalog_jobs WHERE product_id = 'main') AS catalog_status,
@@ -1243,7 +1285,8 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
           (SELECT status FROM engine_policy_jobs WHERE binding_id = $1) AS policy_status,
           (SELECT sync_state FROM account_policy_bindings WHERE id = $1) AS sync_state,
           (SELECT applied_effective_version::text FROM account_policy_bindings WHERE id = $1) AS applied_version,
-          (SELECT reason FROM engine_pricing_jobs WHERE user_id = $2) AS scalar_reason
+          (SELECT status FROM engine_pricing_jobs WHERE user_id = $2) AS strict_scalar_status,
+          (SELECT reason FROM engine_pricing_jobs WHERE user_id = $2) AS strict_scalar_reason
       `, [graph.b2bBindingId, graph.b2bUserId]);
       expect(state.rows).toEqual([{
         catalog_status: "confirmed",
@@ -1251,7 +1294,8 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         policy_status: "confirmed",
         sync_state: "confirmed",
         applied_version: "1",
-        scalar_reason: "drained_to_versioned_policy:legacy_pending",
+        strict_scalar_status: "confirmed",
+        strict_scalar_reason: "drained_to_versioned_policy:legacy_pending_strict",
       }]);
     } finally {
       await database.pool.end();

@@ -114,8 +114,11 @@ release head. The pre-0029 orchestration remains dormant until replaced by that 
 Operational details and bounded env defaults are in `docs/commerce/MULTI_DISCOUNT_STAGE6.md`.
 
 This application checkpoint does not seed production policies or enable the engine's strict runtime.
-A legacy scalar job is drained only after its account has a non-null desired full-policy version and
-digest, so empty version streams cannot alter current users. Application provisioning is now
+A legacy scalar job is drained only once its account's binding is `policy_enforcement = 'strict'`
+with a non-null desired full-policy version and digest, so empty version streams cannot alter
+current users. While bindings stay `shadow` (the entire pre-cutover fleet), the engine still bills
+off the legacy `accounts.mult_bp` scalar that only this lane writes, so scalar jobs are delivered
+normally. Application provisioning is now
 conditionally policy-before-key: when a managed Global B2C or B2B source policy exists, commerce
 creates the binding, immutable effective version and durable job before a usable key, keeps the
 engine account pending, and activates it only after the exact ACK. Accounts with no managed policy
@@ -426,5 +429,7 @@ change any of them. `paid_over` credits only the requested amount; underpayment 
   version `2`, and newly ingested exact providers start at that version. Model names never
   participate in recovery.
 - Legacy scalar pricing changes are persisted as durable jobs before the engine multiplier is
-  updated. Once an account has a desired full policy, that scalar lane is audit-drained and only
-  the monotonic versioned policy lane may advance its engine pricing state.
+  updated. Only an account whose binding enforces the full policy (`policy_enforcement = 'strict'`)
+  has its scalar lane audit-drained; for `shadow` bindings the engine still bills off the legacy
+  scalar, so the lane keeps delivering. Under strict, only the monotonic versioned policy lane may
+  advance the account's engine pricing state.

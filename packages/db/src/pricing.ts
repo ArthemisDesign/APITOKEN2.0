@@ -2690,10 +2690,11 @@ export async function claimNextPricingJob(
       WHERE status = 'processing'
         AND (locked_at IS NULL OR locked_at < now() - interval '5 minutes')
     `);
-    // Once commerce has a desired full policy, the unversioned scalar stream is no longer allowed
-    // to race that account's monotonic policy jobs. Existing rows are retained as an audit record
-    // but drained without another engine write. Stage 5 switches writers only after it can
-    // materialize a replacement policy for every future scalar change.
+    // The unversioned scalar stream is retired only for accounts whose binding enforces the
+    // versioned policy ('strict'). While a binding is 'shadow' (pre-cutover), the engine still
+    // bills off the legacy accounts.mult_bp scalar — which only this stream writes — so scalar
+    // jobs must be delivered, not drained. Strict-bound rows are retained as an audit record but
+    // drained without another engine write: the monotonic policy jobs own that account.
     await client.query(`
       UPDATE engine_pricing_jobs legacy
       SET status = 'confirmed',
@@ -2702,6 +2703,7 @@ export async function claimNextPricingJob(
           locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
       FROM account_policy_bindings binding
       WHERE binding.user_id = legacy.user_id
+        AND binding.policy_enforcement = 'strict'
         AND binding.desired_effective_version IS NOT NULL
         AND binding.desired_digest IS NOT NULL
         AND legacy.status IN ('pending', 'retry')
@@ -2715,6 +2717,7 @@ export async function claimNextPricingJob(
         AND NOT EXISTS (
           SELECT 1 FROM account_policy_bindings binding
           WHERE binding.user_id = engine_pricing_jobs.user_id
+            AND binding.policy_enforcement = 'strict'
             AND binding.desired_effective_version IS NOT NULL
             AND binding.desired_digest IS NOT NULL
         )
@@ -2756,6 +2759,7 @@ export async function confirmPricingJob(database: Database, job: ClaimedPricingJ
     FROM account_policy_bindings binding
     WHERE legacy.id = $1 AND legacy.status = 'processing'
       AND binding.user_id = legacy.user_id
+      AND binding.policy_enforcement = 'strict'
       AND binding.desired_effective_version IS NOT NULL
       AND binding.desired_digest IS NOT NULL
   `, [job.id]);
@@ -2792,6 +2796,7 @@ export async function retryPricingJob(database: Database, job: ClaimedPricingJob
     FROM account_policy_bindings binding
     WHERE legacy.id = $1 AND legacy.status = 'processing'
       AND binding.user_id = legacy.user_id
+      AND binding.policy_enforcement = 'strict'
       AND binding.desired_effective_version IS NOT NULL
       AND binding.desired_digest IS NOT NULL
   `, [job.id]);
