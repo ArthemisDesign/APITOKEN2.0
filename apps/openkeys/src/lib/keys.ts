@@ -2,7 +2,7 @@ import "server-only";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { EngineAccount, EngineUsage } from "@claude-api/contracts";
 import { openkeysBatches, openkeysIssuanceJobs, openkeysKeys } from "@claude-api/openkeys-db";
-import { and, count, desc, eq, ilike, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { apiTypeOf, type ApiType } from "./api-product";
 import {
   adminUsagePercent,
@@ -329,6 +329,137 @@ function loadUsageReport(
   );
   usageLoads.set(cacheKey, { expiresAt: null, promise });
   return promise;
+}
+
+export type PayingKeysDays = 1 | 7 | 30;
+
+export interface PayingKeysQuery {
+  days: PayingKeysDays;
+  limit: number;
+  offset: number;
+  q: string;
+  status: AdminKeyStatusFilter;
+}
+
+export type PayingKeyUsage =
+  | ({ status: "available" } & EngineUsage)
+  | { status: "unavailable"; window: string };
+
+export interface PayingKeyRow {
+  id: string;
+  batchId: string;
+  batchLabel: string | null;
+  createdBy: string;
+  keyMasked: string;
+  engineAccountId: string;
+  apiType: ApiType;
+  enabled: boolean;
+  faceValueNano: string;
+  pricingContract: "legacy" | "official_1_to_1";
+  createdAt: string;
+  deliveredAt: string;
+  usage: PayingKeyUsage;
+}
+
+export interface PayingKeysPage {
+  days: PayingKeysDays;
+  total: number;
+  limit: number;
+  offset: number;
+  rows: PayingKeyRow[];
+}
+
+const PAYING_KEYS_USAGE_CONCURRENCY = 4;
+
+/**
+ * Выданные покупателям ключи с DB-пагинацией до live usage. Складские, снятые и
+ * соседние страницы не создают Control API вызовов; сбой одного аккаунта не скрывает остальные.
+ */
+export async function loadPayingKeys(query: PayingKeysQuery): Promise<PayingKeysPage> {
+  const { db } = getDatabase();
+  const search = query.q.trim().slice(0, 80);
+  const where = and(
+    isNull(openkeysKeys.removedAt),
+    isNotNull(openkeysKeys.deliveredAt),
+    query.status === "active" ? eq(openkeysKeys.status, "active") : undefined,
+    query.status === "disabled" ? eq(openkeysKeys.status, "disabled") : undefined,
+    search
+      ? or(
+          ilike(openkeysKeys.keyMasked, `%${search}%`),
+          ilike(openkeysKeys.engineAccountId, `%${search}%`),
+          ilike(openkeysBatches.label, `%${search}%`),
+          ilike(openkeysBatches.createdBy, `%${search}%`),
+          sql`${openkeysBatches.id}::text ILIKE ${`%${search}%`}`,
+        )
+      : undefined,
+  );
+
+  const [rows, totals] = await Promise.all([
+    db
+      .select({
+        id: openkeysKeys.id,
+        batchId: openkeysKeys.batchId,
+        batchLabel: openkeysBatches.label,
+        createdBy: openkeysBatches.createdBy,
+        keyMasked: openkeysKeys.keyMasked,
+        engineAccountId: openkeysKeys.engineAccountId,
+        apiType: openkeysBatches.apiType,
+        enabled: openkeysKeys.status,
+        faceValueNano: openkeysKeys.faceValueNano,
+        pricingContract: openkeysKeys.pricingContract,
+        createdAt: openkeysKeys.createdAt,
+        deliveredAt: openkeysKeys.deliveredAt,
+      })
+      .from(openkeysKeys)
+      .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
+      .where(where)
+      .orderBy(desc(openkeysKeys.deliveredAt), asc(openkeysKeys.id))
+      .limit(query.limit)
+      .offset(query.offset),
+    db
+      .select({ value: count() })
+      .from(openkeysKeys)
+      .innerJoin(openkeysBatches, eq(openkeysKeys.batchId, openkeysBatches.id))
+      .where(where),
+  ]);
+
+  const window = `${query.days}d`;
+  const engine = getEngineClient();
+  const usage = new Map<string, PayingKeyUsage>();
+  for (let offset = 0; offset < rows.length; offset += PAYING_KEYS_USAGE_CONCURRENCY) {
+    const page = rows.slice(offset, offset + PAYING_KEYS_USAGE_CONCURRENCY);
+    const settled = await Promise.allSettled(
+      page.map((row) => loadUsageReport(engine, row.engineAccountId, window)),
+    );
+    settled.forEach((result, index) => {
+      const accountId = page[index]!.engineAccountId;
+      usage.set(accountId, result.status === "fulfilled"
+        ? { status: "available", ...result.value }
+        : { status: "unavailable", window });
+    });
+  }
+
+  return {
+    days: query.days,
+    total: totals[0]?.value ?? 0,
+    limit: query.limit,
+    offset: query.offset,
+    rows: rows.map((row) => ({
+      id: row.id,
+      batchId: row.batchId,
+      batchLabel: row.batchLabel,
+      createdBy: row.createdBy,
+      keyMasked: row.keyMasked,
+      engineAccountId: row.engineAccountId,
+      apiType: apiTypeOf(row.apiType),
+      enabled: row.enabled !== "disabled",
+      faceValueNano: row.faceValueNano.toString(),
+      pricingContract: row.pricingContract as "legacy" | "official_1_to_1",
+      createdAt: row.createdAt.toISOString(),
+      deliveredAt: row.deliveredAt!.toISOString(),
+      usage: usage.get(row.engineAccountId) ?? { status: "unavailable", window },
+    })),
+  };
 }
 
 export async function loadUsageByViewToken(

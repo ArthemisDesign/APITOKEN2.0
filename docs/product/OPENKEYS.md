@@ -204,6 +204,22 @@ disabling. Filters work by batch, status and usage. The browser only talks to sa
 public `openkeys.apitoken.sale/api/internal/*` is closed with a `404` response, and the
 internal API never returns the full key or the AES-GCM ciphertext.
 
+The additive read-only producer `GET /api/internal/admin/paying-keys` projects only keys
+that were delivered and not removed (`delivered_at IS NOT NULL`, `removed_at IS NULL`).
+It accepts `days=1|7|30` (default `30`), `limit=1..100` (default `50`),
+`offset=0..100000` (default `0`), trimmed `q` up to 80 characters and
+`status=all|active|disabled`. PostgreSQL performs the cohort count, search and stable
+`delivered_at DESC, id ASC` pagination before the selected page makes usage calls with
+concurrency four. Every row carries safe batch/key metadata and the complete engine usage
+for the selected window, preserving exact nanoUSD strings, free-form provider/model names
+and all token counters. A failed account usage call is row-local
+`{status:"unavailable",window}`; a real zero remains `status:"available"` with exact zero
+usage. Responses, including auth/query errors, are `no-store`; invalid auth is hidden as
+`404`, invalid query is `400`. The contract excludes the full secret, view token, engine
+key id, digest and warehouse ciphertext/nonce. This is the producer checkpoint only:
+`apps/admin` must consume it in a separate change after the exact producer SHA has a GREEN
+`deploy/watchdog`.
+
 ## First launch on the server
 
 ```bash
