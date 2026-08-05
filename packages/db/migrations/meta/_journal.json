@@ -295,6 +295,13 @@
       "when": 1785947758472,
       "tag": "0041_pricing_control_notify",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1785965700915,
+      "tag": "0042_pricing_strict_chain_pending",
+      "breakpoints": true
     }
   ]
 }

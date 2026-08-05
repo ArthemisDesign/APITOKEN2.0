@@ -820,7 +820,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         const before = await captureLegacyState(client);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(42);
+        expect(await migrationCount(client)).toBe(43);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
         await expect(client.query(`
@@ -851,7 +851,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         ]);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(42);
+        expect(await migrationCount(client)).toBe(43);
         expect(await captureLegacyState(client)).toEqual(before);
         await expectExpandedTablesEmpty(client);
 
@@ -985,7 +985,7 @@ describe.runIf(Boolean(connectionString))("multi-discount migration", () => {
         `);
 
         await applyMigrations(client, MIGRATIONS_FOLDER);
-        expect(await migrationCount(client)).toBe(42);
+        expect(await migrationCount(client)).toBe(43);
         const legacy = await client.query(`
           SELECT funding_generation::text, target_funding_digest,
                  normalization_source, blockers, status

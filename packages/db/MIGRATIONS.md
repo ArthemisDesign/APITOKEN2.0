@@ -184,3 +184,14 @@ itself: delivery remains owned by the periodic worker sweep until the separately
 consumer ships, and that consumer treats the sweep as the recovery path for notifications missed
 while no listener was connected. The LISTEN consumer may be delivered only after this migration SHA
 has green `deploy/migration` and `deploy/watchdog` in production.
+
+Migration `0042_pricing_strict_chain_pending.sql` adds `strict_chain_pending boolean NOT NULL
+DEFAULT false` to `account_policy_bindings`. The flag is the durable intent behind the agreed
+B2B enforcement contract (`docs/commerce/MULTI-DISCOUNT.md` decisions 13–14): a B2C→B2B conversion
+and every `b2b_client` policy save must chain the per-account strict cutover automatically instead
+of waiting for the fleet Stage 9 CAS. The default `false` keeps the deployed writers compatible and
+backfills nothing — accounts converted before the chain existed keep the manual
+`POST /v1/admin/users/:id/policy-enforcement-cutover` repair lane. The migration stages no job,
+touches no policy/binding state, and does not enforce anything by itself; the dependent writers
+(conversion/save setting the flag) and the worker sweep consuming it ship only after this
+migration SHA has green `deploy/migration` and `deploy/watchdog` in production.

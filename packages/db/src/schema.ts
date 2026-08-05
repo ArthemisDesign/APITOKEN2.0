@@ -1043,6 +1043,7 @@ export const accountPolicyBindings = pgTable("account_policy_bindings", {
   fundingEnforcement: text("funding_enforcement").notNull().default("legacy_single"),
   reconciliationState: text("reconciliation_state").notNull().default("pending"),
   syncState: text("sync_state").notNull().default("legacy"),
+  strictChainPending: boolean("strict_chain_pending").notNull().default(false),
   lastAckAt: timestamp("last_ack_at", { withTimezone: true }),
   lastError: text("last_error"),
   createdAt,

@@ -1,0 +1,1 @@
+ALTER TABLE "account_policy_bindings" ADD COLUMN "strict_chain_pending" boolean DEFAULT false NOT NULL;
