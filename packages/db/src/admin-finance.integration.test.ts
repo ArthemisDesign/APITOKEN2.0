@@ -289,6 +289,31 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
     });
   });
 
+  it("finds a spender by exact email regardless of incomplete attribution", async () => {
+    const email = "wwwvatroke@gmail.com";
+    await database.pool.query("UPDATE users SET email = $1 WHERE id = $2", [
+      email,
+      users.get("unattributed"),
+    ]);
+
+    const page = await listAdminPayingUsers(database, {
+      days: 30,
+      funding: "spenders",
+      q: email,
+    });
+
+    expect(page.total).toBe(1);
+    expect(page.rows).toEqual([
+      expect.objectContaining({
+        userId: users.get("unattributed"),
+        email,
+        fundingKind: "spend_only",
+        spentNano: "700",
+        unattributedSpentNano: "700",
+      }),
+    ]);
+  });
+
   it("keeps provider filtering on COALESCE(attribution provider, event provider)", async () => {
     const anthropic = await listAdminPayingUsers(database, {
       days: 30, funding: "all", provider: "anthropic",
