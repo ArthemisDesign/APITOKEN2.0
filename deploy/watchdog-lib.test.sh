@@ -3220,6 +3220,9 @@ grep -Fq '.state == "evidence_home_mismatch"' "$ROOT/deploy/gpt-image-2-live-gat
 grep -Fq '.state == "rejected" or .state == "outcome_unknown"' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 edit diagnostic omits terminal transport outcomes'
+grep -Fq 'wd_die "prior GPT Image 2 edit attempt was withdrawn; publication remains blocked"' \
+  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 edit withdrawal can incorrectly advance overall GREEN'
 grep -Fq '(.returned.output_sha256 | type == "string"' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 mismatch journal does not require a bounded output digest'

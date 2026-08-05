@@ -15,8 +15,9 @@
   a bounded `opaque/low/auto` PNG with terminal numeric usage, exact home/turn/SHA attribution, and
   digest-matched internal/external evidence.
 - Edit-capable implementation SHA `1c48e3769f0fe775e650f60ea3c5839458e5dfe2` is watchdog-GREEN. Its
-  separate bounded production edit is pending; the one-shot can consume only the successful generation
-  PNG above and requires positive authoritative image-input and image-output token details for GREEN.
+  separate bounded production edit verdict is pending; the one-shot can consume only the successful
+  generation PNG above and requires positive authoritative image-input and image-output token details
+  for GREEN. Its follow-up is non-network and reports every validated terminal withdrawal as RED.
 
 ## Official and upstream sources
 

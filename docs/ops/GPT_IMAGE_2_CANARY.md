@@ -178,7 +178,10 @@ forces both ClaudeStore fallbacks off, performs the free `/wham/usage` preflight
 exact-home `opaque/low/auto` edit. GREEN additionally requires positive terminal
 `input_tokens_details.image_tokens` and `output_tokens_details.image_tokens`, consistent input/output/
 total token sums, a bounded PNG, and exact turn/SHA evidence. A parsed mismatch, provider rejection, or
-ambiguous outcome is a terminal withdrawal with no image artifacts and cannot be replayed.
+ambiguous outcome is a terminal withdrawal with no image artifacts and cannot be replayed. The follow-up
+verdict pass is non-network: it accepts an existing exact checkpoint as GREEN, but validates and then
+fails overall delivery for any terminal withdrawal so a closed fence cannot be mistaken for successful
+edit evidence.
 
 ## Publication gate
 

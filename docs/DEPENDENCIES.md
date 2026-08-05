@@ -299,8 +299,10 @@ is only what is needed to walk the relationships when making changes:
   watchdog-GREEN. Its pending one-shot is pinned to that exact binary and can consume only the
   digest-matched successful generation PNG after verifying its private modes, checkpoint, success
   journal and internal recovery copy. One reference edit is authorized at `64_022_330_000` nanoUSD;
-  GREEN additionally requires positive terminal image-input and image-output token details. It
-  introduces no image key/origin/env. There is no `AppState`, HTTP/customer, router, catalog, defaults,
+  GREEN additionally requires positive terminal image-input and image-output token details. Its
+  non-network verdict pass accepts a checkpoint but deliberately fails delivery after validating any
+  terminal withdrawal, so fence closure cannot authorize publication. It introduces no image
+  key/origin/env. There is no `AppState`, HTTP/customer, router, catalog, defaults,
   billing/settlement, public-doc or publication consumer. Contract and blockers — `docs/engine/CODEX_PROVIDER.md`,
   `docs/ops/GPT_IMAGE_2_CANARY.md`, and `research/GPT_IMAGE_2_EVIDENCE.md`.
 - **Policy preflight contract (provider planes → router, phase 6.4a).** The producer is

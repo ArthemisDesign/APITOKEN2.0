@@ -292,7 +292,7 @@ if [[ -e $checkpoint || -L $checkpoint || -e $output || -L $output ]]; then
 fi
 if [[ -e $recovery || -L $recovery ]]; then
   verify_terminal_withdrawal || wd_die "prior GPT Image 2 edit attempt is non-replayable and invalid"
-  exit 0
+  wd_die "prior GPT Image 2 edit attempt was withdrawn; publication remains blocked"
 fi
 
 umask 077

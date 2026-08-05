@@ -137,8 +137,11 @@ a bounded `opaque/low/auto` PNG, terminal usage, and exact SHA/turn attribution.
 controller is pinned to that exact binary, verifies the successful generation checkpoint and byte digest
 before credentials, and authorizes one `64_022_330_000` nanoUSD reference edit. GREEN requires positive
 terminal image-input and image-output token details plus the same bounded PNG and exact identity evidence;
-all terminal failures are fenced without replay. The watchdog invokes the explicit immutable edit SHA
-rather than a mutable engine baseline and still requires that exact release and binary to be current.
+all terminal failures are fenced without replay. A non-network verdict pass accepts an existing exact
+checkpoint as GREEN but deliberately makes overall delivery RED after validating a terminal withdrawal;
+this prevents fence closure from being mistaken for successful edit proof. The watchdog invokes the
+explicit immutable edit SHA rather than a mutable engine baseline and still requires that exact release
+and binary to be current.
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane
 but do not reinstall the production controller. A changed Caddy template is rendered with the
