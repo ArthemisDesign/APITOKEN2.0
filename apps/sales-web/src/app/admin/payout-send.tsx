@@ -74,12 +74,36 @@ export function PayoutSendTab({ adminKey }: { adminKey: string }) {
 
   useEffect(() => { void loadEngine(); }, [loadEngine]);
 
-  // live progress while a batch is sending
+  // live progress while a batch is sending: fast right after visible movement,
+  // backing off to a quiet cadence while the chain is quiet, fast again after
+  // any change — instead of a fixed 4s beat that hammers the API while a long
+  // batch just waits for confirmations
   useEffect(() => {
     if (report?.batch.status !== "sending") return;
-    const t = setInterval(() => void openBatch(report.batch.id), 4000);
-    return () => clearInterval(t);
-  }, [report?.batch.status, report?.batch.id, openBatch]);
+    const batchId = report.batch.id;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+    let delay = 2_000;
+    let lastFrame = "";
+
+    const tick = async () => {
+      try {
+        const next = await api<PayoutReportDto>(`/v1/admin/payouts/batches/${batchId}`, { headers: adminHeaders(adminKey) });
+        if (cancelled) return;
+        const frame = JSON.stringify(next.rows.map((r) => [r.status, r.chainStatus, r.txHash]));
+        delay = frame !== lastFrame ? 2_000 : Math.min(delay * 2, 15_000);
+        lastFrame = frame;
+        setReport(next);
+      } catch {
+        // transient API failure — keep the current report, retry on the slow cadence
+        delay = Math.min(delay * 2, 15_000);
+      }
+      if (!cancelled) timer = setTimeout(() => void tick(), delay);
+    };
+    timer = setTimeout(() => void tick(), delay);
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report?.batch.status, report?.batch.id, adminKey]);
 
   async function act<T>(fn: () => Promise<T>): Promise<T | null> {
     setBusy(true); setError(null);
