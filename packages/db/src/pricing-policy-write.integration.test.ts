@@ -210,9 +210,12 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
 
   it("re-points the backfilled B2C binding to the client policy on manual conversion", async () => {
     // Production state for long-lived B2C customers: the Stage 5 backfill already bound the
-    // account to the global B2C policy, and account_policy_bindings allows exactly one row per
-    // user. Conversion must re-point that single binding instead of crashing on the policy
-    // mismatch or violating the uniqueness.
+    // account to the global B2C policy, account_policy_bindings allows exactly one row per
+    // user, and the engine confirmed the backfilled delivery — which fixed the account's
+    // legacy delivery lineage. Conversion re-points the binding, but the identity switch is
+    // NOT staged through the legacy lane (the engine would reject it with version_conflict);
+    // it ships via the release-cutover lane, and any drifted desired state is folded back to
+    // the engine-confirmed applied state.
     const user = await createEmailUser(database, "backfilled-b2c@example.test", "password-hash");
     const engineAccountId = `acct_backfilled_${user.id.replaceAll("-", "")}`;
     await seedClient.query(`
@@ -223,6 +226,25 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
       engine_accounts: [{ account_id: engineAccountId, multiplier_bp: 4_000, status: "active" }],
       openkeys_accounts: [],
     }, { mode: "safe" });
+    // The engine acknowledged the backfilled delivery: applied v1 is what the account runs.
+    await seedClient.query(`
+      UPDATE account_policy_bindings
+      SET applied_effective_version = desired_effective_version,
+          applied_digest = desired_digest,
+          last_ack_at = now(), sync_state = 'confirmed'
+      WHERE user_id = $1
+    `, [user.id]);
+    await seedClient.query(`
+      UPDATE engine_policy_jobs
+      SET status = 'confirmed', last_error = NULL, confirmed_at = now(),
+          ack_effective_version = effective_version,
+          ack_policy_version = policy_version,
+          ack_catalog_generation = catalog_generation,
+          ack_switch_generation = switch_generation,
+          ack_schema_version = schema_version,
+          ack_content_digest = content_digest,
+          ack_payload = payload
+    `);
     const before = await seedClient.query<{ account_class: string; policy_id: string }>(`
       SELECT account_class, policy_id FROM account_policy_bindings WHERE user_id = $1
     `, [user.id]);
@@ -235,24 +257,36 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
       multiplierBp: 2_000,
     });
     expect(converted).toMatchObject({ converted: true, multiplierBp: 2_000 });
+    expect(converted.jobId).not.toBeNull(); // legacy scalar delivery, unaffected by policy lineage
 
     const binding = await seedClient.query<{
       account_class: string;
       policy_id: string;
       sync_state: string;
       desired_effective_version: string | null;
+      applied_effective_version: string | null;
+      last_error: string | null;
     }>(`
-      SELECT account_class, policy_id, sync_state, desired_effective_version::text
+      SELECT account_class, policy_id, sync_state, last_error,
+             desired_effective_version::text, applied_effective_version::text
       FROM account_policy_bindings WHERE user_id = $1
     `, [user.id]);
-    // The backfill staged effective version 1 (global B2C policy); conversion re-points the
-    // same binding and stages the B2B policy as the next effective version.
+    // The binding now aims at the B2B client policy, but no new effective version is staged:
+    // the engine still runs the confirmed backfilled v1 and the identity switch is cutover work.
     expect(binding.rows).toEqual([{
       account_class: "b2b",
       policy_id: `policy:main:b2b:${user.id}`,
-      sync_state: "pending",
-      desired_effective_version: "2",
+      sync_state: "confirmed",
+      desired_effective_version: "1",
+      applied_effective_version: "1",
+      last_error: null,
     }]);
+    const staged = await seedClient.query<{ versions: string; jobs: string }>(`
+      SELECT
+        (SELECT count(*)::text FROM account_policy_versions) AS versions,
+        (SELECT count(*)::text FROM engine_policy_jobs) AS jobs
+    `);
+    expect(staged.rows[0]).toEqual({ versions: "1", jobs: "1" });
     const policy = await getManagedPricingPolicy(database, {
       ownerType: "b2b_client",
       ownerId: user.id,
@@ -266,7 +300,75 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
       }],
     });
     expect(policy!.targets).toHaveLength(1);
-    expect(policy!.targets[0]).toMatchObject({ accountClass: "b2b", syncState: "pending" });
+    expect(policy!.targets[0]).toMatchObject({
+      accountClass: "b2b",
+      desiredVersion: 1,
+      appliedVersion: 1,
+      syncState: "confirmed",
+      deliveryState: "confirmed",
+    });
+
+    // Regression for the production "dead delivery" state: the earlier staging left converted
+    // customers with a desired version the engine keeps rejecting. Saving the managed policy
+    // must heal the binding back to the engine-confirmed state instead of stacking another
+    // rejected delivery on top; the source policy itself still versions normally. The drift
+    // mirrors production: the buggy staging created an immutable v2 effective row aimed at the
+    // client policy, which the engine then refused to prepare.
+    await seedClient.query(`
+      INSERT INTO account_policy_versions (
+        binding_id, effective_version, policy_id, policy_version, policy_digest,
+        product_id, account_class, schema_version, catalog_generation,
+        switch_generation, content_digest, replacement_locked
+      )
+      SELECT binding.id, 2, source.policy_id, source.version, source.content_digest,
+             source.product_id, 'b2b', source.schema_version, source.catalog_generation,
+             applied.switch_generation, 'undeliverable', applied.replacement_locked
+      FROM account_policy_bindings binding
+      JOIN pricing_policy_versions source
+        ON source.policy_id = $2 AND source.version = 1
+      JOIN account_policy_versions applied
+        ON applied.binding_id = binding.id AND applied.effective_version = 1
+      WHERE binding.user_id = $1
+    `, [user.id, `policy:main:b2b:${user.id}`]);
+    await seedClient.query(`
+      UPDATE account_policy_bindings
+      SET desired_effective_version = 2, desired_digest = 'undeliverable',
+          sync_state = 'pending',
+          last_error = 'account-policy prepare rejected with version_conflict'
+      WHERE user_id = $1
+    `, [user.id]);
+    const updated = await updateManagedPricingPolicy(database, {
+      ownerType: "b2b_client",
+      ownerId: user.id,
+      expectedVersion: 1,
+      rules: [{ ...ANTHROPIC_60, discountBps: 7_000 }],
+      actorId: "admin@example.test",
+      reason: "adjust negotiated discount",
+    });
+    expect(updated.currentVersion).toBe(2);
+    const healed = await seedClient.query<{
+      sync_state: string;
+      desired_effective_version: string | null;
+      applied_effective_version: string | null;
+      last_error: string | null;
+    }>(`
+      SELECT sync_state, last_error,
+             desired_effective_version::text, applied_effective_version::text
+      FROM account_policy_bindings WHERE user_id = $1
+    `, [user.id]);
+    expect(healed.rows).toEqual([{
+      sync_state: "confirmed",
+      desired_effective_version: "1",
+      applied_effective_version: "1",
+      last_error: null,
+    }]);
+    // The immutable drifted v2 row stays as history; no new delivery job was staged.
+    const afterHeal = await seedClient.query<{ versions: string; jobs: string }>(`
+      SELECT
+        (SELECT count(*)::text FROM account_policy_versions) AS versions,
+        (SELECT count(*)::text FROM engine_policy_jobs) AS jobs
+    `);
+    expect(afterHeal.rows[0]).toEqual({ versions: "2", jobs: "1" });
   });
 
   it("provisions a managed policy on manual B2B conversion and repairs pre-policy conversions", async () => {

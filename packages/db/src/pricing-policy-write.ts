@@ -976,10 +976,27 @@ export async function updateManagedPricingPolicy(database: Database, input: {
         WHERE invite_id = $1
       `, [input.ownerId, next.version, next.content_digest]);
     } else {
-      const bindings = await client.query<{ id: string }>(`
-        SELECT id::text FROM account_policy_bindings WHERE policy_id = $1 ORDER BY id FOR UPDATE
+      const bindings = await client.query<{
+        id: string;
+        desired_effective_version: string | null;
+        applied_effective_version: string | null;
+      }>(`
+        SELECT id::text,
+               desired_effective_version::text AS desired_effective_version,
+               applied_effective_version::text AS applied_effective_version
+        FROM account_policy_bindings WHERE policy_id = $1 ORDER BY id FOR UPDATE
       `, [policyId]);
       for (const binding of bindings.rows) {
+        const enginePolicyId = await engineRunPolicyId(client, binding);
+        if (enginePolicyId !== null && enginePolicyId !== policyId) {
+          // The engine runs a different policy identity for this account (e.g. a converted
+          // B2C customer whose lineage was created by the Stage 5 backfill). The legacy lane
+          // would reject the delivery with version_conflict, so nothing is staged; instead any
+          // drifted desired state is folded back to the engine-confirmed applied state. The
+          // identity switch ships via the release-cutover lane.
+          await closeLegacyDeliveryDrift(client, binding.id);
+          continue;
+        }
         await materializeBinding(client, binding.id, next, catalog.generation);
       }
     }
@@ -1475,13 +1492,58 @@ export async function copyBusinessInvitationPolicyToReplacement(
 }
 
 /**
+ * The legacy engine delivery lane stores an immutable policy lineage per account and rejects any
+ * prepare whose identity (policy/owner/class) differs from what the account already runs; identity
+ * changes reach the engine only through the release-cutover locked transition. Returns the policy
+ * the engine currently runs for the binding (its applied version, or the staged desired version
+ * when nothing was applied yet), or null when no delivery lineage exists at all.
+ */
+async function engineRunPolicyId(
+  client: PoolClient,
+  binding: { id: string; desired_effective_version: string | null; applied_effective_version: string | null },
+): Promise<string | null> {
+  const reference = binding.applied_effective_version ?? binding.desired_effective_version;
+  if (reference === null) return null;
+  const version = await client.query<{ policy_id: string }>(`
+    SELECT policy_id FROM account_policy_versions
+    WHERE binding_id = $1 AND effective_version = $2
+  `, [binding.id, reference]);
+  return version.rows[0]?.policy_id ?? null;
+}
+
+/**
+ * Aligns a binding whose legacy lane is closed (the engine runs a different policy identity) with
+ * the engine-confirmed state: any staged-but-undeliverable desired version is dropped back to the
+ * applied one and the dead-delivery error is cleared. The identity switch itself is delivered by
+ * the release-cutover lane, never by rewriting or retrying legacy jobs.
+ */
+async function closeLegacyDeliveryDrift(client: PoolClient, bindingId: string): Promise<void> {
+  await client.query(`
+    UPDATE account_policy_bindings
+    SET desired_effective_version = applied_effective_version,
+        desired_digest = applied_digest,
+        sync_state = CASE WHEN applied_effective_version IS NULL THEN 'legacy' ELSE 'confirmed' END,
+        last_error = NULL, updated_at = now()
+    WHERE id = $1
+      AND (desired_effective_version IS DISTINCT FROM applied_effective_version
+           OR desired_digest IS DISTINCT FROM applied_digest
+           OR sync_state IN ('pending', 'failed')
+           OR last_error IS NOT NULL)
+  `, [bindingId]);
+}
+
+/**
  * Provisions the managed B2B client policy for a manually converted customer, reaching the same
  * end state as invitation redemption: an active source policy with a single Anthropic discount
- * rule mirroring the negotiated scalar multiplier, the account binding aimed at that policy, and
- * a staged engine delivery job. A long-lived B2C customer already carries their single allowed
- * binding (UNIQUE user_id) from the Stage 5 backfill — aimed at the global B2C policy — so the
- * conversion re-points that row instead of inserting a second one. Idempotent: when the policy
- * exists and the binding already aims at it, nothing is written and provisioned=false is returned.
+ * rule mirroring the negotiated scalar multiplier and the account binding aimed at that policy.
+ * A long-lived B2C customer already carries their single allowed binding (UNIQUE user_id) from
+ * the Stage 5 backfill — aimed at the global B2C policy — so the conversion re-points that row
+ * instead of inserting a second one. A legacy engine delivery job is staged only when the
+ * account has no conflicting delivery lineage: the legacy lane keeps an immutable policy
+ * identity per account, so for a converted customer the identity switch ships via the
+ * release-cutover lane and the scalar multiplier stays authoritative until then. Idempotent:
+ * when the policy exists and the binding already aims at it, nothing is written and
+ * provisioned=false is returned (a drifted legacy desired state is still healed).
  */
 export async function provisionBusinessClientPolicy(client: PoolClient, input: {
   userId: string;
@@ -1532,8 +1594,16 @@ export async function provisionBusinessClientPolicy(client: PoolClient, input: {
     catalogGeneration = stored.catalogGeneration;
     provisioned = true;
   }
-  const existingBinding = await client.query<{ id: string; account_class: string; policy_id: string }>(`
-    SELECT id::text, account_class, policy_id
+  const existingBinding = await client.query<{
+    id: string;
+    account_class: string;
+    policy_id: string;
+    desired_effective_version: string | null;
+    applied_effective_version: string | null;
+  }>(`
+    SELECT id::text, account_class, policy_id,
+           desired_effective_version::text AS desired_effective_version,
+           applied_effective_version::text AS applied_effective_version
     FROM account_policy_bindings WHERE user_id = $1 FOR UPDATE
   `, [input.userId]);
   let bindingId = existingBinding.rows[0]?.id ?? null;
@@ -1559,8 +1629,9 @@ export async function provisionBusinessClientPolicy(client: PoolClient, input: {
     || existingBinding.rows[0]!.account_class !== "b2b") {
     // The Stage 5 backfill bound existing B2C accounts to the global policy (shadow
     // enforcement). Conversion re-points that row to the new client policy; the
-    // effective-version history continues on the same binding and the materialization below
-    // stages the engine delivery of the B2B policy as the next version.
+    // effective-version history continues on the same binding. The engine delivery of the
+    // identity switch itself is NOT staged here: the legacy lane keeps an immutable lineage
+    // per account and would reject it, so the switch ships via the release-cutover lane.
     await client.query(`
       UPDATE account_policy_bindings
       SET account_class = 'b2b', policy_id = $2, updated_at = now()
@@ -1568,8 +1639,19 @@ export async function provisionBusinessClientPolicy(client: PoolClient, input: {
     `, [bindingId, source.policy_id]);
     provisioned = true;
   }
+  const enginePolicyId = await engineRunPolicyId(client, existingBinding.rows[0] ?? {
+    id: bindingId,
+    desired_effective_version: null,
+    applied_effective_version: null,
+  });
   let jobId: string | null = null;
-  if (provisioned) {
+  if (enginePolicyId !== null && enginePolicyId !== source.policy_id) {
+    // The engine already runs a different policy identity for this account (a converted B2C
+    // customer whose lineage was created by the backfill). A legacy prepare would be rejected
+    // with version_conflict, so no delivery is staged; instead any drifted desired state left
+    // behind by earlier staging is folded back to the engine-confirmed applied state.
+    await closeLegacyDeliveryDrift(client, bindingId);
+  } else if (provisioned) {
     jobId = (await materializeBinding(client, bindingId, source, catalogGeneration)).jobId;
   }
   return {

@@ -74,10 +74,20 @@ B2B does not inherit the global B2C policy or its provider/model overrides. The 
 immutable policy, thereafter edited by full CAS replacement. The policy originates from exactly one
 of two paths: invitation redemption copies the invitation snapshot at registration, while a manual
 admin conversion of an existing B2C customer provisions a fresh policy with a single Anthropic
-discount rule derived from the negotiated multiplier. Re-running the conversion on a customer who
+discount rule derived from the negotiated multiplier and re-points the customer's single account
+binding (the Stage 5 backfill already bound it to the global B2C policy) at that policy.
+Re-running the conversion on a customer who
 is already B2B repairs a missing policy (customers converted before this provisioning existed)
 against the multiplier already in effect, and is otherwise a no-op — it never rewrites an existing
 policy or the active scalar.
+
+The legacy engine delivery lane keeps an immutable policy lineage per account and rejects any
+prepare that switches identity (global B2C → client policy) with `version_conflict`. Conversion
+and later policy edits therefore stage a legacy delivery only when the account has no conflicting
+delivery lineage; for a converted customer the engine keeps running the confirmed backfilled
+lineage, the scalar multiplier stays authoritative, and any drifted staged-but-undeliverable
+desired state is folded back to the engine-confirmed applied state. The identity switch itself is
+delivered by the release-cutover locked transition, never by rewriting or retrying legacy jobs.
 
 The existing scalar `mult_bp` becomes only an Anthropic provider rule at migration:
 
