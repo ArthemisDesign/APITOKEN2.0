@@ -3178,9 +3178,9 @@ grep -Fq 'TEST_DB_SLOT=$3' "$ROOT/deploy/watchdog.sh" \
 ! grep -Fq 'CODEX_APP_SERVERS_HELPER' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'watchdog still waits on a Codex daemon cohort before reporting green'
 
-# GPT Image 2 generation is one exact-SHA, bounded production gate. The paid attempt is terminal;
-# the root-owned controller now verifies its controls-mismatch withdrawal without network access and
-# must close that fence before overall GREEN advances the processed baseline.
+# GPT Image 2 generation is one exact-SHA, bounded production gate. A parsed mismatch is terminal;
+# its root-owned controller must retain only sanitized diagnostics, never image bytes, and close the
+# success-or-withdrawal fence before overall GREEN advances the processed baseline.
 wd_path_is_gpt_image_2_live_gate_trigger deploy/gpt-image-2-live-gate.sh \
   || wd_die 'GPT Image 2 live gate file does not trigger its one-shot delivery range'
 if wd_path_is_gpt_image_2_live_gate_trigger deploy/watchdog.sh; then
@@ -3188,41 +3188,35 @@ if wd_path_is_gpt_image_2_live_gate_trigger deploy/watchdog.sh; then
 fi
 grep -Fq '"$ROOT/deploy/gpt-image-2-live-gate.sh"' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'GPT Image 2 live gate is not installed as a fixed controller'
-grep -Fxq 'EXPECTED_IMPLEMENTATION_SHA=012fccc471142fc51a46563da3a87564d674b39f' \
+grep -Fxq 'EXPECTED_IMPLEMENTATION_SHA=8fcd7c3c6f5dc968bedb7260433f2eaff23f8931' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate is not pinned to the watchdog-green engine SHA'
+  || wd_die 'GPT Image 2 live gate is not pinned to the watchdog-green diagnostic SHA'
 grep -Fxq 'GENERATION_BUDGET_NANOUSD=8560000' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 live gate lost its numeric authorization ceiling'
-grep -Fq '.state == "evidence_controls_mismatch"' \
+grep -Fq '.state == "evidence_home_mismatch"' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 diagnostic omits a terminal evidence state'
+grep -Fq '(.returned.output_sha256 | type == "string"' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 withdrawal does not require the exact terminal mismatch state'
-grep -Fq '(keys | sort) == ([' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 withdrawal accepts an unbounded journal schema'
+  || wd_die 'GPT Image 2 mismatch journal does not require a bounded output digest'
+grep -Fq '(.returned | keys | sort) == ([' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 diagnostic accepts an unbounded returned schema'
 grep -Fq '[[ ${#recovery_entries[@]} -eq 1 && ${recovery_entries[0]} == journal.json ]]' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 withdrawal accepts unexpected recovery artifacts'
-grep -Fq 'for forbidden in "$output" "$checkpoint" "$internal_output" "$internal_checkpoint"' \
+  || wd_die 'GPT Image 2 diagnostic accepts unexpected recovery artifacts'
+grep -Fq 'for forbidden in "$internal_output" "$internal_checkpoint"' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 withdrawal does not verify artifact absence'
-grep -Fq '(.image_turn_id | type == "string" and length > 0)' \
+  || wd_die 'GPT Image 2 diagnostic does not verify rejected image absence'
+grep -Fq '"$binary" openai-image-canary' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 gate cannot dispatch the exact private canary'
+grep -Fq 'CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 withdrawal does not require local image turn evidence'
-for network_or_dispatch_marker in \
-  /proc/ \
-  systemctl \
-  setpriv \
-  '"$binary" openai-image-canary' \
-  CLAUDE_API_CODEX_ \
-  CLAUDE_API_CLAUDESTORE_ \
-  /images/generations \
-  /images/edits; do
-  ! grep -Fq "$network_or_dispatch_marker" "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-    || wd_die "GPT Image 2 terminal withdrawal can dispatch or load runtime environment: $network_or_dispatch_marker"
-done
+  || wd_die 'GPT Image 2 gate does not force the external Codex fallback off'
+! grep -Fq '/images/edits' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'generation-only GPT Image 2 gate can dispatch an edit'
 ! grep -Eiq 'apiyi|laozhang|aihubproxy|apixo|whataicc' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 live gate contains a third-party image relay'
-grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-live-gate.sh 012fccc471142fc51a46563da3a87564d674b39f' \
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-live-gate.sh 8fcd7c3c6f5dc968bedb7260433f2eaff23f8931' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die 'GPT Image 2 live gate lacks an exact-SHA sudo bridge'
 grep -Fq "require_permitted 'GPT Image 2 exact-SHA live gate'" \

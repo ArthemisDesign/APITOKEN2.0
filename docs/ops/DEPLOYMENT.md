@@ -108,11 +108,14 @@ the processed SHA/overall GREEN. The withdrawn attempt under engine SHA
 The paid attempt under watchdog-GREEN engine SHA
 `012fccc471142fc51a46563da3a87564d674b39f` is also terminal: the endpoint returned a parsed image,
 but its response metadata did not echo the requested `opaque/low/1024x1024` controls. No output or
-checkpoint was published, and the exact attempt is permanently fenced. The controller is now a
-non-network withdrawal verifier pinned to that SHA, budget, private root, exact
-`evidence_controls_mismatch` journal shape, and absence of every image/checkpoint artifact. It only
-closes the quarantined production baseline; it does not turn the failed attempt into evidence or
-permit another paid request.
+checkpoint was published, and the exact attempt is permanently fenced. That recovery remains a
+non-network withdrawal record and never permits replay. Diagnostic implementation SHA
+`8fcd7c3c6f5dc968bedb7260433f2eaff23f8931` is independently watchdog-GREEN. A new one-shot controller
+is pinned to that exact deployed binary, a fresh SHA-keyed private root, and the same `8_560_000`
+nanoUSD authorization. It performs the free preflight and at most one exact-home generation. A complete
+checkpoint is accepted as GREEN; a parsed evidence mismatch is accepted only as a terminal withdrawal
+with a closed sanitized journal schema and no persisted or published image. Every other outcome fails
+the delivery, and no attempt is replayed.
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane
 but do not reinstall the production controller. A changed Caddy template is rendered with the

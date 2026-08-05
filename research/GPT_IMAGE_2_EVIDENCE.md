@@ -131,12 +131,14 @@ requirement to generate only through our existing OAuth pool. No third-party ima
 
 1. The RED production baseline is closed by a non-network verifier for the terminal
    `evidence_controls_mismatch` attempt; never replay that image turn or treat it as successful evidence.
-2. Deploy the private recovery change that records a rejected parsed result's sanitized returned
+2. The private recovery change is deployed under watchdog-GREEN SHA
+   `8fcd7c3c6f5dc968bedb7260433f2eaff23f8931`: a rejected parsed result records sanitized returned
    controls, dimensions, identity flags, usage, optional request id, and digest—but not image bytes—in
    the mode-0600 journal. This diagnostic evidence is not publication evidence.
-3. Use that separately reviewed implementation and a new evidence root to determine the real native
-   response contract. Require 2xx, one real PNG, terminal usage, local turn attribution, private mode-0600
-   evidence, and no ambiguous replay; do not require response echo fields the native contract omits.
+3. Run its separately authorized one-shot controller against a new SHA-keyed evidence root to determine
+   the real native response contract. Require 2xx, one real PNG, terminal usage, local turn attribution,
+   private mode-0600 evidence, and no ambiguous replay; do not require response echo fields the native
+   contract omits.
 4. Derive and review a normative edit ceiling, authorize it separately, and run an exact-home edit with
    an owned generated PNG. Verify every claimed reference/edit behavior.
 5. Resolve partial-image streaming for the actual native subscription wire before claiming it. Public

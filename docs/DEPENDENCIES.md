@@ -282,8 +282,10 @@ is only what is needed to walk the relationships when making changes:
   `opaque/low/1024x1024`; edit remains blocked until a normative input-image ceiling exists. The one-shot
   watchdog attempt against exact deployed engine SHA `012fccc471142fc51a46563da3a87564d674b39f`
   returned a parsed image with mismatched control metadata, published no artifact, and is permanently
-  fenced. Its controller now performs only a non-network verification of that exact terminal journal
-  before advancing processed/overall GREEN; it cannot replay or reinterpret the attempt as evidence.
+  fenced. Diagnostic implementation SHA `8fcd7c3c6f5dc968bedb7260433f2eaff23f8931` is separately
+  watchdog-GREEN. Its new SHA-pinned controller may run one fresh bounded exact-home generation; it
+  accepts either complete private checkpoint evidence or a terminal sanitized mismatch journal with no
+  image artifacts. It cannot replay either attempt or reinterpret a diagnostic withdrawal as evidence.
   It introduces no image key/origin/env. There is no
   `AppState`, HTTP/customer,
   router, catalog, defaults, billing/settlement,

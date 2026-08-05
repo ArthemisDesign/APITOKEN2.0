@@ -123,6 +123,14 @@ non-network verification of that exact SHA/budget/journal and the absence of all
 cannot replay the paid call. The diagnostic journal contract described above applies only to a future
 attempt running an implementation that contains it; it does not retroactively enrich this fenced journal.
 
+Diagnostic implementation SHA `8fcd7c3c6f5dc968bedb7260433f2eaff23f8931` is independently
+watchdog-GREEN. Its separate one-shot delivery uses a fresh SHA-keyed root and the same explicit
+`8_560_000` nanoUSD ceiling. Before dispatch it requires the exact active binary, the existing free
+`/wham/usage` preflight path, the sealed pool environment from that running OpenAI slot, and both
+ClaudeStore fallback switches forced off. It can dispatch one exact-home generation only. Full exact
+evidence yields GREEN; a parsed mismatch yields a terminal sanitized journal with no image artifacts;
+all other outcomes fail the delivery. Neither branch can be replayed.
+
 Edit can be validated as a blocked plan by repeating `--reference` up to five times. Do not add
 `--execute` until a reviewed normative input-image ceiling and separate numeric authorization exist.
 
