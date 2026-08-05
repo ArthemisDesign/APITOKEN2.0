@@ -371,7 +371,6 @@ export async function listAdminPayingUsers(
 ): Promise<AdminPayingUsersPage> {
   if (![1, 7, 30].includes(query.days)) throw new Error(`unsupported paying users window: ${query.days}`);
   const days = query.days;
-  const windowEnd = new Date();
   const limit = Math.max(1, Math.min(100, query.limit ?? 50));
   const offset = Math.max(0, query.offset ?? 0);
   const q = query.q?.trim() ?? "";
@@ -397,7 +396,7 @@ export async function listAdminPayingUsers(
   // Exact modern funding requires policy_v1/release_v2, complete non-negative split, and equality
   // to both attribution charged_nano and the immutable event amount. No balance/model/top-up proxy
   // participates in bonus-only classification.
-  const commonCtes = (fundingParameter: number, windowEndParameter: number) => `
+  const commonCtes = (fundingParameter: number) => `
     WITH money AS (
       SELECT user_id,
              sum(payments_count)::bigint AS payments_count,
@@ -435,8 +434,12 @@ export async function listAdminPayingUsers(
         ) AS exact_modern_funding
       FROM pricing_usage_events e
       LEFT JOIN pricing_usage_attributions a ON a.pricing_usage_event_id = e.id
-      WHERE e.occurred_at >= $${windowEndParameter}::timestamptz - make_interval(days => $1)
-        AND e.occurred_at < $${windowEndParameter}::timestamptz
+      -- now() is one coherent transaction-start timestamp at microsecond precision: an event
+      -- written microseconds before this query stays inside the window (a JavaScript Date
+      -- carries only milliseconds and could truncate above such a row), and all three cohort
+      -- queries share the exact same window end.
+      WHERE e.occurred_at >= now() - make_interval(days => $1)
+        AND e.occurred_at < now()
     ), window_events AS (
       SELECT user_id, engine_account_id, amount_nano, provider_id, exact_modern_funding,
         CASE WHEN exact_modern_funding THEN paid_funded_nano ELSE 0 END AS paid_funded_nano,
@@ -541,7 +544,7 @@ export async function listAdminPayingUsers(
       last_seen_at: Date | null; created_at: Date;
     }>(`
       /* admin-finance:paying-users */
-      ${commonCtes(5, 8)}
+      ${commonCtes(5)}
       SELECT u.id AS user_id, u.email, u.display_name, u.status,
         cp.customer_type, cp.current_tier, cp.multiplier_bp, paid.funding_kind,
         paid.paid_nano::text, paid.payments_count::text, paid.last_paid_at,
@@ -573,16 +576,16 @@ export async function listAdminPayingUsers(
       WHERE ${filters}
       ORDER BY ${sortExpr} ${dir === "asc" ? "ASC" : "DESC"} NULLS LAST, u.id ASC
       LIMIT $6 OFFSET $7
-    `, [days, q, status, provider, funding, limit, offset, windowEnd]),
+    `, [days, q, status, provider, funding, limit, offset]),
     await client.query<{ total: string }>(`
       /* admin-finance:paying-users-count */
-      ${commonCtes(5, 6)}
+      ${commonCtes(5)}
       SELECT count(*)::text AS total
       FROM users u
       JOIN paid ON paid.user_id = u.id
       LEFT JOIN usage ON usage.user_id = u.id
       WHERE ${filters}
-    `, [days, q, status, provider, funding, windowEnd]),
+    `, [days, q, status, provider, funding]),
     await client.query<{
       paying_users: string; cohort_users: string; bonus_only_users: string;
       active_spenders: string; paid_nano: string; manual_paid_nano: string;
@@ -591,7 +594,7 @@ export async function listAdminPayingUsers(
       anthropic_users: string; openai_users: string; google_users: string; other_users: string;
     }>(`
       /* admin-finance:paying-users-summary */
-      ${commonCtes(2, 3)}
+      ${commonCtes(2)}
       SELECT count(*) FILTER (
           WHERE paid.funding_kind IN ('payments', 'payments_and_manual', 'manual')
         )::text AS paying_users,
@@ -613,7 +616,7 @@ export async function listAdminPayingUsers(
         count(*) FILTER (WHERE COALESCE(usage.other_nano, 0) > 0)::text AS other_users
       FROM paid
       LEFT JOIN usage ON usage.user_id = paid.user_id
-    `, [days, funding, windowEnd]),
+    `, [days, funding]),
   ];
   await client.query("COMMIT");
 

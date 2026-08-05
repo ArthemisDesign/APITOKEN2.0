@@ -69,9 +69,7 @@ describe("listAdminPayingUsers", () => {
     ]);
     expect(state.released).toBe(true);
     expect(queries).toHaveLength(3);
-    const windowEnd = queries[0]!.params[7];
-    expect(windowEnd).toBeInstanceOf(Date);
-    expect(queries[0]!.params).toEqual([7, "paid@", "active", "openai", "", 25, 50, windowEnd]);
+    expect(queries[0]!.params).toEqual([7, "paid@", "active", "openai", "", 25, 50]);
     expect(queries[0]!.text).toContain("JOIN paid ON paid.user_id = u.id");
     expect(queries[0]!.text).toContain("pricing_usage_attributions");
     expect(queries[0]!.text).toContain("COALESCE(a.provider_id, e.provider_id) AS provider_id");
@@ -82,12 +80,12 @@ describe("listAdminPayingUsers", () => {
     expect(queries[0]!.text).not.toContain("real_funded_nano");
     expect(queries[0]!.text).not.toContain("free_balance_nano");
     expect(queries[0]!.text).toContain("array_agg(DISTINCT engine_account_id ORDER BY engine_account_id)");
-    expect(queries[0]!.text).toContain("e.occurred_at < $8::timestamptz");
+    expect(queries[0]!.text).toContain("e.occurred_at < now()");
     expect(queries[0]!.text).toContain("ORDER BY paid.paid_nano ASC NULLS LAST, u.id ASC");
-    expect(queries[1]!.params).toEqual([7, "paid@", "active", "openai", "", windowEnd]);
-    expect(queries[1]!.text).toContain("e.occurred_at < $6::timestamptz");
-    expect(queries[2]!.params).toEqual([7, "", windowEnd]);
-    expect(queries[2]!.text).toContain("e.occurred_at < $3::timestamptz");
+    expect(queries[1]!.params).toEqual([7, "paid@", "active", "openai", ""]);
+    expect(queries[1]!.text).toContain("e.occurred_at < now()");
+    expect(queries[2]!.params).toEqual([7, ""]);
+    expect(queries[2]!.text).toContain("e.occurred_at < now()");
     expect(page).toMatchObject({
       total: 3,
       days: 7,
