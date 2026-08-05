@@ -134,11 +134,15 @@ requirement to generate only through our existing OAuth pool. No third-party ima
 2. The private recovery change is deployed under watchdog-GREEN SHA
    `8fcd7c3c6f5dc968bedb7260433f2eaff23f8931`: a rejected parsed result records sanitized returned
    controls, dimensions, identity flags, usage, optional request id, and digest—but not image bytes—in
-   the mode-0600 journal. This diagnostic evidence is not publication evidence.
-3. Run its separately authorized one-shot controller against a new SHA-keyed evidence root to determine
-   the real native response contract. Require 2xx, one real PNG, terminal usage, local turn attribution,
-   private mode-0600 evidence, and no ambiguous replay; do not require response echo fields the native
-   contract omits.
+   the mode-0600 journal. This diagnostic evidence is not publication evidence. Active watchdog-GREEN
+   descendant `3c17b31b6dfdcb8867d8def57e7aedc4ebc87644` has an empty diff from that SHA across
+   `openai_image_canary.rs` and the three Codex image transport/config files.
+3. Run the separately authorized one-shot controller against the fresh SHA-keyed root for exact active
+   SHA `3c17b31b6dfdcb8867d8def57e7aedc4ebc87644` to determine the real native response contract.
+   Earlier controller deliveries `3ba2d941e95419748027bf5fc8a0759821095148` and
+   `e0618cca78b6b5a650f9a8399c5457572bb44568` stopped before free preflight or paid dispatch. Require
+   2xx, one real PNG, terminal usage, local turn attribution, private mode-0600 evidence, and no ambiguous
+   replay; do not require response echo fields the native contract omits.
 4. Derive and review a normative edit ceiling, authorize it separately, and run an exact-home edit with
    an owned generated PNG. Verify every claimed reference/edit behavior.
 5. Resolve partial-image streaming for the actual native subscription wire before claiming it. Public

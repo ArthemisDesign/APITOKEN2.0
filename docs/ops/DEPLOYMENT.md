@@ -110,16 +110,22 @@ The paid attempt under watchdog-GREEN engine SHA
 but its response metadata did not echo the requested `opaque/low/1024x1024` controls. No output or
 checkpoint was published, and the exact attempt is permanently fenced. That recovery remains a
 non-network withdrawal record and never permits replay. Diagnostic implementation SHA
-`8fcd7c3c6f5dc968bedb7260433f2eaff23f8931` is independently watchdog-GREEN. A new one-shot controller
-is pinned to that exact deployed binary, a fresh SHA-keyed private root, and the same `8_560_000`
-nanoUSD authorization. It performs the free preflight and at most one exact-home generation. A complete
+`8fcd7c3c6f5dc968bedb7260433f2eaff23f8931` is independently watchdog-GREEN. The active
+watchdog-GREEN engine SHA `3c17b31b6dfdcb8867d8def57e7aedc4ebc87644` is its descendant, and the
+image canary and Codex image transport files have no diff between those SHAs. A new one-shot controller
+is pinned to that exact active binary, a fresh SHA-keyed private root, and the same `8_560_000` nanoUSD
+authorization. It performs the free preflight and at most one exact-home generation. A complete
 checkpoint is accepted as GREEN; a parsed evidence mismatch is accepted only as a terminal withdrawal
 with a closed sanitized journal schema and no persisted or published image. Every other outcome fails
 the delivery, and no attempt is replayed. Initial controller delivery
 `3ba2d941e95419748027bf5fc8a0759821095148` stopped during infrastructure installation before the gate
-could run because the sudo-policy installer self-check still named the predecessor SHA. No preflight or
-paid image dispatch occurred; a corrective delivery aligns that fail-closed self-check with the existing
-exact-SHA policy.
+could run because the sudo-policy installer self-check still named the predecessor SHA. Corrective
+delivery `e0618cca78b6b5a650f9a8399c5457572bb44568` installed and verified the exact policy, then stopped
+before the gate because the watchdog passed the newer unrelated engine baseline instead of the gate's
+pinned implementation SHA; sudo correctly rejected that different argument. Neither delivery performed
+the free preflight or a paid image dispatch. The watchdog invokes this one-shot gate with the explicit
+immutable active implementation SHA rather than a mutable engine baseline; the gate still requires that
+exact release and binary to be current.
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane
 but do not reinstall the production controller. A changed Caddy template is rendered with the

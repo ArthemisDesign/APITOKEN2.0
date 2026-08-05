@@ -283,9 +283,11 @@ is only what is needed to walk the relationships when making changes:
   watchdog attempt against exact deployed engine SHA `012fccc471142fc51a46563da3a87564d674b39f`
   returned a parsed image with mismatched control metadata, published no artifact, and is permanently
   fenced. Diagnostic implementation SHA `8fcd7c3c6f5dc968bedb7260433f2eaff23f8931` is separately
-  watchdog-GREEN. Its new SHA-pinned controller may run one fresh bounded exact-home generation; it
-  accepts either complete private checkpoint evidence or a terminal sanitized mismatch journal with no
-  image artifacts. It cannot replay either attempt or reinterpret a diagnostic withdrawal as evidence.
+  watchdog-GREEN. Active watchdog-GREEN descendant `3c17b31b6dfdcb8867d8def57e7aedc4ebc87644`
+  has no image canary or Codex image transport diff from that diagnostic SHA. The new controller is
+  pinned to that exact active binary and may run one fresh bounded exact-home generation; it accepts
+  either complete private checkpoint evidence or a terminal sanitized mismatch journal with no image
+  artifacts. It cannot replay either attempt or reinterpret a diagnostic withdrawal as evidence.
   It introduces no image key/origin/env. There is no
   `AppState`, HTTP/customer,
   router, catalog, defaults, billing/settlement,

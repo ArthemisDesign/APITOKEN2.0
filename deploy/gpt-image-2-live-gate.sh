@@ -9,7 +9,7 @@ source "$LIB"
 STATE_ROOT=/var/lib/apitoken/watchdog
 ENGINE_RELEASE_ROOT=/srv/claude-api/releases
 ENGINE_DATA_ROOT=/srv/claude-api/data
-EXPECTED_IMPLEMENTATION_SHA=8fcd7c3c6f5dc968bedb7260433f2eaff23f8931
+EXPECTED_IMPLEMENTATION_SHA=3c17b31b6dfdcb8867d8def57e7aedc4ebc87644
 GENERATION_BUDGET_NANOUSD=8560000
 
 [[ $# -eq 1 ]] || wd_die "usage: gpt-image-2-live-gate.sh <exact-engine-sha>"

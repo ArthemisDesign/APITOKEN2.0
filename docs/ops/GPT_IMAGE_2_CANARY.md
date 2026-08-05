@@ -124,12 +124,16 @@ cannot replay the paid call. The diagnostic journal contract described above app
 attempt running an implementation that contains it; it does not retroactively enrich this fenced journal.
 
 Diagnostic implementation SHA `8fcd7c3c6f5dc968bedb7260433f2eaff23f8931` is independently
-watchdog-GREEN. Its separate one-shot delivery uses a fresh SHA-keyed root and the same explicit
-`8_560_000` nanoUSD ceiling. Before dispatch it requires the exact active binary, the existing free
-`/wham/usage` preflight path, the sealed pool environment from that running OpenAI slot, and both
-ClaudeStore fallback switches forced off. It can dispatch one exact-home generation only. Full exact
-evidence yields GREEN; a parsed mismatch yields a terminal sanitized journal with no image artifacts;
-all other outcomes fail the delivery. Neither branch can be replayed.
+watchdog-GREEN. Active watchdog-GREEN descendant `3c17b31b6dfdcb8867d8def57e7aedc4ebc87644`
+has an empty diff against that SHA across the image canary and Codex image transport files. Its separate
+one-shot delivery uses a fresh SHA-keyed root and the same explicit `8_560_000` nanoUSD ceiling. Before
+dispatch it requires that exact active binary, the existing free `/wham/usage` preflight path, the sealed
+pool environment from that running OpenAI slot, and both ClaudeStore fallback switches forced off. It can
+dispatch one exact-home generation only. Full exact evidence yields GREEN; a parsed mismatch yields a
+terminal sanitized journal with no image artifacts; all other outcomes fail the delivery. Neither branch
+can be replayed. Controller deliveries `3ba2d941e95419748027bf5fc8a0759821095148` and
+`e0618cca78b6b5a650f9a8399c5457572bb44568` stopped before preflight and paid dispatch; the latter passed
+policy installation but supplied a different mutable engine SHA to the exact-argument sudo bridge.
 
 Edit can be validated as a blocked plan by repeating `--reference` up to five times. Do not add
 `--execute` until a reviewed normative input-image ceiling and separate numeric authorization exist.

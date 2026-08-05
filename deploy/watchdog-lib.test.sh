@@ -3188,9 +3188,9 @@ if wd_path_is_gpt_image_2_live_gate_trigger deploy/watchdog.sh; then
 fi
 grep -Fq '"$ROOT/deploy/gpt-image-2-live-gate.sh"' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'GPT Image 2 live gate is not installed as a fixed controller'
-grep -Fxq 'EXPECTED_IMPLEMENTATION_SHA=8fcd7c3c6f5dc968bedb7260433f2eaff23f8931' \
+grep -Fxq 'EXPECTED_IMPLEMENTATION_SHA=3c17b31b6dfdcb8867d8def57e7aedc4ebc87644' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate is not pinned to the watchdog-green diagnostic SHA'
+  || wd_die 'GPT Image 2 live gate is not pinned to the watchdog-green active implementation SHA'
 grep -Fxq 'GENERATION_BUDGET_NANOUSD=8560000' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 live gate lost its numeric authorization ceiling'
 grep -Fq '.state == "evidence_home_mismatch"' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
@@ -3216,17 +3216,23 @@ grep -Fq 'CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0' \
 ! grep -Eiq 'apiyi|laozhang|aihubproxy|apixo|whataicc' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 live gate contains a third-party image relay'
-grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-live-gate.sh 8fcd7c3c6f5dc968bedb7260433f2eaff23f8931' \
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-live-gate.sh 3c17b31b6dfdcb8867d8def57e7aedc4ebc87644' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die 'GPT Image 2 live gate lacks an exact-SHA sudo bridge'
 grep -A2 -F "require_permitted 'GPT Image 2 exact-SHA live gate'" \
   "$ROOT/deploy/install-sudoers.sh" \
-  | grep -Fq '8fcd7c3c6f5dc968bedb7260433f2eaff23f8931' \
+  | grep -Fq '3c17b31b6dfdcb8867d8def57e7aedc4ebc87644' \
   || wd_die 'GPT Image 2 exact-SHA sudo bridge self-check is not aligned with policy'
-live_gate_line=$(grep -nF 'sudo -n "$GPT_IMAGE_2_LIVE_GATE" "$ENGINE_SHA"' \
+grep -Fxq 'GPT_IMAGE_2_IMPLEMENTATION_SHA=3c17b31b6dfdcb8867d8def57e7aedc4ebc87644' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog does not pin the GPT Image 2 gate to its immutable implementation release'
+live_gate_line=$(grep -nF \
+  'sudo -n "$GPT_IMAGE_2_LIVE_GATE" "$GPT_IMAGE_2_IMPLEMENTATION_SHA"' \
   "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
 [[ -n $live_gate_line && -n $processed_line && $live_gate_line -lt $processed_line ]] \
-  || wd_die 'GPT Image 2 withdrawal fence is not verified before processed/green'
+  || wd_die 'GPT Image 2 exact implementation withdrawal fence is not verified before processed/green'
+! grep -Fq 'sudo -n "$GPT_IMAGE_2_LIVE_GATE" "$ENGINE_SHA"' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'GPT Image 2 gate follows the mutable current engine baseline instead of its pinned implementation'
 
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'
