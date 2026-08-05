@@ -82,6 +82,7 @@ document, update this index.
 - [2026-08-04-BACKEND-POSTGRES-PERFORMANCE-AUDIT.md](audits/2026-08-04-BACKEND-POSTGRES-PERFORMANCE-AUDIT.md) — full PostgreSQL communications and performance audit across engine, commerce, Sales, OpenKeys, pooling, indexes, and observability.
 - [2026-08-05-MULTI-DISCOUNT-IMPLEMENTATION-AUDIT.md](audits/2026-08-05-MULTI-DISCOUNT-IMPLEMENTATION-AUDIT.md) — implementation and production-readiness audit of the multi-provider discount contract, release-v2 rollout, customer/admin surfaces, OpenKeys, and referral attribution.
 - [2026-08-05-SOURCE-CONTEXT-AUDIT.md](audits/2026-08-05-SOURCE-CONTEXT-AUDIT.md) — source concentration and large-file audit with a behavior-preserving decomposition roadmap for smaller agent navigation contexts.
+- [2026-08-05-GEMINI-IMAGE-INTERACTIONS-CAPABILITY-AUDIT.md](audits/2026-08-05-GEMINI-IMAGE-INTERACTIONS-CAPABILITY-AUDIT.md) — capability audit of Gemini image generation across the current Interactions contract, the native core subset, multi-turn state, SDK methods, and OpenAI media conversion.
 
 ## Next to the code (do not move here)
 
