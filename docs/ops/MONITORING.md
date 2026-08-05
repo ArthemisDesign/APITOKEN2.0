@@ -843,6 +843,27 @@ requeueing; all money mutations must remain idempotent. Intentionally obsolete c
 use the separate `canceled` state and `apitoken_queue_canceled` metric. Never relabel a genuine
 delivery failure as canceled merely to silence this alert.
 
+## PricingPolicyDeliveryStale
+
+A new customer's `account_policy_bindings` row has waited unconfirmed for over two minutes.
+Expected causes, in order: the `apitoken-worker` unit is down or crash-looping (check
+`node_systemd_unit_state` and the unit journal for `pricing worker` lines), the LISTEN/NOTIFY
+connection and the periodic sweep are both unhealthy (the journal shows repeated
+`pricing-control notify listener reconnecting` warnings), or the engine Control API rejects
+deliveries (`pricing-control job … failed permanently` in the same journal). Do not update the
+binding row by hand: once the cause is fixed the worker re-claims the durable job on its own
+(lease recovery plus `FOR UPDATE SKIP LOCKED` claiming make replay idempotent). Confirm recovery
+by watching `apitoken_pricing_policy_oldest_pending_seconds` return to single digits and the
+binding reach `sync_state = 'confirmed'`.
+
+## PricingPolicyDeliveryFailed
+
+The engine rejected a policy activation permanently (`sync_state = 'failed'`). Read
+`last_error` on the binding row and the corresponding `engine_policy_jobs.last_error` first.
+Typical causes are an invalid desired policy payload or a superseded desired version. Fix the
+cause, then re-drive the desired policy through the application's own idempotent write path
+(`packages/db` pricing policy write), never by editing `sync_state` directly.
+
 ## FailedWebhooksPresent
 
 Verify provider signature/audit data and whether the event’s intended payment mutation committed.

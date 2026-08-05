@@ -617,6 +617,28 @@ groups:
           description: '{{ $value }} durable jobs require operator investigation.'
           runbook: 'docs/ops/MONITORING.md#durablequeuedeaditems'
 
+      - alert: PricingPolicyDeliveryStale
+        expr: apitoken_pricing_policy_oldest_pending_seconds > 120
+        for: 5m
+        labels:
+          severity: critical
+          component: pricing-worker
+        annotations:
+          summary: 'New account tariff policies are stuck before engine delivery'
+          description: 'The oldest unconfirmed account policy binding is {{ $value | humanizeDuration }} old; affected customers see 503 on the dashboard until the pricing worker delivers. LISTEN/NOTIFY normally confirms within seconds.'
+          runbook: 'docs/ops/MONITORING.md#pricingpolicydeliverystale'
+
+      - alert: PricingPolicyDeliveryFailed
+        expr: apitoken_pricing_policy_failed > 0
+        for: 2m
+        labels:
+          severity: warning
+          component: pricing-worker
+        annotations:
+          summary: 'Account policy engine activation failed terminally'
+          description: '{{ $value }} account policy bindings sit in failed state; their owners stay without working API access until requeued after the cause is fixed.'
+          runbook: 'docs/ops/MONITORING.md#pricingpolicydeliveryfailed'
+
       - alert: FailedWebhooksPresent
         expr: apitoken_webhook_failed > 0
         for: 2m

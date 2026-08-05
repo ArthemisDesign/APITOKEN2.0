@@ -63,6 +63,12 @@ cat >"$temporary" <<'METRICS'
 # TYPE apitoken_sales_pending_referral_events gauge
 # HELP apitoken_sales_failed_payout_batches Sales payout batches in failed state.
 # TYPE apitoken_sales_failed_payout_batches gauge
+# HELP apitoken_pricing_policy_pending Account policy bindings waiting for engine confirmation; new accounts cannot serve spend until confirmed.
+# TYPE apitoken_pricing_policy_pending gauge
+# HELP apitoken_pricing_policy_oldest_pending_seconds Age of the oldest account policy binding still waiting for engine confirmation.
+# TYPE apitoken_pricing_policy_oldest_pending_seconds gauge
+# HELP apitoken_pricing_policy_failed Account policy bindings whose engine activation terminally failed.
+# TYPE apitoken_pricing_policy_failed gauge
 METRICS
 
 psql_database commerce >>"$temporary" <<'SQL'
@@ -75,6 +81,15 @@ SELECT 'apitoken_queue_oldest_ready_seconds{queue="engine_adjustments"} ' || COA
 SELECT 'apitoken_queue_ready{queue="engine_pricing"} ' || count(*) FROM engine_pricing_jobs WHERE status IN ('pending','retry');
 SELECT 'apitoken_queue_dead{queue="engine_pricing"} 0';
 SELECT 'apitoken_queue_oldest_ready_seconds{queue="engine_pricing"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM engine_pricing_jobs WHERE status IN ('pending','retry');
+-- The signup path: a fresh account cannot serve spend until its policy control job is delivered
+-- and the binding is confirmed. LISTEN/NOTIFY (migration 0041) makes the common case sub-second;
+-- these gauges are the "registration to working account" SLO evidence.
+SELECT 'apitoken_queue_ready{queue="engine_policy_jobs"} ' || count(*) FROM engine_policy_jobs WHERE status IN ('pending','retry');
+SELECT 'apitoken_queue_dead{queue="engine_policy_jobs"} ' || count(*) FROM engine_policy_jobs WHERE status = 'dead';
+SELECT 'apitoken_queue_oldest_ready_seconds{queue="engine_policy_jobs"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM engine_policy_jobs WHERE status IN ('pending','retry');
+SELECT 'apitoken_pricing_policy_pending ' || count(*) FROM account_policy_bindings WHERE sync_state = 'pending';
+SELECT 'apitoken_pricing_policy_oldest_pending_seconds ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM account_policy_bindings WHERE sync_state = 'pending';
+SELECT 'apitoken_pricing_policy_failed ' || count(*) FROM account_policy_bindings WHERE sync_state = 'failed';
 SELECT 'apitoken_queue_ready{queue="commerce_email"} ' || count(*) FROM email_outbox WHERE status = 'pending';
 SELECT 'apitoken_queue_dead{queue="commerce_email"} ' || count(*) FROM email_outbox WHERE status = 'failed';
 -- Infrastructure installs before application migrations. Cast the enum to text so this collector

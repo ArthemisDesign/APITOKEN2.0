@@ -409,6 +409,32 @@ grep -Fq 'docs/ops/MONITORING.md#balancedivergencedetected' "$ROOT/observability
 grep -Fqi '## BalanceDivergenceDetected' "$ROOT/docs/ops/MONITORING.md" \
   || { printf 'docs/ops/MONITORING.md has no balance-divergence runbook\n' >&2; exit 1; }
 
+# The signup-readiness SLO ("registration to working account") must be a closed
+# collector -> alert -> runbook loop just like money conservation. Pin the operands so a
+# constant-zero replacement cannot satisfy the contract.
+policy_pending_metric=apitoken_pricing_policy_oldest_pending_seconds
+for required in \
+  "$policy_pending_metric" \
+  'account_policy_bindings' \
+  "sync_state = 'pending'" \
+  'queue="engine_policy_jobs"'; do
+  grep -Fq "$required" "$ROOT/deploy/collect-monitoring-metrics.sh" \
+    || { printf 'policy-pending collector is missing %s\n' "$required" >&2; exit 1; }
+done
+grep -Fq "$policy_pending_metric" "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'no alert rule consumes %s\n' "$policy_pending_metric" >&2; exit 1; }
+grep -Fq 'alert: PricingPolicyDeliveryStale' "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'missing policy-delivery stale alert\n' >&2; exit 1; }
+grep -Fq 'severity: critical' \
+  <(grep -F 'alert: PricingPolicyDeliveryStale' -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
+  || { printf 'policy-delivery stale alert is not critical\n' >&2; exit 1; }
+grep -Fq 'docs/ops/MONITORING.md#pricingpolicydeliverystale' "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'policy-delivery stale alert has no runbook anchor\n' >&2; exit 1; }
+grep -Fqi '## PricingPolicyDeliveryStale' "$ROOT/docs/ops/MONITORING.md" \
+  || { printf 'docs/ops/MONITORING.md has no policy-delivery runbook\n' >&2; exit 1; }
+grep -Fqi '## PricingPolicyDeliveryFailed' "$ROOT/docs/ops/MONITORING.md" \
+  || { printf 'docs/ops/MONITORING.md has no policy-delivery-failed runbook\n' >&2; exit 1; }
+
 # The journal must be an explicit, bounded, persistent store. Under the default `Storage=auto`
 # journald decided volatile-vs-persistent from whether the Docker-created /var/log/journal existed,
 # put the journal in tmpfs, and lost it on every reboot; the SystemMaxUse default of 10% of the
