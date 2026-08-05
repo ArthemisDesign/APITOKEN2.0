@@ -109,14 +109,14 @@ systemd syntax from `config.env` as Bash. Delivery
 provider supplied no optional request-id header. Its exact recovery root is a terminal non-replay fence.
 
 Corrected implementation SHA `012fccc471142fc51a46563da3a87564d674b39f` is independently
-watchdog-GREEN. A delivery range changing `deploy/gpt-image-2-live-gate.sh` invokes its root-owned
-one-shot controller after all selected production checks and before processed/overall GREEN. The
-controller uses a distinct SHA-keyed evidence root, imports only systemd-parsed Codex/DB/affinity values
-from an active exact-release OpenAI slot, forces both external fallbacks off, drops to `deploy` with
-`no_new_privs`, and authorizes one `$0.00856` generation. Valid evidence requires exact controls and
-local turn, nonempty numeric terminal usage, strict PNG/hash, identical private recovery and published
-artifacts, and the exact implementation SHA; the provider request-id remains optional. Any recovery
-without complete valid evidence is terminal and cannot be replayed.
+watchdog-GREEN. Delivery `d7b394fc5e6b9b603e1e0ab3982038f5479ba2e8` then made its one
+authorized `$0.00856` generation through the sealed pool. The endpoint returned a parsed image, but the
+returned metadata did not exactly echo `opaque/low/1024x1024`; the canary recorded
+`evidence_controls_mismatch`, published neither PNG nor checkpoint, and permanently fenced the attempt.
+The recovery journal intentionally contains no returned controls or usage, so this attempt cannot prove
+which field differed and cannot be promoted as partial evidence. The controller now performs only a
+non-network verification of that exact SHA/budget/journal and the absence of all output artifacts; it
+cannot replay the paid call.
 
 Edit can be validated as a blocked plan by repeating `--reference` up to five times. Do not add
 `--execute` until a reviewed normative input-image ceiling and separate numeric authorization exist.

@@ -105,14 +105,14 @@ The private `deploy/gpt-image-2-live-gate.sh` is a one-shot exception within the
 only the delivery range changing that file invokes it, after selected production verification and before
 the processed SHA/overall GREEN. The withdrawn attempt under engine SHA
 `3f67d43c0ae541979fee66823d251e2e3eea33e0` remains fenced in its own recovery root and is never replayed.
-The current controller is pinned to watchdog-GREEN engine SHA
-`012fccc471142fc51a46563da3a87564d674b39f` and a distinct evidence root. It imports only the
-systemd-parsed Codex/DB/affinity environment from an active exact-release OpenAI slot, forces both
-external fallbacks off, drops to `deploy` with `no_new_privs`, and permits one `$0.00856` generation.
-Success requires matching private recovery and published artifacts, exact controls and local turn,
-nonempty numeric terminal usage, a strict PNG/hash, and the exact implementation SHA; the provider
-request-id remains optional. Any prior recovery without valid complete evidence is terminal and
-quarantines the delivery without publishing GPT Image 2 or advancing the processed baseline.
+The paid attempt under watchdog-GREEN engine SHA
+`012fccc471142fc51a46563da3a87564d674b39f` is also terminal: the endpoint returned a parsed image,
+but its response metadata did not echo the requested `opaque/low/1024x1024` controls. No output or
+checkpoint was published, and the exact attempt is permanently fenced. The controller is now a
+non-network withdrawal verifier pinned to that SHA, budget, private root, exact
+`evidence_controls_mismatch` journal shape, and absence of every image/checkpoint artifact. It only
+closes the quarantined production baseline; it does not turn the failed attempt into evidence or
+permit another paid request.
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane
 but do not reinstall the production controller. A changed Caddy template is rendered with the

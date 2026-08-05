@@ -16,9 +16,12 @@
   Delivery `2c7dabcce85be9a691597d6b5ab765fe4868a3b6` then reached a parsed image result but withheld it
   because the provider supplied no optional request-id header; that exact attempt is permanently
   fenced and never replayed. Corrected implementation SHA
-  `012fccc471142fc51a46563da3a87564d674b39f` is watchdog-GREEN, and its distinct bounded
-  production generation gate is prepared but not yet live-proven; no owned live edit was performed.
-  Mock tests and source review are not live proof.
+  `012fccc471142fc51a46563da3a87564d674b39f` is watchdog-GREEN. Its distinct bounded attempt in
+  delivery `d7b394fc5e6b9b603e1e0ab3982038f5479ba2e8` reached a parsed image but returned control
+  metadata that did not exactly match `opaque/low/1024x1024`. It recorded
+  `evidence_controls_mismatch`, published no PNG/checkpoint, and is permanently fenced without replay.
+  Because the terminal journal retained only the mismatch class—not returned controls, image, or usage—
+  the attempt is withdrawn rather than partial evidence. No owned live edit was performed.
 
 ## Official and upstream sources
 
@@ -126,14 +129,15 @@ requirement to generate only through our existing OAuth pool. No third-party ima
 
 ## Remaining live and publication gates
 
-1. Land and deploy the corrected engine implementation that treats the provider request-id header as
-   optional while retaining mandatory local turn identity, strict PNG, exact controls, and terminal usage.
-2. After that exact implementation SHA is watchdog-GREEN, authorize and deliver a new one-shot controller
-   with a distinct evidence root and the same conservative `$0.00856` generation ceiling.
-3. Require 2xx, one real 1024×1024 PNG, exact returned controls, terminal authoritative usage, local turn
-   attribution, private mode-0600 evidence, and no ambiguous replay before overall watchdog GREEN.
+1. Close the RED production baseline with a non-network verifier for the terminal
+   `evidence_controls_mismatch` attempt; never replay that image turn or treat it as successful evidence.
+2. Before any separately authorized future generation, change private recovery so a rejected parsed
+   result retains sanitized returned controls and usage (but not the image) for root-cause diagnosis.
+3. Use that separately reviewed implementation and a new evidence root to determine the real native
+   response contract. Require 2xx, one real PNG, terminal usage, local turn attribution, private mode-0600
+   evidence, and no ambiguous replay; do not require response echo fields the native contract omits.
 4. Derive and review a normative edit ceiling, authorize it separately, and run an exact-home edit with
-   the generated owned PNG. Verify every claimed reference/edit behavior.
+   an owned generated PNG. Verify every claimed reference/edit behavior.
 5. Resolve partial-image streaming for the actual native subscription wire before claiming it. Public
    API documentation alone is insufficient.
 6. Only after GREEN generation and edit implement producer-first image billing/customer routes, then a

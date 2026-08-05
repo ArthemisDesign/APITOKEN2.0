@@ -3178,9 +3178,9 @@ grep -Fq 'TEST_DB_SLOT=$3' "$ROOT/deploy/watchdog.sh" \
 ! grep -Fq 'CODEX_APP_SERVERS_HELPER' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'watchdog still waits on a Codex daemon cohort before reporting green'
 
-# GPT Image 2 generation is one exact-SHA, bounded production gate. The root-owned controller reuses
-# only the sealed Codex OAuth environment, refuses ambiguous replay, and must complete before overall
-# GREEN advances the processed baseline.
+# GPT Image 2 generation is one exact-SHA, bounded production gate. The paid attempt is terminal;
+# the root-owned controller now verifies its controls-mismatch withdrawal without network access and
+# must close that fence before overall GREEN advances the processed baseline.
 wd_path_is_gpt_image_2_live_gate_trigger deploy/gpt-image-2-live-gate.sh \
   || wd_die 'GPT Image 2 live gate file does not trigger its one-shot delivery range'
 if wd_path_is_gpt_image_2_live_gate_trigger deploy/watchdog.sh; then
@@ -3193,46 +3193,32 @@ grep -Fxq 'EXPECTED_IMPLEMENTATION_SHA=012fccc471142fc51a46563da3a87564d674b39f'
   || wd_die 'GPT Image 2 live gate is not pinned to the watchdog-green engine SHA'
 grep -Fxq 'GENERATION_BUDGET_NANOUSD=8560000' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 live gate lost its numeric authorization ceiling'
-grep -Fq 'CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0' \
+grep -Fq '.state == "evidence_controls_mismatch"' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate can escape the sealed local Codex pool'
-grep -Fq 'prior GPT Image 2 generation attempt is non-replayable' \
+  || wd_die 'GPT Image 2 withdrawal does not require the exact terminal mismatch state'
+grep -Fq '(keys | sort) == ([' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 withdrawal accepts an unbounded journal schema'
+grep -Fq '[[ ${#recovery_entries[@]} -eq 1 && ${recovery_entries[0]} == journal.json ]]' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate can replay an ambiguous prior attempt'
-grep -Fq 'done <"/proc/$pid/environ"' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate does not reuse systemd-parsed OpenAI environment values'
-grep -Fq 'CLAUDE_API_CODEX_*) entries+=("$entry")' \
+  || wd_die 'GPT Image 2 withdrawal accepts unexpected recovery artifacts'
+grep -Fq 'for forbidden in "$output" "$checkpoint" "$internal_output" "$internal_checkpoint"' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate does not use a narrow Codex runtime environment allowlist'
-for forbidden_name in \
-  CLAUDE_API_KEYS \
-  CLAUDE_API_CONTROL_KEY \
-  CLAUDE_API_PANEL_KEY \
-  CLAUDE_API_CLAUDESTORE_API_KEY \
-  CLAUDE_API_CLAUDESTORE_CODEX_API_KEY; do
-  ! grep -Fq "$forbidden_name" "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-    || wd_die "GPT Image 2 live gate imports forbidden credential: $forbidden_name"
-done
-! grep -Eq '(^|[[:space:];])\.[[:space:]]+"?\$path"?|source[[:space:]]+"?\$path"?' \
-  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate evaluates systemd EnvironmentFile values as shell source'
-grep -Fq '[[ $executable == "$binary" ]]' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate accepts environment from a different engine release'
-grep -Fq '[[ $provider == openai ]]' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate accepts environment from a non-OpenAI provider process'
-grep -Fq '((.request_id == null) or (.request_id | type == "string" and length > 0))' \
-  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate does not preserve the optional provider request-id contract'
+  || wd_die 'GPT Image 2 withdrawal does not verify artifact absence'
 grep -Fq '(.image_turn_id | type == "string" and length > 0)' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate does not require local image turn evidence'
-grep -Fq '(.usage | type == "object" and length > 0)' \
-  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate does not require terminal usage evidence'
-grep -Fq 'cmp -s -- "$output" "$internal_output"' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate does not bind published output to private recovery'
-grep -Fq '[[ $png_signature == 89504e470d0a1a0a ]]' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate does not verify the PNG signature'
+  || wd_die 'GPT Image 2 withdrawal does not require local image turn evidence'
+for network_or_dispatch_marker in \
+  /proc/ \
+  systemctl \
+  setpriv \
+  '"$binary" openai-image-canary' \
+  CLAUDE_API_CODEX_ \
+  CLAUDE_API_CLAUDESTORE_ \
+  /images/generations \
+  /images/edits; do
+  ! grep -Fq "$network_or_dispatch_marker" "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+    || wd_die "GPT Image 2 terminal withdrawal can dispatch or load runtime environment: $network_or_dispatch_marker"
+done
 ! grep -Eiq 'apiyi|laozhang|aihubproxy|apixo|whataicc' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
   || wd_die 'GPT Image 2 live gate contains a third-party image relay'
@@ -3242,13 +3228,10 @@ grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-live-gate.sh 0
 grep -Fq "require_permitted 'GPT Image 2 exact-SHA live gate'" \
   "$ROOT/deploy/install-sudoers.sh" \
   || wd_die 'GPT Image 2 exact-SHA sudo bridge is not validated before installation'
-grep -Fq 'setpriv --reuid="$deploy_uid" --regid="$deploy_gid" --init-groups --no-new-privs' \
-  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 paid binary does not drop root before dispatch'
 live_gate_line=$(grep -nF 'sudo -n "$GPT_IMAGE_2_LIVE_GATE" "$ENGINE_SHA"' \
   "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
 [[ -n $live_gate_line && -n $processed_line && $live_gate_line -lt $processed_line ]] \
-  || wd_die 'GPT Image 2 live generation is not fenced before processed/green'
+  || wd_die 'GPT Image 2 withdrawal fence is not verified before processed/green'
 
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'
