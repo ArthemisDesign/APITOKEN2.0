@@ -1652,7 +1652,7 @@ fn valid_pending_phase(pending: &PendingOAuthSecret) -> bool {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Failure {
+pub(crate) enum Failure {
     Authorization,
     Interrupted,
     CodeAssistApiDisabled,
@@ -1883,7 +1883,7 @@ enum Completion {
     Published(PublishedProfile, tokio::sync::OwnedMutexGuard<()>),
 }
 
-struct PublishedProfile {
+pub(crate) struct PublishedProfile {
     id: String,
     plan: String,
     has_proxy: bool,
