@@ -204,6 +204,33 @@ disabling. Filters work by batch, status and usage. The browser only talks to sa
 public `openkeys.apitoken.sale/api/internal/*` is closed with a `404` response, and the
 internal API never returns the full key or the AES-GCM ciphertext.
 
+### Bulk control by issuing admin
+
+The same section lists the issuing admins above the catalog. An admin is not a table row:
+it is `openkeys_batches.created_by`, the name from that person's own console session, so
+the summary and every bulk action are grouped by that field. `GET
+/api/internal/admin/sellers` returns one row per admin — batches, live keys,
+active/paused, delivered/stock, already revoked, the total face value and the last
+issuance — computed by a single SQL without live balances.
+
+`POST /api/internal/admin/sellers` takes `{createdBy, action}` and applies one action to
+**all** keys of that admin, ignoring the catalog filters:
+
+- `pause` — every active key goes to `disabled` in the engine and here. Reversible.
+- `resume` — the mirror action; it only lifts paused keys and never resurrects revoked ones.
+- `revoke` — irreversible: the engine key is disabled, the row is marked removed
+  (`removed_by` is the actor verified by Caddy, never a value from the body), and the
+  warehouse ciphertext is wiped. Keys already handed to buyers are revoked too — the
+  "the issuing admin is compromised" case is not covered otherwise. Revoked rows leave the
+  catalog but stay in history and in the pricing inventory producer.
+
+An unknown `createdBy` answers `404 unknown_seller` instead of a silent "0 keys", so a typo
+cannot look like a successful revocation. One call touches at most 500 keys with
+concurrency four; the response `{matched, changed, failed, remaining}` reports partial
+success, and the panel shows those counters instead of "done" — a key the engine refused
+stays in its previous state and is picked up by the next click. In the UI `revoke` is the
+only red button and additionally requires typing the admin's name.
+
 The additive read-only producer `GET /api/internal/admin/paying-keys` projects only keys
 that were delivered and not removed (`delivered_at IS NOT NULL`, `removed_at IS NULL`).
 It accepts `days=1|7|30` (default `30`), `limit=1..100` (default `50`),

@@ -33,16 +33,25 @@ import {
   clampOffset,
   okTypeLabel,
   PAGE_LIMIT,
+  SELLER_ACTION_COPY,
+  sellerActionToast,
+  SELLERS_PATH,
   USAGE_LABELS,
   type OpenkeysQuery,
   type OpenkeysResponse,
   type OpenkeysRow,
+  type OpenkeysSeller,
+  type OpenkeysSellersResponse,
+  type SellerAction,
+  type SellerActionResult,
 } from "./lib";
 
 const EMPTY_QUERY: OpenkeysQuery = { offset: 0, q: "", batch: "", status: "", usage: "" };
 
 type OpenkeysResult = {
   data: OpenkeysResponse | null;
+  /** Издатели грузятся отдельным контрактом: их падение не должно гасить каталог. */
+  sellers: OpenkeysSeller[] | null;
   /** Фактически загруженная страница — после отката за пределы total. */
   offset: number;
 };
@@ -52,16 +61,19 @@ type OpenkeysResult = {
 // Если offset уехал за пределы total (фильтры сузили выдачу), перезапрашиваем
 // последнюю страницу — рекурсивный откат openkeys() из admin-panel.js:612.
 async function loadKeys(query: OpenkeysQuery): Promise<OpenkeysResult> {
-  const [data] = await Promise.all([
+  const [data, sellers] = await Promise.all([
     api<OpenkeysResponse>(buildKeysPath(query)).catch(() => null),
+    api<OpenkeysSellersResponse>(SELLERS_PATH)
+      .then((payload) => payload.sellers ?? [])
+      .catch(() => null),
   ]);
   const total = data?.total ?? 0;
-  if (!data || total <= 0 || query.offset < total) return { data, offset: query.offset };
+  if (!data || total <= 0 || query.offset < total) return { data, sellers, offset: query.offset };
   const offset = clampOffset(query.offset, total);
   const [clamped] = await Promise.all([
     api<OpenkeysResponse>(buildKeysPath({ ...query, offset })).catch(() => null),
   ]);
-  return { data: clamped, offset };
+  return { data: clamped, sellers, offset };
 }
 
 // percentBar из admin-panel.js (строки 188-190): округление, пороги 95/70.
@@ -145,6 +157,87 @@ const KeyRow = memo(function KeyRow({ item, pending, onToggle }: KeyRowProps) {
     </tr>
   );
 });
+
+type SellerRowProps = {
+  seller: OpenkeysSeller;
+  pending: boolean;
+  onAction: (seller: OpenkeysSeller, action: SellerAction) => void;
+};
+
+// Строка админа-издателя: состав его выпуска и три массовых действия.
+// «Пауза» и «снять паузу» обратимы, «аннулировать» — нет, поэтому кнопка красная
+// и подтверждается вводом имени.
+const SellerRow = memo(function SellerRow({ seller, pending, onAction }: SellerRowProps) {
+  const keys = seller.keys ?? 0;
+  const active = seller.active ?? 0;
+  const disabled = seller.disabled ?? 0;
+  return (
+    <tr>
+      <td className="left">
+        <b className="mono">{seller.createdBy}</b>
+        <div className="sub">{count(seller.batches ?? 0, "партия", "партии", "партий")}</div>
+      </td>
+      <td>
+        <b>{keys}</b>
+        <div className="sub">аннулировано {seller.revoked ?? 0}</div>
+      </td>
+      <td>
+        <Pill kind={disabled ? "warn" : "ok"}>
+          {active} / {disabled}
+        </Pill>
+        <div className="sub">активны / на паузе</div>
+      </td>
+      <td>
+        {seller.delivered ?? 0}
+        <div className="sub">на складе {seller.stock ?? 0}</div>
+      </td>
+      <td>{nanoMoney(seller.faceValueNano)}</td>
+      <td>{formatDate(seller.lastIssuedAt ?? undefined, true)}</td>
+      <td>
+        <div className="actions wrap">
+          <button
+            type="button"
+            className="btn"
+            disabled={pending || active === 0}
+            onClick={() => onAction(seller, "pause")}
+          >
+            пауза
+          </button>
+          <button
+            type="button"
+            className="btn ghost"
+            disabled={pending || disabled === 0}
+            onClick={() => onAction(seller, "resume")}
+          >
+            снять паузу
+          </button>
+          <button
+            type="button"
+            className="btn bad"
+            disabled={pending || keys === 0}
+            onClick={() => onAction(seller, "revoke")}
+          >
+            аннулировать
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+});
+
+const SELLERS_HEAD = (
+  <thead>
+    <tr>
+      <th className="left">админ</th>
+      <th>ключи</th>
+      <th>состояние</th>
+      <th>выдано</th>
+      <th>номинал</th>
+      <th>последний выпуск</th>
+      <th>массовые действия</th>
+    </tr>
+  </thead>
+);
 
 function Pager({
   offset,
@@ -232,6 +325,7 @@ export default function OpenKeysPage() {
   // Текст поиска — черновик до отправки формы (в легаси применяется по submit).
   const [draft, setDraft] = useState("");
   const [pendingId, setPendingId] = useState<string | null>(null);
+  const [pendingSeller, setPendingSeller] = useState<string | null>(null);
 
   const path = buildKeysPath(query);
   const { data: result, refresh } = usePoll(path, () => loadKeys(query));
@@ -278,6 +372,43 @@ export default function OpenKeysPage() {
     [refresh],
   );
 
+  // Массовое действие по админу-издателю: подтверждение (для аннулирования —
+  // с вводом имени), затем POST /openkeys-admin/sellers. Сервер режет пачку по
+  // потолку и возвращает остаток, поэтому итог показываем счётчиками, а не «готово».
+  const runSellerAction = useCallback(
+    async (seller: OpenkeysSeller, action: SellerAction) => {
+      const createdBy = seller.createdBy;
+      if (!createdBy) return;
+      const copy = SELLER_ACTION_COPY[action];
+      const values = await dialog({
+        title: copy.title + " · " + createdBy,
+        message: copy.message,
+        confirmLabel: copy.confirmLabel,
+        danger: copy.danger,
+        fields: action === "revoke" ? [{ name: "confirm", label: "Имя админа" }] : undefined,
+      });
+      if (!values) return;
+      if (action === "revoke" && values.confirm?.trim() !== createdBy) {
+        toast("Имя не совпало — аннулирование отменено.", "bad");
+        return;
+      }
+      setPendingSeller(createdBy);
+      try {
+        const result = await send<SellerActionResult>("/openkeys-admin/sellers", "POST", {
+          createdBy,
+          action,
+        });
+        toast(sellerActionToast(result), result.failed ? "bad" : "ok");
+        refresh();
+      } catch (error) {
+        toast(error instanceof Error ? error.message : String(error), "bad");
+      } finally {
+        setPendingSeller(null);
+      }
+    },
+    [refresh],
+  );
+
   if (result === undefined) {
     return (
       <>
@@ -287,7 +418,7 @@ export default function OpenKeysPage() {
     );
   }
 
-  const { data, offset } = result;
+  const { data, offset, sellers } = result;
 
   if (data === null) {
     return (
@@ -345,6 +476,37 @@ export default function OpenKeysPage() {
           hint={"остаток " + nanoMoney(summary.remainingNano)}
         />
       </CardGrid>
+
+      <SectionHeader
+        title="Админы-издатели"
+        sub="одно действие на весь выпуск конкретного админа — фильтры каталога на него не влияют"
+      />
+
+      {sellers === null ? (
+        <Banner kind="warn" title="Список админов-издателей недоступен">
+          Каталог ключей ниже продолжает работать; массовые действия временно недоступны.
+        </Banner>
+      ) : (
+        <TableCard>
+          <table>
+            {SELLERS_HEAD}
+            <tbody>
+              {sellers.length ? (
+                sellers.map((seller) => (
+                  <SellerRow
+                    key={seller.createdBy}
+                    seller={seller}
+                    pending={pendingSeller !== null && pendingSeller === seller.createdBy}
+                    onAction={runSellerAction}
+                  />
+                ))
+              ) : (
+                <EmptyRow columns={7} />
+              )}
+            </tbody>
+          </table>
+        </TableCard>
+      )}
 
       <SectionHeader title="Каталог ключей" sub="метка и партия всегда видны" />
 

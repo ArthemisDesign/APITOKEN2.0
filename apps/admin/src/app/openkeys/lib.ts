@@ -91,3 +91,81 @@ export const USAGE_LABELS: Record<string, string> = {
 export function okTypeLabel(type: string | null | undefined): string {
   return type === "openai" ? "OpenAI" : "Claude";
 }
+
+// --- Админы-издатели (bulk-управление ключами одного created_by) ---------------
+
+export const SELLERS_PATH = "/openkeys-admin/sellers";
+
+export type SellerAction = "pause" | "resume" | "revoke";
+
+export type OpenkeysSeller = {
+  createdBy?: string;
+  batches?: number;
+  keys?: number;
+  active?: number;
+  disabled?: number;
+  delivered?: number;
+  stock?: number;
+  revoked?: number;
+  faceValueNano?: string;
+  lastIssuedAt?: string | null;
+};
+
+export type OpenkeysSellersResponse = {
+  sellers?: OpenkeysSeller[];
+};
+
+export type SellerActionResult = {
+  createdBy?: string;
+  action?: SellerAction;
+  matched?: number;
+  changed?: number;
+  failed?: number;
+  remaining?: number;
+};
+
+// Тексты подтверждения. Аннулирование необратимо, поэтому оно требует ввода
+// имени издателя — случайный клик по красной кнопке не должен убивать выпуск.
+export const SELLER_ACTION_COPY: Record<
+  SellerAction,
+  { title: string; message: string; confirmLabel: string; danger: boolean }
+> = {
+  pause: {
+    title: "Поставить на паузу ключи",
+    message:
+      "Все активные ключи этого админа перестанут принимать запросы. Действие обратимо: «снять паузу» вернёт их в строй.",
+    confirmLabel: "Поставить на паузу",
+    danger: false,
+  },
+  resume: {
+    title: "Снять паузу с ключей",
+    message: "Ключи, стоящие на паузе, снова начнут принимать запросы. Аннулированные не воскресают.",
+    confirmLabel: "Снять паузу",
+    danger: false,
+  },
+  revoke: {
+    title: "Аннулировать ключи",
+    message:
+      "Необратимо: ключи отключаются в движке навсегда, включая уже выданные покупателям, складские секреты стираются. Введите имя админа, чтобы подтвердить.",
+    confirmLabel: "Аннулировать",
+    danger: true,
+  },
+};
+
+// Итог массового действия в одну строку: сколько прошло, что не прошло и
+// сколько осталось на следующий клик (сервер режет пачку по потолку).
+export function sellerActionToast(result: SellerActionResult): string {
+  const changed = result.changed ?? 0;
+  const failed = result.failed ?? 0;
+  const remaining = result.remaining ?? 0;
+  const verb = result.action === "revoke"
+    ? "Аннулировано"
+    : result.action === "resume"
+      ? "Возвращено в строй"
+      : "Поставлено на паузу";
+  if (changed === 0 && failed === 0 && remaining === 0) return "Подходящих ключей нет — ничего не изменилось.";
+  const parts = [`${verb} ключей: ${changed}`];
+  if (failed) parts.push(`не удалось: ${failed}`);
+  if (remaining) parts.push(`осталось: ${remaining} — нажмите ещё раз`);
+  return parts.join(" · ") + ".";
+}

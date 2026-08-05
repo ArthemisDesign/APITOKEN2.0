@@ -12,7 +12,14 @@ vi.mock("next/link", () => ({
 }));
 
 import OpenKeysPage from "./page";
-import { buildKeysPath, clampOffset, okTypeLabel, PAGE_LIMIT } from "./lib";
+import {
+  buildKeysPath,
+  clampOffset,
+  okTypeLabel,
+  PAGE_LIMIT,
+  SELLER_ACTION_COPY,
+  sellerActionToast,
+} from "./lib";
 
 describe("OpenKeys (page)", () => {
   it("рендерится без падения: начальное состояние — скелетон загрузки", () => {
@@ -64,5 +71,34 @@ describe("okTypeLabel", () => {
     expect(okTypeLabel("openai")).toBe("OpenAI");
     expect(okTypeLabel("claude")).toBe("Claude");
     expect(okTypeLabel(undefined)).toBe("Claude");
+  });
+});
+
+describe("sellerActionToast", () => {
+  it("сообщает счётчики, а не «готово»: сервер режет пачку по потолку", () => {
+    expect(sellerActionToast({ action: "revoke", changed: 500, failed: 0, remaining: 120 })).toBe(
+      "Аннулировано ключей: 500 · осталось: 120 — нажмите ещё раз.",
+    );
+    expect(sellerActionToast({ action: "pause", changed: 8, failed: 2, remaining: 2 })).toBe(
+      "Поставлено на паузу ключей: 8 · не удалось: 2 · осталось: 2 — нажмите ещё раз.",
+    );
+    expect(sellerActionToast({ action: "resume", changed: 4, failed: 0, remaining: 0 })).toBe(
+      "Возвращено в строй ключей: 4.",
+    );
+  });
+
+  it("пустой результат не выдаёт себя за выполненное действие", () => {
+    expect(sellerActionToast({ action: "pause", matched: 0, changed: 0, failed: 0, remaining: 0 })).toBe(
+      "Подходящих ключей нет — ничего не изменилось.",
+    );
+  });
+});
+
+describe("SELLER_ACTION_COPY", () => {
+  it("только аннулирование красное и заявлено как необратимое", () => {
+    expect(SELLER_ACTION_COPY.revoke.danger).toBe(true);
+    expect(SELLER_ACTION_COPY.revoke.message).toContain("Необратимо");
+    expect(SELLER_ACTION_COPY.pause.danger).toBe(false);
+    expect(SELLER_ACTION_COPY.resume.danger).toBe(false);
   });
 });
