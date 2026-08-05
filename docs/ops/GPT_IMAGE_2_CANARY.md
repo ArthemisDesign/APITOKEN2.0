@@ -162,25 +162,30 @@ accepting that valid terminal journal. The corrective controller is strictly non
 it verifies the existing journal and absence of artifacts before loading runtime credentials or reaching
 the dispatch path. The paid image turn remains permanently non-replayable.
 
-Auto-size implementation SHA `df58715abb4f1ac52b6c46b1ea6f830c6e11178f` is independently
-watchdog-GREEN. Its separate one-shot controller is pinned to that exact active binary and a fresh
-SHA-keyed private root, with an explicit `22_330_000` nanoUSD authorization. It requests only
-`opaque/low/auto`, forces both ClaudeStore fallbacks off, runs the existing free `/wham/usage` preflight,
-and can dispatch one exact-home generation. GREEN requires a real bounded PNG, matching auto-size
-metadata, terminal numeric usage, exact home/turn/SHA attribution, and durable digest-matched internal
-and external evidence. Any terminal mismatch is fenced without image artifacts and cannot be replayed.
+Auto-size implementation SHA `df58715abb4f1ac52b6c46b1ea6f830c6e11178f` and controller delivery
+`afcfca46e22d3b123540462c9b20a2249dc9a56b` are watchdog-GREEN. The one-shot used a fresh SHA-keyed
+private root and `22_330_000` nanoUSD for one `opaque/low/auto` exact-home generation. It produced a
+real bounded PNG with terminal numeric usage, exact home/turn/SHA attribution, and digest-matched
+internal and external evidence. That immutable `generation.png` and its successful checkpoint are the
+only accepted reference provenance for the edit gate; withdrawn attempts remain ineligible.
 
-Edit can be validated as a blocked plan by repeating `--reference` up to five times. Do not add
-`--execute` until a reviewed normative input-image ceiling and separate numeric authorization exist.
+Edit-capable implementation SHA `1c48e3769f0fe775e650f60ea3c5839458e5dfe2` is independently
+watchdog-GREEN. The pending one-shot edit controller is pinned to that exact active binary and a fresh
+SHA-keyed root. Before credentials or dispatch it verifies the generation artifact's regular-file modes,
+PNG signature, exact generation SHA/budget/success journal, internal/external byte equality, and
+checkpoint digest. It then authorizes exactly `64_022_330_000` nanoUSD, supplies that one PNG reference,
+forces both ClaudeStore fallbacks off, performs the free `/wham/usage` preflight, and may dispatch one
+exact-home `opaque/low/auto` edit. GREEN additionally requires positive terminal
+`input_tokens_details.image_tokens` and `output_tokens_details.image_tokens`, consistent input/output/
+total token sums, a bounded PNG, and exact turn/SHA evidence. A parsed mismatch, provider rejection, or
+ambiguous outcome is a terminal withdrawal with no image artifacts and cannot be replayed.
 
 ## Publication gate
 
-The original implementation remains deployed, but its production generation was withdrawn without
-GREEN evidence and no live edit was performed. Before publication, a corrected implementation and a new
-controlled production run must prove generation 2xx, real PNG, terminal usage, returned controls, local
-turn attribution, and
-non-duplicating failure semantics. A separately bounded live edit must then prove the data-URL reference
-wire and every edit control to be advertised.
+Production generation is GREEN, but the separately bounded live edit is still pending. Publication
+remains blocked until that edit proves the data-URL reference wire, a real edited PNG, terminal
+image-input and image-output usage, returned controls, local turn attribution, and non-duplicating
+failure semantics.
 
 The public Image API guide documents partial-image streaming, masks, output formats and Responses API
 multi-turn editing, but the current native Codex subscription client does not expose those request

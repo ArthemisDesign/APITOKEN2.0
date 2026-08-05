@@ -293,13 +293,15 @@ is only what is needed to walk the relationships when making changes:
   opaque/low `1254x1254` result for the requested `1024x1024`; the controller retained only a terminal
   sanitized mismatch journal and no image artifacts. The corrective verifier consumes that existing
   journal before environment loading and cannot replay the request or reinterpret the withdrawal as
-  publication evidence. Auto-size implementation SHA `df58715abb4f1ac52b6c46b1ea6f830c6e11178f`
-  is independently watchdog-GREEN; its separate controller is pinned to that exact binary, a fresh
-  evidence root, and `22_330_000` nanoUSD for one `opaque/low/auto` exact-home generation.
-  It introduces no image key/origin/env. There is no
-  `AppState`, HTTP/customer,
-  router, catalog, defaults, billing/settlement,
-  public-doc or publication consumer. Contract and blockers — `docs/engine/CODEX_PROVIDER.md`,
+  publication evidence. Auto-size implementation SHA `df58715abb4f1ac52b6c46b1ea6f830c6e11178f` and its one-shot
+  controller are watchdog-GREEN with a bounded PNG, terminal usage and exact SHA/turn evidence.
+  Edit-capable implementation SHA `1c48e3769f0fe775e650f60ea3c5839458e5dfe2` is independently
+  watchdog-GREEN. Its pending one-shot is pinned to that exact binary and can consume only the
+  digest-matched successful generation PNG after verifying its private modes, checkpoint, success
+  journal and internal recovery copy. One reference edit is authorized at `64_022_330_000` nanoUSD;
+  GREEN additionally requires positive terminal image-input and image-output token details. It
+  introduces no image key/origin/env. There is no `AppState`, HTTP/customer, router, catalog, defaults,
+  billing/settlement, public-doc or publication consumer. Contract and blockers — `docs/engine/CODEX_PROVIDER.md`,
   `docs/ops/GPT_IMAGE_2_CANARY.md`, and `research/GPT_IMAGE_2_EVIDENCE.md`.
 - **Policy preflight contract (provider planes → router, phase 6.4a).** The producer is
   the identical `crates/server::router_policy` on every fixed runtime: an authenticated

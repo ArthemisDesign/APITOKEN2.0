@@ -130,11 +130,15 @@ requested `1024x1024` size to `1254x1254`; no PNG or checkpoint was persisted or
 sanitized `evidence_controls_mismatch` journal permanently fences that image turn. Its first verifier run
 then failed because the optional-usage jq branch used an invalid binding expression. The corrective gate
 only validates the existing terminal journal before any environment load or network dispatch; it cannot
-replay the request. Auto-size implementation SHA `df58715abb4f1ac52b6c46b1ea6f830c6e11178f`
-is independently watchdog-GREEN. Its separate one-shot controller uses a fresh SHA-keyed evidence root,
-`22_330_000` nanoUSD, and the bounded `opaque/low/auto` result contract. The watchdog invokes this gate
-with the explicit immutable active implementation SHA rather than a mutable engine baseline; the gate
-still requires that exact release and binary to be current.
+replay the request. Auto-size implementation SHA `df58715abb4f1ac52b6c46b1ea6f830c6e11178f` and controller delivery
+`afcfca46e22d3b123540462c9b20a2249dc9a56b` are watchdog-GREEN; their immutable private evidence contains
+a bounded `opaque/low/auto` PNG, terminal usage, and exact SHA/turn attribution. Edit-capable SHA
+`1c48e3769f0fe775e650f60ea3c5839458e5dfe2` is independently watchdog-GREEN. The pending edit
+controller is pinned to that exact binary, verifies the successful generation checkpoint and byte digest
+before credentials, and authorizes one `64_022_330_000` nanoUSD reference edit. GREEN requires positive
+terminal image-input and image-output token details plus the same bounded PNG and exact identity evidence;
+all terminal failures are fenced without replay. The watchdog invokes the explicit immutable edit SHA
+rather than a mutable engine baseline and still requires that exact release and binary to be current.
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane
 but do not reinstall the production controller. A changed Caddy template is rendered with the

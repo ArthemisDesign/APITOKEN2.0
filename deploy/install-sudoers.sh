@@ -219,7 +219,7 @@ require_permitted 'engine schema migration helper probe' \
   /usr/bin/test -x /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh
 require_permitted 'GPT Image 2 exact-SHA live gate' \
   /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-live-gate.sh \
-  df58715abb4f1ac52b6c46b1ea6f830c6e11178f
+  1c48e3769f0fe775e650f60ea3c5839458e5dfe2
 require_permitted 'router promotion to slot A' \
   /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8800
 require_permitted 'router promotion to slot B' \

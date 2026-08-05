@@ -140,10 +140,14 @@ customer reserve; two to five references remain blocked. The preflight is not im
 reserve proof, and this private path does not invent ChatGPT credits, metering, billing or settlement.
 
 This remains private and unpublished: no `AppState`, HTTP/customer route, catalog, router preset,
-public docs, defaults/systemd or product availability. The native request proves no masks,
-partial-image streaming, JPEG/WebP or multi-turn Responses image state. No live image proof was
-performed in this worktree. The exact run contract and remaining publication blockers are
-`docs/ops/GPT_IMAGE_2_CANARY.md` and `research/GPT_IMAGE_2_EVIDENCE.md`.
+public docs, defaults/systemd or product availability. A sealed-pool `opaque/low/auto` generation is
+watchdog-GREEN with a real PNG and terminal usage. The separately bounded one-reference edit gate is
+pending against watchdog-GREEN implementation SHA `1c48e3769f0fe775e650f60ea3c5839458e5dfe2`; it accepts
+GREEN only for a new PNG whose bytes differ from the owned reference and whose terminal usage contains
+positive image-input and image-output token details. The native request still proves no masks,
+partial-image streaming, JPEG/WebP or multi-turn Responses image state. The exact run contract and
+remaining publication blockers are `docs/ops/GPT_IMAGE_2_CANARY.md` and
+`research/GPT_IMAGE_2_EVIDENCE.md`.
 
 ## Runtime behavior
 

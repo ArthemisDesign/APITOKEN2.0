@@ -28,7 +28,7 @@ CONTROLLER_ROOT=/usr/local/lib/apitoken-watchdog/controller
 CONTROLLER_ENTRYPOINT=/usr/local/lib/apitoken-watchdog/watchdog.sh
 VALIDATION_PLANNER=$CONTROLLER_ROOT/validation-plan.sh
 GPT_IMAGE_2_LIVE_GATE=$CONTROLLER_ROOT/gpt-image-2-live-gate.sh
-GPT_IMAGE_2_IMPLEMENTATION_SHA=df58715abb4f1ac52b6c46b1ea6f830c6e11178f
+GPT_IMAGE_2_IMPLEMENTATION_SHA=1c48e3769f0fe775e650f60ea3c5839458e5dfe2
 TEST_DB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-test-db
 BACKUP_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-backup.sh
 MIGRATION_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
@@ -2629,7 +2629,7 @@ main() {
   if (( gpt_image_2_live_gate == 1 )); then
     CURRENT_PHASE=verifying-gpt-image-2
     CURRENT_PHASE_BEFORE_FAILURE=verifying-gpt-image-2
-    status "running bounded GPT Image 2 generation through the sealed Codex OAuth pool"
+    status "running bounded GPT Image 2 edit through the sealed Codex OAuth pool"
     # This is evidence for one already deployed implementation, not whichever unrelated engine
     # release happens to be current when the one-shot controller lands.
     sudo -n "$GPT_IMAGE_2_LIVE_GATE" "$GPT_IMAGE_2_IMPLEMENTATION_SHA"

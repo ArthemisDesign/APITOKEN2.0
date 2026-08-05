@@ -10,18 +10,13 @@
   image-specific environment variable.
 - The private transport and canary exist, but there is no customer HTTP route, catalog, router preset,
   billing/settlement, production default, storefront, or publication claim.
-- Initial implementation SHA `3f67d43c0ae541979fee66823d251e2e3eea33e0` is deployed and
-  watchdog-GREEN. Controller delivery `7a334604f41c367e898073567a7aa0d481614839` stopped before network
-  access because systemd `EnvironmentFile` syntax was sourced as Bash; no paid dispatch occurred.
-  Delivery `2c7dabcce85be9a691597d6b5ab765fe4868a3b6` then reached a parsed image result but withheld it
-  because the provider supplied no optional request-id header; that exact attempt is permanently
-  fenced and never replayed. Corrected implementation SHA
-  `012fccc471142fc51a46563da3a87564d674b39f` is watchdog-GREEN. Its distinct bounded attempt in
-  delivery `d7b394fc5e6b9b603e1e0ab3982038f5479ba2e8` reached a parsed image but returned control
-  metadata that did not exactly match `opaque/low/1024x1024`. It recorded
-  `evidence_controls_mismatch`, published no PNG/checkpoint, and is permanently fenced without replay.
-  Because the terminal journal retained only the mismatch class—not returned controls, image, or usage—
-  the attempt is withdrawn rather than partial evidence. No owned live edit was performed.
+- Auto-size implementation SHA `df58715abb4f1ac52b6c46b1ea6f830c6e11178f` and controller delivery
+  `afcfca46e22d3b123540462c9b20a2249dc9a56b` are watchdog-GREEN. The sealed-pool generation produced
+  a bounded `opaque/low/auto` PNG with terminal numeric usage, exact home/turn/SHA attribution, and
+  digest-matched internal/external evidence.
+- Edit-capable implementation SHA `1c48e3769f0fe775e650f60ea3c5839458e5dfe2` is watchdog-GREEN. Its
+  separate bounded production edit is pending; the one-shot can consume only the successful generation
+  PNG above and requires positive authoritative image-input and image-output token details for GREEN.
 
 ## Official and upstream sources
 
@@ -161,13 +156,14 @@ requirement to generate only through our existing OAuth pool. No third-party ima
    itself to report RED; its correction may only consume this existing journal before credential loading
    and network dispatch. This proves native generation reachability and authoritative usage, but not the
    deterministic size control required for publication.
-4. Auto-size implementation SHA `df58715abb4f1ac52b6c46b1ea6f830c6e11178f` is independently
-   watchdog-GREEN. Its separate one-shot controller is pinned to that exact active binary, a fresh
-   SHA-keyed root and `22_330_000` nanoUSD. It can make one `opaque/low/auto` exact-home generation
-   through the sealed pool after the free `/wham/usage` preflight; both external fallbacks remain forced
-   off. Only a bounded PNG with terminal usage and exact home/turn/SHA evidence is GREEN.
-5. Derive and review a normative edit ceiling, authorize it separately, and run an exact-home edit with
-   an owned generated PNG. Verify every claimed reference/edit behavior.
+4. Auto-size implementation SHA `df58715abb4f1ac52b6c46b1ea6f830c6e11178f` and controller delivery
+   `afcfca46e22d3b123540462c9b20a2249dc9a56b` are watchdog-GREEN. The sealed-pool call produced the
+   durable bounded generation PNG, terminal usage, and exact home/turn/SHA evidence.
+5. Edit-capable implementation SHA `1c48e3769f0fe775e650f60ea3c5839458e5dfe2` is independently
+   watchdog-GREEN. Its pending one-shot validates the successful generation artifact and recovery digest
+   before credentials, then authorizes one `64_022_330_000` nanoUSD exact-home edit. GREEN requires a
+   bounded edited PNG and positive terminal image-input/image-output token details; every other terminal
+   outcome is withdrawn without replay.
 6. Resolve partial-image streaming for the actual native subscription wire before claiming it. Public
    API documentation alone is insufficient.
 7. Only after GREEN generation and edit implement producer-first image billing/customer routes, then a
