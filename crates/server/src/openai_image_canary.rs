@@ -386,6 +386,25 @@ fn journal_state_for_error(error: &CodexImageError) -> &'static str {
     }
 }
 
+fn evidence_incomplete_state(
+    exact_home: bool,
+    exact_turn: bool,
+    exact_metadata: bool,
+    has_usage: bool,
+) -> Option<&'static str> {
+    if !exact_home {
+        Some("evidence_home_mismatch")
+    } else if !exact_turn {
+        Some("evidence_turn_mismatch")
+    } else if !exact_metadata {
+        Some("evidence_controls_mismatch")
+    } else if !has_usage {
+        Some("evidence_usage_missing")
+    } else {
+        None
+    }
+}
+
 fn persist_result(
     validated: &ValidatedCanary,
     profile: &str,
@@ -402,19 +421,19 @@ fn persist_result(
         && result.quality() == "low"
         && result.size() == "1024x1024"
         && result.output_format().is_none_or(|format| format == "png");
-    if result.home_id() != profile
-        || result.image_turn_id() != image_turn_id
-        || !exact_metadata
-        || usage.is_none()
-        || request_id.is_none()
-    {
+    if let Some(state) = evidence_incomplete_state(
+        result.home_id() == profile,
+        result.image_turn_id() == image_turn_id,
+        exact_metadata,
+        usage.is_some(),
+    ) {
         persist_journal(
             run_dir,
             validated,
             profile,
             image_turn_id,
             implementation_sha,
-            "evidence_incomplete",
+            state,
         )?;
         bail!("Codex image result did not provide complete exact canary evidence");
     }
@@ -1175,6 +1194,27 @@ mod tests {
         assert_eq!(
             journal_state_for_error(&CodexImageError::OutcomeUnknown(None)),
             "outcome_unknown"
+        );
+    }
+
+    #[test]
+    fn provider_request_id_is_optional_but_exact_evidence_is_not() {
+        assert_eq!(evidence_incomplete_state(true, true, true, true), None);
+        assert_eq!(
+            evidence_incomplete_state(false, true, true, true),
+            Some("evidence_home_mismatch")
+        );
+        assert_eq!(
+            evidence_incomplete_state(true, false, true, true),
+            Some("evidence_turn_mismatch")
+        );
+        assert_eq!(
+            evidence_incomplete_state(true, true, false, true),
+            Some("evidence_controls_mismatch")
+        );
+        assert_eq!(
+            evidence_incomplete_state(true, true, true, false),
+            Some("evidence_usage_missing")
         );
     }
 

@@ -81,11 +81,13 @@ Paid generation additionally requires an exact lowercase 40-hex compile-time
 - dimensions `1024x1024`;
 - returned `background=opaque`, `quality=low`, and `size=1024x1024`; `output_format`, when present,
   must be `png`;
-- terminal numeric usage after allow-list sanitization and a sanitized provider request id;
+- terminal numeric usage after allow-list sanitization;
+- the locally generated image turn id; a sanitized provider request-id header is retained when present
+  but is optional because the official Codex `ImageResponse` contract does not require one;
 - output SHA-256 and exact implementation SHA.
 
-Missing usage or mismatched controls become `evidence_incomplete`; the result is kept only in the
-private recovery directory and is not publication evidence.
+Missing usage or mismatched home, local turn, or controls receive a specific `evidence_*` journal state;
+the result is kept only in the private recovery directory and is not publication evidence.
 
 ## Commands
 

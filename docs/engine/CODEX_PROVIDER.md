@@ -125,8 +125,11 @@ prints a sanitized plan without reading configuration or using the network. Gene
 only with an exact implementation SHA and an explicit `8_560_000` nanoUSD budget for the fixed
 `background=opaque,quality=low,size=1024x1024` request. Execution uses the existing free profile
 `/wham/usage` preflight, one exact-home attempt, and exclusive mode-`0600` PNG/checkpoint publication;
-the checkpoint requires exact returned controls and terminal usage. Edit validates one to five PNG
-references but remains blocked because no normative input-image ceiling exists. The preflight is not
+the checkpoint requires exact returned controls, terminal usage, and the locally generated image turn
+identity. A sanitized provider request-id header is retained when present but is not required: the
+official Codex `ImageResponse` has no request-id field and the endpoint fixture succeeds without that
+header. Edit validates one to five PNG references but remains blocked because no normative input-image
+ceiling exists. The preflight is not
 image `countTokens` or reserve proof, and this private path does not invent ChatGPT credits, metering,
 billing or settlement.
 

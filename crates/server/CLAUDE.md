@@ -126,7 +126,9 @@ background loops and the HTTP router. Here — and only here — everything is w
   `opaque/low/1024x1024` request. `--execute` additionally requires an exact compile-time implementation
   SHA, reuses the existing Codex OAuth roster/base URL/identity, freezes one admitted profile, runs its
   free `/wham/usage` auth/quota preflight, and performs one exact-home attempt. A successful checkpoint
-  requires exact returned controls, a strict PNG and terminal usage. Edit planning accepts one to five
+  requires exact returned controls, a strict PNG and terminal usage; the provider request-id header is
+  optional because the official Codex Images response contract does not require it, while the local
+  image turn id remains mandatory. Edit planning accepts one to five
   PNG references but paid edit execution remains blocked until a normative input-image ceiling is
   proved. Output/checkpoint publication uses exclusive mode-`0600` files. The command remains outside
   `AppState`, HTTP, customer routes, catalog, defaults and billing; no live proof was performed in this
