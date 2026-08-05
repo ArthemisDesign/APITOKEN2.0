@@ -3219,9 +3219,10 @@ grep -Fq 'CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0' \
 grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-live-gate.sh 8fcd7c3c6f5dc968bedb7260433f2eaff23f8931' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die 'GPT Image 2 live gate lacks an exact-SHA sudo bridge'
-grep -Fq "require_permitted 'GPT Image 2 exact-SHA live gate'" \
+grep -A2 -F "require_permitted 'GPT Image 2 exact-SHA live gate'" \
   "$ROOT/deploy/install-sudoers.sh" \
-  || wd_die 'GPT Image 2 exact-SHA sudo bridge is not validated before installation'
+  | grep -Fq '8fcd7c3c6f5dc968bedb7260433f2eaff23f8931' \
+  || wd_die 'GPT Image 2 exact-SHA sudo bridge self-check is not aligned with policy'
 live_gate_line=$(grep -nF 'sudo -n "$GPT_IMAGE_2_LIVE_GATE" "$ENGINE_SHA"' \
   "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
 [[ -n $live_gate_line && -n $processed_line && $live_gate_line -lt $processed_line ]] \

@@ -115,7 +115,11 @@ is pinned to that exact deployed binary, a fresh SHA-keyed private root, and the
 nanoUSD authorization. It performs the free preflight and at most one exact-home generation. A complete
 checkpoint is accepted as GREEN; a parsed evidence mismatch is accepted only as a terminal withdrawal
 with a closed sanitized journal schema and no persisted or published image. Every other outcome fails
-the delivery, and no attempt is replayed.
+the delivery, and no attempt is replayed. Initial controller delivery
+`3ba2d941e95419748027bf5fc8a0759821095148` stopped during infrastructure installation before the gate
+could run because the sudo-policy installer self-check still named the predecessor SHA. No preflight or
+paid image dispatch occurred; a corrective delivery aligns that fail-closed self-check with the existing
+exact-SHA policy.
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane
 but do not reinstall the production controller. A changed Caddy template is rendered with the
