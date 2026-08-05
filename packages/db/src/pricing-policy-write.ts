@@ -1477,9 +1477,11 @@ export async function copyBusinessInvitationPolicyToReplacement(
 /**
  * Provisions the managed B2B client policy for a manually converted customer, reaching the same
  * end state as invitation redemption: an active source policy with a single Anthropic discount
- * rule mirroring the negotiated scalar multiplier, a legacy account binding, and a staged engine
- * delivery job. Idempotent: when both the policy and the binding already exist, nothing is
- * written and the result reports provisioned=false.
+ * rule mirroring the negotiated scalar multiplier, the account binding aimed at that policy, and
+ * a staged engine delivery job. A long-lived B2C customer already carries their single allowed
+ * binding (UNIQUE user_id) from the Stage 5 backfill — aimed at the global B2C policy — so the
+ * conversion re-points that row instead of inserting a second one. Idempotent: when the policy
+ * exists and the binding already aims at it, nothing is written and provisioned=false is returned.
  */
 export async function provisionBusinessClientPolicy(client: PoolClient, input: {
   userId: string;
@@ -1530,8 +1532,9 @@ export async function provisionBusinessClientPolicy(client: PoolClient, input: {
     catalogGeneration = stored.catalogGeneration;
     provisioned = true;
   }
-  const existingBinding = await client.query<{ id: string }>(`
-    SELECT id::text FROM account_policy_bindings WHERE user_id = $1 FOR UPDATE
+  const existingBinding = await client.query<{ id: string; account_class: string; policy_id: string }>(`
+    SELECT id::text, account_class, policy_id
+    FROM account_policy_bindings WHERE user_id = $1 FOR UPDATE
   `, [input.userId]);
   let bindingId = existingBinding.rows[0]?.id ?? null;
   if (bindingId === null) {
@@ -1551,6 +1554,18 @@ export async function provisionBusinessClientPolicy(client: PoolClient, input: {
       MAIN_PRICING_PRODUCT_ID,
       source.policy_id,
     ]);
+    provisioned = true;
+  } else if (existingBinding.rows[0]!.policy_id !== source.policy_id
+    || existingBinding.rows[0]!.account_class !== "b2b") {
+    // The Stage 5 backfill bound existing B2C accounts to the global policy (shadow
+    // enforcement). Conversion re-points that row to the new client policy; the
+    // effective-version history continues on the same binding and the materialization below
+    // stages the engine delivery of the B2B policy as the next version.
+    await client.query(`
+      UPDATE account_policy_bindings
+      SET account_class = 'b2b', policy_id = $2, updated_at = now()
+      WHERE id = $1
+    `, [bindingId, source.policy_id]);
     provisioned = true;
   }
   let jobId: string | null = null;

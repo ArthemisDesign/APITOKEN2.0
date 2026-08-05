@@ -208,6 +208,67 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
     });
   });
 
+  it("re-points the backfilled B2C binding to the client policy on manual conversion", async () => {
+    // Production state for long-lived B2C customers: the Stage 5 backfill already bound the
+    // account to the global B2C policy, and account_policy_bindings allows exactly one row per
+    // user. Conversion must re-point that single binding instead of crashing on the policy
+    // mismatch or violating the uniqueness.
+    const user = await createEmailUser(database, "backfilled-b2c@example.test", "password-hash");
+    const engineAccountId = `acct_backfilled_${user.id.replaceAll("-", "")}`;
+    await seedClient.query(`
+      UPDATE engine_accounts SET engine_account_id = $2, status = 'active' WHERE user_id = $1
+    `, [user.id, engineAccountId]);
+    await runStage5Backfill(database, {
+      schema_version: 1,
+      engine_accounts: [{ account_id: engineAccountId, multiplier_bp: 4_000, status: "active" }],
+      openkeys_accounts: [],
+    }, { mode: "safe" });
+    const before = await seedClient.query<{ account_class: string; policy_id: string }>(`
+      SELECT account_class, policy_id FROM account_policy_bindings WHERE user_id = $1
+    `, [user.id]);
+    expect(before.rows).toEqual([{ account_class: "b2c", policy_id: "policy:main:global-b2c" }]);
+
+    const converted = await convertCustomerToBusiness(database, {
+      userId: user.id,
+      actorId: "admin@example.test",
+      reason: "customer negotiated business terms",
+      multiplierBp: 2_000,
+    });
+    expect(converted).toMatchObject({ converted: true, multiplierBp: 2_000 });
+
+    const binding = await seedClient.query<{
+      account_class: string;
+      policy_id: string;
+      sync_state: string;
+      desired_effective_version: string | null;
+    }>(`
+      SELECT account_class, policy_id, sync_state, desired_effective_version::text
+      FROM account_policy_bindings WHERE user_id = $1
+    `, [user.id]);
+    // The backfill staged effective version 1 (global B2C policy); conversion re-points the
+    // same binding and stages the B2B policy as the next effective version.
+    expect(binding.rows).toEqual([{
+      account_class: "b2b",
+      policy_id: `policy:main:b2b:${user.id}`,
+      sync_state: "pending",
+      desired_effective_version: "2",
+    }]);
+    const policy = await getManagedPricingPolicy(database, {
+      ownerType: "b2b_client",
+      ownerId: user.id,
+    });
+    expect(policy).toMatchObject({
+      currentVersion: 1,
+      rules: [{
+        scope: { provider: { providerId: "anthropic" } },
+        pricingMode: "discount",
+        discountBps: 8_000,
+      }],
+    });
+    expect(policy!.targets).toHaveLength(1);
+    expect(policy!.targets[0]).toMatchObject({ accountClass: "b2b", syncState: "pending" });
+  });
+
   it("provisions a managed policy on manual B2B conversion and repairs pre-policy conversions", async () => {
     const user = await createEmailUser(database, "convert-buyer@example.test", "password-hash");
     await seedClient.query(`
