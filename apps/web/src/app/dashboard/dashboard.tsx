@@ -90,6 +90,8 @@ export function Dashboard() {
   const [dataPending, setDataPending] = useState<Record<OptionalDataSource, boolean>>({ keys: true, ledger: true, usage: true });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Счётчик подряд идущих падений основной загрузки — двигает backoff авторетрая.
+  const [loadFailures, setLoadFailures] = useState(0);
   const [logoutError, setLogoutError] = useState<string | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const [sideOpen, setSideOpen] = useState(false);
@@ -138,15 +140,22 @@ export function Dashboard() {
     }
   }, []);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options?: { silent?: boolean }) => {
     const lifecycle = ++lifecycleGeneration.current;
-    setLoading(true);
-    setError(null);
+    // Тихий ретрай (фоновое восстановление) не трогает спиннер и текст ошибки,
+    // чтобы экран не мигал между карточкой ошибки и загрузкой.
+    const silent = options?.silent === true;
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const [identity, accountView] = await Promise.all([api.me(), api.account()]);
       if (lifecycle !== lifecycleGeneration.current) return;
       const { user: current } = identity;
       setUser(current); setAccount(accountView);
+      setError(null);
+      setLoadFailures(0);
       setLoading(false);
       if (!analyticsLoaded.current) {
         analyticsLoaded.current = true;
@@ -159,6 +168,7 @@ export function Dashboard() {
       if (lifecycle !== lifecycleGeneration.current) return;
       if (cause instanceof ApiError && cause.status === 401) { router.replace("/login"); return; }
       setError(cause instanceof Error ? cause.message : dashboardCopy.en.loadError);
+      setLoadFailures((current) => current + 1);
     } finally {
       if (lifecycle === lifecycleGeneration.current) setLoading(false);
     }
@@ -169,6 +179,19 @@ export function Dashboard() {
     const timer = window.setTimeout(() => { void load(); }, 0);
     return () => { lifecycleGeneration.current += 1; window.clearTimeout(timer); document.body.classList.remove("app-body"); };
   }, [load]);
+
+  // Автовосстановление после временной ошибки (5xx бэкенда, обрыв сети): раньше
+  // страница падала в тупиковый экран с кнопкой «Log in» при живой сессии. Теперь
+  // переспрашиваем с экспоненциальным backoff'ом 1s → 30s (джиттер ±25%), без лимита
+  // попыток — частота ограничена потолком 30s, и страница сама оживает, как только
+  // бэкенд поднялся. 401 сюда не доезжает: load() уже увёл на /login.
+  useEffect(() => {
+    if (user || loadFailures === 0) return;
+    const base = Math.min(1000 * 2 ** (loadFailures - 1), 30_000);
+    const delay = Math.round(base * (0.75 + Math.random() * 0.5));
+    const timer = window.setTimeout(() => { void load({ silent: true }); }, delay);
+    return () => window.clearTimeout(timer);
+  }, [user, loadFailures, load]);
 
   useEffect(() => {
     function syncSectionFromHistory() {
@@ -239,7 +262,19 @@ export function Dashboard() {
   const refreshKeys = useCallback(() => retryOptional("keys", false), [retryOptional]);
 
   if (loading) return <DashboardLoading label={copy.loading} />;
-  if (!user || !account) return <div className="wrap guard ym-hide-content"><div className="auth-card"><p>{error ?? copy.loginPrompt}</p><Link className="btn btn-primary" href="/login">{copy.login}</Link></div></div>;
+  if (!user || !account) {
+    // 401 уже ушёл редиректом в load(); ошибка здесь — временная (5xx бэкенда,
+    // обрыв сети), поэтому экран восстановления с авторетраем, а не кнопка «Log in»
+    // при живой сессии. Без ошибки — настоящее незалогиненное состояние.
+    if (error) {
+      return <div className="wrap guard ym-hide-content"><div className="auth-card">
+        <p>{error}</p>
+        <p>{copy.loadRetrying}</p>
+        <button className="btn btn-primary" onClick={() => void load()}>{copy.retry}</button>
+      </div></div>;
+    }
+    return <div className="wrap guard ym-hide-content"><div className="auth-card"><p>{copy.loginPrompt}</p><Link className="btn btn-primary" href="/login">{copy.login}</Link></div></div>;
+  }
 
   return <div className="app ym-hide-content">
     <DashboardSidebar
