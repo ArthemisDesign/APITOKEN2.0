@@ -613,6 +613,11 @@ async function capturePage(client, [name, route, width, height, theme, language 
       const feedback = document.querySelector('.auth-msg');
       const russianControl = [...document.querySelectorAll('.lang button, .lang a')]
         .find((control) => control.textContent?.trim() === 'RU');
+      const sidebar = document.querySelector('aside.side');
+      const sidebarNav = sidebar?.querySelector('.side-nav');
+      const sidebarFoot = sidebar?.querySelector('.side-foot');
+      const sidebarRect = sidebar?.getBoundingClientRect();
+      const sidebarFootRect = sidebarFoot?.getBoundingClientRect();
       const promoEmpty = document.querySelector('.promo-history .empty-cell');
       const promoEmptyRect = promoEmpty?.getBoundingClientRect();
       const promoContainerRect = promoEmpty?.closest('.table-scroll')?.getBoundingClientRect();
@@ -642,6 +647,8 @@ async function capturePage(client, [name, route, width, height, theme, language 
         feedbackClass: feedback?.className ?? '',
         feedbackRole: feedback?.getAttribute('role') ?? '',
         russianUnavailable: russianControl instanceof HTMLButtonElement && russianControl.disabled,
+        sidebarNavOverflow: sidebarNav ? Math.max(0, sidebarNav.scrollHeight - sidebarNav.clientHeight) : 0,
+        sidebarFootVisible: !sidebar || Boolean(sidebarRect && sidebarFootRect && sidebarFootRect.top >= sidebarRect.top - 1 && sidebarFootRect.bottom <= sidebarRect.bottom + 1),
         overflowElements,
         promoEmptyFits: !promoEmpty || Boolean(promoEmptyRect && promoContainerRect && promoEmpty.scrollWidth <= promoEmpty.clientWidth + 1 && promoEmptyRect.left >= promoContainerRect.left - 1 && promoEmptyRect.right <= promoContainerRect.right + 1),
       });
@@ -652,6 +659,9 @@ async function capturePage(client, [name, route, width, height, theme, language 
   const expectedNotFound = name.startsWith("not-found-");
   if (visualState.overflow > 1 || visualState.bodyWidth > visualState.viewportWidth + 1) {
     throw new Error(`${name} has page-level horizontal overflow: ${JSON.stringify(visualState)}`);
+  }
+  if (name.startsWith("dashboard-") && width > 1080 && (visualState.sidebarNavOverflow > 1 || !visualState.sidebarFootVisible)) {
+    throw new Error(`${name} has a scrolling or clipped desktop sidebar: ${JSON.stringify(visualState)}`);
   }
   if (!visualState.hasMain || (!expectedNotFound && /page not found/i.test(visualState.h1))) {
     throw new Error(`${name} rendered the wrong page state: ${JSON.stringify(visualState)}`);

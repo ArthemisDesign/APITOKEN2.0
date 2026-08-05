@@ -436,8 +436,8 @@
 .side{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;
   background:var(--bg-card);border-right:1px solid var(--line);padding:24px 18px;overflow:hidden;overscroll-behavior:contain}
 .side-brand{margin:2px 10px 24px;font-size:18px}
-.side-nav{display:flex;flex-direction:column;gap:4px;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding-bottom:20px}
-.side-nav button{display:flex;align-items:center;gap:12px;width:100%;min-height:42px;padding:10px 12px;
+.side-nav{display:flex;flex-direction:column;gap:3px;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding-bottom:10px}
+.side-nav button{display:flex;align-items:center;gap:12px;width:100%;min-height:38px;padding:10px 12px;
   border:1px solid transparent;background:transparent;border-radius:8px;cursor:pointer;text-align:left;
   font-family:var(--font-mono);font-size:13px;color:var(--txt-3);transition:background-color .14s,color .14s,border-color .14s}
 .side-nav button:hover{background:var(--bg-soft);color:var(--txt)}
@@ -446,7 +446,7 @@
 .side-nav .si{width:18px;display:inline-flex;align-items:center;justify-content:center;flex:none;opacity:.9}
 .side-nav .si svg{width:16px;height:16px;stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
 /* Footer never leaves the visible column: the nav above absorbs overflow (see .side/.side-nav). */
-.side-foot{display:flex;flex-direction:column;gap:14px;padding:18px 2px 0;border-top:1px solid var(--line);
+.side-foot{display:flex;flex-direction:column;gap:10px;padding:12px 2px 0;border-top:1px solid var(--line);
   flex:none;margin-top:12px;background:var(--bg-card)}
 .side-tools{display:flex;align-items:center;gap:10px;justify-content:space-between}
 .side-legal{display:flex;gap:5px 11px;flex-wrap:wrap;padding:0 4px}
@@ -525,18 +525,11 @@ body.app-body{background:var(--bg-soft);background-image:none}
 body.app-body .bg-decor{display:none!important}
 
 .side-group{font-family:var(--font-mono);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.12em;
-  color:var(--txt-4);padding:18px 12px 7px}
-.side-nav .side-link{display:flex;align-items:center;gap:12px;min-height:42px;padding:10px 12px;border:1px solid transparent;border-radius:8px;
+  color:var(--txt-4);padding:10px 12px 7px}
+.side-nav .side-link{display:flex;align-items:center;gap:12px;min-height:38px;padding:10px 12px;border:1px solid transparent;border-radius:8px;
   font-family:var(--font-mono);font-size:13px;color:var(--txt-3);transition:background-color .14s,color .14s,border-color .14s}
 .side-nav .side-link:hover{background:var(--bg-soft);color:var(--txt)}
 .side-nav .side-link.on{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent)}
-/* RU labels are wider and the legal row wraps to two lines, which pushes the 100vh sidebar a few
-   dozen px past the fold and shows a scrollbar (EN fits). Tighten the vertical rhythm for RU only
-   so the whole menu + footer fits without scrolling; EN spacing stays untouched. */
-.side[data-lang="ru"] .side-group{padding-top:10px}
-.side[data-lang="ru"] .side-nav{gap:3px;padding-bottom:10px}
-.side[data-lang="ru"] .side-nav button,.side[data-lang="ru"] .side-nav .side-link{min-height:38px}
-.side[data-lang="ru"] .side-foot{gap:10px;padding-top:12px}
 .app-top-h{flex:1;display:flex;flex-direction:column;line-height:1.2;min-width:0}
 
 .page-heading{display:flex;flex-direction:column;align-items:flex-start;margin-bottom:28px}
