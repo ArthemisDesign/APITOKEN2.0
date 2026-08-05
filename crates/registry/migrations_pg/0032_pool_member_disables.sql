@@ -50,3 +50,6 @@ CREATE TABLE IF NOT EXISTS pool_member_disables (
 -- The pools read the whole disabled set for one provider on every roster load and on a short
 -- refresh interval, so the provider prefix of the primary key is the access path. No secondary
 -- index is warranted: this table is bounded by operator actions, not by traffic.
+
+INSERT INTO engine_schema_migrations(version) VALUES (32)
+ON CONFLICT (version) DO NOTHING;

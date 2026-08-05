@@ -3562,6 +3562,36 @@ fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
     assert_eq!(registered, Some(MIGRATION_0029));
 }
 
+/// A migration records its own version — `apply_migration` runs the SQL but never writes the
+/// bookkeeping row. Forgetting that line still creates the tables, so every local suite without a
+/// database stays green while `schema_version()` silently sticks at the previous number and the
+/// engine then refuses to start against the new schema. Assert the line exists for every
+/// registered migration instead of finding out from a red deploy.
+#[test]
+fn every_migration_registers_its_own_schema_version() {
+    for &(version, sql) in ENGINE_MIGRATIONS {
+        // Both spellings are in use (`engine_schema_migrations` and the schema-qualified
+        // `public.engine_schema_migrations`), and whitespace varies, so normalize before
+        // matching: the invariant is the value inserted, not the formatting.
+        let needle = format!("VALUES({version})");
+        let registers = sql
+            .split("engine_schema_migrations(version)")
+            .skip(1)
+            .any(|tail| {
+                tail.chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect::<String>()
+                    .starts_with(&needle)
+            });
+        assert!(
+            registers,
+            "migration {version:04} does not register its own version: \
+             `schema_version()` would stay at {} after it applies",
+            version - 1
+        );
+    }
+}
+
 /// The disable store is only reachable once its migration is actually in the applied set: the
 /// pools read it on every roster load, so a registered-but-missing table would fail closed for a
 /// whole fleet rather than for one member.
