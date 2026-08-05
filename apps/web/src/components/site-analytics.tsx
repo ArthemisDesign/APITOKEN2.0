@@ -65,7 +65,7 @@ export function SiteAnalytics() {
   }, []);
 
   // Keep the document language correct during client-side locale navigation too.
-  // The server-rendered value comes from the request path in proxy.ts.
+  // The first-paint value comes from the inline script in the root layout.
   useEffect(() => {
     const lang = documentLanguageForPathname(pathname);
     if (document.documentElement.lang !== lang) document.documentElement.lang = lang;

@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import { headers } from "next/headers";
 import type { ReactNode } from "react";
 import "./globals.css";
 import "./anim.css";
@@ -65,12 +64,18 @@ export const viewport: Viewport = { width: "device-width", initialScale: 1, them
 
 const themeScript = `(()=>{try{const t=localStorage.getItem('theme:v1')||localStorage.getItem('theme')||'dark';document.documentElement.dataset.theme=t}catch{}})()`;
 
-export default async function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
-  const documentLanguage = (await headers()).get("x-document-language") ?? "en";
+// Язык документа выставляется инлайн-скриптом до первой отрисовки (тот же паттерн,
+// что и тема), поэтому корневой layout не читает headers(): весь сайт — и публичные
+// страницы, и дашборд — рендерится как статический HTML вместо per-request
+// рендеринга. Клиентские переходы синхронизируют lang в SiteAnalytics.
+const documentLanguageScript = `(()=>{try{const p=location.pathname;const l=p==='/ru'||p.startsWith('/ru/')?'ru':p==='/ko'||p.startsWith('/ko/')?'ko':p==='/zh'||p.startsWith('/zh/')?'zh-CN':'en';if(document.documentElement.lang!==l){document.documentElement.lang=l}}catch{}})()`;
+
+export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
-    <html className={fontVariables} lang={documentLanguage} suppressHydrationWarning>
+    <html className={fontVariables} lang="en" suppressHydrationWarning>
       <head>
         <script id="referral-capture" dangerouslySetInnerHTML={{ __html: referralBootstrapScript }} />
+        <script dangerouslySetInnerHTML={{ __html: documentLanguageScript }} />
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
         <script id="yandex-metrika" dangerouslySetInnerHTML={{ __html: yandexMetrikaBootstrap }} />
         <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM-readable site summary" />

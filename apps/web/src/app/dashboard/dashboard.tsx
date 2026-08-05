@@ -17,17 +17,27 @@ import { dashboardHref, parseDashboardSection, type DashboardSection } from "./d
 import { DashboardLoading } from "./dashboard-loading";
 import { DashboardScrim, DashboardSidebar, DashboardTopBar } from "./dashboard-shell";
 
-const ApiKeys = dynamic(() => import("./sections/api-keys").then((module) => module.ApiKeys));
-const Credits = dynamic(() => import("./sections/credits").then((module) => module.Credits));
-const Usage = dynamic(() => import("./sections/usage").then((module) => module.Usage));
-const SupportPanel = dynamic(() => import("./sections/support-panel").then((module) => module.SupportPanel));
-const Profile = dynamic(() => import("./sections/profile").then((module) => module.Profile));
-const PromoPanel = dynamic(() => import("./sections/promo-panel").then((module) => module.PromoPanel));
+// Ленивые разделы мемоизированы: скрытые (Activity) секции не должны перерисовываться
+// от каждого изменения dataPending/dataErrors — только от изменения собственных props.
+const ApiKeys = memo(dynamic(() => import("./sections/api-keys").then((module) => module.ApiKeys)));
+const Credits = memo(dynamic(() => import("./sections/credits").then((module) => module.Credits)));
+const Usage = memo(dynamic(() => import("./sections/usage").then((module) => module.Usage)));
+const SupportPanel = memo(dynamic(() => import("./sections/support-panel").then((module) => module.SupportPanel)));
+const Profile = memo(dynamic(() => import("./sections/profile").then((module) => module.Profile)));
+const PromoPanel = memo(dynamic(() => import("./sections/promo-panel").then((module) => module.PromoPanel)));
 
 type Section = DashboardSection;
 type OptionalDataSource = "keys" | "ledger" | "usage";
 
 const NANO_PER_USD = 1_000_000_000n;
+
+// Один in-flight запрос account на всё время жизни вкладки: focus-обновление и
+// повторные загрузки делят один промис вместо параллельных копий одного fetch.
+let accountRequest: Promise<AccountView> | null = null;
+function fetchAccount(): Promise<AccountView> {
+  accountRequest ??= api.account().finally(() => { accountRequest = null; });
+  return accountRequest;
+}
 const localDashboardCopy = {
   en: {
     logoutError: "Logout failed. Your server session is still active; please try again.",
@@ -150,7 +160,11 @@ export function Dashboard() {
       setError(null);
     }
     try {
-      const [identity, accountView] = await Promise.all([api.me(), api.account()]);
+      // Optional sources стартуют одновременно с me/account: их данные не зависят
+      // от identity-ответа, а каждый источник ловит собственные ошибки, так что
+      // падение одного history-эндпоинта не роняет весь дашборд.
+      void Promise.all([retryOptional("keys"), retryOptional("ledger"), retryOptional("usage")]);
+      const [identity, accountView] = await Promise.all([api.me(), fetchAccount()]);
       if (lifecycle !== lifecycleGeneration.current) return;
       const { user: current } = identity;
       setUser(current); setAccount(accountView);
@@ -162,8 +176,6 @@ export function Dashboard() {
         trackProductEvent("Dashboard Opened", { section: initialSection.current, customer_type: current.customerType });
         trackFirstProductEvent("dashboard", "First Dashboard Open", { customer_type: current.customerType });
       }
-      // Optional sections hydrate independently after the account shell is ready.
-      void Promise.all([retryOptional("keys"), retryOptional("ledger"), retryOptional("usage")]);
     } catch (cause) {
       if (lifecycle !== lifecycleGeneration.current) return;
       if (cause instanceof ApiError && cause.status === 401) { router.replace("/login"); return; }
@@ -176,9 +188,21 @@ export function Dashboard() {
 
   useEffect(() => {
     document.body.classList.add("app-body");
-    const timer = window.setTimeout(() => { void load(); }, 0);
-    return () => { lifecycleGeneration.current += 1; window.clearTimeout(timer); document.body.classList.remove("app-body"); };
+    queueMicrotask(() => { void load(); });
+    return () => { lifecycleGeneration.current += 1; document.body.classList.remove("app-body"); };
   }, [load]);
+
+  // Чанки самых ходовых разделов (keys/usage) грузим в простое браузера после
+  // первого визита: переключение на них не ждёт сеть. Save Data пропускаем.
+  const sectionChunksPrefetched = useRef(false);
+  useEffect(() => {
+    if (!user || sectionChunksPrefetched.current) return;
+    if ((navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData) return;
+    sectionChunksPrefetched.current = true;
+    const prefetch = () => { void import("./sections/api-keys"); void import("./sections/usage"); };
+    if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(prefetch, { timeout: 3000 });
+    else window.setTimeout(prefetch, 2000);
+  }, [user]);
 
   // Автовосстановление после временной ошибки (5xx бэкенда, обрыв сети): раньше
   // страница падала в тупиковый экран с кнопкой «Log in» при живой сессии. Теперь
@@ -214,7 +238,7 @@ export function Dashboard() {
       if (document.visibilityState !== "visible") return;
       if (Date.now() - lastFocusRefreshAt.current < 30_000) return;
       try {
-        const fresh = await api.account();
+        const fresh = await fetchAccount();
         lastFocusRefreshAt.current = Date.now();
         if (!cancelled) setAccount(fresh);
       } catch {
