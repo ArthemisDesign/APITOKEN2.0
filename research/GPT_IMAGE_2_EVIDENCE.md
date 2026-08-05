@@ -12,10 +12,11 @@
   billing/settlement, production default, storefront, or publication claim.
 - Exact private implementation SHA `3f67d43c0ae541979fee66823d251e2e3eea33e0` is deployed and
   watchdog-GREEN. Controller delivery `7a334604f41c367e898073567a7aa0d481614839` stopped before network
-  access because systemd `EnvironmentFile` syntax was sourced as Bash. Host evidence contained only the
-  prompt and no recovery/output/checkpoint, so no paid dispatch occurred. The corrected bounded
-  production generation is still pending; no owned live edit was performed. Mock tests and source
-  review are not live proof.
+  access because systemd `EnvironmentFile` syntax was sourced as Bash; no paid dispatch occurred.
+  Delivery `2c7dabcce85be9a691597d6b5ab765fe4868a3b6` then reached a parsed image result but withheld it as
+  `evidence_incomplete`; its exact attempt is now fenced by a non-network recovery controller and is
+  never replayed. A corrected implementation and a distinct bounded production generation are still
+  pending; no owned live edit was performed. Mock tests and source review are not live proof.
 
 ## Official and upstream sources
 
@@ -123,11 +124,11 @@ requirement to generate only through our existing OAuth pool. No third-party ima
 
 ## Remaining live and publication gates
 
-1. Deliver the one-shot watchdog controller that is pinned to the already watchdog-GREEN private
-   implementation SHA `3f67d43c0ae541979fee66823d251e2e3eea33e0`.
-2. Let that exact controller consume the recorded `$0.00856` generation authorization: free
-   `/wham/usage` preflight followed by one minimal generation through the existing sealed pool.
-3. Require 2xx, one real 1024×1024 PNG, exact returned controls, terminal authoritative usage, request
+1. Land and deploy the corrected engine implementation that treats the provider request-id header as
+   optional while retaining mandatory local turn identity, strict PNG, exact controls, and terminal usage.
+2. After that exact implementation SHA is watchdog-GREEN, authorize and deliver a new one-shot controller
+   with a distinct evidence root and the same conservative `$0.00856` generation ceiling.
+3. Require 2xx, one real 1024×1024 PNG, exact returned controls, terminal authoritative usage, local turn
    attribution, private mode-0600 evidence, and no ambiguous replay before overall watchdog GREEN.
 4. Derive and review a normative edit ceiling, authorize it separately, and run an exact-home edit with
    the generated owned PNG. Verify every claimed reference/edit behavior.

@@ -103,14 +103,13 @@ five-second poll because only a fresh manager invocation receives the updated se
 The root `compose.yaml` is a local-development definition and does not reinstall production.
 The private `deploy/gpt-image-2-live-gate.sh` is a one-shot exception within the controller transaction:
 only the delivery range changing that file invokes it, after selected production verification and before
-the processed SHA/overall GREEN. It is pinned to engine SHA `3f67d43c0ae541979fee66823d251e2e3eea33e0`,
-uses only the sealed Codex OAuth pool and an exact-SHA sudo rule. The fixed bridge imports the
-already systemd-parsed NUL-delimited environment from an active exact-release OpenAI slot without shell
-evaluation, applies fixed no-fallback overrides, then drops to `deploy` with `no_new_privs` before
-dispatch. It caps the single generation at
-`8_560_000` nanoUSD, stores private mode-`0600` evidence, and refuses to replay an ambiguous attempt. Its
-failure quarantines the delivery
-without publishing GPT Image 2 or advancing the processed baseline.
+the processed SHA/overall GREEN. The paid attempt pinned to engine SHA
+`3f67d43c0ae541979fee66823d251e2e3eea33e0` returned a parsed image result but lacked the then-required
+publication evidence. The installed controller is now a non-network recovery gate: it verifies the
+exact private mode-`0600` `evidence_incomplete` journal, requires that no output/checkpoint was published,
+and refuses unexpected recovery artifacts. It contains no binary invocation, pool credentials, or image
+dispatch, so the withdrawn paid attempt cannot be replayed. A mismatch quarantines the delivery without
+publishing GPT Image 2 or advancing the processed baseline.
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane
 but do not reinstall the production controller. A changed Caddy template is rendered with the

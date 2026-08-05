@@ -2628,7 +2628,7 @@ main() {
   if (( gpt_image_2_live_gate == 1 )); then
     CURRENT_PHASE=verifying-gpt-image-2
     CURRENT_PHASE_BEFORE_FAILURE=verifying-gpt-image-2
-    status "running bounded GPT Image 2 generation through the sealed Codex OAuth pool"
+    status "verifying non-replayable GPT Image 2 withdrawal evidence"
     sudo -n "$GPT_IMAGE_2_LIVE_GATE" "$ENGINE_SHA"
   fi
 

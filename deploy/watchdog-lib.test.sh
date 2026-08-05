@@ -3178,9 +3178,9 @@ grep -Fq 'TEST_DB_SLOT=$3' "$ROOT/deploy/watchdog.sh" \
 ! grep -Fq 'CODEX_APP_SERVERS_HELPER' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'watchdog still waits on a Codex daemon cohort before reporting green'
 
-# GPT Image 2 generation is one exact-SHA, bounded production gate. The root-owned controller reuses
-# only the sealed Codex OAuth environment, refuses ambiguous replay, and must complete before overall
-# GREEN advances the processed baseline.
+# The first exact-SHA GPT Image 2 attempt returned incomplete publication evidence. The root-owned
+# controller now only verifies its private non-replayable recovery journal and must not dispatch a
+# second image before overall GREEN advances the processed baseline.
 wd_path_is_gpt_image_2_live_gate_trigger deploy/gpt-image-2-live-gate.sh \
   || wd_die 'GPT Image 2 live gate file does not trigger its one-shot delivery range'
 if wd_path_is_gpt_image_2_live_gate_trigger deploy/watchdog.sh; then
@@ -3190,48 +3190,37 @@ grep -Fq '"$ROOT/deploy/gpt-image-2-live-gate.sh"' "$ROOT/deploy/install-watchdo
   || wd_die 'GPT Image 2 live gate is not installed as a fixed controller'
 grep -Fxq 'EXPECTED_IMPLEMENTATION_SHA=3f67d43c0ae541979fee66823d251e2e3eea33e0' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate is not pinned to the watchdog-green engine SHA'
+  || wd_die 'GPT Image 2 recovery gate is not pinned to the withdrawn engine SHA'
 grep -Fxq 'GENERATION_BUDGET_NANOUSD=8560000' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate lost its numeric authorization ceiling'
-grep -Fq 'CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0' \
-  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate can escape the sealed local Codex pool'
-grep -Fq 'prior GPT Image 2 generation attempt is non-replayable' \
-  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate can replay an ambiguous prior attempt'
-grep -Fq 'done <"/proc/$pid/environ"' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate does not reuse systemd-parsed OpenAI environment values'
-grep -Fq 'CLAUDE_API_CODEX_*) entries+=("$entry")' \
-  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate does not use a narrow Codex runtime environment allowlist'
-for forbidden_name in \
+  || wd_die 'GPT Image 2 recovery gate lost the exact withdrawn authorization identity'
+grep -Fq '.state == "evidence_incomplete"' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 recovery gate does not require the withdrawn journal state'
+grep -Fq 'recovery_entries[0]} == journal.json' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 recovery gate accepts unexpected recovery artifacts'
+grep -Fq '! -e $output' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 recovery gate does not require absent published output'
+grep -Fq '! -e $checkpoint' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+  || wd_die 'GPT Image 2 recovery gate does not require absent published checkpoint'
+for forbidden_dispatch in \
+  '"$binary" openai-image-canary' \
+  setpriv \
+  /proc/ \
+  CLAUDE_API_CODEX_ \
   CLAUDE_API_KEYS \
-  CLAUDE_API_CONTROL_KEY \
-  CLAUDE_API_PANEL_KEY \
-  CLAUDE_API_CLAUDESTORE_API_KEY \
-  CLAUDE_API_CLAUDESTORE_CODEX_API_KEY; do
-  ! grep -Fq "$forbidden_name" "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-    || wd_die "GPT Image 2 live gate imports forbidden credential: $forbidden_name"
+  images/generations \
+  images/edits; do
+  ! grep -Fq "$forbidden_dispatch" "$ROOT/deploy/gpt-image-2-live-gate.sh" \
+    || wd_die "GPT Image 2 recovery gate can dispatch or import credentials: $forbidden_dispatch"
 done
-! grep -Eq '(^|[[:space:];])\.[[:space:]]+"?\$path"?|source[[:space:]]+"?\$path"?' \
-  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate evaluates systemd EnvironmentFile values as shell source'
-grep -Fq '[[ $executable == "$binary" ]]' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate accepts environment from a different engine release'
-grep -Fq '[[ $provider == openai ]]' "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate accepts environment from a non-OpenAI provider process'
 ! grep -Eiq 'laozhang|aihubproxy|apixo|whataicc' \
   "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 live gate contains a third-party image relay'
+  || wd_die 'GPT Image 2 recovery gate contains a third-party image relay'
 grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-live-gate.sh 3f67d43c0ae541979fee66823d251e2e3eea33e0' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
-  || wd_die 'GPT Image 2 live gate lacks an exact-SHA sudo bridge'
+  || wd_die 'GPT Image 2 recovery gate lacks an exact-SHA sudo bridge'
 grep -Fq "require_permitted 'GPT Image 2 exact-SHA live gate'" \
   "$ROOT/deploy/install-sudoers.sh" \
-  || wd_die 'GPT Image 2 exact-SHA sudo bridge is not validated before installation'
-grep -Fq 'setpriv --reuid="$deploy_uid" --regid="$deploy_gid" --init-groups --no-new-privs' \
-  "$ROOT/deploy/gpt-image-2-live-gate.sh" \
-  || wd_die 'GPT Image 2 paid binary does not drop root before dispatch'
+  || wd_die 'GPT Image 2 exact-SHA recovery bridge is not validated before installation'
 live_gate_line=$(grep -nF 'sudo -n "$GPT_IMAGE_2_LIVE_GATE" "$ENGINE_SHA"' \
   "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
 [[ -n $live_gate_line && -n $processed_line && $live_gate_line -lt $processed_line ]] \

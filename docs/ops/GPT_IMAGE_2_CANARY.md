@@ -100,30 +100,32 @@ claude-api openai-image-canary \
 ```
 
 The exact private implementation SHA `3f67d43c0ae541979fee66823d251e2e3eea33e0` is deployed and
-watchdog-GREEN. The normal watchdog now owns the separately authorized `$0.00856` production run:
-only a delivery range changing `deploy/gpt-image-2-live-gate.sh` invokes the root-owned controller,
-after all selected production checks and before processed/overall GREEN. The exact-SHA sudo bridge
-finds the active OpenAI slot whose executable is that exact release, imports its already systemd-parsed
-NUL-delimited environment without evaluating `EnvironmentFile` contents as shell, then applies fixed
-no-fallback overrides and drops to `deploy` with `no_new_privs` before running the exact deployed binary
-with `--execute`. It auto-freezes one admitted home and stores evidence below
-`/var/lib/apitoken/watchdog/gpt-image-2-live/<engine-sha>` as mode `0600`, and never prints a profile or
-request id. Existing valid evidence is idempotently verified; recovery state without published evidence
-is non-replayable.
+watchdog-GREEN. Its separately authorized `$0.00856` attempt is complete and withdrawn. Only a delivery
+range changing `deploy/gpt-image-2-live-gate.sh` invokes the root-owned recovery controller, after all
+selected production checks and before processed/overall GREEN. That controller reads only private state
+below `/var/lib/apitoken/watchdog/gpt-image-2-live/<engine-sha>`: it verifies the exact journal, modes,
+operation/model/SHA/budget identity, absence of output/checkpoint, and absence of unexpected recovery
+artifacts. It contains no credentials, executable invocation, or network path.
 
 The first controller delivery `7a334604f41c367e898073567a7aa0d481614839` stopped before network
 access because it tried to source systemd syntax from `config.env` as Bash. Production evidence proved
 that only `generation-prompt.txt` existed: there was no recovery directory, output, or checkpoint, so a
-new controller commit may safely make the single authorized attempt without replaying a paid dispatch.
+new controller commit could safely make the single authorized attempt without replaying a paid dispatch.
+Controller delivery `2c7dabcce85be9a691597d6b5ab765fe4868a3b6` reached a parsed image result but
+withheld it as `evidence_incomplete`. Its private journal is now a terminal withdrawal fence: the
+controller only verifies that exact journal and the absence of published output/checkpoint, performs no
+network or binary invocation, and cannot replay the paid attempt. A corrected engine implementation and
+a separately authorized new exact-SHA gate are required before another generation.
 
 Edit can be validated as a blocked plan by repeating `--reference` up to five times. Do not add
 `--execute` until a reviewed normative input-image ceiling and separate numeric authorization exist.
 
 ## Publication gate
 
-The implementation checkpoint is deployed, but its one-shot production generation has not yet produced
-GREEN evidence and no live edit was performed. Before publication, the controlled production run must
-prove generation 2xx, real PNG, terminal usage, returned controls, request attribution, and
+The original implementation remains deployed, but its production generation was withdrawn without
+GREEN evidence and no live edit was performed. Before publication, a corrected implementation and a new
+controlled production run must prove generation 2xx, real PNG, terminal usage, returned controls, local
+turn attribution, and
 non-duplicating failure semantics. A separately bounded live edit must then prove the data-URL reference
 wire and every edit control to be advertised.
 
