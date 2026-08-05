@@ -132,6 +132,9 @@ plausible number in the UI does not substitute for that gate.
    `registry`; selection/rotation → `pool`; forwarding transport → `forward`; wiring/CLI/env →
    `server`. If you feel tempted to add networking to pool or env access to forward — that is a
    signal you picked the wrong layer.
+6. **Large Rust unit-test suites** live in a private `#[cfg(test)] mod tests;` child `tests.rs` next
+   to the parent source file. The move must preserve test identities and private-item access;
+   non-module `#[cfg(test)]` hooks used by those tests stay in the parent.
 
 ## Branch model (trunk + one owner branch per component)
 
