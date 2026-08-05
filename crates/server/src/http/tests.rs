@@ -845,6 +845,32 @@ fn provider_test_app(provider: forward::ProviderMode) -> AppState {
     app
 }
 
+/// A permanent input error must never be dressed as a retryable one. Hiding a profile that is not
+/// disabled can never succeed, so answering 503 "temporarily unavailable, please retry" would send
+/// an operator into a retry loop against a request the engine will always reject — the same wrong
+/// error class that turned unsupported models into 529s on the Anthropic plane.
+#[tokio::test]
+async fn hiding_a_profile_that_is_not_disabled_is_a_client_error_not_a_retryable_one() {
+    let service = router(
+        provider_test_app(forward::ProviderMode::Gemini),
+        Arc::new(AtomicBool::new(true)),
+    );
+    let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/gemini-subs/gemini_oauth_000001/disabled")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"disabled":false,"hidden":true}"#))
+        .unwrap();
+    request.extensions_mut().insert(peer);
+    request
+        .headers_mut()
+        .insert("x-api-key", "control-key".parse().unwrap());
+
+    let status = service.oneshot(request).await.unwrap().status();
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test]
 async fn every_admin_route_enforces_the_control_key_lattice() {
     assert_eq!(ADMIN_ROUTE_CASES.len(), 44);

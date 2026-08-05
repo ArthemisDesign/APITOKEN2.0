@@ -2499,6 +2499,17 @@ async fn gemini_sub_set_disabled(
         )
             .into_response();
     }
+    // Hiding is only meaningful on top of a disable. Reject it here, at the boundary, rather than
+    // letting the authority's fail-closed bail surface as a write failure: that path answers 503
+    // "temporarily unavailable, please retry", which tells an operator to retry a request that can
+    // never succeed. A permanent input error must be a 4xx.
+    if body.hidden && !body.disabled {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "a gemini profile can only be hidden while it is disabled"})),
+        )
+            .into_response();
+    }
     let Some(gemini) = &app.gemini else {
         return (
             StatusCode::NOT_FOUND,
