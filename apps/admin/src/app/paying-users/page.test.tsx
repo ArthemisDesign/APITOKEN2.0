@@ -1,16 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToString } from "react-dom/server";
-import PayingUsersPage, { OpenkeysPayingTable, PayingLedger, PayingRow } from "./page";
+import PayingUsersPage, { OpenkeysPayingTable, PayingLedger, PayingRow, PayingUsageDetails } from "./page";
 import type { OpenkeysPayingResponse } from "./openkeys-paying-lib";
 import {
   buildPayingUsersCsvRows,
   INITIAL_PAYING_USERS_PAGE,
   PAYING_USER_FUNDINGS,
   PAYING_USERS_CSV_HEADER,
+  normalizePayingUsersSearch,
   payingCohortUsers,
   payingTierLabel,
   payingUsersQuery,
   providerShareBp,
+  usageNanoMoney,
 } from "./paying-users-lib";
 
 describe("Платящие (paying users page)", () => {
@@ -18,7 +20,7 @@ describe("Платящие (paying users page)", () => {
     const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const html = renderToString(<PayingUsersPage />);
-    expect(html).toContain("Платящие");
+    expect(html).toContain("Расход клиентов");
     expect(html).toContain("Клиенты");
     expect(html).toContain("OpenKeys");
     expect(html).toContain('id="paying-tab-customers"');
@@ -31,21 +33,32 @@ describe("Платящие (paying users page)", () => {
     vi.unstubAllGlobals();
   });
 
-  it("SSR bonus-only row показывает бонус без ложных payment/never значений", () => {
-    const html = renderToString(<table><tbody><PayingRow row={{
+  it("SSR bonus-only и spend_only строки не смешивают классификации", () => {
+    const bonusHtml = renderToString(<table><tbody><PayingRow row={{
       email: "bonus@example.com",
       funding_kind: "bonus_only",
       bonus_funded_spent_nano: "9007199254740993",
       spent_nano: "9007199254740993",
       payments_count: 0,
       last_paid_at: null,
+      usage: { status: "unavailable", window: "30d", account_count: 0, available_account_count: 0, unavailable_account_count: 0, requests: "0", total_official_nano: "0", total_charged_nano: "0", models: [] },
     }} rank={1} days={30} /></tbody></table>);
-    expect(html).toContain("только бонус");
-    expect(html).toContain("$9,007,199.25");
-    expect(html).toContain("денежных пополнений нет");
-    expect(html).not.toContain("0 платежей");
-    expect(html).not.toContain("никогда");
-    expect(html).not.toContain("$0.00");
+    expect(bonusHtml).toContain("строгий bonus-only");
+    expect(bonusHtml).toContain("$9,007,199.25");
+    expect(bonusHtml).toContain("денежных пополнений нет");
+    expect(bonusHtml).not.toContain("0 платежей");
+    expect(bonusHtml).not.toContain("никогда");
+    expect(bonusHtml).not.toContain("$0.00");
+
+    const spendOnlyHtml = renderToString(<table><tbody><PayingRow row={{
+      email: "legacy@example.com",
+      funding_kind: "spend_only",
+      spent_nano: "12",
+      usage: { status: "unavailable", window: "30d", account_count: 0, available_account_count: 0, unavailable_account_count: 0, requests: "0", total_official_nano: "0", total_charged_nano: "0", models: [] },
+    }} rank={2} days={30} /></tbody></table>);
+    expect(spendOnlyHtml).toContain("расход без строгой классификации");
+    expect(spendOnlyHtml).toContain("не bonus-only");
+    expect(spendOnlyHtml).not.toContain("строгий bonus-only");
   });
 
   it("SSR ledger разделяет lifetime деньги и bonus-only окно", () => {
@@ -57,13 +70,19 @@ describe("Платящие (paying users page)", () => {
         bonus_only_users: 2,
         bonus_only_spent_nano: "3500000000",
       },
-    }} activeProvider="" onProviderSelect={() => undefined} />);
+    }} funding="spenders" activeProvider="" onProviderSelect={() => undefined} />);
     expect(html).toContain("Получено денег");
     expect(html).toContain("$12.00");
-    expect(html).toContain("Списано бонуса ·");
+    expect(html).toContain("Строгий bonus-only ·");
+    expect(html).toContain("Все spenders");
     expect(html).toContain("7 дней");
     expect(html).toContain("$3.50");
     expect(html).toContain("2 bonus-only клиента");
+
+    const filtered = renderToString(<PayingLedger data={{ days: 7, summary: { active_spenders: 1, spent_nano: "1" } }} funding="bonus" activeProvider="" onProviderSelect={() => undefined} />);
+    expect(filtered).toContain("Выбранная когорта");
+    expect(filtered).toContain("только бонусный расход");
+    expect(filtered).not.toContain("включая mixed/legacy/unattributed");
   });
 
   it("SSR manual-only row не выдаёт ручное пополнение за provider payment", () => {
@@ -75,10 +94,70 @@ describe("Платящие (paying users page)", () => {
       manual_topups_count: 2,
       payments_count: 0,
       last_paid_at: "2026-08-01T00:00:00Z",
+      usage: { status: "unavailable", window: "30d", account_count: 0, available_account_count: 0, unavailable_account_count: 0, requests: "0", total_official_nano: "0", total_charged_nano: "0", models: [] },
     }} rank={1} days={30} /></tbody></table>);
     expect(html).toContain("ручное пополнение");
     expect(html).toContain("2 ручных пополнения");
     expect(html).not.toContain("0 платежей");
+  });
+
+  it("commerce disclosure в collapsed состоянии не ссылается на отсутствующие детали", () => {
+    const html = renderToString(<table><tbody><PayingRow row={{
+      user_id: "user-1",
+      email: "spender@example.com",
+      funding_kind: "spend_only",
+      spent_nano: "1",
+      usage: {
+        status: "complete", window: "7d", account_count: 1, available_account_count: 1,
+        unavailable_account_count: 0, requests: "1", total_official_nano: "1",
+        total_charged_nano: "1", models: [],
+      },
+    }} rank={1} days={7} /></tbody></table>);
+    expect(html).toContain('aria-label="Показать usage клиента spender@example.com"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain("aria-controls=");
+    expect(html).not.toContain('id="paying-user-details-1"');
+  });
+
+  it("рендерит complete, partial и unavailable usage без ложного нуля", () => {
+    const complete = renderToString(<PayingUsageDetails row={{ usage: {
+      status: "complete", window: "30d", account_count: 1, available_account_count: 1,
+      unavailable_account_count: 0, requests: "9007199254740993", total_official_nano: "12",
+      total_charged_nano: "10", models: [],
+    } }} />);
+    expect(complete).toContain("9007199254740993");
+    expect(complete).toContain("запросов, моделей в окне нет");
+    expect(complete).toContain("Official");
+    expect(complete).toContain("&lt;$0.01");
+    expect(complete).not.toContain("$0.00");
+
+    const partial = renderToString(<PayingUsageDetails row={{ usage: {
+      status: "partial", window: "7d", account_count: 2, available_account_count: 1,
+      unavailable_account_count: 1, requests: "3", total_official_nano: "20",
+      total_charged_nano: "15", models: [{
+        provider: null, model: "=future-model", requests: "3", input_tokens: "9007199254740993",
+        output_tokens: "2", cache_read_tokens: "3", cache_write_5m_tokens: "4",
+        cache_write_1h_tokens: "5", web_search_requests: "6", official_nano: "20", charged_nano: "15",
+      }],
+    } }} />);
+    expect(partial).toContain("Покрытие");
+    expect(partial).toContain("1");
+    expect(partial).toContain("/<!-- -->2");
+    expect(partial).toContain("только к доступной части");
+    expect(partial).toContain("не указан");
+    expect(partial).toContain("вх 9007199254740993");
+    expect(partial).toContain("=future-model");
+    expect(partial.match(/&lt;\$0\.01/g)).toHaveLength(4);
+    expect(partial).not.toContain("$0.00");
+
+    const unavailable = renderToString(<PayingUsageDetails row={{ usage: {
+      status: "unavailable", window: "1d", account_count: 1, available_account_count: 0,
+      unavailable_account_count: 1, requests: "0", total_official_nano: "0",
+      total_charged_nano: "0", models: [],
+    } }} />);
+    expect(unavailable).toContain("данные недоступны");
+    expect(unavailable).toContain("это не нулевой расход");
+    expect(unavailable).not.toContain("$0.00");
   });
 
   it("collapsed OpenKeys disclosure не ссылается на отсутствующую строку деталей", () => {
@@ -111,25 +190,29 @@ describe("Платящие (paying users page)", () => {
 });
 
 describe("payingUsersQuery", () => {
-  it("строит стабильный серверный запрос и пропускает пустые фильтры", () => {
+  it("строит exact default spender query с обязательным usage", () => {
     expect(payingUsersQuery(INITIAL_PAYING_USERS_PAGE)).toBe(
-      "days=30&limit=50&offset=0&sort=spent&dir=desc&funding=all",
+      "days=30&limit=50&offset=0&sort=spent&dir=desc&funding=spenders&include_usage=true",
     );
   });
 
-  it("добавляет поиск, статус и провайдера, сохраняя явный funding", () => {
+  it("нормализует producer search до 200 символов", () => {
+    expect(normalizePayingUsersSearch(`  ${"x".repeat(201)}  `)).toBe("x".repeat(200));
+  });
+
+  it("добавляет поиск, статус и провайдера, сохраняя funding и usage", () => {
     expect(payingUsersQuery({
       ...INITIAL_PAYING_USERS_PAGE,
       days: 7,
-      q: "paid user@example.com",
+      q: "wwwvatroke@gmail.com",
       status: "active",
       provider: "openai",
       sort: "paid",
       dir: "asc",
     })).toBe(
-      "days=7&limit=50&offset=0&sort=paid&dir=asc&funding=all&q=paid+user%40example.com&status=active&provider=openai",
+      "days=7&limit=50&offset=0&sort=paid&dir=asc&funding=spenders&include_usage=true&q=wwwvatroke%40gmail.com&status=active&provider=openai",
     );
-    expect(payingUsersQuery({ ...INITIAL_PAYING_USERS_PAGE, funding: "bonus" })).toContain("funding=bonus");
+    expect(payingUsersQuery({ ...INITIAL_PAYING_USERS_PAGE, funding: "bonus" })).toContain("funding=bonus&include_usage=true");
   });
 });
 
@@ -147,9 +230,18 @@ describe("providerShareBp", () => {
 });
 
 describe("paying customer helpers", () => {
+  it("не округляет положительный usage меньше цента до нуля", () => {
+    expect(usageNanoMoney("0")).toBe("$0.00");
+    expect(usageNanoMoney("12")).toBe("<$0.01");
+    expect(usageNanoMoney("9999999")).toBe("<$0.01");
+    expect(usageNanoMoney("10000000")).toBe("$0.01");
+    expect(usageNanoMoney("malformed")).toBe("$0.00");
+  });
+
   it("публикует точные funding labels и предпочитает cohort_users", () => {
     expect(PAYING_USER_FUNDINGS).toEqual([
-      ["all", "деньги + бонусный расход"],
+      ["spenders", "все с расходом"],
+      ["all", "деньги + строгий бонус"],
       ["payments", "платёжный провайдер"],
       ["manual", "ручное денежное пополнение"],
       ["bonus", "только бонусный расход"],
@@ -165,16 +257,13 @@ describe("paying customer helpers", () => {
     expect(payingTierLabel({ customer_type: "b2c", tier: 8 })).toBe("—");
   });
 
-  it("экспортирует exact funding header и nanoUSD-строки выше safe integer", () => {
-    expect(PAYING_USERS_CSV_HEADER).toEqual([
-      "email", "имя", "статус", "тариф", "funding_kind", "оплачено_nanoUSD", "платежей",
-      "ручных_пополнений", "ручные_nanoUSD", "расход_окна_nanoUSD", "paid_funded_spent_nano",
-      "bonus_funded_spent_nano", "other_funded_spent_nano", "unattributed_spent_nano", "claude_nanoUSD",
-      "gpt_nanoUSD", "gemini_nanoUSD", "другое_nanoUSD", "последняя_оплата", "последняя_активность", "активные_ключи",
-    ]);
-    expect(buildPayingUsersCsvRows([{
-      email: "paid@example.com",
-      display_name: "Paid",
+  it("экспортирует user × provider × model с exact strings и formula safety", () => {
+    expect(PAYING_USERS_CSV_HEADER).toContain("usage_available_account_count");
+    expect(PAYING_USERS_CSV_HEADER).toContain("model_charged_nanoUSD_text");
+    const rows = buildPayingUsersCsvRows([{
+      user_id: "=user-id",
+      email: "=paid@example.com",
+      display_name: "+Paid",
       status: "active",
       customer_type: "b2c",
       tier: 1,
@@ -188,18 +277,35 @@ describe("paying customer helpers", () => {
       bonus_funded_spent_nano: "9007199254740994",
       other_funded_spent_nano: "9007199254740995",
       unattributed_spent_nano: "9007199254740996",
-      provider_spend: {
-        anthropic_nano: "20000000000000001",
-        openai_nano: "16000000000000002",
-        google_nano: "1000000000000001",
-      },
-      last_paid_at: "2026-07-30T10:00:00Z",
+      provider_spend: { anthropic_nano: "20000000000000001" },
       active_api_keys: 1,
-    }])[0]).toEqual([
-      "paid@example.com", "Paid", "active", "Builder", "payments_and_manual", "25000000000000001", 2, 1,
-      "5000000000000001", "37000000000000004", "9007199254740993", "9007199254740994", "9007199254740995",
-      "9007199254740996", "20000000000000001", "16000000000000002", "1000000000000001", "0",
-      "2026-07-30T10:00:00Z", "", 1,
-    ]);
+      usage: {
+        status: "complete", window: "30d", account_count: 2, available_account_count: 2,
+        unavailable_account_count: 0, requests: "90071992547409930",
+        total_official_nano: "90071992547409931", total_charged_nano: "90071992547409932",
+        models: [
+          { provider: "=provider", model: "+model-a", requests: "90071992547409933", input_tokens: "1", output_tokens: "2", cache_read_tokens: "3", cache_write_5m_tokens: "4", cache_write_1h_tokens: "5", web_search_requests: "6", official_nano: "90071992547409934", charged_nano: "90071992547409935" },
+          { provider: null, model: "model-b", requests: "7", input_tokens: "8", output_tokens: "9", cache_read_tokens: "10", cache_write_5m_tokens: "11", cache_write_1h_tokens: "12", web_search_requests: "13", official_nano: "14", charged_nano: "15" },
+        ],
+      },
+    }]);
+    expect(rows).toHaveLength(2);
+    const first = Object.fromEntries(PAYING_USERS_CSV_HEADER.map((header, index) => [header, rows[0]![index]]));
+    const second = Object.fromEntries(PAYING_USERS_CSV_HEADER.map((header, index) => [header, rows[1]![index]]));
+    expect(first).toMatchObject({
+      user_id: "'=user-id", email: "'=paid@example.com", имя: "'+Paid", provider: "'=provider",
+      model: "'+model-a", оплачено_nanoUSD_text: "'25000000000000001",
+      usage_requests_text: "'90071992547409930", model_requests_text: "'90071992547409933",
+      model_official_nanoUSD_text: "'90071992547409934", usage_total_charged_nanoUSD_text: "'90071992547409932",
+    });
+    expect(second.provider).toBe("не указан");
+    expect(second.model).toBe("model-b");
+
+    const unavailable = buildPayingUsersCsvRows([{
+      email: "down@example.com", funding_kind: "spend_only", spent_nano: "1",
+      usage: { status: "unavailable", window: "7d", account_count: 1, available_account_count: 0, unavailable_account_count: 1, requests: "0", total_official_nano: "0", total_charged_nano: "0", models: [] },
+    }])[0]!;
+    const unavailableRecord = Object.fromEntries(PAYING_USERS_CSV_HEADER.map((header, index) => [header, unavailable[index]]));
+    expect(unavailableRecord).toMatchObject({ usage_status: "unavailable", usage_requests_text: "", model: "", model_official_nanoUSD_text: "", usage_total_charged_nanoUSD_text: "" });
   });
 });

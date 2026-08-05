@@ -40,15 +40,19 @@ import {
   PAYING_USER_FUNDINGS,
   PAYING_USER_SORTS,
   PAYING_USERS_CSV_HEADER,
+  normalizePayingUsersSearch,
   payingCohortUsers,
   payingTierLabel,
   payingUsersQuery,
   providerNano,
   providerShareBp,
   spendWindowLabel,
+  usageNanoMoney,
   type PayingUserDays,
+  type PayingUserFunding,
   type PayingUserProvider,
   type PayingUserRow,
+  type PayingUserUsageModel,
   type PayingUsersPageState,
   type PayingUsersResponse,
 } from "./paying-users-lib";
@@ -70,13 +74,14 @@ type PayingCohort = "customers" | "openkeys";
 type CohortControlsProps = {
   cohort: PayingCohort;
   days: PayingUserDays;
+  customerFunding: PayingUserFunding;
   customerTotal?: number;
   openkeysTotal?: number;
   onCohortChange: (cohort: PayingCohort) => void;
   onDaysChange: (days: PayingUserDays) => void;
 };
 
-function CohortControls({ cohort, days, customerTotal, openkeysTotal, onCohortChange, onDaysChange }: CohortControlsProps): ReactElement {
+function CohortControls({ cohort, days, customerFunding, customerTotal, openkeysTotal, onCohortChange, onDaysChange }: CohortControlsProps): ReactElement {
   const onTabsKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     event.preventDefault();
@@ -87,9 +92,11 @@ function CohortControls({ cohort, days, customerTotal, openkeysTotal, onCohortCh
   return (
     <>
       <PageHead
-        title="Платящие"
+        title="Расход клиентов"
         sub={cohort === "customers"
-          ? "единая когорта клиентов с денежным финансированием и строгим бонусным расходом · точный расход Claude, GPT и Gemini"
+          ? (customerFunding === "spenders"
+              ? "все commerce-клиенты с расходом окна · exact usage по provider/model с явным покрытием"
+              : "выбранная funding-когорта commerce · exact usage по provider/model с явным покрытием")
           : "выданные OpenKeys · номинал и live usage движка остаются отдельной денежной властью"}
         badge={cohort === "customers"
           ? (customerTotal == null ? undefined : <Pill kind="ok">{count(customerTotal, "клиент", "клиента", "клиентов")}</Pill>)
@@ -167,9 +174,54 @@ function ProviderCell({ row, provider }: { row: PayingUserRow; provider: (typeof
   );
 }
 
+function payingTokenSummary(model: PayingUserUsageModel): string {
+  return `вх ${model.input_tokens} · вых ${model.output_tokens} · cache read ${model.cache_read_tokens} · write 5m ${model.cache_write_5m_tokens} · write 1h ${model.cache_write_1h_tokens} · web ${model.web_search_requests}`;
+}
+
+export const PayingUsageDetails = memo(function PayingUsageDetails({ row }: { row: PayingUserRow }): ReactElement {
+  const usage = row.usage;
+  if (!usage || usage.status === "unavailable") {
+    return <p className="paying-usage-unavailable"><Pill kind="warn">данные недоступны</Pill> Usage за окно {usage?.window ?? "—"} не получен; это не нулевой расход.</p>;
+  }
+  const warning = usage.status === "partial" ? (
+    <p className="paying-usage-partial"><Pill kind="warn">частичные данные</Pill> Покрытие {usage.available_account_count}/{usage.account_count}; таблица и итоги ниже относятся только к доступной части.</p>
+  ) : null;
+  if (!usage.models.length) {
+    return (
+      <div className="paying-usage-copy">
+        {warning}
+        <p>Доступный отчёт: {usage.requests} запросов, моделей в окне нет. Official {usageNanoMoney(usage.total_official_nano)} · charged {usageNanoMoney(usage.total_charged_nano)}.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="paying-usage-copy">
+      {warning}
+      <p className="paying-usage-totals">Доступная часть: {usage.requests} запросов · official {usageNanoMoney(usage.total_official_nano)} · charged {usageNanoMoney(usage.total_charged_nano)}</p>
+      <div className="openkeys-model-scroll paying-model-scroll">
+        <table className="openkeys-model-table paying-model-table">
+          <thead><tr><th className="left">провайдер</th><th className="left">модель</th><th>запросы</th><th className="left">токены</th><th>official</th><th>charged</th></tr></thead>
+          <tbody>{usage.models.map((model, index) => (
+            <tr key={`${model.provider ?? ""}:${model.model}:${index}`}>
+              <td className="left"><b>{providerLabel(model.provider)}</b></td>
+              <td className="left mono">{model.model}</td>
+              <td>{model.requests}</td>
+              <td className="left openkeys-token-data">{payingTokenSummary(model)}</td>
+              <td className="openkeys-official-money">{usageNanoMoney(model.official_nano)}</td>
+              <td className="openkeys-charged-money">{usageNanoMoney(model.charged_nano)}</td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+    </div>
+  );
+});
+
 export const PayingRow = memo(function PayingRow({ row, rank, days }: { row: PayingUserRow; rank: number; days: PayingUserDays }) {
+  const [expanded, setExpanded] = useState(false);
   const other = providerNano(row.provider_spend, "other");
   const discount = row.multiplier_bp == null ? null : 100 - row.multiplier_bp / 100;
+  const detailsId = `paying-user-details-${rank}`;
   const fundingLabel = row.funding_kind === "payments"
     ? "платёжный провайдер"
     : row.funding_kind === "payments_and_manual"
@@ -178,60 +230,72 @@ export const PayingRow = memo(function PayingRow({ row, rank, days }: { row: Pay
         ? "ручное пополнение"
         : null;
   const bonusOnly = row.funding_kind === "bonus_only";
+  const spendOnly = row.funding_kind === "spend_only";
   return (
-    <tr>
-      <td className="left paying-customer-cell">
-        <span className="paying-rank" aria-label={`Место ${rank}`}>
-          {String(rank).padStart(2, "0")}
-        </span>
-        <span className="paying-customer-copy">
-          <b><Dot kind={row.status === "disabled" ? "bad" : "ok"} /> {row.email ?? "—"}</b>
-          <span className="sub">
-            {row.display_name || "Без имени"} · {payingTierLabel(row)}
-            {discount == null ? "" : ` · скидка ${discount}%`}
-          </span>
-        </span>
-      </td>
-      <td className="paying-money-cell">
-        {bonusOnly ? (
-          <>
-            <Pill kind="info">только бонус</Pill>
-            <b>{nanoMoney(row.bonus_funded_spent_nano)}</b>
-            <span className="sub">денежных пополнений нет</span>
-          </>
-        ) : (
-          <>
-            {fundingLabel ? <Pill kind="ok">{fundingLabel}</Pill> : null}
-            <b>{nanoMoney(row.paid_nano)}</b>
-            <span className="sub">
-              {row.funding_kind === "manual"
-                ? `${count(row.manual_topups_count ?? 0, "ручное пополнение", "ручных пополнения", "ручных пополнений")} · ${ago(row.last_paid_at)}`
-                : `${row.payments_count ?? 0} платежей${(row.manual_topups_count ?? 0) > 0 ? ` · ${row.manual_topups_count} ручных` : ""} · ${ago(row.last_paid_at)}`}
+    <Fragment>
+      <tr>
+        <td className="left paying-customer-cell">
+          <span className="paying-rank" aria-label={`Место ${rank}`}>{String(rank).padStart(2, "0")}</span>
+          <button type="button" className="paying-row-toggle" aria-label={`${expanded ? "Скрыть" : "Показать"} usage клиента ${row.email ?? "—"}`} aria-expanded={expanded} aria-controls={expanded ? detailsId : undefined} onClick={() => setExpanded((current) => !current)}>
+            <span aria-hidden="true">{expanded ? "−" : "+"}</span>
+            <span className="paying-customer-copy">
+              <b><Dot kind={row.status === "disabled" ? "bad" : "ok"} /> {row.email ?? "—"}</b>
+              <span className="sub">
+                {row.display_name || "Без имени"} · {payingTierLabel(row)}
+                {discount == null ? "" : ` · скидка ${discount}%`}
+              </span>
             </span>
-            {isPositiveNano(row.manual_paid_nano) ? <span className="sub">вручную {nanoMoney(row.manual_paid_nano)}</span> : null}
-          </>
-        )}
-      </td>
-      <td className="paying-money-cell paying-window-total">
-        <b>{nanoMoney(row.spent_nano)}</b>
-        <span className="sub">за {spendWindowLabel(days).toLowerCase()}</span>
-        {isPositiveNano(other) ? <span className="sub">другое {nanoMoney(other)}</span> : null}
-      </td>
-      {PROVIDERS.map((provider) => <ProviderCell key={provider.id} row={row} provider={provider} />)}
-      <td className="paying-activity-cell">
-        <b>{ago(row.last_seen_at)}</b>
-        <span className="sub">ключей активно: {row.active_api_keys ?? 0}</span>
-      </td>
-    </tr>
+          </button>
+        </td>
+        <td className="paying-money-cell">
+          {bonusOnly ? (
+            <>
+              <Pill kind="info">строгий bonus-only</Pill>
+              <b>{nanoMoney(row.bonus_funded_spent_nano)}</b>
+              <span className="sub">денежных пополнений нет · не выручка</span>
+            </>
+          ) : spendOnly ? (
+            <>
+              <Pill kind="warn">расход без строгой классификации</Pill>
+              <span className="sub">не bonus-only · lifetime деньги не подтверждены</span>
+            </>
+          ) : (
+            <>
+              {fundingLabel ? <Pill kind="ok">{fundingLabel}</Pill> : null}
+              <b>{nanoMoney(row.paid_nano)}</b>
+              <span className="sub">
+                {row.funding_kind === "manual"
+                  ? `${count(row.manual_topups_count ?? 0, "ручное пополнение", "ручных пополнения", "ручных пополнений")} · ${ago(row.last_paid_at)}`
+                  : `${row.payments_count ?? 0} платежей${(row.manual_topups_count ?? 0) > 0 ? ` · ${row.manual_topups_count} ручных` : ""} · ${ago(row.last_paid_at)}`}
+              </span>
+              {isPositiveNano(row.manual_paid_nano) ? <span className="sub">вручную {nanoMoney(row.manual_paid_nano)}</span> : null}
+            </>
+          )}
+        </td>
+        <td className="paying-money-cell paying-window-total">
+          <b>{nanoMoney(row.spent_nano)}</b>
+          <span className="sub">за {spendWindowLabel(days).toLowerCase()}</span>
+          {isPositiveNano(other) ? <span className="sub">другое {nanoMoney(other)}</span> : null}
+        </td>
+        {PROVIDERS.map((provider) => <ProviderCell key={provider.id} row={row} provider={provider} />)}
+        <td className="paying-activity-cell">
+          <b>{ago(row.last_seen_at)}</b>
+          <span className="sub">ключей активно: {row.active_api_keys ?? 0}</span>
+        </td>
+      </tr>
+      {expanded ? <tr id={detailsId} className="paying-model-row"><td colSpan={7}><PayingUsageDetails row={row} /></td></tr> : null}
+    </Fragment>
   );
 });
 
 export function PayingLedger({
   data,
+  funding,
   activeProvider,
   onProviderSelect,
 }: {
   data: PayingUsersResponse;
+  funding: PayingUserFunding;
   activeProvider: "" | PayingUserProvider;
   onProviderSelect: (provider: "" | PayingUserProvider) => void;
 }): ReactElement {
@@ -240,6 +304,8 @@ export function PayingLedger({
   const spentTotal = summary.spent_nano ?? "0";
   const other = providerNano(spend, "other");
   const days = data.days ?? 30;
+  const allSpenders = funding === "spenders";
+  const fundingLabel = PAYING_USER_FUNDINGS.find(([value]) => value === funding)?.[1] ?? funding;
   return (
     <section className="paying-ledger" aria-label="Сводка клиентской когорты">
       <div className="paying-ledger-lead">
@@ -251,14 +317,14 @@ export function PayingLedger({
         </small>
       </div>
       <div className="paying-ledger-bonus">
-        <span>Списано бонуса · {spendWindowLabel(days)}</span>
+        <span>Строгий bonus-only · {spendWindowLabel(days)}</span>
         <strong>{nanoMoney(summary.bonus_only_spent_nano)}</strong>
-        <small>{count(summary.bonus_only_users ?? 0, "bonus-only клиент", "bonus-only клиента", "bonus-only клиентов")} · не выручка</small>
+        <small>{count(summary.bonus_only_users ?? 0, "bonus-only клиент", "bonus-only клиента", "bonus-only клиентов")} · отдельно от mixed/legacy · не выручка</small>
       </div>
       <div className="paying-ledger-window">
-        <span>Расход когорты · {spendWindowLabel(days)}</span>
+        <span>{allSpenders ? "Все spenders" : `Выбранная когорта · ${fundingLabel}`} · {spendWindowLabel(days)}</span>
         <strong>{nanoMoney(spentTotal)}</strong>
-        <small>{summary.active_spenders ?? 0} клиентов тратили · обновлено {ago(data.generated_at)}</small>
+        <small>{summary.active_spenders ?? 0} клиентов с расходом{allSpenders ? ", включая mixed/legacy/unattributed" : " в выбранной funding-когорте"} · обновлено {ago(data.generated_at)}</small>
       </div>
       <div className="paying-ledger-provider-area">
         <div className="paying-ledger-rail" aria-label="Распределение расхода по провайдерам">
@@ -330,7 +396,7 @@ function CustomerCohort({ page, search, setPage, setSearch, onTotalChange }: Cus
 
   const submitSearch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    patchPage({ q: search.trim() });
+    patchPage({ q: normalizePayingUsersSearch(search) });
   };
 
   return (
@@ -339,13 +405,17 @@ function CustomerCohort({ page, search, setPage, setSearch, onTotalChange }: Cus
         <>
           <PayingLedger
             data={data}
+            funding={page.funding}
             activeProvider={page.provider}
             onProviderSelect={(provider) => patchPage({ provider })}
           />
-          <SectionHeader title="Клиенты: деньги и бонус" sub={`${data.total ?? 0} по текущему фильтру · суммы в выбранном окне`} />
+          <SectionHeader
+            title={page.funding === "spenders" ? "Все клиенты с расходом" : "Клиенты выбранной funding-когорты"}
+            sub={`${data.total ?? 0} по текущему фильтру${page.funding === "spenders" ? " · spenders включают mixed, legacy и unattributed" : ""}`}
+          />
           <form className="paying-toolbar" onSubmit={submitSearch}>
-            <label className="sr-only" htmlFor="paying-search">Поиск клиентов денежной и бонусной когорты</label>
-            <input id="paying-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="email, имя или UUID…" />
+            <label className="sr-only" htmlFor="paying-search">Поиск клиентов с расходом</label>
+            <input id="paying-search" name="q" type="search" maxLength={200} autoComplete="off" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="email, имя или UUID…" />
             <label className="sr-only" htmlFor="paying-status">Статус</label>
             <select id="paying-status" value={page.status} onChange={(event) => patchPage({ status: event.target.value as PayingUsersPageState["status"] })}>
               <option value="">все статусы</option><option value="active">активные</option><option value="disabled">отключённые</option>
@@ -354,8 +424,8 @@ function CustomerCohort({ page, search, setPage, setSearch, onTotalChange }: Cus
             <select id="paying-provider" value={page.provider} onChange={(event) => patchPage({ provider: event.target.value as PayingUsersPageState["provider"] })}>
               <option value="">все провайдеры</option><option value="anthropic">Claude</option><option value="openai">GPT</option><option value="google">Gemini</option><option value="other">другое / legacy</option>
             </select>
-            <label className="sr-only" htmlFor="paying-funding">Финансирование клиентской когорты</label>
-            <select id="paying-funding" value={page.funding} title="Выберите денежное финансирование, строгий bonus-only расход или объединённую когорту" onChange={(event) => patchPage({ funding: event.target.value as PayingUsersPageState["funding"] })}>
+            <label className="sr-only" htmlFor="paying-funding">Фильтр spender-когорты</label>
+            <select id="paying-funding" value={page.funding} title="Выберите всех spenders, lifetime money funding или строгий bonus-only" onChange={(event) => patchPage({ funding: event.target.value as PayingUsersPageState["funding"] })}>
               {PAYING_USER_FUNDINGS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
             <label className="sr-only" htmlFor="paying-sort">Сортировка</label>
@@ -366,7 +436,7 @@ function CustomerCohort({ page, search, setPage, setSearch, onTotalChange }: Cus
               {page.dir === "desc" ? "↓" : "↑"}
             </button>
             <button className="btn" type="submit">Найти</button>
-            <button className="btn ghost" type="button" title="Выгрузить текущую страницу в CSV" onClick={() => downloadCsv(`paying-users-${page.days}d-${csvDate()}.csv`, PAYING_USERS_CSV_HEADER, buildPayingUsersCsvRows(data.rows ?? []))}>CSV</button>
+            <button className="btn ghost" type="button" title="Выгрузить текущую страницу: одна строка на user × provider × model" onClick={() => downloadCsv(`paying-users-${page.days}d-${csvDate()}.csv`, PAYING_USERS_CSV_HEADER, buildPayingUsersCsvRows(data.rows ?? []))}>CSV</button>
           </form>
           <TableCard>
             <table className="paying-table">
@@ -382,7 +452,7 @@ function CustomerCohort({ page, search, setPage, setSearch, onTotalChange }: Cus
             <button type="button" className="btn ghost" disabled={(data.offset ?? page.offset) + (data.limit ?? page.limit) >= (data.total ?? 0)} onClick={() => patchPage({ offset: (data.offset ?? page.offset) + (data.limit ?? page.limit) }, false)}>Дальше</button>
           </div>
           <footer>
-            Режим «деньги + бонусный расход» объединяет клиентов с lifetime payment/manual funding и строгих bonus-only клиентов. Bonus-only требует положительный расход окна и полную immutable modern-атрибуцию policy_v1|release_v2: paid=0, bonus=spent, other=0, unattributed=0; legacy, mixed и incomplete события исключены. Бонусный расход не является выручкой. Расход аккаунтов без клиента — на странице «Расход движка».
+            По умолчанию режим «все с расходом» включает каждого commerce spender окна: money-funded, строгий bonus-only, mixed, legacy и unattributed; узкие funding-фильтры сужают строки и сводку. `spend_only` означает расход без строгой классификации и никогда не означает bonus-only. Lifetime деньги и строгий bonus-only показаны отдельно; бонус не является выручкой. Partial usage отражает только доступные аккаунты, unavailable не подменяется нулём. Расход аккаунтов без клиента — на странице «Расход движка».
           </footer>
         </>
       )}
@@ -547,6 +617,7 @@ export default function PayingUsersPage(): ReactElement {
       <CohortControls
         cohort={cohort}
         days={days}
+        customerFunding={customerPage.funding}
         customerTotal={customerTotal}
         openkeysTotal={openkeysTotal}
         onCohortChange={setCohort}

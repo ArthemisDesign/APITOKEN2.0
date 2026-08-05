@@ -1,3 +1,6 @@
+import { spreadsheetExactInteger, spreadsheetSafeText } from "@/lib/csv";
+import { nanoMoney } from "@/lib/format";
+
 export const PAYING_USER_SORTS = [
   ["spent", "расход за окно"],
   ["paid", "оплачено всего"],
@@ -7,12 +10,13 @@ export const PAYING_USER_SORTS = [
 
 export type PayingUserSort = (typeof PAYING_USER_SORTS)[number][0];
 export type PayingUserProvider = "anthropic" | "openai" | "google" | "other";
-export type PayingUserFunding = "all" | "payments" | "manual" | "bonus";
-export type PayingUserFundingKind = "payments" | "payments_and_manual" | "manual" | "bonus_only";
+export type PayingUserFunding = "spenders" | "all" | "payments" | "manual" | "bonus";
+export type PayingUserFundingKind = "payments" | "payments_and_manual" | "manual" | "bonus_only" | "spend_only";
 
 /** Источник финансирования клиента: подписи для селектора когорты. */
 export const PAYING_USER_FUNDINGS: Array<[PayingUserFunding, string]> = [
-  ["all", "деньги + бонусный расход"],
+  ["spenders", "все с расходом"],
+  ["all", "деньги + строгий бонус"],
   ["payments", "платёжный провайдер"],
   ["manual", "ручное денежное пополнение"],
   ["bonus", "только бонусный расход"],
@@ -24,6 +28,32 @@ export interface ProviderSpend {
   openai_nano?: string;
   google_nano?: string;
   other_nano?: string;
+}
+
+export interface PayingUserUsageModel {
+  provider: string | null;
+  model: string;
+  requests: string;
+  input_tokens: string;
+  output_tokens: string;
+  cache_read_tokens: string;
+  cache_write_5m_tokens: string;
+  cache_write_1h_tokens: string;
+  web_search_requests: string;
+  official_nano: string;
+  charged_nano: string;
+}
+
+export interface PayingUserUsage {
+  status: "complete" | "partial" | "unavailable";
+  window: string;
+  account_count: number;
+  available_account_count: number;
+  unavailable_account_count: number;
+  requests: string;
+  total_official_nano: string;
+  total_charged_nano: string;
+  models: PayingUserUsageModel[];
 }
 
 export interface PayingUserRow {
@@ -46,6 +76,7 @@ export interface PayingUserRow {
   other_funded_spent_nano?: string;
   unattributed_spent_nano?: string;
   provider_spend?: ProviderSpend;
+  usage: PayingUserUsage;
   active_api_keys?: number;
   last_seen_at?: string | null;
   created_at?: string;
@@ -93,10 +124,14 @@ export const INITIAL_PAYING_USERS_PAGE: PayingUsersPageState = {
   q: "",
   status: "",
   provider: "",
-  funding: "all",
+  funding: "spenders",
   sort: "spent",
   dir: "desc",
 };
+
+export function normalizePayingUsersSearch(value: string): string {
+  return value.trim().slice(0, 200);
+}
 
 export function payingUsersQuery(state: PayingUsersPageState): string {
   const params = new URLSearchParams({
@@ -106,6 +141,7 @@ export function payingUsersQuery(state: PayingUsersPageState): string {
     sort: state.sort,
     dir: state.dir,
     funding: state.funding,
+    include_usage: "true",
   });
   if (state.q) params.set("q", state.q);
   if (state.status) params.set("status", state.status);
@@ -122,6 +158,15 @@ export function isPositiveNano(value: string | null | undefined): boolean {
     return BigInt(value ?? "0") > 0n;
   } catch {
     return false;
+  }
+}
+
+export function usageNanoMoney(value: string | null | undefined): string {
+  try {
+    const nano = BigInt(value ?? "0");
+    return nano > 0n && nano < 10_000_000n ? "<$0.01" : nanoMoney(value);
+  } catch {
+    return nanoMoney(value);
   }
 }
 
@@ -152,51 +197,95 @@ export function payingCohortUsers(summary: PayingUsersSummary | undefined): numb
 }
 
 export const PAYING_USERS_CSV_HEADER = [
+  "user_id",
   "email",
   "имя",
   "статус",
   "тариф",
   "funding_kind",
-  "оплачено_nanoUSD",
+  "оплачено_nanoUSD_text",
   "платежей",
   "ручных_пополнений",
-  "ручные_nanoUSD",
-  "расход_окна_nanoUSD",
-  "paid_funded_spent_nano",
-  "bonus_funded_spent_nano",
-  "other_funded_spent_nano",
-  "unattributed_spent_nano",
-  "claude_nanoUSD",
-  "gpt_nanoUSD",
-  "gemini_nanoUSD",
-  "другое_nanoUSD",
+  "ручные_nanoUSD_text",
+  "расход_окна_nanoUSD_text",
+  "paid_funded_spent_nanoUSD_text",
+  "bonus_funded_spent_nanoUSD_text",
+  "other_funded_spent_nanoUSD_text",
+  "unattributed_spent_nanoUSD_text",
+  "claude_nanoUSD_text",
+  "gpt_nanoUSD_text",
+  "gemini_nanoUSD_text",
+  "другое_nanoUSD_text",
   "последняя_оплата",
   "последняя_активность",
   "активные_ключи",
+  "usage_status",
+  "usage_window",
+  "usage_account_count",
+  "usage_available_account_count",
+  "usage_unavailable_account_count",
+  "usage_requests_text",
+  "provider",
+  "model",
+  "model_requests_text",
+  "input_tokens_text",
+  "output_tokens_text",
+  "cache_read_tokens_text",
+  "cache_write_5m_tokens_text",
+  "cache_write_1h_tokens_text",
+  "web_search_requests_text",
+  "model_official_nanoUSD_text",
+  "model_charged_nanoUSD_text",
+  "usage_total_official_nanoUSD_text",
+  "usage_total_charged_nanoUSD_text",
 ];
 
 export function buildPayingUsersCsvRows(rows: PayingUserRow[]): unknown[][] {
-  return rows.map((row) => [
-    row.email ?? "",
-    row.display_name ?? "",
-    row.status ?? "",
-    payingTierLabel(row),
-    row.funding_kind ?? "",
-    row.paid_nano ?? "0",
-    row.payments_count ?? 0,
-    row.manual_topups_count ?? 0,
-    row.manual_paid_nano ?? "0",
-    row.spent_nano ?? "0",
-    row.paid_funded_spent_nano ?? "0",
-    row.bonus_funded_spent_nano ?? "0",
-    row.other_funded_spent_nano ?? "0",
-    row.unattributed_spent_nano ?? "0",
-    providerNano(row.provider_spend, "anthropic"),
-    providerNano(row.provider_spend, "openai"),
-    providerNano(row.provider_spend, "google"),
-    providerNano(row.provider_spend, "other"),
-    row.last_paid_at ?? "",
-    row.last_seen_at ?? "",
-    row.active_api_keys ?? 0,
-  ]);
+  return rows.flatMap((row) => {
+    const usage = row.usage;
+    const models = usage && usage.status !== "unavailable" && usage.models.length ? usage.models : [null];
+    return models.map((model) => [
+      spreadsheetSafeText(row.user_id ?? ""),
+      spreadsheetSafeText(row.email ?? ""),
+      spreadsheetSafeText(row.display_name ?? ""),
+      spreadsheetSafeText(row.status ?? ""),
+      spreadsheetSafeText(payingTierLabel(row)),
+      spreadsheetSafeText(row.funding_kind ?? ""),
+      spreadsheetExactInteger(row.paid_nano ?? "0"),
+      row.payments_count ?? 0,
+      row.manual_topups_count ?? 0,
+      spreadsheetExactInteger(row.manual_paid_nano ?? "0"),
+      spreadsheetExactInteger(row.spent_nano ?? "0"),
+      spreadsheetExactInteger(row.paid_funded_spent_nano ?? "0"),
+      spreadsheetExactInteger(row.bonus_funded_spent_nano ?? "0"),
+      spreadsheetExactInteger(row.other_funded_spent_nano ?? "0"),
+      spreadsheetExactInteger(row.unattributed_spent_nano ?? "0"),
+      spreadsheetExactInteger(providerNano(row.provider_spend, "anthropic")),
+      spreadsheetExactInteger(providerNano(row.provider_spend, "openai")),
+      spreadsheetExactInteger(providerNano(row.provider_spend, "google")),
+      spreadsheetExactInteger(providerNano(row.provider_spend, "other")),
+      spreadsheetSafeText(row.last_paid_at ?? ""),
+      spreadsheetSafeText(row.last_seen_at ?? ""),
+      row.active_api_keys ?? 0,
+      usage?.status ?? "",
+      spreadsheetSafeText(usage?.window ?? ""),
+      usage?.account_count ?? "",
+      usage?.available_account_count ?? "",
+      usage?.unavailable_account_count ?? "",
+      spreadsheetExactInteger(usage && usage.status !== "unavailable" ? usage.requests : ""),
+      spreadsheetSafeText(model ? (model.provider ?? "не указан") : ""),
+      spreadsheetSafeText(model?.model ?? ""),
+      spreadsheetExactInteger(model?.requests ?? ""),
+      spreadsheetExactInteger(model?.input_tokens ?? ""),
+      spreadsheetExactInteger(model?.output_tokens ?? ""),
+      spreadsheetExactInteger(model?.cache_read_tokens ?? ""),
+      spreadsheetExactInteger(model?.cache_write_5m_tokens ?? ""),
+      spreadsheetExactInteger(model?.cache_write_1h_tokens ?? ""),
+      spreadsheetExactInteger(model?.web_search_requests ?? ""),
+      spreadsheetExactInteger(model?.official_nano ?? ""),
+      spreadsheetExactInteger(model?.charged_nano ?? ""),
+      spreadsheetExactInteger(usage && usage.status !== "unavailable" ? usage.total_official_nano : ""),
+      spreadsheetExactInteger(usage && usage.status !== "unavailable" ? usage.total_charged_nano : ""),
+    ]);
+  });
 }

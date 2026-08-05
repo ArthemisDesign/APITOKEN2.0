@@ -54,13 +54,16 @@ No secrets, and there never will be: the browser uses same-origin relative paths
 - `src/app/page.tsx` — Overview (the reference page; port the others following it).
 - `src/app/paying-users/page.tsx` — one read-only control room with independently filtered
   `Клиенты` and `OpenKeys` cohorts. Only the active cohort mounts its 30-second poller. Commerce
-  explicitly requests `funding=all`, combining lifetime payment/manual users with strict selected-window
-  bonus-only spenders. Its ledger separates lifetime money, a neutral bonus-only amount/count and the
-  whole-cohort provider rail; commerce CSV keeps raw decimal strings and exports `funding_kind` plus all
-  four exact funding legs. OpenKeys uses same-origin `/openkeys-admin/paying-keys`, exact local wire types
-  and an expandable key → provider/model usage table. OpenKeys CSV money columns end in
-  `*_nanoUSD_text`: values carry a leading apostrophe so spreadsheets preserve exact integers, while
-  untrusted text is apostrophe-prefixed when it could be interpreted as a formula.
+  defaults to `funding=spenders`, retains the selected funding filter and always sends
+  `include_usage=true`. The default contains every positive selected-window spender, including
+  mixed/legacy/unattributed rows, with `spend_only` explicitly distinct from strict
+  `bonus_only`. Its ledger separates all-spender window spend from lifetime money revenue and strict
+  bonus-only (not revenue). Commerce rows expand into producer-authored provider/model usage with
+  `complete|partial|unavailable` coverage; partial totals cover only available accounts and unavailable
+  never means zero. Commerce CSV emits one row per user × provider × model, or one status row when
+  models are empty/unavailable, preserving exact counter/nanoUSD strings as spreadsheet text and
+  formula-safing untrusted text. OpenKeys uses same-origin `/openkeys-admin/paying-keys`, exact local
+  wire types and the same expandable usage pattern.
 - `src/app/subscriptions/codex-capacity-board.tsx` — compact GPT summary of shared-plan capacity,
   native-credit/API-$ windows, and masked-email homes. Raw calibration, token-capacity, and
   profitability matrices are intentionally not surfaced in the operator UI.
@@ -94,10 +97,10 @@ No secrets, and there never will be: the browser uses same-origin relative paths
    from `useSpendStatsModal()` + `title="Разбивка: сутки / 7 дней / 30 дней"`.
 8. Table export — `downloadCsv(filename, header, rows)`, file name with a date
    via `csvDate()` (e.g. `users-2026-07-31.csv`).
-9. The `/paying-users` page uses only the exact nanoUSD fields of
-   `/admin/finance/paying-users`; bonus-only classification comes only from `funding_kind`, and
-   provider/funding amounts must not be reconstructed from zero totals, float USD or the top-50
-   `/spend-stats`.
+9. The `/paying-users` page uses only exact decimal strings from
+   `/admin/finance/paying-users`; `bonus_only`/`spend_only` classification comes only from
+   `funding_kind`, and provider/funding/usage amounts or counters must not be reconstructed from zero
+   totals, float USD, model names or the top-50 `/spend-stats`.
 
 ## Commands
 

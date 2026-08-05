@@ -179,53 +179,44 @@ does not switch clients over.
 ## Paying customers
 
 The `/paying-users` page is a separate compact read-only control room, not a filter of the
-general `/users` table. It receives an expand-only snapshot from commerce and explicitly
-requests `GET /admin/finance/paying-users?days=1|7|30&funding=all`. This combines the
-lifetime money-funded cohort (confirmed payments and admin-issued manual engine top-ups)
-with strict bonus-only spenders in the selected window. A bonus-only user has no lifetime
-payment/manual funding, positive window spend, and every event is complete immutable modern
-`policy_v1|release_v2` attribution with `paid=0`, `bonus=spent`, `other=0` and
-`unattributed=0`; legacy, mixed and incomplete rows are excluded. Search,
-provider/status/funding filters, sorting and pagination stay on the server and therefore do
-not degrade as the customer base grows. The additive bonus contract is consumed only after
-GREEN exact producer SHA `b12a08fe872fb08a88943d7ade0a75a3e567b579`.
+general `/users` table. It receives an expand-only snapshot from commerce, defaults to
+`GET /admin/finance/paying-users?days=1|7|30&funding=spenders&include_usage=true`, retains the
+selected funding filter and always sends `include_usage=true`. The consumer was wired only after
+GREEN exact producer SHA `d27033effc237156bce91a38d1ca0ff5b6e66cbd`. Search,
+provider/status/funding filters, sorting and pagination stay on the server and therefore do not
+degrade as the customer base grows; from the default cohort a search such as
+`q=wwwvatroke@gmail.com` retains `funding=spenders` and `include_usage=true`.
 
-Commerce now also produces additive `funding=spenders`: every positive selected-window commerce
-spender, including mixed/other/legacy/unattributed evidence, while preserving strict `bonus_only`
-and marking zero-money non-strict rows `spend_only`. Page/count/summary share one half-open commerce
-cutoff in a read-only repeatable-read snapshot. Existing requests, including the current page's
-`funding=all`, remain DB-only because `include_usage` is omitted: they make no engine calls and expose
-neither usage nor internal engine account IDs.
+The default cohort contains every positive selected-window commerce spender, including
+mixed/other/legacy/unattributed evidence. Producer-authored `bonus_only` remains the strict
+classification for zero-money rows whose complete immutable modern attribution is entirely bonus;
+`spend_only` instead means spend without that strict classification and is never presented as
+bonus-only. The `all` filter remains available and is labelled `деньги + строгий бонус`; the other
+historical funding filters are unchanged.
 
-The future consumer must explicitly request `funding=spenders&include_usage=true`. Only then does each
-paginated row receive a `usage` projection covering every distinct account found on that user's window
-events (the current mapping is only a no-spend money-row fallback). Usage calls have a page-wide
-concurrency limit of four and a shared five-second abort deadline; calls still queued at expiry never
-start, in-flight calls are cancelled, and coverage degrades to `partial` or `unavailable`. Successful
-rows are grouped by the exact provider and model values supplied by EngineUsage, never by model-name
-inference. Safe engine request/token integers are summed with BigInt and serialized as decimal strings;
-nanoUSD remains exact decimal strings. The producer does not expose full engine usage, account IDs,
-key details, buckets or daily series, and partial totals never claim complete coverage. Switching the
-page to this opt-in contract is a separate checkpoint after the exact producer SHA is GREEN.
+Each paginated row receives a minimal `usage` projection covering every distinct account found on
+that user's window events. Commerce rows expand into exact producer/model details. `complete` means
+all accounts are represented; `partial` shows `available_account_count/account_count`, warns that
+both its totals and model table cover only the available part; `unavailable` says that data is
+unavailable and never substitutes `$0`. A complete report with no models still shows its exact
+request/official/charged totals. Provider is displayed only from the wire (`null` → `не указан`),
+never inferred from model. Request/token counters and nanoUSD values stay decimal strings throughout
+the consumer; only bounded coverage counts and the 0–10000 provider-share basis points use JS
+`number`.
 
 The top ledger separates lifetime money received (`paid_nano`, including the manual amount
-in its copy) from the neutral selected-window bonus-only card (`bonus_only_spent_nano` and
-`bonus_only_users`); bonus spend is not revenue. Window spend and the proportional
-Claude/GPT/Gemini rail cover the whole selected cohort, and provider segments also serve as
-quick filters. The table branches bonus rows only on producer-authored
-`funding_kind='bonus_only'`, never by inferring from zero money, while money rows distinguish
-payments, payment plus manual, and manual funding. It shows exact charged nanoUSD separately
-for Anthropic/OpenAI/Google. Provider authority is taken from immutable pricing attribution,
-and for legacy pricing — from the stored top-level provider engine ledger; the worker also
-reprocesses previously provisional `unattributed` rows after producer evidence appears.
-Versioned recovery v2 re-selects old `unavailable` rows created by the weak request-ID-only
-algorithm, recovers still-available 30-day rows by the strict settlement fingerprint and
-marks each exact/exhausted result with version `2`. A model ID is never converted into a
-provider; remaining ambiguity is not lost and is shown as `другое` ("other"). Commerce CSV
-keeps raw decimal nanoUSD strings and adds `funding_kind` plus the exact
-`paid_funded_spent_nano`, `bonus_funded_spent_nano`, `other_funded_spent_nano` and
-`unattributed_spent_nano` legs; JS `number` is used only for the bounded 0–10000
-basis-points fraction.
+in its copy) from strict selected-window bonus-only (`bonus_only_spent_nano` and
+`bonus_only_users`); bonus spend is not revenue. A separate window card and the proportional
+Claude/GPT/Gemini rail cover all selected spenders, explicitly including mixed, legacy and
+unattributed rows. The page therefore never calls this cohort "money-paying customers".
+Provider segments also serve as quick filters.
+
+Commerce CSV preserves the exact funding legs and provider totals, then emits one row per
+user × producer-authored provider × model. A complete/partial report without models and an
+unavailable report each get one status row. It includes usage status/window/coverage, exact
+request and token counters, model and total official/charged nanoUSD. All decimal integer strings
+are serialized through `spreadsheetExactInteger`; user/provider/model and other text pass through
+`spreadsheetSafeText`. Unavailable usage/model money remains empty rather than becoming a fake zero.
 
 The same page has a separate `OpenKeys` cohort backed by the same-origin read-only
 `GET /openkeys-admin/paying-keys?days=1|7|30&limit&offset&q&status`. It shows only delivered,
