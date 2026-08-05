@@ -18,14 +18,16 @@ User=deploy
 Group=deploy
 Environment=HOME=/srv/claude-api/data/authbot
 Environment=AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude
+LoadCredential=proxy-admin.key:/etc/apitoken/proxy-admin.key
 EnvironmentFile=/srv/claude-api/data/authbot.env
 EnvironmentFile=/srv/claude-api/data/engine-postgres.env
-# Reuse the engine control key for the loopback-only proxy-admin listener. The leading dash keeps
-# rollback to an older release possible while the shared environment is first being provisioned.
+# Runtime status calls still use the engine control key. Keep this optional for rollback to a release
+# predating those calls; the incoming proxy-admin API never reuses that shared credential.
 EnvironmentFile=-/srv/claude-api/data/server.env
 # Command assignments override legacy values from EnvironmentFile even for the old binary that may
-# still be current when an infrastructure transaction restarts this unit before promotion.
-ExecStart=/usr/bin/env CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CODEX_HOMES_DIR=/srv/claude-api/data/codex-staging AUTH_BOT_CODEX_ROSTER_DIR=/srv/claude-api/data/codex /srv/claude-api/releases/current/authbot
+# still be current when an infrastructure transaction restarts this unit before promotion. Pin the
+# credential path here as well so none of the loaded environment files can redirect the new binary.
+ExecStart=/usr/bin/env CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CODEX_HOMES_DIR=/srv/claude-api/data/codex-staging AUTH_BOT_CODEX_ROSTER_DIR=/srv/claude-api/data/codex AUTH_BOT_PROXY_ADMIN_KEY_FILE=%d/proxy-admin.key /srv/claude-api/releases/current/authbot
 WorkingDirectory=/srv/claude-api/data
 Restart=always
 RestartSec=5
@@ -38,6 +40,8 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectProc=invisible
+ProcSubset=pid
 # Resolve the official install before hiding /home, then expose only its executable at runtime.
 # A bind mounted below hidden /home remains unreachable even when the leaf itself is mounted.
 BindReadOnlyPaths=/home/deploy/.local/bin/claude:/run/claude-authbot/claude

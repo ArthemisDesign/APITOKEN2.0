@@ -85,35 +85,94 @@ behind `managed_admin_auth`: login/password is verified by commerce internal aut
 domain grants. Caddy same-origin proxies the depersonalized `/capacity`, `/codex-subs`,
 `/gemini-subs`, `/kimi-subs` and `/glm-subs` to the three provider runtimes (KIMI and GLM
 are backend-only planes inside the Anthropic runtime, there is no separate origin) and adds
-the server keys; the browser never receives control keys, full email, OAuth, Google
-project, KIMI/GLM subject, keys or proxy. The protection applies to all pages, including
-`/sales/calculator`.
+the server keys; the browser never receives control keys, OAuth, Google project, KIMI/GLM
+subject, keys or proxy. Full account email has one narrow exception described below for the
+closed managed-admin `/proxies` response; the other subscription routes remain masked. The
+protection applies to all pages, including `/sales/calculator`.
 
 ## Proxy lifecycle
 
-The separate `/proxies` page reads the authbot-owned `GET /proxy-admin/inventory` route on
-loopback `127.0.0.1:8806`. Caddy preserves the `/proxy-admin/*` path, injects the shared control
-key and forwards only the actor established by `managed_admin_auth`; neither value exists in the
-Next.js environment or browser bundle. The wire response is allowlisted and contains no proxy IP,
-credentials, account email, subject, project or token. Rows use opaque inventory IDs plus stable
-hashed proxy hints, masked order hints, provider/plan, subscription and proxy expiry, liveness,
-binding status and a fail-closed renewal reason.
+This producer-first rollout adds authbot capability for the separate `/proxies` product contract;
+this patch does not change `apps/admin`, and its existing consumer may ignore the additive field.
+The authbot-owned `GET /proxy-admin/inventory` route listens on loopback `127.0.0.1:8806`. Its
+stable raw authorization secret is `/etc/apitoken/proxy-admin.key`, provisioned atomically before
+the systemd unit and Caddy configuration. The `/etc/apitoken` parent is root-owned and
+non-deploy-writable, unlike the deploy-writable `/srv/claude-api/data` parent; the key is a
+`root:root` `0600` regular non-symlink file with exactly 64 lowercase hex bytes plus an optional
+final LF. The installer migrates one exact legacy `AUTH_BOT_PROXY_ADMIN_KEY` assignment out of
+`authbot.env` and fails on malformed, duplicate, or divergent input. It rejects either
+`AUTH_BOT_PROXY_ADMIN_KEY` or `AUTH_BOT_PROXY_ADMIN_KEY_FILE` in `server.env` rather than accepting
+that file as credential authority.
 
-The inventory is a union of every Claude/GPT/Gemini subscription with a literal proxy and every
-IPRoyal ISP allocation. A positive order+IP is accepted only when that allocation still exists in
-the exact provider order. Legacy order-zero profiles may be reconciled only when their IP has one
-unique IPRoyal candidate; duplicate or missing candidates stay unbound rather than being guessed.
-Unmatched IPRoyal allocations are shown as `unassigned` and cannot be renewed from the panel.
+Systemd creates authbot's private per-service copy with
+`LoadCredential=proxy-admin.key:/etc/apitoken/proxy-admin.key`. After loading `authbot.env`,
+`engine-postgres.env` and optional `server.env`, its `ExecStart=/usr/bin/env ...` command assignment
+pins `AUTH_BOT_PROXY_ADMIN_KEY_FILE=%d/proxy-admin.key`; it is not an `Environment=` assignment, so
+an env file cannot redirect the path. Authbot's bounded parser accepts only that file. The root-run
+Caddy installer and renderer use the same `/etc/apitoken/proxy-admin.key`; the renderer matches an
+existing live `X-Proxy-Admin-Key` header name case-insensitively and rejects duplicate or mismatched
+values. Caddy preserves `/proxy-admin/*`, sends the dedicated `X-Proxy-Admin-Key`, and forwards only
+the actor established by `managed_admin_auth`; neither value exists in the Next.js environment or
+browser bundle, and sibling services receive no copy of the dedicated value.
+`ProtectProc=invisible` and `ProcSubset=pid` remain in force. After operator-subcommand early-return
+handling and before loading daemon secrets, Linux authbot calls `prctl(PR_SET_DUMPABLE, 0)`, blocking
+same-UID `ptrace`, `process_vm_readv`, and sensitive proc-memory access. Code already executing inside
+authbot itself is within the same trust boundary, and no defense can protect against such in-process
+code. Caddy also
+overwrites `x-api-key` with the shared engine key only for mixed-version rollout and rollback to the
+previous authbot binary. The dedicated key must differ from `CLAUDE_API_CONTROL_KEY`: the new authbot
+ignores that compatibility header, accepts only the dedicated key for incoming proxy-admin requests,
+and uses the shared key only on its outgoing `/codex-subs` and `/gemini-subs` status reads.
+Shared-key holders therefore cannot read `account_email` from the new producer. The allowlisted item key set now includes
+`account_email`, restricted to an ASCII local part using alphanumerics plus
+``.!#$%&'*+/=?^_`{|}~-`` (no edge/consecutive dots, at most 64 bytes), followed by DNS-style domain
+labels (alphanumeric/hyphen, no edge hyphen, at most 63 bytes each and 254 bytes total). It is the
+sole full-identity managed-admin exception, allowed only in the closed `/proxies` response with
+`Cache-Control: no-store` and in-memory handling; it must not be persisted to SQLite or logs. This states producer
+capability, not that the current UI already consumes or renders the field. Proxy IP, proxy URL,
+credentials, token, subject, project and every other identity or secret remain forbidden. Rows
+otherwise use opaque inventory IDs plus stable hashed proxy hints, masked order hints,
+provider/plan, subscription and proxy expiry, liveness, binding status and a fail-closed renewal
+reason.
+
+Inventory serializes only subscription-backed Claude/GPT/Gemini rows durably and exactly bound to
+an existing IPRoyal allocation (`binding_status=bound`) with liveness other than `dead`. Unmatched
+IPRoyal allocations, external/unbound/mismatched subscriptions and dead subscriptions are absent.
+Legacy/external unique-IP reconciliation may still run in the background, but a row does not appear
+until the exact binding has been written durably. GPT remains public `provider=gpt`, while its
+existing durable binding namespace is `codex`. A legacy `gpt` binding migrates in place only on one
+exact local id + order + allocation-IP match, preserving `inventory_id`; unresolved, mismatched or
+ambiguous rows stay untouched. Claude and Gemini use the same name in both places.
 Claude and GPT subscriptions expire 30 days after acquisition. Gemini `google_ai_pro` expires after
 18 Gregorian UTC calendar months; Ultra and all other Gemini plans expire after 30 days.
 
+GPT and Gemini liveness comes from an authoritative opaque-id join: authbot calls the sanitized
+loopback defaults `http://127.0.0.1:8792/codex-subs` and
+`http://127.0.0.1:8794/gemini-subs` with the shared engine control key and trusts only id plus status.
+Unavailable, malformed, missing or duplicate evidence closes that provider. GPT accepts exactly
+`account_state=healthy|suspect|dead`; an empty or unknown value is schema drift and closes the whole
+GPT source. Gemini `authenticated!=true` is dead, while `disabled=true` is degraded and
+nonrenewable rather than dead. The overrides
+`AUTH_BOT_PROXY_ADMIN_CODEX_RUNTIME_URL` and
+`AUTH_BOT_PROXY_ADMIN_GEMINI_RUNTIME_URL` accept only HTTP with a literal loopback host, the exact
+provider path and no credentials/query/fragment/external origin.
+
 Renewal is never automatic. New IPRoyal purchases set `auto_extend=false`, and authbot's free
 background guard disables unexpected auto-extend on every ISP order. A paid extension happens only
-after the operator selects one or more renewable rows, confirms the action and submits a fresh UUID
-idempotency key to `POST /proxy-admin/renew`. Authbot snapshots exact allocation IPs privately,
-groups selected allocations by order and performs one selective extend call per order. Ambiguous
-provider outcomes are reported as `uncertain` and are not automatically replayed. The page can show
-the exact IPRoyal reseller balance as nanoUSD, but never card metadata.
+after an operator submits an authenticated request with a fresh UUID idempotency key to
+`POST /proxy-admin/renew`. Authbot repeats the exact durable-binding, authoritative-liveness and
+local subscription-expiry checks before spending; an expiry at or before the recheck time is
+`local_profile_inactive` and makes no provider call. It snapshots exact allocation IPs privately,
+groups selected allocations by order and performs one selective extend call per order. After exact
+same-key replay handling, a different UUID overlapping a queued or active inventory ID or exact
+order/allocation gets safe `409 renewal_selection_busy` before insertion and cannot later be claimed
+for a second spend; disjoint selections can proceed. Claiming repairs legacy or corrupt overlap in
+one `IMMEDIATE` transaction: an explicit direct target wins, background work chooses the oldest
+`(created_at,id)`, and existing `in_progress` work wins over pending rows. Every overlapping pending
+sibling becomes terminal `indeterminate`, replays as uncertain without a provider call, and can never
+later spend. Idempotency is unchanged; ambiguous provider outcomes are reported as `uncertain` and
+are not automatically replayed. The contract may
+show the exact IPRoyal reseller balance as nanoUSD, but never card metadata.
 
 The existing `/subscriptions` page additionally shows acquisition/expiry/days-left lifecycle fields
 from `/capacity`, `/codex-subs` and `/gemini-subs`; these are display data and do not by themselves

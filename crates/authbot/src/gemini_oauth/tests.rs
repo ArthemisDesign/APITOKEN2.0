@@ -1371,6 +1371,7 @@ fn lifecycle_profiles_include_external_and_same_order_different_ip_profiles() {
         .iter()
         .find(|profile| profile.profile_id == first.id)
         .unwrap();
+    assert_eq!(first.account_email, "owner@example.com");
     assert_eq!(first.order_id, 42);
     assert_eq!(first.issued_at, 100);
     assert_eq!(first.canonical_plan, "google_ai_pro");
@@ -1399,9 +1400,10 @@ fn lifecycle_profiles_include_external_and_same_order_different_ip_profiles() {
 
     fn consume_without_formatting(
         profile: &LifecycleProfile,
-    ) -> (&str, i64, i64, &str, Option<std::net::IpAddr>) {
+    ) -> (&str, &str, i64, i64, &str, Option<std::net::IpAddr>) {
         let LifecycleProfile {
             profile_id,
+            account_email,
             order_id,
             issued_at,
             canonical_plan,
@@ -1409,13 +1411,14 @@ fn lifecycle_profiles_include_external_and_same_order_different_ip_profiles() {
         } = profile;
         (
             profile_id,
+            account_email,
             *order_id,
             *issued_at,
             canonical_plan,
             *canonical_ip,
         )
     }
-    assert_eq!(consume_without_formatting(first).1, 42);
+    assert_eq!(consume_without_formatting(first).1, "owner@example.com");
     let _ = fs::remove_dir_all(root);
 }
 

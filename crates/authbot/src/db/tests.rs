@@ -29,6 +29,35 @@ fn selection(marker: char, order_id: i64, allocation_ip: &str) -> RenewalSelecti
     }
 }
 
+fn insert_legacy_pending_request(s: &Store, key: &str, selection: &RenewalSelection) -> i64 {
+    let (
+        selections,
+        inventory_ids,
+        order_ids,
+        encoded_selections,
+        encoded_inventory_ids,
+        encoded_order_ids,
+    ) = canonical_selections(std::slice::from_ref(selection)).unwrap();
+    assert_eq!(selections, [selection.clone()]);
+    let c = s.c.lock().unwrap();
+    c.execute(
+        "INSERT INTO proxy_renewal_requests(idempotency_key,selections,inventory_ids,order_ids,
+                                            requested_by,state,created_at,updated_at)
+         VALUES(?1,?2,?3,?4,'legacy-admin','pending',?5,?5)",
+        rusqlite::params![
+            key,
+            encoded_selections,
+            encoded_inventory_ids,
+            encoded_order_ids,
+            now()
+        ],
+    )
+    .unwrap();
+    assert_eq!(inventory_ids, vec![selection.inventory_id.clone()]);
+    assert_eq!(order_ids, vec![selection.order_id]);
+    c.last_insert_rowid()
+}
+
 #[test]
 fn proxy_bindings_allow_multi_ip_order_and_keep_stable_ids_across_reopen() {
     let p = tmp();
@@ -98,6 +127,160 @@ fn proxy_bindings_allow_multi_ip_order_and_keep_stable_ids_across_reopen() {
 }
 
 #[test]
+fn codex_exact_upsert_adopts_only_an_exact_legacy_gpt_binding() {
+    let s = Store::open(":memory:").unwrap();
+    let legacy = s
+        .upsert_proxy_binding_allocation(
+            "gpt",
+            "account-a",
+            51,
+            "192.0.2.51",
+            101,
+            ProxyAuthorityStatus::Local,
+        )
+        .unwrap();
+
+    let codex = s
+        .upsert_proxy_binding_allocation(
+            "codex",
+            "account-a",
+            51,
+            "192.0.2.51",
+            999,
+            ProxyAuthorityStatus::Unknown,
+        )
+        .unwrap();
+
+    assert_eq!(codex.provider, "codex");
+    assert_eq!(codex.inventory_id, legacy.inventory_id);
+    assert_eq!(codex.issued_at, 101);
+    assert_eq!(codex.authority_status, ProxyAuthorityStatus::Unknown);
+    assert_eq!(s.list_proxy_bindings().unwrap(), vec![codex]);
+}
+
+#[test]
+fn codex_upsert_does_not_adopt_mismatched_unresolved_or_shadowed_gpt_bindings() {
+    let s = Store::open(":memory:").unwrap();
+    let mismatched = s
+        .upsert_proxy_binding_allocation(
+            "gpt",
+            "mismatch",
+            61,
+            "192.0.2.61",
+            201,
+            ProxyAuthorityStatus::Local,
+        )
+        .unwrap();
+    let unresolved = s
+        .upsert_proxy_binding("gpt", "unresolved", 62, 202, ProxyAuthorityStatus::Unknown)
+        .unwrap();
+    let shadowed = s
+        .upsert_proxy_binding_allocation(
+            "gpt",
+            "shadowed",
+            63,
+            "192.0.2.63",
+            203,
+            ProxyAuthorityStatus::Local,
+        )
+        .unwrap();
+    let existing_codex = s
+        .upsert_proxy_binding_allocation(
+            "codex",
+            "shadowed",
+            64,
+            "192.0.2.64",
+            204,
+            ProxyAuthorityStatus::Local,
+        )
+        .unwrap();
+
+    let mismatch_codex = s
+        .upsert_proxy_binding_allocation(
+            "codex",
+            "mismatch",
+            65,
+            "192.0.2.65",
+            205,
+            ProxyAuthorityStatus::Local,
+        )
+        .unwrap();
+    let unresolved_codex = s
+        .upsert_proxy_binding_allocation(
+            "codex",
+            "unresolved",
+            62,
+            "192.0.2.62",
+            206,
+            ProxyAuthorityStatus::Local,
+        )
+        .unwrap();
+    let replayed_codex = s
+        .upsert_proxy_binding_allocation(
+            "codex",
+            "shadowed",
+            64,
+            "192.0.2.64",
+            999,
+            ProxyAuthorityStatus::Unknown,
+        )
+        .unwrap();
+
+    let bindings = s.list_proxy_bindings().unwrap();
+    assert!(bindings.iter().any(|binding| binding == &mismatched));
+    assert!(bindings.iter().any(|binding| binding == &unresolved));
+    assert!(bindings.iter().any(|binding| binding == &shadowed));
+    assert_ne!(mismatch_codex.inventory_id, mismatched.inventory_id);
+    assert_ne!(unresolved_codex.inventory_id, unresolved.inventory_id);
+    assert_eq!(replayed_codex.inventory_id, existing_codex.inventory_id);
+    assert_eq!(replayed_codex.issued_at, existing_codex.issued_at);
+}
+
+#[test]
+fn codex_upsert_never_adopts_ambiguous_legacy_gpt_rows() {
+    let s = Store::open(":memory:").unwrap();
+    {
+        let c = s.c.lock().unwrap();
+        c.execute_batch(
+            "DROP TABLE proxy_bindings;
+             CREATE TABLE proxy_bindings(
+                inventory_id TEXT NOT NULL, provider TEXT NOT NULL, local_id TEXT NOT NULL,
+                order_id INTEGER NOT NULL, allocation_ip TEXT, issued_at INTEGER NOT NULL,
+                authority_status TEXT NOT NULL, updated_at INTEGER NOT NULL);
+             INSERT INTO proxy_bindings VALUES
+                ('inv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','gpt','duplicate',71,
+                 '192.0.2.71',301,'local',301),
+                ('inv_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','gpt','duplicate',71,
+                 '192.0.2.71',302,'local',302);",
+        )
+        .unwrap();
+    }
+
+    let error = s
+        .upsert_proxy_binding_allocation(
+            "codex",
+            "duplicate",
+            71,
+            "192.0.2.71",
+            303,
+            ProxyAuthorityStatus::Local,
+        )
+        .unwrap_err();
+    assert_eq!(
+        lifecycle_conflict(&error),
+        Some(&ProxyLifecycleConflict::OrderAlreadyBound)
+    );
+    assert_eq!(
+        s.list_proxy_bindings()
+            .unwrap()
+            .iter()
+            .filter(|binding| binding.provider == "gpt")
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn exact_request_snapshot_allows_duplicate_order_for_different_allocations() {
     let s = Store::open(":memory:").unwrap();
     let a = selection('a', 7, "192.0.2.1");
@@ -147,6 +330,151 @@ fn exact_request_snapshot_allows_duplicate_order_for_different_allocations() {
             "admin",
         )
         .is_err());
+}
+
+#[test]
+fn renewal_creation_rejects_pending_and_in_progress_overlap_without_queueing() {
+    let s = Store::open(":memory:").unwrap();
+    let queued_selection = selection('a', 81, "198.51.100.81");
+    let queued = s
+        .create_or_get_renewal_request_exact("queued-overlap", &[queued_selection.clone()], "admin")
+        .unwrap();
+
+    let inventory_error = s
+        .create_or_get_renewal_request_exact(
+            "inventory-overlap",
+            &[RenewalSelection {
+                inventory_id: queued_selection.inventory_id.clone(),
+                order_id: 82,
+                allocation_ip: "198.51.100.82".parse().unwrap(),
+            }],
+            "admin",
+        )
+        .unwrap_err();
+    assert_eq!(
+        lifecycle_conflict(&inventory_error),
+        Some(&ProxyLifecycleConflict::RenewalSelectionBusy)
+    );
+    assert!(s
+        .get_renewal_request_by_key("inventory-overlap")
+        .unwrap()
+        .is_none());
+
+    s.claim_renewal_request(queued.id).unwrap().unwrap();
+    let allocation_error = s
+        .create_or_get_renewal_request_exact(
+            "allocation-overlap",
+            &[RenewalSelection {
+                inventory_id: inventory_id('b'),
+                order_id: queued_selection.order_id,
+                allocation_ip: queued_selection.allocation_ip,
+            }],
+            "admin",
+        )
+        .unwrap_err();
+    assert_eq!(
+        lifecycle_conflict(&allocation_error),
+        Some(&ProxyLifecycleConflict::RenewalSelectionBusy)
+    );
+    assert!(s
+        .get_renewal_request_by_key("allocation-overlap")
+        .unwrap()
+        .is_none());
+
+    let replay = s
+        .create_or_get_renewal_request_exact("queued-overlap", &[queued_selection], "other-admin")
+        .unwrap();
+    assert_eq!(replay, s.get_renewal_request(queued.id).unwrap().unwrap());
+}
+
+#[test]
+fn direct_claim_terminalizes_legacy_overlap_sibling_and_preserves_disjoint() {
+    let s = Store::open(":memory:").unwrap();
+    let winner_selection = selection('c', 83, "198.51.100.83");
+    let sibling_selection = RenewalSelection {
+        inventory_id: inventory_id('d'),
+        order_id: winner_selection.order_id,
+        allocation_ip: winner_selection.allocation_ip,
+    };
+    let disjoint_selection = selection('e', 84, "198.51.100.84");
+    let winner_id = insert_legacy_pending_request(&s, "legacy-direct-winner", &winner_selection);
+    let sibling_id = insert_legacy_pending_request(&s, "legacy-direct-sibling", &sibling_selection);
+    let disjoint_id =
+        insert_legacy_pending_request(&s, "legacy-direct-disjoint", &disjoint_selection);
+
+    let winner = s.claim_renewal_request(winner_id).unwrap().unwrap();
+    assert_eq!(winner.state, RenewalRequestState::InProgress);
+    assert_eq!(
+        s.get_renewal_request(sibling_id).unwrap().unwrap().state,
+        RenewalRequestState::Indeterminate
+    );
+    assert_eq!(
+        s.get_renewal_request(disjoint_id).unwrap().unwrap().state,
+        RenewalRequestState::Pending
+    );
+    assert!(s.claim_renewal_request(sibling_id).unwrap().is_none());
+    assert_eq!(
+        s.claim_renewal_request(disjoint_id).unwrap().unwrap().state,
+        RenewalRequestState::InProgress
+    );
+}
+
+#[test]
+fn disjoint_renewal_requests_can_be_claimed_together() {
+    let s = Store::open(":memory:").unwrap();
+    let first = s
+        .create_or_get_renewal_request_exact(
+            "disjoint-first",
+            &[selection('c', 91, "203.0.113.91")],
+            "admin",
+        )
+        .unwrap();
+    let second = s
+        .create_or_get_renewal_request_exact(
+            "disjoint-second",
+            &[selection('d', 92, "203.0.113.92")],
+            "admin",
+        )
+        .unwrap();
+
+    assert_eq!(
+        s.claim_renewal_request(first.id).unwrap().unwrap().state,
+        RenewalRequestState::InProgress
+    );
+    assert_eq!(
+        s.claim_renewal_request(second.id).unwrap().unwrap().state,
+        RenewalRequestState::InProgress
+    );
+}
+
+#[test]
+fn background_claim_chooses_oldest_legacy_winner_and_terminalizes_overlap() {
+    let s = Store::open(":memory:").unwrap();
+    let winner_selection = selection('f', 101, "192.0.2.101");
+    let sibling_selection = RenewalSelection {
+        inventory_id: inventory_id('g'),
+        order_id: winner_selection.order_id,
+        allocation_ip: winner_selection.allocation_ip,
+    };
+    let disjoint_selection = selection('h', 102, "192.0.2.102");
+    let winner_id = insert_legacy_pending_request(&s, "background-winner", &winner_selection);
+    let sibling_id = insert_legacy_pending_request(&s, "background-sibling", &sibling_selection);
+    let disjoint_id = insert_legacy_pending_request(&s, "background-disjoint", &disjoint_selection);
+
+    assert_eq!(
+        s.claim_next_renewal_request().unwrap().unwrap().id,
+        winner_id
+    );
+    assert_eq!(
+        s.get_renewal_request(sibling_id).unwrap().unwrap().state,
+        RenewalRequestState::Indeterminate
+    );
+    assert_eq!(
+        s.claim_next_renewal_request().unwrap().unwrap().id,
+        disjoint_id
+    );
+    assert!(s.claim_renewal_request(sibling_id).unwrap().is_none());
+    assert!(s.claim_next_renewal_request().unwrap().is_none());
 }
 
 #[test]
@@ -335,6 +663,342 @@ fn legacy_binding_rebuild_preserves_identity_and_exact_backfill() {
         Store::open(&p).unwrap().list_proxy_bindings().unwrap()[0].inventory_id,
         legacy_id
     );
+    let _ = std::fs::remove_dir_all(parent);
+}
+
+#[test]
+fn previous_proxy_lifecycle_schema_rebuild_preserves_contract_and_is_idempotent() {
+    type RequestRow = (
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+        String,
+        i64,
+        i64,
+    );
+    type EventRow = (
+        i64,
+        i64,
+        Option<String>,
+        i64,
+        Option<String>,
+        String,
+        i64,
+        Option<i64>,
+    );
+
+    fn lifecycle_rows(c: &Connection) -> (Vec<RequestRow>, Vec<EventRow>) {
+        let requests = {
+            let mut statement = c
+                .prepare(
+                    "SELECT id,idempotency_key,selections,inventory_ids,order_ids,requested_by,
+                            state,created_at,updated_at
+                     FROM proxy_renewal_requests ORDER BY id",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        let events = {
+            let mut statement = c
+                .prepare(
+                    "SELECT id,request_id,inventory_id,order_id,allocation_ip,outcome,
+                            observed_at,new_expiry_at
+                     FROM proxy_renewal_events ORDER BY id",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        (requests, events)
+    }
+
+    fn lifecycle_sequences(c: &Connection) -> (i64, i64) {
+        let sequence = |table| {
+            c.query_row(
+                "SELECT seq FROM sqlite_sequence WHERE name=?1",
+                rusqlite::params![table],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        (
+            sequence("proxy_renewal_requests"),
+            sequence("proxy_renewal_events"),
+        )
+    }
+
+    fn assert_lifecycle_schema(c: &Connection) {
+        let foreign_key = c
+            .query_row("PRAGMA foreign_key_list(proxy_renewal_events)", [], |row| {
+                Ok((
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(
+            foreign_key,
+            (
+                "proxy_renewal_requests".to_string(),
+                "request_id".to_string(),
+                "id".to_string(),
+            )
+        );
+        let mut foreign_key_check = c.prepare("PRAGMA foreign_key_check").unwrap();
+        assert!(foreign_key_check
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none());
+
+        let indexes = c
+            .prepare(
+                "SELECT name,sql FROM sqlite_master
+                 WHERE type='index' AND name IN (
+                    'proxy_bindings_authority_idx',
+                    'proxy_renewal_requests_state_idx',
+                    'proxy_renewal_events_request_idx')
+                 ORDER BY name",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            indexes,
+            vec![
+                (
+                    "proxy_bindings_authority_idx".to_string(),
+                    "CREATE INDEX proxy_bindings_authority_idx\n            ON proxy_bindings(authority_status,provider,local_id)".to_string(),
+                ),
+                (
+                    "proxy_renewal_events_request_idx".to_string(),
+                    "CREATE INDEX proxy_renewal_events_request_idx\n            ON proxy_renewal_events(request_id,id)".to_string(),
+                ),
+                (
+                    "proxy_renewal_requests_state_idx".to_string(),
+                    "CREATE INDEX proxy_renewal_requests_state_idx\n            ON proxy_renewal_requests(state,created_at,id)".to_string(),
+                ),
+            ]
+        );
+        let event_schema = c
+            .query_row(
+                "SELECT sql FROM sqlite_master
+                 WHERE type='table' AND name='proxy_renewal_events'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        assert!(event_schema.contains("'local_profile_inactive'"));
+    }
+
+    let path = tmp();
+    let parent = std::path::Path::new(&path).parent().unwrap();
+    std::fs::create_dir_all(parent).unwrap();
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let first = selection('a', 91, "192.0.2.91");
+    let second = selection('b', 92, "192.0.2.92");
+    let fresh = selection('c', 93, "192.0.2.93");
+    let (_, _, _, first_selections, first_ids, first_orders) =
+        canonical_selections(std::slice::from_ref(&first)).unwrap();
+    let (_, _, _, second_selections, second_ids, second_orders) =
+        canonical_selections(std::slice::from_ref(&second)).unwrap();
+    {
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE proxy_bindings(
+                inventory_id TEXT NOT NULL UNIQUE CHECK(length(inventory_id) BETWEEN 1 AND 160),
+                provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 64),
+                local_id TEXT NOT NULL CHECK(length(local_id) BETWEEN 1 AND 255),
+                order_id INTEGER NOT NULL CHECK(order_id > 0), allocation_ip TEXT,
+                issued_at INTEGER NOT NULL CHECK(issued_at > 0),
+                authority_status TEXT NOT NULL CHECK(authority_status IN ('local','unknown')),
+                updated_at INTEGER NOT NULL CHECK(updated_at > 0),
+                PRIMARY KEY(provider,local_id), UNIQUE(order_id,allocation_ip));
+             CREATE INDEX proxy_bindings_authority_idx
+                ON proxy_bindings(authority_status,provider,local_id);
+             CREATE TABLE proxy_renewal_requests(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                idempotency_key TEXT NOT NULL UNIQUE CHECK(length(idempotency_key) BETWEEN 1 AND 255),
+                selections TEXT CHECK(length(selections) BETWEEN 1 AND 32768),
+                inventory_ids TEXT CHECK(length(inventory_ids) BETWEEN 1 AND 16384),
+                order_ids TEXT NOT NULL CHECK(length(order_ids) BETWEEN 1 AND 8192),
+                requested_by TEXT NOT NULL CHECK(length(requested_by) BETWEEN 1 AND 128),
+                state TEXT NOT NULL CHECK(state IN
+                    ('pending','in_progress','completed','failed','indeterminate')),
+                created_at INTEGER NOT NULL CHECK(created_at > 0),
+                updated_at INTEGER NOT NULL CHECK(updated_at > 0));
+             CREATE INDEX proxy_renewal_requests_state_idx
+                ON proxy_renewal_requests(state,created_at,id);
+             CREATE TABLE proxy_renewal_events(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id INTEGER NOT NULL REFERENCES proxy_renewal_requests(id),
+                inventory_id TEXT, order_id INTEGER NOT NULL CHECK(order_id > 0), allocation_ip TEXT,
+                outcome TEXT NOT NULL CHECK(outcome IN
+                    ('renewed','unchanged','not_found','rejected','provider_unavailable','indeterminate')),
+                observed_at INTEGER NOT NULL CHECK(observed_at > 0),
+                new_expiry_at INTEGER CHECK(new_expiry_at IS NULL OR new_expiry_at > 0),
+                UNIQUE(request_id,inventory_id));
+             CREATE INDEX proxy_renewal_events_request_idx
+                ON proxy_renewal_events(request_id,id);",
+        )
+        .unwrap();
+        for (local_id, item) in [
+            ("legacy-a", &first),
+            ("legacy-b", &second),
+            ("fresh", &fresh),
+        ] {
+            c.execute(
+                "INSERT INTO proxy_bindings VALUES(?1,'codex',?2,?3,?4,10,'local',11)",
+                rusqlite::params![
+                    item.inventory_id,
+                    local_id,
+                    item.order_id,
+                    item.allocation_ip.to_string()
+                ],
+            )
+            .unwrap();
+        }
+        c.execute(
+            "INSERT INTO proxy_renewal_requests VALUES(7,'legacy-renewed',?1,?2,?3,
+                                                        'legacy-admin','completed',20,21)",
+            rusqlite::params![first_selections, first_ids, first_orders],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO proxy_renewal_requests VALUES(19,'legacy-rejected',?1,?2,?3,
+                                                         'legacy-admin','failed',22,23)",
+            rusqlite::params![second_selections, second_ids, second_orders],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO proxy_renewal_events VALUES(11,7,?1,91,'192.0.2.91',
+                                                       'renewed',30,1000)",
+            rusqlite::params![first.inventory_id],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO proxy_renewal_events VALUES(27,19,?1,92,'192.0.2.92',
+                                                       'rejected',31,NULL)",
+            rusqlite::params![second.inventory_id],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO proxy_renewal_requests VALUES(41,'deleted-request',?1,?2,?3,
+                                                         'legacy-admin','failed',24,25)",
+            rusqlite::params![first_selections, first_ids, first_orders],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO proxy_renewal_events VALUES(53,41,?1,91,'192.0.2.91',
+                                                       'rejected',32,NULL)",
+            rusqlite::params![first.inventory_id],
+        )
+        .unwrap();
+        c.execute("DELETE FROM proxy_renewal_events WHERE id=53", [])
+            .unwrap();
+        c.execute("DELETE FROM proxy_renewal_requests WHERE id=41", [])
+            .unwrap();
+        assert_eq!(lifecycle_sequences(&c), (41, 53));
+    }
+
+    let original = lifecycle_rows(&Connection::open(&path).unwrap());
+    let store = Store::open(&path).unwrap();
+    {
+        let c = store.c.lock().unwrap();
+        assert_eq!(lifecycle_rows(&c), original);
+        assert_eq!(lifecycle_sequences(&c), (41, 53));
+        assert_lifecycle_schema(&c);
+    }
+    assert_eq!(
+        serde_json::to_value(RenewalEventOutcome::LocalProfileInactive).unwrap(),
+        serde_json::json!("local_profile_inactive")
+    );
+    assert_eq!(
+        serde_json::from_value::<RenewalEventOutcome>(serde_json::json!("local_profile_inactive"))
+            .unwrap(),
+        RenewalEventOutcome::LocalProfileInactive
+    );
+
+    let request = store
+        .create_or_get_renewal_request_exact("fresh-local-inactive", &[fresh.clone()], "admin")
+        .unwrap();
+    assert!(request.id > 41);
+    store.claim_renewal_request(request.id).unwrap().unwrap();
+    let event = store
+        .record_renewal_event_for_inventory(
+            request.id,
+            &fresh.inventory_id,
+            RenewalEventOutcome::LocalProfileInactive,
+            40,
+            None,
+        )
+        .unwrap();
+    assert!(event.id > 53);
+    assert_eq!(event.outcome, RenewalEventOutcome::LocalProfileInactive);
+    store.fail_renewal_request(request.id).unwrap();
+    let (after_upgrade, upgraded_sequences) = {
+        let c = store.c.lock().unwrap();
+        (lifecycle_rows(&c), lifecycle_sequences(&c))
+    };
+    assert_eq!(upgraded_sequences, (request.id, event.id));
+    drop(store);
+
+    let reopened = Store::open(&path).unwrap();
+    {
+        let c = reopened.c.lock().unwrap();
+        assert_eq!(lifecycle_rows(&c), after_upgrade);
+        assert_eq!(lifecycle_sequences(&c), upgraded_sequences);
+        assert_lifecycle_schema(&c);
+    }
+    assert_eq!(
+        reopened
+            .get_exact_renewal_events(request.id)
+            .unwrap()
+            .remove(0)
+            .event
+            .outcome,
+        RenewalEventOutcome::LocalProfileInactive
+    );
+    drop(reopened);
     let _ = std::fs::remove_dir_all(parent);
 }
 

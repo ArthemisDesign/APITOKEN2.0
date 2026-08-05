@@ -45,24 +45,87 @@ These routes are protected by server-side control/panel auth; the browser reache
 `admin.apitoken.sale`, and no keys are issued to it.
 
 Authbot owns a separate loopback proxy-lifecycle contract, also exposed only through that closed
-admin vhost:
+admin vhost. Its dedicated authorization secret is the stable raw
+`/etc/apitoken/proxy-admin.key`: the `/etc/apitoken` parent is root-owned and
+non-deploy-writable, and the key is a `root:root` `0600` regular non-symlink file containing exactly
+64 lowercase hex bytes plus an optional final LF. This avoids placing the authority below the
+deploy-writable `/srv/claude-api/data` parent. The installer provisions it atomically before
+installing either the unit or Caddy configuration. It migrates one exact legacy
+`AUTH_BOT_PROXY_ADMIN_KEY` assignment out of `authbot.env`; malformed, duplicate, or divergent
+legacy/file values fail installation rather than choosing one. `server.env` is never a migration
+source: an `AUTH_BOT_PROXY_ADMIN_KEY` or `AUTH_BOT_PROXY_ADMIN_KEY_FILE` assignment there rejects
+installation.
+
+Systemd uses
+`LoadCredential=proxy-admin.key:/etc/apitoken/proxy-admin.key` to give authbot a private per-service
+copy. It first loads `authbot.env`, `engine-postgres.env` and the optional `server.env`, then its
+`ExecStart=/usr/bin/env ... AUTH_BOT_PROXY_ADMIN_KEY_FILE=%d/proxy-admin.key ...` command assignment
+pins the path passed to the bounded Rust parser. The path is deliberately not set with
+`Environment=`, so no environment file can redirect it. The parser accepts only that dedicated file
+and the exact format above. The root-run Caddy installer and renderer use only the `/etc/apitoken`
+raw path. The renderer matches an existing live `X-Proxy-Admin-Key` header name case-insensitively
+and rejects duplicate or mismatched live values. Caddy sends the canonical header; it also overwrites
+`x-api-key` with the shared key solely so the previous authbot binary remains available during
+mixed-version rollout or rollback. The new listener ignores that compatibility header and
+authenticates only the dedicated header, so possession of the shared key cannot authorize access to
+`account_email`. The dedicated value is not placed in sibling service environments or credentials.
+`ProtectProc=invisible` and `ProcSubset=pid` remain in force. After operator-subcommand
+early-return handling and before loading daemon secrets, Linux authbot calls
+`prctl(PR_SET_DUMPABLE, 0)`, blocking same-UID `ptrace`, `process_vm_readv`, and sensitive proc-memory
+access. Code already executing inside authbot itself is within the same trust boundary, and no
+defense can protect against such in-process code. Authbot otherwise uses the shared key only for outgoing
+`/codex-subs` and `/gemini-subs` status reads:
 
 - `GET /proxy-admin/inventory` returns schema version, observation time, IPRoyal balance as an exact
   decimal nanoUSD string, an aggregate auto-extend warning, and sanitized rows. The item key set is
-  `inventory_id`, `proxy_hint`, `order_hint`, `provider`, `subscription_plan`, `liveness`,
-  `subscription_expires_at`, `proxy_expires_at`, `binding_status`, `renewable`,
-  `renew_block_code`. Full IP/email/subject/project/proxy URL/credentials/tokens are forbidden.
+  `inventory_id`, `account_email`, `proxy_hint`, `order_hint`, `provider`, `subscription_plan`,
+  `liveness`, `subscription_expires_at`, `proxy_expires_at`, `binding_status`, `renewable`,
+  `renew_block_code`. `account_email` is restricted to an ASCII local part using alphanumerics plus
+  ``.!#$%&'*+/=?^_`{|}~-`` (no edge/consecutive dots, at most 64 bytes), followed by DNS-style
+  domain labels (alphanumeric/hyphen, no edge hyphen, at most 63 bytes each and 254 bytes total). Full
+  `account_email` is the sole managed-admin identity exception: it is
+  allowed only in this closed `managed_admin_auth` `/proxies` response, marked `no-store` and kept
+  in memory, never SQLite or logs. Tokens, subjects, projects, raw IP/proxy URLs/credentials and all
+  other identities or secrets remain forbidden. `/capacity`, `/codex-subs` and `/gemini-subs`
+  continue to expose only masked email.
+- Items are only subscription-backed rows with a durable exact binding to an existing IPRoyal
+  allocation (`binding_status=bound`) and liveness other than `dead`. Unmatched allocations,
+  external/unbound/mismatched subscriptions and dead subscriptions are not serialized. Unique-IP
+  reconciliation for legacy/external profiles may continue in the background, but no row is visible
+  until the exact binding is durable. GPT rows retain public `provider=gpt`, while their durable
+  binding namespace is `codex`. A legacy `gpt` binding migrates in place only on one exact local
+  id + order + allocation-IP match, preserving `inventory_id`; unresolved, mismatched or ambiguous
+  rows are not adopted. Claude and Gemini use the same public and binding provider name.
+- GPT/Gemini liveness is joined authoritatively by opaque id to sanitized loopback `/codex-subs` and
+  `/gemini-subs` using the shared engine control key. Authbot trusts only id plus status; unavailable,
+  malformed, missing or duplicate status evidence closes that provider. GPT accepts exactly
+  `account_state=healthy|suspect|dead`; an empty or unknown value is schema drift and closes the
+  whole GPT source. Gemini `authenticated!=true` is dead; `disabled=true` is degraded and
+  nonrenewable, not dead. The configurable origins are
+  `AUTH_BOT_PROXY_ADMIN_CODEX_RUNTIME_URL` and
+  `AUTH_BOT_PROXY_ADMIN_GEMINI_RUNTIME_URL`, defaulting to
+  `http://127.0.0.1:8792/codex-subs` and `http://127.0.0.1:8794/gemini-subs`. They accept only HTTP
+  with a literal loopback host, the exact provider path, and no credentials, query, fragment or
+  external origin.
 - `POST /proxy-admin/renew` accepts only `{idempotency_key: UUID, inventory_ids: string[1..100]}`
-  and additionally requires the verified `X-Admin-Actor`. It renews only durable exact
-  order+allocation bindings, groups allocations by order, and reports per-inventory
-  `renewed|failed|uncertain`. An uncertain paid POST is never automatically replayed.
+  and additionally requires the verified `X-Admin-Actor`. Before a paid extension it repeats the
+  durable exact-binding, authoritative-liveness and local subscription-expiry checks;
+  `subscription_expires_at <= now` fails as `local_profile_inactive` without calling the provider.
+  It groups allocations by order and reports per-inventory `renewed|failed|uncertain`. After exact
+  same-key replay handling, a different UUID overlapping a `pending` or `in_progress` inventory ID
+  or exact order/allocation receives `409 renewal_selection_busy` before insertion, so it cannot
+  remain queued for later spend; disjoint selections can proceed. Claiming also repairs legacy or
+  corrupt overlap atomically: an explicit direct claim is the winner, while the background claimant
+  chooses the oldest `(created_at,id)`; existing `in_progress` work wins over pending rows. The winner
+  becomes `in_progress` and every overlapping pending sibling becomes terminal `indeterminate` in
+  the same `IMMEDIATE` transaction. Such a sibling replays as uncertain with no provider call and can
+  never later be claimed. Idempotency is unchanged; an uncertain paid POST is never automatically
+  replayed.
 
 Every IPRoyal purchase has `auto_extend=false`; a free background guard disables unexpected
 order-level auto-extend across the complete inventory and confirms the state by exact refetch. No
-background task performs a paid extension. Legacy order-zero subscriptions are matched only by one
-unique literal-IP candidate; ambiguity remains visibly unbound. Subscription lifecycle is 30 days
-for Claude/GPT, 18 Gregorian UTC calendar months for Gemini `google_ai_pro`, and 30 days for other
-Gemini plans.
+background task performs a paid extension. Subscription lifecycle is 30 days for Claude/GPT, 18
+Gregorian UTC calendar months for Gemini `google_ai_pro`, and 30 days for other Gemini plans.
 
 `GET /spend-stats` (windows `d1`/`d7`/`d30` plus an optional `from`/`to` range) is additionally consumed
 server-side by the commercial backend for `GET /admin/finance/engine-spend`: it is the only source that

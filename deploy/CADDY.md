@@ -4,9 +4,9 @@
 
 ## Host-only secrets
 
-The repository intentionally contains only named placeholders for bcrypt rows and engine/commerce/sales admin keys. The real values live only in `/etc/caddy/Caddyfile` on the production host and are carried forward by `deploy/render-caddy.awk`.
+The repository intentionally contains only named placeholders for engine/commerce/sales service keys and the dedicated proxy-admin header. Shared service keys live only in `/etc/caddy/Caddyfile` and are carried forward by `deploy/render-caddy.awk`. The proxy-admin secret instead has one canonical raw source: `/etc/apitoken/proxy-admin.key`, a stable `root:root 0600` regular file with no symlink, containing exactly 64 lowercase hexadecimal bytes and optionally one trailing LF. Its `/etc/apitoken` parent is root-owned and not writable by `deploy`; the key must not live below deploy-writable `/srv/claude-api/data`. `deploy/install-watchdog.sh` provisions it atomically before installing the unit or Caddy definitions. On upgrade it removes one exact legacy `AUTH_BOT_PROXY_ADMIN_KEY=<64-lowercase-hex>` assignment from `authbot.env`; malformed, duplicate, or divergent legacy/canonical state aborts the transaction. It also rejects either `AUTH_BOT_PROXY_ADMIN_KEY` or `AUTH_BOT_PROXY_ADMIN_KEY_FILE` in `server.env`, so a shared environment file cannot supply or redirect this credential.
 
-Before validation or reload, splice the real values into the host copy without printing them, putting them in shell history, or committing them. Never reload the repository placeholders into production, and never copy the populated host file back into Git.
+`deploy/install-caddy.sh` passes only `/etc/apitoken/proxy-admin.key` to AWK, never the secret itself. The renderer emits the canonical key; it matches the live `X-Proxy-Admin-Key` header name case-insensitively, and any existing occurrence must have the exact canonical value or rendering fails without a partial candidate. Missing, malformed, symlinked, or incorrectly owned canonical state aborts before validation/reload. Systemd uses `LoadCredential=proxy-admin.key:/etc/apitoken/proxy-admin.key` to make a private per-service copy. After all `EnvironmentFile` directives load, `ExecStart=/usr/bin/env ... AUTH_BOT_PROXY_ADMIN_KEY_FILE=%d/proxy-admin.key ...` pins the credential path for `claude-authbot.service`; it is deliberately not an `Environment=` directive, so an env file cannot override it. The Rust parser reads only that bounded dedicated file format. Sibling units are not passed the value or credential path. `ProtectProc=invisible` and `ProcSubset=pid` remain in force. After operator-subcommand early-return handling and before loading daemon secrets, Linux authbot calls `prctl(PR_SET_DUMPABLE, 0)`, blocking same-UID `ptrace`, `process_vm_readv`, and sensitive proc-memory access. Code already executing inside authbot itself is within the same trust boundary, and no defense can protect against such in-process code. The root-run Caddy installer is the only other intended consumer. Never print either source, put values in shell history, reload repository placeholders into production, or copy the populated host file back into Git.
 
 Preserve the existing file owner, group, and mode when replacing the host config. The packaged service reads it as the `caddy` user; changing a `root:caddy 0640` file to `root:root 0640` makes `systemctl reload caddy` fail even though a root-run `caddy validate` succeeds. Use `cp -a` for a backup and `chown --reference`/`chmod --reference` after installing a generated candidate.
 
@@ -81,12 +81,16 @@ receives it. The public OpenKeys vhost returns `404` for `/api/internal/*`, so t
 cannot be reached through the customer-facing hostname even with a forged actor header.
 
 The same admin vhost preserves `/proxy-admin/*` and routes it to authbot's loopback-only listener on
-`127.0.0.1:8806`. Caddy injects the server-side `x-api-key` and forwards the `X-Admin-Actor` copied by
-`managed_admin_auth`; a client-supplied actor is removed before authentication. `GET inventory` is a
-sanitized read, while `POST renew` is the only paid mutation and requires that verified actor plus a
-UUID idempotency key. No public provider hostname routes this listener. The authbot unit reads the
-shared control key from `/srv/claude-api/data/server.env`; proxy credentials and IPRoyal keys remain
-in its private environment/state and never enter Caddy or the browser.
+`127.0.0.1:8806`. Caddy overwrites any client-supplied `X-Proxy-Admin-Key` with the dedicated
+canonical value and overwrites `x-api-key` with the shared engine key only so the previous authbot
+binary remains usable during mixed-version rollout or rollback. The new binary
+ignores `x-api-key`, authenticates only the dedicated header, and uses the shared key only for its
+outgoing loopback runtime status calls; shared-key holders therefore cannot read `account_email`.
+Caddy also forwards the `X-Admin-Actor` copied by `managed_admin_auth`; a client-supplied actor is
+removed before authentication. `GET inventory` is a sanitized managed-admin read, while `POST renew`
+is the only paid mutation and requires that verified actor plus a UUID idempotency key. No public
+provider hostname routes this listener. Proxy credentials and IPRoyal keys never enter Caddy or the
+browser.
 
 Gemini is an independent active/passive pair: `gemini.api.apitoken.sale` targets stable loopback
 origin `127.0.0.1:8794`, which health-gates slots `127.0.0.1:8795` and `127.0.0.1:8799`. Its

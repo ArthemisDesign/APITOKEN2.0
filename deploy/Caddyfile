@@ -31,6 +31,7 @@
 		format filter {
 			request>headers>X-Admin-Key replace REDACTED
 			request>headers>X-Api-Key replace REDACTED
+			request>headers>X-Proxy-Admin-Key replace REDACTED
 			request>headers>X-Goog-Api-Key replace REDACTED
 			request>headers>X-Sales-Admin-Key replace REDACTED
 			request>headers>X-Crm-Ingest-Key replace REDACTED
@@ -367,11 +368,13 @@ admin.apitoken.sale {
 			header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"
 		}
 	}
-	# Proxy lifecycle is owned by authbot. Keep the URI intact, inject the same server-side control
-	# credential as other admin data routes, and forward the verified managed-admin actor for audit.
+	# Proxy lifecycle is owned by authbot. Keep the URI intact, overwrite any client-supplied
+	# credentials, and forward the verified actor. The shared x-api-key is rollback/mixed-version
+	# compatibility for the old binary only; the new binary authenticates only X-Proxy-Admin-Key.
 	handle /proxy-admin/* {
 		reverse_proxy 127.0.0.1:8806 {
 			header_up Host 127.0.0.1:8806
+			header_up X-Proxy-Admin-Key "<AUTH_BOT_PROXY_ADMIN_KEY_PLACEHOLDER>"
 			header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"
 			header_up X-Admin-Actor {http.request.header.X-Admin-Actor}
 		}

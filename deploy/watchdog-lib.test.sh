@@ -1912,7 +1912,16 @@ grep -Fq 'handle_path /partner-admin/*' "$ROOT/deploy/Caddyfile"
 grep -Fq 'handle /proxy-admin/* {' "$ROOT/deploy/Caddyfile"
 grep -Fq 'reverse_proxy 127.0.0.1:8806' "$ROOT/deploy/Caddyfile"
 grep -Fq 'header_up Host 127.0.0.1:8806' "$ROOT/deploy/Caddyfile"
-grep -Fq 'header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"' "$ROOT/deploy/Caddyfile"
+[[ $(grep -Fc 'header_up X-Proxy-Admin-Key "<AUTH_BOT_PROXY_ADMIN_KEY_PLACEHOLDER>"' \
+  "$ROOT/deploy/Caddyfile") == 1 ]] \
+  || wd_die 'proxy-admin route must overwrite its exact header with one dedicated placeholder'
+proxy_admin_route=$(sed -n '/^[[:space:]]*handle \/proxy-admin\/\* {$/,/^[[:space:]]*}$/p' \
+  "$ROOT/deploy/Caddyfile")
+[[ $(grep -Fc 'header_up x-api-key "<ADMIN_CONTROL_KEY_PLACEHOLDER>"' \
+  <<<"$proxy_admin_route") == 1 ]] \
+  || wd_die 'proxy-admin route lacks the old-binary rollback compatibility key'
+grep -Fq 'new binary authenticates only X-Proxy-Admin-Key' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'proxy-admin compatibility header lacks an explicit new-binary boundary'
 grep -Fq 'header_up X-Admin-Actor {http.request.header.X-Admin-Actor}' "$ROOT/deploy/Caddyfile"
 grep -Fq 'copy_headers X-Admin-Actor X-Admin-Account-Id' "$ROOT/deploy/Caddyfile"
 grep -Fq 'encode zstd gzip' "$ROOT/deploy/Caddyfile"
@@ -1939,6 +1948,8 @@ grep -Fq 'reverse_proxy 127.0.0.1:3700' "$ROOT/deploy/Caddyfile" \
 ! grep -Fq 'fail_duration' "$ROOT/deploy/Caddyfile"
 ! grep -Fq 'max_fails' "$ROOT/deploy/Caddyfile"
 grep -Fq 'request>headers>X-Admin-Key replace REDACTED' "$ROOT/deploy/Caddyfile"
+grep -Fq 'request>headers>X-Proxy-Admin-Key replace REDACTED' "$ROOT/deploy/Caddyfile" \
+  || wd_die 'dedicated proxy-admin header is not redacted from Caddy runtime errors'
 # Both slots of each pair stay listed as upstreams while exactly one runs, so the active health
 # checker fails against a deliberately stopped address once every two seconds forever. Excluding
 # that logger is what keeps the journal and the Grafana error panel readable; losing the line
@@ -2037,11 +2048,15 @@ grep -Fq '"$ENGINE_STAGE/authbot"' "$ROOT/deploy/deploy.sh" \
   || wd_die "the authbot binary is not installed into the engine release"
 grep -Fq 'staged authbot binary is missing' "$ROOT/deploy/deploy.sh" \
   || wd_die "a release without an authbot binary must fail closed"
-grep -Fq 'ExecStart=/usr/bin/env CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CODEX_HOMES_DIR=/srv/claude-api/data/codex-staging AUTH_BOT_CODEX_ROSTER_DIR=/srv/claude-api/data/codex /srv/claude-api/releases/current/authbot' \
-  "$ROOT/systemd/claude-authbot.service" \
-  || wd_die "the authbot unit must override legacy CLI/home paths and run the current release"
+authbot_exec_start='ExecStart=/usr/bin/env CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude AUTH_BOT_CODEX_HOMES_DIR=/srv/claude-api/data/codex-staging AUTH_BOT_CODEX_ROSTER_DIR=/srv/claude-api/data/codex AUTH_BOT_PROXY_ADMIN_KEY_FILE=%d/proxy-admin.key /srv/claude-api/releases/current/authbot'
+grep -Fxq "$authbot_exec_start" "$ROOT/systemd/claude-authbot.service" \
+  || wd_die 'the authbot unit must pin runtime paths and the credential path in its exact command'
 grep -Fq 'ProtectHome=true' "$ROOT/systemd/claude-authbot.service" \
   || wd_die "the authbot must keep the service user's home hidden"
+grep -Fxq 'ProtectProc=invisible' "$ROOT/systemd/claude-authbot.service" \
+  || wd_die 'the authbot can inspect unrelated host processes'
+grep -Fxq 'ProcSubset=pid' "$ROOT/systemd/claude-authbot.service" \
+  || wd_die 'the authbot procfs view exposes non-process kernel state'
 grep -Fq 'Environment=AUTH_BOT_CLAUDE_BIN=/run/claude-authbot/claude' "$ROOT/systemd/claude-authbot.service" \
   || wd_die "the protected authbot still tries to execute Claude below hidden /home"
 grep -Fq 'env_opt("AUTH_BOT_CLAUDE_BIN")' "$ROOT/crates/authbot/src/main.rs" \
@@ -2052,10 +2067,84 @@ grep -Fq 'RuntimeDirectory=claude-authbot' "$ROOT/systemd/claude-authbot.service
   || wd_die "the authbot has no private mount destination for the Claude CLI"
 grep -Fq 'Environment=HOME=/srv/claude-api/data/authbot' "$ROOT/systemd/claude-authbot.service" \
   || wd_die "the protected authbot has no writable home for an already-running old binary"
+grep -Fxq 'LoadCredential=proxy-admin.key:/etc/apitoken/proxy-admin.key' \
+  "$ROOT/systemd/claude-authbot.service" \
+  || wd_die 'the authbot unit does not load the root-owned raw proxy-admin key as a credential'
+! grep -Eq '^Environment=AUTH_BOT_PROXY_ADMIN_KEY_FILE=' \
+  "$ROOT/systemd/claude-authbot.service" \
+  || wd_die 'an Environment directive lets environment files redirect the proxy-admin credential'
+! grep -Eq '^(Environment|ExecStart)=.*AUTH_BOT_PROXY_ADMIN_KEY=' \
+  "$ROOT/systemd/claude-authbot.service" \
+  || wd_die 'the authbot unit still injects the proxy-admin secret as an environment value'
 grep -Fq 'EnvironmentFile=/srv/claude-api/data/engine-postgres.env' "$ROOT/systemd/claude-authbot.service" \
   || wd_die "the authbot can silently fall back from the engine PostgreSQL authority"
+grep -Fq 'EnvironmentFile=/srv/claude-api/data/authbot.env' "$ROOT/systemd/claude-authbot.service" \
+  || wd_die 'authbot.env is not retained for the bot other settings'
 grep -Fq 'EnvironmentFile=-/srv/claude-api/data/server.env' "$ROOT/systemd/claude-authbot.service" \
-  || wd_die "the authbot proxy-admin listener cannot receive the shared control key"
+  || wd_die "the authbot runtime status calls cannot receive the shared control key"
+authbot_exec_line=$(grep -nFx "$authbot_exec_start" "$ROOT/systemd/claude-authbot.service" | cut -d: -f1)
+authbot_last_env_line=$(grep -n '^EnvironmentFile=' "$ROOT/systemd/claude-authbot.service" \
+  | tail -n 1 | cut -d: -f1)
+[[ -n $authbot_exec_line && -n $authbot_last_env_line \
+    && $authbot_last_env_line -lt $authbot_exec_line ]] \
+  || wd_die 'the authbot command does not pin its credential path after environment-file loading'
+! grep -Fq 'env_opt("AUTH_BOT_PROXY_ADMIN_KEY")' "$ROOT/crates/authbot/src/main.rs" \
+  || wd_die 'the authbot still accepts the proxy-admin secret from the process environment'
+grep -Fq 'env_opt("AUTH_BOT_PROXY_ADMIN_KEY_FILE")' "$ROOT/crates/authbot/src/main.rs" \
+  || wd_die 'the authbot does not resolve the proxy-admin credential by path'
+grep -Fq 'libc::PR_SET_DUMPABLE, 0' "$ROOT/crates/authbot/src/main.rs" \
+  || wd_die 'the authbot does not block same-UID process memory inspection before loading secrets'
+hardening_line=$(grep -n '^[[:space:]]*harden_daemon_process()?;' "$ROOT/crates/authbot/src/main.rs" \
+  | cut -d: -f1)
+proxy_key_load_line=$(grep -n '^[[:space:]]*let proxy_admin_key = read_proxy_admin_key' \
+  "$ROOT/crates/authbot/src/main.rs" | cut -d: -f1)
+[[ -n $hardening_line && -n $proxy_key_load_line && $hardening_line -lt $proxy_key_load_line ]] \
+  || wd_die 'authbot loads the proxy-admin key before disabling process dumpability'
+grep -Fq 'provision_authbot_proxy_admin_key' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'watchdog installation never provisions the dedicated proxy-admin key'
+grep -Fq '[[ -f $key_file && ! -L $key_file ]]' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'raw proxy-admin key provisioning is not regular-file/symlink fenced'
+grep -Fq 'install -d -o root -g root -m 0755 "$key_dir"' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'the proxy-admin key parent is not root-owned and non-writable by deploy'
+grep -Fq 'chown root:root "$key_file"' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'raw proxy-admin key root ownership is not enforced'
+grep -Fq 'chmod 0600 "$key_file"' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'raw proxy-admin key mode is not enforced'
+grep -Fq '[[ -f $authbot_env && ! -L $authbot_env ]]' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'legacy authbot.env migration is not regular-file/symlink fenced'
+grep -Fq 'chown root:root "$env_candidate"' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'migrated authbot.env ownership is not enforced'
+grep -Fq 'chmod 0600 "$authbot_env"' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'migrated authbot.env mode is not enforced'
+grep -Fxq 'PROXY_ADMIN_KEY_FILE=${PROXY_ADMIN_KEY_FILE:-/etc/apitoken/proxy-admin.key}' \
+  "$ROOT/deploy/install-caddy.sh" \
+  || wd_die 'Caddy does not read the canonical root-owned proxy-admin key path'
+grep -Fq 'awk -v proxy_admin_key_file="$PROXY_ADMIN_KEY_FILE" -v render_output="$tmp" \' \
+  "$ROOT/deploy/install-caddy.sh" \
+  || wd_die 'Caddy renderer does not receive only the private raw-key path'
+[[ $(grep -Ec '^[[:space:]]*awk -v ' "$ROOT/deploy/install-caddy.sh") == 1 ]] \
+  || wd_die 'Caddy installer has an unexpected secret-bearing AWK invocation'
+! grep -Eq -- '-v [[:alnum:]_]*(key|secret)=' "$ROOT/deploy/install-caddy.sh" \
+  || wd_die 'Caddy installer passes a secret value through AWK argv'
+! grep -Fq 'AUTHBOT_ENV' "$ROOT/deploy/install-caddy.sh" \
+  || wd_die 'Caddy still reads the mixed-settings authbot.env secret source'
+provision_line=$(grep -n '^[[:space:]]*provision_authbot_proxy_admin_key$' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+authbot_unit_install_line=$(grep -n 'install -o root -g root -m 0644 "$ROOT/systemd/$unit"' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+[[ -n $provision_line && -n $authbot_unit_install_line \
+    && $provision_line -lt $authbot_unit_install_line ]] \
+  || wd_die 'authbot raw key is provisioned after systemd definitions'
+full_install_line=$(grep -nF '"$CANDIDATE/deploy/install-watchdog.sh"' \
+  "$ROOT/deploy/watchdog-infrastructure.sh" | head -n 1 | cut -d: -f1)
+combined_systemd_line=$(grep -nF '"$CANDIDATE/deploy/install-watchdog.sh" --systemd-only' \
+  "$ROOT/deploy/watchdog-infrastructure.sh" | cut -d: -f1)
+combined_caddy_line=$(grep -nF 'CADDY_TEMPLATE="$CANDIDATE/deploy/Caddyfile" "$CANDIDATE/deploy/install-caddy.sh" --check' \
+  "$ROOT/deploy/watchdog-infrastructure.sh" | cut -d: -f1)
+[[ -n $full_install_line && -n $combined_systemd_line && -n $combined_caddy_line \
+    && $full_install_line -lt $combined_caddy_line \
+    && $combined_systemd_line -lt $combined_caddy_line ]] \
+  || wd_die 'combined infrastructure can render Caddy before raw-key provisioning'
 grep -Fq 'AuthorityConfig::Postgres' "$ROOT/crates/authbot/src/main.rs" \
   || wd_die "the authbot registry is not pinned to PostgreSQL"
 ! grep -Fq 'subscriptions.db' "$ROOT/crates/authbot/src/main.rs" \
@@ -2852,9 +2941,214 @@ grep -Fq "''|000|404|421" "$ROOT/deploy/watchdog.sh"
   || wd_die 'watchdog must not verify the retired embedded panel version marker'
 [[ ! -e "$ROOT/crates/server/src/panel.html" ]]
 
+# Exercise the exact raw-key provisioner with host ownership changes stubbed into the test directory.
+# Generation, migration, rejection, and reruns must never print the credential.
+authbot_key_fixture="$TEMP/apitoken/proxy-admin.key"
+authbot_env_fixture="$TEMP/authbot/authbot.env"
+authbot_server_env_fixture="$TEMP/server.env"
+authbot_key_log="$TEMP/authbot-key.log"
+authbot_chown_log="$TEMP/authbot-key.chown.log"
+authbot_install_log="$TEMP/authbot-key.install.log"
+canonical_proxy_key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+divergent_proxy_key=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+AUTHBOT_PROXY_ADMIN_KEY_CREATED=0
+for provision_function in proxy_admin_key_file_is_valid proxy_admin_key_files_equal \
+  provision_authbot_proxy_admin_key; do
+  provision_definition=$(sed -n "/^$provision_function()/,/^}/p" \
+    "$ROOT/deploy/install-watchdog.sh")
+  [[ -n $provision_definition ]] || wd_die "missing installer helper: $provision_function"
+  eval "$provision_definition"
+done
+install() {
+  local arg previous= target=
+  printf '%s\n' "$*" >>"$authbot_install_log"
+  for arg in "$@"; do previous=$target; target=$arg; done
+  if [[ " $* " == *' -d '* ]]; then mkdir -p "$target"; else cp "$previous" "$target"; fi
+}
+chown() { printf '%s\n' "$*" >>"$authbot_chown_log"; }
+openssl() {
+  [[ $* == 'rand -hex 32' ]] || return 1
+  printf '%064d\n' 0
+}
+command() {
+  if [[ ${1:-} == -v && ${2:-} == openssl ]]; then printf 'openssl\n'; else builtin command "$@"; fi
+}
+AUTHBOT_LN_COLLISION=0
+ln() {
+  if [[ $AUTHBOT_LN_COLLISION == 1 && ${1:-} == -- ]]; then
+    printf '%s\n' "$divergent_proxy_key" >"${3}"
+    return 1
+  fi
+  command ln "$@"
+}
+: >"$authbot_chown_log"
+: >"$authbot_install_log"
+printf 'OTHER_SERVER_SETTING=preserved\n' >"$authbot_server_env_fixture"
+PROXY_ADMIN_KEY_FILE=$authbot_key_fixture AUTHBOT_ENV=$authbot_env_fixture \
+  SERVER_ENV=$authbot_server_env_fixture provision_authbot_proxy_admin_key \
+  >"$authbot_key_log" 2>&1
+[[ $(wc -c <"$authbot_key_fixture" | tr -d '[:space:]') == 65 \
+    && $(LC_ALL=C awk 'NR == 1 && length($0) == 64 && $0 ~ /^[0-9a-f]+$/ { valid=1 } END { print valid+0 ":" NR }' \
+      "$authbot_key_fixture") == 1:1 ]] \
+  || wd_die 'proxy-admin bootstrap did not create the exact raw lowercase-hex format'
+[[ ! -e $authbot_env_fixture ]] \
+  || wd_die 'raw proxy-admin bootstrap created a mixed-settings authbot.env'
+[[ $AUTHBOT_PROXY_ADMIN_KEY_CREATED == 1 ]] \
+  || wd_die 'proxy-admin bootstrap does not request service adoption'
+grep -Fxq -- "-d -o root -g root -m 0755 ${authbot_key_fixture%/*}" "$authbot_install_log" \
+  || wd_die 'proxy-admin bootstrap did not enforce a root-owned, non-deploy-writable key parent'
+grep -Fq "root:root $authbot_key_fixture" "$authbot_chown_log" \
+  || wd_die 'proxy-admin bootstrap did not enforce raw-key ownership'
+[[ $(LC_ALL=C ls -ld "$authbot_key_fixture" | cut -c1-10) == -rw------- ]] \
+  || wd_die 'proxy-admin bootstrap did not enforce raw-key mode'
+[[ ! -s $authbot_key_log ]] || wd_die 'proxy-admin bootstrap emitted output'
+AUTHBOT_PROXY_ADMIN_KEY_CREATED=0
+authbot_key_before=$(shasum -a 256 "$authbot_key_fixture" | cut -d' ' -f1)
+PROXY_ADMIN_KEY_FILE=$authbot_key_fixture AUTHBOT_ENV=$authbot_env_fixture \
+  SERVER_ENV=$authbot_server_env_fixture provision_authbot_proxy_admin_key \
+  >>"$authbot_key_log" 2>&1
+authbot_key_after=$(shasum -a 256 "$authbot_key_fixture" | cut -d' ' -f1)
+[[ $authbot_key_before == "$authbot_key_after" ]] \
+  || wd_die 'proxy-admin provisioning rotated or rewrote an existing valid raw key'
+[[ $AUTHBOT_PROXY_ADMIN_KEY_CREATED == 0 ]] \
+  || wd_die 'valid raw proxy-admin key falsely requests another authbot restart'
+[[ ! -s $authbot_key_log ]] || wd_die 'proxy-admin stable rerun emitted output'
+
+assert_proxy_admin_provision_fails() {
+  local description=$1 key_contents=$2 env_contents=${3-__absent__}
+  rm -f -- "$authbot_key_fixture" "$authbot_env_fixture" "$authbot_key_log"
+  printf '%b' "$key_contents" >"$authbot_key_fixture"
+  printf 'OTHER_SERVER_SETTING=preserved\n' >"$authbot_server_env_fixture"
+  if [[ $env_contents != __absent__ ]]; then printf '%b' "$env_contents" >"$authbot_env_fixture"; fi
+  if PROXY_ADMIN_KEY_FILE=$authbot_key_fixture AUTHBOT_ENV=$authbot_env_fixture \
+      SERVER_ENV=$authbot_server_env_fixture provision_authbot_proxy_admin_key \
+      >"$authbot_key_log" 2>&1; then
+    wd_die "proxy-admin provisioning accepted $description"
+  fi
+  ! grep -Eq '[0-9a-fA-F]{64}' "$authbot_key_log" \
+    || wd_die "proxy-admin provisioning leaked a key while rejecting $description"
+}
+assert_proxy_admin_provision_fails 'a short raw key' 'short\n'
+assert_proxy_admin_provision_fails 'an uppercase raw key' \
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n'
+assert_proxy_admin_provision_fails 'a CRLF raw key' \
+  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n'
+assert_proxy_admin_provision_fails 'a multi-line raw key' \
+  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nextra\n'
+assert_proxy_admin_provision_fails 'an oversized raw key' \
+  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+rm -f -- "$authbot_key_fixture" "$authbot_env_fixture"
+printf '%s\n' "$canonical_proxy_key" >"$TEMP/proxy-admin-target.key"
+ln -s "$TEMP/proxy-admin-target.key" "$authbot_key_fixture"
+if PROXY_ADMIN_KEY_FILE=$authbot_key_fixture AUTHBOT_ENV=$authbot_env_fixture \
+    SERVER_ENV=$authbot_server_env_fixture provision_authbot_proxy_admin_key \
+    >"$authbot_key_log" 2>&1; then
+  wd_die 'proxy-admin provisioning followed a raw-key symlink'
+fi
+! grep -Fq "$canonical_proxy_key" "$authbot_key_log" \
+  || wd_die 'proxy-admin symlink rejection leaked the key'
+rm -f -- "$authbot_key_fixture" "$authbot_env_fixture"
+printf '%s\n' "$canonical_proxy_key" >"$authbot_key_fixture"
+printf 'OTHER_SETTING=preserved\n' >"$TEMP/authbot-target.env"
+ln -s "$TEMP/authbot-target.env" "$authbot_env_fixture"
+if PROXY_ADMIN_KEY_FILE=$authbot_key_fixture AUTHBOT_ENV=$authbot_env_fixture \
+    SERVER_ENV=$authbot_server_env_fixture provision_authbot_proxy_admin_key \
+    >"$authbot_key_log" 2>&1; then
+  wd_die 'proxy-admin migration followed an authbot.env symlink'
+fi
+
+# Shared server settings may not shadow or redirect the dedicated credential authority.
+for stale_server_setting in \
+  "AUTH_BOT_PROXY_ADMIN_KEY=$divergent_proxy_key" \
+  'AUTH_BOT_PROXY_ADMIN_KEY_FILE=/tmp/deploy-controlled-proxy-admin.key'; do
+  rm -f -- "$authbot_env_fixture" "$authbot_key_log"
+  printf '%s\n' "$canonical_proxy_key" >"$authbot_key_fixture"
+  printf '%s\n' "$stale_server_setting" >"$authbot_server_env_fixture"
+  authbot_key_before=$(shasum -a 256 "$authbot_key_fixture" | cut -d' ' -f1)
+  if PROXY_ADMIN_KEY_FILE=$authbot_key_fixture AUTHBOT_ENV=$authbot_env_fixture \
+      SERVER_ENV=$authbot_server_env_fixture provision_authbot_proxy_admin_key \
+      >"$authbot_key_log" 2>&1; then
+    wd_die "proxy-admin provisioning accepted stale server.env setting: ${stale_server_setting%%=*}"
+  fi
+  [[ $(shasum -a 256 "$authbot_key_fixture" | cut -d' ' -f1) == "$authbot_key_before" ]] \
+    || wd_die 'server.env rejection modified the canonical proxy-admin key'
+  ! grep -Eq '[0-9a-fA-F]{64}' "$authbot_key_log" \
+    || wd_die 'server.env rejection leaked a proxy-admin key'
+done
+printf 'OTHER_SERVER_SETTING=preserved\n' >"$authbot_server_env_fixture"
+
+# An exact legacy assignment is migrated into the raw file while unrelated authbot settings remain.
+rm -f -- "$authbot_key_fixture" "$authbot_env_fixture" "$authbot_key_log"
+printf 'AUTH_BOT_TOKEN=telegram-setting\nAUTH_BOT_PROXY_ADMIN_KEY=%s\nAUTH_BOT_ADMIN=42\n' \
+  "$canonical_proxy_key" >"$authbot_env_fixture"
+AUTHBOT_PROXY_ADMIN_KEY_CREATED=0
+PROXY_ADMIN_KEY_FILE=$authbot_key_fixture AUTHBOT_ENV=$authbot_env_fixture \
+  SERVER_ENV=$authbot_server_env_fixture provision_authbot_proxy_admin_key \
+  >"$authbot_key_log" 2>&1
+[[ $(tr -d '\n' <"$authbot_key_fixture") == "$canonical_proxy_key" ]] \
+  || wd_die 'legacy proxy-admin assignment was not migrated into the raw key file'
+[[ $(grep -Ec '^AUTH_BOT_PROXY_ADMIN_KEY=' "$authbot_env_fixture") == 0 \
+    && $(grep -Fc 'AUTH_BOT_TOKEN=telegram-setting' "$authbot_env_fixture") == 1 \
+    && $(grep -Fc 'AUTH_BOT_ADMIN=42' "$authbot_env_fixture") == 1 ]] \
+  || wd_die 'legacy migration did not preserve other authbot.env settings exactly once'
+[[ $AUTHBOT_PROXY_ADMIN_KEY_CREATED == 1 ]] \
+  || wd_die 'legacy proxy-admin migration does not request service adoption'
+[[ ! -s $authbot_key_log ]] || wd_die 'legacy proxy-admin migration emitted output'
+
+# Equal canonical and legacy values converge by deleting only the obsolete assignment.
+printf '%s' "$canonical_proxy_key" >"$authbot_key_fixture"
+printf 'AUTH_BOT_TOKEN=keep\nAUTH_BOT_PROXY_ADMIN_KEY=%s\n' "$canonical_proxy_key" \
+  >"$authbot_env_fixture"
+AUTHBOT_PROXY_ADMIN_KEY_CREATED=0
+PROXY_ADMIN_KEY_FILE=$authbot_key_fixture AUTHBOT_ENV=$authbot_env_fixture \
+  SERVER_ENV=$authbot_server_env_fixture provision_authbot_proxy_admin_key \
+  >"$authbot_key_log" 2>&1
+[[ $(cat "$authbot_env_fixture") == 'AUTH_BOT_TOKEN=keep' \
+    && $(cat "$authbot_key_fixture") == "$canonical_proxy_key" \
+    && $AUTHBOT_PROXY_ADMIN_KEY_CREATED == 0 ]] \
+  || wd_die 'equal canonical and legacy proxy-admin keys did not converge safely'
+[[ ! -s $authbot_key_log ]] || wd_die 'equal-key proxy-admin convergence emitted output'
+
+# Divergent canonical and legacy values fail without modifying either authority.
+printf '%s\n' "$canonical_proxy_key" >"$authbot_key_fixture"
+printf 'AUTH_BOT_TOKEN=keep\nAUTH_BOT_PROXY_ADMIN_KEY=%s\n' "$divergent_proxy_key" \
+  >"$authbot_env_fixture"
+authbot_key_before=$(shasum -a 256 "$authbot_key_fixture" | cut -d' ' -f1)
+authbot_env_before=$(shasum -a 256 "$authbot_env_fixture" | cut -d' ' -f1)
+if PROXY_ADMIN_KEY_FILE=$authbot_key_fixture AUTHBOT_ENV=$authbot_env_fixture \
+    SERVER_ENV=$authbot_server_env_fixture provision_authbot_proxy_admin_key \
+    >"$authbot_key_log" 2>&1; then
+  wd_die 'proxy-admin provisioning accepted divergent canonical and legacy keys'
+fi
+[[ $(shasum -a 256 "$authbot_key_fixture" | cut -d' ' -f1) == "$authbot_key_before" \
+    && $(shasum -a 256 "$authbot_env_fixture" | cut -d' ' -f1) == "$authbot_env_before" ]] \
+  || wd_die 'divergent proxy-admin migration modified canonical or legacy state'
+! grep -Eq '[0-9a-f]{64}' "$authbot_key_log" \
+  || wd_die 'divergent proxy-admin migration leaked a key'
+
+# A destination appearing between candidate creation and hard-link publication wins unchanged.
+rm -f -- "$authbot_key_fixture" "$authbot_env_fixture" "$authbot_key_log"
+AUTHBOT_PROXY_ADMIN_KEY_CREATED=0
+AUTHBOT_LN_COLLISION=1
+if PROXY_ADMIN_KEY_FILE=$authbot_key_fixture AUTHBOT_ENV=$authbot_env_fixture \
+    SERVER_ENV=$authbot_server_env_fixture provision_authbot_proxy_admin_key \
+    >"$authbot_key_log" 2>&1; then
+  wd_die 'proxy-admin provisioning overwrote an atomic destination collision'
+fi
+AUTHBOT_LN_COLLISION=0
+[[ $(tr -d '\n' <"$authbot_key_fixture") == "$divergent_proxy_key" \
+    && $AUTHBOT_PROXY_ADMIN_KEY_CREATED == 0 ]] \
+  || wd_die 'proxy-admin collision did not preserve the independently published destination'
+! grep -Eq '[0-9a-f]{64}' "$authbot_key_log" \
+  || wd_die 'proxy-admin collision rejection leaked a key'
+unset -f assert_proxy_admin_provision_fails install chown openssl command ln \
+  proxy_admin_key_file_is_valid proxy_admin_key_files_equal provision_authbot_proxy_admin_key
+unset AUTHBOT_PROXY_ADMIN_KEY_CREATED AUTHBOT_LN_COLLISION
+
 render_live="$TEMP/live.Caddyfile"
 rendered_once="$TEMP/rendered-once.Caddyfile"
 rendered_twice="$TEMP/rendered-twice.Caddyfile"
+render_proxy_key="$TEMP/render-proxy-admin.key"
 {
   printf '(panel_admins) {\n\tbasic_auth {\n\t\tadmin $2y$12$GkwhyxjgFuLvnJRxUDO5POFWymIfHL9NKsdtLIHo3lvrXIhvPaO2q\n\t}\n}\n'
   printf '(crm_admins) {\n\tbasic_auth {\n\t\tcrm $2a$14$GkwhyxjgFuLvnJRxUDO5POFWymIfHL9NKsdtLIHo3lvrXIhvPaO2q\n\t}\n}\n'
@@ -2863,8 +3157,13 @@ rendered_twice="$TEMP/rendered-twice.Caddyfile"
   printf '\theader_up x-admin-key "test-commerce-secret"\n'
   printf '\theader_up x-sales-admin-key "test-sales-secret"\n}\n'
 } >"$render_live"
-awk -f "$ROOT/deploy/render-caddy.awk" "$render_live" "$ROOT/deploy/Caddyfile" >"$rendered_once"
-awk -f "$ROOT/deploy/render-caddy.awk" "$rendered_once" "$ROOT/deploy/Caddyfile" >"$rendered_twice"
+printf '%s' "$canonical_proxy_key" >"$render_proxy_key"
+awk -v proxy_admin_key_file="$render_proxy_key" -v render_output="$rendered_once" \
+  -f "$ROOT/deploy/render-caddy.awk" "$render_live" "$ROOT/deploy/Caddyfile"
+# The same raw-key parser accepts the provisioner's single LF and requires live Caddy to agree.
+printf '%s\n' "$canonical_proxy_key" >"$render_proxy_key"
+awk -v proxy_admin_key_file="$render_proxy_key" -v render_output="$rendered_twice" \
+  -f "$ROOT/deploy/render-caddy.awk" "$rendered_once" "$ROOT/deploy/Caddyfile"
 for rendered in "$rendered_once" "$rendered_twice"; do
   ! grep -Fq 'basic_auth' "$rendered"
   ! grep -Fq '$2y$' "$rendered"
@@ -2874,10 +3173,59 @@ for rendered in "$rendered_once" "$rendered_twice"; do
   [[ $(grep -Fc 'header_up x-admin-key "test-commerce-secret"' "$rendered") == 2 ]]
   [[ $(grep -Fc 'header_up X-Admin-Key "test-commerce-secret"' "$rendered") == 1 ]]
   [[ $(grep -Fc 'header_up x-sales-admin-key "test-sales-secret"' "$rendered") == 1 ]]
+  [[ $(grep -Fc "header_up X-Proxy-Admin-Key \"$canonical_proxy_key\"" "$rendered") == 1 ]]
   if grep -Eq '<[A-Z_]*PLACEHOLDER>' "$rendered"; then
     wd_die "rendered Caddy fixture retained a secret placeholder"
   fi
 done
+
+assert_proxy_admin_render_fails() {
+  local description=$1 key_contents=$2 live_input=${3:-$render_live}
+  local failure_output="$TEMP/render-failure.out" failure_render="$TEMP/render-failure.Caddyfile"
+  if [[ $key_contents == __missing__ ]]; then
+    rm -f -- "$render_proxy_key"
+  else
+    printf '%b' "$key_contents" >"$render_proxy_key"
+  fi
+  rm -f -- "$failure_render"
+  if awk -v proxy_admin_key_file="$render_proxy_key" -v render_output="$failure_render" \
+      -f "$ROOT/deploy/render-caddy.awk" "$live_input" "$ROOT/deploy/Caddyfile" \
+      >"$failure_output" 2>&1; then
+    wd_die "Caddy renderer accepted $description proxy-admin state"
+  fi
+  [[ ! -e $failure_render ]] \
+    || wd_die "failed Caddy render published a partial candidate for $description state"
+  ! grep -Eq '[0-9a-fA-F]{64}' "$failure_output" \
+    || wd_die "failed Caddy render leaked a proxy-admin key for $description state"
+}
+assert_proxy_admin_render_fails 'empty' ''
+assert_proxy_admin_render_fails 'short' 'short\n'
+assert_proxy_admin_render_fails 'uppercase' \
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n'
+assert_proxy_admin_render_fails 'CRLF' \
+  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n'
+assert_proxy_admin_render_fails 'multi-line' \
+  'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ndddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\n'
+assert_proxy_admin_render_fails 'missing raw-key file' __missing__
+
+# Header names follow HTTP case-insensitive semantics; alternate case must still match and deduplicate.
+render_alternate_case="$TEMP/render-alternate-case.Caddyfile"
+sed "s/header_up X-Proxy-Admin-Key \"$canonical_proxy_key\"/header_up x-PrOxY-aDmIn-KeY \"$canonical_proxy_key\"/" \
+  "$rendered_once" >"$render_alternate_case"
+printf '%s\n' "$canonical_proxy_key" >"$render_proxy_key"
+awk -v proxy_admin_key_file="$render_proxy_key" -v render_output="$rendered_twice" \
+  -f "$ROOT/deploy/render-caddy.awk" "$render_alternate_case" "$ROOT/deploy/Caddyfile"
+[[ $(grep -Fci "header_up X-Proxy-Admin-Key \"$canonical_proxy_key\"" "$rendered_twice") == 1 ]] \
+  || wd_die 'Caddy renderer did not case-insensitively converge the live proxy-admin header'
+render_duplicate_case="$TEMP/render-duplicate-case.Caddyfile"
+cp "$render_alternate_case" "$render_duplicate_case"
+printf 'header_up X-PROXY-ADMIN-KEY "%s"\n' "$canonical_proxy_key" \
+  >>"$render_duplicate_case"
+assert_proxy_admin_render_fails 'duplicate alternate-case live header' \
+  "$canonical_proxy_key\n" "$render_duplicate_case"
+assert_proxy_admin_render_fails 'divergent alternate-case live header' \
+  "$divergent_proxy_key\n" "$render_alternate_case"
+unset -f assert_proxy_admin_render_fails
 
 legacy_export="$TEMP/legacy-admins.json"
 awk -f "$ROOT/deploy/export-legacy-admins.awk" "$render_live" >"$legacy_export"

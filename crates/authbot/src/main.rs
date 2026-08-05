@@ -24,7 +24,10 @@ use anyhow::{anyhow, Context, Result};
 use db::Store;
 use std::collections::HashSet;
 use std::env;
+use std::fs::OpenOptions;
 use std::io::Read as _;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 use std::sync::Arc;
 use tg::Bot;
 use zeroize::Zeroizing;
@@ -53,6 +56,51 @@ fn env_opt(k: &str) -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+fn harden_daemon_process() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: PR_SET_DUMPABLE changes only this process attribute. Disabling dumpability blocks
+        // same-UID ptrace/process_vm_readv and sensitive /proc reads before any daemon secret loads.
+        if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("disable authbot process dumpability");
+        }
+    }
+    Ok(())
+}
+
+fn read_proxy_admin_key(path: &Path) -> Result<proxy_admin::ProxyAdminKey> {
+    if !path.is_absolute() {
+        return Err(anyhow!(
+            "AUTH_BOT_PROXY_ADMIN_KEY_FILE должен быть абсолютным путём"
+        ));
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .context("open AUTH_BOT_PROXY_ADMIN_KEY_FILE")?;
+    if !file
+        .metadata()
+        .context("stat AUTH_BOT_PROXY_ADMIN_KEY_FILE")?
+        .is_file()
+    {
+        return Err(anyhow!(
+            "AUTH_BOT_PROXY_ADMIN_KEY_FILE должен быть обычным файлом"
+        ));
+    }
+    let mut bytes = Zeroizing::new(Vec::with_capacity(66));
+    file.take(66)
+        .read_to_end(&mut bytes)
+        .context("read AUTH_BOT_PROXY_ADMIN_KEY_FILE")?;
+    if bytes.len() > 65 {
+        return Err(anyhow!(
+            "AUTH_BOT_PROXY_ADMIN_KEY_FILE превышает допустимый размер"
+        ));
+    }
+    proxy_admin::ProxyAdminKey::parse(bytes)
 }
 
 /// Конфигурация encrypted roster движка для ChatGPT-аккаунтов. Intake гейтится только на AEAD
@@ -313,11 +361,27 @@ async fn main() -> Result<()> {
         }
         return run_gemini_proxy_operator(&command, &profile_id);
     }
+    harden_daemon_process()?;
     let token = env_opt("AUTH_BOT_TOKEN").ok_or_else(|| anyhow!("AUTH_BOT_TOKEN не задан"))?;
-    let proxy_admin_control_key = env_opt("CLAUDE_API_CONTROL_KEY")
-        .ok_or_else(|| anyhow!("CLAUDE_API_CONTROL_KEY обязателен для proxy admin API"))?;
+    let proxy_admin_key_file = env_opt("AUTH_BOT_PROXY_ADMIN_KEY_FILE")
+        .ok_or_else(|| anyhow!("AUTH_BOT_PROXY_ADMIN_KEY_FILE обязателен для proxy admin API"))?;
+    let proxy_admin_key = read_proxy_admin_key(Path::new(&proxy_admin_key_file))?;
+    let runtime_control_key = env_opt("CLAUDE_API_CONTROL_KEY")
+        .ok_or_else(|| anyhow!("CLAUDE_API_CONTROL_KEY обязателен для runtime status API"))?;
     let proxy_admin_bind_raw = env_opt("AUTH_BOT_PROXY_ADMIN_BIND");
     let proxy_admin_bind = proxy_admin::parse_bind(proxy_admin_bind_raw.as_deref())?;
+    let codex_runtime_url_raw = env_opt("AUTH_BOT_PROXY_ADMIN_CODEX_RUNTIME_URL");
+    let codex_runtime_url = proxy_admin::parse_runtime_url(
+        codex_runtime_url_raw.as_deref(),
+        proxy_admin::DEFAULT_CODEX_RUNTIME_URL,
+        "/codex-subs",
+    )?;
+    let gemini_runtime_url_raw = env_opt("AUTH_BOT_PROXY_ADMIN_GEMINI_RUNTIME_URL");
+    let gemini_runtime_url = proxy_admin::parse_runtime_url(
+        gemini_runtime_url_raw.as_deref(),
+        proxy_admin::DEFAULT_GEMINI_RUNTIME_URL,
+        "/gemini-subs",
+    )?;
     let (admins_id, admins_name) = parse_admins(&env_opt("AUTH_BOT_ADMIN").unwrap_or_default());
     let home = env::var("HOME").unwrap_or_default();
     let database_url = env_opt("CLAUDE_API_DATABASE_URL")
@@ -406,13 +470,16 @@ async fn main() -> Result<()> {
     };
     let proxy_admin = proxy_admin::Service::new(
         proxy_admin_bind,
-        proxy_admin_control_key,
+        proxy_admin_key,
+        runtime_control_key,
         store.clone(),
         proxy_admin_iproyal,
         authority_cfg(&cfg),
         cfg.fleet.clone(),
         cfg.codex_roster.clone(),
         cfg.gemini_oauth.clone(),
+        codex_runtime_url,
+        gemini_runtime_url,
     )?;
     let mut proxy_admin_runtime = tokio::spawn(proxy_admin.run());
     eprintln!("proxy-admin: loopback listener and lifecycle actor enabled");
@@ -488,6 +555,112 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod runtime_tests {
     use super::*;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let path = env::temp_dir().join(format!(
+                "authbot-proxy-admin-key-{}-{}",
+                std::process::id(),
+                TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn daemon_hardening_disables_process_dumpability() {
+        // SAFETY: PR_GET_DUMPABLE reads only this process attribute.
+        let before = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
+        assert!(before >= 0);
+        harden_daemon_process().unwrap();
+        // SAFETY: PR_GET_DUMPABLE reads only this process attribute.
+        assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) }, 0);
+        if before != 0 {
+            // SAFETY: Restore the test process attribute so parallel tests keep their original state.
+            assert_eq!(
+                unsafe { libc::prctl(libc::PR_SET_DUMPABLE, before, 0, 0, 0) },
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn proxy_admin_key_parser_accepts_only_canonical_shapes() {
+        assert!(proxy_admin::ProxyAdminKey::parse(Zeroizing::new(b"a".repeat(64))).is_ok());
+        assert!(proxy_admin::ProxyAdminKey::parse(Zeroizing::new(
+            [b"0123456789abcdef".repeat(4), vec![b'\n']].concat()
+        ))
+        .is_ok());
+
+        for malformed in [
+            b"a".repeat(63),
+            b"a".repeat(65),
+            b"A".repeat(64),
+            [b"a".repeat(63), vec![b'g']].concat(),
+            [b"a".repeat(64), vec![b'\r']].concat(),
+            [b"a".repeat(64), vec![b' ']].concat(),
+            [b"a".repeat(64), vec![b'\n', b'\n']].concat(),
+        ] {
+            assert!(proxy_admin::ProxyAdminKey::parse(Zeroizing::new(malformed)).is_err());
+        }
+    }
+
+    #[test]
+    fn proxy_admin_key_reader_accepts_lf_and_no_lf() {
+        let temp = TempDir::new();
+        for (name, bytes) in [
+            ("no-lf", b"a".repeat(64)),
+            ("lf", [b"0123456789abcdef".repeat(4), vec![b'\n']].concat()),
+        ] {
+            let path = temp.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            assert!(read_proxy_admin_key(&path).is_ok());
+        }
+    }
+
+    #[test]
+    fn proxy_admin_key_reader_rejects_bounds_and_invalid_paths() {
+        let temp = TempDir::new();
+        for (name, bytes) in [
+            ("short", b"a".repeat(63)),
+            ("canonical-bound-invalid", b"a".repeat(65)),
+            ("overflow", b"a".repeat(66)),
+            ("malformed", [b"a".repeat(64), vec![b' ']].concat()),
+        ] {
+            let path = temp.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            assert!(read_proxy_admin_key(&path).is_err(), "{name}");
+        }
+
+        let target = temp.path().join("target");
+        fs::write(&target, b"a".repeat(64)).unwrap();
+        let link = temp.path().join("link");
+        symlink(&target, &link).unwrap();
+        assert!(read_proxy_admin_key(&link).is_err());
+        assert!(read_proxy_admin_key(temp.path()).is_err());
+        assert!(read_proxy_admin_key(&temp.path().join("missing")).is_err());
+        assert!(read_proxy_admin_key(Path::new("relative-key")).is_err());
+    }
 
     #[tokio::test]
     async fn postgres_preflight_does_not_nest_a_runtime() {

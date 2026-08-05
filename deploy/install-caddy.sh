@@ -6,12 +6,17 @@ set -euo pipefail
 TEMPLATE=${CADDY_TEMPLATE:-/opt/apitoken/repo/deploy/Caddyfile}
 LIVE=${CADDY_CONFIG:-/etc/caddy/Caddyfile}
 LIVE_DIR=${LIVE%/*}
+PROXY_ADMIN_KEY_FILE=${PROXY_ADMIN_KEY_FILE:-/etc/apitoken/proxy-admin.key}
 ROUTER_ACTIVE_SNIPPET=${ROUTER_ACTIVE_SNIPPET:-/etc/caddy/router-active.caddy}
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CHECK_ONLY=0
 [[ ${1:-} != --check ]] || CHECK_ONLY=1
 [[ $# -le 1 ]] || { echo "usage: $0 [--check]" >&2; exit 2; }
 [[ -f "$TEMPLATE" && -f "$LIVE" ]]
+[[ -f "$PROXY_ADMIN_KEY_FILE" && ! -L "$PROXY_ADMIN_KEY_FILE" ]] \
+  || { echo "$PROXY_ADMIN_KEY_FILE must be a regular file" >&2; exit 1; }
+[[ $(stat -c '%u:%g:%a' -- "$PROXY_ADMIN_KEY_FILE") == 0:0:600 ]] \
+  || { echo "$PROXY_ADMIN_KEY_FILE must be root-owned mode 0600" >&2; exit 1; }
 [[ "$ROUTER_ACTIVE_SNIPPET" == /etc/caddy/router-active.caddy ]]
 
 router_backend_port() {
@@ -70,10 +75,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Preserve production-only service keys without placing any secret in argv, stdout, the repository,
-# or a world-readable temporary file. Human admin credentials live in PostgreSQL after cutover.
+# Preserve shared production-only service keys without placing any secret in argv, stdout, the
+# repository, or a world-readable temporary file. AWK receives only the private raw-key path,
+# renders its canonical value, and rejects a divergent value already present in live Caddy.
 chmod 0600 "$tmp" "$legacy_payload" "$legacy_response" "$curl_config" "$openai_response"
-awk -f "$SCRIPT_DIR/render-caddy.awk" "$LIVE" "$TEMPLATE" >"$tmp"
+awk -v proxy_admin_key_file="$PROXY_ADMIN_KEY_FILE" -v render_output="$tmp" \
+  -f "$SCRIPT_DIR/render-caddy.awk" "$LIVE" "$TEMPLATE"
 
 ! grep -q '<[A-Z_]*PLACEHOLDER>' "$tmp"
 caddy validate --adapter caddyfile --config "$tmp" >/dev/null

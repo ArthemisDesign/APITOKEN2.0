@@ -16,10 +16,15 @@ use axum::{Json, Router};
 use registry::authority::AuthorityConfig;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+pub const DEFAULT_CODEX_RUNTIME_URL: &str = "http://127.0.0.1:8792/codex-subs";
+pub const DEFAULT_GEMINI_RUNTIME_URL: &str = "http://127.0.0.1:8794/gemini-subs";
+const RUNTIME_RESPONSE_LIMIT: usize = 1024 * 1024;
+const RUNTIME_REQUEST_TIMEOUT: Duration = Duration::from_secs(4);
 use tokio::sync::RwLock;
 use zeroize::Zeroizing;
 
@@ -42,6 +47,59 @@ pub fn parse_bind(raw: Option<&str>) -> Result<SocketAddr> {
     Ok(bind)
 }
 
+pub fn parse_runtime_url(
+    raw: Option<&str>,
+    default: &str,
+    expected_path: &str,
+) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(raw.unwrap_or(default))
+        .map_err(|_| anyhow!("proxy admin runtime URL must be absolute HTTP"))?;
+    if url.scheme() != "http"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != expected_path
+    {
+        bail!("proxy admin runtime URL is not an allowed loopback endpoint");
+    }
+    let host = url
+        .host_str()
+        .and_then(|host| {
+            host.trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .ok()
+        })
+        .filter(std::net::IpAddr::is_loopback)
+        .ok_or_else(|| anyhow!("proxy admin runtime URL must use a literal loopback IP"))?;
+    if !host.is_loopback() || url.port().is_some_and(|port| port == 0) {
+        bail!("proxy admin runtime URL must use a non-zero loopback port");
+    }
+    Ok(url)
+}
+
+pub(crate) struct ProxyAdminKey(Zeroizing<String>);
+
+impl ProxyAdminKey {
+    pub(crate) fn parse(mut bytes: Zeroizing<Vec<u8>>) -> Result<Self> {
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+        }
+        if bytes.len() != 64
+            || !bytes
+                .iter()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            bail!(
+                "proxy admin key file must contain exactly 64 lowercase hex bytes and optional LF"
+            );
+        }
+        let value = String::from_utf8(std::mem::take(&mut *bytes))
+            .map_err(|_| anyhow!("proxy admin key file is not valid ASCII"))?;
+        Ok(Self(Zeroizing::new(value)))
+    }
+}
+
 struct ControlKey(Zeroizing<String>);
 
 impl ControlKey {
@@ -53,6 +111,10 @@ impl ControlKey {
             bail!("proxy admin control key exceeds the safety bound");
         }
         Ok(Self(Zeroizing::new(value)))
+    }
+
+    fn from_proxy_admin(value: ProxyAdminKey) -> Self {
+        Self(value.0)
     }
 
     fn matches(&self, candidate: &[u8]) -> bool {
@@ -78,13 +140,16 @@ pub struct Service {
 impl Service {
     pub fn new(
         bind: SocketAddr,
-        control_key: String,
+        admin_key: ProxyAdminKey,
+        runtime_control_key: String,
         store: Arc<Store>,
         iproyal: Option<Arc<Iproyal>>,
         authority: AuthorityConfig,
         fleet: String,
         codex: Option<codex_login::RosterConfig>,
         gemini: Option<gemini_oauth::Config>,
+        codex_runtime_url: reqwest::Url,
+        gemini_runtime_url: reqwest::Url,
     ) -> Result<Self> {
         if !bind.ip().is_loopback() || bind.port() == 0 {
             bail!("proxy admin bind must use a non-zero loopback port");
@@ -95,16 +160,31 @@ impl Service {
         if fleet.is_empty() {
             bail!("proxy admin fleet must not be empty");
         }
+        let runtime_client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(RUNTIME_REQUEST_TIMEOUT)
+            .build()
+            .map_err(|_| anyhow!("proxy admin runtime client configuration failed"))?;
+        let admin_key = ControlKey::from_proxy_admin(admin_key);
+        let runtime_control_key = ControlKey::new(runtime_control_key)?;
+        if admin_key.matches(runtime_control_key.0.as_bytes()) {
+            bail!("proxy admin key must differ from the runtime control key");
+        }
         Ok(Self {
             bind,
             runtime: Arc::new(Runtime {
-                control_key: ControlKey::new(control_key)?,
+                admin_key,
+                runtime_control_key,
                 store,
                 iproyal,
                 authority,
                 fleet,
                 codex,
                 gemini,
+                runtime_client,
+                codex_runtime_url,
+                gemini_runtime_url,
                 provider_cache: RwLock::new(ProviderSnapshot::unavailable()),
                 #[cfg(test)]
                 test_local_projection: std::sync::RwLock::new(None),
@@ -124,13 +204,17 @@ impl Service {
 }
 
 struct Runtime {
-    control_key: ControlKey,
+    admin_key: ControlKey,
+    runtime_control_key: ControlKey,
     store: Arc<Store>,
     iproyal: Option<Arc<Iproyal>>,
     authority: AuthorityConfig,
     fleet: String,
     codex: Option<codex_login::RosterConfig>,
     gemini: Option<gemini_oauth::Config>,
+    runtime_client: reqwest::Client,
+    codex_runtime_url: reqwest::Url,
+    gemini_runtime_url: reqwest::Url,
     provider_cache: RwLock<ProviderSnapshot>,
     #[cfg(test)]
     test_local_projection: std::sync::RwLock<Option<LocalProjection>>,
@@ -174,9 +258,9 @@ fn json_response<T: Serialize>(status: StatusCode, value: T) -> Response {
 
 fn authorized(runtime: &Runtime, headers: &HeaderMap) -> bool {
     headers
-        .get("x-api-key")
-        .map(|value| runtime.control_key.matches(value.as_bytes()))
-        .unwrap_or_else(|| runtime.control_key.matches(&[]))
+        .get("x-proxy-admin-key")
+        .map(|value| runtime.admin_key.matches(value.as_bytes()))
+        .unwrap_or_else(|| runtime.admin_key.matches(&[]))
 }
 
 fn validated_actor(headers: &HeaderMap) -> Option<&str> {
@@ -274,6 +358,7 @@ struct ProviderView {
 #[derive(Serialize)]
 struct InventoryItem {
     inventory_id: String,
+    account_email: String,
     proxy_hint: String,
     order_hint: String,
     provider: String,
@@ -297,11 +382,14 @@ struct InventoryResponse {
 #[derive(Clone)]
 struct SubscriptionProjection {
     provider: &'static str,
+    binding_provider: &'static str,
     local_id: String,
+    account_email: String,
     canonical_plan: String,
     issued_at: i64,
     expires_at: i64,
     liveness: Liveness,
+    renewable_eligible: bool,
     canonical_ip: Option<std::net::IpAddr>,
     order_id: Option<i64>,
 }
@@ -322,39 +410,52 @@ impl SubscriptionSource {
 
     fn local_projection(&self) -> LocalProjection {
         LocalProjection {
-            liveness: self
+            states: self
                 .subscriptions
                 .iter()
-                .map(|subscription| (subscription.local_id.clone(), subscription.liveness))
+                .map(|subscription| {
+                    (
+                        subscription.local_id.clone(),
+                        LocalState {
+                            liveness: subscription.liveness,
+                            renewable_eligible: subscription.renewable_eligible,
+                            expires_at: subscription.expires_at,
+                            canonical_ip: subscription.canonical_ip,
+                            order_id: subscription.order_id,
+                        },
+                    )
+                })
                 .collect(),
             source_ok: self.source_ok,
         }
     }
 }
 
+#[derive(Clone, Copy)]
+struct LocalState {
+    liveness: Liveness,
+    renewable_eligible: bool,
+    expires_at: i64,
+    canonical_ip: Option<std::net::IpAddr>,
+    order_id: Option<i64>,
+}
+
 #[derive(Clone)]
 struct LocalProjection {
-    liveness: HashMap<String, Liveness>,
+    states: HashMap<String, LocalState>,
     source_ok: bool,
 }
 
 impl LocalProjection {
     fn unavailable() -> Self {
         Self {
-            liveness: HashMap::new(),
+            states: HashMap::new(),
             source_ok: false,
         }
     }
 
-    fn present(&self, local_id: &str) -> bool {
-        self.liveness.contains_key(local_id)
-    }
-
-    fn liveness(&self, local_id: &str) -> Liveness {
-        self.liveness
-            .get(local_id)
-            .copied()
-            .unwrap_or(Liveness::Dead)
+    fn state(&self, local_id: &str) -> Option<LocalState> {
+        self.states.get(local_id).copied()
     }
 }
 
@@ -400,59 +501,40 @@ fn inventory_response(
             )
         })
         .collect::<HashMap<_, _>>();
-    let mut matched_allocations = HashSet::new();
     let mut items = Vec::new();
 
-    for subscription in subscriptions
-        .iter()
-        .filter(|subscription| subscription.canonical_ip.is_some())
-    {
-        let ip = subscription.canonical_ip.expect("filtered literal IP");
-        let binding = binding_by_local
-            .get(&(subscription.provider, subscription.local_id.as_str()))
-            .copied();
-        let exact_order = binding.and_then(|binding| provider.orders.get(&binding.order_id));
-        let exact_allocation = binding.is_some_and(|binding| {
-            subscription
+    if provider.inventory_ok {
+        for subscription in &subscriptions {
+            let Some(ip) = subscription.canonical_ip else {
+                continue;
+            };
+            if subscription.liveness == Liveness::Dead {
+                continue;
+            }
+            let Some(binding) = binding_by_local
+                .get(&(
+                    subscription.binding_provider,
+                    subscription.local_id.as_str(),
+                ))
+                .copied()
+            else {
+                continue;
+            };
+            if subscription
                 .order_id
-                .is_none_or(|order_id| order_id == binding.order_id)
-                && binding.allocation_ip == Some(ip)
-                && exact_order.is_some_and(|order| order_contains_ip(order, ip))
-        });
-        if exact_allocation {
-            let binding = binding.expect("exact allocation has binding");
-            matched_allocations.insert((binding.order_id, ip));
+                .is_some_and(|order_id| order_id != binding.order_id)
+                || binding.allocation_ip != Some(ip)
+            {
+                continue;
+            }
+            let Some(order) = provider.orders.get(&binding.order_id) else {
+                continue;
+            };
+            if !order_contains_ip(order, ip) {
+                continue;
+            }
+            items.push(project_subscription_item(subscription, binding, &provider));
         }
-        items.push(project_subscription_item(
-            subscription,
-            binding,
-            &provider,
-            exact_allocation,
-        ));
-    }
-
-    for (order_id, ip) in provider_allocations(&provider) {
-        if matched_allocations.contains(&(order_id, ip)) {
-            continue;
-        }
-        let order = provider.orders.get(&order_id);
-        items.push(InventoryItem {
-            inventory_id: allocation_inventory_id(order_id, ip),
-            proxy_hint: proxy_hint(ip),
-            order_hint: masked_order_hint(order_id),
-            provider: "unassigned".to_string(),
-            subscription_plan: "unknown".to_string(),
-            liveness: Liveness::Unknown,
-            subscription_expires_at: None,
-            proxy_expires_at: order.and_then(|order| parse_expiry(&order.expire_date)),
-            binding_status: if provider.inventory_ok {
-                BindingStatus::Unbound
-            } else {
-                BindingStatus::Unknown
-            },
-            renewable: false,
-            renew_block_code: Some("binding_mismatch"),
-        });
     }
 
     let auto_extend_enabled = provider.auto_extend_enabled();
@@ -508,7 +590,7 @@ fn reconcile_subscriptions(
             continue;
         };
         let _ = store.upsert_proxy_binding_allocation(
-            subscription.provider,
+            subscription.binding_provider,
             &subscription.local_id,
             order_id,
             &ip.to_string(),
@@ -532,16 +614,26 @@ fn renewable_guard(
     let Some(allocation_ip) = binding.allocation_ip else {
         return Err("binding_mismatch");
     };
-    if !order_contains_ip(order, allocation_ip) || !local.present(&binding.local_id) {
+    if !order_contains_ip(order, allocation_ip) {
         return Err("binding_mismatch");
     }
-    if !matches!(binding.provider.as_str(), "claude" | "gpt" | "gemini") {
+    let Some(state) = local.state(&binding.local_id) else {
+        return Err("binding_mismatch");
+    };
+    if state.canonical_ip != Some(allocation_ip)
+        || !state
+            .order_id
+            .is_none_or(|order_id| order_id == binding.order_id)
+    {
         return Err("binding_mismatch");
     }
-    if !matches!(
-        local.liveness(&binding.local_id),
-        Liveness::Live | Liveness::Degraded
-    ) {
+    if !matches!(binding.provider.as_str(), "claude" | "codex" | "gemini") {
+        return Err("binding_mismatch");
+    }
+    if state.expires_at <= unix_now()
+        || !state.renewable_eligible
+        || !matches!(state.liveness, Liveness::Live | Liveness::Degraded)
+    {
         return Err("local_profile_inactive");
     }
     if !sanitized_order_active(order) {
@@ -554,56 +646,43 @@ fn renewable_guard(
 
 fn project_subscription_item(
     subscription: &SubscriptionProjection,
-    binding: Option<&ProxyBinding>,
+    binding: &ProxyBinding,
     provider: &ProviderSnapshot,
-    exact_allocation: bool,
 ) -> InventoryItem {
     let ip = subscription
         .canonical_ip
-        .expect("subscription inventory has IP");
-    let binding_status = if !provider.inventory_ok {
-        BindingStatus::Unknown
-    } else if exact_allocation {
-        BindingStatus::Bound
-    } else if binding.is_some() || subscription.order_id.is_some() {
-        BindingStatus::Mismatch
-    } else {
-        BindingStatus::Unbound
-    };
-    let order_id = binding
-        .map(|binding| binding.order_id)
-        .or(subscription.order_id);
-    let proxy_expires_at = order_id
-        .and_then(|order_id| provider.orders.get(&order_id))
+        .expect("exact-bound subscription inventory has IP");
+    let proxy_expires_at = provider
+        .orders
+        .get(&binding.order_id)
         .and_then(|order| parse_expiry(&order.expire_date));
     let local = LocalProjection {
-        liveness: [(subscription.local_id.clone(), subscription.liveness)]
-            .into_iter()
-            .collect(),
+        states: [(
+            subscription.local_id.clone(),
+            LocalState {
+                liveness: subscription.liveness,
+                renewable_eligible: subscription.renewable_eligible,
+                expires_at: subscription.expires_at,
+                canonical_ip: subscription.canonical_ip,
+                order_id: subscription.order_id,
+            },
+        )]
+        .into_iter()
+        .collect(),
         source_ok: true,
     };
-    let guard = binding
-        .ok_or("binding_mismatch")
-        .and_then(|binding| renewable_guard(binding, provider, &local))
-        .and_then(|expiry| {
-            (subscription.expires_at > unix_now())
-                .then_some(expiry)
-                .ok_or("local_profile_inactive")
-        });
+    let guard = renewable_guard(binding, provider, &local);
     InventoryItem {
-        inventory_id: binding
-            .map(|binding| binding.inventory_id.clone())
-            .unwrap_or_else(|| subscription_inventory_id(subscription)),
+        inventory_id: binding.inventory_id.clone(),
+        account_email: subscription.account_email.clone(),
         proxy_hint: proxy_hint(ip),
-        order_hint: order_id
-            .map(masked_order_hint)
-            .unwrap_or_else(|| "external".to_string()),
+        order_hint: masked_order_hint(binding.order_id),
         provider: subscription.provider.to_string(),
         subscription_plan: canonical_plan(&subscription.canonical_plan),
         liveness: subscription.liveness,
         subscription_expires_at: Some(subscription.expires_at),
         proxy_expires_at,
-        binding_status,
+        binding_status: BindingStatus::Bound,
         renewable: guard.is_ok(),
         renew_block_code: guard.err(),
     }
@@ -639,22 +718,6 @@ fn proxy_hint(ip: std::net::IpAddr) -> String {
     format!("proxy-{}", &digest[..12])
 }
 
-fn subscription_inventory_id(subscription: &SubscriptionProjection) -> String {
-    let digest = format!(
-        "{:x}",
-        Sha256::digest(format!("{}:{}", subscription.provider, subscription.local_id).as_bytes())
-    );
-    format!("sub_{}", &digest[..32])
-}
-
-fn allocation_inventory_id(order_id: i64, ip: std::net::IpAddr) -> String {
-    let digest = format!(
-        "{:x}",
-        Sha256::digest(format!("{order_id}:{ip}").as_bytes())
-    );
-    format!("alloc_{}", &digest[..32])
-}
-
 fn canonical_plan(plan: &str) -> String {
     let plan = plan.trim();
     if plan.is_empty() {
@@ -662,6 +725,61 @@ fn canonical_plan(plan: &str) -> String {
     } else {
         plan.to_string()
     }
+}
+
+fn validated_account_email(email: &str) -> Result<&str> {
+    if email.is_empty() || email.len() > 254 || !email.is_ascii() {
+        bail!("account email is outside the proxy admin safety bounds");
+    }
+    let Some((local, domain)) = email.split_once('@') else {
+        bail!("account email is invalid for proxy admin projection");
+    };
+    if local.is_empty()
+        || local.len() > 64
+        || domain.is_empty()
+        || domain.len() > 253
+        || domain.contains('@')
+        || local.starts_with('.')
+        || local.ends_with('.')
+        || local.contains("..")
+        || !local.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'.' | b'!'
+                        | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'/'
+                        | b'='
+                        | b'?'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'{'
+                        | b'|'
+                        | b'}'
+                        | b'~'
+                        | b'-'
+                )
+        })
+        || domain.split('.').any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+    {
+        bail!("account email is invalid for proxy admin projection");
+    }
+    Ok(email)
 }
 
 fn masked_order_hint(order_id: i64) -> String {
@@ -685,33 +803,36 @@ async fn load_claude_projection(runtime: Arc<Runtime>) -> SubscriptionSource {
     match tokio::task::spawn_blocking(move || {
         let mut authority = authority.connect()?;
         let rows = authority.load_claude_lifecycle()?;
-        Ok::<_, anyhow::Error>(
-            rows.into_iter()
-                .filter(|row| row.fleet == fleet)
-                .map(|row| {
-                    let liveness = if row.status != "active" || !row.has_token {
-                        Liveness::Dead
-                    } else {
-                        match row.auth_state.as_str() {
-                            "healthy" => Liveness::Live,
-                            "suspect" => Liveness::Degraded,
-                            "dead" => Liveness::Dead,
-                            _ => Liveness::Unknown,
-                        }
-                    };
-                    SubscriptionProjection {
-                        provider: "claude",
-                        local_id: opaque_claude_local_id(&row.email),
-                        canonical_plan: canonical_plan(&row.plan),
-                        issued_at: row.added_ts.max(1),
-                        expires_at: row.added_ts.max(1).saturating_add(30 * 86_400),
-                        liveness,
-                        canonical_ip: literal_proxy_ip(&row.proxy),
-                        order_id: None,
+        rows.into_iter()
+            .filter(|row| row.fleet == fleet)
+            .map(|row| {
+                validated_account_email(&row.email)?;
+                let liveness = if row.status != "active" || !row.has_token {
+                    Liveness::Dead
+                } else {
+                    match row.auth_state.as_str() {
+                        "healthy" => Liveness::Live,
+                        "suspect" => Liveness::Degraded,
+                        "dead" => Liveness::Dead,
+                        _ => Liveness::Unknown,
                     }
+                };
+                let renewable_eligible = matches!(liveness, Liveness::Live | Liveness::Degraded);
+                Ok(SubscriptionProjection {
+                    provider: "claude",
+                    binding_provider: "claude",
+                    local_id: opaque_claude_local_id(&row.email),
+                    account_email: row.email,
+                    canonical_plan: canonical_plan(&row.plan),
+                    issued_at: row.added_ts.max(1),
+                    expires_at: row.added_ts.max(1).saturating_add(30 * 86_400),
+                    liveness,
+                    renewable_eligible,
+                    canonical_ip: literal_proxy_ip(&row.proxy),
+                    order_id: None,
                 })
-                .collect::<Vec<_>>(),
-        )
+            })
+            .collect::<Result<Vec<_>>>()
     })
     .await
     {
@@ -727,14 +848,45 @@ async fn load_gpt_projection(runtime: Arc<Runtime>) -> SubscriptionSource {
     let Some(config) = runtime.codex.clone() else {
         return SubscriptionSource::unavailable();
     };
-    load_roster_projection(move || config.lifecycle_profiles(), "gpt", false).await
+    let Ok(mut subscriptions) =
+        read_roster_projection(move || config.lifecycle_profiles(), "gpt", "codex", false).await
+    else {
+        return SubscriptionSource::unavailable();
+    };
+    let response =
+        fetch_runtime::<CodexRuntimeResponse>(&runtime, &runtime.codex_runtime_url).await;
+    match response.and_then(|response| join_codex_runtime(&mut subscriptions, response)) {
+        Ok(()) => SubscriptionSource {
+            subscriptions,
+            source_ok: true,
+        },
+        Err(_) => SubscriptionSource::unavailable(),
+    }
 }
 
 async fn load_gemini_projection(runtime: Arc<Runtime>) -> SubscriptionSource {
     let Some(config) = runtime.gemini.clone() else {
         return SubscriptionSource::unavailable();
     };
-    load_roster_projection(move || config.lifecycle_profiles(), "gemini", true).await
+    let Ok(mut subscriptions) = read_roster_projection(
+        move || config.lifecycle_profiles(),
+        "gemini",
+        "gemini",
+        true,
+    )
+    .await
+    else {
+        return SubscriptionSource::unavailable();
+    };
+    let response =
+        fetch_runtime::<GeminiRuntimeResponse>(&runtime, &runtime.gemini_runtime_url).await;
+    match response.and_then(|response| join_gemini_runtime(&mut subscriptions, response)) {
+        Ok(()) => SubscriptionSource {
+            subscriptions,
+            source_ok: true,
+        },
+        Err(_) => SubscriptionSource::unavailable(),
+    }
 }
 
 async fn load_binding_projection(runtime: Arc<Runtime>, binding: &ProxyBinding) -> LocalProjection {
@@ -744,59 +896,194 @@ async fn load_binding_projection(runtime: Arc<Runtime>, binding: &ProxyBinding) 
     }
     match binding.provider.as_str() {
         "claude" => load_claude_projection(runtime).await.local_projection(),
-        "gpt" => load_gpt_projection(runtime).await.local_projection(),
+        "codex" => load_gpt_projection(runtime).await.local_projection(),
         "gemini" => load_gemini_projection(runtime).await.local_projection(),
         _ => LocalProjection::unavailable(),
     }
 }
 
-async fn load_roster_projection<F, T>(
+async fn read_roster_projection<F, T>(
     read: F,
     provider: &'static str,
+    binding_provider: &'static str,
     gemini_calendar_expiry: bool,
-) -> SubscriptionSource
+) -> Result<Vec<SubscriptionProjection>>
 where
     F: FnOnce() -> Result<Vec<T>> + Send + 'static,
     T: RosterProjection + Send + 'static,
 {
-    match tokio::task::spawn_blocking(move || {
-        Ok::<_, anyhow::Error>(
-            read()?
-                .into_iter()
-                .map(|profile| {
-                    let issued_at = profile.issued_at().max(1);
-                    let plan = canonical_plan(profile.plan());
-                    let expires_at = if gemini_calendar_expiry && plan == "google_ai_pro" {
-                        add_calendar_months_utc(issued_at, 18).unwrap_or(issued_at)
-                    } else {
-                        issued_at.saturating_add(30 * 86_400)
-                    };
-                    SubscriptionProjection {
-                        provider,
-                        local_id: profile.profile_id().to_string(),
-                        canonical_plan: plan,
-                        issued_at,
-                        expires_at,
-                        liveness: Liveness::Live,
-                        canonical_ip: profile.canonical_ip(),
-                        order_id: (profile.order_id() > 0).then_some(profile.order_id()),
-                    }
+    tokio::task::spawn_blocking(move || {
+        read()?
+            .into_iter()
+            .map(|profile| {
+                let issued_at = profile.issued_at().max(1);
+                let plan = canonical_plan(profile.plan());
+                let account_email = validated_account_email(profile.account_email())?.to_string();
+                let expires_at = if gemini_calendar_expiry && plan == "google_ai_pro" {
+                    add_calendar_months_utc(issued_at, 18).unwrap_or(issued_at)
+                } else {
+                    issued_at.saturating_add(30 * 86_400)
+                };
+                Ok(SubscriptionProjection {
+                    provider,
+                    binding_provider,
+                    local_id: profile.profile_id().to_string(),
+                    account_email,
+                    canonical_plan: plan,
+                    issued_at,
+                    expires_at,
+                    liveness: Liveness::Unknown,
+                    renewable_eligible: false,
+                    canonical_ip: profile.canonical_ip(),
+                    order_id: (profile.order_id() > 0).then_some(profile.order_id()),
                 })
-                .collect::<Vec<_>>(),
-        )
+            })
+            .collect()
     })
     .await
-    {
-        Ok(Ok(subscriptions)) => SubscriptionSource {
-            subscriptions,
-            source_ok: true,
-        },
-        Ok(Err(_)) | Err(_) => SubscriptionSource::unavailable(),
+    .map_err(|_| anyhow!("proxy admin roster task failed"))?
+}
+
+#[derive(Deserialize)]
+struct CodexRuntimeResponse {
+    homes: Vec<CodexRuntimeHome>,
+}
+
+#[derive(Deserialize)]
+struct CodexRuntimeHome {
+    id: String,
+    account_state: String,
+}
+
+#[derive(Deserialize)]
+struct GeminiRuntimeResponse {
+    profiles: Vec<GeminiRuntimeProfile>,
+}
+
+#[derive(Deserialize)]
+struct GeminiRuntimeProfile {
+    id: String,
+    authenticated: bool,
+    disabled: bool,
+}
+
+async fn fetch_runtime<T: serde::de::DeserializeOwned>(
+    runtime: &Runtime,
+    url: &reqwest::Url,
+) -> Result<T> {
+    let response = runtime
+        .runtime_client
+        .get(url.clone())
+        .header("x-api-key", runtime.runtime_control_key.0.as_str())
+        .send()
+        .await
+        .map_err(|_| anyhow!("proxy admin runtime request failed"))?;
+    if !response.status().is_success() {
+        bail!("proxy admin runtime returned a non-success status");
     }
+    if response
+        .content_length()
+        .is_some_and(|length| length > RUNTIME_RESPONSE_LIMIT as u64)
+    {
+        bail!("proxy admin runtime response exceeds the safety bound");
+    }
+    let mut bytes = Vec::new();
+    let mut response = response;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| anyhow!("proxy admin runtime response read failed"))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > RUNTIME_RESPONSE_LIMIT {
+            bail!("proxy admin runtime response exceeds the safety bound");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| anyhow!("proxy admin runtime response is malformed"))
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeStatus {
+    liveness: Liveness,
+    renewable_eligible: bool,
+}
+
+fn join_codex_runtime(
+    subscriptions: &mut [SubscriptionProjection],
+    response: CodexRuntimeResponse,
+) -> Result<()> {
+    let mut states = HashMap::new();
+    for home in response.homes {
+        if home.id.is_empty() || home.account_state.is_empty() || states.contains_key(&home.id) {
+            bail!("Codex runtime response is malformed");
+        }
+        let state = match home.account_state.as_str() {
+            "healthy" => RuntimeStatus {
+                liveness: Liveness::Live,
+                renewable_eligible: true,
+            },
+            "suspect" => RuntimeStatus {
+                liveness: Liveness::Degraded,
+                renewable_eligible: true,
+            },
+            "dead" => RuntimeStatus {
+                liveness: Liveness::Dead,
+                renewable_eligible: false,
+            },
+            _ => bail!("Codex runtime response is malformed"),
+        };
+        states.insert(home.id, state);
+    }
+    apply_runtime_states(subscriptions, states)
+}
+
+fn join_gemini_runtime(
+    subscriptions: &mut [SubscriptionProjection],
+    response: GeminiRuntimeResponse,
+) -> Result<()> {
+    let mut states = HashMap::new();
+    for profile in response.profiles {
+        if profile.id.is_empty() || states.contains_key(&profile.id) {
+            bail!("Gemini runtime response is malformed");
+        }
+        let state = if !profile.authenticated {
+            RuntimeStatus {
+                liveness: Liveness::Dead,
+                renewable_eligible: false,
+            }
+        } else if profile.disabled {
+            RuntimeStatus {
+                liveness: Liveness::Degraded,
+                renewable_eligible: false,
+            }
+        } else {
+            RuntimeStatus {
+                liveness: Liveness::Live,
+                renewable_eligible: true,
+            }
+        };
+        states.insert(profile.id, state);
+    }
+    apply_runtime_states(subscriptions, states)
+}
+
+fn apply_runtime_states(
+    subscriptions: &mut [SubscriptionProjection],
+    mut states: HashMap<String, RuntimeStatus>,
+) -> Result<()> {
+    for subscription in subscriptions {
+        let state = states
+            .remove(&subscription.local_id)
+            .ok_or_else(|| anyhow!("runtime response is missing a roster profile"))?;
+        subscription.liveness = state.liveness;
+        subscription.renewable_eligible = state.renewable_eligible;
+    }
+    Ok(())
 }
 
 trait RosterProjection {
     fn profile_id(&self) -> &str;
+    fn account_email(&self) -> &str;
     fn order_id(&self) -> i64;
     fn issued_at(&self) -> i64;
     fn plan(&self) -> &str;
@@ -806,6 +1093,9 @@ trait RosterProjection {
 impl RosterProjection for codex_login::LifecycleProfile {
     fn profile_id(&self) -> &str {
         &self.profile_id
+    }
+    fn account_email(&self) -> &str {
+        &self.account_email
     }
     fn order_id(&self) -> i64 {
         self.order_id
@@ -824,6 +1114,9 @@ impl RosterProjection for codex_login::LifecycleProfile {
 impl RosterProjection for gemini_oauth::LifecycleProfile {
     fn profile_id(&self) -> &str {
         &self.profile_id
+    }
+    fn account_email(&self) -> &str {
+        &self.account_email
     }
     fn order_id(&self) -> i64 {
         self.order_id
@@ -954,64 +1247,75 @@ async fn renew_handler(
             )
         }
     };
-    let (request, replay) = if let Some(request) = existing {
-        if request.inventory_ids != canonical_ids {
-            return error_response(
-                StatusCode::CONFLICT,
-                "idempotency_conflict",
-                "idempotency key belongs to another inventory selection",
-            );
-        }
-        if request.state != RenewalRequestState::Pending {
-            return replay_response(&runtime.store, request, true);
-        }
-        (request, true)
-    } else {
-        let mut selections = Vec::with_capacity(canonical_ids.len());
-        for inventory_id in &canonical_ids {
-            match runtime
-                .store
-                .get_proxy_binding_by_inventory_id(inventory_id)
-            {
-                Ok(Some(binding)) => selections.push((inventory_id.clone(), binding.order_id)),
-                Ok(None) | Err(_) => {
-                    return error_response(
-                        StatusCode::BAD_REQUEST,
-                        "unknown_inventory_id",
-                        "inventory selection contains an unknown id",
-                    )
-                }
-            }
-        }
-        let request = match runtime.store.create_or_get_renewal_request(
-            &body.idempotency_key,
-            &selections,
-            actor,
-        ) {
-            Ok(request) => request,
-            Err(error)
-                if error
-                    .downcast_ref::<ProxyLifecycleConflict>()
-                    .is_some_and(|conflict| {
-                        *conflict == ProxyLifecycleConflict::IdempotencyKeyReused
-                    }) =>
-            {
+    let (request, replay) =
+        if let Some(request) = existing {
+            if request.inventory_ids != canonical_ids {
                 return error_response(
                     StatusCode::CONFLICT,
                     "idempotency_conflict",
                     "idempotency key belongs to another inventory selection",
-                )
+                );
             }
-            Err(_) => {
-                return error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "renewal_store_unavailable",
-                    "renewal request could not be stored",
-                )
+            if request.state != RenewalRequestState::Pending {
+                return replay_response(&runtime.store, request, true);
             }
+            (request, true)
+        } else {
+            let mut selections = Vec::with_capacity(canonical_ids.len());
+            for inventory_id in &canonical_ids {
+                match runtime
+                    .store
+                    .get_proxy_binding_by_inventory_id(inventory_id)
+                {
+                    Ok(Some(binding)) => selections.push((inventory_id.clone(), binding.order_id)),
+                    Ok(None) | Err(_) => {
+                        return error_response(
+                            StatusCode::BAD_REQUEST,
+                            "unknown_inventory_id",
+                            "inventory selection contains an unknown id",
+                        )
+                    }
+                }
+            }
+            let request =
+                match runtime.store.create_or_get_renewal_request(
+                    &body.idempotency_key,
+                    &selections,
+                    actor,
+                ) {
+                    Ok(request) => request,
+                    Err(error)
+                        if error.downcast_ref::<ProxyLifecycleConflict>().is_some_and(
+                            |conflict| *conflict == ProxyLifecycleConflict::IdempotencyKeyReused,
+                        ) =>
+                    {
+                        return error_response(
+                            StatusCode::CONFLICT,
+                            "idempotency_conflict",
+                            "idempotency key belongs to another inventory selection",
+                        )
+                    }
+                    Err(error)
+                        if error.downcast_ref::<ProxyLifecycleConflict>().is_some_and(
+                            |conflict| *conflict == ProxyLifecycleConflict::RenewalSelectionBusy,
+                        ) =>
+                    {
+                        return error_response(
+                            StatusCode::CONFLICT,
+                            "renewal_selection_busy",
+                            "inventory selection overlaps a queued or active renewal request",
+                        )
+                    }
+                    Err(_) => {
+                        return error_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "renewal_store_unavailable",
+                            "renewal request could not be stored",
+                        )
+                    }
+                };
+            (request, false)
         };
-        (request, false)
-    };
     let claimed = match runtime.store.claim_renewal_request(request.id) {
         Ok(Some(claimed)) => claimed,
         Ok(None) => {
@@ -1022,6 +1326,19 @@ async fn renew_handler(
                     uncertain_response(&request, true, "request_in_progress"),
                 ),
             }
+        }
+        Err(error)
+            if error
+                .downcast_ref::<ProxyLifecycleConflict>()
+                .is_some_and(|conflict| {
+                    *conflict == ProxyLifecycleConflict::RenewalSelectionBusy
+                }) =>
+        {
+            return error_response(
+                StatusCode::CONFLICT,
+                "renewal_selection_busy",
+                "inventory selection overlaps a queued or active renewal request",
+            )
         }
         Err(_) => {
             return json_response(
@@ -1163,6 +1480,9 @@ fn result_from_event(inventory_id: String, exact: &ExactRenewalEvent) -> RenewRe
             (RenewItemStatus::Failed, Some("provider_order_not_found"))
         }
         RenewalEventOutcome::Rejected => (RenewItemStatus::Failed, Some("binding_mismatch")),
+        RenewalEventOutcome::LocalProfileInactive => {
+            (RenewItemStatus::Failed, Some("local_profile_inactive"))
+        }
         RenewalEventOutcome::ProviderUnavailable => {
             (RenewItemStatus::Failed, Some("source_unavailable"))
         }
@@ -1260,6 +1580,7 @@ async fn process_request(runtime: &Arc<Runtime>, request: RenewalRequest) {
             if let Err(code) = renewable_guard(&binding, &provider, &local) {
                 outcome = Some(match code {
                     "source_unavailable" => RenewalEventOutcome::ProviderUnavailable,
+                    "local_profile_inactive" => RenewalEventOutcome::LocalProfileInactive,
                     "provider_order_inactive" | "provider_order_invalid" => {
                         RenewalEventOutcome::Unchanged
                     }
@@ -1505,16 +1826,19 @@ fn unix_now() -> i64 {
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+    use axum::routing::get;
     use serde_json::{json, Value};
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const UUID_A: &str = "123e4567-e89b-12d3-a456-426614174000";
     const UUID_B: &str = "123e4567-e89b-42d3-b456-426614174001";
+    const UUID_C: &str = "123e4567-e89b-42d3-b456-426614174002";
 
     fn runtime(iproyal: Option<Arc<Iproyal>>) -> Arc<Runtime> {
         Arc::new(Runtime {
-            control_key: ControlKey::new("test-control-key".to_string()).unwrap(),
+            admin_key: ControlKey::new("test-admin-key".to_string()).unwrap(),
+            runtime_control_key: ControlKey::new("test-runtime-control-key".to_string()).unwrap(),
             store: Arc::new(Store::open(":memory:").unwrap()),
             iproyal,
             authority: AuthorityConfig::Sqlite {
@@ -1523,15 +1847,60 @@ mod tests {
             fleet: "prod".to_string(),
             codex: None,
             gemini: None,
+            runtime_client: reqwest::Client::builder().no_proxy().build().unwrap(),
+            codex_runtime_url: reqwest::Url::parse(DEFAULT_CODEX_RUNTIME_URL).unwrap(),
+            gemini_runtime_url: reqwest::Url::parse(DEFAULT_GEMINI_RUNTIME_URL).unwrap(),
             provider_cache: RwLock::new(ProviderSnapshot::unavailable()),
             test_local_projection: std::sync::RwLock::new(None),
         })
     }
 
+    fn local_projection(states: &[(&str, Liveness, bool)]) -> LocalProjection {
+        exact_local_projection(
+            &states
+                .iter()
+                .map(|(id, liveness, renewable_eligible)| {
+                    (
+                        *id,
+                        *liveness,
+                        *renewable_eligible,
+                        Some("203.0.113.9"),
+                        Some(42),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn exact_local_projection(
+        states: &[(&str, Liveness, bool, Option<&str>, Option<i64>)],
+    ) -> LocalProjection {
+        LocalProjection {
+            states: states
+                .iter()
+                .map(
+                    |(id, liveness, renewable_eligible, canonical_ip, order_id)| {
+                        (
+                            (*id).to_string(),
+                            LocalState {
+                                liveness: *liveness,
+                                renewable_eligible: *renewable_eligible,
+                                expires_at: i64::MAX,
+                                canonical_ip: canonical_ip.map(|ip| ip.parse().unwrap()),
+                                order_id: *order_id,
+                            },
+                        )
+                    },
+                )
+                .collect(),
+            source_ok: true,
+        }
+    }
+
     fn headers(key: Option<&str>, actor: Option<&str>) -> HeaderMap {
         let mut headers = HeaderMap::new();
         if let Some(key) = key {
-            headers.insert("x-api-key", key.parse().unwrap());
+            headers.insert("x-proxy-admin-key", key.parse().unwrap());
         }
         if let Some(actor) = actor {
             headers.insert("x-admin-actor", actor.parse().unwrap());
@@ -1546,6 +1915,40 @@ mod tests {
     async fn response_json(response: Response) -> Value {
         let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn spawn_runtime_server(
+        path: &'static str,
+        body: Value,
+        status: StatusCode,
+    ) -> (reqwest::Url, tokio::task::JoinHandle<()>) {
+        async fn respond(
+            State((expected_path, body, status)): State<(&'static str, Value, StatusCode)>,
+            headers: HeaderMap,
+            request: axum::extract::Request,
+        ) -> Response {
+            assert_eq!(request.uri().path(), expected_path);
+            assert_eq!(
+                headers
+                    .get("x-api-key")
+                    .and_then(|value| value.to_str().ok()),
+                Some("test-runtime-control-key")
+            );
+            (status, Json(body)).into_response()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route(path, get(respond))
+            .with_state((path, body, status));
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (
+            reqwest::Url::parse(&format!("http://{address}{path}")).unwrap(),
+            task,
+        )
     }
 
     fn keys(value: &Value) -> BTreeSet<String> {
@@ -1594,7 +1997,9 @@ mod tests {
     ) -> SubscriptionProjection {
         SubscriptionProjection {
             provider,
+            binding_provider: if provider == "gpt" { "codex" } else { provider },
             local_id: local_id.to_string(),
+            account_email: "test@example.com".to_string(),
             canonical_plan: if provider == "gemini" {
                 "google_ai_pro".to_string()
             } else {
@@ -1603,6 +2008,7 @@ mod tests {
             issued_at: 1_700_000_000,
             expires_at: 4_102_444_800,
             liveness: Liveness::Live,
+            renewable_eligible: true,
             canonical_ip: Some(ip.parse().unwrap()),
             order_id,
         }
@@ -1630,9 +2036,17 @@ mod tests {
     }
 
     #[test]
-    fn exact_inventory_and_renewal_key_sets() {
+    fn codex_binding_projects_public_gpt_row_and_passes_renewal_guard() {
         let runtime = runtime(None);
-        let binding = binding(&runtime, "gpt", "profile-a", 123456);
+        let binding = binding(&runtime, "codex", "profile-a", 123456);
+        let local = exact_local_projection(&[(
+            "profile-a",
+            Liveness::Live,
+            true,
+            Some("203.0.113.9"),
+            Some(123456),
+        )]);
+        assert!(renewable_guard(&binding, &complete_provider(123456), &local).is_ok());
         let inventory = inventory_response(
             complete_provider(123456),
             vec![binding.clone()],
@@ -1667,6 +2081,7 @@ mod tests {
             keys(&value["items"][0]),
             [
                 "inventory_id",
+                "account_email",
                 "proxy_hint",
                 "order_hint",
                 "provider",
@@ -1683,6 +2098,7 @@ mod tests {
             .collect()
         );
         assert_eq!(value["items"][0]["provider"], "gpt");
+        assert_eq!(value["items"][0]["account_email"], "test@example.com");
         assert_eq!(value["items"][0]["subscription_plan"], "chatgpt_plus");
         assert_eq!(
             value["items"][0]["subscription_expires_at"],
@@ -1694,6 +2110,7 @@ mod tests {
             .starts_with("proxy-"));
         assert!(!value.to_string().contains("203.0.113.9"));
         assert_ne!(value["items"][0]["order_hint"], "123456");
+        assert_no_forbidden_keys(&value);
 
         let request = RenewalRequest {
             id: 1,
@@ -1823,20 +2240,24 @@ mod tests {
     fn liveness_and_binding_projection_is_fail_closed() {
         let runtime = runtime(None);
         let bound = binding(&runtime, "claude", "claude-local", 42);
-        let live = LocalProjection {
-            liveness: [("claude-local".to_string(), Liveness::Live)]
-                .into_iter()
-                .collect(),
-            source_ok: true,
-        };
+        let live = exact_local_projection(&[(
+            "claude-local",
+            Liveness::Live,
+            true,
+            Some("203.0.113.9"),
+            None,
+        )]);
         assert!(renewable_guard(&bound, &complete_provider(42), &live).is_ok());
 
-        let absent = LocalProjection {
-            liveness: HashMap::new(),
-            source_ok: true,
-        };
+        let absent = local_projection(&[]);
         assert_eq!(
             renewable_guard(&bound, &complete_provider(42), &absent),
+            Err("binding_mismatch")
+        );
+        let missing_ip =
+            exact_local_projection(&[("claude-local", Liveness::Live, true, None, None)]);
+        assert_eq!(
+            renewable_guard(&bound, &complete_provider(42), &missing_ip),
             Err("binding_mismatch")
         );
 
@@ -1847,14 +2268,15 @@ mod tests {
             Err("source_unavailable")
         );
 
-        let unknown_claude = LocalProjection {
-            liveness: [("claude-local".to_string(), Liveness::Unknown)]
-                .into_iter()
-                .collect(),
-            source_ok: true,
-        };
+        let unknown_claude = local_projection(&[("claude-local", Liveness::Unknown, false)]);
         assert_eq!(
             renewable_guard(&bound, &complete_provider(42), &unknown_claude),
+            Err("local_profile_inactive")
+        );
+        let mut expired = live.clone();
+        expired.states.get_mut("claude-local").unwrap().expires_at = unix_now();
+        assert_eq!(
+            renewable_guard(&bound, &complete_provider(42), &expired),
             Err("local_profile_inactive")
         );
 
@@ -1867,7 +2289,7 @@ mod tests {
     }
 
     #[test]
-    fn inventory_union_reconciles_unique_ip_and_keeps_external_and_unmatched() {
+    fn inventory_reconciles_unique_ip_but_omits_external_and_unmatched() {
         let runtime = runtime(None);
         let provider = complete_provider(42);
         let unique = subscription("gpt", "managed", None, "203.0.113.9");
@@ -1879,21 +2301,18 @@ mod tests {
         );
         let bindings = runtime.store.list_proxy_bindings().unwrap();
         assert_eq!(bindings.len(), 1);
-        assert_eq!(bindings[0].provider, "gpt");
+        assert_eq!(bindings[0].provider, "codex");
         assert_eq!(bindings[0].order_id, 42);
         assert_eq!(bindings[0].allocation_ip, unique.canonical_ip);
 
         let response = inventory_response(provider, bindings, vec![unique, external]);
-        assert_eq!(response.items.len(), 2);
+        assert_eq!(response.items.len(), 1);
         assert_eq!(response.items[0].provider, "gpt");
         assert_eq!(response.items[0].binding_status, BindingStatus::Bound);
-        assert_eq!(response.items[1].provider, "gemini");
-        assert_eq!(response.items[1].binding_status, BindingStatus::Unbound);
-        assert!(!response.items[1].renewable);
     }
 
     #[test]
-    fn ambiguous_duplicate_ip_is_not_bound_and_allocations_are_unassigned() {
+    fn inventory_omits_ambiguous_unbound_and_mismatched_rows() {
         let runtime = runtime(None);
         let mut provider = complete_provider(42);
         provider.orders.insert(
@@ -1909,11 +2328,132 @@ mod tests {
         let ambiguous = subscription("gpt", "ambiguous", None, "203.0.113.9");
         reconcile_subscriptions(&runtime.store, &provider, &[ambiguous.clone()]);
         assert!(runtime.store.list_proxy_bindings().unwrap().is_empty());
-        let response = inventory_response(provider, Vec::new(), vec![ambiguous]);
-        assert_eq!(response.items.len(), 3);
-        assert_eq!(response.items[0].binding_status, BindingStatus::Unbound);
-        assert_eq!(response.items[1].provider, "unassigned");
-        assert_eq!(response.items[2].provider, "unassigned");
+
+        let mismatch = subscription("gpt", "mismatch", Some(43), "203.0.113.9");
+        let mismatch_binding = binding(&runtime, "codex", "mismatch", 42);
+        let response =
+            inventory_response(provider, vec![mismatch_binding], vec![ambiguous, mismatch]);
+        assert!(response.items.is_empty());
+    }
+
+    #[test]
+    fn inventory_omits_dead_and_retains_exact_bound_degraded_rows() {
+        let runtime = runtime(None);
+        let mut provider = complete_provider(42);
+        provider
+            .orders
+            .get_mut(&42)
+            .unwrap()
+            .ips
+            .push("203.0.113.10".into());
+        let dead_binding = binding(&runtime, "codex", "dead", 42);
+        let degraded_binding = binding_ip(&runtime, "gemini", "degraded", 42, "203.0.113.10");
+        let mut dead = subscription("gpt", "dead", Some(42), "203.0.113.9");
+        dead.liveness = Liveness::Dead;
+        dead.renewable_eligible = false;
+        let mut degraded = subscription("gemini", "degraded", Some(42), "203.0.113.10");
+        degraded.liveness = Liveness::Degraded;
+        degraded.renewable_eligible = false;
+
+        let response = inventory_response(
+            provider,
+            vec![dead_binding, degraded_binding],
+            vec![dead, degraded],
+        );
+        assert_eq!(response.items.len(), 1);
+        assert_eq!(response.items[0].liveness, Liveness::Degraded);
+        assert_eq!(response.items[0].binding_status, BindingStatus::Bound);
+        assert!(!response.items[0].renewable);
+        assert_eq!(
+            response.items[0].renew_block_code,
+            Some("local_profile_inactive")
+        );
+    }
+
+    #[test]
+    fn inventory_retains_exact_bound_claude_unknown_but_provider_unavailable_has_no_rows() {
+        let runtime = runtime(None);
+        let binding = binding(&runtime, "claude", "unknown", 42);
+        let mut unknown = subscription("claude", "unknown", Some(42), "203.0.113.9");
+        unknown.liveness = Liveness::Unknown;
+        unknown.renewable_eligible = false;
+
+        let available = inventory_response(
+            complete_provider(42),
+            vec![binding.clone()],
+            vec![unknown.clone()],
+        );
+        assert_eq!(available.items.len(), 1);
+        assert_eq!(available.items[0].liveness, Liveness::Unknown);
+        assert!(!available.items[0].renewable);
+
+        let unavailable = inventory_response(
+            ProviderSnapshot::unavailable(),
+            vec![binding],
+            vec![unknown],
+        );
+        assert!(unavailable.items.is_empty());
+    }
+
+    #[test]
+    fn account_email_validation_accepts_only_the_exact_ascii_subset() {
+        let max_local = format!("{}@example.com", "a".repeat(64));
+        let max_label = format!("a@{}.example", "b".repeat(63));
+        let max_total = format!(
+            "{}@{}.{}.{}",
+            "a".repeat(64),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(61)
+        );
+        for valid in [
+            "owner@example.com",
+            "OPS_100%+tag-name@sub-domain.example",
+            "!#$%&'*+/=?^_`{|}~-@example.com",
+            max_local.as_str(),
+            max_label.as_str(),
+            max_total.as_str(),
+        ] {
+            assert_eq!(validated_account_email(valid).unwrap(), valid);
+        }
+
+        let long_local = format!("{}@example.com", "a".repeat(65));
+        let long_label = format!("a@{}.example", "b".repeat(64));
+        let long_total = format!(
+            "{}@{}.{}.{}",
+            "a".repeat(64),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(62)
+        );
+        for invalid in [
+            "",
+            "owner",
+            "@example.com",
+            "owner@",
+            "owner@@example.com",
+            ".owner@example.com",
+            "owner.@example.com",
+            "own..er@example.com",
+            "owner name@example.com",
+            "owner,tag@example.com",
+            "owner@example..com",
+            "owner@-example.com",
+            "owner@example-.com",
+            "owner@example_com",
+            "owner@éxample.com",
+            "öwner@example.com",
+            " owner@example.com",
+            "owner@example.com\n",
+            long_local.as_str(),
+            long_label.as_str(),
+            long_total.as_str(),
+        ] {
+            assert!(
+                validated_account_email(invalid).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
     }
 
     #[test]
@@ -1927,6 +2467,260 @@ mod tests {
             add_calendar_months_utc(january_31, 18),
             parse_expiry("2026-07-31T12:00:00Z")
         );
+    }
+
+    #[test]
+    fn parse_runtime_url_accepts_only_exact_literal_loopback_http() {
+        assert_eq!(
+            parse_runtime_url(None, DEFAULT_CODEX_RUNTIME_URL, "/codex-subs")
+                .unwrap()
+                .as_str(),
+            DEFAULT_CODEX_RUNTIME_URL
+        );
+        assert!(parse_runtime_url(
+            Some("http://[::1]:8794/gemini-subs"),
+            DEFAULT_GEMINI_RUNTIME_URL,
+            "/gemini-subs"
+        )
+        .is_ok());
+        assert!(parse_runtime_url(
+            Some("http://127.0.0.1/codex-subs"),
+            DEFAULT_CODEX_RUNTIME_URL,
+            "/codex-subs"
+        )
+        .is_ok());
+        for invalid in [
+            "codex-subs",
+            "https://127.0.0.1:8792/codex-subs",
+            "http://localhost:8792/codex-subs",
+            "http://192.0.2.1:8792/codex-subs",
+            "http://user@127.0.0.1:8792/codex-subs",
+            "http://127.0.0.1:8792/codex-subs/",
+            "http://127.0.0.1:8792/codex-subs?full=1",
+            "http://127.0.0.1:8792/codex-subs#fragment",
+            "http://127.0.0.1:0/codex-subs",
+        ] {
+            assert!(
+                parse_runtime_url(Some(invalid), DEFAULT_CODEX_RUNTIME_URL, "/codex-subs").is_err(),
+                "accepted {invalid}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_runtime_sends_key_and_joins_codex_by_opaque_id() {
+        let (url, server) = spawn_runtime_server(
+            "/codex-subs",
+            json!({"homes": [{"id": "codex-a", "account_state": "suspect"}]}),
+            StatusCode::OK,
+        )
+        .await;
+        let runtime = runtime(None);
+        let response = fetch_runtime::<CodexRuntimeResponse>(&runtime, &url)
+            .await
+            .unwrap();
+        let mut subscriptions = vec![subscription("gpt", "codex-a", None, "203.0.113.9")];
+        join_codex_runtime(&mut subscriptions, response).unwrap();
+        assert_eq!(subscriptions[0].liveness, Liveness::Degraded);
+        assert!(subscriptions[0].renewable_eligible);
+        assert_eq!(
+            subscriptions[0].canonical_ip,
+            Some("203.0.113.9".parse().unwrap())
+        );
+        assert_eq!(subscriptions[0].order_id, None);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn fetch_runtime_joins_gemini_and_marks_unauthenticated_dead() {
+        let (url, server) = spawn_runtime_server(
+            "/gemini-subs",
+            json!({
+                "profiles": [{
+                    "id": "gemini-a",
+                    "authenticated": false,
+                    "disabled": false
+                }]
+            }),
+            StatusCode::OK,
+        )
+        .await;
+        let runtime = runtime(None);
+        let response = fetch_runtime::<GeminiRuntimeResponse>(&runtime, &url)
+            .await
+            .unwrap();
+        let mut subscriptions = vec![subscription("gemini", "gemini-a", None, "203.0.113.9")];
+        join_gemini_runtime(&mut subscriptions, response).unwrap();
+        assert_eq!(subscriptions[0].liveness, Liveness::Dead);
+        assert!(!subscriptions[0].renewable_eligible);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn fetch_runtime_duplicate_and_missing_ids_fail_join() {
+        let runtime = runtime(None);
+        let (duplicate_url, duplicate_server) = spawn_runtime_server(
+            "/codex-subs",
+            json!({
+                "homes": [
+                    {"id": "codex-a", "account_state": "healthy"},
+                    {"id": "codex-a", "account_state": "dead"}
+                ]
+            }),
+            StatusCode::OK,
+        )
+        .await;
+        let duplicate = fetch_runtime::<CodexRuntimeResponse>(&runtime, &duplicate_url)
+            .await
+            .unwrap();
+        let mut codex = vec![subscription("gpt", "codex-a", None, "203.0.113.9")];
+        assert!(join_codex_runtime(&mut codex, duplicate).is_err());
+        duplicate_server.abort();
+
+        let (missing_url, missing_server) =
+            spawn_runtime_server("/gemini-subs", json!({"profiles": []}), StatusCode::OK).await;
+        let missing = fetch_runtime::<GeminiRuntimeResponse>(&runtime, &missing_url)
+            .await
+            .unwrap();
+        let mut gemini = vec![subscription("gemini", "gemini-a", None, "203.0.113.9")];
+        assert!(join_gemini_runtime(&mut gemini, missing).is_err());
+        missing_server.abort();
+    }
+
+    #[tokio::test]
+    async fn fetch_runtime_unavailable_endpoint_returns_error() {
+        let (url, server) = spawn_runtime_server(
+            "/codex-subs",
+            json!({"error": "unavailable"}),
+            StatusCode::SERVICE_UNAVAILABLE,
+        )
+        .await;
+        let runtime = runtime(None);
+        assert!(fetch_runtime::<CodexRuntimeResponse>(&runtime, &url)
+            .await
+            .is_err());
+        server.abort();
+    }
+
+    #[test]
+    fn runtime_payload_join_is_exact_and_fail_closed() {
+        let mut codex = vec![subscription("gpt", "codex-a", None, "203.0.113.9")];
+        join_codex_runtime(
+            &mut codex,
+            CodexRuntimeResponse {
+                homes: vec![
+                    CodexRuntimeHome {
+                        id: "codex-a".into(),
+                        account_state: "suspect".into(),
+                    },
+                    CodexRuntimeHome {
+                        id: "extra".into(),
+                        account_state: "healthy".into(),
+                    },
+                ],
+            },
+        )
+        .unwrap();
+        assert_eq!(codex[0].liveness, Liveness::Degraded);
+        assert!(codex[0].renewable_eligible);
+
+        let duplicate = CodexRuntimeResponse {
+            homes: vec![
+                CodexRuntimeHome {
+                    id: "codex-a".into(),
+                    account_state: "healthy".into(),
+                },
+                CodexRuntimeHome {
+                    id: "codex-a".into(),
+                    account_state: "dead".into(),
+                },
+            ],
+        };
+        assert!(join_codex_runtime(&mut codex, duplicate).is_err());
+        for account_state in ["", "unknown", "Healthy"] {
+            assert!(join_codex_runtime(
+                &mut codex,
+                CodexRuntimeResponse {
+                    homes: vec![CodexRuntimeHome {
+                        id: "codex-a".into(),
+                        account_state: account_state.into(),
+                    }],
+                },
+            )
+            .is_err());
+        }
+        assert!(
+            join_codex_runtime(&mut codex, CodexRuntimeResponse { homes: Vec::new() }).is_err()
+        );
+
+        let mut gemini = vec![subscription("gemini", "gemini-a", None, "203.0.113.9")];
+        join_gemini_runtime(
+            &mut gemini,
+            GeminiRuntimeResponse {
+                profiles: vec![GeminiRuntimeProfile {
+                    id: "gemini-a".into(),
+                    authenticated: true,
+                    disabled: true,
+                }],
+            },
+        )
+        .unwrap();
+        assert_eq!(gemini[0].liveness, Liveness::Degraded);
+        assert!(!gemini[0].renewable_eligible);
+
+        join_gemini_runtime(
+            &mut gemini,
+            GeminiRuntimeResponse {
+                profiles: vec![GeminiRuntimeProfile {
+                    id: "gemini-a".into(),
+                    authenticated: false,
+                    disabled: false,
+                }],
+            },
+        )
+        .unwrap();
+        assert_eq!(gemini[0].liveness, Liveness::Dead);
+        assert!(!gemini[0].renewable_eligible);
+
+        let duplicate = GeminiRuntimeResponse {
+            profiles: vec![
+                GeminiRuntimeProfile {
+                    id: "gemini-a".into(),
+                    authenticated: true,
+                    disabled: false,
+                },
+                GeminiRuntimeProfile {
+                    id: "gemini-a".into(),
+                    authenticated: false,
+                    disabled: false,
+                },
+            ],
+        };
+        assert!(join_gemini_runtime(&mut gemini, duplicate).is_err());
+        assert!(join_gemini_runtime(
+            &mut gemini,
+            GeminiRuntimeResponse {
+                profiles: Vec::new()
+            }
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn runtime_payload_requires_individual_fields_but_allows_top_level_extras() {
+        assert!(serde_json::from_value::<CodexRuntimeResponse>(json!({
+            "homes": [{"id": "a", "account_state": "healthy"}],
+            "sanitized_extra": true
+        }))
+        .is_ok());
+        assert!(serde_json::from_value::<CodexRuntimeResponse>(json!({
+            "homes": [{"id": "a"}]
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<GeminiRuntimeResponse>(json!({
+            "profiles": [{"id": "a", "authenticated": true}]
+        }))
+        .is_err());
     }
 
     #[test]
@@ -1949,6 +2743,30 @@ mod tests {
         assert_eq!(validated_actor(&headers(None, Some("bad actor"))), None);
     }
 
+    #[test]
+    fn service_rejects_reused_admin_and_runtime_keys() {
+        let error = Service::new(
+            "127.0.0.1:8806".parse().unwrap(),
+            ProxyAdminKey::parse(Zeroizing::new(b"a".repeat(64))).unwrap(),
+            "a".repeat(64),
+            Arc::new(Store::open(":memory:").unwrap()),
+            None,
+            AuthorityConfig::Postgres {
+                url: "postgresql://unused".into(),
+            },
+            "prod".into(),
+            None,
+            None,
+            reqwest::Url::parse(DEFAULT_CODEX_RUNTIME_URL).unwrap(),
+            reqwest::Url::parse(DEFAULT_GEMINI_RUNTIME_URL).unwrap(),
+        )
+        .err()
+        .expect("matching keys must fail");
+        assert!(error
+            .to_string()
+            .contains("must differ from the runtime control key"));
+    }
+
     #[tokio::test]
     async fn handlers_require_key_and_post_requires_actor() {
         let runtime = runtime(None);
@@ -1968,9 +2786,26 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            inventory_handler(
+                State(runtime.clone()),
+                headers(Some("test-runtime-control-key"), None),
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let mut legacy_header = HeaderMap::new();
+        legacy_header.insert("x-api-key", "test-admin-key".parse().unwrap());
+        assert_eq!(
+            inventory_handler(State(runtime.clone()), legacy_header)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
         let response = renew_handler(
             State(runtime),
-            headers(Some("test-control-key"), None),
+            headers(Some("test-admin-key"), None),
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec!["unknown".to_string()],
@@ -1983,11 +2818,8 @@ mod tests {
 
     #[tokio::test]
     async fn get_without_provider_has_exact_safe_shape() {
-        let response = inventory_handler(
-            State(runtime(None)),
-            headers(Some("test-control-key"), None),
-        )
-        .await;
+        let response =
+            inventory_handler(State(runtime(None)), headers(Some("test-admin-key"), None)).await;
         assert_eq!(response.status(), StatusCode::OK);
         let value = response_json(response).await;
         assert_eq!(value["schema_version"], 1);
@@ -2005,7 +2837,7 @@ mod tests {
         let runtime = runtime(None);
         let response = renew_handler(
             State(runtime.clone()),
-            headers(Some("test-control-key"), Some("admin")),
+            headers(Some("test-admin-key"), Some("admin")),
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec!["same".into(), "same".into()],
@@ -2019,7 +2851,7 @@ mod tests {
         );
         let response = renew_handler(
             State(runtime.clone()),
-            headers(Some("test-control-key"), Some("admin")),
+            headers(Some("test-admin-key"), Some("admin")),
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec!["unknown".into()],
@@ -2037,11 +2869,11 @@ mod tests {
     #[tokio::test]
     async fn same_selection_replays_and_different_selection_conflicts() {
         let runtime = runtime(None);
-        let first_binding = binding(&runtime, "gpt", "first", 11);
+        let first_binding = binding(&runtime, "codex", "first", 11);
         let second_binding = binding(&runtime, "gemini", "second", 12);
         let first = renew_handler(
             State(runtime.clone()),
-            headers(Some("test-control-key"), Some("admin")),
+            headers(Some("test-admin-key"), Some("admin")),
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![first_binding.inventory_id.clone()],
@@ -2055,7 +2887,7 @@ mod tests {
 
         let replay = renew_handler(
             State(runtime.clone()),
-            headers(Some("test-control-key"), Some("other-admin")),
+            headers(Some("test-admin-key"), Some("other-admin")),
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![first_binding.inventory_id],
@@ -2079,7 +2911,7 @@ mod tests {
 
         let conflict = renew_handler(
             State(runtime),
-            headers(Some("test-control-key"), Some("admin")),
+            headers(Some("test-admin-key"), Some("admin")),
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![second_binding.inventory_id],
@@ -2094,16 +2926,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn overlapping_queued_selection_is_409_without_insert_while_disjoint_can_proceed() {
+        let runtime = runtime(None);
+        let first = binding(&runtime, "codex", "first-active", 11);
+        let second = binding(&runtime, "gemini", "second-active", 12);
+        runtime
+            .store
+            .create_or_get_renewal_request(
+                UUID_A,
+                &[(first.inventory_id.clone(), first.order_id)],
+                "admin",
+            )
+            .unwrap();
+
+        let overlap = renew_handler(
+            State(runtime.clone()),
+            headers(Some("test-admin-key"), Some("admin")),
+            accepted_json(RenewBody {
+                idempotency_key: UUID_B.to_string(),
+                inventory_ids: vec![first.inventory_id],
+            }),
+        )
+        .await;
+        assert_eq!(overlap.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response_json(overlap).await["code"],
+            "renewal_selection_busy"
+        );
+        assert!(runtime
+            .store
+            .get_renewal_request_by_key(UUID_B)
+            .unwrap()
+            .is_none());
+
+        let disjoint = renew_handler(
+            State(runtime),
+            headers(Some("test-admin-key"), Some("admin")),
+            accepted_json(RenewBody {
+                idempotency_key: UUID_C.to_string(),
+                inventory_ids: vec![second.inventory_id],
+            }),
+        )
+        .await;
+        assert_eq!(disjoint.status(), StatusCode::OK);
+        assert_eq!(response_json(disjoint).await["status"], "failed");
+    }
+
+    #[tokio::test]
     async fn pending_replay_resumes_once_but_in_progress_does_not_spend() {
         let (client, extend_calls, server) = mock_iproyal().await;
         let runtime = runtime(Some(client));
-        let binding = binding(&runtime, "gpt", "pending", 42);
-        *runtime.test_local_projection.write().unwrap() = Some(LocalProjection {
-            liveness: [("pending".to_string(), Liveness::Live)]
-                .into_iter()
-                .collect(),
-            source_ok: true,
-        });
+        let binding = binding(&runtime, "codex", "pending", 42);
+        *runtime.test_local_projection.write().unwrap() =
+            Some(local_projection(&[("pending", Liveness::Live, true)]));
         let selections = vec![(binding.inventory_id.clone(), 42)];
         let pending = runtime
             .store
@@ -2111,7 +2986,7 @@ mod tests {
             .unwrap();
         let response = renew_handler(
             State(runtime.clone()),
-            headers(Some("test-control-key"), Some("admin")),
+            headers(Some("test-admin-key"), Some("admin")),
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: pending.inventory_ids,
@@ -2135,7 +3010,7 @@ mod tests {
             .unwrap();
         let response = renew_handler(
             State(runtime.clone()),
-            headers(Some("test-control-key"), Some("admin")),
+            headers(Some("test-admin-key"), Some("admin")),
             accepted_json(RenewBody {
                 idempotency_key: UUID_B.to_string(),
                 inventory_ids: in_progress.inventory_ids,
@@ -2153,7 +3028,7 @@ mod tests {
     #[tokio::test]
     async fn terminal_replay_works_without_provider() {
         let runtime = runtime(None);
-        let binding = binding(&runtime, "gpt", "terminal", 42);
+        let binding = binding(&runtime, "codex", "terminal", 42);
         let request = runtime
             .store
             .create_or_get_renewal_request(UUID_A, &[(binding.inventory_id.clone(), 42)], "admin")
@@ -2176,7 +3051,7 @@ mod tests {
         runtime.store.complete_renewal_request(request.id).unwrap();
         let response = renew_handler(
             State(runtime),
-            headers(Some("test-control-key"), Some("admin")),
+            headers(Some("test-admin-key"), Some("admin")),
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![binding.inventory_id],
@@ -2248,26 +3123,108 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_local_binding_fails_before_paid_extend() {
+    async fn expired_local_profile_fails_before_paid_extend() {
         let (client, extend_calls, server) = mock_iproyal().await;
         let runtime = runtime(Some(client));
-        let binding = binding(&runtime, "gpt", "removed", 42);
-        *runtime.test_local_projection.write().unwrap() = Some(LocalProjection {
-            liveness: HashMap::new(),
-            source_ok: true,
-        });
+        let binding = binding(&runtime, "codex", "expired", 42);
+        let mut projection = local_projection(&[("expired", Liveness::Live, true)]);
+        projection.states.get_mut("expired").unwrap().expires_at = unix_now();
+        *runtime.test_local_projection.write().unwrap() = Some(projection);
+
         let response = renew_handler(
+            State(runtime.clone()),
+            headers(Some("test-admin-key"), Some("admin")),
+            accepted_json(RenewBody {
+                idempotency_key: UUID_A.to_string(),
+                inventory_ids: vec![binding.inventory_id.clone()],
+            }),
+        )
+        .await;
+        let value = response_json(response).await;
+        assert_eq!(value["status"], "failed");
+        assert_eq!(value["idempotent_replay"], false);
+        assert_eq!(value["results"][0]["result_code"], "local_profile_inactive");
+        let request = runtime
+            .store
+            .get_renewal_request_by_key(UUID_A)
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.state, RenewalRequestState::Failed);
+        let events = runtime.store.get_exact_renewal_events(request.id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].event.outcome,
+            RenewalEventOutcome::LocalProfileInactive
+        );
+        assert_eq!(extend_calls.load(Ordering::SeqCst), 0);
+
+        let replay = renew_handler(
             State(runtime),
-            headers(Some("test-control-key"), Some("admin")),
+            headers(Some("test-admin-key"), Some("other-admin")),
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![binding.inventory_id],
             }),
         )
         .await;
-        let value = response_json(response).await;
-        assert_eq!(value["status"], "failed");
-        assert_eq!(value["results"][0]["result_code"], "binding_mismatch");
+        let replay = response_json(replay).await;
+        assert_eq!(replay["status"], "failed");
+        assert_eq!(replay["idempotent_replay"], true);
+        assert_eq!(
+            replay["results"][0]["result_code"],
+            "local_profile_inactive"
+        );
+        assert_eq!(replay["results"], value["results"]);
+        assert_eq!(extend_calls.load(Ordering::SeqCst), 0);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn stale_roster_binding_fails_before_paid_extend() {
+        let (client, extend_calls, server) = mock_iproyal().await;
+        let runtime = runtime(Some(client));
+        let binding = binding(&runtime, "codex", "stale", 42);
+
+        *runtime.test_local_projection.write().unwrap() = Some(exact_local_projection(&[(
+            "stale",
+            Liveness::Live,
+            true,
+            Some("203.0.113.10"),
+            Some(42),
+        )]));
+        let wrong_ip = renew_handler(
+            State(runtime.clone()),
+            headers(Some("test-admin-key"), Some("admin")),
+            accepted_json(RenewBody {
+                idempotency_key: UUID_A.to_string(),
+                inventory_ids: vec![binding.inventory_id.clone()],
+            }),
+        )
+        .await;
+        let wrong_ip = response_json(wrong_ip).await;
+        assert_eq!(wrong_ip["status"], "failed");
+        assert_eq!(wrong_ip["results"][0]["result_code"], "binding_mismatch");
+        assert_eq!(extend_calls.load(Ordering::SeqCst), 0);
+
+        *runtime.test_local_projection.write().unwrap() = Some(exact_local_projection(&[(
+            "stale",
+            Liveness::Live,
+            true,
+            Some("203.0.113.9"),
+            Some(43),
+        )]));
+        let wrong_order = renew_handler(
+            State(runtime),
+            headers(Some("test-admin-key"), Some("admin")),
+            accepted_json(RenewBody {
+                idempotency_key: UUID_B.to_string(),
+                inventory_ids: vec![binding.inventory_id],
+            }),
+        )
+        .await;
+        let wrong_order = response_json(wrong_order).await;
+        assert_eq!(wrong_order["status"], "failed");
+        assert_eq!(wrong_order["results"][0]["result_code"], "binding_mismatch");
         assert_eq!(extend_calls.load(Ordering::SeqCst), 0);
         server.abort();
     }
@@ -2276,16 +3233,12 @@ mod tests {
     async fn claimant_renews_synchronously_once() {
         let (client, extend_calls, server) = mock_iproyal().await;
         let runtime = runtime(Some(client));
-        let binding = binding(&runtime, "gpt", "renew", 42);
-        *runtime.test_local_projection.write().unwrap() = Some(LocalProjection {
-            liveness: [("renew".to_string(), Liveness::Live)]
-                .into_iter()
-                .collect(),
-            source_ok: true,
-        });
+        let binding = binding(&runtime, "codex", "renew", 42);
+        *runtime.test_local_projection.write().unwrap() =
+            Some(local_projection(&[("renew", Liveness::Live, true)]));
         let response = renew_handler(
             State(runtime.clone()),
-            headers(Some("test-control-key"), Some("admin")),
+            headers(Some("test-admin-key"), Some("admin")),
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![binding.inventory_id],
@@ -2304,20 +3257,27 @@ mod tests {
     async fn multiple_allocations_same_order_use_one_selective_call_and_exact_events() {
         let (client, extend_calls, server) = mock_iproyal().await;
         let runtime = runtime(Some(client));
-        let first = binding_ip(&runtime, "gpt", "first-ip", 42, "203.0.113.9");
-        let second = binding_ip(&runtime, "gpt", "second-ip", 42, "203.0.113.10");
-        *runtime.test_local_projection.write().unwrap() = Some(LocalProjection {
-            liveness: [
-                ("first-ip".to_string(), Liveness::Live),
-                ("second-ip".to_string(), Liveness::Live),
-            ]
-            .into_iter()
-            .collect(),
-            source_ok: true,
-        });
+        let first = binding_ip(&runtime, "codex", "first-ip", 42, "203.0.113.9");
+        let second = binding_ip(&runtime, "codex", "second-ip", 42, "203.0.113.10");
+        *runtime.test_local_projection.write().unwrap() = Some(exact_local_projection(&[
+            (
+                "first-ip",
+                Liveness::Live,
+                true,
+                Some("203.0.113.9"),
+                Some(42),
+            ),
+            (
+                "second-ip",
+                Liveness::Live,
+                true,
+                Some("203.0.113.10"),
+                Some(42),
+            ),
+        ]));
         let response = renew_handler(
             State(runtime.clone()),
-            headers(Some("test-control-key"), Some("admin")),
+            headers(Some("test-admin-key"), Some("admin")),
             accepted_json(RenewBody {
                 idempotency_key: UUID_A.to_string(),
                 inventory_ids: vec![first.inventory_id.clone(), second.inventory_id.clone()],
@@ -2429,6 +3389,7 @@ mod tests {
             "full_identity",
             "ip",
             "password",
+            "project",
             "proxy_host",
             "proxy_url",
             "secret",
@@ -2439,7 +3400,9 @@ mod tests {
         match value {
             Value::Object(object) => {
                 for (key, value) in object {
-                    assert!(!FORBIDDEN.contains(&key.as_str()), "forbidden key: {key}");
+                    if key != "account_email" {
+                        assert!(!FORBIDDEN.contains(&key.as_str()), "forbidden key: {key}");
+                    }
                     assert_no_forbidden_keys(value);
                 }
             }

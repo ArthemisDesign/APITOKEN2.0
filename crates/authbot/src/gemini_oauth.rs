@@ -125,6 +125,7 @@ struct PreparedOAuth {
 #[derive(Clone, PartialEq, Eq)]
 pub struct LifecycleProfile {
     pub profile_id: String,
+    pub account_email: String,
     pub order_id: i64,
     pub issued_at: i64,
     pub canonical_plan: String,
@@ -300,8 +301,9 @@ impl Config {
         Ok(())
     }
 
-    /// Read every sealed roster profile without exposing Google identity, project, tokens or proxy
-    /// credentials. Only a literal host from the canonical proxy URL is projected; no DNS occurs.
+    /// Read every sealed roster profile, including its full account email, without exposing Google
+    /// subject, project, tokens or proxy credentials. Only a literal host from the canonical proxy
+    /// URL is projected; no DNS occurs.
     pub fn lifecycle_profiles(&self) -> anyhow::Result<Vec<LifecycleProfile>> {
         let roster_path = self.root.join("profiles.json");
         if !roster_path.exists() {
@@ -339,6 +341,7 @@ impl Config {
             }
             profiles.push(LifecycleProfile {
                 profile_id: profile.id,
+                account_email: credential.email.clone(),
                 order_id: credential.proxy_order_id,
                 issued_at: credential.issued_at,
                 canonical_plan: credential.plan.clone(),

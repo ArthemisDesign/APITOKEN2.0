@@ -61,9 +61,26 @@ migrated onto this commercial host on 2026-07-14. Anthropic now runs here as `cl
 `claude-authbot.service` and the `claude-api-backup.timer`) under the
 `deploy` user, with its
 authority in the isolated PostgreSQL `claude_engine` database; the drained SQLite snapshot remains
-at `/srv/claude-api/data/subscriptions.db`. Its secrets live at
+at `/srv/claude-api/data/subscriptions.db`. Its environment secrets live at
 `/srv/claude-api/data/{server.env,config.env,authbot.env,engine-postgres.env}` (separate from the commercial
-`/etc/apitoken/*.env`). The interim host keeps a cold pre-migration copy for forensics, not as a
+`/etc/apitoken/*.env`). The dedicated proxy-admin secret is not an environment assignment: its
+canonical source is `/etc/apitoken/proxy-admin.key`, a stable `root:root 0600` regular file with no
+symlink and exactly 64 lowercase hexadecimal bytes plus an optional LF. Its `/etc/apitoken` parent is
+root-owned and not writable by `deploy`; the credential must not be placed below deploy-writable
+`/srv/claude-api/data`. The installer provisions it atomically before the authbot unit and Caddy,
+migrating one exact legacy assignment out of `authbot.env` and failing on malformed, duplicate, or
+divergent state. It rejects either `AUTH_BOT_PROXY_ADMIN_KEY` or
+`AUTH_BOT_PROXY_ADMIN_KEY_FILE` in `server.env`. Systemd uses
+`LoadCredential=proxy-admin.key:/etc/apitoken/proxy-admin.key` to give only
+`claude-authbot.service` a private per-service copy. After its environment files load, the unit's
+`ExecStart=/usr/bin/env` pins `AUTH_BOT_PROXY_ADMIN_KEY_FILE=%d/proxy-admin.key`; this is deliberately
+not `Environment=`, so environment files cannot redirect it. Sibling units receive neither the value
+nor credential path. On Linux, after any operator subcommand has returned and before daemon secrets
+are loaded, authbot calls `prctl(PR_SET_DUMPABLE, 0)`; this blocks same-UID `ptrace`,
+`process_vm_readv`, and sensitive `/proc` memory access. `ProtectProc=invisible` and `ProcSubset=pid`
+remain as service-level process-isolation layers. Code already executing inside authbot itself is in
+the same trust boundary, and no defense can protect secrets from code already executing there. The
+root-run Caddy installer is the only other intended raw-file consumer. The interim host keeps a cold pre-migration copy for forensics, not as a
 live rollback authority, and no longer runs any product unit. The `claude-api-fingerprint.timer` is intentionally not
 enabled here yet (it needs a live `claude` CLI on the host); the fingerprint values in `config.env`
 are current.

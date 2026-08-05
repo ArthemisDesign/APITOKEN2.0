@@ -98,8 +98,24 @@ installed and exact-candidate controllers each emit a versioned validation plan;
 their union, and the frozen marker binds both the effective plan and the candidate policy digest.
 A controller-only update then transfers the already-held deployment lock directly to the new
 root-owned controller, without another poll or validation pass. Caddy and monitoring updates
-continue in the same process. Any systemd scope keeps `deploy/watchdog` pending until the next
-five-second poll because only a fresh manager invocation receives the updated service sandbox.
+continue in the same process. For a combined systemd/Caddy transaction, systemd provisioning runs
+first: it atomically creates or validates the canonical raw `/etc/apitoken/proxy-admin.key` before
+installing the unit or Caddy definitions. The `/etc/apitoken` parent is root-owned and not writable by
+`deploy`, unlike deploy-writable `/srv/claude-api/data`; the installer rejects either
+`AUTH_BOT_PROXY_ADMIN_KEY` or `AUTH_BOT_PROXY_ADMIN_KEY_FILE` in `server.env`. Systemd uses
+`LoadCredential=proxy-admin.key:/etc/apitoken/proxy-admin.key` to create a private per-service copy.
+After all `EnvironmentFile` directives load, the `ExecStart=/usr/bin/env` assignments pin
+`AUTH_BOT_PROXY_ADMIN_KEY_FILE=%d/proxy-admin.key` for `claude-authbot.service`. This is deliberately
+not an `Environment=` assignment, so env files cannot override the path; sibling units receive
+neither the value nor that credential path. On Linux, after any operator subcommand has returned and
+before daemon secrets are loaded, authbot calls `prctl(PR_SET_DUMPABLE, 0)`; this blocks same-UID
+`ptrace`, `process_vm_readv`, and sensitive `/proc` memory access. `ProtectProc=invisible` and
+`ProcSubset=pid` remain as service-level process-isolation layers. Code already executing inside
+authbot itself is in the same trust boundary, and no defense can protect secrets from code already
+executing there. The root-run Caddy installer is the only other intended consumer of the canonical
+raw file. Any systemd
+scope keeps `deploy/watchdog` pending until the next five-second poll because only a fresh manager
+invocation receives the updated service sandbox.
 The root `compose.yaml` is a local-development definition and does not reinstall production.
 The private `deploy/gpt-image-2-live-gate.sh` is a one-shot exception within the controller transaction:
 only the delivery range changing that file invokes it, after selected production verification and before
@@ -760,9 +776,23 @@ sudo ss -ltnH 'sport = :8794'
 sudo ss -ltnH 'sport = :8803'
 ```
 
-The installer extracts the existing host-only bcrypt/control-key lines without printing them,
-validates the rendered candidate, saves a timestamped rollback copy, and performs a Caddy reload
-rather than stop/start. Ports 8790, 8792, 8794, and 8803 must be bound to `127.0.0.1`, never `*`.
+Before a Caddy-only install can run, the full/systemd watchdog installer must have atomically
+provisioned `/etc/apitoken/proxy-admin.key` as a `root:root 0600` regular file with no symlink,
+containing exactly 64 lowercase hexadecimal bytes and optionally one trailing LF. Its
+`/etc/apitoken` parent is root-owned and not writable by `deploy`; do not move the canonical key into
+deploy-writable `/srv/claude-api/data`. During upgrade, the installer migrates one exact legacy
+`AUTH_BOT_PROXY_ADMIN_KEY=<64-lowercase-hex>` assignment out of `authbot.env`; malformed or duplicate
+legacy rows, or a legacy value divergent from an existing canonical file, fail before unit/Caddy
+installation. It also rejects `AUTH_BOT_PROXY_ADMIN_KEY` and `AUTH_BOT_PROXY_ADMIN_KEY_FILE` settings
+in `server.env`. The Caddy installer receives only the raw canonical file path, not the value in argv
+or output. The renderer matches the live `X-Proxy-Admin-Key` header name case-insensitively; any
+existing occurrence must have the exact canonical value or rendering fails without publishing a
+partial candidate. The rendered proxy-admin upstream
+also carries the shared `x-api-key` for only the previous authbot binary during mixed-version rollout
+or rollback; the new binary ignores it, accepts only the dedicated header, and reads that key only
+through its bounded dedicated-file parser. The installer then validates the candidate, saves a
+timestamped rollback copy, and reloads rather than stop/start. Ports 8790, 8792, 8794, and 8803 must
+be bound to `127.0.0.1`, never `*`.
 
 Normal release selection also does not reinstall systemd templates. When a reviewed template itself
 changes, verify and install it before the matching blue-green cycle; `daemon-reload` does not replace

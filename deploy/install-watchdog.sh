@@ -5,6 +5,7 @@ set -euo pipefail
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'run as root' >&2; exit 1; }
 INSTALL_MODE=full
 REDIS_RESTART_REQUIRED=0
+AUTHBOT_PROXY_ADMIN_KEY_CREATED=0
 case "${1:-}" in
   '') ;;
   --controller-only) INSTALL_MODE=controller ;;
@@ -17,6 +18,131 @@ esac
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=deploy/watchdog-lib.sh
 source "$ROOT/deploy/watchdog-lib.sh"
+
+proxy_admin_key_file_is_valid() {
+  local key_file=$1 size
+  [[ -f $key_file && ! -L $key_file ]] || return 1
+  size=$(wc -c <"$key_file") || return 1
+  size=${size//[[:space:]]/}
+  [[ $size == 64 || $size == 65 ]] || return 1
+  LC_ALL=C awk '
+    NR != 1 || length($0) != 64 || $0 !~ /^[0-9a-f]+$/ { exit 1 }
+    END { if (NR != 1) exit 1 }
+  ' "$key_file"
+}
+
+proxy_admin_key_files_equal() {
+  LC_ALL=C awk '
+    NR == FNR { expected = $0; next }
+    $0 != expected { different = 1 }
+    END { if (different || NR != 2) exit 1 }
+  ' "$1" "$2"
+}
+
+provision_authbot_proxy_admin_key() {
+  local key_file=${PROXY_ADMIN_KEY_FILE:-/etc/apitoken/proxy-admin.key}
+  local authbot_env=${AUTHBOT_ENV:-/srv/claude-api/data/authbot.env}
+  local server_env=${SERVER_ENV:-/srv/claude-api/data/server.env}
+  local key_dir=${key_file%/*} authbot_dir=${authbot_env%/*}
+  local key_candidate= env_candidate= legacy_candidate= legacy_rows
+  command -v openssl >/dev/null || { echo 'openssl is required' >&2; return 1; }
+  install -d -o root -g root -m 0755 "$key_dir"
+  [[ $authbot_dir == "$key_dir" ]] || install -d -o deploy -g deploy -m 0750 "$authbot_dir"
+
+  if [[ -e $key_file || -L $key_file ]]; then
+    proxy_admin_key_file_is_valid "$key_file" \
+      || { echo "$key_file must be a regular file containing one 64-lowercase-hex key" >&2; return 1; }
+  fi
+  if [[ -e $authbot_env || -L $authbot_env ]]; then
+    [[ -f $authbot_env && ! -L $authbot_env ]] \
+      || { echo "$authbot_env must be a regular file" >&2; return 1; }
+    legacy_rows=$(LC_ALL=C awk '
+      /^[[:space:]]*AUTH_BOT_PROXY_ADMIN_KEY[[:space:]]*=/ {
+        count++
+        if ($0 !~ /^AUTH_BOT_PROXY_ADMIN_KEY=[0-9a-f]+$/ ||
+            length($0) != length("AUTH_BOT_PROXY_ADMIN_KEY=") + 64) bad = 1
+      }
+      END { if (bad || count > 1) exit 1; print count + 0 }
+    ' "$authbot_env") \
+      || { echo 'legacy proxy-admin key state is malformed' >&2; return 1; }
+  else
+    legacy_rows=0
+  fi
+  if [[ -e $server_env || -L $server_env ]]; then
+    [[ -f $server_env && ! -L $server_env ]] \
+      || { echo "$server_env must be a regular file" >&2; return 1; }
+    if LC_ALL=C awk '
+        /^[[:space:]]*AUTH_BOT_PROXY_ADMIN_KEY(_FILE)?[[:space:]]*=/ { found=1 }
+        END { exit found ? 0 : 1 }
+      ' "$server_env"; then
+      echo 'server.env must not contain proxy-admin credential settings' >&2
+      return 1
+    fi
+  fi
+
+  if [[ $legacy_rows == 1 ]]; then
+    legacy_candidate=$(mktemp "$key_dir/.proxy-admin.key.legacy.XXXXXX")
+    chmod 0600 "$legacy_candidate"
+    if ! LC_ALL=C awk '
+        /^AUTH_BOT_PROXY_ADMIN_KEY=[0-9a-f]+$/ {
+          print substr($0, length("AUTH_BOT_PROXY_ADMIN_KEY=") + 1)
+        }
+      ' "$authbot_env" >"$legacy_candidate" \
+        || ! proxy_admin_key_file_is_valid "$legacy_candidate"; then
+      rm -f -- "$legacy_candidate"
+      return 1
+    fi
+    if [[ -e $key_file ]]; then
+      if ! proxy_admin_key_files_equal "$legacy_candidate" "$key_file"; then
+        rm -f -- "$legacy_candidate"
+        echo 'legacy and canonical proxy-admin keys differ' >&2
+        return 1
+      fi
+      rm -f -- "$legacy_candidate"
+      legacy_candidate=
+    else
+      key_candidate=$legacy_candidate
+      legacy_candidate=
+    fi
+  elif [[ ! -e $key_file ]]; then
+    key_candidate=$(mktemp "$key_dir/.proxy-admin.key.XXXXXX")
+    chmod 0600 "$key_candidate"
+    if ! openssl rand -hex 32 >"$key_candidate" \
+        || ! proxy_admin_key_file_is_valid "$key_candidate"; then
+      rm -f -- "$key_candidate"
+      return 1
+    fi
+  fi
+
+  if [[ -n $key_candidate ]]; then
+    if ! chown root:root "$key_candidate" || ! chmod 0600 "$key_candidate"; then
+      rm -f -- "$key_candidate"
+      return 1
+    fi
+    if ! ln -- "$key_candidate" "$key_file"; then
+      rm -f -- "$key_candidate"
+      echo 'canonical proxy-admin key appeared during provisioning' >&2
+      return 1
+    fi
+    rm -f -- "$key_candidate"
+    AUTHBOT_PROXY_ADMIN_KEY_CREATED=1
+  fi
+  chown root:root "$key_file"
+  chmod 0600 "$key_file"
+
+  if [[ $legacy_rows == 1 ]]; then
+    env_candidate=$(mktemp "$authbot_dir/.authbot.env.XXXXXX")
+    chmod 0600 "$env_candidate"
+    if ! LC_ALL=C awk '
+        !/^[[:space:]]*AUTH_BOT_PROXY_ADMIN_KEY[[:space:]]*=/ { print }
+      ' "$authbot_env" >"$env_candidate" \
+        || ! chown root:root "$env_candidate" || ! mv -- "$env_candidate" "$authbot_env"; then
+      rm -f -- "$env_candidate"
+      return 1
+    fi
+    chmod 0600 "$authbot_env"
+  fi
+}
 
 # Every transaction that can start the Redis containers must provision their data directories
 # first. Docker creates a missing bind-mount target as root, and redis:7.4-alpine runs as the
@@ -121,6 +247,10 @@ install_systemd_definitions() {
   command -v systemctl >/dev/null || { echo 'systemd is required' >&2; return 1; }
   command -v systemd-tmpfiles >/dev/null || { echo 'systemd-tmpfiles is required' >&2; return 1; }
   local restart_authbot=0 engine_current
+  # Provision before installing/restarting the unit and before a later Caddy render in the same
+  # infrastructure transaction. This is idempotent and never rotates an existing valid key.
+  provision_authbot_proxy_admin_key
+  (( AUTHBOT_PROXY_ADMIN_KEY_CREATED == 0 )) || restart_authbot=1
   # The watchdog's `ProtectSystem=full` namespace keeps /etc/tmpfiles.d read-only even after sudo.
   # Stage the exact candidate input under the fixed root-owned controller path; a manager-spawned
   # root oneshot below publishes it from a fresh namespace, just like the sudoers installer.

@@ -295,8 +295,20 @@ are preserved in `offer_archive_events`. The `paying` phase is not subject to de
 - `AUTH_BOT_IPROYAL_KEY` — automatic proxy issuance (empty = manual input).
 - `AUTH_BOT_PROXY_ADMIN_BIND` — loopback-only proxy lifecycle API bind (default
   `127.0.0.1:8806`; non-loopback addresses are rejected).
-- `CLAUDE_API_CONTROL_KEY` — required exact `x-api-key` for both proxy lifecycle endpoints;
-  `POST /proxy-admin/renew` additionally requires the verified `X-Admin-Actor` header.
+- `AUTH_BOT_PROXY_ADMIN_CODEX_RUNTIME_URL`, `AUTH_BOT_PROXY_ADMIN_GEMINI_RUNTIME_URL` — sanitized
+  runtime status endpoints (defaults `http://127.0.0.1:8792/codex-subs` and
+  `http://127.0.0.1:8794/gemini-subs`). Only literal loopback HTTP, the exact provider path and no
+  credentials/query/fragment are accepted; external origins fail startup.
+- `AUTH_BOT_PROXY_ADMIN_KEY_FILE` — required path to the dedicated proxy-admin credential file.
+  Production passes only `%d/proxy-admin.key`, the per-service private copy created by systemd
+  `LoadCredential`; the bounded Rust parser accepts no environment-value fallback and requires a
+  regular non-symlink file containing exactly 64 lowercase hex bytes plus an optional final LF.
+  The parsed key authenticates incoming `X-Proxy-Admin-Key` and must differ from
+  `CLAUDE_API_CONTROL_KEY`; `POST /proxy-admin/renew` additionally requires the verified
+  `X-Admin-Actor` header.
+- `CLAUDE_API_CONTROL_KEY` — shared engine control key used by new authbot only for outgoing runtime
+  status calls to `/codex-subs` and `/gemini-subs`; the incoming listener ignores `x-api-key`. Caddy
+  still injects that header solely for mixed-version rollout or rollback to the previous binary.
 
 The background proxy lifecycle check refreshes bounded inventory/balance state and disables any
 unexpected IPRoyal auto-extend setting, but it never extends a lease or spends reseller balance.
@@ -304,23 +316,70 @@ unexpected IPRoyal auto-extend setting, but it never extends a lease or spends r
 Only an authenticated `POST /proxy-admin/renew` may manually extend selected durable opaque
 inventory IDs, after the idempotency request has been committed to private SQLite. The exact
 allocation IP is snapshotted privately; selected allocations sharing an order are sent in one
-selective extension call and receive separate per-inventory events. Inventory includes every
-Claude/GPT/Gemini subscription with a literal proxy plus every unmatched IPRoyal allocation. Exact
-order+IP evidence wins; an order-zero legacy profile is bound only when the IP has one unique
-provider candidate, while ambiguity stays unbound. Public rows contain only opaque/hash hints and
-never the IP, email, subject, project, proxy URL or credentials. A committed
-`pending` request resumes on exact-key replay after a restart; `in_progress` and indeterminate work
-never replays automatically. No periodic "Контроль прокси" ("Proxy check") reports are sent to
-Telegram. A separate background loop ticks once a minute over `gemini_pending_verifications` and
-runs the automatic Gemini acceptance window (Gemini invariant 4): due accounts are probed
-sequentially — never in parallel, since each attempt is a real paid generation through a per-account
-authenticated CONNECT — a late success publishes and settles the deal on its own, and a closed
-window notifies once.
+selective extension call and receive separate per-inventory events. Before the paid extend, renewal
+repeats the durable exact binding, authoritative liveness and local subscription-expiry checks;
+`expires_at <= now` is `local_profile_inactive` and performs no provider extend. Queued and active requests are selection-exclusive: after same-key exact replay handling, a new UUID
+whose inventory or exact order/allocation overlaps a `pending` or `in_progress` request receives safe
+`409 renewal_selection_busy` before insertion, while disjoint requests may proceed. At claim time,
+an explicitly requested pending row wins; the background claimant chooses the oldest `(created_at,
+id)`. In the same `IMMEDIATE` transaction the winner becomes `in_progress` and every overlapping
+legacy pending sibling becomes terminal `indeterminate`, so replay is uncertain and no sibling can
+later spend. Existing in-progress work wins over pending overlap. Idempotency semantics are
+unchanged.
+
+Inventory items are only subscription-backed Claude/GPT/Gemini rows with a durable exact existing
+IPRoyal allocation binding (`binding_status=bound`) and liveness other than `dead`. Unmatched
+IPRoyal allocations, external/unbound/mismatched subscriptions and dead subscriptions are not
+serialized. Reconciliation may continue binding a legacy/external profile in the background when
+its literal IP has exactly one provider candidate, but the row remains absent until that exact
+binding is durable. GPT uses public item provider `gpt` but the existing durable binding namespace
+`codex`; an exact legacy `gpt` binding is migrated in place to `codex` only when local id,
+order and allocation IP all match uniquely, preserving its inventory id. Claude and Gemini use the
+same name in both places. GPT and Gemini liveness is an
+authoritative join against the sanitized runtime endpoints with the shared engine control key, trusting only
+opaque id plus status: unavailable, malformed, missing or duplicate evidence closes that provider.
+GPT accepts exactly `account_state=healthy|suspect|dead`; any other or empty value is schema drift
+and closes the whole GPT source. Gemini `authenticated!=true` is dead, while `disabled=true` is
+degraded and nonrenewable rather than dead.
+
+The inventory item key set includes `account_email`, accepted only as an ASCII local part using
+alphanumerics plus ``.!#$%&'*+/=?^_`{|}~-`` (no edge/consecutive dots, at most 64 bytes), followed
+by DNS-style domain labels (alphanumeric/hyphen, no edge hyphen, at most 63 bytes each and 254 bytes
+total). This full identity is the one
+managed-admin exception and is allowed only in the closed `managed_admin_auth` `/proxies` response,
+with `Cache-Control: no-store` and in-memory handling; it must not enter SQLite or logs. Tokens,
+subjects, projects, raw IP/proxy URLs/credentials and every other identity or secret remain
+forbidden. The other managed-admin subscription responses (`/capacity`, `/codex-subs`,
+`/gemini-subs`) remain masked. A committed `pending` request resumes on exact-key replay after a
+restart; `in_progress` and indeterminate work never replays automatically. No periodic "Контроль
+прокси" ("Proxy check") reports are sent to Telegram. A separate background loop ticks once a
+minute over `gemini_pending_verifications` and runs the automatic Gemini acceptance window (Gemini
+invariant 4): due accounts are probed sequentially — never in parallel, since each attempt is a real
+paid generation through a per-account authenticated CONNECT — a late success publishes and settles
+the deal on its own, and a closed window notifies once.
 
 **Deploy:** the watchdog builds the bot together with the engine and places the tested binary in
 the immutable engine release; `claude-authbot.service` runs
-`/srv/claude-api/releases/current/authbot`. A changed binary is restarted after promotion. On
-startup, a lost in-memory Claude child is restored from persisted `ho_code` into `ho_email`, and
+`/srv/claude-api/releases/current/authbot`. The installer atomically provisions the stable raw
+`/etc/apitoken/proxy-admin.key` before the unit or Caddy: the `/etc/apitoken` parent is root-owned
+and non-deploy-writable, and the key is a `root:root` `0600` regular non-symlink containing exactly
+64 lowercase hex bytes plus optional LF. One exact legacy `AUTH_BOT_PROXY_ADMIN_KEY` assignment is
+removed from `authbot.env`; malformed, duplicate or divergent legacy/file values fail installation.
+`server.env` is not a migration source: either `AUTH_BOT_PROXY_ADMIN_KEY` or
+`AUTH_BOT_PROXY_ADMIN_KEY_FILE` there rejects installation. Systemd loads `authbot.env`,
+`engine-postgres.env` and the optional `server.env`, while
+`LoadCredential=proxy-admin.key:/etc/apitoken/proxy-admin.key` creates a private per-service copy.
+After those environment files, `ExecStart=/usr/bin/env ...
+AUTH_BOT_PROXY_ADMIN_KEY_FILE=%d/proxy-admin.key ...` pins the credential path; it is deliberately
+not an `Environment=` assignment, so no loaded env file can redirect it. Sibling services receive no
+copy. The root-run Caddy installer and renderer use only `/etc/apitoken/proxy-admin.key`; matching an
+existing live `X-Proxy-Admin-Key` header name is case-insensitive, and duplicate or mismatched live
+values fail closed. `ProtectProc=invisible` and `ProcSubset=pid` reduce process metadata exposure;
+before loading daemon secrets, authbot also disables Linux process dumpability, blocking same-UID
+`ptrace`/`process_vm_readv` access to its memory. Code already executing inside authbot remains inside
+the same trust boundary. A changed binary
+is restarted after promotion. On startup, a lost in-memory Claude child is restored from persisted
+`ho_code` into `ho_email`, and
 an interrupted ChatGPT wait from `cx_wait` into `cx_email`; the seller sends the email and gets a
 fresh flow. Gemini `processing` sessions never replay an already submitted Google code: startup
 uses the same generation-fenced `/cancel` path, preserves the egress and automatically issues the

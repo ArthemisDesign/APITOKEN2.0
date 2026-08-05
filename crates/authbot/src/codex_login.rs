@@ -29,6 +29,7 @@ const DEVICE_FLOW_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 #[derive(Clone, PartialEq, Eq)]
 pub struct LifecycleProfile {
     pub profile_id: String,
+    pub account_email: String,
     pub order_id: i64,
     pub issued_at: i64,
     pub canonical_plan: String,
@@ -48,8 +49,9 @@ pub struct RosterConfig {
 }
 
 impl RosterConfig {
-    /// Read every sealed roster profile without exposing account, email, token or proxy credentials.
-    /// Only a literal host from the canonical proxy URL is projected; hostnames are never resolved.
+    /// Read every sealed roster profile, including its full account email, without exposing account
+    /// identifiers, tokens or proxy credentials. Only a literal host from the canonical proxy URL
+    /// is projected; hostnames are never resolved.
     pub fn lifecycle_profiles(&self) -> Result<Vec<LifecycleProfile>> {
         let roster_path = self.dir.join("profiles.json");
         if !roster_path.exists() {
@@ -92,6 +94,7 @@ impl RosterConfig {
             }
             profiles.push(LifecycleProfile {
                 profile_id: profile.id,
+                account_email: credential.email.clone(),
                 order_id: credential.proxy_order_id,
                 issued_at: credential.issued_at,
                 canonical_plan: credential.plan.clone(),
@@ -1006,6 +1009,7 @@ Follow these steps to sign in with ChatGPT using device code authorization:\n\n\
             .iter()
             .find(|profile| profile.profile_id == first.profile_id)
             .unwrap();
+        assert_eq!(first.account_email, "private@example.com");
         assert_eq!(first.order_id, 42);
         assert_eq!(first.issued_at, 100);
         assert_eq!(first.canonical_plan, "chatgpt_plus");
@@ -1042,9 +1046,10 @@ Follow these steps to sign in with ChatGPT using device code authorization:\n\n\
 
         fn consume_without_formatting(
             profile: &LifecycleProfile,
-        ) -> (&str, i64, i64, &str, Option<std::net::IpAddr>) {
+        ) -> (&str, &str, i64, i64, &str, Option<std::net::IpAddr>) {
             let LifecycleProfile {
                 profile_id,
+                account_email,
                 order_id,
                 issued_at,
                 canonical_plan,
@@ -1052,13 +1057,14 @@ Follow these steps to sign in with ChatGPT using device code authorization:\n\n\
             } = profile;
             (
                 profile_id,
+                account_email,
                 *order_id,
                 *issued_at,
                 canonical_plan,
                 *canonical_ip,
             )
         }
-        assert_eq!(consume_without_formatting(first).1, 42);
+        assert_eq!(consume_without_formatting(first).1, "private@example.com");
         std::fs::remove_dir_all(root).unwrap();
     }
 
