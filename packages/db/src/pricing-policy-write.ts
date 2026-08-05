@@ -1077,25 +1077,29 @@ export async function updateManagedPricingPolicy(database: Database, input: {
     } else {
       const bindings = await client.query<{
         id: string;
+        policy_enforcement: string;
         desired_effective_version: string | null;
         applied_effective_version: string | null;
       }>(`
-        SELECT id::text,
+        SELECT id::text, policy_enforcement,
                desired_effective_version::text AS desired_effective_version,
                applied_effective_version::text AS applied_effective_version
         FROM account_policy_bindings WHERE policy_id = $1 ORDER BY id FOR UPDATE
       `, [policyId]);
       for (const binding of bindings.rows) {
         const enginePolicyId = await engineRunPolicyId(client, binding);
-        if (enginePolicyId !== null && enginePolicyId !== policyId) {
-          // The engine runs a different policy identity for this account (e.g. a converted
-          // B2C customer whose lineage was created by the Stage 5 backfill). The legacy lane
-          // would reject the delivery with version_conflict, so nothing is staged; instead any
-          // drifted desired state is folded back to the engine-confirmed applied state. The
-          // identity switch ships via the release-cutover lane.
+        if (enginePolicyId !== null && enginePolicyId !== policyId && binding.policy_enforcement === "strict") {
+          // A strict binding whose engine lineage runs a different policy identity cannot be
+          // re-pointed by the legacy lane: the engine would reject the delivery with
+          // version_conflict, so nothing is staged; instead any drifted desired state is
+          // folded back to the engine-confirmed applied state. The identity switch for a
+          // strict account ships via the release-cutover lane.
           await closeLegacyDeliveryDrift(client, binding.id);
           continue;
         }
+        // A shadow lineage mismatch (e.g. a converted B2C customer whose lineage was created
+        // by the Stage 5 backfill) is staged as a normal delivery: the engine accepts a
+        // shadow rebind pre-cutover, so the new policy identity is delivered now.
         await materializeBinding(client, binding.id, next, catalog.generation);
       }
     }
@@ -1635,10 +1639,12 @@ async function engineRunPolicyId(
 }
 
 /**
- * Aligns a binding whose legacy lane is closed (the engine runs a different policy identity) with
- * the engine-confirmed state: any staged-but-undeliverable desired version is dropped back to the
- * applied one and the dead-delivery error is cleared. The identity switch itself is delivered by
- * the release-cutover lane, never by rewriting or retrying legacy jobs.
+ * Aligns a strict binding whose legacy lane is closed (the engine runs a different policy
+ * identity) with the engine-confirmed state: any staged-but-undeliverable desired version is
+ * dropped back to the applied one and the dead-delivery error is cleared. The identity switch
+ * for a strict account is delivered by the release-cutover lane, never by rewriting or
+ * retrying legacy jobs. Shadow bindings never take this path: the engine accepts a shadow
+ * rebind pre-cutover, so their identity switch is staged as a normal delivery.
  */
 async function closeLegacyDeliveryDrift(client: PoolClient, bindingId: string): Promise<void> {
   await client.query(`
@@ -1661,12 +1667,14 @@ async function closeLegacyDeliveryDrift(client: PoolClient, bindingId: string): 
  * rule mirroring the negotiated scalar multiplier and the account binding aimed at that policy.
  * A long-lived B2C customer already carries their single allowed binding (UNIQUE user_id) from
  * the Stage 5 backfill — aimed at the global B2C policy — so the conversion re-points that row
- * instead of inserting a second one. A legacy engine delivery job is staged only when the
- * account has no conflicting delivery lineage: the legacy lane keeps an immutable policy
- * identity per account, so for a converted customer the identity switch ships via the
- * release-cutover lane and the scalar multiplier stays authoritative until then. Idempotent:
+ * instead of inserting a second one. A conflicting delivery lineage blocks staging only for a
+ * strict binding: the legacy lane keeps an immutable policy identity per strict account, so the
+ * identity switch there ships via the release-cutover lane and the scalar multiplier stays
+ * authoritative until then. A shadow binding (the backfilled B2C lineage) is re-pointed with a
+ * normally staged delivery — the engine accepts a shadow rebind pre-cutover. Idempotent:
  * when the policy exists and the binding already aims at it, nothing is written and
- * provisioned=false is returned (a drifted legacy desired state is still healed).
+ * provisioned=false is returned (a pending shadow rebind is still staged when the engine
+ * lineage has not moved yet).
  */
 export async function provisionBusinessClientPolicy(client: PoolClient, input: {
   userId: string;
@@ -1721,10 +1729,11 @@ export async function provisionBusinessClientPolicy(client: PoolClient, input: {
     id: string;
     account_class: string;
     policy_id: string;
+    policy_enforcement: string;
     desired_effective_version: string | null;
     applied_effective_version: string | null;
   }>(`
-    SELECT id::text, account_class, policy_id,
+    SELECT id::text, account_class, policy_id, policy_enforcement,
            desired_effective_version::text AS desired_effective_version,
            applied_effective_version::text AS applied_effective_version
     FROM account_policy_bindings WHERE user_id = $1 FOR UPDATE
@@ -1753,8 +1762,7 @@ export async function provisionBusinessClientPolicy(client: PoolClient, input: {
     // The Stage 5 backfill bound existing B2C accounts to the global policy (shadow
     // enforcement). Conversion re-points that row to the new client policy; the
     // effective-version history continues on the same binding. The engine delivery of the
-    // identity switch itself is NOT staged here: the legacy lane keeps an immutable lineage
-    // per account and would reject it, so the switch ships via the release-cutover lane.
+    // identity switch is staged below: the engine accepts a shadow rebind pre-cutover.
     await client.query(`
       UPDATE account_policy_bindings
       SET account_class = 'b2b', policy_id = $2, updated_at = now()
@@ -1768,13 +1776,17 @@ export async function provisionBusinessClientPolicy(client: PoolClient, input: {
     applied_effective_version: null,
   });
   let jobId: string | null = null;
-  if (enginePolicyId !== null && enginePolicyId !== source.policy_id) {
-    // The engine already runs a different policy identity for this account (a converted B2C
-    // customer whose lineage was created by the backfill). A legacy prepare would be rejected
-    // with version_conflict, so no delivery is staged; instead any drifted desired state left
-    // behind by earlier staging is folded back to the engine-confirmed applied state.
+  const lineageMismatch = enginePolicyId !== null && enginePolicyId !== source.policy_id;
+  if (lineageMismatch && existingBinding.rows[0]?.policy_enforcement === "strict") {
+    // A strict account already runs a different policy identity and the legacy lane keeps that
+    // lineage immutable: a prepare would be rejected with version_conflict, so no delivery is
+    // staged; instead any drifted desired state left behind by earlier staging is folded back
+    // to the engine-confirmed applied state.
     await closeLegacyDeliveryDrift(client, bindingId);
-  } else if (provisioned) {
+  } else if (provisioned || lineageMismatch) {
+    // Fresh provisioning stages the first delivery; a shadow lineage mismatch (converted B2C
+    // customer) stages the rebind delivery the engine now accepts — including on an idempotent
+    // re-run that finds the policy and binding already in place.
     jobId = (await materializeBinding(client, bindingId, source, catalogGeneration)).jobId;
   }
   return {

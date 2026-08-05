@@ -81,13 +81,15 @@ is already B2B repairs a missing policy (customers converted before this provisi
 against the multiplier already in effect, and is otherwise a no-op — it never rewrites an existing
 policy or the active scalar.
 
-The legacy engine delivery lane keeps an immutable policy lineage per account and rejects any
-prepare that switches identity (global B2C → client policy) with `version_conflict`. Conversion
-and later policy edits therefore stage a legacy delivery only when the account has no conflicting
-delivery lineage; for a converted customer the engine keeps running the confirmed backfilled
-lineage, the scalar multiplier stays authoritative, and any drifted staged-but-undeliverable
-desired state is folded back to the engine-confirmed applied state. The identity switch itself is
-delivered by the release-cutover locked transition, never by rewriting or retrying legacy jobs.
+The legacy engine delivery lane keeps an immutable policy lineage per strict account and rejects
+any prepare that switches identity (global B2C → client policy) with `version_conflict`; a shadow
+account accepts the same switch as a shadow rebind pre-cutover. Conversion and later policy edits
+therefore stage the identity switch as a normal delivery for the backfilled shadow binding, while
+for a strict binding nothing is staged: the engine keeps running the confirmed lineage, the scalar
+multiplier stays authoritative, and any drifted staged-but-undeliverable desired state is folded
+back to the engine-confirmed applied state. The strict identity switch itself is delivered by the
+release-cutover locked transition, never by rewriting or retrying legacy jobs. Until the cutover
+the scalar remains the only engine-enforced price for shadow accounts too.
 
 The existing scalar `mult_bp` becomes only an Anthropic provider rule at migration:
 

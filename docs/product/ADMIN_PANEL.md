@@ -118,10 +118,12 @@ invitation snapshot, and a manual B2C→B2B conversion from `/users` provisions 
 Anthropic discount policy from the negotiated multiplier; re-running that conversion on a
 client who still lacks the policy (converted before this provisioning existed) repairs it
 without touching the active discount. For a converted customer the binding is re-pointed at the
-client policy but the engine keeps running the confirmed backfilled lineage: the legacy delivery
-lane rejects identity switches, so no new delivery is staged, a drifted desired state is healed
-back to the confirmed one, and the scalar multiplier stays authoritative until the release
-cutover delivers the identity switch. Saving a B2B client policy whose rules are a uniform
+client policy and the identity switch is staged as a normal delivery: the backfilled binding is
+shadow, and the engine accepts a shadow rebind pre-cutover, so the panel's versions move once
+the engine ACKs. Only a strict binding keeps the immutable lineage — its desired state is
+healed back to the confirmed one and the release cutover delivers the identity switch. The
+scalar multiplier stays the authoritative enforced price until the cutover. Saving a B2B client
+policy whose rules are a uniform
 provider-level discount (for example 70% on every provider) also moves that authoritative
 scalar and enqueues its engine delivery, so the edit actually changes the price the customer
 pays today; the customer's usage page shows that scalar price wherever the policy governs the
