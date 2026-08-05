@@ -12,10 +12,12 @@ const mocks = vi.hoisted(() => {
   }
 
   const replace = vi.fn();
+  const prefetch = vi.fn();
   return {
     me: vi.fn(),
     replace,
-    router: { replace },
+    prefetch,
+    router: { replace, prefetch },
     MockApiError,
   };
 });
@@ -63,6 +65,7 @@ describe("AuthEntryGuard", () => {
 
     await renderGuard(root);
 
+    expect(mocks.prefetch).toHaveBeenCalledWith("/dashboard");
     expect(container.textContent).toContain("Checking your session");
     expect(container.textContent).not.toContain("login form");
 

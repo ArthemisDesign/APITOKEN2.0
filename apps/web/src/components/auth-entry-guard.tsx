@@ -20,6 +20,13 @@ export function AuthEntryGuard({
   const router = useRouter();
   const [phase, setPhase] = useState<AuthEntryPhase>("checking");
 
+  // Дашборд — цель каждого исхода этой страницы (авто-редирект по живой сессии
+  // или вход/регистрация). Префетчим его чанки и статический shell заранее,
+  // пока пользователь набирает креды, чтобы переход был мгновенным.
+  useEffect(() => {
+    router.prefetch(dashboardHref);
+  }, [router, dashboardHref]);
+
   useEffect(() => {
     let cancelled = false;
     let finished = false;
