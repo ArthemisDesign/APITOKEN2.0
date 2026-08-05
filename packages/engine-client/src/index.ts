@@ -181,6 +181,23 @@ const stage8EvidenceMaxResponseBytes = 16 * 1024 * 1024;
 // requests for a sub-second window, and pausing briefly lets the health-gated origin settle.
 const transientGetRetryDelayMs = 300;
 
+function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(new EngineClientError("engine request aborted", undefined, false));
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, delayMs);
+    const abort = () => {
+      clearTimeout(timeout);
+      reject(new EngineClientError("engine request aborted", undefined, false));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
 export class EngineClient {
   private readonly baseUrl: string;
   private readonly controlKey: string;
@@ -385,10 +402,15 @@ export class EngineClient {
     return result.entries;
   }
 
-  async getUsage(accountId: string, window = "30d"): Promise<EngineUsage> {
+  async getUsage(
+    accountId: string,
+    window = "30d",
+    options: { signal?: AbortSignal } = {},
+  ): Promise<EngineUsage> {
     if (!/^(all|\d+[dh])$/.test(window)) throw new RangeError("window must be like 30d, 7d, 24h, or all");
     const { response, payload } = await this.request(
       `/admin/account/${encodeURIComponent(accountId)}/usage?window=${encodeURIComponent(window)}`,
+      options.signal === undefined ? {} : { signal: options.signal },
     );
     const usage = engineUsageSchema.parse(payload);
     this.assertAccount(usage.account, accountId, response);
@@ -996,6 +1018,7 @@ export class EngineClient {
       authenticated?: boolean;
       acceptedStatuses?: readonly number[];
       maxResponseBytes?: number;
+      signal?: AbortSignal;
     } = {},
   ): Promise<{ response: Response; payload: unknown; rawText: string }> {
     // Retry only idempotent GETs (the default method), exactly once, on failures the client
@@ -1006,10 +1029,12 @@ export class EngineClient {
       try {
         return await this.attemptRequest(path, options);
       } catch (error) {
-        if (attempt >= maxAttempts || !(error instanceof EngineClientError && error.retryable)) {
+        if (options.signal?.aborted
+          || attempt >= maxAttempts
+          || !(error instanceof EngineClientError && error.retryable)) {
           throw error;
         }
-        await new Promise((resolve) => setTimeout(resolve, transientGetRetryDelayMs));
+        await waitForRetry(transientGetRetryDelayMs, options.signal);
       }
     }
   }
@@ -1022,9 +1047,13 @@ export class EngineClient {
       authenticated?: boolean;
       acceptedStatuses?: readonly number[];
       maxResponseBytes?: number;
+      signal?: AbortSignal;
     },
   ): Promise<{ response: Response; payload: unknown; rawText: string }> {
     const controller = new AbortController();
+    const abortFromCaller = () => controller.abort(options.signal?.reason);
+    if (options.signal?.aborted) abortFromCaller();
+    else options.signal?.addEventListener("abort", abortFromCaller, { once: true });
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     const headers: Record<string, string> = { accept: "application/json" };
     if (options.body !== undefined) headers["content-type"] = "application/json";
@@ -1046,15 +1075,19 @@ export class EngineClient {
       };
     } catch (error) {
       if (error instanceof EngineClientError) throw error;
+      const abortedByCaller = options.signal?.aborted === true;
       const timedOut = controller.signal.aborted || (error instanceof Error && error.name === "AbortError");
-      const message = timedOut
-        ? "engine request timed out"
-        : response === undefined
-          ? "engine request failed"
-          : "engine response body failed";
-      throw new EngineClientError(message, response?.status, true);
+      const message = abortedByCaller
+        ? "engine request aborted"
+        : timedOut
+          ? "engine request timed out"
+          : response === undefined
+            ? "engine request failed"
+            : "engine response body failed";
+      throw new EngineClientError(message, response?.status, !abortedByCaller);
     } finally {
       clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", abortFromCaller);
     }
   }
 

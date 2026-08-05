@@ -4,49 +4,74 @@ import type { Database } from "./client.js";
 
 type RecordedQuery = { text: string; params: unknown[] };
 
-function fakeDatabase(): { database: Database; queries: RecordedQuery[] } {
+type FakeDatabase = {
+  database: Database;
+  queries: RecordedQuery[];
+  transactionStatements: string[];
+  state: { released: boolean };
+};
+
+function fakeDatabase(options: { selectError?: Error; rollbackError?: Error } = {}): FakeDatabase {
   const queries: RecordedQuery[] = [];
-  const pool = {
-    query: (text: string, params?: unknown[]) => {
-      queries.push({ text, params: params ?? [] });
-      if (text.includes("admin-finance:paying-users-summary")) {
-        return Promise.resolve({ rows: [{
-          paying_users: "8", cohort_users: "10", bonus_only_users: "2", active_spenders: "7",
-          paid_nano: "90000000000", manual_paid_nano: "10000000000", spent_nano: "34000000000",
-          bonus_only_spent_nano: "2000000000", anthropic_nano: "14000000000",
-          openai_nano: "15000000000", google_nano: "4000000000", other_nano: "1000000000",
-          anthropic_users: "5", openai_users: "4", google_users: "2", other_users: "1",
-        }] });
+  const transactionStatements: string[] = [];
+  const state = { released: false };
+  const query = (text: string, params?: unknown[]) => {
+    if (!text.includes("admin-finance:")) {
+      transactionStatements.push(text);
+      if (text === "ROLLBACK" && options.rollbackError !== undefined) {
+        return Promise.reject(options.rollbackError);
       }
-      if (text.includes("admin-finance:paying-users-count")) {
-        return Promise.resolve({ rows: [{ total: "3" }] });
-      }
+      return Promise.resolve({ rows: [] });
+    }
+    queries.push({ text, params: params ?? [] });
+    if (options.selectError !== undefined) return Promise.reject(options.selectError);
+    if (text.includes("admin-finance:paying-users-summary")) {
       return Promise.resolve({ rows: [{
-        user_id: "user-1", email: "paid@example.com", display_name: "Paid User", status: "active",
-        customer_type: "b2c", current_tier: 2, multiplier_bp: 5000, funding_kind: "payments_and_manual",
-        paid_nano: "25000000000", payments_count: "2", manual_paid_nano: "5000000000",
-        manual_topups_count: "1", last_paid_at: new Date("2026-07-30T10:00:00Z"),
-        spent_nano: "7000000000", paid_funded_nano: "4000000000", bonus_funded_nano: "2000000000",
-        other_funded_nano: "500000000", unattributed_nano: "500000000",
-        anthropic_nano: "2000000000", openai_nano: "4000000000",
-        google_nano: "1000000000", other_nano: "0", active_api_keys: "1",
-        last_seen_at: new Date("2026-08-01T10:00:00Z"), created_at: new Date("2026-06-01T10:00:00Z"),
+        paying_users: "8", cohort_users: "10", bonus_only_users: "2", active_spenders: "7",
+        paid_nano: "90000000000", manual_paid_nano: "10000000000", spent_nano: "34000000000",
+        bonus_only_spent_nano: "2000000000", anthropic_nano: "14000000000",
+        openai_nano: "15000000000", google_nano: "4000000000", other_nano: "1000000000",
+        anthropic_users: "5", openai_users: "4", google_users: "2", other_users: "1",
       }] });
-    },
+    }
+    if (text.includes("admin-finance:paying-users-count")) {
+      return Promise.resolve({ rows: [{ total: "3" }] });
+    }
+    return Promise.resolve({ rows: [{
+      user_id: "user-1", email: "paid@example.com", display_name: "Paid User", status: "active",
+      customer_type: "b2c", current_tier: 2, multiplier_bp: 5000, funding_kind: "payments_and_manual",
+      paid_nano: "25000000000", payments_count: "2", manual_paid_nano: "5000000000",
+      manual_topups_count: "1", last_paid_at: new Date("2026-07-30T10:00:00Z"),
+      spent_nano: "7000000000", paid_funded_nano: "4000000000", bonus_funded_nano: "2000000000",
+      other_funded_nano: "500000000", unattributed_nano: "500000000",
+      anthropic_nano: "2000000000", openai_nano: "4000000000",
+      google_nano: "1000000000", other_nano: "0", engine_account_id: "acct-user-1",
+      usage_account_ids: ["acct-historical", "acct-user-1"], active_api_keys: "1",
+      last_seen_at: new Date("2026-08-01T10:00:00Z"), created_at: new Date("2026-06-01T10:00:00Z"),
+    }] });
   };
-  return { database: { pool } as unknown as Database, queries };
+  const client = { query, release: () => { state.released = true; } };
+  const pool = { connect: () => Promise.resolve(client) };
+  return { database: { pool } as unknown as Database, queries, transactionStatements, state };
 }
 
 describe("listAdminPayingUsers", () => {
   it("returns exact provider money, stable totals and filtered pagination", async () => {
-    const { database, queries } = fakeDatabase();
+    const { database, queries, transactionStatements, state } = fakeDatabase();
     const page = await listAdminPayingUsers(database, {
       days: 7, limit: 25, offset: 50, q: "paid@", status: "active", provider: "openai",
       sort: "paid", dir: "asc",
     });
 
+    expect(transactionStatements).toEqual([
+      "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
+      "COMMIT",
+    ]);
+    expect(state.released).toBe(true);
     expect(queries).toHaveLength(3);
-    expect(queries[0]!.params).toEqual([7, "paid@", "active", "openai", "", 25, 50]);
+    const windowEnd = queries[0]!.params[7];
+    expect(windowEnd).toBeInstanceOf(Date);
+    expect(queries[0]!.params).toEqual([7, "paid@", "active", "openai", "", 25, 50, windowEnd]);
     expect(queries[0]!.text).toContain("JOIN paid ON paid.user_id = u.id");
     expect(queries[0]!.text).toContain("pricing_usage_attributions");
     expect(queries[0]!.text).toContain("COALESCE(a.provider_id, e.provider_id) AS provider_id");
@@ -56,9 +81,13 @@ describe("listAdminPayingUsers", () => {
     expect(queries[0]!.text).toContain("usage.event_count = usage.exact_modern_event_count");
     expect(queries[0]!.text).not.toContain("real_funded_nano");
     expect(queries[0]!.text).not.toContain("free_balance_nano");
+    expect(queries[0]!.text).toContain("array_agg(DISTINCT engine_account_id ORDER BY engine_account_id)");
+    expect(queries[0]!.text).toContain("e.occurred_at < $8::timestamptz");
     expect(queries[0]!.text).toContain("ORDER BY paid.paid_nano ASC NULLS LAST, u.id ASC");
-    expect(queries[1]!.params).toEqual([7, "paid@", "active", "openai", ""]);
-    expect(queries[2]!.params).toEqual([7, ""]);
+    expect(queries[1]!.params).toEqual([7, "paid@", "active", "openai", "", windowEnd]);
+    expect(queries[1]!.text).toContain("e.occurred_at < $6::timestamptz");
+    expect(queries[2]!.params).toEqual([7, "", windowEnd]);
+    expect(queries[2]!.text).toContain("e.occurred_at < $3::timestamptz");
     expect(page).toMatchObject({
       total: 3,
       days: 7,
@@ -72,6 +101,8 @@ describe("listAdminPayingUsers", () => {
         otherFundedSpentNano: "500000000",
         unattributedSpentNano: "500000000",
         providerSpendNano: { anthropic: "2000000000", openai: "4000000000", google: "1000000000", other: "0" },
+        engineAccountId: "acct-user-1",
+        usageAccountIds: ["acct-historical", "acct-user-1"],
       }],
       summary: {
         payingUsers: 8,
@@ -110,8 +141,32 @@ describe("listAdminPayingUsers", () => {
       expect(queries[0]!.text).toContain("$5::text IN ('', 'all')");
       expect(queries[1]!.text).toContain("$5 IN ('bonus', 'all')");
       expect(queries[2]!.text).toContain("$2 IN ('bonus', 'all')");
-      expect(queries[2]!.text).toContain("paid.funding_kind <> 'bonus_only'");
+      expect(queries[2]!.text).toContain("paid.funding_kind IN ('payments', 'payments_and_manual', 'manual')");
     }
+  });
+
+  it("accepts spenders as an additive all-positive-spend cohort", async () => {
+    const { database, queries } = fakeDatabase();
+    await listAdminPayingUsers(database, { days: 1, funding: "spenders" });
+    for (const query of queries) expect(query.params).toContain("spenders");
+    expect(queries[0]!.text).toContain("$5 = 'spenders' AND COALESCE(usage.spent_nano, 0) > 0");
+    expect(queries[2]!.text).toContain("$2 = 'spenders' AND COALESCE(usage.spent_nano, 0) > 0");
+    expect(queries[0]!.text).toContain("ELSE 'spend_only'");
+  });
+
+  it("preserves a SELECT failure when rollback also fails and always releases the client", async () => {
+    const selectError = new Error("page select failed");
+    const { database, transactionStatements, state } = fakeDatabase({
+      selectError,
+      rollbackError: new Error("rollback failed"),
+    });
+
+    await expect(listAdminPayingUsers(database, { days: 7 })).rejects.toBe(selectError);
+    expect(transactionStatements).toEqual([
+      "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
+      "ROLLBACK",
+    ]);
+    expect(state.released).toBe(true);
   });
 
   it("rejects sort, direction, provider and window values outside closed enums", async () => {

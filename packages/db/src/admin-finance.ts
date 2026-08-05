@@ -84,8 +84,13 @@ export interface AdminFinanceChurnRow {
 
 export type AdminPayingUserProvider = "anthropic" | "openai" | "google" | "other";
 export type AdminPayingUserSort = "spent" | "paid" | "last_paid" | "last_seen";
-export type AdminPayingUserFunding = "payments" | "manual" | "bonus" | "all";
-export type AdminPayingUserFundingKind = "payments" | "payments_and_manual" | "manual" | "bonus_only";
+export type AdminPayingUserFunding = "payments" | "manual" | "bonus" | "all" | "spenders";
+export type AdminPayingUserFundingKind =
+  | "payments"
+  | "payments_and_manual"
+  | "manual"
+  | "bonus_only"
+  | "spend_only";
 
 export interface AdminPayingUsersQuery {
   days: 1 | 7 | 30;
@@ -96,10 +101,13 @@ export interface AdminPayingUsersQuery {
   provider?: AdminPayingUserProvider;
   /**
    * Когорта по источнику денег. Отсутствующий фильтр сохраняет прежний payment/manual union;
-   * `bonus` означает строгий bonus-only расход выбранного окна, `all` объединяет обе когорты.
-   * Как определение когорты фильтр сужает и строки, и сводку.
+   * `bonus` означает строгий bonus-only расход выбранного окна, `all` объединяет эти старые
+   * когорты, а `spenders` включает любой положительный расход окна. Как определение когорты
+   * фильтр сужает и строки, и сводку.
    */
   funding?: AdminPayingUserFunding;
+  /** Opt-in live engine usage enrichment; omitted/false keeps the endpoint commerce-DB-only. */
+  includeUsage?: boolean;
   sort?: AdminPayingUserSort;
   dir?: "asc" | "desc";
 }
@@ -125,13 +133,15 @@ export interface AdminPayingUserRow {
   otherFundedSpentNano: string;
   unattributedSpentNano: string;
   providerSpendNano: Record<AdminPayingUserProvider, string>;
+  engineAccountId: string | null;
+  usageAccountIds: string[];
   activeApiKeys: number;
   lastSeenAt: Date | null;
   createdAt: Date;
 }
 
 export interface AdminPayingUsersSummary {
-  /** Backward-compatible money-funded count; use cohortUsers for `funding=all`. */
+  /** Backward-compatible money-funded count; use cohortUsers for the complete selected cohort. */
   payingUsers: number;
   cohortUsers: number;
   bonusOnlyUsers: number;
@@ -350,10 +360,10 @@ const PAYING_USER_SORT_SQL: Record<AdminPayingUserSort, string> = {
 };
 
 /**
- * Пагинированный money-funded или строгий bonus-only cohort. Расход берётся из immutable
- * pricing_usage_events за выбранное окно, а провайдер — из exact attribution snapshot либо
- * authoritative top-level engine ledger evidence на событии. Bonus-only требует modern split
- * для каждого события окна; legacy/неполная атрибуция остаётся видимой как unattributed.
+ * Пагинированный money-funded, строгий bonus-only или полный spender cohort. Расход берётся
+ * из immutable pricing_usage_events за выбранное окно, а провайдер — из exact attribution snapshot
+ * либо authoritative top-level engine ledger evidence на событии. Bonus-only требует modern split
+ * для каждого события окна; остальные spend-only строки сохраняют legacy/неполную атрибуцию.
  */
 export async function listAdminPayingUsers(
   database: Database,
@@ -361,6 +371,7 @@ export async function listAdminPayingUsers(
 ): Promise<AdminPayingUsersPage> {
   if (![1, 7, 30].includes(query.days)) throw new Error(`unsupported paying users window: ${query.days}`);
   const days = query.days;
+  const windowEnd = new Date();
   const limit = Math.max(1, Math.min(100, query.limit ?? 50));
   const offset = Math.max(0, query.offset ?? 0);
   const q = query.q?.trim() ?? "";
@@ -378,7 +389,7 @@ export async function listAdminPayingUsers(
   if (status && status !== "active" && status !== "disabled") {
     throw new Error(`unsupported paying users status: ${String(query.status)}`);
   }
-  if (funding && !["payments", "manual", "bonus", "all"].includes(funding)) {
+  if (funding && !["payments", "manual", "bonus", "all", "spenders"].includes(funding)) {
     throw new Error(`unsupported paying users funding: ${String(query.funding)}`);
   }
 
@@ -386,7 +397,7 @@ export async function listAdminPayingUsers(
   // Exact modern funding requires policy_v1/release_v2, complete non-negative split, and equality
   // to both attribution charged_nano and the immutable event amount. No balance/model/top-up proxy
   // participates in bonus-only classification.
-  const commonCtes = (fundingParameter: number) => `
+  const commonCtes = (fundingParameter: number, windowEndParameter: number) => `
     WITH money AS (
       SELECT user_id,
              sum(payments_count)::bigint AS payments_count,
@@ -410,7 +421,7 @@ export async function listAdminPayingUsers(
       ) sources
       GROUP BY user_id
     ), attributed_window_events AS (
-      SELECT e.user_id, e.amount_nano,
+      SELECT e.user_id, e.engine_account_id, e.amount_nano,
         COALESCE(a.provider_id, e.provider_id) AS provider_id,
         a.paid_funded_nano, a.bonus_funded_nano, a.other_funded_nano,
         COALESCE(
@@ -424,15 +435,17 @@ export async function listAdminPayingUsers(
         ) AS exact_modern_funding
       FROM pricing_usage_events e
       LEFT JOIN pricing_usage_attributions a ON a.pricing_usage_event_id = e.id
-      WHERE e.occurred_at >= now() - make_interval(days => $1)
+      WHERE e.occurred_at >= $${windowEndParameter}::timestamptz - make_interval(days => $1)
+        AND e.occurred_at < $${windowEndParameter}::timestamptz
     ), window_events AS (
-      SELECT user_id, amount_nano, provider_id, exact_modern_funding,
+      SELECT user_id, engine_account_id, amount_nano, provider_id, exact_modern_funding,
         CASE WHEN exact_modern_funding THEN paid_funded_nano ELSE 0 END AS paid_funded_nano,
         CASE WHEN exact_modern_funding THEN bonus_funded_nano ELSE 0 END AS bonus_funded_nano,
         CASE WHEN exact_modern_funding THEN other_funded_nano ELSE 0 END AS other_funded_nano
       FROM attributed_window_events
     ), usage AS (
       SELECT user_id,
+        array_agg(DISTINCT engine_account_id ORDER BY engine_account_id) AS event_account_ids,
         sum(amount_nano) AS spent_nano,
         count(*) AS event_count,
         count(*) FILTER (WHERE exact_modern_funding) AS exact_modern_event_count,
@@ -461,7 +474,14 @@ export async function listAdminPayingUsers(
             THEN 'payments_and_manual'
           WHEN COALESCE(money.payments_count, 0) > 0 THEN 'payments'
           WHEN COALESCE(money.manual_topups_count, 0) > 0 THEN 'manual'
-          ELSE 'bonus_only'
+          WHEN COALESCE(usage.spent_nano, 0) > 0
+            AND usage.event_count = usage.exact_modern_event_count
+            AND usage.paid_funded_nano = 0
+            AND usage.bonus_funded_nano = usage.spent_nano
+            AND usage.other_funded_nano = 0
+            AND usage.unattributed_nano = 0
+            THEN 'bonus_only'
+          ELSE 'spend_only'
         END AS funding_kind
       FROM users u
       LEFT JOIN money ON money.user_id = u.id
@@ -482,6 +502,7 @@ export async function listAdminPayingUsers(
           AND usage.bonus_funded_nano = usage.spent_nano
           AND usage.other_funded_nano = 0
           AND usage.unattributed_nano = 0)
+        OR ($${fundingParameter} = 'spenders' AND COALESCE(usage.spent_nano, 0) > 0)
       )
     ), sessions AS (
       SELECT user_id, max(last_seen_at) AS last_seen_at
@@ -504,8 +525,11 @@ export async function listAdminPayingUsers(
       OR ($4 = 'google' AND COALESCE(usage.google_nano, 0) > 0)
       OR ($4 = 'other' AND COALESCE(usage.other_nano, 0) > 0))
   `;
-  const [pageResult, countResult, summaryResult] = await Promise.all([
-    database.pool.query<{
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const [pageResult, countResult, summaryResult] = [
+      await client.query<{
       user_id: string; email: string; display_name: string; status: "active" | "disabled";
       customer_type: "b2c" | "b2b" | null; current_tier: number | null; multiplier_bp: number | null;
       funding_kind: AdminPayingUserFundingKind; paid_nano: string; payments_count: string;
@@ -513,10 +537,11 @@ export async function listAdminPayingUsers(
       spent_nano: string; paid_funded_nano: string; bonus_funded_nano: string;
       other_funded_nano: string; unattributed_nano: string;
       anthropic_nano: string; openai_nano: string; google_nano: string; other_nano: string;
-      active_api_keys: string; last_seen_at: Date | null; created_at: Date;
+      engine_account_id: string | null; usage_account_ids: string[]; active_api_keys: string;
+      last_seen_at: Date | null; created_at: Date;
     }>(`
       /* admin-finance:paying-users */
-      ${commonCtes(5)}
+      ${commonCtes(5, 8)}
       SELECT u.id AS user_id, u.email, u.display_name, u.status,
         cp.customer_type, cp.current_tier, cp.multiplier_bp, paid.funding_kind,
         paid.paid_nano::text, paid.payments_count::text, paid.last_paid_at,
@@ -530,28 +555,35 @@ export async function listAdminPayingUsers(
         COALESCE(usage.openai_nano, 0)::text AS openai_nano,
         COALESCE(usage.google_nano, 0)::text AS google_nano,
         COALESCE(usage.other_nano, 0)::text AS other_nano,
+        ea.engine_account_id,
+        CASE
+          WHEN usage.event_account_ids IS NOT NULL THEN usage.event_account_ids
+          WHEN ea.engine_account_id IS NOT NULL THEN ARRAY[ea.engine_account_id]
+          ELSE ARRAY[]::text[]
+        END AS usage_account_ids,
         COALESCE(api_keys.active_count, 0)::text AS active_api_keys,
         sessions.last_seen_at, u.created_at
       FROM users u
       JOIN paid ON paid.user_id = u.id
       LEFT JOIN customer_profiles cp ON cp.user_id = u.id
+      LEFT JOIN engine_accounts ea ON ea.user_id = u.id
       LEFT JOIN usage ON usage.user_id = u.id
       LEFT JOIN sessions ON sessions.user_id = u.id
       LEFT JOIN api_keys ON api_keys.user_id = u.id
       WHERE ${filters}
       ORDER BY ${sortExpr} ${dir === "asc" ? "ASC" : "DESC"} NULLS LAST, u.id ASC
       LIMIT $6 OFFSET $7
-    `, [days, q, status, provider, funding, limit, offset]),
-    database.pool.query<{ total: string }>(`
+    `, [days, q, status, provider, funding, limit, offset, windowEnd]),
+    await client.query<{ total: string }>(`
       /* admin-finance:paying-users-count */
-      ${commonCtes(5)}
+      ${commonCtes(5, 6)}
       SELECT count(*)::text AS total
       FROM users u
       JOIN paid ON paid.user_id = u.id
       LEFT JOIN usage ON usage.user_id = u.id
       WHERE ${filters}
-    `, [days, q, status, provider, funding]),
-    database.pool.query<{
+    `, [days, q, status, provider, funding, windowEnd]),
+    await client.query<{
       paying_users: string; cohort_users: string; bonus_only_users: string;
       active_spenders: string; paid_nano: string; manual_paid_nano: string;
       spent_nano: string; bonus_only_spent_nano: string;
@@ -559,8 +591,10 @@ export async function listAdminPayingUsers(
       anthropic_users: string; openai_users: string; google_users: string; other_users: string;
     }>(`
       /* admin-finance:paying-users-summary */
-      ${commonCtes(2)}
-      SELECT count(*) FILTER (WHERE paid.funding_kind <> 'bonus_only')::text AS paying_users,
+      ${commonCtes(2, 3)}
+      SELECT count(*) FILTER (
+          WHERE paid.funding_kind IN ('payments', 'payments_and_manual', 'manual')
+        )::text AS paying_users,
         count(*)::text AS cohort_users,
         count(*) FILTER (WHERE paid.funding_kind = 'bonus_only')::text AS bonus_only_users,
         count(*) FILTER (WHERE COALESCE(usage.spent_nano, 0) > 0)::text AS active_spenders,
@@ -579,8 +613,9 @@ export async function listAdminPayingUsers(
         count(*) FILTER (WHERE COALESCE(usage.other_nano, 0) > 0)::text AS other_users
       FROM paid
       LEFT JOIN usage ON usage.user_id = paid.user_id
-    `, [days, funding]),
-  ]);
+    `, [days, funding, windowEnd]),
+  ];
+  await client.query("COMMIT");
 
   const summary = summaryResult.rows[0] ?? {
     paying_users: "0", cohort_users: "0", bonus_only_users: "0", active_spenders: "0",
@@ -614,6 +649,8 @@ export async function listAdminPayingUsers(
         google: row.google_nano,
         other: row.other_nano,
       },
+      engineAccountId: row.engine_account_id,
+      usageAccountIds: row.usage_account_ids,
       activeApiKeys: Number(row.active_api_keys),
       lastSeenAt: row.last_seen_at,
       createdAt: row.created_at,
@@ -645,6 +682,16 @@ export async function listAdminPayingUsers(
       },
     },
   };
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // Preserve the query/commit failure: rollback is best-effort cleanup only.
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**

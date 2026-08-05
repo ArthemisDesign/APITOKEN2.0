@@ -41,6 +41,10 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
         "INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)",
         [userId, `${kind}@test.invalid`, kind],
       );
+      await database.pool.query(`
+        INSERT INTO engine_accounts (id, user_id, engine_account_id, mult_bp, status)
+        VALUES ($1, $2, $3, 5000, 'active')
+      `, [randomUUID(), userId, `acct-${userId}`]);
     }
 
     await insertPayment(users.get("paid")!);
@@ -57,6 +61,7 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
     });
     await insertEvent(users.get("paid")!, {
       amount: 50n, eventProvider: "google", attributionProvider: null,
+      engineAccountId: `acct-historical-${users.get("paid")!}`,
     });
     await insertEvent(users.get("manual")!, {
       amount: 300n, paid: 300n, bonus: 0n, other: 0n,
@@ -125,6 +130,7 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
     bonus?: bigint;
     other?: bigint;
     snapshotKind?: "release_v2" | "legacy_scalar";
+    engineAccountId?: string;
   }): Promise<void> {
     ledgerId += 1;
     const eventId = randomUUID();
@@ -132,7 +138,14 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
       INSERT INTO pricing_usage_events (
         id, user_id, engine_account_id, ledger_entry_id, provider_id, amount_nano, occurred_at
       ) VALUES ($1, $2, $3, $4, $5, $6, now())
-    `, [eventId, userId, `acct-${userId}`, ledgerId, input.eventProvider, input.amount.toString()]);
+    `, [
+      eventId,
+      userId,
+      input.engineAccountId ?? `acct-${userId}`,
+      ledgerId,
+      input.eventProvider,
+      input.amount.toString(),
+    ]);
     if (input.attributionProvider === null) return;
     if (input.snapshotKind === "legacy_scalar") {
       await database.pool.query(`
@@ -197,6 +210,7 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
         otherFundedSpentNano: "0",
         unattributedSpentNano: "0",
         providerSpendNano: { anthropic: "100", openai: "0", google: "0", other: "0" },
+        engineAccountId: `acct-${users.get("bonus")}`,
       }),
     ]);
     expect(page.summary).toMatchObject({
@@ -217,6 +231,11 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
       spentNano: "250",
       paidFundedSpentNano: "200",
       unattributedSpentNano: "50",
+      engineAccountId: `acct-${users.get("paid")}`,
+      usageAccountIds: [
+        `acct-${users.get("paid")}`,
+        `acct-historical-${users.get("paid")}`,
+      ],
     });
 
     const all = await listAdminPayingUsers(database, { days: 30, funding: "all" });
@@ -231,6 +250,16 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
     });
   });
 
+  it("preserves the legacy payments and manual filters", async () => {
+    const payments = await listAdminPayingUsers(database, { days: 30, funding: "payments" });
+    expect(payments.rows.map((row) => row.userId)).toEqual([users.get("paid")]);
+    expect(payments.rows[0]?.fundingKind).toBe("payments");
+
+    const manual = await listAdminPayingUsers(database, { days: 30, funding: "manual" });
+    expect(manual.rows.map((row) => row.userId)).toEqual([users.get("manual")]);
+    expect(manual.rows[0]?.fundingKind).toBe("manual");
+  });
+
   it("excludes paid/manual users, mixed/other, legacy/unattributed, and bonus topup without charge", async () => {
     const bonus = await listAdminPayingUsers(database, { days: 30, funding: "bonus" });
     const ids = new Set(bonus.rows.map((row) => row.userId));
@@ -239,6 +268,25 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
     ] as const) {
       expect(ids.has(users.get(kind)!)).toBe(false);
     }
+  });
+
+  it("includes every positive spender, keeps strict bonus_only, and marks other zero-money spenders spend_only", async () => {
+    const spenders = await listAdminPayingUsers(database, { days: 30, funding: "spenders" });
+    expect(new Set(spenders.rows.map((row) => row.userId))).toEqual(new Set([
+      users.get("bonus"), users.get("paid"), users.get("manual"), users.get("mixed"),
+      users.get("other"), users.get("legacy"), users.get("unattributed"),
+    ]));
+    expect(spenders.rows.find((row) => row.userId === users.get("bonus"))?.fundingKind).toBe("bonus_only");
+    for (const kind of ["mixed", "other", "legacy", "unattributed"] as const) {
+      expect(spenders.rows.find((row) => row.userId === users.get(kind))?.fundingKind).toBe("spend_only");
+    }
+    expect(spenders.rows.some((row) => row.userId === users.get("bonus_topup"))).toBe(false);
+    expect(spenders.summary).toMatchObject({
+      payingUsers: 2,
+      cohortUsers: 7,
+      bonusOnlyUsers: 1,
+      activeSpenders: 7,
+    });
   });
 
   it("keeps provider filtering on COALESCE(attribution provider, event provider)", async () => {

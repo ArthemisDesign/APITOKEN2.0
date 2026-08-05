@@ -478,6 +478,61 @@ describe("EngineClient", () => {
     });
   });
 
+  it("rejects unsafe usage counters instead of rounding coerced engine values", async () => {
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async () => new Response(JSON.stringify({
+        account: "acct_test",
+        window: "30d",
+        since_ts: 1,
+        until_ts: 2,
+        requests: "9007199254740993",
+        total_official_nano: "0",
+        total_charged_nano: "0",
+        buckets: {
+          input: { tokens: 0, official_nano: "0" },
+          output: { tokens: 0, official_nano: "0" },
+          cache_read: { tokens: 0, official_nano: "0" },
+          cache_write: { tokens: 0, official_nano: "0" },
+          web_search: { requests: 0, official_nano: "0" },
+          unattributed_legacy: { official_nano: "0" },
+        },
+        models: [],
+        daily: [],
+        daily_providers: [],
+        keys: [],
+      })),
+    });
+
+    await expect(client.getUsage("acct_test", "30d")).rejects.toThrow();
+  });
+
+  it("propagates external usage abort without retrying", async () => {
+    let calls = 0;
+    const client = new EngineClient({
+      baseUrl: "http://engine.test",
+      controlKey: "test-control-key",
+      fetch: async (_input, init) => {
+        calls += 1;
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), {
+            once: true,
+          });
+        });
+      },
+    });
+    const controller = new AbortController();
+    const pending = client.getUsage("acct_test", "30d", { signal: controller.signal });
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({
+      message: "engine request aborted",
+      retryable: false,
+    });
+    expect(calls).toBe(1);
+  });
+
   it("acknowledges an exact durable ledger cursor", async () => {
     let request: { url: string; body: string } | undefined;
     const client = new EngineClient({

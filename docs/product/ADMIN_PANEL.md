@@ -188,6 +188,24 @@ provider/status/funding filters, sorting and pagination stay on the server and t
 not degrade as the customer base grows. The additive bonus contract is consumed only after
 GREEN exact producer SHA `b12a08fe872fb08a88943d7ade0a75a3e567b579`.
 
+Commerce now also produces additive `funding=spenders`: every positive selected-window commerce
+spender, including mixed/other/legacy/unattributed evidence, while preserving strict `bonus_only`
+and marking zero-money non-strict rows `spend_only`. Page/count/summary share one half-open commerce
+cutoff in a read-only repeatable-read snapshot. Existing requests, including the current page's
+`funding=all`, remain DB-only because `include_usage` is omitted: they make no engine calls and expose
+neither usage nor internal engine account IDs.
+
+The future consumer must explicitly request `funding=spenders&include_usage=true`. Only then does each
+paginated row receive a `usage` projection covering every distinct account found on that user's window
+events (the current mapping is only a no-spend money-row fallback). Usage calls have a page-wide
+concurrency limit of four and a shared five-second abort deadline; calls still queued at expiry never
+start, in-flight calls are cancelled, and coverage degrades to `partial` or `unavailable`. Successful
+rows are grouped by the exact provider and model values supplied by EngineUsage, never by model-name
+inference. Safe engine request/token integers are summed with BigInt and serialized as decimal strings;
+nanoUSD remains exact decimal strings. The producer does not expose full engine usage, account IDs,
+key details, buckets or daily series, and partial totals never claim complete coverage. Switching the
+page to this opt-in contract is a separate checkpoint after the exact producer SHA is GREEN.
+
 The top ledger separates lifetime money received (`paid_nano`, including the manual amount
 in its copy) from the neutral selected-window bonus-only card (`bonus_only_spent_nano` and
 `bonus_only_users`); bonus spend is not revenue. Window spend and the proportional

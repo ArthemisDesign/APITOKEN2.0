@@ -19,6 +19,9 @@ describe("admin finance HTTP contract", () => {
     expect(() => controller.payingUsers("30", "50", "0", "", undefined, undefined, "raw_sql")).toThrow(BadRequestException);
     expect(() => controller.payingUsers("30", "50", "0", "", undefined, undefined, undefined, undefined, "gift"))
       .toThrow(BadRequestException);
+    expect(() => controller.payingUsers(
+      "30", "50", "0", "", undefined, undefined, undefined, undefined, "all", "1",
+    )).toThrow(BadRequestException);
     expect(() => controller.cohorts("0")).toThrow(BadRequestException);
     expect(() => controller.engineSpend("14")).toThrow(BadRequestException);
     expect(() => controller.churnSignals("91", undefined)).toThrow(BadRequestException);
@@ -64,6 +67,19 @@ describe("admin finance HTTP contract", () => {
     await controller.payingUsers("30", undefined, undefined, undefined, undefined, undefined, undefined, undefined, "all");
     expect(finance.payingUsers).toHaveBeenLastCalledWith({
       days: 30, limit: 50, offset: 0, sort: "spent", dir: "desc", funding: "all",
+    });
+    await controller.payingUsers(
+      "1", undefined, undefined, undefined, undefined, undefined, undefined, undefined, "spenders", "true",
+    );
+    expect(finance.payingUsers).toHaveBeenLastCalledWith({
+      days: 1, limit: 50, offset: 0, sort: "spent", dir: "desc", funding: "spenders",
+      includeUsage: true,
+    });
+    await controller.payingUsers(
+      "1", undefined, undefined, undefined, undefined, undefined, undefined, undefined, "all", "false",
+    );
+    expect(finance.payingUsers).toHaveBeenLastCalledWith({
+      days: 1, limit: 50, offset: 0, sort: "spent", dir: "desc", funding: "all",
     });
 
     await controller.cohorts(undefined);

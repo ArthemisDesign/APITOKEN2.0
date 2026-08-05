@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@claude-api/db", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@claude-api/db")>();
@@ -27,6 +27,7 @@ import {
   listAdminPayingUsers,
   listAdminRefunds,
 } from "@claude-api/db";
+import type { EngineUsage } from "@claude-api/contracts";
 import { AdminFinanceService } from "./admin-finance.service.js";
 
 const overviewMock = vi.mocked(getAdminFinanceOverview);
@@ -39,12 +40,17 @@ const cohortsMock = vi.mocked(listAdminFinanceCohorts);
 const churnMock = vi.mocked(listAdminFinanceChurnSignals);
 const engineOwnersMock = vi.mocked(listAdminEngineAccountOwners);
 const getSpendStats = vi.fn();
+const getUsage = vi.fn();
 
 // db-слой замокан на уровне функций-репозиториев, поэтому Database не используется.
-const service = new AdminFinanceService({} as never, { getSpendStats } as never);
+const service = new AdminFinanceService({} as never, { getSpendStats, getUsage } as never);
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("admin finance overview", () => {
@@ -295,7 +301,62 @@ describe("admin finance top customers", () => {
 });
 
 describe("admin finance paying users", () => {
-  it("serializes exact provider spend and dates without float money", async () => {
+  const usage = (account: string, overrides: Partial<EngineUsage> = {}): EngineUsage => ({
+    account,
+    window: "7d",
+    since_ts: 1,
+    until_ts: 2,
+    requests: 1,
+    total_official_nano: "1",
+    total_charged_nano: "1",
+    buckets: {
+      input: { tokens: 0, official_nano: "0" },
+      output: { tokens: 0, official_nano: "0" },
+      cache_read: { tokens: 0, official_nano: "0" },
+      cache_write: { tokens: 0, official_nano: "0" },
+      web_search: { requests: 0, official_nano: "0" },
+      unattributed_legacy: { official_nano: "0" },
+    },
+    models: [],
+    daily: [],
+    daily_providers: [],
+    keys: [],
+    ...overrides,
+  });
+
+  it("keeps the default response DB-only and omits internal account fields", async () => {
+    payingUsersMock.mockResolvedValue({
+      days: 30, total: 1, limit: 50, offset: 0,
+      summary: {
+        payingUsers: 1, cohortUsers: 1, bonusOnlyUsers: 0, activeSpenders: 1,
+        paidNano: "10", manualPaidNano: "0", spentNano: "1", bonusOnlySpentNano: "0",
+        providerSpendNano: { anthropic: "1", openai: "0", google: "0", other: "0" },
+        providerUsers: { anthropic: 1, openai: 0, google: 0, other: 0 },
+      },
+      rows: [{
+        userId: "u1", email: "paid@example.com", displayName: "Paid", status: "active",
+        customerType: "b2c", tier: 1, multiplierBp: 5000, fundingKind: "payments",
+        paidNano: "10", paymentsCount: 1, manualPaidNano: "0", manualTopupsCount: 0,
+        lastPaidAt: null, spentNano: "1", paidFundedSpentNano: "1",
+        bonusFundedSpentNano: "0", otherFundedSpentNano: "0", unattributedSpentNano: "0",
+        providerSpendNano: { anthropic: "1", openai: "0", google: "0", other: "0" },
+        engineAccountId: "acct_current", usageAccountIds: ["acct_old", "acct_current"],
+        activeApiKeys: 1, lastSeenAt: null, createdAt: new Date("2026-06-01T10:00:00Z"),
+      }],
+    });
+
+    const value = await service.payingUsers({ days: 30, funding: "all" }) as {
+      rows: Array<Record<string, unknown>>;
+    };
+
+    expect(getUsage).not.toHaveBeenCalled();
+    expect(value.rows[0]).not.toHaveProperty("usage");
+    expect(value.rows[0]).not.toHaveProperty("engine_account_id");
+    expect(value.rows[0]).not.toHaveProperty("usageAccountIds");
+    expect(JSON.stringify(value)).not.toContain("acct_");
+  });
+
+  it("aggregates every historical account by exact provider and model without leaking EngineUsage", async () => {
     payingUsersMock.mockResolvedValue({
       days: 30,
       total: 1,
@@ -337,13 +398,71 @@ describe("admin finance paying users", () => {
         providerSpendNano: {
           anthropic: "2000000000", openai: "4000000000", google: "1000000000", other: "0",
         },
+        engineAccountId: "acct_u1",
+        usageAccountIds: ["acct_u1", "acct_old_u1", "acct_u1"],
         activeApiKeys: 1,
         lastSeenAt: null,
         createdAt: new Date("2026-06-01T10:00:00Z"),
       }],
     });
+    const exact = "900719925474099312345678901234567890";
+    getUsage.mockImplementation(async (account: string) => account === "acct_u1"
+      ? usage(account, {
+        window: "30d",
+        requests: 3,
+        total_official_nano: exact,
+        total_charged_nano: `${exact}1`,
+        models: [
+          {
+            model: "future-model",
+            provider: "free-community-provider",
+            requests: 2,
+            input_tokens: 11,
+            output_tokens: 12,
+            cache_read_tokens: 13,
+            cache_write_5m_tokens: 14,
+            cache_write_1h_tokens: 15,
+            web_search_requests: 16,
+            official_nano: exact,
+            charged_nano: `${exact}1`,
+          },
+          {
+            model: "future-model",
+            requests: 1,
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_tokens: 3,
+            cache_write_5m_tokens: 4,
+            cache_write_1h_tokens: 5,
+            web_search_requests: 6,
+            official_nano: "7",
+            charged_nano: "8",
+          },
+        ],
+      })
+      : usage(account, {
+        window: "30d",
+        requests: 4,
+        total_official_nano: "10",
+        total_charged_nano: "20",
+        models: [{
+          model: "future-model",
+          provider: "free-community-provider",
+          requests: 4,
+          input_tokens: 21,
+          output_tokens: 22,
+          cache_read_tokens: 23,
+          cache_write_5m_tokens: 24,
+          cache_write_1h_tokens: 25,
+          web_search_requests: 26,
+          official_nano: "10",
+          charged_nano: "20",
+        }],
+      }));
 
-    const query = { days: 30 as const, limit: 50, sort: "spent" as const, dir: "desc" as const };
+    const query = {
+      days: 30 as const, limit: 50, sort: "spent" as const, dir: "desc" as const, includeUsage: true,
+    };
     const value = await service.payingUsers(query) as {
       summary: Record<string, unknown>; rows: Array<Record<string, unknown>>;
     };
@@ -366,25 +485,178 @@ describe("admin finance paying users", () => {
     expect(value.rows[0]).toMatchObject({
       user_id: "u1",
       funding_kind: "bonus_only",
-      paid_nano: "0",
-      manual_paid_nano: "0",
-      manual_topups_count: 0,
-      spent_nano: "123456789012345678901234567890",
-      paid_funded_spent_nano: "0",
-      bonus_funded_spent_nano: "123456789012345678901234567890",
-      other_funded_spent_nano: "0",
-      unattributed_spent_nano: "0",
-      provider_spend: {
-        anthropic_nano: "2000000000",
-        openai_nano: "4000000000",
-        google_nano: "1000000000",
-        other_nano: "0",
-      },
       last_paid_at: null,
       last_seen_at: null,
       created_at: "2026-06-01T10:00:00.000Z",
     });
+    expect(value.rows[0]!.usage).toEqual({
+      status: "complete",
+      window: "30d",
+      account_count: 2,
+      available_account_count: 2,
+      unavailable_account_count: 0,
+      requests: "7",
+      total_official_nano: (BigInt(exact) + 10n).toString(),
+      total_charged_nano: (BigInt(`${exact}1`) + 20n).toString(),
+      models: [
+        {
+          provider: null,
+          model: "future-model",
+          requests: "1",
+          input_tokens: "1",
+          output_tokens: "2",
+          cache_write_5m_tokens: "4",
+          cache_write_1h_tokens: "5",
+          cache_read_tokens: "3",
+          web_search_requests: "6",
+          official_nano: "7",
+          charged_nano: "8",
+        },
+        {
+          provider: "free-community-provider",
+          model: "future-model",
+          requests: "6",
+          input_tokens: "32",
+          output_tokens: "34",
+          cache_write_5m_tokens: "38",
+          cache_write_1h_tokens: "40",
+          cache_read_tokens: "36",
+          web_search_requests: "42",
+          official_nano: (BigInt(exact) + 10n).toString(),
+          charged_nano: (BigInt(`${exact}1`) + 20n).toString(),
+        },
+      ],
+    });
+    expect(getUsage.mock.calls).toEqual([
+      ["acct_u1", "30d", { signal: expect.any(AbortSignal) }],
+      ["acct_old_u1", "30d", { signal: expect.any(AbortSignal) }],
+    ]);
+    const serialized = JSON.stringify(value.rows[0]!.usage);
+    for (const forbidden of ["account", "since_ts", "until_ts", "buckets", "daily", "keys"]) {
+      expect(serialized).not.toContain(`\"${forbidden}\"`);
+    }
     expect(JSON.stringify(value)).not.toContain("_usd");
+  });
+
+  it("bounds all account calls globally and reports complete, partial, and unavailable coverage", async () => {
+    const baseRow = {
+      email: "spender@example.com", displayName: "Spender", status: "active" as const,
+      customerType: "b2c" as const, tier: 0, multiplierBp: 5000,
+      fundingKind: "spend_only" as const, paidNano: "0", paymentsCount: 0,
+      manualPaidNano: "0", manualTopupsCount: 0, lastPaidAt: null,
+      spentNano: "1", paidFundedSpentNano: "0", bonusFundedSpentNano: "0",
+      otherFundedSpentNano: "0", unattributedSpentNano: "1",
+      providerSpendNano: { anthropic: "0", openai: "0", google: "0", other: "1" },
+      activeApiKeys: 0, lastSeenAt: null, createdAt: new Date("2026-06-01T10:00:00Z"),
+    };
+    const rows = Array.from({ length: 6 }, (_, index) => ({
+      ...baseRow,
+      userId: `u${index}`,
+      engineAccountId: index === 5 ? null : `acct_u${index}`,
+      usageAccountIds: index === 0
+        ? ["acct_u0", "acct_old_u0"]
+        : index === 5 ? [] : [`acct_u${index}`],
+    }));
+    payingUsersMock.mockResolvedValue({
+      days: 7, total: 200, limit: 6, offset: 100, rows,
+      summary: {
+        payingUsers: 0, cohortUsers: 6, bonusOnlyUsers: 0, activeSpenders: 6,
+        paidNano: "0", manualPaidNano: "0", spentNano: "6", bonusOnlySpentNano: "0",
+        providerSpendNano: { anthropic: "0", openai: "0", google: "0", other: "6" },
+        providerUsers: { anthropic: 0, openai: 0, google: 0, other: 6 },
+      },
+    });
+
+    let active = 0;
+    let maxActive = 0;
+    const releases: Array<() => void> = [];
+    getUsage.mockImplementation((account: string, window: string) => new Promise((resolve, reject) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      releases.push(() => {
+        active -= 1;
+        if (account === "acct_old_u0") reject(new Error("engine unavailable"));
+        else resolve(usage(account, { window }));
+      });
+    }));
+
+    const pending = service.payingUsers({
+      days: 7, limit: 6, offset: 100, funding: "spenders", includeUsage: true,
+    });
+    await vi.waitFor(() => expect(getUsage).toHaveBeenCalledTimes(4));
+    releases.splice(0).forEach((release) => release());
+    await vi.waitFor(() => expect(getUsage).toHaveBeenCalledTimes(6));
+    releases.splice(0).forEach((release) => release());
+    const value = await pending as { rows: Array<Record<string, unknown>> };
+
+    expect(maxActive).toBe(4);
+    expect(getUsage.mock.calls.map(([account, window]) => [account, window])).toEqual([
+      ["acct_u0", "7d"], ["acct_old_u0", "7d"], ["acct_u1", "7d"],
+      ["acct_u2", "7d"], ["acct_u3", "7d"], ["acct_u4", "7d"],
+    ]);
+    expect(value.rows[0]?.usage).toEqual({
+      status: "partial", window: "7d", account_count: 2,
+      available_account_count: 1, unavailable_account_count: 1,
+      requests: "1", total_official_nano: "1", total_charged_nano: "1", models: [],
+    });
+    expect(value.rows[1]?.usage).toEqual({
+      status: "complete", window: "7d", account_count: 1,
+      available_account_count: 1, unavailable_account_count: 0,
+      requests: "1", total_official_nano: "1", total_charged_nano: "1", models: [],
+    });
+    expect(value.rows[5]).toMatchObject({
+      usage: {
+        status: "unavailable", window: "7d", account_count: 0,
+        available_account_count: 0, unavailable_account_count: 0,
+        requests: "0", total_official_nano: "0", total_charged_nano: "0", models: [],
+      },
+    });
+  });
+
+  it("aborts in-flight usage and starts no queued calls after the page deadline", async () => {
+    vi.useFakeTimers();
+    const baseRow = {
+      email: "spender@example.com", displayName: "Spender", status: "active" as const,
+      customerType: "b2c" as const, tier: 0, multiplierBp: 5000,
+      fundingKind: "spend_only" as const, paidNano: "0", paymentsCount: 0,
+      manualPaidNano: "0", manualTopupsCount: 0, lastPaidAt: null,
+      spentNano: "1", paidFundedSpentNano: "0", bonusFundedSpentNano: "0",
+      otherFundedSpentNano: "0", unattributedSpentNano: "1",
+      providerSpendNano: { anthropic: "0", openai: "0", google: "0", other: "1" },
+      activeApiKeys: 0, lastSeenAt: null, createdAt: new Date("2026-06-01T10:00:00Z"),
+    };
+    payingUsersMock.mockResolvedValue({
+      days: 7, total: 6, limit: 6, offset: 0,
+      rows: Array.from({ length: 6 }, (_, index) => ({
+        ...baseRow, userId: `u${index}`, engineAccountId: `acct_u${index}`,
+        usageAccountIds: [`acct_u${index}`],
+      })),
+      summary: {
+        payingUsers: 0, cohortUsers: 6, bonusOnlyUsers: 0, activeSpenders: 6,
+        paidNano: "0", manualPaidNano: "0", spentNano: "6", bonusOnlySpentNano: "0",
+        providerSpendNano: { anthropic: "0", openai: "0", google: "0", other: "6" },
+        providerUsers: { anthropic: 0, openai: 0, google: 0, other: 6 },
+      },
+    });
+    getUsage.mockImplementation((_account: string, _window: string, options: { signal: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      }));
+
+    const pending = service.payingUsers({ days: 7, includeUsage: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getUsage).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const value = await pending as { rows: Array<Record<string, unknown>> };
+
+    expect(getUsage).toHaveBeenCalledTimes(4);
+    for (const row of value.rows) {
+      expect(row.usage).toEqual({
+        status: "unavailable", window: "7d", account_count: 1,
+        available_account_count: 0, unavailable_account_count: 1,
+        requests: "0", total_official_nano: "0", total_charged_nano: "0", models: [],
+      });
+    }
   });
 });
 

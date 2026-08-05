@@ -10,9 +10,11 @@ import {
   listAdminPayingUsers,
   listAdminRefunds,
   type AdminEngineAccountOwner,
+  type AdminPayingUserRow,
   type AdminPayingUsersQuery,
   type Database,
 } from "@claude-api/db";
+import type { EngineUsage } from "@claude-api/contracts";
 import type { EngineClient } from "@claude-api/engine-client";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
 import { nanoToUsd } from "./admin-operations.service.js";
@@ -220,6 +222,9 @@ export class AdminFinanceService {
 
   async payingUsers(query: AdminPayingUsersQuery): Promise<Record<string, unknown>> {
     const value = await listAdminPayingUsers(this.database, query);
+    const usage = query.includeUsage
+      ? await loadAdminPayingUserUsage(this.engine, value.rows, `${value.days}d`)
+      : undefined;
     const providerMoney = (amounts: Record<"anthropic" | "openai" | "google" | "other", string>) => ({
       anthropic_nano: amounts.anthropic,
       openai_nano: amounts.openai,
@@ -249,7 +254,7 @@ export class AdminFinanceService {
           other: value.summary.providerUsers.other,
         },
       },
-      rows: value.rows.map((row) => ({
+      rows: value.rows.map((row, index) => ({
         user_id: row.userId,
         email: row.email,
         display_name: row.displayName,
@@ -269,6 +274,7 @@ export class AdminFinanceService {
         other_funded_spent_nano: row.otherFundedSpentNano,
         unattributed_spent_nano: row.unattributedSpentNano,
         provider_spend: providerMoney(row.providerSpendNano),
+        ...(usage === undefined ? {} : { usage: usage[index]! }),
         active_api_keys: row.activeApiKeys,
         last_seen_at: row.lastSeenAt?.toISOString() ?? null,
         created_at: row.createdAt.toISOString(),
@@ -336,6 +342,187 @@ export class AdminFinanceService {
       })),
     };
   }
+}
+
+interface AdminPayingUserUsageModel {
+  provider: string | null;
+  model: string;
+  requests: string;
+  input_tokens: string;
+  output_tokens: string;
+  cache_write_5m_tokens: string;
+  cache_write_1h_tokens: string;
+  cache_read_tokens: string;
+  web_search_requests: string;
+  official_nano: string;
+  charged_nano: string;
+}
+
+interface AdminPayingUserUsage {
+  status: "complete" | "partial" | "unavailable";
+  window: string;
+  account_count: number;
+  available_account_count: number;
+  unavailable_account_count: number;
+  requests: string;
+  total_official_nano: string;
+  total_charged_nano: string;
+  models: AdminPayingUserUsageModel[];
+}
+
+type UsageTask = { rowIndex: number; accountId: string };
+type UsageTaskResult = { rowIndex: number; usage: EngineUsage | null };
+
+const payingUsersUsageDeadlineMs = 5_000;
+const payingUsersUsageConcurrency = 4;
+
+async function loadAdminPayingUserUsage(
+  engine: EngineClient,
+  rows: readonly AdminPayingUserRow[],
+  window: string,
+): Promise<AdminPayingUserUsage[]> {
+  const usageAccountIds = rows.map((row) => [...new Set(row.usageAccountIds)]);
+  const tasks = usageAccountIds.flatMap((accountIds, rowIndex) =>
+    accountIds.map((accountId) => ({ rowIndex, accountId })),
+  );
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), payingUsersUsageDeadlineMs);
+  let results: UsageTaskResult[];
+  try {
+    results = await mapWithDeadlineConcurrency(
+      tasks,
+      payingUsersUsageConcurrency,
+      controller.signal,
+      async (task): Promise<UsageTaskResult> => {
+        try {
+          return {
+            rowIndex: task.rowIndex,
+            usage: await engine.getUsage(task.accountId, window, { signal: controller.signal }),
+          };
+        } catch {
+          return { rowIndex: task.rowIndex, usage: null };
+        }
+      },
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+  const availableUsage = rows.map(() => [] as EngineUsage[]);
+  const unavailableUsage = usageAccountIds.map((accountIds) => accountIds.length);
+  for (const result of results) {
+    if (result.usage !== null) {
+      availableUsage[result.rowIndex]!.push(result.usage);
+      unavailableUsage[result.rowIndex]! -= 1;
+    }
+  }
+  return rows.map((_, index) => aggregateAdminPayingUserUsage(
+    window,
+    usageAccountIds[index]!.length,
+    availableUsage[index]!,
+    unavailableUsage[index]!,
+  ));
+}
+
+type UsageModelTotals = {
+  requests: bigint;
+  inputTokens: bigint;
+  outputTokens: bigint;
+  cacheWrite5mTokens: bigint;
+  cacheWrite1hTokens: bigint;
+  cacheReadTokens: bigint;
+  webSearchRequests: bigint;
+  officialNano: bigint;
+  chargedNano: bigint;
+};
+
+function aggregateAdminPayingUserUsage(
+  window: string,
+  accountCount: number,
+  available: readonly EngineUsage[],
+  unavailableCount: number,
+): AdminPayingUserUsage {
+  let requests = 0n;
+  let totalOfficialNano = 0n;
+  let totalChargedNano = 0n;
+  const modelTotals = new Map<string | null, Map<string, UsageModelTotals>>();
+  for (const usage of available) {
+    requests += BigInt(usage.requests);
+    totalOfficialNano += BigInt(usage.total_official_nano);
+    totalChargedNano += BigInt(usage.total_charged_nano);
+    for (const model of usage.models) {
+      const provider = model.provider ?? null;
+      const providerModels = modelTotals.get(provider) ?? new Map<string, UsageModelTotals>();
+      const totals = providerModels.get(model.model) ?? {
+        requests: 0n,
+        inputTokens: 0n,
+        outputTokens: 0n,
+        cacheWrite5mTokens: 0n,
+        cacheWrite1hTokens: 0n,
+        cacheReadTokens: 0n,
+        webSearchRequests: 0n,
+        officialNano: 0n,
+        chargedNano: 0n,
+      };
+      totals.requests += BigInt(model.requests);
+      totals.inputTokens += BigInt(model.input_tokens);
+      totals.outputTokens += BigInt(model.output_tokens);
+      totals.cacheWrite5mTokens += BigInt(model.cache_write_5m_tokens);
+      totals.cacheWrite1hTokens += BigInt(model.cache_write_1h_tokens);
+      totals.cacheReadTokens += BigInt(model.cache_read_tokens);
+      totals.webSearchRequests += BigInt(model.web_search_requests);
+      totals.officialNano += BigInt(model.official_nano);
+      totals.chargedNano += BigInt(model.charged_nano);
+      providerModels.set(model.model, totals);
+      modelTotals.set(provider, providerModels);
+    }
+  }
+  const models = [...modelTotals.entries()]
+    .flatMap(([provider, providerModels]) => [...providerModels.entries()].map(([model, totals]) => ({
+      provider,
+      model,
+      requests: totals.requests.toString(),
+      input_tokens: totals.inputTokens.toString(),
+      output_tokens: totals.outputTokens.toString(),
+      cache_write_5m_tokens: totals.cacheWrite5mTokens.toString(),
+      cache_write_1h_tokens: totals.cacheWrite1hTokens.toString(),
+      cache_read_tokens: totals.cacheReadTokens.toString(),
+      web_search_requests: totals.webSearchRequests.toString(),
+      official_nano: totals.officialNano.toString(),
+      charged_nano: totals.chargedNano.toString(),
+    })))
+    .sort((left, right) => (left.provider ?? "").localeCompare(right.provider ?? "")
+      || left.model.localeCompare(right.model));
+  return {
+    status: available.length === 0
+      ? "unavailable"
+      : unavailableCount === 0 && available.length === accountCount ? "complete" : "partial",
+    window,
+    account_count: accountCount,
+    available_account_count: available.length,
+    unavailable_account_count: unavailableCount,
+    requests: requests.toString(),
+    total_official_nano: totalOfficialNano.toString(),
+    total_charged_nano: totalChargedNano.toString(),
+    models,
+  };
+}
+
+async function mapWithDeadlineConcurrency(
+  items: readonly UsageTask[],
+  limit: number,
+  signal: AbortSignal,
+  fn: (item: UsageTask) => Promise<UsageTaskResult>,
+): Promise<UsageTaskResult[]> {
+  const results: UsageTaskResult[] = [];
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (!signal.aborted && cursor < items.length) {
+      const index = cursor++;
+      results.push(await fn(items[index]!));
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 /** Доля числителя от знаменателя в процентах с 1 знаком; null при нулевом знаменателе. */

@@ -227,11 +227,11 @@ export const engineLedgerSchema = z.object({
 // Разбивка расхода по токенам/моделям (`/admin/account/:id/usage`). Токены — числа (реалистично
 // < 2^53); нанодоллары — decimal-строки (bigint-safe, деньги никогда не через JS number).
 const usageBucketSchema = z.object({
-  tokens: z.coerce.number().int().nonnegative(),
+  tokens: z.coerce.number().int().safe().nonnegative(),
   official_nano: decimalIntegerSchema,
 });
 const usageWebSearchBucketSchema = z.object({
-  requests: z.coerce.number().int().nonnegative(),
+  requests: z.coerce.number().int().safe().nonnegative(),
   official_nano: decimalIntegerSchema,
 });
 const usageMoneyOnlyBucketSchema = z.object({
@@ -243,13 +243,13 @@ export const engineUsageModelSchema = z.object({
   // ("anthropic", "openai", "google" for Gemini traffic, more later) and an
   // exact enum here already took the usage endpoint down twice.
   provider: z.string().optional(),
-  requests: z.coerce.number().int().nonnegative(),
-  input_tokens: z.coerce.number().int().nonnegative(),
-  output_tokens: z.coerce.number().int().nonnegative(),
-  cache_read_tokens: z.coerce.number().int().nonnegative(),
-  cache_write_5m_tokens: z.coerce.number().int().nonnegative(),
-  cache_write_1h_tokens: z.coerce.number().int().nonnegative(),
-  web_search_requests: z.coerce.number().int().nonnegative(),
+  requests: z.coerce.number().int().safe().nonnegative(),
+  input_tokens: z.coerce.number().int().safe().nonnegative(),
+  output_tokens: z.coerce.number().int().safe().nonnegative(),
+  cache_read_tokens: z.coerce.number().int().safe().nonnegative(),
+  cache_write_5m_tokens: z.coerce.number().int().safe().nonnegative(),
+  cache_write_1h_tokens: z.coerce.number().int().safe().nonnegative(),
+  web_search_requests: z.coerce.number().int().safe().nonnegative(),
   official_nano: decimalIntegerSchema,
   charged_nano: decimalIntegerSchema,
 });
@@ -258,7 +258,7 @@ export const engineUsageSchema = z.object({
   window: z.string(),
   since_ts: z.coerce.number().int().nonnegative(),
   until_ts: z.coerce.number().int().nonnegative(),
-  requests: z.coerce.number().int().nonnegative(),
+  requests: z.coerce.number().int().safe().nonnegative(),
   total_official_nano: decimalIntegerSchema,
   total_charged_nano: decimalIntegerSchema,
   buckets: z.object({
@@ -272,7 +272,7 @@ export const engineUsageSchema = z.object({
   models: z.array(engineUsageModelSchema),
   daily: z.array(z.object({
     day_ts: z.coerce.number().int().nonnegative(),
-    requests: z.coerce.number().int().nonnegative(),
+    requests: z.coerce.number().int().safe().nonnegative(),
     official_nano: decimalIntegerSchema,
     charged_nano: decimalIntegerSchema,
   })),
@@ -280,13 +280,13 @@ export const engineUsageSchema = z.object({
     day_ts: z.coerce.number().int().nonnegative(),
     // Free-form, same rationale as engineUsageModelSchema.provider.
     provider: z.string(),
-    requests: z.coerce.number().int().nonnegative(),
+    requests: z.coerce.number().int().safe().nonnegative(),
     official_nano: decimalIntegerSchema,
     charged_nano: decimalIntegerSchema,
   })).default([]),
   keys: z.array(z.object({
     key_masked: z.string().nullable(),
-    requests: z.coerce.number().int().nonnegative(),
+    requests: z.coerce.number().int().safe().nonnegative(),
     official_nano: decimalIntegerSchema,
     charged_nano: decimalIntegerSchema,
   })),

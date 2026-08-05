@@ -181,7 +181,7 @@ GET       /admin/pricing-stage8-capture-v2
 POST      /admin/pricing-stage8-capture-v2/stage
 GET       /admin/pricing-release-activation-v2
 POST      /admin/pricing-release-activation-v2/stage
-GET       /admin/finance/paying-users?days=1|7|30&limit=...&offset=...&funding=payments|manual|bonus|all
+GET       /admin/finance/paying-users?days=1|7|30&limit=...&offset=...&funding=payments|manual|bonus|all|spenders&include_usage=true|false
 GET       /admin/finance/engine-spend?days=1|7|30
 ```
 
@@ -212,24 +212,52 @@ manual top-up, and positive spend in the selected window where **every** event h
 `policy_v1` or `release_v2` funding split equal to the immutable charged amount, with the complete
 window equal to bonus (`paid=0`, `other=0`, unknown/unattributed `=0`). A bonus top-up is neither
 required nor sufficient. Current balance, `real_funded_nano`, model names and other heuristics never
-classify this cohort. `all` is the union of the historical money cohort and strict bonus-only. As a
-cohort selector, `funding` narrows both rows and summary.
+classify this cohort. `all` is the union of the historical money cohort and strict bonus-only.
+Additive `spenders` includes every commerce user with positive `pricing_usage_events.amount_nano`
+in the selected window, regardless of lifetime payments/manual credits or mixed, other, legacy and
+unattributed funding evidence; a top-up without spend remains excluded. As a cohort selector,
+`funding` narrows both rows and summary.
 
-Rows add `funding_kind` (`payments|payments_and_manual|manual|bonus_only`) and exact selected-window
-`paid_funded_spent_nano`, `bonus_funded_spent_nano`, `other_funded_spent_nano`, and
-`unattributed_spent_nano`. Bonus-only rows therefore have `paid_nano="0"`, `last_paid_at=null`, and a
-full bonus-funded split. Summary adds `bonus_only_users`, `bonus_only_spent_nano`, and
-`cohort_users`. Backward-compatible `paying_users` continues to count only money-funded users; for
-`funding=all`, `cohort_users` is the complete listed cohort count. Existing lifetime paid/manual and
-provider summary fields keep their semantics.
+Rows add `funding_kind` (`payments|payments_and_manual|manual|bonus_only|spend_only`) and exact
+selected-window `paid_funded_spent_nano`, `bonus_funded_spent_nano`, `other_funded_spent_nano`, and
+`unattributed_spent_nano`. Zero-money spenders retain `bonus_only` only under the strict proof above;
+all other zero-money positive spenders are `spend_only`. Summary adds `bonus_only_users`,
+`bonus_only_spent_nano`, and `cohort_users`. Backward-compatible `paying_users` continues to count
+only money-funded users for every cohort; existing lifetime paid/manual and provider summary fields
+keep their semantics.
 
 Provider attribution remains `COALESCE(pricing_usage_attributions.provider_id,
 pricing_usage_events.provider_id)` with no model inference. All money is a decimal nanoUSD string;
 provider `other` still retains missing/unknown provider evidence, independently from the new funding
-`unattributed_spent_nano`. Search, status and provider filters continue to narrow only the paged
-rows/count; the cohort-selected summary remains fleet-wide. `apps/admin` must consume this
-expand-only producer contract only after the exact producer SHA has a green `deploy/watchdog`
-verdict.
+`unattributed_spent_nano`. Page, count, and cohort summary use one half-open
+`[window_end-days, window_end)` cutoff inside one read-only `REPEATABLE READ` commerce snapshot.
+Search, status and provider filters continue to narrow only the paged rows/count; the cohort-selected
+summary remains fleet-wide.
+
+Live model usage is explicitly opt-in through the closed literal query
+`include_usage=true|false`; omitted and `false` preserve the DB-only response, perform no engine calls,
+and expose neither `usage` nor internal engine account IDs. With `include_usage=true`, after DB
+pagination (maximum 100 rows), commerce collects the distinct `engine_account_id` values from that
+user's selected-window events. It uses the current `engine_accounts` mapping only as a fallback for a
+money-funded row with no window event. Every collected account calls authoritative
+`EngineClient.getUsage(accountId, "<days>d")` under one page-wide concurrency limit of four and a
+fixed five-second page deadline. The shared abort signal cancels in-flight calls without retry; queued
+calls are not started after expiry, so an engine outage degrades coverage instead of extending endpoint
+latency or leaving an unbounded background fanout.
+
+The opt-in response adds a deliberately bounded `usage` projection rather than the full engine
+response: `window`, account coverage counts, aggregate request/official/charged totals, and models
+grouped only by the exact `(provider, model)` pair. Provider is passed through from `EngineUsage`; an
+absent optional value is serialized as `null`, without deriving it from the model ID or promising
+anything about how the engine labels legacy rows. Engine request/token counters are accepted only as
+safe JS integers, then summed with `BigInt` and serialized as decimal integer strings; exact nanoUSD
+amounts remain decimal strings throughout. Account IDs, time bounds, buckets, daily series and key
+details from `EngineUsage` are never copied into the HTTP response. Coverage is `complete` only when
+every collected account succeeds, `partial` when only a subset succeeds, and `unavailable` when none
+succeeds or no account is known. Partial totals contain only successful accounts and never masquerade
+as complete. The engine's relative usage window is fetched after the commerce snapshot and is not
+claimed to share its exact cutoff. `apps/admin` must consume this expand-only producer contract only
+after the exact producer SHA has a green `deploy/watchdog` verdict.
 
 The Stage 8 capture GET returns a bounded read-only view of durable job/artifact identities,
 status counts, freshness and sanitized combined blockers (`source/code/count` plus already-hashed
