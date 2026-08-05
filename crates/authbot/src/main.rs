@@ -328,6 +328,16 @@ async fn proxy_lifecycle_loop(cfg: Arc<Config>) {
 
 const SUB_LIFETIME_DAYS: i64 = 30; // срок жизни подписки = added_ts + 30д (совпадает с движком)
 
+/// Автоматическое окно допуска Gemini: раз в минуту забираем аккаунты, у которых наступил срок
+/// следующей пробы. Само расписание (каждые 5 минут в течение 24 часов) живёт в SQLite, поэтому
+/// перезапуск бота его не сбрасывает и не устраивает залп проб на старте.
+async fn gemini_verification_sweep_loop(bot: tg::Bot, store: Arc<db::Store>, cfg: Arc<Config>) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        gemini_oauth::sweep_recorded_verifications(&bot, &store, &cfg).await;
+    }
+}
+
 /// Authbot is a producer for the live engine authority. SQLite is only its private workflow state.
 pub fn authority_cfg(cfg: &Config) -> registry::authority::AuthorityConfig {
     registry::authority::AuthorityConfig::Postgres {
@@ -648,6 +658,13 @@ async fn main() -> Result<()> {
                 async move { gemini_oauth::serve(oauth_bot, oauth_store, oauth_cfg).await },
             );
         eprintln!("Gemini OAuth callback enabled");
+        let (sweep_bot, sweep_store, sweep_cfg) = (bot.clone(), store.clone(), cfg.clone());
+        tokio::spawn(gemini_verification_sweep_loop(
+            sweep_bot, sweep_store, sweep_cfg,
+        ));
+        eprintln!(
+            "Gemini acceptance sweep enabled: recorded accounts are retried every 5 min for 24 h"
+        );
         Some(task)
     } else {
         eprintln!("Gemini OAuth intake disabled: credentials are not configured");

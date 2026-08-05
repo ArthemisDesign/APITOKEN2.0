@@ -23,7 +23,7 @@ offer product — this is the only place where they diverge):
 | Result | `sk-ant-oat01-…` | nothing we are allowed to read | refresh/access token + Google subject/project/tier |
 | What the purchase becomes | a row in the registry | a `CODEX_HOME` directory | AEAD envelope + opaque entry in `profiles.json` |
 | Module | `setup_token.rs` | `codex_login.rs` | `gemini_oauth.rs` |
-| Seller steps | proxy → email → `code#state` | proxy → email → one-time code | proxy → Gemini CLI OAuth/code → Antigravity OAuth/localhost URL |
+| Seller steps | proxy → email → `code#state` | proxy → email → one-time code | proxy → Antigravity OAuth → localhost callback URL |
 | Step back | `ho_code→ho_email→ho_proxy` | `cx_wait→cx_email→cx_proxy` | `gm_wait→gm_ready→gm_gproxy` |
 | How the engine learns | registry reload | homes scan | atomic roster refresh on the health loop |
 
@@ -38,7 +38,7 @@ a proxy, never sending a newcomer onward with an incomplete instruction.
 At any step the seller can go back **exactly one step** with the `↩️` button or the word `назад`
 ("back"). For Claude/Codex `/cancel` uses the same mechanism. For Gemini `/cancel` is deliberately
 stronger: it atomically extinguishes the pending/processing OAuth capability, rotates the
-seller-job generation, stops the local worker and immediately restarts both OAuth phases with a
+seller-job generation, stops the local worker and immediately restarts the OAuth transaction with a
 fresh state+PKCE on the same egress. An old callback after this cannot publish a credential or
 alter the new attempt. Going back with the regular button from a step where a one-time link or
 code has already been issued requires explicit confirmation and extinguishes the old capability.
@@ -105,16 +105,16 @@ are preserved in `offer_archive_events`. The `paying` phase is not subject to de
    `AUTH_BOT_CODEX_ROSTER_DIR` + keyring is its entire part of the contract.
 
 **Gemini branch invariants (critical):**
-1. A new handoff is two separate client-bound OAuth transactions, not a token conversion. First,
-   the public installed-app client of the official Gemini CLI with redirect
-   `https://codeassist.google.com/authcode` confirms the verified Google identity; its tokens are
-   never published and its volatile Code Assist response is not used for admission. Then a new
-   `state` + PKCE S256 uses
-   the public Antigravity client and the fixed redirect
-   `http://localhost:51121/oauth-callback`. Google subject, canonical proxy and seller-job
-   generation must all match; legacy proof is carried over only inside the state-bound AEAD of the
-   second phase. The seller does not create an OAuth client and does not enable private APIs in
-   their project.
+1. A new handoff is ONE client-bound OAuth transaction: `state` + PKCE S256 with the public
+   Antigravity client and the fixed redirect `http://localhost:51121/oauth-callback`. The former
+   Gemini CLI bootstrap phase is retired — it proved nothing the Antigravity consent does not prove
+   (its Code Assist surface was never an admission authority) while costing a second
+   `select_account consent`, and every extra consent screen in one browser profile is another
+   chance to confirm the wrong account and annul a token already paid for. Canonical proxy and
+   seller-job generation must match. The seller does not create an OAuth client and does not enable
+   private APIs in their project. `OAuthPhase::LegacyBootstrap`/`AntigravityFinal` survive in code
+   ONLY so a session sealed by the previous binary can still finish across a deploy; nothing
+   creates them.
 2. Token exchange, userinfo, Antigravity `loadCodeAssist` and onboarding go through the same
    `node_transport.cjs` source as runtime: SHA-pinned `/usr/bin/node` v24.18.0 Linux/x64,
    per-account authenticated CONNECT and `env_clear`. The legacy phase preserves the client-bound
@@ -127,60 +127,69 @@ are preserved in `offer_archive_events`. The `paying` phase is not subject to de
    Proxy/bearer/form exist in zeroizing IPC buffers; Rust TLS and ambient proxy do not
    participate. `loadCodeAssist` sends `ideType=ANTIGRAVITY`, and onboarding sends Antigravity ide
    name/version metadata.
-3. OAuth codes/tokens never go through Telegram. In the legacy phase the seller copies the
-   one-time Gemini CLI code shown by Google into a no-store HTTPS form. In the Antigravity phase
-   localhost may fail to open; the seller copies the full URL from the address bar into a separate
-   form. The parser verifies the exact HTTP localhost:51121 path, the callback state and the
+3. OAuth codes/tokens never go through Telegram, and the authorization URL is sent as an ordinary
+   hyperlink, never as an inline URL button: a Telegram button opens the client's built-in browser
+   — a different profile and a different egress than the account was created on. Localhost may fail
+   to open; the seller copies the full URL from the address bar into the HTTPS form. The parser
+   verifies the exact HTTP localhost:51121 path, the callback state and the
    absence of credentials/fragment/OAuth error.
    The short-lived proxy lives in SQLite only as an XChaCha20-Poly1305 envelope, bound by AAD to
    the one-time state; the form/callback claim is one-time.
-4. The legacy phase checks verified userinfo and performs a duplicate/proxy preflight before the
-   second consent. Absence of a project/tier on the legacy Code Assist surface proves neither
-   compatibility nor incompatibility of the account, so authoritative tier/project admission runs
-   only after a fresh Antigravity consent. Only known
+4. Admission runs after the single consent: verified userinfo, then exact tier/project. Only known
    Google AI Pro/Ultra, Code Assist Standard/Enterprise and Workspace AI Ultra are accepted. Free,
    Plus, incompatible Workspace and unknown future paid tiers fail closed. The offer-creation menu
    shows only Google AI Pro/Ultra; organizational tiers keep being recognized for compatibility
    with old callbacks and the actual plan check after OAuth.
-   After the final tier check a non-streaming
+   After the tier check a non-streaming
    `gemini-2.5-flash-lite:generateContent` runs with runtime headers; it requires a 2xx, a wrapped
-   candidate and non-zero authoritative `usageMetadata`. The surface is the reviewed sandbox host
-   first, and ONLY on a pre-generation access refusal (403/404) is the same probe repeated on the
-   production host from which the engine actually serves traffic: an account may be admitted on
+   candidate and non-zero authoritative `usageMetadata`. The surface is the PRODUCTION host the
+   engine actually serves customer traffic from, and ONLY on a pre-generation access refusal
+   (403/404) is the same probe repeated on the reviewed sandbox host: an account may be admitted on
    one host and rejected on the other, and a 403 means the model never ran and no paid generation
-   was spent. A 503, malformed response, missing usage or ambiguous transport does not publish the
-   credential, does not complete the payout and does NOT move to the second surface; a paid
-   generation that already happened is never automatically repeated. A Google-account-level refusal
+   was spent. A 503, malformed response, missing usage or ambiguous post-send transport does not
+   publish the credential, does not complete the payout and does NOT move to the second surface; a
+   paid generation that already happened is never automatically repeated. A CONNECT-stage refusal
+   is the opposite case — the tunnel never reached Google, so nothing was generated — and exactly
+   the `safe_to_retry_before_target` classes are retried on the same 0/2/7/17/37s schedule as the
+   token exchange. Treating one `proxy_throttle` as a verdict is what silently killed a healthy
+   subscription's retry button in production on 2026-08-04.
+   A Google-account-level refusal
    is identical on every surface, so it is recognized immediately and not retried anywhere else:
    `VALIDATION_REQUIRED` / "Verify your account to continue" is
    `account_validation_required`, a separate outcome instructing the seller to complete Google
-   verification in the same profile and proxy — not "wait and retry": a retry does not change the
-   account state. Google puts the personal verification link in
+   verification in the same profile and proxy. Google puts the personal verification link in
    `error.details[].metadata.validation_url`, while `message` carries only the phrase — the link
    is extracted and forwarded to the seller as copyable text (not a clickable link: it must be
    opened in their profile and egress, not in Telegram's built-in browser).
    It comes from upstream, so fail-closed: only an `https://accounts.google.com/` prefix,
    no control/whitespace/quotes and ≤2048 bytes — otherwise our own message would become phishing.
-   Such an account's tokens are NOT discarded: Google has already confirmed identity, tier and
-   project, and rerunning both consents is an extra chance to confirm the wrong account. They are
-   parked as an AEAD envelope in `gemini_pending_verifications` (AAD
-   `gemini-verification-<chat>`, so one seller's envelope cannot be opened for another), exactly
-   one per chat, fenced by the exact seller-job generation with a 72-hour TTL. This is NOT
-   publication: nothing enters `profiles.json` and the payout does not complete. A
-   `gemini:verified` button appears next to the message, and every press is one real acceptance
-   generation on the parked tokens (the access token is refreshed via the same egress when
-   needed). Success publishes the profile and closes the deal with the same code path as the
-   callback; a repeated hold shows the button again; any other verdict erases the parking, as do a
-   new consent, `/cancel` and an expired TTL. `countTokens`, quota and `loadCodeAssist` are not
-   acceptance. Only the HTTP status, the surface and Google's enum fields (`error.status`,
-   `error.details[].reason`) go to the log;
+   **Consented tokens are ALWAYS recorded, before anything that can fail.** Consent has already
+   annulled any previous refresh token for that subject, so this material is the only copy of a
+   subscription the seller was paid for; a tier Google has not provisioned yet, a held account, an
+   unhappy surface or a throttled proxy must never destroy it. It is sealed into
+   `gemini_pending_verifications` (AAD `gemini-verification-<chat>`, so one seller's envelope
+   cannot be opened for another), exactly one per chat, fenced by the exact seller-job generation,
+   kept for 7 days; tier/project resolved by a later attempt are re-sealed in place. This is NOT
+   publication: nothing enters `profiles.json` and the payout does not complete. **A recorded
+   account is then retried automatically — one acceptance generation every 5 minutes for 24 hours
+   after consent.** The schedule lives in SQLite, so a restart neither loses it nor fires a burst,
+   and claiming an attempt advances the next one, so the `gemini:verified` button and the sweep
+   cannot double-charge one account. Every attempt is the same code path (refresh the bearer over
+   the same egress if needed → resolve tier/project if still missing → exactly one probe), so a
+   4 a.m. admission rests on the same evidence as an immediate one; success publishes and settles
+   the deal, payout included, through the callback's own code path. Only a verdict no retry can
+   change (`authorization`, `account_mismatch`, `duplicate_account`, `duplicate_proxy`,
+   `migration_proxy_mismatch`, `stale_handoff`) ends the window early. When the window closes the
+   seller and admins are told once, probing stops, and the credential STAYS on record. `countTokens`,
+   quota and `loadCodeAssist` are not acceptance. Only the HTTP status, the surface and Google's
+   enum fields (`error.status`, `error.details[].reason`) go to the log;
    free-form `error.message` — only under `AUTH_BOT_GEMINI_TIER_EVIDENCE=1`, because it may
    contain the project and account.
 5. Google subject is the quota identity: two DIFFERENT subjects cannot share a profile, and one
-   subject always occupies exactly one profile. The legacy preflight recognizes an already
-   published Antigravity subject BEFORE checking the volatile tier display and the second consent,
-   so repeating an already connected account returns the exact duplicate outcome instead of a
-   false "subscription not found", and does not annul the live refresh token. An existing
+   subject always occupies exactly one profile. Publication is the authority on this, because it is
+   the only moment the roster can be read and written atomically: an already published Antigravity
+   subject is a reauthorization in place (the fresh consent already annulled the old token, so
+   refusing would leave a knowingly dead credential in the roster), an existing
    legacy profile may migrate to Antigravity only with the same subject/proxy; the profile id,
    roster and IPRoyal lifecycle are preserved. An in-flight Antigravity callback from an old
    version stays compatible and, with the exact same subject/proxy, can atomically replace the
@@ -220,8 +229,7 @@ are preserved in `offer_archive_events`. The `paying` phase is not subject to de
    does not accept another profile's proxy and resets the IPRoyal order to `0`, because the bot
    cannot renew an external proxy.
 7. After an unsuccessful OAuth, retry preserves the exact egress for buyer/IPRoyal and
-   seller-proxy. Any second-phase error starts a new two-phase generation; legacy token/project
-   survive nowhere. `transport_unavailable`, control-plane `temporary_upstream` and final
+   seller-proxy. Any consent error starts a new generation with fresh state+PKCE. `transport_unavailable`, control-plane `temporary_upstream` and final
    `generation_unavailable` are different outcomes, so a healthy proxy is no longer blamed by a
    message for a Google HTTP/malformed response or a generation 503. In a
    seller-proxy job the command `повторить` ("retry") creates a new PKCE generation with the saved
@@ -241,7 +249,7 @@ are preserved in `offer_archive_events`. The `paying` phase is not subject to de
    already processing the code, rollback refuses rather than racing the exchange. `/cancel` is a
    separate generation-fenced restart: it is entitled to stop an already claimed callback,
    restores the sealed or pinned egress before deleting the old session and immediately issues a
-   fresh two-phase attempt. If the egress is corrupted or externally deleted, the old generation
+   fresh attempt. If the egress is corrupted or externally deleted, the old generation
    is extinguished anyway; the seller proxy is requested anew, a fixed proxy requires operator
    repair. A regular rollback never erases a pinned proxy — the previous `/cancel` did so
    unconditionally and thereby permanently locked a job with the buyer's proxy.
@@ -288,7 +296,11 @@ are preserved in `offer_archive_events`. The `paying` phase is not subject to de
 
 The background lifecycle check refreshes the proxy expiry and, when needed, renews the same
 IPRoyal allocation, but does not send periodic "Контроль прокси" ("Proxy check") reports to
-Telegram.
+Telegram. A second background loop ticks once a minute over `gemini_pending_verifications` and runs
+the automatic Gemini acceptance window (Gemini invariant 4): due accounts are probed sequentially —
+never in parallel, since each attempt is a real paid generation through a per-account authenticated
+CONNECT — a late success publishes and settles the deal on its own, and a closed window notifies
+once.
 
 **Deploy:** the watchdog builds the bot together with the engine and places the tested binary in
 the immutable engine release; `claude-authbot.service` runs

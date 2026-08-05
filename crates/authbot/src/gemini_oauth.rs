@@ -1,10 +1,12 @@
-//! Two-stage Google OAuth producer for paid Antigravity-backed Gemini subscriptions.
+//! Single-consent Google OAuth producer for paid Antigravity-backed Gemini subscriptions.
 //!
-//! The legacy Gemini CLI identity first initializes Code Assist; a fresh Antigravity consent for the
-//! exact same Google subject and egress then has to pass a real generation probe. Browser
-//! authorization and both HTTPS code-entry forms are state+PKCE protected. Only the final encrypted
-//! Antigravity credential is published; account email, Google subject, refresh tokens, authenticated
-//! proxy and PKCE material never enter the roster, Telegram messages, filenames or logs.
+//! One Antigravity consent establishes everything admission needs: verified userinfo, the Google
+//! subject, the exact tier/project and one real generation probe. Browser authorization and the
+//! HTTPS code-entry form are state+PKCE protected. Only the encrypted Antigravity credential is
+//! published; account email, Google subject, refresh tokens, authenticated proxy and PKCE material
+//! never enter the roster, Telegram messages, filenames or logs. The legacy Gemini CLI bootstrap
+//! phase is retired — its types survive only so a callback already in flight across a deploy can
+//! still finish.
 
 use crate::db::{GeminiOAuthSession, GeminiPendingVerification, SellerJobRef, Store};
 use crate::gemini_transport::{Client as GeminiHttpClient, Method as GeminiHttpMethod};
@@ -66,10 +68,13 @@ const ANTIGRAVITY_SCOPES: &str = "https://www.googleapis.com/auth/cloud-platform
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum OAuthPhase {
-    /// Compatibility for Antigravity sessions created before the two-stage rollout.
+    /// The only phase new handoffs create: one Antigravity consent that is itself the admission.
     #[default]
     DirectAntigravity,
+    /// Retired. Kept so a legacy-bootstrap session sealed by an older binary can still complete
+    /// across a deploy instead of stranding a seller mid-flow.
     LegacyBootstrap,
+    /// Retired second phase of the former two-stage flow; same deploy-overlap compatibility.
     AntigravityFinal,
 }
 
@@ -504,9 +509,14 @@ pub struct AuthorizationLinks {
     pub job: Option<SellerJobRef>,
 }
 
-/// Create the first restart-safe, one-use PKCE transaction using the official legacy Gemini CLI
-/// installed-app identity. Its only durable output is an encrypted proof for the second phase; the
-/// legacy OAuth material is never published to the runtime roster.
+/// Create the restart-safe, one-use PKCE transaction for the Antigravity consent that actually
+/// produces the published subscription.
+///
+/// The former legacy Gemini CLI bootstrap is gone: it cost the seller a second Google consent and
+/// a second code-entry form while proving nothing that this consent does not prove on its own —
+/// verified userinfo, subject, tier, project and one real generation are all established here, and
+/// `publish` is the authority on duplicate subjects and proxies. Fewer `select_account consent`
+/// screens is also fewer chances to confirm the wrong account in one browser profile.
 pub fn begin(
     store: &Store,
     config: &Config,
@@ -520,7 +530,7 @@ pub fn begin(
     let proxy = normalize_proxy_url(proxy)?;
     let prepared = prepare_oauth(
         config,
-        OAuthPhase::LegacyBootstrap,
+        OAuthPhase::DirectAntigravity,
         &proxy,
         proxy_order_id,
         "",
@@ -535,7 +545,7 @@ pub fn begin(
         )
         .map_err(|_| StartError::State)?;
     eprintln!(
-        "[gemini-oauth] chat={} proxy_order={} started legacy bootstrap phase",
+        "[gemini-oauth] chat={} proxy_order={} started Antigravity consent",
         chat_id, proxy_order_id
     );
     Ok(AuthorizationLinks {
@@ -1042,11 +1052,12 @@ async fn process_oauth_completion(
                 {
                     let _ = state
                         .bot
-                        .send_url_button(
+                        .send(
                             session.chat_id,
-                            "✅ <b>Gemini CLI инициализировал подписку.</b> Теперь, не меняя Google-аккаунт, антидетект-профиль и прокси, выдай финальный доступ Antigravity по официальной ссылке.",
-                            "Авторизовать через Antigravity",
-                            &links.authorize_url,
+                            &format!(
+                                "✅ <b>Gemini CLI инициализировал подписку.</b> Теперь, не меняя Google-аккаунт, антидетект-профиль и прокси, выдай финальный доступ по официальной ссылке: <a href=\"{}\">авторизация Google для Antigravity</a>.",
+                                crate::bot::esc(&links.authorize_url)
+                            ),
                         )
                         .await;
                     let _ = state
@@ -1277,7 +1288,7 @@ fn code_form(state: &str, phase: OAuthPhase) -> Response {
         )
     } else {
         (
-            "Этап 2 из 2",
+            "Подключение подписки",
             "Завершите Antigravity OAuth",
             "После согласия Google перенаправит браузер на localhost; страница может не открыться — это нормально. Скопируйте весь адрес из адресной строки и вставьте ниже.",
             "Полный localhost callback URL",
@@ -1299,7 +1310,7 @@ fn code_form(state: &str, phase: OAuthPhase) -> Response {
         kicker,
         title,
         instruction,
-        "Не меняйте Google-аккаунт, профиль браузера или прокси между двумя этапами.",
+        "Не меняйте Google-аккаунт, профиль браузера или прокси до конца проверки.",
         active_step,
         &form,
     );
@@ -1663,6 +1674,25 @@ impl Failure {
         )
     }
 
+    /// Does this verdict end automatic retries for parked material?
+    ///
+    /// Only outcomes that no later attempt can change: the token family is dead, the consent named
+    /// a different account, or the account/proxy conflicts with a published profile. Everything
+    /// else — a held account, a tier Google has not finished provisioning, an unhappy surface, a
+    /// throttled egress — is exactly what the 24-hour window exists for. The credential itself is
+    /// kept on record either way.
+    fn stops_automatic_probing(self) -> bool {
+        matches!(
+            self,
+            Self::Authorization
+                | Self::AccountMismatch
+                | Self::Duplicate
+                | Self::DuplicateProxy
+                | Self::MigrationProxyMismatch
+                | Self::StaleHandoff
+        )
+    }
+
     fn operator_message(self) -> &'static str {
         match self {
             Self::CodeAssistApiDisabled => "⚠️ Antigravity OAuth завершился, но Cloud Code gateway отклонил consumer identity. Проверь bounded diagnostic в journalctl; пользовательский Cloud API включать не нужно.",
@@ -1919,25 +1949,58 @@ impl<'a> RecoveringClient<'a> {
     }
 
     /// A generation can consume quota and may have reached Google even when the response tunnel is
-    /// lost. Send it exactly once; unlike control-plane reads it must never be replayed after an
-    /// ambiguous transport outcome.
+    /// lost, so an ambiguous post-send outcome is never replayed.
+    ///
+    /// A CONNECT-stage refusal is a different fact: the tunnel to Google was never established, so
+    /// the request provably did not reach the model and no paid generation exists to protect. Those
+    /// bounded classes (`proxy_throttle`, `proxy_timeout`, `proxy_upstream`, `proxy_connect`,
+    /// `proxy_eof`, `tls` — exactly `safe_to_retry_before_target`) get the same bounded recovery as
+    /// the token exchange. Without this a residential gateway throttling one CONNECT burned the
+    /// seller's whole acceptance attempt and was reported as `generation_unavailable`, which reads
+    /// as a verdict about the subscription rather than about our egress.
     async fn generation_request(
         &mut self,
         url: &str,
         headers: &[(&str, &str)],
         body: &[u8],
     ) -> Result<crate::gemini_transport::Response, Failure> {
-        self.inner
-            .request(GeminiHttpMethod::Post, url, headers, body)
-            .await
-            .map_err(|error| {
-                eprintln!(
-                    "[gemini-oauth] chat={} generation acceptance transport failed: {}",
-                    self.chat_id,
-                    crate::gemini_transport::diagnostic_kind(&error),
-                );
-                Failure::GenerationUnavailable
-            })
+        for attempt in 1..=TRANSPORT_RECOVERY_DELAYS.len() + 1 {
+            match self
+                .inner
+                .request(GeminiHttpMethod::Post, url, headers, body)
+                .await
+            {
+                Ok(response) => {
+                    if attempt > 1 {
+                        eprintln!(
+                            "[gemini-oauth] chat={} generation transport recovered on attempt {}/{}",
+                            self.chat_id,
+                            attempt,
+                            TRANSPORT_RECOVERY_DELAYS.len() + 1,
+                        );
+                    }
+                    return Ok(response);
+                }
+                Err(error) => {
+                    let diagnostic = crate::gemini_transport::diagnostic_kind(&error);
+                    let before_target = crate::gemini_transport::failure_kind(&error)
+                        .is_some_and(|kind| kind.safe_to_retry_before_target());
+                    eprintln!(
+                        "[gemini-oauth] chat={} generation acceptance transport attempt {}/{} failed: {}",
+                        self.chat_id,
+                        attempt,
+                        TRANSPORT_RECOVERY_DELAYS.len() + 1,
+                        diagnostic,
+                    );
+                    if !before_target || attempt > TRANSPORT_RECOVERY_DELAYS.len() {
+                        return Err(Failure::GenerationUnavailable);
+                    }
+                    tokio::time::sleep(TRANSPORT_RECOVERY_DELAYS[attempt - 1]).await;
+                    self.reconnect().await?;
+                }
+            }
+        }
+        unreachable!("bounded generation transport recovery loop always returns")
     }
 
     async fn userinfo_request(
@@ -2099,28 +2162,6 @@ async fn complete(
         });
     }
     let refresh_token = token.refresh_token.take().ok_or(Failure::Authorization)?;
-    let resolved = resolve_antigravity_account(&mut client, &token.access_token).await;
-    let resolved = match resolved {
-        Ok(resolved) => resolved,
-        Err(failure) => {
-            eprintln!(
-                "[gemini-oauth] chat={} {:?} tier/project resolution failed: {}",
-                session.chat_id,
-                phase,
-                failure.code()
-            );
-            return Err(failure);
-        }
-    };
-    if !supported_paid_plan(&resolved.plan) {
-        log_unsupported_plan("unreviewed_reported_tier", resolved.diagnostic);
-        eprintln!(
-            "[gemini-oauth] chat={} rejected: unsupported Google plan {}",
-            session.chat_id,
-            plan_label(&resolved.plan)
-        );
-        return Err(Failure::UnsupportedPlan);
-    }
     if validate_final_subject(phase, &user.id, bootstrap_subject).is_err() {
         eprintln!(
             "[gemini-oauth] chat={} rejected: Antigravity subject differs from legacy bootstrap",
@@ -2128,7 +2169,12 @@ async fn complete(
         );
         return Err(Failure::AccountMismatch);
     }
-    let credential = GeminiCredential {
+    // Consent succeeded, so this token family is the only copy of a subscription the seller already
+    // paid for and Google has already annulled any previous one. Seal it BEFORE anything that can
+    // fail — tier resolution, the paid generation, the roster write — so no verdict, timeout or
+    // throttled proxy can lose it. Parking is not publication: nothing reaches `profiles.json` and
+    // the payout does not complete until an acceptance generation passes.
+    let mut credential = GeminiCredential {
         version: 1,
         access_token: std::mem::take(&mut token.access_token),
         refresh_token,
@@ -2138,30 +2184,30 @@ async fn complete(
         token_uri: TOKEN_URL.to_string(),
         subject: std::mem::take(&mut user.id),
         email: std::mem::take(&mut user.email),
-        project_id: resolved.project_id,
-        tier_id: resolved.tier_id,
-        tier_name: resolved.tier_name,
-        plan: resolved.plan,
+        // Tier and project are resolved below and re-sealed; an attempt that never got that far
+        // resolves them on its next automatic retry instead of discarding the account.
+        project_id: String::new(),
+        tier_id: String::new(),
+        tier_name: String::new(),
+        plan: String::new(),
         proxy: proxy.to_string(),
         proxy_order_id,
         issued_at: now(),
     };
-    if let Err(failure) = generation_probe(
+    park_verification(store, config, session.chat_id, session.job.as_ref(), &credential);
+    // Resolution and the paid probe share one code path with every later automatic attempt, so a
+    // credential admitted at 03:00 by the sweep goes through exactly the checks the callback would
+    // have applied.
+    if let Err(failure) = resolve_and_probe(
         &mut client,
-        &credential.access_token,
-        &credential.project_id,
+        &mut credential,
         session.chat_id,
         verification_url,
     )
     .await
     {
-        // Google admitted the identity, the tier and the project and is only holding the account
-        // for its own verification. Discarding the material here would force the seller through
-        // both consents again after verifying — and every extra `select_account consent` is a
-        // chance to confirm the wrong account. Park it sealed instead, fenced to this exact deal.
-        if failure == Failure::AccountValidationRequired {
-            park_verification(store, config, session, &credential);
-        }
+        reseal_parked_credential(store, config, session.chat_id, &credential);
+        record_probe_outcome(store, session.chat_id, failure);
         return Err(failure);
     }
     eprintln!(
@@ -2169,14 +2215,23 @@ async fn complete(
         session.chat_id,
         plan_label(&credential.plan)
     );
-    publish_verified_credential(
+    let published = publish_verified_credential(
         store,
         config,
         session.chat_id,
         session.job.as_ref(),
         credential,
     )
-    .await
+    .await;
+    match &published {
+        // The roster now owns this material, so the parked copy has no reason to exist and must
+        // not keep the automatic sweep probing a subscription that is already serving traffic.
+        Ok(_) => {
+            let _ = store.clear_gemini_verification(session.chat_id);
+        }
+        Err(failure) => record_probe_outcome(store, session.chat_id, *failure),
+    }
+    published
 }
 
 /// Publication tail shared by the callback and the seller's post-verification retry.
@@ -2239,10 +2294,18 @@ fn validate_final_subject(
     }
 }
 
-/// How long a parked account may wait for its seller to finish Google's verification. Long enough
-/// for a phone check and a night's sleep, short enough that abandoned token material does not sit
-/// at rest indefinitely.
-const VERIFICATION_PARK_SECS: i64 = 72 * 3600;
+/// How long the sealed credential of a consented-but-not-yet-admitted account stays on record.
+/// Deliberately far longer than the automatic window: the seller already paid for this
+/// subscription, and an operator investigating why it never passed needs the material to still
+/// exist.
+const VERIFICATION_PARK_SECS: i64 = 7 * 24 * 3600;
+
+/// One automatic acceptance attempt every five minutes, for twenty-four hours after consent.
+/// Google's own holds (account verification, tier provisioning) and a throttled residential egress
+/// all clear on that timescale, and a `gemini-2.5-flash-lite` probe capped at 8 output tokens is
+/// negligible against the subscription it is proving.
+const VERIFICATION_PROBE_INTERVAL_SECS: i64 = 300;
+const VERIFICATION_PROBE_WINDOW_SECS: i64 = 24 * 3600;
 
 /// AEAD context for a parked account. The keyring restricts a context id to `[A-Za-z0-9_-]`, so the
 /// separator is a dash — a colon here silently fails the seal and loses the parked account.
@@ -2250,51 +2313,134 @@ fn verification_aad(chat_id: i64) -> String {
     format!("gemini-verification-{chat_id}")
 }
 
-/// Seal the admitted-but-held account so one button press can finish the deal. The envelope uses
-/// the same keyring and AEAD as a published credential and is bound to this chat, so it cannot be
-/// moved to another seller, and it never enters `profiles.json`.
+fn seal_parked_credential(
+    config: &Config,
+    chat_id: i64,
+    credential: &GeminiCredential,
+) -> Option<String> {
+    let payload = Zeroizing::new(serde_json::to_string(credential).ok()?);
+    config
+        .keyring
+        .seal_secret(
+            &config.active_key_id,
+            &verification_aad(chat_id),
+            payload.as_str(),
+        )
+        .ok()
+        .and_then(|envelope| serde_json::to_string(&envelope).ok())
+}
+
+/// Seal a consented account and start its automatic acceptance window. The envelope uses the same
+/// keyring and AEAD as a published credential and is bound to this chat, so it cannot be moved to
+/// another seller, and it never enters `profiles.json`.
 fn park_verification(
     store: &Store,
     config: &Config,
-    session: &GeminiOAuthSession,
+    chat_id: i64,
+    job: Option<&SellerJobRef>,
     credential: &GeminiCredential,
 ) {
-    let sealed = Zeroizing::new(serde_json::to_string(credential).unwrap_or_default());
-    let sealed = (!sealed.is_empty())
-        .then(|| {
-            config
-                .keyring
-                .seal_secret(
-                    &config.active_key_id,
-                    &verification_aad(session.chat_id),
-                    sealed.as_str(),
-                )
-                .ok()
-                .and_then(|envelope| serde_json::to_string(&envelope).ok())
-        })
-        .flatten();
-    let Some(sealed) = sealed else {
+    let Some(sealed) = seal_parked_credential(config, chat_id, credential) else {
         eprintln!(
-            "[gemini-oauth] chat={} could not seal the held account; the seller must authorize again after verifying",
-            session.chat_id
+            "[gemini-oauth] chat={chat_id} could not seal the consented account; it will have to be authorized again"
         );
         return;
     };
+    let now = now();
     match store.park_gemini_verification(
-        session.chat_id,
+        chat_id,
         &sealed,
-        now().saturating_add(VERIFICATION_PARK_SECS),
-        session.job.as_ref(),
+        now.saturating_add(VERIFICATION_PARK_SECS),
+        now.saturating_add(VERIFICATION_PROBE_WINDOW_SECS),
+        now.saturating_add(VERIFICATION_PROBE_INTERVAL_SECS),
+        job,
     ) {
         Ok(()) => eprintln!(
-            "[gemini-oauth] chat={} parked the held account for a post-verification retry",
-            session.chat_id
+            "[gemini-oauth] chat={chat_id} recorded the consented account; automatic acceptance runs every {VERIFICATION_PROBE_INTERVAL_SECS}s for {VERIFICATION_PROBE_WINDOW_SECS}s"
         ),
         Err(_) => eprintln!(
-            "[gemini-oauth] chat={} could not park the held account; the seller must authorize again after verifying",
-            session.chat_id
+            "[gemini-oauth] chat={chat_id} could not record the consented account; it will have to be authorized again"
         ),
     }
+}
+
+/// Persist material the attempt improved (a refreshed access token, a resolved project/tier)
+/// without touching the schedule the claim already advanced.
+fn reseal_parked_credential(
+    store: &Store,
+    config: &Config,
+    chat_id: i64,
+    credential: &GeminiCredential,
+) {
+    if let Some(sealed) = seal_parked_credential(config, chat_id, credential) {
+        let _ = store.reseal_gemini_verification(chat_id, &sealed);
+    }
+}
+
+/// Record what one attempt concluded. A verdict no retry can change stops the sweep; the sealed
+/// credential stays on record either way, so nothing the seller paid for is thrown away.
+fn record_probe_outcome(store: &Store, chat_id: i64, failure: Failure) {
+    if failure.stops_automatic_probing() {
+        let _ = store.schedule_gemini_probe(chat_id, 0, Some(0), failure.code());
+        eprintln!(
+            "[gemini-oauth] chat={chat_id} automatic acceptance stopped on a terminal verdict: {}; the credential stays recorded",
+            failure.code()
+        );
+    } else {
+        let _ = store.schedule_gemini_probe(
+            chat_id,
+            now().saturating_add(VERIFICATION_PROBE_INTERVAL_SECS),
+            None,
+            failure.code(),
+        );
+    }
+}
+
+/// Everything between a consented token family and publication: refresh the bearer if it aged out,
+/// resolve tier/project when a previous attempt could not, then run exactly one paid acceptance
+/// generation. Shared by the callback, the seller's button and the background sweep so all three
+/// admit on identical evidence.
+async fn resolve_and_probe(
+    client: &mut RecoveringClient<'_>,
+    credential: &mut GeminiCredential,
+    chat_id: i64,
+    verification_url: &mut Option<String>,
+) -> Result<(), Failure> {
+    if credential.expires_at <= now() {
+        refresh_parked_access_token(client, credential).await?;
+    }
+    if credential.project_id.is_empty() {
+        let resolved = match resolve_antigravity_account(client, &credential.access_token).await {
+            Ok(resolved) => resolved,
+            Err(failure) => {
+                eprintln!(
+                    "[gemini-oauth] chat={chat_id} tier/project resolution failed: {}",
+                    failure.code()
+                );
+                return Err(failure);
+            }
+        };
+        if !supported_paid_plan(&resolved.plan) {
+            log_unsupported_plan("unreviewed_reported_tier", resolved.diagnostic);
+            eprintln!(
+                "[gemini-oauth] chat={chat_id} rejected: unsupported Google plan {}",
+                plan_label(&resolved.plan)
+            );
+            return Err(Failure::UnsupportedPlan);
+        }
+        credential.project_id = resolved.project_id;
+        credential.tier_id = resolved.tier_id;
+        credential.tier_name = resolved.tier_name;
+        credential.plan = resolved.plan;
+    }
+    generation_probe(
+        client,
+        &credential.access_token,
+        &credential.project_id,
+        chat_id,
+        verification_url,
+    )
+    .await
 }
 
 /// The seller pressed “I verified the account”. One press = one real acceptance generation with the
@@ -2332,6 +2478,15 @@ pub(crate) async fn finish_parked_verification(
                 ),
                 _ => base.to_string(),
             };
+            // The seller does not have to babysit this: the same acceptance runs automatically
+            // every five minutes for a day, and a late success publishes and pays out on its own.
+            let message = if matches!(store.gemini_verification_is_parked(chat_id), Ok(true)) {
+                format!(
+                    "{message}\n\n🔄 Доступ сохранён у нас: бот сам повторяет проверку каждые 5 минут в течение суток и завершит сделку автоматически, как только она пройдёт. Кнопкой ниже можно проверить немедленно."
+                )
+            } else {
+                message
+            };
             if matches!(store.gemini_verification_is_parked(chat_id), Ok(true)) {
                 let _ = bot
                     .send_kb(chat_id, &message, Some(&crate::bot::gemini_verified_kb()))
@@ -2368,15 +2523,17 @@ pub(crate) enum VerificationRetry {
     Missing,
 }
 
-/// Re-run the paid acceptance generation for an account Google was holding, using the tokens that
-/// consent already produced. Every press is one real generation: the account either passes now or
-/// is still held, and nothing else about the deal changes.
+/// Re-run the paid acceptance generation for a consented account that has not been admitted yet,
+/// using the tokens that consent already produced. Every call is exactly one real generation: the
+/// account either passes now or waits for the next attempt, and nothing else about the deal
+/// changes. Shared by the seller's button and the background sweep.
 pub(crate) async fn retry_parked_verification(
     store: &Store,
     config: &Config,
     chat_id: i64,
 ) -> VerificationRetry {
-    let Ok(Some(parked)) = store.claim_gemini_verification(chat_id) else {
+    let next_probe = now().saturating_add(VERIFICATION_PROBE_INTERVAL_SECS);
+    let Ok(Some(parked)) = store.claim_gemini_verification(chat_id, next_probe) else {
         return VerificationRetry::Missing;
     };
     if !handoff_is_current(store, chat_id, parked.job.as_ref()) {
@@ -2392,7 +2549,7 @@ pub(crate) async fn retry_parked_verification(
         return VerificationRetry::Missing;
     };
     eprintln!(
-        "[gemini-oauth] chat={chat_id} re-running acceptance for the parked account (attempt {})",
+        "[gemini-oauth] chat={chat_id} re-running acceptance for the recorded account (attempt {})",
         parked.attempts
     );
     // The client borrows the egress for its whole lifetime, so hand it an owned copy: the parked
@@ -2400,28 +2557,21 @@ pub(crate) async fn retry_parked_verification(
     let proxy = credential.proxy.clone();
     let mut client = match RecoveringClient::connect(&proxy, chat_id).await {
         Ok(client) => client,
-        Err(failure) => return VerificationRetry::Rejected(failure, None),
-    };
-    if credential.expires_at <= now() {
-        if let Err(failure) = refresh_parked_access_token(&mut client, &mut credential).await {
+        Err(failure) => {
+            record_probe_outcome(store, chat_id, failure);
             return VerificationRetry::Rejected(failure, None);
         }
-    }
+    };
     let mut verification_url = None;
-    if let Err(failure) = generation_probe(
-        &mut client,
-        &credential.access_token,
-        &credential.project_id,
-        chat_id,
-        &mut verification_url,
-    )
-    .await
+    if let Err(failure) =
+        resolve_and_probe(&mut client, &mut credential, chat_id, &mut verification_url).await
     {
-        if failure != Failure::AccountValidationRequired {
-            // Anything other than the same hold is a different verdict about this material; it must
-            // not keep masquerading as “press the button again after verifying”.
-            let _ = store.clear_gemini_verification(chat_id);
-        }
+        // Keep the material. A refused generation is a statement about the account's current state
+        // — held for verification, tier not provisioned yet, a surface having a bad minute, a
+        // throttled CONNECT — and none of those are reasons to destroy tokens the seller was paid
+        // for. Erasing here is exactly what turned one throttled proxy into a dead button.
+        reseal_parked_credential(store, config, chat_id, &credential);
+        record_probe_outcome(store, chat_id, failure);
         return VerificationRetry::Rejected(failure, verification_url);
     }
     match publish_verified_credential(store, config, chat_id, parked.job.as_ref(), credential).await
@@ -2431,7 +2581,75 @@ pub(crate) async fn retry_parked_verification(
             VerificationRetry::Published(profile)
         }
         Ok(Completion::LegacyBootstrap { .. }) => VerificationRetry::Missing,
-        Err(failure) => VerificationRetry::Rejected(failure, None),
+        Err(failure) => {
+            record_probe_outcome(store, chat_id, failure);
+            VerificationRetry::Rejected(failure, None)
+        }
+    }
+}
+
+/// One pass of the automatic acceptance window over every recorded account that is due.
+///
+/// Attempts are sequential on purpose: each one is a real paid generation through a per-account
+/// authenticated CONNECT, and the parallel version of this would look like a burst from one egress.
+/// A late success publishes and settles the deal through exactly the callback's code path, so a
+/// subscription that Google unblocks at 04:00 is in the pool at 04:05 without anyone pressing
+/// anything.
+pub(crate) async fn sweep_recorded_verifications(
+    bot: &Bot,
+    store: &Arc<Store>,
+    config: &Arc<BotConfig>,
+) {
+    let Some(oauth) = config.gemini_oauth.as_ref() else {
+        return;
+    };
+    for chat_id in store.due_gemini_verifications().unwrap_or_default() {
+        let job = store
+            .active_seller_job(chat_id)
+            .ok()
+            .flatten()
+            .map(|job| job.reference);
+        match retry_parked_verification(store, oauth, chat_id).await {
+            VerificationRetry::Published(profile) => {
+                eprintln!(
+                    "[gemini-oauth] chat={chat_id} automatic acceptance passed; publishing profile {}",
+                    profile.id
+                );
+                announce_publication(bot, store, config, chat_id, job, &profile).await;
+            }
+            // Silent by design: the seller already has the explanation and the button from the
+            // attempt that failed first, and 288 identical messages a day would be noise.
+            VerificationRetry::Rejected(failure, _) => eprintln!(
+                "[gemini-oauth] chat={chat_id} automatic acceptance attempt failed: {}",
+                failure.code()
+            ),
+            VerificationRetry::Missing => {}
+        }
+    }
+    for chat_id in store.expired_gemini_probe_windows().unwrap_or_default() {
+        if !store
+            .mark_gemini_probe_window_notified(chat_id)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        eprintln!("[gemini-oauth] chat={chat_id} automatic acceptance window closed");
+        let _ = bot
+            .send(
+                chat_id,
+                "⏳ <b>Автоматическая проверка этого Google-аккаунта закончилась.</b> Сутки бот повторял тестовую генерацию каждые 5 минут, и она так и не прошла — доступ в пул не добавлен и выплата не завершена. Сам доступ сохранён: если ты завершил проверку Google, нажми кнопку проверки ещё раз или отправь <code>повторить</code> для новой авторизации.",
+            )
+            .await;
+        for admin in &config.admins_id {
+            let _ = bot
+                .send(
+                    *admin,
+                    &format!(
+                        "⏳ Gemini: 24-часовое окно автопроверки закрыто для chat=<code>{chat_id}</code>. Конверт остаётся записанным, профиль не опубликован, выплата не завершена."
+                    ),
+                )
+                .await;
+        }
     }
 }
 
@@ -2546,14 +2764,15 @@ async fn resolve_antigravity_account(
     })
 }
 
-/// The reviewed acceptance surfaces for the one paid probe generation, in order. Antigravity's own
-/// language server reads the sandbox host, but a subscription can be admitted there and rejected —
-/// or the reverse — independently of the production host the gateway actually serves from. A
-/// pre-generation rejection therefore moves to the next surface; nothing that already produced a
-/// generation is ever replayed.
+/// The reviewed acceptance surfaces for the one paid probe generation, in order. Production comes
+/// first because that is the host the engine actually serves customer traffic from
+/// (`gemini::config::LEGACY_GEMINI_UPSTREAM` / the configured Antigravity upstream): admission has
+/// to be evidence about the surface that will carry the subscription, not about a sandbox that can
+/// admit or reject independently. Only a pre-generation access refusal (403/404) moves to the
+/// sandbox host; nothing that already produced a generation is ever replayed.
 const GENERATION_PROBE_SURFACES: [(&str, &str); 2] = [
-    ("sandbox", CODE_ASSIST_SANDBOX_URL),
     ("production", CODE_ASSIST_PROD_URL),
+    ("sandbox", CODE_ASSIST_SANDBOX_URL),
 ];
 
 async fn generation_probe(
@@ -3550,8 +3769,10 @@ mod tests {
         (root, ring)
     }
 
+    /// A new handoff is one Antigravity consent, and a legacy-bootstrap session sealed by an older
+    /// binary can still reach its second phase across a deploy.
     #[test]
-    fn two_stage_oauth_uses_the_pinned_legacy_then_antigravity_identities() {
+    fn one_consent_uses_the_pinned_antigravity_identity_and_legacy_sessions_still_advance() {
         let (root, ring) = fixture();
         let database = root.join("state").join("authbot.db");
         let store = Store::open(database.to_str().unwrap()).unwrap();
@@ -3568,10 +3789,10 @@ mod tests {
         let authorize = reqwest::Url::parse(&links.authorize_url).unwrap();
         assert!(authorize
             .query_pairs()
-            .any(|(name, value)| name == "client_id" && value == LEGACY_CLIENT_ID));
+            .any(|(name, value)| name == "client_id" && value == ANTIGRAVITY_CLIENT_ID));
         assert!(authorize
             .query_pairs()
-            .any(|(name, value)| { name == "redirect_uri" && value == LEGACY_REDIRECT_URI }));
+            .any(|(name, value)| { name == "redirect_uri" && value == ANTIGRAVITY_REDIRECT_URI }));
         assert!(links
             .submit_url
             .starts_with("https://gemini.example/oauth/callback?state="));
@@ -3579,7 +3800,35 @@ mod tests {
             .query_pairs()
             .find_map(|(name, value)| (name == "state").then(|| value.into_owned()))
             .unwrap();
-        let legacy = store.claim_gemini_oauth(&state).unwrap().unwrap();
+        let session = store.claim_gemini_oauth(&state).unwrap().unwrap();
+        assert_eq!(
+            open_pending_secret(&config, &session).unwrap().phase,
+            OAuthPhase::DirectAntigravity,
+            "no new handoff may create the retired Gemini CLI bootstrap phase"
+        );
+
+        // Deploy overlap: a session an older binary sealed in the legacy phase still transitions.
+        let legacy_prepared = prepare_oauth(
+            &config,
+            OAuthPhase::LegacyBootstrap,
+            "http://user:pass@127.0.0.1:8080/",
+            0,
+            "",
+        )
+        .unwrap();
+        store
+            .start_gemini_oauth(
+                2,
+                &legacy_prepared.state,
+                &legacy_prepared.sealed_payload,
+                now() + 600,
+                0,
+            )
+            .unwrap();
+        let legacy = store
+            .claim_gemini_oauth(&legacy_prepared.state)
+            .unwrap()
+            .unwrap();
         let final_links = begin_antigravity_phase(
             &store,
             &config,
@@ -3724,12 +3973,12 @@ mod tests {
         let proxy = "http://user:pass@127.0.0.1:8080";
         let links = begin(&store, &config, 42, proxy, 777).unwrap();
         assert!(!links.authorize_url.contains("user:pass"));
-        assert!(!links.authorize_url.contains(LEGACY_CLIENT_SECRET));
+        assert!(!links.authorize_url.contains(ANTIGRAVITY_CLIENT_SECRET));
         assert!(!links.submit_url.contains("user:pass"));
         let url = reqwest::Url::parse(&links.authorize_url).unwrap();
         assert!(url
             .query_pairs()
-            .any(|(name, value)| { name == "client_id" && value == LEGACY_CLIENT_ID }));
+            .any(|(name, value)| { name == "client_id" && value == ANTIGRAVITY_CLIENT_ID }));
         let state = url
             .query_pairs()
             .find_map(|(name, value)| (name == "state").then(|| value.into_owned()))
@@ -3753,10 +4002,10 @@ mod tests {
         let pending: PendingOAuthSecret = serde_json::from_str(decrypted.as_str()).unwrap();
         assert_eq!(pending.proxy, format!("{proxy}/"));
         assert_eq!(pending.proxy_order_id, 777);
-        assert_eq!(pending.client_id, LEGACY_CLIENT_ID);
-        assert_eq!(pending.client_secret, LEGACY_CLIENT_SECRET);
-        assert_eq!(pending.redirect_uri, LEGACY_REDIRECT_URI);
-        assert_eq!(pending.phase, OAuthPhase::LegacyBootstrap);
+        assert_eq!(pending.client_id, ANTIGRAVITY_CLIENT_ID);
+        assert_eq!(pending.client_secret, ANTIGRAVITY_CLIENT_SECRET);
+        assert_eq!(pending.redirect_uri, ANTIGRAVITY_REDIRECT_URI);
+        assert_eq!(pending.phase, OAuthPhase::DirectAntigravity);
         assert!(pending.bootstrap_subject.is_empty());
         assert!(valid_oauth_value(&pending.verifier, 256));
         assert!(!session.sealed_payload.contains(&pending.verifier));
@@ -4086,9 +4335,23 @@ mod tests {
             job: None,
         };
         let credential = credential("subject-parked");
-        park_verification(&store, &config, &session, &credential);
+        park_verification(
+            &store,
+            &config,
+            session.chat_id,
+            session.job.as_ref(),
+            &credential,
+        );
 
-        let parked = store.claim_gemini_verification(4242).unwrap().unwrap();
+        let parked = store
+            .claim_gemini_verification(4242, now() + VERIFICATION_PROBE_INTERVAL_SECS)
+            .unwrap()
+            .unwrap();
+        // Automatic acceptance owns the record from here: the first retry is one interval away and
+        // the window closes a day after consent, while the envelope itself outlives both.
+        assert!(parked.probe_deadline_ts > now() + VERIFICATION_PROBE_WINDOW_SECS - 60);
+        assert!(parked.expires_ts > parked.probe_deadline_ts);
+        assert!(!parked.deadline_notified);
         // Nothing identifying may sit in the clear next to the record.
         for secret in [
             credential.refresh_token.as_str(),
@@ -4112,12 +4375,75 @@ mod tests {
         assert!(open_parked_credential(&config, &foreign).is_none());
     }
 
+    /// The contract of the automatic acceptance window, in one place: how often it retries, how
+    /// long it retries for, how long the credential outlives that, and which verdicts are allowed
+    /// to end it. Yesterday's dead retry button came from treating a throttled CONNECT as a verdict
+    /// about the subscription — that class must stay retryable here and in `generation_request`.
+    #[test]
+    fn automatic_acceptance_retries_everything_except_settled_verdicts() {
+        assert_eq!(VERIFICATION_PROBE_INTERVAL_SECS, 300);
+        assert_eq!(VERIFICATION_PROBE_WINDOW_SECS, 24 * 3600);
+        assert!(
+            VERIFICATION_PARK_SECS > VERIFICATION_PROBE_WINDOW_SECS,
+            "the credential must stay on record after automatic probing stops"
+        );
+
+        for settled in [
+            Failure::Authorization,
+            Failure::AccountMismatch,
+            Failure::Duplicate,
+            Failure::DuplicateProxy,
+            Failure::MigrationProxyMismatch,
+            Failure::StaleHandoff,
+        ] {
+            assert!(
+                settled.stops_automatic_probing(),
+                "{} cannot change on a retry",
+                settled.code()
+            );
+        }
+        for retryable in [
+            // The account is held by Google, or its tier is not provisioned yet: both clear on
+            // their own timescale, which is exactly what the 24-hour window is for.
+            Failure::AccountValidationRequired,
+            Failure::UnsupportedPlan,
+            // Surface, transport and egress states — never verdicts about the subscription.
+            Failure::GenerationUnavailable,
+            Failure::TransportUnavailable,
+            Failure::Temporary,
+            Failure::CodeAssistApiDisabled,
+            Failure::Storage,
+        ] {
+            assert!(
+                !retryable.stops_automatic_probing(),
+                "{} must keep the automatic window open",
+                retryable.code()
+            );
+        }
+
+        // A CONNECT-stage refusal never reached Google, so the probe may safely resend it; anything
+        // ambiguous after the request left us must not be replayed.
+        for pre_target in [
+            crate::gemini_transport::RequestFailureKind::ProxyThrottle,
+            crate::gemini_transport::RequestFailureKind::ProxyTimeout,
+            crate::gemini_transport::RequestFailureKind::ProxyConnect,
+        ] {
+            assert!(pre_target.safe_to_retry_before_target());
+        }
+        for ambiguous in [
+            crate::gemini_transport::RequestFailureKind::Timeout,
+            crate::gemini_transport::RequestFailureKind::Network,
+        ] {
+            assert!(!ambiguous.safe_to_retry_before_target());
+        }
+    }
+
     #[test]
     fn generation_acceptance_surfaces_are_ordered_and_access_failures_stay_actionable() {
         assert_eq!(
             GENERATION_PROBE_SURFACES.map(|(_, host)| host),
-            [CODE_ASSIST_SANDBOX_URL, CODE_ASSIST_PROD_URL],
-            "the reviewed sandbox surface stays first; production is the fallback the engine serves"
+            [CODE_ASSIST_PROD_URL, CODE_ASSIST_SANDBOX_URL],
+            "acceptance must first ask the production host the engine actually serves customer traffic from"
         );
         let disabled = json!({
             "error": {

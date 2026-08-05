@@ -78,42 +78,43 @@ above.
 
 ## OAuth and publication flow
 
-Auth Bot uses two separate installed-application OAuth transactions with PKCE. OAuth codes and
-refresh tokens are client-bound, so this is deliberately not described or implemented as token
-conversion: the official Gemini CLI client initializes Code Assist first, then the Antigravity
-client receives its own consent for the same Google subject. No Gemini Developer API key is derived
-from the subscription, and sellers do not create OAuth clients or operator Cloud projects.
+Auth Bot uses one installed-application OAuth transaction with PKCE, against the Antigravity
+client. No Gemini Developer API key is derived from the subscription, and sellers do not create
+OAuth clients or operator Cloud projects.
 
-Regression baseline (sanitized production audit, 2026-08-02): the first working subscription was
-initialized by the Gemini CLI flow introduced in `c805f6f` and wire-calibrated in `b385278`, then
-migrated to Antigravity by `241fce3`/`9a475f0`; the resulting profile has 93 completed runtime turns.
-The second profile used direct Antigravity onboarding, passed OAuth/quota discovery, but its first
-real generation stopped before execution with HTTP 503 and zero completed turns. Therefore the
-automated flow preserves the calibrated Gemini CLI token form and verified userinfo identity as a
-regression-tested bootstrap, while the final Antigravity transaction remains a fresh client-bound
-consent rather than token conversion. Owned live evidence on 2026-08-02 showed a candidate account
-whose legacy OAuth and verified userinfo succeeded while the legacy Code Assist surface returned
-no project, `paidTier` or `currentTier`; therefore this surface is not an admission authority and
-the Antigravity checks below remain decisive.
+The former two-transaction shape (official Gemini CLI bootstrap, then Antigravity consent) is
+retired. Regression baseline (sanitized production audit, 2026-08-02) had justified it: the first
+working subscription was initialized by the Gemini CLI flow (`c805f6f`, wire-calibrated in
+`b385278`) and migrated to Antigravity by `241fce3`/`9a475f0`, while an early direct-Antigravity
+onboarding stopped at HTTP 503. Owned live evidence since then shows the bootstrap proving nothing
+the Antigravity consent does not prove on its own — its Code Assist surface legitimately returns
+no project, `paidTier` or `currentTier`, so it was never an admission authority — while costing the
+seller a second `select_account consent` screen. Every extra consent in one browser profile is
+another chance to confirm the wrong Google account and annul a token that was already paid for.
+Admission authority is unchanged and still decisive: verified userinfo, exact reviewed tier,
+resolved project, matching roster invariants and one real generation.
 
 1. The seller submits only the account's dedicated proxy. When Auth Bot issues the proxy, OAuth
    starts immediately after issuance.
-2. Auth Bot creates a 256-bit `state`, PKCE S256 verifier/challenge and twenty-minute legacy phase.
-   The verifier, canonical proxy, Gemini CLI public client material and fixed
-   `https://codeassist.google.com/authcode` redirect are sealed immediately in an
+2. Auth Bot creates a 256-bit `state`, PKCE S256 verifier/challenge and a twenty-minute phase. The
+   verifier, canonical proxy, Antigravity public client material and the fixed
+   `http://localhost:51121/oauth-callback` redirect are sealed immediately in an
    XChaCha20-Poly1305 envelope bound to `state`; SQLite and its WAL retain no plaintext secret.
-3. The seller opens the Google link in the prepared browser profile, then copies the one-use Gemini
-   CLI code from Google's page into the no-store Auth Bot HTTPS form. Telegram receives only the
-   two non-secret links. The server forces every server-side request through the dedicated proxy;
+3. Telegram delivers the authorization URL as an ordinary hyperlink, never as an inline URL button:
+   a Telegram button opens the client's built-in browser, which is a different profile and a
+   different egress than the account was created on. The seller opens it in the prepared
+   anti-detect profile. The server forces every server-side request through the dedicated proxy;
    browser egress remains a seller-enforced invariant.
-4. Auth Bot claims the legacy `state` once, exchanges the code with the same client/redirect and
-   performs verified userinfo. Before issuing a second consent it rejects an already published
-   subject or incompatible legacy-profile proxy. The resulting legacy tokens never enter a roster;
-   missing legacy Code Assist project/tier evidence neither admits nor rejects the subscription.
-   Successful claim processing is detached before the handler returns `202 Accepted`; terminal
-   failure cleanup is detached before its bounded `4xx`/`503` page is returned as well. Closing the
-   browser cannot cancel exchange, failure cleanup or the eventual Telegram result.
-5. After the Antigravity consent, paid-plan admission uses the actual tier/project and reviewed
+4. The seller completes the consent. Google redirects to `http://localhost:51121/oauth-callback`;
+   no local listener is required, and the page failing to load is expected. The seller pastes the
+   complete callback URL into the Auth Bot HTTPS form. Its parser accepts only the exact HTTP
+   localhost host, port and path, rejects credentials/fragments/OAuth errors and requires the
+   callback `state` to match the hidden form state. Successful claim processing is detached before
+   the handler returns `202 Accepted`; terminal failure cleanup is detached before its bounded
+   `4xx`/`503` page is returned as well. Closing the browser cannot cancel exchange, failure
+   cleanup or the eventual Telegram result.
+5. Auth Bot claims the `state` once, exchanges the code with the same client/redirect and performs
+   verified userinfo. Paid-plan admission then uses the actual tier/project and reviewed
    tier evidence. A stable reviewed tier ID is the single authority: Google rewrites display names
    (Google One branding, Antigravity wording) without touching the ID, so a name that maps to
    another reviewed plan is treated as drift and journalled, not as a second entitlement. When
@@ -122,38 +123,36 @@ the Antigravity checks below remain decisive.
    Antigravity onboarding routinely leaves `currentTier` on a different tier and rejecting the pair
    told sellers with a real subscription that no subscription exists. An unreviewed ID still falls
    back to an exact reviewed name; substring-only matches and evidence that is unreviewed in both
-   fields are rejected.
-   Before issuing the Antigravity consent, Auth Bot scans the encrypted roster: an existing
-   Antigravity subject is reported as an already connected duplicate while its live refresh token
-   is still safe; a legacy profile may continue only through its exact subject, canonical proxy and
-   IPRoyal identity. Every final `unsupported_plan` branch emits
+   fields are rejected. Every `unsupported_plan` branch emits
    only structural diagnostics (project and tier-field presence/classes plus allowed-tier count),
    never raw tier, project or identity. `AUTH_BOT_GEMINI_TIER_EVIDENCE=1` is an opt-in operator
-   switch that additionally journals bounded raw tier IDs/names of the final `loadCodeAssist`
+   switch that additionally journals bounded raw tier IDs/names of the `loadCodeAssist`
    response, so a genuinely new Google tier can be identified without shipping a build; it stays off
-   by default.
-6. A successful bootstrap is atomically replaced in SQLite by a fresh Antigravity `state`/PKCE
-   phase and a rotated exact seller-job generation. Only the legacy Google subject and same proxy
-   are carried forward, inside the new state-bound AEAD. Restart, replay, pause or job replacement
-   cannot move an old callback into the new phase.
-7. The seller completes Antigravity consent in the same Google account/browser/proxy. Google
-   redirects to `http://localhost:51121/oauth-callback`; no local listener is required. The seller
-   pastes the complete callback URL into the second HTTPS form. Its parser accepts only the exact
-   HTTP localhost host, port and path, rejects credentials/fragments/OAuth errors and requires the
-   callback `state` to match the hidden form state.
-8. Auth Bot exchanges the final code through the same proxy, verifies that Google subject exactly
-   matches the legacy proof, and resolves the Antigravity tier/project. Control-plane calls fall
-   back only among the three reviewed Cloud Code hosts.
-9. Admission sends one tiny non-streaming `gemini-2.5-flash-lite` generation using the runtime
-   Antigravity wrapper and headers, first to the reviewed sandbox endpoint. It requires
-   HTTP 2xx, a wrapped candidate and non-zero authoritative `usageMetadata`. An access rejection made
-   before the model ran (`403`/`404`) repeats the same probe once on the production endpoint the
-   gateway actually serves from, because a subscription can be admitted on one host and refused on
-   the other and nothing was generated or billed yet. `503`, malformed JSON,
+   by default. Roster invariants — an already published Antigravity subject is a reauthorization in
+   place, a legacy profile migrates one-way only through its exact subject, canonical proxy and
+   IPRoyal identity, and a proxy already bound to another profile is refused — are enforced at
+   publication, which is the only moment they can be enforced atomically.
+6. **The consented token family is sealed and recorded before anything that can fail.** Consent
+   already annulled any previous refresh token for this Google subject, so those tokens are the
+   only copy of a subscription the seller was paid for; a tier that Google has not finished
+   provisioning, a held account, an unhappy surface or a throttled CONNECT must never destroy them.
+   They are parked in an AEAD envelope bound to that seller's chat (never in `profiles.json`, never
+   a completed payout), fenced to the exact seller-job generation, kept on record for seven days.
+   Tier/project resolved later are re-sealed into the same envelope.
+7. Admission sends one tiny non-streaming `gemini-2.5-flash-lite` generation using the runtime
+   Antigravity wrapper and headers, **first to the production endpoint the gateway actually serves
+   customer traffic from**, so admission is evidence about the surface that will carry the
+   subscription. It requires HTTP 2xx, a wrapped candidate and non-zero authoritative
+   `usageMetadata`. An access rejection made before the model ran (`403`/`404`) repeats the same
+   probe once on the reviewed sandbox endpoint, because a subscription can be admitted on one host
+   and refused on the other and nothing was generated or billed yet. `503`, malformed JSON,
    missing usage and ambiguous transport return `generation_unavailable` without trying another
-   host; a generation that did run is never
-   replayed automatically, no credential is published and seller payout does not complete. An
-   account-level rejection is identical on every host and therefore stops the probe immediately:
+   host; a generation that did run is never replayed automatically, no credential is published and
+   seller payout does not complete. A CONNECT-stage transport refusal is a different fact: the
+   tunnel never reached Google, so no paid generation exists to protect, and exactly the bounded
+   pre-target classes (`proxy_throttle`, `proxy_timeout`, `proxy_upstream`, `proxy_connect`,
+   `proxy_eof`, `tls`) are retried on the same 0/2/7/17/37-second schedule as the token exchange.
+   An account-level rejection is identical on every host and therefore stops the probe immediately:
    `VALIDATION_REQUIRED` / "Verify your account to continue" becomes `account_validation_required`,
    whose seller instruction is to finish Google's own account verification in
    the same browser profile and proxy — retrying cannot clear it, and a working `gemini.google.com`
@@ -161,29 +160,36 @@ the Antigravity checks below remain decisive.
    verification link in `error.details[].metadata.validation_url` while `message` carries only the
    sentence; Auth Bot forwards that link to the seller as copyable text, fail-closed on anything but
    an `https://accounts.google.com/` URL so the message cannot be turned into a phishing vector. The
-   admitted-but-held token material is parked in an AEAD envelope bound to that seller's chat
-   (never in `profiles.json`, never a completed payout), fenced to the exact seller-job generation
-   and expiring after 72 hours, so the seller finishes with one button press instead of two fresh
-   Google consents. Each press runs exactly one acceptance generation on those tokens, refreshing
-   the access token over the same egress when needed; success publishes and settles the deal
-   through the same code path as the callback, and any verdict other than the same hold discards
-   the parked material. The
    journal carries the HTTP status, the surface and Google's enum fields (`error.status`,
    `error.details[].reason`); the free-form `error.message` can name the project or account and is
    printed only under `AUTH_BOT_GEMINI_TIER_EVIDENCE=1`.
-10. Only after generation acceptance is the final Antigravity credential sealed and published
-   atomically. After waiting for the publication lock, Auth Bot re-checks the exact seller-job
-   generation immediately before the roster write; a cancelled, rewound or replaced job fails
+8. **A recorded account that has not been admitted is retried automatically: one acceptance
+   generation every five minutes for twenty-four hours after consent.** Every attempt runs the
+   identical code path — refresh the bearer over the same egress if it aged out, resolve tier and
+   project if a previous attempt could not, then exactly one probe — so a late admission rests on
+   the same evidence as an immediate one. The schedule lives in SQLite, so a restart neither loses
+   it nor fires a burst; claiming an attempt advances the next one, so the seller's button and the
+   sweep cannot double-charge one account. A success publishes and settles the deal, payout
+   included, through the callback's own code path. Only a verdict no retry can change
+   (`authorization`, `account_mismatch`, `duplicate_account`, `duplicate_proxy`,
+   `migration_proxy_mismatch`, `stale_handoff`) ends the window early. When the window closes, the
+   seller and the admins are told once, probing stops and **the credential stays on record**.
+   The seller's `gemini:verified` button remains an immediate manual attempt at any time.
+9. Only after generation acceptance is the Antigravity credential sealed and published
+   atomically, and the parked copy cleared. After waiting for the publication lock, Auth Bot
+   re-checks the exact seller-job generation immediately before the roster write; a cancelled,
+   rewound or replaced job fails
    closed. A legacy roster profile migrates one-way in place, preserving opaque id, roster bytes and
    IPRoyal lifecycle; reverse migration or proxy mismatch fails. The runtime discovers the profile
-   on its health loop without restart. A direct Antigravity callback created before this rollout
-   remains decodable for deployment compatibility and retains the former in-place reauthorization
-   rule because its already-issued consent may have invalidated the old token.
+   on its health loop without restart. A two-phase callback created before this rollout remains
+   decodable for deployment compatibility: a legacy-bootstrap session sealed by the previous binary
+   still transitions to its Antigravity phase instead of stranding a seller mid-flow.
 
 `/cancel` is the explicit full-restart boundary for a Gemini seller handoff. Under the same
 publication/terminal lock it first decrypts or resolves the exact pinned egress, atomically deletes
 the pending or already-claimed capability and rotates the seller-job generation, then aborts the
-old local worker and starts again from the Gemini CLI phase with a fresh state and PKCE verifier.
+old local worker and starts again with a fresh state and PKCE verifier for a new Antigravity
+consent.
 The generation check immediately before publication makes an old task harmless even if cancellation
 arrives while Google I/O is in progress. A malformed/missing egress still fences the old generation
 instead of leaving `processing` behind; seller-owned egress is requested again, while fixed egress

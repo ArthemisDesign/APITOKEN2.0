@@ -134,6 +134,12 @@ pub struct GeminiPendingVerification {
     pub expires_ts: i64,
     /// Includes the attempt being claimed right now.
     pub attempts: i64,
+    /// Earliest moment the background sweep may run the next acceptance attempt.
+    pub next_probe_ts: i64,
+    /// Moment automatic probing stops. The envelope itself survives until `expires_ts`, so the
+    /// credential stays recorded even when the account never passed.
+    pub probe_deadline_ts: i64,
+    pub deadline_notified: bool,
     pub job: Option<SellerJobRef>,
 }
 
@@ -342,6 +348,24 @@ impl Store {
         );
         let _ = c.execute(
             "ALTER TABLE seller_jobs ADD COLUMN job_token TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        // Автопроба припаркованного аккаунта. Expand-only: старые записи получают нули и будут
+        // подхвачены первой же парковкой, а не воскреснут с невалидным расписанием.
+        let _ = c.execute(
+            "ALTER TABLE gemini_pending_verifications ADD COLUMN next_probe_ts INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = c.execute(
+            "ALTER TABLE gemini_pending_verifications ADD COLUMN probe_deadline_ts INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = c.execute(
+            "ALTER TABLE gemini_pending_verifications ADD COLUMN deadline_notified INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = c.execute(
+            "ALTER TABLE gemini_pending_verifications ADD COLUMN last_failure TEXT NOT NULL DEFAULT ''",
             [],
         );
         c.execute(
@@ -850,14 +874,18 @@ impl Store {
         )? == 1)
     }
 
-    /// Seal the token material of an account that Google admitted but is holding for its own
-    /// verification. Exactly one such account may wait per seller chat, fenced to the seller-job
-    /// generation that produced it, so a later deal can never publish an earlier deal's account.
+    /// Seal the token material of an account whose consent succeeded but whose acceptance
+    /// generation has not passed yet. Exactly one such account may wait per seller chat, fenced to
+    /// the seller-job generation that produced it, so a later deal can never publish an earlier
+    /// deal's account. `probe_deadline_ts` bounds automatic retries; `expires_ts` bounds how long
+    /// the credential itself stays recorded, and it is always the later of the two.
     pub fn park_gemini_verification(
         &self,
         chat_id: i64,
         sealed_payload: &str,
         expires_ts: i64,
+        probe_deadline_ts: i64,
+        next_probe_ts: i64,
         job: Option<&SellerJobRef>,
     ) -> Result<()> {
         let stored = job.cloned().unwrap_or(SellerJobRef {
@@ -870,13 +898,17 @@ impl Store {
         self.c.lock().unwrap().execute(
             "INSERT INTO gemini_pending_verifications(
                 chat_id,sealed_payload,expires_ts,attempts,ts,
-                job_kind,job_offer_id,job_batch_id,job_item_no,job_token)
-             VALUES(?1,?2,?3,0,?4,?5,?6,?7,?8,?9)
+                job_kind,job_offer_id,job_batch_id,job_item_no,job_token,
+                next_probe_ts,probe_deadline_ts,deadline_notified,last_failure)
+             VALUES(?1,?2,?3,0,?4,?5,?6,?7,?8,?9,?10,?11,0,'')
              ON CONFLICT(chat_id) DO UPDATE SET
                 sealed_payload=excluded.sealed_payload,expires_ts=excluded.expires_ts,
                 attempts=0,ts=excluded.ts,job_kind=excluded.job_kind,
                 job_offer_id=excluded.job_offer_id,job_batch_id=excluded.job_batch_id,
-                job_item_no=excluded.job_item_no,job_token=excluded.job_token",
+                job_item_no=excluded.job_item_no,job_token=excluded.job_token,
+                next_probe_ts=excluded.next_probe_ts,
+                probe_deadline_ts=excluded.probe_deadline_ts,
+                deadline_notified=0,last_failure=''",
             rusqlite::params![
                 chat_id,
                 sealed_payload,
@@ -886,17 +918,22 @@ impl Store {
                 stored.offer_id,
                 stored.batch_id,
                 stored.item_no,
-                stored.token
+                stored.token,
+                next_probe_ts,
+                probe_deadline_ts
             ],
         )?;
         Ok(())
     }
 
     /// Read the parked account and count this attempt in one transaction, so a seller hammering
-    /// the button cannot start several paid acceptance generations from one parked record.
+    /// the button — or the background sweep racing that press — cannot start several paid
+    /// acceptance generations from one parked record. Claiming also pushes `next_probe_ts` forward
+    /// by one interval, which is what serializes the sweep against the button.
     pub fn claim_gemini_verification(
         &self,
         chat_id: i64,
+        next_probe_ts: i64,
     ) -> Result<Option<GeminiPendingVerification>> {
         let mut c = self.c.lock().unwrap();
         let tx = c.transaction()?;
@@ -907,7 +944,8 @@ impl Store {
         let parked = tx
             .query_row(
                 "SELECT sealed_payload,expires_ts,attempts,
-                        job_kind,job_offer_id,job_batch_id,job_item_no,job_token
+                        job_kind,job_offer_id,job_batch_id,job_item_no,job_token,
+                        next_probe_ts,probe_deadline_ts,deadline_notified
                  FROM gemini_pending_verifications WHERE chat_id=?1",
                 rusqlite::params![chat_id],
                 |row| {
@@ -924,6 +962,9 @@ impl Store {
                         sealed_payload: row.get(0)?,
                         expires_ts: row.get(1)?,
                         attempts: row.get::<_, i64>(2)? + 1,
+                        next_probe_ts: row.get(8).unwrap_or_default(),
+                        probe_deadline_ts: row.get(9).unwrap_or_default(),
+                        deadline_notified: row.get::<_, i64>(10).unwrap_or_default() != 0,
                         job,
                     })
                 },
@@ -931,12 +972,92 @@ impl Store {
             .optional()?;
         if parked.is_some() {
             tx.execute(
-                "UPDATE gemini_pending_verifications SET attempts=attempts+1,ts=?2 WHERE chat_id=?1",
-                rusqlite::params![chat_id, now()],
+                "UPDATE gemini_pending_verifications
+                 SET attempts=attempts+1,ts=?2,next_probe_ts=?3 WHERE chat_id=?1",
+                rusqlite::params![chat_id, now(), next_probe_ts],
             )?;
         }
         tx.commit()?;
         Ok(parked)
+    }
+
+    /// Sellers whose parked account is due for another automatic acceptance attempt. The sweep
+    /// claims each of them separately, so this read only decides who to look at.
+    pub fn due_gemini_verifications(&self) -> Result<Vec<i64>> {
+        let now = now();
+        let c = self.c.lock().unwrap();
+        let mut statement = c.prepare(
+            "SELECT chat_id FROM gemini_pending_verifications
+             WHERE expires_ts>=?1 AND probe_deadline_ts>?1 AND next_probe_ts<=?1
+             ORDER BY next_probe_ts",
+        )?;
+        let due = statement
+            .query_map(rusqlite::params![now], |row| row.get::<_, i64>(0))?
+            .collect::<Result<Vec<i64>, _>>()?;
+        Ok(due)
+    }
+
+    /// Sellers whose automatic window has just closed and who have not been told yet. The
+    /// credential stays recorded; only probing stops.
+    pub fn expired_gemini_probe_windows(&self) -> Result<Vec<i64>> {
+        let now = now();
+        let c = self.c.lock().unwrap();
+        let mut statement = c.prepare(
+            "SELECT chat_id FROM gemini_pending_verifications
+             WHERE expires_ts>=?1 AND probe_deadline_ts>0 AND probe_deadline_ts<=?1
+                   AND deadline_notified=0",
+        )?;
+        let expired = statement
+            .query_map(rusqlite::params![now], |row| row.get::<_, i64>(0))?
+            .collect::<Result<Vec<i64>, _>>()?;
+        Ok(expired)
+    }
+
+    /// Record the outcome of one automatic attempt without touching the sealed material: when to
+    /// try again and the bounded failure code shown to the seller. A terminal verdict passes
+    /// `next_probe_ts = 0` together with a zero deadline to stop the sweep while keeping the
+    /// credential on record.
+    pub fn schedule_gemini_probe(
+        &self,
+        chat_id: i64,
+        next_probe_ts: i64,
+        probe_deadline_ts: Option<i64>,
+        last_failure: &str,
+    ) -> Result<()> {
+        let c = self.c.lock().unwrap();
+        match probe_deadline_ts {
+            Some(deadline) => c.execute(
+                "UPDATE gemini_pending_verifications
+                 SET next_probe_ts=?2,probe_deadline_ts=?3,last_failure=?4,ts=?5
+                 WHERE chat_id=?1",
+                rusqlite::params![chat_id, next_probe_ts, deadline, last_failure, now()],
+            )?,
+            None => c.execute(
+                "UPDATE gemini_pending_verifications
+                 SET next_probe_ts=?2,last_failure=?3,ts=?4 WHERE chat_id=?1",
+                rusqlite::params![chat_id, next_probe_ts, last_failure, now()],
+            )?,
+        };
+        Ok(())
+    }
+
+    /// One-shot flag: the seller and the admins have been told the automatic window closed.
+    pub fn mark_gemini_probe_window_notified(&self, chat_id: i64) -> Result<bool> {
+        Ok(self.c.lock().unwrap().execute(
+            "UPDATE gemini_pending_verifications SET deadline_notified=1
+             WHERE chat_id=?1 AND deadline_notified=0",
+            rusqlite::params![chat_id],
+        )? == 1)
+    }
+
+    /// Replace only the sealed material of an already parked account — a refreshed access token or
+    /// a tier/project a later attempt managed to resolve. The schedule, attempt count and
+    /// seller-job fence are deliberately untouched.
+    pub fn reseal_gemini_verification(&self, chat_id: i64, sealed_payload: &str) -> Result<bool> {
+        Ok(self.c.lock().unwrap().execute(
+            "UPDATE gemini_pending_verifications SET sealed_payload=?2,ts=?3 WHERE chat_id=?1",
+            rusqlite::params![chat_id, sealed_payload, now()],
+        )? == 1)
     }
 
     /// Is an account still parked for this seller? Read-only: it must not consume an attempt,
@@ -2971,41 +3092,148 @@ mod tests {
             token: "generation-a".into(),
         };
         assert!(!s.gemini_verification_is_parked(555).unwrap());
-        s.park_gemini_verification(555, "sealed-envelope", now() + 3600, Some(&job))
-            .unwrap();
+        s.park_gemini_verification(
+            555,
+            "sealed-envelope",
+            now() + 3600,
+            now() + 1800,
+            now() - 1,
+            Some(&job),
+        )
+        .unwrap();
         assert!(s.gemini_verification_is_parked(555).unwrap());
         // Reading the record must not consume an attempt: it only decides whether to show a button.
         assert!(s.gemini_verification_is_parked(555).unwrap());
 
         // Each claim is one paid acceptance generation, so the counter advances per press and the
         // job generation travels with the record.
-        let first = s.claim_gemini_verification(555).unwrap().unwrap();
+        let first = s.claim_gemini_verification(555, now() + 300).unwrap().unwrap();
         assert_eq!(first.attempts, 1);
         assert_eq!(first.sealed_payload, "sealed-envelope");
         assert_eq!(first.job.as_ref().unwrap().token, "generation-a");
         assert_eq!(
-            s.claim_gemini_verification(555).unwrap().unwrap().attempts,
+            s.claim_gemini_verification(555, now() + 300)
+                .unwrap()
+                .unwrap()
+                .attempts,
             2
         );
 
         // Re-parking a newer account for the same seller restarts the count instead of stacking.
-        s.park_gemini_verification(555, "second-envelope", now() + 3600, Some(&job))
-            .unwrap();
+        s.park_gemini_verification(
+            555,
+            "second-envelope",
+            now() + 3600,
+            now() + 1800,
+            now() - 1,
+            Some(&job),
+        )
+        .unwrap();
         assert_eq!(
-            s.claim_gemini_verification(555).unwrap().unwrap().attempts,
+            s.claim_gemini_verification(555, now() + 300)
+                .unwrap()
+                .unwrap()
+                .attempts,
             1
         );
 
         // An expired record is swept rather than served: parked token material is not permanent.
-        s.park_gemini_verification(555, "stale-envelope", now() - 1, Some(&job))
-            .unwrap();
+        s.park_gemini_verification(
+            555,
+            "stale-envelope",
+            now() - 1,
+            now() - 1,
+            now() - 1,
+            Some(&job),
+        )
+        .unwrap();
         assert!(!s.gemini_verification_is_parked(555).unwrap());
-        assert!(s.claim_gemini_verification(555).unwrap().is_none());
+        assert!(s.claim_gemini_verification(555, now() + 300).unwrap().is_none());
 
-        s.park_gemini_verification(555, "sealed-envelope", now() + 3600, Some(&job))
-            .unwrap();
+        s.park_gemini_verification(
+            555,
+            "sealed-envelope",
+            now() + 3600,
+            now() + 1800,
+            now() - 1,
+            Some(&job),
+        )
+        .unwrap();
         s.clear_gemini_verification(555).unwrap();
-        assert!(s.claim_gemini_verification(555).unwrap().is_none());
+        assert!(s.claim_gemini_verification(555, now() + 300).unwrap().is_none());
+    }
+
+    /// The automatic acceptance window: who the sweep may probe, how a claim spaces the next
+    /// attempt, and that a terminal verdict stops probing WITHOUT discarding the credential — the
+    /// exact combination that turned one throttled proxy into a permanently dead retry button.
+    #[test]
+    fn gemini_probe_schedule_bounds_the_sweep_and_keeps_the_credential() {
+        let p = tmp();
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&p).parent().unwrap());
+        let s = Store::open(&p).unwrap();
+        let job = SellerJobRef {
+            kind: "offer".into(),
+            offer_id: 9,
+            batch_id: 0,
+            item_no: 0,
+            token: "generation-b".into(),
+        };
+
+        // Freshly recorded: the first automatic attempt is one interval away, not immediate.
+        s.park_gemini_verification(
+            777,
+            "sealed",
+            now() + 86_400,
+            now() + 3600,
+            now() + 300,
+            Some(&job),
+        )
+        .unwrap();
+        assert!(s.due_gemini_verifications().unwrap().is_empty());
+
+        // Due once its next probe time has passed; claiming pushes the following attempt out, so a
+        // manual press and the sweep cannot double-charge one account.
+        s.schedule_gemini_probe(777, now() - 1, None, "generation_unavailable")
+            .unwrap();
+        assert_eq!(s.due_gemini_verifications().unwrap(), vec![777]);
+        s.claim_gemini_verification(777, now() + 300).unwrap().unwrap();
+        assert!(s.due_gemini_verifications().unwrap().is_empty());
+
+        // A terminal verdict stops the sweep but leaves the sealed material readable.
+        s.schedule_gemini_probe(777, 0, Some(0), "duplicate_account")
+            .unwrap();
+        assert!(s.due_gemini_verifications().unwrap().is_empty());
+        assert!(s.gemini_verification_is_parked(777).unwrap());
+        assert_eq!(
+            s.claim_gemini_verification(777, now() + 300)
+                .unwrap()
+                .unwrap()
+                .sealed_payload,
+            "sealed"
+        );
+
+        // Re-sealing swaps only the material; schedule and fence survive.
+        assert!(s.reseal_gemini_verification(777, "resealed").unwrap());
+        let claimed = s.claim_gemini_verification(777, now() + 300).unwrap().unwrap();
+        assert_eq!(claimed.sealed_payload, "resealed");
+        assert_eq!(claimed.job.as_ref().unwrap().token, "generation-b");
+
+        // A closed window notifies exactly once, and the record stays.
+        s.park_gemini_verification(
+            778,
+            "sealed",
+            now() + 86_400,
+            now() - 1,
+            now() - 1,
+            Some(&job),
+        )
+        .unwrap();
+        assert!(s.due_gemini_verifications().unwrap().is_empty());
+        assert_eq!(s.expired_gemini_probe_windows().unwrap(), vec![778]);
+        assert!(s.mark_gemini_probe_window_notified(778).unwrap());
+        assert!(!s.mark_gemini_probe_window_notified(778).unwrap());
+        assert!(s.expired_gemini_probe_windows().unwrap().is_empty());
+        assert!(s.gemini_verification_is_parked(778).unwrap());
     }
 
     #[test]
