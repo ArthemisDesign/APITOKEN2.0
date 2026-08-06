@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client } from "pg";
@@ -11,12 +12,15 @@ import { MIGRATIONS_FOLDER } from "./migrate.js";
 import { runStage5Backfill } from "./multi-discount-backfill.js";
 import { convertCustomerToBusiness } from "./pricing.js";
 import { stageAccountStrictCutoverJob } from "./pricing-control-jobs.js";
+import { updateManagedPricingPolicy } from "./pricing-policy-write.js";
 import { advanceAccountStrictChain, listPendingStrictChainAccounts } from "./strict-chain.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 const TEST_TIMEOUT_MS = 120_000;
 
-const NORMALIZATION_DIGEST = `sha256:v2:${"b".repeat(64)}`;
+function digest(label: string): string {
+  return `sha256:v2:${createHash("sha256").update(label, "utf8").digest("hex")}`;
+}
 
 function quoteIdentifier(identifier: string): string {
   if (!/^[a-z][a-z0-9_]*$/.test(identifier)) throw new Error(`unsafe identifier ${identifier}`);
@@ -187,6 +191,63 @@ describe.runIf(Boolean(connectionString))("automatic strict chain", () => {
     return result.rows[0];
   }
 
+  // A durable cutover receipt with its FK parents, marking the post-cutover era for the
+  // commerce-local check. The receipt payload is what the real activation writer stores.
+  async function markCutoverCompleted(): Promise<void> {
+    for (const [generation, kind] of [[901, "target"], [902, "recovery"]] as const) {
+      await seedClient.query(`
+        INSERT INTO pricing_release_plans_v2 (
+          generation,release_kind,schema_version,commerce_inventory_digest,engine_inventory_digest,
+          openkeys_inventory_digest,service_inventory_digest,policy_manifest_digest,
+          assignment_manifest_digest,funding_manifest_digest,engine_release_digest,content_digest,status
+        ) VALUES ($1,$2,2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'planned')
+      `, [
+        generation,
+        kind,
+        digest(`commerce:${generation}`),
+        digest(`engine:${generation}`),
+        digest(`openkeys:${generation}`),
+        digest(`service:${generation}`),
+        digest(`policy-manifest:${generation}`),
+        digest(`assignment-manifest:${generation}`),
+        digest(`funding-manifest:${generation}`),
+        digest(`engine-release:${generation}`),
+        digest(`content:${generation}`),
+      ]);
+    }
+    await seedClient.query(`
+      INSERT INTO pricing_stage8_evidence_v2 (
+        evidence_digest,target_generation,target_digest,recovery_generation,recovery_digest,
+        commerce_inventory_digest,engine_inventory_digest,openkeys_inventory_digest,
+        sales_contract_digest,funding_digest,shadow_digest,runtime_floor_digest,
+        legacy_inflight_count,blocker_count,passed,observed_at,valid_until
+      ) VALUES ($1,901,$2,902,$3,$4,$5,$6,$7,$8,$9,$10,0,0,true,now(),now()+interval '5 minutes')
+    `, [
+      digest("evidence"),
+      digest("content:901"),
+      digest("content:902"),
+      digest("commerce-evidence"),
+      digest("engine:901"),
+      digest("openkeys-evidence"),
+      digest("sales-contract"),
+      digest("funding-manifest:901"),
+      digest("shadow"),
+      digest("runtime-floor"),
+    ]);
+    await seedClient.query(`
+      INSERT INTO pricing_release_activation_receipts_v2 (
+        activation_id,activation_kind,release_generation,release_digest,
+        evidence_digest,head_version,receipt_digest,receipt_payload,activated_at
+      ) VALUES ($1,'cutover',901,$2,$3,1,$4,$5::jsonb,now())
+    `, [
+      randomUUID(),
+      digest("content:901"),
+      digest("evidence"),
+      digest("activation-receipt"),
+      JSON.stringify({ result: "applied" }),
+    ]);
+  }
+
   it("waits for the shadow confirmation, then stages the strict cutover and disarms", async () => {
     const { userId } = await convertUser("chain-staged@example.test");
 
@@ -321,5 +382,62 @@ describe.runIf(Boolean(connectionString))("automatic strict chain", () => {
       strict_chain_pending: false,
       last_error: "per-account strict cutover is supported for converted B2B clients only",
     });
+  });
+
+  it("disarms a pending chain as superseded once the global cutover is durable", async () => {
+    const { userId } = await convertUser("chain-superseded@example.test");
+    await confirmShadowDelivery(userId);
+    // The fleet head CAS lands while the chain is still armed: the release-v2 authority takes
+    // over the account, so the legacy lane must stand down without engine I/O.
+    await markCutoverCompleted();
+
+    const engine = fakePreflight();
+    const candidate = (await listPendingStrictChainAccounts(database, 10))[0]!;
+    await expect(advanceAccountStrictChain(database, engine.transport, candidate))
+      .resolves.toEqual({ status: "superseded" });
+    expect(engine.calls).toEqual([]);
+    expect((await bindingState(userId))?.strict_chain_pending).toBe(false);
+
+    // The legacy staging lane itself refuses post-cutover, and the sweep never lists the
+    // disarmed binding again.
+    await expect(stageAccountStrictCutoverJob(database, { userId }))
+      .rejects.toMatchObject({ code: "post_cutover" });
+    expect(await listPendingStrictChainAccounts(database, 10)).toEqual([]);
+  });
+
+  it("stops arming the legacy chain for post-cutover conversions and saves", async () => {
+    await markCutoverCompleted();
+    const { userId } = await convertUser("chain-post-cutover@example.test");
+    expect((await bindingState(userId))?.strict_chain_pending).toBe(false);
+
+    await updateManagedPricingPolicy(database, {
+      ownerType: "b2b_client",
+      ownerId: userId,
+      expectedVersion: 1,
+      rules: [{
+        scope: { provider: { providerId: "anthropic" } },
+        pricingMode: "discount",
+        discountBps: 6_000,
+      }],
+      actorId: "admin@example.test",
+      reason: "post-cutover policy save",
+    });
+    expect((await bindingState(userId))?.strict_chain_pending).toBe(false);
+    expect(await listPendingStrictChainAccounts(database, 10)).toEqual([]);
+
+    // The global B2C policy is pinned by the active release: post-cutover edits fail loudly
+    // instead of silently diverging the panel from enforced prices.
+    await expect(updateManagedPricingPolicy(database, {
+      ownerType: "global_b2c",
+      ownerId: "global-b2c",
+      expectedVersion: 1,
+      rules: [{
+        scope: { provider: { providerId: "anthropic" } },
+        pricingMode: "discount",
+        discountBps: 5_000,
+      }],
+      actorId: "admin@example.test",
+      reason: "post-cutover global edit",
+    })).rejects.toMatchObject({ code: "release_cycle_required" });
   });
 });

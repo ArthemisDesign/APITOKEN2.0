@@ -219,29 +219,19 @@ shadow, and the engine accepts a shadow rebind pre-cutover, so the panel's versi
 the engine ACKs. Only a strict binding keeps the immutable lineage — its desired state is
 healed back to the confirmed one and the release cutover delivers the identity switch.
 
-Conversion and every B2B policy save then enforce the client's own policy per account without
-waiting for the fleet cutover (`docs/commerce/MULTI-DISCOUNT.md` decisions 13–14): both arm the
-binding's durable `strict_chain_pending` intent, and the pricing worker cuts the account over
-to strict as soon as the exact saved version confirms under shadow (shared funding
-normalization + exact key ACKs + atomic strict delivery; the worker re-stamps keys on the new
-head). From the engine ACK on, billing and the customer's badge both follow the materialized
-per-provider policy — the legacy scalar, the global B2C rules and older versions never price a
-new charge again, while in-flight reservations settle on their reserve-time snapshot. A failed
-precondition (blocked funding normalization, an unstamped key, engine-side guards) is recorded
-as the binding's last error and retried loudly, never a silent half state. The manual endpoint
-`POST /v1/admin/users/:id/policy-enforcement-cutover` remains for repair, replay, and clients
-converted before this chaining existed (runbook in `docs/commerce/PRICING.md`, "Per-account
-strict cutover"). While the account is still pre-strict (the short delivery window), the legacy
-scalar stays the enforced bridge: saving a B2B client policy whose rules are a uniform
-provider-level discount (for example 70% on every provider) also moves that scalar and enqueues
-its engine delivery, so the edit changes the price the customer pays even inside the window;
-the customer's usage page shows each provider at the policy's per-provider
-discount, clamped to never exceed the discount the scalar actually bills while the policy is
-not engine-enforced (a tighter negotiated rate shows as configured, a looser one shows the
-scalar). A non-uniform policy (per-provider or per-model differences) cannot be
-one scalar — it leaves the window price unchanged and is enforced by the chain. Post-cutover, a saved B2B policy also advances the live release-v2 authority:
-a strictly newer release policy version is pinned through the append-only assignment
-extension under the exact current head, and the CAS response reports that outcome. A new invitation is created immediately with a full provider/model policy; a
+Conversion and every B2B policy save enforce the client's own policy per account
+(`docs/commerce/MULTI-DISCOUNT.md` decisions 13–14). Since the fleet cutover completed on
+2026-08-04, the enforcement lane is the append-only assignment extension: the save prepares a
+strictly newer release policy version and pins it under the exact current head and its paired
+recovery, and the resolver prefers the extension over the immutable base assignment — billing
+and the customer's badge both follow the materialized per-provider policy, while the global B2C
+rules, the legacy scalar and older versions never price a new charge again. In-flight
+reservations settle on their reserve-time snapshot. A pre-cutover converted account still on
+the legacy lane is disarmed as `superseded` by the pricing worker and the manual
+`POST /v1/admin/users/:id/policy-enforcement-cutover` endpoint refuses with `post_cutover`:
+the engine guards (funding parity, exact key ACKs) now live behind the extension writer's
+readback. A failed extension sync is reported on the save response with its typed code, never
+a silent half state. A new invitation is created immediately with a full provider/model policy; a
 scalar discount editor does not exist in the active UI. An unredeemed invitation is edited
 with CAS replacement versions, resend gets an independent exact snapshot, and after
 redemption changing the invitation no longer changes the client policy.

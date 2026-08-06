@@ -6,6 +6,7 @@ import {
 import type { Database } from "./client.js";
 import {
   AccountStrictCutoverError,
+  pricingReleaseCutoverCompleted,
   stageAccountStrictCutoverJob,
 } from "./pricing-control-jobs.js";
 
@@ -19,6 +20,11 @@ import {
  * flag, so a replay never duplicates the cutover, and a binding that is already strict is just
  * disarmed. A failed precondition is recorded on the binding's last_error and retried on the
  * next sweep; it never produces a partial silent state.
+ *
+ * The lane is pre-cutover only: once the global release cutover receipt is durable, the
+ * release-v2 authority owns admission and pricing, and per-account B2B enforcement moves
+ * through the append-only assignment extension lane. The writers stop arming the flag at that
+ * point, and the sweep disarms any straggler as `superseded` without touching the engine.
  */
 
 export type PendingStrictChainAccount = {
@@ -35,6 +41,9 @@ export type PendingStrictChainAccount = {
 export type AccountStrictChainAdvanceResult =
   | { status: "staged"; jobId: string | null; funding: string; keysStamped: number }
   | { status: "already_strict" }
+  // The global release cutover has completed; the flag was disarmed without engine I/O because
+  // the assignment extension lane owns per-account enforcement now.
+  | { status: "superseded" }
   // The shadow delivery of the target version is still in flight (or a newer save moved the
   // desired target mid-sweep); the next pass re-evaluates quietly.
   | { status: "pending" }
@@ -83,6 +92,17 @@ export async function advanceAccountStrictChain(
   engine: AccountStrictCutoverPreflightTransport,
   candidate: PendingStrictChainAccount,
 ): Promise<AccountStrictChainAdvanceResult> {
+  {
+    const client = await database.pool.connect();
+    try {
+      if (await pricingReleaseCutoverCompleted(client)) {
+        await clearStrictChainPending(database, candidate.bindingId);
+        return { status: "superseded" };
+      }
+    } finally {
+      client.release();
+    }
+  }
   if (candidate.policyEnforcement === "strict") {
     await clearStrictChainPending(database, candidate.bindingId);
     return { status: "already_strict" };
@@ -124,6 +144,12 @@ export async function advanceAccountStrictChain(
         await noteStrictChainFailure(database, candidate.bindingId, error.message);
         await clearStrictChainPending(database, candidate.bindingId);
         return { status: "failed", error: error.message };
+      }
+      if (error.code === "post_cutover") {
+        // The head CAS landed between the sweep's read and staging: disarm, the release
+        // authority owns this account now.
+        await clearStrictChainPending(database, candidate.bindingId);
+        return { status: "superseded" };
       }
       return { status: "pending" };
     }

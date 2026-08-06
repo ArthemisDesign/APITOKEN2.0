@@ -487,6 +487,10 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
             `strict chain staged for ${candidate.userId}: job ${result.jobId} ` +
             `(funding ${result.funding}, ${result.keysStamped} active keys stamped)`,
           );
+        } else if (result.status === "superseded") {
+          this.logger.log(
+            `strict chain for ${candidate.userId} disarmed: the global release cutover owns enforcement now`,
+          );
         } else if (result.status === "failed") {
           this.logger.error(`strict chain for ${candidate.userId} cannot advance: ${result.error}`);
         }

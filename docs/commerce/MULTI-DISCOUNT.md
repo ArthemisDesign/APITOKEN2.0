@@ -1,9 +1,11 @@
 # Multi-provider discount contract and online cutover
 
-Document status: approved target contract dated 2026-08-02. Code and production data are
-considered migrated to it only after the Definition of Done below is met. This document supersedes
-the previous progressive-tariff design: the target system has no active `track` mode, no tier
-ladder, and no 30-day retention.
+Document status: approved target contract dated 2026-08-02, LIVE since the Stage 9 one-head CAS
+on 2026-08-04 (release generation 13; durable cutover receipt in commerce and the engine head
+row). The release-v2 authority governs admission and pricing for every account class. What
+remains below the line is the removal of the retired progressive machinery (§6) and the final
+Definition of Done sweep. This document supersedes the previous progressive-tariff design: the
+target system has no active `track` mode, no tier ladder, and no 30-day retention.
 
 ## 1. Accepted product decisions
 
@@ -61,7 +63,7 @@ tariff such as "this model always costs $0.01" is not part of the contract.
 |---|---|---|---|---|
 | B2C | global `5000 bps`, then provider/model override | main product catalog | yes | paid-funded usage |
 | B2B | individual provider/model rules | only models explicitly allowed by the policy | yes | no, until a separate B2B contract is approved |
-| OpenKeys | `0 bps` discount, strictly 1:1 | OpenKeys product catalog | yes | no |
+| OpenKeys | `0 bps` discount, strictly 1:1 | all runtime-priceable models (§4) | yes | no |
 | Service | customer charge is not computed; official cost is persisted | all runtime-capable models | no (`meter_only`) | no |
 
 Pricing and admission are different decisions. A discount does not enable a model, and a model's
@@ -663,7 +665,16 @@ step.
 
 ## 11. Definition of Done
 
-The work is complete only when all of the following hold simultaneously:
+The work is complete only when all of the following hold simultaneously. Production state as
+verified on 2026-08-06 (read-only audit of commerce/engine PostgreSQL and the GitHub deploy
+statuses): items 1, 3–13, 15, 16 hold — the cutover receipt and the generation-13 head are
+durable, funding normalization is `ready` for the full inventory, Stage 8 evidence passed, the
+B2C global rule resolves at 5000 bps, B2B policies carry their negotiated provider rules,
+OpenKeys bill 1:1 with runtime-following admission (Google included), service accounts run
+`meter_only`, new signups receive exactly `$5.000000000`, and every deploy lane is green.
+Item 17 holds with the chain's post-cutover stand-down guard. Items 2 and 14 remain: the
+retired progressive writers/UI surfaces are the cleanup tracked in §6, and their removal is the
+last open work.
 
 1. All expand migrations are delivered before the dependent code.
 2. No new writer creates progressive pricing records.

@@ -17,6 +17,7 @@ import {
 import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
 import { stage5Digest } from "./multi-discount-backfill.js";
+import { pricingReleaseCutoverCompleted } from "./pricing-control-jobs.js";
 
 type ManagedOwnerType = "global_b2c" | "b2b_client" | "b2b_invitation" | "service";
 type MaterializedOwnerType = Exclude<ManagedOwnerType, "b2b_invitation">;
@@ -101,7 +102,8 @@ export class PricingPolicyWriteError extends Error {
       | "invalid_owner_rule"
       | "rule_outside_catalog"
       | "invitation_not_editable"
-      | "provisioning_policy_missing",
+      | "provisioning_policy_missing"
+      | "release_cycle_required",
     message: string,
   ) {
     super(message);
@@ -1037,6 +1039,15 @@ export async function updateManagedPricingPolicy(database: Database, input: {
         throw new PricingPolicyWriteError("invitation_not_editable", "only an active unredeemed invitation can be edited");
       }
     }
+    if (input.ownerType === "global_b2c" && (await pricingReleaseCutoverCompleted(client))) {
+      // Post-cutover the active release pins the global B2C policy: a save here would version
+      // the commerce document and stage legacy-lane deliveries that never move release-v2
+      // billing, silently diverging the panel from enforced prices. Refuse loudly instead.
+      throw new PricingPolicyWriteError(
+        "release_cycle_required",
+        "the global B2C policy is pinned by the active pricing release; changing it post-cutover requires a new release cycle",
+      );
+    }
     const identity = await client.query<{ id: string }>(`
       SELECT id FROM pricing_policies
       WHERE owner_type = $1 AND owner_id = $2 AND product_id = $3 AND status = 'active'
@@ -1123,11 +1134,16 @@ export async function updateManagedPricingPolicy(database: Database, input: {
       // strict→strict via the delivery staged above, and a non-strict binding is flagged so
       // the pricing worker sweep cuts it over as soon as this exact version confirms under
       // shadow. Older versions, the legacy scalar, and B2C rules never price new charges again.
-      await client.query(`
-        UPDATE account_policy_bindings
-        SET strict_chain_pending = true, updated_at = now()
-        WHERE policy_id = $1 AND policy_enforcement <> 'strict'
-      `, [policyId]);
+      // Post-cutover the release-v2 authority owns pricing: the caller's extension-lane sync
+      // (syncPricingReleasePolicyOverrideV2) pins the new version for the exact active head,
+      // and no legacy chain is armed.
+      if (!(await pricingReleaseCutoverCompleted(client))) {
+        await client.query(`
+          UPDATE account_policy_bindings
+          SET strict_chain_pending = true, updated_at = now()
+          WHERE policy_id = $1 AND policy_enforcement <> 'strict'
+        `, [policyId]);
+      }
     }
     await client.query(`
       INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
@@ -1803,12 +1819,15 @@ export async function provisionBusinessClientPolicy(client: PoolClient, input: {
   // per-account strict cutover automatically: as soon as the staged shadow delivery confirms,
   // the pricing worker sweep flips enforcement to the client's own policy without a second
   // operator action. An already-strict binding is left untouched — its saves advance
-  // strict→strict directly.
-  await client.query(`
-    UPDATE account_policy_bindings
-    SET strict_chain_pending = true, updated_at = now()
-    WHERE id = $1 AND policy_enforcement <> 'strict'
-  `, [bindingId]);
+  // strict→strict directly. Post-cutover the release-v2 authority owns pricing and the
+  // assignment extension lane carries the client's policy, so no legacy chain is armed.
+  if (!(await pricingReleaseCutoverCompleted(client))) {
+    await client.query(`
+      UPDATE account_policy_bindings
+      SET strict_chain_pending = true, updated_at = now()
+      WHERE id = $1 AND policy_enforcement <> 'strict'
+    `, [bindingId]);
+  }
   return {
     policyId: source.policy_id,
     policyVersion: source.version,

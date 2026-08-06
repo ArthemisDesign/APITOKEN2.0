@@ -3,6 +3,9 @@
 Stage 9 moves all customers simultaneously, without canary and without stopping production. The only
 live mutation is a compare-and-set of a single global active pricing release head.
 
+**Executed on 2026-08-04**: the one-head CAS activated release generation 13 (`head_version` 1) with
+the durable cutover receipt stored in commerce; every deploy lane went green on the activated SHA.
+
 Exception: an individually negotiated B2B client may be cut to strict per-account ahead of the
 fleet CAS through the documented lane in `docs/commerce/PRICING.md` ("Per-account strict
 cutover"). That lane normalizes the account's funding, stamps its keys, and delivers a durable
@@ -11,8 +14,10 @@ fleet transition below is unchanged and still moves every remaining customer in 
 converted B2B clients the lane runs automatically: a B2C→B2B conversion and every `b2b_client`
 policy save arm the durable `strict_chain_pending` intent, and the pricing worker advances the
 same guarded cutover as soon as the exact saved version confirms under shadow
-(`docs/commerce/MULTI-DISCOUNT.md` decisions 13–14); the manual endpoint remains only for
-repair, replay, and clients converted before the chaining existed.
+(`docs/commerce/MULTI-DISCOUNT.md` decisions 13–14). With the cutover complete, the lane has
+stood down: writers no longer arm the flag, the sweep disarms stragglers as `superseded`, and
+the staging entry point refuses with `post_cutover`; post-cutover per-account enforcement runs
+through the append-only assignment extension lane.
 
 Commerce migration `0031_pricing_activation_evidence_capture.sql` is a separate expand-only
 checkpoint ahead of the consumer code. It adds nullable storage of the source engine evidence

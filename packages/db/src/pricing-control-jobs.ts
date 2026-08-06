@@ -834,12 +834,35 @@ async function insertOrRearmPolicyJob(client: PoolClient, input: {
 
 export class AccountStrictCutoverError extends Error {
   constructor(
-    readonly code: "no_binding" | "not_b2b" | "not_shadow" | "no_confirmed_version" | "unverified",
+    readonly code:
+      | "no_binding"
+      | "not_b2b"
+      | "not_shadow"
+      | "no_confirmed_version"
+      | "unverified"
+      | "post_cutover",
     message: string,
   ) {
     super(message);
     this.name = "AccountStrictCutoverError";
   }
+}
+
+/**
+ * Commerce-local proof that the global release cutover has completed: a complete cutover
+ * activation receipt is durable. Post-cutover the release-v2 authority owns admission and
+ * pricing, so the legacy per-account strict lane must not fire — B2B enforcement moves through
+ * the append-only assignment extension lane (syncPricingReleasePolicyOverrideV2 /
+ * ensurePricingReleaseProvisioningV2) instead.
+ */
+export async function pricingReleaseCutoverCompleted(client: PoolClient): Promise<boolean> {
+  const result = await client.query<{ present: boolean }>(`
+    SELECT EXISTS (
+      SELECT 1 FROM pricing_release_activation_receipts_v2
+      WHERE activation_kind = 'cutover' AND receipt_payload IS NOT NULL
+    ) AS present
+  `);
+  return result.rows[0]?.present ?? false;
 }
 
 export type AccountStrictCutoverStageResult = {
@@ -865,7 +888,9 @@ export type AccountStrictCutoverStageResult = {
  * activation. Idempotent: an exact replay returns the already-staged job, and an
  * already-strict binding is a reported no-op. Both outcomes disarm the binding's
  * `strict_chain_pending` intent in the same transaction, so the automatic chain never stages
- * a duplicate after a race with the manual endpoint.
+ * a duplicate after a race with the manual endpoint. Once the global release cutover receipt
+ * is durable, the lane refuses with `post_cutover`: the release-v2 authority owns pricing and
+ * per-account B2B enforcement belongs to the assignment extension lane.
  */
 export async function stageAccountStrictCutoverJob(
   database: Database,
@@ -889,6 +914,12 @@ export async function stageAccountStrictCutoverJob(
     const row = binding.rows[0];
     if (!row) {
       throw new AccountStrictCutoverError("no_binding", "user has no account policy binding");
+    }
+    if (await pricingReleaseCutoverCompleted(client)) {
+      throw new AccountStrictCutoverError(
+        "post_cutover",
+        "the global pricing release cutover has completed; per-account B2B enforcement moves through the assignment extension lane",
+      );
     }
     if (row.policy_enforcement === "strict") {
       // Report the durable job behind the strict state so an operator replaying the cutover

@@ -1,8 +1,9 @@
 # Customer pricing
 
-The target contract was approved on 2026-08-02. Until the atomic Stage 9 cutover, production may
-continue executing the old scalar/progressive path, but it must not be extended: the implementation
-must arrive at the contract below following the zero-downtime plan in
+The contract below was approved on 2026-08-02 and is LIVE: the Stage 9 one-head CAS activated
+the target pricing release on 2026-08-04 (engine `pricing_release_head_v2`, generation 13), and
+the release-v2 authority governs admission and pricing for every account class. The retired
+scalar/progressive path survives only as immutable history and the cleanup surface tracked in
 `docs/commerce/MULTI-DISCOUNT.md`.
 
 ## B2C
@@ -25,6 +26,11 @@ An operator may set a B2C provider/model override. The priority is always:
 
 For example, Gemini 60% plus a separate Gemini image model at 55% yields 55% for exactly the image
 model and 60% for all other Gemini models. Discounts do not stack.
+
+The global B2C policy is pinned by the active pricing release. Post-cutover a direct editor save
+is refused with `release_cycle_required`: changing the global rule set requires a new release
+cycle (new prepared target/recovery pair, fresh evidence, one head CAS) so the panel can never
+diverge from enforced prices.
 
 The official cost is computed by `crates/metering` from the immutable effective-dated tariff and
 only then multiplied by the integer `payable_multiplier_bp`. All amounts are nanoUSD/decimal
@@ -51,8 +57,8 @@ into "official usage".
 ## Provider/model pricing authority
 
 Pricing policy and model admission are independent. The catalog includes a model in the product, a
-switch can emergency-close a provider, and the policy sets the percentage. A missing applicable rule
-after Stage 9 fails closed; scalar fallback is forbidden.
+switch can emergency-close a provider, and the policy sets the percentage. A missing applicable
+rule fails closed; scalar fallback is forbidden.
 
 The current Gemini tariff schedule `google/gemini-developer-api/2026-08-02` includes
 `gemini-3-flash-preview`: text/image/video input `$0.50/M`, audio input `$1/M`, cached text
@@ -62,8 +68,8 @@ generation 4 remains rejected and is never materialized. A fresh private-wire ga
 implementation then completed 22 paid turns on Google AI Pro and Ultra: all thinking levels,
 incremental SSE, cache, exact PCM audio and forced tools with terminal authoritative usage.
 Publication proceeds through capability/catalog generation 5 and the production/public allowlists.
-OpenKeys does not receive the Gemini model automatically: its generation-5 catalog keeps the
-explicit Anthropic/OpenAI set. Dormant generation 6 adds only the tariff-pinned
+OpenKeys admits Gemini at 1:1 like every other runtime-priceable model (see the OpenKeys section).
+Dormant generation 6 adds only the tariff-pinned
 `openai/gpt-image-2-2026-04-21` snapshot to main and OpenKeys after real generation and
 one-reference edit passed through the existing sealed Codex OAuth pool. This producer checkpoint
 adds no reseller, separate image API key, fallback, customer admission, or public model listing;
@@ -84,40 +90,41 @@ Re-running the conversion on a customer who is already B2B repairs a missing pol
 converted before this provisioning existed) against the multiplier already in effect, and is
 otherwise a no-op — it never rewrites an existing policy.
 
-Conversion and every later B2B policy save are enforced per account without waiting for the fleet
-Stage 9 CAS: the flow automatically chains the per-account strict cutover (first enforcement) or
-a strict→strict advance (already strict), so the client's own policy becomes the only enforced
-price and every B2C input — the global default, its provider/model overrides, the legacy scalar,
-any progressive remnant — dies for that account's new charges. The chain is durable and
-idempotent: staged atomically with the conversion/save, delivered by the worker within seconds;
-a replay reports the already-enforced state, and a failed precondition (blocked funding
-normalization, an unstamped key, engine-side guards) fails loudly with a typed error, never a
-partial silent state. In-flight reservations keep their reserve-time pinned price; only new
-reserves resolve the newest policy version. Remaining welcome-bonus funds stay spendable under
-the B2B policy (funding, not pricing), and B2B charges carry no referral commission basis.
+Conversion and every later B2B policy save are enforced per account. Post-cutover the
+enforcement lane is the append-only assignment extension: the save
+(`syncPricingReleasePolicyOverrideV2`) and the post-cutover provisioning flow
+(`ensurePricingReleaseProvisioningV2`) prepare a strictly newer release policy version and pin
+it for the exact active head and its paired recovery, and the runtime resolver prefers the
+extension over the immutable base assignment. The client's own policy is therefore the only
+enforced price for new charges and every B2C input — the global default, its provider/model
+overrides, the legacy scalar, any progressive remnant — is dead for the account. The flip never
+rewrites the immutable ledger and never reprices an in-flight reservation: those settle on
+their reserve-time pinned snapshots. Remaining welcome-bonus funds stay spendable under the
+B2B policy (funding, not pricing), and B2B charges carry no referral commission basis.
+
+Before the fleet cutover the same contract ran through the per-account strict lane: conversion
+and saves armed `strict_chain_pending`, and the pricing worker chained funding normalization,
+exact key ACK stamps, and the atomic strict+strict+verified delivery once the exact client
+policy version was shadow-confirmed and reconciliation-verified. Once the cutover receipt
+became durable the lane stood down: writers no longer arm the flag, the sweep disarms
+stragglers as `superseded`, and the staging entry point refuses with `post_cutover`.
 
 The legacy engine delivery lane keeps an immutable policy lineage per strict account and rejects
 any prepare that switches identity (global B2C → client policy) with `version_conflict`; a shadow
-account accepts the same switch as a shadow rebind pre-cutover. The conversion/save therefore
-delivers the identity switch as a normal shadow delivery first, and the chained strict cutover
-flips enforcement only after the exact client policy version is shadow-confirmed and the binding
-is reconciliation-verified — the state the Stage 7 shadow rollout delivers for backfilled
-accounts; until then the chain keeps waiting without touching the enforced price. After the
-flip, the scalar is dead for the
-account and any drifted staged-but-undeliverable legacy desired state is folded back to the
+account accepts the same switch as a shadow rebind pre-cutover. Any drifted
+staged-but-undeliverable legacy desired state is folded back to the
 engine-confirmed applied state.
 
-## Per-account strict cutover
+## Per-account strict cutover (pre-cutover lane, stood down)
 
-The default strict transition is the fleet-wide Stage 9 release CAS (see
-`docs/commerce/MULTI_DISCOUNT_STAGE9.md`). For B2B clients the per-account lane runs
-automatically: a B2C→B2B conversion and every `b2b_client` policy save chain this cutover (or
-the strict→strict advance once the account is strict), so the client's confirmed policy becomes
-the only enforced price without a second operator action. The manual endpoint
-`POST /v1/admin/users/:id/policy-enforcement-cutover`
-(`AdminOperationsService.cutoverUserPolicyToStrict`) remains for repair, replay, and accounts
-converted before this chaining existed; it makes the client's confirmed
-per-provider policy the enforced price instead of the legacy scalar. The flow orchestrates
+The fleet-wide Stage 9 release CAS completed on 2026-08-04 (see
+`docs/commerce/MULTI_DISCOUNT_STAGE9.md`), so this lane is stood down: the writers stop arming
+`strict_chain_pending`, the worker sweep disarms stragglers as `superseded`, and the manual
+endpoint `POST /v1/admin/users/:id/policy-enforcement-cutover` refuses with `post_cutover`.
+Post-cutover per-account B2B enforcement belongs to the assignment extension lane described
+above. The mechanics below remain as the record of how the lane enforced one individually
+negotiated B2B client ahead of the fleet CAS — it made the client's confirmed
+per-provider policy the enforced price instead of the legacy scalar by orchestrating
 the full precondition set the engine enforces atomically at the flip:
 
 1. funding buckets are normalized to equal the account aggregates
@@ -139,7 +146,7 @@ original job id and status instead of staging a duplicate. Engine-side guards th
 pre-flighted from commerce (drained legacy reservations, policy-capable engine instances) fail
 the delivery job loudly with the trigger error, never a partial state.
 
-The existing scalar `mult_bp` becomes only an Anthropic provider rule at migration:
+The retired scalar `mult_bp` became only an Anthropic provider rule at migration:
 
 ```text
 provider_id = anthropic
@@ -147,21 +154,10 @@ discount_bps = 10000 - mult_bp
 ```
 
 OpenAI/Gemini do not appear for an existing B2B automatically. The operator adds them via explicit
-provider/model rules; every save chains the strict enforcement for any rule shape, so a
-mixed-scope policy is enforced as soon as the chain delivers and never waits for the fleet
-cutover. During the short pre-delivery window the legacy scalar is still the enforced bridge, so a
-saved b2b_client policy whose rules are a uniform set of provider-level discounts also moves the
-scalar (`mult_bp = 10000 - discount_bps` on `customer_profiles` and `engine_accounts`, plus the
-durable scalar delivery job) — otherwise the panel would show the new policy while billing follows
-the stale multiplier. A policy that cannot be one scalar (mixed scopes, track rules, per-provider
-differences) leaves the scalar untouched for the window and is enforced by the chain. The customer
-dashboard prices each provider by the same honesty rule: while the binding's policy is not
-engine-enforced (`legacy_scalar`/`shadow`), the usage page shows the materialized per-provider
-policy discount clamped to never exceed the discount the legacy scalar actually bills — a
-tighter negotiated provider rate (say 60% on Google against a 70% scalar) shows as configured,
-a looser one shows the scalar. Billing can only over-deliver against the badge until the chain
-delivers, never overcharge it; providers the policy does not cover stay unavailable exactly as
-the materialized rules say.
+provider/model rules; post-cutover every save propagates through the assignment extension lane for
+any rule shape, so a mixed-scope policy is enforced as soon as the extension is pinned and never
+waits for a fleet transition. The legacy scalar no longer prices anything: it survives only as
+immutable history and as the migration source for the initial Anthropic rule.
 
 B2B spend IS ingested by the pricing usage sync: `listPricingSyncTargets` selects both
 `b2c` and `b2b`, so every charge lands in the immutable `pricing_usage_events` (with provider
@@ -175,7 +171,10 @@ to prove paid money — under-paying commission is safe, over-paying is not.
 
 All existing and new OpenKeys operate 1:1: `discount_bps=0`,
 `payable_multiplier_bp=10000`. They do not inherit B2C/B2B discounts and do not participate in
-referral commission. A new model requires explicit OpenKeys catalog enablement.
+referral commission. Access follows the runtime: every provider and model the engine can price —
+Anthropic, OpenAI, and Google Gemini included — is sellable at 1:1, and newly admitted providers
+flow automatically. The master switch and an explicitly disabled scoped provider switch still
+close a provider, and a model without a runtime tariff fails closed at quote time.
 
 ## Service
 
@@ -194,20 +193,19 @@ Immutable ledger attribution must contain pricing release/policy/rule/tariff ide
 and charged cost, ordered funding allocations and exact paid/bonus totals. Commerce validates the
 evidence and cursor in one transaction; the sales feed receives only the confirmed event.
 
-## Zero-downtime activation
+## Post-cutover operation
 
-A new policy is not activated per account. Dual-compatible runtime and funding writers are first
-rolled out dormant, funding is normalized online by account-local transactions, and the
-full-inventory shadow runs on 100% of traffic. Stage 9 then changes the global active release head
-with a single CAS.
-
-Active v2 reservations may cross the cutover and settle against the immutable reserve snapshot. A
-global drain, maintenance window and canary-account rollout are forbidden. The full runbook is
+The fleet cutover completed on 2026-08-04 (release generation 13, one head CAS, no traffic
+stop). New accounts are covered by append-only assignment extensions before a usable key is
+issued, and B2B policy saves propagate through the same extension lane. Reservations started
+before the head CAS settled against their immutable reserve-time snapshots; legacy-format
+outbox rows completed without a drain. The recovery path is a forward CAS to the paired
+recovery generation, never a rollback to an old binary. The full runbook and evidence chain:
 `docs/commerce/MULTI_DISCOUNT_STAGE9.md`.
 
-## Known temporary gap
+## Remaining cleanup
 
-Until the rollout completes, the old code/schema may still contain tiers, retention, `track`, the
-`$4` grant and scalar jobs. This is the migration source, not the target contract. New code must not
-add functionality to them. After the switchover the readers/writers are removed; immutable history
-and already-applied append-only migrations are not rewritten.
+The retired progressive machinery (tiers, retention, `track`, referral price floors, scalar
+delivery jobs) no longer influences admission or price, and its readers/writers are being
+removed under `docs/commerce/MULTI-DISCOUNT.md` §6: active code must not create or consume
+progressive records; immutable history and applied migrations are never rewritten.
