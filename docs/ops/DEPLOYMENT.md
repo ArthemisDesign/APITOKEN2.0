@@ -67,17 +67,19 @@ actual production remains one SHA at a time under its existing deployment lock.
 
 Both watchdogs poll every five seconds. The candidate queue uses one state-bearing GitHub query per
 poll rather than one request per historical deployment. A production failure quarantines that SHA
-and stops the pipeline; neither later migrations nor application cutovers are attempted. This holds for every
-abnormal termination — a failing command, an interrupt, or a validation failure raised internally —
-so a stopped pipeline always leaves a quarantine marker and a red commit status rather than stopping
-silently. A failure before any commit is selected (an unreachable remote, a missing state file) is
-an infrastructure fault rather than a verdict on a commit: it is logged and retried on the next
-cycle without quarantining anything. Commerce migration
-failure always blocks the backend. Engine migration or readiness failure leaves the serving engine
-slot untouched. Expensive retention and production-alignment checks remain on a separate one-minute
-idle cadence, where the watchdog requires exactly one slot for Anthropic, OpenAI, and supported
-Gemini to be active, ready, selected on the recorded release, enabled, and running their
-fixed provider modes. If an out-of-band service command
+and stops the pipeline; neither later migrations nor application cutovers are attempted. Once a
+candidate is selected, this holds for every unhandled abnormal termination — a failing command, an
+interrupt, or a validation failure raised internally — so a stopped pipeline always leaves a
+quarantine marker and a red commit status rather than stopping silently. Release-retention
+housekeeping is the explicit fail-local exception: incomplete process observation, selection, or
+lock acquisition skips both release roots and continues candidate processing without quarantining
+the candidate. A failure before any commit is selected (an unreachable remote, a missing state file)
+is an infrastructure fault rather than a verdict on a commit: it is logged and retried on the next
+cycle without quarantining anything. Commerce migration failure always blocks the backend. Engine
+migration or readiness failure leaves the serving engine slot untouched. Expensive retention and
+production-alignment checks remain on a separate one-minute idle cadence, where the watchdog requires
+exactly one slot for Anthropic, OpenAI, and supported Gemini to be active, ready, selected on the
+recorded release, enabled, and running their fixed provider modes. If an out-of-band service command
 reactivates the inactive slot, the watchdog reconverges through the same readiness-gated controller;
 it never stops the availability anchor before another current slot is verified. Normal releases
 require no SSH command.
@@ -112,12 +114,18 @@ before daemon secrets are loaded, authbot calls `prctl(PR_SET_DUMPABLE, 0)`; thi
 `ptrace`, `process_vm_readv`, and sensitive `/proc` memory access. `ProtectProc=invisible` and
 `ProcSubset=pid` remain as service-level process-isolation layers. Code already executing inside
 authbot itself is in the same trust boundary, and no defense can protect secrets from code already
-executing there. This also prevents the `deploy` user from dereferencing `/proc/<MainPID>/exe`, so
-engine promotion uses the narrowly sudoed root-owned `authbot-runtime-state.sh`: it hashes only that
-procfs entry, rechecks active state and PID for churn, preserves an exact running binary, and after a
-changed restart accepts only the exact tested SHA-256. The helper emits only `exact`, `different`, or
-`inactive`; malformed input and unexpected inspection failures abort the rollout without paths or
-digests. Authbot reconciliation is part of the release-link transaction: an activation abort restores
+executing there. This also prevents the `deploy` user from dereferencing `/proc/<MainPID>/exe`, so the
+narrowly sudoed root-owned `authbot-runtime-state.sh` provides two fixed operations. The helper and
+its non-symlink parent must both be exactly root:root mode `0755`. Digest mode hashes only that procfs
+entry for engine promotion and emits only `exact`, `different`, or `inactive`. Literal `release-sha`
+mode resolves the same entry as root, accepts only the canonical immutable path
+`/srv/claude-api/releases/<SHA>/authbot`, and exposes only that lowercase 40-character SHA for
+retention. A missing unit is treated as inactive (empty output in release mode). Both modes recheck
+load state, active state, and PID for churn; malformed input, unexpected paths, and inspection
+failures abort without path or digest output. Controller installation publishes this
+backward-compatible helper and verifies its sudo policy before atomically publishing the watchdog
+entrypoint that depends on them. Authbot reconciliation is part of the
+release-link transaction: an activation abort restores
 links first and converges authbot to the captured original engine release only if engine `current`
 strictly resolves there; a failed or mismatched `current` restoration leaves authbot untouched. Explicit
 `rollback.sh --engine-bluegreen` converges it to the selected rollback release before provider slots
@@ -222,8 +230,11 @@ unrestricted `NOPASSWD: ALL` grant, `deploy` can read the GitHub credential and 
 `/etc/apitoken/*.env` secret, and can replace the root-owned controllers that are meant to be fixed
 trust anchors.
 
-Applying the policy is a deliberate operator action, not an automatic deployment step — a policy
-that locks out the pipeline cannot be repaired by the pipeline it governs:
+Tested full and controller-only infrastructure transactions apply the policy automatically through
+the isolated root `apitoken-sudoers-install.service`. They first publish the backward-compatible
+fixed helper, then validate and live-verify the policy, and only after that succeeds atomically
+publish the watchdog entrypoint that depends on it. These commands remain useful as manual preflight
+or recovery procedures:
 
 ```bash
 sudo deploy/install-sudoers.sh --check
@@ -234,8 +245,9 @@ sudo apitoken-watchdog status
 The installer validates the candidate with `visudo -c` (treating warnings as fatal, since an unused
 alias means an intended privilege is silently not granted), saves timestamped rollback copies under
 `/root/sudoers-backups`, removes the legacy unrestricted grant, then verifies every privilege the
-pipeline needs and every privilege it must not have. If any check fails it restores the previous
-policy automatically and exits non-zero. It also removes `apitoken-ci` from the `deploy` group, so
+pipeline needs and every privilege it must not have. If validation, verification, interruption, or
+any other pre-commit step fails, it restores the previous policy and exits non-zero; the outer
+transaction also restores the prior helper. It also removes `apitoken-ci` from the `deploy` group, so
 candidate-derived test code can no longer write group-writable files in the deployment checkout.
 
 The policy deliberately permits `deploy` to re-run the installer at its fixed root-owned path.
@@ -881,18 +893,26 @@ itself fails, the warning says so explicitly — inspect the slots before any fu
 ## Retention
 
 Every delivery creates an immutable release per affected component and a validated pre-deployment
-dump per database. Nothing else removes them, so the watchdog prunes both at the start of each
-cycle, while it holds the exclusive lock and no deploy, rollback, or migration is in flight.
+dump per database. Nothing else removes them, so the watchdog runs retention at the start of each
+delivery cycle and on its periodic idle cadence.
 
 - Build candidates: removed after 24 hours (measured from test completion when a marker exists).
 - Immutable releases: the newest ten per component root are kept.
 - Pre-deployment dumps: the newest ten per database are kept.
 
 `current`, `previous`, the recorded component SHAs, and any release backing a live process are
-always retained regardless of those counts. Live releases are resolved from each unit's `MainPID`
-through `/proc/<pid>/exe` and `/proc/<pid>/cwd`, exactly like the readiness gates, rather than
-trusting the symlinks alone. The hourly `<database>.dump` rotation artifacts are never pruned — they
-remain the authoritative recovery objects.
+always retained regardless of those counts. Release retention acquires the deployment lock itself,
+snapshots live SHAs once, and completely materializes checked engine and commerce selections before
+removing anything from either root. Each active normal unit requires successful, independent
+`/proc/<pid>/exe` and `/proc/<pid>/cwd` resolution followed by unchanged load state, active state, and
+PID; each path inside a managed root must name an exact release SHA, and both are retained when they
+differ. Missing, inactive, and failed units are skipped. An active unit observed only outside the
+managed roots, an unreadable procfs entry, an ambiguous path, or state/PID churn makes the observation
+incomplete. Non-dumpable authbot is never inspected that way by `deploy`: its fixed root helper
+returns only a strictly validated engine release SHA. Any lock, observation, helper, or selector
+failure skips release deletion in both roots and continues candidate processing without quarantine.
+The hourly `<database>.dump` rotation artifacts are never pruned — they remain the authoritative
+recovery objects.
 
 ## Failure behavior
 

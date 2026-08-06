@@ -60,31 +60,34 @@ wd_retry() {
 # named in the protected list (used for live PID-resolved releases and recorded component SHAs).
 # Selection is deliberately pure; the caller performs the privileged deletion under the deploy lock.
 wd_prunable_release_dirs() {
-  [[ $# -ge 2 ]] || wd_die "release retention selection requires a release root and keep count"
+  [[ $# -ge 2 ]] || return 2
   local root=$1 keep=$2 protected=() name link resolved canonical_root candidate kept=0
+  local ordered
   shift 2
   protected=("$@")
-  [[ $root == /* && -d $root && ! -L $root ]] \
-    || wd_die "release root must be an absolute, non-symlink directory: $root"
-  [[ $keep =~ ^[0-9]+$ ]] || wd_die "release retention keep count must be a non-negative integer"
+  [[ $root == /* && -d $root && ! -L $root ]] || return 1
+  [[ $keep =~ ^[0-9]+$ ]] || return 2
 
   # Compare resolved link targets against the resolved root: a release root reached through a
   # symlinked parent must still recognise its own current/previous targets as in-root.
-  canonical_root=$(readlink -f -- "$root")
+  canonical_root=$(readlink -f -- "$root") || return 1
 
   for link in current previous; do
     if [[ -L $root/$link ]]; then
-      resolved=$(readlink -f -- "$root/$link" 2>/dev/null) || continue
+      resolved=$(readlink -f -- "$root/$link" 2>/dev/null) || return 1
       [[ ${resolved%/*} == "$canonical_root" ]] || continue
       protected+=("${resolved##*/}")
     fi
   done
 
-  # Newest first by directory mtime, so `keep` always retains the most recent releases.
+  # Materialize the complete ordering before emitting any NUL candidate. A failed enumeration or
+  # mtime read therefore cannot expose a partial deletion stream to the caller.
+  ordered=$(wd_dirs_newest_first "$root") || return 1
   while IFS= read -r candidate; do
+    [[ -n $candidate ]] || continue
     name=${candidate##*/}
     [[ $name =~ ^[0-9a-f]{40}$ ]] || continue
-    [[ -d $candidate && ! -L $candidate ]] || continue
+    [[ -d $candidate && ! -L $candidate ]] || return 1
     if wd_list_contains "$name" "${protected[@]}"; then
       continue
     fi
@@ -93,7 +96,7 @@ wd_prunable_release_dirs() {
       continue
     fi
     printf '%s\0' "$candidate"
-  done < <(wd_dirs_newest_first "$root")
+  done <<<"$ordered"
 }
 
 wd_list_contains() {
@@ -107,14 +110,26 @@ wd_list_contains() {
 }
 
 wd_dirs_newest_first() {
-  local root=$1 path modified
+  local root=$1 path modified listing rows
+  listing=$(mktemp) || return 1
+  rows=$(mktemp) || { rm -f -- "$listing"; return 1; }
+  if ! find "$root" -mindepth 1 -maxdepth 1 -type d -print0 >"$listing"; then
+    rm -f -- "$listing" "$rows"
+    return 1
+  fi
   while IFS= read -r -d '' path; do
-    [[ -d $path && ! -L $path ]] || continue
-    modified=$(wd_path_mtime_epoch "$path" 2>/dev/null) || continue
-    [[ $modified =~ ^[0-9]+$ ]] || continue
-    printf '%s\t%s\n' "$modified" "$path"
-  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -print0) \
-    | sort -rn -k1,1 | cut -f2-
+    [[ -d $path && ! -L $path ]] || { rm -f -- "$listing" "$rows"; return 1; }
+    modified=$(wd_path_mtime_epoch "$path" 2>/dev/null) \
+      || { rm -f -- "$listing" "$rows"; return 1; }
+    [[ $modified =~ ^[0-9]+$ ]] || { rm -f -- "$listing" "$rows"; return 1; }
+    printf '%s\t%s\n' "$modified" "$path" >>"$rows"
+  done <"$listing"
+  rm -f -- "$listing"
+  if ! sort -rn -k1,1 "$rows" | cut -f2-; then
+    rm -f -- "$rows"
+    return 1
+  fi
+  rm -f -- "$rows"
 }
 
 # Print NUL-delimited pre-deploy dump files older than the newest `keep` per database. The hourly

@@ -137,17 +137,24 @@ Neither symlink-based unit may be installed or first-started before both of thes
 
 ## Retention and cleanup
 
-Keep at least:
+In one fail-local transaction under the exclusive deployment lock, the watchdog snapshots every live
+release once, completely selects expired directories for both managed engine and commerce roots, and
+only then removes any selection. It keeps the newest ten immutable releases per root and always
+protects:
 
-- the target of `current`;
-- the target of `previous`;
-- any release needed for incident investigation or database-compatibility rollback.
+- the targets of `current` and `previous`;
+- recorded component and in-flight deployment SHAs;
+- every release identified from a live unit's executable or working directory.
 
-Old SHA directories may be removed manually only after confirming that neither link targets them and no process is running from them. Never make an old release writable and never delete or modify a release while a process uses it.
+Each active normal unit requires complete, successful `/proc/<MainPID>/exe` and
+`/proc/<MainPID>/cwd` observations followed by unchanged load state, active state, and PID. A missing,
+inactive, or failed unit contributes no live release; an active unit observed only outside managed
+roots is incomplete. Because authbot is non-dumpable, its live engine release is obtained only
+through the fixed root-owned runtime helper. Any lock, observation, or selector failure skips deletion
+in both roots without quarantining an otherwise valid candidate. Releases are made owner-writable
+only immediately before removal and are never modified in place.
 
-The scripts perform no automatic garbage collection of immutable production releases. Retention
-remains an explicit, non-destructive operator decision. This does not apply to temporary watchdog
-build/test candidates under `/var/lib/apitoken/watchdog/candidates`: the watchdog removes those
-workspaces and their test markers automatically 24 hours after successful test completion, while
-holding its exclusive lock. An incomplete workspace without a marker ages from its directory mtime.
-A later explicit retry rebuilds an expired candidate before using it.
+Temporary watchdog build/test candidates under `/var/lib/apitoken/watchdog/candidates` are removed
+24 hours after successful test completion while the same lock is held. An incomplete workspace
+without a marker ages from its directory mtime. A later explicit retry rebuilds an expired candidate
+before using it.

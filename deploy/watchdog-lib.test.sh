@@ -702,6 +702,222 @@ done < <(wd_prunable_release_dirs "$release_root" 0)
 [[ ${#zero_keep_selection[@]} -eq 3 ]] \
   || wd_die "keep=0 retention must still protect current and previous"
 
+# Live release discovery requires complete exe+cwd observations, protects every distinct managed
+# release, skips missing/inactive units, and routes non-dumpable authbot only through the root helper.
+for retention_function in live_release_shas prune_selected_releases prune_expired_releases \
+  prune_expired_releases_best_effort; do
+  eval "$(sed -n "/^${retention_function}()/,/^}/p" "$ROOT/deploy/watchdog.sh")"
+done
+generic_engine_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+generic_commerce_sha=cccccccccccccccccccccccccccccccccccccccc
+authbot_live_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+ENGINE_RELEASE_ROOT="$TEMP/live-engine-releases"
+COMMERCE_RELEASE_ROOT="$TEMP/live-commerce-releases"
+mkdir -p "$ENGINE_RELEASE_ROOT/$generic_engine_sha" "$COMMERCE_RELEASE_ROOT/$generic_commerce_sha"
+engine_delete_sha=1111111111111111111111111111111111111111
+commerce_delete_sha=2222222222222222222222222222222222222222
+mkdir -p "$ENGINE_RELEASE_ROOT/$engine_delete_sha" "$COMMERCE_RELEASE_ROOT/$commerce_delete_sha"
+live_readlink_log="$TEMP/live-readlink.log"
+release_rm_log="$TEMP/release-rm.log"
+selector_log="$TEMP/prunable-release-args.log"
+generic_state_count="$TEMP/generic-state-count"
+generic_pid_count="$TEMP/generic-pid-count"
+selector_count="$TEMP/selector-count"
+mktemp_count="$TEMP/mktemp-count"
+live_helper_mode=active
+generic_live_mode=active
+selector_mode=success
+systemctl() {
+  [[ $1 == show && $3 == -p && $5 == --value ]] || return 1
+  if [[ $2 != claude-api.service ]]; then
+    [[ $4 == LoadState ]] && printf '%s\n' not-found
+    return 0
+  fi
+  case $4 in
+    LoadState)
+      [[ $generic_live_mode != systemctl-failure ]] || return 1
+      printf '%s\n' loaded
+      ;;
+    ActiveState)
+      count=$(<"$generic_state_count")
+      count=$((count + 1))
+      printf '%s\n' "$count" >"$generic_state_count"
+      [[ $generic_live_mode != state-churn || $count -eq 1 ]] && printf '%s\n' active || printf '%s\n' inactive
+      ;;
+    MainPID)
+      count=$(<"$generic_pid_count")
+      count=$((count + 1))
+      printf '%s\n' "$count" >"$generic_pid_count"
+      [[ $generic_live_mode != pid-churn || $count -eq 1 ]] && printf '%s\n' 4242 || printf '%s\n' 4343
+      ;;
+    *) return 1 ;;
+  esac
+}
+readlink() {
+  printf '%s\n' "$3" >>"$live_readlink_log"
+  case "$3" in
+    /proc/4242/exe)
+      [[ $generic_live_mode != exe-failure ]] || return 1
+      case $generic_live_mode in
+        outside-only) printf '%s\n' /usr/local/bin/claude-api ;;
+        malformed-root) printf '%s/not-a-release/claude-api\n' "$ENGINE_RELEASE_ROOT" ;;
+        *) printf '%s/%s/claude-api\n' "$ENGINE_RELEASE_ROOT" "$generic_engine_sha" ;;
+      esac
+      ;;
+    /proc/4242/cwd)
+      [[ $generic_live_mode != cwd-failure ]] || return 1
+      [[ $generic_live_mode != outside-only ]] \
+        && printf '%s/%s/apps/api\n' "$COMMERCE_RELEASE_ROOT" "$generic_commerce_sha" \
+        || printf '%s\n' /var/lib/apitoken
+      ;;
+    *) wd_die "generic live release inspection reached an unexpected procfs path: $3" ;;
+  esac
+}
+flock() { return 0; }
+sudo() {
+  if [[ $1 == -n && $2 == fixed-authbot-helper && $3 == release-sha && $# -eq 3 ]]; then
+    case "$live_helper_mode" in
+      active) printf '%s\n' "$authbot_live_sha" ;;
+      inactive) return 0 ;;
+      malformed) printf '%s\n' not-a-sha ;;
+      failure) return 1 ;;
+      *) return 1 ;;
+    esac
+    return
+  fi
+  printf '%s\n' "$*" >>"$release_rm_log"
+}
+mktemp() {
+  count=$(<"$mktemp_count")
+  count=$((count + 1))
+  printf '%s\n' "$count" >"$mktemp_count"
+  path="$TEMP/release-selection-$count"
+  : >"$path"
+  printf '%s\n' "$path"
+}
+wd_prunable_release_dirs() {
+  count=$(<"$selector_count")
+  count=$((count + 1))
+  printf '%s\n' "$count" >"$selector_count"
+  printf '%s\n' "$*" >>"$selector_log"
+  if [[ $selector_mode == first-failure && $count == 1 ]]; then
+    printf '%s\0' "$ENGINE_RELEASE_ROOT/$engine_delete_sha"
+    return 1
+  fi
+  if [[ $selector_mode == second-failure && $count == 2 ]]; then
+    printf '%s\0' "$COMMERCE_RELEASE_ROOT/$commerce_delete_sha"
+    return 1
+  fi
+  [[ $1 == "$ENGINE_RELEASE_ROOT" ]] \
+    && printf '%s\0' "$ENGINE_RELEASE_ROOT/$engine_delete_sha" \
+    || printf '%s\0' "$COMMERCE_RELEASE_ROOT/$commerce_delete_sha"
+}
+notification_failure=none
+wd_warn() {
+  printf '%s\n' "$*" >>"$TEMP/retention-warn.log"
+  [[ $notification_failure != warn ]]
+}
+wd_log() { :; }
+status() {
+  printf '%s\n' "$*" >>"$TEMP/retention-status.log"
+  [[ $notification_failure != status ]]
+}
+AUTHBOT_RUNTIME_STATE=fixed-authbot-helper
+DEPLOY_LOCK="$TEMP/release-deploy.lock"
+: >"$DEPLOY_LOCK"
+RELEASE_RETENTION_KEEP=1
+ENGINE_SHA=
+BACKEND_SHA=
+PROCESSED_SHA=
+SALES_SHA=
+OPENKEYS_SHA=
+reset_live_fixture() {
+  printf '0\n' >"$generic_state_count"
+  printf '0\n' >"$generic_pid_count"
+  printf '0\n' >"$selector_count"
+  printf '0\n' >"$mktemp_count"
+  : >"$live_readlink_log"
+  : >"$release_rm_log"
+  : >"$selector_log"
+  : >"$TEMP/retention-warn.log"
+  : >"$TEMP/retention-status.log"
+  rm -f -- "$TEMP/release-selection-1" "$TEMP/release-selection-2"
+}
+reset_live_fixture
+live_output=$(live_release_shas) || wd_die 'live release discovery rejected complete generic/authbot observations'
+for live_sha in "$generic_engine_sha" "$generic_commerce_sha" "$authbot_live_sha"; do
+  printf '%s\n' "$live_output" | grep -Fxq "$live_sha" \
+    || wd_die "live release discovery lost protected SHA $live_sha"
+done
+[[ $(wc -l <"$live_readlink_log" | tr -d ' ') == 2 ]] \
+  || wd_die 'live release discovery did not require both exe and cwd observations'
+live_helper_mode=inactive
+reset_live_fixture
+live_release_shas >/dev/null || wd_die 'live release discovery rejected inactive authbot'
+for live_helper_mode in malformed failure; do
+  reset_live_fixture
+  live_release_shas >"$TEMP/live-helper-$live_helper_mode.log" 2>&1 \
+    && wd_die "live release discovery accepted authbot helper $live_helper_mode"
+done
+live_helper_mode=active
+for generic_live_mode in exe-failure cwd-failure outside-only malformed-root state-churn pid-churn systemctl-failure; do
+  reset_live_fixture
+  live_release_shas >"$TEMP/generic-live-$generic_live_mode.log" 2>&1 \
+    && wd_die "live release discovery accepted generic inspection $generic_live_mode"
+done
+generic_live_mode=active
+for selector_mode in first-failure second-failure; do
+  reset_live_fixture
+  prune_expired_releases && wd_die "release pruning accepted $selector_mode"
+  [[ ! -s $release_rm_log ]] || wd_die "release pruning mutated a root after $selector_mode"
+  [[ ! -e $TEMP/release-selection-1 && ! -e $TEMP/release-selection-2 ]] \
+    || wd_die "release pruning leaked selector files after $selector_mode"
+done
+selector_mode=success
+reset_live_fixture
+prune_expired_releases || wd_die 'release pruning rejected complete dual-root selections'
+[[ $(grep -Fc "$authbot_live_sha" "$selector_log") -eq 2 ]] \
+  || wd_die 'both release roots did not use the same protected live snapshot'
+grep -Fq "rm -rf --one-file-system -- $ENGINE_RELEASE_ROOT/$engine_delete_sha" "$release_rm_log" \
+  || wd_die 'engine release selection was not removed after both selectors completed'
+grep -Fq "rm -rf --one-file-system -- $COMMERCE_RELEASE_ROOT/$commerce_delete_sha" "$release_rm_log" \
+  || wd_die 'commerce release selection was not removed after both selectors completed'
+[[ ! -e $TEMP/release-selection-1 && ! -e $TEMP/release-selection-2 ]] \
+  || wd_die 'release pruning leaked selector files after success'
+# A host-local observation failure is absorbed by the real wrapper under production-like errexit.
+# Invoke it as a simple command, never through `fn || ...` (which suppresses errexit inside the
+# function). Warning and status publication are independently best-effort: even when either fails,
+# the ERR/quarantine equivalent must not run and subsequent candidate processing must execute.
+live_helper_mode=failure
+selector_mode=success
+CANDIDATE_SHA=dddddddddddddddddddddddddddddddddddddddd
+for notification_failure in none warn status; do
+  reset_live_fixture
+  retention_sentinel="$TEMP/retention-$notification_failure.continued"
+  retention_failure_trap="$TEMP/retention-$notification_failure.failed"
+  rm -f -- "$retention_sentinel" "$retention_failure_trap"
+  (
+    set -Ee
+    trap 'printf "failure trap ran\n" >"$retention_failure_trap"; exit 97' ERR
+    prune_expired_releases_best_effort
+    printf 'candidate processing continued\n' >"$retention_sentinel"
+  )
+  [[ -e $retention_sentinel ]] \
+    || wd_die "best-effort release pruning stopped candidate processing when $notification_failure notification failed"
+  [[ ! -e $retention_failure_trap ]] \
+    || wd_die "best-effort release pruning reached the failure trap when $notification_failure notification failed"
+  [[ ! -s $release_rm_log ]] \
+    || wd_die "best-effort release pruning deleted after $notification_failure notification failure"
+  grep -Fq 'release retention skipped' "$TEMP/retention-warn.log" \
+    || wd_die "best-effort release pruning lost its warning message in $notification_failure case"
+  grep -Fq 'continuing candidate processing' "$TEMP/retention-status.log" \
+    || wd_die "best-effort release pruning lost its status message in $notification_failure case"
+done
+unset CANDIDATE_SHA notification_failure
+unset -f live_release_shas prune_selected_releases prune_expired_releases \
+  prune_expired_releases_best_effort reset_live_fixture systemctl readlink flock sudo mktemp \
+  wd_prunable_release_dirs wd_warn wd_log status
+
 # Pre-deploy dump retention is per-database and must never select the hourly rotation artifact.
 dump_root="$TEMP/backups"
 mkdir -p "$dump_root"
@@ -2159,20 +2375,26 @@ grep -Fq 'claude-authbot.service' "$ROOT/deploy/install-watchdog.sh" \
 grep -Fq '/usr/bin/systemctl restart claude-authbot.service' "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
   || wd_die "the deploy user cannot restart the authbot"
 # Non-dumpability intentionally prevents same-UID /proc executable inspection. A fixed root helper
-# exposes only a bounded comparison result, while deploy computes the expected release digest itself.
+# exposes either a bounded comparison result or one canonical immutable release SHA.
 authbot_runtime_helper="$ROOT/deploy/authbot-runtime-state.sh"
 grep -Fq 'UNIT=claude-authbot.service' "$authbot_runtime_helper" \
   || wd_die 'authbot runtime verification does not hard-code its unit'
+grep -Fq 'RELEASE_ROOT=/srv/claude-api/releases' "$authbot_runtime_helper" \
+  || wd_die 'authbot release inspection does not hard-code its immutable root'
 grep -Fq '/usr/bin/systemctl' "$authbot_runtime_helper" \
   || wd_die 'authbot runtime verification does not pin systemctl'
 grep -Fq '/usr/bin/sha256sum -- "/proc/$pid/exe"' "$authbot_runtime_helper" \
   || wd_die 'authbot runtime verification does not hash only the live procfs executable'
-grep -Fq '[[ $# -eq 1 && $1 =~ ^[0-9a-f]{64}$ ]]' "$authbot_runtime_helper" \
-  || wd_die 'authbot runtime verification does not require one exact SHA-256'
-grep -Fq '[[ $final_state == active && $final_pid == "$pid" ]]' "$authbot_runtime_helper" \
-  || wd_die 'authbot runtime verification accepts service churn around hashing'
-[[ $(grep -Ec "printf '%s\\\\n' (exact|different|inactive)" "$authbot_runtime_helper") -eq 3 ]] \
-  || wd_die 'authbot runtime verification exposes an unexpected result vocabulary'
+grep -Fq '/usr/bin/readlink -f -- "/proc/$pid/exe"' "$authbot_runtime_helper" \
+  || wd_die 'authbot release inspection does not canonically resolve only the live executable'
+grep -Fq 'release-sha) mode=release-sha' "$authbot_runtime_helper" \
+  || wd_die 'authbot runtime verification does not require literal release-sha mode'
+grep -Fq '[[ $final_load_state == loaded && $final_state == active && $final_pid == "$pid" ]]' \
+  "$authbot_runtime_helper" \
+  || wd_die 'authbot runtime verification accepts service churn around inspection'
+[[ $(grep -Ec "printf '%s\\\\n' (exact|different)" "$authbot_runtime_helper") -eq 2 \
+    && $(grep -Fc "printf '%s\\n' inactive" "$authbot_runtime_helper") -eq 2 ]] \
+  || wd_die 'authbot digest verification exposes an unexpected result vocabulary'
 ! grep -Eq '(readlink|cmp)[[:space:]]' "$ROOT/deploy/deploy.sh" \
   || wd_die 'deploy still dereferences a non-dumpable authbot process as deploy'
 grep -Fq 'reconcile_authbot_release()' "$ROOT/deploy/lib.sh" \
@@ -2219,16 +2441,18 @@ authbot_deploy_install_line=$(grep -nF '"$ROOT/deploy/deploy.sh"' \
   || wd_die "the authbot unit check must not require sudo"
 
 # Execute the helper with fixed command stubs: malformed arguments and inspection failures are silent,
-# only the three bounded states are emitted, and an active PID/state change rejects the observation.
+# digest mode has its three bounded states, and release mode emits only an exact immutable SHA.
 authbot_helper_fixture="$TEMP/authbot-runtime-state.sh"
 sed \
   -e 's#\[\[ ${EUID:-$(id -u)} -eq 0 \]\] || exit 1#:#' \
   -e 's#/usr/bin/systemctl#"$AUTHBOT_TEST_SYSTEMCTL"#g' \
   -e 's#/usr/bin/sha256sum#"$AUTHBOT_TEST_SHA256SUM"#g' \
+  -e 's#/usr/bin/readlink#"$AUTHBOT_TEST_READLINK"#g' \
   "$authbot_runtime_helper" >"$authbot_helper_fixture"
 chmod +x "$authbot_helper_fixture"
 authbot_systemctl_stub="$TEMP/authbot-systemctl"
 authbot_sha_stub="$TEMP/authbot-sha256sum"
+authbot_readlink_stub="$TEMP/authbot-readlink"
 cat >"$authbot_systemctl_stub" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2239,6 +2463,19 @@ for arg in "$@"; do
   esac
 done
 case "$property" in
+  LoadState)
+    count=1
+    if [[ -n ${AUTHBOT_TEST_LOAD_COUNT:-} ]]; then
+      count=$(cat "$AUTHBOT_TEST_LOAD_COUNT")
+      count=$((count + 1))
+      printf '%s\n' "$count" >"$AUTHBOT_TEST_LOAD_COUNT"
+    fi
+    if [[ ${AUTHBOT_TEST_MODE:-exact} == load-churn && $count -gt 1 ]]; then
+      printf '%s\n' not-found
+    else
+      printf '%s\n' "${AUTHBOT_TEST_LOAD_STATE:-loaded}"
+    fi
+    ;;
   ActiveState)
     count=$(cat "$AUTHBOT_TEST_ACTIVE_COUNT")
     count=$((count + 1))
@@ -2249,7 +2486,19 @@ case "$property" in
       printf '%s\n' "${AUTHBOT_TEST_ACTIVE_STATE:-active}"
     fi
     ;;
-  MainPID) printf '%s\n' "${AUTHBOT_TEST_PID:-4242}" ;;
+  MainPID)
+    count=1
+    if [[ -n ${AUTHBOT_TEST_PID_COUNT:-} ]]; then
+      count=$(cat "$AUTHBOT_TEST_PID_COUNT")
+      count=$((count + 1))
+      printf '%s\n' "$count" >"$AUTHBOT_TEST_PID_COUNT"
+    fi
+    if [[ ${AUTHBOT_TEST_MODE:-exact} == pid-churn && $count -gt 1 ]]; then
+      printf '%s\n' 4343
+    else
+      printf '%s\n' "${AUTHBOT_TEST_PID:-4242}"
+    fi
+    ;;
   *) exit 1 ;;
 esac
 EOF
@@ -2260,19 +2509,42 @@ set -euo pipefail
 [[ $# -eq 2 && $1 == -- && $2 == /proc/4242/exe ]] || exit 1
 printf '%s  %s\n' "$AUTHBOT_TEST_OBSERVED" "$2"
 EOF
-chmod +x "$authbot_systemctl_stub" "$authbot_sha_stub"
+cat >"$authbot_readlink_stub" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ ${AUTHBOT_TEST_READLINK_FAIL:-0} != 1 ]] || exit 1
+[[ $# -eq 3 && $1 == -f && $2 == -- && $3 == /proc/4242/exe ]] || exit 1
+printf '%s\n' "$AUTHBOT_TEST_RESOLVED"
+EOF
+chmod +x "$authbot_systemctl_stub" "$authbot_sha_stub" "$authbot_readlink_stub"
 authbot_expected=$(printf expected | wd_sha256_stdin)
 authbot_different=$(printf different | wd_sha256_stdin)
 authbot_active_count="$TEMP/authbot-active-count"
+authbot_pid_count="$TEMP/authbot-pid-count"
+authbot_load_count="$TEMP/authbot-load-count"
 run_authbot_helper() {
   printf '0\n' >"$authbot_active_count"
+  printf '0\n' >"$authbot_pid_count"
+  printf '0\n' >"$authbot_load_count"
   AUTHBOT_TEST_SYSTEMCTL=$authbot_systemctl_stub \
-    AUTHBOT_TEST_SHA256SUM=$authbot_sha_stub \
-    AUTHBOT_TEST_ACTIVE_COUNT=$authbot_active_count \
+    AUTHBOT_TEST_SHA256SUM=$authbot_sha_stub AUTHBOT_TEST_READLINK=$authbot_readlink_stub \
+    AUTHBOT_TEST_ACTIVE_COUNT=$authbot_active_count AUTHBOT_TEST_PID_COUNT=$authbot_pid_count \
+    AUTHBOT_TEST_LOAD_COUNT=$authbot_load_count \
     AUTHBOT_TEST_OBSERVED=$authbot_expected "$authbot_helper_fixture" "$@"
 }
 [[ $(run_authbot_helper "$authbot_expected") == exact ]] \
   || wd_die 'authbot runtime helper did not recognize the exact live binary'
+printf '0\n' >"$authbot_load_count"
+[[ $(AUTHBOT_TEST_SYSTEMCTL=$authbot_systemctl_stub AUTHBOT_TEST_LOAD_COUNT=$authbot_load_count \
+  AUTHBOT_TEST_LOAD_STATE=not-found "$authbot_helper_fixture" "$authbot_expected") == inactive ]] \
+  || wd_die 'authbot runtime helper did not treat a missing unit as inactive'
+printf '0\n' >"$authbot_load_count"
+authbot_missing_release_output=$(AUTHBOT_TEST_SYSTEMCTL=$authbot_systemctl_stub \
+  AUTHBOT_TEST_LOAD_COUNT=$authbot_load_count AUTHBOT_TEST_LOAD_STATE=not-found \
+  "$authbot_helper_fixture" release-sha) \
+  || wd_die 'authbot release helper rejected a missing unit'
+[[ -z $authbot_missing_release_output ]] \
+  || wd_die 'authbot release helper emitted output for a missing unit'
 AUTHBOT_TEST_OBSERVED=$authbot_different
 printf '0\n' >"$authbot_active_count"
 [[ $(AUTHBOT_TEST_SYSTEMCTL=$authbot_systemctl_stub \
@@ -2285,7 +2557,7 @@ printf '0\n' >"$authbot_active_count"
   AUTHBOT_TEST_OBSERVED=$authbot_expected AUTHBOT_TEST_ACTIVE_STATE=inactive \
   "$authbot_helper_fixture" "$authbot_expected") == inactive ]] \
   || wd_die 'authbot runtime helper did not report an inactive service'
-for malformed_args in '' 'abc' "$authbot_expected extra"; do
+for malformed_args in '' 'abc' 'release-path' 'release-sha extra' "$authbot_expected extra"; do
   read -r -a helper_args <<<"$malformed_args"
   helper_log="$TEMP/authbot-helper-malformed.log"
   if run_authbot_helper "${helper_args[@]}" >"$helper_log" 2>&1; then
@@ -2304,6 +2576,51 @@ for helper_failure in hash churn; do
     wd_die "authbot runtime helper accepted $helper_failure during inspection"
   fi
   [[ ! -s $helper_log ]] || wd_die 'authbot runtime helper leaked a digest or procfs path on failure'
+done
+
+authbot_release_sha=0123456789abcdef0123456789abcdef01234567
+printf '0\n' >"$authbot_active_count"
+[[ $(AUTHBOT_TEST_SYSTEMCTL=$authbot_systemctl_stub AUTHBOT_TEST_READLINK=$authbot_readlink_stub \
+  AUTHBOT_TEST_ACTIVE_COUNT=$authbot_active_count \
+  AUTHBOT_TEST_RESOLVED="/srv/claude-api/releases/$authbot_release_sha/authbot" \
+  "$authbot_helper_fixture" release-sha) == "$authbot_release_sha" ]] \
+  || wd_die 'authbot runtime helper did not emit the exact canonical live release SHA'
+printf '0\n' >"$authbot_active_count"
+authbot_inactive_release_output=$(AUTHBOT_TEST_SYSTEMCTL=$authbot_systemctl_stub \
+  AUTHBOT_TEST_ACTIVE_COUNT=$authbot_active_count AUTHBOT_TEST_ACTIVE_STATE=inactive \
+  "$authbot_helper_fixture" release-sha) \
+  || wd_die 'authbot runtime helper rejected an inactive release inspection'
+[[ -z $authbot_inactive_release_output ]] \
+  || wd_die 'authbot runtime helper emitted output for an inactive release inspection'
+for rejected_path in \
+  "/srv/claude-api/releases/current/authbot" \
+  "/srv/claude-api/releases/${authbot_release_sha^^}/authbot" \
+  "/srv/claude-api/releases/$authbot_release_sha/bin/authbot" \
+  "/opt/apitoken/releases/$authbot_release_sha/authbot"; do
+  printf '0\n' >"$authbot_active_count"
+  helper_log="$TEMP/authbot-release-path.log"
+  if AUTHBOT_TEST_SYSTEMCTL=$authbot_systemctl_stub AUTHBOT_TEST_READLINK=$authbot_readlink_stub \
+      AUTHBOT_TEST_ACTIVE_COUNT=$authbot_active_count AUTHBOT_TEST_RESOLVED=$rejected_path \
+      "$authbot_helper_fixture" release-sha >"$helper_log" 2>&1; then
+    wd_die "authbot runtime helper accepted a non-canonical release path: $rejected_path"
+  fi
+  [[ ! -s $helper_log ]] || wd_die 'authbot release helper leaked a rejected path'
+done
+for release_failure in readlink churn pid-churn load-churn; do
+  printf '0\n' >"$authbot_active_count"
+  printf '0\n' >"$authbot_pid_count"
+  printf '0\n' >"$authbot_load_count"
+  helper_log="$TEMP/authbot-release-$release_failure.log"
+  if AUTHBOT_TEST_SYSTEMCTL=$authbot_systemctl_stub AUTHBOT_TEST_READLINK=$authbot_readlink_stub \
+      AUTHBOT_TEST_ACTIVE_COUNT=$authbot_active_count AUTHBOT_TEST_PID_COUNT=$authbot_pid_count \
+      AUTHBOT_TEST_LOAD_COUNT=$authbot_load_count \
+      AUTHBOT_TEST_RESOLVED="/srv/claude-api/releases/$authbot_release_sha/authbot" \
+      AUTHBOT_TEST_READLINK_FAIL=$([[ $release_failure == readlink ]] && printf 1 || printf 0) \
+      AUTHBOT_TEST_MODE=$release_failure "$authbot_helper_fixture" release-sha \
+      >"$helper_log" 2>&1; then
+    wd_die "authbot runtime helper accepted $release_failure during release inspection"
+  fi
+  [[ ! -s $helper_log ]] || wd_die 'authbot release helper leaked a path or SHA on failure'
 done
 
 # Exercise the shared reconciliation state machine independently from host systemd. Exact state
@@ -2735,11 +3052,16 @@ grep -Fq 'recover_interrupted_handoffs' "$ROOT/crates/authbot/src/main.rs" \
   || wd_die "an authbot code restart can strand sellers in a dead in-memory OAuth session"
 for retained_engine_unit in claude-api-openai.service claude-api-openai@8793.service \
   claude-api-openai@8797.service claude-api-gemini.service \
-  claude-api-gemini@8795.service claude-api-gemini@8799.service claude-authbot.service \
+  claude-api-gemini@8795.service claude-api-gemini@8799.service \
   claude-router.service claude-router@8800.service claude-router@8801.service; do
   grep -Fq "$retained_engine_unit" "$ROOT/deploy/watchdog.sh" \
     || wd_die "release retention can unlink the executable backing $retained_engine_unit"
 done
+grep -Fq 'AUTHBOT_RUNTIME_STATE=$CONTROLLER_ROOT/authbot-runtime-state.sh' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'release retention has no fixed privileged authbot inspection path'
+grep -Fq 'require_fixed_root_executable "$AUTHBOT_RUNTIME_STATE"' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'the watchdog does not preflight its privileged authbot inspection helper'
 grep -Fq 'shutdown_until(shutdown_deadline)' "$ROOT/crates/server/src/main.rs" \
   || wd_die "Codex shutdown is not bounded by the server drain deadline"
 grep -Fq 'self.abort_active_turns();' "$ROOT/crates/forward/src/codex/mod.rs" \
@@ -2929,10 +3251,8 @@ grep -Fq 'CANDIDATE_RETENTION_SECONDS=$((24 * 60 * 60))' "$ROOT/deploy/watchdog.
 grep -Fq 'prune_expired_candidates' "$ROOT/deploy/watchdog.sh"
 
 # Retention, retry, and post-admission recovery must stay wired into the watchdog itself.
-grep -Fq 'prune_expired_releases "$ENGINE_RELEASE_ROOT" engine' "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'engine release retention is not wired into the watchdog cycle'
-grep -Fq 'prune_expired_releases "$COMMERCE_RELEASE_ROOT" commerce' "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'commerce release retention is not wired into the watchdog cycle'
+[[ $(grep -Fc 'prune_expired_releases_best_effort' "$ROOT/deploy/watchdog.sh") -ge 3 ]] \
+  || wd_die 'combined fail-local release retention is not wired into both watchdog paths'
 grep -Fq 'prune_expired_dumps' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'pre-deploy dump retention is not wired into the watchdog cycle'
 grep -Fq 'wd_retry 3 5 fetch_source_once' "$ROOT/deploy/watchdog.sh" \
@@ -3087,6 +3407,41 @@ grep -Fq 'visudo -c -f' "$ROOT/deploy/install-sudoers.sh" \
   || wd_die 'the sudoers installer does not validate before installing'
 grep -Fq 'github-watchdog.env' "$ROOT/deploy/install-sudoers.sh" \
   || wd_die 'the sudoers installer does not verify the reporting credential stays unreadable'
+# Exercise the real cleanup and signal traps without touching host policy. An interrupt after the
+# mutation point must restore the prior policy and remain non-zero so the outer installer cannot
+# publish a dependent watchdog entrypoint.
+sudoers_cleanup_body=$(sed -n '/^cleanup()/,/^}/p' "$ROOT/deploy/install-sudoers.sh")
+sudoers_signal_traps=$(sed -n '/^trap cleanup EXIT$/,/^trap '\''exit 143'\'' TERM$/p' \
+  "$ROOT/deploy/install-sudoers.sh")
+[[ -n $sudoers_cleanup_body && -n $sudoers_signal_traps ]] \
+  || wd_die 'the sudoers installer cleanup or signal traps are missing'
+for signal_case in INT:130 TERM:143; do
+  signal=${signal_case%%:*}
+  expected_rc=${signal_case#*:}
+  signal_restore_log="$TEMP/sudoers-$signal.restore"
+  signal_staging="$TEMP/sudoers-$signal.staging"
+  : >"$signal_staging"
+  if (
+    staging=$signal_staging
+    policy_mutated=1
+    policy_committed=0
+    restore() { printf 'restored\n' >"$signal_restore_log"; }
+    eval "$sudoers_cleanup_body"
+    eval "$sudoers_signal_traps"
+    kill -s "$signal" "$BASHPID"
+    exit 0
+  ); then
+    signal_rc=0
+  else
+    signal_rc=$?
+  fi
+  [[ $signal_rc == "$expected_rc" ]] \
+    || wd_die "sudoers $signal interruption exited $signal_rc instead of $expected_rc"
+  grep -Fxq restored "$signal_restore_log" \
+    || wd_die "sudoers $signal interruption did not restore the prior policy"
+  [[ ! -e $signal_staging ]] \
+    || wd_die "sudoers $signal interruption did not remove its staging file"
+done
 # The policy must permit re-running its own installer. Without this, removing the unrestricted
 # grant is irreversible without console access.
 grep -Fq '/usr/local/lib/apitoken-watchdog/install-sudoers.sh' "$sudoers_policy" \
@@ -3103,11 +3458,65 @@ grep -Fq "/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh $
   || wd_die 'the sudo policy does not restrict authbot runtime verification to one exact SHA-256'
 grep -Fq "require_permitted 'authbot exact-runtime verifier'" "$ROOT/deploy/install-sudoers.sh" \
   || wd_die 'the sudoers installer does not live-verify authbot runtime inspection'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh release-sha' \
+  "$sudoers_policy" \
+  || wd_die 'the sudo policy does not permit only literal authbot release-sha inspection'
+grep -Fq "require_permitted 'authbot live release inspector'" "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die 'the sudoers installer does not live-verify authbot release inspection'
+grep -Fq 'MISSING or unsafe required fixed authbot helper or parent' "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die 'the sudoers installer can skip a missing authbot trust anchor'
+# Exercise the trust predicate itself: only a non-symlink root:root 0755 helper under an equally
+# constrained fixed parent may pass. Stub stat metadata so this remains runnable without root.
+fixed_root_helper_body=$(sed -n '/^fixed_root_helper_is_trusted()/,/^}/p' \
+  "$ROOT/deploy/install-sudoers.sh")
+eval "$fixed_root_helper_body"
+trust_root="$TEMP/authbot-helper-trust"
+trust_parent="$trust_root/controller"
+trust_helper="$trust_parent/authbot-runtime-state.sh"
+mkdir -p "$trust_parent"
+printf '#!/usr/bin/env bash\n' >"$trust_helper"
+chmod 0755 "$trust_parent" "$trust_helper"
+trust_parent_meta=0:0:755
+trust_helper_meta=0:0:755
+stat() {
+  case $4 in
+    "$trust_parent") printf '%s\n' "$trust_parent_meta" ;;
+    "$trust_helper") printf '%s\n' "$trust_helper_meta" ;;
+    *) return 1 ;;
+  esac
+}
+fixed_root_helper_is_trusted "$trust_helper" \
+  || wd_die 'fixed authbot helper trust rejected root:root 0755 metadata'
+for trust_case in writable-helper wrong-helper-group writable-parent wrong-parent-group; do
+  trust_parent_meta=0:0:755
+  trust_helper_meta=0:0:755
+  case $trust_case in
+    writable-helper) trust_helper_meta=0:0:775 ;;
+    wrong-helper-group) trust_helper_meta=0:1:755 ;;
+    writable-parent) trust_parent_meta=0:0:775 ;;
+    wrong-parent-group) trust_parent_meta=0:1:755 ;;
+  esac
+  fixed_root_helper_is_trusted "$trust_helper" \
+    && wd_die "fixed authbot helper trust accepted $trust_case"
+done
+rm -f -- "$trust_helper"
+fixed_root_helper_is_trusted "$trust_helper" \
+  && wd_die 'fixed authbot helper trust accepted a missing helper'
+printf '#!/usr/bin/env bash\n' >"$trust_root/target"
+ln -s "$trust_root/target" "$trust_helper"
+fixed_root_helper_is_trusted "$trust_helper" \
+  && wd_die 'fixed authbot helper trust accepted a symlink helper'
+unset -f fixed_root_helper_is_trusted stat
 grep -Fq "require_denied 'malformed authbot runtime digest'" "$ROOT/deploy/install-sudoers.sh" \
   || wd_die 'the sudoers installer does not reject malformed authbot verifier arguments'
 grep -Fq "require_denied 'extra authbot runtime verifier argument'" \
   "$ROOT/deploy/install-sudoers.sh" \
   || wd_die 'the sudoers installer does not reject extra authbot verifier arguments'
+grep -Fq "require_denied 'extra authbot release inspector argument'" \
+  "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die 'the sudoers installer does not reject extra authbot release arguments'
+grep -Fq "require_denied 'arbitrary authbot runtime mode'" "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die 'the sudoers installer does not reject arbitrary authbot runtime modes'
 ! grep -Eq '(^|[[:space:],])(readlink|cmp|sha256sum)([[:space:],]|$)' "$sudoers_policy" \
   || wd_die 'the sudo policy grants generic process or file comparison access'
 # Operator tooling must survive the restriction.
@@ -3160,12 +3569,17 @@ if grep -Fxq '/usr/local/lib/apitoken-watchdog/install-sudoers.sh' \
   "$ROOT/deploy/install-watchdog.sh"; then
   wd_die 'the sudoers installer runs inside the watchdog read-only mount namespace'
 fi
-sudoers_reload_line=$(grep -nF 'systemctl daemon-reload' "$ROOT/deploy/install-watchdog.sh" \
-  | cut -d: -f1 | tail -n 1)
-sudoers_start_line=$(grep -nF 'systemctl start apitoken-sudoers-install.service' \
+sudoers_start_line=$(grep -nF 'if ! systemctl start apitoken-sudoers-install.service' \
   "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
-[[ -n $sudoers_reload_line && -n $sudoers_start_line && $sudoers_start_line -gt $sudoers_reload_line ]] \
-  || wd_die 'the isolated sudoers installer is not started after daemon-reload'
+helper_publish_line=$(grep -nF 'publish_authbot_runtime_helper' "$ROOT/deploy/install-watchdog.sh" \
+  | cut -d: -f1 | head -n 2 | tail -n 1)
+watchdog_publish_line=$(grep -nF 'mv -f -- "$watchdog_staged" "$watchdog_target"' \
+  "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
+[[ -n $helper_publish_line && -n $sudoers_start_line && -n $watchdog_publish_line \
+    && $helper_publish_line -lt $sudoers_start_line && $sudoers_start_line -lt $watchdog_publish_line ]] \
+  || wd_die 'helper and sudo policy are not verified before atomic watchdog publication'
+grep -Fq 'mv -f -- "$helper_backup" "$helper"' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'failed sudo policy installation does not restore the prior authbot helper'
 # install-watchdog.sh must never re-add apitoken-ci to the deploy group: that would silently undo
 # the isolation fix on the next infrastructure install, and the two installers would fight.
 if grep -Eq 'usermod -a -G deploy apitoken-ci' "$ROOT/deploy/install-watchdog.sh"; then

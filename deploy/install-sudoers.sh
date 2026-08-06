@@ -41,8 +41,20 @@ id apitoken-ci >/dev/null 2>&1 || die "apitoken-ci user is required"
 # Syntax-validate the candidate in a private temporary file first. visudo -c on a standalone file
 # checks it in isolation, which is exactly what /etc/sudoers.d inclusion will do.
 staging=$(mktemp /tmp/apitoken-sudoers.XXXXXX)
-cleanup() { rm -f -- "$staging"; }
+policy_mutated=0
+policy_committed=0
+cleanup() {
+  local rc=$?
+  trap - EXIT INT TERM
+  if (( policy_mutated == 1 && policy_committed == 0 )); then
+    restore || true
+  fi
+  rm -f -- "$staging"
+  exit "$rc"
+}
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 install -o root -g root -m 0440 "$SOURCE" "$staging"
 # `visudo -c` exits 0 on warnings. An unused Cmnd_Alias is one of them, and it means a privilege the
 # policy intends to grant is silently not granted — exactly the failure that locks the pipeline out.
@@ -86,9 +98,9 @@ restore() {
   visudo -c >/dev/null || warn "RESTORED POLICY DOES NOT VALIDATE; fix /etc/sudoers.d from console"
 }
 
+policy_mutated=1
 install -o root -g root -m 0440 "$staging" "$TARGET"
 if ! visudo -c >/dev/null; then
-  restore
   die "combined sudo policy failed validation after install; previous policy restored"
 fi
 
@@ -98,7 +110,6 @@ if [[ -f $LEGACY ]]; then
   rm -f -- "$LEGACY"
   log "removed legacy unrestricted policy $LEGACY"
   if ! visudo -c >/dev/null; then
-    restore
     die "sudo policy failed validation after removing the legacy grant; previous policy restored"
   fi
 fi
@@ -136,6 +147,14 @@ require_denied() {
   else
     log "correctly denied: $description"
   fi
+}
+
+fixed_root_helper_is_trusted() {
+  local helper=$1 parent=${1%/*}
+  [[ -d $parent && ! -L $parent ]] || return 1
+  [[ $(stat -c '%u:%g:%a' -- "$parent" 2>/dev/null) == 0:0:755 ]] || return 1
+  [[ -f $helper && ! -L $helper ]] || return 1
+  [[ $(stat -c '%u:%g:%a' -- "$helper" 2>/dev/null) == 0:0:755 ]]
 }
 
 sample_sha=0000000000000000000000000000000000000000
@@ -216,8 +235,15 @@ require_permitted 'backup runner' /usr/local/lib/apitoken-watchdog/watchdog-back
 require_permitted 'migration runner' /usr/local/lib/apitoken-watchdog/watchdog-migrate.sh "$sample_sha"
 require_permitted 'engine schema migration runner' \
   /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh "$sample_sha"
+authbot_runtime_helper=/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
+if ! fixed_root_helper_is_trusted "$authbot_runtime_helper"; then
+  warn "MISSING or unsafe required fixed authbot helper or parent"
+  verify_failures=$((verify_failures + 1))
+fi
 require_permitted 'authbot exact-runtime verifier' \
-  /usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh "$sample_sha256"
+  "$authbot_runtime_helper" "$sample_sha256"
+require_permitted 'authbot live release inspector' \
+  "$authbot_runtime_helper" release-sha
 require_permitted 'engine schema migration helper probe' \
   /usr/bin/test -x /usr/local/lib/apitoken-watchdog/controller/engine-migrate.sh
 require_permitted 'GPT Image 2 exact-SHA live gate' \
@@ -274,6 +300,10 @@ require_denied 'malformed authbot runtime digest' \
   /usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh "$sample_sha"
 require_denied 'extra authbot runtime verifier argument' \
   /usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh "$sample_sha256" extra
+require_denied 'extra authbot release inspector argument' \
+  /usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh release-sha extra
+require_denied 'arbitrary authbot runtime mode' \
+  /usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh release-path
 require_denied 'arbitrary root shell' /bin/bash
 require_denied 'switching to root' /usr/bin/su -
 require_denied 'replacing a fixed controller' /usr/bin/install -m 0755 /tmp/x /usr/local/lib/apitoken-watchdog/watchdog.sh
@@ -281,7 +311,6 @@ require_denied 'stopping PostgreSQL' /usr/bin/systemctl stop apitoken-postgres.s
 require_denied 'arbitrary file removal' /usr/bin/rm -rf /etc
 
 if (( verify_failures > 0 )); then
-  restore
   die "$verify_failures privilege check(s) failed; previous sudo policy restored"
 fi
 
@@ -322,4 +351,5 @@ if [[ -d /usr/local/lib/apitoken-watchdog ]]; then
   log "policy installer and its source are current at their fixed root-owned paths"
 fi
 
+policy_committed=1
 log "least-privilege sudo policy installed and verified"

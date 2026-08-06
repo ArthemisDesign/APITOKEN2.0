@@ -82,10 +82,15 @@ remain as service-level process-isolation layers. Code already executing inside 
 the same trust boundary, and no defense can protect secrets from code already executing there.
 Because non-dumpability also blocks same-UID `/proc/<MainPID>/exe` dereference, the root-owned
 `/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh` is the only deployment bridge
-for exact runtime verification. Its sudo rule accepts one SHA-256 argument; it hashes only the live
-procfs executable, rejects PID/active-state churn, and reveals only `exact`, `different`, or
-`inactive`. Engine rollout skips an exact binary and, after a changed restart, fails unless the exact
-tested digest remains active. The root-run Caddy installer is the only other intended raw-file
+for runtime inspection. The helper and its non-symlink parent must both be exactly root:root mode
+`0755`. Its sudo rule accepts either one exact SHA-256 argument, returning only `exact`, `different`,
+or `inactive`, or literal `release-sha`, returning only a canonical immutable engine release SHA (and
+nothing when the unit is missing or inactive). Both operations inspect only the live procfs
+executable and recheck load state, active state, and PID; malformed paths, unexpected load-state
+churn, and failures reveal no path or digest. Controller installation publishes the backward-compatible
+helper, verifies the sudo policy, and only then atomically publishes the watchdog entrypoint that
+depends on them. Engine rollout skips an exact binary and, after a changed restart, fails unless the
+exact tested digest remains active. The root-run Caddy installer is the only other intended raw-file
 consumer. The interim host keeps a cold pre-migration copy for forensics, not as a
 live rollback authority, and no longer runs any product unit. The `claude-api-fingerprint.timer` is intentionally not
 enabled here yet (it needs a live `claude` CLI on the host); the fingerprint values in `config.env`

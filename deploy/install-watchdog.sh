@@ -183,11 +183,49 @@ activate_redis_definition() {
   fi
 }
 
+publish_authbot_runtime_helper() {
+  local target=/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
+  local staged=${target}.tmp.$$
+  install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/controller
+  install -o root -g root -m 0755 "$ROOT/deploy/authbot-runtime-state.sh" "$staged"
+  mv -f -- "$staged" "$target"
+}
+
+install_and_verify_sudo_policy() {
+  local helper=/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
+  local helper_backup=${helper}.rollback.$$
+  local had_helper=0
+  if [[ -e $helper || -L $helper ]]; then
+    [[ -f $helper && ! -L $helper ]] || { echo "$helper must be a regular file" >&2; return 1; }
+    cp -p -- "$helper" "$helper_backup"
+    had_helper=1
+  fi
+  publish_authbot_runtime_helper
+  install -o root -g root -m 0755 "$ROOT/deploy/install-sudoers.sh" \
+    /usr/local/lib/apitoken-watchdog/install-sudoers.sh
+  install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/sudoers.d
+  install -o root -g root -m 0644 "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+    /usr/local/lib/apitoken-watchdog/sudoers.d/95-apitoken-deploy
+  install -o root -g root -m 0644 "$ROOT/systemd/apitoken-sudoers-install.service" \
+    /etc/systemd/system/apitoken-sudoers-install.service
+  systemctl daemon-reload
+  if ! systemctl start apitoken-sudoers-install.service; then
+    if (( had_helper == 1 )); then
+      mv -f -- "$helper_backup" "$helper"
+    else
+      rm -f -- "$helper"
+    fi
+    return 1
+  fi
+  rm -f -- "$helper_backup"
+}
+
 install_controller_definitions() {
+  local watchdog_target=/usr/local/lib/apitoken-watchdog/watchdog.sh
+  local watchdog_staged=${watchdog_target}.tmp.$$
   install -d -o root -g root -m 0755 \
     /usr/local/lib/apitoken-watchdog/controller /opt/apitoken-watchdog
-  install -o root -g root -m 0755 "$ROOT/deploy/watchdog.sh" \
-    /usr/local/lib/apitoken-watchdog/watchdog.sh
+  publish_authbot_runtime_helper
   install -o root -g root -m 0644 "$ROOT/deploy/watchdog-lib.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-lib.sh
   install -o root -g root -m 0755 "$ROOT/deploy/validation-plan.sh" \
@@ -208,9 +246,6 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/watchdog-github
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-control.sh" \
     /usr/local/bin/apitoken-watchdog
-  # deploy.sh calls this fixed root bridge during engine activation, so publish it first.
-  install -o root -g root -m 0755 "$ROOT/deploy/authbot-runtime-state.sh" \
-    /usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
   install -o root -g root -m 0755 "$ROOT/deploy/deploy.sh" \
     /usr/local/lib/apitoken-watchdog/controller/deploy.sh
   install -o root -g root -m 0644 "$ROOT/deploy/lib.sh" \
@@ -244,6 +279,9 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/admin-deploy.sh
   install -o root -g root -m 0755 "$ROOT/deploy/devbot-deploy.sh" \
     /usr/local/lib/apitoken-watchdog/controller/devbot-deploy.sh
+  # The entrypoint is the controller transaction's commit point: every dependency is present first.
+  install -o root -g root -m 0755 "$ROOT/deploy/watchdog.sh" "$watchdog_staged"
+  mv -f -- "$watchdog_staged" "$watchdog_target"
 }
 
 install_systemd_definitions() {
@@ -331,6 +369,7 @@ install_monitoring_definitions() {
 # deliberately fenced before bootstrap provisioning and unrelated service restarts.
 case "$INSTALL_MODE" in
   controller)
+    install_and_verify_sudo_policy
     install_controller_definitions
     echo 'production watchdog controller definitions installed'
     exit 0
@@ -381,15 +420,11 @@ install -d -o deploy -g deploy -m 0750 \
 # Candidate tests need traverse-only access through these parents. State contents remain unlistable.
 chmod o+x /var/lib/apitoken /var/lib/apitoken/watchdog /var/lib/apitoken/watchdog/candidates
 chown apitoken-ci:apitoken-ci /var/lib/apitoken/watchdog/ci-home
+# Publish the backward-compatible authbot helper and verify its required sudo rule before the new
+# watchdog entrypoint can become visible. Policy failure restores both the old policy (inside the
+# sudoers installer) and the prior helper, leaving the old watchdog compatible.
+install_and_verify_sudo_policy
 install_controller_definitions
-# The sudo policy and its validating installer are delivered together. They are applied below by a
-# dedicated root oneshot after daemon-reload: this installer inherits the watchdog's read-only
-# /root and /etc mount namespace even though its effective user is root, while a manager-spawned
-# unit gets its own namespace and can keep rollback copies before replacing /etc/sudoers.d.
-install -o root -g root -m 0755 "$ROOT/deploy/install-sudoers.sh" /usr/local/lib/apitoken-watchdog/install-sudoers.sh
-install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/sudoers.d
-install -o root -g root -m 0644 "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
-  /usr/local/lib/apitoken-watchdog/sudoers.d/95-apitoken-deploy
 install -o root -g root -m 0755 "$ROOT/deploy/apitoken-db-dump" /usr/local/lib/apitoken-watchdog/apitoken-db-dump
 install -o root -g root -m 0644 "$ROOT/deploy/commerce-postgres.compose.yaml" \
   /usr/local/lib/apitoken-watchdog/controller/commerce-postgres.compose.yaml
@@ -507,9 +542,6 @@ for observable in status candidate-validation-1.status candidate-validation-2.st
 done
 
 systemctl daemon-reload
-# This unit validates the candidate, saves a rollback copy, replaces the policy, verifies every
-# required and forbidden privilege as `deploy`, and restores the old policy on any failure.
-systemctl start apitoken-sudoers-install.service
 # Monitoring requires both Redis exporters to report `redis_up=1`. Reconcile the additive 6380
 # service first; doing this after monitoring makes a two-instance candidate fail deterministically.
 activate_redis_definition

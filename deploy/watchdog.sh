@@ -27,6 +27,7 @@ CI_TOOLCHAIN=/opt/apitoken-watchdog/rust-toolchain
 CONTROLLER_ROOT=/usr/local/lib/apitoken-watchdog/controller
 CONTROLLER_ENTRYPOINT=/usr/local/lib/apitoken-watchdog/watchdog.sh
 VALIDATION_PLANNER=$CONTROLLER_ROOT/validation-plan.sh
+AUTHBOT_RUNTIME_STATE=$CONTROLLER_ROOT/authbot-runtime-state.sh
 GPT_IMAGE_2_LIVE_GATE=$CONTROLLER_ROOT/gpt-image-2-live-gate.sh
 GPT_IMAGE_2_IMPLEMENTATION_SHA=1c48e3769f0fe775e650f60ea3c5839458e5dfe2
 TEST_DB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-test-db
@@ -343,6 +344,17 @@ require_fixed_directory() {
   [[ $owner == 0 ]] || wd_die "required directory must be root-owned: $path"
 }
 
+require_fixed_root_executable() {
+  local path=$1 parent=${1%/*}
+  [[ -d $parent && ! -L $parent ]] \
+    || wd_die "required fixed helper parent is missing: $parent"
+  [[ $(stat -c '%u:%g:%a' -- "$parent") == 0:0:755 ]] \
+    || wd_die "required fixed helper parent must be root:root mode 0755: $parent"
+  [[ -f $path && ! -L $path ]] || wd_die "required fixed helper is missing: $path"
+  [[ $(stat -c '%u:%g:%a' -- "$path") == 0:0:755 ]] \
+    || wd_die "required fixed helper must be root:root mode 0755: $path"
+}
+
 marker_for() {
   printf '%s/%s.tested\n' "$STATE_ROOT" "$1"
 }
@@ -524,56 +536,72 @@ prune_expired_candidates() {
 }
 
 # Releases backing a live process must never be removed, even if retention counting would otherwise
-# reach them. Resolve every relevant unit's MainPID to the release directory it actually executes
-# from, exactly like the readiness gates do, rather than trusting the symlinks alone.
+# reach them. Resolve normal active units directly from procfs and fail if their immutable release
+# cannot be identified; authbot is non-dumpable, so only the fixed root helper may resolve its
+# executable and expose the validated immutable release SHA.
 live_release_shas() {
-  local unit pid resolved name
+  local unit pid resolved relative name authbot_sha load_state state final_load_state final_state
+  local final_pid found exe cwd
   for unit in claude-api.service claude-api@8787.service claude-api@8788.service \
     claude-api-anthropic@8787.service claude-api-anthropic@8788.service \
     claude-api-openai.service claude-api-openai@8793.service claude-api-openai@8797.service \
     claude-api-gemini.service claude-api-gemini@8795.service claude-api-gemini@8799.service \
     claude-api-kimi.service claude-api-kimi@8804.service claude-api-kimi@8805.service \
-    claude-authbot.service \
     claude-router.service claude-router@8800.service claude-router@8801.service \
     apitoken-api@3000.service apitoken-api@3001.service \
     apitoken-worker.service apitoken-content-studio.service; do
-    systemctl is-active --quiet "$unit" || continue
-    pid=$(systemctl show "$unit" -p MainPID --value)
-    [[ $pid =~ ^[1-9][0-9]*$ ]] || continue
-    for resolved in "$(readlink -f -- "/proc/$pid/exe" 2>/dev/null)" \
-      "$(readlink -f -- "/proc/$pid/cwd" 2>/dev/null)"; do
-      [[ -n $resolved ]] || continue
-      # Walk up to the SHA-named release directory under either release root.
-      while [[ $resolved == /*/* ]]; do
-        name=${resolved##*/}
-        if [[ $name =~ ^[0-9a-f]{40}$ ]]; then
-          printf '%s\n' "$name"
-          break
-        fi
-        resolved=${resolved%/*}
-      done
+    load_state=''
+    if ! load_state=$(systemctl show "$unit" -p LoadState --value 2>/dev/null); then
+      [[ $load_state == not-found ]] && continue
+      return 1
+    fi
+    [[ $load_state != not-found ]] || continue
+    [[ $load_state == loaded ]] || return 1
+    state=$(systemctl show "$unit" -p ActiveState --value) || return 1
+    case $state in
+      inactive|failed) continue ;;
+      active) ;;
+      *) return 1 ;;
+    esac
+    pid=$(systemctl show "$unit" -p MainPID --value) || return 1
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+    exe=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null) || return 1
+    cwd=$(readlink -f -- "/proc/$pid/cwd" 2>/dev/null) || return 1
+    found=0
+    for resolved in "$exe" "$cwd"; do
+      case $resolved in
+        "$ENGINE_RELEASE_ROOT"/*) relative=${resolved#"$ENGINE_RELEASE_ROOT"/} ;;
+        "$COMMERCE_RELEASE_ROOT"/*) relative=${resolved#"$COMMERCE_RELEASE_ROOT"/} ;;
+        *) continue ;;
+      esac
+      name=${relative%%/*}
+      [[ $name =~ ^[0-9a-f]{40}$ ]] || return 1
+      printf '%s\n' "$name"
+      found=1
     done
+    final_load_state=$(systemctl show "$unit" -p LoadState --value) || return 1
+    final_state=$(systemctl show "$unit" -p ActiveState --value) || return 1
+    final_pid=$(systemctl show "$unit" -p MainPID --value) || return 1
+    [[ $final_load_state == loaded && $final_state == active \
+        && $final_pid == "$pid" && $found == 1 ]] || return 1
   done
+
+  authbot_sha=$(sudo -n "$AUTHBOT_RUNTIME_STATE" release-sha) || return 1
+  [[ -z $authbot_sha || $authbot_sha =~ ^[0-9a-f]{40}$ ]] || return 1
+  [[ -z $authbot_sha ]] || printf '%s\n' "$authbot_sha"
 }
 
-prune_expired_releases() {
-  local root=$1 label=$2 protected=() sha removed=0 failed=0 release
-
-  mapfile -t protected < <(live_release_shas)
-  for sha in "${ENGINE_SHA:-}" "${BACKEND_SHA:-}" "${PROCESSED_SHA:-}" "${SALES_SHA:-}" "${OPENKEYS_SHA:-}"; do
-    [[ $sha =~ ^[0-9a-f]{40}$ ]] && protected+=("$sha")
-  done
-
+prune_selected_releases() {
+  local root=$1 label=$2 selection=$3 release sha removed=0 failed=0
   while IFS= read -r -d '' release; do
-    # wd_prunable_release_dirs already excludes links, non-SHA names, and protected releases.
-    # Revalidate at the destructive boundary as defence in depth.
+    # The checked selector excludes links, non-SHA names, and protected releases. Revalidate at the
+    # destructive boundary as defence in depth.
     sha=${release##*/}
     if [[ ${release%/*} != "$root" || ! $sha =~ ^[0-9a-f]{40}$ || ! -d $release || -L $release ]]; then
       wd_warn "unsafe $label retention target skipped: $release"
       failed=$((failed + 1))
       continue
     fi
-    # Releases are finalized read-only; restore write bits on the tree before removing it.
     sudo -n chmod -R u+w -- "$release" 2>/dev/null || true
     if sudo -n rm -rf --one-file-system -- "$release"; then
       removed=$((removed + 1))
@@ -581,11 +609,71 @@ prune_expired_releases() {
       wd_warn "failed to remove expired $label release $sha"
       failed=$((failed + 1))
     fi
-  done < <(wd_prunable_release_dirs "$root" "$RELEASE_RETENTION_KEEP" "${protected[@]}")
-
+  done <"$selection"
   if (( removed > 0 || failed > 0 )); then
     wd_log "$label release retention finished: removed=$removed failed=$failed keep=$RELEASE_RETENTION_KEEP"
   fi
+  return 0
+}
+
+prune_expired_releases() {
+  local protected=() sha live_shas engine_selection commerce_selection
+  exec 8<>"$DEPLOY_LOCK" || return 1
+  if ! flock -n 8; then
+    exec 8>&-
+    return 1
+  fi
+  engine_selection=$(mktemp) || { flock -u 8; exec 8>&-; return 1; }
+  commerce_selection=$(mktemp) \
+    || { rm -f -- "$engine_selection"; flock -u 8; exec 8>&-; return 1; }
+
+  # Build one complete live snapshot and both complete NUL selections before mutating either root.
+  # No process substitution is used here: producer status is checked directly.
+  if ! live_shas=$(live_release_shas); then
+    rm -f -- "$engine_selection" "$commerce_selection"
+    flock -u 8
+    exec 8>&-
+    return 1
+  fi
+  while IFS= read -r sha; do
+    [[ -z $sha ]] && continue
+    if [[ ! $sha =~ ^[0-9a-f]{40}$ ]]; then
+      rm -f -- "$engine_selection" "$commerce_selection"
+      flock -u 8
+      exec 8>&-
+      return 1
+    fi
+    protected+=("$sha")
+  done <<<"$live_shas"
+  for sha in "${ENGINE_SHA:-}" "${BACKEND_SHA:-}" "${PROCESSED_SHA:-}" \
+    "${SALES_SHA:-}" "${OPENKEYS_SHA:-}"; do
+    [[ $sha =~ ^[0-9a-f]{40}$ ]] && protected+=("$sha")
+  done
+  if ! wd_prunable_release_dirs "$ENGINE_RELEASE_ROOT" "$RELEASE_RETENTION_KEEP" \
+      "${protected[@]}" >"$engine_selection" \
+      || ! wd_prunable_release_dirs "$COMMERCE_RELEASE_ROOT" "$RELEASE_RETENTION_KEEP" \
+        "${protected[@]}" >"$commerce_selection"; then
+    rm -f -- "$engine_selection" "$commerce_selection"
+    flock -u 8
+    exec 8>&-
+    return 1
+  fi
+
+  prune_selected_releases "$ENGINE_RELEASE_ROOT" engine "$engine_selection"
+  prune_selected_releases "$COMMERCE_RELEASE_ROOT" commerce "$commerce_selection"
+  rm -f -- "$engine_selection" "$commerce_selection"
+  flock -u 8
+  exec 8>&-
+  return 0
+}
+
+prune_expired_releases_best_effort() {
+  if prune_expired_releases; then
+    return 0
+  fi
+  wd_warn "release retention skipped: live process observation or release selection was incomplete" \
+    || true
+  status "release retention skipped safely; continuing candidate processing" || true
   return 0
 }
 
@@ -2354,6 +2442,7 @@ main() {
   require_fixed_file "$ADMIN_RUNNER"
   require_fixed_file "$DEVBOT_RUNNER"
   require_fixed_file "$VALIDATION_PLANNER"
+  require_fixed_root_executable "$AUTHBOT_RUNTIME_STATE"
   require_fixed_file "$GPT_IMAGE_2_LIVE_GATE"
   require_fixed_file "$GITHUB_HELPER"
   require_fixed_directory "$CI_TOOLCHAIN"
@@ -2479,8 +2568,7 @@ main() {
       CURRENT_PHASE=maintaining
       status "running periodic retention and production-alignment checks"
       prune_expired_candidates
-      prune_expired_releases "$ENGINE_RELEASE_ROOT" engine
-      prune_expired_releases "$COMMERCE_RELEASE_ROOT" commerce
+      prune_expired_releases_best_effort
       prune_expired_dumps
       final_verification_plan=$(wd_final_verification_plan full 0 0 0 0 0) \
         || wd_die "could not derive the idle-maintenance verification plan"
@@ -2498,8 +2586,7 @@ main() {
   CURRENT_PHASE=pruning
   status "applying candidate, release, and pre-deploy dump retention"
   prune_expired_candidates
-  prune_expired_releases "$ENGINE_RELEASE_ROOT" engine
-  prune_expired_releases "$COMMERCE_RELEASE_ROOT" commerce
+  prune_expired_releases_best_effort
   prune_expired_dumps
 
   publish_pipeline_start_statuses
