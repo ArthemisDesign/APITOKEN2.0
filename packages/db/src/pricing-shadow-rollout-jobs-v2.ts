@@ -772,23 +772,62 @@ export async function stagePricingShadowRolloutV2(
           retention_eligible: false,
           commission_eligible: false,
         })).sort((left, right) => compareUtf8(left.rule_id, right.rule_id));
-        const canonicalSuccessor = liveRules.length === expectedRules.length
-          && liveRules.every((rule, index) => {
-            const expected = expectedRules[index]!;
-            return rule.rule_id === expected.rule_id
-              && stage5V2CanonicalJson(rule.scope) === stage5V2CanonicalJson(expected.scope)
-              && rule.pricing_mode === expected.pricing_mode
-              && rule.rule_origin === expected.rule_origin
-              && rule.discount_bps === expected.discount_bps
-              && rule.payable_multiplier_bp === expected.payable_multiplier_bp
-              && rule.track_eligible === expected.track_eligible
-              && rule.retention_eligible === expected.retention_eligible
-              && rule.commission_eligible === expected.commission_eligible;
-          });
+        type SemanticRule = {
+          rule_id: string;
+          scope: unknown;
+          pricing_mode: string;
+          rule_origin: string;
+          discount_bps: number | null;
+          payable_multiplier_bp: number | null;
+          track_eligible: boolean;
+          retention_eligible: boolean;
+          commission_eligible: boolean;
+        };
+        const sameSemanticRules = (
+          left: readonly SemanticRule[],
+          right: readonly SemanticRule[],
+        ) => left.length === right.length && left.every((rule, index) => {
+          const expected = right[index]!;
+          return rule.rule_id === expected.rule_id
+            && stage5V2CanonicalJson(rule.scope) === stage5V2CanonicalJson(expected.scope)
+            && rule.pricing_mode === expected.pricing_mode
+            && rule.rule_origin === expected.rule_origin
+            && rule.discount_bps === expected.discount_bps
+            && rule.payable_multiplier_bp === expected.payable_multiplier_bp
+            && rule.track_eligible === expected.track_eligible
+            && rule.retention_eligible === expected.retention_eligible
+            && rule.commission_eligible === expected.commission_eligible;
+        });
+        const canonicalSuccessor = sameSemanticRules(liveRules, expectedRules);
+        // A lineage that already advanced once through the generic CAS lane carries the
+        // release-v2 target rules (`global-one-to-one:provider:*` from the target document), not
+        // the v1 transition shape. Both shapes are writable only through engine-validated paths,
+        // so both are canonical; anything else still fails closed as lock drift. The target
+        // shape is built only when the v1 check fails, so previously skipped accounts keep
+        // their exact old behavior.
         if (!canonicalSuccessor) {
-          throw permanent(
-            `legacy OpenKeys account ${assignment.engine_account_id} lineage lost its replacement lock without the canonical successor`,
-          );
+          const advancedPolicy = buildGenericShadowPolicyV1({
+            accountId: assignment.engine_account_id,
+            lineage: {
+              policy_id: lineage.policy_id,
+              policy_version: lineage.policy_version + 1,
+              owner_type: lineage.owner_type,
+              owner_id: lineage.owner_id,
+              account_class: lineage.account_class,
+              product_id: lineage.product_id,
+            },
+            effectiveVersion: lineage.effective_version + 1,
+            document,
+            rules: documentRules.get(`${assignment.policy_id}${assignment.policy_version}`)!,
+            mainCatalog,
+            openkeysCatalog,
+            switches,
+          });
+          if (!sameSemanticRules(liveRules, advancedPolicy.rules)) {
+            throw permanent(
+              `legacy OpenKeys account ${assignment.engine_account_id} lineage lost its replacement lock without the canonical successor`,
+            );
+          }
         }
         if (lineage.catalog_generation === openkeysCatalog.generation
             && lineage.switch_generation === switches.generation) {
