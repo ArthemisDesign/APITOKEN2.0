@@ -7,17 +7,17 @@ LIB=/usr/local/lib/apitoken-watchdog/watchdog-lib.sh
 source "$LIB"
 
 STATE_ROOT=/var/lib/apitoken/watchdog
-ENGINE_RELEASE_ROOT=/srv/claude-api/releases
 PRODUCER_SHA=d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6
 EVIDENCE_PARENT=$STATE_ROOT/gpt-image-2-public
 OUTPUT=$EVIDENCE_PARENT/$PRODUCER_SHA
 
-[[ $# -eq 1 ]] || wd_die "usage: gpt-image-2-public-smoke-gate.sh <exact-producer-sha>"
+[[ $# -eq 2 && $2 == --inspect ]] \
+  || wd_die "usage: gpt-image-2-public-smoke-gate.sh <exact-producer-sha> --inspect"
 SHA=$1
 wd_validate_sha "$SHA"
 [[ $SHA == "$PRODUCER_SHA" ]] \
-  || wd_die "GPT Image 2 public smoke gate is pinned to producer $PRODUCER_SHA"
-[[ $(id -u) == 0 ]] || wd_die "GPT Image 2 public smoke gate must run through the fixed root bridge"
+  || wd_die "GPT Image 2 public evidence inspector is pinned to producer $PRODUCER_SHA"
+[[ $(id -u) == 0 ]] || wd_die "GPT Image 2 public evidence inspector must run through the fixed root bridge"
 command -v jq >/dev/null || wd_die "jq is required for GPT Image 2 public evidence"
 command -v sha256sum >/dev/null || wd_die "sha256sum is required for GPT Image 2 public evidence"
 
@@ -228,80 +228,40 @@ verify_success() {
   }'
 }
 
-# The producer SHA is the permanent no-replay root. Inspect it before runtime environment or network.
-if [[ -e $OUTPUT || -L $OUTPUT ]]; then
-  verify_success || wd_die "prior GPT Image 2 public smoke attempt is fenced and not valid success evidence"
+# This corrective controller is permanently non-network. The first delivery owns the producer-SHA
+# fence, so a later candidate may only validate its retained result or report its sanitized journal state.
+[[ -e $OUTPUT && ! -L $OUTPUT ]] \
+  || wd_die "GPT Image 2 public fence is absent; corrective inspection cannot dispatch a replacement"
+if verify_success; then
   exit 0
 fi
-if [[ -e $EVIDENCE_PARENT || -L $EVIDENCE_PARENT ]]; then
-  path_is_private_deploy_directory "$EVIDENCE_PARENT" \
-    || wd_die "GPT Image 2 public evidence parent is not an actual private deploy directory"
-else
-  install -d -o deploy -g deploy -m 0700 -- "$EVIDENCE_PARENT"
-fi
+
+journal=$OUTPUT/journal.json
 path_is_private_deploy_directory "$EVIDENCE_PARENT" \
-  || wd_die "GPT Image 2 public evidence parent is not private"
-
-release=$ENGINE_RELEASE_ROOT/$PRODUCER_SHA
-current=$(readlink -f -- "$ENGINE_RELEASE_ROOT/current")
-[[ $current == "$release" ]] || wd_die "GPT Image 2 public smoke requires current producer release $PRODUCER_SHA"
-binary=$release/claude-api
-[[ -f $binary && ! -L $binary && -x $binary ]] \
-  || wd_die "exact GPT Image 2 public smoke binary is missing"
-
-load_openai_runtime_environment() {
-  local unit pid executable entry name provider database_url_seen
-  local entries=()
-  for unit in claude-api-openai@8793.service claude-api-openai@8797.service; do
-    [[ $(systemctl show "$unit" -p ActiveState --value 2>/dev/null) == active ]] || continue
-    pid=$(systemctl show "$unit" -p MainPID --value 2>/dev/null)
-    [[ $pid =~ ^[1-9][0-9]*$ ]] || continue
-    executable=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null) || continue
-    [[ $executable == "$binary" ]] || continue
-
-    entries=()
-    provider=
-    database_url_seen=0
-    while IFS= read -r -d '' entry; do
-      [[ $entry == *=* ]] || wd_die "running OpenAI slot contains an invalid environment entry"
-      name=${entry%%=*}
-      [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
-        || wd_die "running OpenAI slot contains an invalid environment name"
-      case "$name" in
-        CLAUDE_API_PROVIDER) provider=${entry#*=}; entries+=("$entry") ;;
-        CLAUDE_API_DATABASE_URL) database_url_seen=1; entries+=("$entry") ;;
-        CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED|CLAUDE_API_CLAUDESTORE_API_KEY|\
-          CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED|CLAUDE_API_CLAUDESTORE_CODEX_API_KEY|\
-          CLAUDE_API_IMPLEMENTATION_SHA) ;;
-        CLAUDE_API_*|SUB_*) entries+=("$entry") ;;
-      esac
-    done <"/proc/$pid/environ"
-    [[ $provider == openai ]] || continue
-    (( database_url_seen == 1 )) \
-      || wd_die "active exact-release OpenAI slot lacks the PostgreSQL authority URL"
-
-    for entry in "${entries[@]}"; do
-      export "$entry"
-    done
-    return 0
-  done
-  wd_die "no active exact-release OpenAI slot can supply the production environment"
-}
-
-# Values remain only in inherited process environments; no credential is placed in argv, files or logs.
-load_openai_runtime_environment
-export HOME=/home/deploy
-export SUB_CFG_DIR=/srv/claude-api/data
-export CLAUDE_API_PROVIDER=openai
-export CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0
-export CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0
-unset CLAUDE_API_CLAUDESTORE_API_KEY CLAUDE_API_CLAUDESTORE_CODEX_API_KEY CLAUDE_API_IMPLEMENTATION_SHA
-
-deploy_uid=$(id -u deploy)
-deploy_gid=$(id -g deploy)
-if ! HOME=/home/deploy timeout --signal=TERM --kill-after=30s 1500s \
-    setpriv --reuid="$deploy_uid" --regid="$deploy_gid" --init-groups --no-new-privs \
-    "$binary" openai-image-public-smoke --output "$OUTPUT" --execute; then
-  wd_die "GPT Image 2 public smoke failed; its producer-SHA evidence root is permanently fenced"
-fi
-verify_success || wd_die "GPT Image 2 public smoke returned without valid exact settlement evidence"
+  || wd_die "GPT Image 2 public evidence parent is not an actual private deploy directory"
+path_is_private_deploy_directory "$OUTPUT" \
+  || wd_die "GPT Image 2 public evidence root is not an actual private deploy directory"
+path_is_private_deploy_file "$journal" \
+  || wd_die "GPT Image 2 public fence has no private journal"
+summary=$(jq -er --arg sha "$PRODUCER_SHA" '
+  def uuid4_or_null:
+    . == null or (type == "string" and
+      test("^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"));
+  . as $journal |
+  ((keys | sort) == ([
+    "edit_dispatched", "edit_request_id", "generation_dispatched", "generation_request_id",
+    "implementation_sha", "schema_version", "state"
+  ] | sort) and
+  .schema_version == 1 and .implementation_sha == $sha and
+  (.state | type == "string" and length >= 1 and length <= 64 and test("^[a-z_]+$")) and
+  (.generation_dispatched | type == "boolean") and
+  (.edit_dispatched | type == "boolean") and
+  (.generation_request_id | uuid4_or_null) and
+  (.edit_request_id | uuid4_or_null) and
+  (if .edit_dispatched then .generation_dispatched else true end)) as $valid |
+  if $valid then
+    "gpt-image-public:\($journal.state):g=\($journal.generation_dispatched):e=\($journal.edit_dispatched)"
+  else error("invalid journal contract") end
+' "$journal") || wd_die "GPT Image 2 public fence journal is malformed"
+printf '%s\n' "$summary"
+exit 1

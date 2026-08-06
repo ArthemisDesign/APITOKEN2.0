@@ -176,24 +176,17 @@ identity. The corrective path is non-network: it accepts only that existing exac
 would make overall delivery RED after validating any terminal withdrawal. The historical gate remains
 pinned to the explicit immutable edit SHA rather than a mutable engine baseline.
 
-The separate public Images API publication gate is the fixed root controller
-`deploy/gpt-image-2-public-smoke-gate.sh`, pinned to watchdog-GREEN producer
-`d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6`. Only a change to that controller path triggers it; ordinary
-controller or documentation delivery cannot spend an image request. It runs
-`claude-api openai-image-public-smoke --output /var/lib/apitoken/watchdog/gpt-image-2-public/<producer-sha>
---execute` from the exact current producer binary. The actual `deploy:deploy` mode-`0700` producer-SHA leaf
-is created once and is the permanent no-replay fence; any existing partial or invalid root fails before
-runtime environment or network access. The controller copies only the exact OpenAI slot environment,
-removes both ClaudeStore fallback switches and credentials, and selects exactly one existing active
-`crm-parsing` release-v2 meter-only key without creating or persisting a credential. Before dispatch the CLI
-requires authenticated discovery to exclude both image aliases. It then makes exactly one public generation
-and, only after exact settlement, exactly one public edit using the generated PNG. GREEN requires two
-bounded byte-different PNGs, exact usage modality sums, lowercase UUIDv4 reservation identities, coherent
-terminal reservation/outbox/usage/snapshot evidence, exact official nanoUSD legs, zero customer charge and
-unchanged account/key money aggregates. A valid retained success may be verified read-only; any
-post-dispatch ambiguity is terminal for that producer SHA/root, and another paid attempt requires a new
-producer implementation and delivery. Catalog, router, OpenKeys, site, admin and public-documentation
-publication remains forbidden until this gate and overall watchdog status are GREEN.
+Public Images API attempt delivery `0dbbfdda054a1a7bda709434c8678b192bf12276` is RED at the fixed
+producer gate for `d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6`. The producer-SHA root under
+`/var/lib/apitoken/watchdog/gpt-image-2-public/` is therefore a permanent no-replay fence. The retained
+journal state and dispatch flags have not yet been observed, so no claim is made about whether a paid
+operation started. `deploy/gpt-image-2-public-smoke-gate.sh` is now an exact `--inspect`-only controller:
+it has no runtime environment loader, credential access, timeout, `setpriv`, or CLI/network dispatch. It
+may return GREEN only for the complete strict generation+edit evidence contract; otherwise it reports a
+bounded state plus generation/edit dispatch booleans into the corrective delivery's RED status. Any new
+paid attempt requires a new producer SHA and a new producer-SHA evidence root after this inspector has
+classified the old fence. Catalog, router, OpenKeys, site, admin and public-documentation publication
+remains forbidden until a later exact production generation+edit gate and overall watchdog status are GREEN.
 
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane

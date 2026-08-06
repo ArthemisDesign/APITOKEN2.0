@@ -4282,28 +4282,28 @@ live_gate_line=$(grep -nF \
 ! grep -Fq 'sudo -n "$GPT_IMAGE_2_LIVE_GATE" "$ENGINE_SHA"' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 gate follows the mutable current engine baseline instead of its pinned implementation'
 
-# Public generation+edit is a separate one-shot bound to the already deployed producer SHA. Its
-# root is the replay fence, and only exact complete retained evidence may let overall GREEN advance.
+# The first public generation+edit attempt owns its producer-SHA fence. After a RED delivery this
+# controller becomes a permanently non-network inspector: exact success may pass, anything else reports
+# only bounded journal state and dispatch flags so a new producer can be planned without replay.
 wd_path_is_gpt_image_2_public_smoke_gate_trigger deploy/gpt-image-2-public-smoke-gate.sh \
-  || wd_die 'GPT Image 2 public smoke gate file does not trigger its one-shot delivery range'
+  || wd_die 'GPT Image 2 public evidence inspector file does not trigger corrective verification'
 if wd_path_is_gpt_image_2_public_smoke_gate_trigger deploy/watchdog.sh; then
-  wd_die 'ordinary controller updates trigger paid public GPT Image 2 requests'
+  wd_die 'ordinary controller updates trigger GPT Image 2 public evidence inspection'
 fi
 grep -Fq '"$ROOT/deploy/gpt-image-2-public-smoke-gate.sh"' "$ROOT/deploy/install-watchdog.sh" \
-  || wd_die 'GPT Image 2 public smoke gate is not installed as a fixed controller'
+  || wd_die 'GPT Image 2 public evidence inspector is not installed as a fixed controller'
 grep -Fxq 'PRODUCER_SHA=d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6' \
   "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public smoke is not pinned to its watchdog-green producer SHA'
+  || wd_die 'GPT Image 2 public evidence inspector is not pinned to the withdrawn producer SHA'
 grep -Fq 'OUTPUT=$EVIDENCE_PARENT/$PRODUCER_SHA' \
   "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public smoke does not use the producer SHA as its replay fence'
-public_replay_fence_line=$(grep -nF 'if [[ -e $OUTPUT || -L $OUTPUT ]]; then' \
-  "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" | cut -d: -f1)
-public_runtime_env_line=$(grep -nF 'load_openai_runtime_environment() {' \
-  "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" | cut -d: -f1)
-[[ -n $public_replay_fence_line && -n $public_runtime_env_line \
-    && $public_replay_fence_line -lt $public_runtime_env_line ]] \
-  || wd_die 'GPT Image 2 public replay fence can reach credentials or network before verification'
+  || wd_die 'GPT Image 2 public evidence inspector does not use the producer SHA fence'
+grep -Fq '[[ $# -eq 2 && $2 == --inspect ]]' \
+  "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
+  || wd_die 'GPT Image 2 public evidence inspector accepts a dispatch-capable invocation'
+! grep -Eq 'load_openai_runtime_environment|/proc/\$pid/environ|setpriv|timeout .*1500|openai-image-public-smoke' \
+  "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
+  || wd_die 'GPT Image 2 public corrective inspector can still reach runtime credentials or dispatch'
 grep -Fq 'mapfile -t entries < <(find "$OUTPUT" -mindepth 1 -maxdepth 1' \
   "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
   || wd_die 'GPT Image 2 public verifier accepts unexpected retained artifacts'
@@ -4321,36 +4321,28 @@ grep -Fq '.usage.input_tokens_details.image_tokens > 0' \
 grep -Fq '! cmp -s -- "$generation" "$edit"' \
   "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
   || wd_die 'GPT Image 2 public verifier accepts a byte-identical edit'
-grep -Fq 'CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED=0' \
+grep -Fq 'gpt-image-public:\($journal.state):g=\($journal.generation_dispatched):e=\($journal.edit_dispatched)' \
   "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public smoke does not force the Anthropic external fallback off'
-grep -Fq 'CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0' \
-  "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public smoke does not force the Codex external fallback off'
-grep -Fq 'unset CLAUDE_API_CLAUDESTORE_API_KEY CLAUDE_API_CLAUDESTORE_CODEX_API_KEY' \
-  "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public smoke retains external fallback credentials'
-grep -Fq '"$binary" openai-image-public-smoke --output "$OUTPUT" --execute' \
-  "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public gate cannot dispatch the exact production smoke binary'
+  || wd_die 'GPT Image 2 public inspector does not emit bounded retained journal classification'
 ! grep -Eiq 'laozhang|aihubproxy|apixo|whataicc' \
   "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public smoke contains a third-party image relay'
-grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-smoke-gate.sh d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6' \
+  || wd_die 'GPT Image 2 public inspector contains a third-party image relay'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-smoke-gate.sh d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6 --inspect' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
-  || wd_die 'GPT Image 2 public smoke lacks an exact-producer sudo bridge'
-grep -A2 -F "require_permitted 'GPT Image 2 exact-producer public smoke gate'" \
+  || wd_die 'GPT Image 2 public inspector lacks an exact-producer sudo bridge'
+grep -A2 -F "require_permitted 'GPT Image 2 exact-producer public evidence inspector'" \
   "$ROOT/deploy/install-sudoers.sh" \
-  | grep -Fq 'd2e345f2de75e0ee6c72797fdf315f12ab4bbeb6' \
-  || wd_die 'GPT Image 2 public exact-producer sudo self-check is not aligned with policy'
+  | grep -Fq 'd2e345f2de75e0ee6c72797fdf315f12ab4bbeb6 --inspect' \
+  || wd_die 'GPT Image 2 public inspector sudo self-check is not aligned with policy'
 grep -Fxq 'GPT_IMAGE_2_PUBLIC_PRODUCER_SHA=d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'watchdog does not pin the GPT Image 2 public producer release'
-public_gate_line=$(grep -nF \
-  'sudo -n "$GPT_IMAGE_2_PUBLIC_SMOKE_GATE" "$GPT_IMAGE_2_PUBLIC_PRODUCER_SHA"' \
+public_gate_line=$(grep -nF '"$GPT_IMAGE_2_PUBLIC_PRODUCER_SHA" --inspect' \
   "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
 [[ -n $public_gate_line && -n $processed_line && $public_gate_line -lt $processed_line ]] \
-  || wd_die 'GPT Image 2 public evidence is not verified before processed/green'
+  || wd_die 'GPT Image 2 public evidence is not inspected before processed/green'
+grep -Fq 'CURRENT_PHASE_BEFORE_FAILURE=$public_image_summary' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'GPT Image 2 retained journal classification is absent from the RED status'
 
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'

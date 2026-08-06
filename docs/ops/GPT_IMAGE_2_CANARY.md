@@ -186,10 +186,14 @@ Private generation and edit gates are GREEN. Producer Images API SHA
 public catalog. Its metered success header carries the engine reservation identity so the one-shot can
 correlate the exact release snapshot, reservation, outbox, usage event and terminal settlement.
 
-The fixed controller `deploy/gpt-image-2-public-smoke-gate.sh` is pinned to that producer and invokes
-`claude-api openai-image-public-smoke --output
-/var/lib/apitoken/watchdog/gpt-image-2-public/<producer-sha> --execute`. Only the gate file itself is a paid
-trigger; its delivery is still pending, so the publication condition is not yet satisfied. The one-shot:
+Public gate delivery `0dbbfdda054a1a7bda709434c8678b192bf12276` is RED at
+`verifying-gpt-image-2-public`. Its producer-SHA evidence root is permanently fenced. The retained journal
+state and dispatch flags have not yet been observed, so the failed delivery is not classified as either
+pre-dispatch or paid. The corrective `deploy/gpt-image-2-public-smoke-gate.sh <producer-sha> --inspect` path
+is strictly non-network and may only validate complete retained success or publish bounded journal
+state/dispatch flags in another RED status. It cannot load runtime credentials or execute the CLI. A later
+paid one-shot, if the retained journal proves one is safe, must use a new producer SHA and a new root. The
+intended one-shot contract remains:
 
 1. authenticates `GET https://openai.api.apitoken.sale/v1/models` and requires both image aliases to
    remain absent before dispatch;

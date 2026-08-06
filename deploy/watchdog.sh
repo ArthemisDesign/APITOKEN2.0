@@ -2424,6 +2424,7 @@ main() {
   local typescript_required=0 typescript_full=0 typescript_base= rust_required=0 static_required=0
   local engine_artifacts_required=0 codex_artifacts_required=0
   local validation_policy_sha256='' validation_plan_sha256='' final_verification_plan=''
+  local public_image_summary=''
   local core_pid= sales_pid= openkeys_pid= admin_pid= devbot_pid= core_rc=0 sales_rc=0 openkeys_rc=0 admin_rc=0 devbot_rc=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
@@ -2732,9 +2733,14 @@ main() {
   if (( gpt_image_2_public_smoke_gate == 1 )); then
     CURRENT_PHASE=verifying-gpt-image-2-public
     CURRENT_PHASE_BEFORE_FAILURE=verifying-gpt-image-2-public
-    status "running public GPT Image 2 generation and edit through the sealed Codex OAuth pool"
-    # The public smoke must attest the already deployed producer release, not this controller-only SHA.
-    sudo -n "$GPT_IMAGE_2_PUBLIC_SMOKE_GATE" "$GPT_IMAGE_2_PUBLIC_PRODUCER_SHA"
+    status "inspecting the permanently fenced GPT Image 2 public attempt without network access"
+    public_image_summary=
+    if ! public_image_summary=$(sudo -n "$GPT_IMAGE_2_PUBLIC_SMOKE_GATE" \
+        "$GPT_IMAGE_2_PUBLIC_PRODUCER_SHA" --inspect); then
+      [[ $public_image_summary =~ ^gpt-image-public:[a-z_]{1,64}:g=(true|false):e=(true|false)$ ]] \
+        && CURRENT_PHASE_BEFORE_FAILURE=$public_image_summary
+      false
+    fi
   fi
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"
