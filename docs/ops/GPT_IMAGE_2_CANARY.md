@@ -220,12 +220,15 @@ stopped after inspection because the GitHub status bridge rejected the digit in 
 contexts, and performed no image request. The next free attempt uses the distinct
 `deploy/gpt-image-2-public-preflight-v2-gate.sh`, producer
 `6629ecd7b3725bcd7306ef7a1dc8675ef9160a43`, and fresh
-`gpt-image-2-public-preflight-v2` root. It inherits only the PostgreSQL DSN from the active OpenAI slot, runs
-only `openai-image-public-smoke --preflight-only`, and accepts exactly a sole `preflight_success` journal with
-false dispatch flags and null request identities. The corrected selector remains unproven in production until
-that delivery is watchdog-GREEN. Paid execution must use another new producer/root and repeat a fresh
-successful free preflight before changing `generation_dispatched`
-immediately ahead of the first image POST. This withdrawal does not authorize the paid gate or publication.
+`gpt-image-2-public-preflight-v2` root. It inherited only the PostgreSQL DSN from the active OpenAI slot and
+ran only `openai-image-public-smoke --preflight-only`, but delivery
+`267744a02d664f24ca072326fa06771b54188de4` stopped at `credential_selecting` with both dispatch flags false
+and null request identities. No image POST occurred and this second root is permanently fenced. The
+corrective selector identifies the unique engine account by handle `crm-parsing`, while independently
+requiring its active assignment and linked policy to be service/meter-only; release owner metadata is not
+used as the engine account identity. Paid execution still requires a new producer/root and a fresh successful
+free preflight before changing `generation_dispatched` immediately ahead of the first image POST. This
+withdrawal does not authorize the paid gate or publication.
 
 The intended one-shot contract remains:
 

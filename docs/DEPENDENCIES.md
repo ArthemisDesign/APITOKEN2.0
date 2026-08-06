@@ -301,13 +301,16 @@ is only what is needed to walk the relationships when making changes:
   master switch, and exactly-one-active-unexpired-key fencing. Corrective deploy SHA
   `b0c67351bb25437316afb61d18cd4462c57ef27b` made the lowercase `deploy/*` status allowlist accept digits
   and is watchdog-GREEN; it performed no image request. The separate
-  `deploy/gpt-image-2-public-preflight-v2-gate.sh` is pinned to producer
-  `6629ecd7b3725bcd7306ef7a1dc8675ef9160a43`, uses the fresh
-  `gpt-image-2-public-preflight-v2` root, inherits only the active OpenAI slot's PostgreSQL DSN, and runs only
-  `openai-image-public-smoke --preflight-only`. It accepts exactly a one-file `preflight_success` journal with
-  both dispatch flags false and null request identities. Until that delivery is watchdog-GREEN, production
-  execution of the corrected selector is not proven. Paid execution requires a distinct new producer-SHA fence
-  and fresh successful preflight rather than trusting this withdrawn artifact. The direct OpenAI plane and header-gated Combined
+  `deploy/gpt-image-2-public-preflight-v2-gate.sh` was pinned to producer
+  `6629ecd7b3725bcd7306ef7a1dc8675ef9160a43`, used the fresh
+  `gpt-image-2-public-preflight-v2` root, inherited only the active OpenAI slot's PostgreSQL DSN, and ran only
+  `openai-image-public-smoke --preflight-only`. Delivery `267744a02d664f24ca072326fa06771b54188de4`
+  stopped at `credential_selecting`, with both dispatch flags false and null request identities; it performed
+  no image POST and permanently fenced that root. The corrective selector identifies the unique engine
+  account by handle `crm-parsing` while independently requiring its active assignment and linked policy to
+  remain service/meter-only; service policy owner metadata is authorization, not engine account identity.
+  Paid execution requires a distinct new producer-SHA fence and fresh successful preflight rather than
+  trusting either withdrawn artifact. The direct OpenAI plane and header-gated Combined
   bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —

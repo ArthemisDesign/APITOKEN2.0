@@ -374,10 +374,11 @@ side effect. `serve` may only perform the read-only schema verification before c
   `hold+$1` ceiling, but does not recompute the debit from full official usage (Codex may honestly limit the billed
   output). The runtime itself does not invoke the activation producer: until a separate protected commerce consumer,
   the head remains absent. The PostgreSQL-only public image smoke reader is deliberately narrower than
-  normal key CRUD: it resolves service identity from the active release policy's `owner_type=service` and
-  `owner_id=crm-parsing` (the engine account ID is opaque and is not the service ID), requires that exact
-  assignment to remain canonical service/meter-only with the OpenAI master switch enabled, and selects
-  exactly one active unexpired key. It returns the raw key only in a non-`Debug`/non-serializable
+  normal key CRUD: it resolves the unique engine account handle `crm-parsing` without comparing its opaque
+  account ID to an external service ID, and requires the active assignment plus its linked policy to remain
+  canonical service/meter-only with the OpenAI master switch enabled. It selects exactly one active
+  unexpired key. The release policy's service owner metadata authorizes the account class but is not reused
+  as the engine account identity. The reader returns the raw key only in a non-`Debug`/non-serializable
   process-local type and exposes separately a secret-free exact request snapshot/reservation/outbox/usage
   settlement report. It never creates or mutates a key, account, release, reservation, usage row, or
   balance.

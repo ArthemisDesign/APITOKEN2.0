@@ -148,9 +148,10 @@ background loops and the HTTP router. Here — and only here — everything is w
   fallback or env: dry-run reads no env/network, while `--preflight-only` and `--execute` require an exact
   compile-time SHA and a new absolute output path under an existing actual mode-private directory. Both
   modes read only `CLAUDE_API_DATABASE_URL` through the narrow `config.rs` helper rather than assembling
-  unrelated server/provider settings, borrow exactly one active unexpired key belonging to the active
-  release policy whose service owner is `crm-parsing` (not an account whose opaque ID equals that service
-  ID) from PostgreSQL without serializing it, and require image aliases absent from authenticated discovery.
+  unrelated server/provider settings, borrow exactly one active unexpired key belonging to the unique
+  engine account handle `crm-parsing` (not an account whose opaque ID equals that handle) whose active
+  assignment and linked policy are service/meter-only, without serializing it, and require image aliases
+  absent from authenticated discovery.
   Every database/schema/credential/runtime/discovery stage is persisted before it starts with both dispatch flags
   false. `--preflight-only` stops at `preflight_success`; `--execute` repeats that fresh free preflight,
   sends one public generation and then one one-reference edit with no post-dispatch retry, and correlates

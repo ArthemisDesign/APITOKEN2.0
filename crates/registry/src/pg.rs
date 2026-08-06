@@ -7967,9 +7967,10 @@ impl PgStore {
         )
     }
 
-    /// Select the key owned by the active `crm-parsing` service/meter-only release policy.
-    /// The service ID is policy metadata, not the opaque engine account ID. Ambiguous active keys
-    /// are a hard error: the smoke never creates a credential or borrows an unrelated workload.
+    /// Select the key for the active engine account whose unique handle is `crm-parsing`.
+    /// Its active release assignment and linked policy must both remain service/meter-only.
+    /// Ambiguous active keys are a hard error: the smoke never creates a credential or borrows an
+    /// unrelated workload.
     pub fn openai_image_smoke_credential(&mut self) -> Result<OpenAiImageSmokeCredential> {
         let rows = self.client.query(
             "SELECT account.id,key.key,key.key_id,assignment.purpose,assignment.responsible,
@@ -7996,9 +7997,9 @@ impl PgStore {
                JOIN api_keys key ON key.account_id=account.id
               WHERE head.singleton=1 AND assignment.account_class='service'
                 AND assignment.billing_mode='meter_only' AND policy.owner_type='service'
-                AND policy.owner_id='crm-parsing' AND policy.account_class='service'
-                AND policy.billing_mode='meter_only'
-                AND account.status='active' AND key.status='active'
+                AND policy.account_class='service' AND policy.billing_mode='meter_only'
+                AND account.handle='crm-parsing' AND account.status='active'
+                AND key.status='active'
                 AND (key.expires_ts IS NULL OR key.expires_ts>$1)
                 AND NOT EXISTS (
                     SELECT 1 FROM pricing_release_assignment_extensions_v2 newer

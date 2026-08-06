@@ -4726,7 +4726,7 @@ fn pricing_release_runtime_v2_postgres_matrix() {
         .unwrap();
     pg.key_issue("release-runtime-b2c-key", "release-runtime-b2c", None)
         .unwrap();
-    pg.account_create("release-runtime-service", None, 10_000)
+    pg.account_create("release-runtime-service", Some("crm-parsing"), 10_000)
         .unwrap();
     pg.account_create("release-runtime-openkeys", None, 10_000)
         .unwrap();
@@ -4844,7 +4844,7 @@ fn pricing_release_runtime_v2_postgres_matrix() {
         policy_id: "release-runtime-service-policy".into(),
         policy_version: 1,
         owner_type: crate::pricing::PolicyOwnerType::Service,
-        owner_id: "crm-parsing".into(),
+        owner_id: "service-inventory-opaque-id".into(),
         account_class: crate::pricing::AccountClass::Service,
         product_id: None,
         billing_mode: BillingModeV2::MeterOnly,
