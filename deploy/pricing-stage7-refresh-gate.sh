@@ -22,7 +22,12 @@ BLOCKED_EXIT=76
 if [[ $# -eq 4 && $2 == --converge-cycle && $3 =~ ^[1-3]$ ]]; then
   ACTOR=gpt-image-2-stage567-converge
   REASON='converge GPT Image 2 pricing admission against current engine inventory'
-  cycle_root=/var/lib/apitoken/pricing-stage567-converge/cycle-$3
+  # The cycle root is derived from the exact Stage 6 result path the bridge passes; accept only
+  # the provisioned namespaces of this exact cycle, never an arbitrary directory.
+  cycle_root=$(dirname -- "$4")
+  [[ ($cycle_root == "/var/lib/apitoken/pricing-stage567-converge/cycle-$3" \
+      || $cycle_root == "/var/lib/apitoken/pricing-stage567-converge-v2/cycle-$3") && ! -L $cycle_root ]] \
+    || { printf 'pricing Stage 7 convergence cycle root is not a provisioned namespace\n' >&2; exit 1; }
   STAGE56_PLAN=$cycle_root/stage56/$ADMISSION_SHA/plan.json
   STAGE6_RESULT=$4
   STATE_PARENT=$cycle_root/stage7

@@ -5167,6 +5167,18 @@ diff <(sed -e 's/pricing-stage567-converge-v2-gate.sh/pricing-stage567-converge-
         "$pricing_stage567_v2_gate") "$pricing_stage567_gate" \
   || wd_die 'pricing Stage 5-7 convergence v2 helper diverges from the proven v1 process'
 
+# Both refresh helpers accept a convergence cycle root only from the two provisioned namespaces.
+for refresh_gate in "$ROOT/deploy/pricing-stage56-refresh-gate.sh" \
+                    "$ROOT/deploy/pricing-stage7-refresh-gate.sh"; do
+  grep -Fq '/var/lib/apitoken/pricing-stage567-converge/cycle-$3' "$refresh_gate" \
+    && grep -Fq '/var/lib/apitoken/pricing-stage567-converge-v2/cycle-$3' "$refresh_gate" \
+    || wd_die 'a pricing refresh helper lost its provisioned convergence namespace allowlist'
+done
+grep -Fq 'cycle_root=$(dirname -- "$4")' "$ROOT/deploy/pricing-stage7-refresh-gate.sh" \
+  || wd_die 'pricing Stage 7 refresh helper does not derive the cycle root from the Stage 6 result'
+grep -Fq -- '--converge-cycle "$cycle" "$cycle_dir"' "$pricing_stage567_gate" \
+  || wd_die 'pricing Stage 5-7 convergence bridge does not hand its exact cycle root to Stage 5/6'
+
 # A drifted Stage 7 identity is diagnosed by a bounded read-only helper, never by a blind rerun.
 pricing_stage7_diagnostic_gate="$ROOT/deploy/pricing-stage7-identity-diagnostic-gate.sh"
 wd_path_is_controller_definition deploy/pricing-stage7-identity-diagnostic-gate.sh \

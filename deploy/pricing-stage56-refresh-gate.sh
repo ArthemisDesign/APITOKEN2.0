@@ -9,10 +9,19 @@ POLL_SECONDS=5
 MAX_POLLS=360
 STATE_PARENT=/var/lib/apitoken/pricing-stage56-inventory-refresh
 
-if [[ $# -eq 3 && $2 == --converge-cycle && $3 =~ ^[1-3]$ ]]; then
+if [[ ($# -eq 3 || $# -eq 4) && $2 == --converge-cycle && $3 =~ ^[1-3]$ ]]; then
   ACTOR=gpt-image-2-stage567-converge
   REASON='converge GPT Image 2 pricing admission against current engine inventory'
-  STATE_PARENT=/var/lib/apitoken/pricing-stage567-converge/cycle-$3/stage56
+  if [[ $# -eq 4 ]]; then
+    # The convergence bridge hands over its exact private cycle root; accept only the
+    # provisioned namespaces of this exact cycle, never an arbitrary path.
+    [[ ($4 == "/var/lib/apitoken/pricing-stage567-converge/cycle-$3" \
+        || $4 == "/var/lib/apitoken/pricing-stage567-converge-v2/cycle-$3") && ! -L $4 ]] \
+      || { printf 'pricing Stage 5/6 convergence cycle root is not a provisioned namespace\n' >&2; exit 1; }
+    STATE_PARENT=$4/stage56
+  else
+    STATE_PARENT=/var/lib/apitoken/pricing-stage567-converge/cycle-$3/stage56
+  fi
 elif [[ $# -ne 1 ]]; then
   printf 'usage: pricing-stage56-refresh-gate.sh <exact-admission-sha>\n' >&2
   exit 2

@@ -89,7 +89,7 @@ for ((cycle = 1; cycle <= MAX_CYCLES; cycle++)); do
   else
     candidate=$(mktemp "$cycle_dir/.stage6-result.json.XXXXXX")
     chmod 0600 "$candidate"
-    if ! "$STAGE56_HELPER" "$ADMISSION_SHA" --converge-cycle "$cycle" >"$candidate"; then
+    if ! "$STAGE56_HELPER" "$ADMISSION_SHA" --converge-cycle "$cycle" "$cycle_dir" >"$candidate"; then
       rm -f -- "$candidate"
       printf 'pricing Stage 5/6 convergence cycle %s failed\n' "$cycle" >&2
       exit 1
