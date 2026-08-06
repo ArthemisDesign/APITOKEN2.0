@@ -70,7 +70,12 @@ agent'"'"'s uncommitted edits. Neither git nor the other agent will warn anyone.
 'Landing work is a production deployment, and it is serialized for a reason. Run:
   git push -u origin HEAD && ./deploy/agent-merge.sh
 It rebases, re-runs the full gate on the exact SHA it pushes, takes the machine-wide merge lock
-and holds it until deploy/watchdog is green.' ;;
+and holds it until deploy/watchdog is green.
+Already mid-rebase because that merge hit a conflict? Resolve and stage every conflicted path,
+then finish it without leaving the sanctioned path:
+  ./deploy/agent-merge-recover.sh --continue && ./deploy/agent-merge.sh
+Or restore the branch exactly as it was before the rebase:
+  ./deploy/agent-merge-recover.sh --abort' ;;
     *' worktree '*add*)
       deny 'unmanaged worktree creation' \
 'Raw worktree creation has no lifecycle metadata and cannot be cleaned safely after an interrupted

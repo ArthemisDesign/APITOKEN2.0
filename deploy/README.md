@@ -17,6 +17,25 @@ host reports a green `deploy/watchdog` on that SHA. A red SHA is never retried: 
 with a new commit on a new branch. The full contributor workflow is in
 [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
 
+### Recovering an interrupted merge (agent-merge-recover.sh)
+
+That rebase onto the latest `origin/master` is where a moving trunk shows up: it can stop on a
+conflict and exit, leaving the worktree mid-rebase. `.claude/hooks/guard-git.sh` denies both ways
+out — `git rebase --continue` and `--abort` are indistinguishable to it from a history rewrite —
+so recovery is delegated to a reviewed script, the same arrangement the guard already relies on for
+worktree cleanup. The delegation is deliberately narrow: it performs no merge, no push and no
+branch switch, and only touches a sequencer operation in the worktree the caller stands in.
+
+```bash
+./deploy/agent-merge-recover.sh                  # report the state, change nothing (exit 2)
+./deploy/agent-merge-recover.sh --continue       # finish a rebase whose conflicts are staged
+./deploy/agent-merge-recover.sh --abort          # restore the branch as it was before the rebase
+```
+
+Neither action can lose committed work, `--continue` refuses while any path is still conflicted,
+and the shared primary clone is refused without `--allow-primary-tree`. The behaviour is pinned by
+`deploy/agent-merge-recover.test.sh` against real repositories.
+
 ## Contributor worktree lifecycle and Rust cache
 
 `agent-worktree.sh` is the managed boundary around task worktrees:

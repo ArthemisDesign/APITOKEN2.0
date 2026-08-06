@@ -324,6 +324,28 @@ NEVER asks the person for a token or for proof of a green deploy: it fixes a bro
 locally and re-runs the command. Merging blind or manually is forbidden. Never retry a red SHA —
 fix it with a new commit on a new branch.
 
+### When the merge stops on a conflict
+
+`master` moves while you work, so the script's rebase can stop on a conflict and exit, leaving the
+worktree mid-rebase. That is expected, not damage. The git guard denies `git rebase --continue` and
+`--abort` because it cannot tell them from a history rewrite, so recovery has its own command:
+
+```bash
+# resolve every conflicted path, stage it, then:
+./deploy/agent-merge-recover.sh --continue && ./deploy/agent-merge.sh
+# or give up on the attempt; the branch returns to its pre-rebase commits, nothing is lost:
+./deploy/agent-merge-recover.sh --abort
+```
+
+Run it from the stuck worktree — it recovers the tree you stand in, not the one holding the script,
+so a worktree created before this command existed is still recoverable. With no flag it reports the
+state and stops rather than guessing which decision you meant. **The agent never asks the person to
+run a git command by hand for this.**
+
+One measurement trap worth naming: `./deploy/agent-merge.sh | tail` reports the exit status of
+`tail`, not of the merge. A conflicted rebase then looks like success while nothing reached master.
+Read the log for `deploy/watchdog is GREEN`, or run the script without a pipe.
+
 ## Cleanup after merge
 
 After `agent-merge.sh` has finished and `deploy/watchdog` is green on your SHA, the agent must
