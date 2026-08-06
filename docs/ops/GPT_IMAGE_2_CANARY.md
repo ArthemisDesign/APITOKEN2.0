@@ -228,9 +228,13 @@ corrective selector `63972f2ddfd5906d7c30a87406053eb3782f4223` identifies the un
 handle `crm-parsing`, while independently requiring its active assignment and linked policy to be
 service/meter-only; release owner metadata is not used as the engine account identity. Its trusted-host gate
 was GREEN, but the overall delivery was RED because the historical v2 trigger attempted to revisit its
-already-fenced failed root; no new image request or selector execution occurred. The v2 trigger is retired
-before the next producer delivery. Paid execution still requires a new producer/root and a fresh successful
-free preflight before changing `generation_dispatched` immediately ahead of the first image POST. This
+already-fenced failed root; no new image request or selector execution occurred. Delivery
+`2f11cd62ed0f78b97cf31d2287fa660907975aad` retired the v2 trigger and is watchdog-GREEN. The successor
+`deploy/gpt-image-2-public-preflight-v3-gate.sh` is pinned to producer
+`63972f2ddfd5906d7c30a87406053eb3782f4223`, uses the fresh `gpt-image-2-public-preflight-v3` root, inherits
+only the PostgreSQL DSN, and can run only `--preflight-only`. It accepts one exact no-dispatch journal and
+contains no `--execute` path. Paid execution still requires a new producer/root and a fresh successful free
+preflight before changing `generation_dispatched` immediately ahead of the first image POST. This
 withdrawal does not authorize the paid gate or publication.
 
 The intended one-shot contract remains:

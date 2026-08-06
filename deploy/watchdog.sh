@@ -36,6 +36,8 @@ GPT_IMAGE_2_PUBLIC_PREFLIGHT_GATE=$CONTROLLER_ROOT/gpt-image-2-public-preflight-
 GPT_IMAGE_2_PUBLIC_PREFLIGHT_PRODUCER_SHA=d42fc0e3290c0042a16797626326c250e0f6721c
 GPT_IMAGE_2_PUBLIC_PREFLIGHT_V2_GATE=$CONTROLLER_ROOT/gpt-image-2-public-preflight-v2-gate.sh
 GPT_IMAGE_2_PUBLIC_PREFLIGHT_V2_PRODUCER_SHA=6629ecd7b3725bcd7306ef7a1dc8675ef9160a43
+GPT_IMAGE_2_PUBLIC_PREFLIGHT_V3_GATE=$CONTROLLER_ROOT/gpt-image-2-public-preflight-v3-gate.sh
+GPT_IMAGE_2_PUBLIC_PREFLIGHT_V3_PRODUCER_SHA=63972f2ddfd5906d7c30a87406053eb3782f4223
 TEST_DB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-test-db
 BACKUP_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-backup.sh
 MIGRATION_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
@@ -2426,10 +2428,12 @@ main() {
   local openkeys_changed=0 admin_changed=0 devbot_changed=0 codex_changed=0
   local gpt_image_2_live_gate=0 gpt_image_2_public_smoke_gate=0
   local gpt_image_2_public_preflight_gate=0 gpt_image_2_public_preflight_v2_gate=0
+  local gpt_image_2_public_preflight_v3_gate=0
   local typescript_required=0 typescript_full=0 typescript_base= rust_required=0 static_required=0
   local engine_artifacts_required=0 codex_artifacts_required=0
   local validation_policy_sha256='' validation_plan_sha256='' final_verification_plan=''
   local public_image_summary='' public_image_preflight_summary='' public_image_preflight_v2_summary=''
+  local public_image_preflight_v3_summary=''
   local core_pid= sales_pid= openkeys_pid= admin_pid= devbot_pid= core_rc=0 sales_rc=0 openkeys_rc=0 admin_rc=0 devbot_rc=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
@@ -2456,6 +2460,7 @@ main() {
   require_fixed_file "$GPT_IMAGE_2_PUBLIC_SMOKE_GATE"
   require_fixed_file "$GPT_IMAGE_2_PUBLIC_PREFLIGHT_GATE"
   require_fixed_file "$GPT_IMAGE_2_PUBLIC_PREFLIGHT_V2_GATE"
+  require_fixed_file "$GPT_IMAGE_2_PUBLIC_PREFLIGHT_V3_GATE"
   require_fixed_file "$GITHUB_HELPER"
   require_fixed_directory "$CI_TOOLCHAIN"
   [[ -f $DB_MANIFEST && ! -L $DB_MANIFEST ]] || wd_die "database migration baseline is missing"
@@ -2528,6 +2533,8 @@ main() {
     wd_path_is_gpt_image_2_public_preflight_gate_trigger && gpt_image_2_public_preflight_gate=1
   wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
     wd_path_is_gpt_image_2_public_preflight_v2_gate_trigger && gpt_image_2_public_preflight_v2_gate=1
+  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
+    wd_path_is_gpt_image_2_public_preflight_v3_gate_trigger && gpt_image_2_public_preflight_v3_gate=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_engine \
     && engine_changed=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_codex_tooling \
@@ -2785,6 +2792,26 @@ main() {
     CURRENT_PHASE_BEFORE_FAILURE=$public_image_preflight_v2_summary
     github_status success deploy/gpt-image-2-public-preflight-v2 \
       "$public_image_preflight_v2_summary"
+  fi
+
+  if (( gpt_image_2_public_preflight_v3_gate == 1 )); then
+    CURRENT_PHASE=verifying-gpt-image-2-public-preflight-v3
+    CURRENT_PHASE_BEFORE_FAILURE=verifying-gpt-image-2-public-preflight-v3
+    status "running free GPT Image 2 public preflight v3 without image dispatch"
+    public_image_preflight_v3_summary=
+    if ! public_image_preflight_v3_summary=$(sudo -n "$GPT_IMAGE_2_PUBLIC_PREFLIGHT_V3_GATE" \
+        "$GPT_IMAGE_2_PUBLIC_PREFLIGHT_V3_PRODUCER_SHA"); then
+      [[ $public_image_preflight_v3_summary =~ \
+          ^gpt-image-preflight-v3:[a-z_]{1,64}:g=false:e=false$ ]] \
+        && CURRENT_PHASE_BEFORE_FAILURE=$public_image_preflight_v3_summary
+      false
+    fi
+    [[ $public_image_preflight_v3_summary == \
+        gpt-image-preflight-v3:preflight_success:g=false:e=false ]] \
+      || wd_die "GPT Image 2 public preflight v3 returned an invalid summary"
+    CURRENT_PHASE_BEFORE_FAILURE=$public_image_preflight_v3_summary
+    github_status success deploy/gpt-image-2-public-preflight-v3 \
+      "$public_image_preflight_v3_summary"
   fi
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"

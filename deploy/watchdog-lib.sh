@@ -803,7 +803,7 @@ wd_path_is_controller_definition() {
     deploy/watchdog.sh|deploy/watchdog-lib.sh|deploy/validation-plan.sh|\
     deploy/gpt-image-2-live-gate.sh|deploy/gpt-image-2-public-smoke-gate.sh|\
     deploy/gpt-image-2-public-preflight-gate.sh|deploy/gpt-image-2-public-preflight-v2-gate.sh|\
-    deploy/watchdog-test-db.sh|\
+    deploy/gpt-image-2-public-preflight-v3-gate.sh|deploy/watchdog-test-db.sh|\
     deploy/watchdog-backup.sh|deploy/watchdog-migrate.sh|deploy/watchdog-infrastructure.sh|\
     deploy/watchdog-retention.sh|\
     deploy/watchdog-github.sh|deploy/watchdog-control.sh|\
@@ -834,6 +834,10 @@ wd_path_is_gpt_image_2_public_preflight_v2_gate_trigger() {
   # This one-shot root is permanently fenced after its delivery; retained controller changes may
   # only be inspected as history and must never execute it again.
   return 1
+}
+
+wd_path_is_gpt_image_2_public_preflight_v3_gate_trigger() {
+  [[ $1 == deploy/gpt-image-2-public-preflight-v3-gate.sh ]]
 }
 
 # Return the least expensive safe root-install transaction for an exact commit range. Independent

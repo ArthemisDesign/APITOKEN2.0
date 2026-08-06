@@ -311,9 +311,14 @@ is only what is needed to walk the relationships when making changes:
   `crm-parsing` while independently requiring its active assignment and linked policy to remain
   service/meter-only; service policy owner metadata is authorization, not engine account identity. Its
   trusted-host gate was GREEN, but the overall delivery was RED because the historical v2 trigger revisited
-  its already-fenced failed root; no selector or image request was rerun. The v2 trigger is retired before the
-  next producer delivery. Paid execution requires a distinct new producer-SHA fence and fresh successful
-  preflight rather than trusting either withdrawn artifact. The direct OpenAI plane and header-gated Combined
+  its already-fenced failed root; no selector or image request was rerun. Delivery
+  `2f11cd62ed0f78b97cf31d2287fa660907975aad` retired the v2 trigger and is watchdog-GREEN. The successor
+  `deploy/gpt-image-2-public-preflight-v3-gate.sh` is pinned to producer
+  `63972f2ddfd5906d7c30a87406053eb3782f4223`, uses a fresh v3 root, inherits only the production PostgreSQL
+  DSN, and can run only `openai-image-public-smoke --preflight-only`; it rejects image artifacts, dispatch
+  flags, request identities, extra arguments and any replay lacking exact success. Paid execution requires a
+  distinct new producer-SHA fence and fresh successful preflight rather than trusting either withdrawn
+  artifact. The direct OpenAI plane and header-gated Combined
   bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —
