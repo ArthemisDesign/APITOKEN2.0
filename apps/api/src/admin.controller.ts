@@ -653,21 +653,40 @@ function throwPricingPolicyHttpError(error: unknown): void {
   throw new HttpException(error.message, 409);
 }
 
+function pricingStageControlException(message: string, code: string, status: number): HttpException {
+  const response = { statusCode: status, message, code };
+  return status === 404 ? new NotFoundException(response) : new HttpException(response, status);
+}
+
 function throwPricingStageControlHttpError(error: unknown): void {
   if (error instanceof PricingControlJobStageError) {
-    throw new NotFoundException(error.message);
+    throw pricingStageControlException(error.message, "pricing_control_job_not_found", 404);
   }
   if (error instanceof PricingPolicyDeliveryRepairError) {
-    if (error.code === "repair_job_not_found") throw new NotFoundException(error.message);
-    throw new HttpException(error.message, 409);
+    if (error.code === "repair_job_not_found") {
+      throw pricingStageControlException(error.message, error.code, 404);
+    }
+    throw pricingStageControlException(error.message, error.code, 409);
   }
   if (error instanceof Stage5MaterializerV2Error) {
-    throw new HttpException(error.message, error.code.endsWith("_unavailable") ? 503 : 409);
+    throw pricingStageControlException(
+      error.message,
+      error.code,
+      error.code.endsWith("_unavailable") ? 503 : 409,
+    );
   }
   if (error instanceof FundingNormalizationJobV2Error) {
-    throw new HttpException(error.message, error.terminal ? 409 : 503);
+    throw pricingStageControlException(
+      error.message,
+      error.terminal ? "funding_normalization_terminal" : "funding_normalization_unavailable",
+      error.terminal ? 409 : 503,
+    );
   }
   if (error instanceof EngineClientError) {
-    throw new HttpException(error.message, error.retryable ? 503 : 409);
+    throw pricingStageControlException(
+      error.message,
+      error.retryable ? "engine_client_unavailable" : "engine_client_invalid",
+      error.retryable ? 503 : 409,
+    );
   }
 }

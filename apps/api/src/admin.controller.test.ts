@@ -318,13 +318,30 @@ describe("managed pricing HTTP contract", () => {
     await expect(stage5Conflict.materializePricingStage5V2({
       plan_digest: planDigest,
       reason: "materialize exact reviewed inventory",
-    }, "operator")).rejects.toMatchObject({ status: 409 });
+    }, "operator")).rejects.toMatchObject({
+      status: 409,
+      response: { statusCode: 409, message: "plan changed", code: "expected_plan_stale" },
+    });
     await expect(stage5Unavailable.dryRunPricingStage5V2({}, "operator"))
-      .rejects.toMatchObject({ status: 503 });
+      .rejects.toMatchObject({
+        status: 503,
+        response: {
+          statusCode: 503,
+          message: "OpenKeys unavailable",
+          code: "openkeys_inventory_unavailable",
+        },
+      });
     await expect(stage6Conflict.stagePricingStage6V2({
       plan_digest: planDigest,
       reason: "stage exact funding normalization",
-    }, "operator")).rejects.toMatchObject({ status: 409 });
+    }, "operator")).rejects.toMatchObject({
+      status: 409,
+      response: {
+        statusCode: 409,
+        message: "Stage 5 is not materializing",
+        code: "funding_normalization_terminal",
+      },
+    });
   });
 
   it("exposes read-only activation control and stages only an explicit attributed request", async () => {

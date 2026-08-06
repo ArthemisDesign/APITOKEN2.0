@@ -149,8 +149,10 @@ POST /v1/admin/pricing-stage5-v2/materialize
 ```
 
 The response is a strict summary: source/plan digests, target/recovery generations and plan
-digests, the total blocker count, and the full exact blocker list. The dry run does not write even
-an audit row. Materialize rebuilds the full plan, rejects a stale digest, and, atomically with the
+digests, the total blocker count, and the full exact blocker list. A Stage 5/6 control failure keeps
+the standard `statusCode` and `message` fields and adds a stable machine-readable `code`; consumers
+must ignore unknown response fields. The dry run does not write even an audit row. Materialize
+rebuilds the full plan, rejects a stale digest, and, atomically with the
 local run/plan, writes the attributed audit request; the dormant engine prepare/readback remains
 the next part of the same idempotent operation. The runtime takes `DATABASE_URL`,
 `ENGINE_BASE_URL`, `ENGINE_CONTROL_KEY`; OpenKeys is read directly on loopback

@@ -331,6 +331,9 @@ POST /v1/admin/pricing-stage5-v2/dry-run       body: {}
 POST /v1/admin/pricing-stage5-v2/materialize   body: {plan_digest, reason}
 ```
 
+Stage 5/6 control errors extend the normal Nest error envelope with a stable machine-readable
+`code` while preserving `statusCode` and `message`; clients must ignore fields they do not know.
+
 If an account created before the pre-cutover compatibility fix is stuck on an exact terminal policy
 job with the historical `strict + legacy_single`, `POST /v1/admin/pricing-policy-delivery-repairs`
 accepts its UUID, effective version, content digest and reason. The producer works only while the

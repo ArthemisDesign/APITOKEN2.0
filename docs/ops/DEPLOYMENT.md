@@ -428,7 +428,9 @@ package CLIs over SSH, invoke migration SQL manually, pause traffic, stop money 
 zero inflight reservations. The API is reachable through the authenticated admin Caddy route
 (`/admin/pricing-stage5-v2/*`, `/admin/pricing-stage6-v2*`) and as `/v1/admin/*` on the protected
 loopback commerce origin. Caddy or the server operator supplies the admin credential; every request
-also requires the verified `x-admin-actor`. Never print either credential.
+also requires the verified `x-admin-actor`. Stage 5/6 failures add a stable machine-readable `code`
+to the standard error envelope so fixed operators do not need to print free-form messages. Never
+print either credential.
 
 For the GPT Image 2 generation-6 admission, the non-interactive operator surface is the fixed
 root-owned `pricing-stage56-admission-gate.sh`, pinned to admission SHA
