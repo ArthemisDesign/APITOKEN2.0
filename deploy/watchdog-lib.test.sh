@@ -4845,6 +4845,10 @@ grep -Fq 'flock -n 9' "$pricing_stage56_gate" \
   || wd_die 'pricing Stage 5/6 helper does not serialize admission attempts'
 grep -Fq '.phase = "materialized"' "$pricing_stage56_gate" \
   || wd_die 'pricing Stage 5/6 helper cannot resume after materialization'
+grep -Fq 'if [[ $plan_phase != materialized ]]' "$pricing_stage56_gate" \
+  || wd_die 'pricing Stage 5/6 helper does not refresh a pre-materialization plan fence'
+[[ $(grep -Fc 'request POST /v1/admin/pricing-stage5-v2/dry-run' "$pricing_stage56_gate") == 1 ]] \
+  || wd_die 'pricing Stage 5/6 helper has multiple dry-run dispatch paths'
 [[ $(grep -Fc 'request POST /v1/admin/pricing-stage5-v2/materialize' "$pricing_stage56_gate") == 1 ]] \
   || wd_die 'pricing Stage 5/6 helper has multiple materialize dispatch paths'
 [[ $(grep -Fc 'request POST /v1/admin/pricing-stage6-v2/stage' "$pricing_stage56_gate") == 1 ]] \

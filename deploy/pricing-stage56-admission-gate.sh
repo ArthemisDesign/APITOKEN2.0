@@ -210,13 +210,16 @@ stage6_identity_matches_plan() {
 }
 
 load_admin_key_from_commerce_slot
+plan_phase=absent
 if [[ -e $PLAN_STATE || -L $PLAN_STATE ]]; then
   [[ -f $PLAN_STATE && ! -L $PLAN_STATE \
       && $(stat -c '%U:%G:%a' -- "$PLAN_STATE") == root:root:600 ]] \
     || { unset COMMERCIAL_ADMIN_KEY; printf 'pricing Stage 5/6 plan fence is not private root authority\n' >&2; exit 1; }
   plan_state_is_valid \
     || { unset COMMERCIAL_ADMIN_KEY; printf 'pricing Stage 5/6 plan fence is invalid\n' >&2; exit 1; }
-else
+  plan_phase=$(jq -r '.phase' "$PLAN_STATE")
+fi
+if [[ $plan_phase != materialized ]]; then
   printf '{}\n' >"$work/dry-run-body.json"
   request POST /v1/admin/pricing-stage5-v2/dry-run "$work/dry-run-body.json" "$work/dry-run.json"
   stage5_result_is_valid dry_run dry_run "$work/dry-run.json" \
