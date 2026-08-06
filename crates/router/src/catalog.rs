@@ -456,29 +456,64 @@ async fn fetch_plane(
         .await
     {
         Ok(response) => response,
-        Err(_) => return FetchResult::Failed,
+        Err(e) => {
+            elog::warn(
+                "router-catalog",
+                format!("plane {lane:?} catalog fetch failed: {e}"),
+            );
+            return FetchResult::Failed;
+        }
     };
     let status = response.status();
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
         return FetchResult::AuthRejected;
     }
     if !status.is_success() {
+        elog::warn(
+            "router-catalog",
+            format!(
+                "plane {lane:?} catalog fetch failed: non-success status {}",
+                status.as_u16()
+            ),
+        );
         return FetchResult::Failed;
     }
     let bytes = match bounded::response_bytes(response, MAX_CATALOG_BODY_BYTES).await {
         Ok(bytes) => bytes,
-        Err(ReadError::Oversized) => return FetchResult::Oversized,
-        Err(ReadError::Transport) => return FetchResult::Failed,
+        Err(ReadError::Oversized) => {
+            elog::warn(
+                "router-catalog",
+                format!("plane {lane:?} catalog fetch failed: oversized body"),
+            );
+            return FetchResult::Oversized;
+        }
+        Err(ReadError::Transport) => {
+            elog::warn(
+                "router-catalog",
+                format!("plane {lane:?} catalog fetch failed: body transport"),
+            );
+            return FetchResult::Failed;
+        }
     };
     let body: Value = match serde_json::from_slice(&bytes) {
         Ok(body) => body,
-        Err(_) => return FetchResult::Failed,
+        Err(_) => {
+            elog::warn(
+                "router-catalog",
+                format!("plane {lane:?} catalog fetch failed: invalid JSON"),
+            );
+            return FetchResult::Failed;
+        }
     };
     let model_count = match lane {
         Lane::Anthropic | Lane::OpenAi => body.get("data").and_then(Value::as_array),
         Lane::Gemini => body.get("models").and_then(Value::as_array),
     };
     if model_count.is_some_and(|models| models.len() > MAX_MODELS_PER_PLANE) {
+        elog::warn(
+            "router-catalog",
+            format!("plane {lane:?} catalog fetch failed: too many models"),
+        );
         return FetchResult::Oversized;
     }
     let entries = match lane {
@@ -487,11 +522,19 @@ async fn fetch_plane(
         Lane::Gemini => parse_gemini(&body),
     };
     let Ok(entries) = entries else {
+        elog::warn(
+            "router-catalog",
+            format!("plane {lane:?} catalog fetch failed: malformed catalog"),
+        );
         return FetchResult::Failed;
     };
     if entries.is_empty() {
         // Пустой каталог от живой плоскости — аномалия конфигурации; не
         // закрепляем его в кэше, чтобы не опустошать единый каталог.
+        elog::error(
+            "router-catalog",
+            format!("plane {lane:?} returned an empty catalog"),
+        );
         return FetchResult::Failed;
     }
     FetchResult::Entries(entries)

@@ -281,6 +281,7 @@ pub async fn preflight(
         }
         return Ok(allowed);
     }
+    elog::warn("router-policy", "policy authority unavailable");
     Err(PreflightError::Unavailable)
 }
 

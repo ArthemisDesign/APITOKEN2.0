@@ -191,8 +191,11 @@ async fn proxy_attempt_with_optional_header_timeout(
             Ok(result) => result,
             Err(_) => {
                 metrics.response_header_timeout(target_lane);
-                eprintln!(
-                    "router: {target_lane:?} lane upstream transport failed class=response_header_timeout"
+                elog::warn(
+                    "router-proxy",
+                    format!(
+                        "router: {target_lane:?} lane upstream transport failed class=response_header_timeout"
+                    ),
                 );
                 return ProxyAttempt {
                     response: error::upstream_unavailable(
@@ -238,7 +241,8 @@ async fn proxy_attempt_with_optional_header_timeout(
             // соединении с плоскостью.
             let response = match builder.body(Body::from_stream(res.bytes_stream())) {
                 Ok(response) => response,
-                Err(_) => {
+                Err(e) => {
+                    elog::error("router-proxy", format!("upstream response build failed: {e}"));
                     return ProxyAttempt {
                         response: error::upstream_unavailable(
                             error_lane,
@@ -264,7 +268,10 @@ async fn proxy_attempt_with_optional_header_timeout(
             let class = retry_reason.map_or("ambiguous", RetryReason::as_str);
             // Display reqwest::Error содержит URL (и потенциальный secret query),
             // поэтому логируем только bounded classification.
-            eprintln!("router: {target_lane:?} lane upstream transport failed class={class}");
+            elog::warn(
+                "router-proxy",
+                format!("router: {target_lane:?} lane upstream transport failed class={class}"),
+            );
             ProxyAttempt {
                 response: error::upstream_unavailable(
                     error_lane,
@@ -330,6 +337,7 @@ pub async fn proxy_balance(
             metrics.balance_failover(lane, *next_lane);
         }
     }
+    elog::warn("router-proxy", "balance failover exhausted all planes");
     last.unwrap_or_else(|| {
         error::upstream_unavailable(
             Lane::Anthropic,

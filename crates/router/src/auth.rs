@@ -127,22 +127,37 @@ async fn probe_auth(client: &reqwest::Client, origin: &str, auth: &HeaderMap) ->
         .await
     {
         Ok(response) => response,
-        Err(_) => return ProbeOutcome::Inconclusive,
+        Err(e) => {
+            elog::warn("router-auth", format!("auth probe inconclusive: {e}"));
+            return ProbeOutcome::Inconclusive;
+        }
     };
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
         return ProbeOutcome::Unauthorized;
     }
     if !response.status().is_success() {
+        elog::warn("router-auth", "auth probe inconclusive: non-success status");
         return ProbeOutcome::Inconclusive;
     }
-    let Ok(bytes) = bounded::response_bytes(response, MAX_BODY_BYTES).await else {
-        return ProbeOutcome::Inconclusive;
+    let bytes = match bounded::response_bytes(response, MAX_BODY_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(bounded::ReadError::Oversized) => {
+            elog::warn("router-auth", "auth probe inconclusive: oversized body");
+            return ProbeOutcome::Inconclusive;
+        }
+        Err(bounded::ReadError::Transport) => {
+            elog::warn("router-auth", "auth probe inconclusive: body transport");
+            return ProbeOutcome::Inconclusive;
+        }
     };
     match serde_json::from_slice::<AuthResponse>(&bytes) {
         Ok(response) if response.schema_version == 1 && response.authenticated => {
             ProbeOutcome::Success
         }
-        _ => ProbeOutcome::Inconclusive,
+        _ => {
+            elog::warn("router-auth", "auth probe inconclusive: parse failure");
+            ProbeOutcome::Inconclusive
+        }
     }
 }
 

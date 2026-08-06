@@ -197,7 +197,10 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
     match auth_result {
         Ok(()) => {}
         Err(AuthError::Unauthorized) => return surface.auth_rejected(),
-        Err(AuthError::Unavailable) => return surface.auth_unavailable(),
+        Err(AuthError::Unavailable) => {
+            elog::warn("router-auth", "auth preflight unavailable");
+            return surface.auth_unavailable();
+        }
     }
     let (mut parts, body) = req.into_parts();
     let (bytes, body_permit) = match read_body(&state, &parts.headers, body).await {
@@ -205,7 +208,10 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         Err(BodyReadError::TooLarge) => {
             return surface.invalid("Request body exceeds the 32 MiB limit.", None)
         }
-        Err(BodyReadError::Overloaded) => return surface.overloaded(),
+        Err(BodyReadError::Overloaded) => {
+            elog::warn("router", "body admission overload");
+            return surface.overloaded();
+        }
         Err(BodyReadError::Timeout) => return surface.body_timeout(),
         Err(BodyReadError::Transport) => {
             return surface.invalid("Failed to read request body.", None)
@@ -365,6 +371,7 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
     }
     let entries = catalog::dedup(aggregate.entries);
     if entries.is_empty() {
+        elog::warn("router", "catalog empty; router degraded");
         return surface.catalog_unavailable();
     }
 
@@ -416,6 +423,18 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         });
     }
     if preset_live.iter().any(|live| !live) {
+        for (index, live) in preset_live.iter().enumerate() {
+            if !*live {
+                elog::warn(
+                    "router",
+                    format!(
+                        "preset {} has no live catalog members",
+                        referenced_presets[index]
+                    ),
+                );
+                break;
+            }
+        }
         return surface.catalog_unavailable();
     }
 
@@ -473,6 +492,7 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         }
         Err(PreflightError::Unavailable) => {
             state.metrics.policy_failure(PolicyFailure::Unavailable);
+            elog::warn("router", "policy preflight unavailable or restricted");
             return surface.policy_unavailable();
         }
         Err(PreflightError::Restricted) => {
@@ -554,14 +574,17 @@ pub async fn proxy_universal(state: Arc<AppState>, req: Request, surface: Surfac
         let status = result.response.status();
         let retry = result.retry_reason.filter(|_| index + 1 < attempt_count);
         let logged_model = bounded_log_id(&attempt.catalog_id);
-        eprintln!(
-            "router: fallback surface={surface_label} attempt={}/{} model={} lane={:?} status={} retry={}",
-            index + 1,
-            attempt_count,
-            logged_model,
-            attempt.lane,
-            status.as_u16(),
-            retry.map_or("none", proxy::RetryReason::as_str),
+        elog::info(
+            "router",
+            format!(
+                "router: fallback surface={surface_label} attempt={}/{} model={} lane={:?} status={} retry={}",
+                index + 1,
+                attempt_count,
+                logged_model,
+                attempt.lane,
+                status.as_u16(),
+                retry.map_or("none", proxy::RetryReason::as_str),
+            ),
         );
         if let Some(reason) = retry {
             state
@@ -664,7 +687,10 @@ async fn read_body_with_timeouts(
             let Some(chunk) = next else {
                 break;
             };
-            let chunk = chunk.map_err(|_| BodyReadError::Transport)?;
+            let chunk = chunk.map_err(|e| {
+                elog::warn("router", format!("request body stream error: {e}"));
+                BodyReadError::Transport
+            })?;
             if chunk.is_empty() {
                 continue;
             }
@@ -737,6 +763,7 @@ async fn proxy_single(
             }
             let entries = catalog::dedup(aggregate.entries);
             if entries.is_empty() {
+                elog::warn("router", "catalog empty; router degraded");
                 return surface.catalog_unavailable();
             }
             match catalog::find(&entries, model) {
@@ -907,7 +934,10 @@ fn normalize_fast_service_tier(
 
 fn fresh_execution_group_id() -> Result<String, ()> {
     let mut bytes = [0_u8; 16];
-    getrandom::fill(&mut bytes).map_err(|_| ())?;
+    if let Err(e) = getrandom::fill(&mut bytes) {
+        elog::error("router", format!("getrandom failed for execution group id: {e}"));
+        return Err(());
+    }
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Ok(format!(

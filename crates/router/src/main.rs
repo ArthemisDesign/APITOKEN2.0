@@ -200,6 +200,7 @@ async fn list_models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
     }
     let entries = catalog::dedup(aggregate.entries);
     if entries.is_empty() {
+        elog::warn("router", "models catalog empty");
         return private_catalog_response(error::catalog_unavailable());
     }
     let pricing = match catalog_pricing(&state, &auth, &entries).await {
@@ -259,6 +260,7 @@ async fn get_model(
     }
     let entries = catalog::dedup(aggregate.entries);
     if entries.is_empty() {
+        elog::warn("router", "models catalog empty");
         return private_catalog_response(error::catalog_unavailable());
     }
     let pricing = match catalog_pricing(&state, &auth, &entries).await {
@@ -312,6 +314,7 @@ async fn catalog_pricing(
             }
             pricing::PricingError::Unavailable => {
                 state.metrics.pricing_failure(PricingFailure::Unavailable);
+                elog::warn("router-pricing", "pricing error for catalog");
                 error::pricing_unavailable()
             }
         })
@@ -379,12 +382,15 @@ async fn main() -> anyhow::Result<()> {
     });
     let addr: SocketAddr = format!("{}:{}", state.cfg.host, state.cfg.port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    eprintln!(
-        "claude-router listening on {addr} (anthropic={}, openai={}, gemini={}, fallback_enabled={})",
-        state.cfg.anthropic_origin,
-        state.cfg.openai_origin,
-        state.cfg.gemini_origin,
-        state.cfg.fallback_enabled,
+    elog::info(
+        "router",
+        format!(
+            "claude-router listening on {addr} (anthropic={}, openai={}, gemini={}, fallback_enabled={})",
+            state.cfg.anthropic_origin,
+            state.cfg.openai_origin,
+            state.cfg.gemini_origin,
+            state.cfg.fallback_enabled,
+        ),
     );
     // Graceful shutdown: после атомарного Caddy cutover SIGTERM прекращает приём новых
     // соединений на старом slot; живые SSE-стримы добиваются до TimeoutStopSec юнита

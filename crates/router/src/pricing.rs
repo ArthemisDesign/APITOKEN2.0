@@ -190,6 +190,7 @@ async fn fetch_chunk(
         };
         return Ok(entries);
     }
+    elog::warn("router-pricing", "pricing authority unavailable");
     Err(PricingError::Unavailable)
 }
 
