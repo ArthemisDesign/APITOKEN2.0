@@ -235,6 +235,13 @@ pub struct GeminiConfig {
     pub max_transport_retries: usize,
     /// Quarantine after a terminal OAuth/auth rejection before the profile can re-enter rotation.
     pub auth_quarantine_secs: i64,
+    /// First backoff step after an environment-derived auth rejection (upstream 401/403 that a
+    /// fresh bearer did not resolve). Doubles per consecutive rejection up to
+    /// `auth_quarantine_secs`, and never removes the profile from the authenticated set.
+    pub auth_blocked_cool_secs: i64,
+    /// Floor between health sweeps requested by the data path, so an exhausted pool re-probes
+    /// promptly without letting every customer request trigger another full roster probe.
+    pub min_probe_interval_secs: i64,
     pub transport_cool_secs: i64,
     pub model_failure_cool_secs: i64,
     pub model_failure_max_cool_secs: i64,

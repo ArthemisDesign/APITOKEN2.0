@@ -13,7 +13,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -181,7 +181,15 @@ pub(crate) struct GeminiProfile {
     google_api_client: String,
     refresh_user_agent: String,
     inflight: AtomicUsize,
+    /// Soft, environment-derived cooling: auth 401/403, transport faults, blocked probes. These are
+    /// our inference about the environment, never a statement by Google that capacity is gone, so
+    /// this axis steers routing but is never allowed to be the reason a request finds no profile.
     cooling_until: AtomicI64,
+    /// Hard, quota-derived cooling at profile scope: Google answered 429 on a quota-free call. Only
+    /// this axis, the per-model axis and the official quota catalogue may deny a request outright.
+    quota_cooling_until: AtomicI64,
+    /// Consecutive environment-derived auth rejections, driving the exponential backoff below.
+    auth_failure_streak: AtomicU32,
     authenticated: AtomicBool,
     last_probe_at: AtomicI64,
     quota: RwLock<GeminiQuotaSnapshot>,
@@ -262,6 +270,8 @@ impl GeminiProfile {
             refresh_user_agent: cfg.refresh_user_agent(oauth_kind),
             inflight: AtomicUsize::new(0),
             cooling_until: AtomicI64::new(0),
+            quota_cooling_until: AtomicI64::new(0),
+            auth_failure_streak: AtomicU32::new(0),
             authenticated: AtomicBool::new(true),
             last_probe_at: AtomicI64::new(0),
             quota: RwLock::new(GeminiQuotaSnapshot::default()),
@@ -514,10 +524,42 @@ impl GeminiProfile {
         // verified success must not leave the profile quarantined for the full auth timeout.
         self.authenticated.store(true, Ordering::Release);
         self.cooling_until.store(0, Ordering::Release);
+        self.quota_cooling_until.store(0, Ordering::Release);
+        self.auth_failure_streak.store(0, Ordering::Release);
     }
 
     pub(crate) fn cool_until(&self, until: i64) {
         self.cooling_until.fetch_max(until, Ordering::AcqRel);
+    }
+
+    /// Cool on the hard axis: Google itself reported the profile is out of quota.
+    pub(crate) fn cool_quota_until(&self, until: i64) {
+        self.quota_cooling_until.fetch_max(until, Ordering::AcqRel);
+    }
+
+    /// Record an environment-derived auth rejection (upstream 401/403 that a fresh bearer did not
+    /// resolve).
+    ///
+    /// Google declares a credential dead exactly once, by answering `invalid_grant` to a refresh —
+    /// that is `mark_auth_failed`. A 401/403 on the generation surface after a successful refresh
+    /// says something about the environment (entitlement, IP reputation, a Google-side blip), not
+    /// about the token, so `authenticated` is deliberately left alone: the profile stays visible
+    /// and countable, and only backs off. The streak escalates the backoff exactly like
+    /// `mark_model_failure`, so a one-off blip costs seconds while a persistently rejected profile
+    /// stops being hammered.
+    pub(crate) fn mark_auth_blocked(&self, cfg: &GeminiConfig) {
+        let now = pool::now();
+        let streak = self
+            .auth_failure_streak
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        let shift = streak.saturating_sub(1).min(30);
+        let multiplier = 1_i64.checked_shl(shift).unwrap_or(i64::MAX);
+        let delay = cfg
+            .auth_blocked_cool_secs
+            .saturating_mul(multiplier)
+            .clamp(1, cfg.auth_quarantine_secs);
+        self.cool_until(now.saturating_add(delay));
     }
 
     pub(crate) fn cool_model_until(&self, model_id: &str, until: i64) {
@@ -560,7 +602,36 @@ impl GeminiProfile {
         now: i64,
         generation: bool,
     ) -> i64 {
-        let global = self.cooling_until.load(Ordering::Acquire);
+        self.cooling_until_inner(model_id, cfg, now, generation, false)
+    }
+
+    /// Cooling that may legitimately deny a request: only what Google itself reported as exhausted
+    /// quota. The soft environment axis is skipped, so a profile that merely backed off after a
+    /// 401/403 or a transport fault is still reachable when it is the last capacity left.
+    fn hard_cooling_until_for(
+        &self,
+        model_id: &str,
+        cfg: &GeminiConfig,
+        now: i64,
+        generation: bool,
+    ) -> i64 {
+        self.cooling_until_inner(model_id, cfg, now, generation, true)
+    }
+
+    fn cooling_until_inner(
+        &self,
+        model_id: &str,
+        cfg: &GeminiConfig,
+        now: i64,
+        generation: bool,
+        hard_only: bool,
+    ) -> i64 {
+        let env = if hard_only {
+            0
+        } else {
+            self.cooling_until.load(Ordering::Acquire)
+        };
+        let global = env.max(self.quota_cooling_until.load(Ordering::Acquire));
         if !generation {
             // countTokens is quota-free and is deliberately usable as a diagnostic even when
             // generation for this model is degraded or its generation quota is exhausted.
@@ -917,7 +988,10 @@ impl GeminiProfile {
             authenticated: self.authenticated.load(Ordering::Acquire),
             disabled,
             hidden,
-            cooling_until: self.cooling_until.load(Ordering::Acquire),
+            cooling_until: self
+                .cooling_until
+                .load(Ordering::Acquire)
+                .max(self.quota_cooling_until.load(Ordering::Acquire)),
             inflight: self.inflight.load(Ordering::Acquire),
             last_probe_at: self.last_probe_at.load(Ordering::Acquire),
             quota_updated_at,
@@ -984,13 +1058,18 @@ impl GeminiProfile {
                         Err(TokenError::Temporary) => return ProbeResult::Temporary,
                     };
                 }
+                // A fresh bearer was just obtained (a revoked refresh token would have returned
+                // `Invalid` above), so a still-rejecting liveness surface is the environment
+                // talking, not Google revoking the credential. Back off, stay authenticated.
                 Ok(response) if matches!(response.status().as_u16(), 401 | 403) => {
-                    return ProbeResult::Invalid
+                    return ProbeResult::Blocked
                 }
                 Ok(_) | Err(_) => return ProbeResult::Temporary,
             }
         }
-        ProbeResult::Invalid
+        // Unreachable while the loop returns on every arm; kept as the same conservative verdict
+        // the arms use, so a future edit cannot silently turn a fallthrough into a revocation.
+        ProbeResult::Blocked
     }
 
     async fn refresh_quota(&self, cfg: &GeminiConfig, token: &str) {
@@ -1615,6 +1694,8 @@ pub struct GeminiGateway {
     abort_streams: AtomicBool,
     abort_notify: tokio::sync::Notify,
     probe_poke: tokio::sync::Notify,
+    /// Start time of the last health sweep, so a data-path poke cannot spin the sweep loop.
+    last_sweep_at: AtomicI64,
     background_tasks: Arc<ActiveTaskTracker>,
 }
 
@@ -1674,6 +1755,7 @@ impl GeminiGateway {
             abort_streams: AtomicBool::new(false),
             abort_notify: tokio::sync::Notify::new(),
             probe_poke: tokio::sync::Notify::new(),
+            last_sweep_at: AtomicI64::new(0),
             background_tasks: Arc::new(ActiveTaskTracker::default()),
         })
     }
@@ -1685,6 +1767,21 @@ impl GeminiGateway {
     /// Wake the free provider quota sweep after an exact controlled turn. `Notify` coalesces a
     /// burst, while normal customer traffic keeps the configured background cadence unchanged.
     pub(crate) fn request_probe(&self) {
+        self.probe_poke.notify_one();
+    }
+
+    /// Ask for an out-of-band health sweep from the data path.
+    ///
+    /// The request that just found no capacity is the freshest evidence the pool will get, and
+    /// waiting a full background cadence to act on it is exactly how a recoverable pool stayed
+    /// unusable for minutes. Rate-limited against the last sweep so a sustained failure cannot turn
+    /// every customer request into another full roster probe.
+    pub(crate) fn request_probe_rate_limited(&self) {
+        let now = pool::now();
+        let last = self.last_sweep_at.load(Ordering::Acquire);
+        if now.saturating_sub(last) < self.cfg.min_probe_interval_secs {
+            return;
+        }
         self.probe_poke.notify_one();
     }
 
@@ -1860,6 +1957,54 @@ impl GeminiGateway {
         place_cache_root: bool,
         generation: bool,
     ) -> Option<GeminiLease> {
+        self.select_routed_inner(
+            model_id,
+            excluded,
+            preferred_id,
+            warm_profile_ids,
+            place_cache_root,
+            generation,
+            false,
+        )
+    }
+
+    /// Last-resort selection that ignores the soft, environment-derived cooling axis.
+    ///
+    /// Environment cooling is our inference, not Google reporting exhausted capacity, so it must
+    /// steer routing without ever being the reason a customer request finds nothing. The data path
+    /// calls this only after the normal selection came back empty; hard quota cooling is still
+    /// honoured, so a genuinely rate-limited pool still answers 429 instead of burning a turn.
+    pub(crate) fn select_routed_ignoring_env_cooling(
+        &self,
+        model_id: &str,
+        excluded: &HashSet<String>,
+        preferred_id: Option<&str>,
+        warm_profile_ids: &HashSet<String>,
+        place_cache_root: bool,
+        generation: bool,
+    ) -> Option<GeminiLease> {
+        self.select_routed_inner(
+            model_id,
+            excluded,
+            preferred_id,
+            warm_profile_ids,
+            place_cache_root,
+            generation,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn select_routed_inner(
+        &self,
+        model_id: &str,
+        excluded: &HashSet<String>,
+        preferred_id: Option<&str>,
+        warm_profile_ids: &HashSet<String>,
+        place_cache_root: bool,
+        generation: bool,
+        ignore_env_cooling: bool,
+    ) -> Option<GeminiLease> {
         if self.shutting_down.load(Ordering::Acquire) {
             return None;
         }
@@ -1874,8 +2019,13 @@ impl GeminiGateway {
             .iter()
             .enumerate()
             .filter(|(_, profile)| {
+                let cooling = if ignore_env_cooling {
+                    profile.hard_cooling_until_for(model_id, &self.cfg, now, generation)
+                } else {
+                    profile.cooling_until_for(model_id, &self.cfg, now, generation)
+                };
                 !excluded.contains(profile.id())
-                    && profile.cooling_until_for(model_id, &self.cfg, now, generation) <= now
+                    && cooling <= now
                     && profile.authenticated.load(Ordering::Acquire)
             })
             .map(|(index, profile)| {
@@ -2239,6 +2389,7 @@ impl GeminiGateway {
     async fn probe_profiles(&self) -> usize {
         let mut healthy = 0usize;
         let now = pool::now();
+        self.last_sweep_at.store(now, Ordering::Release);
         // Disabled profiles are not probed at all. Probing refreshes the OAuth token, so a
         // credential the provider has revoked would otherwise be re-attempted on every sweep
         // forever — the exact churn this switch exists to stop.
@@ -2262,18 +2413,19 @@ impl GeminiGateway {
                     healthy += 1;
                 }
                 ProbeResult::RateLimited => {
+                    // Google itself reported exhaustion: the hard axis, which may deny a request.
                     profile.authenticated.store(true, Ordering::Release);
-                    profile.cool_until(now + self.cfg.default_rate_limit_cool_secs);
+                    profile.cool_quota_until(now + self.cfg.default_rate_limit_cool_secs);
                     healthy += 1;
                 }
                 ProbeResult::Invalid => {
                     profile.mark_auth_failed(now + self.cfg.auth_quarantine_secs);
                 }
                 // Окружение отклонило запрос, а не Google — токен. Профиль остаётся
-                // аутентифицированным (панель не врёт «ошибка auth»), но остывает надолго,
-                // чтобы не долбить заблокированный путь.
+                // аутентифицированным (панель не врёт «ошибка auth») и остывает по мягкой оси с
+                // нарастающей паузой, но никогда не перестаёт быть последней доступной ёмкостью.
                 ProbeResult::Blocked => {
-                    profile.cool_until(now + self.cfg.auth_quarantine_secs);
+                    profile.mark_auth_blocked(&self.cfg);
                     healthy += 1;
                 }
                 ProbeResult::Temporary => {
@@ -2486,6 +2638,8 @@ mod tests {
             generation_idle_timeout_secs: 5,
             max_transport_retries: 1,
             auth_quarantine_secs: 900,
+            auth_blocked_cool_secs: 15,
+            min_probe_interval_secs: 15,
             transport_cool_secs: 5,
             model_failure_cool_secs: 15,
             model_failure_max_cool_secs: 900,
@@ -3269,6 +3423,137 @@ mod tests {
         assert_eq!(
             profile.cooling_until_for("gemini-test", gateway.config(), now, false),
             0
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Живой инцидент 2026-08-05/06: девять раз за двое суток весь пул Gemini уходил в нулевую
+    /// ёмкость на 105–300 секунд, и клиентам шёл `503 gemini_profiles_unauthenticated`. Токены при
+    /// этом были живы — следующий health-свип возвращал ровно те же профили здоровыми. Убивал их
+    /// наш собственный код: upstream 401/403 на generation трактовался как смерть credential, а
+    /// вызов стоял внутри retry-цикла, поэтому ОДИН клиентский запрос проходил по всему ростеру.
+    #[test]
+    fn generation_auth_rejection_backs_off_without_deauthenticating_the_profile() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first)]);
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        let profile = &gateway.profiles_snapshot()[0];
+        let now = pool::now();
+
+        profile.mark_auth_blocked(gateway.config());
+
+        assert!(
+            profile.authenticated.load(Ordering::Acquire),
+            "401/403 на generation — это окружение, а не отзыв credential"
+        );
+        assert!(
+            gateway.has_authenticated_profiles(),
+            "пул обязан сохранять ёмкость: иначе весь трафик получает 503"
+        );
+        let cooled = profile.cooling_until.load(Ordering::Acquire);
+        assert!(cooled > now && cooled <= now + gateway.config().auth_blocked_cool_secs);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn repeated_auth_rejections_escalate_and_cap_at_the_quarantine_ceiling() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first)]);
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        let profile = &gateway.profiles_snapshot()[0];
+        let cfg = gateway.config();
+
+        profile.mark_auth_blocked(cfg);
+        let first_delay = profile.cooling_until.load(Ordering::Acquire) - pool::now();
+        profile.mark_auth_blocked(cfg);
+        let second_delay = profile.cooling_until.load(Ordering::Acquire) - pool::now();
+        assert!(
+            second_delay > first_delay,
+            "повторный отказ должен удлинять паузу, иначе долбим заблокированный путь"
+        );
+
+        for _ in 0..40 {
+            profile.mark_auth_blocked(cfg);
+        }
+        let capped = profile.cooling_until.load(Ordering::Acquire) - pool::now();
+        assert!(capped <= cfg.auth_quarantine_secs);
+        assert!(
+            profile.authenticated.load(Ordering::Acquire),
+            "сколько бы ни было отказов, средовая ось не снимает профиль с учёта"
+        );
+
+        profile.mark_authenticated();
+        profile.mark_auth_blocked(cfg);
+        assert_eq!(
+            profile.cooling_until.load(Ordering::Acquire) - pool::now(),
+            first_delay,
+            "доказанный успех обнуляет streak"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Подписка вправе отдыхать по реальным лимитам провайдера и не вправе — по нашей догадке о
+    /// среде. Когда вся ёмкость остыла по средовой оси, запрос обязан дойти до попытки.
+    #[test]
+    fn environment_cooling_never_empties_the_pool_but_quota_cooling_still_denies() {
+        let (dir, ring) = fixture();
+        let first = write_credential(&dir, &ring, "profile_a", "subject-a");
+        let second = write_credential(&dir, &ring, "profile_b", "subject-b");
+        let roster = dir.join("profiles.json");
+        write_roster(&roster, &[("profile_a", &first), ("profile_b", &second)]);
+        let gateway = GeminiGateway::new(config(&roster, ring)).unwrap();
+        let cfg_owned = gateway.config().clone();
+        for profile in gateway.profiles_snapshot() {
+            profile.mark_auth_blocked(&cfg_owned);
+        }
+
+        assert!(
+            gateway
+                .select_routed(
+                    "gemini-test",
+                    &HashSet::new(),
+                    None,
+                    &HashSet::new(),
+                    false,
+                    true
+                )
+                .is_none(),
+            "обычный выбор уважает средовое охлаждение, пока есть куда деться"
+        );
+        assert!(
+            gateway
+                .select_routed_ignoring_env_cooling(
+                    "gemini-test",
+                    &HashSet::new(),
+                    None,
+                    &HashSet::new(),
+                    false,
+                    true
+                )
+                .is_some(),
+            "но полностью средовое охлаждение не имеет права обнулить пул"
+        );
+
+        let now = pool::now();
+        for profile in gateway.profiles_snapshot() {
+            profile.cool_quota_until(now + 600);
+        }
+        assert!(
+            gateway
+                .select_routed_ignoring_env_cooling(
+                    "gemini-test",
+                    &HashSet::new(),
+                    None,
+                    &HashSet::new(),
+                    false,
+                    true
+                )
+                .is_none(),
+            "реальный лимит провайдера остаётся жёстким: это честный 429, а не попытка"
         );
         let _ = fs::remove_dir_all(dir);
     }

@@ -2262,7 +2262,7 @@ async fn stream_response(
             match translator.provider_error {
                 Some(401 | 403) => {
                     Metrics::inc(&metrics.upstream_auth);
-                    profile.mark_auth_failed(pool::now() + gateway.config().auth_quarantine_secs);
+                    profile.mark_auth_blocked(gateway.config());
                 }
                 Some(429) => {
                     Metrics::inc(&metrics.upstream_429);
@@ -2599,14 +2599,30 @@ async fn api_inner(
             Some(target) => {
                 gateway.select_operator_target(&wire_model_id, target, &excluded, generation)
             }
-            None => gateway.select_routed(
-                &wire_model_id,
-                &excluded,
-                preferred_id.as_deref(),
-                &warm_profile_ids,
-                place_cache_root,
-                generation,
-            ),
+            None => gateway
+                .select_routed(
+                    &wire_model_id,
+                    &excluded,
+                    preferred_id.as_deref(),
+                    &warm_profile_ids,
+                    place_cache_root,
+                    generation,
+                )
+                // A subscription may rest because Google reported its quota is gone. It may not
+                // rest because we inferred something about the environment from a 401/403 or a
+                // transport fault: that inference steers routing while healthier capacity exists,
+                // and stops mattering the moment it would otherwise turn into an empty pool. Only
+                // `excluded` bounds this pass, so each profile is still attempted at most once.
+                .or_else(|| {
+                    gateway.select_routed_ignoring_env_cooling(
+                        &wire_model_id,
+                        &excluded,
+                        preferred_id.as_deref(),
+                        &warm_profile_ids,
+                        place_cache_root,
+                        generation,
+                    )
+                }),
         };
         let Some(lease) = lease else {
             Metrics::inc(&app.metrics.exhausted);
@@ -2615,6 +2631,10 @@ async fn api_inner(
                     "gemini_calibration_profile_unavailable",
                 ));
             }
+            // This request is the freshest evidence the pool has that it is out of capacity. Ask
+            // for an out-of-band sweep so recovery is bounded by the probe, not by the background
+            // cadence — the difference between seconds and the full health interval.
+            gateway.request_probe_rate_limited();
             let retry = gateway
                 .soonest_ready(&wire_model_id, &HashSet::new(), generation)
                 .map(|until| until.saturating_sub(pool::now()).max(1) as u64);
@@ -2839,8 +2859,7 @@ async fn api_inner(
                         Metrics::inc(&app.metrics.upstream_auth);
                         saw_auth = true;
                         excluded.insert(profile.id().to_string());
-                        profile
-                            .mark_auth_failed(pool::now() + gateway.config().auth_quarantine_secs);
+                        profile.mark_auth_blocked(gateway.config());
                         continue;
                     }
                     429 => {
@@ -2945,7 +2964,7 @@ async fn api_inner(
                 Metrics::inc(&app.metrics.upstream_auth);
                 saw_auth = true;
                 excluded.insert(profile.id().to_string());
-                profile.mark_auth_failed(pool::now() + gateway.config().auth_quarantine_secs);
+                profile.mark_auth_blocked(gateway.config());
                 continue;
             }
             429 => {

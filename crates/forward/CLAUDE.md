@@ -779,10 +779,24 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    failure is classified by the response body, not the code: `400 invalid_grant` → `TokenError::Invalid`
    (the profile is removed from rotation), `401`/`403` → `TokenError::Blocked` (the grant is intact, the
    environment rejected it — proxy IP reputation or a client block; the profile stays authenticated and merely
-   cools for `auth_quarantine_secs`), anything else → `Temporary`. Previously all three collapsed into
+   cools), anything else → `Temporary`. Previously all three collapsed into
    `Invalid`, and a live paid subscription permanently left capacity with a red "auth error" for a
    reason the token does not contain. The failure is logged as a bounded line `profile/http/error/verdict` —
    without token, proxy or Google's text.
+1b. **The same rule binds the generation and probe planes, and cooling has two axes.** A `401`/`403`
+   from generation or from the liveness probe arrives *after* a successful refresh, so it cannot mean
+   the credential died: it is `mark_auth_blocked` — an exponential backoff from
+   `auth_blocked_cool_secs` capped at `auth_quarantine_secs` that never clears `authenticated`.
+   `mark_auth_failed` stays reserved for `TokenError::Invalid`. Cooling is therefore split:
+   `cooling_until` is the **soft, environment-derived** axis (auth 401/403, transport, blocked probes)
+   and `quota_cooling_until` plus the per-model axis are the **hard, quota-derived** ones. Only a hard
+   axis may deny a request outright — when the normal selection is empty, the data path re-selects with
+   `select_routed_ignoring_env_cooling`, so a subscription rests on real provider limits and never on
+   our inference about the environment. An exhausted selection also calls
+   `request_probe_rate_limited`, bounding recovery by the probe rather than the background cadence.
+   This is not theory: for two days in August 2026 the whole pool went to zero capacity nine times for
+   105–300 s each, because one 401/403 wave walked the roster inside the retry loop and only the next
+   scheduled sweep resurrected the — entirely healthy — profiles.
 2. `GeminiGateway` serves only the startup-fixed `ProviderMode::Gemini`. Native allowlist:
    models get/list, generateContent, streamGenerateContent, countTokens. The client's `x-goog-api-key`
    (like x-api-key/Bearer) authorizes our key, but never goes to Google; the query `key`/`api_key`,
@@ -817,7 +831,8 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    classes into the existing network policy, never treating them as IPC protocol corruption and never
    exposing status/header/credentials.
 4. A profile owns its separate transport/proxy/inflight/cooling/auth and single-flight token refresh.
-   First 401 → one refresh+retry of the same profile; a repeated 401/403 → auth quarantine. 429 →
+   First 401 → one refresh+retry of the same profile; a repeated 401/403 → soft auth backoff per 1b,
+   never de-authentication. 429 →
    model-specific profile cooling by Retry-After/RetryInfo/quota reset and rotation without
    transport budget; a health probe never erases generation cooling. Antigravity
    `fetchAvailableModels` publishes a sanitized model catalogue: explicit zero blocks a model until

@@ -781,6 +781,13 @@ fn gemini_config() -> Option<GeminiConfig> {
             60,
             86_400,
         ),
+        auth_blocked_cool_secs: bounded_i64(
+            "CLAUDE_API_GEMINI_AUTH_BLOCKED_COOL_SECS",
+            15,
+            1,
+            900,
+        ),
+        min_probe_interval_secs: bounded_i64("CLAUDE_API_GEMINI_MIN_PROBE_INTERVAL_SECS", 15, 5, 300),
         transport_cool_secs: bounded_i64("CLAUDE_API_GEMINI_TRANSPORT_COOL_SECS", 5, 1, 300),
         model_failure_cool_secs: bounded_i64(
             "CLAUDE_API_GEMINI_MODEL_FAILURE_COOL_SECS",

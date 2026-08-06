@@ -482,6 +482,8 @@ fn gateway_fixture_with_models_and_calibration(
             generation_idle_timeout_secs: 5,
             max_transport_retries,
             auth_quarantine_secs: 900,
+            auth_blocked_cool_secs: 15,
+            min_probe_interval_secs: 15,
             transport_cool_secs: 30,
             model_failure_cool_secs: 15,
             model_failure_max_cool_secs: 900,
@@ -3142,7 +3144,7 @@ async fn deterministic_client_400_is_returned_without_pool_rotation() {
 }
 
 #[tokio::test]
-async fn auth_failure_quarantines_only_the_failed_project_and_rotates() {
+async fn auth_failure_cools_only_the_failed_project_and_rotates_without_losing_capacity() {
     let server = start_mock(MockState::with_replies([
         (
             PROFILE_A_KEY,
@@ -3179,9 +3181,13 @@ async fn auth_failure_quarantines_only_the_failed_project_and_rotates() {
         .iter()
         .find(|profile| profile.id == "profile_b")
         .unwrap();
-    assert!(!failed.authenticated);
+    // Rotation away from the rejected project is the point; declaring its credential dead is not.
+    // A 401/403 on the generation surface is environment, and only a refresh answering
+    // `invalid_grant` may take a paid subscription out of the authenticated set.
     assert!(failed.cooling_until > pool::now());
+    assert!(failed.authenticated);
     assert!(healthy.authenticated);
+    assert_eq!(status.authenticated, status.profiles.len());
 }
 
 #[tokio::test]
