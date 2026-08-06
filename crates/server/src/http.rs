@@ -1451,6 +1451,37 @@ async fn metrics(
                 && anthropic_report.is_some()
         ),
     );
+    // Newest exact provider quota observation across the whole Anthropic fleet. Every per-window
+    // gauge below can look perfectly healthy while the refresh path is dead, because a frozen
+    // snapshot keeps reporting its last value; only this timestamp distinguishes the two. Mirrors
+    // `claude_api_kimi_quota_last_observation_timestamp_seconds` and its Codex/GLM equivalents.
+    // Aggregate-only: no per-subscription label, so cardinality stays fixed as the fleet grows.
+    {
+        let caps = app.pool.capacity();
+        let observed_at = caps
+            .iter()
+            .filter(|cap| cap.routable)
+            .flat_map(|cap| [cap.quota5h, cap.quota7d])
+            .flatten()
+            .map(|snapshot| snapshot.observed_at)
+            .max();
+        let _ = writeln!(
+            body,
+            "# TYPE claude_api_anthropic_quota_snapshot_subscriptions gauge\n\
+             claude_api_anthropic_quota_snapshot_subscriptions {}",
+            caps.iter()
+                .filter(|cap| cap.routable
+                    && (cap.quota5h.is_some() || cap.quota7d.is_some()))
+                .count(),
+        );
+        if let Some(observed_at) = observed_at {
+            let _ = writeln!(
+                body,
+                "# TYPE claude_api_anthropic_quota_last_observation_timestamp_seconds gauge\n\
+                 claude_api_anthropic_quota_last_observation_timestamp_seconds {observed_at}"
+            );
+        }
+    }
     if let Some(report) = anthropic_report.as_ref() {
         let capacity = capacity_value(
             &app.pool.capacity(),
@@ -3413,12 +3444,12 @@ fn capacity_value_with_lifecycle(
         .map(|cap| {
             let window = |window_kind: &str, duration: i64| {
                 let row = claude_row(rows, &cap.email, &cap.plan, window_kind);
-                let current = delivery_ready
-                    .then(|| claude_current_quota(cap, row, window_kind, now))
-                    .flatten();
-                let last_known = delivery_ready
-                    .then(|| claude_last_known_quota(cap, row, window_kind, now))
-                    .flatten();
+                // Provider quota/reset and saleable dollars have independent authorities. A
+                // pending/degraded money FIFO must not blind the operator to the real quota wall,
+                // so the exact provider fraction is read regardless of delivery state, exactly as
+                // the Gemini/KIMI/GLM boards already do. Money below stays gated on `delivery_ready`.
+                let current = claude_current_quota(cap, row, window_kind, now);
+                let last_known = claude_last_known_quota(cap, row, window_kind, now);
                 let retained_reset = current.is_none().then(|| {
                     claude_last_known_reset(cap, row, window_kind)
                         .filter(|resets_at| *resets_at > now)
@@ -3428,10 +3459,35 @@ fn capacity_value_with_lifecycle(
                     .then_some(last_known)
                     .flatten()
                     .filter(|_| retained_reset.is_some());
-                let displayed = current.or(retained);
+                // A window whose provider deadline has passed is empty by construction: the
+                // provider refilled it at that instant. Publishing `null` there discarded an exact
+                // zero and made an idle healthy subscription indistinguishable from an unmeasured
+                // one. Only a healthy, non-cooling, routable subscription qualifies; a dead/suspect
+                // token or a cooling window keeps the old fail-closed silence, because their
+                // reset is not evidence that quota was actually refilled for us.
+                let rolled_over_empty = current.is_none()
+                    && retained.is_none()
+                    && cap.auth_state == "healthy"
+                    && !cap.cooling
+                    && cap.routable
+                    && claude_last_known_reset(cap, row, window_kind)
+                        .is_some_and(|resets_at| resets_at <= now);
+                let rolled_over = rolled_over_empty.then(|| ClaudeCurrentQuota {
+                    used_fraction_units: 0,
+                    measurement_resolution_fraction_units: 100_000_000,
+                    observed_at: now,
+                    resets_at: None,
+                    source: "provider_window_rollover",
+                });
+                let displayed = current.or(retained).or(rolled_over);
                 let cohort = cohorts.get(&(cap.plan.clone(), duration));
                 let estimate = cohort.map(claude_cohort_estimate).unwrap_or_default();
-                let remaining = current.and_then(|current| {
+                // Saleable dollars keep the strict authority: only an exact, fresh provider
+                // snapshot under a healthy delivery FIFO may price current supply. A rolled-over
+                // window is known to be empty but its capacity has not been re-measured, so it
+                // never prices money either.
+                let priceable = current.filter(|_| delivery_ready);
+                let remaining = priceable.and_then(|current| {
                     estimate.capacity_per_sub_nano.and_then(|capacity| {
                         capacity
                             .checked_mul(i128::from(100_000_000i64.saturating_sub(
@@ -3442,7 +3498,7 @@ fn capacity_value_with_lifecycle(
                     })
                 });
                 let remaining_bound = |bound: Option<i128>| {
-                    current.and_then(|current| {
+                    priceable.and_then(|current| {
                         bound.and_then(|capacity| {
                             capacity
                                 .checked_mul(i128::from(100_000_000i64.saturating_sub(
@@ -3453,7 +3509,7 @@ fn capacity_value_with_lifecycle(
                         })
                     })
                 };
-                let last_known_remaining = retained.and_then(|last_known| {
+                let last_known_remaining = retained.filter(|_| delivery_ready).and_then(|last_known| {
                     estimate.capacity_per_sub_nano.and_then(|capacity| {
                         capacity
                             .checked_mul(i128::from(100_000_000i64.saturating_sub(
@@ -3463,6 +3519,10 @@ fn capacity_value_with_lifecycle(
                             .and_then(|value| value.checked_div(CLAUDE_FRACTION_SCALE))
                     })
                 });
+                // Why saleable dollars are absent. Ordered from the widest authority outage to
+                // the narrowest per-window gap so the panel can name one exact cause instead of
+                // collapsing four different situations into one word. Quota/reset publication no
+                // longer depends on this: a delivery reason here leaves the fraction visible.
                 let missing_reason = if report.is_none() {
                     Some("calibration_authority_unavailable")
                 } else if estimate.capacity_per_sub_nano.is_none() {
@@ -3489,9 +3549,24 @@ fn capacity_value_with_lifecycle(
                         .map(|quota| now.saturating_sub(quota.observed_at).max(0))
                         .or_else(|| row.map(|row| now.saturating_sub(row.observed_at).max(0))),
                     "snapshot_fresh": current.is_some(),
+                    // Additive: names why an exact current fraction is absent, independently from
+                    // the money-side `missing_reason`. `awaiting_probe` means the runtime has no
+                    // fresh provider snapshot yet; `window_rolled_over` means the provider deadline
+                    // passed and the window is empty by construction. Absent when the snapshot is
+                    // fresh. Consumers must ignore unknown values.
+                    "quota_state": if current.is_some() {
+                        None
+                    } else if rolled_over.is_some() {
+                        Some("window_rolled_over")
+                    } else if retained.is_some() {
+                        Some("last_known_before_reset")
+                    } else {
+                        Some("awaiting_probe")
+                    },
                     "used_fraction_units": displayed.map(|quota| quota.used_fraction_units),
                     "measurement_resolution_fraction_units": displayed.map(|quota| quota.measurement_resolution_fraction_units),
                     "current_quota_source": current.map(|current| current.source),
+                    "displayed_quota_source": displayed.map(|quota| quota.source),
                     "last_known_quota_source": retained.map(|quota| quota.source),
                     "capacity_nano": nano_string(estimate.capacity_per_sub_nano),
                     "remaining_nano": nano_string(remaining),

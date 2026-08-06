@@ -174,16 +174,40 @@ pending event or degraded integrity. `calibration_delivery` publishes `pending_e
 `dropped_events`, `persistence_ok` and `queue_limit`; the normal state is `0/0/true`. A failed head
 survives a transient authority outage in memory and is retried ahead of later events/snapshots;
 immutable replay is idempotent, and a semantic conflict is isolated and increments the dropped diagnostic.
+
+Provider quota and saleable money have separate authorities, and only money is gated on delivery.
+`windows[].used_fraction_units`, `resets_at`, `snapshot_fresh` and the top-level `util5h`/`util7d`,
+`reset5h_in`/`reset7d_in` are published from the exact provider snapshot regardless of FIFO state,
+so a dollar-evidence failure never hides the real utilization wall. Under pending/degraded delivery
+every money field — `remaining_nano`, `remaining_low_nano`/`remaining_high_nano`,
+`last_known_remaining_nano`, `rem5h_nano`/`rem7d_nano`, fleet remaining and horizons — stays `null`
+with `missing_reason` naming the delivery cause. This matches the Gemini/KIMI/GLM contract.
+
 The last exact provider snapshot remains available only as a diagnostic display-state until
 its future reset: `windows[].used_fraction_units`, `resets_at`, `last_known_quota_source` and
 `last_known_remaining_nano` keep their previous value, while the top-level `reset5h_in`/`reset7d_in`
 keep counting down. This covers both an idle routable subscription and quota-cooling,
 when a new probe is deliberately deferred until reset. A new snapshot replaces the display-state immediately;
-after the provider deadline the old fraction/reset/last-known remaining become `null` and are not
-carried into the new window. `windows[].snapshot_fresh` stays `false` all this time, and the canonical
+after the provider deadline the old fraction/reset/last-known remaining are never carried into the
+new window. `windows[].snapshot_fresh` stays `false` all this time, and the canonical
 `remaining_nano`, fleet remaining and horizon stay `null`: `last_known_remaining_nano` must not be
-treated as currently sellable capacity. Pending/degraded calibration delivery also does not
-publish this display-state.
+treated as currently sellable capacity.
+
+Once that provider deadline passes, the window is empty by construction: the provider refilled it at
+that instant. A subscription that is `auth_state="healthy"`, routable and not cooling therefore
+publishes an exact `used_fraction_units: 0` for the new window with `resets_at: null` — not a `null`
+fraction, which would be indistinguishable from never having measured. A dead/suspect token or a
+cooling window keeps the previous silence, because their reset is no evidence that quota was
+refilled for us. A rolled-over window is never priced: it has no fresh measurement, so
+`remaining_nano` and fleet remaining stay `null` and `snapshot_fresh` stays `false`.
+
+The additive `windows[].quota_state` names why an exact current fraction is absent, independently of
+the money-side `missing_reason`: `awaiting_probe` (no usable provider snapshot yet),
+`last_known_before_reset` (stale snapshot retained until its provider deadline), or
+`window_rolled_over` (deadline passed, window empty by construction). It is absent when the snapshot
+is fresh. The additive `windows[].displayed_quota_source` names the origin of whatever fraction is
+being shown (`runtime_quota_snapshot`, `durable_calibration_snapshot` or `provider_window_rollover`).
+Consumers must ignore unknown values of both fields.
 `calibration_evidence` contains aggregates of real requests by masked email/model/tier/geo/tariff with all
 token/cost legs; for the UI they can be sorted by `api_total_nanousd`.
 `calibration_recent_turns` is a bounded newest-first window of up to 512 individual immutable Anthropic events.

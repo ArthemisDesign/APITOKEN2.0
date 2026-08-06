@@ -500,6 +500,36 @@ Fleet planning uses `claude_api_anthropic_window_capacity_usd` and
 omitted: full-window historical evidence is still valid, but the current snapshot/delivery is not.
 Coverage is visible through routable/calibrated/snapshot subscription gauges and confidence ratio.
 
+## AnthropicQuotaSnapshotStale
+
+Exact provider quota observations have stopped refreshing for the routable Anthropic fleet. Every
+window gauge keeps publishing its last observed fraction, so the numbers can look entirely healthy
+while the path that produces them is broken; this alert is the only signal that separates "the
+window is 32% used" from "the window was 32% used an hour ago".
+
+`claude_api_anthropic_quota_last_observation_timestamp_seconds` is the newest snapshot across the
+fleet and `claude_api_anthropic_quota_snapshot_subscriptions` is how many routable subscriptions
+have any snapshot at all; a fleet that has never been probed publishes no timestamp and cannot fire
+this alert. The 900-second threshold is the same freshness bound `/capacity` uses to decide whether
+current remaining may be priced, so when this fires the panel has already degraded: money cells
+read `обновляем` and each window falls back to its last-known percentage or, past the provider
+reset, to an exact zero for healthy subscriptions.
+
+This is a diagnosis alert, not an outage: customer traffic keeps routing and money stays
+fail-closed rather than wrong. Idle healthy subscriptions are probed every 5–7.5 minutes by the free
+count-tokens poller, so exceeding 900 seconds means that path stopped. Check, in order: the
+PostgreSQL `subscription-poller` leader lease (only the elected slot probes, so a lost or flapping
+lease silently suspends the sweep for the whole fleet), the Anthropic slot journal for `poll_sub
+transport failure` (a wedged persona proxy makes probes fail while `polled_ts` still advances, so
+the next attempt is deferred a full interval), and whether `CLAUDE_API_POLL` is disabled on the
+serving slot. A blue-green cutover or restart clears the in-memory snapshots by design and
+resolves itself within a few minutes as the new leader probes the fleet; a value that keeps growing
+past that does not.
+
+Distinguish this from **AnthropicCalibrationPersistenceFailed**: that alert means the money
+authority is undelivered while the provider quota is still fresh and visible. This alert means the
+provider quota itself is frozen. They fire independently and have different causes.
+
 ## CodexProviderDown
 
 Only the OpenAI-compatible surface is affected; Claude routing is independent. Check

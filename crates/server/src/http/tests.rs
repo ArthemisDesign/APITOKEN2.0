@@ -1832,6 +1832,16 @@ fn claude_delivery(pending_events: usize) -> Option<forward::AnthropicCalibratio
     })
 }
 
+/// Delivery that drains without backlog but cannot persist: the second fail-closed money path.
+fn claude_degraded_delivery() -> Option<forward::AnthropicCalibrationDeliveryStatus> {
+    Some(forward::AnthropicCalibrationDeliveryStatus {
+        pending_events: 0,
+        dropped_events: 1,
+        persistence_ok: false,
+        queue_limit: 4_096,
+    })
+}
+
 #[test]
 fn claude_recent_turn_contract_masks_subject_and_preserves_exact_vector() {
     let event = registry::ProviderTurnCalibrationEvent {
@@ -2078,12 +2088,32 @@ fn claude_stale_runtime_quota_does_not_reopen_current_supply() {
         claude_delivery(0),
         now + 1_801,
     );
+    // After the provider deadline the stale fraction is never carried into the new window. The
+    // window is now empty by construction, so a healthy routable subscription publishes an exact
+    // zero instead of an unmeasured `null`; money stays closed until a real snapshot prices it.
     let expired = &after_reset["per_sub"][0]["windows"][0];
-    assert!(expired["used_fraction_units"].is_null());
+    assert_eq!(expired["used_fraction_units"], 0);
+    assert_eq!(expired["quota_state"], "window_rolled_over");
+    assert_eq!(expired["displayed_quota_source"], "provider_window_rollover");
     assert!(expired["resets_at"].is_null());
+    assert!(expired["remaining_nano"].is_null());
     assert!(expired["last_known_remaining_nano"].is_null());
     assert!(expired["last_known_quota_source"].is_null());
+    assert!(expired["current_quota_source"].is_null());
+    assert_eq!(expired["snapshot_fresh"], false);
     assert!(after_reset["per_sub"][0]["reset5h_in"].is_null());
+    assert!(after_reset["window_totals"][0]["remaining_nano"].is_null());
+
+    // A rolled-over window of an unhealthy subscription keeps the old fail-closed silence: its
+    // reset is no evidence that quota was refilled for us.
+    let mut dead = cap.clone();
+    dead.auth_state = "dead".to_owned();
+    dead.auth_dead = true;
+    dead.routable = false;
+    let dead_value = capacity_value(&[dead], Some(&report), claude_delivery(0), now + 1_801);
+    let dead_five = &dead_value["per_sub"][0]["windows"][0];
+    assert!(dead_five["used_fraction_units"].is_null());
+    assert_eq!(dead_five["quota_state"], "awaiting_probe");
 }
 
 #[test]
@@ -2224,9 +2254,16 @@ fn claude_delivery_degradation_remains_fail_closed_with_runtime_quota() {
 
     let value = capacity_value(&[cap], Some(&report), claude_delivery(1), now);
     let five = &value["per_sub"][0]["windows"][0];
+    // Money stays fail-closed under a pending FIFO...
     assert!(five["remaining_nano"].is_null());
-    assert!(five["current_quota_source"].is_null());
+    assert!(five["last_known_remaining_nano"].is_null());
     assert_eq!(five["missing_reason"], "calibration_delivery_pending");
+    // ...but the exact provider quota wall remains visible: a dollar-evidence failure must not
+    // blind the operator to real utilization, exactly as on the Gemini/KIMI/GLM boards.
+    assert_eq!(five["used_fraction_units"], 25_000_000);
+    assert_eq!(five["snapshot_fresh"], true);
+    assert_eq!(five["current_quota_source"], "runtime_quota_snapshot");
+    assert!(five["quota_state"].is_null());
     assert!(value["window_totals"][0]["remaining_nano"].is_null());
     assert!(value["plan_cohorts"][0]["fleet_remaining_nano"].is_null());
     assert_eq!(
@@ -5189,4 +5226,164 @@ async fn spend_stats_custom_range_aggregates_window() {
     let body: Value = serde_json::from_slice(&body).unwrap();
     assert!(body.get("custom").is_none());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An idle healthy subscription that spent a whole 5h window without traffic used exactly nothing.
+/// Publishing `null` there discarded a measured zero and made the panel say "обновляем" on a 0%
+/// window — the single most misleading state, because it looked like missing evidence.
+#[test]
+fn claude_rolled_over_window_publishes_exact_zero_without_pricing_money() {
+    let now = 2_000_000;
+    let mut cap = capacity("idle@example.test", 999.0, true, true);
+    cap.quota5h = Some(pool::QuotaSnapshot {
+        used_fraction_units: 0,
+        measurement_resolution_fraction_units: 100_000,
+        observed_at: now - 6 * 3_600,
+        resets_at: Some(now - 3_600),
+    });
+    let report = (
+        vec![claude_calibration(
+            "idle@example.test",
+            "5h",
+            0,
+            10_000_000,
+            1_000_000_000,
+        )],
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let value = capacity_value(
+        std::slice::from_ref(&cap),
+        Some(&report),
+        claude_delivery(0),
+        now,
+    );
+    let five = &value["per_sub"][0]["windows"][0];
+    assert_eq!(five["used_fraction_units"], 0);
+    assert_eq!(five["quota_state"], "window_rolled_over");
+    assert_eq!(value["per_sub"][0]["util5h"], 0.0);
+    // The window is empty, but its capacity has not been re-measured: money stays null and the
+    // fleet total must not treat a rolled-over window as priced supply.
+    assert_eq!(five["snapshot_fresh"], false);
+    assert!(five["remaining_nano"].is_null());
+    assert!(five["remaining_low_nano"].is_null());
+    assert!(five["remaining_high_nano"].is_null());
+    assert!(five["last_known_remaining_nano"].is_null());
+    assert!(value["window_totals"][0]["remaining_nano"].is_null());
+    assert!(value["available_nano"]["next_5h"].is_null());
+    assert_eq!(five["missing_reason"], "stale_current_quota_snapshot");
+
+    // A cooling window is exhausted, not refilled: its passed reset must not fabricate a zero.
+    let mut cooling = cap.clone();
+    cooling.cooling = true;
+    cooling.routable = false;
+    let cooling_value = capacity_value(&[cooling], Some(&report), claude_delivery(0), now);
+    assert!(cooling_value["per_sub"][0]["windows"][0]["used_fraction_units"].is_null());
+}
+
+/// Provider quota/reset and saleable dollars have independent authorities. A pending or degraded
+/// money FIFO used to blank the exact quota fraction too, so an operator lost sight of the real
+/// utilization wall precisely while the money path was broken.
+#[test]
+fn claude_pending_delivery_keeps_quota_visible_while_money_stays_closed() {
+    let now = 2_000;
+    let mut cap = capacity("wall@example.test", 999.0, true, true);
+    cap.quota5h = Some(pool::QuotaSnapshot {
+        used_fraction_units: 97_000_000,
+        measurement_resolution_fraction_units: 100_000,
+        observed_at: now - 10,
+        resets_at: Some(now + 1_800),
+    });
+    let report = (
+        vec![claude_calibration(
+            "wall@example.test",
+            "5h",
+            97_000_000,
+            10_000_000,
+            1_000_000_000,
+        )],
+        Vec::new(),
+        Vec::new(),
+    );
+
+    for delivery in [claude_delivery(1), claude_degraded_delivery()] {
+        let value = capacity_value(std::slice::from_ref(&cap), Some(&report), delivery, now);
+        let five = &value["per_sub"][0]["windows"][0];
+        assert_eq!(five["used_fraction_units"], 97_000_000);
+        assert_eq!(five["resets_at"], now + 1_800);
+        assert_eq!(five["snapshot_fresh"], true);
+        assert_eq!(value["per_sub"][0]["reset5h_in"], 1_800);
+        // Not one dollar may be published while exact turn evidence is undelivered.
+        assert!(five["remaining_nano"].is_null());
+        assert!(five["last_known_remaining_nano"].is_null());
+        assert!(value["window_totals"][0]["remaining_nano"].is_null());
+        assert!(value["available_nano"]["next_5h"].is_null());
+        assert!(value["per_sub"][0]["rem5h_nano"].is_null());
+    }
+}
+
+
+/// A frozen quota snapshot keeps reporting its last value, so every Anthropic window gauge can look
+/// healthy while the refresh path is dead. Only this observation timestamp separates the two, which
+/// is what `AnthropicQuotaSnapshotStale` alerts on.
+#[tokio::test]
+async fn anthropic_quota_snapshot_freshness_is_published_for_alerting() {
+    let mut app = admin_auth_test_app();
+    app.pool = Arc::new(pool::Pool::new(
+        vec![registry::Sub {
+            email: "metrics@example.test".to_owned(),
+            token: "token".to_owned(),
+            proxy: String::new(),
+            fleet: String::new(),
+            plan: "max20".to_owned(),
+        }],
+        pool::Reserve::new(0.1, 0.03, 0.02),
+        0.0,
+        0.0,
+    ));
+
+    let read_metrics = |app: AppState| async move {
+        let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+        let mut request = Request::builder()
+            .uri("/metrics")
+            .header("x-api-key", "panel-key")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(peer);
+        let response = router(app, Arc::new(AtomicBool::new(true)))
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        String::from_utf8(
+            to_bytes(response.into_body(), 2 * 1024 * 1024)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap()
+    };
+
+    // Never observed: the timestamp is absent rather than zero, so the alert cannot fire on a
+    // subscription that simply has not been probed yet.
+    let body = read_metrics(app.clone()).await;
+    assert!(body.contains("claude_api_anthropic_quota_snapshot_subscriptions 0"));
+    assert!(!body.contains("claude_api_anthropic_quota_last_observation_timestamp_seconds"));
+
+    app.pool.set_quota_snapshots(
+        "metrics@example.test",
+        Some(pool::QuotaSnapshot {
+            used_fraction_units: 25_000_000,
+            measurement_resolution_fraction_units: 100_000,
+            observed_at: 1_800_000_000,
+            resets_at: Some(1_800_001_800),
+        }),
+        None,
+    );
+    let body = read_metrics(app).await;
+    assert!(body.contains("claude_api_anthropic_quota_snapshot_subscriptions 1"));
+    assert!(body.contains(
+        "claude_api_anthropic_quota_last_observation_timestamp_seconds 1800000000"
+    ));
 }

@@ -118,6 +118,17 @@ groups:
           description: 'Turn evidence is pending, was quarantined/dropped, or the calibration authority cannot be read. Current API-dollar remaining is intentionally fail-closed.'
           runbook: 'docs/ops/MONITORING.md#anthropiccalibrationpersistencefailed'
 
+      - alert: AnthropicQuotaSnapshotStale
+        expr: claude_api_anthropic_quota_snapshot_subscriptions{provider="anthropic"} > 0 and time() - claude_api_anthropic_quota_last_observation_timestamp_seconds{provider="anthropic"} > 900
+        for: 5m
+        labels:
+          severity: warning
+          component: claude-engine
+        annotations:
+          summary: 'Claude quota observations have stopped refreshing'
+          description: 'The newest exact provider quota snapshot across the routable Anthropic fleet is older than the 900s freshness bound the panel and /capacity use. Every quota reading now reports a frozen value, and the panel degrades each window to a waiting state instead of showing real utilization. Suspect the free count-tokens probe path: a lost poller leader lease, a wedged persona proxy, or CLAUDE_API_POLL disabled.'
+          runbook: 'docs/ops/MONITORING.md#anthropicquotasnapshotstale'
+
       - alert: ExecutionGroupDoubleWinner
         expr: increase(claude_api_execution_group_double_winner_total[5m]) > 0
         labels:
