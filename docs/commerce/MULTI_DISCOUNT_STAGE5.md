@@ -189,8 +189,11 @@ Target/recovery release prepare, the recovery link, and the control job are abse
 
 A same-version/same-digest replay returns `unchanged`. Same-version/different-digest, incomplete
 inventory coverage, a stale source, a policy collision, or an unsupported runtime capability is
-rejected before commit. The B2C/B2B/service/OpenKeys target is prepared in full; partial apply per
-class is forbidden. A stable plan with ownership blockers may save only a terminal `blocked` run
+rejected before commit. A rejected engine prepare remains fail-closed and exposes only a bounded
+`engine_<main_catalog|openkeys_catalog|switches|policy>_prepare_<rejection>` control error code; it
+never treats the activation-only `applied` result as a successful dormant prepare and never puts an
+artifact identity, digest, account, or engine message into that code. The B2C/B2B/service/OpenKeys
+target is prepared in full; partial apply per class is forbidden. A stable plan with ownership blockers may save only a terminal `blocked` run
 and typed blocker rows; the catalog/policy/release skeleton and the remote prepare are not created
 in that case. Unstable paired scans are not saved as false evidence and require a new full pass.
 

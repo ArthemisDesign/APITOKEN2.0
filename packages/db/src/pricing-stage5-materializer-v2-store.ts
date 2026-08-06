@@ -1140,14 +1140,32 @@ async function persistLocalPlan(
   }
 }
 
-function mutationResult(
-  result: { result: string },
+type PrepareArtifactKind = "main_catalog" | "openkeys_catalog" | "switches" | "policy";
+type PrepareMutationResult =
+  | { result: "stored" | "unchanged" }
+  | { result: "applied" }
+  | {
+    result: "rejected";
+    code:
+      | "invalid"
+      | "missing_dependency"
+      | "stale"
+      | "version_conflict"
+      | "cas_mismatch"
+      | "policy_cas_mismatch"
+      | "locked";
+  };
+
+export function stage5V2PrepareMutationResult(
+  result: PrepareMutationResult,
+  artifactKind: PrepareArtifactKind,
   label: string,
 ): "stored" | "unchanged" {
   if (result.result === "stored" || result.result === "unchanged") return result.result;
+  const rejection = result.result === "rejected" ? result.code : result.result;
   throw new Stage5MaterializerV2Error(
-    "engine_prepare_rejected",
-    `${label} prepare was rejected with ${result.result}`,
+    `engine_${artifactKind}_prepare_${rejection}`,
+    `${label} prepare was rejected with ${rejection}`,
   );
 }
 
@@ -1165,8 +1183,13 @@ async function prepareEngineArtifacts(
 ): Promise<PrepareAck[]> {
   const acks: PrepareAck[] = [];
   for (const catalog of plan.catalogs) {
+    const artifactKind = catalog.product_id === "main" ? "main_catalog" : "openkeys_catalog";
     const mutation = await engine.preparePricingCatalog(catalog);
-    const result = mutationResult(mutation, `catalog ${catalog.product_id}/${catalog.generation}`);
+    const result = stage5V2PrepareMutationResult(
+      mutation,
+      artifactKind,
+      `catalog ${catalog.product_id}/${catalog.generation}`,
+    );
     const readback = await engine.getPricingCatalogVersion(catalog.product_id, catalog.generation);
     if (!readback || !sameCanonical(readback, catalog)) {
       throw new Stage5MaterializerV2Error(
@@ -1184,7 +1207,11 @@ async function prepareEngineArtifacts(
     });
   }
   const switchMutation = await engine.prepareProviderSwitches(plan.switches);
-  const switchResult = mutationResult(switchMutation, `switches ${plan.switches.generation}`);
+  const switchResult = stage5V2PrepareMutationResult(
+    switchMutation,
+    "switches",
+    `switches ${plan.switches.generation}`,
+  );
   const switchReadback = await engine.getProviderSwitchVersion(plan.switches.generation);
   if (!switchReadback || !sameCanonical(switchReadback, plan.switches)) {
     throw new Stage5MaterializerV2Error(
@@ -1202,7 +1229,11 @@ async function prepareEngineArtifacts(
   });
   for (const policy of plan.policies) {
     const mutation = await engine.preparePricingReleasePolicyV2(policy);
-    const result = mutationResult(mutation, `policy ${policy.policy_id}/${policy.policy_version}`);
+    const result = stage5V2PrepareMutationResult(
+      mutation,
+      "policy",
+      `policy ${policy.policy_id}/${policy.policy_version}`,
+    );
     const readback = await engine.getPricingReleasePolicyV2(policy.policy_id, policy.policy_version);
     if (!readback || !sameCanonical(readback, policy)) {
       throw new Stage5MaterializerV2Error(

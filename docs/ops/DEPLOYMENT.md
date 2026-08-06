@@ -446,8 +446,10 @@ The helper reads the credential only from the active exact-release commerce proc
 to the loopback AdminGuard origin, fixes the audit actor/reason, validates the complete Stage 5/6
 contracts and prints only bounded digest/status/count evidence. An unexpected HTTP response is
 reported only as its status plus a machine-readable `code` matching the bounded lowercase identifier
-format from the strict Nest error envelope; the response body, free-form message, identifiers and
-credentials are never printed. It fails closed
+format from the strict Nest error envelope; Stage 5 engine prepare failures identify only the bounded
+artifact kind and rejection class as
+`engine_<main_catalog|openkeys_catalog|switches|policy>_prepare_<rejection>`. The response body,
+free-form message, artifact identity, digest, account and credentials are never printed. It fails closed
 before materialize when the exhaustive dry-run has blockers and fails on any dead, failed or blocker
 Stage 6 state.
 It does not stage Stage 7/8/9, move the release head or publish GPT Image 2. Do not replace it with

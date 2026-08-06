@@ -22,6 +22,7 @@ import {
   type Stage5V2EngineScan,
   type Stage5V2OpenKeysScan,
 } from "./pricing-stage5-materializer-v2.js";
+import { stage5V2PrepareMutationResult } from "./pricing-stage5-materializer-v2-store.js";
 
 function engineAccount(
   accountId: string,
@@ -556,5 +557,26 @@ describe("pricing Stage 5 v2 exhaustive scanners", () => {
     ];
     await expect(scanStage5OpenKeysInventoryV2({ getPage: async () => pages.shift()! }))
       .rejects.toMatchObject({ code: "openkeys_manifest_changed_during_scan" });
+  });
+
+  it("reports bounded artifact and rejection classes for failed engine prepares", () => {
+    expect(stage5V2PrepareMutationResult({ result: "stored" }, "main_catalog", "main catalog"))
+      .toBe("stored");
+    expect(stage5V2PrepareMutationResult({ result: "unchanged" }, "policy", "policy"))
+      .toBe("unchanged");
+    expect(() => stage5V2PrepareMutationResult({
+      result: "rejected",
+      code: "version_conflict",
+    }, "openkeys_catalog", "sensitive catalog identity"))
+      .toThrow(expect.objectContaining({
+        code: "engine_openkeys_catalog_prepare_version_conflict",
+      }));
+    expect(() => stage5V2PrepareMutationResult({
+      result: "rejected",
+      code: "locked",
+    }, "policy", "sensitive policy identity"))
+      .toThrow(expect.objectContaining({ code: "engine_policy_prepare_locked" }));
+    expect(() => stage5V2PrepareMutationResult({ result: "applied" }, "switches", "switches"))
+      .toThrow(expect.objectContaining({ code: "engine_switches_prepare_applied" }));
   });
 });
