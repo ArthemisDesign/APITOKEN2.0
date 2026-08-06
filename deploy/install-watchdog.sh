@@ -184,7 +184,8 @@ activate_redis_definition() {
 }
 
 publish_fixed_helper() {
-  local source=$1 target=$2 staged=${target}.tmp.$$
+  local source=$1 target=$2 staged
+  staged=${target}.tmp.$$
   install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/controller
   install -o root -g root -m 0755 "$source" "$staged"
   mv -f -- "$staged" "$target"

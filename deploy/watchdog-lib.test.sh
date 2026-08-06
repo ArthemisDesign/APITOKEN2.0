@@ -3609,6 +3609,20 @@ grep -Fq 'mv -f -- "$authbot_backup" "$authbot_helper"' "$ROOT/deploy/install-wa
   || wd_die 'failed sudo policy installation does not restore the prior authbot helper'
 grep -Fq 'mv -f -- "$pricing_backup" "$pricing_helper"' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'failed sudo policy installation does not restore the prior pricing helper'
+# Bash expands every assignment word in one `local` command before applying any of them. Keep the
+# staged path assignment separate so `set -u` cannot dereference `target` before it exists.
+publish_fixed_helper_body=$(sed -n '/^publish_fixed_helper()/,/^}/p' \
+  "$ROOT/deploy/install-watchdog.sh")
+printf '%s\n' "$publish_fixed_helper_body" \
+  | grep -Fq 'local source=$1 target=$2 staged' \
+  || wd_die 'fixed-helper publisher does not declare its locals before deriving the staged path'
+printf '%s\n' "$publish_fixed_helper_body" \
+  | grep -Fq 'staged=${target}.tmp.$$' \
+  || wd_die 'fixed-helper publisher does not derive its staged path after local initialization'
+if printf '%s\n' "$publish_fixed_helper_body" \
+    | grep -Eq 'local .*staged=\$\{target\}'; then
+  wd_die 'fixed-helper publisher dereferences target in the same local command that declares it'
+fi
 # install-watchdog.sh must never re-add apitoken-ci to the deploy group: that would silently undo
 # the isolation fix on the next infrastructure install, and the two installers would fight.
 if grep -Eq 'usermod -a -G deploy apitoken-ci' "$ROOT/deploy/install-watchdog.sh"; then
