@@ -4283,8 +4283,8 @@ live_gate_line=$(grep -nF \
   || wd_die 'GPT Image 2 gate follows the mutable current engine baseline instead of its pinned implementation'
 
 # The first public generation+edit attempt owns its producer-SHA fence. After a RED delivery this
-# controller becomes a permanently non-network inspector: exact success may pass, anything else reports
-# only bounded journal state and dispatch flags so a new producer can be planned without replay.
+# controller becomes a permanently non-network inspector: exact success or the observed exact pre-dispatch
+# withdrawal may pass, while anything else reports only bounded journal state and dispatch flags.
 wd_path_is_gpt_image_2_public_smoke_gate_trigger deploy/gpt-image-2-public-smoke-gate.sh \
   || wd_die 'GPT Image 2 public evidence inspector file does not trigger corrective verification'
 if wd_path_is_gpt_image_2_public_smoke_gate_trigger deploy/watchdog.sh; then
@@ -4324,6 +4324,12 @@ grep -Fq '! cmp -s -- "$generation" "$edit"' \
 grep -Fq 'gpt-image-public:\($journal.state):g=\($journal.generation_dispatched):e=\($journal.edit_dispatched)' \
   "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
   || wd_die 'GPT Image 2 public inspector does not emit bounded retained journal classification'
+grep -Fq '[[ $summary == gpt-image-public:preflight:g=false:e=false ]]' \
+  "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
+  || wd_die 'GPT Image 2 public inspector does not accept the observed exact pre-dispatch withdrawal'
+grep -Fq ".generation_request_id == null and .edit_request_id == null" \
+  "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
+  || wd_die 'GPT Image 2 public withdrawal can pass with a request identity'
 ! grep -Eiq 'laozhang|aihubproxy|apixo|whataicc' \
   "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
   || wd_die 'GPT Image 2 public inspector contains a third-party image relay'

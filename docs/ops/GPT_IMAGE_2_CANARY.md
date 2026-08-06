@@ -187,13 +187,13 @@ public catalog. Its metered success header carries the engine reservation identi
 correlate the exact release snapshot, reservation, outbox, usage event and terminal settlement.
 
 Public gate delivery `0dbbfdda054a1a7bda709434c8678b192bf12276` is RED at
-`verifying-gpt-image-2-public`. Its producer-SHA evidence root is permanently fenced. The retained journal
-state and dispatch flags have not yet been observed, so the failed delivery is not classified as either
-pre-dispatch or paid. The corrective `deploy/gpt-image-2-public-smoke-gate.sh <producer-sha> --inspect` path
-is strictly non-network and may only validate complete retained success or publish bounded journal
-state/dispatch flags in another RED status. It cannot load runtime credentials or execute the CLI. A later
-paid one-shot, if the retained journal proves one is safe, must use a new producer SHA and a new root. The
-intended one-shot contract remains:
+`verifying-gpt-image-2-public`. Non-network inspector delivery
+`5a16ce96e2d1aef242055e88aa5d38f152d0ecd5` proved the retained journal is exactly `preflight`, both
+`generation_dispatched` and `edit_dispatched` are false, and both request identities are null. No paid image
+operation was dispatched. The producer-SHA evidence root remains permanently fenced. The corrective
+`deploy/gpt-image-2-public-smoke-gate.sh <producer-sha> --inspect` path may accept this exact safe withdrawal
+or complete retained success, but cannot load runtime credentials or execute the CLI. A later paid one-shot
+must use a new producer SHA and a new root. The intended one-shot contract remains:
 
 1. authenticates `GET https://openai.api.apitoken.sale/v1/models` and requires both image aliases to
    remain absent before dispatch;

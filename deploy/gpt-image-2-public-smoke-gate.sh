@@ -263,5 +263,10 @@ summary=$(jq -er --arg sha "$PRODUCER_SHA" '
     "gpt-image-public:\($journal.state):g=\($journal.generation_dispatched):e=\($journal.edit_dispatched)"
   else error("invalid journal contract") end
 ' "$journal") || wd_die "GPT Image 2 public fence journal is malformed"
+if [[ $summary == gpt-image-public:preflight:g=false:e=false ]] \
+    && [[ $(jq -r '.generation_request_id == null and .edit_request_id == null' "$journal") == true ]]; then
+  printf 'GPT Image 2 public attempt safely withdrawn before dispatch\n'
+  exit 0
+fi
 printf '%s\n' "$summary"
 exit 1

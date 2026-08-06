@@ -177,16 +177,17 @@ would make overall delivery RED after validating any terminal withdrawal. The hi
 pinned to the explicit immutable edit SHA rather than a mutable engine baseline.
 
 Public Images API attempt delivery `0dbbfdda054a1a7bda709434c8678b192bf12276` is RED at the fixed
-producer gate for `d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6`. The producer-SHA root under
-`/var/lib/apitoken/watchdog/gpt-image-2-public/` is therefore a permanent no-replay fence. The retained
-journal state and dispatch flags have not yet been observed, so no claim is made about whether a paid
-operation started. `deploy/gpt-image-2-public-smoke-gate.sh` is now an exact `--inspect`-only controller:
-it has no runtime environment loader, credential access, timeout, `setpriv`, or CLI/network dispatch. It
-may return GREEN only for the complete strict generation+edit evidence contract; otherwise it reports a
-bounded state plus generation/edit dispatch booleans into the corrective delivery's RED status. Any new
-paid attempt requires a new producer SHA and a new producer-SHA evidence root after this inspector has
-classified the old fence. Catalog, router, OpenKeys, site, admin and public-documentation publication
-remains forbidden until a later exact production generation+edit gate and overall watchdog status are GREEN.
+producer gate for `d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6`. Corrective inspector delivery
+`5a16ce96e2d1aef242055e88aa5d38f152d0ecd5` observed the exact private journal as `preflight` with both
+`generation_dispatched=false` and `edit_dispatched=false`; both request identities are null. Therefore no
+paid image operation was dispatched. The producer-SHA root under
+`/var/lib/apitoken/watchdog/gpt-image-2-public/` remains a permanent no-replay fence.
+`deploy/gpt-image-2-public-smoke-gate.sh` is an exact `--inspect`-only controller with no runtime environment
+loader, credential access, timeout, `setpriv`, or CLI/network dispatch. It accepts either complete strict
+success evidence or this exact pre-dispatch withdrawal, and otherwise emits bounded state/dispatch flags as
+RED. A new paid attempt requires a new producer SHA and evidence root. Catalog, router, OpenKeys, site,
+admin and public-documentation publication remains forbidden until a later exact production generation+edit
+gate and overall watchdog status are GREEN.
 
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane

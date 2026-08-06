@@ -284,10 +284,12 @@ is only what is needed to walk the relationships when making changes:
   reserves a typed immutable image snapshot, and settles authoritative five-leg token cost. Successful
   malformed evidence and ambiguous post-dispatch errors retain the hold and never claim `not_started`.
   Public gate delivery `0dbbfdda054a1a7bda709434c8678b192bf12276` is RED and permanently fences
-  producer `d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6`; its journal state and dispatch flags are not yet
-  observed. The fixed `deploy/gpt-image-2-public-smoke-gate.sh <producer-sha> --inspect` consumer is now
-  non-network and can only validate complete retained success or emit bounded state/dispatch flags. It has
-  no credential/environment loader or image dispatch. The direct OpenAI plane and header-gated Combined
+  producer `d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6`. Non-network inspector delivery
+  `5a16ce96e2d1aef242055e88aa5d38f152d0ecd5` observed exact `preflight`, both dispatch flags false, and
+  both request identities null, proving that no paid image operation was dispatched. The fixed
+  `deploy/gpt-image-2-public-smoke-gate.sh <producer-sha> --inspect` consumer can accept this exact safe
+  withdrawal or complete retained success; it has no credential/environment loader or image dispatch. The
+  direct OpenAI plane and header-gated Combined
   bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —
