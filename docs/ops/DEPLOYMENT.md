@@ -196,11 +196,15 @@ rerun. This mode has no image POST at all; its journal contract also requires bo
 null request identities. The corrective controller is now `--inspect`-only: no `/proc`, environment, binary,
 credential or network path. It validates that the root contains only the private journal and publishes its
 exact bounded stage as `deploy/gpt-image-2-public-preflight`. Inspector delivery
-`77cf6791c92840dc1e45c1aba252820506f63fd4` reported `credential_selecting`: the selector compared external
-service ID `crm-parsing` to opaque engine `account.id`. Release-v2 service resolution already bypasses the
-model catalog and enforces the provider master switch. Its fix instead joins the exact active assignment to
-the immutable service policy owner, while preserving canonical meter-only resolution and the single active
-unexpired-key requirement. A paid mode requires another new producer/root and a fresh successful free
+`77cf6791c92840dc1e45c1aba252820506f63fd4` reported the retained `credential_selecting` stage with false
+dispatch flags and null request identities; it did not rerun the selector. Selector hardening
+`6629ecd7b3725bcd7306ef7a1dc8675ef9160a43` joins the exact active assignment to the immutable service policy
+owner instead of comparing the external service ID with opaque `account.id`, while preserving canonical
+meter-only resolution, the OpenAI master switch and the single active unexpired-key requirement. Engine and
+trusted-host checks passed, but its overall delivery was RED after the inspector because
+`deploy/watchdog-github.sh` rejected the digit in status context `deploy/gpt-image-2-public-preflight`.
+Consequently the corrected selector has not yet executed in production. A paid mode requires another new
+producer/root and a fresh successful free
 preflight; it cannot promote or replay this artifact. Catalog, router, OpenKeys, site,
 admin and public-documentation publication remains forbidden until a later exact production generation+edit
 gate and overall watchdog status are GREEN.

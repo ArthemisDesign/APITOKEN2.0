@@ -15,6 +15,7 @@ source "$CONFIG"
 api=https://api.github.com/repos/$GITHUB_REPOSITORY
 graphql=https://api.github.com/graphql
 sha_re='^[0-9a-f]{40}$'
+commit_status_context_re='^deploy/[a-z][a-z0-9-]*$'
 
 # Read the authorization header from stdin so the token never appears in argv or service logs.
 github_curl() {
@@ -30,7 +31,7 @@ case "${1:-}" in
     [[ $# -ge 5 && $# -le 6 ]] || { echo 'usage: commit-status SHA STATE CONTEXT DESCRIPTION [URL]' >&2; exit 2; }
     [[ $2 =~ $sha_re ]] || { echo 'invalid SHA' >&2; exit 2; }
     [[ $3 =~ ^(error|failure|pending|success)$ ]] || { echo 'invalid commit state' >&2; exit 2; }
-    [[ $4 =~ ^deploy/[a-z-]+$ ]] || { echo 'invalid context' >&2; exit 2; }
+    [[ $4 =~ $commit_status_context_re ]] || { echo 'invalid context' >&2; exit 2; }
     ((${#5} <= 140)) || { echo 'description is too long' >&2; exit 2; }
     body=$(jq -cn --arg state "$3" --arg context "$4" --arg description "$5" --arg target_url "${6:-}" \
       '{state:$state,context:$context,description:$description} + if $target_url == "" then {} else {target_url:$target_url} end')

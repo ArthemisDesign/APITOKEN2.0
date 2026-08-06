@@ -294,12 +294,14 @@ is only what is needed to walk the relationships when making changes:
   meter-only credential and authenticated public `/v1/models`. Delivery
   `737d0234fc7d016c31c5b9c56a27e16aef134d83` is RED and fences its root, but this mode has no image POST
   and every valid stage has false dispatch flags and null request identities. Corrective inspect-only delivery
-  `77cf6791c92840dc1e45c1aba252820506f63fd4` reported exact `credential_selecting` without environment,
-  credential, binary, or network access. The selector had incorrectly treated external service ID
-  `crm-parsing` as the opaque engine account ID; the release-v2 service resolver already bypasses the model
-  catalog and enforces the OpenAI master switch. The corrected producer selects the assignment through the
-  active policy's `owner_type=service`/`owner_id=crm-parsing`, then retains canonical meter-only resolution
-  and exactly-one-active-unexpired-key fencing. Paid execution requires a distinct new producer-SHA fence
+  `77cf6791c92840dc1e45c1aba252820506f63fd4` reported the retained `credential_selecting` stage without
+  environment, credential, binary, or network access; it did not rerun credential selection. Selector
+  hardening SHA `6629ecd7b3725bcd7306ef7a1dc8675ef9160a43` resolves the assignment through the active policy's
+  `owner_type=service`/`owner_id=crm-parsing`, while retaining canonical meter-only resolution, the OpenAI
+  master switch, and exactly-one-active-unexpired-key fencing. Its engine and trusted-host checks were GREEN,
+  but the overall delivery stopped after inspection because the GitHub bridge rejected the digit in
+  `deploy/gpt-image-2-public-preflight`; therefore production execution of the corrected selector is not yet
+  proven. Paid execution requires a distinct new producer-SHA fence
   and fresh successful preflight rather than trusting this withdrawn artifact. The direct OpenAI plane and header-gated Combined
   bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,

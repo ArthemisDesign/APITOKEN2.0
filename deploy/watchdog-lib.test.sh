@@ -187,6 +187,19 @@ grep -Fq -- \
   "$status_retry_log" \
   || wd_die "commit-status retry changed the requested SHA, state, context, or description"
 
+commit_status_context_re=$(sed -n "s/^commit_status_context_re='\\(.*\\)'$/\\1/p" \
+  "$ROOT/deploy/watchdog-github.sh")
+[[ -n $commit_status_context_re ]] || wd_die 'GitHub commit-status context validator is missing'
+for valid_context in deploy/watchdog deploy/gpt-image-2-public-preflight; do
+  [[ $valid_context =~ $commit_status_context_re ]] \
+    || wd_die "valid GitHub commit-status context was rejected: $valid_context"
+done
+for invalid_context in deploy/ deploy/-image deploy/Image-2 deploy/image_2 deploy/image/2 other/image-2; do
+  if [[ $invalid_context =~ $commit_status_context_re ]]; then
+    wd_die "invalid GitHub commit-status context was accepted: $invalid_context"
+  fi
+done
+
 # Exercise the actual watchdog dispatchers with barrier-backed fakes. A serialized implementation
 # deadlocks its first fake until the barrier deadline and fails, while the intended implementation
 # starts every worker, joins every result, and still returns a single parent-owned verdict.

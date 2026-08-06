@@ -208,12 +208,15 @@ identities. Its corrective `deploy/gpt-image-2-public-preflight-gate.sh <produce
 can only validate the retained one-file journal and publish the exact bounded stage; it has no `/proc`,
 environment, binary, credential, or network path. Inspector delivery
 `77cf6791c92840dc1e45c1aba252820506f63fd4` reported exact retained stage
-`credential_selecting`, with both dispatch flags false and both request identities null. The root cause is
-identity selection, not model publication: service/meter-only resolution already bypasses the product
-catalog and checks the OpenAI master switch, but the smoke selector compared opaque engine `account.id`
-with the external service ID `crm-parsing`. The corrected selector keys service identity from the active
-release policy's `owner_type=service` and `owner_id=crm-parsing`, while retaining canonical
-service/meter-only resolution and exactly-one-active-unexpired-key checks. Paid execution must use another
+`credential_selecting`, with both dispatch flags false and both request identities null. This establishes
+where the old attempt stopped but does not rerun the selector or prove its root cause. Selector hardening
+`6629ecd7b3725bcd7306ef7a1dc8675ef9160a43` keys service identity from the active release policy's
+`owner_type=service` and `owner_id=crm-parsing` rather than comparing opaque engine `account.id` with the
+external service ID. It retains canonical service/meter-only resolution, the OpenAI master switch, and
+exactly-one-active-unexpired-key checks. Engine and trusted-host validation passed, but the overall delivery
+stopped after inspection because the GitHub status bridge rejected the digit in context
+`deploy/gpt-image-2-public-preflight`; the corrected selector therefore has not yet run in production. Paid
+execution must use another
 new producer/root and repeat a fresh successful free preflight before changing `generation_dispatched`
 immediately ahead of the first image POST. This withdrawal does not authorize the paid gate or publication.
 
