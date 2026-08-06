@@ -86,7 +86,9 @@
 //! непустым текстом; thoughtSignature-only парт пропускается — решение 4),
 //! functionCall-парты → function_call items (`fc_*`, arguments — JSON-строка
 //! `args`; `call_id` синтезируется `callu_<name>[_N]` — на private wire
-//! functionCall.id не приезжает, схема общая с chat-адаптером); usage —
+//! functionCall.id не приезжает, схема общая с chat-адаптером),
+//! сгенерированные `inlineData`-парты (image MIME) → output_image items
+//! (`img_*`, image_url — data URL); usage —
 //! `promptTokenCount` → input, `candidatesTokenCount`+`thoughtsTokenCount` →
 //! output (та же сумма, что тарифицирует metering), `cachedContentTokenCount`
 //! → `input_tokens_details.cached_tokens`, `thoughtsTokenCount` →
@@ -114,6 +116,10 @@
 //!   `response.output_item.added` (function_call item, arguments "") → ровно
 //!   одна `response.function_call_arguments.delta` с полной строкой →
 //!   `response.function_call_arguments.done` → `response.output_item.done`;
+//! - сгенерированные `inlineData`-парты (image MIME) → output_image items
+//!   (`response.output_item.added` → `response.output_item.done` с data URL —
+//!   billed media доставляется клиенту, а не теряется после settlement;
+//!   не-image inline-медиа не имеет OpenAI-представления и не фабрикуется);
 //! - смена типа контента закрывает открытый item (done-события) — text и
 //!   thought вперемешку дают серию items в порядке апстрима; output_index —
 //!   плотный собственный счётчик, content_index всегда 0, item-scoped
@@ -152,8 +158,8 @@ use serde_json::{json, Map, Value};
 
 use super::chat::{
     chat_error, code_assist_schema, convert_error_response, function_declaration,
-    function_response_value, gemini_image_part, invalid_request, map_finish_reason, merge_or_push,
-    parse_tool_arguments, replayed_function_call_part, synthetic_call_id,
+    function_response_value, gemini_image_part, image_url_part, invalid_request, map_finish_reason,
+    merge_or_push, parse_tool_arguments, replayed_function_call_part, synthetic_call_id,
     translate_reasoning_effort, unsupported_parameter, CHAT_BODY_LIMIT, RESPONSE_BODY_LIMIT,
 };
 use super::gemini_api;
@@ -1032,12 +1038,24 @@ fn reasoning_item(text: &str) -> Value {
     })
 }
 
+/// output_image output item: сгенерированный `inlineData` → data URL
+/// (`image_uri` не выставляется — публичного URL у нас нет). Billed media
+/// доставляется клиенту, а не теряется после settlement.
+fn output_image_item(url: &str) -> Value {
+    json!({
+        "type": "output_image",
+        "id": new_id("img"),
+        "image_url": url,
+    })
+}
+
 /// Content-парты кандидата → Responses output items (non-stream): thought-
 /// парты с непустым текстом → reasoning items (каждый thought-парт —
 /// отдельный item, как thinking-блоки у Anthropic-зеркала; thoughtSignature-
 /// only парт пропускается — решение 4), text-парты склеиваются в ОДИН message
 /// item (без текста item не создаётся) на позиции первого text-парта,
-/// functionCall → function_call items. Items идут в порядке появления
+/// functionCall → function_call items, сгенерированные `inlineData`-парты
+/// (image MIME) → output_image items. Items идут в порядке появления
 /// партов; неизвестные парты пропускаются.
 fn output_items(parts: Option<&Vec<Value>>) -> Vec<Value> {
     let mut output: Vec<Value> = Vec::new();
@@ -1072,6 +1090,12 @@ fn output_items(parts: Option<&Vec<Value>>) -> Vec<Value> {
                 .map(|args| args.to_string())
                 .unwrap_or_else(|| "{}".to_string());
             output.push(function_call_item(&call_id, name, &arguments, "completed"));
+            continue;
+        }
+        if let Some(inline) = part.get("inlineData") {
+            if let Some(url) = image_url_part(inline) {
+                output.push(output_image_item(&url));
+            }
         }
     }
     if !text.is_empty() {
@@ -1538,6 +1562,30 @@ impl GeminiResponsesSseTranslator {
         self.completed_items.push(item);
     }
 
+    /// Сгенерированный inlineData-парт (image MIME) → output_image item:
+    /// item.added → item.done (дельт у изображения нет — data URL приходит
+    /// целиком). Открытый text/reasoning item закрывается.
+    fn push_output_image(&mut self, url: &str) {
+        self.ensure_started();
+        self.close_open();
+        let output_index = self.next_output_index;
+        self.next_output_index += 1;
+        let item = json!({
+            "type": "output_image",
+            "id": new_id("img"),
+            "image_url": url,
+        });
+        self.push_event(
+            "response.output_item.added",
+            json!({"output_index": output_index, "item": item}),
+        );
+        self.push_event(
+            "response.output_item.done",
+            json!({"output_index": output_index, "item": item}),
+        );
+        self.completed_items.push(item);
+    }
+
     /// Терминальное событие успеха после provider finishReason/blockReason + EOF:
     /// закрывается открытый item и эмитится
     /// `response.completed` с полным Response object (status по сохранённому
@@ -1688,6 +1736,13 @@ impl GeminiResponsesSseTranslator {
                         .map(|args| args.to_string())
                         .unwrap_or_else(|| "{}".to_string());
                     self.push_function_call(&call_id, name, &arguments);
+                    continue;
+                }
+                // Сгенерированный inlineData (image MIME) → output_image item.
+                if let Some(inline) = part.get("inlineData") {
+                    if let Some(url) = image_url_part(inline) {
+                        self.push_output_image(&url);
+                    }
                 }
             }
         }
@@ -2972,6 +3027,51 @@ mod tests {
         assert_eq!(body["error"]["type"], "server_error");
     }
 
+    #[tokio::test]
+    async fn non_stream_generated_image_output_item() {
+        // Сгенерированный inlineData (image MIME) → output_image item с data
+        // URL: billed media доставляется клиенту, а не теряется после
+        // settlement. Позиция — порядок партов: text → message, image →
+        // output_image после него.
+        let upstream = upstream_json(json!({
+            "candidates": [{"content": {"parts": [
+                {"text": "Here it is."},
+                {"inlineData": {"mimeType": "image/png", "data": "iVBORw0KGgo="}}
+            ]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 4, "totalTokenCount": 7}
+        }));
+        let response = json_responses_response(upstream, "gemini-3.1-flash-image".into()).await;
+        let (status, body) = err_parts(response).await;
+        assert_eq!(status, StatusCode::OK);
+        let output = body["output"].as_array().unwrap();
+        assert_eq!(output.len(), 2, "{body}");
+        assert_eq!(output[0]["type"], "message");
+        assert_eq!(output[0]["content"][0]["text"], "Here it is.");
+        assert_eq!(output[1]["type"], "output_image");
+        assert!(output[1]["id"].as_str().unwrap().starts_with("img_"));
+        assert_eq!(output[1]["image_url"], "data:image/png;base64,iVBORw0KGgo=");
+        assert!(output[1].get("image_uri").is_none());
+        // usage продолжает нести итог, который тарифицирует settlement.
+        assert_eq!(body["usage"]["output_tokens"], 4);
+    }
+
+    #[tokio::test]
+    async fn non_stream_non_image_inline_media_stays_dropped() {
+        // Не-image inline-медиа не имеет OpenAI-представления: item не
+        // фабрикуется.
+        let upstream = upstream_json(json!({
+            "candidates": [{"content": {"parts": [
+                {"text": "Note."},
+                {"inlineData": {"mimeType": "audio/wav", "data": "UklGRg=="}}
+            ]}, "finishReason": "STOP"}]
+        }));
+        let response = json_responses_response(upstream, "gemini-2.5-flash".into()).await;
+        let (_, body) = err_parts(response).await;
+        let output = body["output"].as_array().unwrap();
+        assert_eq!(output.len(), 1, "{body}");
+        assert_eq!(output[0]["type"], "message");
+    }
+
     #[test]
     fn local_adapter_errors_mark_execution_not_started() {
         let response = translate_responses_request(json!({})).unwrap_err();
@@ -3118,6 +3218,57 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         assert_eq!(completed["output"][0]["type"], "function_call");
         assert_eq!(completed["output"][0]["call_id"], "callu_get_weather");
         assert_eq!(completed["usage"]["output_tokens"], 8);
+    }
+
+    #[tokio::test]
+    async fn contract_generated_image_event_dictionary() {
+        // Сгенерированный inlineData (image MIME): item.added (output_image с
+        // data URL) → item.done → completed; дельт у изображения нет.
+        let events = concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Done. \"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgo=\"}}]}}]}\n",
+            "\n",
+            "data: {\"candidates\":[{\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":4,\"totalTokenCount\":7}}\n",
+        );
+        let translator = GeminiResponsesSseTranslator::new(sse_bytes(events), "m".into());
+        let output = collect_stream(translator).await;
+        let frames = event_frames(&output);
+        assert_eq!(
+            event_names(&frames),
+            [
+                "response.created",
+                "response.in_progress",
+                "response.output_item.added",
+                "response.content_part.added",
+                "response.output_text.delta",
+                "response.output_text.done",
+                "response.content_part.done",
+                "response.output_item.done",
+                "response.output_item.added",
+                "response.output_item.done",
+                "response.completed",
+            ],
+            "{output}"
+        );
+        let image_item = &frames[8].1["item"];
+        assert_eq!(image_item["type"], "output_image");
+        assert!(image_item["id"].as_str().unwrap().starts_with("img_"));
+        assert_eq!(
+            image_item["image_url"],
+            "data:image/png;base64,iVBORw0KGgo="
+        );
+        assert_eq!(frames[9].1["item"], *image_item);
+        // Открытый text item закрыт до output_image: плотный output_index 0
+        // у message, 1 у изображения.
+        assert_eq!(frames[8].1["output_index"], 1);
+        let completed = &frames[10].1;
+        assert_eq!(completed["status"], "completed");
+        assert_eq!(completed["output"][0]["type"], "message");
+        assert_eq!(completed["output"][1]["type"], "output_image");
+        assert_eq!(
+            completed["output"][1]["image_url"],
+            "data:image/png;base64,iVBORw0KGgo="
+        );
+        assert_eq!(completed["usage"]["output_tokens"], 4);
     }
 
     #[tokio::test]

@@ -881,13 +881,17 @@ Two clarifying caveats from the audit:
    is wrapped as a string in `{result}`); series of tool responses are merged.
    Response: non-stream candidates[0] — text parts are merged, functionCall →
    `message.tool_calls` (args → an arguments string, synthesized ids
-   `callu_<name>[_N]`, content:null without text), finishReason → finish_reason
+   `callu_<name>[_N]`, content:null without text), generated image-MIME `inlineData`
+   parts → `image_url` content parts with data URLs (content becomes the
+   array-form `[{type:"text"|"image_url"}]` — billed media is delivered, not
+   dropped), finishReason → finish_reason
    (MAX_TOKENS→length, SAFETY/RECITATION/BLOCKLIST/PROHIBITED_CONTENT/SPII→
    content_filter), promptFeedback.blockReason without candidates → content_filter
    with empty content, usageMetadata → usage (completion = candidates+thoughts, cached
    → `prompt_tokens_details.cached_tokens`), model = `modelVersion` or the requested
    one. SSE: data-only GenerateContentResponse frames → a role chunk, content deltas,
-   functionCall delivered whole as a single tool_calls chunk (there are no arguments
+   an image-MIME `inlineData` part → one content array delta with the image_url data
+   URL, functionCall delivered whole as a single tool_calls chunk (there are no arguments
    deltas on the wire), finishReason → a finish chunk, the last usageMetadata → a
    usage chunk after the confirmed terminal state at EOF (per
    `stream_options.include_usage`) → `[DONE]`; `promptFeedback.blockReason` is also
@@ -1097,11 +1101,14 @@ Two clarifying caveats from the audit:
    `parallel_tool_calls` (generateContent has no disable_parallel_tool_use — only
    default true); UNKNOWN top-level fields → `400 unsupported_parameter` (a closed
    list, like the chat adapter 3.3 — the Code Assist wrapper would drop them
-   silently). Response: thought parts → reasoning items `rs_*` and reasoning_summary
+   silently).    Response: thought parts → reasoning items `rs_*` and reasoning_summary
    events of the 4.2 vocabulary (a part with only a thoughtSignature spawns no events
    — decision 4), functionCall → function_call items `fc_*` with synthesized call_id
    `callu_<name>[_N]` (there is no functionCall.id on the private wire — the chat
-   adapter's scheme) and exactly one arguments delta (functionCall arrives whole);
+   adapter's scheme) and exactly one arguments delta (functionCall arrives whole),
+   generated image-MIME `inlineData` parts → `output_image` items `img_*` with a
+   data URL (non-stream and stream: item.added → item.done — billed media is
+   delivered, not dropped);
    usage — input = `promptTokenCount`, output = `candidatesTokenCount`+
    `thoughtsTokenCount` (the same sum that metering bills),
    `cachedContentTokenCount` → `input_tokens_details.cached_tokens`,

@@ -399,7 +399,10 @@ Multimodality and structured output (3.4a): image_url parts of user messages →
 (only data: URLs are accepted — the plane has no outbound fetch for external images, so
 an http(s) image URL → `400 invalid_request`; `detail` != auto → `400 unsupported_parameter`),
 `response_format` json_object/json_schema → `generationConfig.responseMimeType`/`responseSchema`
-(the name/strict wrapper is stripped). The shared `gemini_schema` translator is mandatory for tool parameters and
+(the name/strict wrapper is stripped). Generated images are NOT dropped: an image-MIME
+`inlineData` part in the candidate becomes an `image_url` content part with a data URL
+(non-stream — array-form content; stream — one `content` array delta), so billed media reaches
+the caller; non-image inline media has no OpenAI representation and is not fabricated. The shared `gemini_schema` translator is mandatory for tool parameters and
 structured-output schemas on Chat, Responses and the Messages skin. It accepts only the exact
 supported Google `Schema` subset, inline-expands bounded local `$ref`/`$defs`, translates
 representable `const`/nullable union/exclusive bounds/true-contains and strips annotations.
@@ -449,7 +452,8 @@ capability matrix — the same 9 rules as the Anthropic mirror, plus `parallel_t
 `400 documented_limitation` (decision 5). Response: thought parts → reasoning items `rs_*` and
 reasoning_summary events of the 4.2 dictionary (thoughtSignature is never exposed), functionCall →
 function_call items `fc_*` with synthesized call_ids `callu_<name>[_N]` and exactly one
-arguments delta (functionCall arrives whole), usage input=`promptTokenCount` /
+arguments delta (functionCall arrives whole), generated image-MIME `inlineData` parts →
+`output_image` items `img_*` with a data URL (non-stream and stream: item.added → item.done), usage input=`promptTokenCount` /
 output=`candidatesTokenCount`+`thoughtsTokenCount` (thoughts → `reasoning_tokens`),
 finishReason/blockReason → status via the shared `map_finish_reason` (MAX_TOKENS →
 incomplete `max_output_tokens`, SAFETY etc. → incomplete `content_filter`); stream —

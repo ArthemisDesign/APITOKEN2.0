@@ -593,7 +593,10 @@ content only as string/null and does not consume native `inlineData` or OpenRout
 The plugin therefore publishes `modalities.output:["text"]` even for the image model instead of
 promising media the client would discard. This is a client-transport limitation, not a provider
 outage: native Gemini callers continue to generate, receive and settle images through the routes
-above.
+above. OpenAI-compatible Chat and Responses callers also receive generated media: the adapters map
+image-MIME `inlineData` parts to `image_url` content parts (Chat, including stream deltas) and
+`output_image` items with a data URL (Responses), so a universal-lane caller is billed only for
+images it actually gets; non-image inline media has no OpenAI representation and is not fabricated.
 
 Image requests use `https://cloudcode-pa.googleapis.com`, the production endpoint selected by the
 Antigravity language server and independent working implementations. The configured sandbox host

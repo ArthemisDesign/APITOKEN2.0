@@ -17,6 +17,11 @@
 //! с data: URL → inlineData-партам (http(s) ссылки generateContent не принимает —
 //! честный 400), `response_format` json_object/json_schema →
 //! `generationConfig.responseMimeType`/`responseSchema`.
+//! Сгенерированные изображения (этап 3.4a, ответ): `inlineData`-парты
+//! image-типов → image_url content-части с data URL в non-stream (array-форма
+//! content) и в стриме (одна content-дельта) — billed media доставляется
+//! клиенту, а не теряется после settlement; не-image inline-медиа по-прежнему
+//! не имеет OpenAI-представления и не фабрикуется.
 //! Reasoning (3.4b): `reasoning_effort` minimal|low|medium|high →
 //! `generationConfig.thinkingConfig` (`thinkingLevel` проксируется как есть —
 //! плоскость сама мапит уровень в wire model id; `includeThoughts: true`;
@@ -618,6 +623,18 @@ pub(crate) fn gemini_image_part(part: &Value, param: &str) -> Result<Value, Resp
         ));
     }
     Ok(json!({"inlineData": {"mimeType": mime_type, "data": data}}))
+}
+
+/// Generated `inlineData` part → OpenAI image data URL. Only image MIME types
+/// have an OpenAI-compatible representation; non-image inline media (audio and
+/// future formats) stays dropped exactly as before, never fabricated.
+pub(crate) fn image_url_part(inline: &Value) -> Option<String> {
+    let mime_type = inline.get("mimeType").and_then(Value::as_str)?;
+    let data = inline.get("data").and_then(Value::as_str)?;
+    if !mime_type.starts_with("image/") || data.is_empty() {
+        return None;
+    }
+    Some(format!("data:{mime_type};base64,{data}"))
 }
 
 /// `response_format` → `(responseMimeType, Option<responseSchema>)` (этап
@@ -1247,7 +1264,7 @@ async fn json_chat_response(upstream: Response, requested_model: String) -> Resp
         .get("candidates")
         .and_then(Value::as_array)
         .and_then(|candidates| candidates.first());
-    let (text, reasoning, tool_calls) = candidate_content(candidate);
+    let (text, reasoning, tool_calls, images) = candidate_content(candidate);
     // finishReason кандидата; candidates отсутствуют при блокировке промпта
     // на входе — тогда finish берётся из promptFeedback.blockReason
     // (content_filter с пустым content).
@@ -1265,9 +1282,18 @@ async fn json_chat_response(upstream: Response, requested_model: String) -> Resp
         .get("usageMetadata")
         .map(map_usage)
         .unwrap_or(Value::Null);
-    // Контракт OpenAI: при tool calls без текста content — null.
-    let content = if text.is_empty() && !tool_calls.is_empty() {
+    // Контракт OpenAI: при tool calls без текста content — null. Сгенерированные
+    // изображения требуют array-формы content ([{type:"text"|"image_url"}]):
+    // data URL несёт само медиа, поэтому billed-and-delivered не теряется.
+    let content = if !tool_calls.is_empty() {
         Value::Null
+    } else if !images.is_empty() {
+        let mut parts = Vec::with_capacity(images.len() + 1);
+        if !text.is_empty() {
+            parts.push(json!({"type": "text", "text": text}));
+        }
+        parts.extend(images);
+        Value::Array(parts)
     } else {
         Value::String(text)
     };
@@ -1304,17 +1330,20 @@ async fn json_chat_response(upstream: Response, requested_model: String) -> Resp
 /// `tool_calls` (args сериализуются обратно в JSON-строку arguments —
 /// контракт OpenAI). id синтезируются (`callu_<name>`, `_2`, ... при
 /// повторах имени): на private wire functionCall.id не приезжает.
-fn candidate_content(candidate: Option<&Value>) -> (String, String, Vec<Value>) {
+/// Сгенерированные `inlineData`-парты (image MIME) → image_url content-парты
+/// с data URL — иначе клиент заплатил бы за медиа, которого не получил.
+fn candidate_content(candidate: Option<&Value>) -> (String, String, Vec<Value>, Vec<Value>) {
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut tool_calls = Vec::new();
+    let mut images = Vec::new();
     let mut name_counts: HashMap<&str, u64> = HashMap::new();
     let Some(parts) = candidate
         .and_then(|c| c.get("content"))
         .and_then(|c| c.get("parts"))
         .and_then(Value::as_array)
     else {
-        return (text, reasoning, tool_calls);
+        return (text, reasoning, tool_calls, images);
     };
     for part in parts {
         // thought-парт: его text — reasoning, а не content. Парт с одним
@@ -1327,6 +1356,12 @@ fn candidate_content(candidate: Option<&Value>) -> (String, String, Vec<Value>) 
         }
         if let Some(t) = part.get("text").and_then(Value::as_str) {
             text.push_str(t);
+            continue;
+        }
+        if let Some(inline) = part.get("inlineData") {
+            if let Some(url) = image_url_part(inline) {
+                images.push(json!({"type": "image_url", "image_url": {"url": url}}));
+            }
             continue;
         }
         if let Some(call) = part.get("functionCall") {
@@ -1345,7 +1380,7 @@ fn candidate_content(candidate: Option<&Value>) -> (String, String, Vec<Value>) 
             }));
         }
     }
-    (text, reasoning, tool_calls)
+    (text, reasoning, tool_calls, images)
 }
 
 /// Синтезируемый id tool call'а: на private wire functionCall.id не
@@ -1562,6 +1597,19 @@ impl GeminiChatSseTranslator {
                     .filter(|t| !t.is_empty())
                 {
                     self.push_chunk(json!({"content": text}), Value::Null);
+                    continue;
+                }
+                // Сгенерированный inlineData (image MIME) → одна content-дельта
+                // с array-формой: data URL несёт всё медиа одним чанком (дельт
+                // на wire нет — изображение приходит целиком).
+                if let Some(inline) = part.get("inlineData") {
+                    if let Some(url) = image_url_part(inline) {
+                        self.ensure_role();
+                        self.push_chunk(
+                            json!({"content": [{"type": "image_url", "image_url": {"url": url}}]}),
+                            Value::Null,
+                        );
+                    }
                     continue;
                 }
                 // Gemini присылает functionCall целиком (arguments-дельт на
@@ -2645,6 +2693,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn json_response_generated_image_content_parts() {
+        // Сгенерированные inlineData-парты (image MIME) → image_url content-
+        // части с data URL: billed media доставляется, а не теряется после
+        // settlement. Text остаётся text-частью в array-форме content.
+        let upstream = upstream_json(json!({
+            "candidates": [{"content": {"parts": [
+                {"text": "Here it is."},
+                {"inlineData": {"mimeType": "image/png", "data": "iVBORw0KGgo="}},
+                {"inlineData": {"mimeType": "image/jpeg", "data": "/9j/4AAQ"}}
+            ]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 4, "totalTokenCount": 7}
+        }));
+        let response = json_chat_response(upstream, "gemini-3.1-flash-image".to_string()).await;
+        let (status, body) = err_parts(response).await;
+        assert_eq!(status, StatusCode::OK);
+        let message = &body["choices"][0]["message"];
+        let content = message["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[0], json!({"type": "text", "text": "Here it is."}));
+        assert_eq!(
+            content[1],
+            json!({"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}})
+        );
+        assert_eq!(
+            content[2],
+            json!({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/4AAQ"}})
+        );
+        // usage продолжает нести итог, который тарифицирует settlement.
+        assert_eq!(body["usage"]["completion_tokens"], 4);
+    }
+
+    #[tokio::test]
+    async fn json_response_image_only_content_array() {
+        // Изображение без текста: array-форма content без text-части.
+        let upstream = upstream_json(json!({
+            "candidates": [{"content": {"parts": [
+                {"inlineData": {"mimeType": "image/webp", "data": "UklGR"}}
+            ]}, "finishReason": "STOP"}]
+        }));
+        let response = json_chat_response(upstream, "gemini-3.1-flash-image".to_string()).await;
+        let (_, body) = err_parts(response).await;
+        let content = body["choices"][0]["message"]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(
+            content[0],
+            json!({"type": "image_url", "image_url": {"url": "data:image/webp;base64,UklGR"}})
+        );
+    }
+
+    #[tokio::test]
+    async fn json_response_non_image_inline_media_stays_dropped() {
+        // Не-image inline-медиа не имеет OpenAI-представления: контент остаётся
+        // строкой, изображение не фабрикуется.
+        let upstream = upstream_json(json!({
+            "candidates": [{"content": {"parts": [
+                {"text": "Note."},
+                {"inlineData": {"mimeType": "audio/wav", "data": "UklGRg=="}},
+                {"inlineData": {"data": "abc"}}
+            ]}, "finishReason": "STOP"}]
+        }));
+        let response = json_chat_response(upstream, "gemini-2.5-flash".to_string()).await;
+        let (_, body) = err_parts(response).await;
+        let message = &body["choices"][0]["message"];
+        assert_eq!(message["content"], "Note.");
+    }
+
+    #[tokio::test]
     async fn json_response_model_falls_back_to_requested() {
         let upstream = upstream_json(json!({
             "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}]
@@ -2855,6 +2970,35 @@ mod tests {
             }]})
         );
         assert_eq!(frames[2]["choices"][0]["finish_reason"], "stop");
+    }
+
+    #[tokio::test]
+    async fn stream_generated_image_content_part() {
+        // Сгенерированный inlineData → ровно одна content-дельта с array-
+        // формой: изображение приходит целиком и доставляется клиенту.
+        let events = concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Done. \"}]}}]}\n",
+            "\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgo=\"}}]}}]}\n",
+            "\n",
+            "data: {\"candidates\":[{\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":4,\"totalTokenCount\":7}}\n",
+        );
+        let output = collect_stream(translate_events(events, true)).await;
+        let frames = data_frames(&output);
+        assert_eq!(frames.len(), 5, "{output}");
+        assert_eq!(
+            frames[1]["choices"][0]["delta"],
+            json!({"content": "Done. "})
+        );
+        assert_eq!(
+            frames[2]["choices"][0]["delta"],
+            json!({"content": [{
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}
+            }]})
+        );
+        assert_eq!(frames[3]["choices"][0]["finish_reason"], "stop");
+        assert_eq!(frames[4]["usage"]["completion_tokens"], 4);
     }
 
     #[tokio::test]
