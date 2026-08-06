@@ -72,6 +72,7 @@ pub enum PricingReleaseKindV2 {
 pub enum PricingReleaseActivationKindV2 {
     Cutover,
     Recovery,
+    Successor,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -756,6 +757,7 @@ impl PricingReleaseActivationKindV2 {
         match self {
             Self::Cutover => "cutover",
             Self::Recovery => "recovery",
+            Self::Successor => "successor",
         }
     }
 
@@ -763,6 +765,7 @@ impl PricingReleaseActivationKindV2 {
         match value {
             "cutover" => Ok(Self::Cutover),
             "recovery" => Ok(Self::Recovery),
+            "successor" => Ok(Self::Successor),
             _ => bail!("unknown pricing release activation kind {value:?}"),
         }
     }
@@ -1259,11 +1262,21 @@ pub fn validate_pricing_release_activation_v2(
             && head.head_version > 0
             && head.head_version < i64::MAX
             && head.updated_ts > 0 => {}
+        (
+            PricingReleaseActivationKindV2::Successor,
+            PricingReleaseHeadExpectationV2::Exact(head),
+        ) if head.active_generation < evidence.target_generation
+            && head.head_version > 0
+            && head.head_version < i64::MAX
+            && head.updated_ts > 0 => {}
         (PricingReleaseActivationKindV2::Cutover, _) => {
             bail!("pricing cutover requires an absent release head")
         }
         (PricingReleaseActivationKindV2::Recovery, _) => {
             bail!("pricing recovery requires the exact target release head")
+        }
+        (PricingReleaseActivationKindV2::Successor, _) => {
+            bail!("pricing successor requires the exact current release head behind the target")
         }
     }
     Ok(())
@@ -1475,8 +1488,32 @@ mod tests {
         malformed = request.clone();
         malformed.evidence.valid_until_ts += 1;
         assert!(validate_pricing_release_activation_v2(&malformed).is_err());
-        malformed = request;
+        malformed = request.clone();
         malformed.activation_kind = PricingReleaseActivationKindV2::Recovery;
         assert!(validate_pricing_release_activation_v2(&malformed).is_err());
+
+        let mut successor = request.clone();
+        successor.activation_kind = PricingReleaseActivationKindV2::Successor;
+        successor.expectation = PricingReleaseHeadExpectationV2::Exact(PricingReleaseHeadV2 {
+            active_generation: 9,
+            active_digest: "previous-head".into(),
+            head_version: 3,
+            updated_ts: 1_200,
+        });
+        validate_pricing_release_activation_v2(&successor).unwrap();
+
+        // A successor head at or behind the evidence target is the recovery/absent shape, never
+        // a successor; an absent expectation belongs to the cutover alone.
+        let mut non_monotonic = successor.clone();
+        non_monotonic.expectation = PricingReleaseHeadExpectationV2::Exact(PricingReleaseHeadV2 {
+            active_generation: 10,
+            active_digest: "target-release".into(),
+            head_version: 3,
+            updated_ts: 1_200,
+        });
+        assert!(validate_pricing_release_activation_v2(&non_monotonic).is_err());
+        let mut absent_expectation = successor;
+        absent_expectation.expectation = PricingReleaseHeadExpectationV2::Absent;
+        assert!(validate_pricing_release_activation_v2(&absent_expectation).is_err());
     }
 }

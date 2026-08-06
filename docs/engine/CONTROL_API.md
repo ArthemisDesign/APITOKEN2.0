@@ -762,7 +762,7 @@ cutover, `context` is materialized in one PostgreSQL `REPEATABLE READ READ ONLY`
 
 ```text
 head = { active_generation, active_digest, head_version, updated_ts }
-activation = { activation_id, activation_kind=cutover|recovery,
+activation = { activation_id, activation_kind=cutover|recovery|successor,
                evidence_digest, activated_ts }
 active_release = {
   generation, release_kind, schema_version,
@@ -904,6 +904,18 @@ uses the exact release-v2 assignment plus active funding generation/head/lot agg
 cutover authority. A legacy shadow binding may still have `reconciliation_state=pending`; that
 state and the retired `funding_buckets` projection are not duplicate activation preconditions.
 
+The capture has three modes, selected by the active release head alone. With an absent head it
+builds cutover evidence against the full live inventory. With the head equal to the requested
+target it builds recovery evidence: the immutable base inventory identity plus exact paired
+assignment extensions for later accounts. With the head behind the requested pair it builds
+successor evidence: the legacy shadow-coverage, shadow-evaluation and legacy-binding gates no
+longer apply (that lane froze at the first cutover and post-cutover accounts may resolve outside
+the legacy store), the requested target must be strictly newer than the active head, and both
+generations must cover the exact full live inventory in their base manifests — an assignment
+extension never substitutes for base coverage under a new head. Every other structural gate
+(prepared pair identity, recovery link, runtime lineage, funding parity, active catalog/switch
+graph, runtime floor, quiet authority window) applies identically in all modes.
+
 A successfully captured report is the unwrapped schema-v2 JSON object with HTTP `200` regardless
 of its `passed` value. In particular, `passed=false` plus `blockers[]` is valid durable evidence and
 must be persisted by the consumer rather than translated into a transport failure.
@@ -982,13 +994,21 @@ head returned by the cutover:
 ```
 
 Cutover is accepted only from an absent head and only to the prepared target. Recovery is accepted
-only as a monotonic CAS from that exact target to its linked newer recovery. Engine runs one
+only as a monotonic CAS from that exact target to its linked newer recovery. A successor
+(`activation_kind="successor"`) advances an active head to a NEWER prepared target/recovery pair:
+the expectation is the complete exact current head (any kind, behind the evidence target), the
+activated release is the evidence target, and the from identity records the outgoing head. Engine
+runs one
 `SERIALIZABLE` transaction under `pricing-release-v2:control-plane`, locks the singleton head,
 re-reads the immutable pair/link and active catalog/switch heads, and independently recomputes the
 base inventory, funding manifest/parity and live runtime-floor digest. Every live instance must
 claim release/funding schema v2, the exact compile-fixed runtime digest and its own current owner
 epoch. A recovery also proves that any account created after cutover has the exact atomic
-target/recovery assignment extension. With the exact target head active, the Stage 8 engine report
+target/recovery assignment extension. A successor instead requires the exact FULL live inventory
+inside both base manifests: assignment extensions bind to the outgoing head and never transfer, so
+an account provisioned after the successor pair was prepared fails activation closed and the
+consumer stages a fresh pair that includes it. With the exact target head active, the Stage 8
+engine report
 keeps the immutable base inventory identity and validates every later account through that paired
 extension and its live funding head, so fresh recovery evidence remains obtainable after the
 original 300-second cutover proof expires. Only then does the transaction append the evidence row

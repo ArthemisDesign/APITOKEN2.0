@@ -3745,6 +3745,13 @@ fn pricing_release_provisioning_context_v2_in_transaction<C: GenericClient>(
                 && to_generation == recovery_generation
                 && to_digest == recovery_digest
         }
+        super::PricingReleaseActivationKindV2::Successor => {
+            from_generation.is_some_and(|generation| generation != target_generation)
+                && from_digest.is_some()
+                && expected_head_version > 0
+                && to_generation == target_generation
+                && to_digest == target_digest
+        }
     };
     if !head_matches_audit
         || !activation_matches_evidence
@@ -3814,7 +3821,8 @@ fn pricing_release_provisioning_context_v2_in_transaction<C: GenericClient>(
         .context("pricing provisioning activation pair lacks its recovery link")?;
 
     let (active_release, paired_recovery) = match activation_kind {
-        super::PricingReleaseActivationKindV2::Cutover => (
+        super::PricingReleaseActivationKindV2::Cutover
+        | super::PricingReleaseActivationKindV2::Successor => (
             target,
             Some(super::PricingReleaseProvisioningRecoveryV2 {
                 release: recovery,
@@ -3998,7 +4006,8 @@ pub(crate) fn postgres_activate_pricing_release_v2(
     let current_head = locked_pricing_release_head_v2(&mut transaction)?;
     let evidence = &request.evidence;
     let (to_generation, to_digest) = match request.activation_kind {
-        super::PricingReleaseActivationKindV2::Cutover => {
+        super::PricingReleaseActivationKindV2::Cutover
+        | super::PricingReleaseActivationKindV2::Successor => {
             (evidence.target_generation, evidence.target_digest.as_str())
         }
         super::PricingReleaseActivationKindV2::Recovery => (
@@ -4206,7 +4215,12 @@ pub(crate) fn postgres_activate_pricing_release_v2(
     }
 
     let inventory_digest = match request.activation_kind {
-        super::PricingReleaseActivationKindV2::Cutover => {
+        super::PricingReleaseActivationKindV2::Cutover
+        | super::PricingReleaseActivationKindV2::Successor => {
+            // A successor pair re-snapshots the exact full engine inventory into its base
+            // assignments: extensions bind to the outgoing head and never transfer, so any account
+            // provisioned after the pair was prepared must fail closed here (the consumer then
+            // stages a fresh pair that includes it).
             crate::stage8::engine_inventory_digest(&mut transaction)?
         }
         super::PricingReleaseActivationKindV2::Recovery => {

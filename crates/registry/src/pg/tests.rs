@@ -2189,6 +2189,273 @@ fn postgres_stage8_engine_evidence_contract() {
         (row.get(0), row.get(1), row.get(2))
     };
     assert_eq!(activation_rows, (2, 2, 1));
+
+    // Successor lane: with the recovery head active, a newer prepared pair must be capturable and
+    // activatable without any legacy shadow evidence. The pair re-snapshots the full inventory
+    // (both accounts) into its base assignments; the extension-only account from above is exactly
+    // the case a successor pair folds back into the base manifest.
+    const SUCCESSOR_TARGET_GENERATION: i64 = 80_003;
+    const SUCCESSOR_RECOVERY_GENERATION: i64 = 80_004;
+    let successor_inventory_digest =
+        crate::stage8::engine_inventory_digest(&mut pg.client).unwrap();
+    let successor_assignment = |generation: i64, account_id: &str| {
+        format!("stage8-v2-successor-assignment-{generation}-{account_id}")
+    };
+    for (generation, release_kind, content_digest) in [
+        (
+            SUCCESSOR_TARGET_GENERATION,
+            "target",
+            "stage8-v2-successor-target-release",
+        ),
+        (
+            SUCCESSOR_RECOVERY_GENERATION,
+            "recovery",
+            "stage8-v2-successor-recovery-release",
+        ),
+    ] {
+        let funding_digest = {
+            let shell = crate::pricing::PricingReleaseV2 {
+                generation,
+                release_kind: if release_kind == "target" {
+                    crate::pricing::PricingReleaseKindV2::Target
+                } else {
+                    crate::pricing::PricingReleaseKindV2::Recovery
+                },
+                schema_version: 2,
+                capability_generation: 1,
+                capability_digest: "stage8-capability-1".into(),
+                main_catalog_generation: 1,
+                main_catalog_digest: "stage8-main-catalog-1".into(),
+                openkeys_catalog_generation: 1,
+                openkeys_catalog_digest: "stage8-openkeys-catalog-1".into(),
+                switch_generation: 1,
+                switch_digest: "stage8-switches-1".into(),
+                inventory_digest: successor_inventory_digest.clone(),
+                policy_manifest_digest: format!("stage8-v2-successor-policies-{generation}"),
+                assignment_manifest_digest: format!(
+                    "stage8-v2-successor-assignments-{generation}"
+                ),
+                funding_manifest_digest: String::new(),
+                minimum_runtime_schema_version: 2,
+                content_digest: content_digest.into(),
+                assignments: vec![
+                    crate::pricing::PricingReleaseAssignmentV2 {
+                        account_id: "stage8-account".into(),
+                        account_class: crate::pricing::AccountClass::B2c,
+                        policy_id: "stage8-v2-policy".into(),
+                        policy_version: 1,
+                        policy_digest: "stage8-v2-policy-digest".into(),
+                        billing_mode: crate::pricing::BillingModeV2::Balance,
+                        funding_generation: Some(1),
+                        purpose: None,
+                        responsible: None,
+                        assignment_digest: successor_assignment(generation, "stage8-account"),
+                    },
+                    crate::pricing::PricingReleaseAssignmentV2 {
+                        account_id: "stage8-post-cutover".into(),
+                        account_class: crate::pricing::AccountClass::B2c,
+                        policy_id: "stage8-v2-policy".into(),
+                        policy_version: 1,
+                        policy_digest: "stage8-v2-policy-digest".into(),
+                        billing_mode: crate::pricing::BillingModeV2::Balance,
+                        funding_generation: Some(1),
+                        purpose: None,
+                        responsible: None,
+                        assignment_digest: successor_assignment(
+                            generation,
+                            "stage8-post-cutover",
+                        ),
+                    },
+                ],
+            };
+            crate::stage8::funding_manifest_digest(&mut pg.client, Some(&shell)).unwrap()
+        };
+        pg.client
+            .execute(
+                "INSERT INTO pricing_release_versions( \
+               generation,release_kind,schema_version,capability_generation,capability_digest, \
+               main_catalog_generation,main_catalog_digest,openkeys_catalog_generation, \
+               openkeys_catalog_digest,switch_generation,switch_digest,inventory_digest, \
+               policy_manifest_digest,assignment_manifest_digest,funding_manifest_digest, \
+               minimum_runtime_schema_version,content_digest,created_ts \
+             ) VALUES($1,$2,2,1,'stage8-capability-1',1,'stage8-main-catalog-1',1, \
+                      'stage8-openkeys-catalog-1',1,'stage8-switches-1',$3,$4,$5,$6,2,$7,$8)",
+                &[
+                    &generation,
+                    &release_kind,
+                    &successor_inventory_digest,
+                    &format!("stage8-v2-successor-policies-{generation}"),
+                    &format!("stage8-v2-successor-assignments-{generation}"),
+                    &funding_digest,
+                    &content_digest,
+                    &authority_ts,
+                ],
+            )
+            .unwrap();
+        for account_id in ["stage8-account", "stage8-post-cutover"] {
+            pg.client
+                .execute(
+                    "INSERT INTO pricing_release_assignments( \
+                   release_generation,account_id,account_class,policy_id,policy_version, \
+                   policy_digest,billing_mode,funding_generation,purpose,responsible,assignment_digest \
+                 ) VALUES($1,$2,'b2c','stage8-v2-policy',1, \
+                          'stage8-v2-policy-digest','balance',1,NULL,NULL,$3)",
+                    &[&generation, &account_id, &successor_assignment(generation, account_id)],
+                )
+                .unwrap();
+        }
+    }
+    pg.client
+        .execute(
+            "INSERT INTO pricing_release_recovery_links( \
+               target_generation,target_digest,recovery_generation,recovery_digest,link_digest,created_ts \
+             ) VALUES($1,'stage8-v2-successor-target-release',$2, \
+                      'stage8-v2-successor-recovery-release','stage8-v2-successor-link',100)",
+            &[&SUCCESSOR_TARGET_GENERATION, &SUCCESSOR_RECOVERY_GENERATION],
+        )
+        .unwrap();
+
+    // A capture aimed at an OLDER pair is successor-shaped but non-monotonic: the evidence must
+    // say so instead of activating backwards.
+    let mut backwards_request = audited_request.clone();
+    backwards_request.target_generation = TARGET_GENERATION;
+    backwards_request.recovery_generation = RECOVERY_GENERATION;
+    let backwards = pg.stage8_engine_evidence(&backwards_request).unwrap();
+    assert!(!backwards.passed);
+    assert!(backwards
+        .blockers
+        .iter()
+        .any(|blocker| blocker.code == "successor_target_not_newer_than_active_head"));
+
+    let successor_request = crate::stage8::Stage8EngineEvidenceRequest {
+        target_generation: SUCCESSOR_TARGET_GENERATION,
+        recovery_generation: SUCCESSOR_RECOVERY_GENERATION,
+        ..audited_request.clone()
+    };
+    let successor_report = pg.stage8_engine_evidence(&successor_request).unwrap();
+    assert!(
+        successor_report.passed,
+        "successor capture must not require the frozen legacy lanes: {:?}",
+        successor_report.blockers
+    );
+    assert_eq!(
+        successor_report
+            .release
+            .active_head
+            .as_ref()
+            .map(|head| head.active_generation),
+        Some(RECOVERY_GENERATION)
+    );
+    assert_eq!(
+        successor_report.engine_inventory_digest, successor_inventory_digest,
+        "successor evidence binds the exact full live inventory"
+    );
+
+    let successor_head = pg
+        .pricing_release_head_v2()
+        .unwrap()
+        .expect("recovery release head");
+    let successor_activation = crate::pricing::PricingReleaseActivationRequestV2 {
+        activation_kind: crate::pricing::PricingReleaseActivationKindV2::Successor,
+        expectation: crate::pricing::PricingReleaseHeadExpectationV2::Exact(
+            successor_head.clone(),
+        ),
+        evidence: crate::pricing::PricingReleaseActivationEvidenceV2 {
+            evidence_digest: format!("sha256:v2:{}", "f".repeat(64)),
+            target_generation: SUCCESSOR_TARGET_GENERATION,
+            target_digest: successor_report
+                .release
+                .target_digest
+                .clone()
+                .expect("prepared successor target digest"),
+            recovery_generation: SUCCESSOR_RECOVERY_GENERATION,
+            recovery_digest: successor_report
+                .release
+                .recovery_digest
+                .clone()
+                .expect("prepared successor recovery digest"),
+            engine_inventory_digest: successor_report.engine_inventory_digest.clone(),
+            funding_digest: successor_report.funding_digest.clone(),
+            shadow_digest: successor_report.shadow_digest.clone(),
+            runtime_floor_digest: successor_report.runtime_floor_digest.clone(),
+            legacy_inflight_count: successor_report.legacy_inflight_count,
+            engine_captured_ts: successor_report.captured_ts,
+            observed_ts: successor_report.captured_ts,
+            valid_until_ts: successor_report.captured_ts + 300,
+        },
+        operator_id: "stage8-successor-test".into(),
+        reason: "prove successor head advance".into(),
+    };
+
+    // A successor cannot point at or behind the active head, and cannot reuse the other kinds'
+    // expectations.
+    let mut non_monotonic = successor_activation.clone();
+    non_monotonic.evidence.target_generation = RECOVERY_GENERATION;
+    assert!(matches!(
+        pg.activate_pricing_release_v2(&non_monotonic, &runtime_manifest)
+            .unwrap(),
+        crate::pricing::PricingReleaseActivationOutcomeV2::Rejected(
+            crate::pricing::PricingReleaseActivationRejectionV2::Invalid { .. }
+        )
+    ));
+    let mut absent_expectation = successor_activation.clone();
+    absent_expectation.expectation = crate::pricing::PricingReleaseHeadExpectationV2::Absent;
+    assert!(matches!(
+        pg.activate_pricing_release_v2(&absent_expectation, &runtime_manifest)
+            .unwrap(),
+        crate::pricing::PricingReleaseActivationOutcomeV2::Rejected(
+            crate::pricing::PricingReleaseActivationRejectionV2::Invalid { .. }
+        )
+    ));
+
+    let successor_receipt = match pg
+        .activate_pricing_release_v2(&successor_activation, &runtime_manifest)
+        .unwrap()
+    {
+        crate::pricing::PricingReleaseActivationOutcomeV2::Applied(receipt) => receipt,
+        outcome => panic!("unexpected successor outcome: {outcome:?}"),
+    };
+    assert_eq!(
+        successor_receipt.activation_kind,
+        crate::pricing::PricingReleaseActivationKindV2::Successor
+    );
+    assert_eq!(
+        successor_receipt.from_generation,
+        Some(RECOVERY_GENERATION)
+    );
+    assert_eq!(
+        successor_receipt.head.active_generation,
+        SUCCESSOR_TARGET_GENERATION
+    );
+    assert_eq!(successor_receipt.head.head_version, 3);
+    assert!(matches!(
+        pg.activate_pricing_release_v2(&successor_activation, &runtime_manifest)
+            .unwrap(),
+        crate::pricing::PricingReleaseActivationOutcomeV2::Unchanged(_)
+    ));
+
+    // The provisioning authority after a successor activation exposes the new target as active
+    // with its paired recovery, exactly like after a cutover.
+    let successor_context = pg
+        .pricing_release_provisioning_context_v2()
+        .unwrap()
+        .expect("provisioning context after successor activation");
+    assert_eq!(
+        successor_context.activation.activation_kind,
+        crate::pricing::PricingReleaseActivationKindV2::Successor
+    );
+    assert_eq!(
+        successor_context.active_release.generation,
+        SUCCESSOR_TARGET_GENERATION
+    );
+    assert_eq!(
+        successor_context
+            .paired_recovery
+            .as_ref()
+            .map(|paired| paired.release.generation),
+        Some(SUCCESSOR_RECOVERY_GENERATION)
+    );
+
     pg.cancel_request("stage8-legacy-inflight-request")
         .expect("legacy reserve settles after target and recovery CAS");
 

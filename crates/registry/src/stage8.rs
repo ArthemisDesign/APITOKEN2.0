@@ -630,6 +630,17 @@ pub(crate) fn postgres_stage8_engine_evidence(
                     && head.active_digest == release.content_digest
             })
     });
+    // A successor capture proves a NEWER prepared pair can replace the active head. The legacy
+    // scalar/shadow lane ended at the first cutover (its snapshot writes stopped), and
+    // post-cutover accounts may resolve outside the legacy shadow store (strict bindings,
+    // release-only extension accounts), so the shadow-coverage and legacy-binding gates below only
+    // apply up to and including the first cutover. A successor instead stands on the structural
+    // release authority: exact prepared pair + recovery link, full-inventory base coverage of both
+    // generations (assignment extensions bind to the outgoing head and never transfer), live
+    // funding parity, the active catalog/switch graph and the runtime floor. Semantic price
+    // continuity is the consumer's authority: a successor pair is precisely how an intentional
+    // per-account price change ships, so the engine must not equate "different" with "drift".
+    let successor_evidence_mode = active_release_head.is_some() && !recovery_evidence_mode;
     let current_inventory_digest = if recovery_evidence_mode {
         release_base_inventory_digest_v2(&mut transaction, request.target_generation)?
     } else {
@@ -637,15 +648,25 @@ pub(crate) fn postgres_stage8_engine_evidence(
     };
     let current_funding_digest = funding_manifest_digest(&mut transaction, target.as_ref())?;
 
-    if active_release_head.is_some() && !recovery_evidence_mode {
-        push_subjects(
-            &mut blockers,
-            "active_release_head_outside_requested_target",
-            vec![active_release_head
-                .as_ref()
-                .map(|head| format!("{}:{}", head.active_generation, head.head_version))
-                .unwrap_or_default()],
-        );
+    if successor_evidence_mode {
+        // The active head outside the requested pair is the defining shape of a successor capture,
+        // not a blocker (it subsumes the pre-successor `active_release_head_outside_requested_target`
+        // gate, which made any head other than the requested target unverifiable). What must hold
+        // is monotonicity: the head-step trigger rejects a non-advancing activation later, so
+        // surface the same condition here as evidence.
+        let head = active_release_head
+            .as_ref()
+            .expect("successor evidence mode requires an active release head");
+        if request.target_generation <= head.active_generation {
+            push_subjects(
+                &mut blockers,
+                "successor_target_not_newer_than_active_head",
+                vec![format!(
+                    "{}:{}",
+                    head.active_generation, request.target_generation
+                )],
+            );
+        }
     }
 
     if target.is_none() {
@@ -1061,38 +1082,45 @@ pub(crate) fn postgres_stage8_engine_evidence(
         unsupported_switch,
     );
 
-    query_blocker(
-        &mut transaction,
-        &mut blockers,
-        "active_account_shadow_binding_drift",
-        "SELECT account.id FROM accounts account \
-         LEFT JOIN account_policy_bindings binding ON binding.account_id=account.id \
-         LEFT JOIN account_policy_versions policy ON policy.account_id=binding.account_id \
-          AND policy.effective_version=binding.active_effective_version \
-         WHERE account.status='active' AND( \
-           binding.account_id IS NULL OR binding.active_effective_version IS NULL \
-           OR policy.account_id IS NULL OR binding.account_class<>policy.account_class \
-           OR binding.product_id IS DISTINCT FROM policy.product_id \
-           OR binding.policy_enforcement<>'shadow')",
-        &[],
-    )?;
-    query_blocker(
-        &mut transaction,
-        &mut blockers,
-        "active_policy_or_dependency_stale",
-        "SELECT binding.account_id FROM account_policy_bindings binding \
-         JOIN accounts account ON account.id=binding.account_id AND account.status='active' \
-         JOIN account_policy_versions policy ON policy.account_id=binding.account_id \
-          AND policy.effective_version=binding.active_effective_version \
-         LEFT JOIN pricing_catalog_heads catalog ON catalog.product_id=binding.product_id \
-         LEFT JOIN provider_switch_head switches ON switches.singleton=1 \
-         WHERE binding.active_effective_version IS DISTINCT FROM( \
-             SELECT max(candidate.effective_version) FROM account_policy_versions candidate \
-             WHERE candidate.account_id=binding.account_id) \
-           OR policy.catalog_generation IS DISTINCT FROM catalog.active_generation \
-           OR policy.switch_generation IS DISTINCT FROM switches.active_generation",
-        &[],
-    )?;
+    // The legacy shadow store stops being the pricing authority at the first cutover: live
+    // admission resolves through the active release, post-cutover accounts may carry strict
+    // bindings or release-only extension coverage, and legacy account policies are intentionally
+    // frozen at their cutover lineage instead of chasing catalog/switch heads. These two gates
+    // therefore only guard the pre-successor world.
+    if !successor_evidence_mode {
+        query_blocker(
+            &mut transaction,
+            &mut blockers,
+            "active_account_shadow_binding_drift",
+            "SELECT account.id FROM accounts account \
+             LEFT JOIN account_policy_bindings binding ON binding.account_id=account.id \
+             LEFT JOIN account_policy_versions policy ON policy.account_id=binding.account_id \
+              AND policy.effective_version=binding.active_effective_version \
+             WHERE account.status='active' AND( \
+               binding.account_id IS NULL OR binding.active_effective_version IS NULL \
+               OR policy.account_id IS NULL OR binding.account_class<>policy.account_class \
+               OR binding.product_id IS DISTINCT FROM policy.product_id \
+               OR binding.policy_enforcement<>'shadow')",
+            &[],
+        )?;
+        query_blocker(
+            &mut transaction,
+            &mut blockers,
+            "active_policy_or_dependency_stale",
+            "SELECT binding.account_id FROM account_policy_bindings binding \
+             JOIN accounts account ON account.id=binding.account_id AND account.status='active' \
+             JOIN account_policy_versions policy ON policy.account_id=binding.account_id \
+              AND policy.effective_version=binding.active_effective_version \
+             LEFT JOIN pricing_catalog_heads catalog ON catalog.product_id=binding.product_id \
+             LEFT JOIN provider_switch_head switches ON switches.singleton=1 \
+             WHERE binding.active_effective_version IS DISTINCT FROM( \
+                 SELECT max(candidate.effective_version) FROM account_policy_versions candidate \
+                 WHERE candidate.account_id=binding.account_id) \
+               OR policy.catalog_generation IS DISTINCT FROM catalog.active_generation \
+               OR policy.switch_generation IS DISTINCT FROM switches.active_generation",
+            &[],
+        )?;
+    }
     // The target release funding-generation/head/lot aggregate checks above are the Stage 8
     // authority. Legacy `funding_buckets` are intentionally absent after Stage 6 normalization
     // and must not be reintroduced as a second, contradictory activation precondition.
@@ -1128,8 +1156,17 @@ pub(crate) fn postgres_stage8_engine_evidence(
     push_subjects(
         &mut blockers,
         "insufficient_shadow_provider_coverage",
-        insufficient_provider_coverage(&shadow_provider_counts, request.min_samples_per_provider),
+        if successor_evidence_mode {
+            // The shadow lane stopped at the first cutover; requiring fresh legacy_scalar samples
+            // would block every successor capture forever.
+            Vec::new()
+        } else {
+            insufficient_provider_coverage(&shadow_provider_counts, request.min_samples_per_provider)
+        },
     );
+    // The remaining shadow gates evaluate only legacy_scalar rows of a lane that froze at the
+    // first cutover; a successor capture skips them (their zero counts stay in the report).
+    if !successor_evidence_mode {
     query_blocker(
         &mut transaction,
         &mut blockers,
@@ -1348,6 +1385,7 @@ pub(crate) fn postgres_stage8_engine_evidence(
              AND(policy_hold_nano<>legacy_hold_nano OR comparison_result<>'equal'))",
         &[&request.window_start_ts, &request.window_end_ts],
     )?;
+    }
 
     let gemini_usage_rows = query_count(
         &mut transaction,

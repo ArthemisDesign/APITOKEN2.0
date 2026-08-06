@@ -258,8 +258,12 @@ side effect. `serve` may only perform the read-only schema verification before c
   activate or fix anything; any blocker must stop Stage 9.
   With an absent release head, inventory means the full base manifest for cutover. With an exact target
   head the same endpoint builds fresh recovery evidence from the immutable base inventory and accepts a
-  post-cutover account only via an exact paired target/recovery extension with live funding parity;
-  a different active head is a blocker.
+  post-cutover account only via an exact paired target/recovery extension with live funding parity.
+  With the head behind the requested pair the same endpoint builds successor evidence: the frozen
+  legacy shadow/binding gates no longer apply, the target must be strictly newer than the active
+  head, and both generations must cover the exact full live inventory in their BASE manifests —
+  extensions bind to the outgoing head and never transfer, so a later account fails the capture
+  closed and the consumer stages a fresh pair.
 - **Target Stage 5/6/9 contract:** authoritative inventories fully replace the manual assignment
   matrix. Funding normalizes online account-local transactions: exact historical welcome remains
   bonus, residual counts as paid; new `$5` grants, reviewer artifacts and a global money drain are not
@@ -367,7 +371,11 @@ side effect. `serve` may only perform the read-only schema verification before c
   catalog/switch lineage, the full base inventory (or exact paired extensions on recovery), funding
   parity and the compile-fixed runtime floor with exact owner-epoch claims. Evidence, the activation audit and one
   head row commit together; a rejection rolls back entirely. Exact audit replay returns
-  `unchanged`; recovery moves only forward from the target. Accounts, balances, lots, reservations,
+  `unchanged`; recovery moves only forward from the target. A successor activation (migration
+  `0035`) advances any exact active head to a newer prepared target: the from identity records the
+  outgoing head, inventory authority is the full live engine inventory (extensions never
+  transfer), and the provisioning context afterwards exposes the new target as active with its
+  paired recovery, exactly as after a cutover. Accounts, balances, lots, reservations,
   ledger/usage are not written. Real-PG coverage —
   `pg::tests::postgres_stage8_engine_evidence_contract`.
 - **Stage 9 successor activation schema checkpoint:** migration `0035` expand-only admits the
