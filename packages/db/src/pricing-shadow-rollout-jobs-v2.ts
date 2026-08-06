@@ -612,9 +612,10 @@ export async function stagePricingShadowRolloutV2(
       rollout_digest: string;
       actor_id: string;
       reason: string;
+      status: string;
       job_count: string;
     }>(`
-      SELECT id::text, stage5_run_id::text, rollout_digest, actor_id, reason, job_count::text
+      SELECT id::text, stage5_run_id::text, rollout_digest, actor_id, reason, status, job_count::text
       FROM pricing_shadow_rollouts_v2
       WHERE idempotency_key = $1
       FOR UPDATE
@@ -900,16 +901,26 @@ export async function stagePricingShadowRolloutV2(
     const existingRow = existing.rows[0];
     if (existingRow) {
       if (existingRow.stage5_run_id !== input.stage5RunId
-          || existingRow.rollout_digest !== rolloutDigest
           || existingRow.actor_id !== input.actorId
           || existingRow.reason !== input.reason) {
+        throw permanent("shadow rollout idempotency key has a different immutable request");
+      }
+      // A terminal rollout replays by identity, not by the recomputed digest: the digest embeds
+      // the per-account shadow requests built from the live engine lineages, which legitimately
+      // moved once the jobs were delivered (that is the point of the rollout). Digest equality
+      // is enforced only while the rollout is still in flight — a same-key request whose
+      // recomputed content drifted mid-flight is a conflict.
+      const terminal = existingRow.status === "confirmed"
+        || existingRow.status === "blocked"
+        || existingRow.status === "dead";
+      if (!terminal && existingRow.rollout_digest !== rolloutDigest) {
         throw permanent("shadow rollout idempotency key has a different immutable request");
       }
       await client.query("COMMIT");
       transactionOpen = false;
       return {
         rolloutId: existingRow.id,
-        rolloutDigest,
+        rolloutDigest: existingRow.rollout_digest,
         jobCount: nonNegativeSafeNumber(existingRow.job_count, "stored rollout job count"),
         idempotentReplay: true,
       };

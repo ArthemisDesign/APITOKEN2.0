@@ -628,6 +628,54 @@ describe.runIf(Boolean(connectionString))("pricing shadow rollout v2 lane", () =
     }
   });
 
+  it("replays a terminal rollout by identity even after its lineages advanced", async () => {
+    const runId = randomUUID();
+    await seedStage5(seed, runId);
+    const input = stageInput(runId);
+    const staged = await stagePricingShadowRolloutV2(database, engineReader(), input);
+
+    // The confirmed jobs advance the live engine lineages, so the recomputed rollout digest
+    // legitimately differs from the stored one.
+    const advanced = engineReader();
+    const originalState = advanced.getAccountPricingState;
+    advanced.getAccountPricingState = async (accountId: string) => {
+      const state = await originalState(accountId);
+      if (accountId === "acct_ok_new" && typeof state === "object" && state !== null && "active" in state) {
+        state.active.policy.effective_version += 1;
+        state.active.policy.content_digest = V1("advanced-after-confirm");
+      }
+      return state;
+    };
+
+    // While the rollout is still in flight, the same key with drifted recomputed content is a
+    // conflict, not a replay.
+    await expect(stagePricingShadowRolloutV2(database, advanced, input))
+      .rejects.toMatchObject({ permanent: true, code: "idempotency_conflict" });
+
+    const claimed = await claimPricingShadowPolicyJobsV2(database, "worker-a", {
+      batchSize: 10,
+      leaseMs: 300_000,
+      maxAttempts: 3,
+    });
+    for (const job of claimed) {
+      await completePricingShadowPolicyJobV2(database, job, "worker-a", {
+        result: "applied",
+        request_digest: job.requestDigest,
+      });
+    }
+    const terminal = await seed.query<{ status: string }>(
+      "SELECT status FROM pricing_shadow_rollouts_v2 WHERE id = $1",
+      [staged.rolloutId],
+    );
+    expect(terminal.rows[0]!.status).toBe("confirmed");
+
+    // A terminal rollout replays by identity and returns its stored digest.
+    const replay = await stagePricingShadowRolloutV2(database, advanced, input);
+    expect(replay.idempotentReplay).toBe(true);
+    expect(replay.rolloutId).toBe(staged.rolloutId);
+    expect(replay.rolloutDigest).toBe(staged.rolloutDigest);
+  });
+
   it("skips a legacy-contract account whose lineage already holds the canonical successor", async () => {
     const runId = randomUUID();
     await seedStage5(seed, runId);

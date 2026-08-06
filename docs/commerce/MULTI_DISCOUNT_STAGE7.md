@@ -97,7 +97,11 @@ proceeds, so this lane needs no repair pass, while a lock on the active row (or 
 active row) still fails closed. A lineage that already advanced once carries the converted
 release-v2 target rules (e.g. `global-one-to-one:provider:*`), not the v1 transition shape; the
 staging canonical check accepts both shapes — each is writable only through engine-validated
-paths — and everything else still fails closed as `openkeys_lock_drift`.
+paths — and everything else still fails closed as `openkeys_lock_drift`. A terminal rollout
+(`confirmed`/`blocked`/`dead`) replays its staging request by identity (idempotency key, Stage 5
+run, actor, reason) and returns the stored digest: the recomputed digest embeds the per-account
+shadow requests built from live lineages, which legitimately moved once the jobs were delivered;
+digest equality is enforced only while the rollout is still in flight.
 The worker reads the engine state, confirms an already-exact
 policy with a single readback without mutation, otherwise performs prepare → exact readback →
 activate with a CAS expectation from fresh state. Any version conflict, digest mismatch, newer
