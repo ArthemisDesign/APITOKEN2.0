@@ -42,6 +42,8 @@ GPT_IMAGE_2_PUBLIC_PAID_SMOKE_GATE=$CONTROLLER_ROOT/gpt-image-2-public-paid-smok
 GPT_IMAGE_2_PUBLIC_PAID_SMOKE_PRODUCER_SHA=63972f2ddfd5906d7c30a87406053eb3782f4223
 GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V2_GATE=$CONTROLLER_ROOT/gpt-image-2-public-paid-smoke-v2-gate.sh
 GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V2_PRODUCER_SHA=853fdc6c8d5be486c371b23df6772eeaf7a48029
+GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V3_GATE=$CONTROLLER_ROOT/gpt-image-2-public-paid-smoke-v3-gate.sh
+GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V3_PRODUCER_SHA=8b68d73a2a6ba6ffae2f24692b283059f15b7c63
 GPT_IMAGE_2_PUBLIC_PAID_INSPECT_GATE=$CONTROLLER_ROOT/gpt-image-2-public-paid-inspect-gate.sh
 GPT_IMAGE_2_PUBLIC_PAID_INSPECT_PRODUCER_SHA=63972f2ddfd5906d7c30a87406053eb3782f4223
 GPT_IMAGE_2_SETTLEMENT_DIAGNOSTIC_GATE=$CONTROLLER_ROOT/gpt-image-2-settlement-diagnostic-gate.sh
@@ -2439,8 +2441,9 @@ main() {
   local gpt_image_2_live_gate=0 gpt_image_2_public_smoke_gate=0
   local gpt_image_2_public_preflight_gate=0 gpt_image_2_public_preflight_v2_gate=0
   local gpt_image_2_public_preflight_v3_gate=0 gpt_image_2_public_paid_smoke_gate=0
-  local gpt_image_2_public_paid_smoke_v2_gate=0 gpt_image_2_public_paid_inspect_gate=0
-  local gpt_image_2_settlement_diagnostic_gate=0 gpt_image_2_settlement_v2_diagnostic_gate=0
+  local gpt_image_2_public_paid_smoke_v2_gate=0 gpt_image_2_public_paid_smoke_v3_gate=0
+  local gpt_image_2_public_paid_inspect_gate=0 gpt_image_2_settlement_diagnostic_gate=0
+  local gpt_image_2_settlement_v2_diagnostic_gate=0
   local typescript_required=0 typescript_full=0 typescript_base= rust_required=0 static_required=0
   local engine_artifacts_required=0 codex_artifacts_required=0
   local validation_policy_sha256='' validation_plan_sha256='' final_verification_plan=''
@@ -2477,6 +2480,7 @@ main() {
   require_fixed_file "$GPT_IMAGE_2_PUBLIC_PREFLIGHT_V3_GATE"
   require_fixed_file "$GPT_IMAGE_2_PUBLIC_PAID_SMOKE_GATE"
   require_fixed_file "$GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V2_GATE"
+  require_fixed_file "$GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V3_GATE"
   require_fixed_file "$GPT_IMAGE_2_PUBLIC_PAID_INSPECT_GATE"
   require_fixed_file "$GPT_IMAGE_2_SETTLEMENT_DIAGNOSTIC_GATE"
   require_fixed_file "$GPT_IMAGE_2_SETTLEMENT_V2_DIAGNOSTIC_GATE"
@@ -2558,6 +2562,8 @@ main() {
     wd_path_is_gpt_image_2_public_paid_smoke_gate_trigger && gpt_image_2_public_paid_smoke_gate=1
   wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
     wd_path_is_gpt_image_2_public_paid_smoke_v2_gate_trigger && gpt_image_2_public_paid_smoke_v2_gate=1
+  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
+    wd_path_is_gpt_image_2_public_paid_smoke_v3_gate_trigger && gpt_image_2_public_paid_smoke_v3_gate=1
   wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
     wd_path_is_gpt_image_2_public_paid_inspect_gate_trigger && gpt_image_2_public_paid_inspect_gate=1
   wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
@@ -2848,12 +2854,16 @@ main() {
   fi
 
   if (( gpt_image_2_public_paid_smoke_v2_gate == 1 )); then
-    CURRENT_PHASE=verifying-gpt-image-2-public-paid-v2
-    CURRENT_PHASE_BEFORE_FAILURE=verifying-gpt-image-2-public-paid-v2
+    wd_die "retired GPT Image 2 paid smoke v2 root cannot be dispatched again"
+  fi
+
+  if (( gpt_image_2_public_paid_smoke_v3_gate == 1 )); then
+    CURRENT_PHASE=verifying-gpt-image-2-public-paid-v3
+    CURRENT_PHASE_BEFORE_FAILURE=verifying-gpt-image-2-public-paid-v3
     status "running fresh GPT Image 2 generation and edit through the sealed pool"
     public_image_paid_summary=
-    if ! public_image_paid_summary=$(sudo -n "$GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V2_GATE" \
-        "$GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V2_PRODUCER_SHA"); then
+    if ! public_image_paid_summary=$(sudo -n "$GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V3_GATE" \
+        "$GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V3_PRODUCER_SHA"); then
       [[ $public_image_paid_summary =~ ^gpt-image-paid:[a-z_]{1,64}:g=(true|false):e=(true|false)$ ]] \
         && CURRENT_PHASE_BEFORE_FAILURE=$public_image_paid_summary
       false
@@ -2875,7 +2885,7 @@ main() {
       .state == "green" and (.generation | operation(false)) and (.edit | operation(true)) and
       .generation.png_sha256 != .edit.png_sha256
     ' <<<"$public_image_paid_summary" >/dev/null \
-      || wd_die "GPT Image 2 public paid smoke v2 returned invalid evidence"
+      || wd_die "GPT Image 2 public paid smoke v3 returned invalid evidence"
     public_image_generation_status=$(jq -jr '
       .generation | "\(.width)x\(.height) \(.png_sha256) real=\(.real_nano) charge=\(.charge_nano)"
     ' <<<"$public_image_paid_summary")
@@ -2883,8 +2893,8 @@ main() {
       .edit | "\(.width)x\(.height) \(.png_sha256) image_in=\(.image_input_tokens) real=\(.real_nano) charge=\(.charge_nano)"
     ' <<<"$public_image_paid_summary")
     (( ${#public_image_generation_status} <= 140 && ${#public_image_edit_status} <= 140 )) \
-      || wd_die "GPT Image 2 public paid smoke v2 status exceeds the GitHub bound"
-    CURRENT_PHASE_BEFORE_FAILURE=gpt-image-paid-v2:success:g=true:e=true
+      || wd_die "GPT Image 2 public paid smoke v3 status exceeds the GitHub bound"
+    CURRENT_PHASE_BEFORE_FAILURE=gpt-image-paid-v3:success:g=true:e=true
     github_status success deploy/gpt-image-2-public-generation "$public_image_generation_status"
     github_status success deploy/gpt-image-2-public-edit "$public_image_edit_status"
   fi

@@ -287,7 +287,11 @@ and `charge_nano=0`. The repeated stop at `generation_received` was a runner pan
 the async orchestration called synchronous `PgStore` while already inside the command's Tokio runtime, while
 the `postgres` client implements each query and `Drop` with its own runtime `block_on`. The corrected runner
 enters Tokio only around each HTTP future and performs settlement reads and `PgStore` teardown outside Tokio;
-it does not replay either fenced request.
+it does not replay either fenced request. Corrective producer
+`8b68d73a2a6ba6ffae2f24692b283059f15b7c63` is exact watchdog-GREEN. The separately delivered
+`deploy/gpt-image-2-public-paid-smoke-v3-gate.sh` is pinned to that immutable binary and the fresh
+`gpt-image-2-public-paid-smoke-v3` root. It inherits only the production PostgreSQL DSN, invokes exactly one
+`--execute`, and permanently fences any partial outcome. The v2 trigger remains retired.
 
 The intended one-shot contract remains:
 

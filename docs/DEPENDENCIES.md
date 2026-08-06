@@ -359,7 +359,10 @@ is only what is needed to walk the relationships when making changes:
   smoke runner: synchronous `PgStore` was invoked inside its Tokio runtime even though the synchronous
   `postgres` client uses an internal runtime for query and drop. The corrected producer keeps PostgreSQL
   observation and teardown outside Tokio and enters the network runtime only for each HTTP future; neither
-  fenced request is replayed. The direct OpenAI plane and header-gated Combined
+  fenced request is replayed. Corrective producer `8b68d73a2a6ba6ffae2f24692b283059f15b7c63` is exact
+  watchdog-GREEN. Its sole paid consumer is the separately delivered
+  `deploy/gpt-image-2-public-paid-smoke-v3-gate.sh`, pinned to the fresh v3 evidence root and allowed exactly
+  one `--execute`; every partial result permanently fences replay. The direct OpenAI plane and header-gated Combined
   bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —

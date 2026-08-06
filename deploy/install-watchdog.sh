@@ -244,6 +244,8 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-paid-smoke-gate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/gpt-image-2-public-paid-smoke-v2-gate.sh" \
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-paid-smoke-v2-gate.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/gpt-image-2-public-paid-smoke-v3-gate.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-paid-smoke-v3-gate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/gpt-image-2-public-paid-inspect-gate.sh" \
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-paid-inspect-gate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/gpt-image-2-settlement-diagnostic-gate.sh" \
