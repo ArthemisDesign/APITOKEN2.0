@@ -193,7 +193,8 @@ commit_status_context_re=$(sed -n "s/^commit_status_context_re='\\(.*\\)'$/\\1/p
 for valid_context in deploy/watchdog deploy/gpt-image-2-public-preflight \
   deploy/gpt-image-2-public-preflight-v2 deploy/gpt-image-2-public-preflight-v3 \
   deploy/gpt-image-2-public-paid-smoke deploy/gpt-image-2-public-paid-generation \
-  deploy/gpt-image-2-public-paid-edit deploy/gpt-image-2-public-paid-inspect; do
+  deploy/gpt-image-2-public-paid-edit deploy/gpt-image-2-public-paid-inspect \
+  deploy/gpt-image-2-settlement-diagnostic; do
   [[ $valid_context =~ $commit_status_context_re ]] \
     || wd_die "valid GitHub commit-status context was rejected: $valid_context"
 done
@@ -1166,6 +1167,7 @@ for controller_definition in \
   deploy/gpt-image-2-public-preflight-v3-gate.sh \
   deploy/gpt-image-2-public-paid-smoke-gate.sh \
   deploy/gpt-image-2-public-paid-inspect-gate.sh \
+  deploy/gpt-image-2-settlement-diagnostic-gate.sh \
   deploy/watchdog-infrastructure.sh \
   deploy/deploy.sh \
   deploy/authbot-runtime-state.sh \
@@ -4601,6 +4603,64 @@ grep -Fq 'CURRENT_PHASE_BEFORE_FAILURE=gpt-image-paid:generation_received:g=true
 grep -Fq 'github_status success deploy/gpt-image-2-public-paid-inspect "$public_image_generation_status"' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 generation inspection has no sanitized GREEN status'
+
+# Settlement diagnosis consumes the fenced UUID only over stdin and cannot dispatch another image.
+wd_path_is_gpt_image_2_settlement_diagnostic_gate_trigger \
+  deploy/gpt-image-2-settlement-diagnostic-gate.sh \
+  || wd_die 'GPT Image 2 settlement diagnostic file does not trigger its gate'
+for path in deploy/watchdog.sh deploy/watchdog-lib.sh deploy/gpt-image-2-public-paid-inspect-gate.sh; do
+  if wd_path_is_gpt_image_2_settlement_diagnostic_gate_trigger "$path"; then
+    wd_die "unrelated path triggers GPT Image 2 settlement diagnostic: $path"
+  fi
+done
+grep -Fq '"$ROOT/deploy/gpt-image-2-settlement-diagnostic-gate.sh"' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'GPT Image 2 settlement diagnostic is not installed as a fixed controller'
+grep -Fxq 'DIAGNOSTIC_PRODUCER_SHA=ab3b4e557f7b870b93f62a88a53e87e46b49fb4c' \
+  "$ROOT/deploy/gpt-image-2-settlement-diagnostic-gate.sh" \
+  || wd_die 'GPT Image 2 settlement diagnostic is not pinned to its producer'
+grep -Fxq 'FENCED_PRODUCER_SHA=63972f2ddfd5906d7c30a87406053eb3782f4223' \
+  "$ROOT/deploy/gpt-image-2-settlement-diagnostic-gate.sh" \
+  || wd_die 'GPT Image 2 settlement diagnostic reads the wrong paid fence'
+grep -Fq '[[ $# -eq 2 && $2 == --inspect ]]' \
+  "$ROOT/deploy/gpt-image-2-settlement-diagnostic-gate.sh" \
+  || wd_die 'GPT Image 2 settlement diagnostic accepts a dispatch-capable invocation'
+grep -Fq "if ! diagnostic=\$(printf '%s\\n' \"\$request_id\" | \\" \
+  "$ROOT/deploy/gpt-image-2-settlement-diagnostic-gate.sh" \
+  || wd_die 'GPT Image 2 settlement diagnostic does not pass the request identity through stdin'
+grep -Fq 'env -i HOME=/home/deploy CLAUDE_API_DATABASE_URL="$CLAUDE_API_DATABASE_URL"' \
+  "$ROOT/deploy/gpt-image-2-settlement-diagnostic-gate.sh" \
+  || wd_die 'GPT Image 2 settlement diagnostic inherits more than the database URL'
+! grep -Eq 'openai-image-public-smoke|images/generations|images/edits|--execute|--preflight-only' \
+  "$ROOT/deploy/gpt-image-2-settlement-diagnostic-gate.sh" \
+  || wd_die 'GPT Image 2 settlement diagnostic can dispatch or discover images'
+! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc|https?://' \
+  "$ROOT/deploy/gpt-image-2-settlement-diagnostic-gate.sh" \
+  || wd_die 'GPT Image 2 settlement diagnostic contains a network or reseller origin'
+grep -Fq 'unset request_id CLAUDE_API_DATABASE_URL' \
+  "$ROOT/deploy/gpt-image-2-settlement-diagnostic-gate.sh" \
+  || wd_die 'GPT Image 2 settlement diagnostic retains the fenced identity or database URL'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-diagnostic-gate.sh ab3b4e557f7b870b93f62a88a53e87e46b49fb4c --inspect' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'GPT Image 2 settlement diagnostic lacks an exact read-only sudo bridge'
+grep -A2 -F "require_permitted 'GPT Image 2 exact-producer settlement diagnostic'" \
+  "$ROOT/deploy/install-sudoers.sh" \
+  | grep -Fq 'ab3b4e557f7b870b93f62a88a53e87e46b49fb4c --inspect' \
+  || wd_die 'GPT Image 2 settlement diagnostic sudo self-check is not aligned with policy'
+grep -Fxq 'GPT_IMAGE_2_SETTLEMENT_DIAGNOSTIC_PRODUCER_SHA=ab3b4e557f7b870b93f62a88a53e87e46b49fb4c' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog does not pin the GPT Image 2 settlement diagnostic producer'
+settlement_diagnostic_gate_line=$(grep -nF '"$GPT_IMAGE_2_SETTLEMENT_DIAGNOSTIC_PRODUCER_SHA" --inspect)' \
+  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+[[ -n $settlement_diagnostic_gate_line && -n $processed_line && \
+   $settlement_diagnostic_gate_line -lt $processed_line ]] \
+  || wd_die 'GPT Image 2 settlement diagnostic does not run before processed/green'
+grep -Fq 'github_status success deploy/gpt-image-2-settlement-diagnostic' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'GPT Image 2 settlement diagnostic has no sanitized GREEN status'
+grep -Fq '(( ${#public_image_settlement_status} <= 140 ))' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'GPT Image 2 settlement diagnostic status is not length-bounded'
 
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'

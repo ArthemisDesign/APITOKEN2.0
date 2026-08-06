@@ -221,8 +221,13 @@ invocation through the same sealed pool. Delivery `d2216bfa276d9fe195b0d1f0c8f4f
 not dispatched. That root is permanently fenced and the execute trigger is retired. Its successor controller
 is inspect-only: it reads exactly the private journal and generation PNG, validates the generation-only
 withdrawal, and emits bounded dimensions/bytes/SHA-256 without environment, credential, CLI or network
-access. Catalog, router, OpenKeys, site, admin and public-documentation publication remains forbidden until a
-future fresh-root production generation+edit delivery and overall watchdog status are GREEN.
+access. Watchdog-GREEN engine producer `ab3b4e557f7b870b93f62a88a53e87e46b49fb4c` adds the separate
+read-only `openai-image-settlement-diagnostic`. Its pinned root controller revalidates the original fence,
+loads only the PostgreSQL DSN from the active OpenAI slot, sends the retained UUIDv4 to that exact current
+binary over stdin, and publishes only a bounded identifier-free status. It performs no image request,
+credential lookup, retry, or database mutation. Catalog, router, OpenKeys, site, admin and
+public-documentation publication remains forbidden until a future fresh-root production generation+edit
+delivery and overall watchdog status are GREEN.
 
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane

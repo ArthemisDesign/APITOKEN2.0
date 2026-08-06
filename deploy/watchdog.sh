@@ -42,6 +42,8 @@ GPT_IMAGE_2_PUBLIC_PAID_SMOKE_GATE=$CONTROLLER_ROOT/gpt-image-2-public-paid-smok
 GPT_IMAGE_2_PUBLIC_PAID_SMOKE_PRODUCER_SHA=63972f2ddfd5906d7c30a87406053eb3782f4223
 GPT_IMAGE_2_PUBLIC_PAID_INSPECT_GATE=$CONTROLLER_ROOT/gpt-image-2-public-paid-inspect-gate.sh
 GPT_IMAGE_2_PUBLIC_PAID_INSPECT_PRODUCER_SHA=63972f2ddfd5906d7c30a87406053eb3782f4223
+GPT_IMAGE_2_SETTLEMENT_DIAGNOSTIC_GATE=$CONTROLLER_ROOT/gpt-image-2-settlement-diagnostic-gate.sh
+GPT_IMAGE_2_SETTLEMENT_DIAGNOSTIC_PRODUCER_SHA=ab3b4e557f7b870b93f62a88a53e87e46b49fb4c
 TEST_DB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-test-db
 BACKUP_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-backup.sh
 MIGRATION_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
@@ -2433,13 +2435,14 @@ main() {
   local gpt_image_2_live_gate=0 gpt_image_2_public_smoke_gate=0
   local gpt_image_2_public_preflight_gate=0 gpt_image_2_public_preflight_v2_gate=0
   local gpt_image_2_public_preflight_v3_gate=0 gpt_image_2_public_paid_smoke_gate=0
-  local gpt_image_2_public_paid_inspect_gate=0
+  local gpt_image_2_public_paid_inspect_gate=0 gpt_image_2_settlement_diagnostic_gate=0
   local typescript_required=0 typescript_full=0 typescript_base= rust_required=0 static_required=0
   local engine_artifacts_required=0 codex_artifacts_required=0
   local validation_policy_sha256='' validation_plan_sha256='' final_verification_plan=''
   local public_image_summary='' public_image_preflight_summary='' public_image_preflight_v2_summary=''
   local public_image_preflight_v3_summary='' public_image_paid_summary=''
   local public_image_generation_status='' public_image_edit_status='' public_image_paid_inspect_summary=''
+  local public_image_settlement_diagnostic='' public_image_settlement_status=''
   local core_pid= sales_pid= openkeys_pid= admin_pid= devbot_pid= core_rc=0 sales_rc=0 openkeys_rc=0 admin_rc=0 devbot_rc=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
@@ -2469,6 +2472,7 @@ main() {
   require_fixed_file "$GPT_IMAGE_2_PUBLIC_PREFLIGHT_V3_GATE"
   require_fixed_file "$GPT_IMAGE_2_PUBLIC_PAID_SMOKE_GATE"
   require_fixed_file "$GPT_IMAGE_2_PUBLIC_PAID_INSPECT_GATE"
+  require_fixed_file "$GPT_IMAGE_2_SETTLEMENT_DIAGNOSTIC_GATE"
   require_fixed_file "$GITHUB_HELPER"
   require_fixed_directory "$CI_TOOLCHAIN"
   [[ -f $DB_MANIFEST && ! -L $DB_MANIFEST ]] || wd_die "database migration baseline is missing"
@@ -2547,6 +2551,8 @@ main() {
     wd_path_is_gpt_image_2_public_paid_smoke_gate_trigger && gpt_image_2_public_paid_smoke_gate=1
   wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
     wd_path_is_gpt_image_2_public_paid_inspect_gate_trigger && gpt_image_2_public_paid_inspect_gate=1
+  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
+    wd_path_is_gpt_image_2_settlement_diagnostic_gate_trigger && gpt_image_2_settlement_diagnostic_gate=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_engine \
     && engine_changed=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_codex_tooling \
@@ -2856,6 +2862,40 @@ main() {
       || wd_die "GPT Image 2 inspected generation description exceeds the GitHub status bound"
     CURRENT_PHASE_BEFORE_FAILURE=gpt-image-paid:generation_received:g=true:e=false
     github_status success deploy/gpt-image-2-public-paid-inspect "$public_image_generation_status"
+  fi
+
+  if (( gpt_image_2_settlement_diagnostic_gate == 1 )); then
+    CURRENT_PHASE=verifying-gpt-image-2-settlement-diagnostic
+    CURRENT_PHASE_BEFORE_FAILURE=verifying-gpt-image-2-settlement-diagnostic
+    status "reading the fenced GPT Image 2 settlement without image dispatch"
+    public_image_settlement_diagnostic=$(sudo -n "$GPT_IMAGE_2_SETTLEMENT_DIAGNOSTIC_GATE" \
+      "$GPT_IMAGE_2_SETTLEMENT_DIAGNOSTIC_PRODUCER_SHA" --inspect)
+    jq -e '
+      .schema_version == 1 and
+      (.status | IN("reservation_missing", "snapshot_missing", "outbox_missing", "outbox_failed",
+                    "outbox_pending", "usage_missing", "reservation_nonterminal",
+                    "principal_missing", "terminal_evidence_present")) and
+      (.reservation_state == null or
+        (.reservation_state | IN("reserved", "delivering", "settlement_pending", "settled", "canceled"))) and
+      (.outbox_state == null or (.outbox_state | IN("pending", "processing", "done", "failed"))) and
+      (.outbox_attempts == null or
+        (.outbox_attempts | type == "number" and floor == . and . >= 0 and . <= 1000000)) and
+      (.outbox_has_error | type == "boolean") and (.usage_present | type == "boolean") and
+      (.real_nano == null or
+        (.real_nano | type == "number" and floor == . and . >= 0 and . <= 1000000000000)) and
+      (.charge_nano == null or
+        (.charge_nano | type == "number" and floor == . and . >= 0 and . <= 1000000000000))
+    ' <<<"$public_image_settlement_diagnostic" >/dev/null \
+      || wd_die "GPT Image 2 settlement diagnostic returned invalid evidence"
+    public_image_settlement_status=$(jq -jr '
+      "\(.status);r=\(.reservation_state // "missing");o=\(.outbox_state // "missing")/\(.outbox_attempts // 0)/err=\(.outbox_has_error);u=\(.usage_present);real=\(.real_nano // 0);charge=\(.charge_nano // 0)"
+    ' <<<"$public_image_settlement_diagnostic")
+    (( ${#public_image_settlement_status} <= 140 )) \
+      || wd_die "GPT Image 2 settlement diagnostic description exceeds the GitHub status bound"
+    CURRENT_PHASE_BEFORE_FAILURE=$public_image_settlement_status
+    status "GPT Image 2 settlement diagnostic: $public_image_settlement_status"
+    github_status success deploy/gpt-image-2-settlement-diagnostic \
+      "$public_image_settlement_status"
   fi
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"

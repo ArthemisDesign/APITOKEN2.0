@@ -333,11 +333,13 @@ is only what is needed to walk the relationships when making changes:
   retired. The separate `deploy/gpt-image-2-public-paid-inspect-gate.sh` is credential-, environment-, CLI-
   and network-free; it accepts only the exact generation-only two-file withdrawal and emits dimensions,
   bytes and SHA-256. This inspection is not a generation+edit success and no publication consumer can proceed.
-  A producer-only `openai-image-settlement-diagnostic` reads the fenced request's PostgreSQL stages in one
-  read-only snapshot, receives its UUIDv4 only over stdin, and emits no request/account/key identity or raw
-  error. It has no image HTTP, credential selection, dispatch, retry, or mutation path; a later exact-SHA
-  controller is the sole consumer after this producer is watchdog-GREEN. The direct OpenAI plane and
-  header-gated Combined
+  Watchdog-GREEN producer `ab3b4e557f7b870b93f62a88a53e87e46b49fb4c` exposes only
+  `openai-image-settlement-diagnostic`: it reads the fenced request's PostgreSQL stages in one read-only
+  snapshot, receives its UUIDv4 only over stdin, and emits no request/account/key identity or raw error. The
+  sole consumer is the separately pinned `deploy/gpt-image-2-settlement-diagnostic-gate.sh`: it revalidates
+  the immutable generation-only fence, inherits only the production PostgreSQL DSN, passes the identity over
+  stdin, and publishes a bounded status. Neither side has image HTTP, credential selection, dispatch, retry,
+  or mutation. The direct OpenAI plane and header-gated Combined
   bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —

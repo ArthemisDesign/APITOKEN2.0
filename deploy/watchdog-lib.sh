@@ -804,9 +804,9 @@ wd_path_is_controller_definition() {
     deploy/gpt-image-2-live-gate.sh|deploy/gpt-image-2-public-smoke-gate.sh|\
     deploy/gpt-image-2-public-preflight-gate.sh|deploy/gpt-image-2-public-preflight-v2-gate.sh|\
     deploy/gpt-image-2-public-preflight-v3-gate.sh|deploy/gpt-image-2-public-paid-smoke-gate.sh|\
-    deploy/gpt-image-2-public-paid-inspect-gate.sh|deploy/watchdog-test-db.sh|\
-    deploy/watchdog-backup.sh|deploy/watchdog-migrate.sh|deploy/watchdog-infrastructure.sh|\
-    deploy/watchdog-retention.sh|\
+    deploy/gpt-image-2-public-paid-inspect-gate.sh|deploy/gpt-image-2-settlement-diagnostic-gate.sh|\
+    deploy/watchdog-test-db.sh|deploy/watchdog-backup.sh|deploy/watchdog-migrate.sh|\
+    deploy/watchdog-infrastructure.sh|deploy/watchdog-retention.sh|\
     deploy/watchdog-github.sh|deploy/watchdog-control.sh|\
     deploy/deploy.sh|deploy/authbot-runtime-state.sh|deploy/lib.sh|deploy/commerce-release-bundle.sh|\
     deploy/release-tree-digest.mjs|deploy/content-studio-start.sh|\
@@ -848,6 +848,10 @@ wd_path_is_gpt_image_2_public_paid_smoke_gate_trigger() {
 
 wd_path_is_gpt_image_2_public_paid_inspect_gate_trigger() {
   [[ $1 == deploy/gpt-image-2-public-paid-inspect-gate.sh ]]
+}
+
+wd_path_is_gpt_image_2_settlement_diagnostic_gate_trigger() {
+  [[ $1 == deploy/gpt-image-2-settlement-diagnostic-gate.sh ]]
 }
 
 # Return the least expensive safe root-install transaction for an exact commit range. Independent

@@ -252,11 +252,16 @@ dispatched. The paid root is permanently fenced and its execute trigger is retir
 `deploy/gpt-image-2-public-paid-inspect-gate.sh` has no environment, credential, runtime, CLI or network path;
 it accepts only that exact two-file generation-only withdrawal and publishes sanitized PNG dimensions,
 byte length and SHA-256. This retained generation is not a successful generation+edit smoke, does not prove
-settlement, and does not authorize publication. The follow-up producer adds only a PostgreSQL read-only
+settlement, and does not authorize publication. Watchdog-GREEN follow-up producer
+`ab3b4e557f7b870b93f62a88a53e87e46b49fb4c` adds only the PostgreSQL read-only
 `openai-image-settlement-diagnostic`: it receives the fenced UUIDv4 on stdin and independently reports
-identifier-free reservation/snapshot/outbox/usage/principal presence and bounded states/numeric usage. It
-has no image transport, credential lookup or database write path; a separately pinned controller must be
-GREEN before its result can drive a corrective change.
+identifier-free reservation/snapshot/outbox/usage/principal presence and bounded states/numeric usage. The
+separate controller `deploy/gpt-image-2-settlement-diagnostic-gate.sh` is pinned to that immutable producer
+and the original paid fence. It revalidates the exact generation-only journal, requires that diagnostic
+release to be current, inherits only `CLAUDE_API_DATABASE_URL` from an active OpenAI slot, and pipes the UUID
+over stdin into the diagnostic binary. It validates the closed JSON schema and publishes only bounded state,
+attempt/error booleans and integer usage/cost. It has no image transport, credential lookup, image dispatch,
+retry, or database write path; only a GREEN delivery of this controller may drive the next corrective change.
 
 The intended one-shot contract remains:
 
