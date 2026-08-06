@@ -293,6 +293,7 @@ impl CodexGateway {
             {
                 HomeSelection::Ready(home, slot) => (home, slot),
                 HomeSelection::Unavailable { ready_at } => {
+                    elog::warn("codex", "codex pool exhausted: no home available");
                     let local = last_error.unwrap_or_else(|| ProcessError::UsageLimitExceeded {
                         retry_after: retry_after_from(ready_at),
                     });
@@ -411,9 +412,9 @@ impl CodexGateway {
             }
             Err(error) => {
                 Metrics::inc(&self.metrics.claudestore_fallback_failures);
-                eprintln!(
-                    "ClaudeStore Codex fallback failed [{}]",
-                    error.diagnostic_class()
+                elog::error(
+                    "codex",
+                    format!("ClaudeStore Codex fallback failed [{}]", error.diagnostic_class()),
                 );
                 Err(ProcessError::ExternalFallbackFailed {
                     local: Box::new(local),

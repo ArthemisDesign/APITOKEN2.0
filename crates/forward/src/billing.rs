@@ -280,7 +280,7 @@ fn flush_pending_gemini_calibration_turns(
                 }
                 state.dropped_events.fetch_add(1, Ordering::Relaxed);
                 state.persistence_ok.store(false, Ordering::Relaxed);
-                eprintln!("Gemini calibration event quarantined after immutable replay conflict");
+                elog::error("billing", "Gemini calibration event quarantined after immutable replay conflict");
                 if target_delivery_id == Some(delivery_id) {
                     target_conflict = Some(error);
                 }
@@ -394,8 +394,9 @@ fn flush_pending_anthropic_calibration_turns(
                 }
                 state.dropped_events.fetch_add(1, Ordering::Relaxed);
                 state.persistence_ok.store(false, Ordering::Relaxed);
-                eprintln!(
-                    "Anthropic calibration event quarantined after immutable replay conflict"
+                elog::error(
+                    "billing",
+                    "Anthropic calibration event quarantined after immutable replay conflict",
                 );
                 if target_delivery_id == Some(delivery_id) {
                     target_conflict = Some(error);
@@ -574,7 +575,10 @@ fn authorize_snapshot_reserve_commit(handoff: &AtomicU8) -> bool {
             SNAPSHOT_RESERVE_HANDOFF_COMMIT_DECIDED => return true,
             SNAPSHOT_RESERVE_HANDOFF_CANCELED => return false,
             state => {
-                eprintln!("billing snapshot reserve commit gate entered unexpected state {state}");
+                elog::error(
+                    "billing",
+                    format!("billing snapshot reserve commit gate entered unexpected state {state}"),
+                );
                 return false;
             }
         }
@@ -774,7 +778,10 @@ fn dispatch_detached(
                 handle.spawn(async move {
                     let _dispatch = dispatch;
                     if writer.send(cmd).await.is_err() {
-                        eprintln!("billing writer stopped before a detached command was queued");
+                        elog::error(
+                            "billing",
+                            "billing writer stopped before a detached command was queued",
+                        );
                     }
                 });
             } else {
@@ -783,15 +790,19 @@ fn dispatch_detached(
                     .spawn(move || {
                         let _dispatch = dispatch;
                         if writer.blocking_send(cmd).is_err() {
-                            eprintln!(
-                                "billing writer stopped before a detached command was queued"
+                            elog::error(
+                                "billing",
+                                "billing writer stopped before a detached command was queued",
                             );
                         }
                     });
             }
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {
-            eprintln!("billing writer stopped before a detached command was queued");
+            elog::error(
+                "billing",
+                "billing writer stopped before a detached command was queued",
+            );
         }
     }
 }
@@ -812,7 +823,10 @@ fn run_pg_with_retry<T>(
                 if class != registry::pg::FailureClass::Transient || Instant::now() >= deadline {
                     return Err(error);
                 }
-                eprintln!("billing PostgreSQL {operation} transient failure: {error:#}");
+                elog::warn(
+                    "billing",
+                    format!("billing PostgreSQL {operation} transient failure: {error:#}"),
+                );
             }
         }
 
@@ -876,8 +890,11 @@ fn run_pg_snapshot_reserve_with_retry(
                 {
                     return Err(error);
                 }
-                eprintln!(
-                    "billing PostgreSQL legacy snapshot reserve transient failure: {error:#}"
+                elog::warn(
+                    "billing",
+                    format!(
+                        "billing PostgreSQL legacy snapshot reserve transient failure: {error:#}"
+                    ),
                 );
             }
         }
@@ -938,8 +955,11 @@ fn run_pg_policy_snapshot_reserve_with_retry(
                 {
                     return Err(error);
                 }
-                eprintln!(
-                    "billing PostgreSQL policy snapshot reserve transient failure: {error:#}"
+                elog::warn(
+                    "billing",
+                    format!(
+                        "billing PostgreSQL policy snapshot reserve transient failure: {error:#}"
+                    ),
                 );
             }
         }
@@ -1003,8 +1023,11 @@ fn run_pg_pricing_release_reserve_with_retry(
                 {
                     return Err(error);
                 }
-                eprintln!(
-                    "billing PostgreSQL pricing release reserve transient failure: {error:#}"
+                elog::warn(
+                    "billing",
+                    format!(
+                        "billing PostgreSQL pricing release reserve transient failure: {error:#}"
+                    ),
                 );
             }
         }
@@ -2094,7 +2117,10 @@ impl AsyncBilling {
         ) {
             Ok(delivery_id) => delivery_id,
             Err(error) => {
-                eprintln!("Anthropic calibration evidence dropped: {error:#}");
+                elog::error(
+                    "billing",
+                    format!("Anthropic calibration evidence dropped: {error:#}"),
+                );
                 return false;
             }
         };
@@ -2179,7 +2205,10 @@ impl AsyncBilling {
         ) {
             Ok(delivery_id) => delivery_id,
             Err(error) => {
-                eprintln!("Gemini calibration evidence dropped: {error:#}");
+                elog::error(
+                    "billing",
+                    format!("Gemini calibration evidence dropped: {error:#}"),
+                );
                 return false;
             }
         };
@@ -2647,11 +2676,14 @@ impl AsyncBilling {
                     ) {
                         Ok(Some(_)) => handoff.store(RESERVE_HANDOFF_REFUNDED, Ordering::Release),
                         Ok(None) => {
-                            eprintln!("billing reserve cancellation did not produce a balance");
+                            elog::error("billing", "billing reserve cancellation did not produce a balance");
                             handoff.store(RESERVE_HANDOFF_CANCELED, Ordering::Release);
                         }
                         Err(err) => {
-                            eprintln!("billing reserve cancellation refund failed: {err:#}");
+                            elog::error(
+                                "billing",
+                                format!("billing reserve cancellation refund failed: {err:#}"),
+                            );
                             handoff.store(RESERVE_HANDOFF_CANCELED, Ordering::Release);
                         }
                     }
@@ -2694,7 +2726,10 @@ impl AsyncBilling {
                             refund_canceled_reserve(&request_id, &account_id, &key, hold, &handoff);
                         }
                         Err(state) => {
-                            eprintln!("billing reserve handoff entered unexpected state {state}");
+                            elog::error(
+                                "billing",
+                                format!("billing reserve handoff entered unexpected state {state}"),
+                            );
                         }
                     }
                 };
@@ -2854,8 +2889,11 @@ impl AsyncBilling {
                                 &persist_anthropic_turn,
                             );
                             if let Err(error) = result {
-                                eprintln!(
-                                    "Anthropic calibration persistence deferred with FIFO head retained: {error:#}"
+                                elog::error(
+                                    "billing",
+                                    format!(
+                                        "Anthropic calibration persistence deferred with FIFO head retained: {error:#}"
+                                    ),
                                 );
                             }
                         }
@@ -2905,8 +2943,11 @@ impl AsyncBilling {
                             None,
                             &persist_gemini_turn,
                         ) {
-                            eprintln!(
-                                "Gemini calibration persistence deferred with FIFO head retained: {error:#}"
+                            elog::error(
+                                "billing",
+                                format!(
+                                    "Gemini calibration persistence deferred with FIFO head retained: {error:#}"
+                                ),
                             );
                         }
                     }
@@ -3183,7 +3224,12 @@ impl AsyncBilling {
                             )
                         };
                         if let Err(error) = &result {
-                            eprintln!("billing SQLite settlement persisted/retryable failure: {error:#}");
+                            elog::error(
+                                "billing",
+                                format!(
+                                    "billing SQLite settlement persisted/retryable failure: {error:#}"
+                                ),
+                            );
                         }
                         if let Some(reply) = reply { let _ = reply.send(result); }
                     }
@@ -3251,7 +3297,7 @@ impl AsyncBilling {
                     }
                     }
                 }
-                eprintln!("⚠ billing-writer поток завершён (все sender'ы дропнуты)"); // супервизия
+                elog::info("billing", "billing-writer поток завершён (все sender'ы дропнуты)"); // супервизия
             })?;
         }
         // reader-пул
@@ -3495,7 +3541,7 @@ impl AsyncBilling {
                             }
                         }
                     }
-                    eprintln!("⚠ billing-reader-{i} поток завершён");
+                    elog::info("billing", format!("billing-reader-{i} поток завершён"));
                 })?;
             rtxs.push(rtx);
         }
@@ -3574,8 +3620,11 @@ impl AsyncBilling {
                                     },
                                 );
                                 if let Err(error) = result {
-                                    eprintln!(
-                                        "Anthropic calibration persistence deferred with FIFO head retained: {error:#}"
+                                    elog::error(
+                                        "billing",
+                                        format!(
+                                            "Anthropic calibration persistence deferred with FIFO head retained: {error:#}"
+                                        ),
                                     );
                                 }
                             }
@@ -3661,8 +3710,11 @@ impl AsyncBilling {
                                     },
                                 );
                                 if let Err(error) = result {
-                                    eprintln!(
-                                        "Gemini calibration persistence deferred with FIFO head retained: {error:#}"
+                                    elog::error(
+                                        "billing",
+                                        format!(
+                                            "Gemini calibration persistence deferred with FIFO head retained: {error:#}"
+                                        ),
                                     );
                                 }
                             }
@@ -3937,7 +3989,10 @@ impl AsyncBilling {
                             let result = match result {
                                 Ok(result) => result,
                                 Err(error) => {
-                                    eprintln!("billing PostgreSQL reserve failed: {error:#}");
+                                    elog::error(
+                                        "billing",
+                                        format!("billing PostgreSQL reserve failed: {error:#}"),
+                                    );
                                     handoff.store(RESERVE_HANDOFF_FAILED, Ordering::Release);
                                     let _ = reply.send(Err(error));
                                     continue;
@@ -3963,7 +4018,7 @@ impl AsyncBilling {
                                             |pg| pg.cancel_request(&request_id),
                                         ) {
                                             Ok(_) => handoff.store(RESERVE_HANDOFF_REFUNDED, Ordering::Release),
-                                            Err(error) => eprintln!("billing PostgreSQL canceled reserve failed: {error:#}"),
+                                            Err(error) => elog::error("billing", format!("billing PostgreSQL canceled reserve failed: {error:#}")),
                                         }
                                     }
                                 }
@@ -3973,10 +4028,10 @@ impl AsyncBilling {
                                         |pg| pg.cancel_request(&request_id),
                                     ) {
                                         Ok(_) => handoff.store(RESERVE_HANDOFF_REFUNDED, Ordering::Release),
-                                        Err(error) => eprintln!("billing PostgreSQL reserve handoff cancel failed: {error:#}"),
+                                        Err(error) => elog::error("billing", format!("billing PostgreSQL reserve handoff cancel failed: {error:#}")),
                                     }
                                 }
-                                Err(state) => eprintln!("billing PostgreSQL reserve handoff unexpected state {state}"),
+                                Err(state) => elog::error("billing", format!("billing PostgreSQL reserve handoff unexpected state {state}")),
                             }
                         }
                         WriteCmd::ReserveWithLegacySnapshot { key, snapshot, execution, handoff, reply } => {
@@ -3999,8 +4054,11 @@ impl AsyncBilling {
                                 RESERVATION_LEASE_SECS,
                             );
                             if let Err(error) = &result {
-                                eprintln!(
-                                    "billing PostgreSQL legacy snapshot reserve failed: {error:#}"
+                                elog::error(
+                                    "billing",
+                                    format!(
+                                        "billing PostgreSQL legacy snapshot reserve failed: {error:#}"
+                                    ),
                                 );
                             }
                             finish_snapshot_reserve(&handoff, reply, result);
@@ -4025,8 +4083,11 @@ impl AsyncBilling {
                                 RESERVATION_LEASE_SECS,
                             );
                             if let Err(error) = &result {
-                                eprintln!(
-                                    "billing PostgreSQL policy snapshot reserve failed: {error:#}"
+                                elog::error(
+                                    "billing",
+                                    format!(
+                                        "billing PostgreSQL policy snapshot reserve failed: {error:#}"
+                                    ),
                                 );
                             }
                             finish_policy_snapshot_reserve(&handoff, reply, result);
@@ -4054,8 +4115,11 @@ impl AsyncBilling {
                                 RESERVATION_LEASE_SECS,
                             );
                             if let Err(error) = &result {
-                                eprintln!(
-                                    "billing PostgreSQL pricing release reserve failed: {error:#}"
+                                elog::error(
+                                    "billing",
+                                    format!(
+                                        "billing PostgreSQL pricing release reserve failed: {error:#}"
+                                    ),
                                 );
                             }
                             finish_pricing_release_reserve(&handoff, reply, result);
@@ -4229,7 +4293,10 @@ impl AsyncBilling {
                             ) {
                                 Ok(_) => handoff.store(RESERVE_HANDOFF_REFUNDED, Ordering::Release),
                                 Err(error) => {
-                                    eprintln!("billing PostgreSQL cancellation failed: {error:#}");
+                                    elog::error(
+                                        "billing",
+                                        format!("billing PostgreSQL cancellation failed: {error:#}"),
+                                    );
                                     handoff.store(RESERVE_HANDOFF_CANCELED, Ordering::Release);
                                 }
                             }
@@ -4254,7 +4321,10 @@ impl AsyncBilling {
                                 )
                             };
                             if let Err(error) = &result {
-                                eprintln!("billing PostgreSQL settlement failed: {error:#}");
+                                elog::error(
+                                    "billing",
+                                    format!("billing PostgreSQL settlement failed: {error:#}"),
+                                );
                             }
                             if let Some(reply) = reply { let _ = reply.send(result); }
                         }
@@ -4297,7 +4367,10 @@ impl AsyncBilling {
                                 &mut pg, &writer_url, &writer_owner, "capacity release",
                                 |pg| pg.release_capacity(&writer_owner, &lease_id),
                             ) {
-                                eprintln!("capacity lease release failed: {error:#}");
+                                elog::error(
+                                    "billing",
+                                    format!("capacity lease release failed: {error:#}"),
+                                );
                             }
                         }
                         WriteCmd::Topup { account_id, amount, reference, reply } => {
@@ -4415,7 +4488,10 @@ impl AsyncBilling {
                                         Ok(0) => break Ok(()),
                                         Ok(_) => continue,
                                         Err(error) => {
-                                            eprintln!("billing PostgreSQL outbox drain failed: {error:#}");
+                                            elog::error(
+                                                "billing",
+                                                format!("billing PostgreSQL outbox drain failed: {error:#}"),
+                                            );
                                             break Err(error);
                                         }
                                     }
@@ -4425,7 +4501,7 @@ impl AsyncBilling {
                         }
                     }
                 }
-                eprintln!("billing-pg-writer thread stopped");
+                elog::info("billing", "billing-pg-writer thread stopped");
             })?;
         }
 
@@ -4452,8 +4528,9 @@ impl AsyncBilling {
                                         if registry::pricing::is_model_unpriced(&err) {
                                             let _ = $reply.send(Err(err));
                                         } else {
-                                            eprintln!(
-                                                "billing PostgreSQL read failed closed: {err:#}"
+                                            elog::error(
+                                                "billing",
+                                                format!("billing PostgreSQL read failed closed: {err:#}"),
                                             );
                                             if let Ok(next) =
                                                 registry::pg::PgStore::connect(&reader_url)
@@ -6083,8 +6160,11 @@ impl AsyncBilling {
                     if self.anthropic_calibration_delivery_status().pending_events > 0
                         || self.gemini_calibration_delivery_status().pending_events > 0 =>
                 {
-                    eprintln!(
-                        "Provider calibration shutdown drain waiting for authority recovery: {error:#}"
+                    elog::warn(
+                        "billing",
+                        format!(
+                            "Provider calibration shutdown drain waiting for authority recovery: {error:#}"
+                        ),
                     );
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }

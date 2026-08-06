@@ -172,7 +172,7 @@ impl TeeMeter {
                             .await,
                         Ok(true)
                     ) {
-                        eprintln!("stream lease renewal failed; live response remains fail-closed");
+                        elog::error("meter", "stream lease renewal failed; live response remains fail-closed");
                         return;
                     }
                 }
@@ -305,7 +305,10 @@ impl TeeMeter {
                         .as_ref()
                         .map(|subscription| subscription.email.as_str())
                         .unwrap_or("external-fallback");
-                    eprintln!("⚠ SSE-error после 200 на {source} — стрим нёс error-евент");
+                    elog::warn(
+                        "meter",
+                        format!("SSE-error после 200 на {source} — стрим нёс error-евент"),
+                    );
                 }
                 (
                     usage,
@@ -506,7 +509,7 @@ impl TeeMeter {
                         }
                     }
                 } else {
-                    eprintln!("Anthropic calibration event exceeds durable bigint bounds");
+                    elog::error("meter", "Anthropic calibration event exceeds durable bigint bounds");
                 }
             }
         }
@@ -521,7 +524,7 @@ impl TeeMeter {
                 // A missing authoritative usage object is not proof that the provider consumed the
                 // maximum reservation. Downstream cancellation is drained asynchronously in Drop;
                 // a genuine upstream truncation is settled at zero and surfaced for reconciliation.
-                eprintln!("⚠ incomplete non-SSE response without authoritative usage; charge=0");
+                elog::warn("meter", "incomplete non-SSE response without authoritative usage; charge=0");
                 0
             } else if real > 0 {
                 match b.settlement_pricing {
@@ -548,12 +551,15 @@ impl TeeMeter {
             if computed_charge > hold_cap {
                 // Разбивка usage: реальный расход пробил (порезанный балансом) hold — обычно cache_read
                 // либо аномалия. Списываем реальное до hold+$1; разбивка нужна для точного preflight-резерва.
-                eprintln!(
-                    "⚠ billing charge превысил hold: charge_nano={computed_charge} hold_nano={hold_cap}; \
-                     charge real до hold+$1 | model={price_model} us_geo={us_inference} real_nano={real} \
-                     in={} out={} cr={} cw5={} cw1={} web={}",
-                    usage.input_tokens, usage.output_tokens, usage.cache_read_tokens,
-                    usage.cache_write_5m_tokens, usage.cache_write_1h_tokens, usage.web_search_requests,
+                elog::warn(
+                    "meter",
+                    format!(
+                        "billing charge превысил hold: charge_nano={computed_charge} hold_nano={hold_cap}; \
+                         charge real до hold+$1 | model={price_model} us_geo={us_inference} real_nano={real} \
+                         in={} out={} cr={} cw5={} cw1={} web={}",
+                        usage.input_tokens, usage.output_tokens, usage.cache_read_tokens,
+                        usage.cache_write_5m_tokens, usage.cache_write_1h_tokens, usage.web_search_requests,
+                    ),
                 );
             }
             let charge_i64 = computed_charge.clamp(0, charge_ceiling) as i64;
@@ -605,14 +611,17 @@ impl TeeMeter {
                     t.reverse();
                     t.into_iter().collect()
                 };
-                eprintln!(
-                    "💵 ключ …{tail}: −{} [{}]",
-                    metering::nano_to_usd_string(charge_i64 as i128),
-                    if price_model.is_empty() {
-                        "?"
-                    } else {
-                        price_model
-                    }
+                elog::info(
+                    "meter",
+                    format!(
+                        "ключ …{tail}: −{} [{}]",
+                        metering::nano_to_usd_string(charge_i64 as i128),
+                        if price_model.is_empty() {
+                            "?"
+                        } else {
+                            price_model
+                        }
+                    ),
                 );
             }
         }

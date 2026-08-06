@@ -1,8 +1,20 @@
 //! Fail-closed validation and source-protocol state for translated Anthropic SSE.
 
 use std::collections::HashSet;
+use std::fmt;
 
 use serde_json::Value;
+
+/// Why a source SSE frame failed validation. The payload names the offending event and the
+/// violated check so a caller can log the actual protocol violation instead of a generic one.
+#[derive(Debug)]
+pub(crate) struct StreamError(pub(crate) String);
+
+impl fmt::Display for StreamError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct AnthropicStreamState {
@@ -15,7 +27,7 @@ impl AnthropicStreamState {
     /// Validate a known Messages SSE event and advance the mandatory lifecycle. Unknown named
     /// events remain forward-compatible and are ignored; a missing event name, malformed JSON,
     /// mismatched `type`, or impossible ordering is a protocol failure.
-    pub(crate) fn accept(&mut self, event: &str, data: &str) -> Result<Option<Value>, ()> {
+    pub(crate) fn accept(&mut self, event: &str, data: &str) -> Result<Option<Value>, StreamError> {
         let known = matches!(
             event,
             "message_start"
@@ -28,70 +40,119 @@ impl AnthropicStreamState {
                 | "error"
         );
         if !known {
-            return if event.is_empty() { Err(()) } else { Ok(None) };
+            return if event.is_empty() {
+                Err(StreamError(format!("empty event name")))
+            } else {
+                Ok(None)
+            };
         }
 
-        let value: Value = serde_json::from_str(data).map_err(|_| ())?;
-        let object = value.as_object().ok_or(())?;
+        let value: Value = serde_json::from_str(data)
+            .map_err(|_| StreamError(format!("{event}: body not valid JSON")))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| StreamError(format!("{event}: json body not an object")))?;
         if object.get("type").and_then(Value::as_str) != Some(event) {
-            return Err(());
+            return Err(StreamError(format!("{event}: type field does not match event name")));
         }
 
         match event {
             "message_start" => {
                 if self.started || !self.open_blocks.is_empty() || self.saw_message_delta {
-                    return Err(());
+                    return Err(StreamError(format!(
+                        "{event}: state lifecycle violation: stream already started"
+                    )));
                 }
-                object.get("message").and_then(Value::as_object).ok_or(())?;
+                object
+                    .get("message")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| StreamError(format!("{event}: missing message object")))?;
                 self.started = true;
             }
             "ping" => {}
             "error" => {
-                let error = object.get("error").and_then(Value::as_object).ok_or(())?;
-                error.get("message").and_then(Value::as_str).ok_or(())?;
+                let error = object
+                    .get("error")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| StreamError(format!("{event}: missing error object")))?;
+                error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| StreamError(format!("{event}: missing error message")))?;
             }
             "content_block_start" => {
-                self.require_started_before_terminal()?;
-                let index = required_u64(object.get("index"))?;
+                self.require_started_before_terminal(event)?;
+                let index = required_u64(object.get("index"))
+                    .map_err(|_| StreamError(format!("{event}: missing index field")))?;
                 let block = object
                     .get("content_block")
                     .and_then(Value::as_object)
-                    .ok_or(())?;
-                block.get("type").and_then(Value::as_str).ok_or(())?;
+                    .ok_or_else(|| StreamError(format!("{event}: missing content_block object")))?;
+                block
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| StreamError(format!("{event}: missing content_block type")))?;
                 if !self.open_blocks.insert(index) {
-                    return Err(());
+                    return Err(StreamError(format!(
+                        "{event}: state lifecycle violation: duplicate open block index {index}"
+                    )));
                 }
             }
             "content_block_delta" => {
-                self.require_started_before_terminal()?;
-                let index = required_u64(object.get("index"))?;
+                self.require_started_before_terminal(event)?;
+                let index = required_u64(object.get("index"))
+                    .map_err(|_| StreamError(format!("{event}: missing index field")))?;
                 if !self.open_blocks.contains(&index) {
-                    return Err(());
+                    return Err(StreamError(format!(
+                        "{event}: state lifecycle violation: block {index} not open"
+                    )));
                 }
-                let delta = object.get("delta").and_then(Value::as_object).ok_or(())?;
-                delta.get("type").and_then(Value::as_str).ok_or(())?;
+                let delta = object
+                    .get("delta")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| StreamError(format!("{event}: missing delta object")))?;
+                delta
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| StreamError(format!("{event}: missing delta type")))?;
             }
             "content_block_stop" => {
-                self.require_started_before_terminal()?;
-                let index = required_u64(object.get("index"))?;
+                self.require_started_before_terminal(event)?;
+                let index = required_u64(object.get("index"))
+                    .map_err(|_| StreamError(format!("{event}: missing index field")))?;
                 if !self.open_blocks.remove(&index) {
-                    return Err(());
+                    return Err(StreamError(format!(
+                        "{event}: state lifecycle violation: block {index} not open"
+                    )));
                 }
             }
             "message_delta" => {
-                self.require_started_before_terminal()?;
+                self.require_started_before_terminal(event)?;
                 if !self.open_blocks.is_empty() {
-                    return Err(());
+                    return Err(StreamError(format!(
+                        "{event}: state lifecycle violation: open blocks remain"
+                    )));
                 }
-                let delta = object.get("delta").and_then(Value::as_object).ok_or(())?;
-                delta.get("stop_reason").and_then(Value::as_str).ok_or(())?;
-                object.get("usage").and_then(Value::as_object).ok_or(())?;
+                let delta = object
+                    .get("delta")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| StreamError(format!("{event}: missing delta object")))?;
+                delta
+                    .get("stop_reason")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| StreamError(format!("{event}: missing delta stop_reason")))?;
+                object
+                    .get("usage")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| StreamError(format!("{event}: missing usage object")))?;
                 self.saw_message_delta = true;
             }
             "message_stop" => {
-                self.require_started()?;
+                self.require_started(event)?;
                 if !self.open_blocks.is_empty() || !self.saw_message_delta {
-                    return Err(());
+                    return Err(StreamError(format!(
+                        "{event}: state lifecycle violation: open blocks remain or no message_delta"
+                    )));
                 }
             }
             _ => unreachable!(),
@@ -99,19 +160,23 @@ impl AnthropicStreamState {
         Ok(Some(value))
     }
 
-    fn require_started_before_terminal(&self) -> Result<(), ()> {
+    fn require_started_before_terminal(&self, event: &str) -> Result<(), StreamError> {
         if self.started && !self.saw_message_delta {
             Ok(())
         } else {
-            Err(())
+            Err(StreamError(format!(
+                "{event}: state lifecycle violation: terminal event before started stream or after message_delta"
+            )))
         }
     }
 
-    fn require_started(&self) -> Result<(), ()> {
+    fn require_started(&self, event: &str) -> Result<(), StreamError> {
         if self.started {
             Ok(())
         } else {
-            Err(())
+            Err(StreamError(format!(
+                "{event}: state lifecycle violation: stream not started"
+            )))
         }
     }
 }

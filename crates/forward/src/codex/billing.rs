@@ -222,13 +222,19 @@ async fn reserve_openai_image_metered(
             // generation is activated. Serve it from the exact legacy tariff meanwhile instead of
             // refusing a model we already know the price of.
             Err(error) if registry::pricing::is_model_unpriced(&error) => {
-                eprintln!(
-                    "OpenAI image release has no catalog price, using the exact legacy tariff: {error:#}"
+                elog::warn(
+                    "codex-billing",
+                    format!(
+                        "OpenAI image release has no catalog price, using the exact legacy tariff: {error:#}"
+                    ),
                 );
                 None
             }
             Err(error) => {
-                eprintln!("OpenAI image pricing release resolution failed: {error:#}");
+                elog::error(
+                    "codex-billing",
+                    format!("OpenAI image pricing release resolution failed: {error:#}"),
+                );
                 return Err(AdmissionError::Unavailable);
             }
         };
@@ -251,13 +257,16 @@ async fn reserve_openai_image_metered(
                 available_nano: quote_budget,
             })
             .map_err(|error| {
-                eprintln!("OpenAI image release quote failed: {error:#}");
+                elog::error("codex-billing", format!("OpenAI image release quote failed: {error:#}"));
                 AdmissionError::Unavailable
             })?
             .ok_or(AdmissionError::LowBalance)?;
             let release_quote =
                 PricingReleaseQuoteV2::from_legacy_snapshot(&quote).map_err(|error| {
-                    eprintln!("OpenAI image release quote conversion failed: {error:#}");
+                    elog::error(
+                        "codex-billing",
+                        format!("OpenAI image release quote conversion failed: {error:#}"),
+                    );
                     AdmissionError::Unavailable
                 })?;
             match billing
@@ -298,14 +307,20 @@ async fn reserve_openai_image_metered(
                     PricingReleaseReserveConflictV2::ExistingReservationWithoutReleaseSnapshot,
                 )) if pass == 0 => {}
                 Ok(PricingReleaseReserveOutcomeV2::Conflict(conflict)) => {
-                    eprintln!("OpenAI image release reserve conflict: {conflict:?}");
+                    elog::error(
+                        "codex-billing",
+                        format!("OpenAI image release reserve conflict: {conflict:?}"),
+                    );
                     return Err(AdmissionError::Unavailable);
                 }
                 Ok(PricingReleaseReserveOutcomeV2::AbortedBeforeCommit) => {
                     return Err(AdmissionError::Unavailable)
                 }
                 Err(error) => {
-                    eprintln!("OpenAI image release reserve failed: {error:#}");
+                    elog::error(
+                        "codex-billing",
+                        format!("OpenAI image release reserve failed: {error:#}"),
+                    );
                     return Err(AdmissionError::Unavailable);
                 }
             }
@@ -319,7 +334,10 @@ async fn reserve_openai_image_metered(
                 .pricing_read_bundle(account_id)
                 .await
                 .map_err(|error| {
-                    eprintln!("strict OpenAI image pricing bundle read failed: {error:#}");
+                    elog::error(
+                        "codex-billing",
+                        format!("strict OpenAI image pricing bundle read failed: {error:#}"),
+                    );
                     AdmissionError::Unavailable
                 })?;
             let resolved = match crate::pricing::resolve_pricing(
@@ -334,7 +352,10 @@ async fn reserve_openai_image_metered(
             ) {
                 PricingResolution::Resolved(resolved) => resolved,
                 PricingResolution::Rejected(reason) => {
-                    eprintln!("strict OpenAI image pricing rejected: {}", reason.code());
+                    elog::error(
+                        "codex-billing",
+                        format!("strict OpenAI image pricing rejected: {}", reason.code()),
+                    );
                     return Err(AdmissionError::Unavailable);
                 }
             };
@@ -356,13 +377,16 @@ async fn reserve_openai_image_metered(
                 available_nano: strict_available,
             })
             .map_err(|error| {
-                eprintln!("strict OpenAI image quote failed: {error:#}");
+                elog::error("codex-billing", format!("strict OpenAI image quote failed: {error:#}"));
                 AdmissionError::Unavailable
             })?
             .ok_or(AdmissionError::LowBalance)?;
             let policy = build_policy_admission_snapshot(account_id, resolved.clone(), quote)
                 .map_err(|error| {
-                    eprintln!("strict OpenAI image snapshot build failed: {error:#}");
+                    elog::error(
+                        "codex-billing",
+                        format!("strict OpenAI image snapshot build failed: {error:#}"),
+                    );
                     AdmissionError::Unavailable
                 })?;
             match billing
@@ -387,7 +411,10 @@ async fn reserve_openai_image_metered(
                     continue
                 }
                 Ok(PolicyReserveOutcome::Conflict(conflict)) => {
-                    eprintln!("strict OpenAI image reserve conflict: {conflict:?}");
+                    elog::error(
+                        "codex-billing",
+                        format!("strict OpenAI image reserve conflict: {conflict:?}"),
+                    );
                     return Err(AdmissionError::Unavailable);
                 }
                 Ok(PolicyReserveOutcome::AbortedBeforeCommit) | Err(_) => {
@@ -406,7 +433,7 @@ async fn reserve_openai_image_metered(
             available_nano,
         })
         .map_err(|error| {
-            eprintln!("OpenAI image legacy quote failed: {error:#}");
+            elog::error("codex-billing", format!("OpenAI image legacy quote failed: {error:#}"));
             AdmissionError::Unavailable
         })?
         .ok_or(AdmissionError::LowBalance)?;
@@ -433,7 +460,10 @@ async fn reserve_openai_image_metered(
             )) => continue,
             Ok(LegacyScalarReserveOutcome::NotReserved) => return Err(AdmissionError::LowBalance),
             Ok(LegacyScalarReserveOutcome::Conflict(conflict)) => {
-                eprintln!("OpenAI image legacy reserve conflict: {conflict:?}");
+                elog::error(
+                    "codex-billing",
+                    format!("OpenAI image legacy reserve conflict: {conflict:?}"),
+                );
                 return Err(AdmissionError::Unavailable);
             }
             Ok(LegacyScalarReserveOutcome::AbortedBeforeCommit) | Err(_) => {
@@ -513,7 +543,10 @@ async fn reserve_codex_metered(
             return Ok(reserved);
         }
         if pass != 0 {
-            eprintln!("OpenAI legacy reserve closed but no active release could be resolved");
+            elog::error(
+                "codex-billing",
+                "OpenAI legacy reserve closed but no active release could be resolved",
+            );
             return Err(AdmissionError::Unavailable);
         }
         if available_nano <= 0 {
@@ -588,13 +621,17 @@ async fn reserve_codex_release_v2(
         {
             Ok(resolution) => resolution,
             Err(error) if registry::pricing::is_model_unpriced(&error) => {
-                eprintln!(
-                    "OpenAI release has no catalog price, using the exact legacy tariff: {error:#}"
+                elog::warn(
+                    "codex-billing",
+                    format!("OpenAI release has no catalog price, using the exact legacy tariff: {error:#}"),
                 );
                 return Ok(None);
             }
             Err(error) => {
-                eprintln!("OpenAI pricing release resolution failed: {error:#}");
+                elog::error(
+                    "codex-billing",
+                    format!("OpenAI pricing release resolution failed: {error:#}"),
+                );
                 return Err(AdmissionError::Unavailable);
             }
         };
@@ -617,14 +654,20 @@ async fn reserve_codex_release_v2(
         }) {
             Ok(PricingBridgePrepare::Eligible(prepared)) => prepared,
             Ok(PricingBridgePrepare::Fallback(reason)) => {
-                eprintln!(
-                    "OpenAI release-v2 quote rejected canonical input: {}",
-                    reason.code()
+                elog::error(
+                    "codex-billing",
+                    format!(
+                        "OpenAI release-v2 quote rejected canonical input: {}",
+                        reason.code()
+                    ),
                 );
                 return Err(AdmissionError::Unavailable);
             }
             Err(error) => {
-                eprintln!("OpenAI release-v2 quote preparation failed: {error:#}");
+                elog::error(
+                    "codex-billing",
+                    format!("OpenAI release-v2 quote preparation failed: {error:#}"),
+                );
                 return Err(AdmissionError::Unavailable);
             }
         };
@@ -639,13 +682,16 @@ async fn reserve_codex_release_v2(
             }
             Ok(None) => return Err(AdmissionError::Unavailable),
             Err(error) => {
-                eprintln!("OpenAI release-v2 quote failed: {error:#}");
+                elog::error("codex-billing", format!("OpenAI release-v2 quote failed: {error:#}"));
                 return Err(AdmissionError::Unavailable);
             }
         };
         let release_quote =
             PricingReleaseQuoteV2::from_legacy_snapshot(quote.snapshot()).map_err(|error| {
-                eprintln!("OpenAI release-v2 quote conversion failed: {error:#}");
+                elog::error(
+                    "codex-billing",
+                    format!("OpenAI release-v2 quote conversion failed: {error:#}"),
+                );
                 AdmissionError::Unavailable
             })?;
         match billing
@@ -684,19 +730,25 @@ async fn reserve_codex_release_v2(
             )) => return Ok(None),
             Ok(PricingReleaseReserveOutcomeV2::NoActiveRelease) => continue,
             Ok(PricingReleaseReserveOutcomeV2::Conflict(conflict)) => {
-                eprintln!("OpenAI release-v2 reserve conflict: {conflict:?}");
+                elog::error(
+                    "codex-billing",
+                    format!("OpenAI release-v2 reserve conflict: {conflict:?}"),
+                );
                 return Err(AdmissionError::Unavailable);
             }
             Ok(PricingReleaseReserveOutcomeV2::AbortedBeforeCommit) => {
                 return Err(AdmissionError::Unavailable)
             }
             Err(error) => {
-                eprintln!("OpenAI release-v2 reserve failed: {error:#}");
+                elog::error(
+                    "codex-billing",
+                    format!("OpenAI release-v2 reserve failed: {error:#}"),
+                );
                 return Err(AdmissionError::Unavailable);
             }
         }
     }
-    eprintln!("OpenAI release-v2 head changed repeatedly during admission");
+    elog::warn("codex-billing", "OpenAI release-v2 head changed repeatedly during admission");
     Err(AdmissionError::Unavailable)
 }
 
@@ -794,7 +846,10 @@ async fn reserve_codex_legacy_mode(
                 }
                 Err(error) => {
                     app.metrics.pricing_bridge_failure(provider);
-                    eprintln!("OpenAI pricing bridge preparation failed: {error:#}");
+                    elog::error(
+                        "codex-billing",
+                        format!("OpenAI pricing bridge preparation failed: {error:#}"),
+                    );
                     return Err(AdmissionError::Unavailable);
                 }
             };
@@ -807,7 +862,10 @@ async fn reserve_codex_legacy_mode(
                 }
                 Err(error) => {
                     app.metrics.pricing_bridge_failure(provider);
-                    eprintln!("OpenAI pricing bridge quote failed: {error:#}");
+                    elog::error(
+                        "codex-billing",
+                        format!("OpenAI pricing bridge quote failed: {error:#}"),
+                    );
                     return Err(AdmissionError::Unavailable);
                 }
             };
@@ -855,7 +913,10 @@ async fn reserve_codex_legacy_mode(
                 }
                 Ok(LegacyScalarReserveOutcome::Conflict(conflict)) => {
                     app.metrics.pricing_bridge_conflict(provider);
-                    eprintln!("OpenAI pricing bridge reserve conflict: {conflict:?}");
+                    elog::error(
+                        "codex-billing",
+                        format!("OpenAI pricing bridge reserve conflict: {conflict:?}"),
+                    );
                     Err(AdmissionError::Unavailable)
                 }
                 Ok(LegacyScalarReserveOutcome::AbortedBeforeCommit) => {
@@ -864,7 +925,10 @@ async fn reserve_codex_legacy_mode(
                 }
                 Err(error) => {
                     app.metrics.pricing_bridge_failure(provider);
-                    eprintln!("OpenAI pricing bridge reservation failed: {error:#}");
+                    elog::error(
+                        "codex-billing",
+                        format!("OpenAI pricing bridge reservation failed: {error:#}"),
+                    );
                     Err(AdmissionError::Unavailable)
                 }
             }
@@ -894,7 +958,10 @@ async fn reserve_codex_strict(
         .pricing_read_bundle(account_id)
         .await
         .map_err(|error| {
-            eprintln!("strict OpenAI pricing bundle read failed: {error:#}");
+            elog::error(
+                "codex-billing",
+                format!("strict OpenAI pricing bundle read failed: {error:#}"),
+            );
             app.metrics.strict_pricing_rejected(
                 StrictPricingProvider::OpenAi,
                 StrictPricingRejectionReason::ReadUnavailable,
@@ -914,9 +981,12 @@ async fn reserve_codex_strict(
     ) {
         PricingResolution::Resolved(resolved) => resolved,
         PricingResolution::Rejected(reason) => {
-            eprintln!(
-                "strict OpenAI admission rejected by pricing policy: {}",
-                reason.code()
+            elog::error(
+                "codex-billing",
+                format!(
+                    "strict OpenAI admission rejected by pricing policy: {}",
+                    reason.code()
+                ),
             );
             app.metrics.strict_pricing_rejected(
                 StrictPricingProvider::OpenAi,
@@ -957,9 +1027,9 @@ async fn reserve_codex_strict(
     }) {
         Ok(PricingBridgePrepare::Eligible(prepared)) => prepared,
         Ok(PricingBridgePrepare::Fallback(reason)) => {
-            eprintln!(
-                "strict OpenAI quote rejected canonical input: {}",
-                reason.code()
+            elog::error(
+                "codex-billing",
+                format!("strict OpenAI quote rejected canonical input: {}", reason.code()),
             );
             let metric_reason = match reason {
                 crate::PricingBridgeFallbackReason::UnsupportedModelIdentity
@@ -978,7 +1048,7 @@ async fn reserve_codex_strict(
             return Err(AdmissionError::Unavailable);
         }
         Err(error) => {
-            eprintln!("strict OpenAI quote failed: {error:#}");
+            elog::error("codex-billing", format!("strict OpenAI quote failed: {error:#}"));
             app.metrics.strict_pricing_rejected(
                 StrictPricingProvider::OpenAi,
                 StrictPricingRejectionReason::QuoteInvariant,
@@ -996,7 +1066,7 @@ async fn reserve_codex_strict(
             return Err(AdmissionError::LowBalance);
         }
         Err(error) => {
-            eprintln!("strict OpenAI balance quote failed: {error:#}");
+            elog::error("codex-billing", format!("strict OpenAI balance quote failed: {error:#}"));
             app.metrics.strict_pricing_rejected(
                 StrictPricingProvider::OpenAi,
                 StrictPricingRejectionReason::QuoteInvariant,
@@ -1008,7 +1078,10 @@ async fn reserve_codex_strict(
     let policy_snapshot =
         build_policy_admission_snapshot(account_id, resolved.clone(), quote.into_snapshot())
             .map_err(|error| {
-                eprintln!("strict OpenAI snapshot build failed: {error:#}");
+                elog::error(
+                    "codex-billing",
+                    format!("strict OpenAI snapshot build failed: {error:#}"),
+                );
                 app.metrics.strict_pricing_rejected(
                     StrictPricingProvider::OpenAi,
                     StrictPricingRejectionReason::SnapshotInvariant,
@@ -1044,7 +1117,10 @@ async fn reserve_codex_strict(
             Ok(LegacyCodexReserveResult::ReleaseActivated)
         }
         Ok(PolicyReserveOutcome::Conflict(conflict)) => {
-            eprintln!("strict OpenAI reserve conflict: {conflict:?}");
+            elog::error(
+                "codex-billing",
+                format!("strict OpenAI reserve conflict: {conflict:?}"),
+            );
             app.metrics.strict_pricing_rejected(
                 StrictPricingProvider::OpenAi,
                 StrictPricingRejectionReason::ReserveConflict,
@@ -1059,7 +1135,7 @@ async fn reserve_codex_strict(
             Err(AdmissionError::Unavailable)
         }
         Err(error) => {
-            eprintln!("strict OpenAI reserve failed: {error:#}");
+            elog::error("codex-billing", format!("strict OpenAI reserve failed: {error:#}"));
             app.metrics.strict_pricing_rejected(
                 StrictPricingProvider::OpenAi,
                 StrictPricingRejectionReason::ReserveUnavailable,
@@ -1106,7 +1182,7 @@ async fn reserve_codex_legacy(
             Ok(LegacyCodexReserveResult::ReleaseActivated)
         }
         Err(error) => {
-            eprintln!("Codex billing reservation failed: {error:#}");
+            elog::error("codex-billing", format!("Codex billing reservation failed: {error:#}"));
             Err(AdmissionError::Unavailable)
         }
     }
@@ -1156,8 +1232,9 @@ impl OpenAiImageAdmission {
             reservation.settlement_pricing,
         );
         if strict && charge > reservation.hold {
-            eprintln!(
-                "strict OpenAI image usage exceeded its admission hold; leaving reservation for full-hold recovery"
+            elog::error(
+                "codex-billing",
+                "strict OpenAI image usage exceeded its admission hold; leaving reservation for full-hold recovery",
             );
             reservation.guard.disarm();
             return;
@@ -1173,10 +1250,13 @@ impl OpenAiImageAdmission {
         );
         reservation.guard.disarm();
         if charge > 0 {
-            eprintln!(
-                "OpenAI image request charged {} [{}]",
-                metering::nano_to_usd_string(charge as i128),
-                model_id
+            elog::info(
+                "codex-billing",
+                format!(
+                    "OpenAI image request charged {} [{}]",
+                    metering::nano_to_usd_string(charge as i128),
+                    model_id
+                ),
             );
         }
     }
@@ -1297,8 +1377,9 @@ impl CodexAdmission {
             reservation.settlement_pricing,
         );
         if strict && charge > reservation.hold {
-            eprintln!(
-                "strict OpenAI usage exceeded its admission hold; leaving reservation for full-hold recovery"
+            elog::error(
+                "codex-billing",
+                "strict OpenAI usage exceeded its admission hold; leaving reservation for full-hold recovery",
             );
             reservation.guard.disarm();
             return;
@@ -1314,10 +1395,13 @@ impl CodexAdmission {
         );
         reservation.guard.disarm();
         if charge > 0 {
-            eprintln!(
-                "💵 OpenAI-compatible request: −{} [{}]",
-                metering::nano_to_usd_string(charge as i128),
-                model.id
+            elog::info(
+                "codex-billing",
+                format!(
+                    "OpenAI-compatible request: −{} [{}]",
+                    metering::nano_to_usd_string(charge as i128),
+                    model.id
+                ),
             );
         }
     }
@@ -1392,9 +1476,9 @@ pub(crate) async fn begin_admission(
         return Err(AdmissionError::Unavailable);
     }
     let execution = crate::execution::parse_execution_attempt(headers).map_err(|error| {
-        eprintln!(
-            "OpenAI execution identity rejected class={}",
-            error.as_str()
+        elog::error(
+            "codex-billing",
+            format!("OpenAI execution identity rejected class={}", error.as_str()),
         );
         AdmissionError::Unavailable
     })?;

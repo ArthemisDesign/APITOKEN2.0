@@ -643,7 +643,10 @@ impl KimiGateway {
             Err(_) => {
                 // Do not render the error: malformed proxy URLs and credential envelopes may
                 // contain private egress or token material.
-                eprintln!("KIMI encrypted roster refresh skipped; last-good capacity retained");
+                elog::warn(
+                    "kimi",
+                    "KIMI encrypted roster refresh skipped; last-good capacity retained",
+                );
                 false
             }
         }
@@ -741,10 +744,13 @@ impl KimiGateway {
                 }
                 Err(error) => {
                     // Classification only: never print provider bodies, subject, proxy or tokens.
-                    eprintln!(
-                        "KIMI identity preflight failed profile={} class={}",
-                        profile.id,
-                        error.class()
+                    elog::warn(
+                        "kimi",
+                        format!(
+                            "KIMI identity preflight failed profile={} class={}",
+                            profile.id,
+                            error.class()
+                        ),
                     );
                 }
             }
@@ -805,9 +811,9 @@ impl KimiGateway {
         let snapshot = match self.fetch_quota(profile, during_shutdown).await {
             Ok(snapshot) if !snapshot.windows.is_empty() => snapshot,
             Ok(_) => {
-                eprintln!(
-                    "KIMI quota poll returned no usable windows profile={}",
-                    profile.id
+                elog::warn(
+                    "kimi",
+                    format!("KIMI quota poll returned no usable windows profile={}", profile.id),
                 );
                 return false;
             }
@@ -822,10 +828,13 @@ impl KimiGateway {
                 };
                 profile.apply_effect(effect, now_unix());
                 self.refresh_live_profile_count();
-                eprintln!(
-                    "KIMI quota poll failed profile={} class={}",
-                    profile.id,
-                    error.class()
+                elog::warn(
+                    "kimi",
+                    format!(
+                        "KIMI quota poll failed profile={} class={}",
+                        profile.id,
+                        error.class()
+                    ),
                 );
                 return false;
             }
@@ -871,9 +880,12 @@ impl KimiGateway {
             .observe_kimi_windows(&profile.subject_id, &profile.plan, snapshots.clone())
             .await
         {
-            eprintln!(
-                "KIMI quota observation persistence deferred profile={}: {error:#}",
-                profile.id
+            elog::error(
+                "kimi",
+                format!(
+                    "KIMI quota observation persistence deferred profile={}: {error:#}",
+                    profile.id
+                ),
             );
             return false;
         }
@@ -1323,6 +1335,7 @@ impl KimiGateway {
                 Some(_) => None,
                 None => self.select_profile(&request.model, &excluded, placement),
             }) else {
+                elog::warn("kimi", "kimi pool exhausted: no profile");
                 return error_response(GatewayFailure::Capacity);
             };
             // Early claim: a new conversation's home is registered before the first attempt, so
@@ -1340,6 +1353,7 @@ impl KimiGateway {
                 let token = match self.access_token(&profile, rejected_token.as_deref()).await {
                     Ok(token) => token,
                     Err(error) => {
+                        elog::error("kimi", format!("kimi upstream transport failed: {error:?}"));
                         let verdict = error.verdict();
                         let remaining = self.eligible_count(&request.model, &excluded, &profile.id);
                         let decision = decide(verdict, Delivery::PreByte, policy, remaining);
@@ -1370,6 +1384,7 @@ impl KimiGateway {
                 {
                     Ok(response) => response,
                     Err(error) => {
+                        elog::error("kimi", format!("kimi upstream transport failed: {error:?}"));
                         let remaining = self.eligible_count(&request.model, &excluded, &profile.id);
                         let decision = decide(
                             UpstreamVerdict::Transport,
@@ -1392,6 +1407,7 @@ impl KimiGateway {
                 let retry_after = retry_after_seconds(response.headers());
                 let verdict = classify_status(status);
                 let remaining = self.eligible_count(&request.model, &excluded, &profile.id);
+                elog::warn("kimi", format!("kimi upstream refused: {status}"));
                 let decision = decide(verdict, Delivery::PreByte, policy, remaining);
                 self.apply_effect_and_hint(
                     &request.affinity_store,
@@ -1467,6 +1483,7 @@ impl KimiGateway {
                                 // budget and rotate when another profile is eligible — a wedged
                                 // profile must not stay instantly re-selectable.
                                 Ok(Err(error)) => {
+                                    elog::error("kimi", format!("kimi stream start failed: {error:?}"));
                                     let remaining =
                                         self.eligible_count(&request.model, &excluded, &profile.id);
                                     let decision = decide(
@@ -1496,6 +1513,7 @@ impl KimiGateway {
                                     }
                                 }
                                 Err(_) => {
+                                    elog::error("kimi", "kimi stream start failed: timeout");
                                     let remaining =
                                         self.eligible_count(&request.model, &excluded, &profile.id);
                                     let decision = decide(
@@ -1527,6 +1545,7 @@ impl KimiGateway {
                             };
                             let mut sse = SseAccounting::default();
                             if sse.push(&initial).is_err() {
+                                elog::error("kimi", "kimi stream start failed: protocol");
                                 return error_response(GatewayFailure::Protocol);
                             }
                             if !self.mark_delivering(reservation.as_ref()).await {
@@ -1536,6 +1555,7 @@ impl KimiGateway {
                                     background, lease, accounting, None, sse, initial, upstream,
                                     false,
                                 );
+                                elog::error("kimi", "kimi delivery marker unavailable");
                                 return error_response(GatewayFailure::Unavailable(
                                     "kimi_delivery_marker_unavailable",
                                 ));
@@ -1571,6 +1591,7 @@ impl KimiGateway {
                             // whose body breaks is the model path, not the egress: cool this
                             // model on this profile and leave its other models eligible.
                             Err(error) => {
+                                elog::error("kimi", format!("kimi response body read failed: {error:?}"));
                                 let remaining =
                                     self.eligible_count(&request.model, &excluded, &profile.id);
                                 let decision = decide(
@@ -1597,6 +1618,7 @@ impl KimiGateway {
                         if !self.mark_delivering(reservation.as_ref()).await {
                             let parsed = non_stream_accounting(&body);
                             self.finalize_turn(&accounting, None, parsed).await;
+                            elog::error("kimi", "kimi delivery marker unavailable");
                             return error_response(GatewayFailure::Unavailable(
                                 "kimi_delivery_marker_unavailable",
                             ));
@@ -1676,7 +1698,11 @@ impl KimiGateway {
                     execution.clone(),
                 )
                 .await
-                .map_err(|_| GatewayFailure::Unavailable("kimi_reservation_unavailable"))?
+                .map_err(|error| {
+                    elog::error("kimi", "kimi reservation failed");
+                    let _ = error;
+                    GatewayFailure::Unavailable("kimi_reservation_unavailable")
+                })?
             {
                 Some(_) => {
                     if effective_max < requested_max {
@@ -1695,7 +1721,11 @@ impl KimiGateway {
                     balance = billing
                         .account(&input.account_id)
                         .await
-                        .map_err(|_| GatewayFailure::Unavailable("kimi_balance_unavailable"))?
+                        .map_err(|error| {
+                            elog::error("kimi", "kimi balance read failed");
+                            let _ = error;
+                            GatewayFailure::Unavailable("kimi_balance_unavailable")
+                        })?
                         .map(|account| i128::from(account.balance_nano))
                         .unwrap_or(0);
                 }
@@ -1942,6 +1972,7 @@ impl KimiGateway {
                     }
                     Err(_) => {
                         clean = false;
+                        elog::warn("kimi", "kimi mid-stream upstream error");
                         if deliver {
                             let _ = sender
                                 .send(Bytes::from_static(
@@ -2036,7 +2067,7 @@ impl KimiGateway {
                             )
                             .await
                         {
-                            eprintln!("KIMI customer settlement deferred: {error:#}");
+                            elog::error("kimi", format!("KIMI customer settlement deferred: {error:#}"));
                         }
                     }
                     None => {
@@ -2053,7 +2084,10 @@ impl KimiGateway {
                             )
                             .await
                         {
-                            eprintln!("KIMI conservative settlement deferred: {error:#}");
+                            elog::error(
+                                "kimi",
+                                format!("KIMI conservative settlement deferred: {error:#}"),
+                            );
                         }
                     }
                 }
@@ -2068,7 +2102,7 @@ impl KimiGateway {
         let event = match priced.calibration_event(context, &usage, &served_model) {
             Ok(event) => event,
             Err(error) => {
-                eprintln!("KIMI calibration event rejected before FIFO: {error:#}");
+                elog::error("kimi", format!("KIMI calibration event rejected before FIFO: {error:#}"));
                 return;
             }
         };
@@ -2083,7 +2117,10 @@ impl KimiGateway {
             .expect("KIMI turn queue lock")
             .push(event);
         if !accepted {
-            eprintln!("KIMI calibration event dropped because the bounded FIFO is full");
+            elog::error(
+                "kimi",
+                "KIMI calibration event dropped because the bounded FIFO is full",
+            );
             return;
         }
         self.drain_turn_queue_locked().await;
@@ -2107,7 +2144,12 @@ impl KimiGateway {
                         WriteOutcome::Conflict
                     }
                     Err(error) => {
-                        eprintln!("KIMI calibration persistence deferred with FIFO head retained: {error:#}");
+                        elog::warn(
+                            "kimi",
+                            format!(
+                                "KIMI calibration persistence deferred with FIFO head retained: {error:#}"
+                            ),
+                        );
                         WriteOutcome::Transient
                     }
                 },
@@ -2159,7 +2201,10 @@ impl KimiGateway {
             None => final_calibration.await,
         };
         if !complete {
-            eprintln!("KIMI shutdown calibration drain remained incomplete at deadline");
+            elog::error(
+                "kimi",
+                "KIMI shutdown calibration drain remained incomplete at deadline",
+            );
         }
     }
 }

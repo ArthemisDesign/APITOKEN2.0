@@ -397,6 +397,7 @@ impl ProcessShared {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         canceled.retain(|_, inserted| now.duration_since(*inserted) < CANCELED_TOMBSTONE_TTL);
         if canceled.len() >= MAX_CANCELED_TOMBSTONES {
+            elog::warn("gemini", "gemini helper tombstone overflow; closing");
             return false;
         }
         canceled.insert(id, now);
@@ -780,10 +781,12 @@ where
         match read_bounded_line(&mut reader, &mut line).await {
             Ok(true) => {}
             Ok(false) => {
+                elog::error("gemini", "gemini helper reader failed: EOF");
                 shared.close(TransportError::Closed);
                 return;
             }
             Err(error) => {
+                elog::error("gemini", format!("gemini helper reader failed: {error}"));
                 shared.close(error);
                 return;
             }
@@ -791,11 +794,13 @@ where
         let value: InboundFrame = match serde_json::from_slice(&line) {
             Ok(value) => value,
             Err(_) => {
+                elog::error("gemini", "gemini helper reader failed: malformed frame");
                 shared.close(TransportError::Protocol);
                 return;
             }
         };
         if dispatch_frame(&shared, value).await.is_err() {
+            elog::error("gemini", "gemini helper reader failed: dispatch error");
             shared.close(TransportError::Protocol);
             return;
         }
@@ -966,7 +971,7 @@ where
         }
     }
     if observed {
-        eprintln!("Gemini Node transport emitted redacted diagnostics");
+        elog::warn("gemini", "Gemini Node transport emitted redacted diagnostics");
     }
 }
 

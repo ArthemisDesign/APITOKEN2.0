@@ -223,6 +223,7 @@ async fn execute_generation(
         Err(error) => return validation_error(error).into_response(),
     };
     if let Err(error) = admission.mark_delivering().await {
+        elog::error("codex-image", "codex image delivery marker failed");
         return ApiError::from(error).into_response();
     }
     let result = match gateway.generate_image_on_home(&home, &turn, &request).await {
@@ -255,6 +256,7 @@ async fn execute_edit(
         Err(error) => return validation_error(error).into_response(),
     };
     if let Err(error) = admission.mark_delivering().await {
+        elog::error("codex-image", "codex image delivery marker failed");
         return ApiError::from(error).into_response();
     }
     let result = match gateway.edit_image_on_home(&home, &turn, &request).await {
@@ -277,6 +279,7 @@ async fn completed_image(
     operation: OpenAiImageOperation,
 ) -> Response {
     if !valid_result_controls(&result) {
+        elog::error("codex-image", "image output contract violation: unsupported controls");
         admission.retain_full_hold();
         return executed_error(
             StatusCode::BAD_GATEWAY,
@@ -292,6 +295,7 @@ async fn completed_image(
             usage
         }
         _ => {
+            elog::error("codex-image", "image terminal usage missing or unparseable");
             admission.retain_full_hold();
             return executed_error(
                 StatusCode::BAD_GATEWAY,
@@ -529,7 +533,10 @@ fn transport_error(error: CodexImageError, admission: Option<OpenAiImageAdmissio
     if admission.is_none() {
         return match error {
             CodexImageError::Validation(_) => validation_error(error).into_response(),
-            _ => ApiError::from(AdmissionError::Unavailable).into_response(),
+            other => {
+                elog::warn("codex-image", format!("codex image preflight failed: {other}"));
+                ApiError::from(AdmissionError::Unavailable).into_response()
+            }
         };
     }
     if let Some(admission) = admission {
@@ -546,11 +553,17 @@ fn transport_error(error: CodexImageError, admission: Option<OpenAiImageAdmissio
             "The image pool is temporarily rate limited.",
             "image_upstream_usage_limit",
         ),
-        _ => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "The image request outcome could not be finalized safely.",
-            "image_upstream_ambiguous",
-        ),
+        other => {
+            elog::error(
+                "codex-image",
+                format!("image upstream outcome ambiguous: {other}"),
+            );
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "The image request outcome could not be finalized safely.",
+                "image_upstream_ambiguous",
+            )
+        }
     };
     executed_error(status, message, reason)
 }

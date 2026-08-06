@@ -756,7 +756,7 @@ async fn evaluate_work(
         BoundedOperation::Completed(Ok(PricingShadowEvaluationWrite::Conflict(_))) => {
             metrics.pricing_shadow_processing(provider, PricingShadowProcessingResult::Conflict);
             if !conflict_alerted.swap(true, Ordering::AcqRel) {
-                eprintln!("pricing shadow invariant alert: semantic idempotency conflict");
+                elog::error("pricing", "pricing shadow invariant alert: semantic idempotency conflict");
             }
         }
         BoundedOperation::Completed(Err(error)) => {

@@ -597,7 +597,10 @@ impl GlmGateway {
             Err(_) => {
                 // Do not render the error: malformed proxy URLs and credential envelopes may
                 // contain private egress or key material.
-                eprintln!("GLM encrypted roster refresh skipped; last-good capacity retained");
+                elog::warn(
+                    "glm",
+                    "GLM encrypted roster refresh skipped; last-good capacity retained",
+                );
                 false
             }
         }
@@ -690,10 +693,13 @@ impl GlmGateway {
                         profile.apply_effect(ProfileEffect::AccountDead, now_unix(), None, None);
                     }
                     // Classification only: never print provider bodies, subject, proxy or keys.
-                    eprintln!(
-                        "GLM quota preflight failed profile={} class={}",
-                        profile.id,
-                        error.class()
+                    elog::warn(
+                        "glm",
+                        format!(
+                            "GLM quota preflight failed profile={} class={}",
+                            profile.id,
+                            error.class()
+                        ),
                     );
                 }
             }
@@ -760,9 +766,9 @@ impl GlmGateway {
         let snapshot = match self.fetch_quota(profile, during_shutdown).await {
             Ok(snapshot) if !snapshot.windows.is_empty() => snapshot,
             Ok(_) => {
-                eprintln!(
-                    "GLM quota poll returned no usable windows profile={}",
-                    profile.id
+                elog::warn(
+                    "glm",
+                    format!("GLM quota poll returned no usable windows profile={}", profile.id),
                 );
                 return false;
             }
@@ -778,10 +784,13 @@ impl GlmGateway {
                 };
                 profile.apply_effect(effect, now_unix(), None, None);
                 self.refresh_live_profile_count();
-                eprintln!(
-                    "GLM quota poll failed profile={} class={}",
-                    profile.id,
-                    error.class()
+                elog::warn(
+                    "glm",
+                    format!(
+                        "GLM quota poll failed profile={} class={}",
+                        profile.id,
+                        error.class()
+                    ),
                 );
                 return false;
             }
@@ -832,9 +841,12 @@ impl GlmGateway {
             .observe_glm_windows(&profile.subject_id, &profile.plan, snapshots.clone())
             .await
         {
-            eprintln!(
-                "GLM quota observation persistence deferred profile={}: {error:#}",
-                profile.id
+            elog::error(
+                "glm",
+                format!(
+                    "GLM quota observation persistence deferred profile={}: {error:#}",
+                    profile.id
+                ),
             );
             return false;
         }
@@ -1083,6 +1095,7 @@ impl GlmGateway {
         loop {
             let Some(profile) = self.select_profile(&request.model, &excluded, sticky.as_deref())
             else {
+                elog::warn("glm", "glm pool exhausted: no profile");
                 return error_response(GatewayFailure::Capacity);
             };
             let lease = ProfileLease::new(profile.clone());
@@ -1107,6 +1120,10 @@ impl GlmGateway {
             {
                 Ok(response) => response,
                 Err(error) => {
+                    elog::error(
+                        "glm",
+                        format!("glm upstream transport failed: {error:?}"),
+                    );
                     let remaining = self.eligible_count(&request.model, &excluded, &profile.id);
                     let decision = decide(
                         UpstreamVerdict::Transport,
@@ -1163,11 +1180,18 @@ impl GlmGateway {
                     .await;
                     let initial = match startup {
                         Ok(Ok(initial)) => initial,
-                        Ok(Err(error)) => return error_response(error),
-                        Err(_) => return error_response(GatewayFailure::Transport),
+                        Ok(Err(error)) => {
+                            elog::error("glm", format!("glm stream start failed: {error:?}"));
+                            return error_response(error);
+                        }
+                        Err(_) => {
+                            elog::error("glm", "glm stream start failed: timeout");
+                            return error_response(GatewayFailure::Transport);
+                        }
                     };
                     let mut sse = SseAccounting::default();
                     if sse.push(&initial).is_err() {
+                        elog::error("glm", "glm stream start failed: protocol");
                         return error_response(GatewayFailure::Protocol);
                     }
                     // Atomic delivery marker before the first public byte. Everything after this
@@ -1178,6 +1202,7 @@ impl GlmGateway {
                         let _ = self.spawn_stream(
                             background, lease, accounting, None, sse, initial, upstream, false,
                         );
+                        elog::error("glm", "glm delivery marker unavailable");
                         return error_response(GatewayFailure::Unavailable(
                             "glm_delivery_marker_unavailable",
                         ));
@@ -1208,11 +1233,15 @@ impl GlmGateway {
                 let headers = response_headers(&response);
                 let body = match read_bounded(response, RESPONSE_BODY_LIMIT).await {
                     Ok(body) => body,
-                    Err(error) => return error_response(error),
+                    Err(error) => {
+                        elog::error("glm", format!("glm response body read failed: {error:?}"));
+                        return error_response(error);
+                    }
                 };
                 if !self.mark_delivering(reservation.as_ref()).await {
                     let parsed = non_stream_accounting(&body);
                     self.finalize_turn(&accounting, None, parsed).await;
+                    elog::error("glm", "glm delivery marker unavailable");
                     return error_response(GatewayFailure::Unavailable(
                         "glm_delivery_marker_unavailable",
                     ));
@@ -1254,6 +1283,7 @@ impl GlmGateway {
             };
             let quota_reset = payload.as_ref().and_then(client::quota_wall_reset);
             let remaining = self.eligible_count(&request.model, &excluded, &profile.id);
+            elog::warn("glm", format!("glm upstream refused: {status}"));
             let decision = decide(verdict, Delivery::PreByte, policy, remaining);
             profile.apply_effect(
                 decision.effect,
@@ -1321,7 +1351,11 @@ impl GlmGateway {
                     execution.clone(),
                 )
                 .await
-                .map_err(|_| GatewayFailure::Unavailable("glm_reservation_unavailable"))?
+                .map_err(|error| {
+                    elog::error("glm", "glm reservation failed");
+                    let _ = error;
+                    GatewayFailure::Unavailable("glm_reservation_unavailable")
+                })?
             {
                 Some(_) => {
                     if effective_max < requested_max {
@@ -1340,7 +1374,11 @@ impl GlmGateway {
                     balance = billing
                         .account(&input.account_id)
                         .await
-                        .map_err(|_| GatewayFailure::Unavailable("glm_balance_unavailable"))?
+                        .map_err(|error| {
+                            elog::error("glm", "glm balance read failed");
+                            let _ = error;
+                            GatewayFailure::Unavailable("glm_balance_unavailable")
+                        })?
                         .map(|account| i128::from(account.balance_nano))
                         .unwrap_or(0);
                 }
@@ -1573,6 +1611,7 @@ impl GlmGateway {
                     }
                     Err(_) => {
                         clean = false;
+                        elog::warn("glm", "glm mid-stream upstream error");
                         if deliver {
                             let _ = sender
                                 .send(Bytes::from_static(
@@ -1680,7 +1719,7 @@ impl GlmGateway {
                             )
                             .await
                         {
-                            eprintln!("GLM customer settlement deferred: {error:#}");
+                            elog::error("glm", format!("GLM customer settlement deferred: {error:#}"));
                         }
                     }
                     None => {
@@ -1706,7 +1745,10 @@ impl GlmGateway {
                             )
                             .await
                         {
-                            eprintln!("GLM conservative settlement deferred: {error:#}");
+                            elog::error(
+                                "glm",
+                                format!("GLM conservative settlement deferred: {error:#}"),
+                            );
                         }
                     }
                 }
@@ -1721,7 +1763,7 @@ impl GlmGateway {
         let event = match priced.calibration_event(context, &usage, &served_model, completed_at) {
             Ok(event) => event,
             Err(error) => {
-                eprintln!("GLM calibration event rejected before FIFO: {error:#}");
+                elog::error("glm", format!("GLM calibration event rejected before FIFO: {error:#}"));
                 return;
             }
         };
@@ -1736,7 +1778,10 @@ impl GlmGateway {
             .expect("GLM turn queue lock")
             .push(event);
         if !accepted {
-            eprintln!("GLM calibration event dropped because the bounded FIFO is full");
+            elog::error(
+                "glm",
+                "GLM calibration event dropped because the bounded FIFO is full",
+            );
             return;
         }
         self.drain_turn_queue_locked().await;
@@ -1760,8 +1805,11 @@ impl GlmGateway {
                         WriteOutcome::Conflict
                     }
                     Err(error) => {
-                        eprintln!(
-                            "GLM calibration persistence deferred with FIFO head retained: {error:#}"
+                        elog::warn(
+                            "glm",
+                            format!(
+                                "GLM calibration persistence deferred with FIFO head retained: {error:#}"
+                            ),
                         );
                         WriteOutcome::Transient
                     }
@@ -1816,7 +1864,10 @@ impl GlmGateway {
             None => final_calibration.await,
         };
         if !complete {
-            eprintln!("GLM shutdown calibration drain remained incomplete at deadline");
+            elog::error(
+                "glm",
+                "GLM shutdown calibration drain remained incomplete at deadline",
+            );
         }
     }
 }

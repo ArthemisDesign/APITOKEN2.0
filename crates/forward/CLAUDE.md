@@ -641,7 +641,8 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
 6. **The synthetic-error sanitizer (`LocalErr`/`local_err` in `proxy.rs`) — the SINGLE point
    where OUR responses to the client are born.** The client believes it is talking to api.anthropic.com, so
    `error.type`/`message` must NOT contain our internals (`subscription/pool/upstream/authority/
-   cooling/persona/fleet/oauth`). The internal reason lives only in metrics and the `eprintln` log, NOT in
+   cooling/persona/fleet/oauth`). The internal reason lives only in metrics and the `elog`
+   log (`crates/elog`), NOT in
    the body. Public triplets are authentic Anthropic: `overloaded_error`=**529**, `api_error`=500,
    `rate_limit_error`=429, `authentication_error`=401, `not_found_error`=404, `request_too_large`=413.
    Capacity shortage/empty pool/breaker/authority/upstream connection failure → depersonalized retryable

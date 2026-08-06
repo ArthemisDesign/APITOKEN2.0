@@ -519,12 +519,18 @@ pub async fn poll_sub(
         .header("content-type", "application/json")
         .header("user-agent", ua); // per-persona UA — здоровье персоны идёт с тем же отпечатком, что и бой
     rb = apply_persona_headers(rb, cfg); // ТОТ ЖЕ x-app + x-stainless-* + accept, что и в бою
-    let resp = rb
+    let resp = match rb
         .json(&body)
         .timeout(Duration::from_secs(25))
         .send()
         .await
-        .ok()?;
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            elog::warn("upstream", format!("poll_sub transport failure: {e}"));
+            return None;
+        }
+    };
     let http = resp.status().as_u16();
     let l = limits_from_headers(resp.headers());
     Some(PollResult {

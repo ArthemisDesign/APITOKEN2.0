@@ -11,13 +11,20 @@ use super::{CodexConfig, CodexProfileSpec, CodexProfilesFile};
 /// Read and validate the roster. Returns an empty list when the roster is missing or malformed:
 /// the caller keeps the previous pool rather than emptying it on a transient read failure.
 pub(crate) fn discover(cfg: &CodexConfig) -> Vec<CodexProfileSpec> {
-    let Ok(bytes) = std::fs::read(&cfg.profiles_file) else {
-        return Vec::new();
+    let bytes = match std::fs::read(&cfg.profiles_file) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            elog::warn(
+                "codex-discovery",
+                format!("codex roster read failed: {error}"),
+            );
+            return Vec::new();
+        }
     };
     let Ok(roster) =
         serde_json::from_str::<CodexProfilesFile>(std::str::from_utf8(&bytes).unwrap_or(""))
     else {
-        eprintln!("Codex roster is not valid JSON; keeping the current pool");
+        elog::warn("codex-discovery", "codex roster is not valid JSON; keeping the current pool");
         return Vec::new();
     };
     let credentials_dir = std::path::Path::new(&cfg.profiles_file)
@@ -28,7 +35,10 @@ pub(crate) fn discover(cfg: &CodexConfig) -> Vec<CodexProfileSpec> {
     for spec in roster.profiles {
         if codex_credential::validate_profile_id(&spec.id).is_err() || !seen.insert(spec.id.clone())
         {
-            eprintln!("Codex roster entry has an invalid or duplicate profile id; skipped");
+            elog::warn(
+                "codex-discovery",
+                "codex roster entry has an invalid or duplicate profile id; skipped",
+            );
             continue;
         }
         let path = std::path::Path::new(&spec.credential_file);
@@ -39,9 +49,12 @@ pub(crate) fn discover(cfg: &CodexConfig) -> Vec<CodexProfileSpec> {
                 .as_ref()
                 .is_some_and(|expected| path.parent() == Some(expected.as_path()));
         if !layout_ok {
-            eprintln!(
-                "Codex roster entry {} points outside <roster>/credentials/<id>.json; skipped",
-                spec.id
+            elog::warn(
+                "codex-discovery",
+                format!(
+                    "codex roster entry {} points outside <roster>/credentials/<id>.json; skipped",
+                    spec.id
+                ),
             );
             continue;
         }

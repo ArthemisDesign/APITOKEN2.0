@@ -295,7 +295,7 @@ impl SseProtocolState {
             .is_some_and(|last| sequence_number <= last)
         {
             if !self.duplicate_sequence_reported {
-                eprintln!("Codex duplicate SSE sequence suppressed");
+                elog::warn("codex", "Codex duplicate SSE sequence suppressed");
                 self.duplicate_sequence_reported = true;
             }
             return false;
@@ -363,7 +363,7 @@ impl SseProtocolState {
 
     fn report_identity_drift(&mut self) {
         if !self.identity_drift_reported {
-            eprintln!("Codex output item identity drift normalized");
+            elog::warn("codex", "Codex output item identity drift normalized");
             self.identity_drift_reported = true;
         }
     }
@@ -1251,7 +1251,17 @@ async fn dispatch_sse_event(
 ) -> Result<bool, ProcessError> {
     let payload: Value = match serde_json::from_str(data) {
         Ok(payload) => payload,
-        Err(_) => return Ok(false),
+        Err(_) => {
+            if event.is_empty() {
+                elog::warn("codex", "codex upstream SSE event not JSON; skipped");
+            } else {
+                elog::warn(
+                    "codex",
+                    format!("codex upstream SSE event {event} not JSON; skipped"),
+                );
+            }
+            return Ok(false);
+        }
     };
     if !protocol.accept_sequence(&payload) {
         return Ok(false);

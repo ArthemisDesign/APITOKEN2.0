@@ -205,7 +205,10 @@ async fn reserve_gemini_metered(
             return Ok(reserved);
         }
         if pass != 0 {
-            eprintln!("Gemini legacy reserve closed but no active release could be resolved");
+            elog::error(
+                "gemini-billing",
+                "Gemini legacy reserve closed but no active release could be resolved",
+            );
             return Err(AdmissionError::Unavailable);
         }
         if available_nano <= 0 {
@@ -268,11 +271,17 @@ async fn reserve_gemini_release_v2(
             // legacy tariff below still knows this model, so serve the customer from it instead of
             // refusing: waiting would never have admitted the request, only delayed the refusal.
             Err(error) if registry::pricing::is_model_unpriced(&error) => {
-                eprintln!("Gemini release has no catalog price, using the exact legacy tariff: {error:#}");
+                elog::warn(
+                    "gemini-billing",
+                    format!("Gemini release has no catalog price, using the exact legacy tariff: {error:#}"),
+                );
                 return Ok(None);
             }
             Err(error) => {
-                eprintln!("Gemini pricing release resolution failed: {error:#}");
+                elog::error(
+                    "gemini-billing",
+                    format!("Gemini pricing release resolution failed: {error:#}"),
+                );
                 return Err(AdmissionError::Unavailable);
             }
         };
@@ -296,14 +305,14 @@ async fn reserve_gemini_release_v2(
         }) {
             Ok(PricingBridgePrepare::Eligible(prepared)) => prepared,
             Ok(PricingBridgePrepare::Fallback(reason)) => {
-                eprintln!(
-                    "Gemini release-v2 quote rejected canonical input: {}",
-                    reason.code()
+                elog::error(
+                    "gemini-billing",
+                    format!("Gemini release-v2 quote rejected canonical input: {}", reason.code()),
                 );
                 return Err(AdmissionError::Unavailable);
             }
             Err(error) => {
-                eprintln!("Gemini release-v2 quote preparation failed: {error:#}");
+                elog::error("gemini-billing", format!("Gemini release-v2 quote preparation failed: {error:#}"));
                 return Err(AdmissionError::Unavailable);
             }
         };
@@ -318,14 +327,14 @@ async fn reserve_gemini_release_v2(
             }
             Ok(None) => return Err(AdmissionError::Unavailable),
             Err(error) => {
-                eprintln!("Gemini release-v2 quote failed: {error:#}");
+                elog::error("gemini-billing", format!("Gemini release-v2 quote failed: {error:#}"));
                 return Err(AdmissionError::Unavailable);
             }
         };
         let effective_output_tokens = quote.effective_output_tokens();
         let release_quote =
             PricingReleaseQuoteV2::from_legacy_snapshot(quote.snapshot()).map_err(|error| {
-                eprintln!("Gemini release-v2 quote conversion failed: {error:#}");
+                elog::error("gemini-billing", format!("Gemini release-v2 quote conversion failed: {error:#}"));
                 AdmissionError::Unavailable
             })?;
         match billing
@@ -364,19 +373,22 @@ async fn reserve_gemini_release_v2(
             )) => return Ok(None),
             Ok(PricingReleaseReserveOutcomeV2::NoActiveRelease) => continue,
             Ok(PricingReleaseReserveOutcomeV2::Conflict(conflict)) => {
-                eprintln!("Gemini release-v2 reserve conflict: {conflict:?}");
+                elog::error("gemini-billing", format!("Gemini release-v2 reserve conflict: {conflict:?}"));
                 return Err(AdmissionError::Unavailable);
             }
             Ok(PricingReleaseReserveOutcomeV2::AbortedBeforeCommit) => {
                 return Err(AdmissionError::Unavailable)
             }
             Err(error) => {
-                eprintln!("Gemini release-v2 reserve failed: {error:#}");
+                elog::error("gemini-billing", format!("Gemini release-v2 reserve failed: {error:#}"));
                 return Err(AdmissionError::Unavailable);
             }
         }
     }
-    eprintln!("Gemini release-v2 head changed repeatedly during admission");
+    elog::error(
+        "gemini-billing",
+        "Gemini release-v2 head changed repeatedly during admission",
+    );
     Err(AdmissionError::Unavailable)
 }
 
@@ -476,7 +488,7 @@ async fn reserve_gemini_legacy_mode(
                 }
                 Err(error) => {
                     app.metrics.pricing_bridge_failure(provider);
-                    eprintln!("Gemini pricing bridge preparation failed: {error:#}");
+                    elog::error("gemini-billing", format!("Gemini pricing bridge preparation failed: {error:#}"));
                     return Err(AdmissionError::Unavailable);
                 }
             };
@@ -489,7 +501,7 @@ async fn reserve_gemini_legacy_mode(
                 }
                 Err(error) => {
                     app.metrics.pricing_bridge_failure(provider);
-                    eprintln!("Gemini pricing bridge quote failed: {error:#}");
+                    elog::error("gemini-billing", format!("Gemini pricing bridge quote failed: {error:#}"));
                     return Err(AdmissionError::Unavailable);
                 }
             };
@@ -538,7 +550,7 @@ async fn reserve_gemini_legacy_mode(
                 }
                 Ok(LegacyScalarReserveOutcome::Conflict(conflict)) => {
                     app.metrics.pricing_bridge_conflict(provider);
-                    eprintln!("Gemini pricing bridge reserve conflict: {conflict:?}");
+                    elog::error("gemini-billing", format!("Gemini pricing bridge reserve conflict: {conflict:?}"));
                     Err(AdmissionError::Unavailable)
                 }
                 Ok(LegacyScalarReserveOutcome::AbortedBeforeCommit) => {
@@ -547,7 +559,7 @@ async fn reserve_gemini_legacy_mode(
                 }
                 Err(error) => {
                     app.metrics.pricing_bridge_failure(provider);
-                    eprintln!("Gemini pricing bridge reservation failed: {error:#}");
+                    elog::error("gemini-billing", format!("Gemini pricing bridge reservation failed: {error:#}"));
                     Err(AdmissionError::Unavailable)
                 }
             }
@@ -608,10 +620,13 @@ impl GeminiAdmission {
             );
             reservation.guard.disarm();
             if charge > 0 {
-                eprintln!(
-                    "💵 Gemini request: −{} [{}]",
-                    metering::nano_to_usd_string(charge as i128),
-                    model.id
+                elog::info(
+                    "gemini-billing",
+                    format!(
+                        "Gemini request: −{} [{}]",
+                        metering::nano_to_usd_string(charge as i128),
+                        model.id
+                    ),
                 );
             }
         }
@@ -751,9 +766,9 @@ pub(crate) async fn begin_admission(
         return Err(AdmissionError::Unavailable);
     }
     let execution = crate::execution::parse_execution_attempt(headers).map_err(|error| {
-        eprintln!(
-            "Gemini execution identity rejected class={}",
-            error.as_str()
+        elog::error(
+            "gemini-billing",
+            format!("Gemini execution identity rejected class={}", error.as_str()),
         );
         AdmissionError::Unavailable
     })?;
@@ -994,7 +1009,7 @@ async fn reserve_gemini_legacy(
             Ok(LegacyGeminiReserveResult::ReleaseActivated)
         }
         Err(error) => {
-            eprintln!("Gemini billing reservation failed: {error:#}");
+            elog::error("gemini-billing", format!("Gemini billing reservation failed: {error:#}"));
             Err(AdmissionError::Unavailable)
         }
     }

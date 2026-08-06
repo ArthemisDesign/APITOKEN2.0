@@ -454,18 +454,21 @@ impl GeminiProfile {
             let verdict = classify_refresh_failure(status, google_error.as_deref());
             let revoked = matches!(verdict, TokenError::Invalid);
             // Только класс ошибки Google — ни токена, ни прокси, ни описания.
-            eprintln!(
-                "[gemini] profile={} token refresh rejected: http={} error={} verdict={}",
-                self.id(),
-                status,
-                google_error.as_deref().unwrap_or("-"),
-                if revoked {
-                    "revoked"
-                } else if matches!(verdict, TokenError::Blocked) {
-                    "blocked"
-                } else {
-                    "temporary"
-                }
+            elog::warn(
+                "gemini-pool",
+                format!(
+                    "[gemini] profile={} token refresh rejected: http={} error={} verdict={}",
+                    self.id(),
+                    status,
+                    google_error.as_deref().unwrap_or("-"),
+                    if revoked {
+                        "revoked"
+                    } else if matches!(verdict, TokenError::Blocked) {
+                        "blocked"
+                    } else {
+                        "temporary"
+                    }
+                ),
             );
             return Err(verdict);
         }
@@ -776,6 +779,7 @@ impl GeminiProfile {
             return;
         };
         if !billing.record_gemini_turn_detached(event, &self.plan, Vec::new()) {
+            elog::error("gemini-pool", "gemini turn record failed");
             self.calibration_persistence_ok
                 .store(false, Ordering::Relaxed);
         }
@@ -817,9 +821,12 @@ impl GeminiProfile {
                         }
                         Err(error) => {
                             all_persisted = false;
-                            eprintln!(
-                                "Gemini window calibration restore failed [{}]",
-                                error.root_cause()
+                            elog::error(
+                                "gemini-pool",
+                                format!(
+                                    "Gemini window calibration restore failed [{}]",
+                                    error.root_cause()
+                                ),
                             );
                         }
                     }
@@ -856,16 +863,22 @@ impl GeminiProfile {
                             calibrations.insert(bucket.contract.id.to_string(), calibration);
                         }
                         Err(local_error) => {
-                            eprintln!(
-                                "Gemini window calibration failed [{}]",
-                                local_error.root_cause()
+                            elog::warn(
+                                "gemini-pool",
+                                format!(
+                                    "Gemini window calibration failed [{}]",
+                                    local_error.root_cause()
+                                ),
                             );
                         }
                     }
                     if self.billing.is_some() {
-                        eprintln!(
-                            "Gemini window calibration persistence failed [{}]",
-                            error.root_cause()
+                        elog::error(
+                            "gemini-pool",
+                            format!(
+                                "Gemini window calibration persistence failed [{}]",
+                                error.root_cause()
+                            ),
                         );
                     }
                 }
@@ -1850,7 +1863,10 @@ impl GeminiGateway {
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = hidden;
             }
             Err(error) => {
-                eprintln!("Gemini operator disable set refresh failed, keeping previous: {error:#}");
+                elog::warn(
+                    "gemini-pool",
+                    format!("Gemini operator disable set refresh failed, keeping previous: {error:#}"),
+                );
             }
         }
     }
@@ -2328,7 +2344,7 @@ impl GeminiGateway {
 
     pub async fn preflight(&self) -> anyhow::Result<()> {
         if self.profiles_snapshot().is_empty() {
-            eprintln!("Gemini OAuth provider starting with an empty encrypted roster");
+            elog::warn("gemini-pool", "Gemini OAuth provider starting with an empty encrypted roster");
             return Ok(());
         }
         // Load the operator disables before the first probe, so a revoked credential that was
@@ -2338,7 +2354,10 @@ impl GeminiGateway {
         if profile_count == 0 {
             // Every profile is disabled. That is a deliberate operator state, not a broken slot:
             // failing preflight here would make the switch able to prevent the slot from starting.
-            eprintln!("Gemini OAuth provider starting with every profile disabled by an operator");
+            elog::warn(
+                "gemini-pool",
+                "Gemini OAuth provider starting with every profile disabled by an operator",
+            );
             return Ok(());
         }
         let healthy = self.probe_profiles().await;
@@ -2346,9 +2365,12 @@ impl GeminiGateway {
             bail!("Gemini provider preflight found no authenticated subscription");
         }
         if healthy < profile_count {
-            eprintln!(
-                "Gemini provider starting with {healthy}/{} authenticated profiles",
-                profile_count
+            elog::warn(
+                "gemini-pool",
+                format!(
+                    "Gemini provider starting with {healthy}/{} authenticated profiles",
+                    profile_count
+                ),
             );
         }
         Ok(())
@@ -2360,7 +2382,7 @@ impl GeminiGateway {
                 // The message is deliberately generic. Parser/decryption errors may otherwise
                 // reveal a deployment path or key id through journalctl.
                 let _ = error;
-                eprintln!("Gemini encrypted roster reload skipped");
+                elog::warn("gemini-pool", "Gemini encrypted roster reload skipped");
             }
             // Re-read the operator switch on the same tick as the roster, so pressing the button
             // takes effect within one health interval instead of needing a slot restart.
@@ -2380,7 +2402,7 @@ impl GeminiGateway {
             }
             Ok(false) => false,
             Err(_) => {
-                eprintln!("Gemini encrypted roster refresh skipped");
+                elog::warn("gemini-pool", "Gemini encrypted roster refresh skipped");
                 false
             }
         }

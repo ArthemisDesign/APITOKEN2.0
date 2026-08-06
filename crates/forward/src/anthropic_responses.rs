@@ -195,7 +195,8 @@ pub async fn anthropic_responses(
     );
     let body_bytes = match serde_json::to_vec(&translated.body) {
         Ok(bytes) => bytes,
-        Err(_) => {
+        Err(e) => {
+            elog::error("forward", format!("anthropic request build failed: {e}"));
             return chat_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to build the upstream request.",
@@ -923,6 +924,12 @@ fn map_status(stop_reason: Option<&str>) -> (&'static str, Value) {
 /// `output_tokens_details.reasoning_tokens`.
 fn map_responses_usage(usage: &Value) -> Value {
     let tokens = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+    if ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"]
+        .iter()
+        .any(|key| usage.get(key).and_then(Value::as_u64).is_none())
+    {
+        elog::warn("forward", "anthropic usage fields missing; zero-filled");
+    }
     let input = tokens("input_tokens")
         .saturating_add(tokens("cache_creation_input_tokens"))
         .saturating_add(tokens("cache_read_input_tokens"));
@@ -1013,18 +1020,23 @@ fn output_items(blocks: Option<&Vec<Value>>) -> Vec<Value> {
                 }
             }
             Some("tool_use") => {
-                output.push(function_call_item(
-                    block.get("id").and_then(Value::as_str).unwrap_or_default(),
-                    block
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default(),
-                    &block
-                        .get("input")
-                        .map(|i| i.to_string())
-                        .unwrap_or_else(|| "{}".to_string()),
-                    "completed",
-                ));
+                let id = block.get("id").and_then(Value::as_str).unwrap_or_default();
+                let name = block
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let missing_input = block.get("input").is_none();
+                let input = block
+                    .get("input")
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "{}".to_string());
+                if id.is_empty() || name.is_empty() || missing_input {
+                    elog::warn(
+                        "forward",
+                        "anthropic tool_use block missing id/name/input; degraded function_call",
+                    );
+                }
+                output.push(function_call_item(id, name, &input, "completed"));
             }
             _ => {}
         }
@@ -1043,7 +1055,11 @@ async fn json_responses_response(upstream: Response, requested_model: String) ->
     let request_id = upstream.headers().get("request-id").cloned();
     let bytes = match to_bytes(upstream.into_body(), RESPONSE_BODY_LIMIT).await {
         Ok(bytes) => bytes,
-        Err(_) => {
+        Err(e) => {
+            elog::error(
+                "forward",
+                format!("anthropic response body read failed: {e}"),
+            );
             return without_not_started(chat_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "The provider returned an unreadable response.",
@@ -1055,7 +1071,11 @@ async fn json_responses_response(upstream: Response, requested_model: String) ->
     };
     let value: Value = match serde_json::from_slice(&bytes) {
         Ok(value) => value,
-        Err(_) => {
+        Err(e) => {
+            elog::error(
+                "forward",
+                format!("anthropic response body not JSON: {e}"),
+            );
             return without_not_started(chat_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "The provider returned a malformed response.",
@@ -1342,6 +1362,12 @@ impl ResponsesSseTranslator {
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_string();
+                        if call_id.is_empty() || name.is_empty() {
+                            elog::warn(
+                                "forward",
+                                "anthropic tool_use block missing id/name; degraded function_call",
+                            );
+                        }
                         self.push_event(
                             "response.output_item.added",
                             json!({
@@ -1640,6 +1666,10 @@ impl ResponsesSseTranslator {
                     .and_then(Value::as_str)
                     .unwrap_or("The provider returned an error.");
                 let code = error.and_then(|e| e.get("type")).and_then(Value::as_str);
+                elog::warn(
+                    "forward",
+                    format!("anthropic mid-stream error event: {message}"),
+                );
                 self.push_failed(message, code);
             }
             // Неизвестные события не несут client-visible дельт.
@@ -1673,10 +1703,16 @@ impl ResponsesSseTranslator {
             match self.source.accept(event, &data) {
                 Ok(Some(data)) => self.handle_event(event, data),
                 Ok(None) => {}
-                Err(()) => self.push_failed(
-                    "The provider stream contained a malformed event.",
-                    Some("protocol_error"),
-                ),
+                Err(e) => {
+                    elog::error(
+                        "forward",
+                        format!("anthropic SSE protocol violation: {e}"),
+                    );
+                    self.push_failed(
+                        "The provider stream contained a malformed event.",
+                        Some("protocol_error"),
+                    )
+                }
             }
             if self.finished {
                 self.buf.clear();
@@ -1714,6 +1750,7 @@ impl Stream for ResponsesSseTranslator {
                         self.drain_frames();
                     }
                     if !self.finished {
+                        elog::warn("forward", "anthropic stream ended before message_stop");
                         self.push_failed(
                             "The provider stream ended before completion.",
                             Some("protocol_error"),

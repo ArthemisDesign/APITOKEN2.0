@@ -2197,6 +2197,10 @@ async fn stream_response(
                         Err(()) => {
                             clean_eof = false;
                             malformed = !translator.audio_usage_failed;
+                            elog::error(
+                                "gemini",
+                                "gemini stream failed mid-flight: malformed response",
+                            );
                             break;
                         }
                     };
@@ -2212,6 +2216,10 @@ async fn stream_response(
                         {
                             clean_eof = false;
                             malformed = true;
+                            elog::error(
+                                "gemini",
+                                "gemini stream failed mid-flight: malformed response",
+                            );
                             break;
                         }
                     } else {
@@ -2232,11 +2240,12 @@ async fn stream_response(
                         }
                     }
                 }
-                Err(_) => {
+                Err(error) => {
                     clean_eof = false;
                     Metrics::inc(&metrics.upstream_5xx);
                     Metrics::inc(&metrics.gemini_transport_failures);
                     profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
+                    elog::error("gemini", format!("gemini stream failed mid-flight: {error}"));
                     break;
                 }
             }
@@ -2644,6 +2653,7 @@ async fn api_inner(
         };
         let Some(lease) = lease else {
             Metrics::inc(&app.metrics.exhausted);
+            elog::warn("gemini", "gemini pool exhausted: no lease");
             if calibration_target.is_some() {
                 return Err(ApiError::unavailable(
                     "gemini_calibration_profile_unavailable",
@@ -2783,6 +2793,7 @@ async fn api_inner(
                 profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
+                    elog::error("gemini", "gemini request failed: transport unavailable");
                     return Err(ApiError::unavailable("gemini_transport_unavailable"));
                 }
                 continue;
@@ -2826,6 +2837,7 @@ async fn api_inner(
                     profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
                     retry_failures += 1;
                     if retry_failures > gateway.config().max_transport_retries {
+                        elog::error("gemini", "gemini request failed: token refresh unavailable");
                         return Err(ApiError::unavailable("gemini_token_refresh_unavailable"));
                     }
                     continue;
@@ -2886,6 +2898,10 @@ async fn api_inner(
                 Ok(Err(())) if translator.audio_usage_failed => {
                     Metrics::inc(&app.metrics.gemini_usage_missing);
                     profile.mark_model_failure(&wire_model_id, "usage_metadata", gateway.config());
+                    elog::error(
+                        "gemini",
+                        "gemini request failed: audio usage metadata missing",
+                    );
                     return Err(ApiError::unavailable("gemini_audio_usage_metadata_missing"));
                 }
                 Ok(Err(())) | Err(_) => {
@@ -2896,6 +2912,7 @@ async fn api_inner(
                     saw_backend = true;
                     retry_failures += 1;
                     if retry_failures > gateway.config().max_transport_retries {
+                        elog::error("gemini", "gemini request failed: stream start failed");
                         return Err(ApiError::unavailable("gemini_stream_start_failed"));
                     }
                     continue;
@@ -2930,6 +2947,7 @@ async fn api_inner(
                         profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
                         retry_failures += 1;
                         if retry_failures > gateway.config().max_transport_retries {
+                            elog::error("gemini", "gemini request failed: stream start failed");
                             return Err(ApiError::unavailable("gemini_stream_start_failed"));
                         }
                         continue;
@@ -2942,6 +2960,7 @@ async fn api_inner(
                         saw_backend = true;
                         retry_failures += 1;
                         if retry_failures > gateway.config().max_transport_retries {
+                            elog::error("gemini", "gemini request failed: stream start failed");
                             return Err(ApiError::unavailable("gemini_stream_start_failed"));
                         }
                         continue;
@@ -2960,6 +2979,7 @@ async fn api_inner(
                 saw_backend = true;
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
+                    elog::error("gemini", "gemini request failed: stream start failed");
                     return Err(ApiError::unavailable("gemini_stream_start_failed"));
                 }
                 continue;
@@ -3002,6 +3022,7 @@ async fn api_inner(
                 profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
+                    elog::error("gemini", "gemini request failed: response read failed");
                     return Err(ApiError::unavailable("gemini_response_read_failed"));
                 }
                 continue;
@@ -3052,6 +3073,7 @@ async fn api_inner(
                 profile.cool_until(pool::now() + gateway.config().transport_cool_secs);
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
+                    elog::error("gemini", "gemini request failed: backend unavailable");
                     return Err(ApiError::unavailable("gemini_backend_unavailable"));
                 }
                 continue;
@@ -3066,6 +3088,7 @@ async fn api_inner(
                 saw_backend = true;
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
+                    elog::error("gemini", "gemini request failed: backend unavailable");
                     return Err(ApiError::unavailable("gemini_backend_unavailable"));
                 }
                 continue;
@@ -3085,6 +3108,10 @@ async fn api_inner(
                             "usage_metadata",
                             gateway.config(),
                         );
+                        elog::error(
+                            "gemini",
+                            "gemini request failed: audio usage metadata missing",
+                        );
                         return Err(ApiError::unavailable("gemini_audio_usage_metadata_missing"));
                     }
                     Err(ResponseDecodeError::Malformed) => {
@@ -3101,6 +3128,7 @@ async fn api_inner(
                         saw_backend = true;
                         retry_failures += 1;
                         if retry_failures > gateway.config().max_transport_retries {
+                            elog::error("gemini", "gemini request failed: malformed response");
                             return Err(ApiError::unavailable("gemini_malformed_response"));
                         }
                         continue;
@@ -3120,12 +3148,24 @@ async fn api_inner(
                 )
                 .await;
                 let usage = if route.operation == Operation::Generate {
-                    serde_json::from_slice::<Value>(&native_body)
-                        .ok()
-                        .and_then(|value| {
+                    match serde_json::from_slice::<Value>(&native_body) {
+                        Ok(value) => {
                             settlement_usage_from_response(&value, requested_image_output_tokens)
-                        })
-                        .filter(|usage| !usage.is_zero())
+                                .filter(|usage| !usage.is_zero())
+                        }
+                        Err(_) => {
+                            if !admission
+                                .as_ref()
+                                .is_some_and(GeminiAdmission::requires_usage)
+                            {
+                                elog::warn(
+                                    "gemini",
+                                    "gemini settlement usage unparseable; settling without usage",
+                                );
+                            }
+                            None
+                        }
+                    }
                 } else {
                     None
                 };
@@ -3139,6 +3179,7 @@ async fn api_inner(
                     Metrics::inc(&app.metrics.gemini_usage_missing);
                     Metrics::inc(&app.metrics.gemini_malformed_responses);
                     profile.mark_model_failure(&wire_model_id, "usage_metadata", gateway.config());
+                    elog::error("gemini", "gemini request failed: usage metadata missing");
                     return Err(ApiError::unavailable("gemini_usage_metadata_missing"));
                 }
                 let admission = admission
@@ -3170,6 +3211,7 @@ async fn api_inner(
                 saw_backend = true;
                 retry_failures += 1;
                 if retry_failures > gateway.config().max_transport_retries {
+                    elog::error("gemini", "gemini request failed: backend protocol error");
                     return Err(ApiError::unavailable("gemini_backend_protocol_error"));
                 }
                 continue;

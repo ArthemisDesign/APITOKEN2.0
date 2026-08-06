@@ -581,7 +581,7 @@ impl CodexHome {
                 .save_codex_health(&id, durable_health_row(after), pool::now())
                 .await
             {
-                eprintln!("Codex home {id} health persistence failed [{error:#}]");
+                elog::error("codex", format!("Codex home {id} health persistence failed [{error:#}]"));
             }
         });
     }
@@ -610,9 +610,9 @@ impl CodexHome {
             }
             // Fail open: an unreadable verdict must not keep a working subscription out of the
             // pool. The next probe re-establishes the truth either way.
-            Err(error) => eprintln!(
-                "Codex home {} health could not be recovered [{error:#}]",
-                self.id()
+            Err(error) => elog::error(
+                "codex",
+                format!("Codex home {} health could not be recovered [{error:#}]", self.id()),
             ),
         }
     }
@@ -798,9 +798,9 @@ impl CodexHome {
         }
         .await;
         if let Err(error) = write_result {
-            eprintln!(
-                "Codex home {} credential persistence failed [{error}]",
-                self.id()
+            elog::error(
+                "codex",
+                format!("Codex home {} credential persistence failed [{error}]", self.id()),
             );
             return Err(ProcessError::Timeout("credential persist"));
         }
@@ -828,9 +828,9 @@ impl CodexHome {
             return;
         }
         let Ok((_key_id, fresh, fresh_mtime)) = open_credential(&self.cfg, &self.spec) else {
-            eprintln!(
-                "Codex home {} credential reload failed; keeping current",
-                self.id()
+            elog::warn(
+                "codex",
+                format!("Codex home {} credential reload failed; keeping current", self.id()),
             );
             return;
         };
@@ -992,7 +992,7 @@ impl CodexHome {
                     .fetch_add(1, Ordering::Relaxed);
                 self.calibration_persistence_ok
                     .store(false, Ordering::Relaxed);
-                eprintln!("Codex calibration event queue is full; evidence dropped");
+                elog::warn("codex", "Codex calibration event queue is full; evidence dropped");
                 return false;
             }
             pending.push_back(event);
@@ -1096,16 +1096,17 @@ impl CodexHome {
                         .fetch_add(1, Ordering::Relaxed);
                     self.calibration_persistence_ok
                         .store(false, Ordering::Relaxed);
-                    eprintln!(
-                        "Codex calibration event quarantined after immutable replay conflict"
-                    );
+                    elog::warn("codex", "Codex calibration event quarantined after immutable replay conflict");
                 }
                 Err(error) => {
                     self.calibration_persistence_ok
                         .store(false, Ordering::Relaxed);
-                    eprintln!(
-                        "Codex calibration event persistence failed [{}]",
-                        error.root_cause()
+                    elog::error(
+                        "codex",
+                        format!(
+                            "Codex calibration event persistence failed [{}]",
+                            error.root_cause()
+                        ),
                     );
                     break;
                 }
@@ -1145,9 +1146,9 @@ impl CodexHome {
             .fetch_add(1, Ordering::Relaxed);
         self.calibration_persistence_ok
             .store(false, Ordering::Relaxed);
-        eprintln!(
-            "Codex calibration evidence rejected [{}]",
-            error.root_cause()
+        elog::warn(
+            "codex",
+            format!("Codex calibration evidence rejected [{}]", error.root_cause()),
         );
     }
 
@@ -1205,9 +1206,12 @@ impl CodexHome {
                         }
                         Err(error) => {
                             all_persisted = false;
-                            eprintln!(
-                                "Codex window calibration state invalid [{}]",
-                                error.root_cause()
+                            elog::error(
+                                "codex",
+                                format!(
+                                    "Codex window calibration state invalid [{}]",
+                                    error.root_cause()
+                                ),
                             );
                         }
                     }
@@ -1243,21 +1247,30 @@ impl CodexHome {
                                 Ok(calibration) => {
                                     calibrations.insert(duration, calibration);
                                 }
-                                Err(state_error) => eprintln!(
-                                    "Codex in-memory calibration state invalid [{}]",
-                                    state_error.root_cause()
+                                Err(state_error) => elog::error(
+                                    "codex",
+                                    format!(
+                                        "Codex in-memory calibration state invalid [{}]",
+                                        state_error.root_cause()
+                                    ),
                                 ),
                             }
                         }
-                        Err(state_error) => eprintln!(
-                            "Codex in-memory calibration observation invalid [{}]",
-                            state_error.root_cause()
+                        Err(state_error) => elog::error(
+                            "codex",
+                            format!(
+                                "Codex in-memory calibration observation invalid [{}]",
+                                state_error.root_cause()
+                            ),
                         ),
                     }
                     if self.billing.is_some() {
-                        eprintln!(
-                            "Codex window calibration persistence failed [{}]",
-                            error.root_cause()
+                        elog::error(
+                            "codex",
+                            format!(
+                                "Codex window calibration persistence failed [{}]",
+                                error.root_cause()
+                            ),
                         );
                     }
                 }
@@ -1626,16 +1639,19 @@ impl CodexHome {
         match ProfileTransport::new(self.cfg.clone(), Some(proxy.as_str())) {
             Ok(transport) => {
                 *self.transport.lock().expect("codex transport lock") = transport;
-                eprintln!(
-                    "Codex home {} transport recycled after wedge verdict",
-                    self.id()
+                elog::warn(
+                    "codex",
+                    format!("Codex home {} transport recycled after wedge verdict", self.id()),
                 );
             }
             Err(error) => {
-                eprintln!(
-                    "Codex home {} transport recycle failed [{}]",
-                    self.id(),
-                    error.diagnostic_class()
+                elog::error(
+                    "codex",
+                    format!(
+                        "Codex home {} transport recycle failed [{}]",
+                        self.id(),
+                        error.diagnostic_class()
+                    ),
                 );
             }
         }
@@ -3220,10 +3236,13 @@ impl CodexGateway {
             match CodexHome::load(cfg.clone(), spec.clone(), order, calibration_store.clone()) {
                 Ok(home) => homes.push(Arc::new(home)),
                 Err(error) => {
-                    eprintln!(
-                        "Codex profile {} could not be loaded [{}]",
-                        spec.id,
-                        error.diagnostic_class()
+                    elog::error(
+                        "codex",
+                        format!(
+                            "Codex profile {} could not be loaded [{}]",
+                            spec.id,
+                            error.diagnostic_class()
+                        ),
                     );
                 }
             }
@@ -3269,7 +3288,7 @@ impl CodexGateway {
         if specs.is_empty() {
             // Never empty the pool from a scan: a transient unreadable roster would otherwise take
             // the whole provider down while the previous homes were still serving.
-            eprintln!("Codex rediscovery found no profiles; keeping the current pool");
+            elog::warn("codex", "Codex rediscovery found no profiles; keeping the current pool");
             return;
         }
         let mut homes = self.homes.write().await;
@@ -3292,16 +3311,16 @@ impl CodexGateway {
             if !next.iter().any(|home| Arc::ptr_eq(home, gone)) {
                 gone.retired.store(true, Ordering::Release);
                 retiring.push(gone.clone());
-                eprintln!("Codex home {} left the pool", gone.id());
+                elog::warn("codex", format!("Codex home {} left the pool", gone.id()));
             }
         }
         *homes = next.clone();
         drop(homes);
         for home in retiring {
             if let Err(error) = home.retire().await {
-                eprintln!(
-                    "Codex home retirement failed [{}]",
-                    error.diagnostic_class()
+                elog::error(
+                    "codex",
+                    format!("Codex home retirement failed [{}]", error.diagnostic_class()),
                 );
             }
         }
@@ -3316,7 +3335,7 @@ impl CodexGateway {
                 self.calibration_store.clone(),
             ) {
                 Ok(home) => {
-                    eprintln!("Codex home {} joined the pool", spec.id);
+                    elog::info("codex", format!("Codex home {} joined the pool", spec.id));
                     let home = Arc::new(home);
                     // Recover the durable account verdict before this home can be selected, so a
                     // subscription already known to be dead or spent is not re-admitted by a
@@ -3325,10 +3344,13 @@ impl CodexGateway {
                     next.push(home);
                 }
                 Err(error) => {
-                    eprintln!(
-                        "Codex profile {} could not join the pool [{}]",
-                        spec.id,
-                        error.diagnostic_class()
+                    elog::error(
+                        "codex",
+                        format!(
+                            "Codex profile {} could not join the pool [{}]",
+                            spec.id,
+                            error.diagnostic_class()
+                        ),
                     );
                 }
             }
@@ -3392,9 +3414,12 @@ impl CodexGateway {
                 *self.model_catalog.write().await = Some(available);
             }
             Err(error) => {
-                eprintln!(
-                    "Codex model catalog refresh failed [{}]",
-                    error.diagnostic_class()
+                elog::warn(
+                    "codex",
+                    format!(
+                        "Codex model catalog refresh failed [{}]",
+                        error.diagnostic_class()
+                    ),
                 );
             }
         }
@@ -3502,7 +3527,8 @@ impl CodexGateway {
                     // A task can be stuck on downstream backpressure or in cancellation cleanup.
                     // Waiting again without a deadline recreated the ten-minute singleton outage
                     // this deadline exists to prevent.
-                    eprintln!(
+                    elog::warn(
+                        "codex",
                         "Codex forced shutdown: abandoning residual tracked tasks after deadline"
                     );
                 }
@@ -3517,7 +3543,7 @@ impl CodexGateway {
             {
                 Ok(guard) => guard,
                 Err(_) => {
-                    eprintln!("Codex forced shutdown: rediscovery lock exceeded cleanup deadline");
+                    elog::warn("codex", "Codex forced shutdown: rediscovery lock exceeded cleanup deadline");
                     return;
                 }
             },
@@ -3528,7 +3554,8 @@ impl CodexGateway {
                 Some(deadline) => match tokio::time::timeout_at(deadline, home.retire()).await {
                     Ok(result) => result,
                     Err(_) => {
-                        eprintln!(
+                        elog::warn(
+                            "codex",
                             "Codex forced shutdown: home retirement exceeded the hard deadline"
                         );
                         break;
@@ -3537,7 +3564,7 @@ impl CodexGateway {
                 None => home.retire().await,
             };
             if let Err(error) = result {
-                eprintln!("Codex home shutdown failed [{}]", error.diagnostic_class());
+                elog::error("codex", format!("Codex home shutdown failed [{}]", error.diagnostic_class()));
             }
         }
     }
@@ -3842,7 +3869,7 @@ impl CodexGateway {
                 Err(error) => {
                     last_class = error.diagnostic_class();
                     home.note_transport_error(&error);
-                    eprintln!("Codex home {} failed preflight [{}]", home.id(), last_class);
+                    elog::error("codex", format!("Codex home {} failed preflight [{}]", home.id(), last_class));
                 }
             }
         }
@@ -3853,9 +3880,9 @@ impl CodexGateway {
             );
         }
         if healthy < pool_homes.len() {
-            eprintln!(
-                "Codex provider starting with {healthy}/{} authenticated homes",
-                pool_homes.len()
+            elog::info(
+                "codex",
+                format!("Codex provider starting with {healthy}/{} authenticated homes", pool_homes.len()),
             );
         }
         Ok(())
@@ -3903,10 +3930,13 @@ impl CodexGateway {
                 Ok(()) => home.mark_healthy(),
                 Err(error) => {
                     home.note_transport_error(&error);
-                    eprintln!(
-                        "Codex home {} probe failed [{}]",
-                        home.id(),
-                        error.diagnostic_class(),
+                    elog::error(
+                        "codex",
+                        format!(
+                            "Codex home {} probe failed [{}]",
+                            home.id(),
+                            error.diagnostic_class(),
+                        ),
                     );
                     if home.health().needs_recycle() {
                         home.recycle_transport();

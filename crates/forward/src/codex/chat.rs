@@ -111,6 +111,7 @@ pub async fn completions(
             return ApiError::from(error).into_response();
         }
         if let Err(error) = admission.mark_delivering().await {
+            elog::error("codex", "codex delivery marker failed");
             return ApiError::from(error).into_response();
         }
         return stream_chat(
@@ -132,6 +133,7 @@ pub async fn completions(
         Err(error) => return ApiError::from(error).into_response(),
     };
     if let Err(error) = admission.mark_delivering().await {
+        elog::error("codex", "codex delivery marker failed");
         return ApiError::from(error).into_response();
     }
     let response = completed_chat(
@@ -1254,12 +1256,15 @@ async fn stream_chat(
         let result = match run.await {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
-                eprintln!("Codex chat stream failed [{}]", error.diagnostic_class());
+                elog::error(
+                    "codex",
+                    format!("Codex chat stream failed [{}]", error.diagnostic_class()),
+                );
                 let _ = send_chat_error(&frame_tx).await;
                 return;
             }
             Err(_) => {
-                eprintln!("Codex chat stream task failed [join]");
+                elog::error("codex", "Codex chat stream task failed [join]");
                 let _ = send_chat_error(&frame_tx).await;
                 return;
             }

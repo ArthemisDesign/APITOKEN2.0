@@ -175,33 +175,44 @@ impl From<AdmissionError> for ApiError {
 
 impl From<ProcessError> for ApiError {
     fn from(value: ProcessError) -> Self {
+        let diagnostic = format!("codex run_turn rejected: {value}");
         match value {
             ProcessError::ExternalFallbackFailed { local } => {
+                elog::warn("codex", &diagnostic);
                 let mut error = Self::from(*local);
                 error.reason = "claudestore_fallback_failed";
                 error
             }
-            ProcessError::ContextWindowExceeded => Self {
-                status: StatusCode::BAD_REQUEST,
-                message: "This model's maximum context length was exceeded.".to_string(),
-                kind: "invalid_request_error",
-                param: Some("input".to_string()),
-                code: Some("context_length_exceeded"),
-                retry_after: None,
-                reason: "context_window_exceeded",
-            },
-            ProcessError::UsageLimitExceeded { retry_after } => Self::rate_limited_for_reason(
-                retry_after.or(Some(60)),
-                "codex_upstream_usage_limit",
-            ),
-            ProcessError::BadRequest => Self::invalid(
-                "The request could not be processed by the selected model.",
-                None::<String>,
-            ),
+            ProcessError::ContextWindowExceeded => {
+                elog::warn("codex", &diagnostic);
+                Self {
+                    status: StatusCode::BAD_REQUEST,
+                    message: "This model's maximum context length was exceeded.".to_string(),
+                    kind: "invalid_request_error",
+                    param: Some("input".to_string()),
+                    code: Some("context_length_exceeded"),
+                    retry_after: None,
+                    reason: "context_window_exceeded",
+                }
+            }
+            ProcessError::UsageLimitExceeded { retry_after } => {
+                elog::warn("codex", &diagnostic);
+                Self::rate_limited_for_reason(
+                    retry_after.or(Some(60)),
+                    "codex_upstream_usage_limit",
+                )
+            }
+            ProcessError::BadRequest => {
+                elog::warn("codex", &diagnostic);
+                Self::invalid(
+                    "The request could not be processed by the selected model.",
+                    None::<String>,
+                )
+            }
             other => {
-                eprintln!(
-                    "Codex provider request failed [{}]",
-                    other.diagnostic_class()
+                elog::error(
+                    "codex",
+                    format!("Codex provider request failed [{}]", other.diagnostic_class()),
                 );
                 Self::unavailable()
             }
@@ -319,6 +330,7 @@ pub async fn responses(
             return ApiError::from(error).into_response();
         }
         if let Err(error) = admission.mark_delivering().await {
+            elog::error("codex", "codex delivery marker failed");
             return ApiError::from(error).into_response();
         }
         return stream_responses(
@@ -338,6 +350,7 @@ pub async fn responses(
         Err(error) => return ApiError::from(error).into_response(),
     };
     if let Err(error) = admission.mark_delivering().await {
+        elog::error("codex", "codex delivery marker failed");
         return ApiError::from(error).into_response();
     }
     let response = build_completed_response(&prepared.request, &result, &response_id, created_at);
@@ -499,7 +512,8 @@ fn response_not_found(response_id: &str) -> Response {
 fn history_read_error(response_id: &str, error: HistoryError) -> Response {
     match error {
         HistoryError::NotFound | HistoryError::WrongTenant => response_not_found(response_id),
-        HistoryError::TooLarge | HistoryError::Corrupt | HistoryError::Unavailable => {
+        error @ (HistoryError::TooLarge | HistoryError::Corrupt | HistoryError::Unavailable) => {
+            elog::error("codex", format!("codex history unavailable for read: {error}"));
             ApiError::unavailable().into_response()
         }
     }
@@ -831,9 +845,19 @@ pub(super) async fn prepare_turn(
                     Some("previous_response_id".to_string()),
                 ))
             }
-            Err(HistoryError::Unavailable) => return Err(ApiError::unavailable()),
-            Err(HistoryError::TooLarge | HistoryError::Corrupt) => {
-                return Err(ApiError::unavailable())
+            Err(error @ HistoryError::Unavailable) => {
+                elog::error(
+                    "codex",
+                    format!("codex history unavailable for prepare_turn: {error}"),
+                );
+                return Err(ApiError::unavailable());
+            }
+            Err(error @ (HistoryError::TooLarge | HistoryError::Corrupt)) => {
+                elog::error(
+                    "codex",
+                    format!("codex history unavailable for prepare_turn: {error}"),
+                );
+                return Err(ApiError::unavailable());
             }
         }
     } else {
@@ -2370,7 +2394,7 @@ async fn persist_history(
         )
         .await
     {
-        eprintln!("Codex response history persistence degraded: {error}");
+        elog::warn("codex", format!("Codex response history persistence degraded: {error}"));
     }
 }
 
@@ -2777,7 +2801,8 @@ async fn stream_responses(
                 }
                 return;
             }
-            Err(_) => {
+            Err(error) => {
+                elog::error("codex", format!("codex stream task failed: {error}"));
                 if !downstream_closed {
                     emit_stream_failure(
                         &frame_tx,

@@ -1465,15 +1465,18 @@ async fn stream_messages(
         let result = match run.await {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
-                eprintln!(
-                    "Codex messages skin stream failed [{}]",
-                    error.diagnostic_class()
+                elog::error(
+                    "codex",
+                    format!(
+                        "Codex messages skin stream failed [{}]",
+                        error.diagnostic_class()
+                    ),
                 );
                 let _ = send_skin_error(&frame_tx).await;
                 return;
             }
             Err(_) => {
-                eprintln!("Codex messages skin stream task failed [join]");
+                elog::error("codex", "Codex messages skin stream task failed [join]");
                 let _ = send_skin_error(&frame_tx).await;
                 return;
             }
@@ -1591,7 +1594,12 @@ pub async fn messages(
     let (parts, body) = request.into_parts();
     let pending = match begin_admission(&app, &parts.headers, &peer).await {
         Ok(pending) => pending,
-        Err(error) => return anthropic_error(ApiError::from(error)),
+        Err(error) => {
+            if matches!(error, crate::codex::billing::AdmissionError::Unavailable) {
+                elog::warn("codex", "codex admission unavailable for messages");
+            }
+            return anthropic_error(ApiError::from(error));
+        }
     };
     let value = match read_messages_body(body).await {
         Ok(value) => value,
@@ -1642,6 +1650,7 @@ pub async fn messages(
             return anthropic_error(ApiError::from(error));
         }
         if let Err(error) = admission.mark_delivering().await {
+            elog::error("codex", "codex delivery marker failed");
             return anthropic_error(ApiError::from(error));
         }
         return stream_messages(
@@ -1661,6 +1670,7 @@ pub async fn messages(
         Err(error) => return anthropic_error(ApiError::from(error)),
     };
     if let Err(error) = admission.mark_delivering().await {
+        elog::error("codex", "codex delivery marker failed");
         return anthropic_error(ApiError::from(error));
     }
     let response = completed_message(

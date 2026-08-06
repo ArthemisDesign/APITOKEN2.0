@@ -463,7 +463,7 @@ pub(crate) async fn authorize(app: &AppState, headers: &HeaderMap, peer: &Socket
             }
             Ok(None) => {}
             Err(error) => {
-                eprintln!("billing key authorization failed: {error:#}");
+                elog::error("forward", format!("billing key authorization failed: {error:#}"));
                 return Authz::Unavailable;
             }
         }
@@ -998,7 +998,7 @@ async fn attempt_claudestore_fallback(
         Ok(client) => client,
         Err(error) => {
             Metrics::inc(&app.metrics.claudestore_fallback_failures);
-            eprintln!("ClaudeStore fallback client unavailable: {error}");
+            elog::warn("forward", format!("ClaudeStore fallback client unavailable: {error}"));
             return None;
         }
     };
@@ -1016,15 +1016,18 @@ async fn attempt_claudestore_fallback(
         Ok(response) => response,
         Err(error) => {
             Metrics::inc(&app.metrics.claudestore_fallback_failures);
-            eprintln!("ClaudeStore fallback transport failed: {error}");
+            elog::warn("forward", format!("ClaudeStore fallback transport failed: {error}"));
             return None;
         }
     };
     if !response.status().is_success() {
         Metrics::inc(&app.metrics.claudestore_fallback_failures);
-        eprintln!(
-            "ClaudeStore fallback returned terminal status {}",
-            response.status().as_u16()
+        elog::warn(
+            "forward",
+            format!(
+                "ClaudeStore fallback returned terminal status {}",
+                response.status().as_u16()
+            ),
         );
         return None;
     }
@@ -1116,9 +1119,9 @@ pub async fn forward(
     let execution = match crate::execution::parse_execution_attempt(&parts.headers) {
         Ok(execution) => execution,
         Err(error) => {
-            eprintln!(
-                "Anthropic execution identity rejected class={}",
-                error.as_str()
+            elog::error(
+                "forward",
+                format!("Anthropic execution identity rejected class={}", error.as_str()),
             );
             return with_not_started(local_err_for(
                 LocalErr::Overloaded,
@@ -1476,7 +1479,7 @@ pub async fn forward(
             let Some(request_id) = EnginePricingRequestId::from_engine_uuid_v4(&engine_request_id)
             else {
                 app.metrics.pricing_bridge_failure(bridge_provider);
-                eprintln!("pricing bridge rejected the engine-owned request identity");
+                elog::error("forward", "pricing bridge rejected the engine-owned request identity");
                 return local_err_for(LocalErr::Overloaded, "pricing_bridge_invariant", Some(2));
             };
             match app
@@ -1511,7 +1514,10 @@ pub async fn forward(
                         }
                         Err(error) => {
                             app.metrics.pricing_bridge_failure(bridge_provider);
-                            eprintln!("Anthropic pricing bridge preparation failed: {error:#}");
+                            elog::error(
+                                "forward",
+                                format!("Anthropic pricing bridge preparation failed: {error:#}"),
+                            );
                             return local_err_for(
                                 LocalErr::Overloaded,
                                 "pricing_bridge_invariant",
@@ -1587,7 +1593,10 @@ pub async fn forward(
                 settlement_pricing = AnthropicSettlementPricing::ReleaseV2;
             }
             Err(error) => {
-                eprintln!("Anthropic pricing release admission failed: {error:#}");
+                elog::error(
+                    "forward",
+                    format!("Anthropic pricing release admission failed: {error:#}"),
+                );
                 return local_err_for(
                     LocalErr::Overloaded,
                     "pricing_release_admission_unavailable",
@@ -1633,7 +1642,10 @@ pub async fn forward(
                 let bundle = match billing.pricing_read_bundle(account_id).await {
                     Ok(bundle) => bundle,
                     Err(error) => {
-                        eprintln!("strict Anthropic pricing bundle read failed: {error:#}");
+                        elog::error(
+                            "forward",
+                            format!("strict Anthropic pricing bundle read failed: {error:#}"),
+                        );
                         app.metrics.strict_pricing_rejected(
                             StrictPricingProvider::Anthropic,
                             StrictPricingRejectionReason::ReadUnavailable,
@@ -1658,9 +1670,12 @@ pub async fn forward(
                 ) {
                     PricingResolution::Resolved(resolved) => resolved,
                     PricingResolution::Rejected(reason) => {
-                        eprintln!(
-                            "strict Anthropic admission rejected by pricing policy: {}",
-                            reason.code()
+                        elog::warn(
+                            "forward",
+                            format!(
+                                "strict Anthropic admission rejected by pricing policy: {}",
+                                reason.code()
+                            ),
                         );
                         app.metrics.strict_pricing_rejected(
                             StrictPricingProvider::Anthropic,
@@ -1710,9 +1725,12 @@ pub async fn forward(
                 }) {
                     Ok(PricingBridgePrepare::Eligible(prepared)) => prepared,
                     Ok(PricingBridgePrepare::Fallback(reason)) => {
-                        eprintln!(
-                            "strict Anthropic quote rejected canonical input: {}",
-                            reason.code()
+                        elog::warn(
+                            "forward",
+                            format!(
+                                "strict Anthropic quote rejected canonical input: {}",
+                                reason.code()
+                            ),
                         );
                         let metric_reason = match reason {
                             crate::PricingBridgeFallbackReason::UnsupportedModelIdentity
@@ -1737,7 +1755,7 @@ pub async fn forward(
                         );
                     }
                     Err(error) => {
-                        eprintln!("strict Anthropic quote failed: {error:#}");
+                        elog::error("forward", format!("strict Anthropic quote failed: {error:#}"));
                         app.metrics.strict_pricing_rejected(
                             StrictPricingProvider::Anthropic,
                             StrictPricingRejectionReason::QuoteInvariant,
@@ -1759,7 +1777,10 @@ pub async fn forward(
                         return local_err(LocalErr::LowBalance, None);
                     }
                     Err(error) => {
-                        eprintln!("strict Anthropic balance quote failed: {error:#}");
+                        elog::error(
+                            "forward",
+                            format!("strict Anthropic balance quote failed: {error:#}"),
+                        );
                         app.metrics.strict_pricing_rejected(
                             StrictPricingProvider::Anthropic,
                             StrictPricingRejectionReason::QuoteInvariant,
@@ -1780,7 +1801,10 @@ pub async fn forward(
                 ) {
                     Ok(snapshot) => snapshot,
                     Err(error) => {
-                        eprintln!("strict Anthropic snapshot build failed: {error:#}");
+                        elog::error(
+                            "forward",
+                            format!("strict Anthropic snapshot build failed: {error:#}"),
+                        );
                         app.metrics.strict_pricing_rejected(
                             StrictPricingProvider::Anthropic,
                             StrictPricingRejectionReason::SnapshotInvariant,
@@ -1862,7 +1886,10 @@ pub async fn forward(
                         }
                     },
                     Ok(PolicyReserveOutcome::Conflict(conflict)) => {
-                        eprintln!("strict Anthropic reserve conflict: {conflict:?}");
+                        elog::error(
+                            "forward",
+                            format!("strict Anthropic reserve conflict: {conflict:?}"),
+                        );
                         app.metrics.strict_pricing_rejected(
                             StrictPricingProvider::Anthropic,
                             StrictPricingRejectionReason::ReserveConflict,
@@ -1885,7 +1912,7 @@ pub async fn forward(
                         );
                     }
                     Err(error) => {
-                        eprintln!("strict Anthropic reserve failed: {error:#}");
+                        elog::error("forward", format!("strict Anthropic reserve failed: {error:#}"));
                         app.metrics.strict_pricing_rejected(
                             StrictPricingProvider::Anthropic,
                             StrictPricingRejectionReason::ReserveUnavailable,
@@ -1906,7 +1933,10 @@ pub async fn forward(
                         Ok(None) => break,
                         Err(error) => {
                             app.metrics.pricing_bridge_failure(bridge_provider);
-                            eprintln!("Anthropic pricing bridge quote failed: {error:#}");
+                            elog::error(
+                                "forward",
+                                format!("Anthropic pricing bridge quote failed: {error:#}"),
+                            );
                             return local_err_for(
                                 LocalErr::Overloaded,
                                 "pricing_bridge_invariant",
@@ -1987,7 +2017,10 @@ pub async fn forward(
                         },
                         Ok(LegacyScalarReserveOutcome::Conflict(conflict)) => {
                             app.metrics.pricing_bridge_conflict(bridge_provider);
-                            eprintln!("Anthropic pricing bridge reserve conflict: {conflict:?}");
+                            elog::error(
+                                "forward",
+                                format!("Anthropic pricing bridge reserve conflict: {conflict:?}"),
+                            );
                             return local_err_for(
                                 LocalErr::Overloaded,
                                 "pricing_bridge_conflict",
@@ -1996,7 +2029,10 @@ pub async fn forward(
                         }
                         Ok(LegacyScalarReserveOutcome::AbortedBeforeCommit) => {
                             app.metrics.pricing_bridge_failure(bridge_provider);
-                            eprintln!("Anthropic pricing bridge commit handoff was aborted");
+                            elog::error(
+                                "forward",
+                                "Anthropic pricing bridge commit handoff was aborted",
+                            );
                             return local_err_for(
                                 LocalErr::Overloaded,
                                 "pricing_bridge_handoff_aborted",
@@ -2049,7 +2085,10 @@ pub async fn forward(
                         }
                         Err(error) => {
                             app.metrics.pricing_bridge_failure(bridge_provider);
-                            eprintln!("Anthropic pricing bridge reservation failed: {error:#}");
+                            elog::error(
+                                "forward",
+                                format!("Anthropic pricing bridge reservation failed: {error:#}"),
+                            );
                             return local_err_for(
                                 LocalErr::Overloaded,
                                 "pricing_bridge_reservation_unavailable",
@@ -2062,7 +2101,10 @@ pub async fn forward(
                         Ok(None) => 0,
                         Err(error) => {
                             app.metrics.pricing_bridge_failure(bridge_provider);
-                            eprintln!("billing balance refresh failed: {error:#}");
+                            elog::error(
+                                "forward",
+                                format!("billing balance refresh failed: {error:#}"),
+                            );
                             return local_err_for(
                                 LocalErr::Overloaded,
                                 "billing_balance_refresh_unavailable",
@@ -2075,7 +2117,10 @@ pub async fn forward(
                         Ok(None) => break,
                         Err(error) => {
                             app.metrics.pricing_bridge_failure(bridge_provider);
-                            eprintln!("Anthropic pricing bridge requote failed: {error:#}");
+                            elog::error(
+                                "forward",
+                                format!("Anthropic pricing bridge requote failed: {error:#}"),
+                            );
                             return local_err_for(
                                 LocalErr::Overloaded,
                                 "pricing_bridge_invariant",
@@ -2112,7 +2157,7 @@ pub async fn forward(
                         }
                         Ok(None) => {}
                         Err(error) => {
-                            eprintln!("billing reservation failed: {error:#}");
+                            elog::error("forward", format!("billing reservation failed: {error:#}"));
                             return local_err_for(
                                 LocalErr::Overloaded,
                                 "billing_reservation_unavailable",
@@ -2124,7 +2169,10 @@ pub async fn forward(
                         Ok(Some(account)) => account.balance_nano as i128,
                         Ok(None) => 0,
                         Err(error) => {
-                            eprintln!("billing balance refresh failed: {error:#}");
+                            elog::error(
+                                "forward",
+                                format!("billing balance refresh failed: {error:#}"),
+                            );
                             return local_err_for(
                                 LocalErr::Overloaded,
                                 "billing_balance_refresh_unavailable",
@@ -2363,7 +2411,7 @@ pub async fn forward(
                     Ok(lease) => lease,
                     Err(error) => {
                         app.pool.mark_done(&sub.email);
-                        eprintln!("capacity authority failed: {error:#}");
+                        elog::error("forward", format!("capacity authority failed: {error:#}"));
                         return local_err_for(
                             LocalErr::Overloaded,
                             "capacity_authority_unavailable",
@@ -2393,7 +2441,7 @@ pub async fn forward(
                     app.pool.mark_cooling(&sub.email, 10); // битый прокси → cooling (слот закроет guard)
                     app.affinity
                         .publish_cooling_hint(&sub.email, pool::now() + 10);
-                    eprintln!("⚠ прокси {}: {e}", sub.email); // детали ТОЛЬКО в лог (не клиенту)
+                    elog::warn("forward", format!("прокси {}: {e}", sub.email)); // детали ТОЛЬКО в лог (не клиенту)
                     last_local =
                         local_err_for(LocalErr::Overloaded, "subscription_proxy_unavailable", None);
                     continue;
@@ -2496,7 +2544,7 @@ pub async fn forward(
                     app.pool.mark_cooling(&sub.email, 15);
                     app.affinity
                         .publish_cooling_hint(&sub.email, pool::now() + 15);
-                    eprintln!("⚠ upstream {}: {e}", sub.email); // детали (email/сеть) ТОЛЬКО в лог
+                    elog::warn("forward", format!("upstream {}: {e}", sub.email)); // детали (email/сеть) ТОЛЬКО в лог
                     last_local =
                         local_err_for(LocalErr::Overloaded, "upstream_connection_error", None);
                     backend_tries += 1;
@@ -2549,7 +2597,7 @@ pub async fn forward(
                 let secs = cool_secs_429(&resp, &lim, now);
                 app.pool.mark_cooling(&sub.email, secs);
                 app.affinity.publish_cooling_hint(&sub.email, now + secs);
-                eprintln!("↻ ротация: {} вернул 429 — cooling {}s", sub.email, secs);
+                elog::warn("forward", format!("ротация: {} вернул 429 — cooling {}s", sub.email, secs));
                 last_upstream = Some((st, resp));
                 continue;
             }
@@ -2561,9 +2609,12 @@ pub async fn forward(
                 // — детерминировано → это запрос клиента → отдаём НАСТОЯЩИЙ ответ апстрима прозрачно.
                 Metrics::inc(&app.metrics.upstream_auth);
                 auth_tries += 1;
-                eprintln!(
-                    "auth {} на {} (попытка {}) — НЕ студим (возможно вина запроса)",
-                    code, sub.email, auth_tries
+                elog::warn(
+                    "forward",
+                    format!(
+                        "auth {} на {} (попытка {}) — НЕ студим (возможно вина запроса)",
+                        code, sub.email, auth_tries
+                    ),
                 );
                 // Пробуем ДРУГУЮ подписку ТОЛЬКО если она реально есть (вдруг дохлый токен этой). Если
                 // другой нет (напр. пул из одной) или повтор — это вина запроса (scope/модель/путь) → отдаём
@@ -2599,9 +2650,9 @@ pub async fn forward(
                     app.breaker.record_fail(now, &sub.email);
                     backend_fail_recorded = true;
                 }
-                eprintln!(
-                    "↻ ротация: {} вернул {} — backend-fault (breaker+)",
-                    sub.email, code
+                elog::warn(
+                    "forward",
+                    format!("ротация: {} вернул {} — backend-fault (breaker+)", sub.email, code),
                 );
                 last_upstream = Some((st, resp));
                 backend_tries += 1; // backend тратит бюджет (аутейдж)
@@ -3000,10 +3051,14 @@ impl Stream for SseErrorTail {
             return Poll::Ready(Some(Ok(Self::frame())));
         }
         match Pin::new(&mut self.inner).poll_next(cx) {
-            Poll::Ready(Some(Err(_))) => {
+            Poll::Ready(Some(Err(e))) => {
                 // Swallow the transport error and end the body with a protocol frame instead.
                 // Propagating it would abort the response, which is precisely the silent truncation
                 // this exists to remove.
+                elog::error(
+                    "forward",
+                    format!("mid-stream transport failure: {e}"),
+                );
                 self.failed = true;
                 self.done = true;
                 Poll::Ready(Some(Ok(Self::frame())))
