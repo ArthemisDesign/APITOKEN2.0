@@ -2166,6 +2166,24 @@ pub(crate) fn postgres_locked_openkeys_policy_transition(
         );
     }
     if let Err(error) = validate_locked_openkeys_successor_identity(&transition, &locked_policy) {
+        // The source lock is consumed by the first successful application, so the successor
+        // identity validation fails on an exact replay of an already-applied transition. The
+        // terminal state (successor row and active binding) remains an idempotent replay.
+        if actual_state == PolicyBindingState::Active(transition.desired_active())
+            && policy_by_version(
+                &mut transaction,
+                &transition.policy.account_id,
+                transition.policy.effective_version,
+                true,
+            )?
+            .is_some_and(|existing| existing == transition.policy)
+        {
+            return commit_mutation(
+                transaction,
+                PricingMutation::Unchanged,
+                "locked OpenKeys policy transition",
+            );
+        }
         return commit_mutation(
             transaction,
             invalid(error),
@@ -2296,6 +2314,30 @@ pub(crate) fn postgres_locked_openkeys_policy_transition(
         transaction
             .rollback()
             .context("rollback lost PostgreSQL locked OpenKeys policy transition CAS")?;
+        return Ok(policy_cas_mismatch(actual_state));
+    }
+    // The replacement lock is consumed by the transition: while the historical source row stays
+    // locked, no future generation can advance the lineage (generic prepare rejects it) and the
+    // successor identity validation rejects a second transition, which freezes the account
+    // forever. Clear the consumed lock atomically with the binding switch so later generations
+    // advance the engine-validated canonical managed 1:1 successor through the generic CAS lane.
+    let cleared = transaction.execute(
+        "UPDATE account_policy_versions
+         SET replacement_locked = 0
+         WHERE account_id=$1
+           AND effective_version=$2
+           AND content_digest=$3
+           AND replacement_locked",
+        &[
+            &transition.policy.account_id,
+            &transition.expected_active.target.version,
+            &transition.expected_active.target.content_digest,
+        ],
+    )?;
+    if cleared != 1 {
+        transaction
+            .rollback()
+            .context("rollback lost PostgreSQL locked OpenKeys transition lock release")?;
         return Ok(policy_cas_mismatch(actual_state));
     }
     commit_mutation(

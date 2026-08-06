@@ -84,7 +84,10 @@ required to remain the exact managed provider-only 1:1 successor; semantic drift
 If its catalog/switch pins already match the Stage 5 plan it is skipped, otherwise the successor is
 built on the account's EXISTING engine lineage (the same policy identity, next monotonic version,
 exact current active as expected active), with rules converted from the release policy and pins of
-the exact Stage 5 catalog/switch.
+the exact Stage 5 catalog/switch. The engine consumes the source replacement lock atomically with
+the transition, so an already-transitioned legacy lineage advances through the generic
+prepare/activate CAS lane in every later generation; only a lineage whose active policy is still
+replacement-locked remains `423 locked` for generic prepare/activate.
 The worker reads the engine state, confirms an already-exact
 policy with a single readback without mutation, otherwise performs prepare → exact readback →
 activate with a CAS expectation from fresh state. Any version conflict, digest mismatch, newer

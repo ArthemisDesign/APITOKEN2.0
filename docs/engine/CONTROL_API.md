@@ -698,8 +698,13 @@ and CAS-moves the binding to:
 Success is `result=applied`; an exact retry after a lost ACK is `result=unchanged`. A competing
 binding change is `409 policy_cas_mismatch`; missing/inactive exact dependencies and immutable
 version conflicts retain the normal typed pricing errors. Any child insert or CAS failure rolls the
-whole transaction back. Generic policy prepare/activate still return `423 locked` for this
-lineage. The transition changes neither live price nor funding authority: it only makes the
+whole transaction back. The transaction also consumes the source replacement lock: the historical
+locked row is cleared atomically with the binding switch, so later generations advance the
+engine-validated canonical managed 1:1 successor through the generic policy prepare/activate CAS
+lane. Until that transition, and for any lineage whose active policy is still replacement-locked,
+generic policy prepare/activate return `423 locked`. A second transition on the same lineage is
+rejected by the successor identity validation; an exact replay of the applied transition remains
+`result=unchanged`. The transition changes neither live price nor funding authority: it only makes the
 canonical OpenKeys 1:1 successor available in shadow before the all-account Stage 9 release-head
 CAS. Consumers are connected after the GREEN producer SHA: strict request/identity schemas live in
 `packages/contracts`, the typed transport is

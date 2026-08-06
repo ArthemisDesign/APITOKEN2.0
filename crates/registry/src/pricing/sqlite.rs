@@ -1790,6 +1790,19 @@ pub fn sqlite_locked_openkeys_policy_transition(
         );
     }
     if let Err(error) = validate_locked_openkeys_successor_identity(&transition, &locked) {
+        // The source lock is consumed by the first successful application, so the successor
+        // identity validation fails on an exact replay of an already-applied transition. The
+        // terminal state (successor row and active binding) remains an idempotent replay.
+        if actual_state == PolicyBindingState::Active(transition.desired_active())
+            && sqlite_account_policy_by_version(
+                &transaction,
+                &transition.policy.account_id,
+                transition.policy.effective_version,
+            )?
+            .is_some_and(|existing| existing == transition.policy)
+        {
+            return finish(transaction, PricingMutation::Unchanged);
+        }
         return finish(transaction, invalid(error));
     }
     if current_binding
@@ -1987,6 +2000,34 @@ pub fn sqlite_locked_openkeys_policy_transition(
         transaction
             .rollback()
             .context("rollback lost SQLite locked OpenKeys policy transition CAS")?;
+        return Ok(PricingMutation::Rejected(
+            PricingRejection::PolicyCasMismatch {
+                actual: actual_state,
+            },
+        ));
+    }
+    // The replacement lock is consumed by the transition: while the historical source row stays
+    // locked, no future generation can advance the lineage (generic prepare rejects it) and the
+    // successor identity validation rejects a second transition, which freezes the account
+    // forever. Clear the consumed lock atomically with the binding switch so later generations
+    // advance the engine-validated canonical managed 1:1 successor through the generic CAS lane.
+    let cleared = transaction.execute(
+        "UPDATE account_policy_versions
+            SET replacement_locked=0
+          WHERE account_id=?1
+            AND effective_version=?2
+            AND content_digest=?3
+            AND replacement_locked=1",
+        params![
+            &transition.policy.account_id,
+            transition.expected_active.target.version,
+            &transition.expected_active.target.content_digest,
+        ],
+    )?;
+    if cleared != 1 {
+        transaction
+            .rollback()
+            .context("rollback lost SQLite locked OpenKeys transition lock release")?;
         return Ok(PricingMutation::Rejected(
             PricingRejection::PolicyCasMismatch {
                 actual: actual_state,
@@ -3984,9 +4025,40 @@ mod tests {
         third.effective_version = 3;
         third.policy_version = 3;
         third.content_digest = "third-policy".to_owned();
+        // The transition consumed the replacement lock: the engine-validated canonical managed
+        // 1:1 successor can now advance through the generic CAS lane in later generations.
         assert_eq!(
             sqlite_prepare_account_policy(&conn, &third).unwrap(),
-            PricingMutation::Rejected(PricingRejection::Locked)
+            PricingMutation::Stored
+        );
+        let successor_target = VersionTarget::new(
+            2,
+            "current-policy".to_owned(),
+        );
+        assert_eq!(
+            sqlite_activate_account_policy(
+                &conn,
+                &AccountPolicyActivationSpec {
+                    account_id: "legacy-openkeys".to_owned(),
+                    effective_version: 3,
+                    content_digest: "third-policy".to_owned(),
+                    binding: super::super::locked_openkeys_transition_binding(),
+                },
+                &PolicyActiveExpectation::Exact(ActivePolicyTarget {
+                    target: successor_target,
+                    binding: super::super::locked_openkeys_transition_binding(),
+                }),
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+        assert_eq!(
+            sqlite_active_account_policy(&conn, "legacy-openkeys")
+                .unwrap()
+                .expect("advanced OpenKeys policy is active")
+                .policy
+                .effective_version,
+            3
         );
     }
 
