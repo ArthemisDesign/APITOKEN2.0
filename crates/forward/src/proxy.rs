@@ -656,6 +656,12 @@ pub(crate) fn local_err_for(
     response
         .extensions_mut()
         .insert(TerminalErrorReason(terminal_reason));
+    // A synthetic error never carried an upstream `request-id`, so a customer reporting one of
+    // these had nothing to quote and support nothing to search on. The audit event logs whatever id
+    // the response carries, so setting it here makes the two match.
+    if let Ok(value) = HeaderValue::from_str(&crate::fresh_request_id()) {
+        response.headers_mut().insert("x-request-id", value);
+    }
     // Все ответы local_err_for — синтетические не-2xx ДО границы доставки: reserve по request_id
     // (если был) закрывает armed HoldGuard refund'ом. Ветки после границы снимают заголовок через
     // without_not_started (delivery-marker-failed с full-hold charge, fallback сборки stream_back).
