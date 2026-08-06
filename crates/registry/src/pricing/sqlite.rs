@@ -1704,11 +1704,37 @@ pub fn sqlite_prepare_account_policy(
             PricingMutation::Rejected(PricingRejection::VersionConflict),
         );
     }
-    if has_locked_policy(&transaction, &incoming.account_id)? {
-        return finish(
-            transaction,
-            PricingMutation::Rejected(PricingRejection::Locked),
-        );
+    if let Some(locked_target) = locked_policy_target(&transaction, &incoming.account_id)? {
+        let superseded = current_binding
+            .as_ref()
+            .and_then(|binding| binding.active_target.as_ref())
+            .is_some_and(|active| *active != locked_target);
+        if !superseded {
+            return finish(
+                transaction,
+                PricingMutation::Rejected(PricingRejection::Locked),
+            );
+        }
+        // Only the validated one-time transition can move the active target off a locked row
+        // (generic activation rejects any other target while a lock exists), so a lock whose row
+        // is no longer the active target is spent history: the transition applied before lock
+        // consumption shipped. Consume that exact stale lock atomically with this prepare — a
+        // concurrent consumer simply turns the UPDATE into a no-op — and let the canonical
+        // managed successor advance through the generic lane. A lock on the active row, or on a
+        // lineage with no active row at all (transition still pending), fails closed above.
+        transaction.execute(
+            "UPDATE account_policy_versions
+                SET replacement_locked=0
+              WHERE account_id=?1
+                AND effective_version=?2
+                AND content_digest=?3
+                AND replacement_locked=1",
+            params![
+                &incoming.account_id,
+                locked_target.version,
+                &locked_target.content_digest,
+            ],
+        )?;
     }
 
     let Some(catalog) = sqlite_pricing_catalog_by_generation(
@@ -2395,16 +2421,17 @@ fn live_account_multiplier(conn: &Connection, account_id: &str) -> Result<Option
     .context("read live SQLite account multiplier")
 }
 
-fn has_locked_policy(conn: &Connection, account_id: &str) -> Result<bool> {
+fn locked_policy_target(conn: &Connection, account_id: &str) -> Result<Option<VersionTarget>> {
     conn.query_row(
-        "SELECT EXISTS(
-             SELECT 1
-               FROM account_policy_versions
-              WHERE account_id=?1 AND replacement_locked=1
-         )",
+        "SELECT effective_version, content_digest
+           FROM account_policy_versions
+          WHERE account_id=?1 AND replacement_locked=1
+          ORDER BY effective_version
+          LIMIT 1",
         params![account_id],
-        |row| row.get(0),
+        |row| Ok(VersionTarget::new(row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
     )
+    .optional()
     .context("read SQLite account policy replacement lock")
 }
 
@@ -4060,6 +4087,84 @@ mod tests {
                 .effective_version,
             3
         );
+
+        // Pre-consumption production state: the one-time transition applied before lock
+        // consumption shipped, so the historical source row still carries replacement_locked
+        // while the active row is already the canonical managed 1:1 successor. The next generic
+        // prepare must consume the spent lock instead of freezing the lineage forever.
+        assert_eq!(
+            conn.execute(
+                "UPDATE account_policy_versions
+                    SET replacement_locked=1
+                  WHERE account_id='legacy-openkeys'
+                    AND effective_version=1
+                    AND content_digest='legacy-policy'",
+                [],
+            )
+            .unwrap(),
+            1
+        );
+        let mut fourth = third.clone();
+        fourth.effective_version = 4;
+        fourth.policy_version = 4;
+        fourth.content_digest = "fourth-policy".to_owned();
+        assert_eq!(
+            sqlite_prepare_account_policy(&conn, &fourth).unwrap(),
+            PricingMutation::Stored
+        );
+        // The spent lock was consumed by that prepare.
+        assert_eq!(
+            conn.query_row(
+                "SELECT replacement_locked
+                   FROM account_policy_versions
+                  WHERE account_id='legacy-openkeys' AND effective_version=1",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap(),
+            false
+        );
+        // Exact replay stays Unchanged.
+        assert_eq!(
+            sqlite_prepare_account_policy(&conn, &fourth).unwrap(),
+            PricingMutation::Unchanged
+        );
+        // The prepared successor activates through the generic CAS lane.
+        assert_eq!(
+            sqlite_activate_account_policy(
+                &conn,
+                &AccountPolicyActivationSpec {
+                    account_id: "legacy-openkeys".to_owned(),
+                    effective_version: 4,
+                    content_digest: "fourth-policy".to_owned(),
+                    binding: super::super::locked_openkeys_transition_binding(),
+                },
+                &PolicyActiveExpectation::Exact(ActivePolicyTarget {
+                    target: VersionTarget::new(3, "third-policy".to_owned()),
+                    binding: super::super::locked_openkeys_transition_binding(),
+                }),
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+        // A genuine second transition is still rejected: the consumed source no longer carries
+        // the replacement lock the successor identity validation requires.
+        let mut second_successor = fourth.clone();
+        second_successor.effective_version = 5;
+        second_successor.policy_version = 5;
+        second_successor.source_policy_digest = "fifth-source".to_owned();
+        second_successor.content_digest = "fifth-policy".to_owned();
+        let second_transition = LockedOpenKeysPolicyTransitionSpec {
+            policy: second_successor,
+            expected_active: ActivePolicyTarget {
+                target: VersionTarget::new(4, "fourth-policy".to_owned()),
+                binding: super::super::locked_openkeys_transition_binding(),
+            },
+        };
+        assert!(matches!(
+            sqlite_locked_openkeys_policy_transition(&conn, &second_transition).unwrap(),
+            PricingMutation::Rejected(PricingRejection::Invalid { .. })
+        ));
     }
 
     #[test]

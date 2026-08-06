@@ -2087,8 +2087,34 @@ pub(crate) fn postgres_prepare_account_policy(
             return commit_mutation(transaction, version_conflict(), "account policy prepare");
         }
     }
-    if locked_policy_lineage(&mut transaction, &incoming.account_id)?.is_some() {
-        return commit_mutation(transaction, locked(), "account policy prepare");
+    if let Some(locked_history) = locked_policy_lineage(&mut transaction, &incoming.account_id)? {
+        let superseded = current_binding
+            .as_ref()
+            .and_then(|binding| binding.active_target.as_ref())
+            .is_some_and(|active| *active != locked_history.target);
+        if !superseded {
+            return commit_mutation(transaction, locked(), "account policy prepare");
+        }
+        // Only the validated one-time transition can move the active target off a locked row
+        // (generic activation rejects any other target while a lock exists), so a lock whose row
+        // is no longer the active target is spent history: the transition applied before lock
+        // consumption shipped. Consume that exact stale lock atomically with this prepare — a
+        // concurrent consumer simply turns the UPDATE into a no-op — and let the canonical
+        // managed successor advance through the generic lane. A lock on the active row, or on a
+        // lineage with no active row at all (transition still pending), fails closed above.
+        transaction.execute(
+            "UPDATE account_policy_versions
+             SET replacement_locked = FALSE
+             WHERE account_id=$1
+               AND effective_version=$2
+               AND content_digest=$3
+               AND replacement_locked",
+            &[
+                &incoming.account_id,
+                &locked_history.target.version,
+                &locked_history.target.content_digest,
+            ],
+        )?;
     }
     match policy_dependencies(&mut transaction, &incoming)? {
         DependencyCheck::Ready(_) => {}

@@ -704,7 +704,13 @@ engine-validated canonical managed 1:1 successor through the generic policy prep
 lane. Until that transition, and for any lineage whose active policy is still replacement-locked,
 generic policy prepare/activate return `423 locked`. A second transition on the same lineage is
 rejected by the successor identity validation; an exact replay of the applied transition remains
-`result=unchanged`. The transition changes neither live price nor funding authority: it only makes the
+`result=unchanged`. Lineages whose one-time transition applied before lock consumption shipped
+keep a stale lock on the historical source row while the active target is already the canonical
+successor. Only the validated transition can move the active target off a locked row, so such a
+superseded lock is spent: the next generic policy prepare consumes that exact stale lock
+atomically (account, effective version, content digest, flag set) and proceeds with the normal
+prepare. A lock on the active row — or on a lineage with no active row, where the transition is
+still pending — still fails closed with `423 locked`. The transition changes neither live price nor funding authority: it only makes the
 canonical OpenKeys 1:1 successor available in shadow before the all-account Stage 9 release-head
 CAS. Consumers are connected after the GREEN producer SHA: strict request/identity schemas live in
 `packages/contracts`, the typed transport is

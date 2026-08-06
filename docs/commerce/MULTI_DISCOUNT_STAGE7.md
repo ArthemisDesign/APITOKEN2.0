@@ -90,7 +90,11 @@ exact current active as expected active), with rules converted from the release 
 the exact Stage 5 catalog/switch. The engine consumes the source replacement lock atomically with
 the transition, so an already-transitioned legacy lineage advances through the generic
 prepare/activate CAS lane in every later generation; only a lineage whose active policy is still
-replacement-locked remains `423 locked` for generic prepare/activate.
+replacement-locked remains `423 locked` for generic prepare/activate. Lineages transitioned before
+the engine consumed the lock in the transition itself keep a spent lock on the historical source
+row; the first generic prepare of a later generation consumes that exact stale lock atomically and
+proceeds, so this lane needs no repair pass, while a lock on the active row (or a lineage with no
+active row) still fails closed.
 The worker reads the engine state, confirms an already-exact
 policy with a single readback without mutation, otherwise performs prepare → exact readback →
 activate with a CAS expectation from fresh state. Any version conflict, digest mismatch, newer

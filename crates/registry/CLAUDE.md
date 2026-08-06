@@ -151,7 +151,11 @@ side effect. `serve` may only perform the read-only schema verification before c
   be active. Generic prepare/activate remain locked until that one-time unlock, any model
   rule/discount/eligibility flag is invalid, a lost-ACK exact replay is `Unchanged`, a second
   genuine transition is rejected by the successor identity validation, and any failed
-  insert/CAS rolls back all rows.
+  insert/CAS rolls back all rows. A lock whose row is no longer the active target can only
+  come from a transition applied before lock consumption shipped, so it is spent history: the
+  next generic prepare consumes that exact stale lock (account, effective version, content
+  digest, flag set) atomically with the prepare and proceeds; a lock on the active row — or on
+  a lineage with no active row — still rejects generic prepare/activate with `locked`.
   Separately, a **shadow lineage rebind** is the one accepted identity change on the generic
   prepare/activate path: while the stored binding is `shadow` and already active, a spec with a
   different class/product identity (B2C→B2B conversion) prepares as a new lineage — own

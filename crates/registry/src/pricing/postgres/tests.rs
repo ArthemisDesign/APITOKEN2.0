@@ -1311,6 +1311,84 @@ fn postgres_pricing_contract_matrix() {
         PricingMutation::Applied
     );
 
+    // Pre-consumption production state: the one-time transition applied before lock
+    // consumption shipped, so the historical source row still carries replacement_locked
+    // while the active row is already the canonical managed 1:1 successor. The next generic
+    // prepare must consume the spent lock instead of freezing the lineage forever.
+    assert_eq!(
+        client
+            .execute(
+                "UPDATE account_policy_versions
+                 SET replacement_locked=TRUE
+                 WHERE account_id='pricing-pg-contract-openkeys'
+                   AND effective_version=1
+                   AND content_digest='contract-openkeys-policy-1'",
+                &[],
+            )
+            .unwrap(),
+        1
+    );
+    let mut fourth = forbidden_third.clone();
+    fourth.effective_version = 4;
+    fourth.policy_version = 4;
+    fourth.content_digest = "contract-openkeys-managed-policy-4".to_owned();
+    assert_eq!(
+        postgres_prepare_account_policy(&mut client, &fourth).unwrap(),
+        PricingMutation::Stored
+    );
+    // The spent lock was consumed by that prepare.
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT replacement_locked
+                   FROM account_policy_versions
+                  WHERE account_id='pricing-pg-contract-openkeys' AND effective_version=1",
+                &[],
+            )
+            .unwrap()
+            .get::<_, bool>(0),
+        false
+    );
+    // Exact replay stays Unchanged.
+    assert_eq!(
+        postgres_prepare_account_policy(&mut client, &fourth).unwrap(),
+        PricingMutation::Unchanged
+    );
+    // The prepared successor activates through the generic CAS lane.
+    assert_eq!(
+        postgres_activate_account_policy(
+            &mut client,
+            &activation(&fourth, crate::pricing::locked_openkeys_transition_binding()),
+            &PolicyActiveExpectation::Exact(ActivePolicyTarget {
+                target: VersionTarget::new(
+                    3,
+                    "contract-openkeys-managed-policy-3".to_owned(),
+                ),
+                binding: crate::pricing::locked_openkeys_transition_binding(),
+            }),
+        )
+        .unwrap(),
+        PricingMutation::Applied
+    );
+    // A genuine second transition is still rejected: the consumed source no longer carries
+    // the replacement lock the successor identity validation requires.
+    let mut second_successor = fourth.clone();
+    second_successor.effective_version = 5;
+    second_successor.policy_version = 5;
+    second_successor.source_policy_digest = "contract-openkeys-managed-source-5".to_owned();
+    second_successor.content_digest = "contract-openkeys-managed-policy-5".to_owned();
+    let second_transition = LockedOpenKeysPolicyTransitionSpec {
+        policy: second_successor,
+        expected_active: ActivePolicyTarget {
+            target: fourth.target(),
+            binding: crate::pricing::locked_openkeys_transition_binding(),
+        },
+    };
+    assert!(matches!(
+        postgres_locked_openkeys_policy_transition(&mut client, &second_transition).unwrap(),
+        PricingMutation::Rejected(PricingRejection::Invalid { .. })
+    ));
+
     let b2b_v4 = b2b_policy(4, 4, "b2b-policy-4");
     let b2b_v5 = b2b_policy(5, 5, "b2b-policy-5");
     assert_eq!(
