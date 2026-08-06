@@ -5131,6 +5131,42 @@ grep -A7 -F 'pricing_stage567_helper=/usr/local/lib/apitoken-watchdog/controller
   | grep -Fq '3f412e33d631f2956a575e40f7f28f8b0b592106' \
   || wd_die 'pricing Stage 5-7 convergence sudo self-check is not aligned with policy'
 
+# The v2 convergence bridge is the identical fail-closed process over a fresh private namespace:
+# the v1 cycle fences stay immutable evidence, and a burned v1 state never gets deleted or reused.
+pricing_stage567_v2_gate="$ROOT/deploy/pricing-stage567-converge-v2-gate.sh"
+wd_path_is_controller_definition deploy/pricing-stage567-converge-v2-gate.sh \
+  || wd_die 'pricing Stage 5-7 convergence v2 helper is not a fixed controller definition'
+grep -Fq 'publish_pricing_stage567_converge_v2_helper' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'pricing Stage 5-7 convergence v2 helper is not published before sudo verification'
+grep -Fxq 'MAX_CYCLES=3' "$pricing_stage567_v2_gate" \
+  || wd_die 'pricing Stage 5-7 convergence v2 helper lacks its fixed cycle bound'
+grep -Fxq 'STATE_PARENT=/var/lib/apitoken/pricing-stage567-converge-v2' "$pricing_stage567_v2_gate" \
+  || wd_die 'pricing Stage 5-7 convergence v2 helper lacks its own private cycle namespace'
+grep -Fxq 'ADMISSION_SHA=3f412e33d631f2956a575e40f7f28f8b0b592106' "$pricing_stage567_v2_gate" \
+  || wd_die 'pricing Stage 5-7 convergence v2 helper is not pinned to the exact admission'
+grep -Fq 'if (( rc != DRIFT_EXIT && rc != BLOCKED_EXIT )); then' "$pricing_stage567_v2_gate" \
+  && grep -Fq '.state == "engine_inventory_drift"' "$pricing_stage567_v2_gate" \
+  && grep -Fq '.state == "rollout_blocked"' "$pricing_stage567_v2_gate" \
+  || wd_die 'pricing Stage 5-7 convergence v2 helper can advance on a non-terminal blocker'
+grep -Fq 'stage6_result_is_valid "$stage6_result"' "$pricing_stage567_v2_gate" \
+  && grep -Fq -- '--converge-cycle "$cycle" "$stage6_result"' "$pricing_stage567_v2_gate" \
+  || wd_die 'pricing Stage 5-7 convergence v2 helper does not validate dynamic terminal identities'
+! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc|https://|images/(generations|edits)' \
+  "$pricing_stage567_v2_gate" \
+  || wd_die 'pricing Stage 5-7 convergence v2 helper contains reseller or image-dispatch logic'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-v2-gate.sh 3f412e33d631f2956a575e40f7f28f8b0b592106' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'pricing Stage 5-7 convergence v2 helper lacks an exact-admission sudo bridge'
+grep -A7 -F 'pricing_stage567_v2_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-v2-gate.sh' \
+  "$ROOT/deploy/install-sudoers.sh" \
+  | grep -Fq '3f412e33d631f2956a575e40f7f28f8b0b592106' \
+  || wd_die 'pricing Stage 5-7 convergence v2 sudo self-check is not aligned with policy'
+# The v2 bridge must stay an exact clone of the v1 process apart from its namespace and name.
+diff <(sed -e 's/pricing-stage567-converge-v2-gate.sh/pricing-stage567-converge-gate.sh/g' \
+        -e 's|pricing-stage567-converge-v2$|pricing-stage567-converge|' \
+        "$pricing_stage567_v2_gate") "$pricing_stage567_gate" \
+  || wd_die 'pricing Stage 5-7 convergence v2 helper diverges from the proven v1 process'
+
 # A drifted Stage 7 identity is diagnosed by a bounded read-only helper, never by a blind rerun.
 pricing_stage7_diagnostic_gate="$ROOT/deploy/pricing-stage7-identity-diagnostic-gate.sh"
 wd_path_is_controller_definition deploy/pricing-stage7-identity-diagnostic-gate.sh \

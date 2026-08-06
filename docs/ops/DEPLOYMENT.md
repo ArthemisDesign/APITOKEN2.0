@@ -491,6 +491,22 @@ sudo /usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-gate.
   3f412e33d631f2956a575e40f7f28f8b0b592106
 ```
 
+If the v1 bridge has already burned all three private cycles (`rollout_blocked` or
+`engine_inventory_drift` fences under `/var/lib/apitoken/pricing-stage567-converge/cycle-*`), it
+exits without starting new work — those fences are immutable historical evidence and are never
+deleted or reused. Once the blocking cause is fixed and deployed (for the 2026-08-06 blocked
+rollouts: the engine consumed the OpenKeys replacement lock in `e3579048`), rerun the identical
+fail-closed process over a fresh private namespace through the v2 bridge:
+
+```bash
+sudo /usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-v2-gate.sh \
+  3f412e33d631f2956a575e40f7f28f8b0b592106
+```
+
+The v2 bridge differs from v1 only in its state root
+(`/var/lib/apitoken/pricing-stage567-converge-v2`); the regression suite asserts byte-level
+process identity otherwise.
+
 The bridge creates a fresh private namespace per cycle, runs the existing strict Stage 5/6 helper,
 persists its terminal identities, and immediately stages Stage 7 with the same identities and one
 replay-stable UUID. It advances to a fresh cycle on exactly two terminal outcomes: an exact typed
