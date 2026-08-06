@@ -31,6 +31,11 @@ cycle=$(mktemp "$work/.cycle.XXXXXX")
 : >"$cycle"
 for ((c = 1; c <= MAX_CYCLES; c++)); do
   cycle_dir=$STATE_PARENT/cycle-$c
+  # Later cycles legitimately do not exist until an earlier one drifts; only an
+  # existing-but-untrusted cycle path is a fail-closed condition.
+  if [[ ! -e $cycle_dir && ! -L $cycle_dir ]]; then
+    continue
+  fi
   [[ ! -L $cycle_dir ]] \
     || { printf 'pricing convergence cycle path must not be a symlink\n' >&2; exit 1; }
   [[ -d $cycle_dir && $(stat -c '%U:%G:%a' -- "$cycle_dir") == root:root:700 ]] \
