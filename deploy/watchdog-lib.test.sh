@@ -3614,6 +3614,9 @@ grep -Fq 'mv -f -- "$pricing56_refresh_backup" "$pricing56_refresh_helper"' \
   || wd_die 'failed sudo policy installation does not restore the prior pricing Stage 5/6 refresh helper'
 grep -Fq 'mv -f -- "$pricing7_backup" "$pricing7_helper"' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'failed sudo policy installation does not restore the prior pricing Stage 7 helper'
+grep -Fq 'mv -f -- "$pricing7_refresh_backup" "$pricing7_refresh_helper"' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'failed sudo policy installation does not restore the prior pricing Stage 7 refresh helper'
 # Bash expands every assignment word in one `local` command before applying any of them. Keep the
 # staged path assignment separate so `set -u` cannot dereference `target` before it exists.
 publish_fixed_helper_body=$(sed -n '/^publish_fixed_helper()/,/^}/p' \
@@ -5046,6 +5049,48 @@ grep -A7 -F "pricing_stage7_helper=/usr/local/lib/apitoken-watchdog/controller/p
   "$ROOT/deploy/install-sudoers.sh" \
   | grep -Fq '3f412e33d631f2956a575e40f7f28f8b0b592106' \
   || wd_die 'pricing Stage 7 sudo self-check is not aligned with policy'
+
+# The replacement consumer is pinned only after the refresh produced terminal g23/g24 identities.
+pricing_stage7_refresh_gate="$ROOT/deploy/pricing-stage7-refresh-gate.sh"
+wd_path_is_controller_definition deploy/pricing-stage7-refresh-gate.sh \
+  || wd_die 'pricing Stage 7 refresh helper is not a fixed controller definition'
+grep -Fq 'publish_pricing_stage7_refresh_helper' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'pricing Stage 7 refresh helper is not published before sudo policy verification'
+grep -Fxq 'PLAN_DIGEST=sha256:v2:7cea045492a514550f0c7eafa634c834de5f7890c9b7c07c3d8ad78c5f2e9653' \
+  "$pricing_stage7_refresh_gate" \
+  || wd_die 'pricing Stage 7 refresh helper is not pinned to the terminal refresh plan'
+grep -Fxq 'TARGET_GENERATION=23' "$pricing_stage7_refresh_gate" \
+  && grep -Fxq 'RECOVERY_GENERATION=24' "$pricing_stage7_refresh_gate" \
+  || wd_die 'pricing Stage 7 refresh helper is not pinned to the refreshed generations'
+grep -Fxq 'TARGET_RELEASE_DIGEST=sha256:v2:bab313f8619d856de9073c13d6dabbf9663a59aa3e4200ab25f7758202b5892c' \
+  "$pricing_stage7_refresh_gate" \
+  && grep -Fxq 'RECOVERY_RELEASE_DIGEST=sha256:v2:36c48d7c909882d8a01d47131a5e63ce04d0d5bdebbbefefc8fe04dfdcddd8b1' \
+    "$pricing_stage7_refresh_gate" \
+  || wd_die 'pricing Stage 7 refresh helper is not pinned to the refreshed releases'
+grep -Fxq 'STAGE56_PLAN=/var/lib/apitoken/pricing-stage56-inventory-refresh/$ADMISSION_SHA/plan.json' \
+  "$pricing_stage7_refresh_gate" \
+  || wd_die 'pricing Stage 7 refresh helper reads the wrong Stage 5/6 fence'
+grep -Fxq 'STATE_PARENT=/var/lib/apitoken/pricing-stage7-inventory-refresh' \
+  "$pricing_stage7_refresh_gate" \
+  || wd_die 'pricing Stage 7 refresh helper lacks an independent idempotency fence'
+[[ $(grep -Fc 'request GET "/v1/admin/pricing-stage5-v2?plan_digest=$PLAN_DIGEST"' "$pricing_stage7_refresh_gate") == 1 ]] \
+  && [[ $(grep -Fc 'request POST /v1/admin/pricing-shadow-rollout-v2/stage' "$pricing_stage7_refresh_gate") == 1 ]] \
+  || wd_die 'pricing Stage 7 refresh helper has an unexpected control path count'
+! grep -Fq 'request POST /v1/admin/pricing-stage5-v2/materialize' "$pricing_stage7_refresh_gate" \
+  || wd_die 'pricing Stage 7 refresh helper replays Stage 5 materialization'
+grep -Fq '.job_count | tonumber) == (.job_counts_by_status.confirmed // 0)' \
+  "$pricing_stage7_refresh_gate" \
+  || wd_die 'pricing Stage 7 refresh helper does not require complete aggregate ACKs'
+! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc|https://|openai-image-public-smoke|images/(generations|edits)' \
+  "$pricing_stage7_refresh_gate" \
+  || wd_die 'pricing Stage 7 refresh helper contains an external, reseller or image-dispatch path'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/pricing-stage7-refresh-gate.sh 3f412e33d631f2956a575e40f7f28f8b0b592106' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'pricing Stage 7 refresh helper lacks an exact-admission sudo bridge'
+grep -A7 -F "pricing_stage7_refresh_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage7-refresh-gate.sh" \
+  "$ROOT/deploy/install-sudoers.sh" \
+  | grep -Fq '3f412e33d631f2956a575e40f7f28f8b0b592106' \
+  || wd_die 'pricing Stage 7 refresh sudo self-check is not aligned with policy'
 
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'

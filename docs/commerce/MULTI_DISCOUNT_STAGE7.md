@@ -121,8 +121,11 @@ The stage request deliberately rejects `engine_inventory_drift`: the fresh exhau
 identity must equal both scans recorded by Stage 5. Recovery is not a retry or relaxed comparison.
 Run the separately delivered Stage 5/6 inventory-refresh bridge after its exact deployment is GREEN,
 wait for a new immutable prepared target/recovery pair, then deliver a new Stage 7 bridge pinned to
-those terminal identities in a later GREEN checkpoint. Earlier runs, releases and private fences
-remain unchanged.
+those terminal identities in a later GREEN checkpoint. The completed replacement pair is `g23` target
+(`sha256:v2:bab313f8619d856de9073c13d6dabbf9663a59aa3e4200ab25f7758202b5892c`) and `g24`
+recovery (`sha256:v2:36c48d7c909882d8a01d47131a5e63ce04d0d5bdebbbefefc8fe04dfdcddd8b1`); its fixed
+consumer is `pricing-stage7-refresh-gate.sh`, with an independent root-only request fence. Earlier
+runs, releases and private fences remain unchanged.
 
 ## Invariants
 

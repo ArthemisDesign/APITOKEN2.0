@@ -141,9 +141,10 @@ raw subject-bearing DB/engine text. After exact producer SHA
 the consumer: it emits only allowlisted codes and maps malformed/unknown envelopes to
 `unclassified`. `engine_inventory_drift` is recovered producer-first by a separately deployed fixed
 Stage 5/6 refresh bridge that creates a new immutable generation pair in its own private fence; it
-never mutates the older run or relaxes the fresh-inventory equality. A replacement Stage 7 consumer
-is pinned to the refresh's exact terminal identities only after that refresh checkpoint is GREEN.
-Startup, migration, polling, and the read endpoint do not create a rollout/job; the lane does not
+never mutates the older run or relaxes the fresh-inventory equality. The completed refresh prepared
+target `g23` and recovery `g24` across 410 ready accounts; the replacement fixed Stage 7 consumer
+reads only that refresh fence and is pinned to its exact plan/release identities after the refresh
+checkpoint reached GREEN. Startup, migration, polling, and the read endpoint do not create a rollout/job; the lane does not
 move the release head, balances, or the live price.
 
 ### Sales feed (commerce ↔ sales)

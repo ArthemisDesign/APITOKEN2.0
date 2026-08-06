@@ -475,9 +475,22 @@ sudo /usr/local/lib/apitoken-watchdog/controller/pricing-stage56-refresh-gate.sh
 It repeats the blocker-free double inventory scans, materialization ACKs and complete Stage 6 funding
 normalization under `/var/lib/apitoken/pricing-stage56-inventory-refresh`, producing a new immutable
 target/recovery generation pair. The original admission state and releases remain historical and
-untouched. A replacement Stage 7 bridge may be delivered only in a later GREEN checkpoint pinned to
-the refresh's exact terminal identities; the old Stage 7 command must not be retried against the
-superseded inventory snapshot.
+untouched. The first production refresh completed with plan
+`sha256:v2:7cea045492a514550f0c7eafa634c834de5f7890c9b7c07c3d8ad78c5f2e9653`, prepared target
+`g23` / `sha256:v2:bab313f8619d856de9073c13d6dabbf9663a59aa3e4200ab25f7758202b5892c`, prepared
+recovery `g24` / `sha256:v2:36c48d7c909882d8a01d47131a5e63ce04d0d5bdebbbefefc8fe04dfdcddd8b1`, and 410
+ready accounts sharing funding manifest
+`sha256:v2:c701869f87608c5e87e4896024d68da8b6d9ef017e9b589f2e8c73f18f67bc55`.
+Only after that terminal evidence and a later exact GREEN checkpoint, run its pinned Stage 7 consumer:
+
+```bash
+sudo /usr/local/lib/apitoken-watchdog/controller/pricing-stage7-refresh-gate.sh \
+  3f412e33d631f2956a575e40f7f28f8b0b592106
+```
+
+The replacement bridge reads the refresh fence, not the original Stage 5/6 fence, and owns a separate
+root-only idempotency namespace. The old Stage 7 command must not be retried against the superseded
+inventory snapshot.
 
 Use this order:
 
