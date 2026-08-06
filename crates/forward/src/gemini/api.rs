@@ -2591,7 +2591,14 @@ async fn api_inner(
     let mut saw_quota = false;
     let mut saw_auth = false;
     let mut saw_backend = false;
-    loop {
+    // Same smooth-wait budget the Anthropic plane has always had. A pool that is momentarily out of
+    // capacity — every profile refreshing its token at once, one cooling window about to expire —
+    // recovers in well under this budget, and until now the Gemini plane had no way to wait for it:
+    // one pass over the profiles and the customer got a 503. Waiting happens before the first public
+    // byte, so the response the customer finally sees is still exactly one response.
+    let smooth_deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(app.cfg.smooth_wait_ms);
+    'smooth: loop {
         let preferred_id = affinity_resolution
             .as_ref()
             .and_then(|resolution| gateway.profile_id_for_home(&app.affinity, &resolution.home));
@@ -2638,6 +2645,24 @@ async fn api_inner(
             let retry = gateway
                 .soonest_ready(&wire_model_id, &HashSet::new(), generation)
                 .map(|until| until.saturating_sub(pool::now()).max(1) as u64);
+            // Exhausting the pool is transient by construction: cooling expires, a refresh lands, a
+            // concurrent request frees its slot. Wait quietly and re-run the whole rotation while
+            // the budget lasts. `excluded` and the per-round verdicts reset, because a profile
+            // skipped a moment ago may be the healthy one now — otherwise the retry would rotate
+            // over an empty set and just burn the budget.
+            let remaining = smooth_deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_millis();
+            let hint = retry.map(|seconds| seconds as i64).unwrap_or(1);
+            if let Some(step) = crate::proxy::smooth_step(hint, remaining) {
+                tokio::time::sleep(step).await;
+                excluded.clear();
+                retry_failures = 0;
+                saw_quota = false;
+                saw_auth = false;
+                saw_backend = false;
+                continue 'smooth;
+            }
             return if !gateway.has_authenticated_profiles() {
                 Err(ApiError::unavailable("gemini_profiles_unauthenticated"))
             } else if saw_quota {
