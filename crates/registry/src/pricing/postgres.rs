@@ -2632,6 +2632,25 @@ pub(crate) fn postgres_pricing_release_policy_v2(
     release_policy_v2_in_transaction(client, policy_id, policy_version)
 }
 
+pub(crate) fn postgres_latest_pricing_release_policy_v2(
+    client: &mut Client,
+    policy_id: &str,
+) -> Result<Option<super::PricingReleasePolicyV2>> {
+    super::require_id("pricing release policy id", policy_id)?;
+    let Some(row) = client.query_opt(
+        "SELECT policy_version
+           FROM pricing_release_policy_versions
+          WHERE policy_id=$1
+          ORDER BY policy_version DESC
+          LIMIT 1",
+        &[&policy_id],
+    )?
+    else {
+        return Ok(None);
+    };
+    release_policy_v2_in_transaction(client, policy_id, row.get(0))
+}
+
 pub(crate) fn postgres_prepare_pricing_release_policy_v2(
     client: &mut Client,
     policy: &super::PricingReleasePolicyV2,

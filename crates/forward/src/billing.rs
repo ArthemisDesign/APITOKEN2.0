@@ -1798,6 +1798,10 @@ enum ReadCmd {
         policy_version: i64,
         reply: oneshot::Sender<anyhow::Result<Option<PricingReleasePolicyV2>>>,
     },
+    LatestPricingReleasePolicyV2 {
+        policy_id: String,
+        reply: oneshot::Sender<anyhow::Result<Option<PricingReleasePolicyV2>>>,
+    },
     PricingReleaseV2 {
         generation: i64,
         reply: oneshot::Sender<anyhow::Result<Option<PricingReleaseV2>>>,
@@ -3424,7 +3428,8 @@ impl AsyncBilling {
                                     &account_id,
                                 ));
                             }
-                            ReadCmd::PricingReleasePolicyV2 { reply, .. } => {
+                            ReadCmd::PricingReleasePolicyV2 { reply, .. }
+                            | ReadCmd::LatestPricingReleasePolicyV2 { reply, .. } => {
                                 let _ = reply.send(Err(anyhow::anyhow!(
                                     "pricing release v2 authority requires PostgreSQL"
                                 )));
@@ -4570,6 +4575,9 @@ impl AsyncBilling {
                                 reply,
                                 pg.pricing_release_policy_v2(&policy_id, policy_version)
                             ),
+                            ReadCmd::LatestPricingReleasePolicyV2 { policy_id, reply } => {
+                                answer!(reply, pg.latest_pricing_release_policy_v2(&policy_id))
+                            }
                             ReadCmd::PricingReleaseV2 { generation, reply } => {
                                 answer!(reply, pg.pricing_release_v2(generation))
                             }
@@ -5079,6 +5087,23 @@ impl AsyncBilling {
             .send(ReadCmd::PricingReleasePolicyV2 {
                 policy_id: policy_id.to_owned(),
                 policy_version,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    pub async fn latest_pricing_release_policy_v2(
+        &self,
+        policy_id: &str,
+    ) -> anyhow::Result<Option<PricingReleasePolicyV2>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::LatestPricingReleasePolicyV2 {
+                policy_id: policy_id.to_owned(),
                 reply,
             })
             .await

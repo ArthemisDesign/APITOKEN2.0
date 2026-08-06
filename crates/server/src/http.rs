@@ -339,6 +339,13 @@ define_admin_routes!(
         admin::pricing_release_policy_v2
     ),
     (
+        get,
+        GET,
+        "/admin/pricing/v2/policy/{policy_id}/latest",
+        "/admin/pricing/v2/policy/test-policy/latest",
+        admin::latest_pricing_release_policy_v2
+    ),
+    (
         post,
         POST,
         "/admin/pricing/v2/release/prepare",

@@ -716,6 +716,7 @@ operation:
 ```text
 POST /admin/pricing/v2/policy/prepare
 GET  /admin/pricing/v2/policy/{policy_id}/version/{policy_version}
+GET  /admin/pricing/v2/policy/{policy_id}/latest
 POST /admin/pricing/v2/release/prepare
 GET  /admin/pricing/v2/release/{generation}
 POST /admin/pricing/v2/recovery-link/prepare
@@ -732,9 +733,12 @@ POST /admin/pricing/v2/funding/{account_id}/normalization
 ```
 
 Policy/release/link/assignment-extension rows are append-only; policy and release identities are
-monotonic by policy version or release generation. Prepare returns the same typed
-`stored|unchanged|stale|version_conflict|missing_dependency|invalid` result envelope as Stage 3C.
-`GET .../head` returns `{ "head": null }` until a protected consumer submits a fresh passed Stage 8
+monotonic by policy version or release generation. `GET .../policy/{policy_id}/latest` returns
+`{"policy": <newest complete immutable policy>}` or `404` when that lineage is absent. It is a
+read-only reconciliation surface for a consumer whose local evidence can lag a successfully prepared
+engine policy; it does not allocate a version or weaken prepare-time monotonicity. Prepare returns the
+same typed `stored|unchanged|stale|version_conflict|missing_dependency|invalid` result envelope as
+Stage 3C. `GET .../head` returns `{ "head": null }` until a protected consumer submits a fresh passed Stage 8
 identity to the activation route. Prepare routes cannot move the global head, mutate an immutable
 release manifest or change balances.
 An assignment extension can make one post-cutover account resolvable under an already-active head;

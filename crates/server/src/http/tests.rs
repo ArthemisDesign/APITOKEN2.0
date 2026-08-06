@@ -847,7 +847,7 @@ fn provider_test_app(provider: forward::ProviderMode) -> AppState {
 
 #[tokio::test]
 async fn every_admin_route_enforces_the_control_key_lattice() {
-    assert_eq!(ADMIN_ROUTE_CASES.len(), 43);
+    assert_eq!(ADMIN_ROUTE_CASES.len(), 44);
     let service = router(admin_auth_test_app(), Arc::new(AtomicBool::new(true)));
     let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
 
@@ -886,6 +886,35 @@ async fn every_admin_route_enforces_the_control_key_lattice() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn latest_pricing_release_policy_route_validates_path_and_requires_postgres() {
+    let (app, dir) = billing_test_app("latest_pricing_release_policy");
+    let service = router(app, Arc::new(AtomicBool::new(true)));
+
+    let (status, body) = control_json_request(
+        &service,
+        Method::GET,
+        "/admin/pricing/v2/policy/bad%0Apolicy/latest",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid policy_id");
+
+    let (status, body) = control_json_request(
+        &service,
+        Method::GET,
+        "/admin/pricing/v2/policy/test-policy/latest",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"], "billing authority unavailable");
+
+    drop(service);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[tokio::test]

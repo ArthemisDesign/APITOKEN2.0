@@ -365,8 +365,10 @@ background loops and the HTTP router. Here — and only here — everything is w
   and full-inventory Stage 8 evidence must complete before the one global release-head CAS. A manual
   assignment matrix, canary accounts, a maintenance window and a zero-active-reservations gate are not
   used; authoritative inventories must cover all accounts exactly.
-- `/admin/pricing/v2/*` is a producer-first surface: immutable policy/release/recovery, cursor
-  inventory, nullable head, account-local funding normalization and one activation CAS. The handler
+- `/admin/pricing/v2/*` is a producer-first surface: immutable policy/release/recovery, exact and
+  newest-per-policy reads, cursor inventory, nullable head, account-local funding normalization and
+  one activation CAS. The latest-policy read returns one complete immutable PostgreSQL row plus its
+  sorted rules and is only for fail-closed reconciliation of lagging consumer evidence. The handler
   passes the compile-fixed runtime manifest; registry re-checks the evidence TTL,
   inventory/funding/runtime owner epochs and atomically writes evidence/audit/head. Contracts/client and the
   durable commerce caller are added only after a GREEN exact producer SHA; therefore the deploy route

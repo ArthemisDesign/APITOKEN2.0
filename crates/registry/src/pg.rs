@@ -7889,6 +7889,16 @@ impl PgStore {
         )
     }
 
+    pub fn latest_pricing_release_policy_v2(
+        &mut self,
+        policy_id: &str,
+    ) -> Result<Option<crate::pricing::PricingReleasePolicyV2>> {
+        crate::pricing::postgres::postgres_latest_pricing_release_policy_v2(
+            &mut self.client,
+            policy_id,
+        )
+    }
+
     pub fn prepare_pricing_release_policy_v2(
         &mut self,
         policy: &crate::pricing::PricingReleasePolicyV2,

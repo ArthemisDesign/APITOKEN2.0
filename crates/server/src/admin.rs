@@ -1623,6 +1623,29 @@ pub async fn pricing_release_policy_v2(
     }
 }
 
+/// GET /admin/pricing/v2/policy/{policy_id}/latest — newest immutable policy read.
+pub async fn latest_pricing_release_policy_v2(
+    State(app): State<AppState>,
+    Path(policy_id): Path<String>,
+) -> Response {
+    if !valid_pricing_id(&policy_id) {
+        return invalid_pricing_path("invalid policy_id");
+    }
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing.latest_pricing_release_policy_v2(&policy_id).await {
+        Ok(Some(policy)) => Json(json!({"policy": policy})).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown pricing release policy"})),
+        )
+            .into_response(),
+        Err(error) => authority_unavailable("latest pricing release policy v2 read", error),
+    }
+}
+
 /// POST /admin/pricing/v2/release/prepare — append a complete dormant full-inventory release.
 pub async fn prepare_pricing_release_v2(
     State(app): State<AppState>,

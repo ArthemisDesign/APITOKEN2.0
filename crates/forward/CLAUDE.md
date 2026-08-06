@@ -28,8 +28,10 @@ bounded reader pool. SQLite and PostgreSQL dispatch the same registry typed outc
 handler opens a second connection or assembles a policy bundle from separate reads. The constrained
 locked-OpenKeys transition is another single-writer command: it delegates one atomic
 insert-plus-binding-CAS to registry and never decomposes it into generic prepare/activate calls.
-Funding-v2 normalization follows that split: read-only account plans use a bounded reader, exact
-apply uses the existing single writer and PostgreSQL account lock, and SQLite fails closed.
+Release-v2 exact and newest-per-policy reads use the same bounded reader pool; the latter returns one
+complete immutable policy for fail-closed reconciliation and remains PostgreSQL-only. Funding-v2
+normalization follows that split: read-only account plans use a bounded reader, exact apply uses the
+existing single writer and PostgreSQL account lock, and SQLite fails closed.
 Credentials in `x-api-key`, `x-goog-api-key` and `Authorization: Bearer` have OR semantics with no
 header priority: any single valid one is sufficient. This is critical for Claude Code,
 which may send a stale `ANTHROPIC_API_KEY` and a current `ANTHROPIC_AUTH_TOKEN` at the same time.

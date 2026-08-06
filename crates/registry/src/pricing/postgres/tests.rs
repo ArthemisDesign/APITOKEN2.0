@@ -1596,7 +1596,16 @@ fn postgres_pricing_release_v2_producer_matrix() {
             .unwrap(),
             Some(policy.clone())
         );
+        assert_eq!(
+            postgres_latest_pricing_release_policy_v2(&mut client, &policy.policy_id).unwrap(),
+            Some(policy.clone())
+        );
     }
+    assert_eq!(
+        postgres_latest_pricing_release_policy_v2(&mut client, "pricing-v2-producer-missing")
+            .unwrap(),
+        None
+    );
     let mut malformed_policy = b2c_policy.clone();
     malformed_policy.policy_id = "pricing-v2-producer-malformed".into();
     malformed_policy.rules[0].discount_bps = 4_999;
@@ -1611,6 +1620,10 @@ fn postgres_pricing_release_v2_producer_matrix() {
     assert_eq!(
         postgres_prepare_pricing_release_policy_v2(&mut client, &newest_policy).unwrap(),
         PricingMutation::Stored
+    );
+    assert_eq!(
+        postgres_latest_pricing_release_policy_v2(&mut client, &newest_policy.policy_id).unwrap(),
+        Some(newest_policy.clone())
     );
     let stale_policy = crate::pricing::PricingReleasePolicyV2 {
         policy_version: 1,

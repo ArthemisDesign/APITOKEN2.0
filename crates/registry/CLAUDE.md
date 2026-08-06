@@ -346,8 +346,10 @@ side effect. `serve` may only perform the read-only schema verification before c
   snapshot. SQLite remains unavailable; the route neither creates nor moves a head. Real-PG coverage —
   `pg::tests::pricing_release_runtime_v2_postgres_matrix`.
 - **Pricing release v2 producer checkpoint:** `pricing::release_v2` and PostgreSQL persistence
-  add append-only policy/release/recovery prepare and read-only inventory/head. Release
-  prepare verifies exact full-account coverage (`active` + `disabled`) and ready funding
+  add append-only policy/release/recovery prepare and read-only inventory/head. Policy reads expose
+  both exact `(policy_id, policy_version)` lookup and the newest complete immutable version for one
+  exact policy ID, so a lagging consumer can reconcile a remote-only successful prepare without
+  guessing or rewriting lineage. Release prepare verifies exact full-account coverage (`active` + `disabled`) and ready funding
   dependencies. A disabled account intentionally remains in the immutable release so that a later
   enablement does not create a hole in the policy/funding authority. SQLite returns unavailable instead of
   a local authority.
