@@ -259,13 +259,23 @@ async fn reserve_gemini_release_v2(
     execution: &registry::ExecutionAttempt,
 ) -> Result<Option<GeminiReserveResult>, AdmissionError> {
     for _ in 0..3 {
-        let resolution = billing
+        let resolution = match billing
             .pricing_release_resolution_v2(account_id, SnapshotProvider::Google.as_str(), &model.id)
             .await
-            .map_err(|error| {
+        {
+            Ok(resolution) => resolution,
+            // A model the active release cannot price is a product gap, not an outage. The exact
+            // legacy tariff below still knows this model, so serve the customer from it instead of
+            // refusing: waiting would never have admitted the request, only delayed the refusal.
+            Err(error) if registry::pricing::is_model_unpriced(&error) => {
+                eprintln!("Gemini release has no catalog price, using the exact legacy tariff: {error:#}");
+                return Ok(None);
+            }
+            Err(error) => {
                 eprintln!("Gemini pricing release resolution failed: {error:#}");
-                AdmissionError::Unavailable
-            })?;
+                return Err(AdmissionError::Unavailable);
+            }
+        };
         let Some(resolution) = resolution else {
             return Ok(None);
         };

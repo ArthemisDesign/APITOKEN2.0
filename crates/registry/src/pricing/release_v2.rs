@@ -30,6 +30,29 @@ impl fmt::Display for LegacyPricingPathClosedV2 {
 
 impl std::error::Error for LegacyPricingPathClosedV2 {}
 
+/// The active release resolved, but the requested model carries no entry in its pinned catalog.
+///
+/// This is a *product* gap, not an infrastructure fault: the authority is healthy and answered
+/// exactly. Conflating the two made every unpriced model look like an outage — the customer got a
+/// retryable 503/529 for a condition that no amount of waiting resolves, and the billing reader
+/// churned a PostgreSQL reconnect per request. Callers detect this marker to fall through to the
+/// exact legacy tariff instead, and to refuse honestly when even that has no price.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PricingReleaseModelUnpriced;
+
+impl fmt::Display for PricingReleaseModelUnpriced {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("active pricing release model is absent from the pinned catalog")
+    }
+}
+
+impl std::error::Error for PricingReleaseModelUnpriced {}
+
+/// True when `error` reports a model the active release cannot price.
+pub fn is_model_unpriced(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<PricingReleaseModelUnpriced>().is_some()
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BillingModeV2 {

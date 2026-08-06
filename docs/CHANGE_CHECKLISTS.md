@@ -50,6 +50,11 @@ and immutable/dormant artifacts are not rewritten.
 - [ ] `apps/web/src/app/docs/` — docs portal: `integration-builder-data.ts` and, if the model
       appears in the reference, `api-reference-data.ts` / `docs-portal.tsx`; only after the live gate.
 - [ ] Production defaults/systemd and `crates/router/routing-presets.json` — only after the live gate.
+- [ ] `crates/metering` carries an exact tariff for the model BEFORE it is advertised. The gate
+      `advertised_models_all_have_an_exact_tariff` (`crates/router/src/tests.rs`) fails the build
+      otherwise, and a dated snapshot id additionally needs an explicit entry in
+      `ANTHROPIC_DATED_SNAPSHOT_ALIASES` — the alias table stays deliberate so an unpublished
+      future snapshot can never inherit today's price.
 - [ ] `docs/engine/<provider>.md` — provider's model list.
 - [ ] `docs/commerce/MULTI-DISCOUNT.md` §7 — a new model is NOT included automatically:
       an explicit catalog generation is required (catalogs/switches/policies in

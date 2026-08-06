@@ -209,17 +209,29 @@ async fn reserve_openai_image_metered(
         .map_err(|_| AdmissionError::Unavailable)?;
 
     for pass in 0..2 {
-        let resolution = billing
+        let resolution = match billing
             .pricing_release_resolution_v2(
                 account_id,
                 SnapshotProvider::OpenAi.as_str(),
                 tariff.canonical_model_id,
             )
             .await
-            .map_err(|error| {
+        {
+            Ok(resolution) => resolution,
+            // The image snapshot may be reviewed and priced in `metering` before its catalog
+            // generation is activated. Serve it from the exact legacy tariff meanwhile instead of
+            // refusing a model we already know the price of.
+            Err(error) if registry::pricing::is_model_unpriced(&error) => {
+                eprintln!(
+                    "OpenAI image release has no catalog price, using the exact legacy tariff: {error:#}"
+                );
+                None
+            }
+            Err(error) => {
                 eprintln!("OpenAI image pricing release resolution failed: {error:#}");
-                AdmissionError::Unavailable
-            })?;
+                return Err(AdmissionError::Unavailable);
+            }
+        };
         if let Some(resolution) = resolution {
             let multiplier = resolution.payable_multiplier_bp().unwrap_or(10_000);
             let quote_budget = match resolution.billing_mode() {
@@ -566,17 +578,26 @@ async fn reserve_codex_release_v2(
     execution: &registry::ExecutionAttempt,
 ) -> Result<Option<CodexReserveResult>, AdmissionError> {
     for _ in 0..3 {
-        let resolution = billing
+        let resolution = match billing
             .pricing_release_resolution_v2(
                 account_id,
                 SnapshotProvider::OpenAi.as_str(),
                 &model.upstream,
             )
             .await
-            .map_err(|error| {
+        {
+            Ok(resolution) => resolution,
+            Err(error) if registry::pricing::is_model_unpriced(&error) => {
+                eprintln!(
+                    "OpenAI release has no catalog price, using the exact legacy tariff: {error:#}"
+                );
+                return Ok(None);
+            }
+            Err(error) => {
                 eprintln!("OpenAI pricing release resolution failed: {error:#}");
-                AdmissionError::Unavailable
-            })?;
+                return Err(AdmissionError::Unavailable);
+            }
+        };
         let Some(resolution) = resolution else {
             return Ok(None);
         };

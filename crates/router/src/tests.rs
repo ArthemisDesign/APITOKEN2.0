@@ -3732,3 +3732,64 @@ async fn unknown_path_is_404_and_wrong_method_is_lane_shaped_405() {
         "method_not_allowed"
     );
 }
+
+/// Every model this router advertises must have an exact tariff in `metering`.
+///
+/// Publication and pricing are separate, manual steps: a model can reach `routing-presets.json`,
+/// the provider config and production while no authority can quote it. Admission then refuses the
+/// request — historically as a retryable 5xx — and the customer, not the build, is what discovers
+/// the gap. Production carried exactly this state: `claude-opus-4-6`, `claude-opus-4-5-20251101`
+/// and `claude-sonnet-4-5-20250929` were routed and unpriced for days.
+///
+/// The router already filters its live `/v1/models` by resolved pricing; this asserts the same
+/// property statically, before a deploy can ship the gap.
+#[test]
+fn advertised_models_all_have_an_exact_tariff() {
+    #[derive(serde::Deserialize)]
+    struct Manifest {
+        models: Vec<Model>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Model {
+        id: String,
+    }
+
+    // Any positive instant resolves the same identity set; effective-dated tariffs only move
+    // prices, never membership.
+    const PRICED_AT: i64 = 1_788_220_800;
+
+    let manifest: Manifest = serde_json::from_str(include_str!("../routing-presets.json"))
+        .expect("routing-presets.json parses");
+    let mut unpriced = Vec::new();
+    for model in &manifest.models {
+        let Some((provider, model_id)) = model.id.split_once('/') else {
+            panic!("advertised model id is not namespaced: {}", model.id);
+        };
+        let priced = match provider {
+            "anthropic" => metering::anthropic_tariff_capability_at(
+                model_id,
+                PRICED_AT,
+                metering::AnthropicAdmissionModifiers {
+                    speed: metering::AnthropicSpeed::Standard,
+                    inference_geo: metering::AnthropicInferenceGeo::Global,
+                },
+            )
+            .is_ok(),
+            "google" => metering::gemini_prices_at(model_id, PRICED_AT).is_some(),
+            "openai" => {
+                metering::codex_prices_at(model_id, PRICED_AT).is_some()
+                    || metering::openai_image_tariff(model_id).is_ok()
+            }
+            other => panic!("advertised model has an unknown provider namespace: {other}"),
+        };
+        if !priced {
+            unpriced.push(model.id.clone());
+        }
+    }
+    assert!(
+        unpriced.is_empty(),
+        "advertised models have no exact tariff and would be refused at admission: {unpriced:?}. \
+         Add the tariff to crates/metering before advertising the model, or drop it from \
+         routing-presets.json."
+    );
+}

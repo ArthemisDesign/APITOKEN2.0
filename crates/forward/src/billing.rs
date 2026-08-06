@@ -4445,13 +4445,23 @@ impl AsyncBilling {
                                         let _ = $reply.send(Ok(value));
                                     }
                                     Err(err) => {
-                                        eprintln!("billing PostgreSQL read failed closed: {err:#}");
-                                        if let Ok(next) =
-                                            registry::pg::PgStore::connect(&reader_url)
-                                        {
-                                            pg = next;
+                                        // An unpriced model is an exact answer from a healthy
+                                        // authority, not a read fault: reconnecting on it churned
+                                        // one PostgreSQL session per refused request and made a
+                                        // product gap look like a database outage in the log.
+                                        if registry::pricing::is_model_unpriced(&err) {
+                                            let _ = $reply.send(Err(err));
+                                        } else {
+                                            eprintln!(
+                                                "billing PostgreSQL read failed closed: {err:#}"
+                                            );
+                                            if let Ok(next) =
+                                                registry::pg::PgStore::connect(&reader_url)
+                                            {
+                                                pg = next;
+                                            }
+                                            let _ = $reply.send(Err(err));
                                         }
-                                        let _ = $reply.send(Err(err));
                                     }
                                 }
                             }};

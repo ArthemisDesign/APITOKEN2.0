@@ -257,6 +257,25 @@ The engine stores prepared releases and one active release head. Preparing a rel
 change traffic. All requests read the active head and the associated immutable data in a single
 PostgreSQL snapshot.
 
+### 7.1a. A model the release cannot price does not refuse the customer
+
+Publishing a model and admitting it to a catalog generation are separate steps, so a model can be
+routable while the active release has no entry for it. That gap used to surface as a retryable
+`503`/`529` at admission — a refusal no amount of waiting could resolve, indistinguishable from an
+outage in the logs, and it churned one PostgreSQL reconnect per request.
+
+The authority now reports that case as the typed `PricingReleaseModelUnpriced`
+(`crates/registry/src/pricing/release_v2.rs`), naming product, provider, and model. Every plane
+(`proxy.rs`, `gemini/billing.rs`, `codex/billing.rs`) treats it as "no active release for this
+model" and reserves through the exact legacy tariff in `crates/metering` instead. An infrastructure
+fault stays a retryable 5xx — the two are no longer conflated.
+
+Two consequences to keep in mind. Until such a model is admitted to a catalog generation it is
+billed on the account's legacy multiplier rather than its release policy. And a model with no
+tariff anywhere is no longer refused locally: it reserves conservatively and the provider returns
+its own `404`, which is the transparent answer and refunds the hold. Formal admission through a new
+capability generation stays required; the fall-through only stops the customer paying for the lag.
+
 ### 7.2. Expand and dual-compatible runtime
 
 First, only the new structures are added in separate migration-first commits. Then a runtime is

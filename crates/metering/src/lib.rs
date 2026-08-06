@@ -169,7 +169,11 @@ const SONNET5_INTRO_PRICES: Prices = Prices {
 const SONNET5_STD_START: i64 = 1788220800;
 
 /// Version of the exact audited Anthropic alias table used for durable snapshots.
-pub const ANTHROPIC_ALIAS_GENERATION: i64 = 1;
+///
+/// Generation 2 admits the three older reviewed identities (`claude-opus-4-6`, `claude-opus-4-5`,
+/// `claude-sonnet-4-5`) and replaces the single hand-written dated alias with the published
+/// `-YYYYMMDD` snapshot rule, so every model carries a canonical identity instead of only Haiku 4.5.
+pub const ANTHROPIC_ALIAS_GENERATION: i64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnthropicSpeed {
@@ -214,6 +218,29 @@ pub struct AnthropicAdmissionTariffIdentity {
     pub modifiers: AnthropicAdmissionModifiers,
 }
 
+/// Published dated snapshots of audited models, mapped to their rolling canonical id.
+///
+/// Anthropic publishes each model under both a rolling alias (`claude-sonnet-4-5`) and a dated
+/// snapshot (`claude-sonnet-4-5-20250929`), and SDK defaults routinely send the dated form. This
+/// table stays explicit on purpose: a generic "strip the trailing date" rule would also promote an
+/// unpublished future snapshot to today's tariff, which is exactly the silent mispricing
+/// `anthropic_tariff_identity_does_not_promote_legacy_fallbacks` exists to prevent. Every entry
+/// here is a snapshot this repository already routes (`crates/router/routing-presets.json`).
+const ANTHROPIC_DATED_SNAPSHOT_ALIASES: &[(&str, &str)] = &[
+    ("claude-haiku-4-5-20251001", "claude-haiku-4-5"),
+    ("claude-opus-4-5-20251101", "claude-opus-4-5"),
+    ("claude-sonnet-4-5-20250929", "claude-sonnet-4-5"),
+];
+
+/// Resolve a published dated snapshot to its canonical id, leaving every other id untouched.
+fn canonical_alias_for(model_id: &str) -> &str {
+    ANTHROPIC_DATED_SNAPSHOT_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == model_id)
+        .map(|(_, canonical)| *canonical)
+        .unwrap_or(model_id)
+}
+
 /// Resolve one audited model capability to its canonical id, effective tariff epoch and typed
 /// reserve-time modifiers. This function is pure and has no production caller in Stage 3B1c.1;
 /// it does not grant product access.
@@ -226,16 +253,16 @@ pub fn anthropic_tariff_capability_at(
         return Err(TariffIdentityError::InvalidPricedTimestamp);
     }
 
-    let requested_model_id = match requested_model_id {
-        "claude-haiku-4-5-20251001" => "claude-haiku-4-5",
-        other => other,
-    };
+    let requested_model_id = canonical_alias_for(requested_model_id);
 
     let canonical_model_id = [
         "claude-opus-4-8",
         "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-opus-4-5",
         "claude-sonnet-5",
         "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
         "claude-haiku-4-5",
         "claude-opus-5",
         "claude-fable-5",
@@ -248,15 +275,20 @@ pub fn anthropic_tariff_capability_at(
     let (tariff_schedule_id, schedule_effective_from) = match (canonical_model_id, fast) {
         ("claude-opus-4-8" | "claude-opus-5", true) => ("anthropic/fast/opus-current/v1", 0),
         (_, true) => ("anthropic/fast/opus-4-7-conservative/v1", 0),
-        ("claude-opus-4-8" | "claude-opus-4-7" | "claude-opus-5", false) => {
-            ("anthropic/standard/opus-current/v1", 0)
-        }
+        // Opus 4.5 through 5 share one published standard tariff, so they share one schedule id.
+        (
+            "claude-opus-4-8" | "claude-opus-4-7" | "claude-opus-4-6" | "claude-opus-4-5"
+            | "claude-opus-5",
+            false,
+        ) => ("anthropic/standard/opus-current/v1", 0),
         ("claude-fable-5", false) => ("anthropic/standard/fable-5/v1", 0),
         ("claude-sonnet-5", false) if priced_ts < SONNET5_STD_START => {
             ("anthropic/standard/sonnet-5-intro/v1", 0)
         }
         ("claude-sonnet-5", false) => ("anthropic/standard/sonnet-current/v1", SONNET5_STD_START),
-        ("claude-sonnet-4-6", false) => ("anthropic/standard/sonnet-current/v1", 0),
+        ("claude-sonnet-4-6" | "claude-sonnet-4-5", false) => {
+            ("anthropic/standard/sonnet-current/v1", 0)
+        }
         ("claude-haiku-4-5", false) => ("anthropic/standard/haiku-4-5/v1", 0),
         _ => return Err(TariffIdentityError::UnsupportedModelIdentity),
     };
@@ -893,6 +925,24 @@ mod tests {
                 "anthropic/fast/opus-4-7-conservative/v1",
             ),
             (
+                "claude-opus-4-6",
+                "anthropic/standard/opus-current/v1",
+                0,
+                "anthropic/fast/opus-4-7-conservative/v1",
+            ),
+            (
+                "claude-opus-4-5",
+                "anthropic/standard/opus-current/v1",
+                0,
+                "anthropic/fast/opus-4-7-conservative/v1",
+            ),
+            (
+                "claude-sonnet-4-5",
+                "anthropic/standard/sonnet-current/v1",
+                0,
+                "anthropic/fast/opus-4-7-conservative/v1",
+            ),
+            (
                 "claude-sonnet-5",
                 "anthropic/standard/sonnet-current/v1",
                 SONNET5_STD_START,
@@ -933,7 +983,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(standard.canonical_model_id, model);
-            assert_eq!(standard.alias_generation, 1);
+            assert_eq!(standard.alias_generation, ANTHROPIC_ALIAS_GENERATION);
             assert_eq!(standard.tariff_schedule_id.as_str(), standard_schedule);
             assert_eq!(standard.schedule_effective_from, standard_effective_from);
 
@@ -947,7 +997,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(fast.canonical_model_id, model);
-            assert_eq!(fast.alias_generation, 1);
+            assert_eq!(fast.alias_generation, ANTHROPIC_ALIAS_GENERATION);
             assert_eq!(fast.tariff_schedule_id.as_str(), fast_schedule);
             assert_eq!(fast.schedule_effective_from, 0);
         }

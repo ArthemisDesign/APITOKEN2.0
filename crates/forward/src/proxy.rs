@@ -758,28 +758,46 @@ async fn reserve_anthropic_release_v2(
             Ok(None) => return Ok(AnthropicReleaseReserveResult::NoActiveRelease),
             Ok(Some(resolution)) => resolution,
             Err(first_error) => {
-                let identity = metering::anthropic_tariff_capability_at(
+                let identity = match metering::anthropic_tariff_capability_at(
                     requested_model_id,
                     quote_ts,
                     modifiers,
-                )
-                .map_err(|error| {
-                    anyhow::anyhow!(
+                ) {
+                    Ok(identity) => identity,
+                    // The release cannot price this model and it has no canonical identity either.
+                    // The legacy lane below still resolves an exact tariff for it, so fall through
+                    // instead of refusing; a model with no tariff anywhere is refused there, once,
+                    // as an honest terminal error rather than a retryable one.
+                    Err(_) if registry::pricing::is_model_unpriced(&first_error) => {
+                        eprintln!(
+                            "Anthropic release has no catalog price, using the exact legacy tariff: {first_error:#}"
+                        );
+                        return Ok(AnthropicReleaseReserveResult::NoActiveRelease);
+                    }
+                    Err(error) => anyhow::bail!(
                         "Anthropic release canonical model is unavailable after resolution failure ({first_error:#}): {error:?}"
-                    )
-                })?;
-                billing
+                    ),
+                };
+                match billing
                     .pricing_release_resolution_v2(
                         account_id,
                         SnapshotProvider::Anthropic.as_str(),
                         identity.canonical_model_id,
                     )
-                    .await?
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Anthropic release head disappeared during canonical resolution"
-                        )
-                    })?
+                    .await
+                {
+                    Ok(Some(resolution)) => resolution,
+                    Ok(None) => anyhow::bail!(
+                        "Anthropic release head disappeared during canonical resolution"
+                    ),
+                    Err(error) if registry::pricing::is_model_unpriced(&error) => {
+                        eprintln!(
+                            "Anthropic release has no catalog price, using the exact legacy tariff: {error:#}"
+                        );
+                        return Ok(AnthropicReleaseReserveResult::NoActiveRelease);
+                    }
+                    Err(error) => return Err(error),
+                }
             }
         };
         let multiplier = resolution.payable_multiplier_bp().unwrap_or(10_000);
@@ -2919,7 +2937,7 @@ fn cool_secs_429(resp: &wreq::Response, lim: &Limits, now: i64) -> i64 {
 /// (soonest_ready / Retry-After), `remaining_ms` — остаток бюджета. `None` → бюджет исчерпан (пора
 /// отдать клиенту ошибку). Шаг зажат в [250мс, 2с] и не больше остатка: так пул перечитывается часто
 /// (подписка могла освободиться раньше hint), а один длинный сон не «проглатывает» весь бюджет.
-fn smooth_step(hint_secs: i64, remaining_ms: u128) -> Option<std::time::Duration> {
+pub(crate) fn smooth_step(hint_secs: i64, remaining_ms: u128) -> Option<std::time::Duration> {
     if remaining_ms == 0 {
         return None;
     }

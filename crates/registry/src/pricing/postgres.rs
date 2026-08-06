@@ -4686,7 +4686,14 @@ pub(crate) fn pricing_release_resolution_v2_in_transaction<C: GenericClient>(
                         &canonical_model_id,
                     ],
                 )?
-                .context("active pricing release model is absent from the pinned catalog")?
+                .ok_or_else(|| {
+                    // Name the pair: without it an operator can only see *that* something was
+                    // unpriced, never *what*, and a burst stays unattributable after the fact.
+                    anyhow::Error::new(super::PricingReleaseModelUnpriced).context(format!(
+                        "active pricing release model is absent from the pinned catalog \
+                         (product={product_id}, provider={provider_id}, model={canonical_model_id})"
+                    ))
+                })?
                 .get(0)
         };
         if !model_enabled {
