@@ -371,18 +371,12 @@ pub fn feed(chat: i64, codestate: &str) -> Result<Outcome> {
             });
         }
         if let Some(class) = error_class(&out) {
-            eprintln!(
-                "[setup-token] outcome=bad_code class={class} output_bytes={}",
-                bounded_output_size(&out)
-            );
+            elog::warn("authbot", format!("[setup-token] outcome=bad_code class={class} output_bytes={}", bounded_output_size(&out)));
             kill(chat);
             return Ok(Outcome::BadCode(job));
         }
         if Instant::now() > deadline {
-            eprintln!(
-                "[setup-token] outcome=no_token class=timeout output_bytes={}",
-                bounded_output_size(&out)
-            );
+            elog::warn("authbot", format!("[setup-token] outcome=no_token class=timeout output_bytes={}", bounded_output_size(&out)));
             kill(chat);
             return Ok(Outcome::NoToken(job));
         }

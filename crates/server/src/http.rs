@@ -688,7 +688,7 @@ async fn audit_customer_error(
         account.as_ref(),
         &key_row,
     );
-    eprintln!("{event}");
+    elog::warn("server", event);
     response
 }
 
@@ -1082,7 +1082,7 @@ async fn metrics(
                     )
             }
             Err(error) => {
-                eprintln!("billing metrics query failed: {error:#}");
+                elog::error("server", format!("billing metrics query failed: {error:#}"));
                 format!("{body}# TYPE claude_api_billing_authority_up gauge\nclaude_api_billing_authority_up 0\n")
             }
         },
@@ -1423,7 +1423,13 @@ async fn metrics(
         .as_ref()
         .map(|billing| billing.anthropic_calibration_delivery_status());
     let anthropic_report = if let Some(billing) = &app.billing {
-        billing.anthropic_calibration_report().await.ok()
+        match billing.anthropic_calibration_report().await {
+            Ok(report) => Some(report),
+            Err(e) => {
+                elog::warn("server", format!("calibration report failed: {e:#}"));
+                None
+            }
+        }
     } else {
         None
     };
@@ -2546,7 +2552,7 @@ async fn gemini_sub_set_disabled(
         )
         .await
     {
-        eprintln!("Gemini operator disable write failed: {error:#}");
+        elog::error("server", format!("Gemini operator disable write failed: {error:#}"));
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({"error": "pool member disable write failed"})),
@@ -2554,9 +2560,12 @@ async fn gemini_sub_set_disabled(
             .into_response();
     }
     gemini.refresh_disabled().await;
-    eprintln!(
-        "[gemini] profile={profile_id} {} by operator",
-        if body.disabled { "disabled" } else { "enabled" }
+    elog::info(
+        "server",
+        format!(
+            "[gemini] profile={profile_id} {} by operator",
+            if body.disabled { "disabled" } else { "enabled" }
+        ),
     );
     Json(json!({
         "id": profile_id,
@@ -2647,15 +2656,20 @@ fn anthropic_conversion_models(now: i64) -> Vec<Value> {
         .into_iter()
         .filter_map(|(id, display_name)| {
             let tier = |speed, name| {
-                let capability = metering::anthropic_tariff_capability_at(
+                let capability = match metering::anthropic_tariff_capability_at(
                     id,
                     now,
                     metering::AnthropicAdmissionModifiers {
                         speed,
                         inference_geo: metering::AnthropicInferenceGeo::Global,
                     },
-                )
-                .ok()?;
+                ) {
+                    Ok(capability) => capability,
+                    Err(_) => {
+                        elog::warn("server", "tariff lookup failed; model dropped from catalog");
+                        return None;
+                    }
+                };
                 let prices = capability.effective_reserve_prices;
                 Some(json!({
                     "id": name,
@@ -3302,7 +3316,10 @@ async fn capacity(
         Some(billing) => match billing.anthropic_calibration_report().await {
             Ok(report) => Some(report),
             Err(error) => {
-                eprintln!("Anthropic calibration report unavailable: {error:#}");
+                elog::error(
+                    "server",
+                    format!("Anthropic calibration report unavailable: {error:#}"),
+                );
                 None
             }
         },
@@ -3313,19 +3330,27 @@ async fn capacity(
         .as_ref()
         .map(|billing| billing.anthropic_calibration_delivery_status());
     let authority = app.authority.as_ref().clone();
-    let lifecycle_by_email = tokio::task::spawn_blocking(move || {
+    let lifecycle_by_email = match tokio::task::spawn_blocking(move || {
         authority
             .connect()
             .and_then(|mut connection| connection.subs_admin())
     })
     .await
-    .ok()
-    .and_then(Result::ok)
-    .map(|rows| {
-        rows.into_iter()
-            .map(|row| (row.email, row.added_ts))
-            .collect::<BTreeMap<_, _>>()
-    });
+    {
+        Ok(Ok(rows)) => Some(
+            rows.into_iter()
+                .map(|row| (row.email, row.added_ts))
+                .collect::<BTreeMap<_, _>>(),
+        ),
+        Ok(Err(e)) => {
+            elog::error("server", format!("capacity lifecycle query failed: {e:#}"));
+            None
+        }
+        Err(e) => {
+            elog::error("server", format!("capacity lifecycle query failed: {e:#}"));
+            None
+        }
+    };
     let caps = app.pool.capacity();
     let now = pool::now();
     let v = capacity_value_with_lifecycle(
@@ -3627,7 +3652,7 @@ async fn overview(
     let mut v = match overview_value(&app).await {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("billing overview query failed: {error:#}");
+            elog::error("server", format!("billing overview query failed: {error:#}"));
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({"error": "billing authority unavailable"})),
@@ -3641,7 +3666,7 @@ async fn overview(
         let account_rows = match b.accounts().await {
             Ok(rows) => rows,
             Err(error) => {
-                eprintln!("billing account overview failed: {error:#}");
+                elog::error("server", format!("billing account overview failed: {error:#}"));
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(json!({"error": "billing authority unavailable"})),
@@ -3785,7 +3810,7 @@ async fn spend_window_json(
     let rows = match b.spend_by_account_range(since_ts, until_ts, 50).await {
         Ok(rows) => rows,
         Err(error) => {
-            eprintln!("billing spend stats query failed: {error:#}");
+            elog::error("server", format!("billing spend stats query failed: {error:#}"));
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({"error": "billing authority unavailable"})),
@@ -3825,7 +3850,7 @@ async fn spend_window_json(
             })
             .collect(),
         Err(error) => {
-            eprintln!("billing provider spend query failed: {error:#}");
+            elog::error("server", format!("billing provider spend query failed: {error:#}"));
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({"error": "billing authority unavailable"})),
@@ -3851,7 +3876,7 @@ async fn spend_window_json(
             })
             .collect(),
         Err(error) => {
-            eprintln!("billing model spend query failed: {error:#}");
+            elog::error("server", format!("billing model spend query failed: {error:#}"));
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({"error": "billing authority unavailable"})),
@@ -3917,7 +3942,7 @@ async fn settlement_health(
     {
         Ok(h) => h,
         Err(error) => {
-            eprintln!("billing settlement health query failed: {error:#}");
+            elog::error("server", format!("billing settlement health query failed: {error:#}"));
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({"error": "billing authority unavailable"})),
@@ -4000,7 +4025,10 @@ pub(crate) async fn overview_value(app: &AppState) -> anyhow::Result<serde_json:
             match billing.anthropic_calibration_report().await {
                 Ok(report) => Some(report),
                 Err(error) => {
-                    eprintln!("Anthropic overview calibration report unavailable: {error:#}");
+                    elog::error(
+                        "server",
+                        format!("Anthropic overview calibration report unavailable: {error:#}"),
+                    );
                     None
                 }
             },
@@ -4119,23 +4147,38 @@ async fn subs(
     }
     let authority = app.authority.as_ref().clone();
     let db = app.data_db_path.as_ref().clone();
-    let (rows, maxes) = tokio::task::spawn_blocking(move || {
-        let rows = authority
-            .connect()
-            .and_then(|mut c| c.subs_admin())
-            .unwrap_or_default();
+    let (rows, maxes) = match tokio::task::spawn_blocking(move || {
+        let rows = match authority.connect().and_then(|mut c| c.subs_admin()) {
+            Ok(rows) => rows,
+            Err(e) => {
+                elog::error("server", format!("subs admin query failed: {e:#}"));
+                Vec::new()
+            }
+        };
         // пиковая ёмкость по подписке за всю дистанцию (durable sub_peaks в metrics.db)
         let mdir = std::path::Path::new(&db)
             .parent()
             .map(|d| d.to_string_lossy().into_owned())
             .unwrap_or_else(|| ".".into());
-        let maxes = crate::metrics_store::open(&format!("{mdir}/metrics.db"))
+        let maxes = match crate::metrics_store::open(&format!("{mdir}/metrics.db"))
             .and_then(|c| crate::metrics_store::sub_maxes(&c))
-            .unwrap_or_default();
+        {
+            Ok(maxes) => maxes,
+            Err(e) => {
+                elog::error("server", format!("subs metrics read failed: {e:#}"));
+                Vec::new()
+            }
+        };
         (rows, maxes)
     })
     .await
-    .unwrap_or_default();
+    {
+        Ok(result) => result,
+        Err(_) => {
+            elog::error("server", "subs spawn_blocking join failed");
+            Default::default()
+        }
+    };
     let peak: std::collections::HashMap<String, (f64, f64)> = maxes
         .into_iter()
         .map(|(e, m5, m7, _)| (e, (m5, m7)))
@@ -4270,7 +4313,7 @@ async fn fleet_history(
     match read {
         Ok(Ok(v)) => Json(v).into_response(),
         Ok(Err(error)) => {
-            eprintln!("fleet history query failed: {error:#}");
+            elog::error("server", format!("fleet history query failed: {error:#}"));
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({"error": "metrics store unavailable"})),
@@ -4278,7 +4321,7 @@ async fn fleet_history(
                 .into_response()
         }
         Err(error) => {
-            eprintln!("fleet history task failed: {error:#}");
+            elog::error("server", format!("fleet history task failed: {error:#}"));
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({"error": "metrics store unavailable"})),
@@ -4314,7 +4357,7 @@ async fn codex_subs(
         Some(billing) => match billing.codex_calibration_report().await {
             Ok(report) => Some(report),
             Err(error) => {
-                eprintln!("Codex calibration report unavailable: {error:#}");
+                elog::error("server", format!("Codex calibration report unavailable: {error:#}"));
                 None
             }
         },
@@ -4354,7 +4397,10 @@ async fn kimi_subs(
             let report = match billing.kimi_calibration_report().await {
                 Ok(report) => Some(report),
                 Err(error) => {
-                    eprintln!("KIMI calibration report unavailable: {error:#}");
+                    elog::error(
+                        "server",
+                        format!("KIMI calibration report unavailable: {error:#}"),
+                    );
                     None
                 }
             };
@@ -4364,7 +4410,7 @@ async fn kimi_subs(
             {
                 Ok(turns) => Some(turns),
                 Err(error) => {
-                    eprintln!("KIMI recent turns unavailable: {error:#}");
+                    elog::error("server", format!("KIMI recent turns unavailable: {error:#}"));
                     None
                 }
             };
@@ -4588,7 +4634,7 @@ async fn glm_subs(
         Some(billing) => match billing.glm_calibration_report().await {
             Ok(report) => Some(report),
             Err(error) => {
-                eprintln!("GLM calibration report unavailable: {error:#}");
+                elog::error("server", format!("GLM calibration report unavailable: {error:#}"));
                 None
             }
         },
@@ -4859,13 +4905,18 @@ fn codex_conversion_models(models: &[forward::codex::CodexModel], now: i64) -> V
     models
         .iter()
         .filter_map(|model| {
-            let tariff = metering::codex_tariff_capability_at(
+            let tariff = match metering::codex_tariff_capability_at(
                 &model.id,
                 now,
                 metering::CodexServiceTier::Standard,
                 0,
-            )
-            .ok()?;
+            ) {
+                Ok(tariff) => tariff,
+                Err(_) => {
+                    elog::warn("server", "tariff lookup failed; model dropped from catalog");
+                    return None;
+                }
+            };
             let credits = metering::codex_credit_rates(&model.id)?;
             let prices = tariff.prices;
             Some(json!({
@@ -5039,7 +5090,13 @@ fn gemini_conversion_models(models: &[forward::GeminiModel], now: i64) -> Vec<Va
     models
         .iter()
         .filter_map(|model| {
-            let prices = metering::gemini_prices_at(&model.id, now)?;
+            let prices = match metering::gemini_prices_at(&model.id, now) {
+                Some(prices) => prices,
+                None => {
+                    elog::warn("server", "tariff lookup failed; model dropped from catalog");
+                    return None;
+                }
+            };
             let (search_unit, search_nano) = match prices.search {
                 metering::GeminiSearchBilling::PerQuery { nano } => ("query", nano),
                 metering::GeminiSearchBilling::PerGroundedPrompt { nano } => {
@@ -5209,7 +5266,10 @@ async fn gemini_subs(
         Some(billing) => match billing.gemini_calibration_report().await {
             Ok(report) => Some(report),
             Err(error) => {
-                eprintln!("Gemini calibration report unavailable: {error:#}");
+                elog::error(
+                    "server",
+                    format!("Gemini calibration report unavailable: {error:#}"),
+                );
                 None
             }
         },
@@ -5573,7 +5633,7 @@ async fn balance(State(app): State<AppState>, headers: HeaderMap) -> Response {
             return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown key"}))).into_response()
         }
         Err(error) => {
-            eprintln!("billing authorization lookup failed: {error:#}");
+            elog::error("server", format!("billing authorization lookup failed: {error:#}"));
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({"error": "billing authority unavailable"})),
@@ -5584,7 +5644,7 @@ async fn balance(State(app): State<AppState>, headers: HeaderMap) -> Response {
     let krow = match billing.get(&key).await {
         Ok(row) => row,
         Err(error) => {
-            eprintln!("billing key lookup failed: {error:#}");
+            elog::error("server", format!("billing key lookup failed: {error:#}"));
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({"error": "billing authority unavailable"})),
@@ -5595,7 +5655,7 @@ async fn balance(State(app): State<AppState>, headers: HeaderMap) -> Response {
     let acct = match billing.account(&auth.account_id).await {
         Ok(account) => account,
         Err(error) => {
-            eprintln!("billing account lookup failed: {error:#}");
+            elog::error("server", format!("billing account lookup failed: {error:#}"));
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({"error": "billing authority unavailable"})),

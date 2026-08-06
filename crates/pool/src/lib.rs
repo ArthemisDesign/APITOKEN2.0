@@ -1273,10 +1273,7 @@ impl Pool {
         if l.inflight >= max_inflight() {
             // Не скрываем реальную нагрузку клампом: попытка уже выбрана и forward сейчас её пошлёт.
             // Лог без email/токена делает окно гонки наблюдаемым до атомарной lease-миграции.
-            eprintln!(
-                "pool: in-flight soft threshold exceeded (current={})",
-                l.inflight
-            );
+            elog::warn("pool", format!("pool: in-flight soft threshold exceeded (current={})", l.inflight));
         }
         l.inflight = l.inflight.saturating_add(1);
     }

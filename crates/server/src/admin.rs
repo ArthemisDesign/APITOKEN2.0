@@ -42,7 +42,7 @@ fn billing(app: &AppState) -> Result<&std::sync::Arc<forward::AsyncBilling>, Res
 }
 
 fn authority_unavailable(context: &str, error: anyhow::Error) -> Response {
-    eprintln!("billing authority {context} failed: {error:#}");
+    elog::error("server-admin", format!("billing authority {context} failed: {error:#}"));
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(json!({"error": "billing authority unavailable"})),
@@ -121,6 +121,7 @@ pub async fn create_account(
     let id = match crate::gen_account_id() {
         Ok(i) => i,
         Err(e) => {
+            elog::error("server-admin", format!("account id generation failed: {e}"));
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": e.to_string()})),
@@ -630,6 +631,7 @@ pub async fn issue_key(State(app): State<AppState>, Json(req): Json<IssueKeyReq>
     let key = match crate::gen_key() {
         Ok(k) => k,
         Err(e) => {
+            elog::error("server-admin", format!("key generation failed: {e}"));
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": e.to_string()})),
@@ -657,11 +659,14 @@ pub async fn issue_key(State(app): State<AppState>, Json(req): Json<IssueKeyReq>
                 })),
             )
                 .into_response(),
-            Ok(None) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "issued key could not be read"})),
-            )
-                .into_response(),
+            Ok(None) => {
+                elog::error("server-admin", "issued key could not be read back");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "issued key could not be read"})),
+                )
+                    .into_response()
+            }
             Err(error) => authority_unavailable("issued key lookup", error),
         },
         Err(error) if is_policy_ack_conflict(&error) => (

@@ -262,13 +262,10 @@ pub(crate) fn record_execution_group_loser(
     }
 
     EXECUTION_GROUP_DOUBLE_WINNER_TOTAL.fetch_add(1, Ordering::Relaxed);
-    eprintln!(
-        "event=execution_group_double_winner group_id={} winner_request_id={} loser_request_id={} attempt={}",
-        bounded(group_id),
+    elog::error("registry", format!("event=execution_group_double_winner group_id={} winner_request_id={} loser_request_id={} attempt={}", bounded(group_id),
         bounded(winner_request_id),
         bounded(loser_request_id),
-        attempt,
-    );
+        attempt,));
 }
 
 /// Рантайм-запись подписки с УЖЕ разрешённым токеном (inline или из файла).
@@ -3422,9 +3419,7 @@ pub fn account_topup(
                     Ok(Some(original_balance))
                 }
                 Ok(_) => {
-                    eprintln!(
-                        "billing idempotency conflict: parameters differ from the stored operation"
-                    );
+                    elog::error("registry", "billing idempotency conflict: parameters differ from the stored operation");
                     // AUDIT-TODO(C42/C80): expose a typed idempotency conflict through Control API as HTTP 409.
                     anyhow::bail!(
                         "idempotency reference already belongs to a different monetary operation"
@@ -5613,7 +5608,7 @@ pub fn sqlite_reconcile_expired(
             Ok(_) if state == "delivering" => report.charged_after_delivery += 1,
             Ok(_) => report.canceled_before_delivery += 1,
             Err(error) => {
-                eprintln!("SQLite reservation recovery failed for {request_id}: {error:#}")
+                elog::error("registry", format!("SQLite reservation recovery failed for {request_id}: {error:#}"))
             }
         }
     }

@@ -1055,15 +1055,15 @@ fn clamp_frac(k: &str, v: &str, d: f64) -> f64 {
     match v.parse::<f64>() {
         Ok(x) if x.is_finite() && (0.0..=1.0).contains(&x) => x,
         Ok(x) if x.is_finite() => {
-            eprintln!("⚠ {k}={x} вне [0,1] — кламплю (это ДОЛЯ окна, не проценты)");
+            elog::warn("server", format!("{k}={x} вне [0,1] — кламплю (это ДОЛЯ окна, не проценты)"));
             x.clamp(0.0, 1.0)
         }
         Ok(_) => {
-            eprintln!("⚠ {k} не может быть NaN/inf — беру дефолт {d}");
+            elog::warn("server", format!("{k} не может быть NaN/inf — беру дефолт {d}"));
             d
         }
         Err(_) => {
-            eprintln!("⚠ {k}={v:?} не число — беру дефолт {d}");
+            elog::warn("server", format!("{k}={v:?} не число — беру дефолт {d}"));
             d
         }
     }
@@ -1125,9 +1125,10 @@ impl Settings {
             ("CLAUDE_API_CONTROL_KEY", &control_keys),
         ] {
             if keys.iter().any(|k| k.len() < 24) {
-                eprintln!(
-                    "⚠️  {name}: есть ключ короче 24 символов — слабый для управляющего доступа. \
-                           Задай длинный случайный (напр. openssl rand -hex 24)."
+                elog::warn(
+                    "server",
+                    format!("{name}: есть ключ короче 24 символов — слабый для управляющего доступа. \
+                           Задай длинный случайный (напр. openssl rand -hex 24)."),
                 );
             }
         }

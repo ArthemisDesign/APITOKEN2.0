@@ -580,10 +580,7 @@ pub fn begin(
             proxy_order_id,
         )
         .map_err(|_| StartError::State)?;
-    eprintln!(
-        "[gemini-oauth] chat={} proxy_order={} started Antigravity consent",
-        chat_id, proxy_order_id
-    );
+    elog::info("authbot", format!("[gemini-oauth] chat={} proxy_order={} started Antigravity consent", chat_id, proxy_order_id));
     Ok(AuthorizationLinks {
         authorize_url: prepared.authorize_url,
         submit_url: prepared.submit_url,
@@ -691,10 +688,7 @@ fn begin_antigravity_phase(
             proxy_order_id,
         )
         .map_err(|_| StartError::State)?;
-    eprintln!(
-        "[gemini-oauth] chat={} proxy_order={} legacy bootstrap passed; started Antigravity final phase",
-        previous.chat_id, proxy_order_id
-    );
+    elog::info("authbot", format!("[gemini-oauth] chat={} proxy_order={} legacy bootstrap passed; started Antigravity final phase", previous.chat_id, proxy_order_id));
     Ok(AuthorizationLinks {
         authorize_url: prepared.authorize_url,
         submit_url: prepared.submit_url,
@@ -890,10 +884,7 @@ async fn finish_oauth(
     };
     if !oauth_session_handoff_is_current(&state.store, &session) {
         let _ = state.store.fail_gemini_oauth(&session.state);
-        eprintln!(
-            "[gemini-oauth] chat={} rejected stale seller generation before code exchange",
-            session.chat_id
-        );
+        elog::error("authbot", format!("[gemini-oauth] chat={} rejected stale seller generation before code exchange", session.chat_id));
         return status_page(StatusPage::ExpiredLink);
     }
     if callback_error.is_some() {
@@ -1018,10 +1009,7 @@ fn spawn_supervised_oauth<F, Fut>(
         let outcome = worker.await;
         supervisor_oauth.clear_inflight(chat_id, &oauth_state);
         if outcome.is_err_and(|error| error.is_panic()) {
-            eprintln!(
-                "[gemini-oauth] chat={} detached completion panicked; restarting the exact handoff generation",
-                chat_id
-            );
+            elog::error("authbot", format!("[gemini-oauth] chat={} detached completion panicked; restarting the exact handoff generation", chat_id));
             crate::bot::restart_interrupted_gemini_oauth(
                 &recovery_state.bot,
                 &recovery_state.store,
@@ -1107,10 +1095,7 @@ async fn process_oauth_completion(
                         .await;
                 }
                 Ok(_) => {
-                    eprintln!(
-                        "[gemini-oauth] chat={} Antigravity phase became stale immediately after transition",
-                        session.chat_id
-                    );
+                    elog::error("authbot", format!("[gemini-oauth] chat={} Antigravity phase became stale immediately after transition", session.chat_id));
                 }
                 Err(_) => {
                     fail_callback(state, &session, Failure::Storage, None).await;
@@ -1178,10 +1163,7 @@ pub(crate) async fn announce_publication(
         )),
     };
     if binding.is_err() {
-        eprintln!(
-            "[gemini-oauth] chat={chat_id} profile {} is published but lifecycle binding needs reconciliation",
-            profile.id
-        );
+        elog::error("authbot", format!("[gemini-oauth] chat={chat_id} profile {} is published but lifecycle binding needs reconciliation", profile.id));
         for admin in &config.admins_id {
             let _ = bot
                 .send(
@@ -1508,11 +1490,8 @@ async fn fail_callback(
                 )
                 .await;
         }
-        eprintln!(
-            "[gemini-oauth] chat={} stale callback failed: {} (seller state unchanged)",
-            session.chat_id,
-            failure.code()
-        );
+        elog::error("authbot", format!("[gemini-oauth] chat={} stale callback failed: {} (seller state unchanged)", session.chat_id,
+            failure.code()));
         return;
     }
     // The authorization code and its encrypted PKCE transaction cannot be reused after this point;
@@ -1556,16 +1535,13 @@ async fn fail_callback(
             let _ = state.bot.send(*admin, failure.operator_message()).await;
         }
     }
-    eprintln!(
-        "[gemini-oauth] chat={} callback failed: {}{}",
-        session.chat_id,
+    elog::error("authbot", format!("[gemini-oauth] chat={} callback failed: {}{}", session.chat_id,
         failure.code(),
         if failure.operator_action_required() {
             " (operator notified)"
         } else {
             ""
-        }
-    );
+        }));
 }
 
 fn pending_proxy(config: &Config, session: &GeminiOAuthSession) -> Option<(String, i64)> {
@@ -1912,11 +1888,8 @@ struct RecoveringClient<'a> {
 impl<'a> RecoveringClient<'a> {
     async fn connect(proxy: &'a str, chat_id: i64) -> Result<Self, Failure> {
         let inner = GeminiHttpClient::connect(proxy).await.map_err(|error| {
-            eprintln!(
-                "[gemini-oauth] chat={} attested OAuth transport startup failed: {}",
-                chat_id,
-                crate::gemini_transport::diagnostic_kind(&error),
-            );
+            elog::error("authbot", format!("[gemini-oauth] chat={} attested OAuth transport startup failed: {}", chat_id,
+                crate::gemini_transport::diagnostic_kind(&error),));
             Failure::TransportUnavailable
         })?;
         Ok(Self {
@@ -1930,11 +1903,8 @@ impl<'a> RecoveringClient<'a> {
         self.inner = GeminiHttpClient::connect(self.proxy)
             .await
             .map_err(|error| {
-                eprintln!(
-                    "[gemini-oauth] chat={} OAuth transport restart failed: {}",
-                    self.chat_id,
-                    crate::gemini_transport::diagnostic_kind(&error),
-                );
+                elog::error("authbot", format!("[gemini-oauth] chat={} OAuth transport restart failed: {}", self.chat_id,
+                    crate::gemini_transport::diagnostic_kind(&error),));
                 Failure::TransportUnavailable
             })?;
         Ok(())
@@ -1953,12 +1923,9 @@ impl<'a> RecoveringClient<'a> {
             {
                 Ok(response) => {
                     if attempt > 1 {
-                        eprintln!(
-                            "[gemini-oauth] chat={} token transport recovered on attempt {}/{}",
-                            self.chat_id,
+                        elog::warn("authbot", format!("[gemini-oauth] chat={} token transport recovered on attempt {}/{}", self.chat_id,
                             attempt,
-                            TRANSPORT_RECOVERY_DELAYS.len() + 1,
-                        );
+                            TRANSPORT_RECOVERY_DELAYS.len() + 1,));
                     }
                     return Ok(response);
                 }
@@ -1966,13 +1933,10 @@ impl<'a> RecoveringClient<'a> {
                     let diagnostic = crate::gemini_transport::diagnostic_kind(&error);
                     let retryable = crate::gemini_transport::failure_kind(&error)
                         .is_some_and(|kind| kind.safe_to_retry_before_target());
-                    eprintln!(
-                        "[gemini-oauth] chat={} token transport attempt {}/{} failed: {}",
-                        self.chat_id,
+                    elog::warn("authbot", format!("[gemini-oauth] chat={} token transport attempt {}/{} failed: {}", self.chat_id,
                         attempt,
                         TRANSPORT_RECOVERY_DELAYS.len() + 1,
-                        diagnostic,
-                    );
+                        diagnostic,));
                     if !retryable || attempt > TRANSPORT_RECOVERY_DELAYS.len() {
                         return Err(Failure::TransportUnavailable);
                     }
@@ -1999,14 +1963,11 @@ impl<'a> RecoveringClient<'a> {
                     let diagnostic = crate::gemini_transport::diagnostic_kind(&error);
                     let retryable = crate::gemini_transport::failure_kind(&error)
                         .is_some_and(|kind| kind.retryable_control_plane());
-                    eprintln!(
-                        "[gemini-oauth] chat={} {} transport attempt {}/{} failed: {}",
-                        self.chat_id,
+                    elog::warn("authbot", format!("[gemini-oauth] chat={} {} transport attempt {}/{} failed: {}", self.chat_id,
                         phase,
                         attempt,
                         TRANSPORT_RECOVERY_DELAYS.len() + 1,
-                        diagnostic,
-                    );
+                        diagnostic,));
                     if !retryable || attempt > TRANSPORT_RECOVERY_DELAYS.len() {
                         return Err(Failure::TransportUnavailable);
                     }
@@ -2042,12 +2003,9 @@ impl<'a> RecoveringClient<'a> {
             {
                 Ok(response) => {
                     if attempt > 1 {
-                        eprintln!(
-                            "[gemini-oauth] chat={} generation transport recovered on attempt {}/{}",
-                            self.chat_id,
+                        elog::warn("authbot", format!("[gemini-oauth] chat={} generation transport recovered on attempt {}/{}", self.chat_id,
                             attempt,
-                            TRANSPORT_RECOVERY_DELAYS.len() + 1,
-                        );
+                            TRANSPORT_RECOVERY_DELAYS.len() + 1,));
                     }
                     return Ok(response);
                 }
@@ -2055,13 +2013,10 @@ impl<'a> RecoveringClient<'a> {
                     let diagnostic = crate::gemini_transport::diagnostic_kind(&error);
                     let before_target = crate::gemini_transport::failure_kind(&error)
                         .is_some_and(|kind| kind.safe_to_retry_before_target());
-                    eprintln!(
-                        "[gemini-oauth] chat={} generation acceptance transport attempt {}/{} failed: {}",
-                        self.chat_id,
+                    elog::warn("authbot", format!("[gemini-oauth] chat={} generation acceptance transport attempt {}/{} failed: {}", self.chat_id,
                         attempt,
                         TRANSPORT_RECOVERY_DELAYS.len() + 1,
-                        diagnostic,
-                    );
+                        diagnostic,));
                     if !before_target || attempt > TRANSPORT_RECOVERY_DELAYS.len() {
                         return Err(Failure::GenerationUnavailable);
                     }
@@ -2085,13 +2040,10 @@ impl<'a> RecoveringClient<'a> {
                     let diagnostic = crate::gemini_transport::diagnostic_kind(&error);
                     let retryable = crate::gemini_transport::failure_kind(&error)
                         .is_some_and(|kind| kind.retryable_control_plane());
-                    eprintln!(
-                        "[gemini-oauth] chat={} userinfo transport attempt {}/{} failed: {}",
-                        self.chat_id,
+                    elog::warn("authbot", format!("[gemini-oauth] chat={} userinfo transport attempt {}/{} failed: {}", self.chat_id,
                         attempt,
                         TRANSPORT_RECOVERY_DELAYS.len() + 1,
-                        diagnostic,
-                    );
+                        diagnostic,));
                     if !retryable || attempt > TRANSPORT_RECOVERY_DELAYS.len() {
                         return Err(Failure::TransportUnavailable);
                     }
@@ -2121,15 +2073,9 @@ async fn complete(
     // verified; carries that account's verification link back to the Telegram answer.
     verification_url: &mut Option<String>,
 ) -> Result<Completion, Failure> {
-    eprintln!(
-        "[gemini-oauth] chat={} proxy_order={} finalizing: exchanging Google authorization code",
-        session.chat_id, proxy_order_id
-    );
+    elog::info("authbot", format!("[gemini-oauth] chat={} proxy_order={} finalizing: exchanging Google authorization code", session.chat_id, proxy_order_id));
     if session.expires_ts < now() {
-        eprintln!(
-            "[gemini-oauth] chat={} aborted: OAuth session expired before the callback arrived",
-            session.chat_id
-        );
+        elog::error("authbot", format!("[gemini-oauth] chat={} aborted: OAuth session expired before the callback arrived", session.chat_id));
         return Err(Failure::Authorization);
     }
     let mut client = RecoveringClient::connect(proxy, session.chat_id).await?;
@@ -2165,10 +2111,7 @@ async fn complete(
         .token_request(&token_headers, form.as_bytes())
         .await?;
     if !(200..300).contains(&response.status) {
-        eprintln!(
-            "[gemini-oauth] chat={} Google rejected the token exchange: HTTP {}",
-            session.chat_id, response.status
-        );
+        elog::error("authbot", format!("[gemini-oauth] chat={} Google rejected the token exchange: HTTP {}", session.chat_id, response.status));
         return Err(if response.status >= 500 {
             Failure::Temporary
         } else {
@@ -2186,28 +2129,19 @@ async fn complete(
     {
         return Err(Failure::Authorization);
     }
-    eprintln!(
-        "[gemini-oauth] chat={} Google granted scopes: {}",
-        session.chat_id,
-        token.scope.as_deref().unwrap_or("<none>")
-    );
+    elog::info("authbot", format!("[gemini-oauth] chat={} Google granted scopes: {}", session.chat_id,
+        token.scope.as_deref().unwrap_or("<none>")));
     let authorization = Zeroizing::new(format!("Bearer {}", token.access_token));
     let headers = official_userinfo_headers(authorization.as_str());
     let user_info_response = client.userinfo_request(USERINFO_URL, &headers).await?;
     if !(200..300).contains(&user_info_response.status) {
-        eprintln!(
-            "[gemini-oauth] chat={} Google userinfo call failed: HTTP {}",
-            session.chat_id, user_info_response.status
-        );
+        elog::error("authbot", format!("[gemini-oauth] chat={} Google userinfo call failed: HTTP {}", session.chat_id, user_info_response.status));
         return Err(Failure::Authorization);
     }
     let mut user: UserInfo =
         serde_json::from_slice(&user_info_response.body).map_err(|_| Failure::Temporary)?;
     if !user.verified_email || !valid_identity(&user.id, 512) || !valid_identity(&user.email, 512) {
-        eprintln!(
-            "[gemini-oauth] chat={} rejected: Google account is unverified or malformed",
-            session.chat_id
-        );
+        elog::error("authbot", format!("[gemini-oauth] chat={} rejected: Google account is unverified or malformed", session.chat_id));
         return Err(Failure::Authorization);
     }
     // The Gemini CLI OAuth transaction is an identity bootstrap, not the authority for
@@ -2223,20 +2157,14 @@ async fn complete(
             proxy,
             proxy_order_id,
         )?;
-        eprintln!(
-            "[gemini-oauth] chat={} legacy identity bootstrap passed; final subscription admission remains pending",
-            session.chat_id
-        );
+        elog::info("authbot", format!("[gemini-oauth] chat={} legacy identity bootstrap passed; final subscription admission remains pending", session.chat_id));
         return Ok(Completion::LegacyBootstrap {
             subject: Zeroizing::new(std::mem::take(&mut user.id)),
         });
     }
     let refresh_token = token.refresh_token.take().ok_or(Failure::Authorization)?;
     if validate_final_subject(phase, &user.id, bootstrap_subject).is_err() {
-        eprintln!(
-            "[gemini-oauth] chat={} rejected: Antigravity subject differs from legacy bootstrap",
-            session.chat_id
-        );
+        elog::error("authbot", format!("[gemini-oauth] chat={} rejected: Antigravity subject differs from legacy bootstrap", session.chat_id));
         return Err(Failure::AccountMismatch);
     }
     // Consent succeeded, so this token family is the only copy of a subscription the seller already
@@ -2286,11 +2214,8 @@ async fn complete(
         record_probe_outcome(store, session.chat_id, failure);
         return Err(failure);
     }
-    eprintln!(
-        "[gemini-oauth] chat={} Google account and exact generation verified, plan={}, sealing credential",
-        session.chat_id,
-        plan_label(&credential.plan)
-    );
+    elog::info("authbot", format!("[gemini-oauth] chat={} Google account and exact generation verified, plan={}, sealing credential", session.chat_id,
+        plan_label(&credential.plan)));
     let published = publish_verified_credential(
         store,
         config,
@@ -2324,9 +2249,7 @@ async fn publish_verified_credential(
     // exact job generation. Re-check after waiting for the filesystem publication lock and as close
     // as possible to the credential write; SQLite and the roster cannot form one atomic transaction.
     if !handoff_is_current(store, chat_id, job) {
-        eprintln!(
-            "[gemini-oauth] chat={chat_id} rejected stale seller generation immediately before publication"
-        );
+        elog::error("authbot", format!("[gemini-oauth] chat={chat_id} rejected stale seller generation immediately before publication"));
         return Err(Failure::StaleHandoff);
     }
     let _ = plan;
@@ -2337,23 +2260,11 @@ async fn publish_verified_credential(
         .await
         .map_err(|_| Failure::Storage)?;
     match &published {
-        Ok(profile) if profile.reauthorized => eprintln!(
-            "[gemini-oauth] chat={} reauthorized profile {} in place (plan {}); the previous refresh token was invalidated by Google",
-            chat_id, profile.id, plan_label(&profile.plan)
-        ),
-        Ok(profile) if profile.migrated => eprintln!(
-            "[gemini-oauth] chat={} atomically migrated profile {} to Antigravity (plan {})",
-            chat_id, profile.id, plan_label(&profile.plan)
-        ),
-        Ok(profile) => eprintln!(
-            "[gemini-oauth] chat={} sealed and published profile {} (plan {}) into the Gemini roster",
-            chat_id, profile.id, plan_label(&profile.plan)
-        ),
-        Err(failure) => eprintln!(
-            "[gemini-oauth] chat={} sealing/publishing the profile failed: {}",
-            chat_id,
-            failure.code()
-        ),
+        Ok(profile) if profile.reauthorized => elog::info("authbot", format!("[gemini-oauth] chat={} reauthorized profile {} in place (plan {}); the previous refresh token was invalidated by Google", chat_id, profile.id, plan_label(&profile.plan))),
+        Ok(profile) if profile.migrated => elog::info("authbot", format!("[gemini-oauth] chat={} atomically migrated profile {} to Antigravity (plan {})", chat_id, profile.id, plan_label(&profile.plan))),
+        Ok(profile) => elog::info("authbot", format!("[gemini-oauth] chat={} sealed and published profile {} (plan {}) into the Gemini roster", chat_id, profile.id, plan_label(&profile.plan))),
+        Err(failure) => elog::error("authbot", format!("[gemini-oauth] chat={} sealing/publishing the profile failed: {}", chat_id,
+            failure.code())),
     }
     published.map(|profile| Completion::Published(profile, terminal_guard))
 }
@@ -2417,9 +2328,7 @@ fn park_verification(
     credential: &GeminiCredential,
 ) {
     let Some(sealed) = seal_parked_credential(config, chat_id, credential) else {
-        eprintln!(
-            "[gemini-oauth] chat={chat_id} could not seal the consented account; it will have to be authorized again"
-        );
+        elog::error("authbot", format!("[gemini-oauth] chat={chat_id} could not seal the consented account; it will have to be authorized again"));
         return;
     };
     let now = now();
@@ -2431,12 +2340,8 @@ fn park_verification(
         now.saturating_add(VERIFICATION_PROBE_INTERVAL_SECS),
         job,
     ) {
-        Ok(()) => eprintln!(
-            "[gemini-oauth] chat={chat_id} recorded the consented account; automatic acceptance runs every {VERIFICATION_PROBE_INTERVAL_SECS}s for {VERIFICATION_PROBE_WINDOW_SECS}s"
-        ),
-        Err(_) => eprintln!(
-            "[gemini-oauth] chat={chat_id} could not record the consented account; it will have to be authorized again"
-        ),
+        Ok(()) => elog::info("authbot", format!("[gemini-oauth] chat={chat_id} recorded the consented account; automatic acceptance runs every {VERIFICATION_PROBE_INTERVAL_SECS}s for {VERIFICATION_PROBE_WINDOW_SECS}s")),
+        Err(_) => elog::error("authbot", format!("[gemini-oauth] chat={chat_id} could not record the consented account; it will have to be authorized again")),
     }
 }
 
@@ -2458,10 +2363,7 @@ fn reseal_parked_credential(
 fn record_probe_outcome(store: &Store, chat_id: i64, failure: Failure) {
     if failure.stops_automatic_probing() {
         let _ = store.schedule_gemini_probe(chat_id, 0, Some(0), failure.code());
-        eprintln!(
-            "[gemini-oauth] chat={chat_id} automatic acceptance stopped on a terminal verdict: {}; the credential stays recorded",
-            failure.code()
-        );
+        elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} automatic acceptance stopped on a terminal verdict: {}; the credential stays recorded", failure.code()));
     } else {
         let _ = store.schedule_gemini_probe(
             chat_id,
@@ -2489,19 +2391,13 @@ async fn resolve_and_probe(
         let resolved = match resolve_antigravity_account(client, &credential.access_token).await {
             Ok(resolved) => resolved,
             Err(failure) => {
-                eprintln!(
-                    "[gemini-oauth] chat={chat_id} tier/project resolution failed: {}",
-                    failure.code()
-                );
+                elog::error("authbot", format!("[gemini-oauth] chat={chat_id} tier/project resolution failed: {}", failure.code()));
                 return Err(failure);
             }
         };
         if !supported_paid_plan(&resolved.plan) {
             log_unsupported_plan("unreviewed_reported_tier", resolved.diagnostic);
-            eprintln!(
-                "[gemini-oauth] chat={chat_id} rejected: unsupported Google plan {}",
-                plan_label(&resolved.plan)
-            );
+            elog::error("authbot", format!("[gemini-oauth] chat={chat_id} rejected: unsupported Google plan {}", plan_label(&resolved.plan)));
             return Err(Failure::UnsupportedPlan);
         }
         credential.project_id = resolved.project_id;
@@ -2575,10 +2471,7 @@ pub(crate) async fn finish_parked_verification(
                     let _ = bot.send(*admin, failure.operator_message()).await;
                 }
             }
-            eprintln!(
-                "[gemini-oauth] chat={chat_id} post-verification retry failed: {}",
-                failure.code()
-            );
+            elog::error("authbot", format!("[gemini-oauth] chat={chat_id} post-verification retry failed: {}", failure.code()));
         }
         VerificationRetry::Missing => {
             let _ = bot
@@ -2614,20 +2507,15 @@ pub(crate) async fn retry_parked_verification(
     };
     if !handoff_is_current(store, chat_id, parked.job.as_ref()) {
         let _ = store.clear_gemini_verification(chat_id);
-        eprintln!(
-            "[gemini-oauth] chat={chat_id} dropped a parked account whose seller generation moved on"
-        );
+        elog::info("authbot", format!("[gemini-oauth] chat={chat_id} dropped a parked account whose seller generation moved on"));
         return VerificationRetry::Missing;
     }
     let Some(mut credential) = open_parked_credential(config, &parked) else {
         let _ = store.clear_gemini_verification(chat_id);
-        eprintln!("[gemini-oauth] chat={chat_id} could not open the parked account envelope");
+        elog::error("authbot", format!("[gemini-oauth] chat={chat_id} could not open the parked account envelope"));
         return VerificationRetry::Missing;
     };
-    eprintln!(
-        "[gemini-oauth] chat={chat_id} re-running acceptance for the recorded account (attempt {})",
-        parked.attempts
-    );
+    elog::info("authbot", format!("[gemini-oauth] chat={chat_id} re-running acceptance for the recorded account (attempt {})", parked.attempts));
     // The client borrows the egress for its whole lifetime, so hand it an owned copy: the parked
     // credential itself still has to be mutable for the token refresh below.
     let proxy = credential.proxy.clone();
@@ -2687,18 +2575,12 @@ pub(crate) async fn sweep_recorded_verifications(
             .map(|job| job.reference);
         match retry_parked_verification(store, oauth, chat_id).await {
             VerificationRetry::Published(profile) => {
-                eprintln!(
-                    "[gemini-oauth] chat={chat_id} automatic acceptance passed; publishing profile {}",
-                    profile.id
-                );
+                elog::info("authbot", format!("[gemini-oauth] chat={chat_id} automatic acceptance passed; publishing profile {}", profile.id));
                 announce_publication(bot, store, config, chat_id, job, &profile).await;
             }
             // Silent by design: the seller already has the explanation and the button from the
             // attempt that failed first, and 288 identical messages a day would be noise.
-            VerificationRetry::Rejected(failure, _) => eprintln!(
-                "[gemini-oauth] chat={chat_id} automatic acceptance attempt failed: {}",
-                failure.code()
-            ),
+            VerificationRetry::Rejected(failure, _) => elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} automatic acceptance attempt failed: {}", failure.code())),
             VerificationRetry::Missing => {}
         }
     }
@@ -2709,7 +2591,7 @@ pub(crate) async fn sweep_recorded_verifications(
         {
             continue;
         }
-        eprintln!("[gemini-oauth] chat={chat_id} automatic acceptance window closed");
+        elog::info("authbot", format!("[gemini-oauth] chat={chat_id} automatic acceptance window closed"));
         let _ = bot
             .send(
                 chat_id,
@@ -2769,10 +2651,7 @@ async fn refresh_parked_access_token(
         )
         .await?;
     if !(200..300).contains(&response.status) {
-        eprintln!(
-            "[gemini-oauth] chat={} refreshing the parked access token failed: HTTP {}",
-            client.chat_id, response.status
-        );
+        elog::error("authbot", format!("[gemini-oauth] chat={} refreshing the parked access token failed: HTTP {}", client.chat_id, response.status));
         return Err(if matches!(response.status, 400 | 401) {
             Failure::Authorization
         } else {
@@ -2885,9 +2764,7 @@ async fn generation_probe(
             .await?;
         match validate_generation_probe_response(response.status, &response.body) {
             Ok(()) => {
-                eprintln!(
-                    "[gemini-oauth] chat={chat_id} exact generation acceptance passed on {surface}"
-                );
+                elog::info("authbot", format!("[gemini-oauth] chat={chat_id} exact generation acceptance passed on {surface}"));
                 return Ok(());
             }
             Err(failure) => {
@@ -2905,14 +2782,11 @@ async fn generation_probe(
                         // the seller cannot reach this particular check from a normal Gemini
                         // session — theirs already works.
                         *verification_url = verification_url_from_body(&response.body);
-                        eprintln!(
-                            "[gemini-oauth] chat={chat_id} account verification link is {}",
-                            if verification_url.is_some() {
+                        elog::warn("authbot", format!("[gemini-oauth] chat={chat_id} account verification link is {}", if verification_url.is_some() {
                                 "present in the rejection metadata"
                             } else {
                                 "absent from the rejection metadata"
-                            }
-                        );
+                            }));
                     }
                     return Err(classified);
                 }
@@ -2943,19 +2817,13 @@ fn log_generation_failure(chat_id: i64, surface: &str, status: u16, body: &[u8])
                 .iter()
                 .find_map(|detail| detail.get("reason").and_then(Value::as_str))
         });
-    eprintln!(
-        "[gemini-oauth] chat={chat_id} generation acceptance failed on {surface}: HTTP {status} google_status={} reason={}",
-        bounded_label(google_status),
-        bounded_label(reason)
-    );
+    elog::error("authbot", format!("[gemini-oauth] chat={chat_id} generation acceptance failed on {surface}: HTTP {status} google_status={} reason={}", bounded_label(google_status),
+        bounded_label(reason)));
     if std::env::var("AUTH_BOT_GEMINI_TIER_EVIDENCE").as_deref() == Ok("1") {
         let message = error
             .and_then(|error| error.get("message"))
             .and_then(Value::as_str);
-        eprintln!(
-            "[gemini-oauth] chat={chat_id} generation acceptance detail: {}",
-            bounded_label(message)
-        );
+        elog::error("authbot", format!("[gemini-oauth] chat={chat_id} generation acceptance detail: {}", bounded_label(message)));
     }
 }
 
@@ -3195,7 +3063,7 @@ async fn post_antigravity_json<T: for<'de> Deserialize<'de>>(
         let endpoint = url.rsplit('/').next().unwrap_or(url);
         let detail = String::from_utf8_lossy(&response.body);
         let detail: String = detail.chars().take(4_096).collect();
-        eprintln!("[gemini-oauth] Code Assist {endpoint} returned HTTP {status}");
+        elog::error("authbot", format!("[gemini-oauth] Code Assist {endpoint} returned HTTP {status}"));
         return Err(classify_google_http_failure(status, &detail));
     }
     serde_json::from_slice(&response.body).map_err(|_| Failure::Temporary)
@@ -3340,10 +3208,7 @@ fn classify_tier_evidence(tier: Option<&Tier>) -> TierEvidenceClass {
 }
 
 fn log_unsupported_plan(reason: &'static str, diagnostic: CodeAssistDiagnostic) {
-    eprintln!(
-        "[gemini-oauth] unsupported plan shape: reason={reason} {}",
-        diagnostic.sanitized()
-    );
+    elog::error("authbot", format!("[gemini-oauth] unsupported plan shape: reason={reason} {}", diagnostic.sanitized()));
 }
 
 /// Opt-in operator diagnostic. Tier ids and display names are product labels, not identity or
@@ -3375,12 +3240,9 @@ fn log_tier_evidence_if_enabled(loaded: &LoadCodeAssistResponse) {
         })
         .collect::<Vec<_>>()
         .join(",");
-    eprintln!(
-        "[gemini-oauth] raw tier evidence: {} {} allowed=[{}]",
-        render("paid", loaded.paid_tier.as_ref()),
+    elog::info("authbot", format!("[gemini-oauth] raw tier evidence: {} {} allowed=[{}]", render("paid", loaded.paid_tier.as_ref()),
         render("current", loaded.current_tier.as_ref()),
-        allowed
-    );
+        allowed));
 }
 
 /// Keep an operator label printable and bounded: an upstream string is untrusted input, and a
@@ -3444,10 +3306,7 @@ fn resolve_reported_tier(
         // name that contradicts a reviewed id is drift, not a second entitlement. Resolution below
         // follows the id; the shape is journalled because it is the signal that our reviewed name
         // list has aged.
-        eprintln!(
-            "[gemini-oauth] reviewed tier id kept over drifted display name: {}",
-            diagnostic.sanitized()
-        );
+        elog::warn("authbot", format!("[gemini-oauth] reviewed tier id kept over drifted display name: {}", diagnostic.sanitized()));
     }
     let paid = loaded.paid_tier.as_ref();
     let current = loaded.current_tier.as_ref();
@@ -3469,10 +3328,7 @@ fn resolve_reported_tier(
             // is onboarded to for this IDE surface, and Antigravity onboarding routinely reports a
             // different one. Rejecting the pair told a seller with a real subscription that no
             // subscription exists, so the paid entitlement wins and the disagreement is journalled.
-            eprintln!(
-                "[gemini-oauth] paid tier kept over disagreeing current tier: {}",
-                diagnostic.sanitized()
-            );
+            elog::warn("authbot", format!("[gemini-oauth] paid tier kept over disagreeing current tier: {}", diagnostic.sanitized()));
             let Some(tier) = paid else {
                 log_unsupported_plan("missing_paid_tier_after_resolution", diagnostic);
                 return Err(Failure::UnsupportedPlan);
@@ -3488,9 +3344,7 @@ fn resolve_reported_tier(
         }
         (_, Some(plan)) => {
             if paid.is_some() {
-                eprintln!(
-                    "[gemini-oauth] using reviewed current tier because paid tier shape is unreviewed"
-                );
+                elog::warn("authbot", "[gemini-oauth] using reviewed current tier because paid tier shape is unreviewed");
             }
             let Some(tier) = current else {
                 log_unsupported_plan("missing_current_tier_after_resolution", diagnostic);

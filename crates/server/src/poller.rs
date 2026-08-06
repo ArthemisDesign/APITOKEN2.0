@@ -66,16 +66,19 @@ pub async fn billing_recovery_loop(
                         || report.charged_after_delivery > 0
                         || report.processed_outbox > 0 =>
                 {
-                    eprintln!(
-                        "billing recovery: canceled={}, charged={}, outbox={}",
-                        report.canceled_before_delivery,
-                        report.charged_after_delivery,
-                        report.processed_outbox,
+                    elog::info(
+                        "server",
+                        format!(
+                            "billing recovery: canceled={}, charged={}, outbox={}",
+                            report.canceled_before_delivery,
+                            report.charged_after_delivery,
+                            report.processed_outbox,
+                        ),
                     );
                 }
                 Ok(Ok(_)) => {}
-                Ok(Err(err)) => eprintln!("billing recovery pass failed: {err:#}"),
-                Err(err) => eprintln!("billing recovery task failed: {err}"),
+                Ok(Err(err)) => elog::error("server", format!("billing recovery pass failed: {err:#}")),
+                Err(err) => elog::error("server", format!("billing recovery task failed: {err}")),
             }
         }
 
@@ -153,17 +156,20 @@ pub async fn ledger_prune_loop(
                 || life.pricing_shadow_evaluations_cascaded > 0
                 || life.capacity_leases > 0
                 || life.engine_instances > 0 =>
-                eprintln!(
-                    "retention: ledger={led}, usage={usg}, outbox={}, reservations={}, pricing_snapshots={}, shadow_evaluations={}, capacity={}, instances={} (history>{ledger_retention_days}d, request_lifecycle>{request_lifecycle_retention_days}d)",
-                    life.outbox,
-                    life.reservations,
-                    life.pricing_snapshots_cascaded,
-                    life.pricing_shadow_evaluations_cascaded,
-                    life.capacity_leases,
-                    life.engine_instances,
+                elog::info(
+                    "server",
+                    format!(
+                        "retention: ledger={led}, usage={usg}, outbox={}, reservations={}, pricing_snapshots={}, shadow_evaluations={}, capacity={}, instances={} (history>{ledger_retention_days}d, request_lifecycle>{request_lifecycle_retention_days}d)",
+                        life.outbox,
+                        life.reservations,
+                        life.pricing_snapshots_cascaded,
+                        life.pricing_shadow_evaluations_cascaded,
+                        life.capacity_leases,
+                        life.engine_instances,
+                    ),
                 ),
-            Ok(Err(e)) => eprintln!("⚠ ledger-обрезка не удалась: {e}"),
-            Err(e) => eprintln!("⚠ ledger-обрезка: задача упала: {e}"),
+            Ok(Err(e)) => elog::error("server", format!("ledger-обрезка не удалась: {e}")),
+            Err(e) => elog::error("server", format!("ledger-обрезка: задача упала: {e}")),
             _ => {}
         }
     }
@@ -278,7 +284,10 @@ pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64
         let snap = match crate::http::overview_value(&app).await {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                eprintln!("⚠ metrics snapshot skipped: billing authority unavailable: {error:#}");
+                elog::warn(
+                    "server",
+                    format!("metrics snapshot skipped: billing authority unavailable: {error:#}"),
+                );
                 tokio::time::sleep(Duration::from_secs(SNAP_SECS)).await;
                 continue;
             }
@@ -318,7 +327,10 @@ pub async fn metrics_loop(app: AppState, metrics_db: String, retention_days: i64
                         .collect()
                 }
                 Err(error) => {
-                    eprintln!("⚠ exact per-sub metrics snapshot skipped: {error:#}");
+                    elog::warn(
+                        "server",
+                        format!("exact per-sub metrics snapshot skipped: {error:#}"),
+                    );
                     Vec::new()
                 }
             },
@@ -409,7 +421,7 @@ pub async fn reload_loop(
         .await
         .unwrap_or_else(|e| Err(anyhow::anyhow!("reload task panicked: {e}")));
         match loaded {
-            Err(e) => eprintln!("⚠ reload реестра не удался (держим прежний список): {e}"),
+            Err(e) => elog::warn("server", format!("reload реестра не удался (держим прежний список): {e}")),
             Ok(subs) => {
                 let cur: HashSet<String> = subs.iter().map(|s| s.email.clone()).collect();
                 let membership_changed = cur != prev;
@@ -482,21 +494,25 @@ async fn probe(
             PlanDetect::Plan(plan) => Some(plan),
             PlanDetect::NoScope => match app.pool.consensus_paid_plan() {
                 Some(plan) => {
-                    eprintln!(
-                        "Anthropic plan inferred from unanimous paid cohort for inference-only token"
+                    elog::info(
+                        "server",
+                        "Anthropic plan inferred from unanimous paid cohort for inference-only token",
                     );
                     Some(plan)
                 }
                 None => {
-                    eprintln!(
-                        "Anthropic plan remains unknown for {}: OAuth token has no profile scope and fleet cohort is not unanimous",
-                        sub.email
+                    elog::warn(
+                        "server",
+                        format!(
+                            "Anthropic plan remains unknown for {}: OAuth token has no profile scope and fleet cohort is not unanimous",
+                            sub.email
+                        ),
                     );
                     None
                 }
             },
             PlanDetect::Err(error) => {
-                eprintln!("Anthropic plan detection failed for {}: {error}", sub.email);
+                elog::error("server", format!("Anthropic plan detection failed for {}: {error}", sub.email));
                 None
             }
         };
@@ -519,13 +535,13 @@ async fn probe(
                     app.pool.set_plan(&sub.email, &plan);
                     calibration_plan = plan;
                 }
-                Ok(Err(error)) => eprintln!(
-                    "Anthropic plan persistence failed for {}: {error:#}",
-                    sub.email
+                Ok(Err(error)) => elog::error(
+                    "server",
+                    format!("Anthropic plan persistence failed for {}: {error:#}", sub.email),
                 ),
-                Err(error) => eprintln!(
-                    "Anthropic plan persistence task failed for {}: {error}",
-                    sub.email
+                Err(error) => elog::error(
+                    "server",
+                    format!("Anthropic plan persistence task failed for {}: {error}", sub.email),
                 ),
             }
         }
@@ -584,9 +600,9 @@ async fn probe(
                         )
                         .await
                     {
-                        eprintln!(
-                            "Anthropic poll calibration failed for {} {kind}: {error:#}",
-                            sub.email
+                        elog::error(
+                            "server",
+                            format!("Anthropic poll calibration failed for {} {kind}: {error:#}", sub.email),
                         );
                     }
                 }
@@ -646,11 +662,11 @@ async fn persist_health(
     match res {
         Ok(Ok(())) => {
             if state == "dead" {
-                eprintln!("🚫 подписка {email} помечена DEAD (токен отвергнут Anthropic)");
+                elog::error("server", format!("подписка {email} помечена DEAD (токен отвергнут Anthropic)"));
             }
         }
-        Ok(Err(e)) => eprintln!("⚠ персист auth-health {email} не удался: {e}"),
-        Err(e) => eprintln!("⚠ персист auth-health {email}: задача упала: {e}"),
+        Ok(Err(e)) => elog::error("server", format!("персист auth-health {email} не удался: {e}")),
+        Err(e) => elog::error("server", format!("персист auth-health {email}: задача упала: {e}")),
     }
 }
 
@@ -738,7 +754,7 @@ pub async fn persist_loop(
         // Durability is real only after a successful fenced write. PostgreSQL overlap may produce
         // a legitimate CAS conflict, so reload/merge/retry immediately instead of losing a cooling.
         if let Err(e) = persist_state_cas(&app, &authority, owner.as_ref(), 5).await {
-            eprintln!("⚠ персист состояния пула не удался после CAS retry: {e}");
+            elog::error("server", format!("персист состояния пула не удался после CAS retry: {e}"));
         }
     }
 }
@@ -774,7 +790,7 @@ pub async fn poll_loop(
                     continue;
                 }
                 Err(err) => {
-                    eprintln!("⚠ poller leader lease unavailable: {err}");
+                    elog::error("server", format!("poller leader lease unavailable: {err}"));
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
@@ -821,7 +837,7 @@ pub async fn poll_loop(
                             db.postgres()?.acquire_leader(&current, "subscription-poller", 30)
                         }).await;
                         if !matches!(renewed, Ok(Ok(true))) {
-                            eprintln!("poller leader renewal lost; aborting outstanding probes");
+                            elog::error("server", "poller leader renewal lost; aborting outstanding probes");
                             set.abort_all();
                             while set.join_next().await.is_some() {}
                             break;
@@ -870,19 +886,20 @@ pub async fn owner_heartbeat_loop(
         match renewed {
             Ok(Ok(true)) => authority_ready.store(true, Ordering::Release),
             Ok(Ok(false)) => {
-                eprintln!("🛑 engine owner epoch fenced; readiness removed");
+                elog::error("server", "engine owner epoch fenced; readiness removed");
                 authority_ready.store(false, Ordering::Release);
                 return;
             }
             Ok(Err(err)) => {
                 authority_ready.store(false, Ordering::Release);
-                eprintln!(
-                    "⚠ engine owner heartbeat failed; readiness removed until recovery: {err}"
+                elog::error(
+                    "server",
+                    format!("engine owner heartbeat failed; readiness removed until recovery: {err}"),
                 );
             }
             Err(err) => {
                 authority_ready.store(false, Ordering::Release);
-                eprintln!("⚠ engine owner heartbeat task failed; readiness removed: {err}");
+                elog::error("server", format!("engine owner heartbeat task failed; readiness removed: {err}"));
             }
         }
     }

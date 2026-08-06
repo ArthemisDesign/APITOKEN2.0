@@ -682,7 +682,9 @@ fn backup_cmd(out: Option<String>, keep: usize) -> Result<()> {
     snaps.sort(); // имена с epoch-ts → лексикографически = хронологически
     if snaps.len() > keep {
         for old in &snaps[..snaps.len() - keep] {
-            let _ = std::fs::remove_file(old);
+            if let Err(e) = std::fs::remove_file(old) {
+                elog::warn("server", format!("backup cleanup failed to remove {}: {e}", old.display()));
+            }
         }
         println!("  ротация: удалено {} старых", snaps.len() - keep);
     }
@@ -1264,19 +1266,22 @@ async fn serve() -> Result<()> {
         .await
         .context("engine authority startup task failed")??;
     if recovery != registry::pg::ReconcileReport::default() {
-        eprintln!(
-            "PostgreSQL recovery: canceled={} full_hold={} outbox={}",
-            recovery.canceled_before_delivery,
-            recovery.charged_after_delivery,
-            recovery.processed_outbox,
+        elog::info(
+            "server",
+            format!(
+                "PostgreSQL recovery: canceled={} full_hold={} outbox={}",
+                recovery.canceled_before_delivery,
+                recovery.charged_after_delivery,
+                recovery.processed_outbox,
+            ),
         );
     }
     if let Some(result) = sqlite_reconcile {
         match result {
             Ok(n) if n > 0 => {
-                eprintln!("реконсиляция резервов: возвращено {n} ключам (краш-остатки)")
+                elog::info("server", format!("реконсиляция резервов: возвращено {n} ключам (краш-остатки)"))
             }
-            Err(e) => eprintln!("⚠ reconcile резервов не удался: {e}"),
+            Err(e) => elog::error("server", format!("reconcile резервов не удался: {e}")),
             _ => {}
         }
     }
@@ -1293,8 +1298,9 @@ async fn serve() -> Result<()> {
         // The fleet env file is shared by every plane; shadow pricing only exists on the three
         // pricing planes, so a non-pricing plane (KIMI) must stay inert instead of failing
         // closed on a config it cannot act on.
-        eprintln!(
-            "pricing shadow: env enabled, but this provider plane has no pricing shadow producer; staying inert"
+        elog::warn(
+            "server",
+            "pricing shadow: env enabled, but this provider plane has no pricing shadow producer; staying inert",
         );
     }
     if pricing_shadow_active {
@@ -1365,14 +1371,17 @@ async fn serve() -> Result<()> {
         )
         .context("initialize cache affinity")?,
     );
-    eprintln!(
-        "cache affinity [{}]: local L1 + {} L2",
-        s.provider.as_str(),
-        if affinity.redis_configured() {
-            "Redis"
-        } else {
-            "no shared"
-        }
+    elog::info(
+        "server",
+        format!(
+            "cache affinity [{}]: local L1 + {} L2",
+            s.provider.as_str(),
+            if affinity.redis_configured() {
+                "Redis"
+            } else {
+                "no shared"
+            }
+        ),
     );
     let metrics = Arc::new(forward::Metrics::new());
     let codex = if let Some(config) = s.codex.clone() {
@@ -1392,7 +1401,7 @@ async fn serve() -> Result<()> {
             .preflight()
             .await
             .context("validate Codex provider")?;
-        eprintln!("Codex native provider preflight passed");
+        elog::info("server", "Codex native provider preflight passed");
         tokio::spawn(poller::codex_health_loop(gateway.clone()));
         spawn_codex_reconcile_signal(gateway.clone());
         Some(gateway)
@@ -1411,7 +1420,7 @@ async fn serve() -> Result<()> {
             .preflight()
             .await
             .context("validate Gemini provider")?;
-        eprintln!("Gemini OAuth subscription provider preflight passed");
+        elog::info("server", "Gemini OAuth subscription provider preflight passed");
         tokio::spawn(poller::gemini_health_loop(gateway.clone()));
         Some(gateway)
     } else {
@@ -1429,11 +1438,14 @@ async fn serve() -> Result<()> {
                 let gateway = Arc::new(gateway);
                 let live = gateway.preflight().await;
                 if live > 0 {
-                    eprintln!("KIMI backend preview preflight passed: live_profiles={live}");
+                    elog::info("server", format!("KIMI backend preview preflight passed: live_profiles={live}"));
                 } else {
                     // KIMI is an optional backend inside the Anthropic service. Its cold roster or
                     // outage must not take unrelated Claude traffic out of readiness.
-                    eprintln!("KIMI backend preview has no authenticated profile; exact KIMI aliases fail closed");
+                    elog::warn(
+                        "server",
+                        "KIMI backend preview has no authenticated profile; exact KIMI aliases fail closed",
+                    );
                 }
                 tokio::spawn(poller::kimi_maintenance_loop(gateway.clone()));
                 Some(gateway)
@@ -1442,8 +1454,9 @@ async fn serve() -> Result<()> {
                 // Do not render the error: proxy parsing failures may embed credentialed egress.
                 // Keep the dispatcher present with zero capacity: removing it here would let an
                 // exact KIMI alias fall through into the unrelated Claude pool.
-                eprintln!(
-                    "KIMI backend preview initialization failed; exact KIMI aliases fail closed"
+                elog::error(
+                    "server",
+                    "KIMI backend preview initialization failed; exact KIMI aliases fail closed",
                 );
                 let gateway = Arc::new(forward::KimiGateway::new_degraded(
                     config,
@@ -1468,12 +1481,13 @@ async fn serve() -> Result<()> {
                 let gateway = Arc::new(gateway);
                 let live = gateway.preflight().await;
                 if live > 0 {
-                    eprintln!("GLM backend preflight passed: live_profiles={live}");
+                    elog::info("server", format!("GLM backend preflight passed: live_profiles={live}"));
                 } else {
                     // GLM is an optional backend inside the Anthropic service. Its cold roster or
                     // outage must not take unrelated Claude traffic out of readiness.
-                    eprintln!(
-                        "GLM backend has no authenticated profile; exact GLM aliases fail closed"
+                    elog::warn(
+                        "server",
+                        "GLM backend has no authenticated profile; exact GLM aliases fail closed",
                     );
                 }
                 tokio::spawn(poller::glm_maintenance_loop(gateway.clone()));
@@ -1483,7 +1497,10 @@ async fn serve() -> Result<()> {
                 // Do not render the error: proxy parsing failures may embed credentialed egress.
                 // Keep the dispatcher present with zero capacity: removing it here would let an
                 // exact GLM alias fall through into the unrelated Claude pool.
-                eprintln!("GLM backend initialization failed; exact GLM aliases fail closed");
+                elog::error(
+                    "server",
+                    "GLM backend initialization failed; exact GLM aliases fail closed",
+                );
                 let gateway = Arc::new(forward::glm::GlmGateway::new_degraded(
                     config,
                     Some(calibration_store),
@@ -1506,19 +1523,22 @@ async fn serve() -> Result<()> {
         metrics.clone(),
     )?);
     if pricing_shadow_active {
-        eprintln!(
-            "pricing shadow: enabled sample={}bp queue={} workers={} timeout={}ms max_age={}s rate={}/s burst={} db_readers={}",
-            s.proxy.pricing_shadow.sample_bp(),
-            s.proxy.pricing_shadow.queue_capacity(),
-            s.proxy.pricing_shadow.worker_concurrency(),
-            s.proxy.pricing_shadow.timeout_ms(),
-            s.proxy.pricing_shadow.max_queue_age_secs(),
-            s.proxy.pricing_shadow.rate_per_sec(),
-            s.proxy.pricing_shadow.rate_burst(),
-            s.proxy.pricing_shadow.db_read_connections(),
+        elog::info(
+            "server",
+            format!(
+                "pricing shadow: enabled sample={}bp queue={} workers={} timeout={}ms max_age={}s rate={}/s burst={} db_readers={}",
+                s.proxy.pricing_shadow.sample_bp(),
+                s.proxy.pricing_shadow.queue_capacity(),
+                s.proxy.pricing_shadow.worker_concurrency(),
+                s.proxy.pricing_shadow.timeout_ms(),
+                s.proxy.pricing_shadow.max_queue_age_secs(),
+                s.proxy.pricing_shadow.rate_per_sec(),
+                s.proxy.pricing_shadow.rate_burst(),
+                s.proxy.pricing_shadow.db_read_connections(),
+            ),
         );
     } else {
-        eprintln!("pricing shadow: disabled (default-off)");
+        elog::info("server", "pricing shadow: disabled (default-off)");
     }
     let app = AppState {
         provider: s.provider,
@@ -1556,11 +1576,12 @@ async fn serve() -> Result<()> {
         0
     };
     if restored > 0 {
-        eprintln!("восстановлено состояние пула: {restored} подписок");
+        elog::info("server", format!("восстановлено состояние пула: {restored} подписок"));
     }
     if repaired_calibrations > 0 {
-        eprintln!(
-            "pool calibration: quarantined {repaired_calibrations} implausible persisted estimate(s)"
+        elog::info(
+            "server",
+            format!("pool calibration: quarantined {repaired_calibrations} implausible persisted estimate(s)"),
         );
     }
     let dead_restored = health_rows
@@ -1571,7 +1592,10 @@ async fn serve() -> Result<()> {
         app.pool.import_health(health_rows);
     }
     if dead_restored > 0 {
-        eprintln!("восстановлено auth-health: {dead_restored} мёртвых подписок (вне ротации)");
+        elog::info(
+            "server",
+            format!("восстановлено auth-health: {dead_restored} мёртвых подписок (вне ротации)"),
+        );
     }
     if let Some(owner) = owner.clone() {
         tokio::spawn(poller::owner_heartbeat_loop(
@@ -1630,7 +1654,7 @@ async fn serve() -> Result<()> {
                 owner.clone(),
                 poke.clone(),
             ));
-            eprintln!("поллер лимитов: событийный (liveness + post-turn calibration)");
+            elog::info("server", "поллер лимитов: событийный (liveness + post-turn calibration)");
         }
         // Коллектор истории метрик: снапшоты агрегата (спрос/предложение/headroom) в отдельную metrics.db.
         let mdir = std::path::Path::new(&s.db_path)
@@ -1643,32 +1667,36 @@ async fn serve() -> Result<()> {
             metrics_db,
             METRICS_RETENTION_DAYS,
         ));
-        eprintln!(
-            "коллектор истории: metrics.db (снапшот/60с, retention {METRICS_RETENTION_DAYS}д)"
+        elog::info(
+            "server",
+            format!("коллектор истории: metrics.db (снапшот/60с, retention {METRICS_RETENTION_DAYS}д)"),
         );
     }
     if s.proxy.api_keys.is_empty() {
         if s.proxy.trust_loopback {
-            eprintln!(
-                "⚠️  CLAUDE_API_KEYS не заданы — админ ТОЛЬКО с loopback (bind {})",
-                s.bind
+            elog::warn(
+                "server",
+                format!("CLAUDE_API_KEYS не заданы — админ ТОЛЬКО с loopback (bind {})", s.bind),
             );
         } else {
-            eprintln!(
-                "🛑 CLAUDE_API_KEYS не заданы, а bind {} НЕ loopback — сервер ОТКЛОНЯЕТ все \
-                       запросы (за реверс-прокси peer виден как 127.0.0.1). Задай CLAUDE_API_KEYS.",
-                s.bind
+            elog::error(
+                "server",
+                format!("CLAUDE_API_KEYS не заданы, а bind {} НЕ loopback — сервер ОТКЛОНЯЕТ все \
+                       запросы (за реверс-прокси peer виден как 127.0.0.1). Задай CLAUDE_API_KEYS.", s.bind),
             );
         }
     }
 
     let listener = tokio::net::TcpListener::bind(&s.bind).await?;
-    eprintln!(
-        "claude-api слушает http://{}  (provider {}, подписок: {n}, апстрим {}, реестр {})",
-        s.bind,
-        s.provider.as_str(),
-        s.proxy.upstream,
-        authority.label()
+    elog::info(
+        "server",
+        format!(
+            "claude-api слушает http://{}  (provider {}, подписок: {n}, апстрим {}, реестр {})",
+            s.bind,
+            s.provider.as_str(),
+            s.proxy.upstream,
+            authority.label()
+        ),
     );
     // Graceful shutdown: сначала снимаем readiness и даём балансировщику убрать инстанс, затем axum
     // дренирует in-flight стримы. Общий deadline включает propagation-delay, дренаж и billing FIFO-flush.
@@ -1683,9 +1711,9 @@ async fn serve() -> Result<()> {
         let shutdown = async move {
             shutdown_signal().await;
             shutdown_accepting.store(false, Ordering::Release);
-            eprintln!(
-                "graceful shutdown: readiness снята, жду {}с перед дренажем",
-                readiness_delay.as_secs()
+            elog::info(
+                "server",
+                format!("graceful shutdown: readiness снята, жду {}с перед дренажем", readiness_delay.as_secs()),
             );
             let _ = shutdown_started_tx.send(());
             tokio::time::sleep(readiness_delay).await;
@@ -1712,15 +1740,18 @@ async fn serve() -> Result<()> {
         }
     };
     if forced_stream_cut {
-        eprintln!(
-            "⚠ graceful shutdown: deadline {}с исчерпан — принудительно обрываю оставшиеся стримы",
-            s.drain_deadline_secs
+        elog::warn(
+            "server",
+            format!(
+                "graceful shutdown: deadline {}с исчерпан — принудительно обрываю оставшиеся стримы",
+                s.drain_deadline_secs
+            ),
         );
     } else if shutdown_deadline.is_some() {
-        eprintln!("graceful shutdown: дренаж стримов завершён");
+        elog::info("server", "graceful shutdown: дренаж стримов завершён");
     }
     if let Some(codex) = &flush_app.codex {
-        eprintln!("graceful shutdown: жду Codex settlement tasks");
+        elog::info("server", "graceful shutdown: жду Codex settlement tasks");
         codex.shutdown_until(shutdown_deadline).await;
     }
     if let Some(gemini) = &flush_app.gemini {
@@ -1742,7 +1773,7 @@ async fn serve() -> Result<()> {
     if let Some(pricing_shadow) = &flush_app.pricing_shadow {
         pricing_shadow.shutdown_until(shutdown_deadline).await;
     }
-    eprintln!("graceful shutdown: дренирую очередь биллинга + флаш пула");
+    elog::info("server", "graceful shutdown: дренирую очередь биллинга + флаш пула");
     // Завершённые/оборванные стримы поставили settle в очередь DB-актора. Даже после deadline ждём
     // обязательный FIFO-барьер: ограничение дренажа не должно превращаться в потерянную выручку.
     if let Some(b) = &flush_app.billing {
@@ -1762,8 +1793,9 @@ async fn serve() -> Result<()> {
             }
         };
         if !flushed_in_deadline {
-            eprintln!(
-                "⚠ graceful shutdown: billing flush не уложился в deadline; продолжаю обязательный flush"
+            elog::warn(
+                "server",
+                "graceful shutdown: billing flush не уложился в deadline; продолжаю обязательный flush",
             );
             // Never convert a slow money-writer into lost revenue by exiting on a local timeout.
             b.flush()
@@ -1775,7 +1807,7 @@ async fn serve() -> Result<()> {
         if let Err(e) =
             poller::persist_state_cas(&flush_app, &flush_authority, flush_owner.as_ref(), 8).await
         {
-            eprintln!("⚠ финальный флаш не удался после CAS retry: {e}");
+            elog::error("server", format!("финальный флаш не удался после CAS retry: {e}"));
         }
     }
     drop(instance_lock);
@@ -1794,7 +1826,10 @@ async fn shutdown_signal() {
             Ok(mut s) => {
                 s.recv().await;
             }
-            Err(_) => std::future::pending::<()>().await,
+            Err(e) => {
+                elog::error("server", format!("SIGTERM handler unavailable: {e}"));
+                std::future::pending::<()>().await
+            }
         }
     };
     #[cfg(not(unix))]
@@ -1811,12 +1846,13 @@ fn spawn_pre_drain_signal(accepting: Arc<AtomicBool>) {
             Ok(mut signal) => {
                 if signal.recv().await.is_some() {
                     accepting.store(false, Ordering::Release);
-                    eprintln!(
-                        "pre-drain: readiness снята по SIGUSR1; listener остаётся для in-flight"
+                    elog::info(
+                        "server",
+                        "pre-drain: readiness снята по SIGUSR1; listener остаётся для in-flight",
                     );
                 }
             }
-            Err(e) => eprintln!("⚠ SIGUSR1 pre-drain handler unavailable: {e}"),
+            Err(e) => elog::error("server", format!("SIGUSR1 pre-drain handler unavailable: {e}")),
         }
     });
 }
@@ -1835,7 +1871,7 @@ fn spawn_codex_reconcile_signal(gateway: Arc<forward::CodexGateway>) {
                     gateway.probe_health().await;
                 }
             }
-            Err(e) => eprintln!("⚠ SIGUSR2 Codex reconcile handler unavailable: {e}"),
+            Err(e) => elog::error("server", format!("SIGUSR2 Codex reconcile handler unavailable: {e}")),
         }
     });
 }

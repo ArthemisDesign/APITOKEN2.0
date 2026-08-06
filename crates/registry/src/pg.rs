@@ -3499,7 +3499,7 @@ impl PgStore {
                         &[&id, &state, &message, &next_attempt, &ts],
                     );
                     if state == "failed" {
-                        eprintln!("billing outbox request {id} moved to failed: {message}");
+                        elog::error("registry", format!("billing outbox request {id} moved to failed: {message}"));
                     }
                 }
             }

@@ -435,32 +435,27 @@ async fn main() -> Result<()> {
     } else {
         "set"
     };
-    eprintln!(
-        "authbot (Rust) запущен: @{uname} admin={admin_state} users={users} offers={offers} db={}",
-        state_db()
-    );
+    elog::info("authbot", format!("authbot (Rust) запущен: @{uname} admin={admin_state} users={users} offers={offers} db={}", state_db()));
     if recovered > 0 {
-        eprintln!("authbot: восстановлено прерванных Claude handoff: {recovered}");
+        elog::info("authbot", format!("authbot: восстановлено прерванных Claude handoff: {recovered}"));
     }
     if recovered_codex > 0 {
-        eprintln!("authbot: восстановлено прерванных ChatGPT handoff: {recovered_codex}");
+        elog::info("authbot", format!("authbot: восстановлено прерванных ChatGPT handoff: {recovered_codex}"));
     }
     if recovered_glm > 0 {
-        eprintln!("authbot: восстановлено прерванных GLM handoff: {recovered_glm}");
+        elog::info("authbot", format!("authbot: восстановлено прерванных GLM handoff: {recovered_glm}"));
     }
     if recovered_gemini > 0 {
-        eprintln!("authbot: восстановлено устаревших Gemini handoff: {recovered_gemini}");
+        elog::info("authbot", format!("authbot: восстановлено устаревших Gemini handoff: {recovered_gemini}"));
     }
     if recovered_gemini_callbacks > 0 {
-        eprintln!(
-            "authbot: перезапущено прерванных Gemini OAuth callback: {recovered_gemini_callbacks}"
-        );
+        elog::info("authbot", format!("authbot: перезапущено прерванных Gemini OAuth callback: {recovered_gemini_callbacks}"));
     }
     if recovered_seller_jobs > 0 {
-        eprintln!("authbot: восстановлено активных seller jobs: {recovered_seller_jobs}");
+        elog::info("authbot", format!("authbot: восстановлено активных seller jobs: {recovered_seller_jobs}"));
     }
     if admin_state == "EMPTY" {
-        eprintln!("⚠️ AUTH_BOT_ADMIN пуст — админ не задан");
+        elog::warn("authbot", "AUTH_BOT_ADMIN пуст — админ не задан");
     }
 
     let proxy_admin_iproyal = if cfg.iproyal_key.is_empty() {
@@ -482,7 +477,7 @@ async fn main() -> Result<()> {
         gemini_runtime_url,
     )?;
     let mut proxy_admin_runtime = tokio::spawn(proxy_admin.run());
-    eprintln!("proxy-admin: loopback listener and lifecycle actor enabled");
+    elog::info("authbot", "proxy-admin: loopback listener and lifecycle actor enabled");
 
     let mut gemini_callback = if cfg.gemini_oauth.is_some() {
         let (oauth_bot, oauth_store, oauth_cfg) = (bot.clone(), store.clone(), cfg.clone());
@@ -490,19 +485,17 @@ async fn main() -> Result<()> {
             tokio::spawn(
                 async move { gemini_oauth::serve(oauth_bot, oauth_store, oauth_cfg).await },
             );
-        eprintln!("Gemini OAuth callback enabled");
+        elog::info("authbot", "Gemini OAuth callback enabled");
         let (sweep_bot, sweep_store, sweep_cfg) = (bot.clone(), store.clone(), cfg.clone());
         tokio::spawn(gemini_verification_sweep_loop(
             sweep_bot,
             sweep_store,
             sweep_cfg,
         ));
-        eprintln!(
-            "Gemini acceptance sweep enabled: recorded accounts are retried every 5 min for 24 h"
-        );
+        elog::info("authbot", "Gemini acceptance sweep enabled: recorded accounts are retried every 5 min for 24 h");
         Some(task)
     } else {
-        eprintln!("Gemini OAuth intake disabled: credentials are not configured");
+        elog::info("authbot", "Gemini OAuth intake disabled: credentials are not configured");
         None
     };
 
@@ -545,7 +538,7 @@ async fn main() -> Result<()> {
                 }
             }
             Err(e) => {
-                eprintln!("getUpdates err: {e}");
+                elog::error("authbot", format!("getUpdates err: {e}"));
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         }

@@ -57,10 +57,13 @@ pub(crate) async fn preflight(
             "unauthorized",
             "Invalid API credential.",
         ),
-        Err(_) => error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "auth_unavailable",
-            "Authentication is temporarily unavailable.",
-        ),
+        Err(e) => {
+            elog::error("server-auth", format!("router auth preflight resolve failed: {e:#}"));
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "auth_unavailable",
+                "Authentication is temporarily unavailable.",
+            )
+        }
     }
 }

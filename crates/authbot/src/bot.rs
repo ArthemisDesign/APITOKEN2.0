@@ -1597,11 +1597,8 @@ pub async fn on_message(
                             .await;
                     }
                     GeminiProxyRetry::Invalid => {
-                        eprintln!(
-                            "[gemini-proxy] chat={} rejected seller proxy input: {}",
-                            chat,
-                            proxy_input_fingerprint(text)
-                        );
+                        elog::error("authbot", format!("[gemini-proxy] chat={} rejected seller proxy input: {}", chat,
+                            proxy_input_fingerprint(text)));
                         let _ = bot
                             .send_kb(
                                 chat,
@@ -1672,11 +1669,8 @@ pub async fn on_message(
                         prepare_kimi_account(bot, store, cfg, chat, None, rec.hproxy_order).await;
                     }
                     KimiProxyInput::Invalid => {
-                        eprintln!(
-                            "[kimi-proxy] chat={} rejected seller proxy input: {}",
-                            chat,
-                            proxy_input_fingerprint(text)
-                        );
+                        elog::error("authbot", format!("[kimi-proxy] chat={} rejected seller proxy input: {}", chat,
+                            proxy_input_fingerprint(text)));
                         let _ = bot
                             .send_kb(
                                 chat,
@@ -1725,11 +1719,8 @@ pub async fn on_message(
                         prepare_glm_account(bot, store, cfg, chat, None, rec.hproxy_order).await;
                     }
                     GlmProxyInput::Invalid => {
-                        eprintln!(
-                            "[glm-proxy] chat={} rejected seller proxy input: {}",
-                            chat,
-                            proxy_input_fingerprint(text)
-                        );
+                        elog::error("authbot", format!("[glm-proxy] chat={} rejected seller proxy input: {}", chat,
+                            proxy_input_fingerprint(text)));
                         let _ = bot
                             .send_kb(
                                 chat,
@@ -1857,15 +1848,12 @@ async fn restart_gemini_oauth_attempt(
             oauth.abort_inflight(chat);
         }
         drop(_terminal_guard);
-        eprintln!(
-            "[gemini-oauth] chat={} restart {} but could not recover the sealed or pinned egress",
-            chat,
+        elog::error("authbot", format!("[gemini-oauth] chat={} restart {} but could not recover the sealed or pinned egress", chat,
             if fenced {
                 "fenced the old generation"
             } else {
                 "was rejected"
-            }
-        );
+            }));
         if fenced {
             let replaceable = job_accepts_seller_proxy(store, &job.reference, user.hproxy_order);
             let _ = bot
@@ -2509,11 +2497,8 @@ async fn prepare_kimi_account(
     let effective_proxy = match kimi_credential::normalize_proxy_url(effective_proxy) {
         Ok(proxy) => proxy,
         Err(_) => {
-            eprintln!(
-                "[kimi-proxy] chat={} canonicalisation rejected proxy: {}",
-                chat,
-                proxy_input_fingerprint(effective_proxy)
-            );
+            elog::error("authbot", format!("[kimi-proxy] chat={} canonicalisation rejected proxy: {}", chat,
+                proxy_input_fingerprint(effective_proxy)));
             let (retry_proxy, retry_order) = if replaceable_proxy {
                 ("", 0)
             } else {
@@ -2609,11 +2594,8 @@ async fn prepare_gemini_account(
     let effective_proxy = match gemini_oauth::normalize_proxy_url(effective_proxy) {
         Ok(proxy) => proxy,
         Err(_) => {
-            eprintln!(
-                "[gemini-proxy] chat={} canonicalisation rejected proxy: {}",
-                chat,
-                proxy_input_fingerprint(effective_proxy)
-            );
+            elog::error("authbot", format!("[gemini-proxy] chat={} canonicalisation rejected proxy: {}", chat,
+                proxy_input_fingerprint(effective_proxy)));
             let (retry_proxy, retry_order) = if replaceable_proxy {
                 ("", 0)
             } else {
@@ -3006,11 +2988,8 @@ async fn prepare_glm_account(
     let effective_proxy = match glm_credential::normalize_proxy_url(effective_proxy) {
         Ok(proxy) => proxy,
         Err(_) => {
-            eprintln!(
-                "[glm-proxy] chat={} canonicalisation rejected proxy: {}",
-                chat,
-                proxy_input_fingerprint(effective_proxy)
-            );
+            elog::error("authbot", format!("[glm-proxy] chat={} canonicalisation rejected proxy: {}", chat,
+                proxy_input_fingerprint(effective_proxy)));
             let (retry_proxy, retry_order) = if replaceable_proxy {
                 ("", 0)
             } else {
@@ -3382,21 +3361,15 @@ async fn handle_glm_key_message(
         match glm_key::probe_quota(base_url, key.as_str(), &proxy).await {
             Ok(glm_key::QuotaProbe::Valid(snapshot)) => break snapshot,
             Ok(glm_key::QuotaProbe::Invalid) => {
-                eprintln!(
-                    "[glm-key] chat={} provider rejected key: {}",
-                    chat,
-                    glm_key_fingerprint(key.as_str())
-                );
+                elog::error("authbot", format!("[glm-key] chat={} provider rejected key: {}", chat,
+                    glm_key_fingerprint(key.as_str())));
                 glm_back_to_ready(bot, store, chat, &expected_job, GLM_KEY_REJECTED).await;
                 return;
             }
             Err(_) => {
                 attempt += 1;
                 if attempt >= 3 {
-                    eprintln!(
-                        "[glm-key] chat={} quota probe transport failed after {attempt} attempts",
-                        chat
-                    );
+                    elog::error("authbot", format!("[glm-key] chat={} quota probe transport failed after {attempt} attempts", chat));
                     glm_back_to_ready(bot, store, chat, &expected_job, GLM_VALIDATION_TRANSPORT)
                         .await;
                     return;
@@ -3411,18 +3384,12 @@ async fn handle_glm_key_message(
     match glm_key::corroborate_plan(&snapshot, plan) {
         glm_key::PlanVerdict::Confirmed(_) => {}
         glm_key::PlanVerdict::PlanMismatch { .. } => {
-            eprintln!(
-                "[glm-key] chat={} declared plan contradicts the observed quota window",
-                chat
-            );
+            elog::error("authbot", format!("[glm-key] chat={} declared plan contradicts the observed quota window", chat));
             glm_back_to_ready(bot, store, chat, &expected_job, GLM_PLAN_MISMATCH).await;
             return;
         }
         glm_key::PlanVerdict::UnsupportedPlanShape => {
-            eprintln!(
-                "[glm-key] chat={} quota shape is not an individual credits plan",
-                chat
-            );
+            elog::error("authbot", format!("[glm-key] chat={} quota shape is not an individual credits plan", chat));
             glm_back_to_ready(bot, store, chat, &expected_job, GLM_PLAN_SHAPE).await;
             return;
         }
@@ -3438,11 +3405,8 @@ async fn handle_glm_key_message(
     match verdict {
         Ok(Ok(glm_key::KeyVerdict::Valid)) => {}
         Ok(Ok(glm_key::KeyVerdict::Invalid(reason))) => {
-            eprintln!(
-                "[glm-key] chat={} admission refused key: class={reason:?} {}",
-                chat,
-                glm_key_fingerprint(key.as_str())
-            );
+            elog::error("authbot", format!("[glm-key] chat={} admission refused key: class={reason:?} {}", chat,
+                glm_key_fingerprint(key.as_str())));
             glm_back_to_ready(
                 bot,
                 store,
@@ -3462,10 +3426,7 @@ async fn handle_glm_key_message(
             return;
         }
         Ok(Err(_)) | Err(_) => {
-            eprintln!(
-                "[glm-key] chat={} admission generation transport ambiguous; paid call not replayed",
-                chat
-            );
+            elog::error("authbot", format!("[glm-key] chat={} admission generation transport ambiguous; paid call not replayed", chat));
             glm_back_to_ready(bot, store, chat, &expected_job, GLM_VALIDATION_TRANSPORT).await;
             return;
         }
