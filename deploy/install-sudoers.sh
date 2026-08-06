@@ -357,6 +357,7 @@ require_permitted 'candidate ownership' /usr/bin/chown -R root:root -- "/var/lib
 require_permitted 'candidate removal' /usr/bin/rm -rf --one-file-system -- "/var/lib/apitoken/watchdog/candidates/$sample_sha"
 require_permitted 'engine release removal' /usr/bin/rm -rf --one-file-system -- "/srv/claude-api/releases/$sample_sha"
 require_permitted 'commerce release removal' /usr/bin/rm -rf --one-file-system -- "/opt/apitoken/releases/$sample_sha"
+require_permitted 'crm release removal' /usr/bin/rm -rf --one-file-system -- "/opt/apitoken/crm-releases/$sample_sha"
 require_permitted 'caddy validation' /usr/bin/caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
 require_permitted 'OpenAI unit probe' /usr/bin/test -f /etc/systemd/system/claude-api-openai.service
 require_permitted 'OpenAI slot-template probe' \

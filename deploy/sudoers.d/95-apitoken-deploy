@@ -70,12 +70,15 @@ Cmnd_Alias APITOKEN_CANDIDATES = \
     /usr/bin/rm -f -- /var/lib/apitoken/watchdog/[0-9a-f]*.tested
 
 # Immutable release retention. Releases are finalized read-only, so write bits are restored before
-# removal. Both roots are fixed; the trailing SHA pattern prevents aiming at a parent directory.
+# removal. All three roots are fixed; the trailing SHA pattern prevents aiming at a parent directory.
+# The CRM root also matches its `crm-<sha>` lane names, which start with a hex character.
 Cmnd_Alias APITOKEN_RELEASES = \
     /usr/bin/chmod -R u+w -- /srv/claude-api/releases/[0-9a-f]*, \
     /usr/bin/chmod -R u+w -- /opt/apitoken/releases/[0-9a-f]*, \
+    /usr/bin/chmod -R u+w -- /opt/apitoken/crm-releases/[0-9a-f]*, \
     /usr/bin/rm -rf --one-file-system -- /srv/claude-api/releases/[0-9a-f]*, \
-    /usr/bin/rm -rf --one-file-system -- /opt/apitoken/releases/[0-9a-f]*
+    /usr/bin/rm -rf --one-file-system -- /opt/apitoken/releases/[0-9a-f]*, \
+    /usr/bin/rm -rf --one-file-system -- /opt/apitoken/crm-releases/[0-9a-f]*
 
 # Candidate build/test execution as the unprivileged CI account. The wildcard is deliberate: the
 # test gate runs arbitrary package scripts from the candidate, and enumerating them is neither

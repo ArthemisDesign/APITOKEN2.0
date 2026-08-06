@@ -3387,6 +3387,11 @@ grep -Fq 'prune_expired_candidates' "$ROOT/deploy/watchdog.sh"
 # Retention, retry, and post-admission recovery must stay wired into the watchdog itself.
 [[ $(grep -Fc 'prune_expired_releases_best_effort' "$ROOT/deploy/watchdog.sh") -ge 3 ]] \
   || wd_die 'combined fail-local release retention is not wired into both watchdog paths'
+grep -Fq '/usr/bin/rm -rf --one-file-system -- /opt/apitoken/crm-releases/[0-9a-f]*' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'crm release retention deletion is denied by sudo policy'
+grep -Fq "require_permitted 'crm release removal'" "$ROOT/deploy/install-sudoers.sh" \
+  || wd_die 'the sudo policy self-check never verifies crm release removal'
 grep -Fq 'prune_expired_dumps' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'pre-deploy dump retention is not wired into the watchdog cycle'
 grep -Fq 'wd_retry 3 5 fetch_source_once' "$ROOT/deploy/watchdog.sh" \
