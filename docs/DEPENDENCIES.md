@@ -298,10 +298,15 @@ is only what is needed to walk the relationships when making changes:
   environment, credential, binary, or network access; it did not rerun credential selection. Selector
   hardening SHA `6629ecd7b3725bcd7306ef7a1dc8675ef9160a43` resolves the assignment through the active policy's
   `owner_type=service`/`owner_id=crm-parsing`, while retaining canonical meter-only resolution, the OpenAI
-  master switch, and exactly-one-active-unexpired-key fencing. Its engine and trusted-host checks were GREEN,
-  but the overall delivery stopped after inspection because the GitHub bridge rejected the digit in
-  `deploy/gpt-image-2-public-preflight`; therefore production execution of the corrected selector is not yet
-  proven. Paid execution requires a distinct new producer-SHA fence
+  master switch, and exactly-one-active-unexpired-key fencing. Corrective deploy SHA
+  `b0c67351bb25437316afb61d18cd4462c57ef27b` made the lowercase `deploy/*` status allowlist accept digits
+  and is watchdog-GREEN; it performed no image request. The separate
+  `deploy/gpt-image-2-public-preflight-v2-gate.sh` is pinned to producer
+  `6629ecd7b3725bcd7306ef7a1dc8675ef9160a43`, uses the fresh
+  `gpt-image-2-public-preflight-v2` root, inherits only the active OpenAI slot's PostgreSQL DSN, and runs only
+  `openai-image-public-smoke --preflight-only`. It accepts exactly a one-file `preflight_success` journal with
+  both dispatch flags false and null request identities. Until that delivery is watchdog-GREEN, production
+  execution of the corrected selector is not proven. Paid execution requires a distinct new producer-SHA fence
   and fresh successful preflight rather than trusting this withdrawn artifact. The direct OpenAI plane and header-gated Combined
   bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,

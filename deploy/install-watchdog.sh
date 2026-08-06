@@ -236,6 +236,8 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-smoke-gate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/gpt-image-2-public-preflight-gate.sh" \
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-preflight-gate.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/gpt-image-2-public-preflight-v2-gate.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-preflight-v2-gate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-test-db.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-test-db
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-backup.sh" \

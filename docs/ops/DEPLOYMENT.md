@@ -203,9 +203,16 @@ owner instead of comparing the external service ID with opaque `account.id`, whi
 meter-only resolution, the OpenAI master switch and the single active unexpired-key requirement. Engine and
 trusted-host checks passed, but its overall delivery was RED after the inspector because
 `deploy/watchdog-github.sh` rejected the digit in status context `deploy/gpt-image-2-public-preflight`.
-Consequently the corrected selector has not yet executed in production. A paid mode requires another new
-producer/root and a fresh successful free
-preflight; it cannot promote or replay this artifact. Catalog, router, OpenKeys, site,
+Corrective deploy SHA `b0c67351bb25437316afb61d18cd4462c57ef27b` is watchdog-GREEN and now permits lowercase
+numbered `deploy/*` contexts; it performed no image request. A separate one-shot
+`deploy/gpt-image-2-public-preflight-v2-gate.sh` is pinned to the deployed selector producer
+`6629ecd7b3725bcd7306ef7a1dc8675ef9160a43` and the fresh
+`/var/lib/apitoken/watchdog/gpt-image-2-public-preflight-v2/<producer-sha>` fence. It inherits only the
+PostgreSQL DSN from an active OpenAI slot and executes only `openai-image-public-smoke --preflight-only`;
+success requires the sole private journal to be `preflight_success` with both dispatch flags false and null
+request identities. Until this new delivery is watchdog-GREEN, the corrected selector has not executed in
+production. A paid mode requires another new producer/root and a fresh successful free preflight; it cannot
+promote or replay this artifact. Catalog, router, OpenKeys, site,
 admin and public-documentation publication remains forbidden until a later exact production generation+edit
 gate and overall watchdog status are GREEN.
 

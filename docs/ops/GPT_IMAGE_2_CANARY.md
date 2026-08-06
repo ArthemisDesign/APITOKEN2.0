@@ -215,9 +215,16 @@ where the old attempt stopped but does not rerun the selector or prove its root 
 external service ID. It retains canonical service/meter-only resolution, the OpenAI master switch, and
 exactly-one-active-unexpired-key checks. Engine and trusted-host validation passed, but the overall delivery
 stopped after inspection because the GitHub status bridge rejected the digit in context
-`deploy/gpt-image-2-public-preflight`; the corrected selector therefore has not yet run in production. Paid
-execution must use another
-new producer/root and repeat a fresh successful free preflight before changing `generation_dispatched`
+`deploy/gpt-image-2-public-preflight`. Corrective deploy SHA
+`b0c67351bb25437316afb61d18cd4462c57ef27b` is watchdog-GREEN, permits lowercase numbered `deploy/*`
+contexts, and performed no image request. The next free attempt uses the distinct
+`deploy/gpt-image-2-public-preflight-v2-gate.sh`, producer
+`6629ecd7b3725bcd7306ef7a1dc8675ef9160a43`, and fresh
+`gpt-image-2-public-preflight-v2` root. It inherits only the PostgreSQL DSN from the active OpenAI slot, runs
+only `openai-image-public-smoke --preflight-only`, and accepts exactly a sole `preflight_success` journal with
+false dispatch flags and null request identities. The corrected selector remains unproven in production until
+that delivery is watchdog-GREEN. Paid execution must use another new producer/root and repeat a fresh
+successful free preflight before changing `generation_dispatched`
 immediately ahead of the first image POST. This withdrawal does not authorize the paid gate or publication.
 
 The intended one-shot contract remains:

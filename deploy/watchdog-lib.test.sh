@@ -190,7 +190,8 @@ grep -Fq -- \
 commit_status_context_re=$(sed -n "s/^commit_status_context_re='\\(.*\\)'$/\\1/p" \
   "$ROOT/deploy/watchdog-github.sh")
 [[ -n $commit_status_context_re ]] || wd_die 'GitHub commit-status context validator is missing'
-for valid_context in deploy/watchdog deploy/gpt-image-2-public-preflight; do
+for valid_context in deploy/watchdog deploy/gpt-image-2-public-preflight \
+  deploy/gpt-image-2-public-preflight-v2; do
   [[ $valid_context =~ $commit_status_context_re ]] \
     || wd_die "valid GitHub commit-status context was rejected: $valid_context"
 done
@@ -1159,6 +1160,7 @@ for controller_definition in \
   deploy/gpt-image-2-live-gate.sh \
   deploy/gpt-image-2-public-smoke-gate.sh \
   deploy/gpt-image-2-public-preflight-gate.sh \
+  deploy/gpt-image-2-public-preflight-v2-gate.sh \
   deploy/watchdog-infrastructure.sh \
   deploy/deploy.sh \
   deploy/authbot-runtime-state.sh \
@@ -4416,6 +4418,63 @@ grep -Fq 'CURRENT_PHASE_BEFORE_FAILURE=$public_image_preflight_summary' "$ROOT/d
 grep -Fq 'github_status success deploy/gpt-image-2-public-preflight "$public_image_preflight_summary"' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 public preflight stage has no sanitized GREEN status'
+
+# The successor free gate gets a fresh root and executes only the no-image preflight on the exact
+# deployed selector SHA. Its own file is the sole trigger; historical inspectors remain immutable.
+wd_path_is_gpt_image_2_public_preflight_v2_gate_trigger \
+  deploy/gpt-image-2-public-preflight-v2-gate.sh \
+  || wd_die 'GPT Image 2 public preflight v2 file does not trigger the one-shot gate'
+if wd_path_is_gpt_image_2_public_preflight_v2_gate_trigger deploy/watchdog.sh; then
+  wd_die 'ordinary controller updates trigger GPT Image 2 public preflight v2'
+fi
+grep -Fq '"$ROOT/deploy/gpt-image-2-public-preflight-v2-gate.sh"' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'GPT Image 2 public preflight v2 is not installed as a fixed controller'
+grep -Fxq 'PRODUCER_SHA=6629ecd7b3725bcd7306ef7a1dc8675ef9160a43' \
+  "$ROOT/deploy/gpt-image-2-public-preflight-v2-gate.sh" \
+  || wd_die 'GPT Image 2 public preflight v2 is not pinned to the corrected selector producer'
+grep -Fxq 'EVIDENCE_PARENT=$STATE_ROOT/gpt-image-2-public-preflight-v2' \
+  "$ROOT/deploy/gpt-image-2-public-preflight-v2-gate.sh" \
+  || wd_die 'GPT Image 2 public preflight v2 reuses a historical evidence root'
+grep -Fq '[[ $# -eq 1 ]]' "$ROOT/deploy/gpt-image-2-public-preflight-v2-gate.sh" \
+  || wd_die 'GPT Image 2 public preflight v2 accepts an unbounded invocation'
+grep -Fq '"$binary" openai-image-public-smoke --output "$OUTPUT" --preflight-only' \
+  "$ROOT/deploy/gpt-image-2-public-preflight-v2-gate.sh" \
+  || wd_die 'GPT Image 2 public preflight v2 does not run the exact no-image CLI mode'
+! grep -Fq -- '--execute' "$ROOT/deploy/gpt-image-2-public-preflight-v2-gate.sh" \
+  || wd_die 'GPT Image 2 public preflight v2 can dispatch an image'
+grep -Fq '.generation_dispatched == false and .edit_dispatched == false' \
+  "$ROOT/deploy/gpt-image-2-public-preflight-v2-gate.sh" \
+  || wd_die 'GPT Image 2 public preflight v2 accepts image dispatch flags'
+grep -Fq '.generation_request_id == null and .edit_request_id == null' \
+  "$ROOT/deploy/gpt-image-2-public-preflight-v2-gate.sh" \
+  || wd_die 'GPT Image 2 public preflight v2 accepts image request identities'
+grep -Fq '[[ ${#entries[@]} -eq 1 && ${entries[0]} == journal.json ]]' \
+  "$ROOT/deploy/gpt-image-2-public-preflight-v2-gate.sh" \
+  || wd_die 'GPT Image 2 public preflight v2 accepts image/evidence artifacts'
+! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc|https?://' \
+  "$ROOT/deploy/gpt-image-2-public-preflight-v2-gate.sh" \
+  || wd_die 'GPT Image 2 public preflight v2 contains a third-party or direct network origin'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-preflight-v2-gate.sh 6629ecd7b3725bcd7306ef7a1dc8675ef9160a43' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'GPT Image 2 public preflight v2 lacks an exact-producer sudo bridge'
+grep -A2 -F "require_permitted 'GPT Image 2 exact-producer public preflight v2 gate'" \
+  "$ROOT/deploy/install-sudoers.sh" \
+  | grep -Fq '6629ecd7b3725bcd7306ef7a1dc8675ef9160a43' \
+  || wd_die 'GPT Image 2 public preflight v2 sudo self-check is not aligned with policy'
+grep -Fxq 'GPT_IMAGE_2_PUBLIC_PREFLIGHT_V2_PRODUCER_SHA=6629ecd7b3725bcd7306ef7a1dc8675ef9160a43' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog does not pin the GPT Image 2 public preflight v2 producer'
+preflight_v2_gate_line=$(grep -nF '"$GPT_IMAGE_2_PUBLIC_PREFLIGHT_V2_PRODUCER_SHA")' \
+  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+[[ -n $preflight_v2_gate_line && -n $processed_line && $preflight_v2_gate_line -lt $processed_line ]] \
+  || wd_die 'GPT Image 2 public preflight v2 does not run before processed/green'
+grep -Fq 'CURRENT_PHASE_BEFORE_FAILURE=$public_image_preflight_v2_summary' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'GPT Image 2 public preflight v2 result is absent from a later RED status'
+grep -Fq 'github_status success deploy/gpt-image-2-public-preflight-v2' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'GPT Image 2 public preflight v2 has no sanitized GREEN status'
 
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'
