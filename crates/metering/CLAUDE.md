@@ -28,6 +28,11 @@
   alias generation, immutable schedule ID/epoch and typed reserve modifiers live here; access still
   requires a separate product catalog and account policy. An unknown/historical ID is not turned into
   an invented canonical identity, and legacy conservative pricing remains a separate contract.
+  The one audited exception is the live dated id `claude-haiku-4-5-20251001` (the id upstream lists
+  and the router catalog publishes): `anthropic_tariff_capability_at` maps it EXACTLY to the bare
+  canonical `claude-haiku-4-5` (the router rewrites the alias to the dated id on the wire, so the
+  engine sees the dated id). There is no generic date-suffix stripping — any other dated/historical
+  id still returns the typed fallback.
 
 **Invariants (verify with tests):**
 - 1M tokens of any bucket = the exact official rate (test `prices_exact_per_million`).

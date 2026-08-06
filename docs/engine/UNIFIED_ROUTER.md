@@ -474,7 +474,14 @@ advertised as an alias only while it is globally unambiguous. If two planes publ
 the same alias, the router strips it from all conflicting entries and alias lookup
 returns 404; the namespaced IDs of both models remain executable, and their private
 native ID is still used for body rewrite and pricing preflight. Therefore a new model
-cannot silently hijack an existing alias through plane ordering. Each plane response
+cannot silently hijack an existing alias through plane ordering. Besides upstream
+aliases, the router publishes ONE router-side alias: `claude-haiku-4-5` for the
+upstream dated id `claude-haiku-4-5-20251001` (Anthropic lists haiku only with its
+date, unlike opus-5, so the site-documented bare name is injected here). Requests
+that arrive under the bare alias are rewritten to the dated native id before the
+plane is called — the engine admission canonicalizes the dated id back to
+`claude-haiku-4-5` (`crates/metering`), so both spellings settle identically.
+Each plane response
 is bounded by 4 MiB and 1,024 models; IDs and display names by 256 bytes with no
 control characters or surrounding whitespace; a duplicate namespaced ID makes the
 whole refresh malformed. An expired refresh has a separate per-plane singleflight:

@@ -723,6 +723,7 @@ async fn proxy_single(
     fast_body_alias: bool,
     body_permit: BodyAdmissionPermit,
 ) -> Response {
+    let mut rewrite_native_model = None;
     let lane = match catalog::namespace_lane(model) {
         Some(lane) => lane,
         None => {
@@ -739,10 +740,15 @@ async fn proxy_single(
                 return surface.catalog_unavailable();
             }
             match catalog::find(&entries, model) {
-                Some((namespace, _)) => match lane_for_namespace(namespace) {
-                    Some(lane) => lane,
-                    None => return surface.model_not_found(model),
-                },
+                Some((namespace, entry)) => {
+                    if entry.native_id != model {
+                        rewrite_native_model = Some(entry.native_id.clone());
+                    }
+                    match lane_for_namespace(namespace) {
+                        Some(lane) => lane,
+                        None => return surface.model_not_found(model),
+                    }
+                }
                 None => return surface.model_not_found(model),
             }
         }
@@ -766,6 +772,18 @@ async fn proxy_single(
             Ok(bytes) => Bytes::from(bytes),
             Err(_) => return surface.invalid("Invalid JSON in request body.", None),
         }
+    } else if let Some(native_model) = &rewrite_native_model {
+        value
+            .as_object_mut()
+            .expect("validated request object")
+            .insert(
+                "model".to_string(),
+                serde_json::Value::String(native_model.clone()),
+            );
+        match serde_json::to_vec(&value) {
+            Ok(bytes) => Bytes::from(bytes),
+            Err(_) => return surface.invalid("Invalid JSON in request body.", None),
+        }
     } else {
         bytes
     };
@@ -774,7 +792,7 @@ async fn proxy_single(
     // its admission permit into the outbound upload stream.
     drop(value);
     let origin = origin_for_lane(state, lane);
-    let request = if fast_compat {
+    let request = if fast_compat || rewrite_native_model.is_some() {
         request_from_parts(&parts, bytes, Some(body_permit))
     } else {
         Request::from_parts(parts, upload_body(bytes, body_permit))

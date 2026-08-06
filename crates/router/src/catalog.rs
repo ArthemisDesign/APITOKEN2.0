@@ -745,6 +745,14 @@ fn unique_plane_entries(entries: Vec<CatalogEntry>) -> ParseResult {
     }
 }
 
+fn anthropic_aliases(id: &str) -> Vec<String> {
+    let mut aliases = vec![id.to_string()];
+    if id == "claude-haiku-4-5-20251001" {
+        aliases.push("claude-haiku-4-5".to_string());
+    }
+    aliases
+}
+
 fn parse_anthropic(body: &Value) -> ParseResult {
     let models = body.get("data").and_then(Value::as_array).ok_or(())?;
     if models.len() > MAX_MODELS_PER_PLANE {
@@ -813,7 +821,7 @@ fn parse_anthropic(body: &Value) -> ParseResult {
                 Some(Ok(CatalogEntry {
                     id: namespaced_id,
                     native_id: id.clone(),
-                    aliases: vec![id.clone()],
+                    aliases: anthropic_aliases(&id),
                     display_name,
                     limits,
                     reasoning_efforts: Some(reasoning_efforts),
@@ -1067,6 +1075,26 @@ mod tests {
         assert_eq!(entries[0].structured_outputs, Some(true));
         assert_eq!(entries[0].reasoning, Some(true));
         assert_eq!(entries[0].streaming, Some(true));
+    }
+
+    #[test]
+    fn dated_haiku_entry_publishes_the_bare_alias() {
+        let body = serde_json::json!({
+            "data": [
+                {"type": "model", "id": "claude-haiku-4-5-20251001",
+                 "display_name": "Claude Haiku 4.5",
+                 "max_input_tokens": 200000, "max_tokens": 64000}
+            ],
+            "has_more": false
+        });
+        let entries = parse_anthropic(&body).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "anthropic/claude-haiku-4-5-20251001");
+        assert_eq!(entries[0].native_id, "claude-haiku-4-5-20251001");
+        assert_eq!(
+            entries[0].aliases,
+            ["claude-haiku-4-5-20251001", "claude-haiku-4-5"]
+        );
     }
 
     #[test]

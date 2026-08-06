@@ -226,6 +226,11 @@ pub fn anthropic_tariff_capability_at(
         return Err(TariffIdentityError::InvalidPricedTimestamp);
     }
 
+    let requested_model_id = match requested_model_id {
+        "claude-haiku-4-5-20251001" => "claude-haiku-4-5",
+        other => other,
+    };
+
     let canonical_model_id = [
         "claude-opus-4-8",
         "claude-opus-4-7",
@@ -1100,6 +1105,37 @@ mod tests {
                     };
                     assert_eq!(identity.effective_reserve_prices, expected, "{model}");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn dated_haiku_alias_maps_to_the_bare_canonical_identity() {
+        for fast in [false, true] {
+            for us_inference in [false, true] {
+                let modifiers = AnthropicAdmissionModifiers {
+                    speed: if fast {
+                        AnthropicSpeed::Fast
+                    } else {
+                        AnthropicSpeed::Standard
+                    },
+                    inference_geo: if us_inference {
+                        AnthropicInferenceGeo::Us
+                    } else {
+                        AnthropicInferenceGeo::Global
+                    },
+                };
+                let bare =
+                    anthropic_tariff_capability_at("claude-haiku-4-5", SONNET5_STD_START, modifiers)
+                        .unwrap();
+                let dated = anthropic_tariff_capability_at(
+                    "claude-haiku-4-5-20251001",
+                    SONNET5_STD_START,
+                    modifiers,
+                )
+                .unwrap();
+                assert_eq!(bare, dated);
+                assert_eq!(dated.canonical_model_id, "claude-haiku-4-5");
             }
         }
     }

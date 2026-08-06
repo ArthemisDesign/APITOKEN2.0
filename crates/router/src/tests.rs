@@ -2871,6 +2871,73 @@ async fn messages_alias_routes_via_cached_catalog() {
 }
 
 #[tokio::test]
+async fn messages_bare_haiku_alias_rewrites_to_the_dated_native_id() {
+    let (a, log_a) = chat_plane(ANTHROPIC_ROUTING_MODELS, "/v1/models").await;
+    let (o, log_o) = chat_plane(OPENAI_ROUTING_MODELS, "/v1/models").await;
+    let (g, log_g) = chat_plane(GEMINI_ROUTING_MODELS, "/v1beta/models").await;
+    let router = spawn(make_router(&a, &o, &g, Duration::ZERO)).await;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(format!("{router}/v1/messages"))
+        .header("x-api-key", "sk-pool-secret")
+        .body(r#"{"model":"claude-haiku-4-5","max_tokens":64,"messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let echoed: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(echoed["model"], "claude-haiku-4-5-20251001");
+    assert_eq!(echoed["max_tokens"], 64);
+
+    let response = client
+        .post(format!("{router}/v1/messages"))
+        .header("x-api-key", "sk-pool-secret")
+        .body(r#"{"model":"claude-haiku-4-5-20251001","max_tokens":64,"messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let echoed: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(echoed["model"], "claude-haiku-4-5-20251001");
+
+    let (la, lo, lg) = (
+        log_a.lock().unwrap().clone(),
+        log_o.lock().unwrap().clone(),
+        log_g.lock().unwrap().clone(),
+    );
+    let paths = |log: &SharedLog| {
+        log.lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.path.clone())
+            .collect::<Vec<_>>()
+    };
+    let (pa, po, pg) = (paths(&log_a), paths(&log_o), paths(&log_g));
+    assert!(pa.contains(&"/v1/models?limit=1000".to_string()), "{pa:?}");
+    assert!(po.contains(&"/v1/models".to_string()), "{po:?}");
+    assert!(
+        pg.contains(&"/v1beta/models?pageSize=1000".to_string()),
+        "{pg:?}"
+    );
+    assert_eq!(
+        pa.iter().filter(|p| *p == "/v1/messages").count(),
+        2,
+        "{pa:?}"
+    );
+    assert_eq!(
+        po.iter().filter(|p| *p == "/v1/messages").count(),
+        0,
+        "{po:?}"
+    );
+    assert_eq!(
+        pg.iter().filter(|p| *p == "/v1/messages").count(),
+        0,
+        "{pg:?}"
+    );
+}
+
+#[tokio::test]
 async fn messages_unknown_model_is_anthropic_shaped_404() {
     let (a, _) = chat_plane(ANTHROPIC_MODELS, "/v1/models").await;
     let (o, _) = chat_plane(OPENAI_MODELS, "/v1/models").await;
