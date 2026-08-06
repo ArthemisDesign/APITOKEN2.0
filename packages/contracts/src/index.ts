@@ -1339,6 +1339,22 @@ export const pricingReleaseActivationStageResponseV2Schema = z.object({
 export type PricingReleaseActivationStageResponseV2 =
   z.infer<typeof pricingReleaseActivationStageResponseV2Schema>;
 
+export const pricingReleaseActivationReconcileRequestV2Schema = z.object({
+  job_id: z.string().uuid(),
+  reason: pricingReleaseActivationReasonV2Schema,
+}).strict();
+export type PricingReleaseActivationReconcileRequestV2 =
+  z.infer<typeof pricingReleaseActivationReconcileRequestV2Schema>;
+
+export const pricingReleaseActivationReconcileResponseV2Schema = z.object({
+  job_id: z.string().uuid(),
+  activation_id: z.string().min(1),
+  result_digest: z.string(),
+  status: z.enum(["reconciled", "unchanged"]),
+}).strict();
+export type PricingReleaseActivationReconcileResponseV2 =
+  z.infer<typeof pricingReleaseActivationReconcileResponseV2Schema>;
+
 /**
  * Read-only Stage 8 capture producer and its explicit managed-commerce handoff. Integer fields in
  * the engine response are normalized to decimal strings because json-bigint may return either a

@@ -118,7 +118,10 @@ validated receipt. The persisted service-inventory digest is mandatory and must 
 fresh capture; old evidence rows with `NULL` are not staged. Raw identities never leave in
 a blocker/error artifact. The recovery expectation comes only from the durable cutover
 receipt, and the successor expectation only from the newest durable activation receipt; a
-successor (`activate_successor`) advances any exact active head to a newer prepared pair. Startup, migration, the Stage 8 collector, and worker polling do not stage an
+successor (`activate_successor`) advances any exact active head to a newer prepared pair. The
+protected `POST /v1/admin/pricing-release-activation-v2/reconcile` in `apps/api` repairs a lost
+ACK (committed engine CAS, dead job, no receipt) from the read-only engine provisioning
+context. Startup, migration, the Stage 8 collector, and worker polling do not stage an
 activation job. The only producer is the protected
 `POST /v1/admin/pricing-release-activation-v2/stage` in `apps/api`; the paired GET returns
 a bounded local snapshot and separately a timestamped engine head. `apps/admin` is wired

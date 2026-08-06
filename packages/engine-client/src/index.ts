@@ -1256,14 +1256,14 @@ function assertPricingReleaseActivationReceipt(
         digest: expectation.exact.active_digest,
         headVersion: expectation.exact.head_version,
       };
-  const expectedHead = request.activation_kind === "cutover"
+  const expectedHead = request.activation_kind === "recovery"
     ? {
-        generation: request.evidence.target_generation,
-        digest: request.evidence.target_digest,
-      }
-    : {
         generation: request.evidence.recovery_generation,
         digest: request.evidence.recovery_digest,
+      }
+    : {
+        generation: request.evidence.target_generation,
+        digest: request.evidence.target_digest,
       };
   if (
     receipt.activation_kind !== request.activation_kind

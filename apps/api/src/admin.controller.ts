@@ -20,6 +20,7 @@ import {
   pricingSwitchJobStageRequestV2Schema,
   pricingPolicyDeliveryRepairRequestV2Schema,
   pricingReleaseActivationOperatorV2Schema,
+  pricingReleaseActivationReconcileRequestV2Schema,
   pricingReleaseActivationStageRequestV2Schema,
   pricingStage5DryRunRequestV2Schema,
   pricingStage5MaterializeRequestV2Schema,
@@ -452,6 +453,26 @@ export class AdminController {
     if (!actor.success) throw new BadRequestException("verified admin actor is required");
     try {
       return await this.admin.stagePricingReleaseActivationV2(input.data, actor.data);
+    } catch (error) {
+      if (error instanceof PricingReleaseActivationJobV2Error) {
+        throw new HttpException(error.message, error.permanent ? 409 : 503);
+      }
+      throw error;
+    }
+  }
+
+  @Post("pricing-release-activation-v2/reconcile")
+  @Header("Cache-Control", "no-store")
+  async reconcilePricingReleaseActivationV2(
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    const input = pricingReleaseActivationReconcileRequestV2Schema.safeParse(body);
+    const actor = pricingReleaseActivationOperatorV2Schema.safeParse(actorHeader?.trim());
+    if (!input.success) throw new BadRequestException(input.error.flatten());
+    if (!actor.success) throw new BadRequestException("verified admin actor is required");
+    try {
+      return await this.admin.reconcilePricingReleaseActivationV2(input.data, actor.data);
     } catch (error) {
       if (error instanceof PricingReleaseActivationJobV2Error) {
         throw new HttpException(error.message, error.permanent ? 409 : 503);

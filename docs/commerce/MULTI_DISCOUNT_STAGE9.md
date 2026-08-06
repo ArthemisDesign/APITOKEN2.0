@@ -189,7 +189,13 @@ the remedy is to stage a fresh pair that includes it (the converge lane does exa
 combined collector selects the kind from the engine head alone: absent head is a cutover, the head
 equal to the evidence target is a recovery, anything newer is a successor. The successor
 expectation is not reconstructed either: it is read only from the newest durable activation
-receipt, whatever its kind. Because a successor release is precisely how an INTENTIONAL
+receipt, whatever its kind, and a recovery expectation likewise reads the receipt of whichever
+activation (cutover or successor) installed the target head. If the engine CAS committed but the
+worker died before storing the receipt (a lost or misasserted ACK leaves the job `dead`), the
+protected `POST /v1/admin/pricing-release-activation-v2/reconcile` repair re-reads the engine
+provisioning context, requires it to attest the dead job's immutable request exactly, and only
+then durably stores the reconstructed receipt and confirms the job; it never asks the engine to
+mutate anything. Because a successor release is precisely how an INTENTIONAL
 per-account price change ships, neither the engine capture nor the commerce authority treats a
 changed rule set as drift; continuity of unchanged scopes is the staging derivation's
 responsibility, while both sides keep every structural gate (exact pair/link, full-base coverage,

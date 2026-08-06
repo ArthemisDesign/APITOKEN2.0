@@ -20,6 +20,7 @@ import {
   createDatabase,
   recoverStalePricingReleaseActivationJobsV2,
   readPricingReleaseActivationControlV2,
+  reconcileLostPricingActivationReceiptV2,
   stagePricingReleaseActivationJobV2,
   stage5V2CommerceInventoryDigest,
   stage5V2Digest,
@@ -1476,6 +1477,165 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
         WHERE evidence_digest = $1
       `, [blocked.evidence_digest]);
       expect(Number(gate.rows[0]?.blocker_count)).toBeGreaterThan(0);
+    } finally {
+      await database.pool.end();
+    }
+  });
+
+  it("reconciles a lost activation receipt and unblocks the recovery expectation", async () => {
+    const seeded = await seedPreparedPair();
+    const database = createDatabase(databaseUrl, "stage8-reconcile-receipt");
+    try {
+      const evidence = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        seeded.report,
+      );
+      const jobId = await stagePricingReleaseActivationJobV2(database, {
+        activationKind: "cutover",
+        evidenceDigest: evidence.evidence_digest,
+        operatorId: "pricing-control-worker:integration",
+        reason: "activate exact prepared Stage 9 target",
+      });
+      const claim = await claimNextPricingReleaseActivationJobV2(
+        database,
+        "activation-reconcile",
+        seeded.authority.readers,
+      );
+      expect(claim).toMatchObject({ id: jobId, attempts: 1 });
+      const activatedTs = claim!.request.evidence.observed_ts + 1;
+      const head: PricingReleaseHeadV2 = {
+        active_generation: Number(TARGET_GENERATION),
+        active_digest: seeded.report.release.target_digest!,
+        head_version: 1,
+        updated_ts: activatedTs,
+      };
+      // The engine CAS committed but the worker died before storing the receipt: the job is
+      // terminally dead while the engine head already sits on the target.
+      await seed.query(`
+        UPDATE pricing_release_control_jobs_v2
+        SET status = 'dead', locked_at = NULL, locked_by = NULL,
+            last_error = 'simulated lost ACK', updated_at = now()
+        WHERE id = $1
+      `, [jobId]);
+      seeded.authority.setHead(head);
+      const releaseRow = await seed.query<{
+        commerce_inventory_digest: string;
+        engine_inventory_digest: string;
+      }>(`
+        SELECT commerce_inventory_digest, engine_inventory_digest
+        FROM pricing_release_plans_v2 WHERE generation = $1
+      `, [TARGET_GENERATION]);
+      const provisioningContext = {
+        head,
+        activation: {
+          activation_id: "1",
+          activation_kind: "cutover" as const,
+          evidence_digest: evidence.evidence_digest,
+          activated_ts: activatedTs,
+        },
+        active_release: {
+          generation: Number(TARGET_GENERATION),
+          release_kind: "target" as const,
+          schema_version: 2 as const,
+          capability_generation: 3,
+          capability_digest: digest("capability"),
+          main_catalog_generation: 3,
+          main_catalog_digest: digest("main-catalog"),
+          openkeys_catalog_generation: 3,
+          openkeys_catalog_digest: digest("openkeys-catalog"),
+          switch_generation: 3,
+          switch_digest: digest("switches"),
+          inventory_digest: releaseRow.rows[0]!.engine_inventory_digest,
+          funding_manifest_digest: seeded.report.funding_digest,
+          minimum_runtime_schema_version: 2,
+          content_digest: seeded.report.release.target_digest!,
+        },
+        paired_recovery: {
+          release: {
+            generation: Number(RECOVERY_GENERATION),
+            release_kind: "recovery" as const,
+            schema_version: 2 as const,
+            capability_generation: 3,
+            capability_digest: digest("capability"),
+            main_catalog_generation: 3,
+            main_catalog_digest: digest("main-catalog"),
+            openkeys_catalog_generation: 3,
+            openkeys_catalog_digest: digest("openkeys-catalog"),
+            switch_generation: 3,
+            switch_digest: digest("switches"),
+            inventory_digest: releaseRow.rows[0]!.engine_inventory_digest,
+            funding_manifest_digest: seeded.report.funding_digest,
+            minimum_runtime_schema_version: 2,
+            content_digest: seeded.report.release.recovery_digest!,
+          },
+          recovery_link: {
+            target_generation: Number(TARGET_GENERATION),
+            target_digest: seeded.report.release.target_digest!,
+            recovery_generation: Number(RECOVERY_GENERATION),
+            recovery_digest: seeded.report.release.recovery_digest!,
+            link_digest: digest("recovery-link"),
+          },
+        },
+      };
+      const reconcileReaders = {
+        engine: {
+          getPricingReleaseProvisioningContextV2: async () =>
+            structuredClone(provisioningContext),
+        },
+      };
+      const reconciled = await reconcileLostPricingActivationReceiptV2(
+        database,
+        reconcileReaders,
+        {
+          jobId,
+          actorId: "pricing-control-worker:integration",
+          reason: "reconcile the lost cutover ACK",
+        },
+      );
+      expect(reconciled.status).toBe("reconciled");
+      await expect(reconcileLostPricingActivationReceiptV2(
+        database,
+        reconcileReaders,
+        { jobId, actorId: "pricing-control-worker:integration", reason: "replay" },
+      )).resolves.toMatchObject({ status: "unchanged" });
+
+      // The reconciled receipt is the recovery expectation authority.
+      const recoverySource = engineEvidence({
+        engineInventoryDigest: seeded.report.engine_inventory_digest,
+        fundingDigest: seeded.report.funding_digest,
+        targetEngineDigest: seeded.report.release.target_digest!,
+        recoveryEngineDigest: seeded.report.release.recovery_digest!,
+        activeHead: {
+          active_generation: TARGET_GENERATION,
+          active_digest: seeded.report.release.target_digest!,
+          head_version: 1n,
+          updated_ts: BigInt(activatedTs),
+        },
+      });
+      const recoveryEvidence = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        recoverySource,
+      );
+      const recoveryJobId = await stagePricingReleaseActivationJobV2(database, {
+        activationKind: "recovery",
+        evidenceDigest: recoveryEvidence.evidence_digest,
+        operatorId: "pricing-control-worker:integration",
+        reason: "activate exact prepared recovery release",
+      });
+      const recoveryClaim = await claimNextPricingReleaseActivationJobV2(
+        database,
+        "activation-reconcile-recovery",
+        seeded.authority.readers,
+      );
+      expect(recoveryClaim).toMatchObject({
+        id: recoveryJobId,
+        request: {
+          activation_kind: "recovery",
+          expectation: { exact: head },
+        },
+      });
     } finally {
       await database.pool.end();
     }

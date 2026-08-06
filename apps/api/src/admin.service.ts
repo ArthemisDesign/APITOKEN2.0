@@ -7,6 +7,7 @@ import {
   pricingCatalogJobStageRequestV2Schema,
   pricingControlJobStageResponseV2Schema,
   pricingPolicyDeliveryRepairResponseV2Schema,
+  pricingReleaseActivationReconcileResponseV2Schema,
   pricingReleaseActivationStageResponseV2Schema,
   pricingStage5ControlResultV2Schema,
   pricingStage5RunV2Schema,
@@ -18,6 +19,7 @@ import {
   type PricingCatalogJobStageRequestV2,
   type PricingControlJobStageResponseV2,
   type PricingSwitchJobStageRequestV2,
+  type PricingReleaseActivationReconcileRequestV2,
   type PricingReleaseActivationStageRequestV2,
   type PricingPolicyDeliveryRepairRequestV2,
   type PricingPolicyDeliveryRepairResponseV2,
@@ -65,6 +67,7 @@ import {
   revokeBusinessInvite,
   rotateBusinessInvite,
   setBusinessPricing,
+  reconcileLostPricingActivationReceiptV2,
   stagePricingReleaseActivationJobV2,
   stageFundingNormalizationJobV2,
   stagePricingShadowRolloutV2,
@@ -381,6 +384,23 @@ export class AdminService {
       activation_kind: input.activation_kind,
       evidence_digest: input.evidence_digest,
       status: "accepted",
+    });
+  }
+
+  async reconcilePricingReleaseActivationV2(
+    input: PricingReleaseActivationReconcileRequestV2,
+    actorId: string,
+  ): Promise<Record<string, unknown>> {
+    const result = await reconcileLostPricingActivationReceiptV2(
+      this.database,
+      { engine: this.engine },
+      { jobId: input.job_id, actorId, reason: input.reason },
+    );
+    return pricingReleaseActivationReconcileResponseV2Schema.parse({
+      job_id: result.jobId,
+      activation_id: result.activationId,
+      result_digest: result.resultDigest,
+      status: result.status,
     });
   }
 

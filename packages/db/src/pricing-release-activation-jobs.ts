@@ -5,6 +5,7 @@ import {
   pricingReleaseActivationRequestV2Schema,
   type PricingReleaseActivationAckV2,
   type PricingReleaseActivationRequestV2,
+  type PricingReleaseProvisioningContextV2,
 } from "@claude-api/contracts";
 import { EngineClientError } from "@claude-api/engine-client";
 import type { PoolClient } from "pg";
@@ -287,7 +288,11 @@ async function loadActivationEvidence(
   return row;
 }
 
-async function cutoverReceiptForRecovery(
+/**
+ * The recovery expectation is the durable receipt of the activation that INSTALLED the target
+ * head — the initial cutover or a later successor advance; both activate the evidence target.
+ */
+async function targetReceiptForRecovery(
   client: PoolClient,
   evidence: ActivationEvidenceRow,
 ): Promise<Extract<PricingReleaseActivationAckV2, { result: "applied" | "unchanged" }>> {
@@ -302,28 +307,38 @@ async function cutoverReceiptForRecovery(
     SELECT activation_id, evidence_digest, head_version::text,
            receipt_digest, receipt_payload, activated_at
     FROM pricing_release_activation_receipts_v2
-    WHERE activation_kind = 'cutover'
+    WHERE activation_kind IN ('cutover', 'successor')
       AND release_generation = $1 AND release_digest = $2
     FOR SHARE
   `, [evidence.target_generation, evidence.target_digest]);
   if (result.rows.length !== 1 || result.rows[0]!.receipt_payload === null) {
-    throw permanent("recovery requires one complete durable cutover receipt");
+    throw permanent("recovery requires one complete durable target activation receipt");
   }
   const ack = pricingReleaseActivationAckV2Schema.parse(result.rows[0]!.receipt_payload);
-  if (ack.result === "rejected" || ack.activation.activation_kind !== "cutover") {
-    throw permanent("stored cutover receipt payload is not a successful cutover ACK");
+  if (ack.result === "rejected") {
+    throw permanent("stored target receipt payload is not a successful target ACK");
+  }
+  const kind = ack.activation.activation_kind;
+  if (kind !== "cutover" && kind !== "successor") {
+    throw permanent("stored target receipt payload is not a successful target ACK");
   }
   const row = result.rows[0]!;
+  const originMatches = kind === "cutover"
+    ? ack.activation.from_generation === null
+      && ack.activation.from_digest === null
+      && ack.activation.expected_head_version === 0
+      && ack.activation.head.head_version === 1
+    : ack.activation.from_generation !== null
+      && ack.activation.from_digest !== null
+      && ack.activation.expected_head_version > 0
+      && ack.activation.head.head_version === ack.activation.expected_head_version + 1;
   if (
     ack.activation.head.active_generation !== parsePositiveSafeInteger(
       evidence.target_generation,
       "target generation",
     )
     || ack.activation.head.active_digest !== evidence.target_engine_digest
-    || ack.activation.from_generation !== null
-    || ack.activation.from_digest !== null
-    || ack.activation.expected_head_version !== 0
-    || ack.activation.head.head_version !== 1
+    || !originMatches
     || ack.activation.head.updated_ts !== ack.activation.activated_ts
     || ack.activation.activation_id !== row.activation_id
     || ack.activation.evidence_digest !== row.evidence_digest
@@ -331,10 +346,10 @@ async function cutoverReceiptForRecovery(
     || activationReceiptDigest(ack) !== row.receipt_digest
     || ack.activation.activated_ts * 1_000 !== row.activated_at.getTime()
   ) {
-    throw permanent("stored cutover receipt does not match its durable target identity");
+    throw permanent("stored target receipt does not match its durable target identity");
   }
   if (ack.activation.evidence_digest === evidence.evidence_digest) {
-    throw permanent("recovery requires fresh Stage 8 evidence after cutover");
+    throw permanent("recovery requires fresh Stage 8 evidence after the target activation");
   }
   return ack;
 }
@@ -419,7 +434,7 @@ async function requestFromEvidence(
   const expectation = input.activationKind === "cutover"
     ? "absent" as const
     : input.activationKind === "recovery"
-      ? { exact: (await cutoverReceiptForRecovery(client, evidence)).activation.head }
+      ? { exact: (await targetReceiptForRecovery(client, evidence)).activation.head }
       : { exact: (await successorHeadForActivation(client, evidence)).activation.head };
   return pricingReleaseActivationRequestV2Schema.parse({
     activation_kind: input.activationKind,
@@ -1104,6 +1119,198 @@ function assertReceiptMatchesJob(
     || receipt.reason !== job.request.reason
   ) {
     throw permanent("activation ACK does not match the immutable durable job");
+  }
+}
+
+export interface PricingReleaseActivationReconcileReadersV2 {
+  engine: {
+    getPricingReleaseProvisioningContextV2(): Promise<PricingReleaseProvisioningContextV2 | null>;
+  };
+}
+
+export interface PricingReleaseActivationReconcileResultV2 {
+  jobId: string;
+  activationId: string;
+  resultDigest: string;
+  status: "reconciled" | "unchanged";
+}
+
+/**
+ * Repairs the one durable gap a lost or misasserted activation ACK leaves behind: the engine CAS
+ * committed (the head moved) but commerce never stored the receipt, so the dead job would
+ * otherwise block every later advance (the successor expectation and the recovery target receipt
+ * are read only from durable receipts). The reconcile never asks the engine to mutate anything:
+ * it reads the provisioning context, requires the engine-attested activation to match the dead
+ * job's immutable request exactly (kind, evidence digest, destination head and monotonic head
+ * version), rebuilds the full receipt from the two exact identities, and atomically stores the
+ * receipt, confirms the job and writes the audit event. A head that has already moved past the
+ * job's destination, or any identity disagreement, fails closed with no writes.
+ */
+export async function reconcileLostPricingActivationReceiptV2(
+  database: Database,
+  readers: PricingReleaseActivationReconcileReadersV2,
+  input: { jobId: string; actorId: string; reason: string },
+): Promise<PricingReleaseActivationReconcileResultV2> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    await client.query("SET LOCAL statement_timeout = '30s'");
+    await client.query("SET LOCAL lock_timeout = '5s'");
+    const jobResult = await client.query<{
+      id: string;
+      status: string;
+      release_generation: string;
+      release_digest: string;
+      payload_digest: string;
+      expected_head_version: string;
+      stage8_evidence_digest: string;
+      activation_payload: unknown;
+    }>(`
+      SELECT id, status, release_generation::text, release_digest, payload_digest,
+             expected_head_version::text, stage8_evidence_digest, activation_payload
+      FROM pricing_release_control_jobs_v2
+      WHERE id = $1
+      FOR UPDATE
+    `, [input.jobId]);
+    const row = jobResult.rows[0];
+    if (!row) throw permanent("reconcile requires an existing activation job");
+    const request = pricingReleaseActivationRequestV2Schema.parse(row.activation_payload);
+    const existing = await client.query<{ activation_id: string }>(`
+      SELECT activation_id FROM pricing_release_activation_receipts_v2
+      WHERE release_generation = $1 AND release_digest = $2 AND evidence_digest = $3
+    `, [row.release_generation, row.release_digest, row.stage8_evidence_digest]);
+    if (row.status === "confirmed" && existing.rows[0]) {
+      await client.query("COMMIT");
+      return {
+        jobId: row.id,
+        activationId: existing.rows[0].activation_id,
+        resultDigest: row.payload_digest,
+        status: "unchanged",
+      };
+    }
+    if (row.status !== "dead") {
+      throw permanent(`reconcile requires a terminal dead job, not ${row.status}`);
+    }
+
+    const context = await readers.engine.getPricingReleaseProvisioningContextV2();
+    if (!context) throw permanent("reconcile requires an active engine provisioning context");
+    const destination = request.activation_kind === "recovery"
+      ? {
+          generation: request.evidence.recovery_generation,
+          digest: request.evidence.recovery_digest,
+        }
+      : {
+          generation: request.evidence.target_generation,
+          digest: request.evidence.target_digest,
+        };
+    const expectedFrom = request.expectation === "absent"
+      ? { generation: null, digest: null, headVersion: 0 }
+      : {
+          generation: request.expectation.exact.active_generation,
+          digest: request.expectation.exact.active_digest,
+          headVersion: request.expectation.exact.head_version,
+        };
+    if (
+      context.activation.activation_kind !== request.activation_kind
+      || context.activation.evidence_digest !== request.evidence.evidence_digest
+      || context.head.active_generation !== destination.generation
+      || context.head.active_digest !== destination.digest
+      || context.head.head_version !== expectedFrom.headVersion + 1
+      || context.head.updated_ts !== context.activation.activated_ts
+      || context.active_release.generation !== destination.generation
+      || context.active_release.content_digest !== destination.digest
+    ) {
+      throw permanent("engine provisioning context does not attest the dead job's activation");
+    }
+    const ack = pricingReleaseActivationAckV2Schema.parse({
+      result: "applied",
+      activation: {
+        activation_id: String(context.activation.activation_id),
+        activation_kind: context.activation.activation_kind,
+        from_generation: expectedFrom.generation,
+        from_digest: expectedFrom.digest,
+        expected_head_version: expectedFrom.headVersion,
+        head: context.head,
+        evidence_digest: context.activation.evidence_digest,
+        operator_id: request.operator_id,
+        reason: request.reason,
+        activated_ts: context.activation.activated_ts,
+      },
+    });
+    const job: ClaimedPricingReleaseActivationJobV2 = {
+      id: row.id,
+      attempts: 0,
+      releaseGeneration: BigInt(row.release_generation),
+      releaseDigest: row.release_digest,
+      evidenceDigest: row.stage8_evidence_digest,
+      expectedHeadVersion: BigInt(row.expected_head_version),
+      payloadDigest: row.payload_digest,
+      request,
+    };
+    assertReceiptMatchesJob(job, ack as Extract<PricingReleaseActivationAckV2, { result: "applied" | "unchanged" }>);
+    const receiptDigest = activationReceiptDigest(ack as Extract<PricingReleaseActivationAckV2, { result: "applied" | "unchanged" }>);
+    const resultDigest = activationResultDigest(job.payloadDigest, receiptDigest);
+    const activatedAt = new Date(context.activation.activated_ts * 1_000);
+    await client.query(`
+      INSERT INTO pricing_release_activation_receipts_v2 (
+        activation_id, activation_kind, release_generation, release_digest,
+        evidence_digest, head_version, receipt_digest, receipt_payload, activated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+    `, [
+      String(context.activation.activation_id),
+      context.activation.activation_kind,
+      row.release_generation,
+      row.release_digest,
+      row.stage8_evidence_digest,
+      context.head.head_version,
+      receiptDigest,
+      JSON.stringify(ack),
+      activatedAt,
+    ]);
+    const confirmed = await client.query(`
+      UPDATE pricing_release_control_jobs_v2
+      SET status = 'confirmed', result_digest = $2, confirmed_at = now(),
+          locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
+      WHERE id = $1 AND status = 'dead'
+    `, [row.id, resultDigest]);
+    if (confirmed.rowCount !== 1) {
+      throw permanent("activation job changed while its receipt was reconciled");
+    }
+    await client.query(`
+      INSERT INTO audit_log (
+        actor_type, actor_id, action, target_type, target_id, metadata
+      ) VALUES (
+        'admin', $1, 'pricing_release_activation_reconciled',
+        'pricing_release_control_job_v2', $2,
+        jsonb_build_object(
+          'activation_id', $3::text,
+          'activation_kind', $4::text,
+          'evidence_digest', $5::text,
+          'head_version', $6::text,
+          'reason', $7::text
+        )
+      )
+    `, [
+      input.actorId,
+      row.id,
+      String(context.activation.activation_id),
+      context.activation.activation_kind,
+      row.stage8_evidence_digest,
+      String(context.head.head_version),
+      input.reason,
+    ]);
+    await client.query("COMMIT");
+    return {
+      jobId: row.id,
+      activationId: String(context.activation.activation_id),
+      resultDigest,
+      status: "reconciled",
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
   }
 }
 
