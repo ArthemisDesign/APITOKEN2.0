@@ -193,7 +193,7 @@ commit_status_context_re=$(sed -n "s/^commit_status_context_re='\\(.*\\)'$/\\1/p
 for valid_context in deploy/watchdog deploy/gpt-image-2-public-preflight \
   deploy/gpt-image-2-public-preflight-v2 deploy/gpt-image-2-public-preflight-v3 \
   deploy/gpt-image-2-public-paid-smoke deploy/gpt-image-2-public-paid-generation \
-  deploy/gpt-image-2-public-paid-edit; do
+  deploy/gpt-image-2-public-paid-edit deploy/gpt-image-2-public-paid-inspect; do
   [[ $valid_context =~ $commit_status_context_re ]] \
     || wd_die "valid GitHub commit-status context was rejected: $valid_context"
 done
@@ -1165,6 +1165,7 @@ for controller_definition in \
   deploy/gpt-image-2-public-preflight-v2-gate.sh \
   deploy/gpt-image-2-public-preflight-v3-gate.sh \
   deploy/gpt-image-2-public-paid-smoke-gate.sh \
+  deploy/gpt-image-2-public-paid-inspect-gate.sh \
   deploy/watchdog-infrastructure.sh \
   deploy/deploy.sh \
   deploy/authbot-runtime-state.sh \
@@ -4540,84 +4541,66 @@ grep -Fq 'github_status success deploy/gpt-image-2-public-preflight-v3' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 public preflight v3 has no sanitized GREEN status'
 
-# Paid public smoke owns a distinct permanent fence and exactly one generation+edit execution.
-wd_path_is_gpt_image_2_public_paid_smoke_gate_trigger \
-  deploy/gpt-image-2-public-paid-smoke-gate.sh \
-  || wd_die 'GPT Image 2 public paid smoke file does not trigger the one-shot gate'
-for path in deploy/watchdog.sh deploy/watchdog-lib.sh deploy/gpt-image-2-public-preflight-v3-gate.sh; do
-  if wd_path_is_gpt_image_2_public_paid_smoke_gate_trigger "$path"; then
-    wd_die "unrelated path triggers GPT Image 2 public paid smoke: $path"
+# The first paid root is fenced at generation_received and can only be inspected without network.
+if wd_path_is_gpt_image_2_public_paid_smoke_gate_trigger \
+    deploy/gpt-image-2-public-paid-smoke-gate.sh; then
+  wd_die 'retired GPT Image 2 public paid smoke can dispatch again'
+fi
+wd_path_is_gpt_image_2_public_paid_inspect_gate_trigger \
+  deploy/gpt-image-2-public-paid-inspect-gate.sh \
+  || wd_die 'GPT Image 2 public paid inspector file does not trigger the corrective gate'
+for path in deploy/watchdog.sh deploy/watchdog-lib.sh deploy/gpt-image-2-public-paid-smoke-gate.sh; do
+  if wd_path_is_gpt_image_2_public_paid_inspect_gate_trigger "$path"; then
+    wd_die "unrelated path triggers GPT Image 2 public paid inspector: $path"
   fi
 done
-grep -Fq '"$ROOT/deploy/gpt-image-2-public-paid-smoke-gate.sh"' \
+grep -Fq '"$ROOT/deploy/gpt-image-2-public-paid-inspect-gate.sh"' \
   "$ROOT/deploy/install-watchdog.sh" \
-  || wd_die 'GPT Image 2 public paid smoke is not installed as a fixed controller'
+  || wd_die 'GPT Image 2 public paid inspector is not installed as a fixed controller'
 grep -Fxq 'PRODUCER_SHA=63972f2ddfd5906d7c30a87406053eb3782f4223' \
-  "$ROOT/deploy/gpt-image-2-public-paid-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public paid smoke is not pinned to the GREEN selector producer'
+  "$ROOT/deploy/gpt-image-2-public-paid-inspect-gate.sh" \
+  || wd_die 'GPT Image 2 public paid inspector is not pinned to the fenced producer'
 grep -Fxq 'EVIDENCE_PARENT=$STATE_ROOT/gpt-image-2-public-paid-smoke' \
-  "$ROOT/deploy/gpt-image-2-public-paid-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public paid smoke reuses a free or historical evidence root'
-grep -Fq '[[ $# -eq 1 ]]' "$ROOT/deploy/gpt-image-2-public-paid-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public paid smoke accepts an unbounded invocation'
-grep -Fq '"$binary" openai-image-public-smoke --output "$OUTPUT" --execute' \
-  "$ROOT/deploy/gpt-image-2-public-paid-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public paid smoke does not run the exact generation+edit CLI mode'
-! grep -Fq -- '--preflight-only' "$ROOT/deploy/gpt-image-2-public-paid-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 paid controller can accidentally select free mode'
-grep -Fq 'if [[ -e $OUTPUT || -L $OUTPUT ]]; then' \
-  "$ROOT/deploy/gpt-image-2-public-paid-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public paid smoke has no permanent dispatch fence'
-grep -Fq '.generation.request_id != .edit.request_id' \
-  "$ROOT/deploy/gpt-image-2-public-paid-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public paid smoke does not require distinct operation identities'
-grep -Fq '.generation.png_sha256 != .edit.png_sha256' \
-  "$ROOT/deploy/gpt-image-2-public-paid-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public paid smoke accepts a byte-identical edit'
-grep -Fq '.settlement.release_billing_mode == "meter_only"' \
-  "$ROOT/deploy/gpt-image-2-public-paid-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public paid smoke does not require meter-only settlement'
-grep -Fq '.settlement.real_nano > 0 and' \
-  "$ROOT/deploy/gpt-image-2-public-paid-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public paid smoke accepts zero official cost'
-grep -Fq '.settlement.charge_nano == 0' \
-  "$ROOT/deploy/gpt-image-2-public-paid-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public paid smoke accepts a customer charge'
-! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc' \
-  "$ROOT/deploy/gpt-image-2-public-paid-smoke-gate.sh" \
-  || wd_die 'GPT Image 2 public paid smoke contains a reseller path'
-grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-paid-smoke-gate.sh 63972f2ddfd5906d7c30a87406053eb3782f4223' \
+  "$ROOT/deploy/gpt-image-2-public-paid-inspect-gate.sh" \
+  || wd_die 'GPT Image 2 public paid inspector reads the wrong fence'
+grep -Fq '[[ $# -eq 2 && $2 == --inspect ]]' \
+  "$ROOT/deploy/gpt-image-2-public-paid-inspect-gate.sh" \
+  || wd_die 'GPT Image 2 public paid inspector accepts a dispatch-capable invocation'
+! grep -Eq 'openai-image-public-smoke|setpriv|systemctl|/proc/|timeout ' \
+  "$ROOT/deploy/gpt-image-2-public-paid-inspect-gate.sh" \
+  || wd_die 'GPT Image 2 public paid inspector can access runtime or network credentials'
+grep -Fq '.state == "generation_received"' \
+  "$ROOT/deploy/gpt-image-2-public-paid-inspect-gate.sh" \
+  || wd_die 'GPT Image 2 public paid inspector accepts another journal stage'
+grep -Fq '.generation_dispatched == true and .edit_dispatched == false' \
+  "$ROOT/deploy/gpt-image-2-public-paid-inspect-gate.sh" \
+  || wd_die 'GPT Image 2 public paid inspector does not require generation-only dispatch'
+grep -Fq '[[ ${#entries[@]} -eq 2 && ${entries[0]} == generation.png && ${entries[1]} == journal.json ]]' \
+  "$ROOT/deploy/gpt-image-2-public-paid-inspect-gate.sh" \
+  || wd_die 'GPT Image 2 public paid inspector accepts unexpected artifacts'
+! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc|https?://' \
+  "$ROOT/deploy/gpt-image-2-public-paid-inspect-gate.sh" \
+  || wd_die 'GPT Image 2 public paid inspector contains a network origin'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-paid-inspect-gate.sh 63972f2ddfd5906d7c30a87406053eb3782f4223 --inspect' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
-  || wd_die 'GPT Image 2 public paid smoke lacks an exact-producer sudo bridge'
-grep -A2 -F "require_permitted 'GPT Image 2 exact-producer public paid smoke gate'" \
+  || wd_die 'GPT Image 2 public paid inspector lacks an exact read-only sudo bridge'
+grep -A2 -F "require_permitted 'GPT Image 2 exact-producer public paid inspector'" \
   "$ROOT/deploy/install-sudoers.sh" \
-  | grep -Fq '63972f2ddfd5906d7c30a87406053eb3782f4223' \
-  || wd_die 'GPT Image 2 public paid smoke sudo self-check is not aligned with policy'
-grep -Fxq 'GPT_IMAGE_2_PUBLIC_PAID_SMOKE_PRODUCER_SHA=63972f2ddfd5906d7c30a87406053eb3782f4223' \
+  | grep -Fq '63972f2ddfd5906d7c30a87406053eb3782f4223 --inspect' \
+  || wd_die 'GPT Image 2 public paid inspector sudo self-check is not aligned with policy'
+grep -Fxq 'GPT_IMAGE_2_PUBLIC_PAID_INSPECT_PRODUCER_SHA=63972f2ddfd5906d7c30a87406053eb3782f4223' \
   "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'watchdog does not pin the GPT Image 2 public paid producer'
-paid_smoke_gate_line=$(grep -nF '"$GPT_IMAGE_2_PUBLIC_PAID_SMOKE_PRODUCER_SHA")' \
+  || wd_die 'watchdog does not pin the GPT Image 2 public paid inspector producer'
+paid_inspect_gate_line=$(grep -nF '"$GPT_IMAGE_2_PUBLIC_PAID_INSPECT_PRODUCER_SHA" --inspect)' \
   "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
-[[ -n $paid_smoke_gate_line && -n $processed_line && $paid_smoke_gate_line -lt $processed_line ]] \
-  || wd_die 'GPT Image 2 public paid smoke does not run before processed/green'
-grep -Fq 'CURRENT_PHASE_BEFORE_FAILURE=$public_image_paid_summary' \
+[[ -n $paid_inspect_gate_line && -n $processed_line && $paid_inspect_gate_line -lt $processed_line ]] \
+  || wd_die 'GPT Image 2 public paid inspector does not run before processed/green'
+grep -Fq 'CURRENT_PHASE_BEFORE_FAILURE=gpt-image-paid:generation_received:g=true:e=false' \
   "$ROOT/deploy/watchdog.sh" \
-  && wd_die 'raw GPT Image 2 paid evidence may leak into RED status'
-grep -Fq 'CURRENT_PHASE_BEFORE_FAILURE=gpt-image-paid:success:g=true:e=true' \
+  || wd_die 'GPT Image 2 generation-only withdrawal is absent from later RED status'
+grep -Fq 'github_status success deploy/gpt-image-2-public-paid-inspect "$public_image_generation_status"' \
   "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'GPT Image 2 public paid success is absent from later RED status'
-grep -Fq 'github_status success deploy/gpt-image-2-public-paid-smoke' \
-  "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'GPT Image 2 public paid smoke has no sanitized GREEN status'
-grep -Fq 'github_status success deploy/gpt-image-2-public-paid-generation "$public_image_generation_status"' \
-  "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'GPT Image 2 generation evidence has no sanitized GREEN status'
-grep -Fq 'github_status success deploy/gpt-image-2-public-paid-edit "$public_image_edit_status"' \
-  "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'GPT Image 2 edit evidence has no sanitized GREEN status'
-grep -Fq '(( ${#public_image_generation_status} <= 140 && ${#public_image_edit_status} <= 140 ))' \
-  "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'GPT Image 2 paid evidence descriptions are not bounded'
+  || wd_die 'GPT Image 2 generation inspection has no sanitized GREEN status'
 
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'

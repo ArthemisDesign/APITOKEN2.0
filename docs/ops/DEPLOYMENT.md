@@ -216,10 +216,13 @@ production. The v2 root later failed before dispatch and was retired. Handle-bas
 `df924a10edff41b0d047805d18abe16a397b4809` validated its terminal no-dispatch evidence without replay and is
 exact watchdog-GREEN. The subsequent paid controller uses a distinct
 `/var/lib/apitoken/watchdog/gpt-image-2-public-paid-smoke/<producer-sha>` fence and exactly one `--execute`
-invocation through the same sealed pool. It permits one generation and, after its authoritative settlement,
-one one-reference edit; any partial paid state permanently blocks replay. Catalog, router, OpenKeys, site,
-admin and public-documentation publication remains forbidden until that exact production generation+edit
-delivery and overall watchdog status are GREEN.
+invocation through the same sealed pool. Delivery `d2216bfa276d9fe195b0d1f0c8f4f137612bed5a` reached
+`generation_received` with a bounded decoded PNG, then failed before complete settlement evidence; edit was
+not dispatched. That root is permanently fenced and the execute trigger is retired. Its successor controller
+is inspect-only: it reads exactly the private journal and generation PNG, validates the generation-only
+withdrawal, and emits bounded dimensions/bytes/SHA-256 without environment, credential, CLI or network
+access. Catalog, router, OpenKeys, site, admin and public-documentation publication remains forbidden until a
+future fresh-root production generation+edit delivery and overall watchdog status are GREEN.
 
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane

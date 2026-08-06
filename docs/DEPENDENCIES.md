@@ -327,8 +327,13 @@ is only what is needed to walk the relationships when making changes:
   `gpt-image-2-public-paid-smoke` fence, inherits only the production PostgreSQL DSN, and runs exactly one
   `--execute`: free discovery, one generation, authoritative settlement, then one one-reference edit and
   authoritative settlement. Existing output prevents every replay; no reseller origin, fallback, image API
-  key or additional credential path exists. This paid delivery must itself be exact watchdog-GREEN before
-  any publication consumer can proceed. The direct OpenAI plane and header-gated Combined
+  key or additional credential path exists. Delivery `d2216bfa276d9fe195b0d1f0c8f4f137612bed5a` is RED at
+  `generation_received`: generation returned a bounded decoded PNG, no complete settlement evidence was
+  persisted, and edit was not dispatched. That paid root is permanently fenced and its execute trigger is
+  retired. The separate `deploy/gpt-image-2-public-paid-inspect-gate.sh` is credential-, environment-, CLI-
+  and network-free; it accepts only the exact generation-only two-file withdrawal and emits dimensions,
+  bytes and SHA-256. This inspection is not a generation+edit success and no publication consumer can proceed.
+  The direct OpenAI plane and header-gated Combined
   bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —

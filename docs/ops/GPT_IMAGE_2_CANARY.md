@@ -245,8 +245,14 @@ producer `63972f2ddfd5906d7c30a87406053eb3782f4223` and the fresh `gpt-image-2-p
 inherits only the PostgreSQL DSN, runs exactly `openai-image-public-smoke --execute`, and permanently fences
 re-entry before the first paid dispatch. It repeats authenticated discovery, then allows one generation and,
 only after authoritative generation settlement, one one-reference edit; neither paid operation is retried.
-Until this paid controller's own delivery is exact watchdog-GREEN, it is not generation/edit proof and does
-not authorize publication.
+Delivery `d2216bfa276d9fe195b0d1f0c8f4f137612bed5a` is RED at the retained journal state
+`generation_received`: one generation request returned a provider-decoded bounded PNG and an engine UUIDv4
+request identity, but no complete authoritative settlement evidence was persisted and edit was not
+dispatched. The paid root is permanently fenced and its execute trigger is retired. The successor
+`deploy/gpt-image-2-public-paid-inspect-gate.sh` has no environment, credential, runtime, CLI or network path;
+it accepts only that exact two-file generation-only withdrawal and publishes sanitized PNG dimensions,
+byte length and SHA-256. This retained generation is not a successful generation+edit smoke, does not prove
+settlement, and does not authorize publication.
 
 The intended one-shot contract remains:
 
