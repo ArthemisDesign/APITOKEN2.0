@@ -195,15 +195,17 @@ operation was dispatched. The producer-SHA evidence root remains permanently fen
 or complete retained success, but cannot load runtime credentials or execute the CLI. A later paid one-shot
 must use a new producer SHA and a new root.
 
-The successor producer separates a no-image `--preflight-only` mode from `--execute`. Both modes use a
-narrow `config.rs` reader for only `CLAUDE_API_DATABASE_URL`, so free smoke admission no longer assembles
+Successor producer `d42fc0e3290c0042a16797626326c250e0f6721c` is deployed and watchdog-GREEN. It
+separates a no-image `--preflight-only` mode from `--execute`. Both modes use a narrow `config.rs` reader for
+only `CLAUDE_API_DATABASE_URL`, so free smoke admission no longer assembles
 or validates unrelated server, provider-roster, or fallback settings. Before each database, schema,
 credential, runtime/client and authenticated-discovery step, the private journal records the exact stage
 with both dispatch flags false and null request identities. Free success is exactly `preflight_success` and
-creates no PNG or evidence. Paid execution does not trust that earlier artifact: it repeats the same fresh
-preflight in its own new SHA-keyed replay fence before changing `generation_dispatched` immediately ahead
-of the first image POST. Deployment of this dormant producer does not itself authorize either gate or
-publication.
+creates no PNG or evidence. `deploy/gpt-image-2-public-preflight-gate.sh` pins that exact producer and a
+fresh SHA-keyed private root, inherits only the production PostgreSQL DSN, and exposes no credential or
+image-dispatch path. Paid execution does not trust that earlier artifact: it repeats the same fresh preflight
+in its own new SHA-keyed replay fence before changing `generation_dispatched` immediately ahead of the
+first image POST. Deployment of this dormant gate does not authorize the paid gate or publication.
 
 The intended one-shot contract remains:
 

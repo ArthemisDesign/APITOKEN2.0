@@ -32,6 +32,8 @@ GPT_IMAGE_2_LIVE_GATE=$CONTROLLER_ROOT/gpt-image-2-live-gate.sh
 GPT_IMAGE_2_IMPLEMENTATION_SHA=1c48e3769f0fe775e650f60ea3c5839458e5dfe2
 GPT_IMAGE_2_PUBLIC_SMOKE_GATE=$CONTROLLER_ROOT/gpt-image-2-public-smoke-gate.sh
 GPT_IMAGE_2_PUBLIC_PRODUCER_SHA=d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6
+GPT_IMAGE_2_PUBLIC_PREFLIGHT_GATE=$CONTROLLER_ROOT/gpt-image-2-public-preflight-gate.sh
+GPT_IMAGE_2_PUBLIC_PREFLIGHT_PRODUCER_SHA=d42fc0e3290c0042a16797626326c250e0f6721c
 TEST_DB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-test-db
 BACKUP_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-backup.sh
 MIGRATION_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
@@ -2421,6 +2423,7 @@ main() {
   local infra_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
   local openkeys_changed=0 admin_changed=0 devbot_changed=0 codex_changed=0
   local gpt_image_2_live_gate=0 gpt_image_2_public_smoke_gate=0
+  local gpt_image_2_public_preflight_gate=0
   local typescript_required=0 typescript_full=0 typescript_base= rust_required=0 static_required=0
   local engine_artifacts_required=0 codex_artifacts_required=0
   local validation_policy_sha256='' validation_plan_sha256='' final_verification_plan=''
@@ -2449,6 +2452,7 @@ main() {
   require_fixed_root_executable "$AUTHBOT_RUNTIME_STATE"
   require_fixed_file "$GPT_IMAGE_2_LIVE_GATE"
   require_fixed_file "$GPT_IMAGE_2_PUBLIC_SMOKE_GATE"
+  require_fixed_file "$GPT_IMAGE_2_PUBLIC_PREFLIGHT_GATE"
   require_fixed_file "$GITHUB_HELPER"
   require_fixed_directory "$CI_TOOLCHAIN"
   [[ -f $DB_MANIFEST && ! -L $DB_MANIFEST ]] || wd_die "database migration baseline is missing"
@@ -2517,6 +2521,8 @@ main() {
     wd_path_is_gpt_image_2_live_gate_trigger && gpt_image_2_live_gate=1
   wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
     wd_path_is_gpt_image_2_public_smoke_gate_trigger && gpt_image_2_public_smoke_gate=1
+  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
+    wd_path_is_gpt_image_2_public_preflight_gate_trigger && gpt_image_2_public_preflight_gate=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_engine \
     && engine_changed=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_codex_tooling \
@@ -2571,7 +2577,8 @@ main() {
         && $engine_changed == 0 && $backend_changed == 0 \
         && $sales_changed == 0 && $openkeys_changed == 0 && $admin_changed == 0 \
         && $devbot_changed == 0 && $codex_changed == 0 && $gpt_image_2_live_gate == 0 \
-        && $gpt_image_2_public_smoke_gate == 0 ]]; then
+        && $gpt_image_2_public_smoke_gate == 0 \
+        && $gpt_image_2_public_preflight_gate == 0 ]]; then
     if idle_maintenance_due; then
       CURRENT_PHASE=maintaining
       status "running periodic retention and production-alignment checks"
@@ -2741,6 +2748,14 @@ main() {
         && CURRENT_PHASE_BEFORE_FAILURE=$public_image_summary
       false
     fi
+  fi
+
+  if (( gpt_image_2_public_preflight_gate == 1 )); then
+    CURRENT_PHASE=verifying-gpt-image-2-public-preflight
+    CURRENT_PHASE_BEFORE_FAILURE=verifying-gpt-image-2-public-preflight
+    status "running free GPT Image 2 public preflight without image dispatch"
+    sudo -n "$GPT_IMAGE_2_PUBLIC_PREFLIGHT_GATE" \
+      "$GPT_IMAGE_2_PUBLIC_PREFLIGHT_PRODUCER_SHA"
   fi
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"
