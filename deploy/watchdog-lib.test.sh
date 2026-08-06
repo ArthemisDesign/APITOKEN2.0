@@ -4810,11 +4810,17 @@ printf '%s\n' \
     == target_capability_digest_drift ]] \
   || wd_die 'pricing Stage 5/6 helper did not classify a known typed error'
 printf '%s\n' \
-  '{"statusCode":409,"message":"credential-like arbitrary text","code":"unknown_internal_code"}' \
+  '{"statusCode":409,"message":"free-form message is ignored","code":"future_stage5_code"}' \
+  >"$TEMP/pricing-stage56-future-error.json"
+[[ $(pricing_control_error_diagnostic "$TEMP/pricing-stage56-future-error.json" 409) \
+    == future_stage5_code ]] \
+  || wd_die 'pricing Stage 5/6 helper rejected a bounded future typed error'
+printf '%s\n' \
+  '{"statusCode":409,"message":"credential-like arbitrary text","code":"invalid-code","extra":"must-not-pass"}' \
   >"$TEMP/pricing-stage56-unknown-error.json"
 [[ $(pricing_control_error_diagnostic "$TEMP/pricing-stage56-unknown-error.json" 409) \
     == unclassified ]] \
-  || wd_die 'pricing Stage 5/6 helper exposed an unapproved typed error'
+  || wd_die 'pricing Stage 5/6 helper accepted a malformed error envelope'
 printf '%s\n' \
   '{"statusCode":409,"message":"contains private plan digests","code":"expected_plan_stale"}' \
   >"$TEMP/pricing-stage56-stale-error.json"

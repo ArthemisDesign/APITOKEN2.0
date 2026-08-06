@@ -74,21 +74,7 @@ pricing_control_error_diagnostic() {
       ((.error // "") | type == "string")
     ) | .code
   ' "$output" 2>/dev/null) || { printf 'unclassified\n'; return; }
-  case "$code" in
-    expected_plan_stale|source_snapshot_stale|unstable_inventory|\
-    target_capability_digest_drift|openkeys_inventory_unavailable|\
-    openkeys_manifest_changed_during_scan|openkeys_inventory_malformed|\
-    engine_inventory_cursor_regressed|engine_inventory_cursor_loop|\
-    engine_inventory_order_invalid|openkeys_inventory_cursor_regressed|\
-    openkeys_inventory_cursor_loop|openkeys_inventory_order_invalid|\
-    capability_generation_conflict|catalog_generation_conflict|\
-    switch_generation_conflict|policy_version_conflict|\
-    invitation_snapshot_conflict|release_plan_conflict|\
-    funding_normalization_terminal|funding_normalization_unavailable|\
-    engine_client_unavailable|engine_client_invalid)
-      printf '%s\n' "$code" ;;
-    *) printf 'unclassified\n' ;;
-  esac
+  printf '%s\n' "$code"
 }
 
 request() {
