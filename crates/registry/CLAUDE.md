@@ -370,6 +370,14 @@ side effect. `serve` may only perform the read-only schema verification before c
   `unchanged`; recovery moves only forward from the target. Accounts, balances, lots, reservations,
   ledger/usage are not written. Real-PG coverage —
   `pg::tests::postgres_stage8_engine_evidence_contract`.
+- **Stage 9 successor activation schema checkpoint:** migration `0035` expand-only admits the
+  `successor` activation kind in `pricing_release_activations_v2` and adds its arm to the
+  activation-evidence trigger: a successor audit names the exact previous head
+  (`from_generation`/`from_digest`, distinct from the evidence target) and the newer prepared
+  target it activates, backed by the same fresh passed Stage 8 evidence. The head-step and
+  head-audit triggers are kind-agnostic and already cover the monotonic transition. No existing
+  row, arm or semantic changes; the dependent capture/activation producer ships in a separate SHA
+  after a green migration/watchdog of this checkpoint.
 - **Pricing release v2 runtime foundation:** the PostgreSQL resolver reads the head, assignment, policy,
   catalog/switch gates and rule precedence `model → provider → global` in one snapshot; service
   `meter_only` bypasses the product catalog but keeps the provider master-switch. Reserve re-resolves

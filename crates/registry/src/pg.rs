@@ -187,9 +187,11 @@ const MIGRATION_0032: &str = include_str!("../migrations_pg/0032_pool_member_dis
 const MIGRATION_0033: &str = include_str!("../migrations_pg/0033_pool_member_hidden.sql");
 const MIGRATION_0034: &str =
     include_str!("../migrations_pg/0034_pricing_release_b2c_to_b2b_extensions.sql");
+const MIGRATION_0035: &str =
+    include_str!("../migrations_pg/0035_pricing_release_successor_activation.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 34;
+pub const CURRENT_SCHEMA_VERSION: i64 = 35;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -227,6 +229,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (32, MIGRATION_0032),
     (33, MIGRATION_0033),
     (34, MIGRATION_0034),
+    (35, MIGRATION_0035),
 ];
 
 #[cfg(test)]
