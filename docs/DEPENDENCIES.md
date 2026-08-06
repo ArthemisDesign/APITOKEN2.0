@@ -353,7 +353,13 @@ is only what is needed to walk the relationships when making changes:
   `generation_received:g=true:e=false`; the v2 root is permanently fenced. Its new read-only consumer is
   `deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh`, which reuses the exact GREEN `853fdc6c...` diagnostic
   binary and reads only that request's durable settlement state. Neither diagnostic side has image HTTP,
-  credential selection, dispatch, retry, or mutation. The direct OpenAI plane and header-gated Combined
+  credential selection, dispatch, retry, or mutation. Diagnostic delivery
+  `f1fb47c3e6e75c219f7b9f6f229db693e54197f5` is exact watchdog-GREEN with the same terminal
+  `settled`/`done/1`, `real_nano=7_045_000`, `charge_nano=0` evidence. It isolated the repeated stop to the
+  smoke runner: synchronous `PgStore` was invoked inside its Tokio runtime even though the synchronous
+  `postgres` client uses an internal runtime for query and drop. The corrected producer keeps PostgreSQL
+  observation and teardown outside Tokio and enters the network runtime only for each HTTP future; neither
+  fenced request is replayed. The direct OpenAI plane and header-gated Combined
   bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —

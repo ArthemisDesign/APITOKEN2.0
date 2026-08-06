@@ -281,7 +281,13 @@ overall deployment. Delivery `2efcfbf69b672e531b62b8602a74d7fb76ee1fae` withdrew
 separate `deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh` reuses the already GREEN `853fdc6c...`
 diagnostic binary against only the v2 fence. It receives the generation UUID over stdin, inherits only the
 PostgreSQL DSN, and reports bounded settlement/outbox/usage/cost state without image HTTP, pool credential
-selection, mutation, or retry.
+selection, mutation, or retry. Diagnostic delivery `f1fb47c3e6e75c219f7b9f6f229db693e54197f5` is exact
+watchdog-GREEN and again reported `terminal_evidence_present`, `settled`, `done/1`, `real_nano=7_045_000`,
+and `charge_nano=0`. The repeated stop at `generation_received` was a runner panic, not delayed settlement:
+the async orchestration called synchronous `PgStore` while already inside the command's Tokio runtime, while
+the `postgres` client implements each query and `Drop` with its own runtime `block_on`. The corrected runner
+enters Tokio only around each HTTP future and performs settlement reads and `PgStore` teardown outside Tokio;
+it does not replay either fenced request.
 
 The intended one-shot contract remains:
 

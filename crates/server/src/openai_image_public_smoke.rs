@@ -157,16 +157,18 @@ pub(crate) fn run(args: OpenAiImagePublicSmokeArgs) -> Result<()> {
         .enable_all()
         .build()
         .context("create public image smoke runtime")?;
-    runtime.block_on(preflight_and_execute(
+    preflight_and_execute(
+        &runtime,
         args.output,
         implementation_sha,
         credential,
         registry,
         args.execute,
-    ))
+    )
 }
 
-async fn preflight_and_execute(
+fn preflight_and_execute(
+    runtime: &tokio::runtime::Runtime,
     output: PathBuf,
     implementation_sha: &str,
     credential: registry::pg::OpenAiImageSmokeCredential,
@@ -181,7 +183,10 @@ async fn preflight_and_execute(
         .user_agent("apitoken-gpt-image-2-public-smoke/1")
         .build()?;
     persist_pre_dispatch_journal(&output, implementation_sha, "discovery_checking")?;
-    verify_discovery_hidden(&client, credential.authorization_key()).await?;
+    runtime.block_on(verify_discovery_hidden(
+        &client,
+        credential.authorization_key(),
+    ))?;
     persist_pre_dispatch_journal(&output, implementation_sha, "preflight_success")?;
     if !execute {
         println!("GPT Image 2 public smoke preflight GREEN for {implementation_sha}");
@@ -200,7 +205,7 @@ async fn preflight_and_execute(
         },
     )?;
 
-    let generation_result = generate(&client, credential.authorization_key()).await;
+    let generation_result = runtime.block_on(generate(&client, credential.authorization_key()));
     let generation = match generation_result {
         Ok(value) => value,
         Err(error) => {
@@ -273,7 +278,11 @@ async fn preflight_and_execute(
             edit_request_id: None,
         },
     )?;
-    let edit_result = edit(&client, credential.authorization_key(), &generation.png).await;
+    let edit_result = runtime.block_on(edit(
+        &client,
+        credential.authorization_key(),
+        &generation.png,
+    ));
     let edit = match edit_result {
         Ok(value) => value,
         Err(error) => {
