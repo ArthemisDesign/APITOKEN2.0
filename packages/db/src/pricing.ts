@@ -8,6 +8,7 @@ import {
 } from "@claude-api/contracts";
 import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
+import { pricingReleaseCutoverCompleted } from "./pricing-control-jobs.js";
 import {
   copyBusinessInvitationPolicyToReplacement,
   createBusinessInvitationPolicy,
@@ -1179,6 +1180,26 @@ function customerRuleView(row: CustomerPricingRuleRow): CustomerPricingRuleView 
 }
 
 /**
+ * The B2C customer presentation after the fleet cutover: the managed global policy head is the
+ * content the active release pins (post-cutover edits are refused with release_cycle_required,
+ * so the two cannot diverge), while the binding's own frozen v1 rows are pre-cutover track
+ * artifacts — including a missing Google rule — that no longer describe any charge. The view
+ * therefore presents the global policy rules as the account's effective rules, keyed to the
+ * binding version being rendered.
+ */
+function globalB2cPresentationRules(
+  binding: CustomerPricingBindingRow,
+  version: CustomerPricingVersionRow,
+  globalRules: readonly CustomerPricingRuleRow[],
+): CustomerPricingRuleRow[] {
+  return globalRules.map((rule) => ({
+    ...rule,
+    binding_id: binding.id,
+    effective_version: version.effective_version,
+  }));
+}
+
+/**
  * The legacy scalar rule for a binding whose policy is not engine-enforced yet: a plain
  * provider discount mirroring the legacy scalar that billing actually applies. trackEligible and
  * the other capability flags stay false — the legacy lane has no track/retention/commission
@@ -1243,6 +1264,8 @@ function customerPricingVersionView(input: {
   admissionCatalogGeneration: string | null;
   switchEntries: ReadonlyMap<string, readonly CustomerSwitchEntryRow[]>;
   admissionSwitchGeneration: string | null;
+  cutoverCompleted: boolean;
+  globalB2cRules: readonly CustomerPricingRuleRow[];
 }): CustomerPricingVersionView {
   const { binding, version } = input;
   const policyCatalog = input.catalogEntries.get(
@@ -1294,25 +1317,29 @@ function customerPricingVersionView(input: {
     const policyScoped = findSwitch(policySwitches, identity.providerId, scopedType);
     const admissionMaster = findSwitch(admissionSwitches, identity.providerId, "master");
     const admissionScoped = findSwitch(admissionSwitches, identity.providerId, scopedType);
-    const exactRule = input.rules.find((rule) => (
+    const effectiveRules = binding.account_class === "b2c"
+        && input.cutoverCompleted
+        && input.globalB2cRules.length > 0
+      ? globalB2cPresentationRules(binding, version, input.globalB2cRules)
+      : input.rules;
+    const exactRule = effectiveRules.find((rule) => (
       rule.provider_id === identity.providerId
       && rule.scope_type === "model"
       && rule.canonical_model_id === identity.modelId
     ));
-    const providerRule = input.rules.find((rule) => (
+    const providerRule = effectiveRules.find((rule) => (
       rule.provider_id === identity.providerId && rule.scope_type === "provider"
     ));
-    // While the binding's policy is not engine-enforced (legacy_scalar or shadow), billing still
-    // applies the legacy scalar on the engine account to every provider. The customer-facing
-    // rule therefore surfaces the materialized per-provider policy discount, clamped to never
-    // advertise a discount beyond the scalar billing actually charges: a tighter negotiated
-    // provider rate shows as configured (billing can only over-deliver on it until the release
-    // cutover), a looser one is clamped to the scalar. Providers the policy does not cover stay
-    // unavailable exactly as the materialized rules say, and non-discount (track) rules keep the
-    // plain scalar presentation. Policy and scalar converge at the release cutover.
+    // Post-cutover the release authority bills exactly the account's pinned policy, so the
+    // materialized per-provider discount is presented as-is. Pre-cutover (legacy_scalar or
+    // shadow binding), billing still applied the legacy scalar on the engine account to every
+    // provider, so the rule was clamped to never advertise a discount beyond the scalar billing
+    // actually charged: a tighter negotiated provider rate showed as configured, a looser one
+    // clamped to the scalar. Policy and scalar converged at the release cutover.
     const materialized = exactRule ?? providerRule ?? null;
     const legacyScalarActive = binding.account_class === "b2b"
-      && binding.policy_enforcement !== "strict";
+      && binding.policy_enforcement !== "strict"
+      && !input.cutoverCompleted;
     const rule = legacyScalarActive && materialized !== null
       ? shadowPresentationRule(binding, version, materialized)
       : materialized;
@@ -1393,6 +1420,28 @@ export async function getCustomerPricingPolicyView(
     if (bindingResult.rows.length === 0) {
       await client.query("COMMIT");
       return [];
+    }
+    // Post-cutover the release authority owns every price: b2b policies present exactly as
+    // pinned (no legacy-scalar clamp), and b2c presents the managed global policy head — the
+    // content the active release pins — instead of the frozen pre-cutover track artifact rows.
+    const cutoverCompleted = await pricingReleaseCutoverCompleted(client);
+    let globalB2cRules: CustomerPricingRuleRow[] = [];
+    if (cutoverCompleted && bindingResult.rows.some((binding) => binding.account_class === "b2c")) {
+      const globalRulesResult = await client.query<CustomerPricingRuleRow>(`
+        SELECT '' AS binding_id, '' AS effective_version, rule.rule_id,
+               rule.scope_type, rule.provider_id, rule.canonical_model_id,
+               rule.pricing_mode, rule.rule_origin, rule.discount_bps,
+               rule.payable_multiplier_bp, rule.track_eligible,
+               rule.retention_eligible, rule.commission_eligible
+        FROM pricing_policy_rules rule
+        JOIN pricing_policies policy ON policy.id = rule.policy_id
+        JOIN pricing_policy_heads head
+          ON head.policy_id = policy.id AND head.current_version = rule.policy_version
+        WHERE policy.owner_type = 'global_b2c' AND policy.owner_id = 'global-b2c'
+          AND policy.product_id = 'main' AND policy.status = 'active'
+        ORDER BY rule.provider_id, rule.scope_type, rule.canonical_model_id, rule.rule_id
+      `);
+      globalB2cRules = globalRulesResult.rows;
     }
     const bindingIds = bindingResult.rows.map((binding) => binding.id);
     const versionResult = await client.query<CustomerPricingVersionRow>(`
@@ -1525,6 +1574,8 @@ export async function getCustomerPricingPolicyView(
           admissionCatalogGeneration: catalogHeads.get(binding.product_id) ?? null,
           switchEntries,
           admissionSwitchGeneration,
+          cutoverCompleted,
+          globalB2cRules,
         });
       };
       return {

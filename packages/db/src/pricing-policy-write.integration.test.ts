@@ -94,6 +94,51 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
     }
   }, TEST_TIMEOUT_MS);
 
+  // A durable cutover receipt with its FK parents, marking the post-cutover era for the
+  // commerce-local checks. The receipt payload mirrors what the activation writer stores.
+  async function markCutoverCompleted(): Promise<void> {
+    const digest = (label: string): string =>
+      `sha256:v2:${createHash("sha256").update(label, "utf8").digest("hex")}`;
+    for (const [generation, kind] of [[901, "target"], [902, "recovery"]] as const) {
+      await seedClient.query(`
+        INSERT INTO pricing_release_plans_v2 (
+          generation,release_kind,schema_version,commerce_inventory_digest,engine_inventory_digest,
+          openkeys_inventory_digest,service_inventory_digest,policy_manifest_digest,
+          assignment_manifest_digest,funding_manifest_digest,engine_release_digest,content_digest,status
+        ) VALUES ($1,$2,2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'planned')
+      `, [
+        generation, kind,
+        digest(`commerce:${generation}`), digest(`engine:${generation}`),
+        digest(`openkeys:${generation}`), digest(`service:${generation}`),
+        digest(`policy-manifest:${generation}`), digest(`assignment-manifest:${generation}`),
+        digest(`funding-manifest:${generation}`), digest(`engine-release:${generation}`),
+        digest(`content:${generation}`),
+      ]);
+    }
+    await seedClient.query(`
+      INSERT INTO pricing_stage8_evidence_v2 (
+        evidence_digest,target_generation,target_digest,recovery_generation,recovery_digest,
+        commerce_inventory_digest,engine_inventory_digest,openkeys_inventory_digest,
+        sales_contract_digest,funding_digest,shadow_digest,runtime_floor_digest,
+        legacy_inflight_count,blocker_count,passed,observed_at,valid_until
+      ) VALUES ($1,901,$2,902,$3,$4,$5,$6,$7,$8,$9,$10,0,0,true,now(),now()+interval '5 minutes')
+    `, [
+      digest("evidence"), digest("content:901"), digest("content:902"),
+      digest("commerce-evidence"), digest("engine:901"), digest("openkeys-evidence"),
+      digest("sales-contract"), digest("funding-manifest:901"), digest("shadow"),
+      digest("runtime-floor"),
+    ]);
+    await seedClient.query(`
+      INSERT INTO pricing_release_activation_receipts_v2 (
+        activation_id,activation_kind,release_generation,release_digest,
+        evidence_digest,head_version,receipt_digest,receipt_payload,activated_at
+      ) VALUES ($1,'cutover',901,$2,$3,1,$4,$5::jsonb,now())
+    `, [
+      randomUUID(), digest("content:901"), digest("evidence"),
+      digest("activation-receipt"), JSON.stringify({ result: "applied" }),
+    ]);
+  }
+
   it("creates a complete invitation policy atomically and replays only the exact policy", async () => {
     const idempotencyKey = randomUUID();
     const input = inviteInput(idempotencyKey, [ANTHROPIC_60, OPENAI_50]);
@@ -685,6 +730,122 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
       expect(model.rule).toMatchObject({
         pricingMode: "discount",
         ruleOrigin: "legacy",
+        discountBps: 5_000,
+        payableMultiplierBp: 5_000,
+      });
+    }
+  });
+
+  it("prices the customer dashboard by the release authority once the cutover is durable", async () => {
+    // A regular B2C customer on the backfilled global binding (frozen track v1 without any
+    // google rule): post-cutover he must see the global policy, not the legacy artifact.
+    const b2c = await createEmailUser(database, "display-b2c@example.test", "password-hash");
+    const b2cAccount = `acct_displayc_${b2c.id.replaceAll("-", "")}`;
+    await seedClient.query(`
+      UPDATE engine_accounts SET engine_account_id = $2, status = 'active' WHERE user_id = $1
+    `, [b2c.id, b2cAccount]);
+    await runStage5Backfill(database, {
+      schema_version: 1,
+      engine_accounts: [{ account_id: b2cAccount, multiplier_bp: 5_000, status: "active" }],
+      openkeys_accounts: [],
+    }, { mode: "safe" });
+    await seedClient.query(`
+      UPDATE account_policy_bindings
+      SET applied_effective_version = desired_effective_version,
+          applied_digest = desired_digest, last_ack_at = now(), sync_state = 'confirmed'
+      WHERE user_id = $1
+    `, [b2c.id]);
+
+    // The gen-1 fixture catalog has no Google model; add one so google rules validate. The
+    // inserts must come after the backfill, which verifies the canonical gen-1 content.
+    await seedClient.query(`
+      INSERT INTO provider_capability_entries (generation, provider_id, canonical_model_id, entry_digest, capability_data)
+      VALUES (1, 'google', 'gemini-3-flash-preview', 'entry-g1', '{}')
+    `);
+    await seedClient.query(`
+      INSERT INTO product_catalog_entries (product_id, generation, capability_generation, provider_id, canonical_model_id, enabled)
+      VALUES ('main', 1, 1, 'google', 'gemini-3-flash-preview', true)
+    `);
+
+    // The operator-configured global B2C policy: flat 50% on every provider (created by the
+    // backfill above at v1 with legacy track rules, so this save produces v2).
+    await updateManagedPricingPolicy(database, {
+      ownerType: "global_b2c",
+      ownerId: "global-b2c",
+      expectedVersion: 1,
+      rules: [
+        { scope: { provider: { providerId: "anthropic" } }, pricingMode: "discount", discountBps: 5_000 },
+        { scope: { provider: { providerId: "google" } }, pricingMode: "discount", discountBps: 5_000 },
+        { scope: { provider: { providerId: "openai" } }, pricingMode: "discount", discountBps: 5_000 },
+      ],
+      actorId: "admin@example.test",
+      reason: "flat 50% global policy",
+    });
+
+    // A converted B2B client whose negotiated OpenAI rate (75%) is LOOSER than his legacy
+    // scalar (63%): pre-cutover the badge clamps to the scalar; post-cutover the badge must
+    // follow the pinned policy exactly.
+    const b2b = await createEmailUser(database, "display-b2b@example.test", "password-hash");
+    await seedClient.query(`
+      UPDATE engine_accounts SET engine_account_id = $2, status = 'active' WHERE user_id = $1
+    `, [b2b.id, `acct_display_${b2b.id.replaceAll("-", "")}`]);
+    await convertCustomerToBusiness(database, {
+      userId: b2b.id,
+      actorId: "admin@example.test",
+      reason: "customer negotiated business terms",
+      multiplierBp: 3_700,
+    });
+    await updateManagedPricingPolicy(database, {
+      ownerType: "b2b_client",
+      ownerId: b2b.id,
+      expectedVersion: 1,
+      rules: [
+        { scope: { provider: { providerId: "anthropic" } }, pricingMode: "discount", discountBps: 6_300 },
+        { scope: { provider: { providerId: "google" } }, pricingMode: "discount", discountBps: 5_500 },
+        { scope: { provider: { providerId: "openai" } }, pricingMode: "discount", discountBps: 7_500 },
+      ],
+      actorId: "admin@example.test",
+      reason: "63/55/75 per-provider policy",
+    });
+    // The engine confirms the saved version under shadow, so it becomes the applied one.
+    await seedClient.query(`
+      UPDATE account_policy_bindings
+      SET applied_effective_version = desired_effective_version,
+          applied_digest = desired_digest,
+          last_ack_at = now(), sync_state = 'confirmed',
+          policy_enforcement = 'shadow'
+      WHERE user_id = $1
+    `, [b2b.id]);
+
+    await markCutoverCompleted();
+
+    const b2bViews = await getCustomerPricingPolicyView(database, b2b.id);
+    const b2bApplied = b2bViews[0]!.applied;
+    expect(b2bApplied).not.toBeNull();
+    const b2bRuleByProvider = new Map(
+      b2bApplied!.providers.map((provider) => [
+        provider.providerId,
+        provider.models[0]?.rule ?? null,
+      ]),
+    );
+    expect(b2bRuleByProvider.get("anthropic")).toMatchObject({ pricingMode: "discount", discountBps: 6_300, payableMultiplierBp: 3_700 });
+    expect(b2bRuleByProvider.get("google")).toMatchObject({ pricingMode: "discount", discountBps: 5_500, payableMultiplierBp: 4_500 });
+    // The exact production bug: the looser OpenAI rate was clamped to the 63% scalar.
+    expect(b2bRuleByProvider.get("openai")).toMatchObject({ pricingMode: "discount", discountBps: 7_500, payableMultiplierBp: 2_500 });
+
+    const b2cViews = await getCustomerPricingPolicyView(database, b2c.id);
+    const b2cApplied = b2cViews[0]!.applied;
+    expect(b2cApplied).not.toBeNull();
+    const b2cRuleByProvider = new Map(
+      b2cApplied!.providers.map((provider) => [
+        provider.providerId,
+        provider.models[0]?.rule ?? null,
+      ]),
+    );
+    for (const providerId of ["anthropic", "openai", "google"]) {
+      expect(b2cRuleByProvider.get(providerId)).toMatchObject({
+        pricingMode: "discount",
+        ruleOrigin: "managed",
         discountBps: 5_000,
         payableMultiplierBp: 5_000,
       });

@@ -102,6 +102,14 @@ rewrites the immutable ledger and never reprices an in-flight reservation: those
 their reserve-time pinned snapshots. Remaining welcome-bonus funds stay spendable under the
 B2B policy (funding, not pricing), and B2B charges carry no referral commission basis.
 
+The customer dashboard projection (`getCustomerPricingPolicyView`) follows the same authority:
+post-cutover it presents a B2B account's pinned policy rules exactly as configured — never
+clamped to the retired legacy scalar — and a B2C account as the managed global policy head
+(the content the active release pins; a direct global save is refused with
+`release_cycle_required`, so the two cannot diverge). Before the cutover, a not-yet-strict B2B
+badge was clamped to the scalar that legacy billing actually applied; that clamp is pre-cutover
+semantics and is inactive once the cutover receipt is durable.
+
 Before the fleet cutover the same contract ran through the per-account strict lane: conversion
 and saves armed `strict_chain_pending`, and the pricing worker chained funding normalization,
 exact key ACK stamps, and the atomic strict+strict+verified delivery once the exact client
