@@ -362,10 +362,11 @@ for ((poll = 1; poll <= MAX_POLLS; poll++)); do
   if [[ $status == confirmed ]]; then
     jq -e --arg id "$rollout_id" '
       .rollouts[] | select(.id == $id) |
-      (.job_count | tonumber) == (.job_counts_by_status.confirmed // 0) and
-      (["pending", "processing", "retry", "blocked", "dead"] |
-        all(. as $state | (.job_counts_by_status[$state] // 0) == 0)) and
-      .completed_at != null
+      .job_counts_by_status as $counts |
+      ((.job_count | tonumber) == ($counts.confirmed // 0)
+        and (["pending", "processing", "retry", "blocked", "dead"] |
+          all(. as $state | ($counts[$state] // 0) == 0))
+        and .completed_at != null)
     ' "$work/status.json" >/dev/null \
       || { unset COMMERCIAL_ADMIN_KEY; printf 'Stage 7 confirmed without complete job ACKs\n' >&2; exit 1; }
     jq -e --arg id "$rollout_id" '

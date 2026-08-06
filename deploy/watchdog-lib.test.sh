@@ -5144,7 +5144,7 @@ grep -Fq 'flock -n 9' "$pricing_stage7_gate" \
   || wd_die 'pricing Stage 7 helper replays Stage 5 materialization'
 [[ $(grep -Fc 'request POST /v1/admin/pricing-shadow-rollout-v2/stage' "$pricing_stage7_gate") == 1 ]] \
   || wd_die 'pricing Stage 7 helper has multiple rollout staging paths'
-grep -Fq '.job_count | tonumber) == (.job_counts_by_status.confirmed // 0)' "$pricing_stage7_gate" \
+grep -Fq '.job_count | tonumber) == ($counts.confirmed // 0)' "$pricing_stage7_gate" \
   || wd_die 'pricing Stage 7 helper does not require complete aggregate job ACKs'
 grep -Fq '.assignment_count | test("^[1-9][0-9]*$")' "$pricing_stage7_gate" \
   || wd_die 'pricing Stage 7 helper accepts an empty assignment authority'
@@ -5190,9 +5190,37 @@ grep -Fxq 'STATE_PARENT=/var/lib/apitoken/pricing-stage7-inventory-refresh' \
   || wd_die 'pricing Stage 7 refresh helper has an unexpected control path count'
 ! grep -Fq 'request POST /v1/admin/pricing-stage5-v2/materialize' "$pricing_stage7_refresh_gate" \
   || wd_die 'pricing Stage 7 refresh helper replays Stage 5 materialization'
-grep -Fq '.job_count | tonumber) == (.job_counts_by_status.confirmed // 0)' \
+grep -Fq '.job_count | tonumber) == ($counts.confirmed // 0)' \
   "$pricing_stage7_refresh_gate" \
   || wd_die 'pricing Stage 7 refresh helper does not require complete aggregate ACKs'
+# Functional regression for the confirmed-check jq: the unparenthesized `and` chain used to
+# evaluate the trailing operands against the whole status document and died with "Cannot index
+# string" on a genuinely complete rollout. Run the gate's exact program against both fixtures.
+stage7_jq_fixture=$(mktemp)
+cat >"$stage7_jq_fixture" <<'JSON'
+{"rollouts":[
+  {"id":"11111111-1111-4111-8111-111111111111","job_count":"2","job_counts_by_status":{"confirmed":2},"completed_at":"2026-08-06T00:00:00Z"},
+  {"id":"22222222-2222-4222-8222-222222222222","job_count":"2","job_counts_by_status":{"confirmed":1,"blocked":1},"completed_at":"2026-08-06T00:00:00Z"}
+]}
+JSON
+stage7_confirmed_jq() {
+  jq -e --arg id "$1" '
+    .rollouts[] | select(.id == $id) |
+    .job_counts_by_status as $counts |
+    ((.job_count | tonumber) == ($counts.confirmed // 0)
+      and (["pending", "processing", "retry", "blocked", "dead"] |
+        all(. as $state | ($counts[$state] // 0) == 0))
+      and .completed_at != null)
+  ' "$stage7_jq_fixture" >/dev/null
+}
+stage7_confirmed_jq 11111111-1111-4111-8111-111111111111 \
+  || wd_die 'pricing Stage 7 confirmed check rejects a complete rollout'
+! stage7_confirmed_jq 22222222-2222-4222-8222-222222222222 \
+  || wd_die 'pricing Stage 7 confirmed check accepts an incomplete rollout'
+rm -f -- "$stage7_jq_fixture"
+grep -Fq '.job_counts_by_status as $counts' "$pricing_stage7_refresh_gate" \
+  && grep -Fq '.job_counts_by_status as $counts' "$pricing_stage7_gate" \
+  || wd_die 'a pricing Stage 7 gate lost the grouped confirmed-check binding'
 ! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc|https://|openai-image-public-smoke|images/(generations|edits)' \
   "$pricing_stage7_refresh_gate" \
   || wd_die 'pricing Stage 7 refresh helper contains an external, reseller or image-dispatch path'
