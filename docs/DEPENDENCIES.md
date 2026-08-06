@@ -291,9 +291,12 @@ is only what is needed to walk the relationships when making changes:
   withdrawal or complete retained success; it has no credential/environment loader or image dispatch. The
   successor producer `d42fc0e3290c0042a16797626326c250e0f6721c` is watchdog-GREEN. Its private CLI has a
   separate free `--preflight-only` consumer of only the engine PostgreSQL DSN, existing `crm-parsing`
-  meter-only credential and authenticated public `/v1/models`; the fixed root controller inherits only the
-  DSN, records exact pre-dispatch stages and cannot emit an image. Paid execution repeats that preflight
-  under a distinct new producer-SHA fence rather than trusting a stale free artifact. The direct OpenAI plane and header-gated Combined
+  meter-only credential and authenticated public `/v1/models`. Delivery
+  `737d0234fc7d016c31c5b9c56a27e16aef134d83` is RED and fences its root, but this mode has no image POST
+  and every valid stage has false dispatch flags and null request identities. Its corrective fixed controller
+  is `--inspect`-only and publishes the exact retained stage without environment, credential, binary, or
+  network access. Paid execution requires a distinct new producer-SHA fence and fresh successful preflight
+  rather than trusting this withdrawn artifact. The direct OpenAI plane and header-gated Combined
   bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —

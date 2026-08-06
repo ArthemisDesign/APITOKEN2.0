@@ -190,9 +190,13 @@ states. Producer `d42fc0e3290c0042a16797626326c250e0f6721c` is deployed and watc
 `deploy/gpt-image-2-public-preflight-gate.sh` is pinned to that immutable release and a fresh
 `/var/lib/apitoken/watchdog/gpt-image-2-public-preflight/<producer-sha>` fence. The root controller inherits
 only `CLAUDE_API_DATABASE_URL` from an active OpenAI slot; the exact binary selects the existing service
-credential internally, checks authenticated discovery, and stops at `preflight_success` with both dispatch
-flags false, null request identities, and no PNG/evidence. A paid mode must use another new SHA-keyed root
-and repeat that fresh preflight before dispatch; it cannot promote or replay a prior free artifact. Catalog, router, OpenKeys, site,
+credential internally and checks authenticated discovery. Free-preflight delivery
+`737d0234fc7d016c31c5b9c56a27e16aef134d83` is RED, so the producer-SHA root is fenced and cannot be
+rerun. This mode has no image POST at all; its journal contract also requires both dispatch flags false and
+null request identities. The corrective controller is now `--inspect`-only: no `/proc`, environment, binary,
+credential or network path. It validates that the root contains only the private journal and publishes its
+exact bounded stage as `deploy/gpt-image-2-public-preflight`. A paid mode requires another new producer/root
+and a fresh successful free preflight; it cannot promote or replay this artifact. Catalog, router, OpenKeys, site,
 admin and public-documentation publication remains forbidden until a later exact production generation+edit
 gate and overall watchdog status are GREEN.
 

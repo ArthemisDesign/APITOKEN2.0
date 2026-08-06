@@ -201,11 +201,14 @@ only `CLAUDE_API_DATABASE_URL`, so free smoke admission no longer assembles
 or validates unrelated server, provider-roster, or fallback settings. Before each database, schema,
 credential, runtime/client and authenticated-discovery step, the private journal records the exact stage
 with both dispatch flags false and null request identities. Free success is exactly `preflight_success` and
-creates no PNG or evidence. `deploy/gpt-image-2-public-preflight-gate.sh` pins that exact producer and a
-fresh SHA-keyed private root, inherits only the production PostgreSQL DSN, and exposes no credential or
-image-dispatch path. Paid execution does not trust that earlier artifact: it repeats the same fresh preflight
-in its own new SHA-keyed replay fence before changing `generation_dispatched` immediately ahead of the
-first image POST. Deployment of this dormant gate does not authorize the paid gate or publication.
+creates no PNG or evidence. Free-preflight delivery
+`737d0234fc7d016c31c5b9c56a27e16aef134d83` is RED and permanently fences its SHA-keyed root. The mode
+contains no image POST, and every valid journal stage requires both dispatch flags false and null request
+identities. Its corrective `deploy/gpt-image-2-public-preflight-gate.sh <producer-sha> --inspect` controller
+can only validate the retained one-file journal and publish the exact bounded stage; it has no `/proc`,
+environment, binary, credential, or network path. Paid execution must use another new producer/root and
+repeat a fresh successful free preflight before changing `generation_dispatched` immediately ahead of the
+first image POST. This withdrawal does not authorize the paid gate or publication.
 
 The intended one-shot contract remains:
 

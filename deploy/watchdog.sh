@@ -2427,7 +2427,7 @@ main() {
   local typescript_required=0 typescript_full=0 typescript_base= rust_required=0 static_required=0
   local engine_artifacts_required=0 codex_artifacts_required=0
   local validation_policy_sha256='' validation_plan_sha256='' final_verification_plan=''
-  local public_image_summary=''
+  local public_image_summary='' public_image_preflight_summary=''
   local core_pid= sales_pid= openkeys_pid= admin_pid= devbot_pid= core_rc=0 sales_rc=0 openkeys_rc=0 admin_rc=0 devbot_rc=0
 
   [[ $(id -un) == deploy ]] || wd_die "watchdog service must run as deploy"
@@ -2753,9 +2753,13 @@ main() {
   if (( gpt_image_2_public_preflight_gate == 1 )); then
     CURRENT_PHASE=verifying-gpt-image-2-public-preflight
     CURRENT_PHASE_BEFORE_FAILURE=verifying-gpt-image-2-public-preflight
-    status "running free GPT Image 2 public preflight without image dispatch"
-    sudo -n "$GPT_IMAGE_2_PUBLIC_PREFLIGHT_GATE" \
-      "$GPT_IMAGE_2_PUBLIC_PREFLIGHT_PRODUCER_SHA"
+    status "inspecting the fenced GPT Image 2 public preflight without network access"
+    public_image_preflight_summary=$(sudo -n "$GPT_IMAGE_2_PUBLIC_PREFLIGHT_GATE" \
+      "$GPT_IMAGE_2_PUBLIC_PREFLIGHT_PRODUCER_SHA" --inspect)
+    [[ $public_image_preflight_summary =~ ^gpt-image-preflight:[a-z_]{1,64}:g=false:e=false$ ]] \
+      || wd_die "GPT Image 2 public preflight inspector returned an invalid summary"
+    CURRENT_PHASE_BEFORE_FAILURE=$public_image_preflight_summary
+    github_status success deploy/gpt-image-2-public-preflight "$public_image_preflight_summary"
   fi
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"

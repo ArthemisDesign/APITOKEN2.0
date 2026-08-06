@@ -4351,56 +4351,58 @@ public_gate_line=$(grep -nF '"$GPT_IMAGE_2_PUBLIC_PRODUCER_SHA" --inspect' \
 grep -Fq 'CURRENT_PHASE_BEFORE_FAILURE=$public_image_summary' "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 retained journal classification is absent from the RED status'
 
-# The successor producer first runs a separate free gate. It inherits only the production PostgreSQL
-# DSN, selects the existing service key inside the binary, and can accept only a no-dispatch journal.
+# The free production attempt is fenced. Its corrective controller can only classify the retained
+# one-file no-dispatch journal; it cannot load an environment, credential, binary, or network path.
 wd_path_is_gpt_image_2_public_preflight_gate_trigger deploy/gpt-image-2-public-preflight-gate.sh \
-  || wd_die 'GPT Image 2 public free preflight file does not trigger its production gate'
+  || wd_die 'GPT Image 2 public preflight inspector file does not trigger corrective verification'
 if wd_path_is_gpt_image_2_public_preflight_gate_trigger deploy/watchdog.sh; then
-  wd_die 'ordinary controller updates trigger GPT Image 2 public free preflight'
+  wd_die 'ordinary controller updates trigger GPT Image 2 public preflight inspection'
 fi
 grep -Fq '"$ROOT/deploy/gpt-image-2-public-preflight-gate.sh"' "$ROOT/deploy/install-watchdog.sh" \
-  || wd_die 'GPT Image 2 public free preflight is not installed as a fixed controller'
+  || wd_die 'GPT Image 2 public preflight inspector is not installed as a fixed controller'
 grep -Fxq 'PRODUCER_SHA=d42fc0e3290c0042a16797626326c250e0f6721c' \
   "$ROOT/deploy/gpt-image-2-public-preflight-gate.sh" \
-  || wd_die 'GPT Image 2 public free preflight is not pinned to the GREEN producer'
-grep -Fq 'CLAUDE_API_DATABASE_URL=$database_url' \
+  || wd_die 'GPT Image 2 public preflight inspector is not pinned to the GREEN producer'
+grep -Fq '[[ $# -eq 2 && $2 == --inspect ]]' \
   "$ROOT/deploy/gpt-image-2-public-preflight-gate.sh" \
-  || wd_die 'GPT Image 2 public free preflight does not inherit the authority DSN'
-grep -Fq 'env -i HOME=/home/deploy CLAUDE_API_DATABASE_URL="$CLAUDE_API_DATABASE_URL"' \
+  || wd_die 'GPT Image 2 public preflight inspector accepts a dispatch-capable invocation'
+! grep -Eq '/proc/|systemctl|setpriv|timeout|env -i|CLAUDE_API_DATABASE_URL|openai-image-public-smoke|https?://' \
   "$ROOT/deploy/gpt-image-2-public-preflight-gate.sh" \
-  || wd_die 'GPT Image 2 public free preflight does not clear unrelated inherited environment'
-! grep -Eq 'CLAUDE_API_(CODEX|CLAUDESTORE)|SUB_|--execute|images/(generations|edits)' \
-  "$ROOT/deploy/gpt-image-2-public-preflight-gate.sh" \
-  || wd_die 'GPT Image 2 public free preflight can load provider credentials or dispatch images'
-grep -Fq 'openai-image-public-smoke --output "$OUTPUT" --preflight-only' \
-  "$ROOT/deploy/gpt-image-2-public-preflight-gate.sh" \
-  || wd_die 'GPT Image 2 public free preflight does not invoke the exact no-image CLI mode'
+  || wd_die 'GPT Image 2 public preflight inspector can reach environment, binary, or network'
 grep -Fq '.generation_dispatched == false and .edit_dispatched == false' \
   "$ROOT/deploy/gpt-image-2-public-preflight-gate.sh" \
-  || wd_die 'GPT Image 2 public free preflight accepts an image dispatch'
+  || wd_die 'GPT Image 2 public preflight inspector accepts an image dispatch'
 grep -Fq '.generation_request_id == null and .edit_request_id == null' \
   "$ROOT/deploy/gpt-image-2-public-preflight-gate.sh" \
-  || wd_die 'GPT Image 2 public free preflight accepts a request identity'
+  || wd_die 'GPT Image 2 public preflight inspector accepts a request identity'
 grep -Fq '[[ ${#entries[@]} -eq 1 && ${entries[0]} == journal.json ]]' \
   "$ROOT/deploy/gpt-image-2-public-preflight-gate.sh" \
-  || wd_die 'GPT Image 2 public free preflight accepts image/evidence artifacts'
+  || wd_die 'GPT Image 2 public preflight inspector accepts image/evidence artifacts'
+grep -Fq 'gpt-image-preflight:\($journal.state):g=false:e=false' \
+  "$ROOT/deploy/gpt-image-2-public-preflight-gate.sh" \
+  || wd_die 'GPT Image 2 public preflight inspector omits exact retained stage'
 ! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc' \
   "$ROOT/deploy/gpt-image-2-public-preflight-gate.sh" \
-  || wd_die 'GPT Image 2 public free preflight contains a third-party image relay'
-grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-preflight-gate.sh d42fc0e3290c0042a16797626326c250e0f6721c' \
+  || wd_die 'GPT Image 2 public preflight inspector contains a third-party image relay'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-preflight-gate.sh d42fc0e3290c0042a16797626326c250e0f6721c --inspect' \
   "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
-  || wd_die 'GPT Image 2 public free preflight lacks an exact-producer sudo bridge'
-grep -A2 -F "require_permitted 'GPT Image 2 exact-producer public free preflight'" \
+  || wd_die 'GPT Image 2 public preflight inspector lacks an exact-producer sudo bridge'
+grep -A2 -F "require_permitted 'GPT Image 2 exact-producer public preflight inspector'" \
   "$ROOT/deploy/install-sudoers.sh" \
-  | grep -Fq 'd42fc0e3290c0042a16797626326c250e0f6721c' \
-  || wd_die 'GPT Image 2 public free preflight sudo self-check is not aligned with policy'
+  | grep -Fq 'd42fc0e3290c0042a16797626326c250e0f6721c --inspect' \
+  || wd_die 'GPT Image 2 public preflight inspector sudo self-check is not aligned with policy'
 grep -Fxq 'GPT_IMAGE_2_PUBLIC_PREFLIGHT_PRODUCER_SHA=d42fc0e3290c0042a16797626326c250e0f6721c' \
   "$ROOT/deploy/watchdog.sh" \
-  || wd_die 'watchdog does not pin the GPT Image 2 public free preflight producer'
-preflight_gate_line=$(grep -nF '"$GPT_IMAGE_2_PUBLIC_PREFLIGHT_PRODUCER_SHA"' \
-  "$ROOT/deploy/watchdog.sh" | tail -n1 | cut -d: -f1)
+  || wd_die 'watchdog does not pin the GPT Image 2 public preflight producer'
+preflight_gate_line=$(grep -nF '"$GPT_IMAGE_2_PUBLIC_PREFLIGHT_PRODUCER_SHA" --inspect' \
+  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
 [[ -n $preflight_gate_line && -n $processed_line && $preflight_gate_line -lt $processed_line ]] \
-  || wd_die 'GPT Image 2 public free preflight is not verified before processed/green'
+  || wd_die 'GPT Image 2 public preflight is not inspected before processed/green'
+grep -Fq 'CURRENT_PHASE_BEFORE_FAILURE=$public_image_preflight_summary' "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'GPT Image 2 public preflight stage is absent from the watchdog status'
+grep -Fq 'github_status success deploy/gpt-image-2-public-preflight "$public_image_preflight_summary"' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'GPT Image 2 public preflight stage has no sanitized GREEN status'
 
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'
