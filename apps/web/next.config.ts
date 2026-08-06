@@ -22,6 +22,25 @@ const shortLinks: Record<string, string> = {
 // this flag and keep the normal authentication flow.
 const previewFixtures = process.env.VERCEL_ENV === "preview" || process.env.NEXT_PUBLIC_PREVIEW_FIXTURES === "1";
 
+// CSP для клиентского фронта. Public-поверхность: Yandex Metrika (инлайн-бутстрап +
+// внешний скрипт mc.yandex.ru и его beacon) и API на backend.apitoken.sale
+// (NEXT_PUBLIC_BACKEND_URL). Всё остальное — same-origin; checkout-редирект на платёжки
+// идёт через window.location (навигация, не form/frame), поэтому в CSP он не нужен.
+// Inline-скрипты/стили обязательны: Next 16 встраивает inline-скрипты, а layout использует
+// dangerouslySetInnerHTML для темы/referral/Metrika, плюс inline style-атрибуты в UI.
+const csp = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' https://mc.yandex.ru",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: https://mc.yandex.ru",
+  "font-src 'self'",
+  "connect-src 'self' https://backend.apitoken.sale https://mc.yandex.ru",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join("; ");
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   env: { NEXT_PUBLIC_PREVIEW_FIXTURES: previewFixtures ? "1" : "" },
@@ -57,6 +76,7 @@ const nextConfig: NextConfig = {
     return [{
       source: "/:path*",
       headers: [
+        { key: "Content-Security-Policy", value: csp },
         { key: "X-Content-Type-Options", value: "nosniff" },
         { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
         { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },

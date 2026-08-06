@@ -21,6 +21,23 @@ Production deployment and rollback are documented in [`docs/ops/DEPLOYMENT.md`](
 immutable blue-green; the worker remains single-instance stop/start but runs from the exact same
 immutable commerce release selected for the API.
 
+## Frontend security headers
+
+The two customer-facing Next.js apps send a Content-Security-Policy from their
+`next.config.ts` (in addition to nosniff/referrer/permissions headers):
+
+- `apps/web` (customer frontend): `default-src 'self'`; scripts allow `'unsafe-inline'`
+  (Next 16 inline scripts + theme/referral/Metrika bootstrap) and `https://mc.yandex.ru`
+  (Yandex Metrika loader); `connect-src` allows `https://backend.apitoken.sale`
+  (the `NEXT_PUBLIC_BACKEND_URL` default) and `https://mc.yandex.ru` (Metrika beacon).
+- `apps/sales-web` (partners portal): `default-src 'self'`; scripts allow `'unsafe-inline'`
+  and `https://telegram.org` (Telegram Login Widget loader); `frame-src` allows
+  `https://oauth.telegram.org` (the widget's embedded iframe).
+
+A change that adds another external origin to either app (new analytics, widget, font or
+API host) must extend the matching CSP allowlist in the same commit; otherwise the browser
+will silently block the resource.
+
 ## Local setup
 
 Use Node.js 24 LTS and pnpm 9.
