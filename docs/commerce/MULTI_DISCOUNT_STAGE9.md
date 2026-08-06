@@ -114,7 +114,11 @@ GREEN producer SHA.
 - shadow evaluation covers 100% of supported requests;
 - legacy-format reservations/outbox rows are accounted for as an audit count and continue to settle
   by their reserve-time snapshot; the absence of such rows is not a precondition;
-- there are no pending/processing/retry/dead pricing control jobs;
+- there are no pending/processing/retry/dead pricing control jobs — with one exact exemption:
+  a terminal-dead catalog/switch/policy delivery whose same lineage (product, singleton switch or
+  binding) later reached a newer `confirmed` delivery counts as recovered, because the desired end
+  state was verifiably delivered by the newer job; a dead delivery without a confirmed successor,
+  and every dead release control job, still block;
 - every active/disabled account has exactly one B2C/B2B/OpenKeys/service assignment;
 - account creation/activation uses the shared release control-plane lock.
 

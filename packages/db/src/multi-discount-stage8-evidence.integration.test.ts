@@ -1397,6 +1397,90 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
     }
   });
 
+  it("clears the backlog gate only for a dead delivery whose lineage later confirmed", async () => {
+    const seeded = await seedPreparedPair();
+    const database = createDatabase(databaseUrl, "stage8-backlog-recovered");
+    try {
+      await seed.query(`
+        INSERT INTO provider_capability_versions (
+          generation, schema_version, content_digest, observed_at, created_at
+        ) VALUES (1, 2, $1, now(), now())
+      `, [digest("backlog-capability")]);
+      for (const generation of [1, 2]) {
+        await seed.query(`
+          INSERT INTO product_catalog_versions (
+            product_id, generation, schema_version, capability_generation,
+            capability_digest, content_digest, actor_type, reason, created_at
+          ) VALUES ('main', $1, 2, 1, $2, $3, 'admin', 'backlog gate test', now())
+        `, [generation, digest("backlog-capability"), digest(`backlog-catalog-${generation}`)]);
+      }
+      const jobPayload = JSON.stringify({ catalog: { product_id: "main" } });
+      // A terminal-dead delivery overtaken by a newer confirmed one is recovered lineage, not a
+      // backlog: neither the capture gate nor the activation preflight may count it.
+      await seed.query(`
+        INSERT INTO engine_catalog_jobs (
+          id, product_id, generation, schema_version, content_digest, payload, status
+        ) VALUES ($1, 'main', 1, 2, $2, $3::jsonb, 'dead')
+      `, [randomUUID(), digest("backlog-catalog-1"), jobPayload]);
+      await seed.query(`
+        INSERT INTO engine_catalog_jobs (
+          id, product_id, generation, schema_version, content_digest, payload, status,
+          ack_generation, ack_schema_version, ack_content_digest, ack_payload, confirmed_at
+        ) VALUES ($1, 'main', 2, 2, $2, $3::jsonb, 'confirmed',
+                  2, 2, $2, $3::jsonb, now())
+      `, [randomUUID(), digest("backlog-catalog-2"), jobPayload]);
+
+      const recovered = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        seeded.report,
+      );
+      expect(recovered.passed).toBe(true);
+
+      const jobId = await stagePricingReleaseActivationJobV2(database, {
+        activationKind: "cutover",
+        evidenceDigest: recovered.evidence_digest,
+        operatorId: "pricing-control-worker:integration",
+        reason: "recovered lineage must not block activation staging",
+      });
+      const claim = await claimNextPricingReleaseActivationJobV2(
+        database,
+        "activation-backlog-recovered",
+        seeded.authority.readers,
+      );
+      expect(claim).toMatchObject({ id: jobId, attempts: 1 });
+
+      // A dead delivery with NO confirmed successor stays a hard blocker.
+      await seed.query(`
+        DELETE FROM pricing_release_control_jobs_v2 WHERE id = $1
+      `, [jobId]);
+      await seed.query(`
+        INSERT INTO product_catalog_versions (
+          product_id, generation, schema_version, capability_generation,
+          capability_digest, content_digest, actor_type, reason, created_at
+        ) VALUES ('openkeys', 1, 2, 1, $1, $2, 'admin', 'backlog gate test', now())
+      `, [digest("backlog-capability"), digest("backlog-catalog-openkeys")]);
+      await seed.query(`
+        INSERT INTO engine_catalog_jobs (
+          id, product_id, generation, schema_version, content_digest, payload, status
+        ) VALUES ($1, 'openkeys', 1, 2, $2, $3::jsonb, 'dead')
+      `, [randomUUID(), digest("backlog-catalog-openkeys"), jobPayload]);
+      const blocked = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        seeded.report,
+      );
+      expect(blocked.passed).toBe(false);
+      const gate = await seed.query<{ blocker_count: string }>(`
+        SELECT blocker_count::text FROM pricing_stage8_evidence_v2
+        WHERE evidence_digest = $1
+      `, [blocked.evidence_digest]);
+      expect(Number(gate.rows[0]?.blocker_count)).toBeGreaterThan(0);
+    } finally {
+      await database.pool.end();
+    }
+  });
+
   it("stores passed evidence while preserving nonzero legacy inflight audit counts", async () => {
     const seeded = await seedPreparedPair();
     seeded.report = engineEvidence({

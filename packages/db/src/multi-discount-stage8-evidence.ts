@@ -407,12 +407,26 @@ async function pendingPricingJobs(client: PoolClient): Promise<string[]> {
   const rows = await client.query<{ subject: string }>(`
     SELECT concat(kind, ':', id::text) AS subject
     FROM (
-      SELECT 'catalog' AS kind, id, status FROM engine_catalog_jobs
-      UNION ALL SELECT 'switch', id, status FROM engine_switch_jobs
-      UNION ALL SELECT 'policy', id, status FROM engine_policy_jobs
+      SELECT 'catalog' AS kind, job.id, job.status FROM engine_catalog_jobs job
+      WHERE job.status IN ('pending', 'processing', 'retry')
+         OR (job.status = 'dead' AND NOT EXISTS(
+           SELECT 1 FROM engine_catalog_jobs newer
+           WHERE newer.product_id = job.product_id AND newer.status = 'confirmed'
+             AND newer.generation > job.generation))
+      UNION ALL SELECT 'switch', job.id, job.status FROM engine_switch_jobs job
+      WHERE job.status IN ('pending', 'processing', 'retry')
+         OR (job.status = 'dead' AND NOT EXISTS(
+           SELECT 1 FROM engine_switch_jobs newer
+           WHERE newer.status = 'confirmed' AND newer.generation > job.generation))
+      UNION ALL SELECT 'policy', job.id, job.status FROM engine_policy_jobs job
+      WHERE job.status IN ('pending', 'processing', 'retry')
+         OR (job.status = 'dead' AND NOT EXISTS(
+           SELECT 1 FROM engine_policy_jobs newer
+           WHERE newer.binding_id = job.binding_id AND newer.status = 'confirmed'
+             AND newer.effective_version > job.effective_version))
       UNION ALL SELECT 'release', id, status FROM pricing_release_control_jobs_v2
+      WHERE status IN ('pending', 'processing', 'retry', 'dead')
     ) job
-    WHERE status IN ('pending', 'processing', 'retry', 'dead')
     ORDER BY concat(kind, ':', id::text) COLLATE "C"
   `);
   return rows.rows.map((row) => row.subject);

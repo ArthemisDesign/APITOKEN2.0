@@ -451,12 +451,23 @@ async function unresolvedPricingJobCount(client: PoolClient, excludedJobId?: str
   const result = await client.query<{ count: string }>(`
     SELECT count(*)::text AS count
     FROM (
-      SELECT id::text AS id FROM engine_catalog_jobs
-      WHERE status IN ('pending', 'processing', 'retry', 'dead')
-      UNION ALL SELECT id::text FROM engine_switch_jobs
-      WHERE status IN ('pending', 'processing', 'retry', 'dead')
-      UNION ALL SELECT id::text FROM engine_policy_jobs
-      WHERE status IN ('pending', 'processing', 'retry', 'dead')
+      SELECT id::text AS id FROM engine_catalog_jobs job
+      WHERE job.status IN ('pending', 'processing', 'retry')
+         OR (job.status = 'dead' AND NOT EXISTS(
+           SELECT 1 FROM engine_catalog_jobs newer
+           WHERE newer.product_id = job.product_id AND newer.status = 'confirmed'
+             AND newer.generation > job.generation))
+      UNION ALL SELECT id::text FROM engine_switch_jobs job
+      WHERE job.status IN ('pending', 'processing', 'retry')
+         OR (job.status = 'dead' AND NOT EXISTS(
+           SELECT 1 FROM engine_switch_jobs newer
+           WHERE newer.status = 'confirmed' AND newer.generation > job.generation))
+      UNION ALL SELECT id::text FROM engine_policy_jobs job
+      WHERE job.status IN ('pending', 'processing', 'retry')
+         OR (job.status = 'dead' AND NOT EXISTS(
+           SELECT 1 FROM engine_policy_jobs newer
+           WHERE newer.binding_id = job.binding_id AND newer.status = 'confirmed'
+             AND newer.effective_version > job.effective_version))
       UNION ALL SELECT id::text FROM engine_pricing_jobs
       WHERE status IN ('pending', 'processing', 'retry')
       UNION ALL SELECT id::text FROM pricing_release_control_jobs_v2
@@ -970,16 +981,27 @@ export async function claimNextPricingReleaseActivationJobV2(
       WHERE job_kind IN ('activate_release', 'activate_recovery', 'activate_successor')
         AND status IN ('pending', 'retry') AND next_attempt_at <= now()
         AND NOT EXISTS (
-          SELECT 1 FROM engine_catalog_jobs
-          WHERE status IN ('pending', 'processing', 'retry', 'dead')
+          SELECT 1 FROM engine_catalog_jobs job
+          WHERE job.status IN ('pending', 'processing', 'retry')
+             OR (job.status = 'dead' AND NOT EXISTS(
+               SELECT 1 FROM engine_catalog_jobs newer
+               WHERE newer.product_id = job.product_id AND newer.status = 'confirmed'
+                 AND newer.generation > job.generation))
         )
         AND NOT EXISTS (
-          SELECT 1 FROM engine_switch_jobs
-          WHERE status IN ('pending', 'processing', 'retry', 'dead')
+          SELECT 1 FROM engine_switch_jobs job
+          WHERE job.status IN ('pending', 'processing', 'retry')
+             OR (job.status = 'dead' AND NOT EXISTS(
+               SELECT 1 FROM engine_switch_jobs newer
+               WHERE newer.status = 'confirmed' AND newer.generation > job.generation))
         )
         AND NOT EXISTS (
-          SELECT 1 FROM engine_policy_jobs
-          WHERE status IN ('pending', 'processing', 'retry', 'dead')
+          SELECT 1 FROM engine_policy_jobs job
+          WHERE job.status IN ('pending', 'processing', 'retry')
+             OR (job.status = 'dead' AND NOT EXISTS(
+               SELECT 1 FROM engine_policy_jobs newer
+               WHERE newer.binding_id = job.binding_id AND newer.status = 'confirmed'
+                 AND newer.effective_version > job.effective_version))
         )
         AND NOT EXISTS (
           SELECT 1 FROM engine_pricing_jobs
