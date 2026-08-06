@@ -144,10 +144,14 @@ side effect. `serve` may only perform the read-only schema verification before c
   The sole exception to the generic replacement lock is
   `locked_openkeys_policy_transition`: one transaction inserts the exact next provider-only
   managed 1:1 OpenKeys policy and CAS-moves the exact active replacement-locked legacy binding to
-  `shadow + legacy_single + verified`. Account/policy/owner/product identity and both version
+  `shadow + legacy_single + verified`, then atomically consumes the source replacement lock so
+  later generations advance the engine-validated canonical managed 1:1 successor through the
+  generic prepare/activate CAS lane. Account/policy/owner/product identity and both version
   counters must be preserved/advance once; the successor's exact catalog and switches must already
-  be active. Generic prepare/activate remain locked, any model rule/discount/eligibility flag is
-  invalid, a lost-ACK exact replay is `Unchanged`, and any failed insert/CAS rolls back all rows.
+  be active. Generic prepare/activate remain locked until that one-time unlock, any model
+  rule/discount/eligibility flag is invalid, a lost-ACK exact replay is `Unchanged`, a second
+  genuine transition is rejected by the successor identity validation, and any failed
+  insert/CAS rolls back all rows.
   Separately, a **shadow lineage rebind** is the one accepted identity change on the generic
   prepare/activate path: while the stored binding is `shadow` and already active, a spec with a
   different class/product identity (B2C→B2B conversion) prepares as a new lineage — own

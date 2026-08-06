@@ -1286,9 +1286,29 @@ fn postgres_pricing_contract_matrix() {
     forbidden_third.effective_version = 3;
     forbidden_third.policy_version = 3;
     forbidden_third.content_digest = "contract-openkeys-managed-policy-3".to_owned();
+    // The transition consumed the replacement lock: the engine-validated canonical managed
+    // 1:1 successor can now advance through the generic CAS lane in later generations.
     assert_eq!(
         postgres_prepare_account_policy(&mut client, &forbidden_third).unwrap(),
-        locked()
+        PricingMutation::Stored
+    );
+    assert_eq!(
+        postgres_activate_account_policy(
+            &mut client,
+            &activation(
+                &forbidden_third,
+                crate::pricing::locked_openkeys_transition_binding(),
+            ),
+            &PolicyActiveExpectation::Exact(ActivePolicyTarget {
+                target: VersionTarget::new(
+                    2,
+                    "contract-openkeys-managed-policy-2".to_owned(),
+                ),
+                binding: crate::pricing::locked_openkeys_transition_binding(),
+            }),
+        )
+        .unwrap(),
+        PricingMutation::Applied
     );
 
     let b2b_v4 = b2b_policy(4, 4, "b2b-policy-4");

@@ -2323,7 +2323,7 @@ pub(crate) fn postgres_locked_openkeys_policy_transition(
     // advance the engine-validated canonical managed 1:1 successor through the generic CAS lane.
     let cleared = transaction.execute(
         "UPDATE account_policy_versions
-         SET replacement_locked = 0
+         SET replacement_locked = FALSE
          WHERE account_id=$1
            AND effective_version=$2
            AND content_digest=$3
