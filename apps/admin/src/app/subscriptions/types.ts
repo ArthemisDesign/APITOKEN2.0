@@ -70,9 +70,13 @@ export interface ClaudeSubWindow {
   observed_at?: number | null;
   data_age_seconds?: number | null;
   snapshot_fresh?: boolean;
+  /** Почему точной текущей доли нет — независимо от денежного `missing_reason`.
+   *  `awaiting_probe` | `last_known_before_reset` | `window_rolled_over`; отсутствует, когда снапшот свежий. */
+  quota_state?: string | null;
   used_fraction_units?: number | null;
   measurement_resolution_fraction_units?: number | null;
   current_quota_source?: string | null;
+  displayed_quota_source?: string | null;
   last_known_quota_source?: string | null;
   capacity_nano?: string | null;
   remaining_nano?: string | null;

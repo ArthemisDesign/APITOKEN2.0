@@ -409,9 +409,22 @@ Claude is built from `/capacity`:
   reset is still ahead, the row keeps showing the last percentage, countdown and muted
   API-$ with the label `последнее` ("last known"); a new snapshot replaces them
   immediately. These dollars are diagnostic and do not enter the fleet saleable capacity.
-  After the deadline the old value disappears and until the next probe the UI shows
-  `обновляем` ("refreshing"), so it is not carried over into the new window. A missing
-  reset and a pending/degraded FIFO also show `обновляем`. An exhausted window is not
+  After the deadline the old percentage is never carried into the new window. The window is
+  then empty by construction, so a healthy routable subscription shows the exact `0%`
+  published by the backend (`windows[].quota_state = "window_rolled_over"`) instead of
+  hiding a measured zero behind `обновляем` — an idle subscription must not look like one
+  without evidence. Its money cell still says `обновляем` ("refreshing"), because a
+  rolled-over window carries no fresh measurement and nothing may be sold from it.
+  A pending/degraded delivery FIFO no longer blanks the quota: the exact percentage and
+  countdown stay visible while only the money cell degrades, matching the Gemini/KIMI/GLM
+  contract. The money cell names the cause from `windows[].missing_reason` instead of
+  collapsing four different failures into one word: `ждём доставку` ("waiting for
+  delivery") for a pending/degraded/unavailable FIFO, `ждём probe` ("waiting for a probe")
+  for a stale or missing provider snapshot, `нет авторитета` ("no authority") when the
+  calibration report cannot be read, and `ждём данные плана` ("waiting for plan evidence")
+  before a plan cohort exists. When a window genuinely has no snapshot at all
+  (`quota_state = "awaiting_probe"`) the quota cell still shows `обновляем`: a zero must
+  never be invented. An exhausted window is not
   hidden by the general runtime-cooling: the row shows the exact `100%` and the countdown
   to the provider reset separately for 5h/7d, and the status is `лимит … исчерпан` ("limit
   … exhausted") without the internal term `cooling`. Until the reset the money stays `вне

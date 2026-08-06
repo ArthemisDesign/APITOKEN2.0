@@ -29,6 +29,8 @@ interface ClaudeWindowView {
   reset: string;
   remaining: string | null | undefined;
   capacity: string | null | undefined;
+  /** Почему денег нет — конкретной причиной, а не одним словом на четыре разных случая. */
+  moneyHint: string;
 }
 
 function windowFor(item: CapacitySub, kind: "5h" | "7d"): ClaudeSubWindow | undefined {
@@ -36,10 +38,32 @@ function windowFor(item: CapacitySub, kind: "5h" | "7d"): ClaudeSubWindow | unde
   return item.windows?.find((window) => window.window_kind === kind || window.window_minutes === minutes);
 }
 
+// Денежная ячейка обязана называть ПРИЧИНУ отсутствия долларов: сбой доставки точных улик и
+// отсутствие свежего probe — разные аварии с разными действиями оператора, и склеивать их в одно
+// «ждём свежую квоту» значит прятать диагностику, которую бэкенд уже опубликовал в `missing_reason`.
+function moneyHintFor(reason: string | null | undefined): string {
+  switch (reason) {
+    case "calibration_delivery_pending":
+    case "calibration_delivery_degraded":
+    case "calibration_delivery_unavailable":
+      return "ждём доставку";
+    case "calibration_authority_unavailable":
+      return "нет авторитета";
+    case "awaiting_plan_evidence":
+      return "ждём данные плана";
+    case "stale_current_quota_snapshot":
+    case "missing_current_quota_snapshot":
+      return "ждём probe";
+    default:
+      return "ждём свежую квоту";
+  }
+}
+
 function claudeWindowView(item: CapacitySub, kind: "5h" | "7d", now: number): ClaudeWindowView {
   const window = windowFor(item, kind);
   const remaining = window?.remaining_nano ?? (kind === "5h" ? item.rem5h_nano : item.rem7d_nano);
   const capacity = window?.capacity_nano ?? (kind === "5h" ? item.cap5h_nano : item.cap7d_nano);
+  const moneyHint = moneyHintFor(window?.missing_reason);
   const cooling = item.cooling === true;
   const unavailableOutsideQuota = item.auth_state === "dead" || (item.routable === false && !cooling);
   if (unavailableOutsideQuota) {
@@ -49,12 +73,14 @@ function claudeWindowView(item: CapacitySub, kind: "5h" | "7d", now: number): Cl
       reset: "—",
       remaining,
       capacity,
+      moneyHint,
     };
   }
 
-  // Provider quota/reset and saleable money have independent freshness. An exact last-known
-  // snapshot stays useful until its provider reset, but remains visually distinct from current
-  // capacity. Payloads without `windows` retain the legacy live-quota contract.
+  // Провайдерская квота и продаваемые доллары имеют РАЗНЫЕ авторитеты: сбой денежных улик не
+  // должен ослеплять оператора относительно реальной стены лимита. Поэтому процент/reset берём из
+  // точного снапшота всегда, когда бэкенд его опубликовал, а деньги гасим отдельно.
+  // Payload без `windows` сохраняет прежний live-quota контракт.
   const usedFraction = window
     ? window.used_fraction_units == null
       ? null
@@ -70,24 +96,47 @@ function claudeWindowView(item: CapacitySub, kind: "5h" | "7d", now: number): Cl
   const resetFromWindow =
     window?.resets_at == null ? null : Math.max(0, window.resets_at - now);
   const resetSeconds = resetIn ?? resetFromWindow;
+  const resetLabel = resetSeconds == null ? "уточняется" : duration(resetSeconds);
   const snapshotFresh = window ? window.snapshot_fresh === true : true;
+
   if (!snapshotFresh) {
+    // Окно за своим reset пусто по построению: провайдер уже налил его заново. Бэкенд публикует
+    // точный 0%, и прятать измеренный ноль за «обновляем» — ровно та ошибка, из-за которой
+    // простаивающая исправная подписка выглядела как подписка без данных.
+    if (window?.quota_state === "window_rolled_over") {
+      return {
+        state: item.routable === false ? "inactive" : "updating",
+        quota,
+        reset: resetLabel,
+        remaining: null,
+        capacity,
+        moneyHint,
+      };
+    }
     const retainedBeforeReset = quota.value != null && resetSeconds != null && resetSeconds > 0;
     if (retainedBeforeReset) {
+      const lastKnownMoney = window?.last_known_remaining_nano;
       return {
-        state: item.routable === false ? "inactive" : "last_known",
+        state:
+          item.routable === false
+            ? "inactive"
+            : providerInteger(lastKnownMoney) == null
+              ? "updating"
+              : "last_known",
         quota,
         reset: duration(resetSeconds),
-        remaining: window?.last_known_remaining_nano,
+        remaining: lastKnownMoney,
         capacity,
+        moneyHint,
       };
     }
     return {
       state: item.routable === false ? "inactive" : "updating",
-      quota: { value: null, label: "обновляем" },
-      reset: "уточняется",
+      quota: quota.value == null ? { value: null, label: "обновляем" } : quota,
+      reset: resetLabel,
       remaining,
       capacity,
+      moneyHint,
     };
   }
 
@@ -95,9 +144,10 @@ function claudeWindowView(item: CapacitySub, kind: "5h" | "7d", now: number): Cl
   return {
     state: item.routable === false ? "inactive" : moneyReady ? "ready" : "updating",
     quota,
-    reset: resetSeconds == null ? "уточняется" : duration(resetSeconds),
+    reset: resetLabel,
     remaining,
     capacity,
+    moneyHint,
   };
 }
 
@@ -118,7 +168,7 @@ function ClaudeMoney({ view, fiveHour = false }: { view: ClaudeWindowView; fiveH
     );
   }
   if (view.state === "updating") {
-    return <td className={cellClass}><b>обновляем</b><small>ждём свежую квоту</small></td>;
+    return <td className={cellClass}><b>обновляем</b><small>{view.moneyHint}</small></td>;
   }
   return (
     <td className={cellClass}>

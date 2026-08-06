@@ -683,6 +683,173 @@ describe("таблицы флотов (smoke render с данными)", () => {
     expect(text).not.toContain("99%");
   });
 
+  it("ClaudeCapacityBoard: после reset показывает точный 0%, а не «обновляем»", () => {
+    // Простаивающая исправная подписка: снапшот протух именно потому, что трафика не было, и
+    // провайдерский дедлайн уже прошёл. Окно налито заново — бэкенд публикует точный ноль.
+    const html = renderToString(
+      <ClaudeCapacityBoard
+        response={{
+          now: 1_000_000,
+          per_sub: [
+            {
+              email: "idle…",
+              plan: "max20",
+              routable: true,
+              auth_state: "healthy",
+              util5h: 0,
+              util7d: 0.25,
+              reset5h_in: null,
+              reset7d_in: 259_200,
+              windows: [
+                {
+                  window_kind: "5h",
+                  snapshot_fresh: false,
+                  quota_state: "window_rolled_over",
+                  displayed_quota_source: "provider_window_rollover",
+                  used_fraction_units: 0,
+                  resets_at: null,
+                  capacity_nano: "128870000000",
+                  remaining_nano: null,
+                  last_known_remaining_nano: null,
+                  missing_reason: "stale_current_quota_snapshot",
+                },
+                {
+                  window_kind: "7d",
+                  snapshot_fresh: false,
+                  quota_state: "last_known_before_reset",
+                  used_fraction_units: 25_000_000,
+                  resets_at: 1_259_200,
+                  capacity_nano: "1151270000000",
+                  remaining_nano: null,
+                  last_known_remaining_nano: "863450000000",
+                  missing_reason: "stale_current_quota_snapshot",
+                },
+              ],
+            },
+          ],
+        }}
+      />,
+    );
+    const text = plain(html);
+    // Измеренный ноль виден, статус подписки — обычный active.
+    expect(text).toContain("0%");
+    expect(text).toContain("active");
+    // Денег за нулевое окно нет: ёмкость не перемерена, продавать нечего.
+    expect(text).toContain("обновляем");
+    expect(text).toContain("ждём probe");
+    expect(text).not.toContain("$128.87");
+    // Соседнее 7д-окно продолжает жить по last-known контракту.
+    expect(text).toContain("25%");
+    expect(text).toContain("последнее · из $1,151.27");
+  });
+
+  it("ClaudeCapacityBoard: pending FIFO гасит только деньги, стена лимита остаётся видимой", () => {
+    const html = renderToString(
+      <ClaudeCapacityBoard
+        response={{
+          now: 2_000,
+          per_sub: [
+            {
+              email: "wall…",
+              plan: "max20",
+              routable: true,
+              auth_state: "healthy",
+              util5h: 0.97,
+              util7d: 0.5,
+              reset5h_in: 1_800,
+              reset7d_in: 86_400,
+              windows: [
+                {
+                  window_kind: "5h",
+                  snapshot_fresh: true,
+                  used_fraction_units: 97_000_000,
+                  resets_at: 3_800,
+                  capacity_nano: "128870000000",
+                  remaining_nano: null,
+                  last_known_remaining_nano: null,
+                  missing_reason: "calibration_delivery_pending",
+                },
+                {
+                  window_kind: "7d",
+                  snapshot_fresh: true,
+                  used_fraction_units: 50_000_000,
+                  resets_at: 88_400,
+                  capacity_nano: "1151270000000",
+                  remaining_nano: null,
+                  last_known_remaining_nano: null,
+                  missing_reason: "calibration_delivery_pending",
+                },
+              ],
+            },
+          ],
+        }}
+      />,
+    );
+    const text = plain(html);
+    // Реальная стена лимита видна оператору, несмотря на аварию денежной доставки.
+    expect(text).toContain("97%");
+    expect(text).toContain("50%");
+    expect(text).toContain("сброс 30м");
+    expect(text).toContain("сброс 1д 0ч");
+    // Деньги закрыты и причина названа именно доставкой, а не отсутствием probe.
+    expect(text).toContain("обновляем");
+    expect(text).toContain("ждём доставку");
+    expect(text).not.toContain("ждём probe");
+    expect(text).not.toContain("$128.87");
+  });
+
+  it("ClaudeCapacityBoard: без снапшота причина — probe, а квота остаётся «обновляем»", () => {
+    const html = renderToString(
+      <ClaudeCapacityBoard
+        response={{
+          now: 2_000,
+          per_sub: [
+            {
+              email: "cold…",
+              plan: "max20",
+              routable: true,
+              auth_state: "healthy",
+              util5h: 0,
+              util7d: 0,
+              reset5h_in: null,
+              reset7d_in: null,
+              windows: [
+                {
+                  window_kind: "5h",
+                  snapshot_fresh: false,
+                  quota_state: "awaiting_probe",
+                  used_fraction_units: null,
+                  resets_at: null,
+                  capacity_nano: "128870000000",
+                  remaining_nano: null,
+                  last_known_remaining_nano: null,
+                  missing_reason: "missing_current_quota_snapshot",
+                },
+                {
+                  window_kind: "7d",
+                  snapshot_fresh: false,
+                  quota_state: "awaiting_probe",
+                  used_fraction_units: null,
+                  resets_at: null,
+                  capacity_nano: "1151270000000",
+                  remaining_nano: null,
+                  last_known_remaining_nano: null,
+                  missing_reason: "missing_current_quota_snapshot",
+                },
+              ],
+            },
+          ],
+        }}
+      />,
+    );
+    const text = plain(html);
+    // Данных действительно нет — здесь «обновляем» честно, и 0% выдумывать нельзя.
+    // Проверяем видимую подпись, а не инлайновую ширину полосы (`width: 0%`).
+    expect(text).toContain("обновляем");
+    expect(text).toContain("ждём probe");
+    expect(html).not.toContain("<b>0%</b>");
+  });
+
   it("ClaudeCapacityBoard: после reset больше не переносит старое значение в новое окно", () => {
     const html = renderToString(
       <ClaudeCapacityBoard
