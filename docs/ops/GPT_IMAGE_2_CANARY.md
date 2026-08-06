@@ -276,7 +276,12 @@ number of attempts. The PostgreSQL session independently limits each statement t
 slot's PostgreSQL DSN, and may invoke exactly one `--execute`. The old paid root and controller remain retired.
 The v2 gate returns GREEN only for two strict, byte-different PNGs plus exact generation/edit usage and
 release-v2 settlement evidence; every partial or ambiguous state permanently fences the new root and fails the
-overall deployment.
+overall deployment. Delivery `2efcfbf69b672e531b62b8602a74d7fb76ee1fae` withdrew at the exact
+`generation_received:g=true:e=false` journal state, so v2 is now retired and cannot dispatch again. The
+separate `deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh` reuses the already GREEN `853fdc6c...`
+diagnostic binary against only the v2 fence. It receives the generation UUID over stdin, inherits only the
+PostgreSQL DSN, and reports bounded settlement/outbox/usage/cost state without image HTTP, pool credential
+selection, mutation, or retry.
 
 The intended one-shot contract remains:
 

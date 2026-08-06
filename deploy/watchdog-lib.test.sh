@@ -194,7 +194,7 @@ for valid_context in deploy/watchdog deploy/gpt-image-2-public-preflight \
   deploy/gpt-image-2-public-preflight-v2 deploy/gpt-image-2-public-preflight-v3 \
   deploy/gpt-image-2-public-paid-smoke deploy/gpt-image-2-public-paid-generation \
   deploy/gpt-image-2-public-paid-edit deploy/gpt-image-2-public-paid-inspect \
-  deploy/gpt-image-2-settlement-diagnostic; do
+  deploy/gpt-image-2-settlement-diagnostic deploy/gpt-image-2-settlement-v2-diagnostic; do
   [[ $valid_context =~ $commit_status_context_re ]] \
     || wd_die "valid GitHub commit-status context was rejected: $valid_context"
 done
@@ -1169,6 +1169,7 @@ for controller_definition in \
   deploy/gpt-image-2-public-paid-smoke-v2-gate.sh \
   deploy/gpt-image-2-public-paid-inspect-gate.sh \
   deploy/gpt-image-2-settlement-diagnostic-gate.sh \
+  deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh \
   deploy/watchdog-infrastructure.sh \
   deploy/deploy.sh \
   deploy/authbot-runtime-state.sh \
@@ -4549,14 +4550,10 @@ if wd_path_is_gpt_image_2_public_paid_smoke_gate_trigger \
     deploy/gpt-image-2-public-paid-smoke-gate.sh; then
   wd_die 'retired GPT Image 2 public paid smoke can dispatch again'
 fi
-wd_path_is_gpt_image_2_public_paid_smoke_v2_gate_trigger \
-  deploy/gpt-image-2-public-paid-smoke-v2-gate.sh \
-  || wd_die 'fresh GPT Image 2 public paid smoke v2 file does not trigger its gate'
-for path in deploy/watchdog.sh deploy/watchdog-lib.sh deploy/gpt-image-2-public-paid-smoke-gate.sh; do
-  if wd_path_is_gpt_image_2_public_paid_smoke_v2_gate_trigger "$path"; then
-    wd_die "unrelated path triggers GPT Image 2 public paid smoke v2: $path"
-  fi
-done
+if wd_path_is_gpt_image_2_public_paid_smoke_v2_gate_trigger \
+    deploy/gpt-image-2-public-paid-smoke-v2-gate.sh; then
+  wd_die 'retired GPT Image 2 public paid smoke v2 can dispatch again'
+fi
 grep -Fq '"$ROOT/deploy/gpt-image-2-public-paid-smoke-v2-gate.sh"' \
   "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'GPT Image 2 public paid smoke v2 is not installed as a fixed controller'
@@ -4706,6 +4703,52 @@ grep -Fq 'github_status success deploy/gpt-image-2-settlement-diagnostic' \
 grep -Fq '(( ${#public_image_settlement_status} <= 140 ))' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 settlement diagnostic status is not length-bounded'
+
+# The v2 successor reads only the fresh generation fence and reuses the already GREEN diagnostic binary.
+wd_path_is_gpt_image_2_settlement_v2_diagnostic_gate_trigger \
+  deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh \
+  || wd_die 'GPT Image 2 settlement v2 diagnostic file does not trigger its gate'
+for path in deploy/watchdog.sh deploy/watchdog-lib.sh deploy/gpt-image-2-settlement-diagnostic-gate.sh; do
+  if wd_path_is_gpt_image_2_settlement_v2_diagnostic_gate_trigger "$path"; then
+    wd_die "unrelated path triggers GPT Image 2 settlement v2 diagnostic: $path"
+  fi
+done
+grep -Fq '"$ROOT/deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh"' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'GPT Image 2 settlement v2 diagnostic is not installed as a fixed controller'
+grep -Fxq 'DIAGNOSTIC_PRODUCER_SHA=853fdc6c8d5be486c371b23df6772eeaf7a48029' \
+  "$ROOT/deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh" \
+  || wd_die 'GPT Image 2 settlement v2 diagnostic is not pinned to the GREEN diagnostic binary'
+grep -Fxq 'FENCED_PRODUCER_SHA=853fdc6c8d5be486c371b23df6772eeaf7a48029' \
+  "$ROOT/deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh" \
+  || wd_die 'GPT Image 2 settlement v2 diagnostic reads the wrong paid fence'
+grep -Fxq 'EVIDENCE_PARENT=$STATE_ROOT/gpt-image-2-public-paid-smoke-v2' \
+  "$ROOT/deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh" \
+  || wd_die 'GPT Image 2 settlement v2 diagnostic reads the wrong evidence root'
+! grep -Eq 'openai-image-public-smoke|images/generations|images/edits|--execute|--preflight-only' \
+  "$ROOT/deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh" \
+  || wd_die 'GPT Image 2 settlement v2 diagnostic can dispatch or discover images'
+! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc|https?://' \
+  "$ROOT/deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh" \
+  || wd_die 'GPT Image 2 settlement v2 diagnostic contains a network or reseller origin'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-v2-diagnostic-gate.sh 853fdc6c8d5be486c371b23df6772eeaf7a48029 --inspect' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'GPT Image 2 settlement v2 diagnostic lacks an exact read-only sudo bridge'
+grep -A2 -F "require_permitted 'GPT Image 2 exact-producer settlement v2 diagnostic'" \
+  "$ROOT/deploy/install-sudoers.sh" \
+  | grep -Fq '853fdc6c8d5be486c371b23df6772eeaf7a48029 --inspect' \
+  || wd_die 'GPT Image 2 settlement v2 diagnostic sudo self-check is not aligned with policy'
+grep -Fxq 'GPT_IMAGE_2_SETTLEMENT_V2_DIAGNOSTIC_PRODUCER_SHA=853fdc6c8d5be486c371b23df6772eeaf7a48029' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog does not pin the GPT Image 2 settlement v2 diagnostic producer'
+settlement_v2_diagnostic_gate_line=$(grep -nF '"$GPT_IMAGE_2_SETTLEMENT_V2_DIAGNOSTIC_PRODUCER_SHA" --inspect)' \
+  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+[[ -n $settlement_v2_diagnostic_gate_line && -n $processed_line && \
+   $settlement_v2_diagnostic_gate_line -lt $processed_line ]] \
+  || wd_die 'GPT Image 2 settlement v2 diagnostic does not run before processed/green'
+grep -Fq 'github_status success deploy/gpt-image-2-settlement-v2-diagnostic' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'GPT Image 2 settlement v2 diagnostic has no sanitized GREEN status'
 
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'

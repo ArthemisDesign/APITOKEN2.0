@@ -347,10 +347,14 @@ is only what is needed to walk the relationships when making changes:
   bounded to 15 seconds by the PostgreSQL session; observer timeout remains terminal without paid replay.
   Producer `853fdc6c8d5be486c371b23df6772eeaf7a48029` is exact watchdog-GREEN. Its sole paid successor
   consumer is `deploy/gpt-image-2-public-paid-smoke-v2-gate.sh`, pinned to that binary and a fresh v2 evidence
-  root; it inherits only the PostgreSQL DSN, permits one `--execute`, and requires strict generation+edit PNG,
-  usage, settlement, and unchanged-money evidence. Neither diagnostic side has image HTTP, credential
-  selection, dispatch, retry, or mutation. The
-  direct OpenAI plane and header-gated Combined bridge produce these routes; the future router is a
+  root; it inherited only the PostgreSQL DSN, permitted one `--execute`, and required strict generation+edit
+  PNG, usage, settlement, and unchanged-money evidence. Delivery
+  `2efcfbf69b672e531b62b8602a74d7fb76ee1fae` withdrew at
+  `generation_received:g=true:e=false`; the v2 root is permanently fenced. Its new read-only consumer is
+  `deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh`, which reuses the exact GREEN `853fdc6c...` diagnostic
+  binary and reads only that request's durable settlement state. Neither diagnostic side has image HTTP,
+  credential selection, dispatch, retry, or mutation. The direct OpenAI plane and header-gated Combined
+  bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —
   `docs/engine/CODEX_PROVIDER.md`, `docs/ops/GPT_IMAGE_2_CANARY.md`, and

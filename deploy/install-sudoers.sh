@@ -273,6 +273,9 @@ require_permitted 'GPT Image 2 exact-producer public paid inspector' \
 require_permitted 'GPT Image 2 exact-producer settlement diagnostic' \
   /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-diagnostic-gate.sh \
   ab3b4e557f7b870b93f62a88a53e87e46b49fb4c --inspect
+require_permitted 'GPT Image 2 exact-producer settlement v2 diagnostic' \
+  /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-v2-diagnostic-gate.sh \
+  853fdc6c8d5be486c371b23df6772eeaf7a48029 --inspect
 require_permitted 'router promotion to slot A' \
   /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8800
 require_permitted 'router promotion to slot B' \
