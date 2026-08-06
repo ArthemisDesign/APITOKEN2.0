@@ -39,15 +39,18 @@ const CLAUDE_MODELS: Model[] = claudeModels.map((model) => {
   };
 });
 
-const GPT_MODELS: Model[] = openaiModels.map((model) => ({
-  name: model.name,
-  id: model.id,
-  context: model.context,
-  input: model.inputPerM,
-  output: model.outputPerM,
-  cacheRead: model.cachedInputPerM,
-  cacheWrite: model.cacheWritePerM,
-}));
+// The calculator estimates text token spend; image models meter per image-output token instead.
+const GPT_MODELS: Model[] = openaiModels
+  .filter((model) => model.tier !== "Image")
+  .map((model) => ({
+    name: model.name,
+    id: model.id,
+    context: model.context,
+    input: model.inputPerM,
+    output: model.outputPerM,
+    cacheRead: model.cachedInputPerM,
+    cacheWrite: model.cacheWritePerM,
+  }));
 
 const PROVIDERS: Record<Provider, {
   label: string;

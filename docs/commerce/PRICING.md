@@ -73,11 +73,12 @@ implementation then completed 22 paid turns on Google AI Pro and Ultra: all thin
 incremental SSE, cache, exact PCM audio and forced tools with terminal authoritative usage.
 Publication proceeds through capability/catalog generation 5 and the production/public allowlists.
 OpenKeys admits Gemini at 1:1 like every other runtime-priceable model (see the OpenKeys section).
-Dormant generation 6 adds only the tariff-pinned
-`openai/gpt-image-2-2026-04-21` snapshot to main and OpenKeys after real generation and
-one-reference edit passed through the existing sealed Codex OAuth pool. This producer checkpoint
-adds no reseller, separate image API key, fallback, customer admission, or public model listing;
-those follow only after the generation-6 release is activated and paid production smokes pass.
+Generation 6 adds only the tariff-pinned
+`openai/gpt-image-2-2026-04-21` snapshot to main and OpenKeys; it activated as the first
+successor advance of the release head (13 -> 41) after the public production generation+edit
+smoke turned overall watchdog-GREEN. There is still no reseller, separate image API key, or
+fallback: the model rides the existing sealed Codex OAuth pool, and its customer contract stays
+the narrow proved shape (`background=opaque`, `quality=low`, `size=auto`, one PNG).
 
 Policy versions are immutable, content-addressed and delivered catalog → switches → policy. All
 accounts switch via a single active release head, not a sequential update of bindings.

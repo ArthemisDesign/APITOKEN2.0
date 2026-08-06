@@ -63,12 +63,16 @@ function priceRowsFor(model: CatalogModel) {
     }
     return rows;
   }
-  return [
+  const rows = [
     { rate: "Input", official: formatUsd(model.inputPerM), here: priceHere(model.inputPerM) },
     { rate: "Cached input", official: formatUsd(model.cachedInputPerM), here: priceHere(model.cachedInputPerM) },
     { rate: "Cache write", official: formatUsd(model.cacheWritePerM), here: priceHere(model.cacheWritePerM) },
-    { rate: "Output", official: formatUsd(model.outputPerM), here: priceHere(model.outputPerM) },
+    { rate: model.tier === "Image" ? "Image output" : "Output", official: formatUsd(model.outputPerM), here: priceHere(model.outputPerM) },
   ];
+  if (model.imageInputPerM !== undefined) {
+    rows.push({ rate: "Image input", official: formatUsd(model.imageInputPerM), here: priceHere(model.imageInputPerM) });
+  }
+  return rows;
 }
 
 const providerCopy = {
@@ -186,7 +190,7 @@ export default async function ModelPage({ params }: { params: Promise<Params> })
                 </dl>
               </article>)}
             </div>
-            <p className="docs-para">Every request is metered at the official rate first, then the flat 50% B2C discount is subtracted before it touches your prepaid balance. Context window: {model.context}. Max output: {model.maxOutput}.{model.provider === "openai" ? ` Reasoning efforts: ${model.efforts.join(", ")}.` : ""}</p>
+            <p className="docs-para">Every request is metered at the official rate first, then the flat 50% B2C discount is subtracted before it touches your prepaid balance. Context window: {model.context}. Max output: {model.maxOutput}.{model.provider === "openai" && model.efforts ? ` Reasoning efforts: ${model.efforts.join(", ")}.` : ""}</p>
           </div>
 
           <div className="learn-section">

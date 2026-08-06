@@ -42,7 +42,7 @@ export type OpenAiModel = {
   /** Exact API model ID on the OpenAI-compatible endpoint. */
   id: string;
   name: string;
-  tier: "Flagship" | "Balanced" | "Fast";
+  tier: "Flagship" | "Balanced" | "Fast" | "Image";
   /** <title> without brand suffix. */
   title: string;
   description: string;
@@ -51,10 +51,16 @@ export type OpenAiModel = {
   /** Official OpenAI $ per 1M tokens. */
   inputPerM: number;
   cachedInputPerM: number;
+  /** Zero on image models: the image wire has no cache-write billing. */
   cacheWritePerM: number;
+  /** Text models: per 1M text-output tokens. Image models: per 1M image-output tokens. */
   outputPerM: number;
-  /** Supported reasoning effort levels. */
-  efforts: string[];
+  /** Official $ per 1M image-input tokens — image models only. */
+  imageInputPerM?: number;
+  /** Official $ per 1M image-output tokens — image models only. */
+  imageOutputPerM?: number;
+  /** Supported reasoning effort levels — text models only. */
+  efforts?: string[];
   context: string;
   maxOutput: string;
   bestFor: string[];
@@ -524,6 +530,42 @@ export const openaiModels: OpenAiModel[] = [
       { q: "What is the model ID?", a: "gpt-5.4. One apiToken.sale key and balance covers it alongside every other Claude and GPT model." },
     ],
     related: ["openai-api-quickstart", "codex-cli-setup", "how-billing-works", "why-choose-apitoken"],
+  },
+  {
+    provider: "openai",
+    slug: "gpt-image-2",
+    id: "gpt-image-2",
+    name: "GPT Image 2",
+    tier: "Image",
+    title: "GPT Image 2 API — Price per Token & Access",
+    description: "GPT Image 2 API pricing: official $5 per 1M text input tokens and $30 per 1M image output tokens, $2.50/$15 with the flat 50% apiToken.sale discount. Generation and edits on the same key and prepaid balance.",
+    keywords: ["gpt image 2 api", "gpt-image-2 price", "openai image generation api cost", "gpt-image-2-2026-04-21", "gpt image edit api", "openai images api"],
+    dek: "GPT Image 2 is OpenAI's image generation and editing model — text and reference images in, rendered images out, metered per token on the same prepaid balance as every GPT and Claude model here.",
+    inputPerM: 5,
+    cachedInputPerM: 1.25,
+    cacheWritePerM: 0,
+    outputPerM: 30,
+    imageInputPerM: 8,
+    imageOutputPerM: 30,
+    context: "per request",
+    maxOutput: "1 image",
+    bestFor: [
+      "Product image generation from a prompt on a bounded low-cost profile.",
+      "Image editing against one reference PNG.",
+      "Pipelines that already run GPT or Claude here — images debit the same balance.",
+    ],
+    notes: [
+      "gpt-image-2 is the alias of the immutable snapshot gpt-image-2-2026-04-21 — the same model at the same price.",
+      "Generation is POST /v1/images/generations, editing is POST /v1/images/edits with one reference PNG, on the OpenAI-compatible endpoint; one non-streaming PNG per call.",
+      "The shipped contract is deliberately narrow: background auto|opaque, quality auto|low, size auto. The upstream subscription wire normalizes explicit sizes, so exact dimensions are not advertised.",
+      "Image output bills per image-output token; cached text/image input bills at 25% of the fresh rate.",
+    ],
+    faq: [
+      { q: "How much does the GPT Image 2 API cost?", a: "Officially $5 per 1M text input tokens, $8 per 1M image input tokens and $30 per 1M image output tokens (cached input at 25%). On apiToken.sale the same calls cost 50% less — $2.50/$4/$15 — at the flat discount applied to every call." },
+      { q: "What is the model ID for GPT Image 2?", a: "gpt-image-2, an alias of the immutable snapshot gpt-image-2-2026-04-21. Send it as the model field of POST /v1/images/generations or /v1/images/edits on https://openai.api.apitoken.sale/v1 with your Bearer key." },
+      { q: "Does the same balance really cover image generation?", a: "Yes. GPT Image 2 debits the same prepaid balance as every Claude, GPT and Gemini model on the account — no separate image plan or key." },
+    ],
+    related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
   },
 ];
 

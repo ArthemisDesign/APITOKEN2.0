@@ -110,8 +110,10 @@ reuses this same Codex configuration and sealed OAuth roster.
 JSON POSTs to `{CodexConfig.base_url}/images/generations|edits` carry the existing OAuth bearer,
 `ChatGPT-Account-ID`, originator, pinned Codex UA/version and a fresh local image-turn id. The HTTP
 producer exposes authenticated `POST /v1/images/generations` and multipart
-`POST /v1/images/edits`, but keeps the model out of discovery and product catalogs until the separate
-public production smoke succeeds.
+`POST /v1/images/edits`. Publication followed only after the one-shot public production
+generation+edit smoke turned overall watchdog-GREEN (evidence bundle under the
+`gpt-image-2-public-paid-smoke-v3` fence) and the generation-6 pricing release activated the
+immutable `gpt-image-2-2026-04-21` snapshot in the main and OpenKeys catalogs.
 
 The customer contract is intentionally narrower than the native structs and official API guide because
 it contains only controls proved on this subscription wire:

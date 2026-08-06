@@ -53,6 +53,7 @@ export const INTEGRATION_MODELS: Record<IntegrationProvider, readonly Integratio
     { id: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
     { id: "gpt-5.5", name: "GPT-5.5" },
     { id: "gpt-5.4", name: "GPT-5.4" },
+    { id: "gpt-image-2", name: "GPT Image 2" },
   ],
   gemini: [
     { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash" },
