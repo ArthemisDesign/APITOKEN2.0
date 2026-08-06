@@ -11,6 +11,7 @@ path = "src/lib.rs"
 registry = { path = "../registry" }
 pool = { path = "../pool" }
 metering = { path = "../metering" }
+elog = { path = "../elog" }
 gemini-credential = { path = "../gemini-credential" }
 codex-credential = { path = "../codex-credential" }
 kimi-credential = { path = "../kimi-credential" }

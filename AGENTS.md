@@ -215,6 +215,8 @@ walkthroughs of dependent places for typical cross-functional changes — `docs/
   HTTP-only to the planes, no billing and no registry —
   see `docs/engine/UNIFIED_ROUTER.md`) and the credential crates `crates/gemini-credential`
   and `crates/codex-credential` (encrypted OAuth envelopes of Gemini/Codex subscriptions — no network and no HTTP).
+  `crates/elog` (unified error logging, leaf crate with no dependencies: every runtime
+  diagnostic line goes through `elog::error/warn/info`; contract — `crates/elog/CLAUDE.md`).
   In the API layers, env is read only in `crates/server/src/config.rs`; `pool` — no network
   and no HTTP, `registry` — no HTTP and no external network, but it is the sole owner of the engine's
   PostgreSQL connections (Stage 2 authority); DB I/O inside `registry` is the norm. A crate's local boundaries are in its `crates/<name>/CLAUDE.md`; the main crates have one

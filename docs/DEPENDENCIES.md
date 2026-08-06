@@ -199,6 +199,11 @@ no database and uses the engine Control API read-only. It has its own release la
 Layers and invariants — `CLAUDE.md` (layer table) and `docs/engine/ARCHITECTURE.md`. Here
 is only what is needed to walk the relationships when making changes:
 
+- **`crates/elog` — the engine's unified error log.** A leaf crate (no dependencies) that
+  every runtime layer that logs (`forward`, `server`, `router`, `authbot`, `registry`,
+  `pool`) consumes. All runtime diagnostic lines flow through `elog::error/warn/info`
+  with one line format `[LEVEL][category] message` and one central secret scrubber;
+  `metering` stays pure and does not log. Contract — `crates/elog/CLAUDE.md`.
 - **`crates/metering` — the engine's price authority.** Hardcoded effective-dated tables
   in nanoUSD: `src/lib.rs` (Anthropic), `src/codex.rs` (OpenAI text), `src/gemini.rs` (Gemini),
   and `src/openai_image.rs` (GPT Image 2). A price/model change is a reviewable commit here.

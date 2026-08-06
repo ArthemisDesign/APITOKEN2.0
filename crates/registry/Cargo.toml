@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
+elog = { path = "../elog" }
 postgres = "0.19"
 tokio-postgres-rustls = { version = "0.14", features = ["native-certs", "ring"] }
 anyhow = "1"

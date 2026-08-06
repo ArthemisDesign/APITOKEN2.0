@@ -13,6 +13,7 @@ registry = { path = "../registry" }
 pool = { path = "../pool" }
 forward = { path = "../forward" }
 metering = { path = "../metering" }
+elog = { path = "../elog" }
 gemini-credential = { path = "../gemini-credential" }
 codex-credential = { path = "../codex-credential" }
 base64 = "0.22"

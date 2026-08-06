@@ -9,4 +9,5 @@ path = "src/lib.rs"
 
 [dependencies]
 registry = { path = "../registry" }
+elog = { path = "../elog" }
 blake3 = "1"

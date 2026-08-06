@@ -1,0 +1,11 @@
+[package]
+name = "elog"
+version = "0.1.0"
+edition = "2021"
+description = "Unified error logging for the engine: one line format, one secret-scrubbing point, levels"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Leaf crate: no dependencies on purpose — every engine layer may log through it.

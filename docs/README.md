@@ -25,6 +25,7 @@ document, update this index.
 - [STAGE2_POSTGRES_AUTHORITY.md](engine/STAGE2_POSTGRES_AUTHORITY.md) — PostgreSQL authority model and Stage 2 fencing.
 - [UNIFIED_ROUTER.md](engine/UNIFIED_ROUTER.md) — target architecture of the single endpoint for all providers (design).
 - [ROUTING_FENCING.md](engine/ROUTING_FENCING.md) — detailed design of UNIFIED_ROUTER stage 6: routing with fallback lists and attempt fencing (execution group / single billable winner).
+- [ELOG.md](../crates/elog/CLAUDE.md) — unified error logging contract (crate-level instruction: format, levels, scrubbing).
 
 ## commerce/ — commerce (`apps/api`, `apps/worker`, `packages/*`)
 
