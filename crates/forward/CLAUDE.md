@@ -711,12 +711,24 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    costs DB work.
 5. **Retry only BEFORE the first byte:** the `emitted` flag — once a delta has gone to the client, a second
    attempt is forbidden. Fault classification: 429/usage-limit → the ACCOUNT's fault (cooling until reset,
-   retry budget unspent), 401/403 → auth (refresh+retry once, then quarantine 900s),
+   retry budget unspent), 401/403 → auth (refresh+retry once, then a soft backoff — see 5a),
    timeout/5xx/EOF → the TRANSPORT's fault (streak → degraded → wedged → client rebuild),
    400/context → the CLIENT's fault (no chilling, no retry). All homes over the limit → one
    OpenAI-shaped 429 with the nearest reset. Health — a pure policy in `health.rs` along two axes
    (account healthy→suspect→dead; transport responsive→degraded→wedged), durable account axis in the
    authority.
+5a. **A home rests on provider verdicts, never on our own inference.** Cooling has two axes.
+   `cooling_until` is hard and durable, and only a provider statement writes it: `UsageLimited` (the
+   window is full) or an auth rejection that is `permanent` or corroborated by `AUTH_DEAD_STREAK`
+   over `AUTH_DEAD_MIN_SECS`. `soft_cooling_until` is in-memory and holds an uncorroborated auth
+   rejection, escalating from `AUTH_SOFT_COOL_SECS` up to the `AUTH_QUARANTINE_SECS` ceiling.
+   `select_home` has two escape hatches in order: relax the soft window reserve, then relax soft
+   cooling (`admission_ignoring_soft_cooling`). So a `Suspect` home is de-prioritised while healthier
+   capacity exists and is still reachable when it is the last capacity left, which is what the
+   `Suspect`-stays-routable design always intended — a blanket 900 s quarantine on every 401/403 had
+   silently defeated it, and one rejection wave could rest the whole plane for a quarter hour. The
+   Gemini plane learned this the hard way in August 2026; the Claude pool never had the defect and
+   remains the strictest of the three (a live 401/403 there only calls `request_probe`).
 6. **Window capacity calibration — native credits separately from API USD.** The decimal `used_percent` from
    `/wham/usage`/headers is parsed without `f64` into `10^-8` fraction units. Every successful turn before ingesting the
    quota snapshot builds one immutable dual-ledger event: effective Standard/Fast, model,

@@ -55,6 +55,10 @@ pub(crate) const WEDGED_COOL_SECS: i64 = 10;
 /// Quarantine for a home the provider actively rejected. Hammering a rejected profile is useless
 /// and is itself a ban signal; the health sweep still probes it, so repair is automatic.
 pub(crate) const AUTH_QUARANTINE_SECS: i64 = 900;
+/// First backoff step for an auth rejection the provider has not corroborated. Doubles per
+/// consecutive rejection up to `AUTH_QUARANTINE_SECS`, and lives on the soft axis, so a transient
+/// 401/403 costs a home seconds of de-prioritisation rather than a quarter hour of capacity.
+pub(crate) const AUTH_SOFT_COOL_SECS: i64 = 15;
 
 /// Liveness of the subscription behind a home. Durable in spirit: it must survive a transport
 /// restart, because the account does not care which app-server generation talked to it.
@@ -223,6 +227,14 @@ pub(crate) struct HomeHealth {
     first_auth_fail_ts: i64,
     /// Nothing is admitted before this instant.
     pub(crate) cooling_until: i64,
+    /// Environment-derived cooling: an auth rejection the provider has not corroborated, or a
+    /// recycled transport. Deliberately separate from `cooling_until` and deliberately not durable.
+    ///
+    /// This axis is our inference about right now, not the provider reporting that capacity is
+    /// gone, so it may steer selection but must never be the reason the pool has nothing to offer.
+    /// A blanket quarantine here defeated the `Suspect`-stays-routable design above: one 401/403
+    /// wave cooled every home for the full quarantine and took the whole plane down with it.
+    pub(crate) soft_cooling_until: i64,
     /// Last moment this home provably served something.
     pub(crate) last_ok_ts: i64,
     /// Set when a signal asks the sweep to re-probe this home ahead of its cadence.
@@ -248,6 +260,7 @@ impl HomeHealth {
                 self.auth_fail_streak = 0;
                 self.first_auth_fail_ts = 0;
                 self.cooling_until = 0;
+                self.soft_cooling_until = 0;
                 self.last_ok_ts = now;
                 self.probe_requested = false;
             }
@@ -293,7 +306,22 @@ impl HomeHealth {
                 if permanent || corroborated {
                     self.account = AccountState::Dead;
                 }
-                self.cool_until(now.saturating_add(AUTH_QUARANTINE_SECS));
+                // Only a verdict the provider actually issued earns the durable quarantine. An
+                // uncorroborated rejection backs off on the soft axis instead, escalating with the
+                // streak up to the same ceiling: a blip costs seconds, a genuinely rejected home
+                // still stops being hammered, and neither can empty the plane.
+                if permanent || corroborated {
+                    self.cool_until(now.saturating_add(AUTH_QUARANTINE_SECS));
+                } else {
+                    let shift = u32::try_from(self.auth_fail_streak.saturating_sub(1))
+                        .unwrap_or(u32::MAX)
+                        .min(30);
+                    let multiplier = 1_i64.checked_shl(shift).unwrap_or(i64::MAX);
+                    let delay = AUTH_SOFT_COOL_SECS
+                        .saturating_mul(multiplier)
+                        .clamp(1, AUTH_QUARANTINE_SECS);
+                    self.soft_cool_until(now.saturating_add(delay));
+                }
                 self.probe_requested = true;
             }
             // Quota is not a fault of either layer: the home is healthy and simply has nothing left
@@ -309,6 +337,12 @@ impl HomeHealth {
     /// long provider ban would be silently downgraded to a ten-second pause.
     fn cool_until(&mut self, until: i64) {
         self.cooling_until = self.cooling_until.max(until);
+    }
+
+    /// Soft cooling is likewise only ever extended, and never merges into the hard axis: the whole
+    /// point is that a caller can ask for a selection that ignores it.
+    fn soft_cool_until(&mut self, until: i64) {
+        self.soft_cooling_until = self.soft_cooling_until.max(until);
     }
 
     /// The durable slice, for persistence and for change detection.
@@ -386,6 +420,32 @@ impl HomeHealth {
         now: i64,
         probe_interval_secs: i64,
     ) -> Admission {
+        self.admission_inner(limits, now, probe_interval_secs, false)
+    }
+
+    /// Admission for the last-resort pass, ignoring the soft environment axis.
+    ///
+    /// A subscription may rest because the provider reported its window is full, or because the
+    /// provider corroborated that it is dead. It may not rest because we inferred something from a
+    /// single 401/403. The caller uses this only after the normal pass produced no candidate at
+    /// all, so environment cooling still de-prioritises a home for as long as healthier capacity
+    /// exists — it just stops short of turning into an empty plane.
+    pub(crate) fn admission_ignoring_soft_cooling(
+        &self,
+        limits: Option<&LimitView>,
+        now: i64,
+        probe_interval_secs: i64,
+    ) -> Admission {
+        self.admission_inner(limits, now, probe_interval_secs, true)
+    }
+
+    fn admission_inner(
+        &self,
+        limits: Option<&LimitView>,
+        now: i64,
+        probe_interval_secs: i64,
+        ignore_soft_cooling: bool,
+    ) -> Admission {
         if self.account == AccountState::Dead {
             return Admission::Reject {
                 reason: RejectReason::AccountDead,
@@ -402,6 +462,12 @@ impl HomeHealth {
             return Admission::Reject {
                 reason: RejectReason::Cooling,
                 ready_at: Some(self.cooling_until),
+            };
+        }
+        if !ignore_soft_cooling && self.soft_cooling_until > now {
+            return Admission::Reject {
+                reason: RejectReason::Cooling,
+                ready_at: Some(self.soft_cooling_until),
             };
         }
         let freshness = Self::freshness(limits, now, probe_interval_secs);
@@ -524,6 +590,7 @@ mod tests {
         assert_eq!(health.transport, TransportState::Responsive);
         assert_eq!(health.deadline_streak, 0);
         assert!(!health.is_cooling(200));
+        assert_eq!(health.soft_cooling_until, 0);
         assert!(health
             .admission(Some(&limits_at(200, 10)), 200, INTERVAL)
             .is_admitted());
@@ -542,8 +609,76 @@ mod tests {
         let mut health = HomeHealth::new();
         health.apply(HealthSignal::AuthRejected { permanent: false }, 100);
         assert_eq!(health.account, AccountState::Suspect);
-        // Suspect is quarantined by cooling, but it is not the terminal verdict.
+        // Suspect backs off on the soft axis, but it is neither the terminal verdict nor the
+        // durable quarantine: an uncorroborated rejection must not cost the plane a home.
         assert_ne!(health.account, AccountState::Dead);
+        assert_eq!(health.cooling_until, 0);
+        assert!(health.soft_cooling_until > 100);
+    }
+
+    /// Августовский инцидент на Gemini в терминах этого пула: волна 401/403 клала плоские 900 секунд
+    /// охлаждения на КАЖДЫЙ home, и аккуратный дизайн «Suspect ещё маршрутизируем» переставал
+    /// что-либо значить — весь GPT-пул уходил в отказ на четверть часа по причине, которую провайдер
+    /// не подтверждал.
+    #[test]
+    fn uncorroborated_auth_cooling_never_denies_the_last_home() {
+        let mut health = HomeHealth::new();
+        health.apply(HealthSignal::AuthRejected { permanent: false }, 100);
+
+        assert!(
+            !health.admission(Some(&limits_at(100, 10)), 100, INTERVAL).is_admitted(),
+            "пока есть куда деться, остывший home уступает здоровому"
+        );
+        assert!(
+            health
+                .admission_ignoring_soft_cooling(Some(&limits_at(100, 10)), 100, INTERVAL)
+                .is_admitted(),
+            "но наша догадка о среде не имеет права оставить плоскость без ёмкости"
+        );
+    }
+
+    #[test]
+    fn a_provider_verdict_still_rests_the_home_even_in_the_last_resort_pass() {
+        let mut permanent = HomeHealth::new();
+        permanent.apply(HealthSignal::AuthRejected { permanent: true }, 100);
+        assert_eq!(permanent.account, AccountState::Dead);
+        assert!(
+            !permanent
+                .admission_ignoring_soft_cooling(Some(&limits_at(100, 10)), 100, INTERVAL)
+                .is_admitted(),
+            "провайдер сказал, что подписки нет — тут нужен оператор, а не ретраи"
+        );
+        assert!(permanent.cooling_until > 100, "вердикт провайдера durable");
+
+        let mut limited = HomeHealth::new();
+        limited.apply(
+            HealthSignal::UsageLimited {
+                retry_after_secs: Some(600),
+            },
+            100,
+        );
+        assert!(
+            !limited
+                .admission_ignoring_soft_cooling(Some(&limits_at(100, 10)), 100, INTERVAL)
+                .is_admitted(),
+            "реальный лимит окна остаётся жёстким: честный 429, а не сожжённый ход"
+        );
+    }
+
+    #[test]
+    fn repeated_auth_rejections_escalate_the_soft_backoff_up_to_the_quarantine_ceiling() {
+        let mut health = HomeHealth::new();
+        health.apply(HealthSignal::AuthRejected { permanent: false }, 100);
+        let first = health.soft_cooling_until - 100;
+        assert_eq!(first, AUTH_SOFT_COOL_SECS);
+
+        health.apply(HealthSignal::AuthRejected { permanent: false }, 100);
+        assert!(health.soft_cooling_until - 100 > first);
+
+        for _ in 0..40 {
+            health.apply(HealthSignal::AuthRejected { permanent: false }, 100);
+        }
+        assert!(health.soft_cooling_until - 100 <= AUTH_QUARANTINE_SECS);
     }
 
     #[test]

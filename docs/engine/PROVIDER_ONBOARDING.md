@@ -313,11 +313,15 @@ Separate the axes:
 - durable account/auth `healthy → suspect → dead`;
 - in-memory transport `responsive → degraded → wedged`;
 - model generation streak/cooldown, if one model can break independently;
-- provider quota bucket + reset, not generic health.
+- provider quota bucket + reset, not generic health;
+- **cooling itself splits into hard (the provider said capacity is gone) and soft (we inferred
+  something about the environment)**. See the invariant below — it is not optional.
 
 Typical policy, refined by live evidence:
 
-- first 401 → forced refresh + same-profile retry; repeated 401/403 → auth quarantine + rotate;
+- first 401 → forced refresh + same-profile retry; repeated 401/403 → soft, escalating backoff +
+  rotate. It does **not** de-authenticate the subscription: the refresh succeeded, so the grant is
+  intact and the rejection describes the environment;
 - 429 quota → cool the exact model/account scope until the parsed reset, rotate without transport
   budget;
 - timeout/network/408/409/425/5xx before bytes → bounded transport/model rotation;
@@ -326,6 +330,27 @@ Typical policy, refined by live evidence:
 
 Only a successful generation or an equivalent provider probe clears the corresponding fault.
 `countTokens` does not rehabilitate the generation route if those are different backend paths.
+
+**The pool-must-not-empty invariant.** A subscription may rest only because the provider said so —
+a parsed 429/reset, an explicit quota zero, an explicit "this subscription does not exist". It may
+never rest because *we* concluded something from a 401/403, a timeout or a failed probe. Concretely:
+only the hard axis may deny a request; when normal selection is empty, re-select ignoring the soft
+axis, bounded by the already-tried set; the soft axis backs off exponentially from a small base and
+resets on proven success; a terminal verdict needs an unambiguous provider statement or
+corroboration by both a streak and elapsed time; and an exhausted selection wakes the health sweep
+out of band so recovery is bounded by the probe, not by the background cadence.
+
+This is written down because every pool has got it wrong at least once, always the same way and
+always invisibly: the code looks like prudent per-subscription hygiene, and only the aggregate shows
+that one bad wave rests the entire fleet at once. In August 2026 the Gemini pool dropped to zero
+authenticated profiles nine times in two days — 105 to 300 seconds each, every request answered
+`503`, while the credentials were provably healthy the whole time. Codex carried the same defect in
+a milder form (a flat 900 s quarantine on any auth rejection, which quietly defeated its own
+`Suspect`-stays-routable design). The Claude pool never had it and is the reference: a live 401/403
+there does not cool at all, it only asks the poller to re-probe, with the reasoning written in the
+code — otherwise a single crafted client request could cool the whole fleet, which is a DoS.
+
+The mechanical file-by-file version of this is in `docs/engine/PROVIDER_WIRING_CHECKLIST.md` §9.
 
 ### 8.5 Streaming
 

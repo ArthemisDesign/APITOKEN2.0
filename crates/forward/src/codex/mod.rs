@@ -1402,6 +1402,18 @@ impl CodexHome {
         )
     }
 
+    fn admission_ignoring_soft_cooling(
+        &self,
+        limits: Option<&CodexRateLimits>,
+        now: i64,
+    ) -> health::Admission {
+        self.health().admission_ignoring_soft_cooling(
+            Self::limit_view(limits).as_ref(),
+            now,
+            self.probe_interval_secs(),
+        )
+    }
+
     async fn status(&self) -> CodexHomeStatus {
         let rate_limits = self.cached_rate_limits().await;
         let health = self.health();
@@ -3548,6 +3560,7 @@ impl CodexGateway {
         now: i64,
         reserve: &WindowReserve,
         fast_model: Option<&str>,
+        ignore_soft_cooling: bool,
     ) -> (Vec<(u8, bool, usize, u8, i64, Arc<CodexHome>)>, Option<i64>) {
         let mut candidates = Vec::with_capacity(pool_homes.len());
         let mut soonest: Option<i64> = None;
@@ -3561,7 +3574,12 @@ impl CodexGateway {
             // One admission verdict for every reason a home can be unroutable: a dead account, a
             // wedged or degraded transport, cooling, or a fresh full window.
             let limits = home.rate_limits().await;
-            match home.admission(limits.as_ref(), now) {
+            let verdict = if ignore_soft_cooling {
+                home.admission_ignoring_soft_cooling(limits.as_ref(), now)
+            } else {
+                home.admission(limits.as_ref(), now)
+            };
+            match verdict {
                 health::Admission::Admit { snapshot_stale } => {
                     if let Some(blocked_until) =
                         home.reserve_blocked_until(limits.as_ref(), reserve)
@@ -3618,17 +3636,45 @@ impl CodexGateway {
                 now,
                 &self.cfg.window_reserve(),
                 fast_model,
+                false,
             )
             .await;
         if candidates.is_empty() && self.cfg.window_reserve() != WindowReserve::FULL {
             // Peak escape hatch, mirroring the Claude fleet: when every home is past its soft
             // reserve, serve at up to the provider's own wall rather than fail the client.
             let (relaxed, relaxed_soonest) = self
-                .selection_candidates(&pool_homes, exclude, now, &WindowReserve::FULL, fast_model)
+                .selection_candidates(
+                    &pool_homes,
+                    exclude,
+                    now,
+                    &WindowReserve::FULL,
+                    fast_model,
+                    false,
+                )
                 .await;
             candidates = relaxed;
             if candidates.is_empty() {
                 soonest = relaxed_soonest.or(soonest);
+            }
+        }
+        if candidates.is_empty() {
+            // Second escape hatch, for the other kind of rest. The pass above relaxes how much
+            // window we are willing to spend; this one relaxes cooling we inferred ourselves rather
+            // than cooling the provider reported. A home the provider called dead or full is still
+            // excluded, so a genuinely limited plane still answers 429 instead of burning a turn.
+            let (unchilled, unchilled_soonest) = self
+                .selection_candidates(
+                    &pool_homes,
+                    exclude,
+                    now,
+                    &WindowReserve::FULL,
+                    fast_model,
+                    true,
+                )
+                .await;
+            candidates = unchilled;
+            if candidates.is_empty() {
+                soonest = unchilled_soonest.or(soonest);
             }
         }
         if candidates.is_empty() {

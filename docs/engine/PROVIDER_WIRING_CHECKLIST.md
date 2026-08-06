@@ -215,6 +215,30 @@ payout.
 - Readiness: **never** check health with an ungated endpoint. With KIMI, `/v1/models` returns
   200 for an invalid key, and generation then gives a 403 — the probe must hit `/messages` or
   `/me`.
+- **A subscription rests only on a provider verdict — never on our own inference.** Every pool has
+  made this mistake at least once, so it is a checklist item and not a matter of taste:
+  - Split cooling into a **hard** axis (the provider said so: 429/`Retry-After`, an explicit quota
+    catalogue zero, an explicit "this subscription does not exist") and a **soft** axis
+    (auth 401/403 after a successful refresh, transport faults, timeouts, a failed probe).
+  - Only the hard axis may deny a request. When normal selection returns nothing, re-select
+    ignoring the soft axis, bounded by the already-tried set so each subscription is attempted at
+    most once per request. An empty pool must mean real limits, and then the honest answer is a
+    429 with `Retry-After` — never a 503 invented from an environmental guess.
+  - The soft axis backs off exponentially from a small base (~15 s) to the quarantine ceiling and
+    resets on any proven success. Flat, long cooling is what turns one bad wave into a total
+    outage.
+  - Removing a subscription from the authenticated/routable set is a **terminal verdict** and needs
+    an unambiguous provider statement (Google: `invalid_grant` on refresh) or corroboration by both
+    a streak and elapsed time (Claude `DEAD_STREAK`/`DEAD_MIN_SECS`, Codex
+    `AUTH_DEAD_STREAK`/`AUTH_DEAD_MIN_SECS`). One 401/403 is never a verdict — it may belong to the
+    client's request, which also makes blanket cooling a DoS: one crafted request would rest the
+    whole fleet.
+  - An exhausted selection must wake the health sweep out of band (debounced, ~15 s), so recovery
+    is bounded by the probe rather than the background cadence.
+  - Cover it with tests that state the invariant: a full-soft-cooling pool still serves; a
+    full-hard-cooling pool answers 429; a generation 401/403 does not de-authenticate.
+  Reference implementations: `crates/pool` (Claude, strictest — a live 401/403 only calls
+  `request_probe`), `crates/forward/src/codex/health.rs`, `crates/forward/src/gemini/pool.rs`.
 - Metrics of fixed cardinality only; no profile id, no email, no prompt, no provider error
   text.
 - An alert and its same-named section in `docs/ops/MONITORING.md` are added in a single change —
