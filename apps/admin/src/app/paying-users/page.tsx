@@ -223,13 +223,8 @@ export const PayingRow = memo(function PayingRow({ row, rank, days }: { row: Pay
   const other = providerNano(row.provider_spend, "other");
   const discount = row.multiplier_bp == null ? null : 100 - row.multiplier_bp / 100;
   const detailsId = `paying-user-details-${rank}`;
-  const fundingLabel = row.funding_kind === "payments"
-    ? "платёжный провайдер"
-    : row.funding_kind === "payments_and_manual"
-      ? "платёж + ручное"
-      : row.funding_kind === "manual"
-        ? "ручное пополнение"
-        : null;
+  const providerPaid = row.funding_kind === "payments" || row.funding_kind === "payments_and_manual";
+  const manualFunded = row.funding_kind === "manual" || row.funding_kind === "payments_and_manual";
   const bonusOnly = row.funding_kind === "bonus_only";
   const spendOnly = row.funding_kind === "spend_only";
   return (
@@ -240,7 +235,7 @@ export const PayingRow = memo(function PayingRow({ row, rank, days }: { row: Pay
           <button type="button" className="paying-row-toggle" aria-label={`${expanded ? "Скрыть" : "Показать"} usage клиента ${row.email ?? "—"}`} aria-expanded={expanded} aria-controls={expanded ? detailsId : undefined} onClick={() => setExpanded((current) => !current)}>
             <span aria-hidden="true">{expanded ? "−" : "+"}</span>
             <span className="paying-customer-copy">
-              <b><Dot kind={row.status === "disabled" ? "bad" : "ok"} /> {row.email ?? "—"}</b>
+              <b><Dot kind={row.status === "disabled" ? "bad" : "off"} /> {row.email ?? "—"}</b>
               <span className="sub">
                 {row.display_name || "Без имени"} · {payingTierLabel(row)}
                 {discount == null ? "" : ` · скидка ${discount}%`}
@@ -262,7 +257,10 @@ export const PayingRow = memo(function PayingRow({ row, rank, days }: { row: Pay
             </>
           ) : (
             <>
-              {fundingLabel ? <Pill kind="ok">{fundingLabel}</Pill> : null}
+              <span className="paying-funding-badges">
+                {providerPaid ? <Pill kind="ok">подтверждённый платёж</Pill> : null}
+                {manualFunded ? <Pill>ручное пополнение</Pill> : null}
+              </span>
               <b>{nanoMoney(row.paid_nano)}</b>
               <span className="sub">
                 {row.funding_kind === "manual"

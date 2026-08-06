@@ -44,6 +44,8 @@ describe("Платящие (paying users page)", () => {
       usage: { status: "unavailable", window: "30d", account_count: 0, available_account_count: 0, unavailable_account_count: 0, requests: "0", total_official_nano: "0", total_charged_nano: "0", models: [] },
     }} rank={1} days={30} /></tbody></table>);
     expect(bonusHtml).toContain("строгий bonus-only");
+    expect(bonusHtml).toContain('class="pill info"');
+    expect(bonusHtml).not.toContain('class="pill ok"');
     expect(bonusHtml).toContain("$9,007,199.25");
     expect(bonusHtml).toContain("денежных пополнений нет");
     expect(bonusHtml).not.toContain("0 платежей");
@@ -57,6 +59,8 @@ describe("Платящие (paying users page)", () => {
       usage: { status: "unavailable", window: "30d", account_count: 0, available_account_count: 0, unavailable_account_count: 0, requests: "0", total_official_nano: "0", total_charged_nano: "0", models: [] },
     }} rank={2} days={30} /></tbody></table>);
     expect(spendOnlyHtml).toContain("расход без строгой классификации");
+    expect(spendOnlyHtml).toContain('class="pill warn"');
+    expect(spendOnlyHtml).not.toContain('class="pill ok"');
     expect(spendOnlyHtml).toContain("не bonus-only");
     expect(spendOnlyHtml).not.toContain("строгий bonus-only");
   });
@@ -97,8 +101,26 @@ describe("Платящие (paying users page)", () => {
       usage: { status: "unavailable", window: "30d", account_count: 0, available_account_count: 0, unavailable_account_count: 0, requests: "0", total_official_nano: "0", total_charged_nano: "0", models: [] },
     }} rank={1} days={30} /></tbody></table>);
     expect(html).toContain("ручное пополнение");
+    expect(html).toContain('class="pill"');
+    expect(html).not.toContain('class="pill ok"');
     expect(html).toContain("2 ручных пополнения");
     expect(html).not.toContain("0 платежей");
+  });
+
+  it("зелёным отмечает только подтверждённую provider-платежом часть", () => {
+    const usage = { status: "unavailable" as const, window: "30d", account_count: 0, available_account_count: 0, unavailable_account_count: 0, requests: "0", total_official_nano: "0", total_charged_nano: "0", models: [] };
+    const paymentHtml = renderToString(<table><tbody><PayingRow row={{
+      email: "paid@example.com", funding_kind: "payments", paid_nano: "1000000000", payments_count: 1, usage,
+    }} rank={1} days={30} /></tbody></table>);
+    const mixedHtml = renderToString(<table><tbody><PayingRow row={{
+      email: "mixed@example.com", funding_kind: "payments_and_manual", paid_nano: "2000000000", payments_count: 1, manual_topups_count: 1, manual_paid_nano: "1000000000", usage,
+    }} rank={2} days={30} /></tbody></table>);
+
+    expect(paymentHtml).toContain('<span class="pill ok">подтверждённый платёж</span>');
+    expect(paymentHtml).not.toContain('class="dot ok"');
+    expect(mixedHtml).toContain('<span class="pill ok">подтверждённый платёж</span>');
+    expect(mixedHtml).toContain('<span class="pill">ручное пополнение</span>');
+    expect(mixedHtml.match(/class="pill ok"/g)).toHaveLength(1);
   });
 
   it("commerce disclosure в collapsed состоянии не ссылается на отсутствующие детали", () => {

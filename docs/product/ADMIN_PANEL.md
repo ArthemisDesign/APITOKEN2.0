@@ -293,7 +293,11 @@ mixed/other/legacy/unattributed evidence. Producer-authored `bonus_only` remains
 classification for zero-money rows whose complete immutable modern attribution is entirely bonus;
 `spend_only` instead means spend without that strict classification and is never presented as
 bonus-only. The `all` filter remains available and is labelled `деньги + строгий бонус`; the other
-historical funding filters are unchanged.
+historical funding filters are unchanged. Funding colors encode evidence rather than account health:
+green is reserved for the `payments` leg confirmed by a payment provider; a mixed row renders that
+green provider-payment badge beside a neutral manual-top-up badge. Manual-only stays neutral,
+strict bonus-only is blue, and unclassified spend is amber. The customer identity dot is neutral for
+an active account and red only when disabled, so it cannot make a non-payment row look paid.
 
 Each paginated row receives a minimal `usage` projection covering every distinct account found on
 that user's window events. Commerce rows expand into exact producer/model details. `complete` means
