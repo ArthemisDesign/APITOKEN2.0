@@ -450,7 +450,10 @@ format from the strict Nest error envelope; Stage 5 engine prepare failures iden
 artifact kind and rejection class as
 `engine_<main_catalog|openkeys_catalog|switches|policy_b2c|policy_b2b|policy_openkeys|policy_service>_prepare_<rejection>`.
 The response body, free-form message, artifact identity, digest, account and credentials are never
-printed. Before materialization, each invocation replaces a prior `planned`
+printed. A Stage 6 validation failure is classified only as `contract` (the strict wire shape is
+invalid) or `plan_identity` (the valid response no longer matches the immutable private plan fence),
+so operators can distinguish protocol drift from lineage drift without exposing either identity.
+Before materialization, each invocation replaces a prior `planned`
 private fence only with the newest stable, blocker-free dry-run identity; after materialization the
 fence is immutable and the helper resumes Stage 6 from that exact plan. It fails closed before
 materialize when the exhaustive dry-run has blockers and fails on any dead, failed or blocker Stage 6

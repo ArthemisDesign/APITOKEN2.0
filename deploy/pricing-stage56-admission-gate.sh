@@ -278,8 +278,9 @@ fi
 
 request GET "$query" /dev/null "$work/stage6-before.json"
 stage6_result_is_valid "$plan_digest" "$work/stage6-before.json" \
-  && stage6_identity_matches_plan "$work/stage6-before.json" \
-  || { unset COMMERCIAL_ADMIN_KEY; printf 'invalid Stage 6 pre-stage response\n' >&2; exit 1; }
+  || { unset COMMERCIAL_ADMIN_KEY; printf 'invalid Stage 6 pre-stage response (contract)\n' >&2; exit 1; }
+stage6_identity_matches_plan "$work/stage6-before.json" \
+  || { unset COMMERCIAL_ADMIN_KEY; printf 'invalid Stage 6 pre-stage response (plan_identity)\n' >&2; exit 1; }
 
 if jq -e '.job_status == "dead" or .stage5_status == "failed" or .stage5_status == "blocked" or
     .target_status == "failed" or .recovery_status == "failed" or .blocker_accounts != 0' \

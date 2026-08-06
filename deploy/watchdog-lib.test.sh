@@ -4857,6 +4857,10 @@ grep -Fq '.blocker_count == 0' "$pricing_stage56_gate" \
   || wd_die 'pricing Stage 5/6 helper does not fail closed on Stage 5 blockers'
 grep -Fq '.job_status == "dead"' "$pricing_stage56_gate" \
   || wd_die 'pricing Stage 5/6 helper does not fail closed on a dead Stage 6 parent'
+grep -Fq 'invalid Stage 6 pre-stage response (contract)' "$pricing_stage56_gate" \
+  || wd_die 'pricing Stage 5/6 helper does not classify a malformed Stage 6 contract'
+grep -Fq 'invalid Stage 6 pre-stage response (plan_identity)' "$pricing_stage56_gate" \
+  || wd_die 'pricing Stage 5/6 helper does not classify Stage 6 lineage drift separately'
 grep -Fq '.target_funding_manifest_digest == .recovery_funding_manifest_digest' "$pricing_stage56_gate" \
   || wd_die 'pricing Stage 5/6 helper does not require equal terminal funding manifests'
 ! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc|https://|openai-image-public-smoke|images/(generations|edits)' \
