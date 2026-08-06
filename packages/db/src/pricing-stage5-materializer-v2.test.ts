@@ -389,6 +389,46 @@ describe("pricing Stage 5 v2 planner", () => {
       .toBe(bumped.policy_version);
   });
 
+  it("reuses an equivalent later policy version after a partial remote prepare", () => {
+    const baseline = buildStage5V2Plan(completePlanInput());
+    const baselinePolicy = baseline.policies
+      .find((policy) => policy.policy_id === "release-v2:b2b:acct_b2b")!;
+    const versionFourInput = completePlanInput();
+    versionFourInput.existing_release_policies = [{
+      policy_id: baselinePolicy.policy_id,
+      policy_version: baselinePolicy.policy_version,
+      content_digest: "sha256:v2:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    }];
+    const versionFourPolicy = buildStage5V2Plan(versionFourInput).policies
+      .find((policy) => policy.policy_id === baselinePolicy.policy_id)!;
+    expect(versionFourPolicy.policy_version).toBe(baselinePolicy.policy_version + 1);
+
+    const replayInput = completePlanInput();
+    replayInput.existing_release_policies = [{
+      policy_id: versionFourPolicy.policy_id,
+      policy_version: versionFourPolicy.policy_version,
+      content_digest: versionFourPolicy.content_digest,
+    }];
+    expect(buildStage5V2Plan(replayInput).policies
+      .find((policy) => policy.policy_id === baselinePolicy.policy_id))
+      .toEqual(versionFourPolicy);
+  });
+
+  it("allocates above the highest version when no persisted policy is equivalent", () => {
+    const baseline = buildStage5V2Plan(completePlanInput());
+    const baselinePolicy = baseline.policies
+      .find((policy) => policy.policy_id === "release-v2:b2b:acct_b2b")!;
+    const input = completePlanInput();
+    input.existing_release_policies = [3, 5].map((policyVersion) => ({
+      policy_id: baselinePolicy.policy_id,
+      policy_version: policyVersion,
+      content_digest: `sha256:v2:${String(policyVersion).repeat(64)}`,
+    }));
+    const allocated = buildStage5V2Plan(input).policies
+      .find((policy) => policy.policy_id === baselinePolicy.policy_id)!;
+    expect(allocated.policy_version).toBe(6);
+  });
+
   it("shares the exact Stage 5 policy identity with post-cutover external-owner writers", () => {
     const plan = buildStage5V2Plan(completePlanInput());
     const mainCatalog = plan.catalogs.find((catalog) => catalog.product_id === "main")!;

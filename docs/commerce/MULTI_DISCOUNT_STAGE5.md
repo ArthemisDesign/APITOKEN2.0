@@ -108,9 +108,11 @@ Image 2 generation and one-reference edit both passed through the existing seale
 additive generation 6 adds only `openai/gpt-image-2-2026-04-21`. The current materializer builds
 main/OpenKeys catalogs and switches generation 6. Main retains the generation-5 model set and adds
 the image snapshot; OpenKeys retains its generation-5 set and adds only that image snapshot at 1:1.
-The generation-6 materializer starts from policy version 3 and allocates the next immutable version
-whenever a persisted same-version digest differs. Capability/catalog preparation alone does not
-enable traffic or add the image model to buyer/operator display.
+The generation-6 materializer starts from policy version 3, reuses any persisted version whose
+version-aware canonical digest matches the planned policy, and otherwise allocates one above the
+highest persisted version. This makes replay after a partial remote prepare idempotent without
+rewriting immutable policy history or submitting a stale baseline version. Capability/catalog
+preparation alone does not enable traffic or add the image model to buyer/operator display.
 
 The planner reserves the target generation and the recovery generation of the next monotonic number
 and builds an immutable source/policy/assignment plan for both. At this phase balance assignments

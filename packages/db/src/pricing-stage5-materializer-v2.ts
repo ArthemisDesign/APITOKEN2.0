@@ -641,10 +641,14 @@ function resolveReleasePolicyVersion(
 ): PricingReleasePolicyV2 {
   if (policy.policy_version !== STAGE5_V2_POLICY_VERSION) return policy;
   const rows = existing.filter((row) => row.policy_id === policy.policy_id);
-  const baseline = rows.find((row) => row.policy_version === STAGE5_V2_POLICY_VERSION);
-  if (!baseline || baseline.content_digest === policy.content_digest) return policy;
+  const { content_digest: _contentDigest, ...policyWithoutDigest } = policy;
+  for (const row of rows) {
+    const candidate = buildPolicy({ ...policyWithoutDigest, policy_version: row.policy_version });
+    if (candidate.content_digest === row.content_digest) return candidate;
+  }
+  if (rows.length === 0) return policy;
   const next = rows.reduce((maximum, row) => Math.max(maximum, row.policy_version), STAGE5_V2_POLICY_VERSION) + 1;
-  return buildPolicy({ ...policy, policy_version: next });
+  return buildPolicy({ ...policyWithoutDigest, policy_version: next });
 }
 
 function blocker(
