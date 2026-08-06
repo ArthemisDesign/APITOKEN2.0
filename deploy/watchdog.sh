@@ -30,6 +30,8 @@ VALIDATION_PLANNER=$CONTROLLER_ROOT/validation-plan.sh
 AUTHBOT_RUNTIME_STATE=$CONTROLLER_ROOT/authbot-runtime-state.sh
 GPT_IMAGE_2_LIVE_GATE=$CONTROLLER_ROOT/gpt-image-2-live-gate.sh
 GPT_IMAGE_2_IMPLEMENTATION_SHA=1c48e3769f0fe775e650f60ea3c5839458e5dfe2
+GPT_IMAGE_2_PUBLIC_SMOKE_GATE=$CONTROLLER_ROOT/gpt-image-2-public-smoke-gate.sh
+GPT_IMAGE_2_PUBLIC_PRODUCER_SHA=d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6
 TEST_DB_HELPER=/usr/local/lib/apitoken-watchdog/watchdog-test-db
 BACKUP_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-backup.sh
 MIGRATION_RUNNER=/usr/local/lib/apitoken-watchdog/watchdog-migrate.sh
@@ -2417,7 +2419,8 @@ main() {
   local resume_sha=${1:-}
   local remote_ref rejected infra_scope=none delivery_infra_scope=none
   local infra_changed=0 engine_changed=0 backend_changed=0 sales_changed=0
-  local openkeys_changed=0 admin_changed=0 devbot_changed=0 codex_changed=0 gpt_image_2_live_gate=0
+  local openkeys_changed=0 admin_changed=0 devbot_changed=0 codex_changed=0
+  local gpt_image_2_live_gate=0 gpt_image_2_public_smoke_gate=0
   local typescript_required=0 typescript_full=0 typescript_base= rust_required=0 static_required=0
   local engine_artifacts_required=0 codex_artifacts_required=0
   local validation_policy_sha256='' validation_plan_sha256='' final_verification_plan=''
@@ -2444,6 +2447,7 @@ main() {
   require_fixed_file "$VALIDATION_PLANNER"
   require_fixed_root_executable "$AUTHBOT_RUNTIME_STATE"
   require_fixed_file "$GPT_IMAGE_2_LIVE_GATE"
+  require_fixed_file "$GPT_IMAGE_2_PUBLIC_SMOKE_GATE"
   require_fixed_file "$GITHUB_HELPER"
   require_fixed_directory "$CI_TOOLCHAIN"
   [[ -f $DB_MANIFEST && ! -L $DB_MANIFEST ]] || wd_die "database migration baseline is missing"
@@ -2510,6 +2514,8 @@ main() {
     || wd_die "invalid delivery infrastructure scope: $delivery_infra_scope"
   wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
     wd_path_is_gpt_image_2_live_gate_trigger && gpt_image_2_live_gate=1
+  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
+    wd_path_is_gpt_image_2_public_smoke_gate_trigger && gpt_image_2_public_smoke_gate=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_engine \
     && engine_changed=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_codex_tooling \
@@ -2563,7 +2569,8 @@ main() {
   if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $infra_changed == 0 \
         && $engine_changed == 0 && $backend_changed == 0 \
         && $sales_changed == 0 && $openkeys_changed == 0 && $admin_changed == 0 \
-        && $devbot_changed == 0 && $codex_changed == 0 && $gpt_image_2_live_gate == 0 ]]; then
+        && $devbot_changed == 0 && $codex_changed == 0 && $gpt_image_2_live_gate == 0 \
+        && $gpt_image_2_public_smoke_gate == 0 ]]; then
     if idle_maintenance_due; then
       CURRENT_PHASE=maintaining
       status "running periodic retention and production-alignment checks"
@@ -2720,6 +2727,14 @@ main() {
     # This is evidence for one already deployed implementation, not whichever unrelated engine
     # release happens to be current when the one-shot controller lands.
     sudo -n "$GPT_IMAGE_2_LIVE_GATE" "$GPT_IMAGE_2_IMPLEMENTATION_SHA"
+  fi
+
+  if (( gpt_image_2_public_smoke_gate == 1 )); then
+    CURRENT_PHASE=verifying-gpt-image-2-public
+    CURRENT_PHASE_BEFORE_FAILURE=verifying-gpt-image-2-public
+    status "running public GPT Image 2 generation and edit through the sealed Codex OAuth pool"
+    # The public smoke must attest the already deployed producer release, not this controller-only SHA.
+    sudo -n "$GPT_IMAGE_2_PUBLIC_SMOKE_GATE" "$GPT_IMAGE_2_PUBLIC_PRODUCER_SHA"
   fi
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"

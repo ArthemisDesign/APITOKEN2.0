@@ -232,6 +232,8 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/validation-plan.sh
   install -o root -g root -m 0755 "$ROOT/deploy/gpt-image-2-live-gate.sh" \
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-live-gate.sh
+  install -o root -g root -m 0755 "$ROOT/deploy/gpt-image-2-public-smoke-gate.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-smoke-gate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-test-db.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-test-db
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-backup.sh" \

@@ -176,19 +176,23 @@ identity. The corrective path is non-network: it accepts only that existing exac
 would make overall delivery RED after validating any terminal withdrawal. The historical gate remains
 pinned to the explicit immutable edit SHA rather than a mutable engine baseline.
 
-The separate public Images API publication gate uses
-`claude-api openai-image-public-smoke --output <absolute-new-private-directory> --execute` from the exact
-production binary. Its parent must already be an actual absolute directory with no group/world permission;
-the leaf must not exist, becomes mode `0700`, and is the permanent no-replay fence. The controller copies
-only the running OpenAI process environment, forces both ClaudeStore fallback switches off, and pins the
-exact deployed implementation SHA. Before dispatch the CLI requires authenticated discovery to exclude
-both image aliases and selects exactly one existing active `crm-parsing` release-v2 meter-only key without
-creating or persisting a credential. It then makes exactly one public generation and, only after exact
-settlement, exactly one public edit using the generated PNG. GREEN requires two bounded byte-different
-PNGs, exact usage modality sums, lowercase UUIDv4 reservation identities, coherent terminal
-reservation/outbox/usage/snapshot evidence, exact official nanoUSD legs, zero customer charge and unchanged
-account/key money aggregates. Any post-dispatch ambiguity is terminal for that SHA/root; retry requires a
-new implementation and a new delivery. Catalog, router, OpenKeys, site, admin and public-documentation
+The separate public Images API publication gate is the fixed root controller
+`deploy/gpt-image-2-public-smoke-gate.sh`, pinned to watchdog-GREEN producer
+`d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6`. Only a change to that controller path triggers it; ordinary
+controller or documentation delivery cannot spend an image request. It runs
+`claude-api openai-image-public-smoke --output /var/lib/apitoken/watchdog/gpt-image-2-public/<producer-sha>
+--execute` from the exact current producer binary. The actual `deploy:deploy` mode-`0700` producer-SHA leaf
+is created once and is the permanent no-replay fence; any existing partial or invalid root fails before
+runtime environment or network access. The controller copies only the exact OpenAI slot environment,
+removes both ClaudeStore fallback switches and credentials, and selects exactly one existing active
+`crm-parsing` release-v2 meter-only key without creating or persisting a credential. Before dispatch the CLI
+requires authenticated discovery to exclude both image aliases. It then makes exactly one public generation
+and, only after exact settlement, exactly one public edit using the generated PNG. GREEN requires two
+bounded byte-different PNGs, exact usage modality sums, lowercase UUIDv4 reservation identities, coherent
+terminal reservation/outbox/usage/snapshot evidence, exact official nanoUSD legs, zero customer charge and
+unchanged account/key money aggregates. A valid retained success may be verified read-only; any
+post-dispatch ambiguity is terminal for that producer SHA/root, and another paid attempt requires a new
+producer implementation and delivery. Catalog, router, OpenKeys, site, admin and public-documentation
 publication remains forbidden until this gate and overall watchdog status are GREEN.
 
 Test-only deployment scripts,

@@ -182,12 +182,14 @@ the retained summary and are not inferred here.
 ## Publication gate
 
 Private generation and edit gates are GREEN. Producer Images API SHA
-`5a3c21700ce74a024e7e6b933fccc3da7d44c5ff` is deployed and watchdog-GREEN, still dormant in every
-public catalog. Its metered success header must now carry the engine reservation identity so the next
-one-shot can correlate the exact release snapshot, reservation, outbox, usage event and terminal
-settlement.
+`d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6` is deployed and watchdog-GREEN, still dormant in every
+public catalog. Its metered success header carries the engine reservation identity so the one-shot can
+correlate the exact release snapshot, reservation, outbox, usage event and terminal settlement.
 
-`claude-api openai-image-public-smoke --output <new-private-directory> --execute` is that one-shot. It:
+The fixed controller `deploy/gpt-image-2-public-smoke-gate.sh` is pinned to that producer and invokes
+`claude-api openai-image-public-smoke --output
+/var/lib/apitoken/watchdog/gpt-image-2-public/<producer-sha> --execute`. Only the gate file itself is a paid
+trigger; its delivery is still pending, so the publication condition is not yet satisfied. The one-shot:
 
 1. authenticates `GET https://openai.api.apitoken.sale/v1/models` and requires both image aliases to
    remain absent before dispatch;

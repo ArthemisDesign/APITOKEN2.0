@@ -283,10 +283,12 @@ is only what is needed to walk the relationships when making changes:
   preflights one home, permits only one `opaque/low/auto` PNG (edit: exactly one strict PNG reference),
   reserves a typed immutable image snapshot, and settles authoritative five-leg token cost. Successful
   malformed evidence and ambiguous post-dispatch errors retain the hold and never claim `not_started`.
-  The server-only `openai-image-public-smoke` consumer borrows exactly one existing `crm-parsing`
-  meter-only key and correlates the public UUIDv4 response identity to a coherent terminal release-v2
-  snapshot/reservation/outbox/usage view; it creates no credential and cannot replay a dispatched call.
-  The direct OpenAI plane and header-gated Combined bridge produce these routes; the future router is a
+  The fixed `deploy/gpt-image-2-public-smoke-gate.sh` consumer is pinned to watchdog-GREEN producer
+  `d2e345f2de75e0ee6c72797fdf315f12ab4bbeb6`, borrows exactly one existing `crm-parsing` meter-only key,
+  and correlates the public UUIDv4 response identity to a coherent terminal release-v2
+  snapshot/reservation/outbox/usage view. It creates no credential, disables both external fallback paths,
+  and uses the producer-SHA evidence root as a permanent pre-network replay fence. The direct OpenAI plane
+  and header-gated Combined bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —
   `docs/engine/CODEX_PROVIDER.md`, `docs/ops/GPT_IMAGE_2_CANARY.md`, and
