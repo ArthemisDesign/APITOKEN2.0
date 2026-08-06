@@ -1610,6 +1610,15 @@ fn unwrap_code_assist_response(
         .map_err(|_| ResponseDecodeError::Malformed)
 }
 
+/// Read the `error.status` enum from an upstream error body, when it carries a known one.
+///
+/// Used only to classify our own routing reaction; the string is never echoed to the customer.
+fn google_error_status(body: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(body).ok()?;
+    let status = value.get("error")?.get("status")?.as_str()?;
+    is_google_rpc_status(status).then(|| status.to_owned())
+}
+
 /// Canonical google.rpc.Code status strings. Used to echo an upstream stream error's status only
 /// when it is a known-safe enum value; anything else falls back to a generic INTERNAL.
 fn is_google_rpc_status(status: &str) -> bool {
@@ -2590,6 +2599,8 @@ async fn api_inner(
     let mut retry_failures = 0usize;
     let mut saw_quota = false;
     let mut saw_auth = false;
+    // A 403 is a verdict about the *request*, not the credential, and is tracked apart from 401.
+    let mut saw_permission_denied = false;
     let mut saw_backend = false;
     // Same smooth-wait budget the Anthropic plane has always had. A pool that is momentarily out of
     // capacity — every profile refreshing its token at once, one cooling window about to expire —
@@ -2645,23 +2656,35 @@ async fn api_inner(
             let retry = gateway
                 .soonest_ready(&wire_model_id, &HashSet::new(), generation)
                 .map(|until| until.saturating_sub(pool::now()).max(1) as u64);
-            // Exhausting the pool is transient by construction: cooling expires, a refresh lands, a
-            // concurrent request frees its slot. Wait quietly and re-run the whole rotation while
-            // the budget lasts. `excluded` and the per-round verdicts reset, because a profile
-            // skipped a moment ago may be the healthy one now — otherwise the retry would rotate
-            // over an empty set and just burn the budget.
+            // Waiting only helps when the pool ran out of *capacity*: cooling expires, a refresh
+            // lands, a concurrent request frees its slot. If the round instead collected real
+            // provider verdicts — a 401/403 or a backend fault on the profiles it did reach — the
+            // fleet already answered, and re-running the rotation would replay the same rejected
+            // request across every profile a second time. Google has denied one identical request
+            // on all seven profiles before; doubling that traffic is the last thing to do about it.
+            // Quota (429) stays retryable: it is time-based and `soonest_ready` bounds the wait.
+            let round_saw_provider_verdict =
+                saw_auth || saw_permission_denied || saw_backend || retry_failures > 0;
             let remaining = smooth_deadline
                 .saturating_duration_since(std::time::Instant::now())
                 .as_millis();
             let hint = retry.map(|seconds| seconds as i64).unwrap_or(1);
-            if let Some(step) = crate::proxy::smooth_step(hint, remaining) {
-                tokio::time::sleep(step).await;
-                excluded.clear();
-                retry_failures = 0;
-                saw_quota = false;
-                saw_auth = false;
-                saw_backend = false;
-                continue 'smooth;
+            if !round_saw_provider_verdict {
+                if let Some(step) = crate::proxy::smooth_step(hint, remaining) {
+                    tokio::time::sleep(step).await;
+                    // A profile skipped a moment ago may be the healthy one now, so the round
+                    // starts clean; otherwise the retry would rotate over an empty set.
+                    excluded.clear();
+                    saw_quota = false;
+                    continue 'smooth;
+                }
+            }
+            // Every profile that answered denied this exact request while its credential stayed
+            // valid: that is Google refusing the request, not us being unavailable. Return its own
+            // verdict so the caller can stop — a synthetic retryable 503 sent clients into an
+            // endless retry of something no retry can fix.
+            if saw_permission_denied && !saw_quota {
+                return Err(ApiError::provider_rejected(StatusCode::FORBIDDEN));
             }
             return if !gateway.has_authenticated_profiles() {
                 Err(ApiError::unavailable("gemini_profiles_unauthenticated"))
@@ -2985,11 +3008,29 @@ async fn api_inner(
             }
         };
         match status.as_u16() {
-            401 | 403 => {
+            401 => {
                 Metrics::inc(&app.metrics.upstream_auth);
                 saw_auth = true;
                 excluded.insert(profile.id().to_string());
                 profile.mark_auth_blocked(gateway.config());
+                continue;
+            }
+            403 => {
+                Metrics::inc(&app.metrics.upstream_auth);
+                excluded.insert(profile.id().to_string());
+                // Google answers 403 for two unrelated things and the HTTP code alone cannot tell
+                // them apart. `UNAUTHENTICATED` (and anything unrecognized) is about this project's
+                // credential or environment: rotate away and cool it, as before. `PERMISSION_DENIED`
+                // means the credential was accepted and the *request* was refused — every profile
+                // returns it for the same request, so cooling the fleet punishes the whole customer
+                // base for one caller's request and the exponential auth streak makes each repeat
+                // worse.
+                if google_error_status(&response_body).as_deref() == Some("PERMISSION_DENIED") {
+                    saw_permission_denied = true;
+                } else {
+                    saw_auth = true;
+                    profile.mark_auth_blocked(gateway.config());
+                }
                 continue;
             }
             429 => {

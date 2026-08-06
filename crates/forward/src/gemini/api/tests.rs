@@ -3966,3 +3966,47 @@ fn synthetic_errors_never_leak_internal_architecture() {
         }
     }
 }
+
+/// A request Google denies on every profile is the request's fault, not the fleet's.
+///
+/// Production hit exactly this: Google answered `403 PERMISSION_DENIED` to one identical request on
+/// all seven profiles, twice, while every OAuth token stayed valid and the profiles kept serving
+/// afterwards. Treating it as an auth fault cooled the whole fleet on an exponential streak — so one
+/// caller's request degraded Gemini for everyone — and the customer received a retryable
+/// `503 UNAVAILABLE`, which is why their client retried the denial in a loop instead of stopping.
+#[tokio::test]
+async fn request_scoped_permission_denied_returns_googles_verdict_and_spares_the_fleet() {
+    let denied = MockReply::json(
+        StatusCode::FORBIDDEN,
+        json!({"error": {"status": "PERMISSION_DENIED"}}),
+    );
+    let server = start_mock(MockState::with_replies([
+        (PROFILE_A_KEY, vec![denied.clone()]),
+        (PROFILE_B_KEY, vec![denied]),
+    ]))
+    .await;
+    let fixture = gateway_fixture(&server.upstream, &[None, None], 1);
+    let response = invoke(
+        app_state(fixture.gateway.clone(), None),
+        json!({"contents": []}),
+        false,
+    )
+    .await;
+
+    // Google's own verdict reaches the caller, so a client can stop instead of retrying forever.
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["code"], 403);
+    assert_eq!(body["error"]["status"], "PERMISSION_DENIED");
+    // Every profile was tried once for this request and none was punished for answering.
+    assert_eq!(server.state.seen().len(), 2);
+    let status = fixture.gateway.operational_status().await;
+    assert_eq!(status.authenticated, status.profiles.len());
+    for profile in &status.profiles {
+        assert!(
+            profile.cooling_until <= pool::now(),
+            "profile {} was cooled by a request-scoped denial",
+            profile.id
+        );
+    }
+}
