@@ -321,8 +321,14 @@ is only what is needed to walk the relationships when making changes:
   process teardown crossed the controller deadline; no image POST occurred. The successor controller accepts
   only that strict terminal shape after a nonzero timeout and uses the SHA fence without network replay;
   incomplete states, image artifacts, dispatch flags, request identities and extra arguments remain RED.
-  Paid execution requires a distinct new producer-SHA fence and exact watchdog-GREEN preflight delivery
-  rather than trusting a RED delivery by itself. The direct OpenAI plane and header-gated Combined
+  Corrective delivery `df924a10edff41b0d047805d18abe16a397b4809` validated the retained terminal preflight
+  without replay and is exact watchdog-GREEN. The separate
+  `deploy/gpt-image-2-public-paid-smoke-gate.sh` pins the same producer to the fresh
+  `gpt-image-2-public-paid-smoke` fence, inherits only the production PostgreSQL DSN, and runs exactly one
+  `--execute`: free discovery, one generation, authoritative settlement, then one one-reference edit and
+  authoritative settlement. Existing output prevents every replay; no reseller origin, fallback, image API
+  key or additional credential path exists. This paid delivery must itself be exact watchdog-GREEN before
+  any publication consumer can proceed. The direct OpenAI plane and header-gated Combined
   bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —

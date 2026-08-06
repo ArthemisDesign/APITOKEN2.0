@@ -35,6 +35,7 @@ Cmnd_Alias APITOKEN_HELPERS = \
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-preflight-gate.sh d42fc0e3290c0042a16797626326c250e0f6721c --inspect, \
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-preflight-v2-gate.sh 6629ecd7b3725bcd7306ef7a1dc8675ef9160a43, \
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-preflight-v3-gate.sh 63972f2ddfd5906d7c30a87406053eb3782f4223, \
+    /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-paid-smoke-gate.sh 63972f2ddfd5906d7c30a87406053eb3782f4223, \
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8798, \
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8800, \
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8801, \

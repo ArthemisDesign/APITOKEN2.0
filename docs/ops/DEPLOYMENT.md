@@ -211,10 +211,15 @@ numbered `deploy/*` contexts; it performed no image request. A separate one-shot
 PostgreSQL DSN from an active OpenAI slot and executes only `openai-image-public-smoke --preflight-only`;
 success requires the sole private journal to be `preflight_success` with both dispatch flags false and null
 request identities. Until this new delivery is watchdog-GREEN, the corrected selector has not executed in
-production. A paid mode requires another new producer/root and a fresh successful free preflight; it cannot
-promote or replay this artifact. Catalog, router, OpenKeys, site,
-admin and public-documentation publication remains forbidden until a later exact production generation+edit
-gate and overall watchdog status are GREEN.
+production. The v2 root later failed before dispatch and was retired. Handle-based selector producer
+`63972f2ddfd5906d7c30a87406053eb3782f4223` ran through the fresh v3 preflight root; corrective delivery
+`df924a10edff41b0d047805d18abe16a397b4809` validated its terminal no-dispatch evidence without replay and is
+exact watchdog-GREEN. The subsequent paid controller uses a distinct
+`/var/lib/apitoken/watchdog/gpt-image-2-public-paid-smoke/<producer-sha>` fence and exactly one `--execute`
+invocation through the same sealed pool. It permits one generation and, after its authoritative settlement,
+one one-reference edit; any partial paid state permanently blocks replay. Catalog, router, OpenKeys, site,
+admin and public-documentation publication remains forbidden until that exact production generation+edit
+delivery and overall watchdog status are GREEN.
 
 Test-only deployment scripts,
 documentation, and the contributor-side merge workflow still run the operational regression lane

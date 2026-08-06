@@ -261,6 +261,9 @@ require_permitted 'GPT Image 2 exact-producer public preflight v2 gate' \
 require_permitted 'GPT Image 2 exact-producer public preflight v3 gate' \
   /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-preflight-v3-gate.sh \
   63972f2ddfd5906d7c30a87406053eb3782f4223
+require_permitted 'GPT Image 2 exact-producer public paid smoke gate' \
+  /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-paid-smoke-gate.sh \
+  63972f2ddfd5906d7c30a87406053eb3782f4223
 require_permitted 'router promotion to slot A' \
   /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8800
 require_permitted 'router promotion to slot B' \
