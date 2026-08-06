@@ -14,6 +14,7 @@ import { DOCS_URL } from "@/lib/site-links";
 import { trackFirstProductEvent, trackProductEvent } from "@/lib/product-analytics";
 import { modelLabel } from "@/lib/model-label";
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
+import { clearDashboardShellCache, readDashboardShellCache, writeDashboardShellCache } from "./shell-cache";
 import { DashboardLoading } from "./dashboard-loading";
 import { DashboardScrim, DashboardSidebar, DashboardTopBar } from "./dashboard-shell";
 
@@ -91,6 +92,11 @@ export function Dashboard() {
   // переключение вкладок. Ленивые dynamic()-импорты по-прежнему грузятся только при первом визите.
   const [visitedSections, setVisitedSections] = useState<ReadonlySet<Section>>(() => new Set([section]));
   const [policyNow] = useState(() => Date.now());
+  // SWR-снапшот прошлого удачного ответа me+account (sessionStorage). ВАЖНО: в начальные
+  // состояния user/account/loading его не подставляем — первый клиентский кадр обязан
+  // совпасть с SSR (спиннер), иначе hydration mismatch. Снапшот применяется в эффекте
+  // маунта сразу после гидрации, дальше тихая ревалидация подтягивает свежее.
+  const [shellCache] = useState(() => readDashboardShellCache());
   const [user, setUser] = useState<AuthUser | null>(null);
   const [account, setAccount] = useState<AccountView | null>(null);
   const [keys, setKeys] = useState<ApiKeyView[]>([]);
@@ -168,6 +174,7 @@ export function Dashboard() {
       if (lifecycle !== lifecycleGeneration.current) return;
       const { user: current } = identity;
       setUser(current); setAccount(accountView);
+      writeDashboardShellCache(current, accountView);
       setError(null);
       setLoadFailures(0);
       setLoading(false);
@@ -178,7 +185,8 @@ export function Dashboard() {
       }
     } catch (cause) {
       if (lifecycle !== lifecycleGeneration.current) return;
-      if (cause instanceof ApiError && cause.status === 401) { router.replace("/login"); return; }
+      // Сессия мертва — снапшот чужих/старых данных не должен мелькнуть при следующем входе.
+      if (cause instanceof ApiError && cause.status === 401) { clearDashboardShellCache(); router.replace("/login"); return; }
       setError(cause instanceof Error ? cause.message : dashboardCopy.en.loadError);
       setLoadFailures((current) => current + 1);
     } finally {
@@ -188,9 +196,15 @@ export function Dashboard() {
 
   useEffect(() => {
     document.body.classList.add("app-body");
-    queueMicrotask(() => { void load(); });
+    if (shellCache) {
+      // Гидрация завершена — мгновенно подменяем спиннер снапшотом и дальше тихо ревалидируем.
+      setUser(shellCache.user);
+      setAccount(shellCache.account);
+      setLoading(false);
+    }
+    queueMicrotask(() => { void load({ silent: shellCache !== null }); });
     return () => { lifecycleGeneration.current += 1; document.body.classList.remove("app-body"); };
-  }, [load]);
+  }, [load, shellCache]);
 
   // Чанки самых ходовых разделов (keys/usage) грузим в простое браузера после
   // первого визита: переключение на них не ждёт сеть. Save Data пропускаем.
@@ -265,7 +279,7 @@ export function Dashboard() {
   const logout = useCallback(async () => {
     if (loggingOut) return;
     setLoggingOut(true); setLogoutError(null);
-    try { await api.logout(); router.replace("/login"); }
+    try { await api.logout(); clearDashboardShellCache(); router.replace("/login"); }
     catch { setLogoutError(localCopy.logoutError); }
     finally { setLoggingOut(false); }
   }, [loggingOut, router, localCopy]);
