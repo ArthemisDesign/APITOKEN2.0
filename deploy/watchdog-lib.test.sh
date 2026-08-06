@@ -5102,9 +5102,11 @@ grep -Fxq 'MAX_CYCLES=3' "$pricing_stage567_gate" \
   || wd_die 'pricing Stage 5-7 convergence helper lacks its fixed cycle bound'
 grep -Fxq 'STATE_PARENT=/var/lib/apitoken/pricing-stage567-converge' "$pricing_stage567_gate" \
   || wd_die 'pricing Stage 5-7 convergence helper lacks a private cycle namespace'
-grep -Fq 'if (( rc != DRIFT_EXIT )); then' "$pricing_stage567_gate" \
+grep -Fq 'if (( rc != DRIFT_EXIT && rc != BLOCKED_EXIT )); then' "$pricing_stage567_gate" \
   && grep -Fq '.state == "engine_inventory_drift"' "$pricing_stage567_gate" \
-  || wd_die 'pricing Stage 5-7 convergence helper can advance on a non-inventory blocker'
+  && grep -Fq 'BLOCKED_EXIT=76' "$pricing_stage567_gate" \
+  && grep -Fq '.state == "rollout_blocked"' "$pricing_stage567_gate" \
+  || wd_die 'pricing Stage 5-7 convergence helper can advance on a non-terminal blocker'
 grep -Fq 'stage6_result_is_valid "$stage6_result"' "$pricing_stage567_gate" \
   && grep -Fq -- '--converge-cycle "$cycle" "$stage6_result"' "$pricing_stage567_gate" \
   || wd_die 'pricing Stage 5-7 convergence helper does not validate dynamic terminal identities'
@@ -5113,6 +5115,9 @@ grep -Fq 'REQUEST_STATE=$STATE_DIR/request.json' "$pricing_stage7_refresh_gate" 
   || wd_die 'pricing Stage 7 dynamic mode lacks replay-stable idempotency state'
 grep -Fq 'return "$DRIFT_EXIT"' "$pricing_stage7_refresh_gate" \
   || wd_die 'pricing Stage 7 helper does not classify exact inventory drift for convergence'
+grep -Fq 'exit "$BLOCKED_EXIT"' "$pricing_stage7_refresh_gate" \
+  && grep -Fq 'BLOCKED_EXIT=76' "$pricing_stage7_refresh_gate" \
+  || wd_die 'pricing Stage 7 helper does not classify a terminal blocked rollout for convergence'
 ! grep -Eq 'TARGET_GENERATION=(23|24)|RECOVERY_GENERATION=(23|24)' "$pricing_stage567_gate" \
   || wd_die 'pricing Stage 5-7 convergence helper is pinned to stale generations'
 ! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc|https://|images/(generations|edits)' \

@@ -4,6 +4,7 @@ set -euo pipefail
 ADMISSION_SHA=3f412e33d631f2956a575e40f7f28f8b0b592106
 MAX_CYCLES=3
 DRIFT_EXIT=75
+BLOCKED_EXIT=76
 STATE_PARENT=/var/lib/apitoken/pricing-stage567-converge
 STAGE56_HELPER=/usr/local/lib/apitoken-watchdog/controller/pricing-stage56-refresh-gate.sh
 STAGE7_HELPER=/usr/local/lib/apitoken-watchdog/controller/pricing-stage7-refresh-gate.sh
@@ -72,7 +73,8 @@ for ((cycle = 1; cycle <= MAX_CYCLES; cycle++)); do
         && $(stat -c '%U:%G:%a' -- "$drift_state") == root:root:600 ]] \
       || { printf 'pricing convergence drift fence is not private root authority\n' >&2; exit 1; }
     jq -e --argjson cycle "$cycle" \
-      '(keys | sort) == (["cycle","state"] | sort) and .cycle == $cycle and .state == "engine_inventory_drift"' \
+      '(keys | sort) == (["cycle","state"] | sort) and .cycle == $cycle and
+       (.state == "engine_inventory_drift" or .state == "rollout_blocked")' \
       "$drift_state" >/dev/null \
       || { printf 'pricing convergence drift fence is invalid\n' >&2; exit 1; }
     continue
@@ -104,13 +106,17 @@ for ((cycle = 1; cycle <= MAX_CYCLES; cycle++)); do
   if (( rc == 0 )); then
     exit 0
   fi
-  if (( rc != DRIFT_EXIT )); then
+  if (( rc != DRIFT_EXIT && rc != BLOCKED_EXIT )); then
     printf 'pricing Stage 7 convergence cycle %s failed with a non-recoverable blocker\n' "$cycle" >&2
     exit 1
   fi
 
   drift_candidate=$(mktemp "$cycle_dir/.inventory-drift.json.XXXXXX")
-  jq -cn --argjson cycle "$cycle" '{cycle:$cycle,state:"engine_inventory_drift"}' >"$drift_candidate"
+  if (( rc == BLOCKED_EXIT )); then
+    jq -cn --argjson cycle "$cycle" '{cycle:$cycle,state:"rollout_blocked"}' >"$drift_candidate"
+  else
+    jq -cn --argjson cycle "$cycle" '{cycle:$cycle,state:"engine_inventory_drift"}' >"$drift_candidate"
+  fi
   chmod 0600 "$drift_candidate"
   mv -- "$drift_candidate" "$drift_state"
   jq -c . "$drift_state"

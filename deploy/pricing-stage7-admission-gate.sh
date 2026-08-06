@@ -303,8 +303,8 @@ for ((poll = 1; poll <= MAX_POLLS; poll++)); do
     || { unset COMMERCIAL_ADMIN_KEY; printf 'exact Stage 7 rollout is absent from bounded control status\n' >&2; exit 1; }
   jq -e --arg id "$rollout_id" --arg run_id "$stage5_run_id" --arg digest "$rollout_digest" \
     --arg actor "$ACTOR" --arg reason "$REASON" --arg target "$TARGET_GENERATION" \
-    --arg target_digest "$TARGET_RELEASE_DIGEST" --arg recovery "$RECOVERY_GENERATION" \
-    --arg recovery_digest "$RECOVERY_RELEASE_DIGEST" --arg jobs "$staged_job_count" '
+    --arg target_digest "$TARGET_PLAN_DIGEST" --arg recovery "$RECOVERY_GENERATION" \
+    --arg recovery_digest "$RECOVERY_PLAN_DIGEST" --arg jobs "$staged_job_count" '
     .rollouts[] | select(.id == $id) |
     .stage5_run_id == $run_id and .rollout_digest == $digest and .actor_id == $actor and
     .reason == $reason and .target_generation == $target and .target_digest == $target_digest and

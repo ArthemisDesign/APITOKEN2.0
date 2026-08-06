@@ -493,9 +493,11 @@ sudo /usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-gate.
 
 The bridge creates a fresh private namespace per cycle, runs the existing strict Stage 5/6 helper,
 persists its terminal identities, and immediately stages Stage 7 with the same identities and one
-replay-stable UUID. Only an exact typed `engine_inventory_drift` advances to another fresh immutable
-cycle; every other error stops. At most three cycles are attempted. An interrupted cycle resumes its
-existing Stage 5/6 result or Stage 7 UUID, and a drifted cycle is never reused. The account inventory is
+replay-stable UUID. It advances to a fresh cycle on exactly two terminal outcomes: an exact typed
+`engine_inventory_drift` response, or a Stage 7 rollout whose jobs all ended `blocked`/`dead` (a
+terminal failure of the cycle, recoverable only through a fresh Stage 5/6 namespace);
+every other error stops. At most three cycles are attempted. An interrupted cycle resumes its
+existing Stage 5/6 result or Stage 7 UUID, and a drifted or blocked cycle is never reused. The account inventory is
 still rescanned by Stage 7 and must equal both Stage 5 scans; this procedure narrows the churn window
 without pausing registration, rewriting releases, or relaxing any equality.
 
@@ -515,9 +517,10 @@ sudo /usr/local/lib/apitoken-watchdog/controller/pricing-stage7-identity-diagnos
 
 Classify the report before any further action: a candidate rollout that is already `confirmed` with
 complete ACKs and full target/recovery identity is terminal evidence regardless of the helper actor;
-a pending/processing rollout continues under the same request; a real semantic mismatch (different
-target/recovery or digest) is fixed by its producer, never by weakening digest equality or deleting
-cycle state.
+a rollout whose jobs all ended `blocked`/`dead` is a terminal failure of the cycle, and the next
+convergence run advances to a fresh Stage 5/6 namespace; a pending/processing rollout continues
+under the same request; a real semantic mismatch (different target/recovery or digest) is fixed by
+its producer, never by weakening digest equality or deleting cycle state.
 
 Use this order:
 

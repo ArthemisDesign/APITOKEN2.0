@@ -81,9 +81,9 @@ request_state=$cycle_dir/stage7/$ADMISSION_SHA/request.json
 
 stage5_plan_digest=$(jq -r '.stage5_plan_digest' "$stage6_result")
 target_generation=$(jq -r '.target_generation' "$stage6_result")
-target_digest=$(jq -r '.target_release_digest' "$stage6_result")
+target_digest=$(jq -r '.target_plan_digest' "$stage6_result")
 recovery_generation=$(jq -r '.recovery_generation' "$stage6_result")
-recovery_digest=$(jq -r '.recovery_release_digest' "$stage6_result")
+recovery_digest=$(jq -r '.recovery_plan_digest' "$stage6_result")
 request_stage5_run_id=$(jq -r '.stage5_run_id' "$request_state")
 request_idempotency_key=$(jq -r '.idempotency_key' "$request_state")
 

@@ -17,6 +17,7 @@ MAX_POLLS=360
 STAGE56_PLAN=/var/lib/apitoken/pricing-stage56-inventory-refresh/$ADMISSION_SHA/plan.json
 STATE_PARENT=/var/lib/apitoken/pricing-stage7-inventory-refresh
 DRIFT_EXIT=75
+BLOCKED_EXIT=76
 
 if [[ $# -eq 4 && $2 == --converge-cycle && $3 =~ ^[1-3]$ ]]; then
   ACTOR=gpt-image-2-stage567-converge
@@ -332,17 +333,6 @@ for ((poll = 1; poll <= MAX_POLLS; poll++)); do
   matching_rollouts=$(jq --arg id "$rollout_id" '[.rollouts[] | select(.id == $id)] | length' "$work/status.json")
   (( matching_rollouts == 1 )) \
     || { unset COMMERCIAL_ADMIN_KEY; printf 'exact Stage 7 rollout is absent from bounded control status\n' >&2; exit 1; }
-  jq -e --arg id "$rollout_id" --arg run_id "$stage5_run_id" --arg digest "$rollout_digest" \
-    --arg actor "$ACTOR" --arg reason "$REASON" --arg target "$TARGET_GENERATION" \
-    --arg target_digest "$TARGET_RELEASE_DIGEST" --arg recovery "$RECOVERY_GENERATION" \
-    --arg recovery_digest "$RECOVERY_RELEASE_DIGEST" --arg jobs "$staged_job_count" '
-    .rollouts[] | select(.id == $id) |
-    .stage5_run_id == $run_id and .rollout_digest == $digest and .actor_id == $actor and
-    .reason == $reason and .target_generation == $target and .target_digest == $target_digest and
-    .recovery_generation == $recovery and .recovery_digest == $recovery_digest and
-    .job_count == $jobs and (.assignment_count | test("^[1-9][0-9]*$"))
-  ' "$work/status.json" >/dev/null \
-    || { unset COMMERCIAL_ADMIN_KEY; printf 'Stage 7 rollout identity drifted\n' >&2; exit 1; }
   status=$(jq -r --arg id "$rollout_id" '.rollouts[] | select(.id == $id) | .status' "$work/status.json")
   if [[ $status == blocked || $status == dead ]]; then
     jq -c --arg id "$rollout_id" '.rollouts[] | select(.id == $id) | {
@@ -350,8 +340,19 @@ for ((poll = 1; poll <= MAX_POLLS; poll++)); do
       recovery_digest,assignment_count,job_count,status,job_counts_by_status,completed_at
     }' "$work/status.json"
     unset COMMERCIAL_ADMIN_KEY
-    exit 1
+    exit "$BLOCKED_EXIT"
   fi
+  jq -e --arg id "$rollout_id" --arg run_id "$stage5_run_id" --arg digest "$rollout_digest" \
+    --arg actor "$ACTOR" --arg reason "$REASON" --arg target "$TARGET_GENERATION" \
+    --arg target_digest "$TARGET_PLAN_DIGEST" --arg recovery "$RECOVERY_GENERATION" \
+    --arg recovery_digest "$RECOVERY_PLAN_DIGEST" --arg jobs "$staged_job_count" '
+    .rollouts[] | select(.id == $id) |
+    .stage5_run_id == $run_id and .rollout_digest == $digest and .actor_id == $actor and
+    .reason == $reason and .target_generation == $target and .target_digest == $target_digest and
+    .recovery_generation == $recovery and .recovery_digest == $recovery_digest and
+    .job_count == $jobs and (.assignment_count | test("^[1-9][0-9]*$"))
+  ' "$work/status.json" >/dev/null \
+    || { unset COMMERCIAL_ADMIN_KEY; printf 'Stage 7 rollout identity drifted\n' >&2; exit 1; }
   if [[ $status == confirmed ]]; then
     jq -e --arg id "$rollout_id" '
       .rollouts[] | select(.id == $id) |

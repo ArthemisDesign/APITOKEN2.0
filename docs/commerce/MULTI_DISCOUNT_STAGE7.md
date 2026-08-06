@@ -55,7 +55,10 @@ the JSON body is forbidden). `packages/db/src/pricing-shadow-rollout-jobs-v2.ts`
 `SERIALIZABLE` transaction under an advisory lock reads the exact prepared Stage 5 run (status
 `prepared`), the prepared target/recovery release plans, and performs a fresh engine inventory scan:
 any digest drift, collision, or missing owner — fail closed before the first write. The rollout pins
-the target/recovery generation+digest, catalog/switch generations+digests, engine inventory,
+the target/recovery generation and the exact prepared plan digests (the immutable plan identity,
+`target_plan_digest`/`recovery_plan_digest` in the Stage 5/6 reads; the engine's finalized release
+digest remains bound to the same plan through the prepared Stage 5 run, whose release identities the
+helper also verifies), catalog/switch generations+digests, engine inventory,
 assignment/policy manifest, and the canonical `sha256:v2` rollout digest; per-account jobs carry the
 release-policy identity, exact effective version/content digest, expected active from the live
 engine read, request digest, and the full byte-exact request payload. Idempotency is by
@@ -130,8 +133,10 @@ The completed `g23` target / `g24` recovery refresh and its later fixed Stage 7 
 historical evidence: a new account appeared during the deployment interval, so that consumer also
 correctly failed closed. The fixed `pricing-stage567-converge-gate.sh` instead runs fresh Stage 5/6
 and Stage 7 in one root-owned process. It persists each cycle's exact dynamic plan, generation,
-release and idempotency identities, and advances only on the exact typed inventory-drift response.
-The three-cycle bound prevents an open-ended retry loop; any other blocker stops immediately. Earlier
+release and idempotency identities, and advances on exactly two terminal outcomes: an exact typed
+`engine_inventory_drift` response, or a Stage 7 rollout whose jobs all ended `blocked`/`dead` (a
+terminal failure of the cycle, recovered only by a fresh Stage 5/6 namespace). The three-cycle
+bound prevents an open-ended retry loop; any other blocker stops immediately. Earlier
 runs, releases and private fences remain unchanged, and every Stage 7 attempt performs the same strict
 fresh-inventory equality. A stop with `Stage 7 rollout identity drifted` is diagnosed by the separate
 read-only `pricing-stage7-identity-diagnostic-gate.sh` (`--inspect`, pinned to the same admission
