@@ -75,6 +75,12 @@ No secrets, and there never will be: the browser uses same-origin relative paths
 - `src/app/subscriptions/gemini-capacity-board.tsx` — masked-email profiles with provider quota/reset and
   exact workload API-$ for 5h/7d. Under degraded authority the quota stays visible, saleable money
   shows `обновляем` ("updating"); profiles outside rotation are excluded from the fleet total.
+- `src/app/proxies` — bounded proxy inventory and unchanged explicit/idempotent renewal flow. The table
+  renders the full producer-validated `account_email` as the sole identity exception and searches it,
+  but fail-closed removes every `dead` or non-`bound` row. Subscription and proxy expiries at or before
+  the exact 72-hour boundary are marked independently from `inventory.observed_at` (or browser time
+  when invalid); null expiry is not marked. Credentials, proxy URL/IP and every other identity remain
+  forbidden and nothing is persisted by the UI.
 - `src/app/pricing/activation-control.tsx` — a separate 5-second fail-closed poller of the bounded
   activation snapshot: release pair, Stage 8 freshness/blockers, engine head, jobs/receipts, and
   explicit cutover/recovery staging. Mutation requires a reason + the exact phrase and a repeated fresh GET;

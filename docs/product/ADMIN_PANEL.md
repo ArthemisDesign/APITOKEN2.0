@@ -92,9 +92,9 @@ protection applies to all pages, including `/sales/calculator`.
 
 ## Proxy lifecycle
 
-This producer-first rollout adds authbot capability for the separate `/proxies` product contract;
-this patch does not change `apps/admin`, and its existing consumer may ignore the additive field.
-The authbot-owned `GET /proxy-admin/inventory` route listens on loopback `127.0.0.1:8806`. Its
+The `/proxies` UI consumes authbot's separate proxy lifecycle contract and renders the full
+producer-validated account email for each visible proxy. The authbot-owned
+`GET /proxy-admin/inventory` route listens on loopback `127.0.0.1:8806`. Its
 stable raw authorization secret is `/etc/apitoken/proxy-admin.key`, provisioned atomically before
 the systemd unit and Caddy configuration. The `/etc/apitoken` parent is root-owned and
 non-deploy-writable, unlike the deploy-writable `/srv/claude-api/data` parent; the key is a
@@ -128,23 +128,30 @@ Shared-key holders therefore cannot read `account_email` from the new producer. 
 ``.!#$%&'*+/=?^_`{|}~-`` (no edge/consecutive dots, at most 64 bytes), followed by DNS-style domain
 labels (alphanumeric/hyphen, no edge hyphen, at most 63 bytes each and 254 bytes total). It is the
 sole full-identity managed-admin exception, allowed only in the closed `/proxies` response with
-`Cache-Control: no-store` and in-memory handling; it must not be persisted to SQLite or logs. This states producer
-capability, not that the current UI already consumes or renders the field. Proxy IP, proxy URL,
-credentials, token, subject, project and every other identity or secret remain forbidden. Rows
-otherwise use opaque inventory IDs plus stable hashed proxy hints, masked order hints,
-provider/plan, subscription and proxy expiry, liveness, binding status and a fail-closed renewal
-reason.
+`Cache-Control: no-store` and in-memory handling; it must not be persisted to SQLite or logs. The UI
+validates the same grammar and renders the entire value in the `Аккаунт` column; search includes it.
+Proxy IP, proxy URL, credentials, token, subject, project and every other identity or secret remain
+forbidden. Rows otherwise use opaque inventory IDs plus stable hashed proxy hints, masked order
+hints, provider/plan, subscription and proxy expiry, liveness, binding status and a fail-closed
+renewal reason.
 
 Inventory serializes only subscription-backed Claude/GPT/Gemini rows durably and exactly bound to
-an existing IPRoyal allocation (`binding_status=bound`) with liveness other than `dead`. Unmatched
-IPRoyal allocations, external/unbound/mismatched subscriptions and dead subscriptions are absent.
+an existing IPRoyal allocation (`binding_status=bound`) with liveness other than `dead`. The UI repeats
+that boundary fail-closed and drops `dead`, `unbound`, `mismatch` and `unknown` binding rows if a
+producer regression emits them; those states are not offered as filters. Unmatched IPRoyal
+allocations, external/unbound/mismatched subscriptions and dead subscriptions are absent.
 Legacy/external unique-IP reconciliation may still run in the background, but a row does not appear
 until the exact binding has been written durably. GPT remains public `provider=gpt`, while its
 existing durable binding namespace is `codex`. A legacy `gpt` binding migrates in place only on one
 exact local id + order + allocation-IP match, preserving `inventory_id`; unresolved, mismatched or
 ambiguous rows stay untouched. Claude and Gemini use the same name in both places.
 Claude and GPT subscriptions expire 30 days after acquisition. Gemini `google_ai_pro` expires after
-18 Gregorian UTC calendar months; Ultra and all other Gemini plans expire after 30 days.
+18 Gregorian UTC calendar months; Ultra and all other Gemini plans expire after 30 days. The UI marks
+subscription expiry and proxy expiry independently with distinct operational colors and an inset
+marker. Each cell warns when its non-null value is expired or at most exactly `3 * 86400` seconds from
+the reference time; valid `inventory.observed_at` is authoritative, otherwise the browser uses
+`Date.now()`. A value one second outside the boundary and a null value are not marked, and selection
+or hover does not cover either warning.
 
 GPT and Gemini liveness comes from an authoritative opaque-id join: authbot calls the sanitized
 loopback defaults `http://127.0.0.1:8792/codex-subs` and

@@ -12,6 +12,7 @@ export interface ProxyProviderBalance {
 
 export interface ProxyInventoryItem {
   inventory_id: string;
+  account_email: string;
   proxy_hint: string;
   order_hint: string;
   provider: string;
@@ -56,17 +57,19 @@ export interface ProxyFilters {
   query: string;
   provider: string;
   plan: string;
-  liveness: string;
-  binding: string;
 }
+
+export type ExpiryWarningState = "none" | "warning";
+
+export const EXPIRY_WARNING_WINDOW_SECONDS = 3 * 86_400;
 
 const FORBIDDEN_KEYS = new Set([
   "credential",
   "credentials",
-  "email",
   "full_identity",
   "ip",
   "password",
+  "project",
   "proxy_host",
   "proxy_url",
   "secret",
@@ -75,8 +78,9 @@ const FORBIDDEN_KEYS = new Set([
   "username",
 ]);
 const INTEGER = /^-?(0|[1-9]\d*)$/;
+const ACCOUNT_EMAIL_LOCAL = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$/;
+const ACCOUNT_EMAIL_DOMAIN_LABEL = /^[A-Za-z0-9-]+$/;
 const LIVENESS = new Set<ProxyLiveness>(["live", "degraded", "dead", "unknown"]);
-const BINDINGS = new Set<ProxyBinding>(["bound", "unbound", "mismatch", "unknown"]);
 const RENEW_ITEM_STATUSES = new Set<ProxyRenewItemStatus>(["renewed", "failed", "uncertain"]);
 const RENEW_STATUSES = new Set<ProxyRenewStatus>(["succeeded", "partial", "failed", "uncertain"]);
 
@@ -91,27 +95,72 @@ function safeString(value: unknown, fallback = "—"): string {
   return text && text.length <= 160 ? text : fallback;
 }
 
+function accountEmail(value: unknown): string {
+  if (typeof value !== "string" || !value || value.length > 254 || !/^[\x00-\x7F]+$/.test(value)) {
+    throw new Error("Прокси: некорректный account_email");
+  }
+  const parts = value.split("@");
+  if (parts.length !== 2) throw new Error("Прокси: некорректный account_email");
+  const [local, domain] = parts;
+  const labels = domain.split(".");
+  if (
+    !local || local.length > 64 || !domain || domain.length > 253
+    || local.startsWith(".") || local.endsWith(".") || local.includes("..")
+    || !ACCOUNT_EMAIL_LOCAL.test(local)
+    || labels.some((label) => !label || label.length > 63 || label.startsWith("-") || label.endsWith("-") || !ACCOUNT_EMAIL_DOMAIN_LABEL.test(label))
+  ) {
+    throw new Error("Прокси: некорректный account_email");
+  }
+  return value;
+}
+
 function nullableEpoch(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
-function assertNoSecrets(value: unknown): void {
+function assertNoSecrets(value: unknown, accountEmailItems: ReadonlySet<object> = new Set()): void {
   if (!value || typeof value !== "object") return;
   if (Array.isArray(value)) {
-    for (const item of value) assertNoSecrets(item);
+    for (const item of value) assertNoSecrets(item, accountEmailItems);
     return;
   }
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (FORBIDDEN_KEYS.has(key.toLowerCase())) throw new Error("Ответ реестра содержит запрещённые приватные поля");
-    assertNoSecrets(child);
+    const normalizedKey = key.toLowerCase();
+    const allowedAccountEmail = key === "account_email" && accountEmailItems.has(value);
+    if (
+      FORBIDDEN_KEYS.has(normalizedKey)
+      || normalizedKey === "email"
+      || (normalizedKey === "account_email" && !allowedAccountEmail)
+    ) {
+      throw new Error("Ответ реестра содержит запрещённые приватные поля");
+    }
+    if (!allowedAccountEmail) assertNoSecrets(child, accountEmailItems);
   }
 }
 
+export function classifyExpiryWarning(
+  expiresAt: number | null,
+  observedAt: number | null,
+  nowMs = Date.now(),
+): ExpiryWarningState {
+  if (!Number.isSafeInteger(expiresAt) || expiresAt == null || expiresAt <= 0) return "none";
+  const reference = Number.isSafeInteger(observedAt) && observedAt != null && observedAt > 0
+    ? observedAt
+    : Math.floor(nowMs / 1000);
+  return expiresAt - reference <= EXPIRY_WARNING_WINDOW_SECONDS ? "warning" : "none";
+}
+
 export function projectProxyInventory(payload: unknown): ProxyInventoryResponse {
-  assertNoSecrets(payload);
   const root = record(payload, "Реестр прокси");
   const providers = Array.isArray(root.providers) ? root.providers : [];
   const items = Array.isArray(root.items) ? root.items : [];
+  const accountEmailItems = new Set<object>();
+  for (const raw of items) {
+    const item = record(raw, "Прокси");
+    accountEmail(item.account_email);
+    accountEmailItems.add(item);
+  }
+  assertNoSecrets(payload, accountEmailItems);
   return {
     schema_version: typeof root.schema_version === "number" ? root.schema_version : 1,
     observed_at: nullableEpoch(root.observed_at),
@@ -125,25 +174,28 @@ export function projectProxyInventory(payload: unknown): ProxyInventoryResponse 
         auto_extend_enabled: item.auto_extend_enabled === true,
       };
     }),
-    items: items.map((raw) => {
+    items: items.flatMap((raw) => {
       const item = record(raw, "Прокси");
+      const liveness = typeof item.liveness === "string" && LIVENESS.has(item.liveness as ProxyLiveness)
+        ? item.liveness as ProxyLiveness
+        : null;
+      if (!liveness || liveness === "dead" || item.binding_status !== "bound") return [];
       const inventoryId = safeString(item.inventory_id, "");
       if (!inventoryId) throw new Error("Прокси: отсутствует opaque inventory_id");
-      const liveness = safeString(item.liveness, "unknown") as ProxyLiveness;
-      const binding = safeString(item.binding_status, "unknown") as ProxyBinding;
-      return {
+      return [{
         inventory_id: inventoryId,
+        account_email: accountEmail(item.account_email),
         proxy_hint: safeString(item.proxy_hint),
         order_hint: safeString(item.order_hint),
         provider: safeString(item.provider, "unknown"),
         subscription_plan: safeString(item.subscription_plan),
-        liveness: LIVENESS.has(liveness) ? liveness : "unknown",
+        liveness,
         subscription_expires_at: nullableEpoch(item.subscription_expires_at),
         proxy_expires_at: nullableEpoch(item.proxy_expires_at),
-        binding_status: BINDINGS.has(binding) ? binding : "unknown",
+        binding_status: "bound",
         renewable: item.renewable === true,
         renew_block_code: typeof item.renew_block_code === "string" ? safeString(item.renew_block_code, "") || null : null,
-      };
+      }];
     }),
   };
 }
@@ -177,10 +229,8 @@ export function filterProxyInventory(items: ProxyInventoryItem[], filters: Proxy
   return items.filter((item) => {
     if (filters.provider && item.provider !== filters.provider) return false;
     if (filters.plan && item.subscription_plan !== filters.plan) return false;
-    if (filters.liveness && item.liveness !== filters.liveness) return false;
-    if (filters.binding && item.binding_status !== filters.binding) return false;
     if (!query) return true;
-    return [item.proxy_hint, item.order_hint, item.provider, item.subscription_plan]
+    return [item.account_email, item.proxy_hint, item.order_hint, item.provider, item.subscription_plan]
       .some((value) => value.toLocaleLowerCase("ru-RU").includes(query));
   });
 }

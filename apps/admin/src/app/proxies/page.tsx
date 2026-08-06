@@ -8,6 +8,7 @@ import { nanoMoney } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { usePoll } from "@/lib/usePoll";
 import {
+  classifyExpiryWarning,
   createProxyRenewRequest,
   filterProxyInventory,
   projectProxyInventory,
@@ -21,7 +22,7 @@ import {
 
 const INVENTORY_PATH = "/proxy-admin/inventory";
 const RENEW_PATH = "/proxy-admin/renew";
-const EMPTY_FILTERS: ProxyFilters = { query: "", provider: "", plan: "", liveness: "", binding: "" };
+const EMPTY_FILTERS: ProxyFilters = { query: "", provider: "", plan: "" };
 
 const LIVENESS_LABELS: Record<string, string> = {
   live: "live",
@@ -164,7 +165,7 @@ export default function ProxiesPage() {
     <>
       <PageHead
         title="Прокси"
-        sub="bounded реестр без credentials и полной identity"
+        sub="bounded реестр с аккаунтами и сроками"
         badge={<Pill kind={autoExtendProviders.length ? "warn" : "ok"}>{items.length} прокси</Pill>}
       />
 
@@ -210,7 +211,7 @@ export default function ProxiesPage() {
       <div className="toolbar proxy-toolbar">
         <input
           aria-label="Поиск прокси"
-          placeholder="proxy, order, provider, plan"
+          placeholder="email, proxy, order, provider, plan"
           value={filters.query}
           onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
         />
@@ -222,14 +223,6 @@ export default function ProxiesPage() {
           <option value="">все планы</option>
           {plans.map((plan) => <option key={plan} value={plan}>{plan}</option>)}
         </select>
-        <select aria-label="Liveness" value={filters.liveness} onChange={(event) => setFilters((current) => ({ ...current, liveness: event.target.value }))}>
-          <option value="">любой liveness</option>
-          <option value="live">live</option><option value="degraded">degraded</option><option value="dead">dead</option><option value="unknown">unknown</option>
-        </select>
-        <select aria-label="Binding" value={filters.binding} onChange={(event) => setFilters((current) => ({ ...current, binding: event.target.value }))}>
-          <option value="">любой binding</option>
-          <option value="bound">bound</option><option value="unbound">unbound</option><option value="mismatch">mismatch</option><option value="unknown">unknown</option>
-        </select>
         <button type="button" className="btn ghost" onClick={() => setFilters(EMPTY_FILTERS)} disabled={busy}>Сбросить</button>
         <button type="button" className="btn warn" onClick={() => void renew([...selected])} disabled={busy || selected.size === 0}>
           {busy ? "Продлеваем…" : `Продлить выбранные (${selected.size})`}
@@ -240,24 +233,29 @@ export default function ProxiesPage() {
         <table className="proxy-inventory-table">
           <thead><tr>
             <th aria-label="Выбрать видимые"><input className="proxy-select" type="checkbox" checked={allVisibleSelected} onChange={toggleVisible} disabled={busy || !visibleSelectable.length} /></th>
-            <th className="left">Прокси</th><th className="left">Order</th><th className="left">Provider</th><th className="left">План подписки</th>
+            <th className="left">Прокси</th><th className="left">Аккаунт</th><th className="left">Order</th><th className="left">Provider</th><th className="left">План подписки</th>
             <th>Liveness</th><th>Окончание подписки</th><th>Окончание прокси</th><th>Binding</th><th aria-label="Действия" />
           </tr></thead>
           <tbody>
-            {filtered.length ? filtered.map((item: ProxyInventoryItem) => (
-              <tr key={item.inventory_id} className={selected.has(item.inventory_id) ? "selected" : ""}>
-                <td><input className="proxy-select" type="checkbox" checked={selected.has(item.inventory_id)} onChange={() => toggle(item.inventory_id)} disabled={busy || !item.renewable} aria-label={`Выбрать ${item.proxy_hint}`} /></td>
-                <td className="left"><b>{item.proxy_hint}</b></td><td className="left mono">{item.order_hint}</td><td className="left">{item.provider}</td><td className="left">{item.subscription_plan}</td>
-                <td><Pill kind={stateTone(item.liveness)}>{LIVENESS_LABELS[item.liveness]}</Pill></td>
-                <td>{expiryCell(item.subscription_expires_at)}</td><td>{expiryCell(item.proxy_expires_at)}</td>
-                <td><Pill kind={stateTone(item.binding_status)}>{BINDING_LABELS[item.binding_status]}</Pill></td>
-                <td><button type="button" className="btn ghost" onClick={() => void renew([item.inventory_id])} disabled={busy || !item.renewable} title={item.renew_block_code ?? undefined}>Продлить</button></td>
-              </tr>
-            )) : <EmptyRow columns={10} text="прокси по фильтрам не найдены" />}
+            {filtered.length ? filtered.map((item: ProxyInventoryItem) => {
+              const subscriptionWarning = classifyExpiryWarning(item.subscription_expires_at, inventory.observed_at) === "warning";
+              const proxyWarning = classifyExpiryWarning(item.proxy_expires_at, inventory.observed_at) === "warning";
+              return (
+                <tr key={item.inventory_id} className={selected.has(item.inventory_id) ? "selected" : ""}>
+                  <td><input className="proxy-select" type="checkbox" checked={selected.has(item.inventory_id)} onChange={() => toggle(item.inventory_id)} disabled={busy || !item.renewable} aria-label={`Выбрать ${item.proxy_hint}`} /></td>
+                  <td className="left"><b>{item.proxy_hint}</b></td><td className="left mono proxy-account-email">{item.account_email}</td><td className="left mono">{item.order_hint}</td><td className="left">{item.provider}</td><td className="left">{item.subscription_plan}</td>
+                  <td><Pill kind={stateTone(item.liveness)}>{LIVENESS_LABELS[item.liveness]}</Pill></td>
+                  <td className={subscriptionWarning ? "proxy-expiry-warning subscription" : undefined}>{expiryCell(item.subscription_expires_at)}</td>
+                  <td className={proxyWarning ? "proxy-expiry-warning proxy" : undefined}>{expiryCell(item.proxy_expires_at)}</td>
+                  <td><Pill kind={stateTone(item.binding_status)}>{BINDING_LABELS[item.binding_status]}</Pill></td>
+                  <td><button type="button" className="btn ghost" onClick={() => void renew([item.inventory_id])} disabled={busy || !item.renewable} title={item.renew_block_code ?? undefined}>Продлить</button></td>
+                </tr>
+              );
+            }) : <EmptyRow columns={11} text="прокси по фильтрам не найдены" />}
           </tbody>
         </table>
       </TableCard>
-      <footer>В браузер поступают только bounded hints и opaque inventory IDs. Credentials, полный proxy URL, IP и полная identity не запрашиваются и не отображаются.</footer>
+      <footer>В браузер поступает полный account email как единственное identity-исключение, а также bounded hints и opaque inventory IDs. Credentials, полный proxy URL, IP и другие identity не запрашиваются и не отображаются.</footer>
     </>
   );
 }
