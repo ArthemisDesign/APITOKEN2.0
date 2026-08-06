@@ -3554,7 +3554,7 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 33);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 34);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
@@ -4742,6 +4742,26 @@ fn pricing_release_runtime_v2_postgres_matrix() {
         None,
     )
     .unwrap();
+    pg.account_create("release-runtime-b2c-convert", None, 5_000)
+        .unwrap();
+    pg.account_topup(
+        "release-runtime-b2c-convert",
+        1_500,
+        Some("convert-runtime-seed"),
+    )
+    .unwrap();
+    pg.account_create("release-runtime-b2b", None, 10_000)
+        .unwrap();
+    pg.account_topup("release-runtime-b2b", 4_000, Some("b2b-runtime-seed"))
+        .unwrap();
+    pg.account_create("release-runtime-b2c-funding", None, 5_000)
+        .unwrap();
+    pg.account_topup(
+        "release-runtime-b2c-funding",
+        900,
+        Some("funding-runtime-seed"),
+    )
+    .unwrap();
 
     for catalog in [stage8_pg_catalog("main"), stage8_pg_catalog("openkeys")] {
         assert_eq!(
@@ -4811,6 +4831,60 @@ fn pricing_release_runtime_v2_postgres_matrix() {
              INSERT INTO account_funding_head_v2(
                  account_id,active_generation,head_version,updated_ts
              ) VALUES('release-runtime-openkeys',1,1,100);
+             INSERT INTO account_funding_generations_v2(
+                 account_id,generation,schema_version,source_state_digest,
+                 normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                 normalized_ts,updated_ts
+             ) VALUES(
+                 'release-runtime-b2c-convert',1,2,'runtime-source','runtime-normalization',
+                 1500,0,0,1,100,100
+             );
+             INSERT INTO funding_lots_v2(
+                 lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                 reserved_nano,spent_nano,version,status,created_ts,updated_ts
+             ) VALUES(
+                 'release-runtime-convert-paid','release-runtime-b2c-convert',1,
+                 'paid','convert-runtime-seed',1500,0,0,1,'active',100,100
+             );
+             INSERT INTO account_funding_head_v2(
+                 account_id,active_generation,head_version,updated_ts
+             ) VALUES('release-runtime-b2c-convert',1,1,100);
+             INSERT INTO account_funding_generations_v2(
+                 account_id,generation,schema_version,source_state_digest,
+                 normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                 normalized_ts,updated_ts
+             ) VALUES(
+                 'release-runtime-b2b',1,2,'runtime-source','runtime-normalization',
+                 4000,0,0,1,100,100
+             );
+             INSERT INTO funding_lots_v2(
+                 lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                 reserved_nano,spent_nano,version,status,created_ts,updated_ts
+             ) VALUES(
+                 'release-runtime-b2b-paid','release-runtime-b2b',1,
+                 'paid','b2b-runtime-seed',4000,0,0,1,'active',100,100
+             );
+             INSERT INTO account_funding_head_v2(
+                 account_id,active_generation,head_version,updated_ts
+             ) VALUES('release-runtime-b2b',1,1,100);
+             INSERT INTO account_funding_generations_v2(
+                 account_id,generation,schema_version,source_state_digest,
+                 normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                 normalized_ts,updated_ts
+             ) VALUES(
+                 'release-runtime-b2c-funding',1,2,'runtime-source','runtime-normalization',
+                 900,0,0,1,100,100
+             );
+             INSERT INTO funding_lots_v2(
+                 lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                 reserved_nano,spent_nano,version,status,created_ts,updated_ts
+             ) VALUES(
+                 'release-runtime-funding-paid','release-runtime-b2c-funding',1,
+                 'paid','funding-runtime-seed',900,0,0,1,'active',100,100
+             );
+             INSERT INTO account_funding_head_v2(
+                 account_id,active_generation,head_version,updated_ts
+             ) VALUES('release-runtime-b2c-funding',1,1,100);
              SET CONSTRAINTS ALL IMMEDIATE;
              COMMIT;",
         )
@@ -4882,7 +4956,54 @@ fn pricing_release_runtime_v2_postgres_matrix() {
             payable_multiplier_bp: 10_000,
         }],
     };
-    for policy in [&b2c_policy, &service_policy, &openkeys_policy] {
+    let b2b_policy = PricingReleasePolicyV2 {
+        policy_id: "release-runtime-b2b-policy".into(),
+        policy_version: 1,
+        owner_type: crate::pricing::PolicyOwnerType::B2bClient,
+        owner_id: "release-runtime-b2b".into(),
+        account_class: crate::pricing::AccountClass::B2b,
+        product_id: Some("main".into()),
+        billing_mode: BillingModeV2::Balance,
+        schema_version: 2,
+        capability_generation: 1,
+        capability_digest: "stage8-capability-1".into(),
+        catalog_generation: Some(1),
+        catalog_digest: Some("stage8-main-catalog-1".into()),
+        switch_generation: Some(1),
+        switch_digest: Some("stage8-switches-1".into()),
+        content_digest: "release-runtime-b2b-policy-digest".into(),
+        rules: vec![PricingReleasePolicyRuleV2 {
+            rule_id: "release-runtime-b2b-google".into(),
+            rule_digest: "release-runtime-b2b-google-digest".into(),
+            scope: PricingReleaseRuleScopeV2::Provider {
+                provider_id: crate::PROVIDER_GOOGLE.into(),
+            },
+            discount_bps: 2_000,
+            payable_multiplier_bp: 8_000,
+        }],
+    };
+    let b2b_convert_policy = PricingReleasePolicyV2 {
+        policy_id: "release-runtime-b2b-convert-policy".into(),
+        owner_id: "release-runtime-b2c-convert".into(),
+        content_digest: "release-runtime-b2b-convert-policy-digest".into(),
+        rules: vec![PricingReleasePolicyRuleV2 {
+            rule_id: "release-runtime-b2b-convert-google".into(),
+            rule_digest: "release-runtime-b2b-convert-google-digest".into(),
+            scope: PricingReleaseRuleScopeV2::Provider {
+                provider_id: crate::PROVIDER_GOOGLE.into(),
+            },
+            discount_bps: 2_500,
+            payable_multiplier_bp: 7_500,
+        }],
+        ..b2b_policy.clone()
+    };
+    for policy in [
+        &b2c_policy,
+        &service_policy,
+        &openkeys_policy,
+        &b2b_policy,
+        &b2b_convert_policy,
+    ] {
         assert_eq!(
             pg.prepare_pricing_release_policy_v2(policy).unwrap(),
             PricingMutation::Stored
@@ -4925,6 +5046,42 @@ fn pricing_release_runtime_v2_postgres_matrix() {
             purpose: None,
             responsible: None,
             assignment_digest: "release-runtime-openkeys-assignment".into(),
+        },
+        PricingReleaseAssignmentV2 {
+            account_id: "release-runtime-b2c-convert".into(),
+            account_class: crate::pricing::AccountClass::B2c,
+            policy_id: b2c_policy.policy_id.clone(),
+            policy_version: 1,
+            policy_digest: b2c_policy.content_digest.clone(),
+            billing_mode: BillingModeV2::Balance,
+            funding_generation: Some(1),
+            purpose: None,
+            responsible: None,
+            assignment_digest: "release-runtime-b2c-convert-assignment".into(),
+        },
+        PricingReleaseAssignmentV2 {
+            account_id: "release-runtime-b2b".into(),
+            account_class: crate::pricing::AccountClass::B2b,
+            policy_id: b2b_policy.policy_id.clone(),
+            policy_version: 1,
+            policy_digest: b2b_policy.content_digest.clone(),
+            billing_mode: BillingModeV2::Balance,
+            funding_generation: Some(1),
+            purpose: None,
+            responsible: None,
+            assignment_digest: "release-runtime-b2b-assignment".into(),
+        },
+        PricingReleaseAssignmentV2 {
+            account_id: "release-runtime-b2c-funding".into(),
+            account_class: crate::pricing::AccountClass::B2c,
+            policy_id: b2c_policy.policy_id.clone(),
+            policy_version: 1,
+            policy_digest: b2c_policy.content_digest.clone(),
+            billing_mode: BillingModeV2::Balance,
+            funding_generation: Some(1),
+            purpose: None,
+            responsible: None,
+            assignment_digest: "release-runtime-b2c-funding-assignment".into(),
         },
     ];
     let release = |generation, release_kind, digest: &str| PricingReleaseV2 {
@@ -5596,6 +5753,287 @@ fn pricing_release_runtime_v2_postgres_matrix() {
     };
     assert_eq!(override_receipt.snapshot.charged_hold_nano, 80);
     assert_eq!(override_receipt.snapshot.policy_version, 2);
+
+    // B2C -> B2B class-changing conversion: the only class transition an assignment
+    // extension may perform on a base-covered account. The extension starts a new B2B
+    // policy lineage, so the strictly-newer-version rule does not apply (the extension
+    // policy_version 1 equals the base policy_version 1 under a different policy id).
+    // Every rejected attempt below must leave no row behind, so the coherent pair at the
+    // end can still be stored.
+    let convert_assignment = |assignment_digest: &str| PricingReleaseAssignmentV2 {
+        account_id: "release-runtime-b2c-convert".into(),
+        account_class: AccountClass::B2b,
+        policy_id: b2b_convert_policy.policy_id.clone(),
+        policy_version: b2b_convert_policy.policy_version,
+        policy_digest: b2b_convert_policy.content_digest.clone(),
+        billing_mode: BillingModeV2::Balance,
+        funding_generation: Some(1),
+        purpose: None,
+        responsible: None,
+        assignment_digest: assignment_digest.into(),
+    };
+    let convert_extension = PricingReleaseAssignmentExtensionV2 {
+        provisioning_head_generation: TARGET_GENERATION,
+        provisioning_head_digest: target.content_digest.clone(),
+        provisioning_head_version: 1,
+        paired_recovery_generation: Some(RECOVERY_GENERATION),
+        paired_recovery_digest: Some(recovery.content_digest.clone()),
+        extension_group_digest: "release-runtime-convert-extension-group".into(),
+        members: vec![
+            PricingReleaseAssignmentExtensionMemberV2 {
+                release_generation: TARGET_GENERATION,
+                assignment: convert_assignment("release-runtime-convert-target-assignment"),
+                extension_digest: "release-runtime-convert-target-extension".into(),
+            },
+            PricingReleaseAssignmentExtensionMemberV2 {
+                release_generation: RECOVERY_GENERATION,
+                assignment: convert_assignment("release-runtime-convert-recovery-assignment"),
+                extension_digest: "release-runtime-convert-recovery-extension".into(),
+            },
+        ],
+    };
+
+    // A base B2B account cannot convert back to B2C.
+    let b2b_back_assignment = |assignment_digest: &str| PricingReleaseAssignmentV2 {
+        account_id: "release-runtime-b2b".into(),
+        account_class: AccountClass::B2c,
+        policy_id: b2c_policy.policy_id.clone(),
+        policy_version: b2c_policy.policy_version,
+        policy_digest: b2c_policy.content_digest.clone(),
+        billing_mode: BillingModeV2::Balance,
+        funding_generation: Some(1),
+        purpose: None,
+        responsible: None,
+        assignment_digest: assignment_digest.into(),
+    };
+    let mut b2b_back_extension = convert_extension.clone();
+    b2b_back_extension.extension_group_digest = "release-runtime-b2b-back-extension-group".into();
+    b2b_back_extension.members = vec![
+        PricingReleaseAssignmentExtensionMemberV2 {
+            release_generation: TARGET_GENERATION,
+            assignment: b2b_back_assignment("release-runtime-b2b-back-target-assignment"),
+            extension_digest: "release-runtime-b2b-back-target-extension".into(),
+        },
+        PricingReleaseAssignmentExtensionMemberV2 {
+            release_generation: RECOVERY_GENERATION,
+            assignment: b2b_back_assignment("release-runtime-b2b-back-recovery-assignment"),
+            extension_digest: "release-runtime-b2b-back-recovery-extension".into(),
+        },
+    ];
+    assert!(matches!(
+        pg.prepare_pricing_release_assignment_extension_v2(&b2b_back_extension)
+            .unwrap(),
+        PricingMutation::Rejected(PricingRejection::MissingDependency { dependency })
+            if dependency.starts_with("assignment:")
+    ));
+
+    // A base B2C account cannot convert to OpenKeys.
+    let mut openkeys_extension = convert_extension.clone();
+    openkeys_extension.extension_group_digest = "release-runtime-openkeys-convert-group".into();
+    for (member, suffix) in openkeys_extension
+        .members
+        .iter_mut()
+        .zip(["target", "recovery"])
+    {
+        member.assignment.account_class = AccountClass::OpenKeys;
+        member.assignment.policy_id = openkeys_policy.policy_id.clone();
+        member.assignment.policy_version = openkeys_policy.policy_version;
+        member.assignment.policy_digest = openkeys_policy.content_digest.clone();
+        member.assignment.assignment_digest =
+            format!("release-runtime-openkeys-convert-{suffix}-assignment");
+        member.extension_digest = format!("release-runtime-openkeys-convert-{suffix}-extension");
+    }
+    assert!(matches!(
+        pg.prepare_pricing_release_assignment_extension_v2(&openkeys_extension)
+            .unwrap(),
+        PricingMutation::Rejected(PricingRejection::MissingDependency { dependency })
+            if dependency.starts_with("assignment:")
+    ));
+
+    // A base B2C account cannot convert to service.
+    let mut service_extension = convert_extension.clone();
+    service_extension.extension_group_digest = "release-runtime-service-convert-group".into();
+    for (member, suffix) in service_extension
+        .members
+        .iter_mut()
+        .zip(["target", "recovery"])
+    {
+        member.assignment.account_class = AccountClass::Service;
+        member.assignment.policy_id = service_policy.policy_id.clone();
+        member.assignment.policy_version = service_policy.policy_version;
+        member.assignment.policy_digest = service_policy.content_digest.clone();
+        member.assignment.billing_mode = BillingModeV2::MeterOnly;
+        member.assignment.funding_generation = None;
+        member.assignment.purpose = Some("converted-service".into());
+        member.assignment.responsible = Some("runtime-team".into());
+        member.assignment.assignment_digest =
+            format!("release-runtime-service-convert-{suffix}-assignment");
+        member.extension_digest = format!("release-runtime-service-convert-{suffix}-extension");
+    }
+    assert!(matches!(
+        pg.prepare_pricing_release_assignment_extension_v2(&service_extension)
+            .unwrap(),
+        PricingMutation::Rejected(PricingRejection::MissingDependency { dependency })
+            if dependency.starts_with("assignment:")
+    ));
+
+    // A billing-mode mismatch cannot even pass structural validation: a customer class
+    // with meter_only is rejected before any dependency check.
+    let mut metered_extension = convert_extension.clone();
+    metered_extension.extension_group_digest = "release-runtime-metered-convert-group".into();
+    for (member, suffix) in metered_extension
+        .members
+        .iter_mut()
+        .zip(["target", "recovery"])
+    {
+        member.assignment.billing_mode = BillingModeV2::MeterOnly;
+        member.assignment.funding_generation = None;
+        member.assignment.assignment_digest =
+            format!("release-runtime-metered-convert-{suffix}-assignment");
+        member.extension_digest = format!("release-runtime-metered-convert-{suffix}-extension");
+    }
+    assert!(matches!(
+        pg.prepare_pricing_release_assignment_extension_v2(&metered_extension)
+            .unwrap(),
+        PricingMutation::Rejected(PricingRejection::Invalid { .. })
+    ));
+
+    // Purpose/responsible metadata must stay identical to the base (null for balance
+    // classes), so a non-null purpose is rejected before any dependency check.
+    let mut purpose_extension = convert_extension.clone();
+    purpose_extension.extension_group_digest = "release-runtime-purpose-convert-group".into();
+    for (member, suffix) in purpose_extension
+        .members
+        .iter_mut()
+        .zip(["target", "recovery"])
+    {
+        member.assignment.purpose = Some("ops".into());
+        member.assignment.assignment_digest =
+            format!("release-runtime-purpose-convert-{suffix}-assignment");
+        member.extension_digest = format!("release-runtime-purpose-convert-{suffix}-extension");
+    }
+    assert!(matches!(
+        pg.prepare_pricing_release_assignment_extension_v2(&purpose_extension)
+            .unwrap(),
+        PricingMutation::Rejected(PricingRejection::Invalid { .. })
+    ));
+
+    // A funding generation different from the base's stays rejected even when it is the
+    // exact active funding head: the class change keeps the base funding generation.
+    pg.client
+        .batch_execute(
+            "BEGIN;
+             INSERT INTO account_funding_generations_v2(
+                 account_id,generation,schema_version,source_state_digest,
+                 normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                 normalized_ts,updated_ts
+             ) VALUES(
+                 'release-runtime-b2c-funding',2,2,'runtime-reseed-source',
+                 'runtime-reseed-normalization',900,0,0,1,200,200
+             );
+             INSERT INTO funding_lots_v2(
+                 lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                 reserved_nano,spent_nano,version,status,created_ts,updated_ts
+             ) VALUES(
+                 'release-runtime-funding-paid-2','release-runtime-b2c-funding',2,
+                 'paid','funding-runtime-reseed',900,0,0,1,'active',200,200
+             );
+             UPDATE account_funding_head_v2
+                SET active_generation=2,head_version=2,updated_ts=200
+              WHERE account_id='release-runtime-b2c-funding';
+             SET CONSTRAINTS ALL IMMEDIATE;
+             COMMIT;",
+        )
+        .unwrap();
+    let funding_convert_assignment = |assignment_digest: &str, funding_generation| {
+        PricingReleaseAssignmentV2 {
+            account_id: "release-runtime-b2c-funding".into(),
+            funding_generation,
+            assignment_digest: assignment_digest.into(),
+            ..convert_assignment(assignment_digest)
+        }
+    };
+    let funding_convert_extension = |group: &str, funding_generation| {
+        PricingReleaseAssignmentExtensionV2 {
+            extension_group_digest: group.into(),
+            members: vec![
+                PricingReleaseAssignmentExtensionMemberV2 {
+                    release_generation: TARGET_GENERATION,
+                    assignment: funding_convert_assignment(
+                        &format!("release-runtime-funding-{group}-target-assignment"),
+                        funding_generation,
+                    ),
+                    extension_digest: format!(
+                        "release-runtime-funding-{group}-target-extension"
+                    ),
+                },
+                PricingReleaseAssignmentExtensionMemberV2 {
+                    release_generation: RECOVERY_GENERATION,
+                    assignment: funding_convert_assignment(
+                        &format!("release-runtime-funding-{group}-recovery-assignment"),
+                        funding_generation,
+                    ),
+                    extension_digest: format!(
+                        "release-runtime-funding-{group}-recovery-extension"
+                    ),
+                },
+            ],
+            ..convert_extension.clone()
+        }
+    };
+    // The base generation is no longer the active funding head.
+    assert!(matches!(
+        pg.prepare_pricing_release_assignment_extension_v2(&funding_convert_extension(
+            "stale-generation",
+            Some(1),
+        ))
+        .unwrap(),
+        PricingMutation::Rejected(PricingRejection::MissingDependency { dependency })
+            if dependency == "funding_head"
+    ));
+    // The active funding head passes the head gate but differs from the base's.
+    assert!(matches!(
+        pg.prepare_pricing_release_assignment_extension_v2(&funding_convert_extension(
+            "advanced-generation",
+            Some(2),
+        ))
+        .unwrap(),
+        PricingMutation::Rejected(PricingRejection::MissingDependency { dependency })
+            if dependency.starts_with("assignment:")
+    ));
+
+    // The coherent b2c-base -> b2b-extension active/recovery pair is accepted, replays
+    // exactly, reads back, and the resolver prefers the converted B2B lineage.
+    assert_eq!(
+        pg.prepare_pricing_release_assignment_extension_v2(&convert_extension)
+            .unwrap(),
+        PricingMutation::Stored
+    );
+    assert_eq!(
+        pg.prepare_pricing_release_assignment_extension_v2(&convert_extension)
+            .unwrap(),
+        PricingMutation::Unchanged
+    );
+    assert_eq!(
+        pg.pricing_release_assignment_extension_v2(1, "release-runtime-b2c-convert")
+            .unwrap(),
+        Some(convert_extension.clone())
+    );
+    let converted = pg
+        .pricing_release_resolution_v2(
+            "release-runtime-b2c-convert",
+            crate::PROVIDER_GOOGLE,
+            "gemini-3-flash-preview",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(converted.assignment.account_class, AccountClass::B2b);
+    assert_eq!(
+        converted.assignment.policy_id,
+        "release-runtime-b2b-convert-policy"
+    );
+    assert_eq!(converted.assignment.policy_version, 1);
+    assert_eq!(converted.payable_multiplier_bp(), Some(7_500));
 
     let openkeys_google = pg
         .pricing_release_resolution_v2(

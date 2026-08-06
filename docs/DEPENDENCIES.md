@@ -44,8 +44,11 @@ fruitless algorithm. Strict fingerprint producer SHA
 commerce consumer was wired.
 The release-v2 producer publishes immutable policy/release/recovery prepare, the full
 engine inventory, nullable head, account-local funding normalization plan/apply, and an
-append-only assignment extension for the exact active/recovery pair of an account created
-after cutover. The read-only Stage 8 capture returns the same blocker-preserving report
+append-only assignment extension for the exact active/recovery pair: for an account created
+after cutover, for a base-covered account as an exact same-policy version override (engine
+migration 0030), and for a base-covered `b2c` account as a `b2c`→`b2b` class-changing conversion
+onto a new B2B policy lineage with identical balance billing, funding generation and metadata
+(engine migration 0034); every other class transition stays rejected. The read-only Stage 8 capture returns the same blocker-preserving report
 as the CLI through a bounded PostgreSQL reader and does not stage collection/activation
 work. Read-only
 `GET /admin/pricing/v2/provisioning-context` publishes in one snapshot the exact

@@ -845,10 +845,18 @@ Both members must name
 the same account, policy, class, billing mode, funding generation and service metadata while keeping
 their own release generation, assignment digest and extension digest. The account must already
 exist. For an account absent from both immutable base assignment manifests, every policy/funding
-dependency must exist. An account that is present in the base manifest is accepted only as an
-exact policy-version override: the extension must reference the same policy identity at a strictly
-newer version with identical account class, billing mode, funding generation and service metadata,
-so the immutable base is never rewritten.
+dependency must exist. An account that is present in the base manifest is accepted in exactly two
+forms, so the immutable base is never rewritten. The first is an exact policy-version override:
+the extension references the same policy identity at a strictly newer version with identical
+account class, billing mode, funding generation and service metadata. The second is a B2C-to-B2B
+class-changing conversion: the extension references a new B2B policy lineage (a different
+`policy_id`, so the strictly-newer-version requirement does not apply to it) while the base side
+must be exactly `b2c` with `balance` billing, the extension side exactly `b2b` with `balance`
+billing, the funding generation non-null and identical to the base's, and purpose/responsible
+metadata identical to the base's (null on both sides for balance classes). Every other class
+transition — to or from `openkeys`, to or from `service`, and `b2b` back to `b2c` — and any
+billing-mode, funding-generation or metadata mismatch stays rejected as a typed
+`missing_dependency`.
 Balance accounts take the account funding lock and require the assignment
 generation to be the exact active funding head; service accounts remain `meter_only` with no
 funding generation.

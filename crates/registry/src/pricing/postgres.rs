@@ -3499,6 +3499,16 @@ pub(crate) fn postgres_prepare_pricing_release_assignment_extension_v2(
                                AND base.purpose IS NOT DISTINCT FROM $9
                                AND base.responsible IS NOT DISTINCT FROM $10
                         )
+                        OR EXISTS(
+                            SELECT 1 FROM pricing_release_assignments base
+                             WHERE base.release_generation=$2 AND base.account_id=$1
+                               AND base.account_class='b2c' AND $6='b2b'
+                               AND base.billing_mode='balance' AND $7='balance'
+                               AND base.funding_generation IS NOT NULL
+                               AND base.funding_generation IS NOT DISTINCT FROM $8
+                               AND base.purpose IS NOT DISTINCT FROM $9
+                               AND base.responsible IS NOT DISTINCT FROM $10
+                        )
                     )
                     AND (
                         ($7='meter_only' AND $8::bigint IS NULL)
