@@ -79,6 +79,8 @@
 .docs-endpoint-card li span{grid-column:2;min-width:0;overflow:hidden;color:var(--txt-3);font-size:11px;line-height:1.3;text-overflow:ellipsis;white-space:nowrap}
 .docs-endpoints-legacy{margin:14px 4px 0;color:var(--txt-3);font-size:13px;line-height:1.55}
 .docs-endpoints-legacy code{font:.85em var(--font-mono);background:var(--bg-soft);border:1px solid var(--line);border-radius:5px;padding:1px 5px;overflow-wrap:anywhere}
+.docs-note{margin:18px 4px 0;color:var(--txt-3);font-size:13px;line-height:1.55}
+.docs-note code{font:.85em var(--font-mono);background:var(--bg-soft);border:1px solid var(--line);border-radius:5px;padding:1px 5px;overflow-wrap:anywhere}
 
 /* Integration builder: flat two-pane setup. Quiet rows on the left, the exact
    tested guide on the right. Monochrome brand marks, hairline separators, no

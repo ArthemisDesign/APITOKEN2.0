@@ -34,9 +34,21 @@ const GPT_CACHE_JSON = `{
   }
 }`;
 
+const GEMINI_INLINE_JSON = `{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        { "text": "Describe this file" },
+        { "inline_data": { "mime_type": "image/png", "data": "<base64>" } }
+      ]
+    }
+  ]
+}`;
+
 const AGENT_GUIDE_URL = "https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md";
 const SUPPORT_TELEGRAM_URL = "https://t.me/apitokensupportbot";
-const SECTION_IDS = ["overview", "agent-setup", "setup-support", "quickstart", "api", "models", "errors", "caching", "next"] as const;
+const SECTION_IDS = ["overview", "agent-setup", "setup-support", "quickstart", "api", "models", "gemini-files", "errors", "caching", "next"] as const;
 
 const copy = {
   en: {
@@ -83,6 +95,31 @@ const copy = {
     cacheClaudeText: "Breakpoints pass through to Anthropic unchanged. Cache writes bill at 1.25× input (5-minute TTL) or 2× (1-hour TTL — send the `anthropic-beta: extended-cache-ttl-2025-04-11` header yourself). Repeat calls of the same prefix are pinned to the warm upstream, so keep the prefix byte-identical.",
     cacheGpt: "GPT — automatic",
     cacheGptText: "No opt-in: repeated prefixes are cached server-side. `usage.prompt_tokens_details.cached_tokens` (Chat Completions) or `input_tokens_details.cached_tokens` (Responses) bills at 10% of input automatically.",
+    geminiFiles: "Gemini files",
+    geminiFilesTitle: "Sending files to Gemini",
+    geminiFilesText: "We serve Gemini from pooled subscriptions rather than the public Gemini API, so a file must travel inside the request. There is no upload step: the Files API is not available here, and a files/… URI you obtained yourself belongs to your own Google project, which our subscription cannot read.",
+    gfKind: "Input",
+    gfStatus: "Supported",
+    gfHow: "How to send it",
+    gfImages: "Images (PNG, JPEG, WebP)",
+    gfImagesHow: "`inline_data` with `mime_type` and base64. Up to ~23 MB of source file.",
+    gfPdf: "PDF documents",
+    gfPdfHow: "`inline_data` with `application/pdf`. The model reads the text inside.",
+    gfText: "Text files",
+    gfTextHow: "`inline_data` with `text/plain`, or simply paste into the `text` part.",
+    gfAudio: "Audio",
+    gfAudioHow: "Only `gemini-3-flash-preview`, as inline `audio/wav`.",
+    gfFilesApi: "Files API (`file_uri`)",
+    gfFilesApiHow: "Not available. Inline the bytes instead.",
+    gfCached: "`cachedContent`",
+    gfCachedHow: "Not available. Send the content inline.",
+    gfYes: "Yes",
+    gfNo: "No",
+    gfPartial: "One model",
+    geminiInlineTitle: "Inline request",
+    geminiInlineText: "Replace the upload plus reference with a single request. Base64 adds about a third to the size, so the request body stays under our 32 MB limit for a source file up to roughly 23 MB.",
+    geminiReasonTitle: "When we refuse",
+    geminiReasonText: "An input this gateway cannot accept is rejected before your request reaches a subscription, as `400 INVALID_ARGUMENT` with a stable reason in `error.details` — `FILE_URI_UNSUPPORTED`, `CACHED_CONTENT_UNSUPPORTED`, `AUDIO_INPUT_UNSUPPORTED`. Those are final: changing the request is the fix, retrying is not. Every error also carries an `x-request-id` header — quote it to support and we can find your exact request.",
     errorTitle: "Common response codes",
     errorText: "On the unified endpoint every protocol keeps its own error envelope: Anthropic lanes return Anthropic's JSON, OpenAI lanes return {\"error\":{\"message\",\"type\",\"param\",\"code\"}}, and the Gemini lane returns {\"error\":{\"code\",\"message\",\"status\"}}. Treat 401 and 402 as account-state failures; retry only transient 429 and 5xx responses.",
     status: "Status",
@@ -153,6 +190,31 @@ const copy = {
     cacheClaudeText: "Точки кеширования пробрасываются в Anthropic без изменений. Запись в кеш стоит 1,25× от цены ввода (TTL 5 минут) или 2× (TTL 1 час — заголовок `anthropic-beta: extended-cache-ttl-2025-04-11` передайте самостоятельно). Повторные вызовы с тем же префиксом закрепляются за прогретым апстримом, поэтому держите префикс неизменным байт в байт.",
     cacheGpt: "GPT — автоматически",
     cacheGptText: "Ничего включать не нужно: повторяющиеся префиксы кешируются на стороне сервера. `usage.prompt_tokens_details.cached_tokens` (Chat Completions) или `input_tokens_details.cached_tokens` (Responses) автоматически тарифицируются как 10% от цены ввода.",
+    geminiFiles: "Файлы в Gemini",
+    geminiFilesTitle: "Как отправлять файлы в Gemini",
+    geminiFilesText: "Gemini мы отдаём из пула подписок, а не через публичный Gemini API, поэтому файл должен ехать внутри самого запроса. Отдельного шага загрузки нет: Files API здесь недоступен, а полученный вами files/… URI принадлежит вашему проекту Google — наша подписка прочитать его не может.",
+    gfKind: "Тип данных",
+    gfStatus: "Поддержка",
+    gfHow: "Как отправлять",
+    gfImages: "Изображения (PNG, JPEG, WebP)",
+    gfImagesHow: "`inline_data` с `mime_type` и base64. Примерно до 23 МБ исходного файла.",
+    gfPdf: "PDF-документы",
+    gfPdfHow: "`inline_data` с `application/pdf`. Модель читает текст внутри документа.",
+    gfText: "Текстовые файлы",
+    gfTextHow: "`inline_data` с `text/plain` — или просто вставьте текст в `text`.",
+    gfAudio: "Аудио",
+    gfAudioHow: "Только `gemini-3-flash-preview`, inline `audio/wav`.",
+    gfFilesApi: "Files API (`file_uri`)",
+    gfFilesApiHow: "Недоступно. Передавайте содержимое inline.",
+    gfCached: "`cachedContent`",
+    gfCachedHow: "Недоступно. Передавайте содержимое inline.",
+    gfYes: "Да",
+    gfNo: "Нет",
+    gfPartial: "Одна модель",
+    geminiInlineTitle: "Запрос с файлом",
+    geminiInlineText: "Загрузка и ссылка на файл заменяются одним запросом. Base64 добавляет примерно треть объёма, поэтому в наш лимит тела 32 МБ укладывается исходный файл примерно до 23 МБ.",
+    geminiReasonTitle: "Когда мы отказываем",
+    geminiReasonText: "Данные, которые шлюз принять не может, отклоняются ещё до обращения к подписке — `400 INVALID_ARGUMENT` со стабильной причиной в `error.details`: `FILE_URI_UNSUPPORTED`, `CACHED_CONTENT_UNSUPPORTED`, `AUDIO_INPUT_UNSUPPORTED`. Такой отказ окончательный: помогает изменение запроса, а не повтор. В каждой ошибке есть заголовок `x-request-id` — назовите его поддержке, и мы найдём именно ваш запрос.",
     errorTitle: "Основные коды ответа",
     errorText: "На едином endpoint каждый протокол сохраняет свой формат ошибок: маршруты Anthropic возвращают JSON Anthropic, маршруты OpenAI — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}, маршрут Gemini — {\"error\":{\"code\",\"message\",\"status\"}}. Коды 401 и 402 требуют исправить состояние аккаунта; автоматически повторяйте только временные ошибки 429 и 5xx.",
     status: "Статус",
@@ -193,6 +255,7 @@ export function DocsPortal() {
     { id: "quickstart", label: t.quickstart },
     { id: "api", label: t.api },
     { id: "models", label: t.models },
+    { id: "gemini-files", label: t.geminiFiles },
     { id: "errors", label: t.errors },
     { id: "caching", label: t.caching },
     { id: "next", label: t.nextSteps },
@@ -279,13 +342,29 @@ export function DocsPortal() {
           <ModelsPricing language={language} />
         </section>
 
+        <section className="docs-section" id="gemini-files">
+          <div className="docs-section-heading"><span>05</span><div><h2>{t.geminiFilesTitle}</h2><p>{t.geminiFilesText}</p></div></div>
+          <div className="table-scroll"><table className="mtable"><thead><tr><th>{t.gfKind}</th><th>{t.gfStatus}</th><th>{t.gfHow}</th></tr></thead><tbody>
+            <FileRow kind={t.gfImages} status={t.gfYes} how={t.gfImagesHow} labels={t} />
+            <FileRow kind={t.gfPdf} status={t.gfYes} how={t.gfPdfHow} labels={t} />
+            <FileRow kind={t.gfText} status={t.gfYes} how={t.gfTextHow} labels={t} />
+            <FileRow kind={t.gfAudio} status={t.gfPartial} how={t.gfAudioHow} labels={t} />
+            <FileRow kind={t.gfFilesApi} status={t.gfNo} how={t.gfFilesApiHow} labels={t} />
+            <FileRow kind={t.gfCached} status={t.gfNo} how={t.gfCachedHow} labels={t} />
+          </tbody></table></div>
+          <div className="docs-cache-stack">
+            <CacheCard title={t.geminiInlineTitle} text={t.geminiInlineText} code={GEMINI_INLINE_JSON} codeLabel="JSON · Request" copyLabel={t.copy} copiedLabel={t.copied} />
+          </div>
+          <p className="docs-note"><strong>{t.geminiReasonTitle}.</strong> <Prose text={t.geminiReasonText} /></p>
+        </section>
+
         <section className="docs-section" id="errors">
-          <div className="docs-section-heading"><span>05</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div>
+          <div className="docs-section-heading"><span>06</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div>
           <div className="table-scroll"><table className="mtable docs-errors"><thead><tr><th>{t.status}</th><th>{t.meaning}</th><th>{t.action}</th></tr></thead><tbody><ErrorRow code="401" meaning={t.e401} action={t.a401} labels={t} /><ErrorRow code="402" meaning={t.e402} action={t.a402} labels={t} /><ErrorRow code="429" meaning={t.e429} action={t.a429} labels={t} /><ErrorRow code="5xx" meaning={t.e5xx} action={t.a5xx} labels={t} /></tbody></table></div>
         </section>
 
         <section className="docs-section" id="caching">
-          <div className="docs-section-heading"><span>06</span><div><h2>{t.cachingTitle}</h2><p>{t.cachingText}</p></div></div>
+          <div className="docs-section-heading"><span>07</span><div><h2>{t.cachingTitle}</h2><p>{t.cachingText}</p></div></div>
           <div className="docs-cache-stack">
             <CacheCard title={t.cacheClaude} text={t.cacheClaudeText} code={CLAUDE_CACHE_JSON} codeLabel="JSON · Request" copyLabel={t.copy} copiedLabel={t.copied} />
             <CacheCard title={t.cacheGpt} text={t.cacheGptText} code={GPT_CACHE_JSON} codeLabel="JSON · Response" copyLabel={t.copy} copiedLabel={t.copied} />
@@ -293,7 +372,7 @@ export function DocsPortal() {
         </section>
 
         <section className="docs-section docs-next" id="next">
-          <div className="docs-section-heading"><span>07</span><div><h2>{t.nextSteps}</h2><p>{t.nextStepsText}</p></div></div>
+          <div className="docs-section-heading"><span>08</span><div><h2>{t.nextSteps}</h2><p>{t.nextStepsText}</p></div></div>
           <div className="learn-related">
             <Link className="learn-related-card" href={localeHref("/models", language)}><strong>{t.nextModels}</strong><span>{t.nextModelsText}</span></Link>
             <Link className="learn-related-card" href={localeHref("/plans", language)}><strong>{t.nextPricing}</strong><span>{t.nextPricingText}</span></Link>
@@ -373,6 +452,10 @@ function AgentCopyButton({ prompt, label, copiedLabel }: { prompt: string; label
 
 function ErrorRow({ code, meaning, action, labels }: { code: string; meaning: string; action: string; labels: { status: string; meaning: string; action: string } }) {
   return <tr><td data-label={labels.status}><code>{code}</code></td><td data-label={labels.meaning}><span>{meaning}</span></td><td data-label={labels.action}><span>{action}</span></td></tr>;
+}
+
+function FileRow({ kind, status, how, labels }: { kind: string; status: string; how: string; labels: { gfKind: string; gfStatus: string; gfHow: string } }) {
+  return <tr><td data-label={labels.gfKind}><span><Prose text={kind} /></span></td><td data-label={labels.gfStatus}><span>{status}</span></td><td data-label={labels.gfHow}><span><Prose text={how} /></span></td></tr>;
 }
 
 function CacheCard({ title, text, code, codeLabel, copyLabel, copiedLabel }: { title: string; text: string; code: string; codeLabel: string; copyLabel: string; copiedLabel: string }) {
