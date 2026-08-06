@@ -831,7 +831,9 @@ wd_path_is_gpt_image_2_public_preflight_gate_trigger() {
 }
 
 wd_path_is_gpt_image_2_public_preflight_v2_gate_trigger() {
-  [[ $1 == deploy/gpt-image-2-public-preflight-v2-gate.sh ]]
+  # This one-shot root is permanently fenced after its delivery; retained controller changes may
+  # only be inspected as history and must never execute it again.
+  return 1
 }
 
 # Return the least expensive safe root-install transaction for an exact commit range. Independent

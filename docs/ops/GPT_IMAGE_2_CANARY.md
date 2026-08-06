@@ -224,9 +224,12 @@ contexts, and performed no image request. The next free attempt uses the distinc
 ran only `openai-image-public-smoke --preflight-only`, but delivery
 `267744a02d664f24ca072326fa06771b54188de4` stopped at `credential_selecting` with both dispatch flags false
 and null request identities. No image POST occurred and this second root is permanently fenced. The
-corrective selector identifies the unique engine account by handle `crm-parsing`, while independently
-requiring its active assignment and linked policy to be service/meter-only; release owner metadata is not
-used as the engine account identity. Paid execution still requires a new producer/root and a fresh successful
+corrective selector `63972f2ddfd5906d7c30a87406053eb3782f4223` identifies the unique engine account by
+handle `crm-parsing`, while independently requiring its active assignment and linked policy to be
+service/meter-only; release owner metadata is not used as the engine account identity. Its trusted-host gate
+was GREEN, but the overall delivery was RED because the historical v2 trigger attempted to revisit its
+already-fenced failed root; no new image request or selector execution occurred. The v2 trigger is retired
+before the next producer delivery. Paid execution still requires a new producer/root and a fresh successful
 free preflight before changing `generation_dispatched` immediately ahead of the first image POST. This
 withdrawal does not authorize the paid gate or publication.
 

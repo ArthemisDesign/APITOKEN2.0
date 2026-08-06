@@ -306,11 +306,14 @@ is only what is needed to walk the relationships when making changes:
   `gpt-image-2-public-preflight-v2` root, inherited only the active OpenAI slot's PostgreSQL DSN, and ran only
   `openai-image-public-smoke --preflight-only`. Delivery `267744a02d664f24ca072326fa06771b54188de4`
   stopped at `credential_selecting`, with both dispatch flags false and null request identities; it performed
-  no image POST and permanently fenced that root. The corrective selector identifies the unique engine
-  account by handle `crm-parsing` while independently requiring its active assignment and linked policy to
-  remain service/meter-only; service policy owner metadata is authorization, not engine account identity.
-  Paid execution requires a distinct new producer-SHA fence and fresh successful preflight rather than
-  trusting either withdrawn artifact. The direct OpenAI plane and header-gated Combined
+  no image POST and permanently fenced that root. Corrective selector
+  `63972f2ddfd5906d7c30a87406053eb3782f4223` identifies the unique engine account by handle
+  `crm-parsing` while independently requiring its active assignment and linked policy to remain
+  service/meter-only; service policy owner metadata is authorization, not engine account identity. Its
+  trusted-host gate was GREEN, but the overall delivery was RED because the historical v2 trigger revisited
+  its already-fenced failed root; no selector or image request was rerun. The v2 trigger is retired before the
+  next producer delivery. Paid execution requires a distinct new producer-SHA fence and fresh successful
+  preflight rather than trusting either withdrawn artifact. The direct OpenAI plane and header-gated Combined
   bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —

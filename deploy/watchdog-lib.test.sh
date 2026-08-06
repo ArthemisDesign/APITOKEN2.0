@@ -4419,14 +4419,13 @@ grep -Fq 'github_status success deploy/gpt-image-2-public-preflight "$public_ima
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 public preflight stage has no sanitized GREEN status'
 
-# The successor free gate gets a fresh root and executes only the no-image preflight on the exact
-# deployed selector SHA. Its own file is the sole trigger; historical inspectors remain immutable.
-wd_path_is_gpt_image_2_public_preflight_v2_gate_trigger \
-  deploy/gpt-image-2-public-preflight-v2-gate.sh \
-  || wd_die 'GPT Image 2 public preflight v2 file does not trigger the one-shot gate'
-if wd_path_is_gpt_image_2_public_preflight_v2_gate_trigger deploy/watchdog.sh; then
-  wd_die 'ordinary controller updates trigger GPT Image 2 public preflight v2'
-fi
+# The v2 root is permanently fenced after its one delivery. No later path, including the retained
+# historical controller itself, may trigger another execution against that root.
+for path in deploy/gpt-image-2-public-preflight-v2-gate.sh deploy/watchdog.sh deploy/watchdog-lib.sh; do
+  if wd_path_is_gpt_image_2_public_preflight_v2_gate_trigger "$path"; then
+    wd_die "retired GPT Image 2 public preflight v2 trigger accepts $path"
+  fi
+done
 grep -Fq '"$ROOT/deploy/gpt-image-2-public-preflight-v2-gate.sh"' \
   "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'GPT Image 2 public preflight v2 is not installed as a fixed controller'
