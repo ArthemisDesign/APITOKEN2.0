@@ -48,7 +48,30 @@ database state only. Grafana users are auto-provisioned as viewers.
   ```
 
 The Grafana and telemetry volumes are not business records. Dashboards and alert rules are
-provisioned from Git, so telemetry can be rebuilt. The four PostgreSQL custom-format dumps remain
+provisioned from Git, so telemetry can be rebuilt.
+
+## Dashboard layout
+
+`observability/grafana/dashboards/production-overview.json` (uid `apitoken-production`) is
+status-first and section-based so an operator answers "is anything wrong right now?" without
+scrolling:
+
+- **Status row** (always expanded, top): firing-alert counts by severity, failed services,
+  probes down, oldest backup, queued jobs, devbot delivery health (heartbeat age, Telegram
+  send failures, last webhook age), a per-endpoint synthetic probe table (status, latency,
+  24 h uptime), and the full alert list. Stat cards link to their runbook anchors.
+- **Collapsed domain sections** below: Host & Platform · Database · Engine (pool, traffic &
+  capacity) · Affinity, Redis & Codex History · Revenue & Business State · Codex (OpenAI) ·
+  Gemini · Kimi & GLM (default-off) · Router & Unified API · Delivery Pipeline · Devbot &
+  Notification Delivery · Billing Writer · Logs & Journals.
+- **`$provider` template variable** filters the engine pool/traffic panels
+  (`claude_api_*{provider=~"$provider"}`); the default is all providers.
+- **Annotations** on every graph: firing alerts (red), `agent-merge` deploy events from Loki
+  (blue), and systemd unit restarts (purple) — so incidents can be correlated with changes.
+- Dashboard links: runbooks, devbot design, and this dashboard's Git source.
+
+Rows are collapsed by default to keep the initial view compact; every stat that can be wrong
+is thresholded green/yellow/red. The four PostgreSQL custom-format dumps remain
 the authoritative hourly recovery artifacts and are validated again before database migrations.
 
 ## Failure-domain limitation

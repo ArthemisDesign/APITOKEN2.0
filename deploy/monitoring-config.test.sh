@@ -685,8 +685,8 @@ grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?|-kimi(@.+)?)
 grep -Fq 'claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?|-kimi(@.+)?)?|authbot|router)' \
   "$ROOT/observability/grafana/dashboards/production-overview.json" \
   || { printf 'Grafana systemd panel omits a provider runtime unit\n' >&2; exit 1; }
-[[ $(grep -Fc 'public-http|openai-http|gemini-http|protected-http|support-http|loopback-http' \
-  "$ROOT/observability/grafana/dashboards/production-overview.json") -eq 2 ]] \
+[[ $(grep -Fc 'public-http|openai-http|gemini-http|protected-http|support-http|loopback-http|openkeys-http' \
+  "$ROOT/observability/grafana/dashboards/production-overview.json") -ge 2 ]] \
   || { printf 'Grafana synthetic panels omit an independent provider probe\n' >&2; exit 1; }
 
 # A missing status file must read as stale, never as a fresh zero.

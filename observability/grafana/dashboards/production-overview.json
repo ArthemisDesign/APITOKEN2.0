@@ -1,14 +1,81 @@
 {
-  "annotations": { "list": [] },
+  "annotations": {
+    "list": [
+      {
+        "name": "Alerts",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "enable": true,
+        "expr": "ALERTS{alertstate=\"firing\"}",
+        "iconColor": "red",
+        "step": "60s"
+      },
+      {
+        "name": "Deploys (agent-merge)",
+        "datasource": { "type": "loki", "uid": "loki" },
+        "enable": true,
+        "expr": "{job=\"systemd-journal\"} |~ \"\\[agent-merge\\]\"",
+        "iconColor": "blue"
+      },
+      {
+        "name": "Unit restarts",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "enable": true,
+        "expr": "changes(node_systemd_unit_state{name=~\"(apitoken-.+|claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?|-kimi(@.+)?)?|authbot|router))\\.service\",state=\"active\"}[2m]) > 0",
+        "iconColor": "purple",
+        "step": "120s"
+      }
+    ]
+  },
   "editable": false,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
   "id": null,
-  "links": [],
+  "links": [
+    {
+      "title": "Runbooks",
+      "type": "link",
+      "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md",
+      "targetBlank": true
+    },
+    {
+      "title": "Devbot design",
+      "type": "link",
+      "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/DEVBOT.md",
+      "targetBlank": true
+    },
+    {
+      "title": "Dashboard source",
+      "type": "link",
+      "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/observability/grafana/dashboards/production-overview.json",
+      "targetBlank": true
+    }
+  ],
   "liveNow": true,
   "panels": [
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 12, "w": 12, "x": 0, "y": 0 },
+      "id": 300,
+      "options": {
+        "alertInstanceLabelFilter": "",
+        "alertName": "",
+        "dashboardAlerts": false,
+        "groupBy": [],
+        "groupMode": "default",
+        "maxItems": 50,
+        "sortOrder": 1,
+        "stateFilter": { "error": true, "firing": true, "noData": true, "normal": false, "pending": true }
+      },
+      "title": "Firing & pending alerts",
+      "type": "alertlist"
+    },
+    {
+      "id": 301,
+      "type": "stat",
+      "title": "Firing critical",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(ALERTS{alertstate=\"firing\",severity=\"critical\"}) or vector(0)", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 12, "y": 0 },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -17,48 +84,44 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
-      "id": 1,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "sum(ALERTS{alertstate=\"firing\"}) or vector(0)", "refId": "A" }],
-      "title": "Firing alerts",
-      "type": "stat"
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": []
     },
     {
+      "id": 302,
+      "type": "stat",
+      "title": "Firing warning",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(ALERTS{alertstate=\"firing\",severity=\"warning\"}) or vector(0)", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 16, "y": 0 },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] },
-          "unit": "percentunit"
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }] }
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
-      "id": 2,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "avg(probe_success{job=~\"public-http|openai-http|gemini-http|protected-http|support-http|loopback-http\"})", "refId": "A" }],
-      "title": "Synthetic availability",
-      "type": "stat"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] },
-          "unit": "percentunit"
-        },
-        "overrides": []
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
       },
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
-      "id": 3,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "avg(up)", "refId": "A" }],
-      "title": "Scrape health",
-      "type": "stat"
+      "links": []
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -70,12 +133,73 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
-      "id": 4,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "sum(node_systemd_unit_state{name=~\"(apitoken-.+|claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?|-kimi(@.+)?)?|authbot|router))\\\\.service\",state=\"failed\"}) or vector(0)", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 20, "y": 0 },
+      "id": 303,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "sum(node_systemd_unit_state{name=~\"(apitoken-.+|claude-(api(@.+|-anthropic@.+|-openai(@.+)?|-gemini(@.+)?|-kimi(@.+)?)?|authbot|router))\\\\.service\",state=\"failed\"}) or vector(0)",
+          "refId": "A"
+        }
+      ],
       "title": "Failed services",
-      "type": "stat"
+      "type": "stat",
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#projectsystemdunitfailed",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "id": 304,
+      "type": "stat",
+      "title": "Probes down",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "count(probe_success{job=~\"public-http|openai-http|gemini-http|protected-http|support-http|loopback-http|openkeys-http\"} == 0)",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 3, "w": 4, "x": 12, "y": 3 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#publicendpointdown",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -83,17 +207,37 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 3600 }, { "color": "green", "value": 1800 }] },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 3600 }, { "color": "green", "value": 1800 }]
+          },
           "unit": "s"
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
-      "id": 5,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["max"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 3, "w": 4, "x": 16, "y": 3 },
+      "id": 305,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["max"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "max(apitoken_backup_age_seconds)", "refId": "A" }],
       "title": "Oldest database backup",
-      "type": "stat"
+      "type": "stat",
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#backupstale",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -101,24 +245,285 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 25 }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 25 }]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
-      "id": 6,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 3, "w": 4, "x": 20, "y": 3 },
+      "id": 306,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "sum(apitoken_queue_ready)", "refId": "A" }],
       "title": "Queued jobs",
-      "type": "stat"
+      "type": "stat",
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#durablequeuebacklog",
+          "targetBlank": true
+        }
+      ]
     },
     {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 4 },
-      "id": 16,
-      "panels": [],
+      "id": 307,
+      "type": "stat",
+      "title": "Devbot heartbeat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "time() - devbot_heartbeat_timestamp_seconds{job=\"devbot\"}", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 12, "y": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 120 }, { "color": "red", "value": 300 }]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#devbotheartbeatmissing",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "id": 308,
+      "type": "stat",
+      "title": "Telegram failures (1h)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(increase(devbot_telegram_send_failures_total[1h]))", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 16, "y": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#devbottelegramsendfailures",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "id": 309,
+      "type": "stat",
+      "title": "Last webhook (age)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "time() - devbot_last_webhook_seconds", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 20, "y": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 3600 },
+              { "color": "red", "value": 86400 }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#devbotwebhooksilent",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Synthetic probes (per endpoint)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "id": 310,
+      "targets": [
+        {
+          "expr": "probe_success{job=~\"public-http|openai-http|gemini-http|protected-http|support-http|loopback-http|openkeys-http\"}",
+          "refId": "A"
+        },
+        {
+          "expr": "probe_duration_seconds{job=~\"public-http|openai-http|gemini-http|protected-http|support-http|loopback-http|openkeys-http\"}",
+          "refId": "B"
+        },
+        {
+          "expr": "avg_over_time(probe_success{job=~\"public-http|openai-http|gemini-http|protected-http|support-http|loopback-http|openkeys-http\"}[24h])",
+          "refId": "C"
+        }
+      ],
+      "transformations": [
+        { "id": "merge", "options": {  } },
+        { "id": "renameByRegex", "options": { "regex": "Value #C", "rename": "Uptime 24h" } }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "mappings": [] },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "probe_success" },
+            "properties": [
+              { "id": "displayName", "value": "Status" },
+              {
+                "id": "thresholds",
+                "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+              },
+              { "id": "custom.width", "value": 80 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "probe_duration_seconds" },
+            "properties": [
+              { "id": "displayName", "value": "Latency" },
+              { "id": "unit", "value": "s" },
+              { "id": "custom.width", "value": 90 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Uptime 24h" },
+            "properties": [{ "id": "unit", "value": "percentunit" }, { "id": "custom.width", "value": 110 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "instance" },
+            "properties": [{ "id": "displayName", "value": "Target" }, { "id": "custom.width", "value": 320 }]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "Status", "desc": false }] },
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#publicendpointdown",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "id": 311,
+      "type": "stat",
+      "title": "Synthetic availability",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "avg(probe_success{job=~\"public-http|openai-http|gemini-http|protected-http|support-http|loopback-http|openkeys-http\"})",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 3, "w": 4, "x": 0, "y": 20 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": []
+    },
+    {
+      "id": 312,
+      "type": "stat",
+      "title": "Scrape health",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "avg(up)", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 4, "y": 20 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": []
+    },
+    {
+      "type": "row",
       "title": "Host & Platform",
-      "type": "row"
+      "collapsed": true,
+      "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "id": 321
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -150,13 +555,28 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 5 },
-      "id": 7,
-      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 24 },
+      "id": 318,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
       "targets": [
-        { "expr": "1 - avg without(cpu) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))", "legendFormat": "CPU", "refId": "A" },
-        { "expr": "1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes", "legendFormat": "Memory", "refId": "B" },
-        { "expr": "1 - node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"}", "legendFormat": "Disk", "refId": "C" }
+        {
+          "expr": "1 - avg without(cpu) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))",
+          "legendFormat": "CPU",
+          "refId": "A"
+        },
+        {
+          "expr": "1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes",
+          "legendFormat": "Memory",
+          "refId": "B"
+        },
+        {
+          "expr": "1 - node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"}",
+          "legendFormat": "Disk",
+          "refId": "C"
+        }
       ],
       "title": "Host utilization",
       "type": "timeseries"
@@ -211,17 +631,36 @@
           }
         ]
       },
-      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 5 },
-      "id": 17,
-      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 24 },
+      "id": 319,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
       "targets": [
         { "expr": "node_load1", "legendFormat": "Load 1m", "refId": "A" },
         { "expr": "node_load5", "legendFormat": "Load 5m", "refId": "B" },
         { "expr": "node_load15", "legendFormat": "Load 15m", "refId": "C" },
-        { "expr": "rate(node_disk_read_bytes_total{device=~\"nvme.*|sd.*\"}[5m])", "legendFormat": "Disk read", "refId": "D" },
-        { "expr": "rate(node_disk_written_bytes_total{device=~\"nvme.*|sd.*\"}[5m])", "legendFormat": "Disk write", "refId": "E" },
-        { "expr": "rate(node_network_receive_bytes_total{device!~\"lo|veth.*|docker.*\"}[5m])", "legendFormat": "Net in", "refId": "F" },
-        { "expr": "rate(node_network_transmit_bytes_total{device!~\"lo|veth.*|docker.*\"}[5m])", "legendFormat": "Net out", "refId": "G" }
+        {
+          "expr": "rate(node_disk_read_bytes_total{device=~\"nvme.*|sd.*\"}[5m])",
+          "legendFormat": "Disk read",
+          "refId": "D"
+        },
+        {
+          "expr": "rate(node_disk_written_bytes_total{device=~\"nvme.*|sd.*\"}[5m])",
+          "legendFormat": "Disk write",
+          "refId": "E"
+        },
+        {
+          "expr": "rate(node_network_receive_bytes_total{device!~\"lo|veth.*|docker.*\"}[5m])",
+          "legendFormat": "Net in",
+          "refId": "F"
+        },
+        {
+          "expr": "rate(node_network_transmit_bytes_total{device!~\"lo|veth.*|docker.*\"}[5m])",
+          "legendFormat": "Net out",
+          "refId": "G"
+        }
       ],
       "title": "Load average, disk I/O & network",
       "type": "timeseries"
@@ -256,20 +695,29 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 5 },
-      "id": 9,
-      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
-      "targets": [{ "expr": "probe_duration_seconds{job=~\"public-http|openai-http|gemini-http|protected-http|support-http|loopback-http\"}", "legendFormat": "{{component}}", "refId": "A" }],
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 24 },
+      "id": 320,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "probe_duration_seconds{job=~\"public-http|openai-http|gemini-http|protected-http|support-http|loopback-http\"}",
+          "legendFormat": "{{component}}",
+          "refId": "A"
+        }
+      ],
       "title": "End-to-end probe latency",
       "type": "timeseries"
     },
     {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 12 },
-      "id": 18,
-      "panels": [],
+      "type": "row",
       "title": "Database",
-      "type": "row"
+      "collapsed": true,
+      "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "id": 325
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -300,9 +748,12 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 13 },
-      "id": 11,
-      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 32 },
+      "id": 322,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
       "targets": [{ "expr": "pg_stat_activity_count", "legendFormat": "{{datname}} {{state}}", "refId": "A" }],
       "title": "PostgreSQL connections",
       "type": "timeseries"
@@ -337,10 +788,16 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 7, "w": 6, "x": 6, "y": 13 },
-      "id": 12,
-      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
-      "targets": [{ "expr": "rate(pg_stat_database_xact_commit[5m])", "legendFormat": "{{datname}} commits", "refId": "A" }, { "expr": "rate(pg_stat_database_xact_rollback[5m])", "legendFormat": "{{datname}} rollbacks", "refId": "B" }],
+      "gridPos": { "h": 7, "w": 6, "x": 6, "y": 32 },
+      "id": 323,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "rate(pg_stat_database_xact_commit[5m])", "legendFormat": "{{datname}} commits", "refId": "A" },
+        { "expr": "rate(pg_stat_database_xact_rollback[5m])", "legendFormat": "{{datname}} rollbacks", "refId": "B" }
+      ],
       "title": "PostgreSQL transactions",
       "type": "timeseries"
     },
@@ -380,22 +837,27 @@
             "matcher": { "id": "byName", "options": "Cache hit ratio" },
             "properties": [{ "id": "custom.axisPlacement", "value": "right" }, { "id": "unit", "value": "percentunit" }]
           },
-          {
-            "matcher": { "id": "byName", "options": "Deadlocks" },
-            "properties": [{ "id": "unit", "value": "none" }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Temp files" },
-            "properties": [{ "id": "unit", "value": "none" }]
-          }
+          { "matcher": { "id": "byName", "options": "Deadlocks" }, "properties": [{ "id": "unit", "value": "none" }] },
+          { "matcher": { "id": "byName", "options": "Temp files" }, "properties": [{ "id": "unit", "value": "none" }] }
         ]
       },
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 13 },
-      "id": 19,
-      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 32 },
+      "id": 324,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
       "targets": [
-        { "expr": "sum(pg_stat_activity_count) / max(pg_settings_max_connections)", "legendFormat": "Connection util %", "refId": "A" },
-        { "expr": "sum(rate(pg_stat_database_blks_hit[5m])) / (sum(rate(pg_stat_database_blks_hit[5m])) + sum(rate(pg_stat_database_blks_read[5m])))", "legendFormat": "Cache hit ratio", "refId": "B" },
+        {
+          "expr": "sum(pg_stat_activity_count) / max(pg_settings_max_connections)",
+          "legendFormat": "Connection util %",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(pg_stat_database_blks_hit[5m])) / (sum(rate(pg_stat_database_blks_hit[5m])) + sum(rate(pg_stat_database_blks_read[5m])))",
+          "legendFormat": "Cache hit ratio",
+          "refId": "B"
+        },
         { "expr": "rate(pg_stat_database_deadlocks[5m])", "legendFormat": "Deadlocks", "refId": "C" },
         { "expr": "rate(pg_stat_database_temp_files[5m])", "legendFormat": "Temp files", "refId": "D" }
       ],
@@ -403,12 +865,12 @@
       "type": "timeseries"
     },
     {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
-      "id": 21,
+      "type": "row",
+      "title": "Engine: Pool, Traffic & Capacity",
+      "collapsed": true,
       "panels": [],
-      "title": "Engine Traffic & Pool Health",
-      "type": "row"
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 },
+      "id": 326
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -445,24 +907,35 @@
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 14, "x": 0, "y": 21 },
-      "id": 8,
-      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "gridPos": { "h": 8, "w": 14, "x": 0, "y": 40 },
+      "id": 313,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
       "targets": [
-        { "expr": "rate(claude_api_requests_total{provider=\"anthropic\"}[5m])", "legendFormat": "Anthropic requests", "refId": "A" },
-        { "expr": "rate(claude_api_requests_total{provider=\"openai\"}[5m])", "legendFormat": "OpenAI requests", "refId": "E" },
-        { "expr": "rate(claude_api_requests_total{provider=\"gemini\"}[5m])", "legendFormat": "Gemini requests", "refId": "F" },
-        { "expr": "rate(claude_api_upstream_429_total{provider=\"anthropic\"}[5m])", "legendFormat": "Anthropic 429", "refId": "B" },
-        { "expr": "rate(claude_api_upstream_429_total{provider=\"openai\"}[5m])", "legendFormat": "OpenAI 429", "refId": "G" },
-        { "expr": "rate(claude_api_upstream_429_total{provider=\"gemini\"}[5m])", "legendFormat": "Gemini 429", "refId": "H" },
-        { "expr": "rate(claude_api_upstream_5xx_total{provider=\"anthropic\"}[5m])", "legendFormat": "Anthropic 5xx", "refId": "C" },
-        { "expr": "rate(claude_api_upstream_5xx_total{provider=\"openai\"}[5m])", "legendFormat": "OpenAI 5xx", "refId": "I" },
-        { "expr": "rate(claude_api_upstream_5xx_total{provider=\"gemini\"}[5m])", "legendFormat": "Gemini 5xx", "refId": "J" },
-        { "expr": "rate(claude_api_upstream_auth_total{provider=\"anthropic\"}[5m])", "legendFormat": "Anthropic auth fail", "refId": "D" },
-        { "expr": "rate(claude_api_upstream_auth_total{provider=\"openai\"}[5m])", "legendFormat": "OpenAI auth fail", "refId": "K" },
-        { "expr": "rate(claude_api_upstream_auth_total{provider=\"gemini\"}[5m])", "legendFormat": "Gemini auth fail", "refId": "L" },
-        { "expr": "rate(claude_api_exhausted_total[5m])", "legendFormat": "Pool exhausted", "refId": "M" },
-        { "expr": "rate(claude_api_breaker_rejects_total[5m])", "legendFormat": "Breaker rejects", "refId": "N" }
+        {
+          "expr": "sum by (provider) (rate(claude_api_requests_total{provider=~\"$provider\"}[5m]))",
+          "legendFormat": "{{provider}} requests",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (provider) (rate(claude_api_upstream_429_total{provider=~\"$provider\"}[5m]))",
+          "legendFormat": "{{provider}} 429",
+          "refId": "B"
+        },
+        {
+          "expr": "sum by (provider) (rate(claude_api_upstream_5xx_total{provider=~\"$provider\"}[5m]))",
+          "legendFormat": "{{provider}} 5xx",
+          "refId": "C"
+        },
+        {
+          "expr": "sum by (provider) (rate(claude_api_upstream_auth_total{provider=~\"$provider\"}[5m]))",
+          "legendFormat": "{{provider}} auth",
+          "refId": "D"
+        },
+        { "expr": "rate(claude_api_exhausted_total[5m])", "legendFormat": "Exhausted", "refId": "E" },
+        { "expr": "rate(claude_api_breaker_rejects_total[5m])", "legendFormat": "Breaker rejects", "refId": "F" }
       ],
       "title": "Provider traffic & failure modes",
       "type": "timeseries"
@@ -473,14 +946,26 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 3 }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 3 }]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 5, "x": 14, "y": 21 },
-      "id": 22,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "claude_api_subs{provider=\"anthropic\"} or vector(0)", "refId": "A" }],
+      "gridPos": { "h": 4, "w": 5, "x": 14, "y": 40 },
+      "id": 314,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [{ "expr": "sum(claude_api_subs{provider=~\"$provider\"}) or vector(0)", "refId": "A" }],
       "title": "Anthropic subscriptions",
       "type": "stat"
     },
@@ -494,9 +979,18 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 21 },
-      "id": 42,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 40 },
+      "id": 317,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "claude_api_inflight or vector(0)", "refId": "A" }],
       "title": "In-flight requests",
       "type": "stat"
@@ -507,14 +1001,26 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 5, "x": 14, "y": 25 },
-      "id": 43,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "claude_api_cooling{provider=\"anthropic\"} or vector(0)", "refId": "A" }],
+      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 48 },
+      "id": 315,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [{ "expr": "sum(claude_api_cooling{provider=~\"$provider\"}) or vector(0)", "refId": "A" }],
       "title": "Cooling subscriptions",
       "type": "stat"
     },
@@ -523,25 +1029,39 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
-          "mappings": [{ "options": { "0": { "color": "green", "text": "Closed" }, "1": { "color": "red", "text": "OPEN" } }, "type": "value" }],
+          "mappings": [
+            {
+              "options": { "0": { "color": "green", "text": "Closed" }, "1": { "color": "red", "text": "OPEN" } },
+              "type": "value"
+            }
+          ],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 25 },
-      "id": 44,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "claude_api_breaker_open{provider=\"anthropic\"} or vector(0)", "refId": "A" }],
+      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 48 },
+      "id": 316,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [{ "expr": "sum(claude_api_breaker_open{provider=~\"$provider\"}) or vector(0)", "refId": "A" }],
       "title": "Circuit breaker",
       "type": "stat"
     },
     {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 29 },
-      "id": 45,
+      "type": "row",
+      "title": "Affinity, Redis & Codex History",
+      "collapsed": true,
       "panels": [],
-      "title": "Affinity Routing",
-      "type": "row"
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 52 },
+      "id": 340
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -573,12 +1093,23 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 30 },
-      "id": 23,
-      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 53 },
+      "id": 327,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
       "targets": [
-        { "expr": "rate(claude_api_affinity_local_hits_total[5m]) / (rate(claude_api_affinity_local_hits_total[5m]) + rate(claude_api_affinity_redis_hits_total[5m]) + rate(claude_api_affinity_misses_total[5m]) + rate(claude_api_affinity_native_hits_total[5m]) + rate(claude_api_affinity_transcript_hits_total[5m]) + rate(claude_api_affinity_cache_root_hits_total[5m]))", "legendFormat": "Cache hit ratio", "refId": "A" },
-        { "expr": "rate(claude_api_affinity_local_hits_total[5m]) / (rate(claude_api_affinity_local_hits_total[5m]) + rate(claude_api_affinity_redis_hits_total[5m]) + rate(claude_api_affinity_misses_total[5m]) + rate(claude_api_affinity_native_hits_total[5m]) + rate(claude_api_affinity_transcript_hits_total[5m]) + rate(claude_api_affinity_cache_root_hits_total[5m]))", "legendFormat": "Local cache %", "refId": "B" }
+        {
+          "expr": "rate(claude_api_affinity_local_hits_total[5m]) / (rate(claude_api_affinity_local_hits_total[5m]) + rate(claude_api_affinity_redis_hits_total[5m]) + rate(claude_api_affinity_misses_total[5m]) + rate(claude_api_affinity_native_hits_total[5m]) + rate(claude_api_affinity_transcript_hits_total[5m]) + rate(claude_api_affinity_cache_root_hits_total[5m]))",
+          "legendFormat": "Cache hit ratio",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(claude_api_affinity_local_hits_total[5m]) / (rate(claude_api_affinity_local_hits_total[5m]) + rate(claude_api_affinity_redis_hits_total[5m]) + rate(claude_api_affinity_misses_total[5m]) + rate(claude_api_affinity_native_hits_total[5m]) + rate(claude_api_affinity_transcript_hits_total[5m]) + rate(claude_api_affinity_cache_root_hits_total[5m]))",
+          "legendFormat": "Local cache %",
+          "refId": "B"
+        }
       ],
       "title": "Affinity cache hit ratio",
       "type": "timeseries"
@@ -613,9 +1144,12 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 30 },
-      "id": 24,
-      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 53 },
+      "id": 328,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
       "targets": [
         { "expr": "rate(claude_api_route_pin_total[5m])", "legendFormat": "Pin", "refId": "A" },
         { "expr": "rate(claude_api_route_spill_total[5m])", "legendFormat": "Spill", "refId": "B" },
@@ -628,17 +1162,230 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Codex history entries reach 16 MiB each, so a few dozen large conversations can fill the instance and evict affinity with it.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "bytes",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 60 },
+      "id": 329,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "redis_memory_used_bytes", "legendFormat": "{{instance_role}} used", "refId": "A" },
+        { "expr": "redis_config_maxmemory", "legendFormat": "{{instance_role}} maxmemory", "refId": "B" }
+      ],
+      "title": "Redis memory headroom",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Affinity degrades to per-process memory when this is 0. The OpenAI plane loses more: Codex conversations stop crossing slots.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
-          "mappings": [{ "options": { "0": { "color": "green", "text": "OK" }, "1": { "color": "red", "text": "ERRORS" } }, "type": "value" }],
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 60 },
+      "id": 330,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [{ "expr": "redis_up", "legendFormat": "{{instance_role}}", "refId": "A" }],
+      "title": "Redis up",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Eviction begins at 100%. allkeys-lru cannot distinguish short affinity digests from whole Codex conversations.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.85 }, { "color": "red", "value": 0.98 }]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 16, "y": 60 },
+      "id": 331,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "redis_memory_used_bytes / redis_config_maxmemory",
+          "legendFormat": "{{instance_role}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Redis memory used",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Sustained eviction deletes stored conversations, which clients see as a permanent 400 and respond to by discarding context they paid to build.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 30 },
-      "id": 25,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 67 },
+      "id": 332,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "clamp_min(increase(redis_evicted_keys_total[15m]), 0)",
+          "legendFormat": "{{instance_role}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Evicted keys (15m)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "The turn succeeded on local memory but never reached the shared store. Silent until a later request lands on the other slot.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 67 },
+      "id": 333,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [{ "expr": "clamp_min(increase(claude_api_codex_history_write_failures_total[15m]), 0)", "refId": "A" }],
+      "title": "History write failures (15m)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Each miss is a previous_response_id lookup that becomes a customer-visible 400.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 20 }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 10, "y": 67 },
+      "id": 334,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [{ "expr": "clamp_min(increase(claude_api_codex_history_misses_total[15m]), 0)", "refId": "A" }],
+      "title": "History misses (15m)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [
+            {
+              "options": { "0": { "color": "green", "text": "OK" }, "1": { "color": "red", "text": "ERRORS" } },
+              "type": "value"
+            }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 15, "y": 67 },
+      "id": 335,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "clamp_min(increase(claude_api_affinity_redis_errors_total[10m]), 0) > bool 5", "refId": "A" }],
       "title": "Redis errors (10m >5)",
       "type": "stat"
@@ -649,13 +1396,25 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 3 }, { "color": "red", "value": 10 }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 3 }, { "color": "red", "value": 10 }]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 4, "x": 20, "y": 30 },
-      "id": 46,
-      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 3, "w": 4, "x": 19, "y": 67 },
+      "id": 336,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "increase(claude_api_affinity_misses_total[5m])", "legendFormat": "Misses/5m", "refId": "A" }],
       "title": "Affinity misses (5m rate)",
       "type": "stat"
@@ -666,27 +1425,160 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 3 }, { "color": "red", "value": 10 }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 3 }, { "color": "red", "value": 10 }]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 4, "x": 16, "y": 34 },
-      "id": 47,
-      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 3, "w": 4, "x": 0, "y": 71 },
+      "id": 337,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [
-        { "expr": "increase(claude_api_affinity_cache_root_writes_total[5m])", "legendFormat": "Root writes/5m", "refId": "A" },
-        { "expr": "increase(claude_api_affinity_cache_root_hits_total[5m])", "legendFormat": "Root hits/5m", "refId": "B" }
+        {
+          "expr": "increase(claude_api_affinity_cache_root_writes_total[5m])",
+          "legendFormat": "Root writes/5m",
+          "refId": "A"
+        },
+        {
+          "expr": "increase(claude_api_affinity_cache_root_hits_total[5m])",
+          "legendFormat": "Root hits/5m",
+          "refId": "B"
+        }
       ],
       "title": "Cache root writes vs hits",
       "type": "stat"
     },
     {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 37 },
-      "id": 26,
-      "panels": [],
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Misses rising together with write failures means the shared store is at fault rather than the client replaying an old id.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 4, "y": 71 },
+      "id": 338,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "rate(claude_api_codex_history_local_hits_total[5m])", "legendFormat": "local hit", "refId": "A" },
+        { "expr": "rate(claude_api_codex_history_redis_hits_total[5m])", "legendFormat": "redis hit", "refId": "B" },
+        {
+          "expr": "rate(claude_api_codex_history_misses_total[5m])",
+          "legendFormat": "miss (becomes 400)",
+          "refId": "C"
+        },
+        {
+          "expr": "rate(claude_api_codex_history_redis_errors_total[5m])",
+          "legendFormat": "redis error",
+          "refId": "D"
+        },
+        {
+          "expr": "rate(claude_api_codex_history_write_failures_total[5m])",
+          "legendFormat": "write failure",
+          "refId": "E"
+        }
+      ],
+      "title": "Codex response history outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Advisory hints shared between slots when one of them cools a subscription. Skips are saved 429s; lookup/publish errors mean siblings lose the hint but every choice is still authorized by PostgreSQL acquire_capacity.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 78 },
+      "id": 339,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "rate(claude_api_cooling_hint_skips_total[5m])", "legendFormat": "skip (saved 429)", "refId": "A" },
+        { "expr": "rate(claude_api_cooling_hint_publishes_total[5m])", "legendFormat": "publish", "refId": "B" },
+        {
+          "expr": "rate(claude_api_cooling_hint_lookup_errors_total[5m])",
+          "legendFormat": "lookup error",
+          "refId": "C"
+        },
+        {
+          "expr": "rate(claude_api_cooling_hint_publish_errors_total[5m])",
+          "legendFormat": "publish error",
+          "refId": "D"
+        }
+      ],
+      "title": "Cooling hint outcomes",
+      "type": "timeseries"
+    },
+    {
+      "type": "row",
       "title": "Revenue & Business State",
-      "type": "row"
+      "collapsed": true,
+      "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 85 },
+      "id": 356
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -694,14 +1586,26 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 100 }, { "color": "red", "value": 10 }] },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 100 }, { "color": "red", "value": 10 }]
+          },
           "unit": "USD"
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 38 },
-      "id": 27,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 86 },
+      "id": 341,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "claude_api_client_balance_usd / 1e9", "refId": "A" }],
       "title": "Total client balance",
       "type": "stat"
@@ -717,9 +1621,18 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 38 },
-      "id": 48,
-      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 86 },
+      "id": 342,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "rate(claude_api_billed_usd_total[5m]) / 1e9 * 3600", "legendFormat": "$/h", "refId": "A" }],
       "title": "Billing rate (USD/h)",
       "type": "stat"
@@ -735,9 +1648,18 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 38 },
-      "id": 49,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 86 },
+      "id": 343,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "claude_api_reserved_usd / 1e9", "refId": "A" }],
       "title": "Reserved (unbilled)",
       "type": "stat"
@@ -752,9 +1674,18 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 38 },
-      "id": 50,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 86 },
+      "id": 344,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "claude_api_metered_accounts", "refId": "A" }],
       "title": "Active metered accounts",
       "type": "stat"
@@ -793,9 +1724,12 @@
           }
         ]
       },
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 42 },
-      "id": 28,
-      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 90 },
+      "id": 345,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
       "targets": [
         { "expr": "claude_api_billed_usd_total / 1e9", "legendFormat": "Billed total (USD)", "refId": "A" },
         { "expr": "claude_api_client_balance_usd / 1e9", "legendFormat": "Client balance (USD)", "refId": "B" },
@@ -818,9 +1752,18 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 3, "x": 12, "y": 42 },
-      "id": 51,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 4, "w": 3, "x": 12, "y": 90 },
+      "id": 346,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "clamp_max(apitoken_webhook_failed, 1)", "refId": "A" }],
       "title": "Webhook failed",
       "type": "stat"
@@ -831,13 +1774,25 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 10 }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 10 }]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 3, "x": 15, "y": 42 },
-      "id": 52,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 4, "w": 3, "x": 15, "y": 90 },
+      "id": 347,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "apitoken_checkout_stale or vector(0)", "refId": "A" }],
       "title": "Stale checkouts",
       "type": "stat"
@@ -848,13 +1803,25 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 10 }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 10 }]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 3, "x": 18, "y": 42 },
-      "id": 53,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 4, "w": 3, "x": 18, "y": 90 },
+      "id": 348,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "apitoken_sales_pending_referral_events or vector(0)", "refId": "A" }],
       "title": "Pending referral events",
       "type": "stat"
@@ -869,9 +1836,18 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 3, "x": 21, "y": 42 },
-      "id": 54,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 4, "w": 3, "x": 21, "y": 90 },
+      "id": 349,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "clamp_max(apitoken_sales_failed_payout_batches, 1)", "refId": "A" }],
       "title": "Failed payout batches",
       "type": "stat"
@@ -882,13 +1858,25 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 3 }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 3 }]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 3, "x": 12, "y": 46 },
-      "id": 55,
-      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 3, "w": 3, "x": 0, "y": 97 },
+      "id": 350,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "sum(apitoken_queue_dead)", "refId": "A" }],
       "title": "Dead queue items",
       "type": "stat"
@@ -899,13 +1887,25 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 3 }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 3 }]
+          }
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 3, "x": 15, "y": 46 },
-      "id": 56,
-      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 3, "w": 3, "x": 3, "y": 97 },
+      "id": 351,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "sum(apitoken_queue_canceled) or vector(0)", "refId": "A" }],
       "title": "Canceled jobs",
       "type": "stat"
@@ -916,14 +1916,26 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 300 }, { "color": "red", "value": 900 }] },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 300 }, { "color": "red", "value": 900 }]
+          },
           "unit": "s"
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 3, "x": 18, "y": 46 },
-      "id": 57,
-      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["max"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 3, "w": 3, "x": 6, "y": 97 },
+      "id": 352,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["max"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "max(apitoken_queue_oldest_ready_seconds) or vector(0)", "refId": "A" }],
       "title": "Oldest job age",
       "type": "stat"
@@ -957,10 +1969,16 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 49 },
-      "id": 10,
-      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
-      "targets": [{ "expr": "apitoken_queue_ready", "legendFormat": "{{queue}} ready", "refId": "A" }, { "expr": "apitoken_queue_dead", "legendFormat": "{{queue}} dead", "refId": "B" }],
+      "gridPos": { "h": 7, "w": 8, "x": 9, "y": 97 },
+      "id": 353,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "apitoken_queue_ready", "legendFormat": "{{queue}} ready", "refId": "A" },
+        { "expr": "apitoken_queue_dead", "legendFormat": "{{queue}} dead", "refId": "B" }
+      ],
       "title": "Durable worker queues",
       "type": "timeseries"
     },
@@ -975,9 +1993,18 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 49 },
-      "id": 58,
-      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 4, "w": 4, "x": 17, "y": 97 },
+      "id": 354,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "sum(apitoken_backup_size_bytes) or vector(0)", "refId": "A" }],
       "title": "Total backup size",
       "type": "stat"
@@ -987,25 +2014,39 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
-          "mappings": [{ "options": { "0": { "color": "red", "text": "MISSING" }, "1": { "color": "green", "text": "Present" } }, "type": "value" }],
+          "mappings": [
+            {
+              "options": { "0": { "color": "red", "text": "MISSING" }, "1": { "color": "green", "text": "Present" } },
+              "type": "value"
+            }
+          ],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 4, "x": 8, "y": 53 },
-      "id": 59,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["min"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 3, "w": 4, "x": 0, "y": 104 },
+      "id": 355,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["min"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "min(apitoken_backup_present) or vector(0)", "refId": "A" }],
       "title": "All backups present",
       "type": "stat"
     },
     {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 56 },
-      "id": 60,
-      "panels": [],
+      "type": "row",
       "title": "Codex (OpenAI) Provider",
-      "type": "row"
+      "collapsed": true,
+      "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 107 },
+      "id": 364
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -1017,9 +2058,18 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 3, "x": 0, "y": 57 },
-      "id": 31,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 3, "w": 3, "x": 0, "y": 108 },
+      "id": 357,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "claude_api_codex_process_live or vector(0)", "refId": "A" }],
       "title": "Codex process live",
       "type": "stat"
@@ -1034,9 +2084,18 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 3, "x": 3, "y": 57 },
-      "id": 61,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 3, "w": 3, "x": 3, "y": 108 },
+      "id": 358,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "claude_api_codex_homes_available or vector(0)", "refId": "A" }],
       "title": "Codex homes avail",
       "type": "stat"
@@ -1051,9 +2110,18 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 3, "x": 6, "y": 57 },
-      "id": 62,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 3, "w": 3, "x": 6, "y": 108 },
+      "id": 359,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "claude_api_codex_homes_authenticated or vector(0)", "refId": "A" }],
       "title": "Codex homes auth",
       "type": "stat"
@@ -1064,14 +2132,26 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 30 }, { "color": "red", "value": 60 }] },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 30 }, { "color": "red", "value": 60 }]
+          },
           "unit": "s"
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 3, "x": 9, "y": 57 },
-      "id": 63,
-      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["min"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 3, "w": 3, "x": 9, "y": 108 },
+      "id": 360,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["min"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "claude_api_codex_soonest_ready_seconds or vector(0)", "refId": "A" }],
       "title": "Codex soonest ready",
       "type": "stat"
@@ -1106,12 +2186,19 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 7, "w": 8, "x": 12, "y": 57 },
-      "id": 32,
-      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "gridPos": { "h": 7, "w": 8, "x": 12, "y": 108 },
+      "id": 361,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
       "targets": [
         { "expr": "claude_api_codex_rate_limit_used_percent / 100", "legendFormat": "Rate limit used", "refId": "A" },
-        { "expr": "claude_api_codex_home_rate_limit_used_percent / 100", "legendFormat": "{{home}} limit used", "refId": "B" }
+        {
+          "expr": "claude_api_codex_home_rate_limit_used_percent / 100",
+          "legendFormat": "{{home}} limit used",
+          "refId": "B"
+        }
       ],
       "title": "Codex rate limit usage",
       "type": "timeseries"
@@ -1146,9 +2233,12 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 7, "w": 4, "x": 0, "y": 60 },
-      "id": 33,
-      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "gridPos": { "h": 7, "w": 4, "x": 20, "y": 108 },
+      "id": 362,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
       "targets": [
         { "expr": "claude_api_codex_window_remaining_usd", "legendFormat": "{{slot}} remaining", "refId": "A" },
         { "expr": "claude_api_codex_window_capacity_usd", "legendFormat": "{{slot}} capacity", "refId": "B" }
@@ -1185,9 +2275,12 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 7, "w": 8, "x": 4, "y": 60 },
-      "id": 64,
-      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 115 },
+      "id": 363,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
       "targets": [
         { "expr": "claude_api_codex_home_spend_usd_total", "legendFormat": "{{home}} spend", "refId": "A" },
         { "expr": "claude_api_codex_home_inflight_turns", "legendFormat": "{{home}} inflight", "refId": "B" }
@@ -1196,12 +2289,12 @@
       "type": "timeseries"
     },
     {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 67 },
-      "id": 65,
-      "panels": [],
+      "type": "row",
       "title": "Gemini Provider",
-      "type": "row"
+      "collapsed": true,
+      "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 122 },
+      "id": 371
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -1213,9 +2306,18 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 4, "x": 0, "y": 68 },
-      "id": 34,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 3, "w": 4, "x": 0, "y": 123 },
+      "id": 365,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "claude_api_gemini_profiles_available or vector(0)", "refId": "A" }],
       "title": "Gemini profiles avail",
       "type": "stat"
@@ -1230,9 +2332,18 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 4, "x": 4, "y": 68 },
-      "id": 66,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 3, "w": 4, "x": 4, "y": 123 },
+      "id": 366,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "claude_api_gemini_profiles_authenticated or vector(0)", "refId": "A" }],
       "title": "Gemini profiles auth",
       "type": "stat"
@@ -1243,14 +2354,26 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 30 }, { "color": "red", "value": 60 }] },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 30 }, { "color": "red", "value": 60 }]
+          },
           "unit": "s"
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 4, "x": 8, "y": 68 },
-      "id": 67,
-      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["min"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 3, "w": 4, "x": 8, "y": 123 },
+      "id": 367,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["min"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "claude_api_gemini_soonest_ready_seconds or vector(0)", "refId": "A" }],
       "title": "Gemini soonest ready",
       "type": "stat"
@@ -1285,12 +2408,23 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 68 },
-      "id": 35,
-      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 123 },
+      "id": 368,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
       "targets": [
-        { "expr": "claude_api_gemini_profile_cooling_until_seconds", "legendFormat": "{{profile}} cooling until", "refId": "A" },
-        { "expr": "claude_api_gemini_profile_inflight_requests", "legendFormat": "{{profile}} inflight", "refId": "B" }
+        {
+          "expr": "claude_api_gemini_profile_cooling_until_seconds",
+          "legendFormat": "{{profile}} cooling until",
+          "refId": "A"
+        },
+        {
+          "expr": "claude_api_gemini_profile_inflight_requests",
+          "legendFormat": "{{profile}} inflight",
+          "refId": "B"
+        }
       ],
       "title": "Gemini per-profile cooling & inflight",
       "type": "timeseries"
@@ -1324,12 +2458,23 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 71 },
-      "id": 68,
-      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 130 },
+      "id": 369,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
       "targets": [
-        { "expr": "claude_api_gemini_profile_last_probe_seconds", "legendFormat": "{{profile}} last probe", "refId": "A" },
-        { "expr": "claude_api_gemini_profile_quota_updated_seconds", "legendFormat": "{{profile}} quota updated", "refId": "B" }
+        {
+          "expr": "claude_api_gemini_profile_last_probe_seconds",
+          "legendFormat": "{{profile}} last probe",
+          "refId": "A"
+        },
+        {
+          "expr": "claude_api_gemini_profile_quota_updated_seconds",
+          "legendFormat": "{{profile}} quota updated",
+          "refId": "B"
+        }
       ],
       "title": "Gemini profile probe & quota",
       "type": "timeseries"
@@ -1363,22 +2508,684 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 7, "w": 4, "x": 8, "y": 71 },
-      "id": 69,
-      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
-      "targets": [
-        { "expr": "claude_api_gemini_model_profiles_available", "legendFormat": "{{model}} avail", "refId": "A" }
-      ],
+      "gridPos": { "h": 7, "w": 4, "x": 8, "y": 130 },
+      "id": 370,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{ "expr": "claude_api_gemini_model_profiles_available", "legendFormat": "{{model}} avail", "refId": "A" }],
       "title": "Gemini models available",
       "type": "timeseries"
     },
     {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 78 },
-      "id": 70,
+      "type": "row",
+      "title": "Kimi & GLM (default-off planes)",
+      "collapsed": true,
       "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 137 },
+      "id": 379
+    },
+    {
+      "id": 372,
+      "type": "stat",
+      "title": "Kimi live profiles",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "claude_api_kimi_live_profiles or vector(0)", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 0, "y": 138 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": []
+    },
+    {
+      "id": 373,
+      "type": "stat",
+      "title": "Kimi available",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "claude_api_kimi_available_profiles or vector(0)", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 4, "y": 138 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": []
+    },
+    {
+      "id": 374,
+      "type": "stat",
+      "title": "Kimi calibration ok",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "claude_api_kimi_calibration_persistence_ok", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 8, "y": 138 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": []
+    },
+    {
+      "id": 375,
+      "type": "stat",
+      "title": "GLM live profiles",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "claude_api_glm_live_profiles or vector(0)", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 12, "y": 138 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": []
+    },
+    {
+      "id": 376,
+      "type": "stat",
+      "title": "GLM available",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "claude_api_glm_available_profiles or vector(0)", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 16, "y": 138 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": []
+    },
+    {
+      "id": 377,
+      "type": "stat",
+      "title": "GLM calibration ok",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "claude_api_glm_calibration_persistence_ok", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 20, "y": 138 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": []
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 141 },
+      "id": 378,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "claude_api_kimi_calibration_pending_events", "legendFormat": "kimi", "refId": "A" },
+        { "expr": "claude_api_glm_calibration_pending_events", "legendFormat": "glm", "refId": "B" }
+      ],
+      "title": "Kimi & GLM calibration backlog",
+      "type": "timeseries"
+    },
+    {
+      "type": "row",
+      "title": "Router & Unified API",
+      "collapsed": true,
+      "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 147 },
+      "id": 391
+    },
+    {
+      "id": 380,
+      "type": "stat",
+      "title": "Router metrics up",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "up{job=\"claude-router\"}", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 0, "y": 148 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#routermetricsdown",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "id": 381,
+      "type": "stat",
+      "title": "Fallback rate (5m)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "claude_router:fallback_rate5m", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 4, "y": 148 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0 }] },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#routerfallbackratehigh",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "id": 382,
+      "type": "stat",
+      "title": "Not started (5m)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "claude_api:execution_not_started_rate5m", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 8, "y": 148 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0 }] },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#routerfallbackratehigh",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "id": 383,
+      "type": "stat",
+      "title": "Admission overload (15m)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "increase(claude_router_body_admission_overload_total[15m])", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 12, "y": 148 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#routeradmissionfailures",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "id": 384,
+      "type": "stat",
+      "title": "Header timeouts (1h)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(increase(claude_router_response_header_timeout_total[1h]))", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 16, "y": 148 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#routerresponseheadertimeout",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "id": 385,
+      "type": "stat",
+      "title": "Balance failover (1h)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(increase(claude_router_balance_failover_total[1h]))", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 4, "x": 20, "y": 148 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#routerresponseheadertimeout",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 151 },
+      "id": 386,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "claude_router_active_universal_requests", "legendFormat": "universal", "refId": "A" },
+        { "expr": "claude_router_active_body_admission_units", "legendFormat": "admission units", "refId": "B" }
+      ],
+      "title": "Universal requests & admission units",
+      "type": "timeseries",
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#routeradmissionfailures",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 151 },
+      "id": 387,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "claude_router:fallback_rate5m", "legendFormat": "fallback", "refId": "A" },
+        { "expr": "claude_api:execution_not_started_rate5m", "legendFormat": "not started", "refId": "B" }
+      ],
+      "title": "Fallback & execution not started",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 158 },
+      "id": 388,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(claude_router_auth_preflight_total[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Auth preflight outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 158 },
+      "id": 389,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(claude_router_auth_preflight_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "A"
+        }
+      ],
+      "title": "Auth latency p99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 158 },
+      "id": 390,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(claude_router_catalog_refresh_total[5m]))",
+          "legendFormat": "refresh {{outcome}}",
+          "refId": "A"
+        },
+        { "expr": "rate(claude_router_pricing_failure_total[5m])", "legendFormat": "pricing", "refId": "B" },
+        { "expr": "rate(claude_router_policy_failure_total[5m])", "legendFormat": "policy", "refId": "C" }
+      ],
+      "title": "Catalog refresh, pricing & policy",
+      "type": "timeseries"
+    },
+    {
+      "type": "row",
       "title": "Delivery Pipeline",
-      "type": "row"
+      "collapsed": true,
+      "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 165 },
+      "id": 397
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -1402,9 +3209,18 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 79 },
-      "id": 37,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 166 },
+      "id": 392,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [
         {
           "expr": "(apitoken_watchdog_phase{phase=\"idle\"} or vector(0)) * 0 + (apitoken_watchdog_phase{phase=\"testing\"} or vector(0)) * 1 + (apitoken_watchdog_phase{phase=\"building\"} or vector(0)) * 2 + (apitoken_watchdog_phase{phase=\"deploying\"} or vector(0)) * 3 + (apitoken_watchdog_phase{phase=\"migrating\"} or vector(0)) * 4 + (apitoken_watchdog_phase{phase=\"quarantined\"} or vector(0)) * 5",
@@ -1419,14 +3235,28 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
-          "mappings": [{ "options": { "0": { "color": "green", "text": "OK" }, "1": { "color": "red", "text": "QUARANTINED" } }, "type": "value" }],
+          "mappings": [
+            {
+              "options": { "0": { "color": "green", "text": "OK" }, "1": { "color": "red", "text": "QUARANTINED" } },
+              "type": "value"
+            }
+          ],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 79 },
-      "id": 71,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 166 },
+      "id": 393,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "clamp_max(apitoken_watchdog_quarantined, 1) or vector(0)", "refId": "A" }],
       "title": "Quarantined",
       "type": "stat"
@@ -1437,14 +3267,26 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 300 }, { "color": "red", "value": 900 }] },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 300 }, { "color": "red", "value": 900 }]
+          },
           "unit": "s"
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 79 },
-      "id": 72,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 166 },
+      "id": 394,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "apitoken_watchdog_status_age_seconds or vector(0)", "refId": "A" }],
       "title": "Pipeline status age",
       "type": "stat"
@@ -1454,25 +3296,421 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
-          "mappings": [{ "options": { "0": { "color": "green", "text": "None" }, "1": { "color": "red", "text": "PENDING" } }, "type": "value" }],
+          "mappings": [
+            {
+              "options": { "0": { "color": "green", "text": "None" }, "1": { "color": "red", "text": "PENDING" } },
+              "type": "value"
+            }
+          ],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 79 },
-      "id": 73,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 166 },
+      "id": 395,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
       "targets": [{ "expr": "clamp_max(apitoken_watchdog_pending_migration, 1) or vector(0)", "refId": "A" }],
       "title": "Pending migration",
       "type": "stat"
     },
     {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 83 },
-      "id": 74,
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 170 },
+      "id": 396,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{ "expr": "apitoken_watchdog_status_age_seconds", "legendFormat": "status age", "refId": "A" }],
+      "title": "Watchdog status age over time",
+      "type": "timeseries",
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#deploypipelinestale",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Devbot & Notification Delivery",
+      "collapsed": true,
       "panels": [],
-      "title": "Logs & Alerts",
-      "type": "row"
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 176 },
+      "id": 403
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 177 },
+      "id": 398,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{ "expr": "sum by (topic) (rate(devbot_events_total[5m]))", "legendFormat": "{{topic}}", "refId": "A" }],
+      "title": "Events routed by topic",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 177 },
+      "id": 399,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "sum(increase(devbot_telegram_send_failures_total[5m]))", "legendFormat": "failures", "refId": "A" }
+      ],
+      "title": "Telegram send failures",
+      "type": "timeseries"
+    },
+    {
+      "id": 400,
+      "type": "stat",
+      "title": "Events (1h)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(increase(devbot_events_total[1h]))", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 8, "x": 0, "y": 184 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": []
+    },
+    {
+      "id": 401,
+      "type": "stat",
+      "title": "Telegram failures (1h)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(increase(devbot_telegram_send_failures_total[1h]))", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 8, "x": 8, "y": 184 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#devbottelegramsendfailures",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "id": 402,
+      "type": "stat",
+      "title": "Heartbeat age",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "time() - devbot_heartbeat_timestamp_seconds{job=\"devbot\"}", "refId": "A" }],
+      "gridPos": { "h": 3, "w": 8, "x": 16, "y": 184 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 120 }, { "color": "red", "value": 300 }]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "links": [
+        {
+          "title": "Runbook",
+          "type": "link",
+          "url": "https://github.com/3xcalibur-tech/Claude_API/blob/master/docs/ops/MONITORING.md#devbotheartbeatmissing",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Billing Writer (PostgreSQL Hot Path)",
+      "collapsed": true,
+      "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 187 },
+      "id": 407
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Occupied slots of the 4096-slot single-writer channel. Above the dashed line for five minutes fires BillingWriteQueueBacklog; a full channel back-pressures requests.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "dashed" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 2048 }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 188 },
+      "id": 404,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{ "expr": "claude_api_billing_write_queue_depth", "legendFormat": "occupied slots", "refId": "A" }],
+      "title": "Write queue depth",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "p99 of reserve/settle/acquire_capacity including reconnect and retry. Above 0.5 s for ten minutes fires BillingPGCommandLatencyHigh.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "dashed" }
+          },
+          "mappings": [],
+          "unit": "s",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 0.5 }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 188 },
+      "id": 405,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(claude_api_billing_pg_command_duration_seconds_bucket[5m])) by (le, op))",
+          "legendFormat": "{{op}} p99",
+          "refId": "A"
+        }
+      ],
+      "title": "Money command latency (p99)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Commands per second by op, from the histogram _count. Dividing queue depth by this rate estimates the drain time referenced in the BillingWriteQueueBacklog runbook.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "cps",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 188 },
+      "id": 406,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(claude_api_billing_pg_command_duration_seconds_count[5m])) by (op)",
+          "legendFormat": "{{op}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Money command throughput",
+      "type": "timeseries"
+    },
+    {
+      "type": "row",
+      "title": "Logs & Journals",
+      "collapsed": true,
+      "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 195 },
+      "id": 412
     },
     {
       "datasource": { "type": "loki", "uid": "loki" },
@@ -1504,9 +3742,12 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 84 },
-      "id": 39,
-      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 196 },
+      "id": 408,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
       "targets": [
         {
           "expr": "rate({job=\"systemd-journal\"} |~ `(?i)(error|fatal|panic|critical)` [5m])",
@@ -1516,65 +3757,6 @@
       ],
       "title": "Error rate per service (5m rate)",
       "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 84 },
-      "id": 14,
-      "options": { "alertInstanceLabelFilter": "", "alertName": "", "dashboardAlerts": false, "groupBy": [], "groupMode": "default", "maxItems": 50, "sortOrder": 1, "stateFilter": { "error": true, "firing": true, "noData": true, "normal": false, "pending": true } },
-      "title": "Active and pending alerts",
-      "type": "alertlist"
-    },
-    {
-      "datasource": { "type": "loki", "uid": "loki" },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false }
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 92 },
-      "id": 40,
-      "options": {
-        "dedupStrategy": "none",
-        "enableInfiniteScrolling": false,
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true
-      },
-      "targets": [
-        {
-          "expr": "{job=\"systemd-journal\"} |~ `(?i)(error|fatal|panic|failed|critical)` | pattern `<_> <_> <_> <message>`",
-          "refId": "A"
-        }
-      ],
-      "title": "Top error patterns (structured)",
-      "type": "logs"
-    },
-    {
-      "datasource": { "type": "loki", "uid": "loki" },
-      "options": {
-        "dedupStrategy": "none",
-        "enableInfiniteScrolling": false,
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 92 },
-      "id": 13,
-      "targets": [{ "expr": "{job=\"systemd-journal\"} |~ `(?i)(error|fatal|panic|failed|critical)`", "refId": "A" }],
-      "title": "Errors across production journals (raw)",
-      "type": "logs"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -1606,281 +3788,119 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 100 },
-      "id": 15,
-      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 204 },
+      "id": 409,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
       "targets": [
-        { "expr": "sum by (host) (rate(caddy_http_request_duration_seconds_count{handler=\"reverse_proxy\"}[5m]))", "legendFormat": "{{host}} requests", "refId": "A" },
-        { "expr": "sum by (host) (rate(caddy_http_request_duration_seconds_count{handler=\"reverse_proxy\",code=~\"5..\"}[5m]))", "legendFormat": "{{host}} 5xx", "refId": "B" }
+        {
+          "expr": "sum by (host) (rate(caddy_http_request_duration_seconds_count{handler=\"reverse_proxy\"}[5m]))",
+          "legendFormat": "{{host}} requests",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (host) (rate(caddy_http_request_duration_seconds_count{handler=\"reverse_proxy\",code=~\"5..\"}[5m]))",
+          "legendFormat": "{{host}} 5xx",
+          "refId": "B"
+        }
       ],
       "title": "Caddy request and upstream 5xx rate",
       "type": "timeseries"
     },
     {
-      "collapsed": false,
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 107 },
-      "id": 75,
-      "panels": [],
-      "title": "Redis instances (affinity 6380 / Codex response history 6379)",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Affinity degrades to per-process memory when this is 0. The OpenAI plane loses more: Codex conversations stop crossing slots.",
+      "datasource": { "type": "loki", "uid": "loki" },
       "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
-        },
+        "defaults": { "custom": { "hideFrom": { "legend": false, "tooltip": false, "viz": false } } },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 108 },
-      "id": 76,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "redis_up", "legendFormat": "{{instance_role}}", "refId": "A" }],
-      "title": "Redis up",
-      "type": "stat"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Eviction begins at 100%. allkeys-lru cannot distinguish short affinity digests from whole Codex conversations.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
-          "unit": "percentunit",
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.85 }, { "color": "red", "value": 0.98 }] }
-        },
-        "overrides": []
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 211 },
+      "id": 410,
+      "options": {
+        "dedupStrategy": "none",
+        "enableInfiniteScrolling": false,
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
       },
-      "gridPos": { "h": 4, "w": 5, "x": 4, "y": 108 },
-      "id": 77,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "redis_memory_used_bytes / redis_config_maxmemory", "legendFormat": "{{instance_role}}", "refId": "A" }],
-      "title": "Redis memory used",
-      "type": "stat"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Sustained eviction deletes stored conversations, which clients see as a permanent 400 and respond to by discarding context they paid to build.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 4, "w": 5, "x": 9, "y": 108 },
-      "id": 78,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "clamp_min(increase(redis_evicted_keys_total[15m]), 0)", "legendFormat": "{{instance_role}}", "refId": "A" }],
-      "title": "Evicted keys (15m)",
-      "type": "stat"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "The turn succeeded on local memory but never reached the shared store. Silent until a later request lands on the other slot.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }] }
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 4, "w": 5, "x": 14, "y": 108 },
-      "id": 79,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "clamp_min(increase(claude_api_codex_history_write_failures_total[15m]), 0)", "refId": "A" }],
-      "title": "History write failures (15m)",
-      "type": "stat"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Each miss is a previous_response_id lookup that becomes a customer-visible 400.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 20 }] }
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 108 },
-      "id": 80,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
-      "targets": [{ "expr": "clamp_min(increase(claude_api_codex_history_misses_total[15m]), 0)", "refId": "A" }],
-      "title": "History misses (15m)",
-      "type": "stat"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Codex history entries reach 16 MiB each, so a few dozen large conversations can fill the instance and evict affinity with it.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
-          "mappings": [],
-          "unit": "bytes",
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 112 },
-      "id": 81,
-      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "expr": "redis_memory_used_bytes", "legendFormat": "{{instance_role}} used", "refId": "A" },
-        { "expr": "redis_config_maxmemory", "legendFormat": "{{instance_role}} maxmemory", "refId": "B" }
+        {
+          "expr": "{job=\"systemd-journal\"} |~ `(?i)(error|fatal|panic|failed|critical)` | pattern `<_> <_> <_> <message>`",
+          "refId": "A"
+        }
       ],
-      "title": "Redis memory headroom",
-      "type": "timeseries"
+      "title": "Top error patterns (structured)",
+      "type": "logs",
+      "links": [
+        {
+          "title": "Open in Explore",
+          "type": "link",
+          "url": "/explore?left=%7B%22datasource%22%3A%20%22loki%22%2C%20%22queries%22%3A%20[%7B%22expr%22%3A%20%22%7Bjob=%5C%22systemd-journal%5C%22%7D%20|~%20`(?i)(error|fatal|panic|failed|critical)`%20|%20pattern%20`<_>%20<_>%20<_>%20<message>`%22%2C%20%22refId%22%3A%20%22A%22%7D]%2C%20%22range%22%3A%20%7B%22from%22%3A%20%22now-6h%22%2C%20%22to%22%3A%20%22now%22%7D%7D",
+          "targetBlank": true
+        }
+      ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Misses rising together with write failures means the shared store is at fault rather than the client replaying an old id.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
-        },
-        "overrides": []
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": {
+        "dedupStrategy": "none",
+        "enableInfiniteScrolling": false,
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
       },
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 112 },
-      "id": 82,
-      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
-      "targets": [
-        { "expr": "rate(claude_api_codex_history_local_hits_total[5m])", "legendFormat": "local hit", "refId": "A" },
-        { "expr": "rate(claude_api_codex_history_redis_hits_total[5m])", "legendFormat": "redis hit", "refId": "B" },
-        { "expr": "rate(claude_api_codex_history_misses_total[5m])", "legendFormat": "miss (becomes 400)", "refId": "C" },
-        { "expr": "rate(claude_api_codex_history_redis_errors_total[5m])", "legendFormat": "redis error", "refId": "D" },
-        { "expr": "rate(claude_api_codex_history_write_failures_total[5m])", "legendFormat": "write failure", "refId": "E" }
-      ],
-      "title": "Codex response history outcomes",
-      "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 119 },
-      "id": 83,
-      "panels": [],
-      "title": "Billing writer (PostgreSQL hot path)",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Occupied slots of the 4096-slot single-writer channel. Above the dashed line for five minutes fires BillingWriteQueueBacklog; a full channel back-pressures requests.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "dashed" } },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 2048 }] }
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 120 },
-      "id": 84,
-      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
-      "targets": [
-        { "expr": "claude_api_billing_write_queue_depth", "legendFormat": "occupied slots", "refId": "A" }
-      ],
-      "title": "Write queue depth",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "p99 of reserve/settle/acquire_capacity including reconnect and retry. Above 0.5 s for ten minutes fires BillingPGCommandLatencyHigh.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "dashed" } },
-          "mappings": [],
-          "unit": "s",
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 0.5 }] }
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 120 },
-      "id": 85,
-      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
-      "targets": [
-        { "expr": "histogram_quantile(0.99, sum(rate(claude_api_billing_pg_command_duration_seconds_bucket[5m])) by (le, op))", "legendFormat": "{{op}} p99", "refId": "A" }
-      ],
-      "title": "Money command latency (p99)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Commands per second by op, from the histogram _count. Dividing queue depth by this rate estimates the drain time referenced in the BillingWriteQueueBacklog runbook.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
-          "mappings": [],
-          "unit": "cps",
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 120 },
-      "id": 86,
-      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
-      "targets": [
-        { "expr": "sum(rate(claude_api_billing_pg_command_duration_seconds_count[5m])) by (op)", "legendFormat": "{{op}}", "refId": "A" }
-      ],
-      "title": "Money command throughput",
-      "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 127 },
-      "id": 87,
-      "panels": [],
-      "title": "Cooling hints (advisory cross-slot)",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "description": "Advisory hints shared between slots when one of them cools a subscription. Skips are saved 429s; lookup/publish errors mean siblings lose the hint but every choice is still authorized by PostgreSQL acquire_capacity.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 128 },
-      "id": 88,
-      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" } },
-      "targets": [
-        { "expr": "rate(claude_api_cooling_hint_skips_total[5m])", "legendFormat": "skip (saved 429)", "refId": "A" },
-        { "expr": "rate(claude_api_cooling_hint_publishes_total[5m])", "legendFormat": "publish", "refId": "B" },
-        { "expr": "rate(claude_api_cooling_hint_lookup_errors_total[5m])", "legendFormat": "lookup error", "refId": "C" },
-        { "expr": "rate(claude_api_cooling_hint_publish_errors_total[5m])", "legendFormat": "publish error", "refId": "D" }
-      ],
-      "title": "Cooling hint outcomes",
-      "type": "timeseries"
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 211 },
+      "id": 411,
+      "targets": [{ "expr": "{job=\"systemd-journal\"} |~ `(?i)(error|fatal|panic|failed|critical)`", "refId": "A" }],
+      "title": "Errors across production journals (raw)",
+      "type": "logs",
+      "links": [
+        {
+          "title": "Open in Explore",
+          "type": "link",
+          "url": "/explore?left=%7B%22datasource%22%3A%20%22loki%22%2C%20%22queries%22%3A%20[%7B%22expr%22%3A%20%22%7Bjob=%5C%22systemd-journal%5C%22%7D%20|~%20`(?i)(error|fatal|panic|failed|critical)`%22%2C%20%22refId%22%3A%20%22A%22%7D]%2C%20%22range%22%3A%20%7B%22from%22%3A%20%22now-6h%22%2C%20%22to%22%3A%20%22now%22%7D%7D",
+          "targetBlank": true
+        }
+      ]
     }
   ],
   "refresh": "30s",
   "schemaVersion": 42,
   "tags": ["production", "apitoken-sale"],
-  "templating": { "list": [] },
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "All", "value": "$__all" },
+        "hide": 0,
+        "includeAll": true,
+        "label": "Provider",
+        "multi": false,
+        "name": "provider",
+        "options": [{ "selected": true, "text": "All", "value": "$__all" }],
+        "query": { "query": "label_values(claude_api_requests_total, provider)", "refId": "StandardVariableQuery" },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      }
+    ]
+  },
   "time": { "from": "now-6h", "to": "now" },
-  "timepicker": {},
+  "timepicker": {  },
   "timezone": "utc",
   "title": "apiToken.sale Production Overview",
   "uid": "apitoken-production",
-  "version": 2,
-  "weekStart": "monday"
+  "version": 3,
+  "weekStart": "monday",
+  "description": "Production overview \u2014 status first, then collapsible domain sections (host, database, engine, affinity/redis, revenue, providers, router, pipeline, devbot, billing, logs)."
 }
