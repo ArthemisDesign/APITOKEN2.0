@@ -16,7 +16,9 @@ database state only. Grafana users are auto-provisioned as viewers.
 - Engine and router: request totals, upstream 429/auth/5xx failures, breaker state, in-flight work,
   Claude/Codex/Gemini pool health, serial fallback continuations and their bounded reasons,
   exact per-plane `not_started` proofs, settlement backlog, and expired leases.
-- Commerce: database health plus credit, adjustment, pricing, email, webhook, and checkout state.
+- Commerce: database health plus credit, adjustment, pricing, email, webhook, and checkout state,
+  including the release-v2 pricing control queues (release control/activation jobs, funding
+  normalizations, shadow rollouts, and managed Stage 8 captures).
 - Sales: API/web health, email queue, referral reconciliation buffer, and payout-batch failures.
 - CRM, Content Studio, public web, support, and mail: process/systemd health, HTTP probes, and logs.
 - Deployments and recovery: watchdog/timer state and current backups for `commerce`,
@@ -831,10 +833,25 @@ lower the plane's admission set; a plan that lapsed needs a paid renewal, not en
 Check the owning worker/service, its database lock/lease fields, retry schedule, and downstream
 dependency. A growing queue with a live process usually means dependency or poison-job failure.
 
+For the pricing control queues (`engine_catalog_jobs`, `engine_switch_jobs`,
+`pricing_release_control_jobs_v2`, `pricing_funding_normalizations_v2`,
+`pricing_shadow_policy_jobs_v2`, `pricing_shadow_rollouts_v2`,
+`pricing_stage8_capture_jobs_v2`) the owner is the `apitoken-worker` unit (pricing worker,
+funding normalization worker, shadow rollout worker, and Stage 8 capture worker; check
+`node_systemd_unit_state` and the unit journal). These are control-plane lanes, not customer
+traffic: a sustained backlog means a release rollout, activation, or evidence capture is not
+draining. The `/pricing` admin control room shows the same queue counts via the bounded
+`GET /admin/pricing-release-activation-v2` and `GET /admin/pricing-stage8-capture-v2` snapshots.
+
 ## DurableQueueOldestItemStale
 
 Inspect the oldest row without editing it. Confirm lock expiry and worker heartbeat, then use the
 application’s idempotent retry path.
+
+On the pricing control queues a stale oldest item usually means the owning `apitoken-worker`
+lane is down, crash-looping, or every claim fails and re-arms `next_attempt_at`. All v2 queues
+use lease recovery plus `FOR UPDATE SKIP LOCKED` claiming, so once the cause is fixed the worker
+re-claims the row on its own — never update `status` or lock fields by hand.
 
 ## DurableQueueDeadItems
 
@@ -842,6 +859,18 @@ Review the terminal error and associated audit/payment event. Resolve the cause 
 requeueing; all money mutations must remain idempotent. Intentionally obsolete commerce email jobs
 use the separate `canceled` state and `apitoken_queue_canceled` metric. Never relabel a genuine
 delivery failure as canceled merely to silence this alert.
+
+On the release-v2 pricing control queues the dead gauge maps the terminal failure state of each
+state machine: `dead` for `pricing_release_control_jobs_v2` and
+`pricing_stage8_capture_jobs_v2`, `blocked` or `dead` for `pricing_shadow_policy_jobs_v2` and
+`pricing_shadow_rollouts_v2` (`blocked` is a permanent delivery failure there), and `blocker`
+for `pricing_funding_normalizations_v2` (the engine reported a normalization blocker; the release
+cannot pass Stage 8 evidence while any account is blocked). Read `last_error` (and the `blockers`
+JSON for funding normalizations) on the row, fix the cause, and re-drive the work through the
+application's own idempotent paths — never by editing `status` directly. A dead activation or
+capture row blocks the release; the `/pricing` admin control room shows the same terminal states
+with their digests. Note the deliberate exception: a Stage 8 capture ending `blocked` (evidence
+gate did not pass) is terminal evidence, not a lane failure, and does not raise this alert.
 
 ## PricingPolicyDeliveryStale
 

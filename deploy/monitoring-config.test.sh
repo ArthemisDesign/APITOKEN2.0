@@ -435,6 +435,45 @@ grep -Fqi '## PricingPolicyDeliveryStale' "$ROOT/docs/ops/MONITORING.md" \
 grep -Fqi '## PricingPolicyDeliveryFailed' "$ROOT/docs/ops/MONITORING.md" \
   || { printf 'docs/ops/MONITORING.md has no policy-delivery-failed runbook\n' >&2; exit 1; }
 
+# The release-v2 pricing control queues (and the legacy catalog/switch control lanes) must be a
+# closed collector -> alert -> runbook loop just like signup readiness: a stalled control lane
+# raised no alert until the generic DurableQueue* alerts were extended to these series. Pin every
+# exported series and its exact status mapping so a constant-zero replacement cannot satisfy the
+# contract; the generic alert rules consume the queue label, so no per-queue rule is needed.
+for pricing_queue in \
+  engine_catalog_jobs \
+  engine_switch_jobs \
+  pricing_release_control_jobs_v2 \
+  pricing_funding_normalizations_v2 \
+  pricing_shadow_policy_jobs_v2 \
+  pricing_shadow_rollouts_v2 \
+  pricing_stage8_capture_jobs_v2; do
+  for pricing_series in apitoken_queue_ready apitoken_queue_dead apitoken_queue_oldest_ready_seconds; do
+    grep -Fq "$pricing_series{queue=\"$pricing_queue\"}" "$ROOT/deploy/collect-monitoring-metrics.sh" \
+      || { printf 'collector does not export %s for %s\n' "$pricing_series" "$pricing_queue" >&2; exit 1; }
+  done
+done
+for pricing_queue_operand in \
+  "FROM pricing_release_control_jobs_v2 WHERE status IN ('pending','retry')" \
+  "FROM pricing_release_control_jobs_v2 WHERE status = 'dead'" \
+  "FROM pricing_funding_normalizations_v2 WHERE status IN ('pending','retry')" \
+  "FROM pricing_funding_normalizations_v2 WHERE status = 'blocker'" \
+  "FROM pricing_shadow_policy_jobs_v2 WHERE status IN ('pending','retry')" \
+  "FROM pricing_shadow_policy_jobs_v2 WHERE status IN ('blocked','dead')" \
+  "FROM pricing_shadow_rollouts_v2 WHERE status = 'pending'" \
+  "FROM pricing_shadow_rollouts_v2 WHERE status IN ('blocked','dead')" \
+  "FROM pricing_stage8_capture_jobs_v2 WHERE status IN ('pending','retry')" \
+  "FROM pricing_stage8_capture_jobs_v2 WHERE status = 'dead'"; do
+  grep -Fq "$pricing_queue_operand" "$ROOT/deploy/collect-monitoring-metrics.sh" \
+    || { printf 'pricing control queue collector is missing %s\n' "$pricing_queue_operand" >&2; exit 1; }
+done
+for durable_alert in DurableQueueBacklog DurableQueueOldestItemStale DurableQueueDeadItems; do
+  grep -Fqi "## $durable_alert" "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$durable_alert" >&2; exit 1; }
+  grep -Fq 'pricing_release_control_jobs_v2' "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'runbook %s does not name the release-v2 pricing control queues\n' "$durable_alert" >&2; exit 1; }
+done
+
 # The journal must be an explicit, bounded, persistent store. Under the default `Storage=auto`
 # journald decided volatile-vs-persistent from whether the Docker-created /var/log/journal existed,
 # put the journal in tmpfs, and lost it on every reboot; the SystemMaxUse default of 10% of the
