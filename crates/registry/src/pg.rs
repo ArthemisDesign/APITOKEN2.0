@@ -504,6 +504,46 @@ pub struct OpenAiImageSettlementEvidence {
     pub key_reserved_nano: i64,
 }
 
+/// Identifier-free read-only progress snapshot for one fenced GPT Image 2 settlement.
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct OpenAiImageSettlementDiagnostic {
+    pub schema_version: u32,
+    pub status: &'static str,
+    pub reservation_present: bool,
+    pub reservation_state: Option<String>,
+    pub reservation_hold_nano: Option<i64>,
+    pub reservation_actual_nano: Option<i64>,
+    pub snapshot_present: bool,
+    pub release_generation: Option<i64>,
+    pub release_billing_mode: Option<String>,
+    pub snapshot_openai: bool,
+    pub snapshot_canonical_model: bool,
+    pub snapshot_tariff: bool,
+    pub snapshot_requested_model: bool,
+    pub snapshot_generation_controls: bool,
+    pub official_hold_nano: Option<i64>,
+    pub charged_hold_nano: Option<i64>,
+    pub outbox_present: bool,
+    pub outbox_state: Option<String>,
+    pub outbox_disposition: Option<String>,
+    pub outbox_attempts: Option<i64>,
+    pub outbox_has_error: bool,
+    pub usage_present: bool,
+    pub usage_openai: bool,
+    pub usage_model: bool,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cache_read_tokens: Option<i64>,
+    pub real_nano: Option<i64>,
+    pub charge_nano: Option<i64>,
+    pub input_nano: Option<i64>,
+    pub output_nano: Option<i64>,
+    pub cache_read_nano: Option<i64>,
+    pub priced_ts: Option<i64>,
+    pub account_present: bool,
+    pub key_present: bool,
+}
+
 pub struct PgStore {
     pub(crate) client: Client,
 }
@@ -8124,6 +8164,119 @@ impl PgStore {
         };
         tx.commit()?;
         Ok(Some(evidence))
+    }
+
+    /// Inspect each durable stage independently without returning request, account, or key identity.
+    pub fn openai_image_settlement_diagnostic(
+        &mut self,
+        request_id: &str,
+    ) -> Result<OpenAiImageSettlementDiagnostic> {
+        let mut tx = self
+            .client
+            .build_transaction()
+            .isolation_level(IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()?;
+        let row = tx.query_one(
+            r#"SELECT reservation.state,reservation.hold_nano,reservation.actual_nano,
+                    snapshot.release_generation,snapshot.billing_mode,snapshot.provider_id,
+                    snapshot.canonical_model_id,snapshot.tariff_schedule_id,
+                    snapshot.official_hold_nano,snapshot.charged_hold_nano,
+                    snapshot.official_cost_json->>'requested_model_id',
+                    snapshot.official_cost_json->'premium_modifiers' =
+                      '{"kind":"openai_image_v1","operation":"generation","background":"opaque","quality":"low","size":"auto","reference_count":0}'::jsonb,
+                    outbox.state,outbox.disposition,outbox.attempts,
+                    outbox.last_error IS NOT NULL,
+                    usage.provider,usage.model,usage.input_tokens,usage.output_tokens,
+                    usage.cache_read_tokens,usage.real_nano,usage.charge_nano,usage.input_nano,
+                    usage.output_nano,usage.cache_read_nano,usage.priced_ts,
+                    account.id IS NOT NULL,key.key_id IS NOT NULL
+               FROM (SELECT $1::text AS request_id) wanted
+               LEFT JOIN reservations reservation USING(request_id)
+               LEFT JOIN pricing_request_snapshots_v2 snapshot USING(request_id)
+               LEFT JOIN settlement_outbox outbox USING(request_id)
+               LEFT JOIN usage_events usage USING(request_id)
+               LEFT JOIN accounts account ON account.id=reservation.account_id
+               LEFT JOIN api_keys key ON key.key=reservation.key
+                                     AND key.account_id=reservation.account_id"#,
+            &[&request_id],
+        )?;
+        let reservation_state: Option<String> = row.get(0);
+        let release_generation: Option<i64> = row.get(3);
+        let release_billing_mode: Option<String> = row.get(4);
+        let snapshot_provider: Option<String> = row.get(5);
+        let snapshot_model: Option<String> = row.get(6);
+        let snapshot_tariff: Option<String> = row.get(7);
+        let snapshot_requested_model: Option<String> = row.get(10);
+        let snapshot_generation_controls: Option<bool> = row.get(11);
+        let outbox_state: Option<String> = row.get(12);
+        let outbox_disposition: Option<String> = row.get(13);
+        let usage_provider: Option<String> = row.get(16);
+        let usage_model: Option<String> = row.get(17);
+        let snapshot_present = release_generation.is_some();
+        let reservation_present = reservation_state.is_some();
+        let outbox_present = outbox_state.is_some();
+        let usage_present = usage_provider.is_some();
+        let account_present: bool = row.get(27);
+        let key_present: bool = row.get(28);
+        let status = if !reservation_present {
+            "reservation_missing"
+        } else if !snapshot_present {
+            "snapshot_missing"
+        } else if !outbox_present {
+            "outbox_missing"
+        } else if outbox_state.as_deref() == Some("failed") {
+            "outbox_failed"
+        } else if outbox_state.as_deref() != Some("done") {
+            "outbox_pending"
+        } else if !usage_present {
+            "usage_missing"
+        } else if reservation_state.as_deref() != Some("settled") {
+            "reservation_nonterminal"
+        } else if !account_present || !key_present {
+            "principal_missing"
+        } else {
+            "terminal_evidence_present"
+        };
+        let diagnostic = OpenAiImageSettlementDiagnostic {
+            schema_version: 1,
+            status,
+            reservation_present,
+            reservation_state,
+            reservation_hold_nano: row.get(1),
+            reservation_actual_nano: row.get(2),
+            snapshot_present,
+            release_generation,
+            release_billing_mode,
+            snapshot_openai: snapshot_provider.as_deref() == Some(PROVIDER_OPENAI),
+            snapshot_canonical_model: snapshot_model.as_deref() == Some("gpt-image-2-2026-04-21"),
+            snapshot_tariff: snapshot_tariff.as_deref() == Some("openai/gpt-image-2/2026-04-21/v1"),
+            snapshot_requested_model: snapshot_requested_model.as_deref() == Some("gpt-image-2"),
+            snapshot_generation_controls: snapshot_generation_controls.unwrap_or(false),
+            official_hold_nano: row.get(8),
+            charged_hold_nano: row.get(9),
+            outbox_present,
+            outbox_state,
+            outbox_disposition,
+            outbox_attempts: row.get(14),
+            outbox_has_error: row.get::<_, Option<bool>>(15).unwrap_or(false),
+            usage_present,
+            usage_openai: usage_provider.as_deref() == Some(PROVIDER_OPENAI),
+            usage_model: usage_model.as_deref() == Some("gpt-image-2"),
+            input_tokens: row.get(18),
+            output_tokens: row.get(19),
+            cache_read_tokens: row.get(20),
+            real_nano: row.get(21),
+            charge_nano: row.get(22),
+            input_nano: row.get(23),
+            output_nano: row.get(24),
+            cache_read_nano: row.get(25),
+            priced_ts: row.get(26),
+            account_present,
+            key_present,
+        };
+        tx.commit()?;
+        Ok(diagnostic)
     }
 }
 

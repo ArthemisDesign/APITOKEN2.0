@@ -252,7 +252,11 @@ dispatched. The paid root is permanently fenced and its execute trigger is retir
 `deploy/gpt-image-2-public-paid-inspect-gate.sh` has no environment, credential, runtime, CLI or network path;
 it accepts only that exact two-file generation-only withdrawal and publishes sanitized PNG dimensions,
 byte length and SHA-256. This retained generation is not a successful generation+edit smoke, does not prove
-settlement, and does not authorize publication.
+settlement, and does not authorize publication. The follow-up producer adds only a PostgreSQL read-only
+`openai-image-settlement-diagnostic`: it receives the fenced UUIDv4 on stdin and independently reports
+identifier-free reservation/snapshot/outbox/usage/principal presence and bounded states/numeric usage. It
+has no image transport, credential lookup or database write path; a separately pinned controller must be
+GREEN before its result can drive a corrective change.
 
 The intended one-shot contract remains:
 

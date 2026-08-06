@@ -5384,6 +5384,14 @@ fn pricing_release_runtime_v2_postgres_matrix() {
     };
     assert_eq!(service_receipt.snapshot.charged_hold_nano, 0);
     assert_eq!(service_receipt.balance_after_reserve_nano, None);
+    let pending_service = pg
+        .openai_image_settlement_diagnostic("release-runtime-service-request")
+        .unwrap();
+    assert_eq!(pending_service.status, "outbox_missing");
+    assert!(pending_service.reservation_present);
+    assert!(pending_service.snapshot_present);
+    assert!(!pending_service.outbox_present);
+    assert!(!pending_service.usage_present);
     let service_usage = UsageEventInput {
         model: "runtime-only-future-model".into(),
         provider: crate::PROVIDER_GOOGLE.into(),
@@ -5427,6 +5435,20 @@ fn pricing_release_runtime_v2_postgres_matrix() {
         ),
         (0, 0, 0, 0, 500, 0)
     );
+    let terminal_service = pg
+        .openai_image_settlement_diagnostic("release-runtime-service-request")
+        .unwrap();
+    assert_eq!(terminal_service.status, "terminal_evidence_present");
+    assert_eq!(
+        terminal_service.reservation_state.as_deref(),
+        Some("settled")
+    );
+    assert_eq!(terminal_service.outbox_state.as_deref(), Some("done"));
+    assert!(terminal_service.usage_present);
+    assert_eq!(terminal_service.real_nano, Some(500));
+    assert_eq!(terminal_service.charge_nano, Some(0));
+    assert!(terminal_service.account_present);
+    assert!(terminal_service.key_present);
 
     let legacy_error = pg
         .reserve_request(

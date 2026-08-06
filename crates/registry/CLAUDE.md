@@ -380,7 +380,10 @@ side effect. `serve` may only perform the read-only schema verification before c
   unexpired key. The release policy's service owner metadata authorizes the account class but is not reused
   as the engine account identity. The reader returns the raw key only in a non-`Debug`/non-serializable
   process-local type and exposes separately a secret-free exact request snapshot/reservation/outbox/usage
-  settlement report. It never creates or mutates a key, account, release, reservation, usage row, or
+  settlement report. A second PostgreSQL-only diagnostic reads reservation, snapshot, outbox, usage and
+  principal presence independently in one repeatable-read/read-only transaction, then returns only bounded
+  states, numeric usage/cost and canonical-identity booleans; it never returns request/account/key identity
+  or raw errors. Neither reader creates or mutates a key, account, release, reservation, usage row, or
   balance.
 
 **Invariants:**

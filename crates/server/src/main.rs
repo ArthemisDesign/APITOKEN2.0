@@ -14,6 +14,7 @@ mod http;
 mod metrics_store;
 mod openai_image_canary;
 mod openai_image_public_smoke;
+mod openai_image_settlement_diagnostic;
 mod poller;
 mod router_auth;
 mod router_policy;
@@ -199,6 +200,8 @@ enum Cmd {
         #[arg(long, conflicts_with = "preflight_only")]
         execute: bool,
     },
+    /// Read one fenced image settlement from PostgreSQL; accepts its UUID only on stdin.
+    OpenaiImageSettlementDiagnostic,
 }
 
 #[derive(Subcommand)]
@@ -414,6 +417,7 @@ fn main() -> Result<()> {
                 execute,
             })
         }
+        Cmd::OpenaiImageSettlementDiagnostic => openai_image_settlement_diagnostic::run(),
     }
 }
 
