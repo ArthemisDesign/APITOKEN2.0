@@ -130,7 +130,11 @@ and Stage 7 in one root-owned process. It persists each cycle's exact dynamic pl
 release and idempotency identities, and advances only on the exact typed inventory-drift response.
 The three-cycle bound prevents an open-ended retry loop; any other blocker stops immediately. Earlier
 runs, releases and private fences remain unchanged, and every Stage 7 attempt performs the same strict
-fresh-inventory equality.
+fresh-inventory equality. A stop with `Stage 7 rollout identity drifted` is diagnosed by the separate
+read-only `pricing-stage7-identity-diagnostic-gate.sh` (`--inspect`, pinned to the same admission
+SHA): it re-reads the private cycle state and the bounded control reads and reports only per-field
+identity equality booleans, generations/digests and aggregate counts, never a blind rerun or a
+weakened comparison.
 
 ## Invariants
 

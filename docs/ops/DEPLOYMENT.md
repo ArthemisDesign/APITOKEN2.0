@@ -499,6 +499,26 @@ existing Stage 5/6 result or Stage 7 UUID, and a drifted cycle is never reused. 
 still rescanned by Stage 7 and must equal both Stage 5 scans; this procedure narrows the churn window
 without pausing registration, rewriting releases, or relaxing any equality.
 
+A Stage 7 run that stops with `Stage 7 rollout identity drifted` is diagnosed read-only, never by a
+blind rerun of the convergence bridge. The fixed root-owned
+`pricing-stage7-identity-diagnostic-gate.sh`, pinned to the same admission SHA, re-reads the private
+replay-stable cycle state (`stage6-result.json` and the Stage 7 request fence under
+`/var/lib/apitoken/pricing-stage567-converge/cycle-*`) and the bounded control reads, and prints only
+bounded evidence: status, per-field identity equality booleans, target/recovery generations and
+digests, aggregate job counts and the name of each drifted allowlisted field. It never POSTs, never
+takes the convergence lock and never writes state:
+
+```bash
+sudo /usr/local/lib/apitoken-watchdog/controller/pricing-stage7-identity-diagnostic-gate.sh \
+  3f412e33d631f2956a575e40f7f28f8b0b592106 --inspect
+```
+
+Classify the report before any further action: a candidate rollout that is already `confirmed` with
+complete ACKs and full target/recovery identity is terminal evidence regardless of the helper actor;
+a pending/processing rollout continues under the same request; a real semantic mismatch (different
+target/recovery or digest) is fixed by its producer, never by weakening digest equality or deleting
+cycle state.
+
 Use this order:
 
 1. `POST /v1/admin/pricing-stage5-v2/dry-run` with `{}`. Review the returned exact

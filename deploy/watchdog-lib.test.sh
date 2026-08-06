@@ -5126,6 +5126,44 @@ grep -A7 -F 'pricing_stage567_helper=/usr/local/lib/apitoken-watchdog/controller
   | grep -Fq '3f412e33d631f2956a575e40f7f28f8b0b592106' \
   || wd_die 'pricing Stage 5-7 convergence sudo self-check is not aligned with policy'
 
+# A drifted Stage 7 identity is diagnosed by a bounded read-only helper, never by a blind rerun.
+pricing_stage7_diagnostic_gate="$ROOT/deploy/pricing-stage7-identity-diagnostic-gate.sh"
+wd_path_is_controller_definition deploy/pricing-stage7-identity-diagnostic-gate.sh \
+  || wd_die 'pricing Stage 7 identity diagnostic is not a fixed controller definition'
+grep -Fq 'publish_pricing_stage7_identity_diagnostic_helper' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'pricing Stage 7 identity diagnostic is not published before sudo policy verification'
+grep -Fq -- '--inspect' "$pricing_stage7_diagnostic_gate" \
+  || wd_die 'pricing Stage 7 identity diagnostic lacks its fixed read-only mode'
+grep -Fxq 'ADMISSION_SHA=3f412e33d631f2956a575e40f7f28f8b0b592106' "$pricing_stage7_diagnostic_gate" \
+  || wd_die 'pricing Stage 7 identity diagnostic is not pinned to the exact admission'
+grep -Fxq 'STATE_PARENT=/var/lib/apitoken/pricing-stage567-converge' "$pricing_stage7_diagnostic_gate" \
+  || wd_die 'pricing Stage 7 identity diagnostic does not read the private cycle namespace'
+grep -Fq 'CONVERGE_ACTOR=gpt-image-2-stage567-converge' "$pricing_stage7_diagnostic_gate" \
+  && grep -Fq 'CONVERGE_REASON=' "$pricing_stage7_diagnostic_gate" \
+  || wd_die 'pricing Stage 7 identity diagnostic lacks the exact converge identity'
+grep -Fq 'drifted_fields' "$pricing_stage7_diagnostic_gate" \
+  && grep -Fq 'same_digest_replay' "$pricing_stage7_diagnostic_gate" \
+  && grep -Fq 'identity_checks' "$pricing_stage7_diagnostic_gate" \
+  || wd_die 'pricing Stage 7 identity diagnostic does not report bounded per-field identity evidence'
+! grep -Fq 'POST:' "$pricing_stage7_diagnostic_gate" \
+  || wd_die 'pricing Stage 7 identity diagnostic is not read-only'
+! grep -Fq 'pricing-shadow-rollout-v2/stage' "$pricing_stage7_diagnostic_gate" \
+  || wd_die 'pricing Stage 7 identity diagnostic stages shadow rollouts'
+! grep -Fq 'install -d' "$pricing_stage7_diagnostic_gate" \
+  || wd_die 'pricing Stage 7 identity diagnostic writes state'
+! grep -Fq 'flock' "$pricing_stage7_diagnostic_gate" \
+  || wd_die 'pricing Stage 7 identity diagnostic takes the convergence lock'
+! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc|https://|images/(generations|edits)' \
+  "$pricing_stage7_diagnostic_gate" \
+  || wd_die 'pricing Stage 7 identity diagnostic contains reseller or image-dispatch logic'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/pricing-stage7-identity-diagnostic-gate.sh 3f412e33d631f2956a575e40f7f28f8b0b592106 --inspect' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'pricing Stage 7 identity diagnostic lacks an exact-admission read-only sudo bridge'
+grep -A7 -F 'pricing_stage7_diagnostic_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage7-identity-diagnostic-gate.sh' \
+  "$ROOT/deploy/install-sudoers.sh" \
+  | grep -Fq '3f412e33d631f2956a575e40f7f28f8b0b592106 --inspect' \
+  || wd_die 'pricing Stage 7 identity diagnostic sudo self-check is not aligned with policy'
+
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'
 if grep -Eq '^[[:space:]]*(postgres-native-tls|native-tls)[[:space:]]*=' \
