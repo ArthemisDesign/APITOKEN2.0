@@ -4827,6 +4827,29 @@ printf '%s\n' \
 [[ $(pricing_control_error_diagnostic "$TEMP/pricing-stage56-stale-error.json" 409) \
     == expected_plan_stale ]] \
   || wd_die 'pricing Stage 5/6 helper did not use the typed stale-plan diagnostic'
+pricing_stage56_stage6_validator=$(sed -n '/^stage6_result_is_valid()/,/^}/p' "$pricing_stage56_gate")
+[[ -n $pricing_stage56_stage6_validator ]] \
+  || wd_die 'pricing Stage 5/6 helper lacks its Stage 6 validator'
+eval "$pricing_stage56_stage6_validator"
+pricing_stage56_digest="sha256:v2:$(printf 'a%.0s' {1..64})"
+jq -n --arg digest "$pricing_stage56_digest" '{
+  stage5_plan_digest:$digest,stage5_status:"prepared",target_generation:"6",
+  target_plan_digest:("sha256:v2:"+("b"*64)),target_release_digest:("sha256:v2:"+("c"*64)),
+  target_status:"prepared",recovery_generation:"7",
+  recovery_plan_digest:("sha256:v2:"+("d"*64)),recovery_release_digest:("sha256:v2:"+("e"*64)),
+  recovery_status:"prepared",job_id:"2c1850d7-708a-40e8-8bc8-dcde10e890fb",
+  job_status:"confirmed",job_attempts:17,job_last_error:null,
+  job_result_digest:("sha256:v2:"+("f"*64)),pending_accounts:0,processing_accounts:0,
+  retry_accounts:0,ready_accounts:409,blocker_accounts:0,
+  target_funding_manifest_digest:("sha256:v2:"+("1"*64)),
+  recovery_funding_manifest_digest:("sha256:v2:"+("1"*64))
+}' >"$TEMP/pricing-stage56-terminal.json"
+stage6_result_is_valid "$pricing_stage56_digest" "$TEMP/pricing-stage56-terminal.json" \
+  || wd_die 'pricing Stage 5/6 helper rejected a valid terminal Stage 6 response'
+jq '.ready_accounts = "409"' "$TEMP/pricing-stage56-terminal.json" \
+  >"$TEMP/pricing-stage56-invalid-count.json"
+! stage6_result_is_valid "$pricing_stage56_digest" "$TEMP/pricing-stage56-invalid-count.json" \
+  || wd_die 'pricing Stage 5/6 helper accepted a non-numeric Stage 6 account count'
 wd_path_is_controller_definition deploy/pricing-stage56-admission-gate.sh \
   || wd_die 'pricing Stage 5/6 helper is not a fixed controller definition'
 grep -Fq 'publish_pricing_stage56_helper' "$ROOT/deploy/install-watchdog.sh" \

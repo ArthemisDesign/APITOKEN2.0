@@ -152,33 +152,35 @@ stage6_result_is_valid() {
   jq -e --arg digest "$expected_digest" '
     def sha: type == "string" and test("^sha256:v2:[0-9a-f]{64}$");
     def nullable_sha: . == null or sha;
-    def nullable_uuid: . == null or (type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$"));
-    ((keys - ["staged_job_id"]) | sort) == ([
-      "blocker_accounts", "job_attempts", "job_id", "job_last_error", "job_result_digest",
-      "job_status", "pending_accounts", "processing_accounts", "ready_accounts",
-      "recovery_funding_manifest_digest", "recovery_generation", "recovery_plan_digest",
-      "recovery_release_digest", "recovery_status", "retry_accounts", "stage5_plan_digest",
-      "stage5_status", "target_funding_manifest_digest", "target_generation", "target_plan_digest",
-      "target_release_digest", "target_status"
-    ] | sort) and
-    .stage5_plan_digest == $digest and
-    (.stage5_status | IN("blocked", "planned", "materializing", "prepared", "failed")) and
-    (.target_generation | type == "string" and test("^[1-9][0-9]*$")) and
-    (.recovery_generation | type == "string" and test("^[1-9][0-9]*$")) and
-    (.target_plan_digest | sha) and (.recovery_plan_digest | sha) and
-    (.target_release_digest | nullable_sha) and (.recovery_release_digest | nullable_sha) and
-    (.target_status | IN("planned", "materializing", "prepared", "active", "superseded", "failed")) and
-    (.recovery_status | IN("planned", "materializing", "prepared", "active", "superseded", "failed")) and
-    (.job_id | nullable_uuid) and
-    (.job_status == null or (.job_status | IN("pending", "processing", "retry", "confirmed", "dead"))) and
-    (.job_attempts == null or (.job_attempts | type == "number" and floor == . and . >= 0)) and
-    (.job_last_error == null or (.job_last_error | type == "string")) and
-    (.job_result_digest | nullable_sha) and
-    ([.pending_accounts, .processing_accounts, .retry_accounts, .ready_accounts, .blocker_accounts] |
-      all(type == "number" and floor == . and . >= 0)) and
-    (.target_funding_manifest_digest | nullable_sha) and
-    (.recovery_funding_manifest_digest | nullable_sha) and
-    (if has("staged_job_id") then (.staged_job_id | nullable_uuid) else true end)
+    def nullable_uuid: . == null or (type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"));
+    [
+      (((keys - ["staged_job_id"]) | sort) == ([
+        "blocker_accounts", "job_attempts", "job_id", "job_last_error", "job_result_digest",
+        "job_status", "pending_accounts", "processing_accounts", "ready_accounts",
+        "recovery_funding_manifest_digest", "recovery_generation", "recovery_plan_digest",
+        "recovery_release_digest", "recovery_status", "retry_accounts", "stage5_plan_digest",
+        "stage5_status", "target_funding_manifest_digest", "target_generation", "target_plan_digest",
+        "target_release_digest", "target_status"
+      ] | sort)),
+      (.stage5_plan_digest == $digest),
+      (.stage5_status | IN("blocked", "planned", "materializing", "prepared", "failed")),
+      (.target_generation | type == "string" and test("^[1-9][0-9]*$")),
+      (.recovery_generation | type == "string" and test("^[1-9][0-9]*$")),
+      (.target_plan_digest | sha), (.recovery_plan_digest | sha),
+      (.target_release_digest | nullable_sha), (.recovery_release_digest | nullable_sha),
+      (.target_status | IN("planned", "materializing", "prepared", "active", "superseded", "failed")),
+      (.recovery_status | IN("planned", "materializing", "prepared", "active", "superseded", "failed")),
+      (.job_id | nullable_uuid),
+      (.job_status == null or (.job_status | IN("pending", "processing", "retry", "confirmed", "dead"))),
+      (.job_attempts == null or (.job_attempts | type == "number" and floor == . and . >= 0)),
+      (.job_last_error == null or (.job_last_error | type == "string")),
+      (.job_result_digest | nullable_sha),
+      ([.pending_accounts, .processing_accounts, .retry_accounts, .ready_accounts, .blocker_accounts] |
+        all(type == "number" and floor == . and . >= 0)),
+      (.target_funding_manifest_digest | nullable_sha),
+      (.recovery_funding_manifest_digest | nullable_sha),
+      (if has("staged_job_id") then (.staged_job_id | nullable_uuid) else true end)
+    ] | all
   ' "$file" >/dev/null
 }
 
