@@ -54,6 +54,11 @@ and immutable/dormant artifacts are not rewritten.
 - [ ] `docs/commerce/MULTI-DISCOUNT.md` §7 — a new model is NOT included automatically:
       an explicit catalog generation is required (catalogs/switches/policies in
       `crates/registry/src/pricing/` via the versioned pricing protocol of the Control API).
+- [ ] A new capability generation's frozen constants and mirrors are GENERATED, never edited by
+      hand: `node tools/pricing-next-generation.mjs <spec.json>` emits the exact
+      `packages/contracts` block, the Rust manifests (`crates/forward/src/pricing.rs`,
+      `crates/server/src/config.rs`), and the Stage 5 v2 materializer constants with the canonical
+      digests already computed; `node --test 'tools/**/*.test.mjs'` replays GEN5→GEN6 byte-for-byte.
 - [ ] `apps/openkeys` — `assertOpenKeysCatalog()` is checked against `CURRENT_PRODUCT_CATALOG_ENTRIES`
       from `packages/contracts`: without a catalog update OpenKeys fails closed.
 - [ ] `docs/commerce/PRICING.md` — if the model changes customer pricing.
