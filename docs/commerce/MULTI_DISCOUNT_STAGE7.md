@@ -60,7 +60,8 @@ assignment/policy manifest, and the canonical `sha256:v2` rollout digest; per-ac
 release-policy identity, exact effective version/content digest, expected active from the live
 engine read, request digest, and the full byte-exact request payload. Idempotency is by
 `idempotency_key` and `rollout_digest`: an exact replay returns the existing rollout without
-writing.
+writing. Staging failures expose only a stable bounded `code` with a sanitized 409/503 message;
+raw DB/engine errors and account or policy identities never leave the API response.
 
 **Locked-OpenKeys path.** A job for a replacement-locked legacy account (`owner_context=openkeys`,
 `pricing_contract=legacy` in the exact Stage 5 inventory) contains only the

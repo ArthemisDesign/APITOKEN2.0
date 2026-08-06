@@ -134,9 +134,11 @@ against the Stage 5 run, and fails closed on drift/collision/missing owner befor
 the worker claims per-account jobs with a lease, delivers generic `policy_shadow`
 (prepare → exact readback → activate) or the replacement-locked
 `locked_openkeys_transition`, stores the exact ACK digest/payload, and atomically closes
-the rollout `confirmed|blocked|dead`. Startup, migration, polling, and the read endpoint
-do not create a rollout/job; the lane does not move the release head, balances, or the
-live price.
+the rollout `confirmed|blocked|dead`. Staging failures are an expand-only typed producer
+contract: the API returns only a stable bounded `code` and sanitized 409/503 message, never
+raw subject-bearing DB/engine text. An operator helper may consume those codes only after the
+exact producer SHA is GREEN. Startup, migration, polling, and the read endpoint do not create
+a rollout/job; the lane does not move the release head, balances, or the live price.
 
 ### Sales feed (commerce ↔ sales)
 

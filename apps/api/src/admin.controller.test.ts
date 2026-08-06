@@ -651,10 +651,10 @@ describe("pricing shadow rollout admin HTTP contract", () => {
     expect(stagePricingShadowRolloutV2).toHaveBeenCalledTimes(1);
   });
 
-  it("maps permanent staging conflicts to 409 and transient authority failures to 503", async () => {
+  it("maps staging failures to bounded diagnostics without subject identities", async () => {
     const conflict = new AdminController({
       stagePricingShadowRolloutV2: vi.fn().mockRejectedValue(
-        new PricingShadowRolloutV2Error("engine inventory drifted", true),
+        new PricingShadowRolloutV2Error("engine inventory drifted from the exact Stage 5 run", true),
       ),
     } as unknown as AdminService);
     const unavailable = new AdminController({
@@ -662,10 +662,38 @@ describe("pricing shadow rollout admin HTTP contract", () => {
         new PricingShadowRolloutV2Error("engine inventory authority is temporarily unavailable", false),
       ),
     } as unknown as AdminService);
+    const subjectConflict = new AdminController({
+      stagePricingShadowRolloutV2: vi.fn().mockRejectedValue(
+        new PricingShadowRolloutV2Error("legacy OpenKeys multiplier drifted for acct_secret", true),
+      ),
+    } as unknown as AdminService);
+
     await expect(conflict.stagePricingShadowRolloutV2(stageBody, "owner@example.test"))
-      .rejects.toMatchObject({ status: 409 });
+      .rejects.toMatchObject({
+        status: 409,
+        response: {
+          statusCode: 409,
+          message: "pricing shadow rollout conflicts with durable authority",
+          code: "engine_inventory_drift",
+        },
+      });
     await expect(unavailable.stagePricingShadowRolloutV2(stageBody, "owner@example.test"))
-      .rejects.toMatchObject({ status: 503 });
+      .rejects.toMatchObject({
+        status: 503,
+        response: {
+          statusCode: 503,
+          message: "pricing shadow rollout authority is temporarily unavailable",
+          code: "engine_inventory_unavailable",
+        },
+      });
+    const rejected = subjectConflict.stagePricingShadowRolloutV2(stageBody, "owner@example.test");
+    await expect(rejected).rejects.toMatchObject({
+      status: 409,
+      response: { code: "openkeys_multiplier_drift" },
+    });
+    await expect(rejected).rejects.not.toMatchObject({
+      response: expect.objectContaining({ message: expect.stringContaining("acct_secret") }),
+    });
   });
 
   it("returns the bounded read-only rollout snapshot", async () => {

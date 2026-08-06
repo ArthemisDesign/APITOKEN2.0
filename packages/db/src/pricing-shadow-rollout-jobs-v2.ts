@@ -76,10 +76,70 @@ export interface ClaimedPricingShadowPolicyJobV2 {
 
 export type PricingShadowPolicyJobDispositionV2 = "retry" | "blocked" | "dead";
 
+export type PricingShadowRolloutV2ErrorCode =
+  | "stage5_run_missing"
+  | "stage5_run_not_prepared"
+  | "engine_inventory_drift"
+  | "release_plan_missing"
+  | "release_plan_not_prepared"
+  | "release_inventory_drift"
+  | "stage5_artifact_invalid"
+  | "target_assignments_missing"
+  | "target_assignments_drift"
+  | "release_policy_invalid"
+  | "openkeys_owner_missing"
+  | "openkeys_multiplier_drift"
+  | "openkeys_lineage_missing"
+  | "openkeys_lock_drift"
+  | "idempotency_conflict"
+  | "engine_inventory_unavailable"
+  | "shadow_rollout_conflict";
+
+function pricingShadowRolloutErrorCode(message: string): PricingShadowRolloutV2ErrorCode {
+  if (message === "exact Stage 5 run does not exist") return "stage5_run_missing";
+  if (message === "Stage 5 run is not fully prepared for shadow rollout staging") {
+    return "stage5_run_not_prepared";
+  }
+  if (message === "engine inventory drifted from the exact Stage 5 run") return "engine_inventory_drift";
+  if (/^exact (target|recovery) release plan does not exist$/.test(message)) return "release_plan_missing";
+  if (/^exact (target|recovery) release plan is not prepared$/.test(message)) return "release_plan_not_prepared";
+  if (/^exact (target|recovery) release plan engine inventory digest drifted$/.test(message)) {
+    return "release_inventory_drift";
+  }
+  if (message.startsWith("Stage 5 plan artifact") || message === "Stage 5 catalogs do not share one exact generation") {
+    return "stage5_artifact_invalid";
+  }
+  if (message === "exact target release has no assignments to align") return "target_assignments_missing";
+  if (message === "target assignment manifest drifted during shadow rollout staging") {
+    return "target_assignments_drift";
+  }
+  if (message.startsWith("release policy ")) return "release_policy_invalid";
+  if (message.startsWith("OpenKeys assignment ")) return "openkeys_owner_missing";
+  if (message.startsWith("legacy OpenKeys multiplier drifted")) return "openkeys_multiplier_drift";
+  if (message.includes("OpenKeys account") && message.includes("has no active engine policy lineage")) {
+    return "openkeys_lineage_missing";
+  }
+  if (message.includes("OpenKeys account")
+      && (message.includes("replacement lock") || message.includes("unexpectedly locked"))) {
+    return "openkeys_lock_drift";
+  }
+  if (message.startsWith("shadow rollout idempotency key")
+      || message.startsWith("shadow rollout digest collides")) {
+    return "idempotency_conflict";
+  }
+  if (message === "engine inventory authority is temporarily unavailable") {
+    return "engine_inventory_unavailable";
+  }
+  return "shadow_rollout_conflict";
+}
+
 export class PricingShadowRolloutV2Error extends Error {
+  readonly code: PricingShadowRolloutV2ErrorCode;
+
   constructor(message: string, readonly permanent: boolean) {
     super(message);
     this.name = "PricingShadowRolloutV2Error";
+    this.code = pricingShadowRolloutErrorCode(message);
   }
 }
 

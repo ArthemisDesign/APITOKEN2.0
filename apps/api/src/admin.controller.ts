@@ -427,7 +427,14 @@ export class AdminController {
       return await this.admin.stagePricingShadowRolloutV2(input.data, actor.data);
     } catch (error) {
       if (error instanceof PricingShadowRolloutV2Error) {
-        throw new HttpException(error.message, error.permanent ? 409 : 503);
+        const statusCode = error.permanent ? 409 : 503;
+        throw new HttpException({
+          statusCode,
+          message: error.permanent
+            ? "pricing shadow rollout conflicts with durable authority"
+            : "pricing shadow rollout authority is temporarily unavailable",
+          code: error.code,
+        }, statusCode);
       }
       throw error;
     }

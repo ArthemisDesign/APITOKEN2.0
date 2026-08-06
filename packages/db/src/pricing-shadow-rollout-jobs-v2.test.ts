@@ -2,6 +2,7 @@ import { accountPolicySpecSchema } from "@claude-api/contracts";
 import { describe, expect, it } from "vitest";
 import {
   buildLockedOpenkeysSuccessorPolicyV1,
+  PricingShadowRolloutV2Error,
   pricingShadowPolicyAckDigestV2,
   pricingShadowRolloutSubjectDigestV2,
 } from "./pricing-shadow-rollout-jobs-v2.js";
@@ -88,5 +89,25 @@ describe("shadow rollout evidence digests", () => {
     expect(pricingShadowRolloutSubjectDigestV2("acct_a")).toMatch(SHA256_V2);
     expect(pricingShadowRolloutSubjectDigestV2("acct_a"))
       .not.toBe(pricingShadowRolloutSubjectDigestV2("acct_b"));
+  });
+});
+
+describe("shadow rollout bounded error diagnostics", () => {
+  it.each([
+    ["legacy OpenKeys multiplier drifted for acct_private", "openkeys_multiplier_drift"],
+    [
+      "canonical OpenKeys account acct_private has no active engine policy lineage",
+      "openkeys_lineage_missing",
+    ],
+    [
+      "legacy OpenKeys account acct_private lineage lost its replacement lock without the canonical successor",
+      "openkeys_lock_drift",
+    ],
+    ["canonical OpenKeys account acct_private lineage is unexpectedly locked", "openkeys_lock_drift"],
+    ["unknown conflict for acct_private", "shadow_rollout_conflict"],
+  ])("classifies %s without embedding the subject in the code", (message, code) => {
+    const error = new PricingShadowRolloutV2Error(message, true);
+    expect(error.code).toBe(code);
+    expect(error.code).not.toContain("acct_private");
   });
 });
