@@ -1205,6 +1205,29 @@ export const pricingStage5ControlResultV2Schema = z.object({
 }).strict();
 export type PricingStage5ControlResultV2 = z.infer<typeof pricingStage5ControlResultV2Schema>;
 
+export const pricingStage5RunQueryV2Schema = z.object({
+  plan_digest: canonicalSha256V2Schema,
+}).strict();
+export type PricingStage5RunQueryV2 = z.infer<typeof pricingStage5RunQueryV2Schema>;
+
+const pricingStage5RunPositiveIntegerV2Schema = nonNegativeIntegerSchema.refine(
+  (value) => BigInt(value) > 0n,
+  "value must be positive",
+);
+export const pricingStage5RunV2Schema = z.object({
+  run_id: z.string().uuid(),
+  plan_digest: canonicalSha256V2Schema,
+  status: z.enum(["blocked", "planned", "materializing", "prepared", "failed"]),
+  target_generation: pricingStage5RunPositiveIntegerV2Schema,
+  target_plan_digest: canonicalSha256V2Schema,
+  target_release_digest: canonicalSha256V2Schema.nullable(),
+  recovery_generation: pricingStage5RunPositiveIntegerV2Schema,
+  recovery_plan_digest: canonicalSha256V2Schema,
+  recovery_release_digest: canonicalSha256V2Schema.nullable(),
+  blocker_count: nonNegativeIntegerSchema,
+}).strict();
+export type PricingStage5RunV2 = z.infer<typeof pricingStage5RunV2Schema>;
+
 export const pricingStage6PlanQueryV2Schema = z.object({
   plan_digest: canonicalSha256V2Schema,
 }).strict();

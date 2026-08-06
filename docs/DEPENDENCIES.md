@@ -67,9 +67,11 @@ snapshot, fail-closed ambiguous welcome reserve, full-coverage parent confirmati
 identical target/recovery funding evidence, and prepare+readback of both
 releases/recovery link. Job staging/status is bound to the exact Stage 5 plan digest. The
 production producer is the AdminGuard-protected `apps/api` endpoints for Stage 5 dry-run /
-materialize and Stage 6 status / stage: they require a verified `x-admin-actor`, exact
-plan digest, meaningful mutation reason, strict `packages/contracts` response, and
-attributed transactional audit. The DB package CLI remains a non-production diagnostic
+materialize / exact run read and Stage 6 status / stage: they require a verified `x-admin-actor`,
+exact plan digest, strict `packages/contracts` response, meaningful mutation reason and attributed
+transactional audit for writes. The read-only Stage 5 run endpoint is the terminal-run authority for
+the separately delivered Stage 7 operator consumer and never replays materialization. That consumer
+may be connected only after this producer's exact SHA receives `deploy/watchdog` GREEN. The DB package CLI remains a non-production diagnostic
 and is not permission for manual SSH. The presence of transport methods or a runner
 without an explicitly staged job does not start a backfill, does not create Stage 8
 evidence, and does not activate a release.

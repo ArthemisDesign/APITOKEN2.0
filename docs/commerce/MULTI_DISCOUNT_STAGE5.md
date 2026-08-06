@@ -154,9 +154,18 @@ POST /v1/admin/pricing-stage5-v2/dry-run
 
 POST /v1/admin/pricing-stage5-v2/materialize
 {"plan_digest":"sha256:v2:<exact-fresh-plan>","reason":"materialize reviewed full inventory"}
+
+GET /v1/admin/pricing-stage5-v2?plan_digest=sha256:v2:<exact-materialized-plan>
 ```
 
-The response is a strict summary: source/plan digests, target/recovery generations and plan
+The read-only GET is the bounded authority for resuming later stages after the run has become
+terminal. It returns only the run UUID, exact plan/status, target and recovery generation plus their
+plan/release digests, and blocker count. It runs in a read-only repeatable snapshot and fails closed
+if an existing run has lost either release-plan identity. It does not replay materialization, write
+audit state, or mutate the run; `materialize` replay remains limited to its non-terminal lifecycle
+and is not a lookup mechanism.
+
+The mutation response is a strict summary: source/plan digests, target/recovery generations and plan
 digests, the total blocker count, and the full exact blocker list. A Stage 5/6 control failure keeps
 the standard `statusCode` and `message` fields and adds a stable machine-readable `code`; consumers
 must ignore unknown response fields. The dry run does not write even an audit row. Materialize

@@ -426,8 +426,8 @@ never metric labels or error storms.
 Production Stage 5/6 is driven only through the AdminGuard-protected commerce API. Do not run the
 package CLIs over SSH, invoke migration SQL manually, pause traffic, stop money writers or wait for
 zero inflight reservations. The API is reachable through the authenticated admin Caddy route
-(`/admin/pricing-stage5-v2/*`, `/admin/pricing-stage6-v2*`) and as `/v1/admin/*` on the protected
-loopback commerce origin. Caddy or the server operator supplies the admin credential; every request
+(`/admin/pricing-stage5-v2`, `/admin/pricing-stage5-v2/*`, `/admin/pricing-stage6-v2*`) and as
+`/v1/admin/*` on the protected loopback commerce origin. Caddy or the server operator supplies the admin credential; every request
 also requires the verified `x-admin-actor`. Stage 5/6 failures add a stable machine-readable `code`
 to the standard error envelope so fixed operators do not need to print free-form messages. Never
 print either credential.
@@ -475,11 +475,15 @@ Use this order:
    commit. A stable blocker-free plan persists dormant target/recovery skeletons and exact engine
    prepare/readback ACKs; it does not create Stage 6, move a head, change a balance or affect
    admission. The local request and operator audit commit together.
-4. Read `GET /v1/admin/pricing-stage6-v2?plan_digest=...`. Stage only an exact fully ACKed Stage 5
+4. Read `GET /v1/admin/pricing-stage5-v2?plan_digest=...` when a later stage must resume an already
+   materialized run. Require the exact run UUID, target/recovery plan identity, release digests,
+   terminal `prepared` status, and zero blockers. This read writes nothing; never replay
+   `materialize` as a lookup.
+5. Read `GET /v1/admin/pricing-stage6-v2?plan_digest=...`. Stage only an exact fully ACKed Stage 5
    run in `materializing` state.
-5. `POST /v1/admin/pricing-stage6-v2/stage` with the same digest and a meaningful `reason`. Job
+6. `POST /v1/admin/pricing-stage6-v2/stage` with the same digest and a meaningful `reason`. Job
    creation and attributed audit commit together; replay is idempotent and returns the same job.
-6. Poll the paired GET until the parent is `confirmed`, both releases are `prepared`, every balance
+7. Poll the paired GET until the parent is `confirmed`, both releases are `prepared`, every balance
    account is `ready`, all pending/processing/retry/blocker counts are zero, and both funding
    manifest digests are present and equal. A `dead` parent or blocker is diagnosed and fixed in
    code/authority without stopping unrelated accounts.

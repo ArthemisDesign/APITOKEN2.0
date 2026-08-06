@@ -9,6 +9,7 @@ import {
   pricingPolicyDeliveryRepairResponseV2Schema,
   pricingReleaseActivationStageResponseV2Schema,
   pricingStage5ControlResultV2Schema,
+  pricingStage5RunV2Schema,
   pricingStage6StatusV2Schema,
   pricingStage8CaptureControlV2Schema,
   pricingStage8CaptureStageResponseV2Schema,
@@ -22,6 +23,7 @@ import {
   type PricingPolicyDeliveryRepairResponseV2,
   type PricingStage5ControlResultV2,
   type PricingStage5MaterializeRequestV2,
+  type PricingStage5RunV2,
   type PricingStage6StageRequestV2,
   type PricingStage6StatusV2,
   type PricingStage8CaptureStageRequestV2,
@@ -52,6 +54,7 @@ import {
   recordAdminCredit,
   readServiceAccountInventoryV2,
   readPricingReleaseActivationControlV2,
+  readPricingStage5RunV2,
   readPricingShadowRolloutControlV2,
   readPricingStage8CaptureControlV2,
   repairDeadPreCutoverPolicyDelivery,
@@ -245,6 +248,11 @@ export class AdminService {
 
   async getServiceAccountInventoryV2(): Promise<unknown> {
     return readServiceAccountInventoryV2(this.database);
+  }
+
+  async getPricingStage5RunV2(planDigest: string): Promise<PricingStage5RunV2 | null> {
+    const run = await readPricingStage5RunV2(this.database, planDigest);
+    return run === null ? null : pricingStage5RunV2Schema.parse(run);
   }
 
   async dryRunPricingStage5V2(): Promise<PricingStage5ControlResultV2> {

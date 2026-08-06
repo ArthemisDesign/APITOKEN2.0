@@ -1,8 +1,11 @@
 import { Buffer } from "node:buffer";
 import {
   pricingReleaseActivationOperatorV2Schema,
+  pricingStage5RunQueryV2Schema,
+  pricingStage5RunV2Schema,
   pricingStageControlMutationReasonV2Schema,
   type PricingCatalogSpec,
+  type PricingStage5RunV2,
   type PricingReleasePolicyV2,
   type ProviderSwitchSpec,
   type ServiceAccountInventoryEntryV2,
@@ -411,6 +414,48 @@ async function readStoredRun(client: PoolClient, planDigest: string): Promise<St
     WHERE plan_digest = $1
   `, [planDigest]);
   return result.rows[0] ?? null;
+}
+
+export async function readPricingStage5RunV2(
+  database: Database,
+  planDigest: string,
+): Promise<PricingStage5RunV2 | null> {
+  const query = pricingStage5RunQueryV2Schema.parse({ plan_digest: planDigest });
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const result = await client.query<{
+      run_id: string;
+      plan_digest: string;
+      status: StoredRunRow["status"];
+      target_generation: string;
+      target_plan_digest: string | null;
+      target_release_digest: string | null;
+      recovery_generation: string;
+      recovery_plan_digest: string | null;
+      recovery_release_digest: string | null;
+      blocker_count: string;
+    }>(`
+      SELECT run.run_id::text, run.plan_digest, run.status,
+             run.target_generation::text, target.content_digest AS target_plan_digest,
+             run.target_digest AS target_release_digest,
+             run.recovery_generation::text, recovery.content_digest AS recovery_plan_digest,
+             run.recovery_digest AS recovery_release_digest, run.blocker_count::text
+      FROM pricing_stage5_runs_v2 run
+      LEFT JOIN pricing_release_plans_v2 target ON target.generation = run.target_generation
+      LEFT JOIN pricing_release_plans_v2 recovery ON recovery.generation = run.recovery_generation
+      WHERE run.plan_digest = $1
+    `, [query.plan_digest]);
+    const row = result.rows[0];
+    const parsed = row === undefined ? null : pricingStage5RunV2Schema.parse(row);
+    await client.query("COMMIT");
+    return parsed;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 function expectedStoredRun(plan: Stage5V2Plan, status: StoredRunRow["status"]): Omit<StoredRunRow, "run_id"> {

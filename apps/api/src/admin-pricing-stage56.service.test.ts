@@ -1,6 +1,7 @@
 import type { ConfigService } from "@nestjs/config";
 import {
   getFundingNormalizationStageStatusV2,
+  readPricingStage5RunV2,
   repairDeadPreCutoverPolicyDelivery,
   runStage5MaterializerV2,
   stageFundingNormalizationJobV2,
@@ -16,6 +17,7 @@ vi.mock("@claude-api/db", async (importOriginal) => {
   return {
     ...original,
     getFundingNormalizationStageStatusV2: vi.fn(),
+    readPricingStage5RunV2: vi.fn(),
     repairDeadPreCutoverPolicyDelivery: vi.fn(),
     runStage5MaterializerV2: vi.fn(),
     stageFundingNormalizationJobV2: vi.fn(),
@@ -23,6 +25,7 @@ vi.mock("@claude-api/db", async (importOriginal) => {
 });
 
 const mockedRunStage5 = vi.mocked(runStage5MaterializerV2);
+const mockedReadStage5 = vi.mocked(readPricingStage5RunV2);
 const mockedGetStage6 = vi.mocked(getFundingNormalizationStageStatusV2);
 const mockedStage6 = vi.mocked(stageFundingNormalizationJobV2);
 const mockedRepairPolicyDelivery = vi.mocked(repairDeadPreCutoverPolicyDelivery);
@@ -98,6 +101,28 @@ function stage6Status(jobId: string | null = null) {
 describe("managed pricing Stage 5/6 service", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+  });
+
+  it("reads the exact terminal Stage 5 lineage without replaying materialization", async () => {
+    const fixture = service();
+    const run = {
+      run_id: "2d20f96d-0f2b-4cff-9fa0-7c4b7fe1a6c5",
+      plan_digest: digest("a"),
+      status: "prepared" as const,
+      target_generation: "41",
+      target_plan_digest: digest("1"),
+      target_release_digest: digest("2"),
+      recovery_generation: "42",
+      recovery_plan_digest: digest("3"),
+      recovery_release_digest: digest("4"),
+      blocker_count: "0",
+    };
+    mockedReadStage5.mockResolvedValue(run);
+
+    await expect(fixture.service.getPricingStage5RunV2(digest("a"))).resolves.toEqual(run);
+    expect(mockedReadStage5).toHaveBeenCalledWith(fixture.database, digest("a"));
+    mockedReadStage5.mockResolvedValueOnce(null);
+    await expect(fixture.service.getPricingStage5RunV2(digest("b"))).resolves.toBeNull();
   });
 
   it("uses the protected engine/OpenKeys authorities and returns a bounded strict Stage 5 summary", async () => {

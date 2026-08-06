@@ -23,6 +23,7 @@ import {
   pricingReleaseActivationStageRequestV2Schema,
   pricingStage5DryRunRequestV2Schema,
   pricingStage5MaterializeRequestV2Schema,
+  pricingStage5RunQueryV2Schema,
   pricingStage6PlanQueryV2Schema,
   pricingStage6StageRequestV2Schema,
   pricingStage8CaptureStageRequestV2Schema,
@@ -240,6 +241,20 @@ export class AdminController {
   @Header("Cache-Control", "no-store")
   getServiceAccountInventoryV2(): Promise<unknown> {
     return this.admin.getServiceAccountInventoryV2();
+  }
+
+  @Get("pricing-stage5-v2")
+  @Header("Cache-Control", "no-store")
+  async getPricingStage5RunV2(
+    @Query("plan_digest") planDigest: string | undefined,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    const input = pricingStage5RunQueryV2Schema.safeParse({ plan_digest: planDigest });
+    if (!input.success) throw new BadRequestException(input.error.flatten());
+    verifiedAdminActor(actorHeader);
+    const run = await this.admin.getPricingStage5RunV2(input.data.plan_digest);
+    if (run === null) throw new NotFoundException("exact Stage 5 plan does not exist");
+    return run;
   }
 
   @Post("pricing-stage5-v2/dry-run")

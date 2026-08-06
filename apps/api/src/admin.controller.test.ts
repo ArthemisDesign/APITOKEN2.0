@@ -184,8 +184,13 @@ describe("managed pricing HTTP contract", () => {
     expect(listManagedServicePricingPolicies).toHaveBeenCalledOnce();
   });
 
-  it("runs Stage 5 only with an explicit operator and materializes the exact reviewed digest", async () => {
+  it("reads and runs Stage 5 only with an explicit operator and exact reviewed digest", async () => {
     const planDigest = `sha256:v2:${"a".repeat(64)}`;
+    const getPricingStage5RunV2 = vi.fn().mockResolvedValue({
+      run_id: "2d20f96d-0f2b-4cff-9fa0-7c4b7fe1a6c5",
+      plan_digest: planDigest,
+      status: "prepared",
+    });
     const dryRunPricingStage5V2 = vi.fn().mockResolvedValue({
       mode: "dry_run",
       status: "dry_run",
@@ -197,10 +202,14 @@ describe("managed pricing HTTP contract", () => {
       plan_digest: planDigest,
     });
     const controller = new AdminController({
+      getPricingStage5RunV2,
       dryRunPricingStage5V2,
       materializePricingStage5V2,
     } as unknown as AdminService);
 
+    await expect(controller.getPricingStage5RunV2(planDigest, "operator@example.test"))
+      .resolves.toMatchObject({ status: "prepared" });
+    expect(getPricingStage5RunV2).toHaveBeenCalledWith(planDigest);
     await expect(controller.dryRunPricingStage5V2({}, "operator@example.test"))
       .resolves.toMatchObject({ status: "dry_run" });
     expect(dryRunPricingStage5V2).toHaveBeenCalledOnce();
@@ -213,6 +222,13 @@ describe("managed pricing HTTP contract", () => {
       reason: "materialize the reviewed complete inventory",
     }, "operator@example.test");
 
+    await expect(controller.getPricingStage5RunV2("bad-digest", "operator"))
+      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.getPricingStage5RunV2(planDigest, undefined))
+      .rejects.toBeInstanceOf(BadRequestException);
+    getPricingStage5RunV2.mockResolvedValueOnce(null);
+    await expect(controller.getPricingStage5RunV2(planDigest, "operator"))
+      .rejects.toBeInstanceOf(NotFoundException);
     await expect(controller.dryRunPricingStage5V2({}, undefined))
       .rejects.toBeInstanceOf(BadRequestException);
     await expect(controller.dryRunPricingStage5V2({ extra: true }, "operator"))
