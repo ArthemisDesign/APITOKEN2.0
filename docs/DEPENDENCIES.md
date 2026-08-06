@@ -117,7 +117,8 @@ after a possible delivery restores a lost ACK only by exact replay and stores th
 validated receipt. The persisted service-inventory digest is mandatory and must match a
 fresh capture; old evidence rows with `NULL` are not staged. Raw identities never leave in
 a blocker/error artifact. The recovery expectation comes only from the durable cutover
-receipt. Startup, migration, the Stage 8 collector, and worker polling do not stage an
+receipt, and the successor expectation only from the newest durable activation receipt; a
+successor (`activate_successor`) advances any exact active head to a newer prepared pair. Startup, migration, the Stage 8 collector, and worker polling do not stage an
 activation job. The only producer is the protected
 `POST /v1/admin/pricing-release-activation-v2/stage` in `apps/api`; the paired GET returns
 a bounded local snapshot and separately a timestamped engine head. `apps/admin` is wired

@@ -521,7 +521,11 @@ export async function collectStage8CombinedEvidenceV2(
       client,
       readers,
       {
-        activationKind: activeHead === null ? "cutover" : "recovery",
+        activationKind: activeHead === null
+          ? "cutover"
+          : activeHead.active_generation === Number(engine.release.target_generation)
+            ? "recovery"
+            : "successor",
         targetGeneration: target.generation,
         targetEngineDigest: target.engine_release_digest ?? "",
         recoveryGeneration: recovery.generation,

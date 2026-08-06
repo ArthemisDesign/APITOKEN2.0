@@ -173,6 +173,24 @@ Recovery triggers include a systemic rise in pricing/admission failures, funding
 settlement backlog, and divergence of the active release readback. A single provider outage is
 handled by the provider master-switch and does not by itself roll back the pricing release.
 
+## Successor advance
+
+A successor activation (`activation_kind="successor"`, control job `activate_successor`) moves the
+live head from any exact active release to a NEWER prepared target/recovery pair — the standard
+path for publishing a new pricing generation (an added model, a changed per-account discount, a
+refreshed full inventory). The successor pair re-snapshots the exact full inventory into its base
+assignments: assignment extensions bind to the outgoing head and never transfer, so an account
+provisioned after the pair was prepared fails the combined evidence and the activation closed, and
+the remedy is to stage a fresh pair that includes it (the converge lane does exactly that). The
+combined collector selects the kind from the engine head alone: absent head is a cutover, the head
+equal to the evidence target is a recovery, anything newer is a successor. The successor
+expectation is not reconstructed either: it is read only from the newest durable activation
+receipt, whatever its kind. Because a successor release is precisely how an INTENTIONAL
+per-account price change ships, neither the engine capture nor the commerce authority treats a
+changed rule set as drift; continuity of unchanged scopes is the staging derivation's
+responsibility, while both sides keep every structural gate (exact pair/link, full-base coverage,
+funding parity, active catalog/switch graph, runtime floor, quiet authority window).
+
 ## Post-activation evidence
 
 Immediately after the CAS, the exact active release digest, B2C 50%/override test vectors, one B2B,

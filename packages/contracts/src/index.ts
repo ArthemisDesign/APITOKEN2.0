@@ -1035,7 +1035,7 @@ export const pricingReleaseHeadV2Schema = z.object({
 }).strict();
 export type PricingReleaseHeadV2 = z.infer<typeof pricingReleaseHeadV2Schema>;
 
-export const pricingReleaseActivationKindV2Schema = z.enum(["cutover", "recovery"]);
+export const pricingReleaseActivationKindV2Schema = z.enum(["cutover", "recovery", "successor"]);
 
 export const pricingReleaseProvisioningReleaseV2Schema = z.object({
   generation: pricingVersionSchema,
@@ -1087,7 +1087,7 @@ export const pricingReleaseProvisioningContextV2Schema = z.object({
       message: "active release must match the exact provisioning head",
     });
   }
-  const expectedKind = context.activation.activation_kind === "cutover" ? "target" : "recovery";
+  const expectedKind = context.activation.activation_kind === "recovery" ? "recovery" : "target";
   if (active.release_kind !== expectedKind) {
     refinement.addIssue({
       code: z.ZodIssueCode.custom,
@@ -1725,12 +1725,24 @@ export const pricingReleaseActivationRequestV2Schema = z.object({
     return;
   }
   if (request.expectation === "absent") {
-    context.addIssue({ code: "custom", message: "recovery requires an exact target head" });
+    context.addIssue({
+      code: "custom",
+      message: `${request.activation_kind} requires an exact head expectation`,
+    });
     return;
   }
-  if (request.expectation.exact.active_generation !== request.evidence.target_generation
-      || request.expectation.exact.active_digest !== request.evidence.target_digest) {
-    context.addIssue({ code: "custom", message: "recovery expectation must be the exact target head" });
+  if (request.activation_kind === "recovery") {
+    if (request.expectation.exact.active_generation !== request.evidence.target_generation
+        || request.expectation.exact.active_digest !== request.evidence.target_digest) {
+      context.addIssue({ code: "custom", message: "recovery expectation must be the exact target head" });
+    }
+    return;
+  }
+  if (request.expectation.exact.active_generation >= request.evidence.target_generation) {
+    context.addIssue({
+      code: "custom",
+      message: "successor expectation must be the exact current head behind the target",
+    });
   }
 });
 export type PricingReleaseActivationRequestV2 =

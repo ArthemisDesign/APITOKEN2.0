@@ -95,6 +95,8 @@ function authorityHarness(
 }
 
 function engineEvidence(input: {
+  targetGeneration?: bigint;
+  recoveryGeneration?: bigint;
   engineInventoryDigest: string;
   fundingDigest: string;
   targetEngineDigest: string;
@@ -120,9 +122,9 @@ function engineEvidence(input: {
     gemini_client_admissions: 1n,
     passed,
     release: {
-      target_generation: TARGET_GENERATION,
+      target_generation: input.targetGeneration ?? TARGET_GENERATION,
       target_digest: input.targetEngineDigest,
-      recovery_generation: RECOVERY_GENERATION,
+      recovery_generation: input.recoveryGeneration ?? RECOVERY_GENERATION,
       recovery_digest: input.recoveryEngineDigest,
       recovery_link_digest: digest("recovery-link"),
       inventory_digest: input.engineInventoryDigest,
@@ -1152,6 +1154,244 @@ describe.runIf(Boolean(connectionString))("Stage 8 combined commerce evidence", 
         }),
       ]));
       expect(control.receipts.map((receipt) => receipt.headVersion)).toEqual(["2", "1"]);
+    } finally {
+      await database.pool.end();
+    }
+  });
+
+  it("advances the head to a newer prepared pair through the successor lane", async () => {
+    const SUCCESSOR_TARGET = 80_201n;
+    const SUCCESSOR_RECOVERY = 80_202n;
+    const seeded = await seedPreparedPair();
+    const database = createDatabase(databaseUrl, "stage8-successor-lifecycle");
+    try {
+      const cutoverEvidence = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        seeded.report,
+      );
+      const cutoverJobId = await stagePricingReleaseActivationJobV2(database, {
+        activationKind: "cutover",
+        evidenceDigest: cutoverEvidence.evidence_digest,
+        operatorId: "pricing-control-worker:integration",
+        reason: "activate exact prepared Stage 9 target",
+      });
+      const cutoverClaim = await claimNextPricingReleaseActivationJobV2(
+        database,
+        "activation-successor-cutover",
+        seeded.authority.readers,
+      );
+      expect(cutoverClaim).toMatchObject({ id: cutoverJobId, attempts: 1 });
+      const cutoverActivatedTs = cutoverClaim!.request.evidence.observed_ts + 1;
+      const cutoverHead: PricingReleaseHeadV2 = {
+        active_generation: Number(TARGET_GENERATION),
+        active_digest: seeded.report.release.target_digest!,
+        head_version: 1,
+        updated_ts: cutoverActivatedTs,
+      };
+      await confirmPricingReleaseActivationJobV2(
+        database,
+        cutoverClaim!,
+        "activation-successor-cutover",
+        {
+          result: "applied",
+          activation: {
+            activation_id: "1",
+            activation_kind: "cutover",
+            from_generation: null,
+            from_digest: null,
+            expected_head_version: 0,
+            head: cutoverHead,
+            evidence_digest: cutoverEvidence.evidence_digest,
+            operator_id: "pricing-control-worker:integration",
+            reason: "activate exact prepared Stage 9 target",
+            activated_ts: cutoverActivatedTs,
+          },
+        },
+      );
+      seeded.authority.setHead(cutoverHead);
+
+      // A successor pair re-snapshots the unchanged full inventory into new generations; its
+      // policies may add scopes (here: the gpt-image-2 model rule) but never drop existing ones.
+      const successorTargetEngineDigest = digest("successor-target-engine-release");
+      const successorRecoveryEngineDigest = digest("successor-recovery-engine-release");
+      const successorPolicyDigest = digest("policy-v2");
+      const commerceDigest = (await seed.query<{ commerce_inventory_digest: string }>(
+        "SELECT commerce_inventory_digest FROM pricing_release_plans_v2 WHERE generation = $1",
+        [TARGET_GENERATION],
+      )).rows[0]!.commerce_inventory_digest;
+      await seed.query(`
+        INSERT INTO pricing_policy_documents_v2 (
+          policy_id, policy_version, owner_type, owner_id, account_class,
+          product_id, billing_mode, schema_version,
+          capability_generation, capability_digest,
+          catalog_generation, catalog_digest, switch_generation, switch_digest,
+          content_digest
+        ) VALUES (
+          'release-v2:b2c:global', 2, 'global_b2c', 'global', 'b2c',
+          'main', 'balance', 2, 4, $1, 4, $2, 4, $3, $4
+        )
+      `, [digest("capability-v2"), digest("main-catalog-v2"), digest("switches-v2"), successorPolicyDigest]);
+      await seed.query(`
+        INSERT INTO pricing_policy_rules_v2 (
+          policy_id, policy_version, rule_id, rule_digest, scope_type,
+          provider_id, canonical_model_id, discount_bps, payable_multiplier_bp
+        ) VALUES
+          ('release-v2:b2c:global', 2, 'global-60', $1, 'global', NULL, NULL, 6000, 4000),
+          ('release-v2:b2c:global', 2, 'openai-gpt-image-2', $2, 'model', 'openai', 'gpt-image-2', 6000, 4000)
+      `, [digest("global-rule-v2"), digest("gpt-image-2-rule")]);
+      await seed.query(`
+        INSERT INTO pricing_release_plans_v2 (
+          generation, release_kind, schema_version,
+          commerce_inventory_digest, engine_inventory_digest,
+          openkeys_inventory_digest, service_inventory_digest,
+          policy_manifest_digest, assignment_manifest_digest,
+          funding_manifest_digest, engine_release_digest, content_digest, status
+        ) VALUES
+          ($1, 'target', 2, $3, $4, $5, $6, $7, $8, NULL, NULL, $9, 'materializing'),
+          ($2, 'recovery', 2, $3, $4, $5, $6, $7, $8, NULL, NULL, $10, 'materializing')
+      `, [
+        SUCCESSOR_TARGET,
+        SUCCESSOR_RECOVERY,
+        commerceDigest,
+        seeded.report.engine_inventory_digest,
+        digest("openkeys-inventory-empty"),
+        buildStage5ServiceInventoryV2([]).inventory_digest,
+        digest("policy-manifest-v2"),
+        digest("successor-assignment-manifest"),
+        digest("successor-target-plan"),
+        digest("successor-recovery-plan"),
+      ]);
+      for (const generation of [SUCCESSOR_TARGET, SUCCESSOR_RECOVERY]) {
+        await seed.query(`
+          INSERT INTO pricing_release_assignments_v2 (
+            release_generation, engine_account_id, account_class, owner_context,
+            owner_id, policy_id, policy_version, policy_digest, billing_mode,
+            funding_generation, purpose, responsible, assignment_digest
+          ) VALUES (
+            $1, $2, 'b2c', 'commerce', $3,
+            'release-v2:b2c:global', 2, $4, 'balance', 7, NULL, NULL, $5
+          )
+        `, [generation, seeded.accountId, seeded.userId, successorPolicyDigest,
+          digest(`successor-assignment:${generation}`)]);
+        await seed.query(`
+          INSERT INTO pricing_funding_normalizations_v2 (
+            release_generation, engine_account_id, funding_generation,
+            expected_source_digest, target_funding_digest, applied_funding_digest,
+            normalization_source, blockers, status
+          ) VALUES ($1, $2, 7, $3, $4, $4, 'ledger_replay', NULL, 'ready')
+        `, [generation, seeded.accountId, digest("funding-source"), digest("account-funding")]);
+      }
+      await seed.query(`
+        UPDATE pricing_release_plans_v2 SET
+          funding_manifest_digest = $3,
+          engine_release_digest = CASE generation WHEN $1 THEN $4 ELSE $5 END,
+          status = 'prepared', updated_at = now()
+        WHERE generation IN ($1, $2)
+      `, [
+        SUCCESSOR_TARGET,
+        SUCCESSOR_RECOVERY,
+        seeded.report.funding_digest,
+        successorTargetEngineDigest,
+        successorRecoveryEngineDigest,
+      ]);
+
+      const successorReport = engineEvidence({
+        targetGeneration: SUCCESSOR_TARGET,
+        recoveryGeneration: SUCCESSOR_RECOVERY,
+        engineInventoryDigest: seeded.report.engine_inventory_digest,
+        fundingDigest: seeded.report.funding_digest,
+        targetEngineDigest: successorTargetEngineDigest,
+        recoveryEngineDigest: successorRecoveryEngineDigest,
+        activeHead: {
+          active_generation: TARGET_GENERATION,
+          active_digest: seeded.report.release.target_digest!,
+          head_version: 1n,
+          updated_ts: BigInt(cutoverActivatedTs),
+        },
+      });
+      const successorEvidence = await collectStage8CombinedEvidenceV2(
+        database,
+        seeded.authority.readers,
+        successorReport,
+      );
+      expect(successorEvidence.passed).toBe(true);
+
+      const successorJobId = await stagePricingReleaseActivationJobV2(database, {
+        activationKind: "successor",
+        evidenceDigest: successorEvidence.evidence_digest,
+        operatorId: "pricing-control-worker:integration",
+        reason: "advance to the gpt-image-2 successor pair",
+      });
+      const successorClaim = await claimNextPricingReleaseActivationJobV2(
+        database,
+        "activation-successor",
+        seeded.authority.readers,
+      );
+      expect(successorClaim).toMatchObject({
+        id: successorJobId,
+        attempts: 1,
+        releaseGeneration: SUCCESSOR_TARGET,
+        request: {
+          activation_kind: "successor",
+          expectation: { exact: cutoverHead },
+          evidence: {
+            evidence_digest: successorEvidence.evidence_digest,
+            target_generation: Number(SUCCESSOR_TARGET),
+            target_digest: successorTargetEngineDigest,
+          },
+        },
+      });
+      const successorActivatedTs = successorClaim!.request.evidence.observed_ts + 1;
+      const successorHead: PricingReleaseHeadV2 = {
+        active_generation: Number(SUCCESSOR_TARGET),
+        active_digest: successorTargetEngineDigest,
+        head_version: 2,
+        updated_ts: successorActivatedTs,
+      };
+      await confirmPricingReleaseActivationJobV2(
+        database,
+        successorClaim!,
+        "activation-successor",
+        {
+          result: "applied",
+          activation: {
+            activation_id: "2",
+            activation_kind: "successor",
+            from_generation: Number(TARGET_GENERATION),
+            from_digest: seeded.report.release.target_digest!,
+            expected_head_version: 1,
+            head: successorHead,
+            evidence_digest: successorEvidence.evidence_digest,
+            operator_id: "pricing-control-worker:integration",
+            reason: "advance to the gpt-image-2 successor pair",
+            activated_ts: successorActivatedTs,
+          },
+        },
+      );
+
+      const control = await readPricingReleaseActivationControlV2(database);
+      expect(control.jobs).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: successorJobId,
+          activationKind: "successor",
+          status: "confirmed",
+        }),
+      ]));
+      expect(control.receipts[0]).toEqual(expect.objectContaining({
+        activationKind: "successor",
+        releaseGeneration: SUCCESSOR_TARGET.toString(),
+        headVersion: "2",
+      }));
+
+      // A successor pointed at the active pair is not a successor: the request contract rejects
+      // the non-monotonic expectation before any job row exists.
+      await expect(stagePricingReleaseActivationJobV2(database, {
+        activationKind: "successor",
+        evidenceDigest: cutoverEvidence.evidence_digest,
+        operatorId: "pricing-control-worker:integration",
+        reason: "not a successor",
+      })).rejects.toThrow(/successor expectation/);
     } finally {
       await database.pool.end();
     }

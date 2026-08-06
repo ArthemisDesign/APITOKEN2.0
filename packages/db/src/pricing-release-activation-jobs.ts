@@ -20,7 +20,7 @@ import {
 
 const ACTIVATION_LEASE_INTERVAL = "5 minutes";
 
-export type PricingReleaseActivationJobKindV2 = "cutover" | "recovery";
+export type PricingReleaseActivationJobKindV2 = "cutover" | "recovery" | "successor";
 export type PricingReleaseActivationJobDispositionV2 = "retry" | "dead";
 
 export interface StagePricingReleaseActivationJobV2Input {
@@ -141,7 +141,7 @@ interface ActivationEvidenceRow {
 
 interface ActivationJobRow extends ActivationEvidenceRow {
   id: string;
-  job_kind: "activate_release" | "activate_recovery";
+  job_kind: "activate_release" | "activate_recovery" | "activate_successor";
   release_generation: string;
   release_digest: string;
   idempotency_key: string;
@@ -230,7 +230,16 @@ function activationResultDigest(payloadDigest: string, receiptDigest: string): s
 }
 
 function expectedJobKind(kind: PricingReleaseActivationJobKindV2): ActivationJobRow["job_kind"] {
-  return kind === "cutover" ? "activate_release" : "activate_recovery";
+  return kind === "cutover"
+    ? "activate_release"
+    : kind === "recovery" ? "activate_recovery" : "activate_successor";
+}
+
+function activationJobKindV2(jobKind: ActivationJobRow["job_kind"]): PricingReleaseActivationJobKindV2 {
+  if (jobKind === "activate_release") return "cutover";
+  if (jobKind === "activate_recovery") return "recovery";
+  if (jobKind === "activate_successor") return "successor";
+  throw permanent("invalid activation job kind");
 }
 
 function idempotencyKey(kind: PricingReleaseActivationJobKindV2, evidenceDigest: string): string {
@@ -330,6 +339,53 @@ async function cutoverReceiptForRecovery(
   return ack;
 }
 
+/**
+ * The successor expectation is the exact CURRENT head, proven by the newest durable activation
+ * receipt regardless of its kind (cutover, recovery or an earlier successor). The engine CAS
+ * still re-validates it against the live head; this read only pins the immutable durable shape.
+ */
+async function successorHeadForActivation(
+  client: PoolClient,
+  evidence: ActivationEvidenceRow,
+): Promise<Extract<PricingReleaseActivationAckV2, { result: "applied" | "unchanged" }>> {
+  const result = await client.query<{
+    activation_id: string;
+    evidence_digest: string;
+    head_version: string;
+    receipt_digest: string;
+    receipt_payload: unknown;
+    activated_at: Date;
+  }>(`
+    SELECT activation_id, evidence_digest, head_version::text,
+           receipt_digest, receipt_payload, activated_at
+    FROM pricing_release_activation_receipts_v2
+    ORDER BY head_version DESC
+    LIMIT 1
+    FOR SHARE
+  `);
+  const row = result.rows[0];
+  if (!row || row.receipt_payload === null) {
+    throw permanent("successor requires one complete durable activation receipt");
+  }
+  const ack = pricingReleaseActivationAckV2Schema.parse(row.receipt_payload);
+  if (ack.result === "rejected") {
+    throw permanent("stored activation receipt payload is not a successful ACK");
+  }
+  if (
+    ack.activation.activation_id !== row.activation_id
+    || ack.activation.evidence_digest !== row.evidence_digest
+    || String(ack.activation.head.head_version) !== row.head_version
+    || activationReceiptDigest(ack) !== row.receipt_digest
+    || ack.activation.activated_ts * 1_000 !== row.activated_at.getTime()
+  ) {
+    throw permanent("stored activation receipt does not match its durable head identity");
+  }
+  if (ack.activation.evidence_digest === evidence.evidence_digest) {
+    throw permanent("successor requires fresh Stage 8 evidence after the previous activation");
+  }
+  return ack;
+}
+
 async function requestFromEvidence(
   client: PoolClient,
   evidence: ActivationEvidenceRow,
@@ -362,7 +418,9 @@ async function requestFromEvidence(
   const recoveryGeneration = parsePositiveSafeInteger(evidence.recovery_generation, "recovery generation");
   const expectation = input.activationKind === "cutover"
     ? "absent" as const
-    : { exact: (await cutoverReceiptForRecovery(client, evidence)).activation.head };
+    : input.activationKind === "recovery"
+      ? { exact: (await cutoverReceiptForRecovery(client, evidence)).activation.head }
+      : { exact: (await successorHeadForActivation(client, evidence)).activation.head };
   return pricingReleaseActivationRequestV2Schema.parse({
     activation_kind: input.activationKind,
     expectation,
@@ -427,12 +485,12 @@ export async function stagePricingReleaseActivationJobV2(
     const expectedHeadVersion = request.expectation === "absent"
       ? 0
       : request.expectation.exact.head_version;
-    const releaseGeneration = input.activationKind === "cutover"
-      ? evidence.target_generation
-      : evidence.recovery_generation;
-    const releaseDigest = input.activationKind === "cutover"
-      ? evidence.target_digest
-      : evidence.recovery_digest;
+    const releaseGeneration = input.activationKind === "recovery"
+      ? evidence.recovery_generation
+      : evidence.target_generation;
+    const releaseDigest = input.activationKind === "recovery"
+      ? evidence.recovery_digest
+      : evidence.target_digest;
     const existing = await client.query<{
       id: string;
       job_kind: string;
@@ -606,7 +664,7 @@ export async function readPricingReleaseActivationControlV2(
     `, [limit]);
     const jobs = await client.query<{
       id: string;
-      job_kind: "activate_release" | "activate_recovery";
+      job_kind: "activate_release" | "activate_recovery" | "activate_successor";
       release_generation: string;
       release_digest: string;
       stage8_evidence_digest: string;
@@ -623,7 +681,7 @@ export async function readPricingReleaseActivationControlV2(
              stage8_evidence_digest, activation_payload, status, attempts,
              last_error, result_digest, confirmed_at, created_at, updated_at
       FROM pricing_release_control_jobs_v2
-      WHERE job_kind IN ('activate_release', 'activate_recovery')
+      WHERE job_kind IN ('activate_release', 'activate_recovery', 'activate_successor')
       ORDER BY created_at DESC, id
       LIMIT $1
     `, [limit]);
@@ -708,7 +766,7 @@ export async function readPricingReleaseActivationControlV2(
         const payload = pricingReleaseActivationRequestV2Schema.safeParse(row.activation_payload);
         return {
           id: row.id,
-          activationKind: row.job_kind === "activate_release" ? "cutover" : "recovery",
+          activationKind: activationJobKindV2(row.job_kind),
           releaseGeneration: row.release_generation,
           releaseDigest: row.release_digest,
           evidenceDigest: row.stage8_evidence_digest,
@@ -795,17 +853,15 @@ async function claimedJobFromRow(
   if (row.stage8_evidence_digest === null || row.expected_head_version === null) {
     throw permanent("activation job is missing its evidence or head expectation");
   }
-  const activationKind: PricingReleaseActivationJobKindV2 = row.job_kind === "activate_release"
-    ? "cutover"
-    : row.job_kind === "activate_recovery" ? "recovery" : (() => { throw permanent("invalid activation job kind"); })();
+  const activationKind: PricingReleaseActivationJobKindV2 = activationJobKindV2(row.job_kind);
   const request = await requestFromEvidence(client, row, {
     activationKind,
     operatorId: pricingReleaseActivationRequestV2Schema.parse(row.activation_payload).operator_id,
     reason: pricingReleaseActivationRequestV2Schema.parse(row.activation_payload).reason,
   }, row.attempts === 1);
   const storedRequest = pricingReleaseActivationRequestV2Schema.parse(row.activation_payload);
-  const releaseGeneration = activationKind === "cutover" ? row.target_generation : row.recovery_generation;
-  const releaseDigest = activationKind === "cutover" ? row.target_digest : row.recovery_digest;
+  const releaseGeneration = activationKind === "recovery" ? row.recovery_generation : row.target_generation;
+  const releaseDigest = activationKind === "recovery" ? row.recovery_digest : row.target_digest;
   const expectedHeadVersion = storedRequest.expectation === "absent"
     ? 0
     : storedRequest.expectation.exact.head_version;
@@ -878,7 +934,7 @@ export async function recoverStalePricingReleaseActivationJobsV2(
         next_attempt_at = now(),
         last_error = COALESCE(last_error, 'recovered expired pricing-release activation lease'),
         updated_at = now()
-    WHERE job_kind IN ('activate_release', 'activate_recovery')
+    WHERE job_kind IN ('activate_release', 'activate_recovery', 'activate_successor')
       AND status = 'processing'
       AND (locked_at IS NULL OR locked_at < now() - interval '${ACTIVATION_LEASE_INTERVAL}')
   `);
@@ -904,14 +960,14 @@ export async function claimNextPricingReleaseActivationJobV2(
           next_attempt_at = now(),
           last_error = COALESCE(last_error, 'recovered expired pricing-release activation lease'),
           updated_at = now()
-      WHERE job_kind IN ('activate_release', 'activate_recovery')
+      WHERE job_kind IN ('activate_release', 'activate_recovery', 'activate_successor')
         AND status = 'processing'
         AND (locked_at IS NULL OR locked_at < now() - interval '${ACTIVATION_LEASE_INTERVAL}')
     `);
     const candidate = await client.query<{ id: string }>(`
       SELECT id
       FROM pricing_release_control_jobs_v2
-      WHERE job_kind IN ('activate_release', 'activate_recovery')
+      WHERE job_kind IN ('activate_release', 'activate_recovery', 'activate_successor')
         AND status IN ('pending', 'retry') AND next_attempt_at <= now()
         AND NOT EXISTS (
           SELECT 1 FROM engine_catalog_jobs
@@ -1003,14 +1059,14 @@ function assertReceiptMatchesJob(
         digest: expectation.exact.active_digest,
         headVersion: expectation.exact.head_version,
       };
-  const destination = job.request.activation_kind === "cutover"
+  const destination = job.request.activation_kind === "recovery"
     ? {
-        generation: job.request.evidence.target_generation,
-        digest: job.request.evidence.target_digest,
-      }
-    : {
         generation: job.request.evidence.recovery_generation,
         digest: job.request.evidence.recovery_digest,
+      }
+    : {
+        generation: job.request.evidence.target_generation,
+        digest: job.request.evidence.target_digest,
       };
   if (
     receipt.activation_kind !== job.request.activation_kind

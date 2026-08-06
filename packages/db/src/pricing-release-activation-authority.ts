@@ -31,7 +31,7 @@ export interface PricingReleaseActivationAuthorityReadersV2 {
 }
 
 export interface PricingReleaseActivationAuthorityExpectationV2 {
-  activationKind: "cutover" | "recovery";
+  activationKind: "cutover" | "recovery" | "successor";
   targetGeneration: string;
   targetEngineDigest: string;
   recoveryGeneration: string;
