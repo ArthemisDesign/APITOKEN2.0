@@ -719,6 +719,81 @@ done < <(wd_prunable_release_dirs "$release_root" 0)
 [[ ${#zero_keep_selection[@]} -eq 3 ]] \
   || wd_die "keep=0 retention must still protect current and previous"
 
+# The CRM root names releases `crm-<sha>` (plus legacy plain `<sha>`), so its retention runs with an
+# explicit name pattern. Prefixed releases get the same keep counting, current/previous protection,
+# and explicit SHA protection; malformed prefixed names and links are never selected.
+crm_root="$TEMP/crm-releases"
+mkdir -p "$crm_root"
+crm_shas=(
+  1111111111111111111111111111111111111111
+  2222222222222222222222222222222222222222
+  3333333333333333333333333333333333333333
+  4444444444444444444444444444444444444444
+  5555555555555555555555555555555555555555
+)
+for crm_sha in "${crm_shas[@]}"; do
+  mkdir -p "$crm_root/crm-$crm_sha"
+done
+mkdir -p "$crm_root/not-a-release" "$crm_root/crm-not-a-sha" "$crm_root/plain-non-sha"
+ln -s "$crm_root/crm-${crm_shas[4]}" "$crm_root/current"
+ln -s "$crm_root/crm-${crm_shas[3]}" "$crm_root/previous"
+node - "$crm_root" "${crm_shas[@]}" <<'NODE'
+const fs = require("node:fs");
+const [root, ...shas] = process.argv.slice(2);
+// Oldest first, so index 0 is the least recently modified prefixed release.
+shas.forEach((sha, index) => {
+  const when = 1700000000 + index;
+  fs.utimesSync(`${root}/crm-${sha}`, when, when);
+});
+NODE
+
+# keep=1 retains the newest unprotected prefixed release plus current/previous; the two oldest
+# prefixed releases are selected and malformed names are ignored.
+crm_prunable=()
+while IFS= read -r -d '' crm_release; do
+  crm_prunable+=("${crm_release##*/}")
+done < <(wd_prunable_release_dirs "$crm_root" 1 --pattern '^(crm-)?[0-9a-f]{40}$')
+[[ ${#crm_prunable[@]} -eq 2 ]] \
+  || wd_die "crm release retention selected ${#crm_prunable[@]} directories, expected 2"
+printf '%s\n' "${crm_prunable[@]}" | grep -Fxq "crm-${crm_shas[0]}" \
+  || wd_die "crm release retention did not select the oldest prefixed release"
+printf '%s\n' "${crm_prunable[@]}" | grep -Fxq "crm-${crm_shas[1]}" \
+  || wd_die "crm release retention did not select the second-oldest prefixed release"
+for protected_crm in "crm-${crm_shas[4]}" "crm-${crm_shas[3]}" "crm-${crm_shas[2]}" \
+  crm-not-a-sha not-a-release plain-non-sha; do
+  if printf '%s\n' "${crm_prunable[@]}" | grep -Fxq "$protected_crm"; then
+    wd_die "crm release retention selected a protected or malformed entry: $protected_crm"
+  fi
+done
+
+# An explicitly protected plain SHA must protect its prefixed CRM release.
+crm_protected=()
+while IFS= read -r -d '' crm_release; do
+  crm_protected+=("${crm_release##*/}")
+done < <(wd_prunable_release_dirs "$crm_root" 1 --pattern '^(crm-)?[0-9a-f]{40}$' "${crm_shas[0]}")
+if printf '%s\n' "${crm_protected[@]}" | grep -Fxq "crm-${crm_shas[0]}"; then
+  wd_die "crm release retention removed an explicitly protected prefixed release"
+fi
+
+# keep=0 with no protected list still must not touch prefixed current/previous.
+crm_zero_keep=()
+while IFS= read -r -d '' crm_release; do
+  crm_zero_keep+=("${crm_release##*/}")
+done < <(wd_prunable_release_dirs "$crm_root" 0 --pattern '^(crm-)?[0-9a-f]{40}$')
+[[ ${#crm_zero_keep[@]} -eq 3 ]] \
+  || wd_die "keep=0 crm retention must still protect prefixed current and previous"
+
+# The default pattern never admits a prefixed name, even when prefixed directories exist.
+plain_crm_root="$TEMP/plain-crm-releases"
+mkdir -p "$plain_crm_root"
+for plain_sha in 1111111111111111111111111111111111111111 2222222222222222222222222222222222222222; do
+  mkdir -p "$plain_crm_root/$plain_sha" "$plain_crm_root/crm-$plain_sha"
+done
+while IFS= read -r -d '' plain_release; do
+  [[ ${plain_release##*/} != crm-* ]] \
+    || wd_die "default release retention accepted a prefixed name"
+done < <(wd_prunable_release_dirs "$plain_crm_root" 1)
+
 # Live release discovery requires complete exe+cwd observations, protects every distinct managed
 # release, skips missing/inactive units, and routes non-dumpable authbot only through the root helper.
 for retention_function in live_release_shas prune_selected_releases prune_expired_releases \
@@ -727,13 +802,18 @@ for retention_function in live_release_shas prune_selected_releases prune_expire
 done
 generic_engine_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 generic_commerce_sha=cccccccccccccccccccccccccccccccccccccccc
+generic_crm_sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 authbot_live_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 ENGINE_RELEASE_ROOT="$TEMP/live-engine-releases"
 COMMERCE_RELEASE_ROOT="$TEMP/live-commerce-releases"
-mkdir -p "$ENGINE_RELEASE_ROOT/$generic_engine_sha" "$COMMERCE_RELEASE_ROOT/$generic_commerce_sha"
+CRM_RELEASE_ROOT="$TEMP/live-crm-releases"
+mkdir -p "$ENGINE_RELEASE_ROOT/$generic_engine_sha" "$COMMERCE_RELEASE_ROOT/$generic_commerce_sha" \
+  "$CRM_RELEASE_ROOT/crm-$generic_crm_sha"
 engine_delete_sha=1111111111111111111111111111111111111111
 commerce_delete_sha=2222222222222222222222222222222222222222
-mkdir -p "$ENGINE_RELEASE_ROOT/$engine_delete_sha" "$COMMERCE_RELEASE_ROOT/$commerce_delete_sha"
+crm_delete_sha=3333333333333333333333333333333333333333
+mkdir -p "$ENGINE_RELEASE_ROOT/$engine_delete_sha" "$COMMERCE_RELEASE_ROOT/$commerce_delete_sha" \
+  "$CRM_RELEASE_ROOT/crm-$crm_delete_sha"
 live_readlink_log="$TEMP/live-readlink.log"
 release_rm_log="$TEMP/release-rm.log"
 selector_log="$TEMP/prunable-release-args.log"
@@ -746,6 +826,15 @@ generic_live_mode=active
 selector_mode=success
 systemctl() {
   [[ $1 == show && $3 == -p && $5 == --value ]] || return 1
+  if [[ $2 == apitoken-crm-web.service ]]; then
+    case $4 in
+      LoadState) printf '%s\n' loaded ;;
+      ActiveState) printf '%s\n' active ;;
+      MainPID) printf '%s\n' 4343 ;;
+      *) return 1 ;;
+    esac
+    return 0
+  fi
   if [[ $2 != claude-api.service ]]; then
     [[ $4 == LoadState ]] && printf '%s\n' not-found
     return 0
@@ -787,6 +876,12 @@ readlink() {
         && printf '%s/%s/apps/api\n' "$COMMERCE_RELEASE_ROOT" "$generic_commerce_sha" \
         || printf '%s\n' /var/lib/apitoken
       ;;
+    /proc/4343/exe)
+      printf '%s\n' /usr/bin/node
+      ;;
+    /proc/4343/cwd)
+      printf '%s/crm-%s/apps/crm-web\n' "$CRM_RELEASE_ROOT" "$generic_crm_sha"
+      ;;
     *) wd_die "generic live release inspection reached an unexpected procfs path: $3" ;;
   esac
 }
@@ -825,9 +920,16 @@ wd_prunable_release_dirs() {
     printf '%s\0' "$COMMERCE_RELEASE_ROOT/$commerce_delete_sha"
     return 1
   fi
-  [[ $1 == "$ENGINE_RELEASE_ROOT" ]] \
-    && printf '%s\0' "$ENGINE_RELEASE_ROOT/$engine_delete_sha" \
-    || printf '%s\0' "$COMMERCE_RELEASE_ROOT/$commerce_delete_sha"
+  if [[ $selector_mode == third-failure && $count == 3 ]]; then
+    printf '%s\0' "$CRM_RELEASE_ROOT/crm-$crm_delete_sha"
+    return 1
+  fi
+  case $1 in
+    "$ENGINE_RELEASE_ROOT") printf '%s\0' "$ENGINE_RELEASE_ROOT/$engine_delete_sha" ;;
+    "$COMMERCE_RELEASE_ROOT") printf '%s\0' "$COMMERCE_RELEASE_ROOT/$commerce_delete_sha" ;;
+    "$CRM_RELEASE_ROOT") printf '%s\0' "$CRM_RELEASE_ROOT/crm-$crm_delete_sha" ;;
+    *) wd_die "selector reached an unexpected release root: $1" ;;
+  esac
 }
 notification_failure=none
 wd_warn() {
@@ -858,15 +960,15 @@ reset_live_fixture() {
   : >"$selector_log"
   : >"$TEMP/retention-warn.log"
   : >"$TEMP/retention-status.log"
-  rm -f -- "$TEMP/release-selection-1" "$TEMP/release-selection-2"
+  rm -f -- "$TEMP/release-selection-1" "$TEMP/release-selection-2" "$TEMP/release-selection-3"
 }
 reset_live_fixture
 live_output=$(live_release_shas) || wd_die 'live release discovery rejected complete generic/authbot observations'
-for live_sha in "$generic_engine_sha" "$generic_commerce_sha" "$authbot_live_sha"; do
+for live_sha in "$generic_engine_sha" "$generic_commerce_sha" "$generic_crm_sha" "$authbot_live_sha"; do
   printf '%s\n' "$live_output" | grep -Fxq "$live_sha" \
     || wd_die "live release discovery lost protected SHA $live_sha"
 done
-[[ $(wc -l <"$live_readlink_log" | tr -d ' ') == 2 ]] \
+[[ $(wc -l <"$live_readlink_log" | tr -d ' ') == 4 ]] \
   || wd_die 'live release discovery did not require both exe and cwd observations'
 live_helper_mode=inactive
 reset_live_fixture
@@ -883,23 +985,27 @@ for generic_live_mode in exe-failure cwd-failure outside-only malformed-root sta
     && wd_die "live release discovery accepted generic inspection $generic_live_mode"
 done
 generic_live_mode=active
-for selector_mode in first-failure second-failure; do
+for selector_mode in first-failure second-failure third-failure; do
   reset_live_fixture
   prune_expired_releases && wd_die "release pruning accepted $selector_mode"
   [[ ! -s $release_rm_log ]] || wd_die "release pruning mutated a root after $selector_mode"
-  [[ ! -e $TEMP/release-selection-1 && ! -e $TEMP/release-selection-2 ]] \
+  [[ ! -e $TEMP/release-selection-1 && ! -e $TEMP/release-selection-2 \
+      && ! -e $TEMP/release-selection-3 ]] \
     || wd_die "release pruning leaked selector files after $selector_mode"
 done
 selector_mode=success
 reset_live_fixture
-prune_expired_releases || wd_die 'release pruning rejected complete dual-root selections'
-[[ $(grep -Fc "$authbot_live_sha" "$selector_log") -eq 2 ]] \
-  || wd_die 'both release roots did not use the same protected live snapshot'
+prune_expired_releases || wd_die 'release pruning rejected complete triple-root selections'
+[[ $(grep -Fc "$authbot_live_sha" "$selector_log") -eq 3 ]] \
+  || wd_die 'every release root did not use the same protected live snapshot'
 grep -Fq "rm -rf --one-file-system -- $ENGINE_RELEASE_ROOT/$engine_delete_sha" "$release_rm_log" \
-  || wd_die 'engine release selection was not removed after both selectors completed'
+  || wd_die 'engine release selection was not removed after all selectors completed'
 grep -Fq "rm -rf --one-file-system -- $COMMERCE_RELEASE_ROOT/$commerce_delete_sha" "$release_rm_log" \
-  || wd_die 'commerce release selection was not removed after both selectors completed'
-[[ ! -e $TEMP/release-selection-1 && ! -e $TEMP/release-selection-2 ]] \
+  || wd_die 'commerce release selection was not removed after all selectors completed'
+grep -Fq "rm -rf --one-file-system -- $CRM_RELEASE_ROOT/crm-$crm_delete_sha" "$release_rm_log" \
+  || wd_die 'crm release selection was not removed after all selectors completed'
+[[ ! -e $TEMP/release-selection-1 && ! -e $TEMP/release-selection-2 \
+    && ! -e $TEMP/release-selection-3 ]] \
   || wd_die 'release pruning leaked selector files after success'
 # A host-local observation failure is absorbed by the real wrapper under production-like errexit.
 # Invoke it as a simple command, never through `fn || ...` (which suppresses errexit inside the
@@ -3080,7 +3186,8 @@ grep -Fq 'recover_interrupted_handoffs' "$ROOT/crates/authbot/src/main.rs" \
 for retained_engine_unit in claude-api-openai.service claude-api-openai@8793.service \
   claude-api-openai@8797.service claude-api-gemini.service \
   claude-api-gemini@8795.service claude-api-gemini@8799.service \
-  claude-router.service claude-router@8800.service claude-router@8801.service; do
+  claude-router.service claude-router@8800.service claude-router@8801.service \
+  apitoken-crm-api.service apitoken-crm-web.service; do
   grep -Fq "$retained_engine_unit" "$ROOT/deploy/watchdog.sh" \
     || wd_die "release retention can unlink the executable backing $retained_engine_unit"
 done

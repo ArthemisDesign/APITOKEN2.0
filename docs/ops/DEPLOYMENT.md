@@ -1081,7 +1081,10 @@ dump per database. Nothing else removes them, so the watchdog runs retention at 
 delivery cycle and on its periodic idle cadence.
 
 - Build candidates: removed after 24 hours (measured from test completion when a marker exists).
-- Immutable releases: the newest ten per component root are kept.
+- Immutable releases: the newest ten per component root are kept. This covers the engine root
+  `/srv/claude-api/releases`, the commerce root `/opt/apitoken/releases`, and the CRM root
+  `/opt/apitoken/crm-releases` (whose lane names releases `crm-<sha>` and whose live units
+  `apitoken-crm-api`/`apitoken-crm-web` are observed like every other active unit).
 - Pre-deployment dumps: the newest ten per database are kept.
 
 `current`, `previous`, the recorded component SHAs, and any release backing a live process are

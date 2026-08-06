@@ -66,6 +66,7 @@ SOURCE_FETCH_LOCK=/run/lock/apitoken-source-fetch.lock
 DEPLOY_LOCK=/run/lock/apitoken-deploy.lock
 ENGINE_RELEASE_ROOT=/srv/claude-api/releases
 COMMERCE_RELEASE_ROOT=/opt/apitoken/releases
+CRM_RELEASE_ROOT=/opt/apitoken/crm-releases
 
 PROCESSED_FILE=$STATE_ROOT/processed.sha
 INFRASTRUCTURE_FILE=$STATE_ROOT/infrastructure.sha
@@ -569,7 +570,8 @@ live_release_shas() {
     claude-api-kimi.service claude-api-kimi@8804.service claude-api-kimi@8805.service \
     claude-router.service claude-router@8800.service claude-router@8801.service \
     apitoken-api@3000.service apitoken-api@3001.service \
-    apitoken-worker.service apitoken-content-studio.service; do
+    apitoken-worker.service apitoken-content-studio.service \
+    apitoken-crm-api.service apitoken-crm-web.service; do
     load_state=''
     if ! load_state=$(systemctl show "$unit" -p LoadState --value 2>/dev/null); then
       [[ $load_state == not-found ]] && continue
@@ -592,9 +594,11 @@ live_release_shas() {
       case $resolved in
         "$ENGINE_RELEASE_ROOT"/*) relative=${resolved#"$ENGINE_RELEASE_ROOT"/} ;;
         "$COMMERCE_RELEASE_ROOT"/*) relative=${resolved#"$COMMERCE_RELEASE_ROOT"/} ;;
+        "$CRM_RELEASE_ROOT"/*) relative=${resolved#"$CRM_RELEASE_ROOT"/} ;;
         *) continue ;;
       esac
       name=${relative%%/*}
+      name=${name#crm-}
       [[ $name =~ ^[0-9a-f]{40}$ ]] || return 1
       printf '%s\n' "$name"
       found=1
@@ -615,8 +619,10 @@ prune_selected_releases() {
   local root=$1 label=$2 selection=$3 release sha removed=0 failed=0
   while IFS= read -r -d '' release; do
     # The checked selector excludes links, non-SHA names, and protected releases. Revalidate at the
-    # destructive boundary as defence in depth.
+    # destructive boundary as defence in depth; the CRM root's `crm-` name prefix is normalized
+    # before the SHA check, matching the selector's pattern.
     sha=${release##*/}
+    sha=${sha#crm-}
     if [[ ${release%/*} != "$root" || ! $sha =~ ^[0-9a-f]{40}$ || ! -d $release || -L $release ]]; then
       wd_warn "unsafe $label retention target skipped: $release"
       failed=$((failed + 1))
@@ -637,7 +643,7 @@ prune_selected_releases() {
 }
 
 prune_expired_releases() {
-  local protected=() sha live_shas engine_selection commerce_selection
+  local protected=() sha live_shas engine_selection commerce_selection crm_selection
   exec 8<>"$DEPLOY_LOCK" || return 1
   if ! flock -n 8; then
     exec 8>&-
@@ -646,11 +652,13 @@ prune_expired_releases() {
   engine_selection=$(mktemp) || { flock -u 8; exec 8>&-; return 1; }
   commerce_selection=$(mktemp) \
     || { rm -f -- "$engine_selection"; flock -u 8; exec 8>&-; return 1; }
+  crm_selection=$(mktemp) \
+    || { rm -f -- "$engine_selection" "$commerce_selection"; flock -u 8; exec 8>&-; return 1; }
 
-  # Build one complete live snapshot and both complete NUL selections before mutating either root.
+  # Build one complete live snapshot and all complete NUL selections before mutating either root.
   # No process substitution is used here: producer status is checked directly.
   if ! live_shas=$(live_release_shas); then
-    rm -f -- "$engine_selection" "$commerce_selection"
+    rm -f -- "$engine_selection" "$commerce_selection" "$crm_selection"
     flock -u 8
     exec 8>&-
     return 1
@@ -658,7 +666,7 @@ prune_expired_releases() {
   while IFS= read -r sha; do
     [[ -z $sha ]] && continue
     if [[ ! $sha =~ ^[0-9a-f]{40}$ ]]; then
-      rm -f -- "$engine_selection" "$commerce_selection"
+      rm -f -- "$engine_selection" "$commerce_selection" "$crm_selection"
       flock -u 8
       exec 8>&-
       return 1
@@ -672,8 +680,10 @@ prune_expired_releases() {
   if ! wd_prunable_release_dirs "$ENGINE_RELEASE_ROOT" "$RELEASE_RETENTION_KEEP" \
       "${protected[@]}" >"$engine_selection" \
       || ! wd_prunable_release_dirs "$COMMERCE_RELEASE_ROOT" "$RELEASE_RETENTION_KEEP" \
-        "${protected[@]}" >"$commerce_selection"; then
-    rm -f -- "$engine_selection" "$commerce_selection"
+        "${protected[@]}" >"$commerce_selection" \
+      || ! wd_prunable_release_dirs "$CRM_RELEASE_ROOT" "$RELEASE_RETENTION_KEEP" \
+        --pattern '^(crm-)?[0-9a-f]{40}$' "${protected[@]}" >"$crm_selection"; then
+    rm -f -- "$engine_selection" "$commerce_selection" "$crm_selection"
     flock -u 8
     exec 8>&-
     return 1
@@ -681,7 +691,8 @@ prune_expired_releases() {
 
   prune_selected_releases "$ENGINE_RELEASE_ROOT" engine "$engine_selection"
   prune_selected_releases "$COMMERCE_RELEASE_ROOT" commerce "$commerce_selection"
-  rm -f -- "$engine_selection" "$commerce_selection"
+  prune_selected_releases "$CRM_RELEASE_ROOT" crm "$crm_selection"
+  rm -f -- "$engine_selection" "$commerce_selection" "$crm_selection"
   flock -u 8
   exec 8>&-
   return 0

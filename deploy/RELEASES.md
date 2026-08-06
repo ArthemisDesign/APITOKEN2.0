@@ -37,6 +37,25 @@ candidate. Promotion copies only `.deploy-artifacts/commerce-release`, using a s
 reflink when supported. Content Studio runs its traced standalone server; a fixed launcher falls
 back to `next start` when an older full-tree release is selected for rollback.
 
+## CRM
+
+```text
+/opt/apitoken/crm-releases/
+├── crm-<sha>/                             tested production bundle (lane-prefixed names)
+│   ├── .release-sha
+│   └── apps/crm-api|apps/crm-web|...
+├── <sha>/                                 legacy plain-SHA release (early lane versions)
+├── current -> /opt/apitoken/crm-releases/<active-release>
+└── previous -> /opt/apitoken/crm-releases/<prior-release>
+```
+
+The CRM lane (separate repository) writes its own immutable releases below this root; the
+`systemd/apitoken-crm-api.service` and `systemd/apitoken-crm-web.service` units run from
+`/opt/apitoken/crm-releases/current`. This repository's watchdog release retention manages the root
+with the same newest-ten keep and live-process protection as the engine and commerce roots; its
+selector recognizes both the `crm-<sha>` lane names and the legacy plain-SHA names, and the two CRM
+units are observed as live releases exactly like the other managed units.
+
 ## Rust engine
 
 ```text
@@ -138,8 +157,8 @@ Neither symlink-based unit may be installed or first-started before both of thes
 ## Retention and cleanup
 
 In one fail-local transaction under the exclusive deployment lock, the watchdog snapshots every live
-release once, completely selects expired directories for both managed engine and commerce roots, and
-only then removes any selection. It keeps the newest ten immutable releases per root and always
+release once, completely selects expired directories for the managed engine, commerce, and CRM roots,
+and only then removes any selection. It keeps the newest ten immutable releases per root and always
 protects:
 
 - the targets of `current` and `previous`;
@@ -151,8 +170,8 @@ Each active normal unit requires complete, successful `/proc/<MainPID>/exe` and
 inactive, or failed unit contributes no live release; an active unit observed only outside managed
 roots is incomplete. Because authbot is non-dumpable, its live engine release is obtained only
 through the fixed root-owned runtime helper. Any lock, observation, or selector failure skips deletion
-in both roots without quarantining an otherwise valid candidate. Releases are made owner-writable
-only immediately before removal and are never modified in place.
+in every managed root without quarantining an otherwise valid candidate. Releases are made
+owner-writable only immediately before removal and are never modified in place.
 
 Temporary watchdog build/test candidates under `/var/lib/apitoken/watchdog/candidates` are removed
 24 hours after successful test completion while the same lock is held. An incomplete workspace

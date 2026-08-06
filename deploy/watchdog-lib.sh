@@ -58,12 +58,20 @@ wd_retry() {
 # Print NUL-delimited immutable release directories that are safe to remove, newest-first retention.
 # A release is protected when it is `current`/`previous`, within the newest `keep` by mtime, or
 # named in the protected list (used for live PID-resolved releases and recorded component SHAs).
+# An optional `--pattern <ERE>` selects prefixed lane names (the CRM root uses `crm-<sha>`); the
+# default pattern admits only plain 40-character SHA names. A `crm-` prefix is normalized before
+# SHA validation and before protected-name comparison, so `current`/`previous` and the protected
+# list stay plain-SHA based regardless of the root's naming scheme.
 # Selection is deliberately pure; the caller performs the privileged deletion under the deploy lock.
 wd_prunable_release_dirs() {
   [[ $# -ge 2 ]] || return 2
-  local root=$1 keep=$2 protected=() name link resolved canonical_root candidate kept=0
-  local ordered
+  local root=$1 keep=$2 protected=() name_pattern='^[0-9a-f]{40}$' name sha link resolved
+  local canonical_root candidate kept=0 ordered
   shift 2
+  if [[ ${1:-} == --pattern && $# -ge 2 ]]; then
+    name_pattern=$2
+    shift 2
+  fi
   protected=("$@")
   [[ $root == /* && -d $root && ! -L $root ]] || return 1
   [[ $keep =~ ^[0-9]+$ ]] || return 2
@@ -76,7 +84,10 @@ wd_prunable_release_dirs() {
     if [[ -L $root/$link ]]; then
       resolved=$(readlink -f -- "$root/$link" 2>/dev/null) || return 1
       [[ ${resolved%/*} == "$canonical_root" ]] || continue
-      protected+=("${resolved##*/}")
+      name=${resolved##*/}
+      name=${name#crm-}
+      [[ $name =~ ^[0-9a-f]{40}$ ]] || return 1
+      protected+=("$name")
     fi
   done
 
@@ -86,9 +97,11 @@ wd_prunable_release_dirs() {
   while IFS= read -r candidate; do
     [[ -n $candidate ]] || continue
     name=${candidate##*/}
-    [[ $name =~ ^[0-9a-f]{40}$ ]] || continue
+    [[ $name =~ $name_pattern ]] || continue
+    sha=${name#crm-}
+    [[ $sha =~ ^[0-9a-f]{40}$ ]] || continue
     [[ -d $candidate && ! -L $candidate ]] || return 1
-    if wd_list_contains "$name" "${protected[@]}"; then
+    if wd_list_contains "$sha" "${protected[@]}"; then
       continue
     fi
     if (( kept < keep )); then

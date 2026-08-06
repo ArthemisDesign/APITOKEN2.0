@@ -137,6 +137,7 @@ future frontend. Exact DNS records override the wildcard if they are added later
 /opt/apitoken/repo             fetch-only deployment checkout and reviewed controller source
 /opt/apitoken/releases/<sha>   immutable commerce release directories
 /opt/apitoken/releases/current active API/worker/Content Studio commerce release symlink
+/opt/apitoken/crm-releases/<sha> immutable CRM release directories (`crm-<sha>` lane names)
 /srv/claude-api/releases/<sha> immutable Rust engine release directories
 /srv/claude-api/releases/current active engine release symlink
 /var/lib/apitoken/watchdog     24-hour tested-candidate workspaces, SHA baselines, quarantine and status state
