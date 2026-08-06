@@ -618,11 +618,11 @@ impl CodexHome {
     }
 
     fn cooling_until(&self) -> i64 {
-        self.health().cooling_until
+        self.health().effective_cooling_until()
     }
 
     fn is_cooling(&self, now: i64) -> bool {
-        self.health().is_cooling(now)
+        self.health().effective_cooling_until() > now
     }
 
     /// A completed probe proves both axes at once: the account answered and the transport carried
@@ -1459,7 +1459,7 @@ impl CodexHome {
                 health::Admission::Reject { reason, .. } => Some(reason.as_str()),
                 health::Admission::Admit { .. } => None,
             },
-            cooling_until: health.cooling_until,
+            cooling_until: health.effective_cooling_until(),
             inflight: self.inflight(),
             limit_reached: !Self::within_provider_limit(rate_limits.as_ref()),
             snapshot_age_secs: rate_limits

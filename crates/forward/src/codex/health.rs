@@ -368,6 +368,16 @@ impl HomeHealth {
         self.cooling_until > now
     }
 
+    /// When this home stops being cooled for any reason, hard or soft.
+    ///
+    /// `is_cooling` above answers admission's question — may this home be denied? — so it reads the
+    /// hard axis alone. Reporting and ranking must answer a different question: is it currently
+    /// held back at all? An operator surface that showed `cooling_until = 0` next to a `Cooling`
+    /// rejection would be contradicting itself.
+    pub(crate) fn effective_cooling_until(&self) -> i64 {
+        self.cooling_until.max(self.soft_cooling_until)
+    }
+
     /// Whether the transport generation should be replaced. Separate from admission on purpose:
     /// the caller owns the replacement, and replacement is the expensive half of the policy.
     pub(crate) fn needs_recycle(&self) -> bool {
@@ -679,6 +689,20 @@ mod tests {
             health.apply(HealthSignal::AuthRejected { permanent: false }, 100);
         }
         assert!(health.soft_cooling_until - 100 <= AUTH_QUARANTINE_SECS);
+    }
+
+    #[test]
+    fn a_soft_cooled_home_reports_its_hold_so_the_operator_surface_stays_consistent() {
+        let mut health = HomeHealth::new();
+        health.apply(HealthSignal::AuthRejected { permanent: false }, 100);
+        // Admission denies it (there is healthier capacity), so the reported deadline must not
+        // claim the home is free — status and admission are read side by side.
+        assert!(!health
+            .admission(Some(&limits_at(100, 10)), 100, INTERVAL)
+            .is_admitted());
+        assert_eq!(health.cooling_until, 0);
+        assert_eq!(health.effective_cooling_until(), health.soft_cooling_until);
+        assert!(health.effective_cooling_until() > 100);
     }
 
     #[test]
