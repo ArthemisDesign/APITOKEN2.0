@@ -992,6 +992,10 @@ async fn metrics(
          # TYPE claude_api_upstream_5xx_total counter\nclaude_api_upstream_5xx_total {}\n\
          # TYPE claude_api_breaker_rejects_total counter\nclaude_api_breaker_rejects_total {}\n\
          # TYPE claude_api_exhausted_total counter\nclaude_api_exhausted_total {}\n\
+         # HELP claude_api_stream_cut_timeout_total Streams cut after the first byte by the upstream idle timeout.\n\
+         # TYPE claude_api_stream_cut_timeout_total counter\nclaude_api_stream_cut_timeout_total {}\n\
+         # HELP claude_api_stream_cut_transport_total Streams cut after the first byte by a transport failure.\n\
+         # TYPE claude_api_stream_cut_transport_total counter\nclaude_api_stream_cut_transport_total {}\n\
          # TYPE claude_api_auth_failures_total counter\nclaude_api_auth_failures_total {}\n\
          # TYPE claude_api_route_rebind_total counter\nclaude_api_route_rebind_total {}\n\
          # TYPE claude_api_route_pin_total counter\nclaude_api_route_pin_total {}\n\
@@ -1031,6 +1035,8 @@ async fn metrics(
         g(&m.upstream_5xx),
         g(&m.breaker_rejects),
         g(&m.exhausted),
+        g(&m.stream_cut_timeout),
+        g(&m.stream_cut_transport),
         g(&m.auth_failures),
         rs.rebind,
         rs.pin,

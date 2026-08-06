@@ -283,6 +283,16 @@ pub struct Metrics {
     pub upstream_5xx: AtomicU64, // backend-fault (5xx/408/409/425)
     pub breaker_rejects: AtomicU64, // отбито разомкнутым circuit breaker
     pub exhausted: AtomicU64,    // исчерпание пула (все за лимитом) → 429+Retry-After
+    /// Streams that died after the first public byte and were terminated with the protocol's own
+    /// `event: error` frame.
+    ///
+    /// This is the one customer-visible failure the terminal-error audit cannot see: the response
+    /// already carried `200`, so nothing downstream counts it. A customer reports "the connection
+    /// keeps dropping" and the operator finds a clean error log. Split by cause, because the client
+    /// sees the same frame either way and only these counters can tell a stalled upstream from a
+    /// proxy that cut the tunnel mid-answer.
+    pub stream_cut_timeout: AtomicU64,
+    pub stream_cut_transport: AtomicU64,
     /// Selections rotated to the next candidate by the advisory cross-slot cooling hint. The
     /// counter proves the hint actually saves 429s; a permanently zero value alongside a
     /// configured Redis means publishes never arrive.

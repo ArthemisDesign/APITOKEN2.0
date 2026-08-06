@@ -2646,7 +2646,7 @@ pub async fn forward(
                 }
                 // Запрос-детерминированный 401/403 возвращаем БАЙТ-В-БАЙТ: body/request-id/error type
                 // принадлежат Anthropic и нужны SDK-диагностике; секретные auth headers уже фильтруются.
-                return stream_back(st, resp, None);
+                return stream_back(st, resp, None, app.metrics.clone());
             }
             if st.is_server_error() || code == 408 || code == 409 || code == 425 {
                 // вина АПСТРИМА, не подписки: НЕ студим подписку (слот закроет guard), кормим breaker
@@ -2805,7 +2805,7 @@ pub async fn forward(
                 app.pool.mark_healthy(&sub.email);
                 None
             };
-            return stream_back(st, resp, meter);
+            return stream_back(st, resp, meter, app.metrics.clone());
         }
         // Итог раунда. Транзиентную нехватку (нет реального upstream-ответа И backend-бюджет цел) тихо
         // ждём и ретраим до smooth_deadline; всё остальное — отдаём клиенту. Резерв держит hold_guard,
@@ -2893,13 +2893,13 @@ pub async fn forward(
                     bill,
                     subscription: None,
                 };
-                return stream_back(status, resp, Some(meter));
+                return stream_back(status, resp, Some(meter), app.metrics.clone());
             }
         }
         // Терминал: реальный Anthropic-ответ приоритетнее локальной классификации; иначе backend-аутейдж
         // (или пул пуст) → last_local; иначе синтетический 429 с readiness всего пула.
         let terminal = if let Some((st, resp)) = last_upstream {
-            stream_back(st, resp, None)
+            stream_back(st, resp, None, app.metrics.clone())
         } else if backend_exhausted || tried.is_empty() {
             last_local
         } else {
@@ -3023,14 +3023,18 @@ struct SseErrorTail {
     /// Set once the inner stream has failed, so the tail frame is emitted exactly once.
     failed: bool,
     done: bool,
+    /// Kept so the cut can be counted where it happens: the stream outlives the handler that
+    /// built it, and by then no request context is left to attribute it to.
+    metrics: Arc<Metrics>,
 }
 
 impl SseErrorTail {
-    fn new(inner: ResponseByteStream) -> Self {
+    fn new(inner: ResponseByteStream, metrics: Arc<Metrics>) -> Self {
         Self {
             inner,
             failed: false,
             done: false,
+            metrics,
         }
     }
 
@@ -3061,6 +3065,21 @@ impl Stream for SseErrorTail {
                 // Swallow the transport error and end the body with a protocol frame instead.
                 // Propagating it would abort the response, which is precisely the silent truncation
                 // this exists to remove.
+                //
+                // The log alone cannot answer "how often does this happen": a customer reporting
+                // dropped connections needs a rate, and the response already carried `200`, so the
+                // terminal-error audit never sees it. Count it, and split the two causes the
+                // customer cannot tell apart — an upstream that went quiet past the read timeout,
+                // and a tunnel that died mid-answer — because the remedies are different.
+                let timed_out = matches!(
+                    e.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                );
+                if timed_out {
+                    Metrics::inc(&self.metrics.stream_cut_timeout);
+                } else {
+                    Metrics::inc(&self.metrics.stream_cut_transport);
+                }
                 elog::error(
                     "forward",
                     format!("mid-stream transport failure: {e}"),
@@ -3074,7 +3093,12 @@ impl Stream for SseErrorTail {
     }
 }
 
-fn stream_back(st: StatusCode, resp: wreq::Response, meter: Option<MeterCtx>) -> Response {
+fn stream_back(
+    st: StatusCode,
+    resp: wreq::Response,
+    meter: Option<MeterCtx>,
+    metrics: Arc<Metrics>,
+) -> Response {
     // Не-2xx passthrough без метеринга: hold по request_id вернёт armed HoldGuard (refund),
     // а ни одного байта клиенту ещё не отправлено — контракт not_started выполнен. На 2xx
     // (meter = Some) заголовок недопустим никогда, включая SseErrorTail внутри 200.
@@ -3100,7 +3124,7 @@ fn stream_back(st: StatusCode, resp: wreq::Response, meter: Option<MeterCtx>) ->
     // Outermost, so metering never observes the synthetic frame: usage belongs to the upstream that
     // produced it, and a failure tail is not usage.
     if event_stream {
-        stream = Box::pin(SseErrorTail::new(stream));
+        stream = Box::pin(SseErrorTail::new(stream, metrics));
     }
     let body = Body::from_stream(stream);
     match builder.body(body) {
