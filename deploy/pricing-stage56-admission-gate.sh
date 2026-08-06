@@ -62,8 +62,73 @@ load_admin_key_from_commerce_slot() {
   return 1
 }
 
+pricing_control_error_diagnostic() {
+  local output=$1 http_code=$2 message
+  message=$(jq -er --argjson status "$http_code" '
+    select(
+      type == "object" and
+      ((keys - ["error", "message", "statusCode"]) | length) == 0 and
+      .statusCode == $status and
+      (.message | type == "string" and length >= 1 and length <= 300) and
+      ((.error // "") | type == "string")
+    ) | .message
+  ' "$output" 2>/dev/null) || { printf 'unclassified\n'; return; }
+  case "$message" in
+    'target capability projection differs from its reviewed digest')
+      printf 'target_capability_digest_drift\n' ;;
+    'OpenKeys inventory request failed'|'OpenKeys inventory returned HTTP '*)
+      printf 'openkeys_inventory_unavailable\n' ;;
+    'OpenKeys full-manifest digest changed before cursor exhaustion')
+      printf 'openkeys_manifest_changed_during_scan\n' ;;
+    'OpenKeys inventory response is not valid JSON'|\
+    'OpenKeys inventory response has no strict inventory envelope'|\
+    'OpenKeys inventory response does not match the strict contract')
+      printf 'openkeys_inventory_malformed\n' ;;
+    'engine inventory page did not advance beyond its cursor'|\
+    'engine inventory cursor is empty or repeated before exhaustion'|\
+    'openkeys inventory page did not advance beyond its cursor'|\
+    'openkeys inventory cursor is empty or repeated before exhaustion'|\
+    'engine_inventory cursor returned duplicate or non-increasing account ids'|\
+    'openkeys_inventory cursor returned duplicate or non-increasing account ids')
+      printf 'inventory_cursor_invalid\n' ;;
+    'engine request failed'|'engine request timed out'|'engine response body failed')
+      printf 'engine_unavailable\n' ;;
+    'engine returned invalid JSON'|'engine returned a malformed pricing response'|\
+    'engine returned a different pricing release'|\
+    'engine returned an inconsistent funding normalization status'|\
+    'engine returned an invalid pricing response')
+      printf 'engine_response_invalid\n' ;;
+    'engine returned HTTP '*' with a non-JSON response')
+      printf 'engine_http_non_json\n' ;;
+    'stored target capability generation differs from the reviewed projection')
+      printf 'capability_generation_conflict\n' ;;
+    'stored catalog '*/*' differs from Stage 5')
+      printf 'catalog_generation_conflict\n' ;;
+    'stored switches generation '*' differs from Stage 5')
+      printf 'switch_generation_conflict\n' ;;
+    'stored policy '*/*' differs from Stage 5')
+      printf 'policy_version_conflict\n' ;;
+    'stored B2B invitation policy snapshots differ from Stage 5')
+      printf 'invitation_snapshot_conflict\n' ;;
+    'stored target release skeleton differs from Stage 5'|\
+    'stored recovery release skeleton differs from Stage 5')
+      printf 'release_plan_conflict\n' ;;
+    'fresh Stage 5 plan is sha256:v2:'*', not sha256:v2:'*)
+      printf 'expected_plan_stale\n' ;;
+    'commerce or service authority changed after the exact Stage 5 plan was built')
+      printf 'source_snapshot_stale\n' ;;
+    'unstable exhaustive scans cannot be persisted as Stage 5 evidence; repeat the scan')
+      printf 'unstable_inventory\n' ;;
+    'Stage 6 requires one fully ACKed, unfinalized Stage 5 materialization')
+      printf 'stage6_materialization_incomplete\n' ;;
+    'exact Stage 5 plan does not exist')
+      printf 'stage5_plan_missing\n' ;;
+    *) printf 'unclassified\n' ;;
+  esac
+}
+
 request() {
-  local method=$1 path=$2 body_file=$3 output=$4 expected_codes=${5:-200 201} http_code
+  local method=$1 path=$2 body_file=$3 output=$4 expected_codes=${5:-200 201} http_code diagnostic
   case "$method:$path" in
     POST:/v1/admin/pricing-stage5-v2/dry-run|\
     POST:/v1/admin/pricing-stage5-v2/materialize|\
@@ -86,13 +151,14 @@ request() {
     printf 'pricing control request failed with HTTP %s\n' "${http_code:-unreachable}" >&2
     return 1
   }
+  chmod 0600 "$output"
   [[ " $expected_codes " == *" $http_code "* ]] || {
     unset COMMERCIAL_ADMIN_KEY
-    printf 'pricing control request returned HTTP %s\n' "$http_code" >&2
+    diagnostic=$(pricing_control_error_diagnostic "$output" "$http_code")
+    printf 'pricing control request returned HTTP %s (%s)\n' "$http_code" "$diagnostic" >&2
     return 1
   }
   REQUEST_HTTP_CODE=$http_code
-  chmod 0600 "$output"
 }
 
 stage5_result_is_valid() {
