@@ -994,10 +994,12 @@ service’s idempotent recovery path. Never rebroadcast blindly.
 ## DevBotHeartbeatMissing
 
 The dev Telegram bot (`apitoken-devbot.service`, `apps/devbot`) is active in systemd but its
-textfile heartbeat (`devbot_heartbeat_timestamp_seconds` in
+textfile heartbeat (`devbot_heartbeat_timestamp_seconds{job="node"}` in
 `/var/lib/apitoken/monitoring/textfile/devbot.prom`, rewritten every 60 seconds) is absent or
 older than five minutes. Alertmanager email keeps flowing regardless — this alert means the
-Telegram notification path specifically is degraded.
+bot process itself is not publishing liveness. Delivery-level failures are covered separately:
+`DevBotTelegramSendFailures` (bot → Telegram), `DevBotWebhookDeliveryFailing` and
+`DevBotWebhookSilent` (Alertmanager → bot), `DevBotMetricsDown` (scrape health).
 
 First distinguish the two normal states from the broken one:
 
@@ -1034,3 +1036,65 @@ To provision or repair the bot from scratch:
    `devbot_heartbeat_timestamp_seconds` appears in `http://127.0.0.1:9100/metrics` within two
    minutes. Reinstall monitoring (`deploy/install-monitoring.sh` runs via the watchdog
    infrastructure lane) so Alertmanager picks up `DEVBOT_AM_SECRET` for the webhook receiver.
+
+## DevBotTelegramSendFailures
+
+The bot process is up and its heartbeat is fresh, but Telegram send/edit attempts are being
+dropped after retries (`devbot_telegram_send_failures_total` increased in the last fifteen
+minutes, scraped from the bot's own `/metrics` at `127.0.0.1:3800`, job `devbot`). The process
+and heartbeat look healthy while nothing reaches the group — this is exactly the failure the
+heartbeat cannot see.
+
+Check the unit journal for the send-error lines (`telegram ...: 429` / `network error
+(attempt ...)`), then in order: the bot token against @BotFather (`DEVBOT_TELEGRAM_TOKEN` in
+`/etc/apitoken/devbot.env`), the bot's membership and admin rights in the forum group
+(`DEVBOT_CHAT_ID`), and outbound reachability of `api.telegram.org` from the host. A revoked
+token or a kicked bot is a provisioning fix, not a restart. A persistent 429 flood means the
+outbound queue is exceeding Telegram's group limits — coalescing handles the excess, but the
+group's message history may show gaps while it drops.
+
+## DevBotWebhookDeliveryFailing
+
+Alertmanager tried to POST a notification to the devbot webhook and failed
+(`alertmanager_notifications_failed_total{integration="webhook"}` increased in the
+last fifteen minutes; the pinned Alertmanager v0.32.1 keeps the dedicated failed counter). Email keeps flowing — the Telegram fan-out specifically is degraded.
+
+First check the bot itself: `systemctl status apitoken-devbot.service` and
+`curl -fsS http://127.0.0.1:3800/health`. A dead bot is the most common cause (see
+`DevBotHeartbeatMissing` / `ProjectSystemdUnitFailed`). Then verify the webhook path secret
+matches: the `DEVBOT_AM_SECRET` in `/etc/apitoken/devbot.env` must equal the value rendered
+into `http://127.0.0.1:3800/alerts/{secret}` in the Alertmanager configuration; a drift makes
+Alertmanager POST to a path the bot answers with 404. Reinstall monitoring
+(`deploy/install-monitoring.sh` via the watchdog infrastructure lane) so the renderer reads the
+current env file. Do not open port 3800 to the network to "fix" delivery.
+
+## DevBotWebhookSilent
+
+Slow-drift tripwire: the unit is active and Alertmanager has active alerts, but no valid
+webhook delivery reached the bot for over 24 hours (`devbot_last_webhook_seconds` in the bot's
+`/metrics` is older than a day). This fires when the fast signals cannot — typically the
+devbot block was stripped from the rendered `alertmanager.yml` (the renderer omits it whenever
+`DEVBOT_AM_SECRET` is absent from the env file), the path secret drifted, or the bot's intake
+server stopped accepting while the process stayed up.
+
+Verify: `curl -fsS http://127.0.0.1:9093/-/ready` (Alertmanager itself), compare
+`devbot_last_webhook_seconds` against the current time, and confirm the rendered webhook URL
+still contains the same secret as `/etc/apitoken/devbot.env`. Reinstall monitoring so
+`DEVBOT_AM_SECRET` is rendered again, then confirm the next firing alert updates
+`devbot_last_webhook_seconds`. This is a deliberate 24-hour signal, not an outage detector —
+the immediate failures are covered by `DevBotWebhookDeliveryFailing` (Alertmanager side) and
+`DevBotTelegramSendFailures` (bot side).
+
+## DevBotMetricsDown
+
+The scrape of the bot's `/metrics` at `127.0.0.1:3800` (job `devbot`) fails while the unit is
+active, so `devbot_telegram_send_failures_total` and `devbot_last_webhook_seconds` are
+unavailable and the alerts built on them go blind. The bot was deliberately excluded from the
+generic `MonitoringTargetDown` because an unprovisioned bot has no listener on 3800; this alert
+covers the active-but-unscrapable case instead.
+
+Check `systemctl status apitoken-devbot.service` and `curl -fsS http://127.0.0.1:3800/metrics`:
+the process may be up while the metrics server fails (port conflict, crash between restarts,
+or the listener bound to the wrong interface). Confirm the scrape job targets
+`127.0.0.1:3800` in `observability/prometheus/prometheus.yml` and that the watchdog
+infrastructure lane reinstalled the monitoring definitions after the last change.

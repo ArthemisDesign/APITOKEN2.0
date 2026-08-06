@@ -236,8 +236,10 @@ for router_alert in RouterMetricsDown RouterFallbackRateHigh RouterConnectionRef
   grep -Fqi "## $router_alert" "$ROOT/docs/ops/MONITORING.md" \
     || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$router_alert" >&2; exit 1; }
 done
-grep -Fq 'up{job!="claude-router"} == 0' "$ROOT/observability/prometheus/rules/operations.yml" \
-  || { printf 'generic scrape alert would duplicate RouterMetricsDown\n' >&2; exit 1; }
+# The generic scrape alert must exclude jobs with their own scrape-health alerts:
+# claude-router -> RouterMetricsDown, devbot -> DevBotMetricsDown.
+grep -Fq 'up{job!~"claude-router|devbot"} == 0' "$ROOT/observability/prometheus/rules/operations.yml" \
+  || { printf 'generic scrape alert would duplicate RouterMetricsDown/DevBotMetricsDown\n' >&2; exit 1; }
 grep -Fq 'targets: ["https://openai.api.apitoken.sale/v1/responses"]' \
   "$ROOT/observability/prometheus/prometheus.yml" \
   || { printf 'OpenAI public synthetic is missing\n' >&2; exit 1; }
@@ -384,6 +386,44 @@ grep -Fq 'install -d -o root -g deploy -m 0775 "$OUTPUT_DIR"' \
 # regardless of the unit's UMask=0077.
 grep -Fq 'await fs.chmod(tmp, 0o644);' "$ROOT/apps/devbot/src/am-webhook.ts" \
   || { printf 'devbot heartbeat is not world-readable for node-exporter\n' >&2; exit 1; }
+# The devbot delivery alerts are a closed metric -> alert -> runbook loop. Every new devbot
+# alert must stay a warning, carry a runbook anchor, and have a runbook section.
+for devbot_alert in DevBotTelegramSendFailures DevBotWebhookDeliveryFailing DevBotWebhookSilent DevBotMetricsDown; do
+  grep -Fq "alert: $devbot_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'missing devbot alert %s\n' "$devbot_alert" >&2; exit 1; }
+  grep -Fq 'severity: warning' \
+    <(grep -F "alert: $devbot_alert" -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
+    || { printf 'devbot alert %s must stay a warning\n' "$devbot_alert" >&2; exit 1; }
+  anchor=$(printf '%s' "$devbot_alert" | tr '[:upper:]' '[:lower:]')
+  grep -Fq "docs/ops/MONITORING.md#$anchor" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'devbot alert %s has no runbook anchor\n' "$devbot_alert" >&2; exit 1; }
+  grep -Fqi "## $devbot_alert" "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'docs/ops/MONITORING.md has no runbook section for %s\n' "$devbot_alert" >&2; exit 1; }
+done
+# The delivery signals live in the bot's own /metrics: Prometheus must scrape 127.0.0.1:3800.
+grep -Fq 'job_name: devbot' "$ROOT/observability/prometheus/prometheus.yml" \
+  || { printf 'no devbot scrape job in prometheus.yml\n' >&2; exit 1; }
+grep -Fq '127.0.0.1:3800' "$ROOT/observability/prometheus/prometheus.yml" \
+  || { printf 'devbot scrape job does not target 127.0.0.1:3800\n' >&2; exit 1; }
+grep -Fq 'devbot_telegram_send_failures_total' "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'no rule consumes devbot_telegram_send_failures_total\n' >&2; exit 1; }
+grep -Fq 'devbot_last_webhook_seconds' "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'no rule consumes devbot_last_webhook_seconds\n' >&2; exit 1; }
+grep -Fq 'devbot_last_webhook_seconds' "$ROOT/apps/devbot/src/am-webhook.ts" \
+  || { printf 'devbot does not export the last-webhook metric\n' >&2; exit 1; }
+grep -Fq 'alertmanager_notifications_failed_total{integration="webhook"}' \
+  "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'DevBotWebhookDeliveryFailing does not consume Alertmanager webhook failures\n' >&2; exit 1; }
+# The devbot unit itself is part of the systemd failure and restart-loop coverage; a dead bot
+# must page instead of silencing the channel. The heartbeat rule stays pinned to the node
+# textfile series even though the bot /metrics now carries the same gauge name.
+grep -Fq '|devbot)' "$ROOT/observability/prometheus/rules/operations.yml" \
+  || { printf 'devbot is not covered by the systemd unit patterns\n' >&2; exit 1; }
+grep -Fq 'devbot_heartbeat_timestamp_seconds{job="node"}' \
+  "$ROOT/observability/prometheus/rules/application.yml" \
+  || { printf 'DevBotHeartbeatMissing is not pinned to the textfile series\n' >&2; exit 1; }
+grep -Fq 'up{job!~"claude-router|devbot"}' "$ROOT/observability/prometheus/rules/operations.yml" \
+  || { printf 'MonitoringTargetDown does not exclude the devbot job\n' >&2; exit 1; }
 
 # Money conservation must be a closed collector -> alert -> runbook loop. Pin the operands as well
 # as the metric name so a constant-zero replacement cannot satisfy this static contract.

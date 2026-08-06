@@ -361,8 +361,9 @@ commerce/sales/openkeys DBs. During implementation, the links `alertmanager → 
   Moving the baseline here is not allowed: otherwise every TypeScript-less master would go to
   quarantine after provisioning (`devbot-deploy.sh` fails on the missing dist).
 - Bot observability:
-  - a unit failure is caught by the existing `ProjectSystemdUnitFailed` (the `apitoken-*`
-    pattern);
+  - a unit failure or restart loop is caught by `ProjectSystemdUnitFailed` /
+    `ServiceRestartLoop` (`apitoken-devbot` is part of the `apitoken-*` pattern — a dead bot
+    would otherwise silence the notification channel without any page);
   - heartbeat: every 60 s the bot atomically rewrites
     `/var/lib/apitoken/monitoring/textfile/devbot.prom`
     (`devbot_heartbeat_timestamp_seconds`); the `DevBotHeartbeatMissing` alert (warning) in
@@ -374,8 +375,12 @@ commerce/sales/openkeys DBs. During implementation, the links `alertmanager → 
     group-deploy writable (`root:deploy 0775`) by both `install-monitoring.sh` and the root
     collector `collect-monitoring-metrics.sh` (it recreates the directory every minute —
     reverting ownership breaks the heartbeat with EACCES);
-  - Telegram API degradation is visible in the send-error log (journald) — no separate alert
-    in stage 1.
+  - delivery health: the bot's `/metrics` (`127.0.0.1:3800/metrics`) is scraped as job
+    `devbot`; `DevBotTelegramSendFailures` fires when Telegram send/edit attempts are dropped
+    after retries, `DevBotWebhookDeliveryFailing` when Alertmanager cannot POST to the
+    webhook, `DevBotWebhookSilent` when the intake has been silent for 24 h while
+    Alertmanager has active alerts, and `DevBotMetricsDown` when the scrape fails while the
+    unit is active.
 - Last-resort channel: if the bot is dead, Alertmanager's email receiver keeps working —
   therefore the email branch in the Alertmanager config is never removed (expand-only).
 

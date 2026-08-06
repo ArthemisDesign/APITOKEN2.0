@@ -127,6 +127,33 @@ describe("am-webhook server", () => {
       expect(text).toContain('devbot_events_total{topic="critical",kind="alert"} 2');
       expect(text).toContain('devbot_events_total{topic="deploys",kind="green"} 1');
       expect(text).toContain("devbot_telegram_send_failures_total 1");
+      expect(text).toContain("devbot_last_webhook_seconds 0");
+    });
+  });
+
+  it("records the last accepted webhook delivery in /metrics", async () => {
+    await withServer(async (base) => {
+      const before = Math.floor(Date.now() / 1000);
+      const response = await fetch(`${base}/alerts/${SECRET}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(samplePayload()),
+      });
+      expect(response.status).toBe(200);
+      const text = await fetch(`${base}/metrics`).then((r) => r.text());
+      const match = /devbot_last_webhook_seconds (\d+)/.exec(text);
+      expect(match).not.toBeNull();
+      expect(Number(match?.[1])).toBeGreaterThanOrEqual(before);
+    });
+  });
+
+  it("does not count rejected payloads as webhook deliveries", async () => {
+    await withServer(async (base, received) => {
+      await fetch(`${base}/alerts/${SECRET}`, { method: "POST", body: "{not json" });
+      await fetch(`${base}/alerts/wrong`, { method: "POST", body: "{}" });
+      expect(received).toHaveLength(0);
+      const text = await fetch(`${base}/metrics`).then((r) => r.text());
+      expect(text).toContain("devbot_last_webhook_seconds 0");
     });
   });
 });

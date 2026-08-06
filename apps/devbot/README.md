@@ -45,4 +45,4 @@ pnpm --filter @claude-api/devbot test
 - `POST /alerts/{DEVBOT_AM_SECRET}` — Alertmanager v4 webhook (grouped notifications).
 - `GET /health` — deploy health gate (`{"ok":true}`).
 - `GET /metrics` — `devbot_heartbeat_timestamp_seconds`, `devbot_events_total{topic,kind}`,
-  `devbot_telegram_send_failures_total`.
+  `devbot_telegram_send_failures_total`, `devbot_last_webhook_seconds`.

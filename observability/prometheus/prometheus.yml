@@ -59,6 +59,17 @@ scrape_configs:
     static_configs:
       - targets: ["127.0.0.1:8802"]
 
+  # The devbot notification bot exposes its own /metrics on the same loopback port as its
+  # webhook (127.0.0.1:3800). Telegram send failures and the last accepted webhook delivery
+  # drive DevBotTelegramSendFailures / DevBotWebhookSilent; the job is excluded from
+  # MonitoringTargetDown (a deliberately unprovisioned bot has no listener on 3800), and
+  # DevBotMetricsDown covers the active-but-unscrapable case instead.
+  - job_name: devbot
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:3800"]
+        labels: { component: devbot }
+
   - job_name: alertmanager
     static_configs:
       - targets: ["127.0.0.1:9093"]

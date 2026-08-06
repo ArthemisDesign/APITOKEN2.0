@@ -11,6 +11,8 @@ const MAX_BODY_BYTES = 1024 * 1024;
 export class MetricsRegistry {
   heartbeatTs = Math.floor(Date.now() / 1000);
   telegramSendFailures = 0;
+  /** Unix timestamp of the last ACCEPTED Alertmanager webhook delivery; 0 = none yet. */
+  lastWebhookTs = 0;
   private readonly events = new Map<string, number>();
 
   incEvent(topic: TopicKey, kind: string): void {
@@ -34,6 +36,11 @@ export class MetricsRegistry {
       const [topic, kind] = key.split("|");
       lines.push(`devbot_events_total{topic="${topic}",kind="${kind}"} ${value}`);
     }
+    lines.push(
+      "# HELP devbot_last_webhook_seconds Unix timestamp of the last accepted Alertmanager webhook delivery.",
+      "# TYPE devbot_last_webhook_seconds gauge",
+      `devbot_last_webhook_seconds ${this.lastWebhookTs}`,
+    );
     lines.push(
       "# HELP devbot_telegram_send_failures_total Telegram send/edit attempts dropped after retries.",
       "# TYPE devbot_telegram_send_failures_total counter",
@@ -152,6 +159,9 @@ export function createAmServer(deps: AmServerDeps): AmServer {
       if (req.method === "POST" && url.pathname === alertPath) {
         try {
           const alerts = mapAmPayload(JSON.parse(await readBody(req)));
+          // A parsed payload is a real delivery: refresh the tripwire timestamp so
+          // DevBotWebhookSilent only fires when the intake is genuinely silent.
+          deps.metrics.lastWebhookTs = Math.floor(Date.now() / 1000);
           deps.onAlerts(alerts);
           res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
         } catch (error) {

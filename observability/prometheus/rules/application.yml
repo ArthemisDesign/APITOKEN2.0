@@ -792,12 +792,63 @@ groups:
         expr: |
           node_systemd_unit_state{name="apitoken-devbot.service",state="active"} == 1
           unless on(instance)
-          (time() - devbot_heartbeat_timestamp_seconds <= 300)
+          (time() - devbot_heartbeat_timestamp_seconds{job="node"} <= 300)
         for: 5m
         labels:
           severity: warning
           component: devbot
         annotations:
           summary: 'Devbot heartbeat is missing or stale'
-          description: 'apitoken-devbot.service is active but devbot_heartbeat_timestamp_seconds has not refreshed for over five minutes.'
+          description: 'apitoken-devbot.service is active but the textfile heartbeat devbot_heartbeat_timestamp_seconds{job="node"} has not refreshed for over five minutes.'
           runbook: 'docs/ops/MONITORING.md#devbotheartbeatmissing'
+
+      - alert: DevBotTelegramSendFailures
+        expr: |
+          increase(devbot_telegram_send_failures_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: devbot
+        annotations:
+          summary: 'Devbot cannot deliver messages to Telegram'
+          description: 'Devbot dropped Telegram send/edit attempts after retries (devbot_telegram_send_failures_total increased during the last fifteen minutes). The process and heartbeat can look healthy while nothing reaches the group.'
+          runbook: 'docs/ops/MONITORING.md#devbottelegramsendfailures'
+
+      - alert: DevBotWebhookDeliveryFailing
+        expr: |
+          increase(alertmanager_notifications_failed_total{integration="webhook"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: devbot
+        annotations:
+          summary: 'Alertmanager cannot deliver webhook notifications to devbot'
+          description: 'Alertmanager webhook deliveries to the devbot receiver failed during the last fifteen minutes. Email keeps flowing; the Telegram path is degraded.'
+          runbook: 'docs/ops/MONITORING.md#devbotwebhookdeliveryfailing'
+
+      - alert: DevBotWebhookSilent
+        expr: |
+          node_systemd_unit_state{name="apitoken-devbot.service",state="active"} == 1
+          and on() (time() - max(devbot_last_webhook_seconds) > 86400)
+          and on() (sum(alertmanager_alerts{state="active"}) > 0)
+        for: 30m
+        labels:
+          severity: warning
+          component: devbot
+        annotations:
+          summary: 'Devbot webhook has been silent for over a day while alerts are active'
+          description: 'The bot is active and Alertmanager has active alerts, but no valid webhook delivery reached devbot for over 24 hours — the Telegram intake path is likely broken or the devbot block was stripped from the rendered alertmanager.yml.'
+          runbook: 'docs/ops/MONITORING.md#devbotwebhooksilent'
+
+      - alert: DevBotMetricsDown
+        expr: |
+          up{job="devbot"} == 0
+          and on() (max(node_systemd_unit_state{name="apitoken-devbot.service",state="active"}) == 1)
+        for: 2m
+        labels:
+          severity: warning
+          component: devbot
+        annotations:
+          summary: 'Devbot /metrics cannot be scraped'
+          description: 'The devbot scrape target 127.0.0.1:3800 fails while the unit is active, so the metrics behind DevBotTelegramSendFailures and DevBotWebhookSilent are unavailable.'
+          runbook: 'docs/ops/MONITORING.md#devbotmetricsdown'
