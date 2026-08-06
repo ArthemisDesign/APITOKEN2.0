@@ -766,6 +766,28 @@ export class EngineClient {
     return policy;
   }
 
+  async getLatestPricingReleasePolicyV2(
+    policyId: string,
+  ): Promise<PricingReleasePolicyV2 | null> {
+    const target = releasePolicyV2PrepareIdentitySchema
+      .pick({ policy_id: true })
+      .parse({ policy_id: policyId });
+    const { response, payload } = await this.request(
+      `/admin/pricing/v2/policy/${encodeURIComponent(target.policy_id)}/latest`,
+      { acceptedStatuses: [404] },
+    );
+    if (response.status === 404) return null;
+    const policy = this.parsePricingResponse(
+      z.object({ policy: pricingReleasePolicyV2Schema }).strict(),
+      payload,
+      response,
+    ).policy;
+    if (policy.policy_id !== target.policy_id) {
+      throw new EngineClientError("engine returned a different latest pricing release policy", response.status, false);
+    }
+    return policy;
+  }
+
   async preparePricingReleaseV2(
     input: PricingReleaseV2,
   ): Promise<TypedPricingMutationAck<z.infer<typeof releaseV2PrepareIdentitySchema>>> {

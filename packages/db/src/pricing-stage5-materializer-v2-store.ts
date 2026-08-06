@@ -109,6 +109,52 @@ function planArtifact(plan: Stage5V2Plan): Record<string, unknown> {
   return artifact;
 }
 
+async function readLatestEnginePolicies(
+  engine: Pick<EngineClient, "getLatestPricingReleasePolicyV2">,
+  policyIds: readonly string[],
+): Promise<PricingReleasePolicyV2[]> {
+  const policies = await Promise.all(
+    [...policyIds]
+      .sort(compareUtf8)
+      .map((policyId) => engine.getLatestPricingReleasePolicyV2(policyId)),
+  );
+  return policies.filter((policy): policy is PricingReleasePolicyV2 => policy !== null);
+}
+
+function reconcileReleasePolicyLineage(
+  local: readonly Stage5V2ExistingReleasePolicy[],
+  remoteFirst: readonly PricingReleasePolicyV2[],
+  remoteSecond: readonly PricingReleasePolicyV2[],
+): Stage5V2ExistingReleasePolicy[] {
+  if (!sameCanonical(remoteFirst, remoteSecond)) {
+    throw new Stage5MaterializerV2Error(
+      "engine_policy_lineage_drift",
+      "engine pricing release policy lineage changed during Stage 5 collection",
+    );
+  }
+  const identities = new Map<string, Stage5V2ExistingReleasePolicy>();
+  for (const policy of [
+    ...local,
+    ...remoteSecond.map(({ policy_id, policy_version, content_digest }) => ({
+      policy_id,
+      policy_version,
+      content_digest,
+    })),
+  ]) {
+    const key = `${policy.policy_id}\n${policy.policy_version}`;
+    const existing = identities.get(key);
+    if (existing && existing.content_digest !== policy.content_digest) {
+      throw new Stage5MaterializerV2Error(
+        "engine_policy_lineage_conflict",
+        `local and engine policy evidence conflicts at ${policy.policy_id} version ${policy.policy_version}`,
+      );
+    }
+    identities.set(key, policy);
+  }
+  return [...identities.values()].sort((left, right) =>
+    compareUtf8(left.policy_id, right.policy_id) || left.policy_version - right.policy_version);
+}
+
 export async function readStage5V2CommerceAndServiceSnapshot(
   client: PoolClient,
 ): Promise<{
@@ -274,7 +320,10 @@ export async function collectStage5V2Plan(
   database: Database,
   engine: Pick<
     EngineClient,
-    "getPricingReleaseInventoryV2" | "getPricingReleaseHeadV2" | "getPricingReleaseV2"
+    | "getLatestPricingReleasePolicyV2"
+    | "getPricingReleaseInventoryV2"
+    | "getPricingReleaseHeadV2"
+    | "getPricingReleaseV2"
   >,
   openkeys: Stage5V2OpenKeysReader,
   options: { expectedPlanDigest?: string } = {},
@@ -302,18 +351,38 @@ export async function collectStage5V2Plan(
   } finally {
     client.release();
   }
-  const [engineSecond, openkeysSecond, headSecond, targetExisting, recoveryExisting] =
+  const provisionalPlan = buildStage5V2Plan({
+    commerce: snapshot.commerce,
+    service: snapshot.service,
+    existing_release_policies: snapshot.release_policies,
+    engine_first: engineFirst,
+    engine_second: engineFirst,
+    openkeys_first: openkeysFirst,
+    openkeys_second: openkeysFirst,
+    head_first: headFirst,
+    head_second: headFirst,
+    target_generation: reservation.target,
+    recovery_generation: reservation.recovery,
+  });
+  const policyIds = provisionalPlan.policies.map((policy) => policy.policy_id);
+  const remotePoliciesFirst = await readLatestEnginePolicies(engine, policyIds);
+  const [engineSecond, openkeysSecond, headSecond, targetExisting, recoveryExisting, remotePoliciesSecond] =
     await Promise.all([
       scanStage5EngineInventoryV2(engine),
       scanStage5OpenKeysInventoryV2(openkeys),
       engine.getPricingReleaseHeadV2(),
       engine.getPricingReleaseV2(reservation.target),
       engine.getPricingReleaseV2(reservation.recovery),
+      readLatestEnginePolicies(engine, policyIds),
     ]);
   return buildStage5V2Plan({
     commerce: snapshot.commerce,
     service: snapshot.service,
-    existing_release_policies: snapshot.release_policies,
+    existing_release_policies: reconcileReleasePolicyLineage(
+      snapshot.release_policies,
+      remotePoliciesFirst,
+      remotePoliciesSecond,
+    ),
     engine_first: engineFirst,
     engine_second: engineSecond,
     openkeys_first: openkeysFirst,

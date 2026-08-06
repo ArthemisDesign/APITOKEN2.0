@@ -81,6 +81,9 @@ function fakeAuthorities(
     }),
     getPricingReleaseHeadV2: async () => null,
     getPricingReleaseV2: async () => null,
+    getLatestPricingReleasePolicyV2: async (policyId: string) => [...prepared.policies.values()]
+      .filter((policy) => policy.policy_id === policyId)
+      .sort((left, right) => right.policy_version - left.policy_version)[0] ?? null,
     preparePricingCatalog: async (catalog: PricingCatalogSpec) => {
       const key = `${catalog.product_id}:${catalog.generation}`;
       const result = prepared.catalogs.has(key) ? "unchanged" as const : "stored" as const;
@@ -390,6 +393,46 @@ describe.runIf(Boolean(connectionString))("pricing Stage 5 v2 materializer", () 
     expect(replay.run_id).toBe(applied.run_id);
     expect(replay.plan.plan_digest).toBe(dryRun.plan.plan_digest);
     expect((await seed.query("SELECT 1 FROM pricing_stage5_runs_v2")).rowCount).toBe(1);
+  });
+
+  it("reconciles a remote-only policy head before allocating or preparing a version", async () => {
+    const inventory = await seedAuthorities();
+    const authorities = fakeAuthorities(inventory);
+    const baseline = await runStage5MaterializerV2(database, authorities.engine, authorities.openkeys, {
+      mode: "dry_run",
+    });
+    const baselinePolicy = baseline.plan.policies
+      .find((policy) => policy.policy_id === "release-v2:b2b:acct_stage5_b2b")!;
+    const { content_digest: _baselineDigest, ...baselineIdentity } = baselinePolicy;
+    const remotePolicyIdentity = {
+      ...baselineIdentity,
+      policy_version: baselinePolicy.policy_version + 1,
+    };
+    const remotePolicy = {
+      ...remotePolicyIdentity,
+      content_digest: stage5V2Digest("policy", remotePolicyIdentity),
+    };
+    authorities.prepared.policies.set(
+      `${remotePolicy.policy_id}:${remotePolicy.policy_version}`,
+      remotePolicy,
+    );
+
+    const reconciled = await runStage5MaterializerV2(database, authorities.engine, authorities.openkeys, {
+      mode: "dry_run",
+    });
+    expect(reconciled.plan.blockers).toEqual([]);
+    expect(reconciled.plan.policies
+      .find((policy) => policy.policy_id === remotePolicy.policy_id))
+      .toEqual(remotePolicy);
+
+    const applied = await runStage5MaterializerV2(database, authorities.engine, authorities.openkeys, {
+      mode: "apply",
+      expectedPlanDigest: reconciled.plan.plan_digest,
+    });
+    expect(applied.engine_prepared).toBe(true);
+    expect(applied.plan.policies
+      .find((policy) => policy.policy_id === remotePolicy.policy_id))
+      .toEqual(remotePolicy);
   });
 
   it("persists typed ownership blockers without partially preparing policies or releases", async () => {

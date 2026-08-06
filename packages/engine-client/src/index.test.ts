@@ -1040,6 +1040,9 @@ describe("EngineClient", () => {
         if (url.endsWith("/pricing/v2/policy/global-b2c-v2/version/1")) {
           return Response.json({ policy });
         }
+        if (url.endsWith("/pricing/v2/policy/global-b2c-v2/latest")) {
+          return Response.json({ policy });
+        }
         if (url.endsWith("/pricing/v2/release/prepare")) {
           return Response.json({
             result: "unchanged",
@@ -1110,6 +1113,7 @@ describe("EngineClient", () => {
 
     await expect(client.preparePricingReleasePolicyV2(policy)).resolves.toMatchObject({ result: "stored" });
     await expect(client.getPricingReleasePolicyV2(policy.policy_id, 1)).resolves.toEqual(policy);
+    await expect(client.getLatestPricingReleasePolicyV2(policy.policy_id)).resolves.toEqual(policy);
     await expect(client.preparePricingReleaseV2(release)).resolves.toMatchObject({ result: "unchanged" });
     await expect(client.getPricingReleaseV2(10)).resolves.toEqual(release);
     await expect(client.preparePricingReleaseRecoveryLinkV2(recoveryLink)).resolves.toMatchObject({ result: "stored" });

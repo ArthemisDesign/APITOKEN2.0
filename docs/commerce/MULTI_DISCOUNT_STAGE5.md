@@ -108,11 +108,17 @@ Image 2 generation and one-reference edit both passed through the existing seale
 additive generation 6 adds only `openai/gpt-image-2-2026-04-21`. The current materializer builds
 main/OpenKeys catalogs and switches generation 6. Main retains the generation-5 model set and adds
 the image snapshot; OpenKeys retains its generation-5 set and adds only that image snapshot at 1:1.
-The generation-6 materializer starts from policy version 3, reuses any persisted version whose
-version-aware canonical digest matches the planned policy, and otherwise allocates one above the
-highest persisted version. This makes replay after a partial remote prepare idempotent without
-rewriting immutable policy history or submitting a stale baseline version. Capability/catalog
-preparation alone does not enable traffic or add the image model to buyer/operator display.
+The generation-6 materializer starts from policy version 3. For every planned policy ID it reads the
+engine's newest complete immutable policy twice around the second inventory scan, requires both
+ordered read sets to match, and reconciles those heads with commerce-local documents. It reuses the
+newest version only when its version-aware canonical digest matches the planned policy; otherwise it
+allocates exactly one above that newest version. A same-version digest disagreement between engine
+and commerce is a terminal evidence conflict. This makes replay after a remote-only partial prepare
+idempotent without rewriting immutable policy history, falling back to an older equivalent version,
+or submitting a stale baseline version. The typed consumer was connected only after producer SHA
+`a7fbd16a0d63b3b16f7049f8aa1ac5b6e739583c` received exact `deploy/watchdog` GREEN.
+Capability/catalog preparation alone does not enable traffic or add the image model to buyer/operator
+display.
 
 The planner reserves the target generation and the recovery generation of the next monotonic number
 and builds an immutable source/policy/assignment plan for both. At this phase balance assignments
@@ -163,8 +169,10 @@ the next part of the same idempotent operation. The runtime takes `DATABASE_URL`
 The package CLI remains only a diagnostic non-production entrypoint and is not a permitted
 production control-plane or SSH procedure.
 
-The engine cursor is exhausted twice. Stage 5 identity stability includes `account_id`, status, and
-the legacy scalar multiplier, but deliberately does not include the changing
+The engine account cursor is exhausted twice. The latest release-policy heads for every planned
+policy ID are also read twice and must remain byte-canonically equal; a changing or conflicting
+lineage fails before any local evidence or remote prepare is written. Stage 5 identity stability
+includes `account_id`, status, and the legacy scalar multiplier, but deliberately does not include the changing
 `balance/reserved/spent` and the funding head: full money snapshots are preserved as evidence,
 while their final identity belongs to Stage 6. The OpenKeys cursor is also exhausted twice and must
 return one unchanged full-manifest digest on all pages of both passes.

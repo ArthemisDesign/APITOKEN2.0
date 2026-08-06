@@ -414,6 +414,28 @@ describe("pricing Stage 5 v2 planner", () => {
       .toEqual(versionFourPolicy);
   });
 
+  it("uses only the newest remote identity when an older version would otherwise look equivalent", () => {
+    const baseline = buildStage5V2Plan(completePlanInput());
+    const baselinePolicy = baseline.policies
+      .find((policy) => policy.policy_id === "release-v2:b2b:acct_b2b")!;
+    const input = completePlanInput();
+    input.existing_release_policies = [
+      {
+        policy_id: baselinePolicy.policy_id,
+        policy_version: baselinePolicy.policy_version,
+        content_digest: baselinePolicy.content_digest,
+      },
+      {
+        policy_id: baselinePolicy.policy_id,
+        policy_version: baselinePolicy.policy_version + 2,
+        content_digest: "sha256:v2:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      },
+    ];
+    const allocated = buildStage5V2Plan(input).policies
+      .find((policy) => policy.policy_id === baselinePolicy.policy_id)!;
+    expect(allocated.policy_version).toBe(baselinePolicy.policy_version + 3);
+  });
+
   it("allocates above the highest version when no persisted policy is equivalent", () => {
     const baseline = buildStage5V2Plan(completePlanInput());
     const baselinePolicy = baseline.policies

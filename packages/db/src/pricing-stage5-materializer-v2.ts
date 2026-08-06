@@ -640,14 +640,15 @@ function resolveReleasePolicyVersion(
   existing: readonly Stage5V2ExistingReleasePolicy[],
 ): PricingReleasePolicyV2 {
   if (policy.policy_version !== STAGE5_V2_POLICY_VERSION) return policy;
-  const rows = existing.filter((row) => row.policy_id === policy.policy_id);
+  const rows = existing
+    .filter((row) => row.policy_id === policy.policy_id)
+    .sort((left, right) => right.policy_version - left.policy_version);
   const { content_digest: _contentDigest, ...policyWithoutDigest } = policy;
-  for (const row of rows) {
-    const candidate = buildPolicy({ ...policyWithoutDigest, policy_version: row.policy_version });
-    if (candidate.content_digest === row.content_digest) return candidate;
-  }
   if (rows.length === 0) return policy;
-  const next = rows.reduce((maximum, row) => Math.max(maximum, row.policy_version), STAGE5_V2_POLICY_VERSION) + 1;
+  const newest = rows[0]!;
+  const candidate = buildPolicy({ ...policyWithoutDigest, policy_version: newest.policy_version });
+  if (candidate.content_digest === newest.content_digest) return candidate;
+  const next = newest.policy_version + 1;
   return buildPolicy({ ...policyWithoutDigest, policy_version: next });
 }
 
