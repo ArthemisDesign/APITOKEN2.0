@@ -5,7 +5,8 @@ use reqwest::{header::HeaderMap, Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::config::openai_image_public_smoke_database_url;
 
@@ -14,7 +15,8 @@ const MODEL: &str = "gpt-image-2";
 const DATED_MODEL: &str = "gpt-image-2-2026-04-21";
 const PUBLIC_ORIGIN: &str = "https://openai.api.apitoken.sale";
 const MAX_RESPONSE_BYTES: usize = 24 * 1024 * 1024;
-const SETTLEMENT_ATTEMPTS: usize = 300;
+const SETTLEMENT_WAIT: Duration = Duration::from_secs(150);
+const SETTLEMENT_POLL: Duration = Duration::from_millis(500);
 
 pub(crate) struct OpenAiImagePublicSmokeArgs {
     pub output: PathBuf,
@@ -238,9 +240,7 @@ async fn preflight_and_execute(
         &credential,
         "generation",
         &generation.usage,
-    )
-    .await
-    {
+    ) {
         Ok(value) => value,
         Err(error) => {
             persist_journal(
@@ -326,9 +326,7 @@ async fn preflight_and_execute(
         &credential,
         "edit",
         &edit.usage,
-    )
-    .await
-    {
+    ) {
         Ok(value) => value,
         Err(error) => {
             persist_journal(
@@ -561,21 +559,29 @@ fn validate_public_usage(usage: &PublicUsage, operation: &str) -> Result<()> {
     Ok(())
 }
 
-async fn wait_for_settlement(
+fn wait_for_settlement(
     registry: &mut registry::pg::PgStore,
     request_id: &str,
     credential: &registry::pg::OpenAiImageSmokeCredential,
     operation: &str,
     usage: &PublicUsage,
 ) -> Result<registry::pg::OpenAiImageSettlementEvidence> {
-    for _ in 0..SETTLEMENT_ATTEMPTS {
+    let deadline = Instant::now() + SETTLEMENT_WAIT;
+    loop {
         if let Some(evidence) = registry.openai_image_settlement_evidence(request_id)? {
             validate_settlement(&evidence, credential, operation, usage)?;
             return Ok(evidence);
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        let now = Instant::now();
+        let Some(delay) = settlement_poll_delay(now, deadline) else {
+            bail!("authoritative public image {operation} settlement did not become visible");
+        };
+        thread::sleep(delay);
     }
-    bail!("authoritative public image {operation} settlement did not become visible")
+}
+
+fn settlement_poll_delay(now: Instant, deadline: Instant) -> Option<Duration> {
+    (now < deadline).then(|| SETTLEMENT_POLL.min(deadline - now))
 }
 
 fn validate_settlement(
@@ -839,6 +845,20 @@ fn persist_journal(path: &Path, value: &Journal<'_>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settlement_poll_obeys_wall_clock_deadline() {
+        let now = Instant::now();
+        assert_eq!(
+            settlement_poll_delay(now, now + Duration::from_secs(1)),
+            Some(SETTLEMENT_POLL)
+        );
+        assert_eq!(
+            settlement_poll_delay(now, now + Duration::from_millis(100)),
+            Some(Duration::from_millis(100))
+        );
+        assert_eq!(settlement_poll_delay(now, now), None);
+    }
 
     #[test]
     fn request_id_requires_engine_money_identity() {

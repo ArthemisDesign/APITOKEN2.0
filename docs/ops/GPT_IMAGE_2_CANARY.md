@@ -261,7 +261,15 @@ and the original paid fence. It revalidates the exact generation-only journal, r
 release to be current, inherits only `CLAUDE_API_DATABASE_URL` from an active OpenAI slot, and pipes the UUID
 over stdin into the diagnostic binary. It validates the closed JSON schema and publishes only bounded state,
 attempt/error booleans and integer usage/cost. It has no image transport, credential lookup, image dispatch,
-retry, or database write path; only a GREEN delivery of this controller may drive the next corrective change.
+retry, or database write path. Controller delivery
+`d66e25babba5e55ef96ebec51971962656a4badf` is watchdog-GREEN and reported
+`terminal_evidence_present`: reservation `settled`, outbox `done` after one attempt with no error, usage
+present, `real_nano=7_045_000`, and `charge_nano=0`. The generation therefore settled correctly after the
+paid runner had stopped waiting; edit still was not dispatched, so this remains insufficient for
+publication. The successor runner does not extend or replay that fenced call. Instead, each fresh request's
+settlement observer has an explicit 150-second wall-clock deadline with 500 ms polling rather than a fixed
+number of attempts. The PostgreSQL session independently limits each statement to 15 seconds and lock wait to
+5 seconds. Observer timeout is terminal and does not repeat image POST.
 
 The intended one-shot contract remains:
 

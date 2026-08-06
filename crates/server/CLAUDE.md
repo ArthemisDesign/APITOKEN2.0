@@ -157,8 +157,10 @@ background loops and the HTTP router. Here — and only here — everything is w
   false. `--preflight-only` stops at `preflight_success`; `--execute` repeats that fresh free preflight,
   sends one public generation and then one one-reference edit with no post-dispatch retry, and correlates
   each lowercase UUIDv4 response identity to an exact release-v2 snapshot, reservation, usage row, outbox
-  completion and settlement. Success requires exact
-  official token/nanoUSD legs, `charge_nano=0`, unchanged account/key money aggregates, bounded
+  completion and settlement. Each settlement uses a 150-second wall-clock evidence deadline with 500 ms
+  polling; the shared PostgreSQL session already bounds each statement to 15 seconds and each lock wait to
+  5 seconds. A timeout is terminal and never replays the paid request. Success requires exact official
+  token/nanoUSD legs, `charge_nano=0`, unchanged account/key money aggregates, bounded
   byte-different mode-`0600` PNGs and mode-`0600` evidence in a mode-`0700` replay-fenced directory.
   Full contract — `docs/ops/GPT_IMAGE_2_CANARY.md`.
 - ClaudeStore emergency transport: `CLAUDE_API_CLAUDESTORE_FALLBACK_ENABLED` strict default-off

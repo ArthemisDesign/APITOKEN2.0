@@ -338,9 +338,15 @@ is only what is needed to walk the relationships when making changes:
   snapshot, receives its UUIDv4 only over stdin, and emits no request/account/key identity or raw error. The
   sole consumer is the separately pinned `deploy/gpt-image-2-settlement-diagnostic-gate.sh`: it revalidates
   the immutable generation-only fence, inherits only the production PostgreSQL DSN, passes the identity over
-  stdin, and publishes a bounded status. Neither side has image HTTP, credential selection, dispatch, retry,
-  or mutation. The direct OpenAI plane and header-gated Combined
-  bridge produce these routes; the future router is a
+  stdin, and publishes a bounded status. Watchdog-GREEN controller
+  `d66e25babba5e55ef96ebec51971962656a4badf` reported `terminal_evidence_present` for that request:
+  reservation `settled`, outbox `done` on attempt 1 without error, usage present, `real_nano=7_045_000`, and
+  `charge_nano=0`. This proves the old smoke stopped while waiting for evidence rather than a failed
+  settlement; it still does not prove edit or authorize publication. The successor observer uses an explicit
+  150-second wall-clock deadline instead of a fixed iteration count. Each database statement is independently
+  bounded to 15 seconds by the PostgreSQL session; observer timeout remains terminal without paid replay.
+  Neither diagnostic side has image HTTP, credential selection, dispatch, retry, or mutation. The
+  direct OpenAI plane and header-gated Combined bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —
   `docs/engine/CODEX_PROVIDER.md`, `docs/ops/GPT_IMAGE_2_CANARY.md`, and
