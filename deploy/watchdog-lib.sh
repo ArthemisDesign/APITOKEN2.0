@@ -804,7 +804,8 @@ wd_path_is_controller_definition() {
     deploy/gpt-image-2-live-gate.sh|deploy/gpt-image-2-public-smoke-gate.sh|\
     deploy/gpt-image-2-public-preflight-gate.sh|deploy/gpt-image-2-public-preflight-v2-gate.sh|\
     deploy/gpt-image-2-public-preflight-v3-gate.sh|deploy/gpt-image-2-public-paid-smoke-gate.sh|\
-    deploy/gpt-image-2-public-paid-inspect-gate.sh|deploy/gpt-image-2-settlement-diagnostic-gate.sh|\
+    deploy/gpt-image-2-public-paid-smoke-v2-gate.sh|deploy/gpt-image-2-public-paid-inspect-gate.sh|\
+    deploy/gpt-image-2-settlement-diagnostic-gate.sh|\
     deploy/watchdog-test-db.sh|deploy/watchdog-backup.sh|deploy/watchdog-migrate.sh|\
     deploy/watchdog-infrastructure.sh|deploy/watchdog-retention.sh|\
     deploy/watchdog-github.sh|deploy/watchdog-control.sh|\
@@ -844,6 +845,10 @@ wd_path_is_gpt_image_2_public_preflight_v3_gate_trigger() {
 wd_path_is_gpt_image_2_public_paid_smoke_gate_trigger() {
   # The paid output root is permanently fenced after its first delivery. Never dispatch from it again.
   return 1
+}
+
+wd_path_is_gpt_image_2_public_paid_smoke_v2_gate_trigger() {
+  [[ $1 == deploy/gpt-image-2-public-paid-smoke-v2-gate.sh ]]
 }
 
 wd_path_is_gpt_image_2_public_paid_inspect_gate_trigger() {

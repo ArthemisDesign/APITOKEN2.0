@@ -345,7 +345,11 @@ is only what is needed to walk the relationships when making changes:
   settlement; it still does not prove edit or authorize publication. The successor observer uses an explicit
   150-second wall-clock deadline instead of a fixed iteration count. Each database statement is independently
   bounded to 15 seconds by the PostgreSQL session; observer timeout remains terminal without paid replay.
-  Neither diagnostic side has image HTTP, credential selection, dispatch, retry, or mutation. The
+  Producer `853fdc6c8d5be486c371b23df6772eeaf7a48029` is exact watchdog-GREEN. Its sole paid successor
+  consumer is `deploy/gpt-image-2-public-paid-smoke-v2-gate.sh`, pinned to that binary and a fresh v2 evidence
+  root; it inherits only the PostgreSQL DSN, permits one `--execute`, and requires strict generation+edit PNG,
+  usage, settlement, and unchanged-money evidence. Neither diagnostic side has image HTTP, credential
+  selection, dispatch, retry, or mutation. The
   direct OpenAI plane and header-gated Combined bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —

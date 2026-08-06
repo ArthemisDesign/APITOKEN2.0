@@ -269,7 +269,14 @@ paid runner had stopped waiting; edit still was not dispatched, so this remains 
 publication. The successor runner does not extend or replay that fenced call. Instead, each fresh request's
 settlement observer has an explicit 150-second wall-clock deadline with 500 ms polling rather than a fixed
 number of attempts. The PostgreSQL session independently limits each statement to 15 seconds and lock wait to
-5 seconds. Observer timeout is terminal and does not repeat image POST.
+5 seconds. Observer timeout is terminal and does not repeat image POST. Corrective producer
+`853fdc6c8d5be486c371b23df6772eeaf7a48029` is exact watchdog-GREEN. Its separate
+`deploy/gpt-image-2-public-paid-smoke-v2-gate.sh` uses the fresh
+`gpt-image-2-public-paid-smoke-v2` parent, is pinned to that immutable binary, inherits only the active OpenAI
+slot's PostgreSQL DSN, and may invoke exactly one `--execute`. The old paid root and controller remain retired.
+The v2 gate returns GREEN only for two strict, byte-different PNGs plus exact generation/edit usage and
+release-v2 settlement evidence; every partial or ambiguous state permanently fences the new root and fails the
+overall deployment.
 
 The intended one-shot contract remains:
 

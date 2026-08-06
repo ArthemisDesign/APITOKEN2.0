@@ -1166,6 +1166,7 @@ for controller_definition in \
   deploy/gpt-image-2-public-preflight-v2-gate.sh \
   deploy/gpt-image-2-public-preflight-v3-gate.sh \
   deploy/gpt-image-2-public-paid-smoke-gate.sh \
+  deploy/gpt-image-2-public-paid-smoke-v2-gate.sh \
   deploy/gpt-image-2-public-paid-inspect-gate.sh \
   deploy/gpt-image-2-settlement-diagnostic-gate.sh \
   deploy/watchdog-infrastructure.sh \
@@ -4548,6 +4549,50 @@ if wd_path_is_gpt_image_2_public_paid_smoke_gate_trigger \
     deploy/gpt-image-2-public-paid-smoke-gate.sh; then
   wd_die 'retired GPT Image 2 public paid smoke can dispatch again'
 fi
+wd_path_is_gpt_image_2_public_paid_smoke_v2_gate_trigger \
+  deploy/gpt-image-2-public-paid-smoke-v2-gate.sh \
+  || wd_die 'fresh GPT Image 2 public paid smoke v2 file does not trigger its gate'
+for path in deploy/watchdog.sh deploy/watchdog-lib.sh deploy/gpt-image-2-public-paid-smoke-gate.sh; do
+  if wd_path_is_gpt_image_2_public_paid_smoke_v2_gate_trigger "$path"; then
+    wd_die "unrelated path triggers GPT Image 2 public paid smoke v2: $path"
+  fi
+done
+grep -Fq '"$ROOT/deploy/gpt-image-2-public-paid-smoke-v2-gate.sh"' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'GPT Image 2 public paid smoke v2 is not installed as a fixed controller'
+grep -Fxq 'PRODUCER_SHA=853fdc6c8d5be486c371b23df6772eeaf7a48029' \
+  "$ROOT/deploy/gpt-image-2-public-paid-smoke-v2-gate.sh" \
+  || wd_die 'GPT Image 2 public paid smoke v2 is not pinned to the GREEN producer'
+grep -Fxq 'EVIDENCE_PARENT=$STATE_ROOT/gpt-image-2-public-paid-smoke-v2' \
+  "$ROOT/deploy/gpt-image-2-public-paid-smoke-v2-gate.sh" \
+  || wd_die 'GPT Image 2 public paid smoke v2 does not use a fresh evidence root'
+grep -Fq '"$binary" openai-image-public-smoke --output "$OUTPUT" --execute' \
+  "$ROOT/deploy/gpt-image-2-public-paid-smoke-v2-gate.sh" \
+  || wd_die 'GPT Image 2 public paid smoke v2 does not run the exact one-shot CLI'
+[[ $(grep -Fc -- '--execute' "$ROOT/deploy/gpt-image-2-public-paid-smoke-v2-gate.sh") -eq 1 ]] \
+  || wd_die 'GPT Image 2 public paid smoke v2 has multiple execute paths'
+! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc' \
+  "$ROOT/deploy/gpt-image-2-public-paid-smoke-v2-gate.sh" \
+  || wd_die 'GPT Image 2 public paid smoke v2 contains a reseller path'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-paid-smoke-v2-gate.sh 853fdc6c8d5be486c371b23df6772eeaf7a48029' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'GPT Image 2 public paid smoke v2 lacks an exact-producer sudo bridge'
+grep -Fxq 'GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V2_PRODUCER_SHA=853fdc6c8d5be486c371b23df6772eeaf7a48029' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog does not pin the GPT Image 2 public paid smoke v2 producer'
+paid_v2_gate_line=$(grep -nF '"$GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V2_PRODUCER_SHA")' \
+  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+[[ -n $paid_v2_gate_line && -n $processed_line && $paid_v2_gate_line -lt $processed_line ]] \
+  || wd_die 'GPT Image 2 public paid smoke v2 does not run before processed/green'
+grep -Fq 'CURRENT_PHASE_BEFORE_FAILURE=$public_image_paid_summary' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'GPT Image 2 public paid smoke v2 journal state is absent from a RED status'
+grep -Fq 'github_status success deploy/gpt-image-2-public-generation' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'GPT Image 2 public generation has no sanitized GREEN status'
+grep -Fq 'github_status success deploy/gpt-image-2-public-edit' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'GPT Image 2 public edit has no sanitized GREEN status'
 wd_path_is_gpt_image_2_public_paid_inspect_gate_trigger \
   deploy/gpt-image-2-public-paid-inspect-gate.sh \
   || wd_die 'GPT Image 2 public paid inspector file does not trigger the corrective gate'

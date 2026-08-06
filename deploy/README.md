@@ -118,8 +118,10 @@ deployment files still fail closed to the complete installer. After its first RE
 Image 2 public-smoke controller is a non-network corrective inspector: a change to its own path can only
 validate the existing producer-SHA fence, accept an exact `preflight`/no-dispatch withdrawal, or surface
 bounded journal state/dispatch flags before the overall verdict. It cannot load credentials or replay
-generation/edit. Every transaction records its exact tested infrastructure SHA only after every selected
-concern succeeds.
+generation/edit. A fresh paid-smoke controller gets a distinct producer-SHA evidence root and may dispatch
+its one generation-plus-edit attempt only when its own controller path triggers the gate; any recorded attempt
+permanently fences replay. Every transaction records its exact tested infrastructure SHA only after every
+selected concern succeeds.
 
 Pinned Codex tooling has its own artifact flag inside the engine lane. The isolated candidate builds
 and tests the audited upstream pin once. During engine release selection,
