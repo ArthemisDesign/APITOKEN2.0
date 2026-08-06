@@ -35,6 +35,18 @@ export class ReferredSpendV2ShapeError extends Error {
 }
 
 /**
+ * Конфликт реплея: то же commerce_event_id пришло с расходящимися immutable полями. Зеркалит
+ * ReferralEventReplayConflictError из v1 — страница фида должна упасть и остановиться до
+ * исправления producer'а, а не молча принять чужую запись как «duplicate»/«buffered».
+ */
+export class ReferredSpendV2ReplayConflictError extends Error {
+  constructor(commerceEventId: bigint) {
+    super(`release-v2 usage event ${commerceEventId.toString()} conflicts with its immutable replay`);
+    this.name = "ReferredSpendV2ReplayConflictError";
+  }
+}
+
+/**
  * Структурная валидация v2-события ДО записи: зеркалит CHECK `partner_usage_events_v2_shape_check`,
  * чтобы невалидная строка упала понятной ошибкой, а не голым 23514 из БД. Нарушение — баг
  * producer'а; writer бросает и страница фида останавливается до исправления (fail closed).
@@ -73,11 +85,50 @@ export function pendingUsageV2Ref(commerceEventId: bigint): string {
   return `usage-v2:${commerceEventId.toString()}`;
 }
 
+interface StoredSpendV2Row {
+  commerce_user_id: string;
+  provider_id: string;
+  account_class: string;
+  official_nano: string;
+  charged_nano: string;
+  paid_funded_nano: string;
+  bonus_funded_nano: string;
+  other_funded_nano: string;
+  commission_eligible: boolean;
+  release_generation: string;
+  release_digest: string;
+  snapshot_digest: string;
+  occurred_at: Date;
+}
+
+/**
+ * Сверка сохранённой строки с replay: все immutable поля v2-события (юзер, суммы и funding
+ * composition, release/snapshot identity, occurred_at) обязаны совпасть точно. Совпадение —
+ * идемпотентный повтор; любое расхождение — конфликт (ReferredSpendV2ReplayConflictError).
+ */
+function storedSpendV2Matches(stored: StoredSpendV2Row, event: ReferredSpendV2Event): boolean {
+  return stored.commerce_user_id === event.commerceUserId
+    && stored.provider_id === event.providerId
+    && stored.account_class === event.accountClass
+    && stored.official_nano === event.officialNano.toString()
+    && stored.charged_nano === event.chargedNano.toString()
+    && stored.paid_funded_nano === event.paidFundedNano.toString()
+    && stored.bonus_funded_nano === event.bonusFundedNano.toString()
+    && stored.other_funded_nano === event.otherFundedNano.toString()
+    && stored.commission_eligible === event.commissionEligible
+    && stored.release_generation === event.releaseGeneration.toString()
+    && stored.release_digest === event.releaseDigest
+    && stored.snapshot_digest === event.snapshotDigest
+    && stored.occurred_at.getTime() === event.occurredAt.getTime();
+}
+
 /**
  * Списание рефа по schema v2. Одна транзакция: immutable usage event + цепочка комиссий
  * level 0..10 (basis = exact paid_funded_nano; trigger `commission_entries_v2_source_guard`
  * отклонит любую строку вне активной цепочки — это fail-closed вторая линия).
- * Идемпотентно по commerce_event_id (повтор — "duplicate" без второй записи).
+ * Идемпотентно по commerce_event_id: точный повтор — "duplicate"/"buffered" без второй записи,
+ * а replay с расхождением любого immutable поля — ReferredSpendV2ReplayConflictError (страница
+ * фида падает до исправления, неверная первая запись не может остаться незамеченной).
  * Юзер ещё не атрибутирован — событие буферизуется в pending_referral_usage_events_v2
  * ("buffered"), reconcile проиграет после атрибуции. Навсегда ineligible (commission_eligible
  * = false или paid_funded_nano <= 0) — "skipped": комиссия из такого события невозможна,
@@ -99,8 +150,9 @@ export async function recordReferredSpendV2(
     const directPartnerId = referred.rows[0]?.partner_id;
     if (!directPartnerId) {
       // Событие пришло раньше атрибуции юзера — буферизуем со всей lineage, reconcile проиграет
-      // позже. Commerce-события immutable, поэтому конфликт — идемпотентный no-op без сверки полей.
-      await client.query(`
+      // позже. Конфликт по commerce_event_id: точный replay — идемпотентный "buffered", а любое
+      // расхождение immutable полей — конфликт (fail loud), а не молчаливый no-op.
+      const buffered = await client.query<{ id: string }>(`
         INSERT INTO pending_referral_usage_events_v2 (
           commerce_ref, commerce_event_id, commerce_user_id, provider_id, account_class,
           official_nano, charged_nano, paid_funded_nano, bonus_funded_nano, other_funded_nano,
@@ -108,6 +160,7 @@ export async function recordReferredSpendV2(
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         ON CONFLICT (commerce_event_id) DO NOTHING
+        RETURNING id
       `, [
         pendingUsageV2Ref(event.commerceEventId), event.commerceEventId.toString(),
         event.commerceUserId, event.providerId, event.accountClass,
@@ -117,6 +170,24 @@ export async function recordReferredSpendV2(
         event.releaseGeneration.toString(), event.releaseDigest, event.snapshotDigest,
         event.occurredAt,
       ]);
+      if (!buffered.rows[0]) {
+        const existing = await client.query<StoredSpendV2Row>(`
+          SELECT commerce_user_id, provider_id, account_class,
+                 official_nano::text AS official_nano, charged_nano::text AS charged_nano,
+                 paid_funded_nano::text AS paid_funded_nano,
+                 bonus_funded_nano::text AS bonus_funded_nano,
+                 other_funded_nano::text AS other_funded_nano, commission_eligible,
+                 release_generation::text AS release_generation,
+                 release_digest, snapshot_digest, occurred_at
+          FROM pending_referral_usage_events_v2
+          WHERE commerce_event_id = $1
+          FOR UPDATE
+        `, [event.commerceEventId.toString()]);
+        const stored = existing.rows[0];
+        if (!stored || !storedSpendV2Matches(stored, event)) {
+          throw new ReferredSpendV2ReplayConflictError(event.commerceEventId);
+        }
+      }
       await client.query("COMMIT");
       return "buffered";
     }
@@ -140,7 +211,25 @@ export async function recordReferredSpendV2(
     ]);
     const usageEventId = inserted.rows[0]?.id;
     if (!usageEventId) {
-      // Immutable evidence: повтор того же commerce_event_id — дубликат, второй записи не будет.
+      // Immutable evidence: повтор того же commerce_event_id сверяется со сохранённой строкой —
+      // точный replay возвращает "duplicate" без второй записи, расхождение любого immutable
+      // поля (включая partner) — ReferredSpendV2ReplayConflictError.
+      const existing = await client.query<StoredSpendV2Row & { partner_id: string }>(`
+        SELECT commerce_user_id, partner_id, provider_id, account_class,
+               official_nano::text AS official_nano, charged_nano::text AS charged_nano,
+               paid_funded_nano::text AS paid_funded_nano,
+               bonus_funded_nano::text AS bonus_funded_nano,
+               other_funded_nano::text AS other_funded_nano, commission_eligible,
+               release_generation::text AS release_generation,
+               release_digest, snapshot_digest, occurred_at
+        FROM partner_usage_events_v2
+        WHERE commerce_event_id = $1
+        FOR UPDATE
+      `, [event.commerceEventId.toString()]);
+      const stored = existing.rows[0];
+      if (!stored || stored.partner_id !== directPartnerId || !storedSpendV2Matches(stored, event)) {
+        throw new ReferredSpendV2ReplayConflictError(event.commerceEventId);
+      }
       await client.query("COMMIT");
       return "duplicate";
     }

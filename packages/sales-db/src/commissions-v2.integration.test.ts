@@ -7,6 +7,7 @@ import {
   pendingUsageV2Ref,
   recordReferredSpendV2,
   reconcilePendingReferralUsageEventsV2,
+  ReferredSpendV2ReplayConflictError,
   ReferredSpendV2ShapeError,
   type ReferredSpendV2Event,
 } from "./commissions-v2.js";
@@ -128,6 +129,41 @@ describe.runIf(Boolean(connectionString))("recordReferredSpendV2 (release-v2 wri
              (SELECT count(*) FROM commission_entries_v2)::text AS entries
     `);
     expect(counts.rows[0]).toEqual({ usage: "1", entries: "2" });
+  });
+
+  it("rejects a divergent replay of a recorded event, keeps the stored row intact", async () => {
+    const chain = await seedChain();
+    const input = event({ commerceEventId: 7006n });
+    await attribute(input.commerceUserId, chain.direct);
+    await expect(recordReferredSpendV2(db, input)).resolves.toBe("recorded");
+
+    // То же commerce_event_id, но расходится immutable official_nano — конфликт, а не duplicate.
+    await expect(recordReferredSpendV2(db, { ...input, officialNano: 21_000n }))
+      .rejects.toBeInstanceOf(ReferredSpendV2ReplayConflictError);
+
+    // Точный replay по-прежнему идемпотентен, а сохранённая строка не изменилась.
+    await expect(recordReferredSpendV2(db, input)).resolves.toBe("duplicate");
+    const usage = await db.pool.query<{ official_nano: string }>(`
+      SELECT official_nano::text FROM partner_usage_events_v2 WHERE commerce_event_id = 7006
+    `);
+    expect(usage.rows).toEqual([{ official_nano: "20000" }]);
+  });
+
+  it("rejects a divergent replay of a buffered event, keeps the pending row intact", async () => {
+    await seedChain();
+    const input = event({ commerceEventId: 7007n });
+    await expect(recordReferredSpendV2(db, input)).resolves.toBe("buffered");
+
+    // Расходится immutable snapshot_digest буферизованного события — конфликт, а не "buffered".
+    await expect(recordReferredSpendV2(db, { ...input, snapshotDigest: "snapshot-other" }))
+      .rejects.toBeInstanceOf(ReferredSpendV2ReplayConflictError);
+
+    // Точный replay остаётся идемпотентным "buffered", pending-строка не перезаписана.
+    await expect(recordReferredSpendV2(db, input)).resolves.toBe("buffered");
+    const pending = await db.pool.query<{ snapshot_digest: string }>(`
+      SELECT snapshot_digest FROM pending_referral_usage_events_v2 WHERE commerce_event_id = 7007
+    `);
+    expect(pending.rows).toEqual([{ snapshot_digest: "snapshot-v2" }]);
   });
 
   it("buffers a pre-attribution event and reconcile replays it after attribution", async () => {
