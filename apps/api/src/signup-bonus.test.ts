@@ -196,6 +196,24 @@ describe.runIf(Boolean(connectionString))("settleSignupBonus", () => {
     expect(profile.rows[0]?.n).toBe(0);
   });
 
+  it("does not claim the bonus for a password account without an OAuth identity", async () => {
+    // Defense in depth: password-регистрация не имеет auth_identities — даже с активным
+    // engine-аккаунтом и allowlisted доменом клейм не проходит и профиль не пишется.
+    const userId = await createUser(
+      database, "password-user@gmail.com", "active", "acct_password", "b2c", null,
+    );
+
+    await settleSignupBonus(database, engine, {
+      userId, email: "password-user@gmail.com", customerType: "b2c",
+    });
+
+    expect(creditAccount).not.toHaveBeenCalled();
+    const profile = await database.pool.query(
+      "SELECT count(*)::int AS n FROM signup_profiles WHERE user_id = $1", [userId],
+    );
+    expect(profile.rows[0]?.n).toBe(0);
+  });
+
   it("is a no-op once the bonus is granted", async () => {
     const userId = await createUser(database, "twice@gmail.com", "active", "acct_twice");
     await settleSignupBonus(database, engine, {
@@ -216,6 +234,7 @@ async function createUser(
   status: "pending" | "active",
   engineAccountId: string | null,
   customerType: "b2c" | "b2b" = "b2c",
+  oauthProvider: "google" | "github" | null = "github",
 ): Promise<string> {
   const userId = randomUUID();
   await database.pool.query("INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)", [
@@ -229,5 +248,13 @@ async function createUser(
     INSERT INTO customer_profiles (user_id, customer_type, current_tier, multiplier_bp, pricing_month_start)
     VALUES ($1, $2, $3, 4000, date_trunc('month', now())::date)
   `, [userId, customerType, customerType === "b2b" ? null : 0]);
+  // Бонус исторически выдавался только из OAuth-входа → по умолчанию юзер с идентичностью;
+  // null моделирует password-регистрацию (auth_identities пуст).
+  if (oauthProvider) {
+    await database.pool.query(`
+      INSERT INTO auth_identities (id, user_id, provider, subject, email, email_verified)
+      VALUES ($1, $2, $3, $4, $5, true)
+    `, [randomUUID(), userId, oauthProvider, `${oauthProvider}:${userId}`, email]);
+  }
   return userId;
 }

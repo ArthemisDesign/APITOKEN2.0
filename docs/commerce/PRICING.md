@@ -46,7 +46,9 @@ The anti-fraud profile and flags are always recorded at OAuth sign-in, while the
 against an engine account confirmed `active` by a fresh database read. Under managed pricing the
 account is activated by the worker asynchronously after registration — in that case the claim is
 deferred and retried from two points: the next OAuth sign-in and
-`AccountService.ensureEngineAccount` (the first account access: dashboard, keys). The claim is
+`AccountService.ensureEngineAccount` (the first account access: dashboard, keys). Both settlement
+points require a Google/GitHub identity in `auth_identities`, so a password registration never
+passes the deferred gate even with a clean anti-fraud profile. The claim is
 atomic (partial unique indexes) and the credit is idempotent by reference, so retries are safe and
 do not double the bonus.
 

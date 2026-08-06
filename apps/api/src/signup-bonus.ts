@@ -6,6 +6,7 @@ import {
   claimSignupBonus,
   countRecentSubnetSignups,
   flagSignupProfile,
+  hasOAuthIdentity,
   ipSubnetOf,
   isBonusEligibleEmailDomain,
   releaseSignupBonus,
@@ -28,12 +29,15 @@ export interface SignupBonusMeta {
 
 /**
  * Единая точка выдачи welcome-бонуса с антифрод-гейтом. Антифрод-профиль и флаги фиксируются
- * ВСЕГДА (первый зафиксированный сигнал не перезаписывается), а клейм происходит только против
+ * при КАЖДОМ вызове от OAuth-юзера (первый зафиксированный сигнал не перезаписывается), а клейм происходит только против
  * engine-аккаунта, который УЖЕ active по свежему чтению из БД: in-memory статус после
  * managed-provisioning остаётся pending до асинхронного ACK worker'а, и гейт по нему терял
  * бонус вместе с профилем. Вызывается из OAuth-входа и из AccountService.ensureEngineAccount —
  * клейм атомарен (частичные unique-индексы), зачисление идемпотентно по ref, поэтому
- * параллельные и повторные вызовы безопасны. В кластер достаточно попасть ЛЮБЫМ одним
+ * параллельные и повторные вызовы безопасны. Welcome-бонус — ТОЛЬКО OAuth-регистрациям
+ * (Google/GitHub): юзер без записи в auth_identities (password-аккаунт) отсекается первым же
+ * гейтом, до записи профиля и клейма, — страховка для любого будущего вызывающего кода.
+ * В кластер достаточно попасть ЛЮБЫМ одним
  * признаком: то же устройство (device-cookie), та же /24|/64 подсеть или тот же канонический
  * email, что у уже выданного бонуса, — тогда аккаунт создаётся, но бонус не выдаётся.
  */
@@ -43,6 +47,10 @@ export async function settleSignupBonus(
   input: { userId: string; email: string; customerType: "b2c" | "b2b"; meta?: SignupBonusMeta },
 ): Promise<void> {
   if (input.customerType !== "b2c") return;
+  // Подарок — только OAuth-регистрациям: password-аккаунт не имеет auth_identities и
+  // не должен получить бонус даже с чистым антифрод-профилем (deferred-путь в
+  // AccountService дополнительно отгейтован тем же условием на чтении маппинга).
+  if (!await hasOAuthIdentity(database, input.userId)) return;
   let profile: { bonusGranted: boolean; flaggedReason: string | null };
   try {
     profile = await upsertSignupProfile(database, {

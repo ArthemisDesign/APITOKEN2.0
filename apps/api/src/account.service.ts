@@ -55,6 +55,7 @@ export class AccountService {
                COALESCE(cp.customer_type, 'b2c') AS customer_type,
                COALESCE(sp.bonus_granted, false) AS bonus_granted,
                sp.flagged_reason,
+               EXISTS (SELECT 1 FROM auth_identities ai WHERE ai.user_id = ea.user_id) AS has_oauth_identity,
                CASE WHEN COALESCE(sp.bonus_granted, false)
                  THEN COALESCE(sp.bonus_amount_nano, $2::bigint)
                  ELSE NULL
@@ -75,6 +76,7 @@ export class AccountService {
         customerType: row.customer_type,
         bonusGranted: row.bonus_granted,
         flaggedReason: row.flagged_reason,
+        hasOAuthIdentity: row.has_oauth_identity,
         welcomeBonusAmountNano: row.welcome_bonus_amount_nano === null
           ? null
           : BigInt(row.welcome_bonus_amount_nano),
@@ -86,9 +88,12 @@ export class AccountService {
         transactionOpen = false;
         // Отложенный welcome-бонус: профиль чист, но клейм ещё не прошёл — например, аккаунт
         // активировался worker'ом уже после OAuth-регистрации, когда гейт видел pending.
+        // Только OAuth-регистрации: password-аккаунт без auth_identities бонус не получает
+        // (settleSignupBonus дублирует этот гейт как defense in depth).
         // Best-effort: ошибка зачисления не ломает доступ к аккаунту — клейм освобождён,
         // следующий вызов повторит.
-        if (mapping.customerType === "b2c" && !mapping.bonusGranted && mapping.flaggedReason === null) {
+        if (mapping.customerType === "b2c" && mapping.hasOAuthIdentity
+          && !mapping.bonusGranted && mapping.flaggedReason === null) {
           try {
             await settleSignupBonus(this.database, this.engine, {
               userId,
@@ -677,6 +682,7 @@ interface EngineAccountMappingRow {
   customer_type: "b2c" | "b2b";
   bonus_granted: boolean;
   flagged_reason: string | null;
+  has_oauth_identity: boolean;
   welcome_bonus_amount_nano: string | null;
 }
 

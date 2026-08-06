@@ -238,6 +238,22 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
       account: "acct_erin", amountNano: "5000000000", reference: `signup-bonus:${erinId}`,
     }]);
   });
+
+  it("does not settle the deferred welcome bonus for a password account", async () => {
+    // Парольная регистрация: auth_identities пуст, профиль чист и не заклеймен —
+    // deferred-гейт обязан пропустить аккаунт, но НЕ клеймить бонус.
+    const frankId = await createUser(database, "frank@gmail.com", "acct_frank");
+    await database.pool.query(`
+      INSERT INTO signup_profiles (user_id, email_canonical) VALUES ($1, $2)
+    `, [frankId, "frank@gmail.com"]);
+
+    await expect(service.ensureEngineAccount(frankId)).resolves.toBe("acct_frank");
+    expect(engine.signupCredits).toEqual([]);
+    const profile = await database.pool.query(
+      "SELECT bonus_granted, flagged_reason FROM signup_profiles WHERE user_id = $1", [frankId],
+    );
+    expect(profile.rows[0]).toEqual({ bonus_granted: false, flagged_reason: null });
+  });
 });
 
 async function createUser(

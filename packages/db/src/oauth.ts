@@ -84,6 +84,18 @@ export async function findExternalAuthUser(
   return result.rows[0] ? mapExternalUser(result.rows[0]) : null;
 }
 
+/**
+ * true, если у юзера есть OAuth-идентичность (Google/GitHub) — маркер OAuth-регистрации.
+ * Lookup по индексу auth_identities_user_provider_uidx; у password-аккаунтов записей нет.
+ */
+export async function hasOAuthIdentity(database: Database, userId: string): Promise<boolean> {
+  const result = await database.pool.query(
+    "SELECT 1 FROM auth_identities WHERE user_id = $1 LIMIT 1",
+    [userId],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
 export async function completeExternalSignIn(
   database: Database,
   identity: VerifiedExternalIdentity,
