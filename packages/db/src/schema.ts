@@ -2845,11 +2845,12 @@ export const pricingReleaseControlJobsV2 = pgTable("pricing_release_control_jobs
       'normalize_funding',
       'collect_stage8',
       'activate_release',
-      'activate_recovery'
+      'activate_recovery',
+      'activate_successor'
     )
     AND ${table.status} IN ('pending', 'processing', 'retry', 'confirmed', 'dead')
     AND (
-      ${table.jobKind} NOT IN ('activate_release', 'activate_recovery')
+      ${table.jobKind} NOT IN ('activate_release', 'activate_recovery', 'activate_successor')
       OR (${table.expectedHeadVersion} IS NOT NULL AND ${table.stage8EvidenceDigest} IS NOT NULL)
     )
     AND (
@@ -2884,7 +2885,7 @@ export const pricingReleaseActivationReceiptsV2 = pgTable("pricing_release_activ
   }).onDelete("restrict"),
   check("pricing_release_activation_receipts_v2_shape_check", sql`
     ${table.activationId} <> ''
-    AND ${table.activationKind} IN ('cutover', 'recovery')
+    AND ${table.activationKind} IN ('cutover', 'recovery', 'successor')
     AND ${table.headVersion} > 0
     AND ${table.receiptDigest} <> ''
   `),

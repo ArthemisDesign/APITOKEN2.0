@@ -302,6 +302,13 @@
       "when": 1785965700915,
       "tag": "0042_pricing_strict_chain_pending",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1786041400692,
+      "tag": "0043_pricing_successor_activation",
+      "breakpoints": true
     }
   ]
 }

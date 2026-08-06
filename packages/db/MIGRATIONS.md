@@ -195,3 +195,13 @@ backfills nothing — accounts converted before the chain existed keep the manua
 touches no policy/binding state, and does not enforce anything by itself; the dependent writers
 (conversion/save setting the flag) and the worker sweep consuming it ship only after this
 migration SHA has green `deploy/migration` and `deploy/watchdog` in production.
+
+Migration `0043_pricing_successor_activation.sql` expand-only widens two Stage 9 check
+constraints: `pricing_release_control_jobs_v2.job_kind` admits `activate_successor` and
+`pricing_release_activation_receipts_v2.activation_kind` admits `successor`. A successor
+activation advances the live pricing release head to a NEWER prepared target/recovery pair (the
+standard path for publishing a new pricing generation, e.g. an added model); the durable job and
+receipt identities stay exact, and every existing job kind, receipt and constraint arm is
+unchanged. The migration stages no job and changes no row; the dependent consumer (staging,
+collector and worker execution of successor jobs) ships only after this migration SHA has green
+`deploy/migration` and `deploy/watchdog` in production.
