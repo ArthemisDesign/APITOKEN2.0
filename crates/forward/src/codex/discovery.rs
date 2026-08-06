@@ -70,6 +70,7 @@ mod tests {
 
     fn config(profiles_file: &std::path::Path) -> CodexConfig {
         CodexConfig {
+            smooth_wait_ms: 0,
             enabled: true,
             base_url: codex_credential::CODEX_DEFAULT_BASE_URL.to_string(),
             profiles_file: profiles_file.to_str().unwrap().to_string(),

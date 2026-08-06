@@ -1739,6 +1739,7 @@ mod tests {
 
     fn test_config(base: &str) -> Arc<CodexConfig> {
         Arc::new(CodexConfig {
+            smooth_wait_ms: 0,
             enabled: true,
             base_url: format!("{base}/codex"),
             profiles_file: "/tmp/roster.json".to_string(),

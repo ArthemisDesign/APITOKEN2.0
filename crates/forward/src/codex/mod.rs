@@ -2037,6 +2037,7 @@ mod calibration_integration_tests {
         let gateway = Arc::new(
             CodexGateway::new_with_calibration_and_fallback(
                 CodexConfig {
+                    smooth_wait_ms: 0,
                     enabled: true,
                     base_url: base_url.to_string(),
                     profiles_file: roster.to_string_lossy().into_owned(),

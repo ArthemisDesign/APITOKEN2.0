@@ -1462,6 +1462,7 @@ mod tests {
         )
         .unwrap();
         CodexGateway::new(CodexConfig {
+            smooth_wait_ms: 0,
             enabled: true,
             base_url: codex_credential::CODEX_DEFAULT_BASE_URL.to_string(),
             profiles_file: root.join("profiles.json").to_str().unwrap().to_string(),

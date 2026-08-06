@@ -77,6 +77,11 @@ pub struct CodexConfig {
     pub cli_version: String,
     pub request_timeout_ms: u64,
     pub turn_timeout_ms: u64,
+    /// How long a customer request may wait, quietly, for the pool to regain capacity before it is
+    /// refused. Mirrors `CLAUDE_API_SMOOTH_WAIT_MS` on the Anthropic and Gemini planes: a cooling
+    /// window that expires or a concurrent turn that frees its slot recovers well inside it, and
+    /// waiting costs nothing here because no home is held while the pool is empty.
+    pub smooth_wait_ms: u64,
     /// How long the gateway waits for *any* SSE event inside a running turn. Separate from
     /// `turn_timeout_ms`: the total deadline must stay generous (a reasoning model thinks for
     /// minutes), while silence answers "is this profile still there at all".
@@ -159,6 +164,7 @@ mod tests {
     #[test]
     fn derived_urls_stay_on_the_chatgpt_backend() {
         let cfg = CodexConfig {
+            smooth_wait_ms: 0,
             enabled: true,
             base_url: codex_credential::CODEX_DEFAULT_BASE_URL.to_string(),
             profiles_file: "/tmp/roster.json".to_string(),

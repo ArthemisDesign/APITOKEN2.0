@@ -218,6 +218,7 @@ fn test_gateway_with_timeout(
     )
     .unwrap();
     let config = CodexConfig {
+        smooth_wait_ms: 0,
         enabled: true,
         base_url: format!("{base_url}/codex"),
         profiles_file: roster.to_string_lossy().into_owned(),

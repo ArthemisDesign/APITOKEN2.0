@@ -278,6 +278,9 @@ impl CodexGateway {
         let mut tried: Vec<String> = Vec::new();
         let mut transport_retries_left = 1usize;
         let mut last_error: Option<ProcessError> = None;
+        // Same budget the other planes spend before refusing a customer for want of capacity.
+        let smooth_deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(self.cfg.smooth_wait_ms);
         loop {
             let preferred = routing
                 .as_ref()
@@ -293,6 +296,26 @@ impl CodexGateway {
             {
                 HomeSelection::Ready(home, slot) => (home, slot),
                 HomeSelection::Unavailable { ready_at } => {
+                    // No home at all this round. When the round also collected no provider verdict,
+                    // nothing has answered us — the pool is simply out of capacity, which cooling
+                    // expiry or a finishing turn resolves within seconds. Wait quietly and re-run
+                    // the whole rotation while the budget lasts, with `tried` cleared so a home
+                    // skipped a moment ago is eligible again. A round that did collect a verdict
+                    // (`last_error`) is terminal as before: replaying it would only repeat the
+                    // provider's refusal across the fleet.
+                    if last_error.is_none() {
+                        let remaining = smooth_deadline
+                            .saturating_duration_since(std::time::Instant::now())
+                            .as_millis();
+                        let hint = retry_after_from(ready_at).unwrap_or(1) as i64;
+                        if let Some(step) = crate::proxy::smooth_step(hint, remaining) {
+                            tokio::time::sleep(step).await;
+                            tried.clear();
+                            continue;
+                        }
+                    }
+                    // Logged only once the wait budget is spent, so the line still means "we gave
+                    // up" rather than firing on every quiet retry round.
                     elog::warn("codex", "codex pool exhausted: no home available");
                     let local = last_error.unwrap_or_else(|| ProcessError::UsageLimitExceeded {
                         retry_after: retry_after_from(ready_at),

@@ -962,6 +962,9 @@ fn codex_config(redis_url: Option<String>, history_secret: Option<String>) -> Op
         base_url: codex_base_url(),
         profiles_file: codex_profiles_file(),
         credential_keys,
+        // One knob for every plane: a customer waiting on capacity should not get a different
+        // answer depending on which provider their model happens to live on.
+        smooth_wait_ms: bounded_u64("CLAUDE_API_SMOOTH_WAIT_MS", 8_000, 0, 60_000),
         cli_version: ev_or(
             "CLAUDE_API_CODEX_CLI_VERSION",
             codex_credential::CODEX_CLI_VERSION,
