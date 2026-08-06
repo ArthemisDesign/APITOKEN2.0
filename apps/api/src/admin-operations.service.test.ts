@@ -665,6 +665,11 @@ class FakeAdminEngine {
         this.statusChanges.push({ account, status: body.status! });
         return Response.json({ account, status: body.status, updated: 1 });
       }
+      // Release-v2 provisioning probe (post-cutover conversion sync): no head in these tests,
+      // so the sync reports pre_cutover and the legacy lane assertions stay focused.
+      if (url.pathname === "/admin/pricing/v2/head") {
+        return Response.json({ head: null });
+      }
       return Response.json({ error: "unexpected request" }, { status: 500 });
     },
   });

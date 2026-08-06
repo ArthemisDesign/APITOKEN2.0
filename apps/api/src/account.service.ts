@@ -544,7 +544,9 @@ export class AccountService {
       await ensurePricingReleaseProvisioningV2(this.database, this.engine, { userId, engineAccountId });
     } catch (error) {
       if (error instanceof PricingReleaseProvisioningV2Error) {
-        throw new ConflictException("pricing release provisioning is still pending");
+        // The code distinguishes a transient head race from a permanent assignment conflict —
+        // surface it instead of claiming everything is "still pending".
+        throw new ConflictException(`pricing release provisioning failed: ${error.code}`);
       }
       throw error;
     }

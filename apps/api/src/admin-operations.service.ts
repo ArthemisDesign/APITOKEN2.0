@@ -19,6 +19,8 @@ import {
   revokeAdminUserSessions,
   setAdminUserStatus,
   stageAccountStrictCutoverJob,
+  syncPricingReleasePolicyOverrideV2,
+  PricingReleaseProvisioningV2Error,
   type AdminTopupsQuery,
   type AdminAuditQuery,
   type Database,
@@ -309,6 +311,11 @@ export class AdminOperationsService {
       ...input,
       multiplierBp: multiplierForDiscount(input.discountPercent),
     });
+    // Post-cutover the conversion reaches the live pricing authority only through the
+    // class-changing assignment extension. The sync is idempotent, so it doubles as the repair
+    // path for customers converted before this lane existed; its outcome is reported honestly
+    // instead of a blanket "pending".
+    const releaseV2 = await this.syncConversionToReleaseV2(input.userId, result.engineAccountId);
     return {
       user_id: input.userId,
       customer_type: "b2b",
@@ -316,7 +323,25 @@ export class AdminOperationsService {
       multiplier_bp: result.multiplierBp,
       converted: result.converted,
       sync_status: result.jobId ? "pending" : "unchanged",
+      release_v2: releaseV2,
     };
+  }
+
+  private async syncConversionToReleaseV2(
+    userId: string,
+    engineAccountId: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      return await syncPricingReleasePolicyOverrideV2(this.database, this.engine, {
+        userId,
+        engineAccountId,
+      });
+    } catch (error) {
+      if (error instanceof PricingReleaseProvisioningV2Error) {
+        return { status: "error", code: error.code, message: error.message };
+      }
+      throw error;
+    }
   }
 
   /**

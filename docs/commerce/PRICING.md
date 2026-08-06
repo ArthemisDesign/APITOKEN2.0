@@ -97,9 +97,13 @@ otherwise a no-op — it never rewrites an existing policy.
 Conversion and every later B2B policy save are enforced per account. Post-cutover the
 enforcement lane is the append-only assignment extension: the save
 (`syncPricingReleasePolicyOverrideV2`) and the post-cutover provisioning flow
-(`ensurePricingReleaseProvisioningV2`) prepare a strictly newer release policy version and pin
-it for the exact active head and its paired recovery, and the runtime resolver prefers the
-extension over the immutable base assignment. The client's own policy is therefore the only
+(`ensurePricingReleaseProvisioningV2`) prepare the account's release policy — a strictly newer
+version for an already-B2B base, or the first version of the new per-account B2B lineage for a
+converted B2C base — and pin it for the exact active head and its paired recovery, and the
+runtime resolver prefers the extension over the immutable base assignment. The conversion API
+reports the propagation outcome in its `release_v2` response field, and a converted account's
+key issuance self-heals through the same extension when the admin sync did not run. The
+client's own policy is therefore the only
 enforced price for new charges and every B2C input — the global default, its provider/model
 overrides, the legacy scalar, any progressive remnant — is dead for the account. The flip never
 rewrites the immutable ledger and never reprices an in-flight reservation: those settle on

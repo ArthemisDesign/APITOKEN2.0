@@ -561,4 +561,122 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
       engineAccountId: b2bAccountId,
     })).resolves.toMatchObject({ status: "override" });
   });
+
+  // Post-cutover conversion fixture: commerce already says b2b, but the immutable base
+  // assignment in the active release still says b2c — the exact state convertCustomerToBusiness
+  // leaves behind until the class-changing extension lands.
+  function convertedTarget(): PricingReleaseV2 {
+    return {
+      ...target,
+      assignments: [
+        ...target.assignments,
+        {
+          account_id: accountId,
+          account_class: "b2c" as const,
+          policy_id: "release-v2:b2c:global",
+          policy_version: 1,
+          policy_digest: digest("global-policy"),
+          billing_mode: "balance" as const,
+          funding_generation: 7,
+          purpose: null,
+          responsible: null,
+          assignment_digest: digest("converted-base-assignment"),
+        },
+      ],
+    };
+  }
+
+  async function convertFixtureToBusiness(multiplierBp: number): Promise<void> {
+    await seed.query(`
+      UPDATE customer_profiles
+      SET customer_type = 'b2b', current_tier = NULL, multiplier_bp = $2
+      WHERE user_id = $1
+    `, [userId, multiplierBp]);
+    await seed.query("UPDATE engine_accounts SET mult_bp = $2 WHERE user_id = $1", [userId, multiplierBp]);
+  }
+
+  it("propagates a post-cutover B2C-to-B2B conversion through the class-changing extension", async () => {
+    await convertFixtureToBusiness(7_000);
+    const state = fakeEngine({ head, target: convertedTarget(), recovery });
+
+    await expect(syncPricingReleasePolicyOverrideV2(database, state.engine, {
+      userId,
+      engineAccountId: accountId,
+    })).resolves.toEqual({ status: "override", headVersion: 1, policyVersion: 1 });
+
+    // The new per-account b2b lineage starts at version 1 — it is not comparable to the global
+    // b2c base version, and the extension still pins the exact active/recovery pair.
+    const policy = [...state.policies.values()]
+      .find((item) => item.policy_id === `release-v2:b2b:${accountId}`)!;
+    expect(policy.account_class).toBe("b2b");
+    expect(policy.rules).toEqual([expect.objectContaining({
+      scope: { scope: "provider", provider_id: "anthropic" },
+      discount_bps: 3_000,
+      payable_multiplier_bp: 7_000,
+    })]);
+    const extension = state.extensions.get(`1:${accountId}`);
+    expect(extension?.members.map((member) => member.release_generation)).toEqual([10, 11]);
+    expect(extension?.members[0]?.assignment).toMatchObject({
+      account_id: accountId,
+      account_class: "b2b",
+      billing_mode: "balance",
+      funding_generation: 7,
+    });
+
+    // Key issuance after the conversion resolves through the stored extension instead of a
+    // permanent assignment_conflict against the immutable b2c base.
+    await expect(ensurePricingReleaseProvisioningV2(database, state.engine, {
+      userId,
+      engineAccountId: accountId,
+    })).resolves.toMatchObject({ status: "extension" });
+  });
+
+  it("self-heals a converted account at key issuance by creating the class-changing extension", async () => {
+    await convertFixtureToBusiness(7_000);
+    const state = fakeEngine({ head, target: convertedTarget(), recovery });
+
+    await expect(ensurePricingReleaseProvisioningV2(database, state.engine, {
+      userId,
+      engineAccountId: accountId,
+    })).resolves.toMatchObject({ status: "extension" });
+    expect(state.extensions.get(`1:${accountId}`)?.members[0]?.assignment.account_class).toBe("b2b");
+
+    await expect(ensurePricingReleaseProvisioningV2(database, state.engine, {
+      userId,
+      engineAccountId: accountId,
+    })).resolves.toMatchObject({ status: "extension" });
+    expect(state.extensions.size).toBe(1);
+  });
+
+  it("still fails closed when the base class conflicts outside the b2c-to-b2b conversion", async () => {
+    // Commerce says b2c (fixture default) but the base assignment is open_keys — no conversion
+    // path may repair that, it is a genuine ownership conflict.
+    const conflictTarget: PricingReleaseV2 = {
+      ...target,
+      assignments: [
+        ...target.assignments,
+        {
+          account_id: accountId,
+          account_class: "open_keys" as const,
+          policy_id: "release-v2:openkeys:1to1",
+          policy_version: 1,
+          policy_digest: digest("openkeys-policy"),
+          billing_mode: "balance" as const,
+          funding_generation: 7,
+          purpose: null,
+          responsible: null,
+          assignment_digest: digest("conflicting-base-assignment"),
+        },
+      ],
+    };
+    const state = fakeEngine({ head, target: conflictTarget, recovery });
+
+    const failure = await ensurePricingReleaseProvisioningV2(database, state.engine, {
+      userId,
+      engineAccountId: accountId,
+    }).catch((error) => error);
+    expect(failure).toBeInstanceOf(PricingReleaseProvisioningV2Error);
+    expect(failure).toMatchObject({ code: "assignment_conflict" });
+    expect(state.extensions.size).toBe(0);
+  });
 });

@@ -706,14 +706,20 @@ export async function ensurePricingReleaseProvisioningV2(
     const base = release.assignments.find((assignment) => assignment.account_id === input.engineAccountId);
     if (base) {
       const account = await commerceAccount(database, input.userId, input.engineAccountId);
-      if (base.account_class !== account.customerType || base.billing_mode !== "balance") {
+      if (base.account_class === account.customerType && base.billing_mode === "balance") {
+        return {
+          status: "base_assignment",
+          headVersion: head.head_version,
+          releaseGeneration: head.active_generation,
+        };
+      }
+      // A post-cutover B2C→B2B conversion supersedes the immutable b2c base assignment through
+      // the append-only class-changing assignment extension — fall through to the extension
+      // readback/provisioning path instead of failing key issuance forever. Any other mismatch
+      // is a genuine conflict.
+      if (!(base.account_class === "b2c" && account.customerType === "b2b" && base.billing_mode === "balance")) {
         throw new PricingReleaseProvisioningV2Error("assignment_conflict", "base assignment conflicts with commerce ownership");
       }
-      return {
-        status: "base_assignment",
-        headVersion: head.head_version,
-        releaseGeneration: head.active_generation,
-      };
     }
 
     const pair = await activationPair(database, head);
@@ -818,7 +824,13 @@ export async function syncPricingReleasePolicyOverrideV2(
   }
   const base = release.assignments.find((assignment) => assignment.account_id === input.engineAccountId);
   if (!base) return { status: "not_covered" };
-  if (base.account_class !== "b2b" || base.billing_mode !== "balance" || base.funding_generation === null) {
+  // A converted account keeps its immutable b2c base assignment forever; the override then
+  // carries the class change (b2c base → b2b extension). Every other class/billing/funding
+  // shape remains a hard conflict.
+  const classChange = base.account_class === "b2c";
+  if (!(base.account_class === "b2b" || classChange)
+      || base.billing_mode !== "balance"
+      || base.funding_generation === null) {
     throw new PricingReleaseProvisioningV2Error(
       "assignment_conflict",
       "base assignment conflicts with B2B balance ownership",
@@ -828,7 +840,10 @@ export async function syncPricingReleasePolicyOverrideV2(
   if (base.policy_digest === policy.content_digest) {
     return { status: "unchanged", headVersion: head.head_version, policyVersion: base.policy_version };
   }
-  if (policy.policy_version <= base.policy_version) {
+  // The version-advance guard is meaningful only within one policy lineage; a class change
+  // starts the per-account b2b lineage, whose version 1 is not comparable to the global b2c
+  // base version.
+  if (base.policy_id === policy.policy_id && policy.policy_version <= base.policy_version) {
     throw new PricingReleaseProvisioningV2Error(
       "policy_not_ready",
       `release policy override must advance beyond base version ${base.policy_version}`,
