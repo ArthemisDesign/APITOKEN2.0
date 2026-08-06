@@ -564,11 +564,35 @@ export const MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES =
   MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES;
 
 /**
- * Buyer/operator-facing supported-model list for OpenKeys issuance. By explicit owner decision
- * OpenKeys access is universal: every runtime-priced provider is sellable at 1:1, so the display
- * authority equals the full generation-5 main set. The release-pinned OpenKeys catalog identity
- * (`MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES`) deliberately remains the Anthropic/OpenAI
- * subset and must never be rewritten.
+ * Additive GPT Image 2 pricing capability. Generation 5 remains byte-identical because the active
+ * production release may still pin it; generation 6 adds only the immutable image snapshot after
+ * public generation and edit both passed the production gate through the sealed OpenAI OAuth pool.
+ */
+export const MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION = 6;
+export const MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST =
+  "sha256:v1:1652b971ce678094d5717173ed97b32d942d8507b183688cce613b6883e3c7d9";
+export const GPT_IMAGE_2_CANONICAL_MODEL = "gpt-image-2-2026-04-21";
+
+const MULTI_DISCOUNT_GEN6_IMAGE_CATALOG_ENTRY = Object.freeze({
+  provider_id: "openai" as const,
+  canonical_model_id: GPT_IMAGE_2_CANONICAL_MODEL,
+  enabled: true as const,
+});
+
+export const MULTI_DISCOUNT_GEN6_MAIN_CATALOG_ENTRIES = Object.freeze([
+  ...MULTI_DISCOUNT_GEN5_MAIN_CATALOG_ENTRIES,
+  MULTI_DISCOUNT_GEN6_IMAGE_CATALOG_ENTRY,
+]);
+
+export const MULTI_DISCOUNT_GEN6_OPENKEYS_CATALOG_ENTRIES = Object.freeze([
+  ...MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES,
+  MULTI_DISCOUNT_GEN6_IMAGE_CATALOG_ENTRY,
+]);
+
+/**
+ * Buyer/operator-facing supported-model list for OpenKeys issuance. Keep public display on the
+ * generation-5 main set until generation 6 is activated and paid customer generation/edit pass;
+ * publication then advances this authority in its own checkpoint.
  */
 export const MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES =
   MULTI_DISCOUNT_GEN5_MAIN_CATALOG_ENTRIES;

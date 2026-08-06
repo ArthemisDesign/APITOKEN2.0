@@ -3,8 +3,9 @@
 Status: the two-phase consumer is implemented in
 `packages/db/src/pricing-stage5-materializer-v2{,-store}.ts` after separate GREEN producer and
 migration checkpoints. The OpenKeys authoritative cursor, the admin-managed service inventory, the
-compile-fixed runtime capability generations 3/4, and migration `0029_pricing_release_two_phase_finalize.sql` are already
-its deployed prerequisites. Stage 5 prepares the immutable source/ownership/policy authority,
+compile-fixed runtime capability generations 3–6, and migration
+`0029_pricing_release_two_phase_finalize.sql` are already its deployed prerequisites. Stage 5
+prepares the immutable source/ownership/policy authority,
 but does not guess changing funding identities and does not change live traffic.
 
 ## Input inventories
@@ -99,14 +100,17 @@ the correct policy.
 
 The internal engine provider ID for Gemini is `google`. Frozen capability generation 3 preserves
 the original eight tariff-pinned Gemini models. Additive generation 4 added
-`gemini-3-flash-preview` but did not become the target after the failed production gate. The
-OpenKeys target still deliberately retains the Anthropic/OpenAI set:
-Gemini will appear there only via a separate explicit OpenKeys catalog generation and will still be
-1:1. Capability publication is not such an enablement. Generation 4 remains an immutable rejected
-artifact: Stage 5 does not materialize or finalize a target/recovery plan on its digest. The fresh
-Pro+Ultra live matrix authorized additive capability generation 5; the current materializer builds
-main/OpenKeys catalogs and switches generation 5, policy version 2, and includes Preview only in
-main. OpenKeys generation 5 remains without Gemini.
+`gemini-3-flash-preview` but did not become the target after the failed production gate. Generation
+4 remains an immutable rejected artifact: Stage 5 does not materialize or finalize a target/recovery
+plan on its digest. The fresh Pro+Ultra live matrix authorized additive capability generation 5;
+its OpenKeys catalog remains the explicit Anthropic/OpenAI subset without Gemini. After real GPT
+Image 2 generation and one-reference edit both passed through the existing sealed Codex OAuth pool,
+additive generation 6 adds only `openai/gpt-image-2-2026-04-21`. The current materializer builds
+main/OpenKeys catalogs and switches generation 6. Main retains the generation-5 model set and adds
+the image snapshot; OpenKeys retains its generation-5 set and adds only that image snapshot at 1:1.
+The generation-6 materializer starts from policy version 3 and allocates the next immutable version
+whenever a persisted same-version digest differs. Capability/catalog preparation alone does not
+enable traffic or add the image model to buyer/operator display.
 
 The planner reserves the target generation and the recovery generation of the next monotonic number
 and builds an immutable source/policy/assignment plan for both. At this phase balance assignments
@@ -173,14 +177,13 @@ move.
 
 The local plan is first pinned under an advisory lock with a re-check of the commerce/service
 snapshot; the same check is mandatory before saving terminal blocker evidence. Then the consumer
-performs only a dormant engine prepare for the main/OpenKeys catalog generation 5, provider
-switches generation 5, and each policy version 2, immediately reads the exact version back, and
+performs only a dormant engine prepare for the main/OpenKeys catalogs and provider switches of
+generation 6, and for each exact resolved policy version, immediately reads the version back, and
 records an ACK only for `stored|unchanged` with a matching digest. The materializer builds the
-capability projection, both catalogs, the switches, and the customer and service policies on the
-admitted capability generation 5. Rejected generation 4 remains compile-fixed immutable history, is
-not part of any Stage 5 target/recovery artifact, and does not receive a fictitious capability
-ACK. Target/recovery release prepare, the recovery link, and the control job are absent until
-Stage 6.
+capability projection, both catalogs, the switches, and the customer and service policies on dormant
+capability generation 6. Rejected generation 4 remains compile-fixed immutable history, is not part
+of any Stage 5 target/recovery artifact, and does not receive a fictitious capability ACK.
+Target/recovery release prepare, the recovery link, and the control job are absent until Stage 6.
 
 A same-version/same-digest replay returns `unchanged`. Same-version/different-digest, incomplete
 inventory coverage, a stale source, a policy collision, or an unsupported runtime capability is

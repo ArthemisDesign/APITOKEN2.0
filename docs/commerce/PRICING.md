@@ -61,9 +61,13 @@ The first controlled public-wire gate returned 404 with no output/usage, so immu
 generation 4 remains rejected and is never materialized. A fresh private-wire gate against the exact
 implementation then completed 22 paid turns on Google AI Pro and Ultra: all thinking levels,
 incremental SSE, cache, exact PCM audio and forced tools with terminal authoritative usage.
-Publication proceeds through a new capability/catalog generation 5 and the production/public
-allowlists. OpenKeys does not receive the model automatically: its generation 5 catalog keeps the
-explicit Anthropic/OpenAI set.
+Publication proceeds through capability/catalog generation 5 and the production/public allowlists.
+OpenKeys does not receive the Gemini model automatically: its generation-5 catalog keeps the
+explicit Anthropic/OpenAI set. Dormant generation 6 adds only the tariff-pinned
+`openai/gpt-image-2-2026-04-21` snapshot to main and OpenKeys after real generation and
+one-reference edit passed through the existing sealed Codex OAuth pool. This producer checkpoint
+adds no reseller, separate image API key, fallback, customer admission, or public model listing;
+those follow only after the generation-6 release is activated and paid production smokes pass.
 
 Policy versions are immutable, content-addressed and delivered catalog → switches → policy. All
 accounts switch via a single active release head, not a sequential update of bindings.

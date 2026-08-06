@@ -313,16 +313,21 @@ rolled out blue-green that:
 - sales migration `packages/sales-db/migrations/0015_paid_funded_commission_v2.sql` adds separate
   immutable usage/commission v2 tables without a pricing-mode field.
 
-The compile-fixed pricing runtime manifest accepts frozen capability generations 3 and 4, as well
-as admitted generation 5. Generation 4 historically added `gemini-3-flash-preview`, but its old
-public-wire live gate returned 404 without usage: the digest is kept for reproducibility, while the
-catalog, policy, and release of generation 4 must not be materialized or activated. After a full
-fresh Pro+Ultra gate, generation 5 repeats the exact reviewed Anthropic/OpenAI/Gemini model set
-under a new digest. The Stage 5 materializer uses the capability, main catalog, and switches of
-generation 5 and policy version 2; this prepares new immutable identities but by itself does not
-move the release head. The internal provider ID of Gemini in the pricing authority is `google`;
-product documents continue to call the provider Gemini. The OpenKeys catalog generation 5 keeps an
-explicit Anthropic/OpenAI subset.
+The compile-fixed pricing runtime manifest accepts frozen capability generations 3 and 4, admitted
+generation 5, and dormant generation 6. Generation 4 historically added
+`gemini-3-flash-preview`, but its old public-wire live gate returned 404 without usage: the digest is
+kept for reproducibility, while the catalog, policy, and release of generation 4 must not be
+materialized or activated. After a full fresh Pro+Ultra gate, generation 5 repeats the exact
+reviewed Anthropic/OpenAI/Gemini model set under a new digest. Generation 6 adds only
+`openai/gpt-image-2-2026-04-21` after real generation and one-reference edit both produced distinct
+PNG output with terminal authoritative usage through the existing sealed Codex OAuth pool. It adds
+no reseller, image API key, fallback, or public discovery by itself. The Stage 5 materializer uses
+the capability, main/OpenKeys catalogs, and switches of generation 6; persisted policy digest
+collisions allocate the next immutable policy version. Preparation creates new dormant identities
+but does not move the release head or admit customer traffic. The internal provider ID of Gemini in
+the pricing authority is `google`; product documents continue to call the provider Gemini. The
+OpenKeys generation-6 release catalog keeps the explicit generation-5 Anthropic/OpenAI set and adds
+only GPT Image 2.
 
 All three migration surfaces are empty and dormant: the presence of the tables creates no policy,
 release head, funding generation, or live consumer. The dependent producer/runtime is allowed only

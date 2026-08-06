@@ -10,6 +10,9 @@ import {
   MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
   MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
   MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES,
+  MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST,
+  MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION,
+  MULTI_DISCOUNT_GEN6_OPENKEYS_CATALOG_ENTRIES,
   MULTI_DISCOUNT_SCHEMA_VERSION,
   OPENKEYS_PRICING_PRODUCT_ID,
   type AccountPolicyBinding,
@@ -69,11 +72,10 @@ function catalogEntryKey(entry: { provider_id: string; canonical_model_id: strin
 
 /**
  * Reviewed OpenKeys catalog identities, oldest first. Generations 1 and 2 are
- * historical reviewed identities; generation 5 (the admitted Gemini-3-Flash
- * capability; OpenKeys stays an explicit Anthropic/OpenAI subset without
- * Gemini) is the current active production authority. Each identity pins its
- * exact catalog generation, capability pin and complete enabled entry set, so
- * a partial or forged catalog never passes.
+ * historical, generation 5 is the active Anthropic/OpenAI authority without
+ * Gemini, and dormant generation 6 adds only GPT Image 2. Each identity pins
+ * its exact catalog generation, capability pin and complete enabled entry set,
+ * so a partial or forged catalog never passes.
  */
 const REVIEWED_OPENKEYS_CATALOGS = [
   {
@@ -93,6 +95,12 @@ const REVIEWED_OPENKEYS_CATALOGS = [
     capability_generation: MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
     capability_digest: MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
     entries: MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES,
+  },
+  {
+    generation: 6,
+    capability_generation: MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION,
+    capability_digest: MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST,
+    entries: MULTI_DISCOUNT_GEN6_OPENKEYS_CATALOG_ENTRIES,
   },
 ] as const;
 

@@ -207,6 +207,11 @@ describe("release-v2 external-owner provisioning", () => {
     expect(buildOpenKeysPricingReleasePolicyV2(generation5).policy_version).toBe(2);
     expect(buildServicePricingReleasePolicyV2(generation5, "worker").policy_version).toBe(2);
 
+    const generation6 = targetContext();
+    generation6.active_release = { ...generation6.active_release, capability_generation: 6 };
+    expect(buildOpenKeysPricingReleasePolicyV2(generation6).policy_version).toBe(3);
+    expect(buildServicePricingReleasePolicyV2(generation6, "worker").policy_version).toBe(3);
+
     const rejected = targetContext();
     rejected.active_release = { ...rejected.active_release, capability_generation: 4 };
     expect(() => buildOpenKeysPricingReleasePolicyV2(rejected))

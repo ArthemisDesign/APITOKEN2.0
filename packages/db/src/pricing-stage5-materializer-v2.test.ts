@@ -140,7 +140,7 @@ function completePlanInput(): Parameters<typeof buildStage5V2Plan>[0] {
 }
 
 describe("pricing Stage 5 v2 planner", () => {
-  it("pins Gemini only in main while keeping OpenKeys explicit", () => {
+  it("keeps Gemini main-only and admits GPT Image 2 to both customer products", () => {
     const { catalogs, switches } = buildStage5V2CatalogsAndSwitches();
     const googleEntries = catalogs[0].entries.filter((entry) => entry.provider_id === "google");
     expect(googleEntries).toHaveLength(9);
@@ -148,10 +148,17 @@ describe("pricing Stage 5 v2 planner", () => {
       canonical_model_id: "gemini-3-flash-preview",
     }));
     expect(catalogs[1].entries.some((entry) => entry.provider_id === "google")).toBe(false);
+    for (const catalog of catalogs) {
+      expect(catalog.entries).toContainEqual({
+        provider_id: "openai",
+        canonical_model_id: "gpt-image-2-2026-04-21",
+        enabled: true,
+      });
+    }
     expect(switches.entries).toContainEqual({
       provider_id: "google",
       scope: { product: { product_id: "main" } },
-      catalog_generation: 5,
+      catalog_generation: 6,
       enabled: true,
     });
     expect(switches.entries).not.toContainEqual(expect.objectContaining({
@@ -169,10 +176,10 @@ describe("pricing Stage 5 v2 planner", () => {
     const plan = buildStage5V2Plan(completePlanInput());
 
     expect(plan.blockers).toEqual([]);
-    expect(plan.capability.generation).toBe(5);
-    expect(plan.catalogs.every((catalog) => catalog.generation === 5)).toBe(true);
-    expect(plan.switches.generation).toBe(5);
-    expect(plan.policies.every((policy) => policy.policy_version === 2)).toBe(true);
+    expect(plan.capability.generation).toBe(6);
+    expect(plan.catalogs.every((catalog) => catalog.generation === 6)).toBe(true);
+    expect(plan.switches.generation).toBe(6);
+    expect(plan.policies.every((policy) => policy.policy_version === 3)).toBe(true);
     expect(plan.target.assignments).toHaveLength(4);
     expect(plan.recovery.assignments).toHaveLength(4);
     expect(plan.target.assignments.every((item) => item.funding_generation === null)).toBe(true);

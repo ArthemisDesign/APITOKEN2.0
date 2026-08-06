@@ -9,6 +9,9 @@ import {
   MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
   MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
   MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES,
+  MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST,
+  MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION,
+  MULTI_DISCOUNT_GEN6_OPENKEYS_CATALOG_ENTRIES,
   MULTI_DISCOUNT_SCHEMA_VERSION,
   OPENKEYS_PRICING_PRODUCT_ID,
   type AccountPolicyBinding,
@@ -142,6 +145,18 @@ function switchesGen5(): ProviderSwitchSpec {
   };
 }
 
+function catalogGen6(): PricingCatalogSpec {
+  return {
+    product_id: OPENKEYS_PRICING_PRODUCT_ID,
+    generation: 6,
+    schema_version: MULTI_DISCOUNT_SCHEMA_VERSION,
+    capability_generation: MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION,
+    capability_digest: MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST,
+    content_digest: "catalog-openkeys-v6",
+    entries: MULTI_DISCOUNT_GEN6_OPENKEYS_CATALOG_ENTRIES.map((entry) => ({ ...entry })),
+  };
+}
+
 describe("OpenKeys official 1:1 pricing", () => {
   it("pins the complete reviewed Anthropic/OpenAI catalog and excludes Gemini", () => {
     const active = catalog();
@@ -263,6 +278,23 @@ describe("OpenKeys official 1:1 pricing", () => {
         entries: gen5.entries.filter((entry) => entry.canonical_model_id !== "claude-fable-5"),
       })
     ).toThrow("exact reviewed Anthropic/OpenAI catalog");
+  });
+
+  it("accepts generation 6 only with the exact GPT Image 2 addition", () => {
+    const gen6 = catalogGen6();
+    expect(() => assertOpenKeysCatalog(gen6)).not.toThrow();
+    expect(gen6.entries.map((entry) => entry.canonical_model_id)).toEqual([
+      ...catalogGen5().entries.map((entry) => entry.canonical_model_id),
+      "gpt-image-2-2026-04-21",
+    ]);
+    expect(() => assertOpenKeysCatalog({
+      ...gen6,
+      entries: gen6.entries.filter((entry) => entry.canonical_model_id !== "gpt-image-2-2026-04-21"),
+    })).toThrow("exact reviewed Anthropic/OpenAI catalog");
+    expect(() => assertOpenKeysCatalog({
+      ...gen6,
+      capability_digest: MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
+    })).toThrow("exact reviewed Anthropic/OpenAI catalog");
   });
 
   it("resolves the generation-5 authority only with matching generation-5 switches", async () => {

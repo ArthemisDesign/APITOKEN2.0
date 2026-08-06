@@ -185,11 +185,12 @@ is only what is needed to walk the relationships when making changes:
 
 - **`crates/metering` — the engine's price authority.** Hardcoded effective-dated tables
   in nanoUSD: `src/lib.rs` (Anthropic), `src/codex.rs` (OpenAI text), `src/gemini.rs` (Gemini),
-  and dormant `src/openai_image.rs` (GPT Image 2). A price/model change is a reviewable commit
-  here. Consumers: `crates/forward` (main), `crates/server` (types/tariff identifiers). The image
-  tariff is pure dormant official OpenAI API replacement authority; the private CLI uses it only for
-  a conservative plan/authorization estimate. It is not ChatGPT native credits, customer billing,
-  settlement, product access or a runtime route.
+  and `src/openai_image.rs` (GPT Image 2). A price/model change is a reviewable commit here.
+  Consumers: `crates/forward` (main), `crates/server` (types/tariff identifiers). The GPT Image 2
+  tariff prices authoritative five-leg usage from the sealed Codex OAuth-pool runtime; customer
+  admission additionally requires the exact generation-6 capability/catalog/switch and release
+  pins. It is not ChatGPT native-credit accounting and introduces no reseller, external image key,
+  fallback, or environment setting.
 - `crates/registry/src/pricing/` — NOT a price list, but the durable identities of
   multi-discount: catalogs/switches/policies, admission snapshots
   (`docs/commerce/MULTI-DISCOUNT.md`). Fixed provider IDs actual/shadow contract —

@@ -9,6 +9,11 @@ import {
   MULTI_DISCOUNT_GEN5_GEMINI_CANONICAL_MODELS,
   MULTI_DISCOUNT_GEN5_MAIN_CATALOG_ENTRIES,
   MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES,
+  GPT_IMAGE_2_CANONICAL_MODEL,
+  MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST,
+  MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION,
+  MULTI_DISCOUNT_GEN6_MAIN_CATALOG_ENTRIES,
+  MULTI_DISCOUNT_GEN6_OPENKEYS_CATALOG_ENTRIES,
   MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES,
   MULTI_DISCOUNT_SCHEMA_VERSION,
   MULTI_DISCOUNT_TARGET_CAPABILITY_DIGEST,
@@ -24,11 +29,19 @@ import {
 } from "./pricing-stage5-materializer-v2.js";
 
 describe("target pricing capability", () => {
-  const capabilityDigest = (generation: number, rawEntries: readonly {
-    provider_id: string;
-    canonical_model_id: string;
-    enabled: true;
-  }[]) => {
+  const capabilityDigest = (
+    generation: number,
+    rawEntries: readonly {
+      provider_id: string;
+      canonical_model_id: string;
+      enabled: true;
+    }[],
+    aliases = [{
+      provider_id: "openai",
+      alias_model_id: "gpt-5.6",
+      canonical_model_id: "gpt-5.6-sol",
+    }],
+  ) => {
     const entries = rawEntries.map((entry) => {
       const capabilityData = { pricing_supported: true };
       return {
@@ -44,11 +57,7 @@ describe("target pricing capability", () => {
       generation,
       schema_version: MULTI_DISCOUNT_SCHEMA_VERSION,
       entries,
-      aliases: [{
-        provider_id: "openai",
-        alias_model_id: "gpt-5.6",
-        canonical_model_id: "gpt-5.6-sol",
-      }],
+      aliases,
     };
     return { digest: stage5Digest("capability", capability), entries };
   };
@@ -97,32 +106,67 @@ describe("target pricing capability", () => {
     expect(generation5.entries).toHaveLength(21);
     expect(generation5.digest).toBe(MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST);
     expect(generation5.digest).not.toBe(MULTI_DISCOUNT_TARGET_CAPABILITY_DIGEST);
+
+    const generation6 = capabilityDigest(
+      MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION,
+      MULTI_DISCOUNT_GEN6_MAIN_CATALOG_ENTRIES,
+      [
+        {
+          provider_id: "openai",
+          alias_model_id: "gpt-5.6",
+          canonical_model_id: "gpt-5.6-sol",
+        },
+        {
+          provider_id: "openai",
+          alias_model_id: "gpt-image-2",
+          canonical_model_id: GPT_IMAGE_2_CANONICAL_MODEL,
+        },
+      ],
+    );
+    expect(generation6.entries).toHaveLength(22);
+    expect(generation6.digest).toBe(MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST);
+    expect(generation6.digest).not.toBe(MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST);
   });
 
-  it("keeps the pinned OpenKeys catalog Gemini-free while the issuance display is universal", () => {
+  it("keeps frozen OpenKeys generations and adds only GPT Image 2 in generation 6", () => {
     expect(MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES)
       .toEqual(MULTI_DISCOUNT_GEN2_PRODUCT_CATALOG_ENTRIES);
     expect(MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES)
       .not.toContainEqual(expect.objectContaining({ provider_id: "google" }));
+    expect(MULTI_DISCOUNT_GEN6_OPENKEYS_CATALOG_ENTRIES).toEqual([
+      ...MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES,
+      {
+        provider_id: "openai",
+        canonical_model_id: GPT_IMAGE_2_CANONICAL_MODEL,
+        enabled: true,
+      },
+    ]);
     expect(MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES)
       .toEqual(MULTI_DISCOUNT_GEN5_MAIN_CATALOG_ENTRIES);
     expect(MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES)
       .toContainEqual(expect.objectContaining({ provider_id: "google" }));
+    expect(MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES)
+      .not.toContainEqual(expect.objectContaining({ canonical_model_id: GPT_IMAGE_2_CANONICAL_MODEL }));
   });
 
-  it("moves Stage 5 target and recovery materialization to admitted generation 5", () => {
+  it("moves Stage 5 target and recovery materialization to admitted generation 6", () => {
     const capability = buildStage5V2Capability();
     const graph = buildStage5V2CatalogsAndSwitches();
 
     expect(capability).toMatchObject({
-      generation: MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
-      content_digest: MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
+      generation: MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION,
+      content_digest: MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST,
     });
     expect(graph.catalogs.every((catalog) =>
-      catalog.capability_generation === MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION
-      && catalog.capability_digest === MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST
+      catalog.capability_generation === MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION
+      && catalog.capability_digest === MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST
     )).toBe(true);
-    expect(graph.catalogs.find((catalog) => catalog.product_id === "main")?.entries)
-      .toContainEqual(expect.objectContaining({ canonical_model_id: "gemini-3-flash-preview" }));
+    for (const productId of ["main", "openkeys"]) {
+      expect(graph.catalogs.find((catalog) => catalog.product_id === productId)?.entries)
+        .toContainEqual(expect.objectContaining({
+          provider_id: "openai",
+          canonical_model_id: GPT_IMAGE_2_CANONICAL_MODEL,
+        }));
+    }
   });
 });

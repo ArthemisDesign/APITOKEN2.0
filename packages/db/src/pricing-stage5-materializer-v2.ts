@@ -2,10 +2,10 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import {
   MAIN_PRICING_PRODUCT_ID,
-  MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
-  MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
-  MULTI_DISCOUNT_GEN5_MAIN_CATALOG_ENTRIES,
-  MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES,
+  MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST,
+  MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION,
+  MULTI_DISCOUNT_GEN6_MAIN_CATALOG_ENTRIES,
+  MULTI_DISCOUNT_GEN6_OPENKEYS_CATALOG_ENTRIES,
   MULTI_DISCOUNT_SCHEMA_VERSION,
   OPENKEYS_PRICING_PRODUCT_ID,
   PRICING_RELEASE_SCHEMA_VERSION_V2,
@@ -31,9 +31,9 @@ import {
   type EngineClient,
 } from "@claude-api/engine-client";
 
-export const STAGE5_V2_CATALOG_GENERATION = 5;
-export const STAGE5_V2_SWITCH_GENERATION = 5;
-export const STAGE5_V2_POLICY_VERSION = 2;
+export const STAGE5_V2_CATALOG_GENERATION = 6;
+export const STAGE5_V2_SWITCH_GENERATION = 6;
+export const STAGE5_V2_POLICY_VERSION = 3;
 
 export type Stage5V2EngineReader = Pick<
   EngineClient,
@@ -422,17 +422,24 @@ function capabilityEntry(
 
 export function buildStage5V2Capability(): Stage5V2CapabilityProjection {
   const base = {
-    generation: MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
+    generation: MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION,
     schema_version: MULTI_DISCOUNT_SCHEMA_VERSION,
-    entries: MULTI_DISCOUNT_GEN5_MAIN_CATALOG_ENTRIES.map(capabilityEntry),
-    aliases: [{
-      provider_id: "openai",
-      alias_model_id: "gpt-5.6",
-      canonical_model_id: "gpt-5.6-sol",
-    }],
+    entries: MULTI_DISCOUNT_GEN6_MAIN_CATALOG_ENTRIES.map(capabilityEntry),
+    aliases: [
+      {
+        provider_id: "openai",
+        alias_model_id: "gpt-5.6",
+        canonical_model_id: "gpt-5.6-sol",
+      },
+      {
+        provider_id: "openai",
+        alias_model_id: "gpt-image-2",
+        canonical_model_id: "gpt-image-2-2026-04-21",
+      },
+    ],
   };
   const contentDigest = legacyStage5Digest("capability", base);
-  if (contentDigest !== MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST) {
+  if (contentDigest !== MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST) {
     throw new Stage5MaterializerV2Error(
       "target_capability_digest_drift",
       "target capability projection differs from its reviewed digest",
@@ -452,8 +459,8 @@ function buildCatalog(
     product_id: productId,
     generation: STAGE5_V2_CATALOG_GENERATION,
     schema_version: MULTI_DISCOUNT_SCHEMA_VERSION,
-    capability_generation: MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
-    capability_digest: MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
+    capability_generation: MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION,
+    capability_digest: MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST,
     entries: normalizedEntries.map((entry) => ({ ...entry })),
   };
   return pricingCatalogSpecSchema.parse({
@@ -485,8 +492,8 @@ export function buildStage5V2CatalogsAndSwitches(): {
   switches: ProviderSwitchSpec;
 } {
   const catalogs: [PricingCatalogSpec, PricingCatalogSpec] = [
-    buildCatalog(MAIN_PRICING_PRODUCT_ID, MULTI_DISCOUNT_GEN5_MAIN_CATALOG_ENTRIES),
-    buildCatalog(OPENKEYS_PRICING_PRODUCT_ID, MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES),
+    buildCatalog(MAIN_PRICING_PRODUCT_ID, MULTI_DISCOUNT_GEN6_MAIN_CATALOG_ENTRIES),
+    buildCatalog(OPENKEYS_PRICING_PRODUCT_ID, MULTI_DISCOUNT_GEN6_OPENKEYS_CATALOG_ENTRIES),
   ];
   const entries: ProviderSwitchSpec["entries"] = [];
   for (const providerId of ["anthropic", "openai", "google"] as const) {
@@ -523,8 +530,8 @@ export function buildStage5V2CatalogsAndSwitches(): {
   const base = {
     generation: STAGE5_V2_SWITCH_GENERATION,
     schema_version: MULTI_DISCOUNT_SCHEMA_VERSION,
-    capability_generation: MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
-    capability_digest: MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
+    capability_generation: MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION,
+    capability_digest: MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST,
     entries: sortSwitches(entries),
   };
   const switches = providerSwitchSpecSchema.parse({
@@ -580,8 +587,8 @@ function customerPolicyBase(
   return {
     billing_mode: "balance",
     schema_version: PRICING_RELEASE_SCHEMA_VERSION_V2,
-    capability_generation: MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
-    capability_digest: MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
+    capability_generation: MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION,
+    capability_digest: MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST,
     catalog_generation: catalog.generation,
     catalog_digest: catalog.content_digest,
     switch_generation: switches.generation,
@@ -1030,8 +1037,8 @@ export function buildStage5V2Plan(input: {
       product_id: null,
       billing_mode: "meter_only",
       schema_version: PRICING_RELEASE_SCHEMA_VERSION_V2,
-      capability_generation: MULTI_DISCOUNT_GEN5_CAPABILITY_GENERATION,
-      capability_digest: MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
+      capability_generation: MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION,
+      capability_digest: MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST,
       catalog_generation: null,
       catalog_digest: null,
       switch_generation: null,

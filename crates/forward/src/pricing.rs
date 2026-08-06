@@ -29,13 +29,14 @@ mod shadow;
 /// The manifest lists every reviewed capability generation side by side: generation 1 (the active
 /// production authority), generation 2 (`claude-opus-5` + `claude-fable-5`), frozen dormant
 /// generation 3 (the original tariff-pinned Gemini model set under engine provider id `google`),
-/// rejected dormant generation 4 (generation 3 plus Gemini 3 Flash Preview), and admitted
-/// generation 5 after that model passed the complete Pro+Ultra publication gate. Generation 4 is
-/// retained only because its digest is immutable and must never be materialized or activated.
-/// Adding a member is inert — resolution keeps accepting the currently active pins until commerce
-/// materializes and the global release flow later activates a new catalog — and is required before
-/// preparation, because the resolver fails closed on any catalog/switch capability outside this
-/// manifest.
+/// rejected dormant generation 4 (generation 3 plus Gemini 3 Flash Preview), admitted generation 5
+/// after that model passed the complete Pro+Ultra publication gate, and dormant generation 6 adding
+/// GPT Image 2 only after public generation and edit passed through the sealed OpenAI OAuth pool.
+/// Generation 4 is retained only because its digest is immutable and must never be materialized or
+/// activated. Adding a member is inert — resolution keeps accepting the currently active pins until
+/// commerce materializes and the global release flow later activates a new catalog — and is required
+/// before preparation, because the resolver fails closed on any catalog/switch capability outside
+/// this manifest.
 pub fn builtin_pricing_runtime_manifest() -> PricingRuntimeManifestEvidence {
     let capabilities = [
         (
@@ -58,6 +59,10 @@ pub fn builtin_pricing_runtime_manifest() -> PricingRuntimeManifestEvidence {
             5,
             "sha256:v1:f4f69a2032497741a6c5b1c60e14974ddbc7b0f5992e03516f720daa6492f185",
         ),
+        (
+            6,
+            "sha256:v1:1652b971ce678094d5717173ed97b32d942d8507b183688cce613b6883e3c7d9",
+        ),
     ]
     .into_iter()
     .map(|(capability_generation, capability_digest)| {
@@ -69,7 +74,7 @@ pub fn builtin_pricing_runtime_manifest() -> PricingRuntimeManifestEvidence {
         .expect("built-in pricing evaluator capability is valid")
     })
     .collect();
-    PricingRuntimeManifestEvidence::new(5, capabilities)
+    PricingRuntimeManifestEvidence::new(6, capabilities)
         .expect("built-in pricing evaluator manifest is valid")
 }
 

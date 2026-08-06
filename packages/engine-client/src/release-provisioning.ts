@@ -120,6 +120,7 @@ function externalOwnerPolicyVersion(release: PricingReleaseProvisioningReleaseV2
     throw new Error("pricing_release_rejected_capability_generation");
   }
   if (release.capability_generation === 5) return 2;
+  if (release.capability_generation === 6) return 3;
   throw new Error("pricing_release_unsupported_capability_generation");
 }
 
