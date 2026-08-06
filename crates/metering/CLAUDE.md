@@ -50,5 +50,9 @@
 **How `forward` uses it:** tee the upstream response → on completion `usage_from_sse` (stream)
 or `usage_from_response_json` (non-stream) → `cost_with_multiplier` → debit the key's balance.
 Meter ONLY a successful response (429/rotation are not metered).
+Two multiplier-rounding contracts coexist deliberately: `apply_multiplier` (half-up) serves the
+legacy scalar/strict paths as immutable history, `apply_multiplier_floor` (exact contract floor)
+serves every release-v2 settlement — the release-v2 reserve floors its hold, so the final debit
+must match it exactly. A new release-v2 money path uses the floor helper, never the half-up one.
 
 **Verification:** `cargo test -p metering` (ALL must pass — this is about money).

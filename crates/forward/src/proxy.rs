@@ -14,7 +14,9 @@ mod anthropic_snapshot;
 use self::anthropic_snapshot::{
     prepare_anthropic_legacy_quote, AnthropicLegacyQuoteInput, PreparedAnthropicLegacyQuote,
 };
-use crate::meter::{BillCtx, CalibrationCtx, MeterCtx, SubscriptionMeterCtx, TeeMeter};
+use crate::meter::{
+    AnthropicSettlementPricing, BillCtx, CalibrationCtx, MeterCtx, SubscriptionMeterCtx, TeeMeter,
+};
 use crate::metrics::{Metrics, StrictPricingProvider, StrictPricingRejectionReason};
 use crate::pricing::{
     build_policy_admission_snapshot, EnginePricingRequestId, PricingBridgeDecision,
@@ -1398,7 +1400,15 @@ pub async fn forward(
     // It is generated before any money mutation and is never replaced by an upstream audit header.
     let engine_request_id = crate::upstream::fresh_request_id();
     // Tuple: request/account/key/hold plus the payable multiplier and optional strict tariff pin.
-    let mut reserved: Option<(String, String, String, i64, i64, Option<i64>)> = None;
+    let mut reserved: Option<(
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        Option<i64>,
+        AnthropicSettlementPricing,
+    )> = None;
     // Резервируем ТОЛЬКО под POST /v1/messages — единственный биллинговый эндпоинт. `count_tokens` и
     // `GET /v1/models` бесплатны у Anthropic; резерв мог бы ошибочно 402-ить их при нулевом балансе.
     if let (
@@ -1524,6 +1534,7 @@ pub async fn forward(
         let mut reserved_pair: Option<(u64, i64)> = None;
         let mut settlement_mult_bp = *mult_bp;
         let mut settlement_priced_ts = None;
+        let mut settlement_pricing = AnthropicSettlementPricing::LegacyScalar;
         match reserve_anthropic_release_v2(
             billing,
             account_id,
@@ -1555,6 +1566,7 @@ pub async fn forward(
                 reserved_pair = Some((effective_max_output_tokens, hold_nano));
                 settlement_mult_bp = payable_multiplier_bp;
                 settlement_priced_ts = Some(tariff_priced_ts);
+                settlement_pricing = AnthropicSettlementPricing::ReleaseV2;
             }
             Err(error) => {
                 eprintln!("Anthropic pricing release admission failed: {error:#}");
@@ -1779,6 +1791,7 @@ pub async fn forward(
                         );
                         settlement_mult_bp = resolved.rule.payable_multiplier_bp;
                         settlement_priced_ts = Some(price_ts);
+                        settlement_pricing = AnthropicSettlementPricing::LegacyStrict;
                         reserved_pair = Some((eff_mt, hold));
                     }
                     Ok(PolicyReserveOutcome::NotReserved) => {
@@ -1817,6 +1830,7 @@ pub async fn forward(
                             reserved_pair = Some((effective_max_output_tokens, hold_nano));
                             settlement_mult_bp = payable_multiplier_bp;
                             settlement_priced_ts = Some(tariff_priced_ts);
+                            settlement_pricing = AnthropicSettlementPricing::ReleaseV2;
                         }
                         Ok(AnthropicReleaseReserveResult::LowBalance) => {
                             return local_err(LocalErr::LowBalance, None)
@@ -2130,6 +2144,7 @@ pub async fn forward(
             hold,
             settlement_mult_bp,
             settlement_priced_ts,
+            settlement_pricing,
         ));
     }
     // Гард резерва: на любом не-успешном исходе И при отмене запроса вернёт hold клиенту. Создаём
@@ -2137,7 +2152,7 @@ pub async fn forward(
     // Разоружим на успехе — там hold закрывает tee-метеринг. Снимает утечку денег при disconnect.
     let mut hold_guard = reserved
         .as_ref()
-        .map(|(request_id, acct, k, h, _, _)| HoldGuard {
+        .map(|(request_id, acct, k, h, _, _, _)| HoldGuard {
             billing: app.billing.clone(),
             account_id: acct.clone(),
             key: k.clone(),
@@ -2597,7 +2612,7 @@ pub async fn forward(
                     }
                     app.affinity.mark_cache_warm(input, &home);
                 }
-                if let (Some((request_id, account_id, key, hold, _, priced_ts)), Some(billing)) =
+                if let (Some((request_id, account_id, key, hold, _, priced_ts, _)), Some(billing)) =
                     (reserved.as_ref(), app.billing.as_ref())
                 {
                     if !matches!(billing.mark_delivering(request_id, 3600).await, Ok(true)) {
@@ -2641,7 +2656,15 @@ pub async fn forward(
                 let bill = match (&authz, reserved.take()) {
                     (
                         Authz::Metered { .. },
-                        Some((request_id, acct, key, hold, payable_multiplier_bp, priced_ts)),
+                        Some((
+                            request_id,
+                            acct,
+                            key,
+                            hold,
+                            payable_multiplier_bp,
+                            priced_ts,
+                            settlement_pricing,
+                        )),
                     ) => app.billing.clone().map(|billing| BillCtx {
                         billing,
                         account_id: acct,
@@ -2649,6 +2672,7 @@ pub async fn forward(
                         mult_bp: payable_multiplier_bp,
                         hold,
                         tariff_priced_ts: priced_ts,
+                        settlement_pricing,
                         policy_fast: priced_ts.map(|_| requested_fast),
                         policy_us_inference: priced_ts.map(|_| requested_us_inference),
                         request_id,
@@ -2763,20 +2787,27 @@ pub async fn forward(
                     guard.disarm();
                 }
                 let bill = match reserved.take() {
-                    Some((request_id, account_id, key, hold, payable_multiplier_bp, priced_ts)) => {
-                        app.billing.clone().map(|billing| BillCtx {
-                            billing,
-                            account_id,
-                            key,
-                            mult_bp: payable_multiplier_bp,
-                            hold,
-                            tariff_priced_ts: priced_ts,
-                            policy_fast: priced_ts.map(|_| requested_fast),
-                            policy_us_inference: priced_ts.map(|_| requested_us_inference),
-                            request_id,
-                            reference: request_id_of(&resp),
-                        })
-                    }
+                    Some((
+                        request_id,
+                        account_id,
+                        key,
+                        hold,
+                        payable_multiplier_bp,
+                        priced_ts,
+                        settlement_pricing,
+                    )) => app.billing.clone().map(|billing| BillCtx {
+                        billing,
+                        account_id,
+                        key,
+                        mult_bp: payable_multiplier_bp,
+                        hold,
+                        tariff_priced_ts: priced_ts,
+                        settlement_pricing,
+                        policy_fast: priced_ts.map(|_| requested_fast),
+                        policy_us_inference: priced_ts.map(|_| requested_us_inference),
+                        request_id,
+                        reference: request_id_of(&resp),
+                    }),
                     None => None,
                 };
                 Metrics::inc(&app.metrics.claudestore_fallback_successes);

@@ -477,6 +477,16 @@ pub fn apply_multiplier(nano: i128, mult_bp: i64) -> i128 {
     }
 }
 
+/// Release-v2 customer debit: точный контрактный floor — `floor(nano * mult_bp / 10000)`
+/// (truncating i128-деление; release-v2 суммы неотрицательны по построению). Резерв
+/// (`registry::pricing::release_v2`) уже floor'ит hold — финальный settlement обязан
+/// совпасть с ним по формуле, иначе charged расходится с контрактом на ±1 нанодоллар.
+/// Legacy scalar/strict пути НЕ используют этот хелпер: их half-up — immutable история,
+/// которую registry повторно навязывает при legacy settlement.
+pub fn apply_multiplier_floor(nano: i128, mult_bp: i64) -> i128 {
+    nano * (mult_bp as i128) / 10000
+}
+
 /// Итоговая стоимость запроса с наценкой (нанодоллары).
 pub fn cost_with_multiplier(u: &Usage, model: &str, mult_bp: i64) -> i128 {
     apply_multiplier(cost_nanodollars(u, &model_prices(model)), mult_bp)
@@ -1297,6 +1307,22 @@ mod tests {
         assert_eq!(apply_multiplier(NANO_PER_USD, 5000), 500_000_000);
         // Округление half-up.
         assert_eq!(apply_multiplier(3, 15000), 5); // 3*1.5=4.5→5
+    }
+
+    #[test]
+    fn multiplier_floor_matches_the_release_v2_contract() {
+        // Тождественность на ровных произведениях.
+        assert_eq!(apply_multiplier_floor(NANO_PER_USD, 10000), NANO_PER_USD);
+        assert_eq!(apply_multiplier_floor(NANO_PER_USD, 5000), 500_000_000);
+        assert_eq!(apply_multiplier_floor(0, 5000), 0);
+        // Контрактный floor: charged_nano = floor(official_nano * payable_multiplier_bp / 10000).
+        assert_eq!(apply_multiplier_floor(3, 15000), 4); // 3*1.5=4.5→4 (half-up дал бы 5)
+        // Граница half-up: остаток ровно 5000 не округляется вверх.
+        assert_eq!(apply_multiplier_floor(5_000, 5_001), 2_500); // 25_005_000/10_000 = 2500.5→2500
+        assert_eq!(apply_multiplier(5_000, 5_001), 2_501); // legacy half-up остаётся 2501
+        // Максимальный payable-диапазон release-v2.
+        assert_eq!(apply_multiplier_floor(9_999, 10_000), 9_999);
+        assert_eq!(apply_multiplier_floor(9_999, 1), 0);
     }
 
     #[test]

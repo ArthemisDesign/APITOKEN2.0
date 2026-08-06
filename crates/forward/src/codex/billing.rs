@@ -1132,6 +1132,7 @@ impl OpenAiImageAdmission {
             reservation.hold,
             reservation.mult_bp,
             priced_ts,
+            reservation.settlement_pricing,
         );
         if strict && charge > reservation.hold {
             eprintln!(
@@ -1175,6 +1176,7 @@ fn settled_openai_image_charge(
     hold: i64,
     mult_bp: i64,
     priced_ts: i64,
+    settlement_pricing: CodexSettlementPricing,
 ) -> (i64, Option<registry::UsageEventInput>) {
     let Ok(tariff) = metering::openai_image_tariff(model_id) else {
         return (hold.max(0), None);
@@ -1182,7 +1184,12 @@ fn settled_openai_image_charge(
     let Ok(real_nano) = metering::openai_image_cost_nanodollars(usage, &tariff.prices) else {
         return (hold.max(0), None);
     };
-    let computed_charge = metering::apply_multiplier(real_nano, mult_bp);
+    let computed_charge = match settlement_pricing {
+        CodexSettlementPricing::ReleaseV2 => metering::apply_multiplier_floor(real_nano, mult_bp),
+        CodexSettlementPricing::LegacyScalar | CodexSettlementPricing::LegacyStrict => {
+            metering::apply_multiplier(real_nano, mult_bp)
+        }
+    };
     let ceiling = i128::from(hold.max(0)) + metering::OVERDRAFT_NANO;
     let charge = computed_charge.clamp(0, ceiling).min(i64::MAX as i128) as i64;
     let fresh_text = usage
@@ -1266,6 +1273,7 @@ impl CodexAdmission {
             },
             priced_ts,
             effective_fast,
+            reservation.settlement_pricing,
         );
         if strict && charge > reservation.hold {
             eprintln!(
@@ -1305,6 +1313,7 @@ fn settled_charge(
     requested_output_tokens: Option<u64>,
     now: i64,
     fast: bool,
+    settlement_pricing: CodexSettlementPricing,
 ) -> (i64, Option<registry::UsageEventInput>) {
     let priced = price_usage(model, usage, now, fast);
     // Honest billing: the transport cannot hard-stop generation, so the model may emit more output
@@ -1320,7 +1329,14 @@ fn settled_charge(
         }
         _ => priced.real_nano,
     };
-    let computed_charge = metering::apply_multiplier(charge_basis_nano, mult_bp);
+    let computed_charge = match settlement_pricing {
+        CodexSettlementPricing::ReleaseV2 => {
+            metering::apply_multiplier_floor(charge_basis_nano, mult_bp)
+        }
+        CodexSettlementPricing::LegacyScalar | CodexSettlementPricing::LegacyStrict => {
+            metering::apply_multiplier(charge_basis_nano, mult_bp)
+        }
+    };
     let ceiling = hold.max(0) as i128 + metering::OVERDRAFT_NANO;
     let charge = computed_charge.clamp(0, ceiling).min(i64::MAX as i128) as i64;
     let usage_event = (priced.real_nano > 0).then(|| registry::UsageEventInput {
@@ -2039,7 +2055,16 @@ mod tests {
             fast_usage as i128
         );
 
-        let (charge, event) = settled_charge(&model(), &usage, i64::MAX, 10_000, None, 0, true);
+        let (charge, event) = settled_charge(
+            &model(),
+            &usage,
+            i64::MAX,
+            10_000,
+            None,
+            0,
+            true,
+            CodexSettlementPricing::LegacyScalar,
+        );
         assert_eq!(charge, fast_usage);
         let event = event.expect("fast usage must produce a usage event");
         assert_eq!(event.speed, "fast");
@@ -2107,6 +2132,7 @@ mod tests {
             None,
             0,
             false,
+            CodexSettlementPricing::LegacyScalar,
         );
         assert_eq!(uncapped, 100 * 5_000 + 1_000 * 30_000);
         // Honest billing: charge only up to the requested 100 output tokens.
@@ -2118,6 +2144,7 @@ mod tests {
             Some(100),
             0,
             false,
+            CodexSettlementPricing::LegacyScalar,
         );
         assert_eq!(capped, 100 * 5_000 + 100 * 30_000);
         assert!(capped < uncapped);
@@ -2225,6 +2252,7 @@ mod tests {
             None,
             123,
             false,
+            CodexSettlementPricing::LegacyScalar,
         );
 
         // Official cost: 500*5000 + 400*500 + 100*6250 + 20*30000 = 3,925,000.
@@ -2252,6 +2280,39 @@ mod tests {
     }
 
     #[test]
+    fn release_v2_settlement_floors_where_the_legacy_scalar_rounds_half_up() {
+        // 1 input token × 5_000 nano = 5_000 real; × 5_001 bp = 25_005_000 / 10_000. The
+        // fractional remainder (5_000) sits exactly on the half-up boundary: immutable legacy
+        // arithmetic charges 2_501, the release-v2 contract floor charges exactly 2_500.
+        let usage = CodexUsage {
+            input_tokens: 1,
+            ..CodexUsage::default()
+        };
+        let (legacy, _) = settled_charge(
+            &settlement_model(),
+            &usage,
+            i64::MAX,
+            5_001,
+            None,
+            123,
+            false,
+            CodexSettlementPricing::LegacyScalar,
+        );
+        let (release, _) = settled_charge(
+            &settlement_model(),
+            &usage,
+            i64::MAX,
+            5_001,
+            None,
+            123,
+            false,
+            CodexSettlementPricing::ReleaseV2,
+        );
+        assert_eq!(legacy, 2_501);
+        assert_eq!(release, 2_500);
+    }
+
+    #[test]
     fn settlement_clamps_overrun_to_the_reserved_hold_plus_one_dollar() {
         let usage = CodexUsage {
             input_tokens: 1_000_000,
@@ -2259,8 +2320,16 @@ mod tests {
             ..CodexUsage::default()
         };
         let hold = 17;
-        let (charge, event) =
-            settled_charge(&settlement_model(), &usage, hold, 10_000, None, 456, false);
+        let (charge, event) = settled_charge(
+            &settlement_model(),
+            &usage,
+            hold,
+            10_000,
+            None,
+            456,
+            false,
+            CodexSettlementPricing::LegacyScalar,
+        );
         assert_eq!(charge as i128, hold as i128 + metering::OVERDRAFT_NANO);
         assert!(event.is_some());
     }
@@ -2275,6 +2344,7 @@ mod tests {
             None,
             789,
             false,
+            CodexSettlementPricing::LegacyScalar,
         );
         assert_eq!(charge, 0);
         assert!(event.is_none());
@@ -2297,6 +2367,7 @@ mod tests {
             None,
             999,
             false,
+            CodexSettlementPricing::LegacyScalar,
         );
         assert_eq!(charge, i64::MAX);
         let event = event.unwrap();
@@ -2761,6 +2832,7 @@ mod tests {
             10_000_000,
             5_000,
             1_800_000_000,
+            CodexSettlementPricing::LegacyScalar,
         );
         assert_eq!(charge, 975_000);
         let event = event.unwrap();

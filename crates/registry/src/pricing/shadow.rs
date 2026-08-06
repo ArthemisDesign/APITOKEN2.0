@@ -1664,6 +1664,10 @@ fn validate_rule(actual: &ShadowActualSnapshotRef, rule: &AccountPolicyRuleSpec)
     Ok(())
 }
 
+/// Half-up multiplier for modeling the ACTUAL legacy admission inside shadow evaluation: legacy
+/// scalar/strict reserves were computed with `metering::apply_multiplier` (half-up), so any check
+/// that reconstructs what the legacy path really did must use the identical arithmetic. The
+/// release-v2 target side must NOT use this — it floors (see `apply_multiplier_floor_nano`).
 fn apply_multiplier_nano(amount: i64, multiplier_bp: i64) -> Result<i64> {
     if amount < 0 || !(0..=10_000).contains(&multiplier_bp) {
         bail!("invalid amount or multiplier for shadow hold calculation");
@@ -1676,12 +1680,29 @@ fn apply_multiplier_nano(amount: i64, multiplier_bp: i64) -> Result<i64> {
     i64::try_from(multiplied).context("shadow hold does not fit integer nanodollars")
 }
 
+/// Exact release-v2 contract floor — `floor(amount * multiplier_bp / 10_000)`, identical to the
+/// release-v2 reserve hold (`build_pricing_request_snapshot_v2`). Shadow evaluation models what
+/// the TARGET policy would charge; validating it with the legacy half-up formula would let
+/// Stage 8 evidence pass while the live release settles 1 nanoUSD lower on boundary amounts.
+fn apply_multiplier_floor_nano(amount: i64, multiplier_bp: i64) -> Result<i64> {
+    if amount < 0 || !(0..=10_000).contains(&multiplier_bp) {
+        bail!("invalid amount or multiplier for shadow hold calculation");
+    }
+    let multiplied = (amount as i128)
+        .checked_mul(multiplier_bp as i128)
+        .context("shadow hold calculation overflow")?
+        / 10_000;
+    i64::try_from(multiplied).context("shadow hold does not fit integer nanodollars")
+}
+
 /// Resolve the policy hold against the same immutable funding ceiling that constrained the actual
 /// legacy reserve. When the stored actual is below the checked scalar quote, the admission balance
 /// was exactly that stored hold: both scalar and policy candidates therefore share
 /// `min(candidate, legacy_hold_nano)`. An uncapped actual leaves the policy candidate unchanged.
 fn policy_hold_nano(actual: &ShadowActualSnapshotRef, multiplier_bp: i64) -> Result<i64> {
-    let policy_uncapped = apply_multiplier_nano(actual.official_hold_nano, multiplier_bp)?;
+    // Target (release-v2) policy side floors, exactly like the live release reserve; the scalar
+    // side reconstructs the ACTUAL legacy admission and therefore keeps its half-up arithmetic.
+    let policy_uncapped = apply_multiplier_floor_nano(actual.official_hold_nano, multiplier_bp)?;
     let scalar_uncapped =
         apply_multiplier_nano(actual.official_hold_nano, actual.authorized_multiplier_bp)?;
     Ok(if actual.legacy_hold_nano < scalar_uncapped {
@@ -2004,6 +2025,63 @@ mod tests {
         };
         assert_eq!(resolved.policy_hold_nano(), 90_000_000);
         assert_eq!(resolved.comparison(), PricingShadowComparison::Equal);
+    }
+
+    #[test]
+    fn target_policy_hold_floors_while_the_legacy_actual_side_stays_half_up() {
+        // official 5_000 nano × 5_001 bp = 25_005_000 / 10_000 = 2_500.5: the release-v2 target
+        // policy must floor to 2_500 (its reserve does); the old shadow formula rounded half-up
+        // to 2_501 and would have blessed evidence for a charge the live release never makes.
+        let input = LegacyScalarAdmissionSnapshotInput {
+            request_id: "shadow-floor-request".into(),
+            account_id: "shadow-account-1".into(),
+            provider: SnapshotProvider::Anthropic,
+            requested_model_id: "claude-sonnet-5".into(),
+            canonical_model_id: "claude-sonnet-5".into(),
+            alias_generation: 7,
+            tariff_schedule_id: "anthropic/standard/sonnet-5/v1".into(),
+            tariff_priced_ts: 1_788_220_799,
+            admission_ts: 1_788_220_800,
+            payable_multiplier_bp: 2_000,
+            official_hold_nano: 5_000,
+            charged_hold_nano: 1_000,
+            premium_modifiers: LegacyPremiumModifiers::AnthropicV1 {
+                speed: SnapshotAnthropicSpeed::Standard,
+                inference_geo: SnapshotAnthropicInferenceGeo::Global,
+                inference_geo_basis_points: 10_000,
+            },
+        };
+        let snapshot = LegacyScalarAdmissionSnapshot::new(input).unwrap();
+        let actual = ShadowActualSnapshotRef::from_snapshot(&snapshot).unwrap();
+        assert!(actual.validate_shadow_eligibility(1_788_220_801).is_ok());
+        assert_eq!(policy_hold_nano(&actual, 5_001).unwrap(), 2_500);
+
+        // The scalar side still models the ACTUAL legacy admission with half-up: official 3 nano
+        // × 5_000 bp is 1.5, so a legacy hold of 2 is exactly the half-up admission and remains
+        // eligible; the target policy on the same official amount floors to 1.
+        let legacy_input = LegacyScalarAdmissionSnapshotInput {
+            request_id: "shadow-half-up-request".into(),
+            account_id: "shadow-account-1".into(),
+            provider: SnapshotProvider::Anthropic,
+            requested_model_id: "claude-sonnet-5".into(),
+            canonical_model_id: "claude-sonnet-5".into(),
+            alias_generation: 7,
+            tariff_schedule_id: "anthropic/standard/sonnet-5/v1".into(),
+            tariff_priced_ts: 1_788_220_799,
+            admission_ts: 1_788_220_800,
+            payable_multiplier_bp: 5_000,
+            official_hold_nano: 3,
+            charged_hold_nano: 2,
+            premium_modifiers: LegacyPremiumModifiers::AnthropicV1 {
+                speed: SnapshotAnthropicSpeed::Standard,
+                inference_geo: SnapshotAnthropicInferenceGeo::Global,
+                inference_geo_basis_points: 10_000,
+            },
+        };
+        let legacy_snapshot = LegacyScalarAdmissionSnapshot::new(legacy_input).unwrap();
+        let legacy_actual = ShadowActualSnapshotRef::from_snapshot(&legacy_snapshot).unwrap();
+        assert!(legacy_actual.validate_shadow_eligibility(1_788_220_801).is_ok());
+        assert_eq!(policy_hold_nano(&legacy_actual, 5_001).unwrap(), 1);
     }
 
     #[test]

@@ -16,6 +16,16 @@ use std::task::{Context, Poll};
 
 type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
 
+/// Какой pricing-authority выдал admission-hold — выбирает контракт округления при settlement.
+/// Release-v2 settle'ит точным контрактным floor (как свой reserve); legacy scalar/strict
+/// сохраняют immutable half-up, который registry повторно навязывает для legacy strict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnthropicSettlementPricing {
+    LegacyScalar,
+    LegacyStrict,
+    ReleaseV2,
+}
+
 /// Опциональное списание с АККАУНТА клиента (только для метерных ключей). Баланс общий на аккаунт;
 /// `key` — для атрибуции расхода по ключу; `request_id` — в ledger как ссылка на запрос.
 pub struct BillCtx {
@@ -27,6 +37,7 @@ pub struct BillCtx {
     /// Strict policy settlement reuses the exact tariff timestamp pinned at admission. Legacy
     /// scalar requests keep `None` and preserve their existing completion-time tariff lookup.
     pub tariff_priced_ts: Option<i64>,
+    pub settlement_pricing: AnthropicSettlementPricing,
     pub policy_fast: Option<bool>,
     pub policy_us_inference: Option<bool>,
     /// Internal, generated before reservation; the exactly-once money identity.
@@ -513,7 +524,15 @@ impl TeeMeter {
                 eprintln!("⚠ incomplete non-SSE response without authoritative usage; charge=0");
                 0
             } else if real > 0 {
-                metering::apply_multiplier(real, b.mult_bp)
+                match b.settlement_pricing {
+                    AnthropicSettlementPricing::ReleaseV2 => {
+                        metering::apply_multiplier_floor(real, b.mult_bp)
+                    }
+                    AnthropicSettlementPricing::LegacyScalar
+                    | AnthropicSettlementPricing::LegacyStrict => {
+                        metering::apply_multiplier(real, b.mult_bp)
+                    }
+                }
             } else {
                 0
             };
@@ -692,6 +711,7 @@ mod tests {
                     mult_bp: 10_000,
                     hold: HOLD_NANO,
                     tariff_priced_ts: None,
+                    settlement_pricing: AnthropicSettlementPricing::LegacyScalar,
                     policy_fast: None,
                     policy_us_inference: None,
                     request_id: "request".into(),

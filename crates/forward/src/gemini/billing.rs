@@ -28,7 +28,17 @@ pub(crate) enum AdmissionError {
     LowBalance,
 }
 
-type GeminiReserveResult = (u64, i64, i64, Option<i64>);
+/// Which pricing authority produced the admission hold; selects the settlement rounding
+/// contract. Release-v2 settles with the exact contract floor (matching its reserve); the
+/// legacy scalar keeps its immutable half-up arithmetic. Legacy strict Gemini is rejected at
+/// admission, so it has no settlement lineage here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GeminiSettlementPricing {
+    LegacyScalar,
+    ReleaseV2,
+}
+
+type GeminiReserveResult = (u64, i64, i64, Option<i64>, GeminiSettlementPricing);
 
 enum LegacyGeminiReserveResult {
     Reserved(GeminiReserveResult),
@@ -42,6 +52,7 @@ struct Reservation {
     mult_bp: i64,
     hold: i64,
     tariff_priced_ts: Option<i64>,
+    settlement_pricing: GeminiSettlementPricing,
     request_id: String,
     guard: HoldGuard,
 }
@@ -100,25 +111,30 @@ impl PendingGeminiAdmission {
                 Some(billing),
             ) => {
                 let request_id = self.calibration_request_id.clone();
-                let (affordable_output_tokens, hold, reservation_mult_bp, tariff_priced_ts) =
-                    reserve_gemini_metered(
-                        app,
-                        billing,
-                        account_id,
-                        key,
-                        model,
-                        estimated_input_tokens,
-                        requested_output_tokens,
-                        image_output_tokens,
-                        grounding_enabled,
-                        allow_output_cap,
-                        *mult_bp,
-                        *available_nano,
-                        *strict_policy,
-                        &request_id,
-                        &self.execution,
-                    )
-                    .await?;
+                let (
+                    affordable_output_tokens,
+                    hold,
+                    reservation_mult_bp,
+                    tariff_priced_ts,
+                    settlement_pricing,
+                ) = reserve_gemini_metered(
+                    app,
+                    billing,
+                    account_id,
+                    key,
+                    model,
+                    estimated_input_tokens,
+                    requested_output_tokens,
+                    image_output_tokens,
+                    grounding_enabled,
+                    allow_output_cap,
+                    *mult_bp,
+                    *available_nano,
+                    *strict_policy,
+                    &request_id,
+                    &self.execution,
+                )
+                .await?;
                 effective_output_tokens = affordable_output_tokens;
                 Some(Reservation {
                     billing: billing.clone(),
@@ -127,6 +143,7 @@ impl PendingGeminiAdmission {
                     mult_bp: reservation_mult_bp,
                     hold,
                     tariff_priced_ts,
+                    settlement_pricing,
                     request_id: request_id.clone(),
                     guard: HoldGuard::new(
                         Some(billing.clone()),
@@ -323,6 +340,7 @@ async fn reserve_gemini_release_v2(
                     snapshot.charged_hold_nano,
                     settlement_multiplier,
                     Some(snapshot.tariff_priced_ts),
+                    GeminiSettlementPricing::ReleaseV2,
                 )));
             }
             Ok(PricingReleaseReserveOutcomeV2::NotReserved) => {
@@ -485,6 +503,7 @@ async fn reserve_gemini_legacy_mode(
                         hold,
                         mult_bp,
                         None,
+                        GeminiSettlementPricing::LegacyScalar,
                     )))
                 }
                 Ok(LegacyScalarReserveOutcome::Unchanged(receipt)) => {
@@ -497,6 +516,7 @@ async fn reserve_gemini_legacy_mode(
                         hold,
                         mult_bp,
                         None,
+                        GeminiSettlementPricing::LegacyScalar,
                     )))
                 }
                 Ok(LegacyScalarReserveOutcome::Conflict(
@@ -565,6 +585,7 @@ impl GeminiAdmission {
                 reservation.hold,
                 reservation.mult_bp,
                 priced_ts,
+                reservation.settlement_pricing,
             );
             reservation.billing.settle_detached(
                 &reservation.request_id,
@@ -700,9 +721,10 @@ fn settled_charge_or_hold(
     hold: i64,
     mult_bp: i64,
     now: i64,
+    settlement_pricing: GeminiSettlementPricing,
 ) -> (i64, Option<registry::UsageEventInput>) {
     match usage.filter(|usage| !usage.is_zero()) {
-        Some(usage) => settled_charge(model, usage, hold, mult_bp, now),
+        Some(usage) => settled_charge(model, usage, hold, mult_bp, now, settlement_pricing),
         // Once streaming bytes were delivered, missing usage must never turn a paid provider call
         // into a zero settlement. The conservative preflight hold is already bounded by balance;
         // no synthetic token event is invented because it would corrupt authoritative analytics.
@@ -955,6 +977,7 @@ async fn reserve_gemini_legacy(
             hold,
             mult_bp,
             None,
+            GeminiSettlementPricing::LegacyScalar,
         ))),
         Ok(None) => Err(AdmissionError::LowBalance),
         Err(error) if error.downcast_ref::<LegacyPricingPathClosedV2>().is_some() => {
@@ -973,10 +996,14 @@ fn settled_charge(
     hold: i64,
     mult_bp: i64,
     now: i64,
+    settlement_pricing: GeminiSettlementPricing,
 ) -> (i64, Option<registry::UsageEventInput>) {
     let prices = metering::gemini_prices_at(&model.id, now).unwrap_or(model.prices);
     let real = metering::gemini::cost_nanodollars(usage, &prices);
-    let computed = metering::apply_multiplier(real, mult_bp);
+    let computed = match settlement_pricing {
+        GeminiSettlementPricing::ReleaseV2 => metering::apply_multiplier_floor(real, mult_bp),
+        GeminiSettlementPricing::LegacyScalar => metering::apply_multiplier(real, mult_bp),
+    };
     let ceiling = hold.max(0) as i128 + metering::OVERDRAFT_NANO;
     let charge = computed.clamp(0, ceiling).min(i64::MAX as i128) as i64;
     if real <= 0 {
@@ -1550,7 +1577,14 @@ mod tests {
             search_queries: 7,
             grounded_search_prompts: 1,
         };
-        let (charge, event) = settled_charge(&model(), &usage, i64::MAX, 10_000, 123);
+        let (charge, event) = settled_charge(
+            &model(),
+            &usage,
+            i64::MAX,
+            10_000,
+            123,
+            GeminiSettlementPricing::LegacyScalar,
+        );
         let event = event.unwrap();
         assert_eq!(event.provider, registry::PROVIDER_GOOGLE);
         assert_eq!(event.input_tokens, 120);
@@ -1678,7 +1712,14 @@ mod tests {
             image_output_tokens: 1_120,
             ..metering::GeminiUsage::default()
         };
-        let (charge, event) = settled_charge(&model, &usage, i64::MAX, 10_000, 123);
+        let (charge, event) = settled_charge(
+            &model,
+            &usage,
+            i64::MAX,
+            10_000,
+            123,
+            GeminiSettlementPricing::LegacyScalar,
+        );
         let expected = 100 * 500 + 20 * 3_000 + 1_120 * 60_000;
         let event = event.unwrap();
         assert_eq!(charge as i128, expected);
@@ -1694,18 +1735,61 @@ mod tests {
             output_tokens: u64::MAX,
             ..metering::GeminiUsage::default()
         };
-        let (charge, _) = settled_charge(&model(), &usage, 17, 10_000, 0);
+        let (charge, _) = settled_charge(&model(), &usage, 17, 10_000, 0, GeminiSettlementPricing::LegacyScalar);
         assert_eq!(charge as i128, 17 + metering::OVERDRAFT_NANO);
     }
 
     #[test]
+    fn release_v2_settlement_floors_where_the_legacy_scalar_rounds_half_up() {
+        // 300 nano × 5017 bp = 1_505_100 / 10_000: the fractional remainder (5100) crosses the
+        // half-up boundary, so the immutable legacy arithmetic charges 151 while the release-v2
+        // contract floor charges exactly 150.
+        let usage = metering::GeminiUsage {
+            input_tokens: 1,
+            ..metering::GeminiUsage::default()
+        };
+        let (legacy, _) = settled_charge(
+            &model(),
+            &usage,
+            i64::MAX,
+            5_017,
+            123,
+            GeminiSettlementPricing::LegacyScalar,
+        );
+        let (release, _) = settled_charge(
+            &model(),
+            &usage,
+            i64::MAX,
+            5_017,
+            123,
+            GeminiSettlementPricing::ReleaseV2,
+        );
+        assert_eq!(legacy, 151);
+        assert_eq!(release, 150);
+    }
+
+    #[test]
     fn missing_authoritative_usage_fails_closed_to_the_reserved_hold() {
-        let (charge, event) = settled_charge_or_hold(&model(), None, 123_456, 10_000, 0);
+        let (charge, event) = settled_charge_or_hold(
+            &model(),
+            None,
+            123_456,
+            10_000,
+            0,
+            GeminiSettlementPricing::LegacyScalar,
+        );
         assert_eq!(charge, 123_456);
         assert!(event.is_none());
 
         let zero = metering::GeminiUsage::default();
-        let (charge, event) = settled_charge_or_hold(&model(), Some(&zero), 654_321, 10_000, 0);
+        let (charge, event) = settled_charge_or_hold(
+            &model(),
+            Some(&zero),
+            654_321,
+            10_000,
+            0,
+            GeminiSettlementPricing::LegacyScalar,
+        );
         assert_eq!(charge, 654_321);
         assert!(event.is_none());
     }
