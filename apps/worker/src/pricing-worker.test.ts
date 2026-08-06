@@ -39,8 +39,14 @@ test("wakes control-job delivery from LISTEN/NOTIFY with the sweep as recovery",
   // A wake during an active flush schedules exactly one follow-up pass.
   assert.match(source, /this\.controlFlushQueued = true/);
   assert.match(source, /while \(this\.controlFlushQueued && !this\.stopped\)/);
-  // The periodic sweep keeps its own flush call as the recovery path.
-  assert.match(source, /await this\.flushPricingControlJobs\(\);\s*\n\s*await this\.flushPendingStrictChains\(\);\s*\n\s*await this\.flushPricingJobs\(\);/);
+  // Delivery runs first and on its own short tick (PRICING_DISPATCH_MS), never behind the
+  // sweep: control jobs through the coalescing dispatcher so a tick cannot double a
+  // NOTIFY-triggered pass, the other queues directly. The tick is the bounded recovery path
+  // for a missed notification; the slow sweep keeps only the strict-chain flush.
+  assert.match(source, /this\.requestControlFlush\(\);\s*\n\s*await this\.flushPricingJobs\(\);\s*\n\s*await this\.flushPricingReleaseActivationJobs\(\);/);
+  assert.match(source, /const dispatchMs = this\.config\.get\("PRICING_DISPATCH_MS", \{ infer: true \}\)/);
+  assert.match(source, /if \(Date\.now\(\) < nextSweepAt\)/);
+  assert.match(source, /await this\.flushPendingStrictChains\(\);/);
 });
 
 test("advances flagged strict chains once the shadow delivery confirms", () => {
