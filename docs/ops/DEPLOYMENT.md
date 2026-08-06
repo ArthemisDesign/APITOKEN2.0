@@ -448,8 +448,9 @@ contracts and prints only bounded digest/status/count evidence. An unexpected HT
 reported only as its status plus a machine-readable `code` matching the bounded lowercase identifier
 format from the strict Nest error envelope; Stage 5 engine prepare failures identify only the bounded
 artifact kind and rejection class as
-`engine_<main_catalog|openkeys_catalog|switches|policy>_prepare_<rejection>`. The response body,
-free-form message, artifact identity, digest, account and credentials are never printed. Before materialization, each invocation replaces a prior `planned`
+`engine_<main_catalog|openkeys_catalog|switches|policy_b2c|policy_b2b|policy_openkeys|policy_service>_prepare_<rejection>`.
+The response body, free-form message, artifact identity, digest, account and credentials are never
+printed. Before materialization, each invocation replaces a prior `planned`
 private fence only with the newest stable, blocker-free dry-run identity; after materialization the
 fence is immutable and the helper resumes Stage 6 from that exact plan. It fails closed before
 materialize when the exhaustive dry-run has blockers and fails on any dead, failed or blocker Stage 6

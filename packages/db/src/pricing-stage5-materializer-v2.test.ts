@@ -602,7 +602,7 @@ describe("pricing Stage 5 v2 exhaustive scanners", () => {
   it("reports bounded artifact and rejection classes for failed engine prepares", () => {
     expect(stage5V2PrepareMutationResult({ result: "stored" }, "main_catalog", "main catalog"))
       .toBe("stored");
-    expect(stage5V2PrepareMutationResult({ result: "unchanged" }, "policy", "policy"))
+    expect(stage5V2PrepareMutationResult({ result: "unchanged" }, "policy_b2c", "policy"))
       .toBe("unchanged");
     expect(() => stage5V2PrepareMutationResult({
       result: "rejected",
@@ -614,8 +614,8 @@ describe("pricing Stage 5 v2 exhaustive scanners", () => {
     expect(() => stage5V2PrepareMutationResult({
       result: "rejected",
       code: "locked",
-    }, "policy", "sensitive policy identity"))
-      .toThrow(expect.objectContaining({ code: "engine_policy_prepare_locked" }));
+    }, "policy_service", "sensitive policy identity"))
+      .toThrow(expect.objectContaining({ code: "engine_policy_service_prepare_locked" }));
     expect(() => stage5V2PrepareMutationResult({ result: "applied" }, "switches", "switches"))
       .toThrow(expect.objectContaining({ code: "engine_switches_prepare_applied" }));
   });

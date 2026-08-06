@@ -1140,7 +1140,14 @@ async function persistLocalPlan(
   }
 }
 
-type PrepareArtifactKind = "main_catalog" | "openkeys_catalog" | "switches" | "policy";
+type PrepareArtifactKind =
+  | "main_catalog"
+  | "openkeys_catalog"
+  | "switches"
+  | "policy_b2c"
+  | "policy_b2b"
+  | "policy_openkeys"
+  | "policy_service";
 type PrepareMutationResult =
   | { result: "stored" | "unchanged" }
   | { result: "applied" }
@@ -1228,10 +1235,11 @@ async function prepareEngineArtifacts(
     readback_digest: switchReadback.content_digest,
   });
   for (const policy of plan.policies) {
+    const accountClass = policy.account_class === "open_keys" ? "openkeys" : policy.account_class;
     const mutation = await engine.preparePricingReleasePolicyV2(policy);
     const result = stage5V2PrepareMutationResult(
       mutation,
-      "policy",
+      `policy_${accountClass}`,
       `policy ${policy.policy_id}/${policy.policy_version}`,
     );
     const readback = await engine.getPricingReleasePolicyV2(policy.policy_id, policy.policy_version);
