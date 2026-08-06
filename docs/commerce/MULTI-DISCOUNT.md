@@ -679,11 +679,11 @@ charges with the exact contract floor`): every release-v2 settlement path now fl
 reserve, and the Stage 8 shadow validates the same formula. Items 2 and 14 are closed by the
 progressive cleanup and the residual-track UI removal: no active writer creates
 tier/track/retention records and no UI/API surface presents them; only immutable history and
-the legacy columns remain, pending the late physical schema cleanup. Item 17 is OPEN: the
-pre-cutover strict chain has stood down by design, and the post-cutover class-changing
-assignment-extension lane (engine producer + commerce consumer) is still being delivered —
-until it lands, a post-cutover B2C→B2B conversion is refused loudly instead of silently
-unenforced.
+the legacy columns remain, pending the late physical schema cleanup. Item 17 is closed by the
+class-changing assignment-extension lane (engine migration 0034 + the commerce consumer in
+`fix(pricing): propagate post-cutover B2C-to-B2B conversions into the release authority`): a
+post-cutover conversion now propagates through the exact active/recovery extension, key
+issuance self-heals through the same path, and every other class mismatch still fails closed.
 
 1. All expand migrations are delivered before the dependent code.
 2. No new writer creates progressive pricing records.
