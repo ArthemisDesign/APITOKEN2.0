@@ -77,10 +77,14 @@ The worker delivers it exclusively via
 active policy diverging from the durable expectation, a lost replacement lock, or a typed rejection
 (400/409/423) — terminal `blocked` with `last_error`.
 
-**Generic path (canonical OpenKeys).** For already-canonical OpenKeys accounts (`official_1_to_1`)
-the job carries the `policy_shadow` payload: the successor is built on the account's EXISTING engine
-lineage (the same policy identity, next monotonic version, exact current active as expected active),
-with rules converted from the release policy, and pins of the exact Stage 5 catalog/switch.
+**Generic path (canonical or already-unlocked OpenKeys).** For canonical OpenKeys accounts
+(`official_1_to_1`) and legacy source rows whose live lineage has already completed its one-time
+locked transition, the job carries the `policy_shadow` payload. An unlocked legacy lineage is first
+required to remain the exact managed provider-only 1:1 successor; semantic drift still fails closed.
+If its catalog/switch pins already match the Stage 5 plan it is skipped, otherwise the successor is
+built on the account's EXISTING engine lineage (the same policy identity, next monotonic version,
+exact current active as expected active), with rules converted from the release policy and pins of
+the exact Stage 5 catalog/switch.
 The worker reads the engine state, confirms an already-exact
 policy with a single readback without mutation, otherwise performs prepare → exact readback →
 activate with a CAS expectation from fresh state. Any version conflict, digest mismatch, newer

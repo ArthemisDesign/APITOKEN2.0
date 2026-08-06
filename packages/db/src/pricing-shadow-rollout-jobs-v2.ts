@@ -707,109 +707,101 @@ export async function stagePricingShadowRolloutV2(
         // never attaches a release-policy identity to an existing engine lineage.
         continue;
       }
+      const lineageState = openkeysAdvance.get(assignment.engine_account_id);
+      if (!lineageState || lineageState === "unbound" || "inactive" in lineageState) {
+        throw permanent(
+          `${openkeysAccount!.pricing_contract === "legacy" ? "legacy" : "canonical"} OpenKeys account ${assignment.engine_account_id} has no active engine policy lineage`,
+        );
+      }
+      const lineage = lineageState.active.policy;
       if (openkeysAccount!.pricing_contract === "legacy") {
         if (openkeysAccount!.source_multiplier_bp !== inventoryAccount.multiplier_bp) {
           throw permanent(
             `legacy OpenKeys multiplier drifted for ${assignment.engine_account_id}`,
           );
         }
-        // The exact legacy policy is read from the live engine lineage, never reconstructed:
-        // only the actual stored identity/digest can be the transition expectation.
-        const lockedState = openkeysAdvance.get(assignment.engine_account_id);
-        if (!lockedState || lockedState === "unbound" || "inactive" in lockedState) {
-          throw permanent(
-            `legacy OpenKeys account ${assignment.engine_account_id} has no active engine policy lineage`,
-          );
-        }
-        const lockedPolicy = lockedState.active.policy;
-        if (!lockedPolicy.replacement_locked) {
-          // A previous rollout already transitioned this account: the live policy must then be
-          // the exact canonical 1:1 successor (managed provider rules, unlocked, plan pins).
-          // Rule digests are producer-chosen identifiers, so alignment compares the semantic
-          // fields the engine validates. Anything else is real drift and fails closed.
-          const liveRules = [...lockedPolicy.rules].sort((left, right) =>
-            compareUtf8(left.rule_id, right.rule_id));
-          const expectedRules = OPENKEYS_TRANSITION_PROVIDERS.map((providerId) => ({
-            rule_id: `openkeys-${providerId}-1to1`,
-            scope: { provider: { provider_id: providerId } },
-            pricing_mode: "discount" as const,
-            rule_origin: "managed" as const,
-            discount_bps: 0,
-            payable_multiplier_bp: 10_000,
-            track_eligible: false,
-            retention_eligible: false,
-            commission_eligible: false,
-          })).sort((left, right) => compareUtf8(left.rule_id, right.rule_id));
-          const alreadyAligned = lockedPolicy.catalog_generation === openkeysCatalog.generation
-            && lockedPolicy.switch_generation === switches.generation
-            && liveRules.length === expectedRules.length
-            && liveRules.every((rule, index) => {
-              const expected = expectedRules[index]!;
-              return rule.rule_id === expected.rule_id
-                && stage5V2CanonicalJson(rule.scope) === stage5V2CanonicalJson(expected.scope)
-                && rule.pricing_mode === expected.pricing_mode
-                && rule.rule_origin === expected.rule_origin
-                && rule.discount_bps === expected.discount_bps
-                && rule.payable_multiplier_bp === expected.payable_multiplier_bp
-                && rule.track_eligible === expected.track_eligible
-                && rule.retention_eligible === expected.retention_eligible
-                && rule.commission_eligible === expected.commission_eligible;
-            });
-          if (!alreadyAligned) {
-            throw permanent(
-              `legacy OpenKeys account ${assignment.engine_account_id} lineage lost its replacement lock without the canonical successor`,
-            );
-          }
+        if (lineage.replacement_locked) {
+          // The exact legacy policy is read from the live engine lineage, never reconstructed:
+          // only the actual stored identity/digest can be the transition expectation.
+          const successor = buildLockedOpenkeysSuccessorPolicyV1({
+            source: lineage,
+            catalogGeneration: openkeysCatalog.generation,
+            switchGeneration: switches.generation,
+          });
+          const payload: PricingShadowPolicyRequestPayloadV2 = {
+            kind: "locked_openkeys_transition",
+            policy: successor,
+            expected_active: {
+              target: {
+                version: lineage.effective_version,
+                content_digest: lineage.content_digest,
+              },
+              binding: lineageState.active.binding,
+            },
+          };
+          jobs.push({
+            engine_account_id: assignment.engine_account_id,
+            account_status: inventoryAccount.status,
+            account_class: assignment.account_class,
+            owner_context: assignment.owner_context,
+            release_policy_id: assignment.policy_id,
+            release_policy_version: assignment.policy_version,
+            release_policy_digest: assignment.policy_digest,
+            effective_version: successor.effective_version,
+            content_digest: successor.content_digest,
+            expected_active_version: lineage.effective_version,
+            expected_active_digest: lineage.content_digest,
+            request_digest: stage5V2Digest("pricing-shadow-rollout-request-v2", payload),
+            request_payload: payload,
+          });
           continue;
         }
-        const successor = buildLockedOpenkeysSuccessorPolicyV1({
-          source: lockedPolicy,
-          catalogGeneration: openkeysCatalog.generation,
-          switchGeneration: switches.generation,
-        });
-        const payload: PricingShadowPolicyRequestPayloadV2 = {
-          kind: "locked_openkeys_transition",
-          policy: successor,
-          expected_active: {
-            target: {
-              version: lockedPolicy.effective_version,
-              content_digest: lockedPolicy.content_digest,
-            },
-            binding: lockedState.active.binding,
-          },
-        };
-        jobs.push({
-          engine_account_id: assignment.engine_account_id,
-          account_status: inventoryAccount.status,
-          account_class: assignment.account_class,
-          owner_context: assignment.owner_context,
-          release_policy_id: assignment.policy_id,
-          release_policy_version: assignment.policy_version,
-          release_policy_digest: assignment.policy_digest,
-          effective_version: successor.effective_version,
-          content_digest: successor.content_digest,
-          expected_active_version: lockedPolicy.effective_version,
-          expected_active_digest: lockedPolicy.content_digest,
-          request_digest: stage5V2Digest("pricing-shadow-rollout-request-v2", payload),
-          request_payload: payload,
-        });
-        continue;
-      }
-      // Already-canonical OpenKeys accounts advance their existing engine lineage in place: the
-      // engine never accepts a different policy identity for an account with a lineage, so the
-      // shadow successor reuses the live identity at the next monotonic version.
-      const lineageState = openkeysAdvance.get(assignment.engine_account_id);
-      if (!lineageState || lineageState === "unbound" || "inactive" in lineageState) {
-        throw permanent(
-          `canonical OpenKeys account ${assignment.engine_account_id} has no active engine policy lineage`,
-        );
-      }
-      const lineage = lineageState.active.policy;
-      if (lineage.replacement_locked) {
+        // The source remains classified as legacy after its one-time locked transition. Its live
+        // lineage must remain the canonical managed 1:1 successor; stale catalog/switch pins are
+        // advanced below through the same generic CAS lane as official_1_to_1 accounts.
+        const liveRules = [...lineage.rules].sort((left, right) =>
+          compareUtf8(left.rule_id, right.rule_id));
+        const expectedRules = OPENKEYS_TRANSITION_PROVIDERS.map((providerId) => ({
+          rule_id: `openkeys-${providerId}-1to1`,
+          scope: { provider: { provider_id: providerId } },
+          pricing_mode: "discount" as const,
+          rule_origin: "managed" as const,
+          discount_bps: 0,
+          payable_multiplier_bp: 10_000,
+          track_eligible: false,
+          retention_eligible: false,
+          commission_eligible: false,
+        })).sort((left, right) => compareUtf8(left.rule_id, right.rule_id));
+        const canonicalSuccessor = liveRules.length === expectedRules.length
+          && liveRules.every((rule, index) => {
+            const expected = expectedRules[index]!;
+            return rule.rule_id === expected.rule_id
+              && stage5V2CanonicalJson(rule.scope) === stage5V2CanonicalJson(expected.scope)
+              && rule.pricing_mode === expected.pricing_mode
+              && rule.rule_origin === expected.rule_origin
+              && rule.discount_bps === expected.discount_bps
+              && rule.payable_multiplier_bp === expected.payable_multiplier_bp
+              && rule.track_eligible === expected.track_eligible
+              && rule.retention_eligible === expected.retention_eligible
+              && rule.commission_eligible === expected.commission_eligible;
+          });
+        if (!canonicalSuccessor) {
+          throw permanent(
+            `legacy OpenKeys account ${assignment.engine_account_id} lineage lost its replacement lock without the canonical successor`,
+          );
+        }
+        if (lineage.catalog_generation === openkeysCatalog.generation
+            && lineage.switch_generation === switches.generation) {
+          continue;
+        }
+      } else if (lineage.replacement_locked) {
         throw permanent(
           `canonical OpenKeys account ${assignment.engine_account_id} lineage is unexpectedly locked`,
         );
       }
+      // Canonical and already-unlocked legacy OpenKeys advance their existing engine lineage in
+      // place: the engine never accepts a different policy identity for an account with a lineage,
+      // so the shadow successor reuses the live identity at the next monotonic version.
       const policy = buildGenericShadowPolicyV1({
         accountId: assignment.engine_account_id,
         lineage: {

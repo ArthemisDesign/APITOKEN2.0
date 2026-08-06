@@ -645,9 +645,9 @@ producer is the AdminGuard-protected `POST /v1/admin/pricing-shadow-rollout-v2/s
 `apps/api` (UUID idempotency key, exact `stage5_run_id`, verified `x-admin-actor`, reason), which
 pins a prepared target/recovery pair and persists the complete policy/binding/CAS body of every
 OpenKeys job before any delivery; the bounded `apps/worker` consumer claims per-account jobs with a
-lease, advances canonical OpenKeys lineages in place at the next monotonic version through
-prepare/readback/activate and
-replacement-locked legacy OpenKeys only through `locked-openkeys-transition`, stores exact ACK
+lease, advances canonical OpenKeys and already-unlocked legacy successor lineages in place at the
+next monotonic version through prepare/readback/activate, and performs the one-time unlock of a
+replacement-locked legacy OpenKeys lineage only through `locked-openkeys-transition`; it stores exact ACK
 digests/payloads and atomically closes the rollout `confirmed|blocked|dead`. The paired
 `GET /v1/admin/pricing-shadow-rollout-v2` exposes only bounded aggregates and subject digests.
 Startup, migration, polling and the read endpoint never create a rollout or job; the lane never

@@ -4,6 +4,7 @@ import type {
   PricingReleaseInventoryAccountV2,
   ProviderSwitchSpec,
 } from "@claude-api/contracts";
+import type { EngineClient } from "@claude-api/engine-client";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client } from "pg";
@@ -98,7 +99,9 @@ function engineAccounts(): PricingReleaseInventoryAccountV2[] {
   ].sort((left, right) => left.account_id.localeCompare(right.account_id));
 }
 
-function engineReader(accounts = engineAccounts()) {
+function engineReader(
+  accounts = engineAccounts(),
+): Pick<EngineClient, "getPricingReleaseInventoryV2" | "getAccountPricingState"> {
   return {
     getPricingReleaseInventoryV2: async () => ({
       accounts,
@@ -690,6 +693,130 @@ describe.runIf(Boolean(connectionString))("pricing shadow rollout v2 lane", () =
       SELECT engine_account_id FROM pricing_shadow_policy_jobs_v2
     `);
     expect(jobs.rows.map((row) => row.engine_account_id)).toEqual(["acct_ok_new"]);
+  });
+
+  it("advances an unlocked legacy successor whose catalog pins are stale", async () => {
+    const runId = randomUUID();
+    await seedStage5(seed, runId);
+    const reader = engineReader();
+    const originalState = reader.getAccountPricingState;
+    reader.getAccountPricingState = async (accountId: string) => {
+      if (accountId !== "acct_ok_legacy") return originalState(accountId);
+      const policy = {
+        account_id: "acct_ok_legacy",
+        effective_version: 2,
+        policy_id: `policy:openkeys:legacy:${LEGACY_SOURCE_ID}`,
+        policy_version: 2,
+        source_policy_digest: V1("legacy-v1"),
+        owner_type: "open_keys" as const,
+        owner_id: LEGACY_SOURCE_ID,
+        account_class: "open_keys" as const,
+        product_id: "openkeys",
+        schema_version: 1,
+        catalog_generation: 4,
+        switch_generation: 4,
+        content_digest: V1("successor-v2-stale"),
+        replacement_locked: false,
+        rules: [
+          {
+            rule_id: "openkeys-anthropic-1to1",
+            rule_digest: "sha256:v2:stale-a",
+            scope: { provider: { provider_id: "anthropic" } },
+            pricing_mode: "discount" as const,
+            rule_origin: "managed" as const,
+            discount_bps: 0,
+            payable_multiplier_bp: 10_000,
+            track_eligible: false,
+            retention_eligible: false,
+            commission_eligible: false,
+          },
+          {
+            rule_id: "openkeys-openai-1to1",
+            rule_digest: "sha256:v2:stale-b",
+            scope: { provider: { provider_id: "openai" } },
+            pricing_mode: "discount" as const,
+            rule_origin: "managed" as const,
+            discount_bps: 0,
+            payable_multiplier_bp: 10_000,
+            track_eligible: false,
+            retention_eligible: false,
+            commission_eligible: false,
+          },
+        ],
+      };
+      return {
+        active: {
+          policy,
+          binding: {
+            policy_enforcement: "shadow" as const,
+            funding_enforcement: "legacy_single" as const,
+            reconciliation_state: "verified" as const,
+          },
+        },
+      };
+    };
+
+    const staged = await stagePricingShadowRolloutV2(database, reader, stageInput(runId));
+    expect(staged.jobCount).toBe(2);
+    const stored = await seed.query<{
+      request_payload: {
+        kind: string;
+        policy: {
+          policy_id: string;
+          policy_version: number;
+          effective_version: number;
+          catalog_generation: number;
+          switch_generation: number;
+        };
+      };
+      expected_active_version: string | null;
+      expected_active_digest: string | null;
+    }>(`
+      SELECT request_payload, expected_active_version::text, expected_active_digest
+      FROM pricing_shadow_policy_jobs_v2
+      WHERE engine_account_id = 'acct_ok_legacy'
+    `);
+    expect(stored.rows).toHaveLength(1);
+    expect(stored.rows[0]).toMatchObject({
+      request_payload: {
+        kind: "policy_shadow",
+        policy: {
+          policy_id: `policy:openkeys:legacy:${LEGACY_SOURCE_ID}`,
+          policy_version: 3,
+          effective_version: 3,
+          catalog_generation: 5,
+          switch_generation: 5,
+        },
+      },
+      expected_active_version: "2",
+      expected_active_digest: V1("successor-v2-stale"),
+    });
+  });
+
+  it("rejects an unlocked legacy lineage without canonical 1:1 semantics", async () => {
+    const runId = randomUUID();
+    await seedStage5(seed, runId);
+    const reader = engineReader();
+    const originalState = reader.getAccountPricingState;
+    reader.getAccountPricingState = async (accountId: string) => {
+      if (accountId !== "acct_ok_legacy") return originalState(accountId);
+      const state = await originalState(accountId);
+      if (state === "unbound" || "inactive" in state) throw new Error("legacy fixture is unbound");
+      return {
+        active: {
+          ...state.active,
+          policy: {
+            ...state.active.policy,
+            replacement_locked: false,
+          },
+        },
+      };
+    };
+
+    await expect(stagePricingShadowRolloutV2(database, reader, stageInput(runId)))
+      .rejects.toMatchObject({ permanent: true, code: "openkeys_lock_drift" });
+    const stored = await seed.query(`SELECT count(*)::int AS count FROM pricing_shadow_rollouts_v2`);
+    expect(stored.rows[0]!.count).toBe(0);
   });
 
   it("blocks semantic failures and closes the rollout as blocked", async () => {
