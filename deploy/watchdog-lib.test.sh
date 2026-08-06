@@ -5144,6 +5144,7 @@ grep -Fq 'CONVERGE_ACTOR=gpt-image-2-stage567-converge' "$pricing_stage7_diagnos
 grep -Fq 'drifted_fields' "$pricing_stage7_diagnostic_gate" \
   && grep -Fq 'same_digest_replay' "$pricing_stage7_diagnostic_gate" \
   && grep -Fq 'identity_checks' "$pricing_stage7_diagnostic_gate" \
+  && grep -Fq 'rollouts_summary' "$pricing_stage7_diagnostic_gate" \
   || wd_die 'pricing Stage 7 identity diagnostic does not report bounded per-field identity evidence'
 ! grep -Fq 'POST:' "$pricing_stage7_diagnostic_gate" \
   || wd_die 'pricing Stage 7 identity diagnostic is not read-only'

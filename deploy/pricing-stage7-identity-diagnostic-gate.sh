@@ -290,6 +290,17 @@ jq -c \
     },
     rollouts_total: ($control.rollouts | length),
     counts_by_status: $control.counts_by_status,
+    rollouts_summary: ($control.rollouts | map({
+      target_generation: .target_generation,
+      recovery_generation: .recovery_generation,
+      status: .status,
+      job_count: .job_count,
+      assignment_count: .assignment_count,
+      job_counts_by_status: .job_counts_by_status,
+      actor_is_converge: (.actor_id == $actor),
+      completed_at: .completed_at,
+      created_at: .created_at
+    })),
     drifted_fields: (($matched[0] | if . then
       ($matched[0]) as $candidate |
       (["stage5_run_id", "idempotency_key", "actor_id", "reason", "target_generation",
