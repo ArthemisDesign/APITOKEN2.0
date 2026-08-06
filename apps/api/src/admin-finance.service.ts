@@ -84,9 +84,9 @@ export class AdminFinanceService {
       paying_share_pct: pctOf(BigInt(value.payingUsers30d), BigInt(value.activeUsers30d)),
       avg_check_30d_nano: avgCheck30d,
       avg_check_30d_usd: avgCheck30d === null ? null : nanoToUsd(avgCheck30d),
-      tiers: value.tiers.map((tier) => ({
-        tier: tier.customerType === "b2b" ? "b2b" : `b2c_tier_${tier.tier ?? "?"}`,
-        users: tier.users,
+      customer_classes: value.customerClasses.map((item) => ({
+        customer_class: item.customerType,
+        users: item.users,
       })),
     };
   }

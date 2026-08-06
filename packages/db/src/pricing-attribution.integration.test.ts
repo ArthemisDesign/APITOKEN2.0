@@ -324,9 +324,11 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
       attributions: 1,
       allocations: 2,
       real_funded_nano: "60",
-      free_balance_nano: "0",
-      window_spent_nano: "100",
-      month_spent_nano: "100",
+      // Post-cleanup: no local free-first/window/month projections are maintained — the engine
+      // funding evidence alone carries the commission basis, and the legacy columns stay frozen.
+      free_balance_nano: "40",
+      window_spent_nano: "0",
+      month_spent_nano: null,
       cursor: "1",
     }]);
 
@@ -417,7 +419,7 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
       FROM pricing_usage_events event
       JOIN pricing_usage_attributions attribution ON attribution.pricing_usage_event_id = event.id
       JOIN customer_profiles profile ON profile.user_id = event.user_id
-      JOIN pricing_months month ON month.user_id = event.user_id
+      LEFT JOIN pricing_months month ON month.user_id = event.user_id
     `);
     expect(state.rows).toEqual([{
       amount_nano: "100",
@@ -428,7 +430,7 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
       retention_eligible: false,
       free_balance_nano: "40",
       tier_window_spent_nano: "0",
-      month_spent_nano: "0",
+      month_spent_nano: null,
     }]);
   });
 
@@ -495,7 +497,10 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
     )).resolves.toMatchObject({ rows: [{ cursor: "0" }] });
   });
 
-  it("keeps the unattributed legacy free-first fallback and replay idempotency", async () => {
+  it("gives unattributed legacy rows no local commission basis and replays idempotently", async () => {
+    // Post-cleanup there is no free-first projection: without immutable engine funding evidence
+    // a charge carries no commission basis at all (under-paying is the safe direction), and the
+    // legacy free-balance column is never debited locally.
     const entries = [
       legacyEntry(5, "topup", 50n, `promo:${randomUUID()}`),
       { ...legacyEntry(6, "charge", 100n, null), model: "gpt-5" },
@@ -516,10 +521,10 @@ describe.runIf(Boolean(connectionString))("immutable pricing ledger attribution"
     expect(state.rows).toEqual([{
       events: 1,
       attributions: 0,
-      real_funded_nano: "10",
+      real_funded_nano: "0",
       provider_id: "unattributed",
       provider_recovery_version: 0,
-      free_balance_nano: "0",
+      free_balance_nano: "40",
       cursor: "6",
     }]);
   });

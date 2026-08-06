@@ -65,19 +65,12 @@ describe("clampedOffset", () => {
 });
 
 describe("tierLabel", () => {
-  it("B2B по customer_type, независимо от tier", () => {
-    expect(tierLabel({ customer_type: "b2b", tier: 0 })).toBe("B2B");
+  it("B2B по customer_type", () => {
+    expect(tierLabel({ customer_type: "b2b" })).toBe("B2B");
   });
 
-  it("имя тира по индексу для B2C", () => {
-    expect(tierLabel({ customer_type: "b2c", tier: 0 })).toBe("Starter");
-    expect(tierLabel({ customer_type: "b2c", tier: 2 })).toBe("Pro");
-    expect(tierLabel({ customer_type: "b2c", tier: 4 })).toBe("Scale");
-  });
-
-  it("неизвестный/отсутствующий tier — тире", () => {
-    expect(tierLabel({ customer_type: "b2c", tier: 5 })).toBe("—");
-    expect(tierLabel({ customer_type: "b2c" })).toBe("—");
+  it("B2C — единый flat-тариф без тир-лестницы", () => {
+    expect(tierLabel({ customer_type: "b2c" })).toBe("B2C −50%");
   });
 });
 
@@ -106,7 +99,7 @@ describe("buildUsersCsvRows", () => {
       "a@b.c",
       "Ivan",
       "active",
-      "Builder",
+      "B2C −50%",
       12.5,
       100,
       7,

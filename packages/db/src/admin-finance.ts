@@ -17,7 +17,7 @@ export interface AdminFinanceOverview {
   payments30dCount: number;
   payingUsers30d: number;
   activeUsers30d: number;
-  tiers: Array<{ customerType: "b2c" | "b2b"; tier: number | null; users: number }>;
+  customerClasses: Array<{ customerType: "b2c" | "b2b"; users: number }>;
 }
 
 export interface AdminFinanceRevenueDayRow {
@@ -163,9 +163,9 @@ export interface AdminPayingUsersPage {
   summary: AdminPayingUsersSummary;
 }
 
-/** Скалярная сводка: выручка текущих и предыдущих 30 дней + распределение клиентов по тирам. */
+/** Скалярная сводка: выручка текущих и предыдущих 30 дней + распределение клиентов по классам. */
 export async function getAdminFinanceOverview(database: Database): Promise<AdminFinanceOverview> {
-  const [scalars, tiers] = await Promise.all([
+  const [scalars, classes] = await Promise.all([
     database.pool.query<{
       revenue_30d_nano: string;
       revenue_prev_30d_nano: string;
@@ -191,12 +191,12 @@ export async function getAdminFinanceOverview(database: Database): Promise<Admin
           WHERE last_seen_at >= now() - interval '30 days')::text AS active_users_30d
       FROM paid
     `),
-    database.pool.query<{ customer_type: "b2c" | "b2b"; current_tier: number | null; users: string }>(`
-      /* admin-finance:overview-tiers */
-      SELECT customer_type::text AS customer_type, current_tier, count(*)::text AS users
+    database.pool.query<{ customer_type: "b2c" | "b2b"; users: string }>(`
+      /* admin-finance:overview-customer-classes */
+      SELECT customer_type::text AS customer_type, count(*)::text AS users
       FROM customer_profiles
-      GROUP BY customer_type, current_tier
-      ORDER BY customer_type, current_tier
+      GROUP BY customer_type
+      ORDER BY customer_type
     `),
   ]);
   const row = scalars.rows[0]!;
@@ -206,10 +206,9 @@ export async function getAdminFinanceOverview(database: Database): Promise<Admin
     payments30dCount: Number(row.payments_30d_count),
     payingUsers30d: Number(row.paying_users_30d),
     activeUsers30d: Number(row.active_users_30d),
-    tiers: tiers.rows.map((tier) => ({
-      customerType: tier.customer_type,
-      tier: tier.current_tier,
-      users: Number(tier.users),
+    customerClasses: classes.rows.map((item) => ({
+      customerType: item.customer_type,
+      users: Number(item.users),
     })),
   };
 }

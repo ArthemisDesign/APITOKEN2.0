@@ -223,7 +223,7 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
     `, [user.id, engineAccountId]);
     await runStage5Backfill(database, {
       schema_version: 1,
-      engine_accounts: [{ account_id: engineAccountId, multiplier_bp: 4_000, status: "active" }],
+      engine_accounts: [{ account_id: engineAccountId, multiplier_bp: 5_000, status: "active" }],
       openkeys_accounts: [],
     }, { mode: "safe" });
     // The engine acknowledged the backfilled delivery: applied v1 is what the account runs.

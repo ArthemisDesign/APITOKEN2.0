@@ -15,7 +15,7 @@ export interface FinanceOverview {
   paying_share_pct?: number | null;
   active_users_30d?: number;
   payments_30d_count?: number;
-  tiers?: { tier?: string; users?: number }[];
+  customer_classes?: { customer_class?: string; users?: number }[];
 }
 
 // GET /admin/finance/revenue?days=N
@@ -191,17 +191,13 @@ export const FINANCE_WINDOWS: ReadonlyArray<readonly [number, string]> = [
 export const REFUND_PAGE_LIMIT = 25;
 
 const TIER_NAMES: Record<string, string> = {
-  b2c_tier_0: "Starter",
-  b2c_tier_1: "Builder",
-  b2c_tier_2: "Pro",
-  b2c_tier_3: "Studio",
-  b2c_tier_4: "Scale",
+  b2c: "B2C",
+  b2b: "B2B",
 };
 
-// tierName: b2b → B2B, известные b2c-тиры → имена продуктов, остальное → "Tier N".
-export function tierName(key: string): string {
-  if (key === "b2b") return "B2B";
-  return TIER_NAMES[key] ?? key.replace("b2c_tier_", "Tier ");
+// customerClassName: класс клиента в читаемый ярлык сводки (тир-лестница retired 2026-08-04).
+export function customerClassName(key: string): string {
+  return TIER_NAMES[key] ?? key;
 }
 
 // plainBar: округление и зажим процента в 0–100 (как в admin-panel.js).

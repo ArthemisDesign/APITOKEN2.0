@@ -101,7 +101,11 @@ const UserRow = memo(function UserRow({ user, busyAction, onCredit, onAction }: 
       </td>
       <td className="left">
         {tierLabel(user)}
-        <div className="sub">{user.multiplier_bp == null ? "—" : `${100 - user.multiplier_bp / 100}% скидка`}</div>
+        <div className="sub">
+          {user.customer_type === "b2b"
+            ? (user.multiplier_bp == null ? "—" : `${100 - user.multiplier_bp / 100}% скидка`)
+            : "50% скидка"}
+        </div>
       </td>
       <td>
         <b>{user.balance_usd == null ? "—" : money(user.balance_usd)}</b>

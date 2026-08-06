@@ -17,7 +17,7 @@ import {
   clampPercent,
   clampRefundOffset,
   funnelShare,
-  tierName,
+  customerClassName,
 } from "./finance-lib";
 
 describe("Финансы (finance page)", () => {
@@ -37,13 +37,10 @@ describe("Финансы (finance page)", () => {
 });
 
 describe("finance-lib", () => {
-  it("tierName: b2b и именованные тиры, остальное — Tier N", () => {
-    expect(tierName("b2b")).toBe("B2B");
-    expect(tierName("b2c_tier_0")).toBe("Starter");
-    expect(tierName("b2c_tier_2")).toBe("Pro");
-    expect(tierName("b2c_tier_4")).toBe("Scale");
-    expect(tierName("b2c_tier_9")).toBe("Tier 9");
-    expect(tierName("custom")).toBe("custom");
+  it("customerClassName: класс клиента в ярлык, неизвестное — как есть", () => {
+    expect(customerClassName("b2b")).toBe("B2B");
+    expect(customerClassName("b2c")).toBe("B2C");
+    expect(customerClassName("custom")).toBe("custom");
   });
 
   it("clampPercent: округление и зажим в 0–100, мусор → 0", () => {

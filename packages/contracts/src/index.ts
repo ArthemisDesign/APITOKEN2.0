@@ -2159,16 +2159,9 @@ export const renameApiKeySchema = z.object({
 
 export type RenameApiKey = z.infer<typeof renameApiKeySchema>;
 
-// Prepay-модель: Starter −60% даётся СТАРТОВО (базовый тир, порог $0, удержания нет). Выше тир
-// повышается только по идемпотентно потреблённым charge-строкам engine ledger: `spendThresholdNano`
-// — порог накопленного `pricing_usage_events.amount_nano`, `holdNano` — расход за скользящие 30 дней.
-export const B2C_PRICING_TIERS = [
-  { code: "starter", discountPercent: 60, multiplierBp: 4000, spendThresholdNano: 0n, holdNano: 0n, visibleOfficialUsageUsd: "0" },
-  { code: "builder", discountPercent: 62.5, multiplierBp: 3750, spendThresholdNano: 100_000_000_000n, holdNano: 50_000_000_000n, visibleOfficialUsageUsd: "267" },
-  { code: "pro", discountPercent: 65, multiplierBp: 3500, spendThresholdNano: 250_000_000_000n, holdNano: 125_000_000_000n, visibleOfficialUsageUsd: "714" },
-  { code: "studio", discountPercent: 67.5, multiplierBp: 3250, spendThresholdNano: 500_000_000_000n, holdNano: 250_000_000_000n, visibleOfficialUsageUsd: "1538" },
-  { code: "scale", discountPercent: 70, multiplierBp: 3000, spendThresholdNano: 1_000_000_000_000n, holdNano: 500_000_000_000n, visibleOfficialUsageUsd: "3333" },
-] as const;
+// The progressive B2C tier ladder was retired with the pricing release cutover on 2026-08-04:
+// B2C is one flat 50% discount (docs/commerce/PRICING.md). The constant is removed so no new
+// code can resurrect tier semantics; historical rows keep their values as immutable history.
 
 // Welcome credit is an exact platform-balance amount, independent of the active pricing policy.
 // The legacy nominal remains explicit only for rows issued before exact per-claim storage existed.

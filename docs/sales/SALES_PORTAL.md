@@ -86,16 +86,15 @@ Garbage in `after_id`/`limit` is not an error but a default (cursor 0, default l
   `payments`; the cursor is epoch microseconds from `paid_at` (not `feed_seq`: payment happens
   after the insert, and a stale `feed_seq` would fall out of the cursor forever). Also filtered by
   attribution. Response `{items:[{id,paymentId,userId,amountNano,paidAt}], nextCursor}`.
-- `POST /v1/internal/sales/referral-discount` — the current legacy discount "floor" of a
-  salesperson for a referral. Body `{userId, floorBps (0..9500), override?, actorId?}` →
-  `{applied, multiplierBp}`. The customer stays b2c and follows the normal tier rules; the floor
-  merely guarantees a price no worse than the salesperson's discount: effective mult =
-  `min(tier-mult, 10000 − floorBps)`. By default the floor is **monotonic** (`GREATEST`, the best
-  for the customer) — it is written by three independent sources (promo, partner link, sales feed);
-  `override=true` is an absolute write that can lower it (a partner or admin from the sales
-  dashboard), `floorBps=0` is an explicit reset. Only b2c profiles (business-b2b or no tier →
-  `applied:false`). Idempotent; the multiplier is delivered to the engine via durable
-  `engine_pricing_jobs`.
+- `POST /v1/internal/sales/referral-discount` — records the salesperson's discount "floor" for a
+  referral as partner attribution. Body `{userId, floorBps (0..9500), override?, actorId?}` →
+  `{applied, multiplierBp}`. Since the pricing release cutover (2026-08-04) the floor no longer
+  moves any price: B2C pricing is the flat global policy of the active release, so
+  `multiplierBp` is always `null` and no engine scalar job is enqueued. The floor stays
+  **monotonic** (`GREATEST`, the best for the customer) across its three writers (promo, partner
+  link, sales feed); `override=true` is an absolute write that can lower it (a partner or admin
+  from the sales dashboard), `floorBps=0` is an explicit reset. Only b2c profiles
+  (`applied:false` otherwise). Idempotent.
   This tier-linked contract is removed together with progressive pricing: target B2C gets the
   global 50%/provider/model policy, and the partner relationship affects commission but does not
   create a personal price. The route stays only for the producer-first compatibility period and is

@@ -203,9 +203,16 @@ outbox rows completed without a drain. The recovery path is a forward CAS to the
 recovery generation, never a rollback to an old binary. The full runbook and evidence chain:
 `docs/commerce/MULTI_DISCOUNT_STAGE9.md`.
 
-## Remaining cleanup
+## Retired progressive machinery
 
-The retired progressive machinery (tiers, retention, `track`, referral price floors, scalar
-delivery jobs) no longer influences admission or price, and its readers/writers are being
-removed under `docs/commerce/MULTI-DISCOUNT.md` §6: active code must not create or consume
-progressive records; immutable history and applied migrations are never rewritten.
+The progressive model (tiers, retention windows, `track`, referral price floors, the free-first
+projection) was removed from active code on 2026-08-06 under §6 of
+`docs/commerce/MULTI-DISCOUNT.md`: no writer creates progressive records and no reader consumes
+them for admission, pricing, funding, or commissions. Concretely: the worker no longer runs tier
+reconciliation/window/month-close jobs; registration no longer creates `pricing_months` rows or
+tier-0 scalars (new B2C accounts get the flat 50% placeholder); the usage sync keeps only the
+immutable engine-evidence commission basis (unattributed rows get none — under-paying is the
+safe direction); the customer pricing summary is flat; and `setReferralFloor` keeps only the
+partner attribution record without touching any multiplier. Immutable history, applied
+migrations, and the legacy columns remain as audit data; their physical removal is a separate
+late change after a proven absence of readers/writers.

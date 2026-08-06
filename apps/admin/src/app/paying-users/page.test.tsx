@@ -314,10 +314,9 @@ describe("paying customer helpers", () => {
     expect(payingCohortUsers(undefined)).toBe(0);
   });
 
-  it("показывает B2B независимо от тира и имена B2C-тиpов", () => {
-    expect(payingTierLabel({ customer_type: "b2b", tier: 0 })).toBe("B2B");
-    expect(payingTierLabel({ customer_type: "b2c", tier: 2 })).toBe("Pro");
-    expect(payingTierLabel({ customer_type: "b2c", tier: 8 })).toBe("—");
+  it("показывает B2B по классу и flat −50% для B2C", () => {
+    expect(payingTierLabel({ customer_type: "b2b" })).toBe("B2B");
+    expect(payingTierLabel({ customer_type: "b2c" })).toBe("B2C −50%");
   });
 
   it("экспортирует user × provider × model с exact strings и formula safety", () => {

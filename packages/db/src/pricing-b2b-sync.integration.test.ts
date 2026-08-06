@@ -117,7 +117,9 @@ describe.runIf(Boolean(connectionString))("pricing usage sync for b2b customers"
     expect(funded.rows[0]!.total).toBe("0");
   });
 
-  it("leaves b2c behaviour unchanged", async () => {
+  it("applies the same flat evidence-only semantics to b2c", async () => {
+    // Post-cleanup b2c behaves exactly like b2b: no local free-first projection, no month rows,
+    // and no commission basis without immutable engine funding evidence.
     await applyPricingLedgerPage(db, { userId: b2cUserId, engineAccountId: b2cAccountId }, [
       entry(41, "topup", 100n, `signup-bonus:${b2cUserId}`),
       entry(42, "charge", 250n, null),
@@ -126,13 +128,13 @@ describe.runIf(Boolean(connectionString))("pricing usage sync for b2b customers"
       "SELECT free_balance_nano::text AS free_balance_nano FROM customer_profiles WHERE user_id = $1",
       [b2cUserId],
     );
-    expect(profile.rows[0]!.free_balance_nano).toBe("0"); // 100 бонуса списаны первыми
+    expect(profile.rows[0]!.free_balance_nano).toBe("0"); // untouched by the sync
     const funded = await db.pool.query<{ total: string }>(
       "SELECT COALESCE(SUM(real_funded_nano), 0)::text AS total FROM pricing_usage_events WHERE user_id = $1",
       [b2cUserId],
     );
-    expect(funded.rows[0]!.total).toBe("150");
+    expect(funded.rows[0]!.total).toBe("0");
     const months = await db.pool.query("SELECT 1 FROM pricing_months WHERE user_id = $1", [b2cUserId]);
-    expect(months.rowCount).toBe(1);
+    expect(months.rowCount).toBe(0);
   });
 });

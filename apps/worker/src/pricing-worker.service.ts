@@ -8,7 +8,6 @@ import {
   claimNextPricingControlJob,
   claimNextPricingJob,
   claimNextPricingReleaseActivationJobV2,
-  closeElapsedTierWindows,
   completePricingProviderBackfill,
   completePricingUsageSync,
   confirmPricingControlJob,
@@ -20,15 +19,12 @@ import {
   listPendingStrictChainAccounts,
   listPricingSyncTargets,
   PricingControlNotifyListener,
-  reconcileTierLadderMultipliers,
   recoverStalePricingControlJobs,
   recoverStalePricingJobs,
   recoverStalePricingReleaseActivationJobsV2,
-  refreshTierWindowUsage,
   releasePricingControlJob,
   releasePricingReleaseActivationJobV2,
   retryPricingJob,
-  utcMonthStart,
   createStage5OpenKeysInventoryReaderV2,
   type Database,
   type ClaimedPricingControlJob,
@@ -93,10 +89,6 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
     }
     const recovered = await recoverStalePricingJobs(this.database);
     if (recovered > 0) this.logger.warn(`recovered ${recovered} stale pricing jobs`);
-    // После изменения констант лестницы существующие профили сходятся к ней на первом старте;
-    // engine получает новые множители через обычные durable pricing jobs в flushPricingJobs.
-    const reconciled = await reconcileTierLadderMultipliers(this.database);
-    if (reconciled > 0) this.logger.warn(`reconciled ${reconciled} b2c profiles to current tier ladder`);
     // LISTEN/NOTIFY (migration 0041) wakes the control-job flush on the committing
     // transaction instead of waiting out the sweep. The sweep in run() stays as the
     // recovery path for notifications missed while the listener was reconnecting.
@@ -187,39 +179,19 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
           this.logger.warn(`recovered ${recoveredActivation} stale pricing-release activation jobs`);
         }
 
-        const now = new Date();
         // getPricingUsageCursor reconciles durable confirmed-credit accrual markers, including
         // refund/dispute reversal, before any engine network I/O. Keep one authority for that
         // mutation: a separate worker-side refund loop can subtract the same marker twice.
         const targets = await listPricingSyncTargets(this.database);
-        const syncedUserIds: string[] = [];
         for (const target of targets) {
           if (this.stopped) break;
           try {
             await this.syncTarget(target);
-            syncedUserIds.push(target.userId);
           } catch (error) {
             this.logger.error(`pricing usage sync failed for ${target.userId}: ${message(error)}`);
           }
         }
 
-        // C20: the denormalized counter is rebuilt from immutable, deduplicated events using each
-        // event's own timestamp instead of trusting the page in which the event happened to arrive.
-        await refreshTierWindowUsage(this.database, syncedUserIds, now);
-
-        if (
-          syncedUserIds.length > 0 &&
-          afterMonthCloseGrace(now, this.config.get("PRICING_CLOSE_GRACE_MS", { infer: true }))
-        ) {
-          // C19: only users whose ledger sync completed in this cycle are eligible for closure.
-          // AUDIT-TODO(C19): run pnpm db:generate + migrate after adding a durable per-account
-          // engine cutoff watermark; require it to cover the exact window end before closure.
-          const closed = await closeElapsedTierWindows(this.database, now, syncedUserIds);
-          if (closed > 0) {
-            await refreshTierWindowUsage(this.database, syncedUserIds, now);
-            this.logger.log(`closed ${closed} elapsed pricing windows`);
-          }
-        }
         // Strict chains stay inside the sweep: that flush is part of the recovery workload,
         // not latency-sensitive delivery.
         await this.flushPendingStrictChains();
@@ -581,10 +553,6 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
       this.stopSignal,
     ]);
   }
-}
-
-function afterMonthCloseGrace(now: Date, graceMs: number): boolean {
-  return now.getTime() >= utcMonthStart(now).getTime() + graceMs;
 }
 
 function message(error: unknown): string {

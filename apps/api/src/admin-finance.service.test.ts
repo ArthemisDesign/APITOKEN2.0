@@ -54,17 +54,16 @@ afterEach(() => {
 });
 
 describe("admin finance overview", () => {
-  it("derives delta, ARPU/ARPPU, paying share, average check and tier keys", async () => {
+  it("derives delta, ARPU/ARPPU, paying share, average check and customer classes", async () => {
     overviewMock.mockResolvedValue({
       revenue30dNano: "150000000000", // $150
       revenuePrev30dNano: "100000000000", // $100 → +50%
       payments30dCount: 6,
       payingUsers30d: 3,
       activeUsers30d: 10,
-      tiers: [
-        { customerType: "b2b", tier: null, users: 2 },
-        { customerType: "b2c", tier: 0, users: 7 },
-        { customerType: "b2c", tier: 2, users: 1 },
+      customerClasses: [
+        { customerType: "b2b", users: 2 },
+        { customerType: "b2c", users: 8 },
       ],
     });
 
@@ -85,10 +84,9 @@ describe("admin finance overview", () => {
       avg_check_30d_nano: "25000000000", // $150 / 6 платежей
       avg_check_30d_usd: "25",
     });
-    expect(value.tiers).toEqual([
-      { tier: "b2b", users: 2 },
-      { tier: "b2c_tier_0", users: 7 },
-      { tier: "b2c_tier_2", users: 1 },
+    expect(value.customer_classes).toEqual([
+      { customer_class: "b2b", users: 2 },
+      { customer_class: "b2c", users: 8 },
     ]);
   });
 
@@ -99,7 +97,7 @@ describe("admin finance overview", () => {
       payments30dCount: 0,
       payingUsers30d: 0,
       activeUsers30d: 0,
-      tiers: [],
+      customerClasses: [],
     });
 
     const value = await service.overview() as Record<string, unknown>;
@@ -123,7 +121,7 @@ describe("admin finance overview", () => {
       payments30dCount: 2,
       payingUsers30d: 1,
       activeUsers30d: 4,
-      tiers: [],
+      customerClasses: [],
     });
     await expect(service.overview()).resolves.toMatchObject({ revenue_delta_pct: -20 });
 
@@ -133,7 +131,7 @@ describe("admin finance overview", () => {
       payments30dCount: 2,
       payingUsers30d: 1,
       activeUsers30d: 4,
-      tiers: [],
+      customerClasses: [],
     });
     await expect(service.overview()).resolves.toMatchObject({
       revenue_delta_pct: null,

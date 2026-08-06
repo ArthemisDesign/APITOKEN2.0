@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import {
-  B2C_PRICING_TIERS,
   paymentProviderSchema,
   type EngineLedgerEntry,
   type EngineSettlementFundingEvidence,
@@ -128,17 +127,6 @@ export function classifyTopupRef(ref: string | null | undefined): PricingTopupSo
   return "manual";
 }
 
-/** Тир по НАКОПЛЕННОЙ сумме пополнений (`spendThresholdNano` = порог пополнения). 0 = none (<$100). */
-export function tierForTopups(cumulativeNano: bigint): number {
-  let tier = 0;
-  for (let index = 1; index < B2C_PRICING_TIERS.length; index += 1) {
-    if (cumulativeNano >= B2C_PRICING_TIERS[index]!.spendThresholdNano) tier = index;
-  }
-  return tier;
-}
-
-/** Тридцатидневное окно удержания в миллисекундах. */
-const HOLD_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const PRICING_LEDGER_PAGE_SIZE = 1000;
 const POSTGRES_INTEGER_MAX = 2_147_483_647n;
 const SUPPORTED_LEDGER_ATTRIBUTION_SCHEMA_VERSIONS: ReadonlySet<bigint> = new Set([1n, 2n]);
@@ -1079,58 +1067,32 @@ async function queueBusinessInviteEmail(client: PoolClient, input: {
 }
 
 export async function getPricingView(database: Database, userId: string): Promise<Record<string, unknown> | null> {
-  const result = await database.pool.query<PricingViewRow>(`
-    SELECT cp.customer_type, cp.current_tier, cp.multiplier_bp, cp.pricing_month_start,
-           cp.cumulative_topup_nano, cp.tier_window_start, cp.tier_window_spent_nano, cp.referral_floor_bps
+  const result = await database.pool.query<{
+    customer_type: "b2c" | "b2b";
+    multiplier_bp: number;
+  }>(`
+    SELECT cp.customer_type, cp.multiplier_bp
     FROM customer_profiles cp
     WHERE cp.user_id = $1
   `, [userId]);
   const row = result.rows[0];
   if (!row) return null;
-  const discountPercent = 100 - row.multiplier_bp / 100;
   if (row.customer_type === "b2b") {
     return {
       customerType: "b2b",
       pricingMode: "manual",
-      discountPercent,
+      discountPercent: 100 - row.multiplier_bp / 100,
       multiplierBp: row.multiplier_bp,
     };
   }
-  // Prepay-модель: поля формы сохранены, но переосмыслены —
-  // spentNano = НАКОПЛЕНО пополнений; retentionSpendNano = сколько тратить за 30 дней (hold);
-  // nextTier.remainingNano = сколько ещё ДОЛОЖИТЬ до следующего тира.
-  const currentTier = row.current_tier ?? 0;
-  const tier = B2C_PRICING_TIERS[currentTier]!;
-  const nextTier = B2C_PRICING_TIERS[currentTier + 1];
-  const cumulative = BigInt(row.cumulative_topup_nano);
-  // Скидочный «пол» партнёра (реф-ссылка сейлза). Если задан — реальная цена = min(тир, 100−floor),
-  // и клиент показывает фиксированную партнёрскую ставку вместо тир-лестницы.
-  const floorBps = row.referral_floor_bps ?? 0;
-  const effectiveBp = effectiveMultiplierBp(tier.multiplierBp, floorBps);
+  // Post-cutover B2C is the flat global policy: 50% off every catalog model, with any
+  // provider/model overrides resolved by the release authority. No tiers, thresholds or
+  // retention windows exist to display anymore.
   return {
     customerType: "b2c",
-    pricingMode: "progressive",
-    monthStart: row.pricing_month_start.toISOString(),
-    tier: tier.code,
-    discountPercent: tier.discountPercent,
-    multiplierBp: tier.multiplierBp,
-    // Фиксированная партнёрская скидка (0 = нет): floor и итоговая эффективная ставка/скидка.
-    referralFloorBps: floorBps,
-    effectiveMultiplierBp: effectiveBp,
-    effectiveDiscountPercent: 100 - effectiveBp / 100,
-    spentNano: cumulative.toString(),
-    retentionSpendNano: tier.holdNano.toString(),
-    windowSpentNano: BigInt(row.tier_window_spent_nano).toString(),
-    windowStart: row.tier_window_start ? row.tier_window_start.toISOString() : null,
-    nextTier: nextTier ? {
-      tier: nextTier.code,
-      discountPercent: nextTier.discountPercent,
-      spendThresholdNano: nextTier.spendThresholdNano.toString(),
-      remainingNano: (nextTier.spendThresholdNano > cumulative
-        ? nextTier.spendThresholdNano - cumulative
-        : 0n).toString(),
-      visibleOfficialUsageUsd: nextTier.visibleOfficialUsageUsd,
-    } : null,
+    pricingMode: "flat",
+    discountPercent: 50,
+    multiplierBp: 5_000,
   };
 }
 
@@ -1796,56 +1758,43 @@ export async function setReferralFloor(database: Database, input: {
   try {
     await client.query("BEGIN");
     const result = await client.query<{
-      engine_account_id: string | null; customer_type: "b2c" | "b2b";
-      current_tier: number | null; multiplier_bp: number; referral_floor_bps: number;
+      customer_type: "b2c" | "b2b";
+      referral_floor_bps: number;
     }>(`
-      SELECT ea.engine_account_id, cp.customer_type, cp.current_tier, cp.multiplier_bp, cp.referral_floor_bps
+      SELECT cp.customer_type, cp.referral_floor_bps
       FROM customer_profiles cp
-      JOIN engine_accounts ea ON ea.user_id = cp.user_id
       WHERE cp.user_id = $1
-      FOR UPDATE OF cp, ea
+      FOR UPDATE OF cp
     `, [input.userId]);
     const row = result.rows[0];
     // Пол применяется только к обычным b2c-аккаунтам; business-b2b не трогаем (своя прайс-логика).
-    if (!row || row.customer_type !== "b2c" || row.current_tier === null) {
+    if (!row || row.customer_type !== "b2c") {
       await client.query("ROLLBACK");
       return { applied: false, multiplierBp: null };
     }
-    const tierMult = B2C_PRICING_TIERS[row.current_tier]!.multiplierBp;
-    // «Пол» скидки — МОНОТОНЕН: floorBps>0 только ПОДНИМАЕТ (GREATEST). Колонка одна, но пишут в неё
-    // три независимых источника (промо, партнёрская ссылка, sales-фид) — при абсолютной записи они
-    // затирали друг друга и клиент молча терял лучшую скидку. Теперь берём максимум (лучшее клиенту).
-    // floorBps===0 — единственный путь ЯВНОГО сброса пола (напр. отзыв), обходит GREATEST.
+    // Пост-катовер: «пол» — это партнёрская АТРИБУЦИЯ обещанной ставки, а не цена. Цена B2C
+    // задаётся только активным pricing release (flat 50% + overrides), поэтому scalar/jobs
+    // здесь больше не двигаются. Колонка одна, но пишут в неё три независимых источника
+    // (промо, партнёрская ссылка, sales-фид) — берём максимум (лучшее клиенту), кроме явного
+    // сброса/override. floorBps===0 — единственный путь ЯВНОГО сброса (напр. отзыв).
     const effectiveFloor = input.override === true
       ? input.floorBps
       : input.floorBps === 0 ? 0 : Math.max(row.referral_floor_bps, input.floorBps);
-    const multiplierBp = effectiveMultiplierBp(tierMult, effectiveFloor);
-    if (row.referral_floor_bps === effectiveFloor && row.multiplier_bp === multiplierBp) {
+    if (row.referral_floor_bps === effectiveFloor) {
       await client.query("ROLLBACK");
-      return { applied: false, multiplierBp };
+      return { applied: false, multiplierBp: null };
     }
     await client.query(`
       UPDATE customer_profiles
-      SET referral_floor_bps = $2, multiplier_bp = $3, updated_at = now()
+      SET referral_floor_bps = $2, updated_at = now()
       WHERE user_id = $1
-    `, [input.userId, effectiveFloor, multiplierBp]);
-    await client.query(`
-      UPDATE engine_accounts SET mult_bp = $2, updated_at = now() WHERE user_id = $1
-    `, [input.userId, multiplierBp]);
-    if (row.engine_account_id) {
-      await enqueuePricingJob(client, {
-        userId: input.userId,
-        engineAccountId: row.engine_account_id,
-        multiplierBp,
-        reason: "referral_floor",
-      });
-    }
+    `, [input.userId, effectiveFloor]);
     await client.query(`
       INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
       VALUES ('system', $1, 'pricing.referral_floor', 'user', $2, $3::jsonb)
-    `, [input.actorId, input.userId, JSON.stringify({ requestedFloorBps: input.floorBps, effectiveFloorBps: effectiveFloor, multiplierBp, override: input.override === true })]);
+    `, [input.actorId, input.userId, JSON.stringify({ requestedFloorBps: input.floorBps, effectiveFloorBps: effectiveFloor, override: input.override === true })]);
     await client.query("COMMIT");
-    return { applied: true, multiplierBp };
+    return { applied: true, multiplierBp: null };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -1890,7 +1839,7 @@ export async function getPricingUsageCursor(
     `, [target.engineAccountId, target.userId]);
     // Reconcile durable credit accrual markers on every pricing poll. This catches a missed
     // post-credit call and reverses markers whose payment has since been refunded/disputed.
-    await reconcileTopupTier(client, target, "b2c_topup_reconcile");
+    await reconcileTopupTier(client, target);
     await client.query("COMMIT");
     return BigInt(result.rows[0]?.last_ledger_id ?? "0");
   } catch (error) {
@@ -2420,15 +2369,13 @@ export async function applyPricingLedgerPage(
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN");
-    // B2B-профиль тоже лочится и синкается: у него нет тира и free-first проекции, но его
-    // расход обязан попадать в immutable pricing_usage_events — иначе конвертация клиента в
-    // B2B навсегда замораживает его курсор и админка недосчитывает реальные списания.
+    // B2B-профиль тоже лочится и синкается: его расход обязан попадать в immutable
+    // pricing_usage_events — иначе конвертация клиента в B2B навсегда замораживает его курсор
+    // и админка недосчитывает реальные списания. The lock also serializes cursor advancement.
     const profileResult = await client.query<{
-      customer_type: "b2c" | "b2b"; current_tier: number | null;
-      pricing_month_start: Date | null; free_balance_nano: string;
+      customer_type: "b2c" | "b2b";
     }>(`
-      SELECT customer_type, current_tier, pricing_month_start,
-             free_balance_nano::text AS free_balance_nano
+      SELECT customer_type
       FROM customer_profiles
       WHERE user_id = $1 FOR UPDATE
     `, [target.userId]);
@@ -2437,21 +2384,15 @@ export async function applyPricingLedgerPage(
       await client.query("ROLLBACK");
       return;
     }
-    // Для b2b авторитет фондирования — только immutable evidence движка: локальная
-    // free-first проекция, месячные окна и тир-счётчики к нему не применяются.
-    const progressive = profile.customer_type === "b2c";
-    // Курсор на старте: применяем эффекты (free projection, commission basis) ТОЛЬКО к записям выше него —
-    // это делает применение страницы идемпотентным к повторной подаче тех же записей (free-топапы
-    // не имеют ON CONFLICT, как у charge). customer_profiles залочена → обработка юзера сериализована.
+    // Курсор на старте: применяем эффекты (commission basis) ТОЛЬКО к записям выше него —
+    // это делает применение страницы идемпотентным к повторной подаче тех же записей.
+    // customer_profiles залочена → обработка юзера сериализована.
     const cursorRow = await client.query<{ last_ledger_id: string }>(
       "SELECT last_ledger_id::text AS last_ledger_id FROM pricing_usage_cursors WHERE engine_account_id = $1 AND user_id = $2",
       [target.engineAccountId, target.userId],
     );
     const startCursor = BigInt(cursorRow.rows[0]?.last_ledger_id ?? "0");
-    let freeBalance = BigInt(profile.free_balance_nano);
-    let freeBalanceChanged = false;
     let lastLedgerId = 0n;
-    let insertedCharge = false;
     for (const entry of ordered) {
       const ledgerId = BigInt(entry.id);
       if (ledgerId > lastLedgerId) lastLedgerId = ledgerId;
@@ -2463,56 +2404,14 @@ export async function applyPricingLedgerPage(
       if (entry.kind === "topup" && amount > 0n) {
         await recordPricingTopup(client, target, entry, amount);
       }
-      // Бесплатные кредиты (welcome-бонус/промо) пополняют бесплатный баланс. У b2b локального
-      // free-баланса нет — фондирование целиком остаётся авторитетом движка.
-      if (entry.kind === "topup" && amount > 0n && isFreeCreditRef(entry.ref)) {
-        if (progressive) {
-          freeBalance += amount;
-          freeBalanceChanged = true;
-        }
-        continue;
-      }
-      // Только положительные charge создают commission basis. Отрицательные `adjust`
-      // (рефанд/чарджбэк/админ-клобэк) здесь НЕ откатывают уже начисленную комиссию — это
-      // осознанный остаток (полный клобэк требует негативного real_funded по всей цепочке фида
-      // и завязан на engine-компенсацию рефанда). Игнорирование безопасно по направлению: оно
-      // может только НЕ доплатить, но не переплачивает.
       if (entry.kind !== "charge" || amount <= 0n) continue;
       const occurredAt = epochSecondsDate(entry.ts, "event timestamp");
       const validatedAttribution = validateLedgerAttribution(entry, amount);
-      // New policy-aware rows trust only the engine's immutable settlement funding. The local
-      // free-first projection remains solely for pre-attribution rows during rolling compatibility.
-      const legacyFromFree = validatedAttribution === null && progressive
-        ? amount < freeBalance ? amount : freeBalance
-        : 0n;
-      const attributedNonPaid = validatedAttribution?.nonPaidFundedNano ?? 0n;
-      if (
-        progressive
-        && validatedAttribution?.attribution.snapshot_kind === "policy_v1"
-        && attributedNonPaid > freeBalance
-      ) {
-        throw new PricingLedgerAttributionError(
-          "engine policy funding exceeds the local immutable free-credit projection",
-        );
-      }
-      // Release-v2 funding lives entirely in engine v2 lots; the local legacy free-credit
-      // projection must neither validate nor absorb its bonus/other funding.
-      const projectedFreeDebit = !progressive
-        ? 0n
-        : validatedAttribution === null
-          ? legacyFromFree
-          : validatedAttribution.attribution.snapshot_kind === "release_v2"
-            ? 0n
-            : attributedNonPaid;
-      // Комиссионный базис — только доказанные деньги. У b2b legacy-проекции нет, поэтому
-      // pre-attribution строка не создаёт базиса вовсе (недоплатить безопасно, переплатить — нет).
-      const realFunded = validatedAttribution === null
-        ? progressive ? amount - legacyFromFree : 0n
-        : validatedAttribution.commissionEligible
-          ? validatedAttribution.paidFundedNano ?? 0n
-          : 0n;
-      const retentionSpend = validatedAttribution === null || validatedAttribution.retentionEligible
-        ? amount
+      // Комиссионный базис — только доказанные деньги: без immutable engine funding evidence
+      // базиса нет вовсе (недоплатить безопасно, переплатить — нет). The retired free-first
+      // projection no longer manufactures a basis for unattributed rows.
+      const realFunded = validatedAttribution !== null && validatedAttribution.commissionEligible
+        ? validatedAttribution.paidFundedNano ?? 0n
         : 0n;
       const eventId = randomUUID();
       const providerId = ledgerProviderEvidence(entry);
@@ -2534,7 +2433,7 @@ export async function applyPricingLedgerPage(
         occurredAt,
         providerId === UNATTRIBUTED_PROVIDER_ID ? 0 : PROVIDER_RECOVERY_VERSION,
       ]);
-      if (!inserted.rows[0]) continue; // уже обработано — бесплатный баланс не трогаем повторно
+      if (!inserted.rows[0]) continue; // уже обработано — эффекты не дублируем
       if (validatedAttribution !== null) {
         await insertPricingUsageAttribution(
           client,
@@ -2545,30 +2444,6 @@ export async function applyPricingLedgerPage(
           validatedAttribution,
         );
       }
-      if (projectedFreeDebit > 0n) {
-        freeBalance -= projectedFreeDebit;
-        freeBalanceChanged = true;
-      }
-      insertedCharge = true;
-      // Release-v2 usage is flat post-tier pricing: no progressive month/retention projection is
-      // ever created for it (tier windows already exclude it via retention_eligible = false).
-      // B2B не участвует в прогрессивной модели вообще.
-      if (progressive && validatedAttribution?.attribution.snapshot_kind !== "release_v2") {
-        const monthStart = utcMonthStart(occurredAt);
-        await client.query(`
-          INSERT INTO pricing_months (
-            id, user_id, month_start, opening_tier, highest_tier, spent_nano
-          ) VALUES ($1, $2, $3, $4, $4, $5)
-          ON CONFLICT (user_id, month_start) DO UPDATE
-          SET spent_nano = pricing_months.spent_nano + EXCLUDED.spent_nano, updated_at = now()
-        `, [randomUUID(), target.userId, monthStart, profile.current_tier ?? 0, retentionSpend.toString()]);
-      }
-    }
-    if (freeBalanceChanged) {
-      await client.query(
-        "UPDATE customer_profiles SET free_balance_nano = $2, updated_at = now() WHERE user_id = $1",
-        [target.userId, freeBalance.toString()],
-      );
     }
     const reachedStablePageEnd = entries.length < PRICING_LEDGER_PAGE_SIZE;
     await client.query(`
@@ -2577,129 +2452,12 @@ export async function applyPricingLedgerPage(
           updated_at = CASE WHEN $4 THEN now() ELSE updated_at END
       WHERE engine_account_id = $1 AND user_id = $2
     `, [target.engineAccountId, target.userId, lastLedgerId.toString(), reachedStablePageEnd]);
-
-    // Prepay: расход НЕ поднимает тир (тир — за пополнения). The cached counter is rebuilt
-    // from immutable events in the exact current [window_start, window_end) interval so late
-    // ingestion cannot move a charge across retention windows.
-    if (insertedCharge && progressive) await refreshTierWindowSpend(client, [target.userId], new Date());
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
   } finally {
     client.release();
-  }
-}
-
-/**
- * Prepay-тир: применяет ещё не учтённые confirmed-кредиты через durable accrual markers.
- * Повторный вызов идемпотентен, пропущенный вызов догоняется следующим reconcile, а marker
- * refunded/disputed-платежа удаляется с компенсирующим уменьшением cumulative.
- */
-export async function applyTopupTier(database: Database, input: {
-  engineAccountId: string;
-  amountNano: bigint;
-}): Promise<void> {
-  if (input.amountNano <= 0n) throw new RangeError("top-up amount must be positive");
-  const client = await database.pool.connect();
-  try {
-    await client.query("BEGIN");
-    await reconcileTopupTier(client, {
-      engineAccountId: input.engineAccountId,
-    }, "b2c_topup");
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
-/**
- * Закрытие 30-дневных окон удержания: у кого окно истекло — если за окно потрачено ≥ hold(tier),
- * окно продлевается; иначе откат на −1 тир, накопление сбрасывается к порогу нового тира, окно новое.
- */
-export async function closeElapsedTierWindows(
-  database: Database,
-  now = new Date(),
-  eligibleUserIds?: readonly string[],
-): Promise<number> {
-  if (eligibleUserIds?.length === 0) return 0;
-  const windowDeadline = new Date(now.getTime() - HOLD_WINDOW_MS);
-  let closed = 0;
-  for (;;) {
-    const client = await database.pool.connect();
-    try {
-      await client.query("BEGIN");
-      const result = await client.query<{
-        user_id: string; current_tier: number; tier_window_start: Date; engine_account_id: string;
-      }>(`
-        SELECT cp.user_id, cp.current_tier, cp.tier_window_start, ea.engine_account_id
-        FROM customer_profiles cp
-        JOIN engine_accounts ea ON ea.user_id = cp.user_id
-        JOIN pricing_usage_cursors puc
-          ON puc.user_id = cp.user_id AND puc.engine_account_id = ea.engine_account_id
-        WHERE cp.customer_type = 'b2c' AND cp.current_tier > 0
-          AND ea.engine_account_id IS NOT NULL
-          AND cp.tier_window_start IS NOT NULL AND cp.tier_window_start <= $1
-          AND ($2::uuid[] IS NULL OR cp.user_id = ANY($2::uuid[]))
-          -- A page shorter than the engine limit marks a completed ledger scan. If the current
-          -- scan failed, updated_at is not advanced and this window is deferred rather than closed
-          -- from incomplete usage.
-          AND puc.updated_at >= cp.tier_window_start + interval '30 days'
-        ORDER BY cp.tier_window_start, cp.user_id
-        FOR UPDATE OF cp, ea SKIP LOCKED
-        LIMIT 1
-      `, [windowDeadline, eligibleUserIds ? [...eligibleUserIds] : null]);
-      const row = result.rows[0];
-      if (!row) {
-        await client.query("COMMIT");
-        return closed;
-      }
-      const windowEnd = new Date(row.tier_window_start.getTime() + HOLD_WINDOW_MS);
-      const spentResult = await client.query<{ spent_nano: string }>(`
-        SELECT COALESCE(SUM(event.amount_nano), 0)::text AS spent_nano
-        FROM pricing_usage_events event
-        LEFT JOIN pricing_usage_attributions attribution
-          ON attribution.pricing_usage_event_id = event.id
-        WHERE event.user_id = $1 AND event.engine_account_id = $2
-          AND event.occurred_at >= $3 AND event.occurred_at < $4
-          AND (
-            attribution.pricing_usage_event_id IS NULL
-            OR attribution.retention_eligible
-          )
-      `, [row.user_id, row.engine_account_id, row.tier_window_start, windowEnd]);
-      const windowSpent = BigInt(spentResult.rows[0]?.spent_nano ?? "0");
-      const held = windowSpent >= B2C_PRICING_TIERS[row.current_tier]!.holdNano;
-      if (held) {
-        await client.query(`
-          UPDATE customer_profiles SET tier_window_start = $2, tier_window_spent_nano = 0, updated_at = now()
-          WHERE user_id = $1
-        `, [row.user_id, windowEnd]);
-      } else {
-        // Не удержал — откат на −1 тир; накопление к порогу нового тира; новое окно (или none → без окна).
-        const nextTier = Math.max(0, row.current_tier - 1);
-        const newCumulative = B2C_PRICING_TIERS[nextTier]!.spendThresholdNano;
-        await applyTierChange(client, { userId: row.user_id, engineAccountId: row.engine_account_id }, nextTier, "b2c_window_downgrade");
-        await client.query(`
-          UPDATE customer_profiles
-          SET cumulative_topup_nano = $2, tier_window_start = $3, tier_window_spent_nano = 0, updated_at = now()
-          WHERE user_id = $1
-        `, [row.user_id, newCumulative.toString(), nextTier > 0 ? windowEnd : null]);
-      }
-      // Carry already-ingested post-cutoff charges into the exact next window instead of losing them.
-      await refreshTierWindowSpend(client, [row.user_id], now);
-      // AUDIT-TODO(C19): persist an explicit engine cutoff watermark; cursor freshness is the
-      // safest localized guard available until the Control API exposes a stable ledger watermark.
-      await client.query("COMMIT");
-      closed += 1;
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
   }
 }
 
@@ -2864,101 +2622,14 @@ export async function recoverStalePricingJobs(database: Database): Promise<numbe
   return result.rowCount ?? 0;
 }
 
-/** Эффективный mult = лучшее из тира и «пола» скидки сейлза (меньший mult = большая скидка). */
-function effectiveMultiplierBp(tierMultiplierBp: number, referralFloorBps: number): number {
-  return Math.min(tierMultiplierBp, 10_000 - referralFloorBps);
-}
-
-/**
- * Приводит multiplier_bp существующих b2c-профилей к АКТУАЛЬНОЙ лестнице B2C_PRICING_TIERS
- * (с учётом referral floor — персональные полы сейлза сохраняются). Обычные циклы пересчитывают
- * множитель только при СМЕНЕ тира, поэтому после изменения констант лестницы пользователи на том же
- * тире остались бы на старых bp навсегда. Идемпотентен; вызывается на старте pricing-воркера.
- * B2B-профили и их договорные скидки не трогает.
- */
-export async function reconcileTierLadderMultipliers(database: Database): Promise<number> {
-  const candidates = await database.pool.query<{
-    user_id: string; current_tier: number | null; referral_floor_bps: number;
-    multiplier_bp: number; engine_account_id: string;
-  }>(`
-    SELECT cp.user_id, cp.current_tier, cp.referral_floor_bps, cp.multiplier_bp, ea.engine_account_id
-    FROM customer_profiles cp
-    JOIN engine_accounts ea ON ea.user_id = cp.user_id
-    WHERE cp.customer_type = 'b2c' AND ea.engine_account_id IS NOT NULL
-  `);
-  let reconciled = 0;
-  for (const candidate of candidates.rows) {
-    const tier = candidate.current_tier ?? 0;
-    const expected = effectiveMultiplierBp(B2C_PRICING_TIERS[tier]!.multiplierBp, candidate.referral_floor_bps);
-    if (candidate.multiplier_bp === expected) continue;
-    const client = await database.pool.connect();
-    try {
-      await client.query("BEGIN");
-      // Re-read under lock: a parallel topup/window transition may have already moved this user.
-      const locked = await client.query<{ current_tier: number | null; multiplier_bp: number; referral_floor_bps: number }>(`
-        SELECT current_tier, multiplier_bp, referral_floor_bps FROM customer_profiles
-        WHERE user_id = $1 AND customer_type = 'b2c' FOR UPDATE
-      `, [candidate.user_id]);
-      const row = locked.rows[0];
-      if (row) {
-        const lockedTier = row.current_tier ?? 0;
-        const lockedExpected = effectiveMultiplierBp(B2C_PRICING_TIERS[lockedTier]!.multiplierBp, row.referral_floor_bps);
-        if (row.multiplier_bp !== lockedExpected) {
-          await applyTierChange(client, {
-            userId: candidate.user_id,
-            engineAccountId: candidate.engine_account_id,
-          }, lockedTier, "b2c_ladder_reconcile");
-          reconciled += 1;
-        }
-      }
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-  return reconciled;
-}
-
-async function applyTierChange(
-  client: PoolClient,
-  target: PricingSyncTarget,
-  tier: number,
-  reason: string,
-): Promise<void> {
-  // Реф-скидка сейлза — «пол»: тир даёт свою скидку, но цена не хуже скидки сейлза. floor=0 → тир как есть.
-  const floorResult = await client.query<{ referral_floor_bps: number }>(
-    "SELECT referral_floor_bps FROM customer_profiles WHERE user_id = $1",
-    [target.userId],
-  );
-  const floorBps = floorResult.rows[0]?.referral_floor_bps ?? 0;
-  const multiplierBp = effectiveMultiplierBp(B2C_PRICING_TIERS[tier]!.multiplierBp, floorBps);
-  await client.query(`
-    UPDATE customer_profiles SET current_tier = $2, multiplier_bp = $3, updated_at = now()
-    WHERE user_id = $1 AND customer_type = 'b2c'
-  `, [target.userId, tier, multiplierBp]);
-  await client.query(`UPDATE engine_accounts SET mult_bp = $2, updated_at = now() WHERE user_id = $1`, [
-    target.userId, multiplierBp,
-  ]);
-  await enqueuePricingJob(client, {
-    userId: target.userId,
-    engineAccountId: target.engineAccountId,
-    multiplierBp,
-    reason,
-  });
-}
-
 async function reconcileTopupTier(
   client: PoolClient,
   target: { engineAccountId: string; userId?: string },
-  reason: string,
 ): Promise<void> {
   const profileResult = await client.query<{
-    user_id: string; current_tier: number; cumulative_topup_nano: string;
+    user_id: string; cumulative_topup_nano: string;
   }>(`
-    SELECT cp.user_id, cp.current_tier, cp.cumulative_topup_nano
+    SELECT cp.user_id, cp.cumulative_topup_nano
     FROM customer_profiles cp
     JOIN engine_accounts ea ON ea.user_id = cp.user_id
     WHERE ea.engine_account_id = $1 AND cp.customer_type = 'b2c'
@@ -2970,6 +2641,8 @@ async function reconcileTopupTier(
 
   // The unique credit marker and the aggregate update stay in this transaction, so confirmed
   // top-ups and later refund/dispute reversals are applied exactly once across worker retries.
+  // Post-cutover this maintains only the cumulative top-up total used by finance reporting;
+  // no tier, window or multiplier state is advanced anymore.
   const appliedResult = await client.query<{ amount_nano: string }>(`
     WITH eligible AS (
       SELECT ec.id AS credit_id
@@ -3007,77 +2680,7 @@ async function reconcileTopupTier(
   const cumulative = currentCumulative + applied > reversed
     ? currentCumulative + applied - reversed
     : 0n;
-  const currentTier = profile.current_tier ?? 0;
-  const newTier = tierForTopups(cumulative);
   await client.query(`
     UPDATE customer_profiles SET cumulative_topup_nano = $2, updated_at = now() WHERE user_id = $1
   `, [profile.user_id, cumulative.toString()]);
-  if (newTier !== currentTier) {
-    await applyTierChange(client, {
-      userId: profile.user_id,
-      engineAccountId: target.engineAccountId,
-    }, newTier, reversed > 0n ? "b2c_refund_reversal" : reason);
-    await client.query(`
-      UPDATE customer_profiles
-      SET tier_window_start = CASE WHEN $2 > 0 THEN now() ELSE NULL END,
-          tier_window_spent_nano = 0, updated_at = now()
-      WHERE user_id = $1
-    `, [profile.user_id, newTier]);
-    await refreshTierWindowSpend(client, [profile.user_id], new Date());
-  }
-}
-
-/** Rebuilds the denormalized current-window spend from immutable, deduplicated charge events. */
-export async function refreshTierWindowUsage(
-  database: Database,
-  userIds: readonly string[],
-  asOf = new Date(),
-): Promise<void> {
-  if (userIds.length === 0) return;
-  await refreshTierWindowSpend(database.pool, userIds, asOf);
-}
-
-async function refreshTierWindowSpend(
-  queryable: Pick<PoolClient, "query">,
-  userIds: readonly string[],
-  asOf: Date,
-): Promise<void> {
-  await queryable.query(`
-    UPDATE customer_profiles cp
-    SET tier_window_spent_nano = CASE
-          WHEN cp.tier_window_start IS NULL THEN 0
-          ELSE COALESCE((
-            SELECT SUM(pue.amount_nano)
-            FROM pricing_usage_events pue
-            LEFT JOIN pricing_usage_attributions attribution
-              ON attribution.pricing_usage_event_id = pue.id
-            WHERE pue.user_id = cp.user_id AND pue.engine_account_id = ea.engine_account_id
-              AND pue.occurred_at >= cp.tier_window_start
-              AND pue.occurred_at < LEAST(
-                $2::timestamptz,
-                cp.tier_window_start + interval '30 days'
-              )
-              AND (
-                attribution.pricing_usage_event_id IS NULL
-                OR attribution.retention_eligible
-              )
-          ), 0)
-        END,
-        updated_at = now()
-    FROM engine_accounts ea
-    WHERE cp.user_id = ANY($1::uuid[])
-      AND cp.customer_type = 'b2c'
-      AND ea.user_id = cp.user_id
-  `, [userIds, asOf]);
-}
-
-interface PricingViewRow {
-  customer_type: "b2c" | "b2b";
-  current_tier: number | null;
-  multiplier_bp: number;
-  pricing_month_start: Date;
-  cumulative_topup_nano: string;
-  tier_window_start: Date | null;
-  tier_window_spent_nano: string;
-  referral_floor_bps: number | null;
 }

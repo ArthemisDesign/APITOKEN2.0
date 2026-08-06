@@ -363,7 +363,7 @@ describe.runIf(Boolean(connectionString))("automatic strict chain", () => {
     `, [user.id, engineAccountId]);
     await runStage5Backfill(database, {
       schema_version: 1,
-      engine_accounts: [{ account_id: engineAccountId, multiplier_bp: 4_000, status: "active" }],
+      engine_accounts: [{ account_id: engineAccountId, multiplier_bp: 5_000, status: "active" }],
       openkeys_accounts: [],
     }, { mode: "safe" });
     await confirmShadowDelivery(user.id);

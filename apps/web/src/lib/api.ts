@@ -99,19 +99,11 @@ export interface LedgerAttribution {
 
 export interface B2CPricing {
   customerType: "b2c";
-  pricingMode: "progressive";
+  // Flat post-cutover B2C pricing: one global 50% discount (+ provider/model overrides resolved
+  // by the release authority). The progressive tier fields were retired with the cutover.
+  pricingMode: "flat";
   discountPercent: number;
   multiplierBp: number;
-  // Фиксированная партнёрская скидка (реф-ссылка сейлза). 0 = нет. Если > 0 — реальная ставка/скидка
-  // берутся из effective* (поле переопределяет плоскую ставку), и дашборд показывает «партнёрскую ставку».
-  referralFloorBps?: number;
-  effectiveMultiplierBp?: number;
-  effectiveDiscountPercent?: number;
-  tier?: string;
-  spentNano?: string;
-  retentionSpendNano?: string;
-  windowSpentNano?: string;
-  windowStart?: string | null;
 }
 
 export interface B2BPricing {

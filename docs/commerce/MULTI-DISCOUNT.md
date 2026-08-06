@@ -672,9 +672,10 @@ durable, funding normalization is `ready` for the full inventory, Stage 8 eviden
 B2C global rule resolves at 5000 bps, B2B policies carry their negotiated provider rules,
 OpenKeys bill 1:1 with runtime-following admission (Google included), service accounts run
 `meter_only`, new signups receive exactly `$5.000000000`, and every deploy lane is green.
-Item 17 holds with the chain's post-cutover stand-down guard. Items 2 and 14 remain: the
-retired progressive writers/UI surfaces are the cleanup tracked in §6, and their removal is the
-last open work.
+Item 17 holds with the chain's post-cutover stand-down guard. Items 2 and 14 are closed by the
+progressive cleanup: no active writer creates tier/track/retention records and no UI/API surface
+presents them; only immutable history and the legacy columns remain, pending the late physical
+schema cleanup.
 
 1. All expand migrations are delivered before the dependent code.
 2. No new writer creates progressive pricing records.

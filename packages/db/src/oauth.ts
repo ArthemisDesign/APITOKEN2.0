@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { B2C_PRICING_TIERS } from "@claude-api/contracts";
 import type { Database } from "./client.js";
 import { initialDisplayName, type AuthUser, type RegisteredAuthUser } from "./auth.js";
 import { lockBusinessInvite, utcMonthStart } from "./pricing.js";
@@ -116,7 +115,7 @@ export async function completeExternalSignIn(
       LEFT JOIN customer_profiles cp ON cp.user_id = u.id
       WHERE lower(u.email) = lower($1)
       FOR UPDATE OF u
-    `, [identity.email, B2C_PRICING_TIERS[0].multiplierBp]);
+    `, [identity.email, 5_000]);
     const claimedAccount = emailOwner.rows[0];
     if (claimedAccount) {
       if (claimedAccount.status !== "active") throw new Error("account is disabled");
@@ -165,7 +164,9 @@ export async function completeExternalSignIn(
       ? await lockBusinessInvite(client, { email: identity.email, tokenHash: businessInviteTokenHash })
       : null;
     const customerType = invite ? "b2b" : "b2c";
-    const engineMultiplierBp = invite?.multiplierBp ?? B2C_PRICING_TIERS[0].multiplierBp;
+    // Post-cutover the scalar is a display/legacy field only — the release authority prices
+    // every account. New B2C registrations get the flat-policy placeholder (50% off).
+    const engineMultiplierBp = invite?.multiplierBp ?? 5_000;
     const monthStart = utcMonthStart();
     await client.query(`
       INSERT INTO users (id, email, display_name, email_verified, password_hash) VALUES ($1, $2, $3, true, NULL)
@@ -197,11 +198,6 @@ export async function completeExternalSignIn(
             last_error = 'business invitation consumed', updated_at = now()
         WHERE business_invite_id = $1 AND status IN ('pending', 'processing')
       `, [invite.id]);
-    } else {
-      await client.query(`
-        INSERT INTO pricing_months (id, user_id, month_start, opening_tier, highest_tier)
-        VALUES ($1, $2, $3, 0, 0)
-      `, [randomUUID(), userId, monthStart]);
     }
     await client.query(`
       INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
@@ -238,7 +234,7 @@ async function multiplierForUser(database: Database, userId: string): Promise<nu
     "SELECT mult_bp FROM engine_accounts WHERE user_id = $1",
     [userId],
   );
-  return result.rows[0]?.mult_bp ?? B2C_PRICING_TIERS[0].multiplierBp;
+  return result.rows[0]?.mult_bp ?? 5_000;
 }
 
 interface ExternalUserRow {

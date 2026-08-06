@@ -153,7 +153,7 @@ A bidirectional perimeter under one key `SALES_CONTROL_KEY` (header `x-api-key`)
 | Producer | Contract / channel | Consumers | Contract document |
 |---|---|---|---|
 | `apps/api` (`src/sales-feed.controller.ts`, `/v1/internal/sales/*`) | GET feeds `attributions` / `usage-events` / `topups` (cursors `after_id`); usage-events emits schema v1 (policy_v1 track) and schema v2 (release_v2: exact referred-B2C `paid_funded_nano` regardless of pricing mode + `officialNano`/`chargedNano`/`bonusFundedNano`/`otherFundedNano`/`releaseGeneration`/`releaseDigest`, `pricingMode=null`); `referral-discount` lives only on the producer-first transition | `apps/sales-api` (`sync.service.ts` — dual consumer delivered: routing by event shape into the v1 writer `recordReferredSpend` or the v2 writer `recordReferredSpendV2` from `packages/sales-db`, readers aggregate both schemas; `commerce.service.ts`; `COMMERCE_BASE_URL`) | `docs/sales/SALES_PORTAL.md` |
-| `apps/sales-api` (`src/internal.controller.ts`, `/v1/internal/*`) | POST `promo/redeem` is kept for credit/attribution; `partners/referral-discount` and the discount fields are legacy compatibility until the tier-linked personal price is removed | `apps/api` (`promo.service.ts`, `auth.service.ts`; `SALES_API_URL`) | `docs/sales/SALES_PORTAL.md` |
+| `apps/sales-api` (`src/internal.controller.ts`, `/v1/internal/*`) | POST `promo/redeem` is kept for credit/attribution; `partners/referral-discount` records the partner floor as attribution only — the tier-linked personal price was removed with the post-cutover cleanup, so the response `multiplierBp` is always `null` | `apps/api` (`promo.service.ts`, `auth.service.ts`; `SALES_API_URL`) | `docs/sales/SALES_PORTAL.md` |
 
 The feed types are duplicated as local zod schemas on both sides; they are not factored out
 into `packages/contracts`. Any feed change edits both sides — see the contract protocol in
@@ -483,14 +483,15 @@ together with it (the full walk — the "New model" / "Price change" checklists 
   public wire gate returned 404, so generation 4 stays rejected/dormant and cannot be
   materialized or activated; its digest is not rewritten. After the complete fresh
   exact-implementation Pro+Ultra gate, the admitted generation 5 repeats the reviewed set
-  under a new digest; the Stage 5 main catalog includes Preview. OpenKeys generation 5
-  remains an explicit Anthropic/OpenAI subset.
-  `B2C_PRICING_TIERS` is a cleanup target, not an authority of the new pricing.
+  under a new digest; the Stage 5 main catalog includes Preview. The OpenKeys catalog
+  generations pin release-manifest lineage only; admission follows the runtime, so Google
+  traffic bills 1:1 like every other runtime-priceable model.
+  `B2C_PRICING_TIERS` was removed with the post-cutover progressive cleanup; the flat global
+  50% policy in the active release is the only B2C price authority.
 - `apps/web/src/lib/models.ts` — hardcoded SEO model catalog with official prices;
   the file header requires synchronization with `crates/metering/src/{codex,gemini}.rs`.
-- `apps/web/src/lib/pricing-tiers.ts` — legacy cleanup target; the storefront must
-  read/show the global 50% and the effective provider/model discount without the tier
-  ladder.
+- `apps/web/src/lib/pricing-tiers.ts` — the flat B2C 50% storefront constants
+  (`B2C_DISCOUNT_PERCENT`); no tier ladder remains.
 - `packages/engine-client/src/openkeys-policy.ts` — canonical OpenKeys policy
   identity/digest and the catalog check against the exact reviewed identity of
   generation 1, 2 or 5 (`CURRENT_PRODUCT_CATALOG_ENTRIES` /

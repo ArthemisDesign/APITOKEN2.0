@@ -133,10 +133,10 @@ export function clampedOffset(offset: number, limit: number, total: number): num
   return null;
 }
 
-// Тарифная метка: B2B по customer_type, иначе имя тира по индексу (как в легаси).
-export function tierLabel(user: Pick<AdminUser, "customer_type" | "tier">): string {
-  if (user.customer_type === "b2b") return "B2B";
-  return (user.tier != null && ["Starter", "Builder", "Pro", "Studio", "Scale"][user.tier]) || "—";
+// Тарифная метка: B2B по customer_type; B2C — единый flat-тариф (после релиз-катовера
+// 2026-08-04 тир-лестницы нет, цена — глобальные −50% плюс overrides из активного release).
+export function tierLabel(user: Pick<AdminUser, "customer_type">): string {
+  return user.customer_type === "b2b" ? "B2B" : "B2C −50%";
 }
 
 // CSV текущей загруженной страницы: колонки повторяют таблицу, деньги — сырыми

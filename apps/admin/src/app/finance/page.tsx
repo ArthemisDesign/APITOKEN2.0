@@ -30,7 +30,7 @@ import {
   clampPercent,
   clampRefundOffset,
   funnelShare,
-  tierName,
+  customerClassName,
   type AdminRefunds,
   type FinanceChurn,
   type FinanceCohorts,
@@ -221,11 +221,11 @@ export default function FinancePage() {
 
   const windowTitle = (FINANCE_WINDOWS.find(([days]) => days === windowDays) ?? ([0, ""] as const))[1];
 
-  // ── Сводка: выручка с дельтой к предыдущим 30д, ARPPU/ARPU, доля платящих, тиры ──
+  // ── Сводка: выручка с дельтой к предыдущим 30д, ARPPU/ARPU, доля платящих, классы клиентов ──
   const ov = overview ?? {};
   const delta = ov.revenue_delta_pct;
   const deltaText = delta == null ? "—" : (delta > 0 ? "+" : "") + delta + "%";
-  const tierText = (ov.tiers ?? []).map((item) => `${tierName(item.tier ?? "")} ${item.users}`).join(" · ");
+  const classText = (ov.customer_classes ?? []).map((item) => `${customerClassName(item.customer_class ?? "")} ${item.users}`).join(" · ");
   const overviewBlock = overview ? (
     <CardGrid>
       <StatCard
@@ -244,9 +244,9 @@ export default function FinancePage() {
         hint={`доля ${ov.paying_share_pct == null ? "—" : ov.paying_share_pct + "%"} от ${ov.active_users_30d ?? "—"} активных · платежей ${ov.payments_30d_count ?? "—"}`}
       />
       <StatCard
-        label="тиры клиентов"
-        value={(ov.tiers ?? []).reduce((sum, item) => sum + Number(item.users || 0), 0) || "—"}
-        hint={tierText || "профилей нет"}
+        label="классы клиентов"
+        value={(ov.customer_classes ?? []).reduce((sum, item) => sum + Number(item.users || 0), 0) || "—"}
+        hint={classText || "профилей нет"}
       />
     </CardGrid>
   ) : (

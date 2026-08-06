@@ -183,9 +183,8 @@ export function providerShareBp(amount: string | null | undefined, total: string
   }
 }
 
-export function payingTierLabel(row: Pick<PayingUserRow, "customer_type" | "tier">): string {
-  if (row.customer_type === "b2b") return "B2B";
-  return row.tier != null ? (["Starter", "Builder", "Pro", "Studio", "Scale"][row.tier] ?? "—") : "—";
+export function payingTierLabel(row: Pick<PayingUserRow, "customer_type">): string {
+  return row.customer_type === "b2b" ? "B2B" : "B2C −50%";
 }
 
 export function spendWindowLabel(days: PayingUserDays): string {

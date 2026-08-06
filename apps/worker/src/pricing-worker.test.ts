@@ -13,15 +13,18 @@ import {
 const source = readFileSync(new URL("./pricing-worker.service.ts", import.meta.url), "utf8");
 
 test("delegates pricing money mutations to the canonical database module", () => {
-  assert.match(source, /\bcloseElapsedTierWindows\(this\.database, now, syncedUserIds\)/);
   assert.match(source, /\bcompletePricingUsageSync\(this\.database, target\)/);
   assert.match(source, /\bgetPricingProviderBackfillCursor\(/);
   assert.match(source, /\bapplyPricingProviderBackfillPage\(/);
   assert.match(source, /\bcompletePricingProviderBackfill\(/);
   assert.match(source, /await this\.backfillTargetProviders\(target, cursor\)/);
   assert.match(source, /PROVIDER_BACKFILL_MAX_PAGES_PER_SYNC = 4/);
-  assert.match(source, /\brefreshTierWindowUsage\(this\.database, syncedUserIds, now\)/);
 
+  // The progressive tier machinery is retired: no tier reconciliation, window refresh, or
+  // month-close jobs may run anymore (docs/commerce/MULTI-DISCOUNT.md section 6).
+  assert.doesNotMatch(source, /\bcloseElapsedTierWindows\b/);
+  assert.doesNotMatch(source, /\brefreshTierWindowUsage\b/);
+  assert.doesNotMatch(source, /\breconcileTierLadderMultipliers\b/);
   assert.doesNotMatch(source, /\bB2C_TIER_RULES\b/);
   assert.doesNotMatch(source, /\breverseRefundedTopups\b/);
   assert.doesNotMatch(source, /UPDATE customer_profiles/);

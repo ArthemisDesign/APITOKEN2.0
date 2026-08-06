@@ -111,9 +111,9 @@ function account(): AccountView {
     },
     pricing: {
       customerType: "b2c",
-      pricingMode: "progressive",
-      discountPercent: 60,
-      multiplierBp: 4000,
+      pricingMode: "flat",
+      discountPercent: 50,
+      multiplierBp: 5000,
     },
     pricingPolicies: [{
       accountClass: "b2c",

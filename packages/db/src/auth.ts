@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { B2C_PRICING_TIERS, displayNameSchema } from "@claude-api/contracts";
+import { displayNameSchema } from "@claude-api/contracts";
 import type { Database } from "./client.js";
 import { insertAuthEmail } from "./email.js";
 import { lockBusinessInvite, utcMonthStart } from "./pricing.js";
@@ -74,7 +74,10 @@ export async function createEmailUser(
       ? await lockBusinessInvite(client, { email, tokenHash: businessInviteTokenHash })
       : null;
     const customerType = invite ? "b2b" : "b2c";
-    const engineMultiplierBp = invite?.multiplierBp ?? B2C_PRICING_TIERS[0].multiplierBp;
+    // Post-cutover the scalar is a display/legacy field only — the release authority prices
+    // every account. New B2C registrations get the flat-policy placeholder (50% off), never a
+    // tier-ladder rate; B2B keeps the negotiated invitation multiplier.
+    const engineMultiplierBp = invite?.multiplierBp ?? 5_000;
     const monthStart = utcMonthStart();
     await client.query(`
       INSERT INTO users (id, email, display_name, password_hash) VALUES ($1, $2, $3, $4)
@@ -87,12 +90,7 @@ export async function createEmailUser(
         user_id, customer_type, current_tier, multiplier_bp, pricing_month_start
       ) VALUES ($1, $2, $3, $4, $5)
     `, [userId, customerType, invite ? null : 0, engineMultiplierBp, monthStart]);
-    if (!invite) {
-      await client.query(`
-        INSERT INTO pricing_months (id, user_id, month_start, opening_tier, highest_tier)
-        VALUES ($1, $2, $3, 0, 0)
-      `, [randomUUID(), userId, monthStart]);
-    } else {
+    if (invite) {
       await copyBusinessInvitationPolicyToUser(client, { inviteId: invite.id, userId });
       await client.query(`
         UPDATE business_invites

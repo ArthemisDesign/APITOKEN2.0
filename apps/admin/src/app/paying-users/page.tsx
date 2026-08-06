@@ -221,7 +221,9 @@ export const PayingUsageDetails = memo(function PayingUsageDetails({ row }: { ro
 export const PayingRow = memo(function PayingRow({ row, rank, days }: { row: PayingUserRow; rank: number; days: PayingUserDays }) {
   const [expanded, setExpanded] = useState(false);
   const other = providerNano(row.provider_spend, "other");
-  const discount = row.multiplier_bp == null ? null : 100 - row.multiplier_bp / 100;
+  const discount = row.customer_type === "b2b"
+    ? (row.multiplier_bp == null ? null : 100 - row.multiplier_bp / 100)
+    : 50;
   const detailsId = `paying-user-details-${rank}`;
   const providerPaid = row.funding_kind === "payments" || row.funding_kind === "payments_and_manual";
   const manualFunded = row.funding_kind === "manual" || row.funding_kind === "payments_and_manual";
