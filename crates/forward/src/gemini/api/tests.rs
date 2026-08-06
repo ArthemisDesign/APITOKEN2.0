@@ -4010,3 +4010,49 @@ async fn request_scoped_permission_denied_returns_googles_verdict_and_spares_the
         );
     }
 }
+
+/// A Files API reference is refused before dispatch, with a reason the caller can act on.
+///
+/// A `files/…` resource belongs to the customer's own Google project, so the pooled subscription
+/// this gateway calls under cannot read it and every profile returns `PERMISSION_DENIED`. That
+/// used to reach the customer as a synthetic `503 UNAVAILABLE` with a retry delay, so their SDK
+/// retried an input that can never succeed. Refusing locally keeps the fleet out of it entirely
+/// and tells them what to send instead.
+#[tokio::test]
+async fn files_api_reference_is_refused_locally_with_a_machine_reason() {
+    let server = start_mock(MockState::with_replies([(
+        PROFILE_A_KEY,
+        vec![MockReply::json(
+            StatusCode::OK,
+            json!({"candidates": [], "usageMetadata": {}}),
+        )],
+    )]))
+    .await;
+    let fixture = gateway_fixture(&server.upstream, &[None], 1);
+    for field in ["fileData", "file_data"] {
+        let response = invoke(
+            app_state(fixture.gateway.clone(), None),
+            json!({"contents": [{"role": "user", "parts": [
+                {"text": "describe"},
+                {field: {"mime_type": "image/png", "file_uri": "https://generativelanguage.googleapis.com/v1beta/files/x"}}
+            ]}]}),
+            false,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{field}");
+        let body = response_json(response).await;
+        assert_eq!(body["error"]["status"], "INVALID_ARGUMENT", "{field}");
+        assert_eq!(
+            body["error"]["details"][0]["reason"], "FILE_URI_UNSUPPORTED",
+            "{field}"
+        );
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("inlineData")),
+            "the refusal must name the supported alternative: {body}"
+        );
+    }
+    // Never dispatched: the pool must not spend a profile on an input we already know is refused.
+    assert!(server.state.seen().is_empty());
+}

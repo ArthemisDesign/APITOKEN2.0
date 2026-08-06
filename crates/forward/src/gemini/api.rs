@@ -306,6 +306,19 @@ impl ApiError {
         }
     }
 
+    /// A rejection this gateway makes on purpose, carrying a stable machine reason.
+    ///
+    /// Native `google.rpc.ErrorInfo` is how Google itself reports a machine-readable cause, and an
+    /// SDK can branch on it. Without one, a caller only sees prose and cannot tell "this gateway
+    /// will never accept this" from "try again": a customer spent hours on an unsupported input
+    /// because the refusal named nothing they could act on.
+    fn unsupported(message: &'static str, error_info_reason: &'static str) -> Self {
+        Self {
+            error_info_reason: Some(error_info_reason),
+            ..Self::invalid(message)
+        }
+    }
+
     fn not_found() -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
@@ -407,6 +420,12 @@ impl ApiError {
         }
         let body = json!({ "error": Value::Object(error) });
         let mut response = (self.status, axum::Json(body)).into_response();
+        // Give the caller something to quote. Every terminal error is journalled with a request id,
+        // but until now the Gemini plane never sent one back, so a customer reporting "your API
+        // returns 503" left support with no way to find their request among everyone else's.
+        if let Ok(value) = HeaderValue::from_str(&crate::fresh_request_id()) {
+            response.headers_mut().insert("x-request-id", value);
+        }
         if let Some(seconds) = self.retry_after {
             if let Ok(value) = HeaderValue::from_str(&seconds.max(1).to_string()) {
                 response.headers_mut().insert("retry-after", value);
@@ -1087,7 +1106,50 @@ fn has_inline_audio_data(body: &Value) -> bool {
         .any(content_has_inline_audio_data)
 }
 
+fn content_has_file_data(content: &Value) -> bool {
+    let contents = match content {
+        Value::Array(contents) => contents.as_slice(),
+        content => std::slice::from_ref(content),
+    };
+    contents
+        .iter()
+        .flat_map(|content| {
+            content
+                .get("parts")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .any(|part| part.get("fileData").is_some())
+}
+
+/// True when the request references an uploaded Files API resource instead of inlining the bytes.
+fn has_file_data(body: &Value) -> bool {
+    ["contents", "systemInstruction"]
+        .into_iter()
+        .filter_map(|field| body.get(field))
+        .any(content_has_file_data)
+}
+
+/// Reject a Files API reference before dispatch, naming the supported alternative.
+///
+/// A `files/…` resource belongs to the Google project that uploaded it. This gateway calls the
+/// provider under its own pooled subscription, so the customer's file is invisible to us and every
+/// profile answers `PERMISSION_DENIED` — identically, which used to read as a fleet outage rather
+/// than an unsupported input. The same reasoning already rejects `cachedContent`.
+fn validate_no_file_data(body: &Value) -> Result<(), ApiError> {
+    if has_file_data(body) {
+        return Err(ApiError::unsupported(
+            "Files API references (fileData/file_uri) are not supported by this gateway. \
+             Send the file inline as inlineData with its mimeType and base64 data.",
+            "FILE_URI_UNSUPPORTED",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_image_generation_request(body: &Value, model: &GeminiModel) -> Result<(), ApiError> {
+    validate_no_file_data(body)?;
     if body.get("systemInstruction").is_some() {
         return Err(ApiError::invalid(
             "systemInstruction is not supported by the subscription image route.",
@@ -1271,34 +1333,41 @@ fn validate_image_generation_request(body: &Value, model: &GeminiModel) -> Resul
 }
 
 fn validate_generation_request(body: &Value, model: &GeminiModel) -> Result<(), ApiError> {
+    validate_no_file_data(body)?;
     if model.id != "gemini-3-flash-preview" && has_inline_audio_data(body) {
         // Current published subscription routes other than Flash Preview collapse audio into
         // generic prompt tokens and omit promptTokensDetails[AUDIO]. Only Flash Preview has a
         // bounded exact PCM WAV fallback; every other model must reject audio before dispatch.
-        return Err(ApiError::invalid(
-            "Audio input is not available through this subscription gateway.",
+        return Err(ApiError::unsupported(
+            "Audio input is not available for this model on the subscription gateway. \
+             Only gemini-3-flash-preview accepts audio, as inline audio/wav.",
+            "AUDIO_INPUT_UNSUPPORTED",
         ));
     }
     if body.get("serviceTier").is_some() {
         // Priority/flex tiers have distinct provider admission and billing semantics. The private
         // subscription surface cannot prove or settle either, so silently degrading to standard
         // would be a protocol and billing lie.
-        return Err(ApiError::invalid(
+        return Err(ApiError::unsupported(
             "Explicit serviceTier is not supported by this subscription gateway.",
+            "SERVICE_TIER_UNSUPPORTED",
         ));
     }
     if body.get("store").is_some() {
         // `store` overrides project-level logging. Dropping even `false` can change data retention,
         // so reject the unsupported control instead of pretending it was applied.
-        return Err(ApiError::invalid(
+        return Err(ApiError::unsupported(
             "Explicit store logging controls are not supported by this subscription gateway.",
+            "STORE_CONTROL_UNSUPPORTED",
         ));
     }
     if body.get("cachedContent").is_some() {
         // A native cached-content resource is scoped to one Google project. It cannot safely
         // survive subscription rotation and may encode a caller-selected upstream identity.
-        return Err(ApiError::invalid(
-            "Explicit cachedContent resources are not supported by this gateway.",
+        return Err(ApiError::unsupported(
+            "Explicit cachedContent resources are not supported by this gateway. \
+             Send the content inline instead.",
+            "CACHED_CONTENT_UNSUPPORTED",
         ));
     }
     let Some(tools) = body.get("tools").and_then(Value::as_array) else {

@@ -826,7 +826,8 @@ and
 | Condition/result | Profile action | Request action |
 |---|---|---|
 | first `401` | compare rejected bearer, single-flight refresh | retry once on the same profile |
-| repeated `401` or `403` | auth quarantine | rotate to another profile |
+| repeated `401` or `403 UNAUTHENTICATED` | auth quarantine | rotate to another profile |
+| `403 PERMISSION_DENIED` | none — the credential was accepted | rotate for this request only, then return Google's own `403` |
 | `429` | cool only that model/profile from `Retry-After`, `google.rpc.RetryInfo` or quota reset | rotate without transport budget |
 | network/token refresh, `408`, `409`, `425` | short profile cooldown | bounded rotation |
 | generation `5xx` or malformed wrapper/stream | exponential model cooldown | bounded rotation without disabling other models |
@@ -972,3 +973,40 @@ parsing, quota/auth/transport rotation, concurrent 401 single-flight refresh and
 two-copy shared-root warming, stale-quota ordering, 10,000 immediate leases and concurrent fan-out
 that reaches upstream without a release event, split SSE translation,
 no post-event retry, disconnect drain and shutdown settlement.
+
+## What a caller can diagnose from a refusal
+
+Support spent a working day on one customer's `503` because the refusal carried nothing
+actionable: no machine reason, no request id, and the native `/v1beta` surface was outside the
+`customer_http_error` audit. The contract below exists so that never repeats.
+
+**Deliberate refusals name themselves.** Every input this gateway will never accept is rejected
+before dispatch as `400 INVALID_ARGUMENT` carrying a `google.rpc.ErrorInfo` detail with a stable
+`reason`. An SDK can branch on it, and it distinguishes "never going to work" from "retry later".
+
+| `reason` | Meaning | What the caller should do |
+|---|---|---|
+| `FILE_URI_UNSUPPORTED` | `fileData`/`file_uri` references a Files API resource | inline the bytes as `inlineData` (`mimeType` + base64) |
+| `CACHED_CONTENT_UNSUPPORTED` | `cachedContent` resource | send the content inline |
+| `AUDIO_INPUT_UNSUPPORTED` | audio on a model without exact audio accounting | use `gemini-3-flash-preview` with inline `audio/wav` |
+| `SERVICE_TIER_UNSUPPORTED` | explicit `serviceTier` | drop the field |
+| `STORE_CONTROL_UNSUPPORTED` | explicit `store` | drop the field |
+| `API_KEY_INVALID` | key not accepted | check the `x-goog-api-key` header |
+| `RATE_LIMIT_EXCEEDED` | pool quota; carries `RetryInfo` | honour the retry delay |
+
+A Files API reference deserves the explicit note: the uploaded resource belongs to the caller's own
+Google project, while this gateway calls the provider under a pooled subscription. The file is
+invisible to us, so every profile answers `PERMISSION_DENIED` identically. It is an unsupported
+input, not an outage, and no retry or rotation can change that.
+
+**Every error response carries `x-request-id`.** The same id appears in the journal, so a customer
+quoting it lets an operator find their exact request:
+
+```bash
+journalctl -u 'claude-api-gemini@*.service' --since today --grep='<request-id>'
+```
+
+**Retryable and terminal are kept apart.** A `503`/`429` from this gateway means capacity — it
+carries `RetryInfo` and retrying is correct. A `400` or `403` is terminal: the caller must change
+the request. The gateway no longer reports a provider's `PERMISSION_DENIED` as a retryable `503`,
+which previously drove SDKs into retry loops over an input that could never succeed.
