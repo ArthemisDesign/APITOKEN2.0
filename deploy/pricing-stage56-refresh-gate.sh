@@ -16,7 +16,8 @@ if [[ ($# -eq 3 || $# -eq 4) && $2 == --converge-cycle && $3 =~ ^[1-3]$ ]]; then
     # The convergence bridge hands over its exact private cycle root; accept only the
     # provisioned namespaces of this exact cycle, never an arbitrary path.
     [[ ($4 == "/var/lib/apitoken/pricing-stage567-converge/cycle-$3" \
-        || $4 == "/var/lib/apitoken/pricing-stage567-converge-v2/cycle-$3") && ! -L $4 ]] \
+        || $4 == "/var/lib/apitoken/pricing-stage567-converge-v2/cycle-$3" \
+        || $4 == "/var/lib/apitoken/pricing-stage567-converge-v3/cycle-$3") && ! -L $4 ]] \
       || { printf 'pricing Stage 5/6 convergence cycle root is not a provisioned namespace\n' >&2; exit 1; }
     STATE_PARENT=$4/stage56
   else

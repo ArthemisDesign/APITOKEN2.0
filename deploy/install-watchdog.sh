@@ -226,6 +226,11 @@ publish_pricing_stage567_converge_v2_helper() {
     /usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-v2-gate.sh
 }
 
+publish_pricing_stage567_converge_v3_helper() {
+  publish_fixed_helper "$ROOT/deploy/pricing-stage567-converge-v3-gate.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-v3-gate.sh
+}
+
 publish_pricing_stage7_identity_diagnostic_helper() {
   publish_fixed_helper "$ROOT/deploy/pricing-stage7-identity-diagnostic-gate.sh" \
     /usr/local/lib/apitoken-watchdog/controller/pricing-stage7-identity-diagnostic-gate.sh
@@ -296,6 +301,7 @@ install_and_verify_sudo_policy() {
   publish_pricing_stage7_refresh_helper
   publish_pricing_stage567_converge_helper
   publish_pricing_stage567_converge_v2_helper
+  publish_pricing_stage567_converge_v3_helper
   publish_pricing_stage7_identity_diagnostic_helper
   install -o root -g root -m 0755 "$ROOT/deploy/install-sudoers.sh" \
     /usr/local/lib/apitoken-watchdog/install-sudoers.sh
@@ -358,6 +364,7 @@ install_controller_definitions() {
   publish_pricing_stage7_refresh_helper
   publish_pricing_stage567_converge_helper
   publish_pricing_stage567_converge_v2_helper
+  publish_pricing_stage567_converge_v3_helper
   publish_pricing_stage7_identity_diagnostic_helper
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-test-db.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-test-db

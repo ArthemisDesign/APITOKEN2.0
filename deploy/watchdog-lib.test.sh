@@ -5167,17 +5167,44 @@ diff <(sed -e 's/pricing-stage567-converge-v2-gate.sh/pricing-stage567-converge-
         "$pricing_stage567_v2_gate") "$pricing_stage567_gate" \
   || wd_die 'pricing Stage 5-7 convergence v2 helper diverges from the proven v1 process'
 
-# Both refresh helpers accept a convergence cycle root only from the two provisioned namespaces.
+# Both refresh helpers accept a convergence cycle root only from the provisioned namespaces.
 for refresh_gate in "$ROOT/deploy/pricing-stage56-refresh-gate.sh" \
                     "$ROOT/deploy/pricing-stage7-refresh-gate.sh"; do
   grep -Fq '/var/lib/apitoken/pricing-stage567-converge/cycle-$3' "$refresh_gate" \
     && grep -Fq '/var/lib/apitoken/pricing-stage567-converge-v2/cycle-$3' "$refresh_gate" \
+    && grep -Fq '/var/lib/apitoken/pricing-stage567-converge-v3/cycle-$3' "$refresh_gate" \
     || wd_die 'a pricing refresh helper lost its provisioned convergence namespace allowlist'
 done
 grep -Fq 'cycle_root=$(dirname -- "$4")' "$ROOT/deploy/pricing-stage7-refresh-gate.sh" \
   || wd_die 'pricing Stage 7 refresh helper does not derive the cycle root from the Stage 6 result'
 grep -Fq -- '--converge-cycle "$cycle" "$cycle_dir"' "$pricing_stage567_gate" \
   || wd_die 'pricing Stage 5-7 convergence bridge does not hand its exact cycle root to Stage 5/6'
+
+# The v3 bridge runs the same fail-closed process over its own fresh private namespace: the v2
+# cycles burned on the pre-fix engine stay immutable evidence, exactly like the v1 fences.
+pricing_stage567_v3_gate="$ROOT/deploy/pricing-stage567-converge-v3-gate.sh"
+wd_path_is_controller_definition deploy/pricing-stage567-converge-v3-gate.sh \
+  || wd_die 'pricing Stage 5-7 convergence v3 helper is not a fixed controller definition'
+grep -Fq 'publish_pricing_stage567_converge_v3_helper' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'pricing Stage 5-7 convergence v3 helper is not published before sudo verification'
+grep -Fxq 'MAX_CYCLES=3' "$pricing_stage567_v3_gate" \
+  || wd_die 'pricing Stage 5-7 convergence v3 helper lacks its fixed cycle bound'
+grep -Fxq 'STATE_PARENT=/var/lib/apitoken/pricing-stage567-converge-v3' "$pricing_stage567_v3_gate" \
+  || wd_die 'pricing Stage 5-7 convergence v3 helper lacks its own private cycle namespace'
+grep -Fxq 'ADMISSION_SHA=3f412e33d631f2956a575e40f7f28f8b0b592106' "$pricing_stage567_v3_gate" \
+  || wd_die 'pricing Stage 5-7 convergence v3 helper is not pinned to the exact admission'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-v3-gate.sh 3f412e33d631f2956a575e40f7f28f8b0b592106' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'pricing Stage 5-7 convergence v3 helper lacks an exact-admission sudo bridge'
+grep -A7 -F 'pricing_stage567_v3_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-v3-gate.sh' \
+  "$ROOT/deploy/install-sudoers.sh" \
+  | grep -Fq '3f412e33d631f2956a575e40f7f28f8b0b592106' \
+  || wd_die 'pricing Stage 5-7 convergence v3 sudo self-check is not aligned with policy'
+# v3 stays an exact clone of the v1 process apart from its namespace and name.
+diff <(sed -e 's/pricing-stage567-converge-v3-gate.sh/pricing-stage567-converge-gate.sh/g' \
+        -e 's|pricing-stage567-converge-v3$|pricing-stage567-converge|' \
+        "$pricing_stage567_v3_gate") "$pricing_stage567_gate" \
+  || wd_die 'pricing Stage 5-7 convergence v3 helper diverges from the proven v1 process'
 
 # A drifted Stage 7 identity is diagnosed by a bounded read-only helper, never by a blind rerun.
 pricing_stage7_diagnostic_gate="$ROOT/deploy/pricing-stage7-identity-diagnostic-gate.sh"

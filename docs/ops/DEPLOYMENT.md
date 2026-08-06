@@ -505,7 +505,10 @@ sudo /usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-v2-ga
 
 The v2 bridge differs from v1 only in its state root
 (`/var/lib/apitoken/pricing-stage567-converge-v2`); the regression suite asserts byte-level
-process identity otherwise.
+process identity otherwise. The v2 cycles burned while the pre-fix engine was live; with the
+stale replacement-lock consumption deployed (`130581f0`), the same process runs over the v3
+namespace (`pricing-stage567-converge-v3-gate.sh`, state root
+`/var/lib/apitoken/pricing-stage567-converge-v3`).
 
 The bridge creates a fresh private namespace per cycle, runs the existing strict Stage 5/6 helper,
 persists its terminal identities, and immediately stages Stage 7 with the same identities and one
