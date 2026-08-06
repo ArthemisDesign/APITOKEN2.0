@@ -163,10 +163,12 @@ All OpenKeys, including ones previously considered legacy, receive a canonical i
 policy. The history of past charges is not rewritten, but after the global cutover every new
 reserve uses `payable_multiplier_bp=10000`. The issuance API has no multiplier/discount override.
 
-By explicit owner decision, OpenKeys access follows the runtime: every provider and model the
-engine can price is sellable at 1:1 without an OpenKeys catalog cutover, and newly admitted
-providers flow automatically. The master switch and an explicitly disabled scoped provider switch
-still close a provider; a model without a runtime tariff fails closed at quote time.
+By explicit owner decision, OpenKeys access follows the runtime within the pricing authority:
+every model of an authority provider (`anthropic`, `openai`, `google`) that the engine can price
+is sellable at 1:1 without an OpenKeys catalog cutover. Providers outside the pricing authority
+(KIMI, GLM) are not sellable through OpenKeys until a separate authority-extension decision.
+The master switch and an explicitly disabled scoped provider switch still close a provider; a
+model without a runtime tariff fails closed at quote time.
 
 ### Service
 
@@ -606,25 +608,24 @@ fail closed. Stage 9 does not stop the service and requires no manual financial 
 
 ## 9. UI and API contracts
 
-The customer B2C pricing view shows the effective discount and the rule source:
-
-```text
-global_default | provider_override | model_override
-```
-
-It does not show the tier, retention progress, or internal release digests. B2B sees only its own
+The customer B2C pricing view shows the effective discount per provider/model and which rule
+level produced it — the global default, a provider override, or an exact model override. It does
+not show the tier, retention progress, or internal release digests. B2B sees only its own
 policy. OpenKeys shows 1:1. Service usage is available to operators as official cost without a
 balance.
 
 The admin pricing editor must:
 
-- edit the global B2C default, provider, and model rules;
+- manage provider and model B2C rules; the global B2C default and the service `meter_only`
+  policy are pinned by the active release and change only through a new release cycle
+  (prepared target/recovery pair, fresh Stage 8 evidence, one head CAS), never through a direct
+  editor save — the editor refuses such a save with `release_cycle_required`;
 - show the effective preview and the exact-model priority;
 - not offer `track`/tier controls;
 - not apply B2C rules to B2B/OpenKeys/service;
-- manage the B2B full policy;
-- enforce a B2B policy save and a B2C→B2B conversion immediately through the automatic strict
-  chain and surface the enforcement state (staged/delivered/failed);
+- manage the B2B full policy; post-cutover a B2B policy save and a B2C→B2B conversion propagate
+  to the live authority through an append-only assignment extension (the pre-cutover automatic
+  strict chain has stood down) and surface the enforcement state;
 - show service as all-model `meter_only`;
 - show the prepared/active/recovery release and Stage 8 freshness.
 
@@ -638,7 +639,8 @@ step.
 - B2C: global 50%, provider override, model override, model-over-provider precedence.
 - B2B: scalar migration only into `anthropic`; no B2C inheritance.
 - Conversion: B2C→B2B disables the global B2C default, overrides, and the legacy scalar for the
-  account, chains the strict cutover automatically, and only the B2B policy prices new reserves;
+  account (pre-cutover via the automatic strict chain, post-cutover via the class-changing
+  assignment extension), and only the B2B policy prices new reserves;
   remaining welcome bonus stays spendable; the charge carries no commission basis.
 - B2B policy save: first enforcement cuts over, later saves advance strict→strict; a mixed
   provider/model policy is enforced without a scalar bridge; in-flight settlement keeps the
@@ -667,15 +669,21 @@ step.
 
 The work is complete only when all of the following hold simultaneously. Production state as
 verified on 2026-08-06 (read-only audit of commerce/engine PostgreSQL and the GitHub deploy
-statuses): items 1, 3–13, 15, 16 hold — the cutover receipt and the generation-13 head are
+statuses): items 1, 3–13, 15 hold — the cutover receipt and the generation-13 head are
 durable, funding normalization is `ready` for the full inventory, Stage 8 evidence passed, the
 B2C global rule resolves at 5000 bps, B2B policies carry their negotiated provider rules,
 OpenKeys bill 1:1 with runtime-following admission (Google included), service accounts run
 `meter_only`, new signups receive exactly `$5.000000000`, and every deploy lane is green.
-Item 17 holds with the chain's post-cutover stand-down guard. Items 2 and 14 are closed by the
-progressive cleanup: no active writer creates tier/track/retention records and no UI/API surface
-presents them; only immutable history and the legacy columns remain, pending the late physical
-schema cleanup.
+Item 16 was closed on 2026-08-06 by the settlement floor fix (`fix(pricing): settle release-v2
+charges with the exact contract floor`): every release-v2 settlement path now floors like the
+reserve, and the Stage 8 shadow validates the same formula. Items 2 and 14 are closed by the
+progressive cleanup and the residual-track UI removal: no active writer creates
+tier/track/retention records and no UI/API surface presents them; only immutable history and
+the legacy columns remain, pending the late physical schema cleanup. Item 17 is OPEN: the
+pre-cutover strict chain has stood down by design, and the post-cutover class-changing
+assignment-extension lane (engine producer + commerce consumer) is still being delivered —
+until it lands, a post-cutover B2C→B2B conversion is refused loudly instead of silently
+unenforced.
 
 1. All expand migrations are delivered before the dependent code.
 2. No new writer creates progressive pricing records.
@@ -694,9 +702,11 @@ schema cleanup.
 15. `deploy/watchdog` is green on the final SHA.
 16. B2C enforcement is audited against the global 50% default plus provider/model overrides; any
     deviation that bills a B2C customer off-policy is fixed.
-17. Conversion and every B2B policy save enforce the customer's own B2B policy per account
-    through the automatic strict chain; no B2C rule or legacy scalar prices a converted
-    account's new charges, and past multipliers survive only in immutable history.
+17. Conversion and every B2B policy save enforce the customer's own B2B policy per account.
+    Pre-cutover this ran through the automatic strict chain; post-cutover it propagates through
+    the append-only assignment extension (a class-changing extension for conversions). No B2C
+    rule or legacy scalar prices a converted account's new charges, and past multipliers survive
+    only in immutable history.
 
 Production mutation must not be performed from a research or documentation task. Applying Stage
 6/8/9 happens only after the implementation, tests, and standard delivery of each expand-only
