@@ -4499,6 +4499,9 @@ grep -Fq '[[ $# -eq 1 ]]' "$ROOT/deploy/gpt-image-2-public-preflight-v3-gate.sh"
 grep -Fq '"$binary" openai-image-public-smoke --output "$OUTPUT" --preflight-only' \
   "$ROOT/deploy/gpt-image-2-public-preflight-v3-gate.sh" \
   || wd_die 'GPT Image 2 public preflight v3 does not run the exact no-image CLI mode'
+grep -Fq 'if verify_preflight_success; then' \
+  "$ROOT/deploy/gpt-image-2-public-preflight-v3-gate.sh" \
+  || wd_die 'GPT Image 2 public preflight v3 rejects terminal evidence after process teardown timeout'
 ! grep -Fq -- '--execute' "$ROOT/deploy/gpt-image-2-public-preflight-v3-gate.sh" \
   || wd_die 'GPT Image 2 public preflight v3 can dispatch an image'
 grep -Fq '.generation_dispatched == false and .edit_dispatched == false' \

@@ -232,10 +232,15 @@ already-fenced failed root; no new image request or selector execution occurred.
 `2f11cd62ed0f78b97cf31d2287fa660907975aad` retired the v2 trigger and is watchdog-GREEN. The successor
 `deploy/gpt-image-2-public-preflight-v3-gate.sh` is pinned to producer
 `63972f2ddfd5906d7c30a87406053eb3782f4223`, uses the fresh `gpt-image-2-public-preflight-v3` root, inherits
-only the PostgreSQL DSN, and can run only `--preflight-only`. It accepts one exact no-dispatch journal and
-contains no `--execute` path. Paid execution still requires a new producer/root and a fresh successful free
-preflight before changing `generation_dispatched` immediately ahead of the first image POST. This
-withdrawal does not authorize the paid gate or publication.
+only the PostgreSQL DSN, and can run only `--preflight-only`. Delivery
+`825b3596983e7420a038feb3e883b11f0ebabba7` completed authenticated discovery and wrote the sole terminal
+`preflight_success` journal with both dispatch flags false and both request identities null, but the
+controller deadline observed a nonzero process exit during teardown and the overall delivery was RED. No
+image POST occurred. The corrective controller accepts that exact terminal artifact after a teardown
+timeout while every incomplete state, extra artifact, dispatch flag, or request identity remains RED; the
+SHA-keyed fence prevents network replay. Paid execution still requires a distinct new producer/root and an
+exact watchdog-GREEN preflight delivery before changing `generation_dispatched` immediately ahead of the
+first image POST. The retained success alone does not authorize the paid gate or publication.
 
 The intended one-shot contract remains:
 

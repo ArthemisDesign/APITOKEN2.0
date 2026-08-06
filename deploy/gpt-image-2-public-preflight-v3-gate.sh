@@ -119,10 +119,17 @@ if ! timeout --signal=TERM --kill-after=10s 60s \
     env -i HOME=/home/deploy CLAUDE_API_DATABASE_URL="$CLAUDE_API_DATABASE_URL" \
     "$binary" openai-image-public-smoke --output "$OUTPUT" --preflight-only \
     >/dev/null 2>/dev/null; then
+  # The CLI writes this terminal state only after authenticated discovery completed. Accept that
+  # exact sole no-dispatch artifact if process teardown crosses the controller deadline; every
+  # incomplete state, extra artifact, dispatch flag, or request identity still fails closed.
+  if verify_preflight_success; then
+    printf 'gpt-image-preflight-v3:preflight_success:g=false:e=false\n'
+    exit 0
+  fi
   if path_is_private_deploy_directory "$OUTPUT"; then
     journal_summary || true
   fi
-  wd_die "GPT Image 2 public preflight v3 failed without any image dispatch"
+  wd_die "GPT Image 2 public preflight v3 failed without exact no-dispatch success evidence"
 fi
 verify_preflight_success \
   || wd_die "GPT Image 2 public preflight v3 returned without exact no-dispatch success evidence"

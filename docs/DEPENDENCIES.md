@@ -315,10 +315,14 @@ is only what is needed to walk the relationships when making changes:
   `2f11cd62ed0f78b97cf31d2287fa660907975aad` retired the v2 trigger and is watchdog-GREEN. The successor
   `deploy/gpt-image-2-public-preflight-v3-gate.sh` is pinned to producer
   `63972f2ddfd5906d7c30a87406053eb3782f4223`, uses a fresh v3 root, inherits only the production PostgreSQL
-  DSN, and can run only `openai-image-public-smoke --preflight-only`; it rejects image artifacts, dispatch
-  flags, request identities, extra arguments and any replay lacking exact success. Paid execution requires a
-  distinct new producer-SHA fence and fresh successful preflight rather than trusting either withdrawn
-  artifact. The direct OpenAI plane and header-gated Combined
+  DSN, and can run only `openai-image-public-smoke --preflight-only`. Delivery
+  `825b3596983e7420a038feb3e883b11f0ebabba7` completed authenticated discovery with the sole terminal
+  `preflight_success` journal, false dispatch flags and null request identities, but was overall RED when
+  process teardown crossed the controller deadline; no image POST occurred. The successor controller accepts
+  only that strict terminal shape after a nonzero timeout and uses the SHA fence without network replay;
+  incomplete states, image artifacts, dispatch flags, request identities and extra arguments remain RED.
+  Paid execution requires a distinct new producer-SHA fence and exact watchdog-GREEN preflight delivery
+  rather than trusting a RED delivery by itself. The direct OpenAI plane and header-gated Combined
   bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —
