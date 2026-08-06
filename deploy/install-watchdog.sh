@@ -201,25 +201,40 @@ publish_pricing_stage56_helper() {
     /usr/local/lib/apitoken-watchdog/controller/pricing-stage56-admission-gate.sh
 }
 
+publish_pricing_stage7_helper() {
+  publish_fixed_helper "$ROOT/deploy/pricing-stage7-admission-gate.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/pricing-stage7-admission-gate.sh
+}
+
 install_and_verify_sudo_policy() {
   local authbot_helper=/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
-  local pricing_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage56-admission-gate.sh
-  local authbot_backup=${authbot_helper}.rollback.$$ pricing_backup=${pricing_helper}.rollback.$$
-  local had_authbot=0 had_pricing=0
+  local pricing56_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage56-admission-gate.sh
+  local pricing7_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage7-admission-gate.sh
+  local authbot_backup=${authbot_helper}.rollback.$$
+  local pricing56_backup=${pricing56_helper}.rollback.$$
+  local pricing7_backup=${pricing7_helper}.rollback.$$
+  local had_authbot=0 had_pricing56=0 had_pricing7=0
   if [[ -e $authbot_helper || -L $authbot_helper ]]; then
     [[ -f $authbot_helper && ! -L $authbot_helper ]] \
       || { echo "$authbot_helper must be a regular file" >&2; return 1; }
     cp -p -- "$authbot_helper" "$authbot_backup"
     had_authbot=1
   fi
-  if [[ -e $pricing_helper || -L $pricing_helper ]]; then
-    [[ -f $pricing_helper && ! -L $pricing_helper ]] \
-      || { echo "$pricing_helper must be a regular file" >&2; return 1; }
-    cp -p -- "$pricing_helper" "$pricing_backup"
-    had_pricing=1
+  if [[ -e $pricing56_helper || -L $pricing56_helper ]]; then
+    [[ -f $pricing56_helper && ! -L $pricing56_helper ]] \
+      || { echo "$pricing56_helper must be a regular file" >&2; return 1; }
+    cp -p -- "$pricing56_helper" "$pricing56_backup"
+    had_pricing56=1
+  fi
+  if [[ -e $pricing7_helper || -L $pricing7_helper ]]; then
+    [[ -f $pricing7_helper && ! -L $pricing7_helper ]] \
+      || { echo "$pricing7_helper must be a regular file" >&2; return 1; }
+    cp -p -- "$pricing7_helper" "$pricing7_backup"
+    had_pricing7=1
   fi
   publish_authbot_runtime_helper
   publish_pricing_stage56_helper
+  publish_pricing_stage7_helper
   install -o root -g root -m 0755 "$ROOT/deploy/install-sudoers.sh" \
     /usr/local/lib/apitoken-watchdog/install-sudoers.sh
   install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/sudoers.d
@@ -234,14 +249,19 @@ install_and_verify_sudo_policy() {
     else
       rm -f -- "$authbot_helper"
     fi
-    if (( had_pricing == 1 )); then
-      mv -f -- "$pricing_backup" "$pricing_helper"
+    if (( had_pricing56 == 1 )); then
+      mv -f -- "$pricing56_backup" "$pricing56_helper"
     else
-      rm -f -- "$pricing_helper"
+      rm -f -- "$pricing56_helper"
+    fi
+    if (( had_pricing7 == 1 )); then
+      mv -f -- "$pricing7_backup" "$pricing7_helper"
+    else
+      rm -f -- "$pricing7_helper"
     fi
     return 1
   fi
-  rm -f -- "$authbot_backup" "$pricing_backup"
+  rm -f -- "$authbot_backup" "$pricing56_backup" "$pricing7_backup"
 }
 
 install_controller_definitions() {
@@ -277,6 +297,7 @@ install_controller_definitions() {
   install -o root -g root -m 0755 "$ROOT/deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh" \
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-v2-diagnostic-gate.sh
   publish_pricing_stage56_helper
+  publish_pricing_stage7_helper
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-test-db.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-test-db
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-backup.sh" \

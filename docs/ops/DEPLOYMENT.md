@@ -616,7 +616,20 @@ digests/payloads and atomically closes the rollout `confirmed|blocked|dead`. The
 `GET /v1/admin/pricing-shadow-rollout-v2` exposes only bounded aggregates and subject digests.
 Startup, migration, polling and the read endpoint never create a rollout or job; the lane never
 moves the release head, balances, live price or money writers. Operators must not emulate the lane
-with SQL, SSH loops or direct per-account mutations.
+with SQL, SSH loops or direct per-account mutations. After exact Stage 5/6 GREEN, production Stage 7
+is admitted only through the fixed root bridge (the argument is intentionally pinned to the admitted
+producer):
+
+```bash
+ssh -o BatchMode=yes apitokensale \
+  'sudo -n /usr/local/lib/apitoken-watchdog/controller/pricing-stage7-admission-gate.sh 3f412e33d631f2956a575e40f7f28f8b0b592106'
+```
+
+The bridge reads the exact immutable terminal Stage 5 run from the bounded read-only producer first
+deployed GREEN at `70d785e66e915cdbaaf9d4a60bc00492511b95d3`, requires the prepared target/recovery
+lineage and zero blockers, persists a private root-only idempotency fence, and emits only bounded
+release identities and rollout counts. It never replays materialization or exposes the admin
+credential, account IDs or raw worker errors.
 
 Shadow rollout worker bounds are validated at startup: `PRICING_SHADOW_ROLLOUT_POLL_MS=5000`
 (`1000..60000`), `PRICING_SHADOW_ROLLOUT_LEASE_MS=300000` (`30000..3600000`),

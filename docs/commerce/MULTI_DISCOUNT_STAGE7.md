@@ -97,6 +97,22 @@ Worker bounds: `PRICING_SHADOW_ROLLOUT_POLL_MS=5000` (`1000..60000`),
 `PRICING_SHADOW_ROLLOUT_BATCH_SIZE=25` (`1..500`); the defaults are production-safe and validated at
 worker startup.
 
+Production admission is performed only after exact GREEN Stage 5/6 evidence through the fixed,
+root-owned bridge:
+
+```bash
+ssh -o BatchMode=yes apitokensale \
+  'sudo -n /usr/local/lib/apitoken-watchdog/controller/pricing-stage7-admission-gate.sh 3f412e33d631f2956a575e40f7f28f8b0b592106'
+```
+
+The bridge reads the immutable terminal Stage 5 run through the bounded read-only producer added by
+GREEN SHA `70d785e66e915cdbaaf9d4a60bc00492511b95d3`, requires the exact prepared target/recovery
+lineage and zero blockers, stages one idempotent rollout, and polls the bounded control API until
+every durable job is confirmed. It never replays the Stage 5 materialization mutation. It uses the
+admin credential only from the active exact-release process environment via procfs/curl stdin; its
+output is limited to release identities, aggregate counts, status and completion time. Do not
+replace it with SQL, direct engine calls, SSH loops or a copied credential.
+
 ## Invariants
 
 - The target release contains no source-specific discounted legacy policy.

@@ -3607,8 +3607,10 @@ watchdog_publish_line=$(grep -nF 'mv -f -- "$watchdog_staged" "$watchdog_target"
   || wd_die 'helper and sudo policy are not verified before atomic watchdog publication'
 grep -Fq 'mv -f -- "$authbot_backup" "$authbot_helper"' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'failed sudo policy installation does not restore the prior authbot helper'
-grep -Fq 'mv -f -- "$pricing_backup" "$pricing_helper"' "$ROOT/deploy/install-watchdog.sh" \
-  || wd_die 'failed sudo policy installation does not restore the prior pricing helper'
+grep -Fq 'mv -f -- "$pricing56_backup" "$pricing56_helper"' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'failed sudo policy installation does not restore the prior pricing Stage 5/6 helper'
+grep -Fq 'mv -f -- "$pricing7_backup" "$pricing7_helper"' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'failed sudo policy installation does not restore the prior pricing Stage 7 helper'
 # Bash expands every assignment word in one `local` command before applying any of them. Keep the
 # staged path assignment separate so `set -u` cannot dereference `target` before it exists.
 publish_fixed_helper_body=$(sed -n '/^publish_fixed_helper()/,/^}/p' \
@@ -4899,6 +4901,83 @@ grep -A7 -F "pricing_stage56_helper=/usr/local/lib/apitoken-watchdog/controller/
   "$ROOT/deploy/install-sudoers.sh" \
   | grep -Fq '3f412e33d631f2956a575e40f7f28f8b0b592106' \
   || wd_die 'pricing Stage 5/6 sudo self-check is not aligned with policy'
+
+# Stage 7 consumes only the separately deployed GREEN terminal-run read contract. It must never
+# replay Stage 5 materialization to discover the run identity or expose its AdminGuard credential.
+pricing_stage7_gate="$ROOT/deploy/pricing-stage7-admission-gate.sh"
+pricing_stage7_run_validator=$(sed -n '/^stage5_run_is_valid()/,/^}/p' "$pricing_stage7_gate")
+[[ -n $pricing_stage7_run_validator ]] \
+  || wd_die 'pricing Stage 7 helper lacks its terminal Stage 5 run validator'
+PLAN_DIGEST="sha256:v2:$(printf '8%.0s' {1..64})"
+TARGET_GENERATION=21
+TARGET_PLAN_DIGEST="sha256:v2:$(printf 'b%.0s' {1..64})"
+TARGET_RELEASE_DIGEST="sha256:v2:$(printf 'f%.0s' {1..64})"
+RECOVERY_GENERATION=22
+RECOVERY_PLAN_DIGEST="sha256:v2:$(printf '5%.0s' {1..64})"
+RECOVERY_RELEASE_DIGEST="sha256:v2:$(printf '6%.0s' {1..64})"
+eval "$pricing_stage7_run_validator"
+jq -n \
+  --arg plan "$PLAN_DIGEST" --arg target_plan "$TARGET_PLAN_DIGEST" \
+  --arg target_release "$TARGET_RELEASE_DIGEST" --arg recovery_plan "$RECOVERY_PLAN_DIGEST" \
+  --arg recovery_release "$RECOVERY_RELEASE_DIGEST" '{
+  run_id:"2c1850d7-708a-40e8-8bc8-dcde10e890fb",plan_digest:$plan,status:"prepared",
+  target_generation:"21",target_plan_digest:$target_plan,target_release_digest:$target_release,
+  recovery_generation:"22",recovery_plan_digest:$recovery_plan,
+  recovery_release_digest:$recovery_release,blocker_count:"0"
+}' >"$TEMP/pricing-stage7-stage5-run.json"
+stage5_run_is_valid "$TEMP/pricing-stage7-stage5-run.json" \
+  || wd_die 'pricing Stage 7 helper rejected a valid prepared Stage 5 run'
+jq '.status = "materializing"' "$TEMP/pricing-stage7-stage5-run.json" \
+  >"$TEMP/pricing-stage7-nonterminal-run.json"
+! stage5_run_is_valid "$TEMP/pricing-stage7-nonterminal-run.json" \
+  || wd_die 'pricing Stage 7 helper accepted a non-terminal Stage 5 run'
+jq '.target_release_digest = null' "$TEMP/pricing-stage7-stage5-run.json" \
+  >"$TEMP/pricing-stage7-incomplete-run.json"
+! stage5_run_is_valid "$TEMP/pricing-stage7-incomplete-run.json" \
+  || wd_die 'pricing Stage 7 helper accepted incomplete release lineage'
+jq '.blocker_count = "1"' "$TEMP/pricing-stage7-stage5-run.json" \
+  >"$TEMP/pricing-stage7-blocked-run.json"
+! stage5_run_is_valid "$TEMP/pricing-stage7-blocked-run.json" \
+  || wd_die 'pricing Stage 7 helper accepted Stage 5 blockers'
+wd_path_is_controller_definition deploy/pricing-stage7-admission-gate.sh \
+  || wd_die 'pricing Stage 7 helper is not a fixed controller definition'
+grep -Fq 'publish_pricing_stage7_helper' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'pricing Stage 7 helper is not published before sudo policy verification'
+grep -Fxq 'ADMISSION_SHA=3f412e33d631f2956a575e40f7f28f8b0b592106' "$pricing_stage7_gate" \
+  || wd_die 'pricing Stage 7 helper is not pinned to the exact admitted Stage 5/6 plan'
+grep -Fxq 'API_ORIGIN=http://127.0.0.1:8791' "$pricing_stage7_gate" \
+  || wd_die 'pricing Stage 7 helper does not use the protected loopback commerce origin'
+grep -Fq 'done <"/proc/$pid/environ"' "$pricing_stage7_gate" \
+  || wd_die 'pricing Stage 7 helper does not obtain the credential from the active process'
+grep -Fq 'header = "x-admin-key: %s"' "$pricing_stage7_gate" \
+  || wd_die 'pricing Stage 7 helper does not send the server credential through curl stdin'
+grep -Fq 'STATE_PARENT=/var/lib/apitoken/pricing-stage7-admission' "$pricing_stage7_gate" \
+  || wd_die 'pricing Stage 7 helper lacks its private idempotency fence'
+grep -Fq 'flock -n 9' "$pricing_stage7_gate" \
+  || wd_die 'pricing Stage 7 helper does not serialize admission attempts'
+[[ $(grep -Fc 'request GET "/v1/admin/pricing-stage5-v2?plan_digest=$PLAN_DIGEST"' "$pricing_stage7_gate") == 1 ]] \
+  || wd_die 'pricing Stage 7 helper does not have exactly one terminal Stage 5 read path'
+! grep -Fq 'request POST /v1/admin/pricing-stage5-v2/materialize' "$pricing_stage7_gate" \
+  || wd_die 'pricing Stage 7 helper replays Stage 5 materialization'
+[[ $(grep -Fc 'request POST /v1/admin/pricing-shadow-rollout-v2/stage' "$pricing_stage7_gate") == 1 ]] \
+  || wd_die 'pricing Stage 7 helper has multiple rollout staging paths'
+grep -Fq '.job_count | tonumber) == (.job_counts_by_status.confirmed // 0)' "$pricing_stage7_gate" \
+  || wd_die 'pricing Stage 7 helper does not require complete aggregate job ACKs'
+grep -Fq '.assignment_count | test("^[1-9][0-9]*$")' "$pricing_stage7_gate" \
+  || wd_die 'pricing Stage 7 helper accepts an empty assignment authority'
+! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc|https://|openai-image-public-smoke|images/(generations|edits)' \
+  "$pricing_stage7_gate" \
+  || wd_die 'pricing Stage 7 helper contains an external, reseller or image-dispatch path'
+! grep -Eq '(/etc/apitoken|/srv/claude-api/data)/[^ ]*\.env|cat .*\.env|source .*\.env|echo .*COMMERCIAL_ADMIN_KEY' \
+  "$pricing_stage7_gate" \
+  || wd_die 'pricing Stage 7 helper can expose or directly read a secret file'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/pricing-stage7-admission-gate.sh 3f412e33d631f2956a575e40f7f28f8b0b592106' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'pricing Stage 7 helper lacks an exact-admission sudo bridge'
+grep -A7 -F "pricing_stage7_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage7-admission-gate.sh" \
+  "$ROOT/deploy/install-sudoers.sh" \
+  | grep -Fq '3f412e33d631f2956a575e40f7f28f8b0b592106' \
+  || wd_die 'pricing Stage 7 sudo self-check is not aligned with policy'
 
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'
