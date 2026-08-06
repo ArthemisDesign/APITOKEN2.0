@@ -117,6 +117,13 @@ admin credential only from the active exact-release process environment via proc
 output is limited to release identities, aggregate counts, status and completion time. Do not
 replace it with SQL, direct engine calls, SSH loops or a copied credential.
 
+The stage request deliberately rejects `engine_inventory_drift`: the fresh exhaustive engine
+identity must equal both scans recorded by Stage 5. Recovery is not a retry or relaxed comparison.
+Run the separately delivered Stage 5/6 inventory-refresh bridge after its exact deployment is GREEN,
+wait for a new immutable prepared target/recovery pair, then deliver a new Stage 7 bridge pinned to
+those terminal identities in a later GREEN checkpoint. Earlier runs, releases and private fences
+remain unchanged.
+
 ## Invariants
 
 - The target release contains no source-specific discounted legacy policy.

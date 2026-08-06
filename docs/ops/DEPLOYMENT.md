@@ -463,6 +463,22 @@ environment-file reads, a credential in argv, manual SQL or a package CLI over S
 through `https://admin.apitoken.sale` remains the managed-auth browser alternative over the same
 AdminGuard endpoints.
 
+If Stage 7 later fails with `engine_inventory_drift`, the immutable prepared pair must not be edited
+or bypassed. After the refresh-helper commit itself reaches exact `deploy/watchdog` GREEN, run the
+separate fixed bridge once:
+
+```bash
+sudo /usr/local/lib/apitoken-watchdog/controller/pricing-stage56-refresh-gate.sh \
+  3f412e33d631f2956a575e40f7f28f8b0b592106
+```
+
+It repeats the blocker-free double inventory scans, materialization ACKs and complete Stage 6 funding
+normalization under `/var/lib/apitoken/pricing-stage56-inventory-refresh`, producing a new immutable
+target/recovery generation pair. The original admission state and releases remain historical and
+untouched. A replacement Stage 7 bridge may be delivered only in a later GREEN checkpoint pinned to
+the refresh's exact terminal identities; the old Stage 7 command must not be retried against the
+superseded inventory snapshot.
+
 Use this order:
 
 1. `POST /v1/admin/pricing-stage5-v2/dry-run` with `{}`. Review the returned exact

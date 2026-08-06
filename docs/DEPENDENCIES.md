@@ -139,8 +139,12 @@ contract: the API returns only a stable bounded `code` and sanitized 409/503 mes
 raw subject-bearing DB/engine text. After exact producer SHA
 `d85aa225e0846439b85d8ba55fa8cd290d23a472` reached GREEN, the fixed Stage 7 operator helper became
 the consumer: it emits only allowlisted codes and maps malformed/unknown envelopes to
-`unclassified`. Startup, migration, polling, and the read endpoint do not create a rollout/job; the
-lane does not move the release head, balances, or the live price.
+`unclassified`. `engine_inventory_drift` is recovered producer-first by a separately deployed fixed
+Stage 5/6 refresh bridge that creates a new immutable generation pair in its own private fence; it
+never mutates the older run or relaxes the fresh-inventory equality. A replacement Stage 7 consumer
+is pinned to the refresh's exact terminal identities only after that refresh checkpoint is GREEN.
+Startup, migration, polling, and the read endpoint do not create a rollout/job; the lane does not
+move the release head, balances, or the live price.
 
 ### Sales feed (commerce ↔ sales)
 

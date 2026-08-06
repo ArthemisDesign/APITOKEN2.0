@@ -176,7 +176,11 @@ the next part of the same idempotent operation. The runtime takes `DATABASE_URL`
 `OPENKEYS_INTERNAL_BASE_URL` (default `http://127.0.0.1:3410`) with a separate
 `OPENKEYS_CONTROL_KEY` or the same server credential.
 The package CLI remains only a diagnostic non-production entrypoint and is not a permitted
-production control-plane or SSH procedure.
+production control-plane or SSH procedure. If a later stage detects `engine_inventory_drift`, the
+existing run remains immutable: a separately deployed fixed refresh bridge repeats Stage 5/6 into
+new target/recovery generations and a separate private replay fence. It never rewrites, deletes or
+relabels the earlier run, plans, releases or evidence; downstream consumers may use the replacement
+pair only after its exact terminal identities are captured following a GREEN deployment.
 
 The engine account cursor is exhausted twice. The latest release-policy heads for every planned
 policy ID are also read twice and must remain byte-canonically equal; a changing or conflicting

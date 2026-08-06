@@ -3609,6 +3609,9 @@ grep -Fq 'mv -f -- "$authbot_backup" "$authbot_helper"' "$ROOT/deploy/install-wa
   || wd_die 'failed sudo policy installation does not restore the prior authbot helper'
 grep -Fq 'mv -f -- "$pricing56_backup" "$pricing56_helper"' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'failed sudo policy installation does not restore the prior pricing Stage 5/6 helper'
+grep -Fq 'mv -f -- "$pricing56_refresh_backup" "$pricing56_refresh_helper"' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'failed sudo policy installation does not restore the prior pricing Stage 5/6 refresh helper'
 grep -Fq 'mv -f -- "$pricing7_backup" "$pricing7_helper"' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'failed sudo policy installation does not restore the prior pricing Stage 7 helper'
 # Bash expands every assignment word in one `local` command before applying any of them. Keep the
@@ -4901,6 +4904,46 @@ grep -A7 -F "pricing_stage56_helper=/usr/local/lib/apitoken-watchdog/controller/
   "$ROOT/deploy/install-sudoers.sh" \
   | grep -Fq '3f412e33d631f2956a575e40f7f28f8b0b592106' \
   || wd_die 'pricing Stage 5/6 sudo self-check is not aligned with policy'
+
+# Inventory growth after an immutable Stage 5/6 run is recovered by a separate, one-cycle helper.
+# It preserves the original replay fence and repeats every validation before minting new generations.
+pricing_stage56_refresh_gate="$ROOT/deploy/pricing-stage56-refresh-gate.sh"
+wd_path_is_controller_definition deploy/pricing-stage56-refresh-gate.sh \
+  || wd_die 'pricing Stage 5/6 refresh helper is not a fixed controller definition'
+grep -Fq 'publish_pricing_stage56_refresh_helper' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'pricing Stage 5/6 refresh helper is not published before sudo policy verification'
+grep -Fxq 'ADMISSION_SHA=3f412e33d631f2956a575e40f7f28f8b0b592106' "$pricing_stage56_refresh_gate" \
+  || wd_die 'pricing Stage 5/6 refresh helper is not pinned to the GREEN admission producer'
+grep -Fxq 'API_ORIGIN=http://127.0.0.1:8791' "$pricing_stage56_refresh_gate" \
+  || wd_die 'pricing Stage 5/6 refresh helper does not use the protected loopback commerce origin'
+grep -Fxq 'ACTOR=gpt-image-2-stage56-inventory-refresh' "$pricing_stage56_refresh_gate" \
+  || wd_die 'pricing Stage 5/6 refresh helper lacks a distinct audit actor'
+grep -Fq 'done <"/proc/$pid/environ"' "$pricing_stage56_refresh_gate" \
+  || wd_die 'pricing Stage 5/6 refresh helper does not obtain the credential from the active process'
+grep -Fq 'STATE_PARENT=/var/lib/apitoken/pricing-stage56-inventory-refresh' \
+  "$pricing_stage56_refresh_gate" \
+  || wd_die 'pricing Stage 5/6 refresh helper does not preserve the original private replay fence'
+grep -Fq 'if [[ $plan_phase != materialized ]]' "$pricing_stage56_refresh_gate" \
+  || wd_die 'pricing Stage 5/6 refresh helper cannot resume its own materialized plan'
+[[ $(grep -Fc 'request POST /v1/admin/pricing-stage5-v2/dry-run' "$pricing_stage56_refresh_gate") == 1 ]] \
+  || wd_die 'pricing Stage 5/6 refresh helper has multiple dry-run dispatch paths'
+[[ $(grep -Fc 'request POST /v1/admin/pricing-stage5-v2/materialize' "$pricing_stage56_refresh_gate") == 1 ]] \
+  || wd_die 'pricing Stage 5/6 refresh helper has multiple materialize dispatch paths'
+[[ $(grep -Fc 'request POST /v1/admin/pricing-stage6-v2/stage' "$pricing_stage56_refresh_gate") == 1 ]] \
+  || wd_die 'pricing Stage 5/6 refresh helper has multiple Stage 6 dispatch paths'
+grep -Fq '.target_funding_manifest_digest == .recovery_funding_manifest_digest' \
+  "$pricing_stage56_refresh_gate" \
+  || wd_die 'pricing Stage 5/6 refresh helper does not require equal terminal funding manifests'
+! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc|https://|openai-image-public-smoke|images/(generations|edits)' \
+  "$pricing_stage56_refresh_gate" \
+  || wd_die 'pricing Stage 5/6 refresh helper contains an external, reseller or image-dispatch path'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/pricing-stage56-refresh-gate.sh 3f412e33d631f2956a575e40f7f28f8b0b592106' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'pricing Stage 5/6 refresh helper lacks an exact-admission sudo bridge'
+grep -A7 -F "pricing_stage56_refresh_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage56-refresh-gate.sh" \
+  "$ROOT/deploy/install-sudoers.sh" \
+  | grep -Fq '3f412e33d631f2956a575e40f7f28f8b0b592106' \
+  || wd_die 'pricing Stage 5/6 refresh sudo self-check is not aligned with policy'
 
 # Stage 7 consumes only the separately deployed GREEN terminal-run read contract. It must never
 # replay Stage 5 materialization to discover the run identity or expose its AdminGuard credential.
