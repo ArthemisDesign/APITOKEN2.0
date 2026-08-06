@@ -4804,23 +4804,23 @@ pricing_stage56_diagnostic_body=$(sed -n '/^pricing_control_error_diagnostic()/,
   || wd_die 'pricing Stage 5/6 helper lacks its bounded HTTP error classifier'
 eval "$pricing_stage56_diagnostic_body"
 printf '%s\n' \
-  '{"statusCode":409,"message":"target capability projection differs from its reviewed digest"}' \
+  '{"statusCode":409,"message":"free-form message is ignored","code":"target_capability_digest_drift"}' \
   >"$TEMP/pricing-stage56-known-error.json"
 [[ $(pricing_control_error_diagnostic "$TEMP/pricing-stage56-known-error.json" 409) \
     == target_capability_digest_drift ]] \
-  || wd_die 'pricing Stage 5/6 helper did not classify a known bounded error'
+  || wd_die 'pricing Stage 5/6 helper did not classify a known typed error'
 printf '%s\n' \
-  '{"statusCode":409,"message":"credential-like arbitrary text","extra":"must-not-pass"}' \
+  '{"statusCode":409,"message":"credential-like arbitrary text","code":"unknown_internal_code"}' \
   >"$TEMP/pricing-stage56-unknown-error.json"
 [[ $(pricing_control_error_diagnostic "$TEMP/pricing-stage56-unknown-error.json" 409) \
     == unclassified ]] \
-  || wd_die 'pricing Stage 5/6 helper exposed or accepted an unclassified error body'
+  || wd_die 'pricing Stage 5/6 helper exposed an unapproved typed error'
 printf '%s\n' \
-  '{"statusCode":409,"message":"fresh Stage 5 plan is sha256:v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, not sha256:v2:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' \
+  '{"statusCode":409,"message":"contains private plan digests","code":"expected_plan_stale"}' \
   >"$TEMP/pricing-stage56-stale-error.json"
 [[ $(pricing_control_error_diagnostic "$TEMP/pricing-stage56-stale-error.json" 409) \
     == expected_plan_stale ]] \
-  || wd_die 'pricing Stage 5/6 helper did not redact a stale-plan diagnostic'
+  || wd_die 'pricing Stage 5/6 helper did not use the typed stale-plan diagnostic'
 wd_path_is_controller_definition deploy/pricing-stage56-admission-gate.sh \
   || wd_die 'pricing Stage 5/6 helper is not a fixed controller definition'
 grep -Fq 'publish_pricing_stage56_helper' "$ROOT/deploy/install-watchdog.sh" \
