@@ -430,6 +430,25 @@ zero inflight reservations. The API is reachable through the authenticated admin
 loopback commerce origin. Caddy or the server operator supplies the admin credential; every request
 also requires the verified `x-admin-actor`. Never print either credential.
 
+For the GPT Image 2 generation-6 admission, the non-interactive operator surface is the fixed
+root-owned `pricing-stage56-admission-gate.sh`, pinned to admission SHA
+`3f412e33d631f2956a575e40f7f28f8b0b592106`. Run it from the documented host login only after
+`deploy/watchdog` is GREEN for the commit that installs the helper:
+
+```bash
+sudo /usr/local/lib/apitoken-watchdog/controller/pricing-stage56-admission-gate.sh \
+  3f412e33d631f2956a575e40f7f28f8b0b592106
+```
+
+The helper reads the credential only from the active exact-release commerce process, sends it only
+to the loopback AdminGuard origin, fixes the audit actor/reason, validates the complete Stage 5/6
+contracts and prints only bounded digest/status/count evidence. It fails closed before materialize
+when the exhaustive dry-run has blockers and fails on any dead, failed or blocker Stage 6 state.
+It does not stage Stage 7/8/9, move the release head or publish GPT Image 2. Do not replace it with
+environment-file reads, a credential in argv, manual SQL or a package CLI over SSH. Human operation
+through `https://admin.apitoken.sale` remains the managed-auth browser alternative over the same
+AdminGuard endpoints.
+
 Use this order:
 
 1. `POST /v1/admin/pricing-stage5-v2/dry-run` with `{}`. Review the returned exact

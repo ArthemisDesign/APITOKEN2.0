@@ -2450,8 +2450,8 @@ restore_links_line=$(grep -nF 'restore_activation_links || recovery_failed=1' "$
 recovery_callback_line=$(grep -nF 'if ! "$ACTIVATION_RECOVERY_CALLBACK"' "$ROOT/deploy/lib.sh" | cut -d: -f1)
 [[ -n $restore_links_line && -n $recovery_callback_line && $restore_links_line -lt $recovery_callback_line ]] \
   || wd_die 'activation recovery can reconcile authbot before restoring engine links'
-grep -Fq 'install -o root -g root -m 0755 "$ROOT/deploy/authbot-runtime-state.sh"' \
-  "$ROOT/deploy/install-watchdog.sh" \
+grep -A2 -F 'publish_authbot_runtime_helper()' "$ROOT/deploy/install-watchdog.sh" \
+  | grep -Fq '"$ROOT/deploy/authbot-runtime-state.sh"' \
   || wd_die 'the root authbot runtime verifier is not installed with controller definitions'
 authbot_helper_install_line=$(grep -nF '"$ROOT/deploy/authbot-runtime-state.sh"' \
   "$ROOT/deploy/install-watchdog.sh" | cut -d: -f1)
@@ -3605,8 +3605,10 @@ watchdog_publish_line=$(grep -nF 'mv -f -- "$watchdog_staged" "$watchdog_target"
 [[ -n $helper_publish_line && -n $sudoers_start_line && -n $watchdog_publish_line \
     && $helper_publish_line -lt $sudoers_start_line && $sudoers_start_line -lt $watchdog_publish_line ]] \
   || wd_die 'helper and sudo policy are not verified before atomic watchdog publication'
-grep -Fq 'mv -f -- "$helper_backup" "$helper"' "$ROOT/deploy/install-watchdog.sh" \
+grep -Fq 'mv -f -- "$authbot_backup" "$authbot_helper"' "$ROOT/deploy/install-watchdog.sh" \
   || wd_die 'failed sudo policy installation does not restore the prior authbot helper'
+grep -Fq 'mv -f -- "$pricing_backup" "$pricing_helper"' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'failed sudo policy installation does not restore the prior pricing helper'
 # install-watchdog.sh must never re-add apitoken-ci to the deploy group: that would silently undo
 # the isolation fix on the next infrastructure install, and the two installers would fight.
 if grep -Eq 'usermod -a -G deploy apitoken-ci' "$ROOT/deploy/install-watchdog.sh"; then
@@ -4778,6 +4780,51 @@ settlement_v2_diagnostic_gate_line=$(grep -nF '"$GPT_IMAGE_2_SETTLEMENT_V2_DIAGN
 grep -Fq 'github_status success deploy/gpt-image-2-settlement-v2-diagnostic' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 settlement v2 diagnostic has no sanitized GREEN status'
+
+# GPT Image 2 pricing admission uses one fixed root bridge: credential stays in procfs/stdin, while
+# the operator receives only bounded Stage 5/6 digests, states and counts.
+pricing_stage56_gate="$ROOT/deploy/pricing-stage56-admission-gate.sh"
+wd_path_is_controller_definition deploy/pricing-stage56-admission-gate.sh \
+  || wd_die 'pricing Stage 5/6 helper is not a fixed controller definition'
+grep -Fq 'publish_pricing_stage56_helper' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'pricing Stage 5/6 helper is not published before sudo policy verification'
+grep -Fxq 'ADMISSION_SHA=3f412e33d631f2956a575e40f7f28f8b0b592106' "$pricing_stage56_gate" \
+  || wd_die 'pricing Stage 5/6 helper is not pinned to the GREEN admission producer'
+grep -Fxq 'API_ORIGIN=http://127.0.0.1:8791' "$pricing_stage56_gate" \
+  || wd_die 'pricing Stage 5/6 helper does not use the protected loopback commerce origin'
+grep -Fq 'done <"/proc/$pid/environ"' "$pricing_stage56_gate" \
+  || wd_die 'pricing Stage 5/6 helper does not obtain the credential from the active process'
+grep -Fq 'header = "x-admin-key: %s"' "$pricing_stage56_gate" \
+  || wd_die 'pricing Stage 5/6 helper does not send the server credential through curl stdin'
+grep -Fq 'STATE_PARENT=/var/lib/apitoken/pricing-stage56-admission' "$pricing_stage56_gate" \
+  || wd_die 'pricing Stage 5/6 helper lacks its private replay fence'
+grep -Fq 'flock -n 9' "$pricing_stage56_gate" \
+  || wd_die 'pricing Stage 5/6 helper does not serialize admission attempts'
+grep -Fq '.phase = "materialized"' "$pricing_stage56_gate" \
+  || wd_die 'pricing Stage 5/6 helper cannot resume after materialization'
+[[ $(grep -Fc 'request POST /v1/admin/pricing-stage5-v2/materialize' "$pricing_stage56_gate") == 1 ]] \
+  || wd_die 'pricing Stage 5/6 helper has multiple materialize dispatch paths'
+[[ $(grep -Fc 'request POST /v1/admin/pricing-stage6-v2/stage' "$pricing_stage56_gate") == 1 ]] \
+  || wd_die 'pricing Stage 5/6 helper has multiple Stage 6 dispatch paths'
+grep -Fq '.blocker_count == 0' "$pricing_stage56_gate" \
+  || wd_die 'pricing Stage 5/6 helper does not fail closed on Stage 5 blockers'
+grep -Fq '.job_status == "dead"' "$pricing_stage56_gate" \
+  || wd_die 'pricing Stage 5/6 helper does not fail closed on a dead Stage 6 parent'
+grep -Fq '.target_funding_manifest_digest == .recovery_funding_manifest_digest' "$pricing_stage56_gate" \
+  || wd_die 'pricing Stage 5/6 helper does not require equal terminal funding manifests'
+! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc|https://|openai-image-public-smoke|images/(generations|edits)' \
+  "$pricing_stage56_gate" \
+  || wd_die 'pricing Stage 5/6 helper contains an external, reseller or image-dispatch path'
+! grep -Eq '(/etc/apitoken|/srv/claude-api/data)/[^ ]*\.env|cat .*\.env|source .*\.env|echo .*COMMERCIAL_ADMIN_KEY' \
+  "$pricing_stage56_gate" \
+  || wd_die 'pricing Stage 5/6 helper can expose or directly read a secret file'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/pricing-stage56-admission-gate.sh 3f412e33d631f2956a575e40f7f28f8b0b592106' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'pricing Stage 5/6 helper lacks an exact-admission sudo bridge'
+grep -A7 -F "pricing_stage56_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage56-admission-gate.sh" \
+  "$ROOT/deploy/install-sudoers.sh" \
+  | grep -Fq '3f412e33d631f2956a575e40f7f28f8b0b592106' \
+  || wd_die 'pricing Stage 5/6 sudo self-check is not aligned with policy'
 
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'

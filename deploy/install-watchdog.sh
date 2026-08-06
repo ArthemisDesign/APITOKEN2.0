@@ -183,24 +183,42 @@ activate_redis_definition() {
   fi
 }
 
-publish_authbot_runtime_helper() {
-  local target=/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
-  local staged=${target}.tmp.$$
+publish_fixed_helper() {
+  local source=$1 target=$2 staged=${target}.tmp.$$
   install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/controller
-  install -o root -g root -m 0755 "$ROOT/deploy/authbot-runtime-state.sh" "$staged"
+  install -o root -g root -m 0755 "$source" "$staged"
   mv -f -- "$staged" "$target"
 }
 
+publish_authbot_runtime_helper() {
+  publish_fixed_helper "$ROOT/deploy/authbot-runtime-state.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
+}
+
+publish_pricing_stage56_helper() {
+  publish_fixed_helper "$ROOT/deploy/pricing-stage56-admission-gate.sh" \
+    /usr/local/lib/apitoken-watchdog/controller/pricing-stage56-admission-gate.sh
+}
+
 install_and_verify_sudo_policy() {
-  local helper=/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
-  local helper_backup=${helper}.rollback.$$
-  local had_helper=0
-  if [[ -e $helper || -L $helper ]]; then
-    [[ -f $helper && ! -L $helper ]] || { echo "$helper must be a regular file" >&2; return 1; }
-    cp -p -- "$helper" "$helper_backup"
-    had_helper=1
+  local authbot_helper=/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
+  local pricing_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage56-admission-gate.sh
+  local authbot_backup=${authbot_helper}.rollback.$$ pricing_backup=${pricing_helper}.rollback.$$
+  local had_authbot=0 had_pricing=0
+  if [[ -e $authbot_helper || -L $authbot_helper ]]; then
+    [[ -f $authbot_helper && ! -L $authbot_helper ]] \
+      || { echo "$authbot_helper must be a regular file" >&2; return 1; }
+    cp -p -- "$authbot_helper" "$authbot_backup"
+    had_authbot=1
+  fi
+  if [[ -e $pricing_helper || -L $pricing_helper ]]; then
+    [[ -f $pricing_helper && ! -L $pricing_helper ]] \
+      || { echo "$pricing_helper must be a regular file" >&2; return 1; }
+    cp -p -- "$pricing_helper" "$pricing_backup"
+    had_pricing=1
   fi
   publish_authbot_runtime_helper
+  publish_pricing_stage56_helper
   install -o root -g root -m 0755 "$ROOT/deploy/install-sudoers.sh" \
     /usr/local/lib/apitoken-watchdog/install-sudoers.sh
   install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/sudoers.d
@@ -210,14 +228,19 @@ install_and_verify_sudo_policy() {
     /etc/systemd/system/apitoken-sudoers-install.service
   systemctl daemon-reload
   if ! systemctl start apitoken-sudoers-install.service; then
-    if (( had_helper == 1 )); then
-      mv -f -- "$helper_backup" "$helper"
+    if (( had_authbot == 1 )); then
+      mv -f -- "$authbot_backup" "$authbot_helper"
     else
-      rm -f -- "$helper"
+      rm -f -- "$authbot_helper"
+    fi
+    if (( had_pricing == 1 )); then
+      mv -f -- "$pricing_backup" "$pricing_helper"
+    else
+      rm -f -- "$pricing_helper"
     fi
     return 1
   fi
-  rm -f -- "$helper_backup"
+  rm -f -- "$authbot_backup" "$pricing_backup"
 }
 
 install_controller_definitions() {
@@ -252,6 +275,7 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-diagnostic-gate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh" \
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-v2-diagnostic-gate.sh
+  publish_pricing_stage56_helper
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-test-db.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-test-db
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-backup.sh" \
