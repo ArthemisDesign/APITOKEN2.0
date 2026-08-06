@@ -8,12 +8,19 @@ REASON='refresh GPT Image 2 pricing admission after reviewed engine inventory dr
 POLL_SECONDS=5
 MAX_POLLS=360
 STATE_PARENT=/var/lib/apitoken/pricing-stage56-inventory-refresh
-STATE_DIR=$STATE_PARENT/$ADMISSION_SHA
-PLAN_STATE=$STATE_DIR/plan.json
 
-[[ $# -eq 1 ]] || { printf 'usage: pricing-stage56-refresh-gate.sh <exact-admission-sha>\n' >&2; exit 2; }
+if [[ $# -eq 3 && $2 == --converge-cycle && $3 =~ ^[1-3]$ ]]; then
+  ACTOR=gpt-image-2-stage567-converge
+  REASON='converge GPT Image 2 pricing admission against current engine inventory'
+  STATE_PARENT=/var/lib/apitoken/pricing-stage567-converge/cycle-$3/stage56
+elif [[ $# -ne 1 ]]; then
+  printf 'usage: pricing-stage56-refresh-gate.sh <exact-admission-sha>\n' >&2
+  exit 2
+fi
 [[ $1 == "$ADMISSION_SHA" ]] \
   || { printf 'pricing Stage 5/6 inventory refresh is pinned to %s\n' "$ADMISSION_SHA" >&2; exit 1; }
+STATE_DIR=$STATE_PARENT/$ADMISSION_SHA
+PLAN_STATE=$STATE_DIR/plan.json
 [[ $(id -u) == 0 ]] \
   || { printf 'pricing Stage 5/6 inventory refresh must run through the fixed root bridge\n' >&2; exit 1; }
 command -v curl >/dev/null || { printf 'curl is required\n' >&2; exit 1; }

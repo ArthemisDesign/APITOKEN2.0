@@ -177,10 +177,11 @@ the next part of the same idempotent operation. The runtime takes `DATABASE_URL`
 `OPENKEYS_CONTROL_KEY` or the same server credential.
 The package CLI remains only a diagnostic non-production entrypoint and is not a permitted
 production control-plane or SSH procedure. If a later stage detects `engine_inventory_drift`, the
-existing run remains immutable: a separately deployed fixed refresh bridge repeats Stage 5/6 into
-new target/recovery generations and a separate private replay fence. It never rewrites, deletes or
-relabels the earlier run, plans, releases or evidence; downstream consumers may use the replacement
-pair only after its exact terminal identities are captured following a GREEN deployment.
+existing run remains immutable. The fixed convergence bridge repeats Stage 5/6 into a fresh private
+cycle and immediately supplies its validated terminal identities to Stage 7. It advances to another
+fresh cycle only for the exact typed inventory-drift response and is bounded to three cycles. It never
+rewrites, deletes or relabels an earlier run, plan, release or evidence, and Stage 7 still requires its
+fresh inventory scan to equal both Stage 5 scans.
 
 The engine account cursor is exhausted twice. The latest release-policy heads for every planned
 policy ID are also read twice and must remain byte-canonically equal; a changing or conflicting

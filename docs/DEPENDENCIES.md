@@ -139,13 +139,15 @@ contract: the API returns only a stable bounded `code` and sanitized 409/503 mes
 raw subject-bearing DB/engine text. After exact producer SHA
 `d85aa225e0846439b85d8ba55fa8cd290d23a472` reached GREEN, the fixed Stage 7 operator helper became
 the consumer: it emits only allowlisted codes and maps malformed/unknown envelopes to
-`unclassified`. `engine_inventory_drift` is recovered producer-first by a separately deployed fixed
-Stage 5/6 refresh bridge that creates a new immutable generation pair in its own private fence; it
-never mutates the older run or relaxes the fresh-inventory equality. The completed refresh prepared
-target `g23` and recovery `g24` across 410 ready accounts; the replacement fixed Stage 7 consumer
-reads only that refresh fence and is pinned to its exact plan/release identities after the refresh
-checkpoint reached GREEN. Startup, migration, polling, and the read endpoint do not create a rollout/job; the lane does not
-move the release head, balances, or the live price.
+`unclassified`. The `g23`/`g24` refresh and its separately deployed consumer remain immutable
+historical evidence after another account appeared in their deployment interval. Current
+`engine_inventory_drift` recovery uses one fixed Stage 5–7 convergence bridge: each bounded cycle
+creates a fresh Stage 5/6 namespace, persists its validated terminal identities, and immediately
+stages Stage 7 with a replay-stable UUID. Only the exact typed inventory-drift response advances to
+a new cycle (maximum three); all other failures stop. Stage 7 still rescans and requires exact
+inventory equality, so the bridge narrows the churn window without mutating an older run or relaxing
+the contract. Startup, migration, polling, and the read endpoint do not create a rollout/job; the lane
+does not move the release head, balances, or the live price.
 
 ### Sales feed (commerce ↔ sales)
 

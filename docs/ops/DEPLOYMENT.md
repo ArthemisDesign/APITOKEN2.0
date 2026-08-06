@@ -481,16 +481,23 @@ untouched. The first production refresh completed with plan
 recovery `g24` / `sha256:v2:36c48d7c909882d8a01d47131a5e63ce04d0d5bdebbbefefc8fe04dfdcddd8b1`, and 410
 ready accounts sharing funding manifest
 `sha256:v2:c701869f87608c5e87e4896024d68da8b6d9ef017e9b589f2e8c73f18f67bc55`.
-Only after that terminal evidence and a later exact GREEN checkpoint, run its pinned Stage 7 consumer:
+The separately delivered Stage 7 consumer for that pair correctly failed closed when another account
+appeared during its deployment interval. `g23`/`g24` and both private fences remain immutable historical
+evidence; do not retry either old command or weaken digest equality. After the combined helper's own
+exact deployment reaches GREEN, converge Stage 5 through Stage 7 with one fixed command:
 
 ```bash
-sudo /usr/local/lib/apitoken-watchdog/controller/pricing-stage7-refresh-gate.sh \
+sudo /usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-gate.sh \
   3f412e33d631f2956a575e40f7f28f8b0b592106
 ```
 
-The replacement bridge reads the refresh fence, not the original Stage 5/6 fence, and owns a separate
-root-only idempotency namespace. The old Stage 7 command must not be retried against the superseded
-inventory snapshot.
+The bridge creates a fresh private namespace per cycle, runs the existing strict Stage 5/6 helper,
+persists its terminal identities, and immediately stages Stage 7 with the same identities and one
+replay-stable UUID. Only an exact typed `engine_inventory_drift` advances to another fresh immutable
+cycle; every other error stops. At most three cycles are attempted. An interrupted cycle resumes its
+existing Stage 5/6 result or Stage 7 UUID, and a drifted cycle is never reused. The account inventory is
+still rescanned by Stage 7 and must equal both Stage 5 scans; this procedure narrows the churn window
+without pausing registration, rewriting releases, or relaxing any equality.
 
 Use this order:
 

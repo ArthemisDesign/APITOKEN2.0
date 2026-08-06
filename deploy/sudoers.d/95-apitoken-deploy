@@ -45,6 +45,7 @@ Cmnd_Alias APITOKEN_HELPERS = \
     /usr/local/lib/apitoken-watchdog/controller/pricing-stage56-refresh-gate.sh 3f412e33d631f2956a575e40f7f28f8b0b592106, \
     /usr/local/lib/apitoken-watchdog/controller/pricing-stage7-admission-gate.sh 3f412e33d631f2956a575e40f7f28f8b0b592106, \
     /usr/local/lib/apitoken-watchdog/controller/pricing-stage7-refresh-gate.sh 3f412e33d631f2956a575e40f7f28f8b0b592106, \
+    /usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-gate.sh 3f412e33d631f2956a575e40f7f28f8b0b592106, \
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8798, \
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8800, \
     /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8801, \

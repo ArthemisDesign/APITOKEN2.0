@@ -307,6 +307,13 @@ if ! fixed_root_helper_is_trusted "$pricing_stage7_refresh_helper"; then
 fi
 require_permitted 'GPT Image 2 exact-admission pricing Stage 7 inventory refresh helper' \
   "$pricing_stage7_refresh_helper" 3f412e33d631f2956a575e40f7f28f8b0b592106
+pricing_stage567_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-gate.sh
+if ! fixed_root_helper_is_trusted "$pricing_stage567_helper"; then
+  warn "MISSING or unsafe required fixed pricing Stage 5-7 convergence helper or parent"
+  verify_failures=$((verify_failures + 1))
+fi
+require_permitted 'GPT Image 2 exact-admission pricing Stage 5-7 convergence helper' \
+  "$pricing_stage567_helper" 3f412e33d631f2956a575e40f7f28f8b0b592106
 require_permitted 'router promotion to slot A' \
   /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8800
 require_permitted 'router promotion to slot B' \

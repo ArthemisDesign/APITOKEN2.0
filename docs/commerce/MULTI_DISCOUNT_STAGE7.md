@@ -119,13 +119,14 @@ replace it with SQL, direct engine calls, SSH loops or a copied credential.
 
 The stage request deliberately rejects `engine_inventory_drift`: the fresh exhaustive engine
 identity must equal both scans recorded by Stage 5. Recovery is not a retry or relaxed comparison.
-Run the separately delivered Stage 5/6 inventory-refresh bridge after its exact deployment is GREEN,
-wait for a new immutable prepared target/recovery pair, then deliver a new Stage 7 bridge pinned to
-those terminal identities in a later GREEN checkpoint. The completed replacement pair is `g23` target
-(`sha256:v2:bab313f8619d856de9073c13d6dabbf9663a59aa3e4200ab25f7758202b5892c`) and `g24`
-recovery (`sha256:v2:36c48d7c909882d8a01d47131a5e63ce04d0d5bdebbbefefc8fe04dfdcddd8b1`); its fixed
-consumer is `pricing-stage7-refresh-gate.sh`, with an independent root-only request fence. Earlier
-runs, releases and private fences remain unchanged.
+The completed `g23` target / `g24` recovery refresh and its later fixed Stage 7 consumer remain
+historical evidence: a new account appeared during the deployment interval, so that consumer also
+correctly failed closed. The fixed `pricing-stage567-converge-gate.sh` instead runs fresh Stage 5/6
+and Stage 7 in one root-owned process. It persists each cycle's exact dynamic plan, generation,
+release and idempotency identities, and advances only on the exact typed inventory-drift response.
+The three-cycle bound prevents an open-ended retry loop; any other blocker stops immediately. Earlier
+runs, releases and private fences remain unchanged, and every Stage 7 attempt performs the same strict
+fresh-inventory equality.
 
 ## Invariants
 

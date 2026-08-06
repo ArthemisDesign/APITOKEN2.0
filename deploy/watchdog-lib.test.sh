@@ -5092,6 +5092,40 @@ grep -A7 -F "pricing_stage7_refresh_helper=/usr/local/lib/apitoken-watchdog/cont
   | grep -Fq '3f412e33d631f2956a575e40f7f28f8b0b592106' \
   || wd_die 'pricing Stage 7 refresh sudo self-check is not aligned with policy'
 
+# Inventory churn is closed by one replay-safe, bounded Stage 5-7 process rather than a deploy gap.
+pricing_stage567_gate="$ROOT/deploy/pricing-stage567-converge-gate.sh"
+wd_path_is_controller_definition deploy/pricing-stage567-converge-gate.sh \
+  || wd_die 'pricing Stage 5-7 convergence helper is not a fixed controller definition'
+grep -Fq 'publish_pricing_stage567_converge_helper' "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'pricing Stage 5-7 convergence helper is not published before sudo verification'
+grep -Fxq 'MAX_CYCLES=3' "$pricing_stage567_gate" \
+  || wd_die 'pricing Stage 5-7 convergence helper lacks its fixed cycle bound'
+grep -Fxq 'STATE_PARENT=/var/lib/apitoken/pricing-stage567-converge' "$pricing_stage567_gate" \
+  || wd_die 'pricing Stage 5-7 convergence helper lacks a private cycle namespace'
+grep -Fq 'if (( rc != DRIFT_EXIT )); then' "$pricing_stage567_gate" \
+  && grep -Fq '.state == "engine_inventory_drift"' "$pricing_stage567_gate" \
+  || wd_die 'pricing Stage 5-7 convergence helper can advance on a non-inventory blocker'
+grep -Fq 'stage6_result_is_valid "$stage6_result"' "$pricing_stage567_gate" \
+  && grep -Fq -- '--converge-cycle "$cycle" "$stage6_result"' "$pricing_stage567_gate" \
+  || wd_die 'pricing Stage 5-7 convergence helper does not validate dynamic terminal identities'
+grep -Fq 'REQUEST_STATE=$STATE_DIR/request.json' "$pricing_stage7_refresh_gate" \
+  && grep -Fq '[[ -e $REQUEST_STATE || -L $REQUEST_STATE ]]' "$pricing_stage7_refresh_gate" \
+  || wd_die 'pricing Stage 7 dynamic mode lacks replay-stable idempotency state'
+grep -Fq 'return "$DRIFT_EXIT"' "$pricing_stage7_refresh_gate" \
+  || wd_die 'pricing Stage 7 helper does not classify exact inventory drift for convergence'
+! grep -Eq 'TARGET_GENERATION=(23|24)|RECOVERY_GENERATION=(23|24)' "$pricing_stage567_gate" \
+  || wd_die 'pricing Stage 5-7 convergence helper is pinned to stale generations'
+! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc|https://|images/(generations|edits)' \
+  "$pricing_stage567_gate" \
+  || wd_die 'pricing Stage 5-7 convergence helper contains reseller or image-dispatch logic'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-gate.sh 3f412e33d631f2956a575e40f7f28f8b0b592106' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'pricing Stage 5-7 convergence helper lacks an exact-admission sudo bridge'
+grep -A7 -F 'pricing_stage567_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-gate.sh' \
+  "$ROOT/deploy/install-sudoers.sh" \
+  | grep -Fq '3f412e33d631f2956a575e40f7f28f8b0b592106' \
+  || wd_die 'pricing Stage 5-7 convergence sudo self-check is not aligned with policy'
+
 grep -Fq 'tokio-postgres-rustls' "$ROOT/crates/registry/Cargo.toml" \
   || wd_die 'engine PostgreSQL transport must use rustls alongside the BoringSSL forward transport'
 if grep -Eq '^[[:space:]]*(postgres-native-tls|native-tls)[[:space:]]*=' \

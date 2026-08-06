@@ -16,12 +16,43 @@ POLL_SECONDS=5
 MAX_POLLS=360
 STAGE56_PLAN=/var/lib/apitoken/pricing-stage56-inventory-refresh/$ADMISSION_SHA/plan.json
 STATE_PARENT=/var/lib/apitoken/pricing-stage7-inventory-refresh
-STATE_DIR=$STATE_PARENT/$ADMISSION_SHA
-REQUEST_STATE=$STATE_DIR/request.json
+DRIFT_EXIT=75
 
-[[ $# -eq 1 ]] || { printf 'usage: pricing-stage7-refresh-gate.sh <exact-admission-sha>\n' >&2; exit 2; }
+if [[ $# -eq 4 && $2 == --converge-cycle && $3 =~ ^[1-3]$ ]]; then
+  ACTOR=gpt-image-2-stage567-converge
+  REASON='converge GPT Image 2 pricing admission against current engine inventory'
+  cycle_root=/var/lib/apitoken/pricing-stage567-converge/cycle-$3
+  STAGE56_PLAN=$cycle_root/stage56/$ADMISSION_SHA/plan.json
+  STAGE6_RESULT=$4
+  STATE_PARENT=$cycle_root/stage7
+  [[ $STAGE6_RESULT == "$cycle_root/stage6-result.json" \
+      && -f $STAGE6_RESULT && ! -L $STAGE6_RESULT \
+      && $(stat -c '%U:%G:%a' -- "$STAGE6_RESULT") == root:root:600 ]] \
+    || { printf 'exact terminal Stage 6 result is unavailable or untrusted\n' >&2; exit 1; }
+  jq -e '
+    .state == "green" and
+    ([.stage5_plan_digest,.target_plan_digest,.target_release_digest,
+      .recovery_plan_digest,.recovery_release_digest] |
+      all(type == "string" and test("^sha256:v2:[0-9a-f]{64}$"))) and
+    ([.target_generation,.recovery_generation] |
+      all(type == "string" and test("^[1-9][0-9]*$")))
+  ' "$STAGE6_RESULT" >/dev/null \
+    || { printf 'terminal Stage 6 result has an invalid contract\n' >&2; exit 1; }
+  PLAN_DIGEST=$(jq -r '.stage5_plan_digest' "$STAGE6_RESULT")
+  TARGET_GENERATION=$(jq -r '.target_generation' "$STAGE6_RESULT")
+  TARGET_PLAN_DIGEST=$(jq -r '.target_plan_digest' "$STAGE6_RESULT")
+  TARGET_RELEASE_DIGEST=$(jq -r '.target_release_digest' "$STAGE6_RESULT")
+  RECOVERY_GENERATION=$(jq -r '.recovery_generation' "$STAGE6_RESULT")
+  RECOVERY_PLAN_DIGEST=$(jq -r '.recovery_plan_digest' "$STAGE6_RESULT")
+  RECOVERY_RELEASE_DIGEST=$(jq -r '.recovery_release_digest' "$STAGE6_RESULT")
+elif [[ $# -ne 1 ]]; then
+  printf 'usage: pricing-stage7-refresh-gate.sh <exact-admission-sha>\n' >&2
+  exit 2
+fi
 [[ $1 == "$ADMISSION_SHA" ]] \
   || { printf 'pricing Stage 7 inventory refresh is pinned to %s\n' "$ADMISSION_SHA" >&2; exit 1; }
+STATE_DIR=$STATE_PARENT/$ADMISSION_SHA
+REQUEST_STATE=$STATE_DIR/request.json
 [[ $(id -u) == 0 ]] \
   || { printf 'pricing Stage 7 inventory refresh must run through the fixed root bridge\n' >&2; exit 1; }
 command -v curl >/dev/null || { printf 'curl is required\n' >&2; exit 1; }
@@ -116,15 +147,15 @@ request() {
     printf 'silent\nshow-error\nmax-time = 30\n'
     [[ $method == GET ]] || printf 'data = "@%s"\n' "$body_file"
   } | curl --config -) || {
-    unset COMMERCIAL_ADMIN_KEY
     printf 'pricing control request failed with HTTP %s\n' "${http_code:-unreachable}" >&2
     return 1
   }
   chmod 0600 "$output"
   [[ " $expected_codes " == *" $http_code "* ]] || {
-    unset COMMERCIAL_ADMIN_KEY
     diagnostic=$(stage7_control_error_diagnostic "$output" "$http_code")
     printf 'pricing control request returned HTTP %s (%s)\n' "$http_code" "$diagnostic" >&2
+    [[ $method == POST && $path == /v1/admin/pricing-shadow-rollout-v2/stage \
+        && $http_code == 409 && $diagnostic == engine_inventory_drift ]] && return "$DRIFT_EXIT"
     return 1
   }
 }
