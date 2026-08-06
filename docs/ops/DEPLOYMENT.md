@@ -185,7 +185,11 @@ paid image operation was dispatched. The producer-SHA root under
 `deploy/gpt-image-2-public-smoke-gate.sh` is an exact `--inspect`-only controller with no runtime environment
 loader, credential access, timeout, `setpriv`, or CLI/network dispatch. It accepts either complete strict
 success evidence or this exact pre-dispatch withdrawal, and otherwise emits bounded state/dispatch flags as
-RED. A new paid attempt requires a new producer SHA and evidence root. Catalog, router, OpenKeys, site,
+RED. A successor producer adds a separate no-image `--preflight-only` mode and exact pre-dispatch journal
+states. It reads only `CLAUDE_API_DATABASE_URL` through `config.rs`, selects the existing service credential,
+checks authenticated discovery, and stops at `preflight_success` with both dispatch flags false, null request
+identities, and no PNG/evidence. A paid mode must use another new SHA-keyed root and repeat that fresh
+preflight before dispatch; it cannot promote or replay a prior free artifact. Catalog, router, OpenKeys, site,
 admin and public-documentation publication remains forbidden until a later exact production generation+edit
 gate and overall watchdog status are GREEN.
 

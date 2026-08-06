@@ -289,7 +289,10 @@ is only what is needed to walk the relationships when making changes:
   both request identities null, proving that no paid image operation was dispatched. The fixed
   `deploy/gpt-image-2-public-smoke-gate.sh <producer-sha> --inspect` consumer can accept this exact safe
   withdrawal or complete retained success; it has no credential/environment loader or image dispatch. The
-  direct OpenAI plane and header-gated Combined
+  successor private CLI has a separate free `--preflight-only` consumer of only the engine PostgreSQL DSN,
+  existing `crm-parsing` meter-only credential and authenticated public `/v1/models`; it records exact
+  pre-dispatch stages and cannot emit an image. Paid execution repeats that preflight under a distinct new
+  producer-SHA fence rather than trusting a stale free artifact. The direct OpenAI plane and header-gated Combined
   bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —

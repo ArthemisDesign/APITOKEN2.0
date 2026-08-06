@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::config::Settings;
+use crate::config::openai_image_public_smoke_database_url;
 
 const SCHEMA_VERSION: u32 = 1;
 const MODEL: &str = "gpt-image-2";
@@ -18,6 +18,7 @@ const SETTLEMENT_ATTEMPTS: usize = 300;
 
 pub(crate) struct OpenAiImagePublicSmokeArgs {
     pub output: PathBuf,
+    pub preflight_only: bool,
     pub execute: bool,
 }
 
@@ -111,7 +112,10 @@ struct CompletedImage {
 }
 
 pub(crate) fn run(args: OpenAiImagePublicSmokeArgs) -> Result<()> {
-    if !args.execute {
+    if args.preflight_only && args.execute {
+        bail!("public image smoke modes are mutually exclusive");
+    }
+    if !args.preflight_only && !args.execute {
         let plan = SmokePlan {
             schema_version: SCHEMA_VERSION,
             state: "ready",
@@ -132,56 +136,55 @@ pub(crate) fn run(args: OpenAiImagePublicSmokeArgs) -> Result<()> {
         .filter(|value| valid_sha(value))
         .context("public image smoke requires exact compile-time CLAUDE_API_IMPLEMENTATION_SHA")?;
     create_private_directory(&args.output)?;
-    persist_journal(
-        &args.output,
-        &Journal {
-            schema_version: SCHEMA_VERSION,
-            state: "preflight",
-            implementation_sha,
-            generation_dispatched: false,
-            edit_dispatched: false,
-            generation_request_id: None,
-            edit_request_id: None,
-        },
-    )?;
+    persist_pre_dispatch_journal(&args.output, implementation_sha, "database_url_loading")?;
 
-    let settings = Settings::from_env();
-    let database_url = settings
-        .database_url
-        .as_deref()
+    let database_url = openai_image_public_smoke_database_url()
         .context("public image smoke requires CLAUDE_API_DATABASE_URL")?;
+    persist_pre_dispatch_journal(&args.output, implementation_sha, "database_connecting")?;
     let mut registry = registry::pg::PgStore::connect_with_application_name(
-        database_url,
+        &database_url,
         "gpt-image-2-public-smoke",
     )?;
+    persist_pre_dispatch_journal(&args.output, implementation_sha, "schema_verifying")?;
     registry.verify_schema()?;
+    persist_pre_dispatch_journal(&args.output, implementation_sha, "credential_selecting")?;
     let credential = registry.openai_image_smoke_credential()?;
 
+    persist_pre_dispatch_journal(&args.output, implementation_sha, "runtime_building")?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("create public image smoke runtime")?;
-    runtime.block_on(execute(
+    runtime.block_on(preflight_and_execute(
         args.output,
         implementation_sha,
         credential,
         registry,
+        args.execute,
     ))
 }
 
-async fn execute(
+async fn preflight_and_execute(
     output: PathBuf,
     implementation_sha: &str,
     credential: registry::pg::OpenAiImageSmokeCredential,
     mut registry: registry::pg::PgStore,
+    execute: bool,
 ) -> Result<()> {
+    persist_pre_dispatch_journal(&output, implementation_sha, "client_building")?;
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(15))
         .read_timeout(Duration::from_secs(600))
         .redirect(reqwest::redirect::Policy::none())
         .user_agent("apitoken-gpt-image-2-public-smoke/1")
         .build()?;
+    persist_pre_dispatch_journal(&output, implementation_sha, "discovery_checking")?;
     verify_discovery_hidden(&client, credential.authorization_key()).await?;
+    persist_pre_dispatch_journal(&output, implementation_sha, "preflight_success")?;
+    if !execute {
+        println!("GPT Image 2 public smoke preflight GREEN for {implementation_sha}");
+        return Ok(());
+    }
     persist_journal(
         &output,
         &Journal {
@@ -792,6 +795,22 @@ fn persist_json(path: &Path, value: &impl Serialize) -> Result<()> {
 }
 
 #[cfg(unix)]
+fn persist_pre_dispatch_journal(path: &Path, implementation_sha: &str, state: &str) -> Result<()> {
+    persist_journal(
+        path,
+        &Journal {
+            schema_version: SCHEMA_VERSION,
+            state,
+            implementation_sha,
+            generation_dispatched: false,
+            edit_dispatched: false,
+            generation_request_id: None,
+            edit_request_id: None,
+        },
+    )
+}
+
+#[cfg(unix)]
 fn persist_journal(path: &Path, value: &Journal<'_>) -> Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt;
@@ -882,9 +901,30 @@ mod tests {
             std::fs::metadata(&output).unwrap().permissions().mode() & 0o777,
             0o700
         );
+        persist_pre_dispatch_journal(
+            &output,
+            "0123456789abcdef0123456789abcdef01234567",
+            "preflight_success",
+        )
+        .unwrap();
+        let journal: Value =
+            serde_json::from_slice(&std::fs::read(output.join("journal.json")).unwrap()).unwrap();
+        assert_eq!(journal["state"], "preflight_success");
+        assert_eq!(journal["generation_dispatched"], false);
+        assert_eq!(journal["edit_dispatched"], false);
+        assert!(journal["generation_request_id"].is_null());
+        assert!(journal["edit_request_id"].is_null());
+        assert_eq!(
+            std::fs::metadata(output.join("journal.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
         assert!(create_private_directory(&output).is_err());
 
-        std::fs::remove_dir(&output).unwrap();
+        std::fs::remove_dir_all(&output).unwrap();
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o750)).unwrap();
         assert!(create_private_directory(&output).is_err());
         std::fs::remove_dir(&parent).unwrap();

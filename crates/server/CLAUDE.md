@@ -145,12 +145,16 @@ background loops and the HTTP router. Here — and only here — everything is w
   absent from discovery/catalog/defaults until the authenticated public smoke passes. Image auth runs
   inside the handler before JSON or multipart extraction, so unauthenticated bodies are never buffered.
   Generation and edit evidence are watchdog-GREEN. `openai-image-public-smoke` adds no key, origin,
-  fallback or env: dry-run reads no env/network, while `--execute` requires an exact compile-time SHA and
-  a new absolute output path under an existing actual mode-private directory. It borrows exactly one
-  existing active `crm-parsing` meter-only key from PostgreSQL without serializing it, requires image
-  aliases absent from authenticated discovery, sends one public generation and then one one-reference
-  edit with no post-dispatch retry, and correlates each lowercase UUIDv4 response identity to an exact
-  release-v2 snapshot, reservation, usage row, outbox completion and settlement. Success requires exact
+  fallback or env: dry-run reads no env/network, while `--preflight-only` and `--execute` require an exact
+  compile-time SHA and a new absolute output path under an existing actual mode-private directory. Both
+  modes read only `CLAUDE_API_DATABASE_URL` through the narrow `config.rs` helper rather than assembling
+  unrelated server/provider settings, borrow exactly one existing active `crm-parsing` meter-only key from
+  PostgreSQL without serializing it, and require image aliases absent from authenticated discovery. Every
+  database/schema/credential/runtime/discovery stage is persisted before it starts with both dispatch flags
+  false. `--preflight-only` stops at `preflight_success`; `--execute` repeats that fresh free preflight,
+  sends one public generation and then one one-reference edit with no post-dispatch retry, and correlates
+  each lowercase UUIDv4 response identity to an exact release-v2 snapshot, reservation, usage row, outbox
+  completion and settlement. Success requires exact
   official token/nanoUSD legs, `charge_nano=0`, unchanged account/key money aggregates, bounded
   byte-different mode-`0600` PNGs and mode-`0600` evidence in a mode-`0700` replay-fenced directory.
   Full contract — `docs/ops/GPT_IMAGE_2_CANARY.md`.

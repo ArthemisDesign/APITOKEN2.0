@@ -187,12 +187,16 @@ enum Cmd {
         #[arg(long)]
         execute: bool,
     },
-    /// One-shot authenticated generation+edit smoke through our public Images API and sealed pool.
+    /// Authenticated preflight or one-shot generation+edit through our public Images API and sealed pool.
     OpenaiImagePublicSmoke {
         /// Absolute new directory under an existing mode-private parent for replay-fenced evidence.
         #[arg(long)]
         output: std::path::PathBuf,
-        #[arg(long)]
+        /// Run database, credential, and authenticated discovery checks without an image dispatch.
+        #[arg(long, conflicts_with = "execute")]
+        preflight_only: bool,
+        /// Repeat the free preflight, then perform one generation and one edit.
+        #[arg(long, conflicts_with = "preflight_only")]
         execute: bool,
     },
 }
@@ -399,9 +403,14 @@ fn main() -> Result<()> {
             budget_nanousd,
             execute,
         }),
-        Cmd::OpenaiImagePublicSmoke { output, execute } => {
+        Cmd::OpenaiImagePublicSmoke {
+            output,
+            preflight_only,
+            execute,
+        } => {
             openai_image_public_smoke::run(openai_image_public_smoke::OpenAiImagePublicSmokeArgs {
                 output,
+                preflight_only,
                 execute,
             })
         }

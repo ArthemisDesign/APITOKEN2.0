@@ -68,6 +68,15 @@ fn ev(k: &str) -> Option<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
+
+/// Narrow PostgreSQL input for the private public-image smoke CLI.
+///
+/// The smoke must not assemble [`Settings`]: doing so would make its free database/discovery preflight
+/// depend on unrelated provider rosters, fallback credentials, and server-only validation.
+pub(crate) fn openai_image_public_smoke_database_url() -> Option<String> {
+    ev("CLAUDE_API_DATABASE_URL")
+}
+
 fn ev_or(k: &str, d: &str) -> String {
     ev(k).unwrap_or_else(|| d.to_string())
 }
