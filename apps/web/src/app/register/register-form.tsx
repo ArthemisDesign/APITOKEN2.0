@@ -118,7 +118,6 @@ function inviteRuleLabel(
   const target = "provider" in rule.scope
     ? rule.scope.provider.providerId
     : `${rule.scope.model.providerId}/${rule.scope.model.canonicalModelId}`;
-  if (rule.pricingMode === "track") return `${target}: ${language === "ru" ? "прогрессивный тариф" : "progressive pricing"}`;
   const discount = (rule.discountBps ?? 0) / 100;
   return `${target}: ${language === "ru" ? "скидка" : "discount"} ${discount}%`;
 }

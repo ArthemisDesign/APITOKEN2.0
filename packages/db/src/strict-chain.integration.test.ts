@@ -439,5 +439,22 @@ describe.runIf(Boolean(connectionString))("automatic strict chain", () => {
       actorId: "admin@example.test",
       reason: "post-cutover global edit",
     })).rejects.toMatchObject({ code: "release_cycle_required" });
+
+    // Service policies are pinned the same way: the release authority runs service as
+    // meter_only, so a post-cutover editor save would version a legacy document that never
+    // moves release-v2 billing while reporting success. It must fail just as loudly.
+    await expect(updateManagedPricingPolicy(database, {
+      ownerType: "service",
+      ownerId: "service:content-studio",
+      productId: "main",
+      expectedVersion: 1,
+      rules: [{
+        scope: { provider: { providerId: "anthropic" } },
+        pricingMode: "discount",
+        discountBps: 5_000,
+      }],
+      actorId: "admin@example.test",
+      reason: "post-cutover service edit",
+    })).rejects.toMatchObject({ code: "release_cycle_required" });
   });
 });

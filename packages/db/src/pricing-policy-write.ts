@@ -49,6 +49,12 @@ interface SourcePolicy {
   rules: SourceRule[];
 }
 
+// Read-side rule view: the write schema (`PricingPolicyEditorRule`) accepts only `discount`,
+// but historical policy versions may still store the retired `track` mode and stay readable.
+export type ManagedPricingPolicyRuleView = Omit<PricingPolicyEditorRule, "pricingMode"> & {
+  pricingMode: "track" | "discount";
+};
+
 export interface ManagedPricingPolicyView {
   policyId: string;
   ownerType: ManagedOwnerType;
@@ -63,7 +69,7 @@ export interface ManagedPricingPolicyView {
   currentCreatedAt: string;
   servicePurpose: string | null;
   serviceResponsible: string | null;
-  rules: PricingPolicyEditorRule[];
+  rules: ManagedPricingPolicyRuleView[];
   targets: Array<{
     bindingId: string;
     accountId: string;
@@ -155,7 +161,7 @@ function scopeParts(rule: PricingPolicyEditorRule): {
       };
 }
 
-function editorRuleFromSource(rule: SourceRule): PricingPolicyEditorRule {
+function editorRuleFromSource(rule: SourceRule): ManagedPricingPolicyRuleView {
   return {
     scope: rule.scope_type === "provider"
       ? { provider: { providerId: rule.provider_id } }
@@ -173,13 +179,9 @@ function ruleId(input: PricingPolicyEditorRule): string {
   return `${target}:${input.pricingMode}`;
 }
 
-function buildSourceRule(input: PricingPolicyEditorRule, ownerType: ManagedOwnerType): SourceRule {
-  if (ownerType !== "global_b2c" && input.pricingMode === "track") {
-    throw new PricingPolicyWriteError(
-      "invalid_owner_rule",
-      `${ownerType} policies accept only static discount rules`,
-    );
-  }
+function buildSourceRule(input: PricingPolicyEditorRule): SourceRule {
+  // The editor schema accepts only static discount rules; the retired `track` mode is refused
+  // at the schema boundary for every owner type before this builder runs.
   const scope = scopeParts(input);
   const base = {
     rule_id: ruleId(input),
@@ -189,10 +191,10 @@ function buildSourceRule(input: PricingPolicyEditorRule, ownerType: ManagedOwner
     pricing_mode: input.pricingMode,
     rule_origin: "managed" as const,
     discount_bps: input.discountBps,
-    payable_multiplier_bp: input.pricingMode === "discount" ? 10_000 - input.discountBps! : null,
-    track_eligible: input.pricingMode === "track",
-    retention_eligible: input.pricingMode === "track",
-    commission_eligible: input.pricingMode === "track",
+    payable_multiplier_bp: 10_000 - input.discountBps!,
+    track_eligible: false,
+    retention_eligible: false,
+    commission_eligible: false,
   };
   return { ...base, rule_digest: stage5Digest("source-rule", base) };
 }
@@ -206,7 +208,7 @@ function buildSourcePolicy(input: {
   rules: readonly PricingPolicyEditorRule[];
 }): SourcePolicy {
   const parsedRules = pricingPolicyEditorRulesSchema.parse(input.rules);
-  const rules = parsedRules.map((rule) => buildSourceRule(rule, input.ownerType))
+  const rules = parsedRules.map((rule) => buildSourceRule(rule))
     .sort((left, right) => compareKeys(sourceRuleKey(left), sourceRuleKey(right)));
   const base = {
     policy_id: input.policyId,
@@ -1039,13 +1041,15 @@ export async function updateManagedPricingPolicy(database: Database, input: {
         throw new PricingPolicyWriteError("invitation_not_editable", "only an active unredeemed invitation can be edited");
       }
     }
-    if (input.ownerType === "global_b2c" && (await pricingReleaseCutoverCompleted(client))) {
-      // Post-cutover the active release pins the global B2C policy: a save here would version
-      // the commerce document and stage legacy-lane deliveries that never move release-v2
-      // billing, silently diverging the panel from enforced prices. Refuse loudly instead.
+    if ((input.ownerType === "global_b2c" || input.ownerType === "service")
+      && (await pricingReleaseCutoverCompleted(client))) {
+      // Post-cutover the active release pins the global B2C policy and the service meter_only
+      // authority: a save here would version the commerce document and stage legacy-lane
+      // deliveries that never move release-v2 billing, silently diverging the panel from
+      // enforced prices. Refuse loudly instead.
       throw new PricingPolicyWriteError(
         "release_cycle_required",
-        "the global B2C policy is pinned by the active pricing release; changing it post-cutover requires a new release cycle",
+        `the ${input.ownerType === "global_b2c" ? "global B2C" : "service"} policy is pinned by the active pricing release; changing it post-cutover requires a new release cycle`,
       );
     }
     const identity = await client.query<{ id: string }>(`
@@ -1582,7 +1586,9 @@ export async function copyBusinessInvitationPolicyToUser(
   if (!binding.rows[0]) return null;
   const invitation = await sourcePolicyById(client, binding.rows[0].invitation_policy_id);
   const policyId = `policy:main:b2b:${input.userId}`;
-  const rules = invitation.policy.rules.map(editorRuleFromSource);
+  // Re-validate at the write boundary: invitation rules are discount-only, and the parse both
+  // proves it and narrows the read-side view type back to the editor rule type.
+  const rules = pricingPolicyEditorRulesSchema.parse(invitation.policy.rules.map(editorRuleFromSource));
   const copied = await createPolicyIdentityAndVersion(client, {
     policyId,
     ownerType: "b2b_client",
@@ -1620,7 +1626,7 @@ export async function copyBusinessInvitationPolicyToReplacement(
   const source = await sourcePolicyById(client, binding.rows[0].invitation_policy_id);
   const copied = await createBusinessInvitationPolicy(client, {
     inviteId: input.replacementInviteId,
-    rules: source.policy.rules.map(editorRuleFromSource),
+    rules: pricingPolicyEditorRulesSchema.parse(source.policy.rules.map(editorRuleFromSource)),
     actorId: input.actorId,
     reason: input.reason,
   });

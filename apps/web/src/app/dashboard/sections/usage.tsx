@@ -27,7 +27,6 @@ const policyCopy = {
     fundingPending: "Funding split pending",
     unavailable: "Unavailable",
     pricingRule: "Pricing rule",
-    progressive: "Progressive",
     legacy: "Legacy account rule",
     mixed: "Mixed rules",
     noRule: "No pricing rule",
@@ -44,7 +43,6 @@ const policyCopy = {
     fundingPending: "Разбивка средств ожидает сверки",
     unavailable: "Недоступно",
     pricingRule: "Правило тарификации",
-    progressive: "Прогрессивный тариф",
     legacy: "Legacy-правило аккаунта",
     mixed: "Разные правила",
     noRule: "Правило отсутствует",
@@ -498,9 +496,6 @@ function pricingRuleLabel(
   copy: typeof policyCopy.en | typeof policyCopy.ru,
 ): string {
   if (!rule) return copy.noRule;
-  if (rule.pricingMode === "track") {
-    return `${copy.progressive} · ${(100 - rule.payableMultiplierBp / 100).toLocaleString()}%`;
-  }
   if (rule.discountBps !== null) return `−${rule.discountBps / 100}%`;
   return `${copy.legacy} · ${(100 - rule.payableMultiplierBp / 100).toLocaleString()}%`;
 }

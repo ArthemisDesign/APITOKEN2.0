@@ -30,7 +30,9 @@ model and 60% for all other Gemini models. Discounts do not stack.
 The global B2C policy is pinned by the active pricing release. Post-cutover a direct editor save
 is refused with `release_cycle_required`: changing the global rule set requires a new release
 cycle (new prepared target/recovery pair, fresh evidence, one head CAS) so the panel can never
-diverge from enforced prices.
+diverge from enforced prices. Service policies are pinned the same way: the release authority
+runs service as `meter_only` without rules, so a post-cutover service editor save is refused with
+the same `release_cycle_required` instead of silently versioning a legacy document.
 
 The official cost is computed by `crates/metering` from the immutable effective-dated tariff and
 only then multiplied by the integer `payable_multiplier_bp`. All amounts are nanoUSD/decimal

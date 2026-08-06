@@ -131,17 +131,6 @@ function account(): AccountView {
 }
 
 function policyVersion() {
-  const trackRule = (ruleId: string) => ({
-    ruleId,
-    scope: "provider" as const,
-    pricingMode: "track" as const,
-    ruleOrigin: "managed" as const,
-    discountBps: null,
-    payableMultiplierBp: 4000,
-    trackEligible: true,
-    retentionEligible: true,
-    commissionEligible: true,
-  });
   const staticRule = (ruleId: string) => ({
     ruleId,
     scope: "provider" as const,
@@ -162,7 +151,7 @@ function policyVersion() {
       providerId: "anthropic",
       available: true,
       models: ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"].map((modelId) => ({
-        modelId, available: true, unavailableReasons: [], rule: trackRule("anthropic-track"),
+        modelId, available: true, unavailableReasons: [], rule: staticRule("anthropic-static"),
       })),
     }, {
       providerId: "openai",

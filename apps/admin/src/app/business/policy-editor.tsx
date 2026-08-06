@@ -82,7 +82,6 @@ export function ManagedPolicyEditor(props: {
   policy: ManagedPolicyView;
   rules: PricingRule[];
   onRulesChange: (rules: PricingRule[]) => void;
-  allowTrack?: boolean;
   segment: "b2c" | "b2b" | "service";
   disabled?: boolean;
 }) {
@@ -108,7 +107,6 @@ export function ManagedPolicyEditor(props: {
         catalog={props.catalog}
         rules={props.rules}
         onChange={props.onRulesChange}
-        allowTrack={props.allowTrack}
         segment={props.segment}
         disabled={props.disabled}
       />
@@ -144,7 +142,6 @@ export function PolicyRuleEditor(props: {
   catalog: PricingCatalogView;
   rules: PricingRule[];
   onChange: (rules: PricingRule[]) => void;
-  allowTrack?: boolean;
   segment: "b2c" | "b2b" | "service";
   disabled?: boolean;
 }) {
@@ -154,8 +151,8 @@ export function PolicyRuleEditor(props: {
     if (!enabled) return props.onChange(remaining);
     props.onChange([...remaining, {
       scope,
-      pricingMode: props.allowTrack ? "track" : "discount",
-      discountBps: props.allowTrack ? null : 0,
+      pricingMode: "discount",
+      discountBps: 0,
     }]);
   };
   const replaceRule = (scope: PricingRule["scope"], change: Partial<PricingRule>) => {
@@ -201,7 +198,6 @@ export function PolicyRuleEditor(props: {
               <>
                 <RuleControls
                   rule={providerRule}
-                  allowTrack={props.allowTrack}
                   disabled={props.disabled}
                   onChange={(change) => replaceRule(providerScope, change)}
                 />
@@ -237,7 +233,6 @@ export function PolicyRuleEditor(props: {
                       {modelRule ? (
                         <RuleControls
                           rule={modelRule}
-                          allowTrack={props.allowTrack}
                           disabled={props.disabled}
                           compact
                           onChange={(change) => replaceRule(modelScope, change)}
@@ -260,7 +255,6 @@ export function PolicyRuleEditor(props: {
 
 function RuleControls(props: {
   rule: PricingRule;
-  allowTrack?: boolean;
   disabled?: boolean;
   compact?: boolean;
   onChange: (change: Partial<PricingRule>) => void;
@@ -272,33 +266,26 @@ function RuleControls(props: {
         <select
           value={props.rule.pricingMode}
           disabled={props.disabled}
-          onChange={(event) => props.onChange(event.target.value === "track"
-            ? { pricingMode: "track", discountBps: null }
-            : { pricingMode: "discount", discountBps: 0 })}
+          onChange={() => props.onChange({ pricingMode: "discount", discountBps: 0 })}
         >
-          {props.allowTrack ? <option value="track">прогрессивный тариф</option> : null}
           <option value="discount">фиксированная скидка</option>
         </select>
       </label>
-      {props.rule.pricingMode === "discount" ? (
-        <label>
-          <span>скидка, %</span>
-          <input
-            type="number"
-            min={0}
-            max={95}
-            step={1}
-            value={(props.rule.discountBps ?? 0) / 100}
-            disabled={props.disabled}
-            onChange={(event) => {
-              const value = Number(event.target.value);
-              if (Number.isInteger(value) && value >= 0 && value <= 95) props.onChange({ discountBps: value * 100 });
-            }}
-          />
-        </label>
-      ) : (
-        <span className="policy-progressive-note">множитель материализуется из текущего B2C-тира</span>
-      )}
+      <label>
+        <span>скидка, %</span>
+        <input
+          type="number"
+          min={0}
+          max={95}
+          step={1}
+          value={(props.rule.discountBps ?? 0) / 100}
+          disabled={props.disabled}
+          onChange={(event) => {
+            const value = Number(event.target.value);
+            if (Number.isInteger(value) && value >= 0 && value <= 95) props.onChange({ discountBps: value * 100 });
+          }}
+        />
+      </label>
     </div>
   );
 }
@@ -315,7 +302,5 @@ function findRule(rules: PricingRule[], scope: PricingRule["scope"]): PricingRul
 }
 
 function rulePreview(rule: PricingRule, source: string): string {
-  return rule.pricingMode === "track"
-    ? `${source}: прогрессивный тариф`
-    : `${source}: скидка ${(rule.discountBps ?? 0) / 100}%`;
+  return `${source}: скидка ${(rule.discountBps ?? 0) / 100}%`;
 }

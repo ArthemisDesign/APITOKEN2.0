@@ -14,6 +14,7 @@ import {
   createBusinessInvitationPolicy,
   enqueuePricingJob,
   getManagedPricingPolicy,
+  type ManagedPricingPolicyRuleView,
   PricingPolicyWriteError,
   provisionBusinessClientPolicy,
 } from "./pricing-policy-write.js";
@@ -843,7 +844,7 @@ export async function getBusinessInvitePreview(
   email: string | null;
   multiplierBp: number;
   expiresAt: Date;
-  policy: { currentVersion: number; rules: PricingPolicyEditorRule[] } | null;
+  policy: { currentVersion: number; rules: ManagedPricingPolicyRuleView[] } | null;
 } | null> {
   const result = await database.pool.query<{
     id: string; email: string | null; multiplier_bp: number; expires_at: Date;

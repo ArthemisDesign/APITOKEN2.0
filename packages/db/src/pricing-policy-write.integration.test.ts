@@ -187,10 +187,13 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
       reason: "update negotiated provider policy",
     };
 
+    // The retired track mode is refused at the write-boundary schema for every owner type:
+    // a legacy-shaped payload fails validation before any policy row is touched.
+    const legacyTrackRule = { ...ANTHROPIC_60, pricingMode: "track", discountBps: null } as unknown as PricingPolicyEditorRule;
     await expect(updateManagedPricingPolicy(database, {
       ...base,
-      rules: [{ ...ANTHROPIC_60, pricingMode: "track", discountBps: null }],
-    })).rejects.toMatchObject({ code: "invalid_owner_rule" });
+      rules: [legacyTrackRule],
+    })).rejects.toThrow();
     await expect(updateManagedPricingPolicy(database, {
       ...base,
       rules: [{

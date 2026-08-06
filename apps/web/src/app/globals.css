@@ -335,7 +335,7 @@ section{padding:96px 0;border-bottom:1px solid var(--line)}
 .price .val{font-size:13px;color:var(--txt-3);flex:1;margin:0 0 20px;min-block-size:4.8em}
 .price .badge{align-self:flex-start;font-family:var(--font-mono);font-size:11px;color:var(--accent);border:1px solid var(--accent-line);border-radius:99px;padding:3px 10px;margin-bottom:14px;text-transform:uppercase;letter-spacing:.04em}
 
-/* flexible balance + progressive B2C / negotiated B2B pricing */
+/* flexible balance + flat B2C / negotiated B2B pricing */
 .pricing-overview{display:grid;gap:22px}
 .pricing-intro{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px;align-items:stretch}
 .topup-card,.business-card,.tier-section{border:1px solid var(--line);border-radius:8px;background:var(--bg-card);box-shadow:var(--shadow)}

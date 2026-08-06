@@ -64,7 +64,7 @@ describe("multi-provider policy editor", () => {
     expect(html).toContain("Нужно выбрать хотя бы одно правило");
   });
 
-  it("does not expose track mode for B2B/service editors", () => {
+  it("never exposes the retired track mode", () => {
     const html = renderToString(
       <PolicyRuleEditor
         catalog={catalog}
@@ -74,10 +74,11 @@ describe("multi-provider policy editor", () => {
           discountBps: 6_000,
         }]}
         onChange={vi.fn()}
-        segment="b2b"
+        segment="b2c"
       />,
     );
     expect(html).not.toContain("прогрессивный тариф");
+    expect(html).not.toContain("track");
     expect(html).toContain("фиксированная скидка");
   });
 });

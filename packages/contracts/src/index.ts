@@ -2181,14 +2181,13 @@ export const pricingPolicyEditorRuleSchema = z.object({
       }).strict(),
     }).strict(),
   ]),
-  pricingMode: z.enum(["track", "discount"]),
+  // The editor schema is discount-only: the retired `track` mode is no longer accepted at the
+  // write boundary. Historical stored rows keep their values and stay readable as history.
+  pricingMode: z.enum(["discount"]),
   discountBps: z.number().int().min(0).max(9_500)
     .refine((value) => value % 100 === 0, "discountBps must use whole percentage points")
     .nullable(),
 }).strict().superRefine((rule, context) => {
-  if (rule.pricingMode === "track" && rule.discountBps !== null) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["discountBps"], message: "track rules do not have a fixed discount" });
-  }
   if (rule.pricingMode === "discount" && rule.discountBps === null) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["discountBps"], message: "discount rules require discountBps" });
   }

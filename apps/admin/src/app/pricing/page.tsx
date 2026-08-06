@@ -92,7 +92,6 @@ function GlobalPolicyEditor(props: {
         policy={props.policy}
         rules={rules}
         onRulesChange={setRules}
-        allowTrack
         segment="b2c"
         disabled={saving}
       />
@@ -278,7 +277,7 @@ export default function PricingPage() {
         <div className="policy-rule-count bad">Catalog/switch foundation ещё не материализован.</div>
       )}
 
-      <SectionHeader title="Global B2C policy" sub="track и точные static overrides" />
+      <SectionHeader title="Global B2C policy" sub="фиксированные скидки: provider default и точные overrides по моделям" />
       {data.catalog && data.globalPolicy ? (
         <GlobalPolicyEditor
           key={data.globalPolicy.currentVersion}
