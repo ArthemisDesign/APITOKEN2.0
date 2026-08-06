@@ -628,8 +628,11 @@ ssh -o BatchMode=yes apitokensale \
 The bridge reads the exact immutable terminal Stage 5 run from the bounded read-only producer first
 deployed GREEN at `70d785e66e915cdbaaf9d4a60bc00492511b95d3`, requires the prepared target/recovery
 lineage and zero blockers, persists a private root-only idempotency fence, and emits only bounded
-release identities and rollout counts. It never replays materialization or exposes the admin
-credential, account IDs or raw worker errors.
+release identities and rollout counts. After the typed diagnostic producer
+`d85aa225e0846439b85d8ba55fa8cd290d23a472` was deployed exact GREEN, the bridge also reports only
+an allowlisted Stage 7 staging `code`; malformed or unknown envelopes become `unclassified`. It never
+prints the response message, replays materialization, or exposes the admin credential, account IDs,
+or raw worker errors.
 
 Shadow rollout worker bounds are validated at startup: `PRICING_SHADOW_ROLLOUT_POLL_MS=5000`
 (`1000..60000`), `PRICING_SHADOW_ROLLOUT_LEASE_MS=300000` (`30000..3600000`),

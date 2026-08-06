@@ -136,9 +136,11 @@ the worker claims per-account jobs with a lease, delivers generic `policy_shadow
 `locked_openkeys_transition`, stores the exact ACK digest/payload, and atomically closes
 the rollout `confirmed|blocked|dead`. Staging failures are an expand-only typed producer
 contract: the API returns only a stable bounded `code` and sanitized 409/503 message, never
-raw subject-bearing DB/engine text. An operator helper may consume those codes only after the
-exact producer SHA is GREEN. Startup, migration, polling, and the read endpoint do not create
-a rollout/job; the lane does not move the release head, balances, or the live price.
+raw subject-bearing DB/engine text. After exact producer SHA
+`d85aa225e0846439b85d8ba55fa8cd290d23a472` reached GREEN, the fixed Stage 7 operator helper became
+the consumer: it emits only allowlisted codes and maps malformed/unknown envelopes to
+`unclassified`. Startup, migration, polling, and the read endpoint do not create a rollout/job; the
+lane does not move the release head, balances, or the live price.
 
 ### Sales feed (commerce ↔ sales)
 

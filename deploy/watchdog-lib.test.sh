@@ -4908,6 +4908,31 @@ pricing_stage7_gate="$ROOT/deploy/pricing-stage7-admission-gate.sh"
 pricing_stage7_run_validator=$(sed -n '/^stage5_run_is_valid()/,/^}/p' "$pricing_stage7_gate")
 [[ -n $pricing_stage7_run_validator ]] \
   || wd_die 'pricing Stage 7 helper lacks its terminal Stage 5 run validator'
+pricing_stage7_error_diagnostic=$(sed -n '/^stage7_control_error_diagnostic()/,/^}/p' "$pricing_stage7_gate")
+[[ -n $pricing_stage7_error_diagnostic ]] \
+  || wd_die 'pricing Stage 7 helper lacks its bounded error diagnostic classifier'
+eval "$pricing_stage7_error_diagnostic"
+printf '%s\n' '{"statusCode":409,"message":"pricing shadow rollout conflicts with durable authority","code":"openkeys_multiplier_drift"}' \
+  >"$TEMP/pricing-stage7-known-error.json"
+[[ $(stage7_control_error_diagnostic "$TEMP/pricing-stage7-known-error.json" 409) == openkeys_multiplier_drift ]] \
+  || wd_die 'pricing Stage 7 helper rejected an allowlisted staging diagnostic'
+printf '%s\n' '{"statusCode":503,"message":"pricing shadow rollout authority is temporarily unavailable","code":"engine_inventory_unavailable"}' \
+  >"$TEMP/pricing-stage7-transient-error.json"
+[[ $(stage7_control_error_diagnostic "$TEMP/pricing-stage7-transient-error.json" 503) == engine_inventory_unavailable ]] \
+  || wd_die 'pricing Stage 7 helper rejected the bounded transient diagnostic'
+printf '%s\n' '{"statusCode":409,"message":"pricing shadow rollout conflicts with durable authority","code":"account_acct_secret"}' \
+  >"$TEMP/pricing-stage7-unknown-error.json"
+[[ $(stage7_control_error_diagnostic "$TEMP/pricing-stage7-unknown-error.json" 409) == unclassified ]] \
+  || wd_die 'pricing Stage 7 helper exposed an unknown diagnostic code'
+printf '%s\n' '{"statusCode":409,"message":"acct_secret","code":"openkeys_multiplier_drift"}' \
+  >"$TEMP/pricing-stage7-malformed-error.json"
+[[ $(stage7_control_error_diagnostic "$TEMP/pricing-stage7-malformed-error.json" 409) == unclassified ]] \
+  || wd_die 'pricing Stage 7 helper accepted a raw subject-bearing error message'
+! printf '%s\n' "$pricing_stage7_error_diagnostic" \
+  | grep -Eq 'cat .*\$output|printf .*\$(output|message)|jq .*\.message.*\|.*@' \
+  || wd_die 'pricing Stage 7 diagnostic classifier can print the raw control response or message'
+[[ $(printf '%s\n' "$pricing_stage7_error_diagnostic" | grep -Ec 'printf ') == 3 ]] \
+  || wd_die 'pricing Stage 7 diagnostic classifier gained an unreviewed output path'
 PLAN_DIGEST="sha256:v2:$(printf '8%.0s' {1..64})"
 TARGET_GENERATION=21
 TARGET_PLAN_DIGEST="sha256:v2:$(printf 'b%.0s' {1..64})"

@@ -72,14 +72,29 @@ load_admin_key_from_commerce_slot() {
 }
 
 stage7_control_error_diagnostic() {
-  local output=$1 http_code=$2
-  jq -e --argjson status "$http_code" '
-    type == "object" and
-    ((keys - ["error", "message", "statusCode"]) | length) == 0 and
-    .statusCode == $status and
-    (.message | type == "string" and length >= 1 and length <= 300) and
-    ((.error // "") | type == "string" and length <= 100)
-  ' "$output" >/dev/null 2>&1 && printf 'standard\n' || printf 'unclassified\n'
+  local output=$1 http_code=$2 code
+  code=$(jq -er --argjson status "$http_code" '
+    if type == "object" and
+       (keys | sort) == (["code", "message", "statusCode"] | sort) and
+       .statusCode == $status and
+       (.code | type == "string") and
+       (($status == 409 and .message == "pricing shadow rollout conflicts with durable authority") or
+        ($status == 503 and .message == "pricing shadow rollout authority is temporarily unavailable"))
+    then .code else empty end
+  ' "$output" 2>/dev/null) || { printf 'unclassified\n'; return; }
+  case "$http_code:$code" in
+    409:stage5_run_missing|409:stage5_run_not_prepared|409:engine_inventory_drift|\
+    409:release_plan_missing|409:release_plan_not_prepared|409:release_inventory_drift|\
+    409:stage5_artifact_invalid|409:target_assignments_missing|409:target_assignments_drift|\
+    409:release_policy_invalid|409:openkeys_owner_missing|409:openkeys_multiplier_drift|\
+    409:openkeys_lineage_missing|409:openkeys_lock_drift|409:idempotency_conflict|\
+    409:shadow_rollout_conflict|503:engine_inventory_unavailable)
+      printf '%s\n' "$code"
+      ;;
+    *)
+      printf 'unclassified\n'
+      ;;
+  esac
 }
 
 request() {
