@@ -195,8 +195,13 @@ credential internally and checks authenticated discovery. Free-preflight deliver
 rerun. This mode has no image POST at all; its journal contract also requires both dispatch flags false and
 null request identities. The corrective controller is now `--inspect`-only: no `/proc`, environment, binary,
 credential or network path. It validates that the root contains only the private journal and publishes its
-exact bounded stage as `deploy/gpt-image-2-public-preflight`. A paid mode requires another new producer/root
-and a fresh successful free preflight; it cannot promote or replay this artifact. Catalog, router, OpenKeys, site,
+exact bounded stage as `deploy/gpt-image-2-public-preflight`. Inspector delivery
+`77cf6791c92840dc1e45c1aba252820506f63fd4` reported `credential_selecting`: the selector compared external
+service ID `crm-parsing` to opaque engine `account.id`. Release-v2 service resolution already bypasses the
+model catalog and enforces the provider master switch. Its fix instead joins the exact active assignment to
+the immutable service policy owner, while preserving canonical meter-only resolution and the single active
+unexpired-key requirement. A paid mode requires another new producer/root and a fresh successful free
+preflight; it cannot promote or replay this artifact. Catalog, router, OpenKeys, site,
 admin and public-documentation publication remains forbidden until a later exact production generation+edit
 gate and overall watchdog status are GREEN.
 

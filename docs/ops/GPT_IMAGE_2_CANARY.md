@@ -206,9 +206,16 @@ creates no PNG or evidence. Free-preflight delivery
 contains no image POST, and every valid journal stage requires both dispatch flags false and null request
 identities. Its corrective `deploy/gpt-image-2-public-preflight-gate.sh <producer-sha> --inspect` controller
 can only validate the retained one-file journal and publish the exact bounded stage; it has no `/proc`,
-environment, binary, credential, or network path. Paid execution must use another new producer/root and
-repeat a fresh successful free preflight before changing `generation_dispatched` immediately ahead of the
-first image POST. This withdrawal does not authorize the paid gate or publication.
+environment, binary, credential, or network path. Inspector delivery
+`77cf6791c92840dc1e45c1aba252820506f63fd4` reported exact retained stage
+`credential_selecting`, with both dispatch flags false and both request identities null. The root cause is
+identity selection, not model publication: service/meter-only resolution already bypasses the product
+catalog and checks the OpenAI master switch, but the smoke selector compared opaque engine `account.id`
+with the external service ID `crm-parsing`. The corrected selector keys service identity from the active
+release policy's `owner_type=service` and `owner_id=crm-parsing`, while retaining canonical
+service/meter-only resolution and exactly-one-active-unexpired-key checks. Paid execution must use another
+new producer/root and repeat a fresh successful free preflight before changing `generation_dispatched`
+immediately ahead of the first image POST. This withdrawal does not authorize the paid gate or publication.
 
 The intended one-shot contract remains:
 

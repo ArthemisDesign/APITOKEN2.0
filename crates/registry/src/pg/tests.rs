@@ -4844,7 +4844,7 @@ fn pricing_release_runtime_v2_postgres_matrix() {
         policy_id: "release-runtime-service-policy".into(),
         policy_version: 1,
         owner_type: crate::pricing::PolicyOwnerType::Service,
-        owner_id: "release-runtime-service".into(),
+        owner_id: "crm-parsing".into(),
         account_class: crate::pricing::AccountClass::Service,
         product_id: None,
         billing_mode: BillingModeV2::MeterOnly,
@@ -5039,6 +5039,37 @@ fn pricing_release_runtime_v2_postgres_matrix() {
     assert_eq!(
         cutover_recovery.recovery_link.link_digest,
         "release-runtime-recovery-link"
+    );
+
+    let image_smoke_credential = pg.openai_image_smoke_credential().unwrap();
+    assert_eq!(image_smoke_credential.account_id, "release-runtime-service");
+    assert_eq!(
+        image_smoke_credential.authorization_key(),
+        "release-runtime-service-key"
+    );
+    assert_eq!(image_smoke_credential.purpose, "internal-runtime");
+    assert_eq!(image_smoke_credential.responsible, "runtime-team");
+    pg.key_issue(
+        "release-runtime-service-second-key",
+        "release-runtime-service",
+        None,
+    )
+    .unwrap();
+    let ambiguous_error = match pg.openai_image_smoke_credential() {
+        Ok(_) => panic!("multiple active service keys must fail closed"),
+        Err(error) => error,
+    };
+    assert!(ambiguous_error
+        .to_string()
+        .contains("credential is ambiguous (2 candidates)"));
+    assert_eq!(
+        pg.key_set_status("release-runtime-service-second-key", "inactive")
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        pg.openai_image_smoke_credential().unwrap().account_id,
+        "release-runtime-service"
     );
 
     pg.account_create("release-runtime-post-cutover", None, 5_000)

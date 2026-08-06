@@ -293,10 +293,14 @@ is only what is needed to walk the relationships when making changes:
   separate free `--preflight-only` consumer of only the engine PostgreSQL DSN, existing `crm-parsing`
   meter-only credential and authenticated public `/v1/models`. Delivery
   `737d0234fc7d016c31c5b9c56a27e16aef134d83` is RED and fences its root, but this mode has no image POST
-  and every valid stage has false dispatch flags and null request identities. Its corrective fixed controller
-  is `--inspect`-only and publishes the exact retained stage without environment, credential, binary, or
-  network access. Paid execution requires a distinct new producer-SHA fence and fresh successful preflight
-  rather than trusting this withdrawn artifact. The direct OpenAI plane and header-gated Combined
+  and every valid stage has false dispatch flags and null request identities. Corrective inspect-only delivery
+  `77cf6791c92840dc1e45c1aba252820506f63fd4` reported exact `credential_selecting` without environment,
+  credential, binary, or network access. The selector had incorrectly treated external service ID
+  `crm-parsing` as the opaque engine account ID; the release-v2 service resolver already bypasses the model
+  catalog and enforces the OpenAI master switch. The corrected producer selects the assignment through the
+  active policy's `owner_type=service`/`owner_id=crm-parsing`, then retains canonical meter-only resolution
+  and exactly-one-active-unexpired-key fencing. Paid execution requires a distinct new producer-SHA fence
+  and fresh successful preflight rather than trusting this withdrawn artifact. The direct OpenAI plane and header-gated Combined
   bridge produce these routes; the future router is a
   separate consumer after GREEN public smoke. The model remains absent from discovery/product catalogs,
   OpenKeys/site/admin/defaults/public docs until then. Contract and blockers —
