@@ -20,6 +20,7 @@ import {
   pricingSwitchJobStageRequestV2Schema,
   pricingPolicyDeliveryRepairRequestV2Schema,
   pricingReleaseActivationOperatorV2Schema,
+  pricingStageControlMutationReasonV2Schema,
   pricingReleaseActivationReconcileRequestV2Schema,
   pricingReleaseOrchestrationStageRequestV2Schema,
   pricingReleaseActivationStageRequestV2Schema,
@@ -128,6 +129,23 @@ export class AdminController {
       if (error instanceof AdminCreditError) throw new HttpException(error.message, error.status);
       throw error;
     }
+  }
+
+  @Post("users/:id/provisioning-repair")
+  @Header("Cache-Control", "no-store")
+  async repairUserProvisioning(
+    @Param("id") id: string,
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    if (!uuidSchema.safeParse(id).success) throw new BadRequestException("user ID must be a UUID");
+    const reason = pricingStageControlMutationReasonV2Schema.safeParse(
+      (body as { reason?: unknown })?.reason,
+    );
+    const actor = pricingReleaseActivationOperatorV2Schema.safeParse(actorHeader?.trim());
+    if (!reason.success) throw new BadRequestException("reason is required");
+    if (!actor.success) throw new BadRequestException("verified admin actor is required");
+    return this.admin.repairUserProvisioningV2(id, actor.data, reason.data);
   }
 
   @Get("checkouts/:id/refund-eligibility")

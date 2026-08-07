@@ -1,6 +1,8 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomBytes } from "node:crypto";
-import { Inject, Injectable } from "@nestjs/common";
+import {
+  ConflictException,
+  NotFoundException, Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   multiplierForDiscount,
@@ -70,6 +72,7 @@ import {
   rotateBusinessInvite,
   setBusinessPricing,
   reconcileLostPricingActivationReceiptV2,
+  materializeProvisionedUserPolicy,
   readPricingReleaseOrchestrationControlV2,
   stagePricingReleaseOrchestrationV2,
   stagePricingReleaseActivationJobV2,
@@ -389,6 +392,42 @@ export class AdminService {
       evidence_digest: input.evidence_digest,
       status: "accepted",
     });
+  }
+
+  async repairUserProvisioningV2(
+    userId: string,
+    actorId: string,
+    reason: string,
+  ): Promise<Record<string, unknown>> {
+    const account = await this.database.pool.query<{
+      engine_account_id: string | null;
+      status: string;
+    }>(
+      "SELECT engine_account_id, status FROM engine_accounts WHERE user_id = $1",
+      [userId],
+    );
+    const row = account.rows[0];
+    if (!row || !row.engine_account_id) {
+      throw new NotFoundException("user has no engine account mapping");
+    }
+    if (row.status === "active") {
+      return { status: "already_active", job_id: null };
+    }
+    if (row.status === "disabled") {
+      throw new ConflictException("engine account is disabled");
+    }
+    const staged = await materializeProvisionedUserPolicy(this.database, {
+      userId,
+      engineAccountId: row.engine_account_id,
+    });
+    await this.database.pool.query(`
+      INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+      VALUES ('admin', $1, 'user.provisioning_repair', 'user', $2, $3::jsonb)
+    `, [actorId, userId, JSON.stringify({ reason, jobId: staged.jobId })]);
+    return {
+      status: staged.ready ? "ready" : "staged",
+      job_id: staged.jobId,
+    };
   }
 
   async getPricingReleaseOrchestrationControlV2(): Promise<unknown> {
