@@ -23,7 +23,7 @@ RestartSec=3
 # длинным генерациям и сделать финальный флаш состояния, иначе systemd убьёт SIGKILL.
 KillSignal=SIGTERM
 KillMode=mixed
-TimeoutStopSec=660
+TimeoutStopSec=720
 # Базовый hardening (сервис не пишет никуда, кроме своей data-папки):
 NoNewPrivileges=true
 ProtectSystem=strict

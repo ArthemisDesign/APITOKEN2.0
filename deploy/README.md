@@ -198,6 +198,15 @@ left in `delivering` for the reconciler to charge at the full preflight hold. `E
 (default 900) is an emergency ceiling, not the mechanism: reaching it is logged as a warning and
 means something is wedged. A slot whose count cannot be read — an older binary without the field, an
 unparseable answer — is stopped immediately, so the gate can never wedge a deploy.
+
+The systemd side of the same contract is pinned by `deploy/shutdown-ladder.test.sh`, which runs in
+both the merge gate and the watchdog regression suites. It reads the engine's own budget from
+`crates/server/src/config.rs` — the clamp **maxima**, not the defaults, because an env override may
+use them — and requires every serving `systemd/claude-api*.service` to allow at least that much plus
+headroom for the settlement barriers and the mandatory billing flush. This ordering was inverted
+once: the legacy OpenAI unit carried systemd's 90-second default while the engine drained for up to
+620 seconds, so `State 'stop-sigterm' timed out. Killing.` landed mid-drain and the abandoned
+reservations were charged at the full hold.
 Before any target slot is started, `engine-bluegreen.sh` invokes the fixed root-owned
 `engine-migrate.sh` helper for the selected release. Engine startup only verifies the installed
 schema and never runs DDL; pending migrations are applied explicitly, one version transaction at a
