@@ -424,8 +424,12 @@ async function pendingPricingJobs(client: PoolClient): Promise<string[]> {
            SELECT 1 FROM engine_policy_jobs newer
            WHERE newer.binding_id = job.binding_id AND newer.status = 'confirmed'
              AND newer.effective_version > job.effective_version))
-      UNION ALL SELECT 'release', id, status FROM pricing_release_control_jobs_v2
-      WHERE status IN ('pending', 'processing', 'retry', 'dead')
+      UNION ALL SELECT 'release', job.id, job.status FROM pricing_release_control_jobs_v2 job
+      WHERE job.status IN ('pending', 'processing', 'retry')
+         OR (job.status = 'dead' AND NOT EXISTS(
+           SELECT 1 FROM pricing_release_control_jobs_v2 newer
+           WHERE newer.job_kind = job.job_kind AND newer.status = 'confirmed'
+             AND newer.release_generation > job.release_generation))
     ) job
     ORDER BY concat(kind, ':', id::text) COLLATE "C"
   `);

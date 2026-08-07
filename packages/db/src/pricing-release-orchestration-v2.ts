@@ -55,13 +55,21 @@ const CAPTURE_WINDOW_LAG_SECONDS = 30;
 const CAPTURE_MIN_SAMPLES = 8;
 const CAPTURE_FINANCIAL_SAMPLE = 100;
 
+/** Capture blockers that mean "the window was not quiet or the plane was busy" — re-capture. */
+const TRANSIENT_CAPTURE_BLOCKERS = new Set([
+  "authority_changed_during_validation_window",
+  "pricing_control_job_backlog_or_failure",
+]);
+
+/** At most this many capture attempts per pair before the intent dies. */
+const MAX_CAPTURES_PER_PAIR = 5;
+
 /** Capture blockers that mean "the world moved under the pair" — a fresh cycle is the remedy. */
 const DRIFT_BLOCKER_CODES = new Set([
   "target_release_identity_drift",
   "recovery_release_identity_drift",
   "target_release_assignment_inventory_drift",
   "recovery_release_assignment_inventory_drift",
-  "authority_changed_during_validation_window",
   "engine_inventory_changed_between_scans",
   "openkeys_inventory_changed_between_scans",
   "commerce_inventory_drift",
@@ -603,6 +611,32 @@ async function stepCapture(
       .sort();
     if (codes.length > 0 && codes.every((code) => DRIFT_BLOCKER_CODES.has(code))) {
       await freshCycle(database, row, `capture blocked by drift: ${codes.join(",")}`);
+      return;
+    }
+    if (codes.length > 0 && codes.every((code) => TRANSIENT_CAPTURE_BLOCKERS.has(code))) {
+      const attempts = await database.pool.query<{ count: string }>(`
+        SELECT count(*)::text FROM pricing_stage8_capture_jobs_v2
+        WHERE target_generation = $1 AND recovery_generation = $2
+      `, [row.target_generation, row.recovery_generation]);
+      if (Number(attempts.rows[0]!.count) >= MAX_CAPTURES_PER_PAIR) {
+        await kill(
+          database,
+          row.id,
+          "capture",
+          `capture never found a quiet window in ${MAX_CAPTURES_PER_PAIR} attempts: ${codes.join(",")}`,
+        );
+        return;
+      }
+      // The pair is intact; only the window/plane was busy. Stage a fresh capture right away —
+      // the next tick polls the new job instead of re-classifying the blocked one.
+      await stageNewCapture();
+      await transition(
+        database,
+        row.id,
+        "capture",
+        "evidence_digest = NULL, last_error = $3",
+        [`re-capture after transient blockers: ${codes.join(",")}`],
+      );
       return;
     }
     await kill(database, row.id, "capture", `capture blocked: ${codes.join(",") || "unknown"}`);

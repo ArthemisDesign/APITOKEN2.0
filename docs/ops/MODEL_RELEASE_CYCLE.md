@@ -65,6 +65,10 @@ dead delivery re-materializes on the customer's next action — or an operator c
 immediately via any key-issuance path for that user. Only one orchestration is active at a time. Inventory drift is
 classified and re-cycled at every stateful step — materialize, funding normalization (a mid-cycle
 signup dies there with "engine identity inventory no longer matches"), rollout and capture.
+Transient capture blockers (a busy authority window, a briefly unresolved pricing job) trigger a
+bounded re-capture of the same pair instead of a fresh cycle; a dead release control job whose
+kind confirmed at a newer release generation is obsolete abandoned-pair evidence and no longer
+counts as backlog anywhere.
 
 The manual step-by-step lane below remains as the repair/debug path.
 

@@ -184,6 +184,33 @@ describe.runIf(Boolean(connectionString))("pricing release orchestration v2", ()
       SET step = 'capture', target_generation = 41, recovery_generation = 42
       WHERE id = $1
     `, [staged.orchestrationId]);
+    // A transient blocker (busy authority window / backlog) re-captures instead of dying.
+    await seed.query(`
+      UPDATE pricing_release_orchestrations_v2
+      SET step = 'capture', target_generation = 41, recovery_generation = 42,
+          status = 'active', cycle = 1
+      WHERE id = $1
+    `, [staged.orchestrationId]);
+    await seed.query(`
+      UPDATE pricing_stage8_capture_artifacts_v2
+      SET combined_payload_json = $1::jsonb, created_at = now()
+    `, [JSON.stringify({ blockers: [{ code: "authority_changed_during_validation_window" }] })]);
+    await advancePricingReleaseOrchestrationV2(database, readers);
+    const transient = await readPricingReleaseOrchestrationControlV2(database);
+    expect(transient.orchestrations[0]).toMatchObject({ step: "capture", status: "active" });
+    const stagedCaptures = await seed.query<{ count: string }>(`
+      SELECT count(*)::text FROM pricing_stage8_capture_jobs_v2 WHERE target_generation = 41
+    `, []);
+    expect(Number(stagedCaptures.rows[0]!.count)).toBeGreaterThan(1);
+
+    // A non-drift, non-transient blocker still fails closed.
+    await seed.query(`
+      UPDATE pricing_stage8_capture_jobs_v2
+      SET status = 'blocked', completed_at = now(), result_passed = false,
+          result_engine_evidence_digest = $1, result_combined_evidence_digest = $2,
+          created_at = now()
+      WHERE target_generation = 41 AND status IN ('pending', 'retry')
+    `, ["sha256:v2:" + "5".repeat(64), "sha256:v2:" + "6".repeat(64)]);
     await captureJob("blocked");
     await seed.query(`
       UPDATE pricing_stage8_capture_artifacts_v2

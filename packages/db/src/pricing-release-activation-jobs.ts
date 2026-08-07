@@ -485,9 +485,13 @@ async function unresolvedPricingJobCount(client: PoolClient, excludedJobId?: str
              AND newer.effective_version > job.effective_version))
       UNION ALL SELECT id::text FROM engine_pricing_jobs
       WHERE status IN ('pending', 'processing', 'retry')
-      UNION ALL SELECT id::text FROM pricing_release_control_jobs_v2
-      WHERE status IN ('pending', 'processing', 'retry', 'dead')
-        AND ($1::uuid IS NULL OR id <> $1::uuid)
+      UNION ALL SELECT job.id::text FROM pricing_release_control_jobs_v2 job
+      WHERE (job.status IN ('pending', 'processing', 'retry')
+         OR (job.status = 'dead' AND NOT EXISTS(
+           SELECT 1 FROM pricing_release_control_jobs_v2 newer
+           WHERE newer.job_kind = job.job_kind AND newer.status = 'confirmed'
+             AND newer.release_generation > job.release_generation)))
+        AND ($1::uuid IS NULL OR job.id <> $1::uuid)
     ) unresolved
   `, [excludedJobId ?? null]);
   return parseNonNegativeSafeInteger(result.rows[0]!.count, "unresolved pricing job count");
@@ -1024,7 +1028,11 @@ export async function claimNextPricingReleaseActivationJobV2(
         )
         AND NOT EXISTS (
           SELECT 1 FROM pricing_release_control_jobs_v2 other
-          WHERE other.status IN ('pending', 'processing', 'retry', 'dead')
+          WHERE (other.status IN ('pending', 'processing', 'retry')
+             OR (other.status = 'dead' AND NOT EXISTS(
+               SELECT 1 FROM pricing_release_control_jobs_v2 newer
+               WHERE newer.job_kind = other.job_kind AND newer.status = 'confirmed'
+                 AND newer.release_generation > other.release_generation)))
             AND other.id <> pricing_release_control_jobs_v2.id
         )
       ORDER BY next_attempt_at, created_at
