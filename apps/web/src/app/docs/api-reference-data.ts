@@ -3,6 +3,7 @@
 // can never drift away from what the gateway actually serves.
 import {
   INTEGRATION_MODELS,
+  OPENAI_BASE_URL,
   ROUTER_BASE_URL,
   ROUTER_OPENAI_BASE_URL,
   type IntegrationLanguage,
@@ -222,6 +223,51 @@ const response = await client.chat.completions.create({
 console.log(response.choices[0]?.message.content);`;
 }
 
+function imageRequestCode(apiLanguage: ApiLanguage): string {
+  const prompt = "A watercolor lighthouse at dawn";
+  if (apiLanguage === "curl") {
+    return `curl ${OPENAI_BASE_URL}/images/generations \\
+  -H "Authorization: Bearer $APITOKEN_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "gpt-image-2",
+    "prompt": "${prompt}"
+  }'`;
+  }
+  if (apiLanguage === "python") {
+    return `import base64
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["APITOKEN_API_KEY"],
+    base_url="${OPENAI_BASE_URL}",
+)
+
+image = client.images.generate(
+    model="gpt-image-2",
+    prompt="${prompt}",
+)
+
+with open("image.png", "wb") as f:
+    f.write(base64.b64decode(image.data[0].b64_json))`;
+  }
+  return `import { writeFile } from "node:fs/promises";
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env["APITOKEN_API_KEY"],
+  baseURL: "${OPENAI_BASE_URL}",
+});
+
+const image = await client.images.generate({
+  model: "gpt-image-2",
+  prompt: "${prompt}",
+});
+
+await writeFile("image.png", Buffer.from(image.data[0].b64_json!, "base64"));`;
+}
+
 function installStep(provider: IntegrationProvider, style: ApiStyle, apiLanguage: ApiLanguage, language: IntegrationLanguage): ApiStep | null {
   if (apiLanguage === "curl") return null;
   const native = style === "native";
@@ -304,6 +350,19 @@ export function buildApiGuide({
       : compatibleRequestCode(provider, apiLanguage, model.id),
     codeLabel: apiLanguage === "curl" ? "HTTP" : languageName,
   });
+
+  // GPT Image 2 is served only on the OpenAI plane — the unified router advertises
+  // the model in /v1/models but does not proxy image routes.
+  if (provider === "openai" && native) {
+    steps.push({
+      title: localize(language, "Generate an image with GPT Image 2", "Сгенерируйте изображение через GPT Image 2"),
+      text: localize(language,
+        `Images live on the OpenAI endpoint, not the unified router: \`POST ${OPENAI_BASE_URL}/images/generations\` returns one non-streaming base64 PNG billed to the same prepaid balance. The proved contract is deliberately narrow — background auto|opaque, quality auto|low, size auto. To edit, send multipart \`POST /v1/images/edits\` with one reference PNG on the same endpoint.`,
+        `Изображения обслуживает OpenAI endpoint, а не единый роутер: \`POST ${OPENAI_BASE_URL}/images/generations\` возвращает один непотоковый base64 PNG и списывает тот же предоплатный баланс. Доказанный контракт намеренно узкий — background auto|opaque, quality auto|low, size auto. Для редактирования отправьте multipart \`POST /v1/images/edits\` с одним reference PNG на том же endpoint.`),
+      code: imageRequestCode(apiLanguage),
+      codeLabel: apiLanguage === "curl" ? "HTTP" : languageName,
+    });
+  }
 
   return {
     title: `${providerName} · ${native ? "Native API" : "OpenAI-compatible"} · ${languageName}`,

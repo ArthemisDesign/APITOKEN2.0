@@ -1149,9 +1149,11 @@ cached input is accepted only when its modality split is authoritative, so the c
 nonzero cache counter is rejected rather than guessed. Exact official replacement cost is settled across
 fresh/cached text, fresh/cached image, and image output legs. A successful provider turn with malformed
 usage or controls keeps its full hold for recovery instead of becoming free; ambiguous post-dispatch
-errors never advertise `not_started` and are never replayed. The model remains absent from `/v1/models`,
-router, product catalogs, defaults, and public docs until the authenticated production generation+edit
-smoke is GREEN. There is no image API key, reseller origin, or environment variable.
+errors never advertise `not_started` and are never replayed. The authenticated production
+generation+edit smoke is watchdog-GREEN (delivery `d172c6fd0116ba73b051fc5aa02193a4885de5da`), so the
+model is published: `/v1/models` advertises it, the router preset lists the snapshot without proxying
+image routes, and the generation-6 product catalogs, site and public docs include it. There is no
+image API key, reseller origin, or environment variable.
 
 The private canary still freezes an explicit or admitted profile and publishes only mode-`0600` evidence.
 Generation and one-reference edit are watchdog-GREEN under the exact procedure in

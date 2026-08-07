@@ -293,7 +293,7 @@ it does not replay either fenced request. Corrective producer
 `gpt-image-2-public-paid-smoke-v3` root. It inherits only the production PostgreSQL DSN, invokes exactly one
 `--execute`, and permanently fences any partial outcome. The v2 trigger remains retired.
 
-The intended one-shot contract remains:
+The one-shot contract was:
 
 1. authenticates `GET https://openai.api.apitoken.sale/v1/models` and requires both image aliases to
    remain absent before dispatch;
@@ -312,9 +312,17 @@ The intended one-shot contract remains:
    mode-private directory (no group/world permission).
 
 The command uses the same production public origin and the same sealed Codex OAuth pool behind it. There
-is no reseller image origin, image-specific API key, fallback, or environment variable. The model remains
-excluded from `/v1/models`, pricing/product catalogs, router, OpenKeys, site, admin and public documentation
-until this exact production generation+edit smoke and its delivery SHA are GREEN.
+is no reseller image origin, image-specific API key, fallback, or environment variable.
+
+## Outcome
+
+The v3 gate delivery `d172c6fd0116ba73b051fc5aa02193a4885de5da` ran the exact one-shot contract above
+and is overall watchdog-GREEN: two strict byte-different PNGs, exact generation/edit usage, terminal
+`settled`/`done`, and `charge_nano=0` under release-v2 `meter_only`. Publication followed in the
+separate commit `3917a31b333899aed87396acd6e8e83e403cd3e6`: the generation-6 pricing release activated
+the immutable `gpt-image-2-2026-04-21` snapshot in the main and OpenKeys catalogs (release head 41),
+the router preset advertises it in key-scoped `/v1/models` (the router does not proxy image routes),
+and the site catalog and public docs list the model.
 
 The official model contract is non-streaming. The public Image API guide also describes masks, output
 formats and Responses multi-turn editing, but the actual native subscription wire has not proved masks,

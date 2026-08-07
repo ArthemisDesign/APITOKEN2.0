@@ -15,9 +15,9 @@ Public contract (unchanged from the app-server era):
 | `GET /v1/responses/{id}/input_items` | supported |
 | `POST /v1/responses/input_tokens` | supported; estimates input tokens without running a turn |
 | `POST /v1/chat/completions` | supported adapter, streaming and non-streaming |
-| `POST /v1/images/generations` | producer deployed for authenticated canary; one `opaque/low/auto` PNG, non-streaming |
-| `POST /v1/images/edits` | producer deployed for authenticated canary; one strict PNG reference, one edited PNG, non-streaming |
-| `GET /v1/models`, `GET /v1/models/{model}` | supported; last-good live intersection with the pinned billing catalog; GPT Image 2 stays absent until public smoke is GREEN |
+| `POST /v1/images/generations` | supported (GPT Image 2); one `opaque/low/auto` PNG, non-streaming |
+| `POST /v1/images/edits` | supported (GPT Image 2); one strict PNG reference, one edited PNG, non-streaming |
+| `GET /v1/models`, `GET /v1/models/{model}` | supported; last-good live intersection with the pinned billing catalog; GPT Image 2 advertised since the GREEN public smoke |
 
 Everything else on the OpenAI hostname returns an OpenAI-shaped `404`; nothing is ever forwarded
 to Anthropic from it. The lenient SDK-compatibility rules (ignored sampling/store/unknown

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   INTEGRATION_MODELS,
+  OPENAI_BASE_URL,
   ROUTER_BASE_URL,
   ROUTER_OPENAI_BASE_URL,
   type IntegrationLanguage,
@@ -25,10 +26,11 @@ describe("API reference guide", () => {
         for (const apiLanguage of apiLanguages) {
           for (const language of languages) {
             const guide = buildApiGuide({ provider, apiStyle, apiLanguage, language });
+            const withImageStep = provider === "openai" && apiStyle === "native";
             expect(guide.endpoint).toBe(apiStyle === "native" ? nativeEndpoints[provider] : ROUTER_OPENAI_BASE_URL);
-            expect(guide.steps.length).toBe(apiLanguage === "curl" ? 2 : 3);
+            expect(guide.steps.length).toBe((apiLanguage === "curl" ? 2 : 3) + (withImageStep ? 1 : 0));
             expect(guide.steps.every((step) => step.code.trim().length > 0)).toBe(true);
-            const request = guide.steps.at(-1)!.code;
+            const request = guide.steps.at(withImageStep ? -2 : -1)!.code;
             expect(request).toContain(
               apiStyle === "native" ? INTEGRATION_MODELS[provider][0].id : namespacedModelId(provider, INTEGRATION_MODELS[provider][0].id),
             );
@@ -104,5 +106,25 @@ describe("API reference guide", () => {
     expect(compatible.steps[2].code).toContain('import OpenAI from "openai"');
     expect(compatible.steps[2].code).toContain("chat.completions.create");
     expect(compatible.steps[2].code).toContain("anthropic/claude-opus-5");
+  });
+
+  it("documents the GPT Image 2 route only on the OpenAI native lane", () => {
+    for (const apiLanguage of ["curl", "python", "typescript"] as const) {
+      const openai = buildApiGuide({ provider: "openai", apiStyle: "native", apiLanguage, language: "en" });
+      const imageStep = openai.steps.at(-1)!;
+      expect(imageStep.title).toContain("GPT Image 2");
+      expect(imageStep.text).toContain("/v1/images/edits");
+      expect(imageStep.code).toContain(OPENAI_BASE_URL);
+      if (apiLanguage === "curl") {
+        expect(imageStep.code).toContain(`${OPENAI_BASE_URL}/images/generations`);
+      }
+      expect(imageStep.code).toContain('"gpt-image-2"');
+      expect(imageStep.code).toContain("APITOKEN_API_KEY");
+
+      const anthropic = buildApiGuide({ provider: "anthropic", apiStyle: "native", apiLanguage, language: "en" });
+      expect(anthropic.steps.some((step) => step.code.includes("/images/generations"))).toBe(false);
+      const compatible = buildApiGuide({ provider: "openai", apiStyle: "openai-compatible", apiLanguage, language: "en" });
+      expect(compatible.steps.some((step) => step.code.includes("/images/generations"))).toBe(false);
+    }
   });
 });

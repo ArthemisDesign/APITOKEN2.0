@@ -72,8 +72,8 @@ function catalogEntryKey(entry: { provider_id: string; canonical_model_id: strin
 
 /**
  * Reviewed OpenKeys catalog identities, oldest first. Generations 1 and 2 are
- * historical, generation 5 is the active Anthropic/OpenAI authority without
- * Gemini, and dormant generation 6 adds only GPT Image 2. Each identity pins
+ * historical, generation 5 is the Anthropic/OpenAI authority without Gemini,
+ * and generation 6 — the active successor — adds only GPT Image 2. Each identity pins
  * its exact catalog generation, capability pin and complete enabled entry set,
  * so a partial or forged catalog never passes.
  */
