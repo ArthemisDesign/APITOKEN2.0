@@ -2891,6 +2891,54 @@ export const pricingReleaseActivationReceiptsV2 = pgTable("pricing_release_activ
   `),
 ]);
 
+export const pricingReleaseOrchestrationsV2 = pgTable("pricing_release_orchestrations_v2", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  capabilityGeneration: bigint("capability_generation", { mode: "bigint" }).notNull(),
+  step: text("step").notNull(),
+  status: text("status").notNull().default("active"),
+  cycle: integer("cycle").notNull().default(1),
+  stage5RunId: uuid("stage5_run_id"),
+  targetGeneration: bigint("target_generation", { mode: "bigint" }),
+  recoveryGeneration: bigint("recovery_generation", { mode: "bigint" }),
+  evidenceDigest: text("evidence_digest"),
+  activationKind: text("activation_kind"),
+  operatorId: text("operator_id").notNull(),
+  reason: text("reason").notNull(),
+  lastError: text("last_error"),
+  resultDigest: text("result_digest"),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  uniqueIndex("pricing_release_orchestrations_v2_active_uq")
+    .on(sql`(1)`)
+    .where(sql`${table.status} = 'active'`),
+  check("pricing_release_orchestrations_v2_shape_check", sql`
+    ${table.capabilityGeneration} > 0
+    AND ${table.step} IN (
+      'materialize_pair',
+      'deliver_catalogs',
+      'normalize_funding',
+      'rollout',
+      'capture',
+      'activate',
+      'verify'
+    )
+    AND ${table.status} IN ('active', 'confirmed', 'dead')
+    AND ${table.cycle} BETWEEN 1 AND 3
+    AND (${table.activationKind} IS NULL OR ${table.activationKind} IN ('cutover', 'recovery', 'successor'))
+    AND ${table.operatorId} <> ''
+    AND ${table.reason} <> ''
+    AND (
+      (${table.status} = 'confirmed' AND ${table.resultDigest} IS NOT NULL
+        AND ${table.confirmedAt} IS NOT NULL AND ${table.step} = 'verify'
+        AND ${table.targetGeneration} IS NOT NULL)
+      OR (${table.status} <> 'confirmed' AND ${table.confirmedAt} IS NULL)
+    )
+  `),
+]);
+
 export const checkoutSessions = pgTable("checkout_sessions", {
   id: uuid("id").primaryKey(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),

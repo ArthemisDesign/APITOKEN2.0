@@ -205,3 +205,13 @@ receipt identities stay exact, and every existing job kind, receipt and constrai
 unchanged. The migration stages no job and changes no row; the dependent consumer (staging,
 collector and worker execution of successor jobs) ships only after this migration SHA has green
 `deploy/migration` and `deploy/watchdog` in production.
+
+Migration `0044_pricing_release_orchestrations.sql` expand-only creates
+`pricing_release_orchestrations_v2`: one durable intent row that drives a full successor release
+cycle (catalog/switch delivery, Stage 5 materialization, Stage 6 funding normalization, Stage 7
+shadow rollout, Stage 8 capture, Stage 9 activation, verification) through the existing durable
+sub-jobs and their unchanged gates. A partial unique index admits at most one active
+orchestration. The migration changes no existing row, job or constraint and stages nothing by
+itself; the orchestrator consumer (worker state machine and the AdminGuard stage/status routes)
+ships only after this migration SHA has green `deploy/migration` and `deploy/watchdog` in
+production.
