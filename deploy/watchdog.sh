@@ -1929,11 +1929,27 @@ final_verify_admin_routing() {
 }
 
 final_verify_monitoring() {
-  local response monitoring_ready=0
-  curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:3600/api/health >/dev/null \
-    || wd_die "Grafana is not healthy on its loopback listener"
-  curl --noproxy '*' --fail --silent --show-error --max-time 5 http://127.0.0.1:9090/-/ready >/dev/null \
-    || wd_die "Prometheus is not ready on its loopback listener"
+  local response monitoring_ready=0 grafana_ready=0 prometheus_ready=0
+  # Grafana and Prometheus answer their loopback health probes single-threaded and can drop a
+  # 5-second curl while reloading configuration or rules; a single timed-out probe quarantined an
+  # otherwise green master on 2026-08-07. Give both the same bounded retry window the target
+  # aggregation below already uses instead of dying on the first flake.
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    if (( grafana_ready == 0 )) && curl --noproxy '*' --fail --silent --show-error --max-time 5 \
+      http://127.0.0.1:3600/api/health >/dev/null 2>&1; then
+      grafana_ready=1
+    fi
+    if (( prometheus_ready == 0 )) && curl --noproxy '*' --fail --silent --show-error --max-time 5 \
+      http://127.0.0.1:9090/-/ready >/dev/null 2>&1; then
+      prometheus_ready=1
+    fi
+    if (( grafana_ready == 1 && prometheus_ready == 1 )); then
+      break
+    fi
+    sleep 5
+  done
+  [[ $grafana_ready == 1 ]] || wd_die "Grafana is not healthy on its loopback listener"
+  [[ $prometheus_ready == 1 ]] || wd_die "Prometheus is not ready on its loopback listener"
   # Wait across several scrape intervals: the engine may have restarted after monitoring itself,
   # and Caddy may still be completing first-certificate activation for the new protected hostname.
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
