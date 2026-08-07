@@ -343,6 +343,17 @@ pub fn gemini_matched_tariff_at(
         .map(|entry| (entry.tariff_family, prices_at(entry.schedule, now_unix)))
 }
 
+/// Every compiled per-model tariff family (`google/gemini/<id>`) with its price vector as of
+/// `now_unix`: the seeding/diff inventory behind the hot tariff override surface. Each entry is
+/// taken from the same catalog row the matcher reads, so an enumerated price can never diverge
+/// from the billed one.
+pub fn gemini_compiled_tariffs_at(now_unix: i64) -> Vec<(&'static str, GeminiPrices)> {
+    CATALOG
+        .iter()
+        .map(|entry| (entry.tariff_family, prices_at(entry.schedule, now_unix)))
+        .collect()
+}
+
 fn count_modality(details: &Value, modality: &str) -> u64 {
     details
         .as_array()
@@ -998,5 +1009,23 @@ data: {\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":7,\"t
             }
         }
         assert_eq!(gemini_matched_tariff_at("gemini-9-ultra", 0), None);
+    }
+
+    #[test]
+    fn compiled_tariff_enumeration_covers_every_matcher_family_with_identical_prices() {
+        for ts in [0, 1, i64::MAX] {
+            let enumerated: std::collections::BTreeMap<&'static str, GeminiPrices> =
+                gemini_compiled_tariffs_at(ts).into_iter().collect();
+            assert_eq!(enumerated.len(), CATALOG.len(), "one family per catalog model");
+            for entry in CATALOG {
+                let (family, prices) = gemini_matched_tariff_at(entry.id, ts).expect("priced");
+                assert_eq!(
+                    enumerated.get(family),
+                    Some(&prices),
+                    "{} family {family} at {ts} must enumerate identical prices",
+                    entry.id
+                );
+            }
+        }
     }
 }

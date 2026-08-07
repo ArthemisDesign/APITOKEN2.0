@@ -31,7 +31,10 @@ insert-plus-binding-CAS to registry and never decomposes it into generic prepare
 Release-v2 exact and newest-per-policy reads use the same bounded reader pool; the latter returns one
 complete immutable policy for fail-closed reconciliation and remains PostgreSQL-only. Funding-v2
 normalization follows that split: read-only account plans use a bounded reader, exact apply uses the
-existing single writer and PostgreSQL account lock, and SQLite fails closed.
+existing single writer and PostgreSQL account lock, and SQLite fails closed. Hot tariff overrides
+follow the same ownership: `list_tariff_overrides` uses a bounded reader and
+`insert_tariff_override` the single writer; both delegate validation/sequencing to the
+PostgreSQL-only registry authority and fail closed on SQLite.
 Credentials in `x-api-key`, `x-goog-api-key` and `Authorization: Bearer` have OR semantics with no
 header priority: any single valid one is sufficient. This is critical for Claude Code,
 which may send a stale `ANTHROPIC_API_KEY` and a current `ANTHROPIC_AUTH_TOKEN` at the same time.

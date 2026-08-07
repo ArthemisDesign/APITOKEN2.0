@@ -390,6 +390,37 @@ pub fn codex_matched_credit_rates_at(model_id: &str) -> Option<(&'static str, Co
         .map(|entry| (entry.credit_family, entry.credit_rates))
 }
 
+/// Every compiled per-model API tariff family with its price vector as of `now_unix`.
+///
+/// This is the seeding/diff inventory behind the hot tariff override surface: each entry is
+/// `(tariff_family, prices)` taken from the same catalog row the matcher reads, so an enumerated
+/// price can never diverge from the billed one. Families are keyed by the canonical upstream
+/// identity, so the `gpt-5.6` default alias and `gpt-5.6-sol` yield one shared entry (the first
+/// catalog occurrence wins).
+pub fn codex_compiled_tariffs_at(now_unix: i64) -> Vec<(&'static str, CodexPrices)> {
+    let mut tariffs: Vec<(&'static str, CodexPrices)> = Vec::new();
+    for entry in CATALOG {
+        if tariffs.iter().any(|(family, _)| *family == entry.tariff_family) {
+            continue;
+        }
+        tariffs.push((entry.tariff_family, prices_at(entry.schedule, now_unix)));
+    }
+    tariffs
+}
+
+/// Every compiled per-model native credit family (`chatgpt/codex-credits/<upstream>`) with its
+/// compiled rates. Same shared-family dedupe as `codex_compiled_tariffs_at`.
+pub fn codex_compiled_credit_rates() -> Vec<(&'static str, CodexCreditRates)> {
+    let mut families: Vec<(&'static str, CodexCreditRates)> = Vec::new();
+    for entry in CATALOG {
+        if families.iter().any(|(family, _)| *family == entry.credit_family) {
+            continue;
+        }
+        families.push((entry.credit_family, entry.credit_rates));
+    }
+    families
+}
+
 /// Resolve an exact snapshot identity without changing any live pricing behavior.
 ///
 /// Unknown ids return a typed fallback; an unknown model must never be presented to the policy
@@ -937,5 +968,35 @@ mod tests {
         assert_eq!(codex_credit_rates_family(), "chatgpt/codex-credits");
         assert_eq!(codex_matched_tariff_at("gpt-4o", 0), None);
         assert_eq!(codex_matched_credit_rates_at("gpt-4o"), None);
+    }
+
+    #[test]
+    fn compiled_tariff_enumeration_covers_every_matcher_family_with_identical_prices() {
+        let catalog_models: Vec<&'static str> = CATALOG.iter().map(|entry| entry.id).collect();
+        for ts in [0, PRICE_CUT_2026_07_30 - 1, PRICE_CUT_2026_07_30, i64::MAX] {
+            let enumerated: std::collections::BTreeMap<&'static str, CodexPrices> =
+                codex_compiled_tariffs_at(ts).into_iter().collect();
+            // The default alias and its concrete model share one family: one entry per upstream.
+            assert_eq!(enumerated.len(), 5, "one family per canonical upstream at {ts}");
+            for model in &catalog_models {
+                let (family, prices) = codex_matched_tariff_at(model, ts).expect("priced");
+                assert_eq!(
+                    enumerated.get(family),
+                    Some(&prices),
+                    "{model} family {family} at {ts} must enumerate identical prices"
+                );
+            }
+        }
+        let credit_families: std::collections::BTreeMap<&'static str, CodexCreditRates> =
+            codex_compiled_credit_rates().into_iter().collect();
+        assert_eq!(credit_families.len(), 5, "one credit family per canonical upstream");
+        for model in &catalog_models {
+            let (family, rates) = codex_matched_credit_rates_at(model).expect("credit card");
+            assert_eq!(
+                credit_families.get(family),
+                Some(&rates),
+                "{model} credit family {family} must enumerate identical rates"
+            );
+        }
     }
 }

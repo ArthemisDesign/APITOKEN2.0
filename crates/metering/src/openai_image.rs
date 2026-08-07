@@ -21,6 +21,13 @@ pub fn openai_image_tariff_family() -> &'static str {
     OPENAI_IMAGE_TARIFF_FAMILY
 }
 
+/// The single compiled GPT Image 2 tariff family with its compiled price vector: the seeding/diff
+/// inventory entry behind the hot tariff override surface. The vector is the same constant
+/// `openai_image_tariff` resolves, so the two can never diverge.
+pub fn openai_image_compiled_tariff() -> (&'static str, OpenAiImagePrices) {
+    (OPENAI_IMAGE_TARIFF_FAMILY, GPT_IMAGE_2_PRICES)
+}
+
 /// Five disjoint GPT Image billing rates in nanoUSD per token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OpenAiImagePrices {
@@ -281,6 +288,15 @@ mod tests {
                 identity.tariff_schedule_id.as_str(),
                 OPENAI_IMAGE_TARIFF_SCHEDULE_ID
             );
+        }
+    }
+
+    #[test]
+    fn compiled_tariff_matches_the_authoritative_resolution() {
+        let (family, prices) = openai_image_compiled_tariff();
+        assert_eq!(family, OPENAI_IMAGE_TARIFF_FAMILY);
+        for model in [GPT_IMAGE_2_ALIAS, GPT_IMAGE_2_SNAPSHOT] {
+            assert_eq!(openai_image_tariff(model).unwrap().prices, prices, "{model}");
         }
     }
 }

@@ -436,6 +436,34 @@ define_admin_routes!(
         "/admin/pricing/v2/funding/test-account/normalization",
         admin::apply_funding_normalization_v2
     ),
+    (
+        get,
+        GET,
+        "/admin/pricing/tariffs",
+        "/admin/pricing/tariffs",
+        admin::list_tariff_overrides
+    ),
+    (
+        get,
+        GET,
+        "/admin/pricing/tariffs/compiled",
+        "/admin/pricing/tariffs/compiled",
+        admin::compiled_tariff_catalog
+    ),
+    (
+        post,
+        POST,
+        "/admin/pricing/tariffs/override",
+        "/admin/pricing/tariffs/override",
+        admin::publish_tariff_override
+    ),
+    (
+        post,
+        POST,
+        "/admin/pricing/tariffs/seed",
+        "/admin/pricing/tariffs/seed",
+        admin::seed_tariff_overrides
+    ),
 );
 
 async fn require_control_auth(

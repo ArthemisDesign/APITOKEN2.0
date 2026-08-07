@@ -19,6 +19,7 @@ mod poller;
 mod router_auth;
 mod router_policy;
 mod router_pricing;
+mod tariff_admin;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};

@@ -11,22 +11,28 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use forward::AppState;
 use registry::pricing::{
-    validate_account_policy_binding, validate_account_policy_shape, validate_active_expectation,
+    parse_tariff_override_payload, validate_account_policy_binding,
+    validate_account_policy_shape, validate_active_expectation,
     validate_locked_openkeys_policy_transition, validate_policy_active_expectation,
     validate_pricing_catalog, validate_pricing_release_activation_v2,
     validate_pricing_release_assignment_extension_v2, validate_pricing_release_policy_v2,
     validate_pricing_release_recovery_link_v2, validate_pricing_release_v2,
-    validate_provider_switches, AccountPolicyActivationSpec, AccountPolicyBindingSpec,
-    AccountPolicySpec, ActiveExpectation, LockedOpenKeysPolicyTransitionSpec,
-    PolicyActiveExpectation, PricingCatalogSpec, PricingMutation, PricingRejection,
-    PricingReleaseActivationOutcomeV2, PricingReleaseActivationRejectionV2,
-    PricingReleaseActivationRequestV2, PricingReleaseAssignmentExtensionV2, PricingReleasePolicyV2,
-    PricingReleaseRecoveryLinkV2, PricingReleaseV2, ProviderSwitchSpec,
+    validate_provider_switches, validate_tariff_family, AccountPolicyActivationSpec,
+    AccountPolicyBindingSpec, AccountPolicySpec, ActiveExpectation,
+    LockedOpenKeysPolicyTransitionSpec, PolicyActiveExpectation, PricingCatalogSpec,
+    PricingMutation, PricingRejection, PricingReleaseActivationOutcomeV2,
+    PricingReleaseActivationRejectionV2, PricingReleaseActivationRequestV2,
+    PricingReleaseAssignmentExtensionV2, PricingReleasePolicyV2, PricingReleaseRecoveryLinkV2,
+    PricingReleaseV2, ProviderSwitchSpec, TariffOverrideInsert, TariffOverrideInsertOutcome,
+    TariffOverrideRejection, TARIFF_OVERRIDE_CLOCK_SKEW_GRACE_SECS,
 };
 use registry::{FundingNormalizationApplyRequestV2, FundingNormalizationApplyStatusV2};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::tariff_admin::{compiled_tariff_catalog_at, family_head_version};
 
 /// Биллинг обязателен для control-операций (аккаунты/деньги живут в нём). Нет → 503.
 /// (Err-вариант — axum `Response`, намеренно «большой»: это ранний ответ ошибки, не горячий путь.)
@@ -2107,6 +2113,283 @@ pub async fn apply_funding_normalization_v2(
             .into_response(),
         Err(error) => authority_unavailable("funding normalization v2 apply", error),
     }
+}
+
+// ── Hot tariff overrides (`/admin/pricing/tariffs*`) ─────────────────────────
+//
+// The override table (`pricing_tariff_overrides`, migrations 0036/0037) republishes one compiled
+// `metering` tariff family as data without a redeploy. Compiled constants are the implicit
+// version 1; every row is version >= 2 in a strict per-family sequence. The registry authority
+// re-validates, re-digests and sequence-checks every write; these handlers add the early
+// operator-facing validation (clean 400s) and the version bookkeeping. Writes go through the
+// billing single-writer actor, reads through the bounded reader pool — the same discipline as
+// every other `/admin/pricing/*` route. Like the existing pricing handlers, no separate audit
+// log is written: the append-only table itself records `created_by`/`reason`/`created_ts`.
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Mirrors registry `require_id`: operator attribution must be present and canonical.
+fn valid_attribution(value: &str) -> bool {
+    !value.is_empty() && value.trim() == value
+}
+
+fn tariff_override_outcome_response(outcome: TariffOverrideInsertOutcome, identity: Value) -> Response {
+    match outcome {
+        TariffOverrideInsertOutcome::Inserted(row) => Json(json!({
+            "result": "inserted",
+            "identity": identity,
+            "override": row,
+        }))
+        .into_response(),
+        TariffOverrideInsertOutcome::Unchanged(row) => Json(json!({
+            "result": "unchanged",
+            "identity": identity,
+            "override": row,
+        }))
+        .into_response(),
+        TariffOverrideInsertOutcome::Rejected(rejection) => {
+            let (status, code) = match &rejection {
+                TariffOverrideRejection::Invalid { .. } => (StatusCode::BAD_REQUEST, "invalid"),
+                TariffOverrideRejection::Conflict { .. } => (StatusCode::CONFLICT, "conflict"),
+                TariffOverrideRejection::SequenceViolation { .. } => {
+                    (StatusCode::CONFLICT, "sequence_violation")
+                }
+            };
+            (
+                status,
+                Json(json!({
+                    "result": "rejected",
+                    "code": code,
+                    "identity": identity,
+                    "rejection": rejection,
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// GET /admin/pricing/tariffs — every override row, ordered by (family, version).
+pub async fn list_tariff_overrides(State(app): State<AppState>) -> Response {
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    match b.list_tariff_overrides().await {
+        Ok(overrides) => Json(json!({"overrides": overrides})).into_response(),
+        Err(error) => authority_unavailable("tariff override list", error),
+    }
+}
+
+/// GET /admin/pricing/tariffs/compiled — the compiled catalog dump in the exact canonical
+/// payload shape the override table stores, so an auditor can diff DB rows against the code.
+/// Read-only and authority-free: the answer is built from `metering` alone.
+pub async fn compiled_tariff_catalog(State(app): State<AppState>) -> Response {
+    let _ = &app;
+    let now = now_unix();
+    let families: Vec<Value> = compiled_tariff_catalog_at(now)
+        .iter()
+        .map(|entry| {
+            json!({
+                "tariff_family": entry.tariff_family,
+                "payload": entry.payload,
+            })
+        })
+        .collect();
+    Json(json!({"compiled_ts": now, "families": families})).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TariffOverrideReq {
+    pub tariff_family: String,
+    pub effective_from: i64,
+    pub payload: Value,
+    pub created_by: String,
+    pub reason: String,
+}
+
+/// POST /admin/pricing/tariffs/override — publish the next version of one family. The request
+/// carries no version: the server computes `head + 1` (2 when the family has no rows) and
+/// retries exactly once on a sequence race with the authority-returned `expected_next`.
+pub async fn publish_tariff_override(
+    State(app): State<AppState>,
+    Json(req): Json<TariffOverrideReq>,
+) -> Response {
+    let identity = json!({
+        "tariff_family": req.tariff_family,
+        "effective_from": req.effective_from,
+        "payload": req.payload,
+        "created_by": req.created_by,
+        "reason": req.reason,
+    });
+    if let Err(error) = validate_tariff_family(&req.tariff_family) {
+        return invalid_pricing_request(format!("{error:#}"), identity);
+    }
+    if !valid_attribution(&req.created_by) || !valid_attribution(&req.reason) {
+        return invalid_pricing_request(
+            "created_by and reason must be non-empty without surrounding whitespace",
+            identity,
+        );
+    }
+    // Parse once here so a malformed payload is a clean 400 instead of an authority round trip.
+    if let Err(error) = parse_tariff_override_payload(&req.tariff_family, &req.payload) {
+        return invalid_pricing_request(format!("{error:#}"), identity);
+    }
+    let now = now_unix();
+    if req.effective_from < now - TARIFF_OVERRIDE_CLOCK_SKEW_GRACE_SECS {
+        return invalid_pricing_request(
+            format!(
+                "effective_from must be >= now - {TARIFF_OVERRIDE_CLOCK_SKEW_GRACE_SECS}s \
+                 (the determinism rule for non-seed overrides)"
+            ),
+            identity,
+        );
+    }
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    let rows = match b.list_tariff_overrides().await {
+        Ok(rows) => rows,
+        Err(error) => return authority_unavailable("tariff override list", error),
+    };
+    let mut version = family_head_version(&rows, &req.tariff_family) + 1;
+    for attempt in 0..2 {
+        let insert = TariffOverrideInsert {
+            tariff_family: req.tariff_family.clone(),
+            version,
+            effective_from: req.effective_from,
+            payload: req.payload.clone(),
+            created_by: req.created_by.clone(),
+            reason: req.reason.clone(),
+        };
+        match b.insert_tariff_override(insert).await {
+            Ok(TariffOverrideInsertOutcome::Rejected(
+                TariffOverrideRejection::SequenceViolation { expected_next },
+            )) if attempt == 0 => {
+                // A concurrent publisher appended the version we computed; retry exactly once
+                // with the head the authority actually expects.
+                version = expected_next;
+            }
+            Ok(outcome) => return tariff_override_outcome_response(outcome, identity),
+            Err(error) => return authority_unavailable("tariff override insert", error),
+        }
+    }
+    unreachable!("the retry loop returns on every outcome after at most one retry")
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TariffSeedReq {
+    pub created_by: String,
+    pub reason: String,
+    pub tariff_family: Option<String>,
+}
+
+/// POST /admin/pricing/tariffs/seed — bridge one compiled family (or every compiled family)
+/// into the table as version 2 with `effective_from = 0`, built only from the compiled
+/// `metering` constants. Exact replay is `unchanged`, so re-seeding is idempotent. A family
+/// whose head already advanced past version 2 is refused: seeding never overwrites operator
+/// versions. Per-family outcomes are always reported; any refused/rejected family makes the
+/// overall status 409 while the remaining families still seed.
+pub async fn seed_tariff_overrides(
+    State(app): State<AppState>,
+    Json(req): Json<TariffSeedReq>,
+) -> Response {
+    let identity = json!({
+        "created_by": req.created_by,
+        "reason": req.reason,
+        "tariff_family": req.tariff_family,
+    });
+    if !valid_attribution(&req.created_by) || !valid_attribution(&req.reason) {
+        return invalid_pricing_request(
+            "created_by and reason must be non-empty without surrounding whitespace",
+            identity,
+        );
+    }
+    let catalog = compiled_tariff_catalog_at(now_unix());
+    let targets: Vec<&crate::tariff_admin::CompiledTariff> = match req.tariff_family.as_deref() {
+        Some(family) => match catalog.iter().find(|entry| entry.tariff_family == family) {
+            Some(entry) => vec![entry],
+            None => {
+                return invalid_pricing_request(
+                    format!("unknown compiled tariff family {family:?}"),
+                    identity,
+                )
+            }
+        },
+        None => catalog.iter().collect(),
+    };
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+    let rows = match b.list_tariff_overrides().await {
+        Ok(rows) => rows,
+        Err(error) => return authority_unavailable("tariff override list", error),
+    };
+    let mut outcomes = Vec::with_capacity(targets.len());
+    let mut conflict = false;
+    for target in targets {
+        let head = family_head_version(&rows, target.tariff_family);
+        if head > 2 {
+            // The family already carries operator versions; seeding is only the bridge from the
+            // compiled constants to data, never an overwrite.
+            conflict = true;
+            outcomes.push(json!({
+                "tariff_family": target.tariff_family,
+                "result": "refused",
+                "code": "seed_refused",
+                "head_version": head,
+            }));
+            continue;
+        }
+        let insert = TariffOverrideInsert {
+            tariff_family: target.tariff_family.to_owned(),
+            version: 2,
+            effective_from: 0,
+            payload: target.payload.clone(),
+            created_by: req.created_by.clone(),
+            reason: req.reason.clone(),
+        };
+        match b.insert_tariff_override(insert).await {
+            Ok(TariffOverrideInsertOutcome::Inserted(row)) => outcomes.push(json!({
+                "tariff_family": target.tariff_family,
+                "result": "inserted",
+                "override": row,
+            })),
+            Ok(TariffOverrideInsertOutcome::Unchanged(row)) => outcomes.push(json!({
+                "tariff_family": target.tariff_family,
+                "result": "unchanged",
+                "override": row,
+            })),
+            Ok(TariffOverrideInsertOutcome::Rejected(rejection)) => {
+                // Conflict: version 2 was republished with different content. SequenceViolation:
+                // version 3+ appeared between the list and this insert. Invalid on a compiled
+                // payload would mean converter/registry drift. None of these may be advanced by
+                // a seed, so the family is reported and the overall answer is 409.
+                conflict = true;
+                outcomes.push(json!({
+                    "tariff_family": target.tariff_family,
+                    "result": "rejected",
+                    "rejection": rejection,
+                }));
+            }
+            Err(error) => return authority_unavailable("tariff override seed insert", error),
+        }
+    }
+    let status = if conflict {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::OK
+    };
+    (status, Json(json!({"outcomes": outcomes}))).into_response()
 }
 
 #[cfg(test)]

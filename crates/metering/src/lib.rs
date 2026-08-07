@@ -18,7 +18,8 @@ pub mod glm;
 pub mod kimi;
 pub mod openai_image;
 pub use codex::{
-    codex_catalog_at, codex_credit_cost_nano, codex_credit_rates, codex_credit_rates_family,
+    codex_catalog_at, codex_compiled_credit_rates, codex_compiled_tariffs_at,
+    codex_credit_cost_nano, codex_credit_rates, codex_credit_rates_family,
     codex_matched_credit_rates_at, codex_matched_tariff_at, codex_prices_at,
     codex_subscription_fast_multiplier_basis_points, codex_tariff_capability_at,
     CodexAdmissionTariffIdentity, CodexContextTier, CodexCreditRates, CodexCreditUsage,
@@ -26,26 +27,28 @@ pub use codex::{
     CODEX_ALIAS_GENERATION, CODEX_CREDIT_FAMILY, CODEX_CREDIT_SCHEDULE_ID,
 };
 pub use gemini::{
-    gemini_catalog_at, gemini_matched_tariff_at, gemini_prices_at, GeminiModelSpec,
-    GeminiPriceEpoch, GeminiPrices, GeminiSearchBilling, GeminiUsage,
+    gemini_catalog_at, gemini_compiled_tariffs_at, gemini_matched_tariff_at, gemini_prices_at,
+    GeminiModelSpec, GeminiPriceEpoch, GeminiPrices, GeminiSearchBilling, GeminiUsage,
 };
 pub use glm::{
-    glm_catalog_at, glm_credit_cost_micro, glm_credit_rates_for_served_model, glm_credits_at,
-    glm_is_peak_utc, glm_matched_credit_rates_at, glm_matched_tariff_at, glm_prices_at,
+    glm_catalog_at, glm_compiled_credit_rates, glm_compiled_tariffs_at, glm_credit_cost_micro,
+    glm_credit_rates_for_served_model, glm_credits_at, glm_is_peak_utc,
+    glm_matched_credit_rates_at, glm_matched_tariff_at, glm_prices_at,
     glm_prices_for_served_model, glm_resolve_subscription_model, glm_subscription_models,
     GlmCreditRates, GlmModelSpec, GlmPriceEpoch, GlmPrices, GlmSubscriptionModel, GlmUsage,
     GlmUsageError, GLM_CREDIT_SCHEDULE_ID, GLM_TARIFF_SCHEDULE_ID,
 };
 pub use kimi::{
-    kimi_catalog_at, kimi_matched_tariff_at, kimi_prices_at, kimi_prices_for_served_model,
-    kimi_resolve_subscription_model, kimi_subscription_models, KimiModelSpec, KimiPriceEpoch,
-    KimiPrices, KimiSubscriptionModel, KimiUsage, KimiUsageError, KIMI_TARIFF_SCHEDULE_ID,
+    kimi_catalog_at, kimi_compiled_tariffs_at, kimi_matched_tariff_at, kimi_prices_at,
+    kimi_prices_for_served_model, kimi_resolve_subscription_model, kimi_subscription_models,
+    KimiModelSpec, KimiPriceEpoch, KimiPrices, KimiSubscriptionModel, KimiUsage, KimiUsageError,
+    KIMI_TARIFF_SCHEDULE_ID,
 };
 pub use openai_image::{
-    openai_image_cost_nanodollars, openai_image_tariff, openai_image_tariff_family,
-    OpenAiImageMeteringError, OpenAiImagePrices, OpenAiImageTariffIdentity, OpenAiImageUsage,
-    GPT_IMAGE_2_ALIAS, GPT_IMAGE_2_SNAPSHOT, OPENAI_IMAGE_ALIAS_GENERATION,
-    OPENAI_IMAGE_TARIFF_FAMILY, OPENAI_IMAGE_TARIFF_SCHEDULE_ID,
+    openai_image_compiled_tariff, openai_image_cost_nanodollars, openai_image_tariff,
+    openai_image_tariff_family, OpenAiImageMeteringError, OpenAiImagePrices,
+    OpenAiImageTariffIdentity, OpenAiImageUsage, GPT_IMAGE_2_ALIAS, GPT_IMAGE_2_SNAPSHOT,
+    OPENAI_IMAGE_ALIAS_GENERATION, OPENAI_IMAGE_TARIFF_FAMILY, OPENAI_IMAGE_TARIFF_SCHEDULE_ID,
 };
 
 pub const NANO_PER_USD: i128 = 1_000_000_000;
@@ -116,13 +119,9 @@ pub struct Prices {
     pub cache_write_1h: i128,
 }
 
-/// $/Mtoken → нано/токен. Цена в целых центах/десятитысячных → результат ЦЕЛЫЙ.
-const fn nano(dollars_per_mtoken_x1000: i128) -> i128 {
-    dollars_per_mtoken_x1000
-}
-
 /// Current Opus tariff (4.5–5). Unknown response models deliberately use `MAX_PRICES` below: a newly
 /// introduced expensive model must never be silently billed at a cheaper historical fallback.
+/// ($/Mtoken × 1000 — уже целое нано/токен значение; константы записаны сразу в нано/токен.)
 const OPUS_CURRENT_PRICES: Prices = Prices {
     input: 5000,
     cache_read: 500,
@@ -154,6 +153,22 @@ const FAST_OPUS_47_PRICES: Prices = Prices {
     cache_write_1h: 60000,
     output: 150000,
 };
+/// Fable 5 / Mythos 5 — самые дорогие текущие модели ($10/$50).
+const FABLE_5_PRICES: Prices = Prices {
+    input: 10000,
+    cache_read: 1000,
+    cache_write_5m: 12500,
+    cache_write_1h: 20000,
+    output: 50000,
+};
+/// Opus 3 / 4.0 / 4.1 — старший исторический тариф ($15/$75).
+const OPUS_LEGACY_PRICES: Prices = Prices {
+    input: 15000,
+    cache_read: 1500,
+    cache_write_5m: 18750,
+    cache_write_1h: 30000,
+    output: 75000,
+};
 const SONNET_STANDARD_PRICES: Prices = Prices {
     input: 3000,
     cache_read: 300,
@@ -170,6 +185,29 @@ const SONNET5_INTRO_PRICES: Prices = Prices {
 };
 // 2026-09-01T00:00:00Z — Sonnet 5 intro pricing ends 2026-08-31
 const SONNET5_STD_START: i64 = 1788220800;
+/// Haiku тарифицируется ПОКОЛЕННО (цены росли): 4.5 = $1, 3.5 = $0.80, 3 = $0.25.
+const HAIKU_45_PRICES: Prices = Prices {
+    input: 1000,
+    cache_read: 100,
+    cache_write_5m: 1250,
+    cache_write_1h: 2000,
+    output: 5000,
+};
+const HAIKU_35_PRICES: Prices = Prices {
+    input: 800,
+    cache_read: 80,
+    cache_write_5m: 1000,
+    cache_write_1h: 1600,
+    output: 4000,
+};
+// Haiku 3 cache_write_5m: $0.3125/Mtoken rounds to the whole-nano 313.
+const HAIKU_3_PRICES: Prices = Prices {
+    input: 250,
+    cache_read: 25,
+    cache_write_5m: 313,
+    cache_write_1h: 500,
+    output: 1250,
+};
 
 /// Version of the exact audited Anthropic alias table used for durable snapshots.
 ///
@@ -389,23 +427,10 @@ fn model_prices_matched_at(model: &str, now_unix: i64) -> Option<Prices> {
 /// diverge from the price the compiled matcher actually returns.
 fn anthropic_tariff_branch_at(model: &str, now_unix: i64) -> Option<(&'static str, Prices)> {
     let m = model.to_lowercase();
-    // helper: значения = $/Mtoken × 1000 (нано/токен); Some — распознанный тариф
-    let p = |family: &'static str, inp, cr, cw5, cw1, out| {
-        Some((
-            family,
-            Prices {
-                input: nano(inp),
-                cache_read: nano(cr),
-                cache_write_5m: nano(cw5),
-                cache_write_1h: nano(cw1),
-                output: nano(out),
-            },
-        ))
-    };
     // Fable 5 / Mythos 5 — самые дорогие текущие модели ($10/$50). ДОЛЖНЫ идти до дефолта,
     // иначе считались бы как Opus 4.8 ($5/$25) — недосписание вдвое (теряем деньги).
     if m.contains("fable") || m.contains("mythos") {
-        return p("anthropic/standard/fable-5", 10000, 1000, 12500, 20000, 50000); // $10 / 1.0 / 12.5 / 20 / 50
+        return Some(("anthropic/standard/fable-5", FABLE_5_PRICES)); // $10 / 1.0 / 12.5 / 20 / 50
     }
     // Opus: 4.5–5 = $5/$25; Opus 3 / 4.0 / 4.1 = $15/$75 (старший тариф). Opus 4.0 приходит как
     // date-id `claude-opus-4-20250514` или голым алиасом — обе формы матчим ЯВНО: подстрока
@@ -424,7 +449,7 @@ fn anthropic_tariff_branch_at(model: &str, now_unix: i64) -> Option<(&'static st
         || m.contains("opus-3")
         || m.contains("3-opus")
     {
-        return p("anthropic/standard/opus-legacy", 15000, 1500, 18750, 30000, 75000); // $15 / 1.50 / 18.75 / 30 / 75
+        return Some(("anthropic/standard/opus-legacy", OPUS_LEGACY_PRICES)); // $15 / 1.50 / 18.75 / 30 / 75
     }
     // Sonnet 5: introductory $2/$10 through 2026-08-31, then the standard Sonnet tariff.
     // Match only "sonnet-5" so IDs such as sonnet-4-6 are never date-gated accidentally.
@@ -443,12 +468,12 @@ fn anthropic_tariff_branch_at(model: &str, now_unix: i64) -> Option<(&'static st
     // именования (haiku-3-5 и 3-5-haiku). "3-5" проверяем ДО общего Haiku 3 (подстроки пересекаются).
     if m.contains("haiku") {
         if m.contains("haiku-4-5") {
-            return p("anthropic/standard/haiku-4-5", 1000, 100, 1250, 2000, 5000); // $1 / 0.10 / 1.25 / 2 / 5
+            return Some(("anthropic/standard/haiku-4-5", HAIKU_45_PRICES)); // $1 / 0.10 / 1.25 / 2 / 5
         }
         if m.contains("haiku-3-5") || m.contains("3-5-haiku") {
-            return p("anthropic/standard/haiku-3-5", 800, 80, 1000, 1600, 4000); // $0.80 / 0.08 / 1.0 / 1.60 / 4
+            return Some(("anthropic/standard/haiku-3-5", HAIKU_35_PRICES)); // $0.80 / 0.08 / 1.0 / 1.60 / 4
         }
-        return p("anthropic/standard/haiku-3", 250, 25, 313, 500, 1250); // Haiku 3 = $0.25 / 0.025 / 0.3125→313 / 0.50 / 1.25
+        return Some(("anthropic/standard/haiku-3", HAIKU_3_PRICES)); // Haiku 3 = $0.25 / 0.025 / 0.3125→313 / 0.50 / 1.25
     }
     None // не распознано (дефолт решают вызывающие)
 }
@@ -479,6 +504,36 @@ pub fn anthropic_matched_tariff_at(
         // an unknown model that nevertheless reports speed=fast.
         Some(("anthropic/fast/opus-4-7-conservative", FAST_OPUS_47_PRICES))
     }
+}
+
+/// Every compiled Anthropic tariff family with its compiled price vector as of `now_unix`.
+///
+/// This is the seeding/diff inventory behind the hot tariff override surface: the entries are
+/// the same named constants the heuristic branch matcher returns, so an enumerated price can
+/// never diverge from the price the matcher bills (the regression matrix asserts exactly that).
+///
+/// `anthropic/standard/sonnet-5-intro` is time-bounded: it is included only while
+/// `now_unix < SONNET5_STD_START`. After the compiled epoch flip the intro family is dead — the
+/// matcher never emits it again — so seeding skips it instead of publishing a vector no
+/// resolution can still produce. The flip itself is compiled; once hot overrides drive pricing,
+/// the same epoch change is published as a normal new override version of
+/// `anthropic/standard/sonnet-current`.
+pub fn anthropic_compiled_tariffs_at(now_unix: i64) -> Vec<(&'static str, Prices)> {
+    let mut tariffs = vec![
+        ("anthropic/standard/fable-5", FABLE_5_PRICES),
+        ("anthropic/standard/opus-current", OPUS_CURRENT_PRICES),
+        ("anthropic/standard/opus-legacy", OPUS_LEGACY_PRICES),
+        ("anthropic/standard/sonnet-current", SONNET_STANDARD_PRICES),
+        ("anthropic/standard/haiku-4-5", HAIKU_45_PRICES),
+        ("anthropic/standard/haiku-3-5", HAIKU_35_PRICES),
+        ("anthropic/standard/haiku-3", HAIKU_3_PRICES),
+        ("anthropic/fast/opus-current", FAST_OPUS_CURRENT_PRICES),
+        ("anthropic/fast/opus-4-7-conservative", FAST_OPUS_47_PRICES),
+    ];
+    if now_unix < SONNET5_STD_START {
+        tariffs.push(("anthropic/standard/sonnet-5-intro", SONNET5_INTRO_PRICES));
+    }
+    tariffs
 }
 
 /// Стоимость usage в **нанодолларах** (i128 — переполнения исключены). Каждая корзина
@@ -1664,5 +1719,60 @@ data: {{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{{\"type\":\"text
                 assert_eq!(family, expected_family, "{model} fast family");
             }
         }
+    }
+
+    #[test]
+    fn compiled_tariff_enumeration_covers_every_matcher_family_with_identical_prices() {
+        let models = [
+            "claude-fable-5",
+            "claude-mythos-5",
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-opus-4-6",
+            "claude-opus-4-5",
+            "claude-opus-4-1-20250805",
+            "claude-opus-4-20250514",
+            "claude-3-opus-20240229",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "claude-3-5-sonnet-20241022",
+            "claude-haiku-4-5",
+            "claude-haiku-3-5",
+            "claude-3-5-haiku-20241022",
+            "claude-3-haiku-20240307",
+            "claude-opus-4-0", // unrecognized: only the fast path still prices it
+        ];
+        let mut emitted: std::collections::BTreeMap<&'static str, Prices> =
+            std::collections::BTreeMap::new();
+        for ts in [0, SONNET5_STD_START - 1, SONNET5_STD_START, i64::MAX] {
+            let enumerated: std::collections::BTreeMap<&'static str, Prices> =
+                anthropic_compiled_tariffs_at(ts).into_iter().collect();
+            // The dead intro family is skipped after the compiled epoch flip, never before.
+            assert_eq!(
+                enumerated.contains_key("anthropic/standard/sonnet-5-intro"),
+                ts < SONNET5_STD_START,
+                "sonnet-5-intro presence at {ts}"
+            );
+            for model in models {
+                for fast in [false, true] {
+                    let Some((family, prices)) = anthropic_matched_tariff_at(model, ts, fast)
+                    else {
+                        continue;
+                    };
+                    assert_eq!(
+                        enumerated.get(family),
+                        Some(&prices),
+                        "{model} fast={fast} family {family} at {ts} must enumerate identical prices"
+                    );
+                    emitted.insert(family, prices);
+                }
+            }
+        }
+        // Both directions: every family the enumeration can publish is reachable through the
+        // matcher matrix above, so a seeded override never targets a family nothing resolves to.
+        let full: std::collections::BTreeMap<&'static str, Prices> =
+            anthropic_compiled_tariffs_at(0).into_iter().collect();
+        assert_eq!(emitted, full, "enumeration and matcher families diverge");
     }
 }

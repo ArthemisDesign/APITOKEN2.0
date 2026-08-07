@@ -47,6 +47,11 @@
   helper prices can never diverge from them (regression tests assert equality across model/timestamp
   matrices); a model no branch recognizes has no family and keeps its existing conservative
   fallback. Adding a model or a price epoch means adding its family key in the same table row.
+  The additive `*_compiled_tariffs_at(now)` / `*_compiled_credit_rates()` /
+  `openai_image_compiled_tariff()` enumerators list every family with its compiled price vector
+  for seeding/diffing against the override table; they are built from the same constants/catalog
+  rows the matchers read, and the dead-after-flip `anthropic/standard/sonnet-5-intro` is
+  enumerated only while `now < SONNET5_STD_START`.
 
 **Invariants (verify with tests):**
 - 1M tokens of any bucket = the exact official rate (test `prices_exact_per_million`).

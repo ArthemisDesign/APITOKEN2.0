@@ -399,6 +399,27 @@ pub fn glm_matched_credit_rates_at(model_id: &str) -> Option<(&'static str, GlmC
     entry.credit_family.zip(entry.credit_rates.copied())
 }
 
+/// Every compiled per-model tariff family (`zhipu/glm/<official_id>`) with its price vector as
+/// of `now_unix`: the seeding/diff inventory behind the hot tariff override surface. Each entry
+/// is taken from the same catalog row the matcher reads, so an enumerated price can never
+/// diverge from the billed one.
+pub fn glm_compiled_tariffs_at(now_unix: i64) -> Vec<(&'static str, GlmPrices)> {
+    CATALOG
+        .iter()
+        .map(|entry| (entry.tariff_family, prices_at(entry.schedule, now_unix)))
+        .collect()
+}
+
+/// Every compiled native credit family (`zhipu/glm-credits/<official_id>`) with its compiled
+/// rates. Only models with published multipliers have a credit family; `glm-5.1`/`glm-5`
+/// deliberately have none and are absent here, exactly as the matcher reports.
+pub fn glm_compiled_credit_rates() -> Vec<(&'static str, GlmCreditRates)> {
+    CATALOG
+        .iter()
+        .filter_map(|entry| entry.credit_family.zip(entry.credit_rates.copied()))
+        .collect()
+}
+
 // ── usage parsing ────────────────────────────────────────────────────────────
 //
 // The exact cache-field names on GLM's Anthropic route are `unknown`
@@ -1173,5 +1194,38 @@ mod tests {
         );
         assert_eq!(glm_matched_credit_rates_at("glm-5.1"), None);
         assert_eq!(glm_matched_credit_rates_at("glm-9"), None);
+    }
+
+    #[test]
+    fn compiled_tariff_enumeration_covers_every_matcher_family_with_identical_prices() {
+        for ts in [0, NOW, i64::MAX] {
+            let enumerated: std::collections::BTreeMap<&'static str, GlmPrices> =
+                glm_compiled_tariffs_at(ts).into_iter().collect();
+            assert_eq!(enumerated.len(), CATALOG.len(), "one family per catalog model");
+            for entry in CATALOG {
+                let (family, prices) = glm_matched_tariff_at(entry.id, ts).expect("priced");
+                assert_eq!(
+                    enumerated.get(family),
+                    Some(&prices),
+                    "{} family {family} at {ts} must enumerate identical prices",
+                    entry.id
+                );
+            }
+        }
+        let credit_families: std::collections::BTreeMap<&'static str, GlmCreditRates> =
+            glm_compiled_credit_rates().into_iter().collect();
+        // Only models with published multipliers have a credit family; glm-5.1/glm-5 have none.
+        assert_eq!(credit_families.len(), 3);
+        for entry in CATALOG {
+            match glm_matched_credit_rates_at(entry.id) {
+                Some((family, rates)) => assert_eq!(
+                    credit_families.get(family),
+                    Some(&rates),
+                    "{} credit family {family} must enumerate identical rates",
+                    entry.id
+                ),
+                None => assert!(entry.credit_family.is_none(), "{} credit family", entry.id),
+            }
+        }
     }
 }

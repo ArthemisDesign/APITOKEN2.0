@@ -1119,6 +1119,53 @@ The activation lane likewise runs only for an explicitly staged immutable reques
 full receipt. Merely having a typed client or a deployed worker does not materialize an account or
 move the release head.
 
+### Hot tariff overrides (`/admin/pricing/tariffs*`)
+
+The append-only `pricing_tariff_overrides` table (migrations 0036/0037) republishes one compiled
+`metering` tariff family as data, so a price correction does not require a recompile and redeploy.
+Compiled constants are the implicit **version 1** of every family; each row is version >= 2 in a
+strict per-family sequence enforced by database triggers, carries an `effective_from` priced-ts
+bound, a canonical `sha256:v2` payload digest and operator attribution, and is never updated or
+deleted — a correction is a newer version. The runtime resolver that applies overrides to
+reserve/charge ships separately; this surface only manages the data. i128 money legs are canonical
+decimal **strings** in the payload JSON (JSON numbers are rejected); u64/i64 fields stay plain
+integers. Like the other pricing routes, no separate audit log is written: the table itself records
+`created_by`/`reason`/`created_ts` for every version.
+
+All four routes sit under the same control-key gate as the rest of `/admin/*`. Writes go through
+the billing single-writer actor, reads through the bounded reader pool; the authority is
+PostgreSQL-only, so an engine on the SQLite fallback answers `503 billing authority unavailable`.
+
+- `GET /admin/pricing/tariffs` → `{"overrides": [...]}` — every row ordered by
+  `(tariff_family, version)`; each stored digest is recomputed on read and a mismatch fails closed.
+- `GET /admin/pricing/tariffs/compiled` → `{"compiled_ts": <unix>, "families": [{"tariff_family",
+  "payload"}, ...]}` — the compiled catalog dump in the exact canonical payload shape the table
+  stores, sorted by family, so an auditor can diff DB rows against the code. Read-only and
+  authority-free: the answer is built from `metering` alone.
+- `POST /admin/pricing/tariffs/override` — publish the next version of one family. Body:
+  `{tariff_family, effective_from, payload, created_by, reason}` — **no version field**: the server
+  computes `head + 1` (2 when the family has no rows) and retries exactly once on a sequence race
+  with the authority-returned `expected_next`. `effective_from` must be `>= now - 60s` (the
+  determinism rule; validated early for a clean 400), `created_by`/`reason` non-empty, and the
+  payload must parse against the family's schema. Outcomes: `inserted` → 200 with the row;
+  `unchanged` (exact replay) → 200; `invalid` → 400; `conflict` (same family+version, different
+  content) → 409; `sequence_violation` still failing after the single retry → 409.
+- `POST /admin/pricing/tariffs/seed` — bridge compiled constants into the table. Body:
+  `{created_by, reason, tariff_family?}`. For the given family — or for **every** compiled family
+  when the field is absent — the server builds the payload from the compiled `metering` constants
+  (never from operator-typed numbers) and inserts it as **version 2 with `effective_from = 0`**.
+  Exact replay returns `unchanged`, so re-seeding is idempotent. A family whose head is already
+  past version 2 is **refused** (per-family `refused` outcome, overall HTTP 409): seeding is only
+  the bridge from compiled to data, never an overwrite of operator versions. A family name unknown
+  to the compiled catalog is a 400. The response is `{"outcomes": [{"tariff_family", "result":
+  "inserted"|"unchanged"|"refused"|"rejected", ...}]}`; 200 when every target seeded cleanly,
+  409 when at least one was refused/rejected (the remaining families still seed).
+
+The time-bounded `anthropic/standard/sonnet-5-intro` family is published by the compiled catalog
+(and therefore seeded) only while the compiled epoch has not flipped (`now < 2026-09-01T00:00:00Z`);
+after the flip the intro family is dead — the matcher never emits it again — and the scheduled
+epoch change is published as a normal new override version of `anthropic/standard/sonnet-current`.
+
 ### Error codes
 `400` invalid body (explicit handler validation) · `401` missing/incorrect control key · `404`
 account/key/version not found · `409` CAS/version conflict or a limit below what has already been

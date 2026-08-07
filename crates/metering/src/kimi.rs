@@ -290,6 +290,17 @@ pub fn kimi_matched_tariff_at(model_id: &str, now_unix: i64) -> Option<(&'static
     Some((entry.tariff_family, prices_at(entry.schedule, now_unix)))
 }
 
+/// Every compiled per-model tariff family (`moonshot/kimi/<official_id>`) with its price vector
+/// as of `now_unix`: the seeding/diff inventory behind the hot tariff override surface. Each
+/// entry is taken from the same catalog row the matcher reads, so an enumerated price can never
+/// diverge from the billed one.
+pub fn kimi_compiled_tariffs_at(now_unix: i64) -> Vec<(&'static str, KimiPrices)> {
+    CATALOG
+        .iter()
+        .map(|entry| (entry.tariff_family, prices_at(entry.schedule, now_unix)))
+        .collect()
+}
+
 // ── usage parsing ────────────────────────────────────────────────────────────
 
 /// Parse one `usage` object from the Anthropic-compatible endpoint.
@@ -690,5 +701,23 @@ mod tests {
             Some("moonshot/kimi/kimi-k3")
         );
         assert_eq!(kimi_matched_tariff_at("kimi-k4", NOW), None);
+    }
+
+    #[test]
+    fn compiled_tariff_enumeration_covers_every_matcher_family_with_identical_prices() {
+        for ts in [0, NOW, i64::MAX] {
+            let enumerated: std::collections::BTreeMap<&'static str, KimiPrices> =
+                kimi_compiled_tariffs_at(ts).into_iter().collect();
+            assert_eq!(enumerated.len(), CATALOG.len(), "one family per catalog model");
+            for entry in CATALOG {
+                let (family, prices) = kimi_matched_tariff_at(entry.id, ts).expect("priced");
+                assert_eq!(
+                    enumerated.get(family),
+                    Some(&prices),
+                    "{} family {family} at {ts} must enumerate identical prices",
+                    entry.id
+                );
+            }
+        }
     }
 }

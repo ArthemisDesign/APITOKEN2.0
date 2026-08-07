@@ -79,6 +79,13 @@ background loops and the HTTP router. Here — and only here — everything is w
   account-scoped `/admin/account/{id}/key-id/{key_id}/policy` endpoint replaces both nullable
   guardrails; validation is at this HTTP boundary while enforcement remains in registry reservation
   transactions.
+  Hot tariff overrides are exposed under `/admin/pricing/tariffs*`: list, a read-only compiled
+  catalog dump built from `metering` (authority-free), next-version publish (server computes
+  `head + 1`, one sequence-race retry) and idempotent version-2 seeding that never overwrites a
+  family whose head is past version 2. The metering→registry payload converters live in
+  `tariff_admin.rs`; writes go through the billing writer actor, reads through the reader pool,
+  and the authority is PostgreSQL-only (SQLite answers 503). Contract — the hot tariff overrides
+  section of `docs/engine/CONTROL_API.md`.
 - `poller.rs` — EVENT-DRIVEN loops: `reload_loop` (re-reads the registry; wakes the poller via `Notify` when
   the fleet changes) + `poll_loop` (free count-tokens probe of matured subscriptions concurrently, then sleep
   EXACTLY until the nearest due time or until a `poke`). There is no fixed tick: reset is computed

@@ -26,7 +26,7 @@ use registry::pricing::{
     PricingReleaseQuoteV2, PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2,
     PricingReleaseResolutionV2, PricingReleaseV2, PricingRuntimeManifestEvidence,
     PricingShadowAdmissionEvaluationInput, PricingShadowEvaluationWrite, ProviderSwitchSpec,
-    VersionTarget,
+    TariffOverride, TariffOverrideInsert, TariffOverrideInsertOutcome, VersionTarget,
 };
 use registry::{
     AccountFundingSnapshot, AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation,
@@ -1610,6 +1610,10 @@ enum WriteCmd {
         request: FundingNormalizationApplyRequestV2,
         reply: oneshot::Sender<anyhow::Result<Option<FundingNormalizationApplyResultV2>>>,
     },
+    InsertTariffOverride {
+        insert: TariffOverrideInsert,
+        reply: oneshot::Sender<anyhow::Result<TariffOverrideInsertOutcome>>,
+    },
     CancelReserve {
         request_id: String,
         account_id: String,
@@ -1871,6 +1875,7 @@ enum ReadCmd {
         request: registry::stage8::Stage8EngineEvidenceRequest,
         reply: oneshot::Sender<anyhow::Result<registry::stage8::Stage8EngineEvidenceReport>>,
     },
+    ListTariffOverrides(oneshot::Sender<anyhow::Result<Vec<TariffOverride>>>),
     SpendByModel {
         since_ts: i64,
         until_ts: i64,
@@ -3204,6 +3209,11 @@ impl AsyncBilling {
                             "funding normalization v2 authority requires PostgreSQL"
                         )));
                     }
+                    WriteCmd::InsertTariffOverride { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "tariff override authority requires PostgreSQL"
+                        )));
+                    }
                     WriteCmd::CancelReserve { request_id, account_id, key, hold, handoff } => {
                         refund_canceled_reserve(&request_id, &account_id, &key, hold, &handoff);
                     }
@@ -3538,6 +3548,11 @@ impl AsyncBilling {
                             ReadCmd::Stage8EngineEvidence { reply, .. } => {
                                 let _ = reply.send(Err(anyhow::anyhow!(
                                     "Stage 8 engine evidence requires PostgreSQL authority"
+                                )));
+                            }
+                            ReadCmd::ListTariffOverrides(reply) => {
+                                let _ = reply.send(Err(anyhow::anyhow!(
+                                    "tariff override authority requires PostgreSQL"
                                 )));
                             }
                             ReadCmd::SpendByModel {
@@ -4297,6 +4312,16 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
+                        WriteCmd::InsertTariffOverride { insert, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "tariff override insert",
+                                |pg| pg.insert_tariff_override(&insert),
+                            );
+                            let _ = reply.send(result);
+                        }
                         WriteCmd::CancelReserve { request_id, handoff, .. } => {
                             if handoff.compare_exchange(
                                 RESERVE_HANDOFF_CANCELED, RESERVE_HANDOFF_REFUNDING,
@@ -4749,6 +4774,9 @@ impl AsyncBilling {
                             ReadCmd::Stage8EngineEvidence { request, reply } => {
                                 answer!(reply, pg.stage8_engine_evidence(&request))
                             }
+                            ReadCmd::ListTariffOverrides(reply) => {
+                                answer!(reply, pg.list_tariff_overrides())
+                            }
                             ReadCmd::SpendByModel {
                                 since_ts,
                                 until_ts,
@@ -5069,6 +5097,36 @@ impl AsyncBilling {
                 request,
                 reply,
             })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    /// Every hot tariff override row, ordered by (family, version). Read path, like the other
+    /// pricing reads; the authority is PostgreSQL-only (the SQLite fallback answers with a typed
+    /// unavailability error).
+    pub async fn list_tariff_overrides(&self) -> anyhow::Result<Vec<TariffOverride>> {
+        let (reply, result) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::ListTariffOverrides(reply))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
+
+    /// Append one hot tariff override version through the single-writer actor, exactly like the
+    /// other control-plane pricing writes.
+    pub async fn insert_tariff_override(
+        &self,
+        insert: TariffOverrideInsert,
+    ) -> anyhow::Result<TariffOverrideInsertOutcome> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::InsertTariffOverride { insert, reply })
             .await
             .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
         result

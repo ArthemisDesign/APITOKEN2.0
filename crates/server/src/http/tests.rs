@@ -873,7 +873,7 @@ async fn hiding_a_profile_that_is_not_disabled_is_a_client_error_not_a_retryable
 
 #[tokio::test]
 async fn every_admin_route_enforces_the_control_key_lattice() {
-    assert_eq!(ADMIN_ROUTE_CASES.len(), 44);
+    assert_eq!(ADMIN_ROUTE_CASES.len(), 48);
     let service = router(admin_auth_test_app(), Arc::new(AtomicBool::new(true)));
     let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
 
@@ -995,6 +995,243 @@ async fn stage8_capture_separates_malformed_input_from_unavailable_authority() {
 
     drop(service);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn tariff_override_route_validates_before_touching_the_authority() {
+    let (app, dir) = billing_test_app("tariff_override_validation");
+    let service = router(app, Arc::new(AtomicBool::new(true)));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let valid_payload = json!({
+        "input": "5000",
+        "output": "25000",
+        "cache_read": "500",
+        "cache_write_5m": "6250",
+        "cache_write_1h": "10000"
+    });
+    let valid_body = json!({
+        "tariff_family": "anthropic/standard/opus-current",
+        "effective_from": now,
+        "payload": valid_payload,
+        "created_by": "operator-test",
+        "reason": "route test"
+    });
+
+    // Unknown field → 422 (deny_unknown_fields).
+    let mut unknown_field = valid_body.clone();
+    unknown_field["version"] = json!(2);
+    let (status, _) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/override",
+        unknown_field,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Malformed family → 400 invalid.
+    let mut bad_family = valid_body.clone();
+    bad_family["tariff_family"] = json!("Anthropic/Standard");
+    let (status, body) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/override",
+        bad_family,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["result"], "rejected");
+    assert_eq!(body["code"], "invalid");
+
+    // JSON-number money legs are not the canonical string encoding → 400 invalid.
+    let mut bad_payload = valid_body.clone();
+    bad_payload["payload"]["input"] = json!(5000);
+    let (status, body) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/override",
+        bad_payload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "invalid");
+
+    // A payload parsed against the wrong family prefix → 400 invalid.
+    let mut wrong_schema = valid_body.clone();
+    wrong_schema["payload"] = json!({"input": "1"});
+    let (status, _) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/override",
+        wrong_schema,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // effective_from older than the clock-skew grace → 400 invalid.
+    let mut stale = valid_body.clone();
+    stale["effective_from"] = json!(now - 120);
+    let (status, body) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/override",
+        stale,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "invalid");
+
+    // Empty operator attribution → 400 invalid.
+    let mut no_operator = valid_body.clone();
+    no_operator["created_by"] = json!("  ");
+    let (status, _) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/override",
+        no_operator,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A fully valid request reaches the authority; the SQLite fallback is not the tariff
+    // override authority, so it answers with the same unavailable class as other PG-only
+    // pricing routes.
+    let (status, body) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/override",
+        valid_body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"], "billing authority unavailable");
+
+    drop(service);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn tariff_seed_rejects_unknown_families_and_requires_the_pg_authority() {
+    let (app, dir) = billing_test_app("tariff_seed_validation");
+    let service = router(app, Arc::new(AtomicBool::new(true)));
+
+    // A family the compiled catalog does not know → 400 invalid, before any authority call.
+    let (status, body) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/seed",
+        json!({
+            "created_by": "operator-test",
+            "reason": "route test",
+            "tariff_family": "anthropic/standard/not-a-family"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "invalid");
+
+    // Missing attribution → 400 invalid.
+    let (status, _) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/seed",
+        json!({"created_by": "", "reason": "route test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A known family is accepted by validation and then fails only on the SQLite authority.
+    let (status, body) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/seed",
+        json!({
+            "created_by": "operator-test",
+            "reason": "route test",
+            "tariff_family": "openai/gpt-image-2"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"], "billing authority unavailable");
+
+    // Listing overrides likewise requires the PostgreSQL authority.
+    let (status, body) = control_json_request(
+        &service,
+        Method::GET,
+        "/admin/pricing/tariffs",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"], "billing authority unavailable");
+
+    drop(service);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn compiled_tariff_catalog_is_read_only_and_built_from_metering() {
+    // No billing at all: the compiled dump must not need the authority.
+    let service = router(admin_auth_test_app(), Arc::new(AtomicBool::new(true)));
+    let (status, body) = control_json_request(
+        &service,
+        Method::GET,
+        "/admin/pricing/tariffs/compiled",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let families = body["families"].as_array().expect("families array");
+    assert!(families.len() >= 30, "compiled families: {}", families.len());
+    let by_family: std::collections::BTreeMap<&str, &Value> = families
+        .iter()
+        .map(|entry| (entry["tariff_family"].as_str().unwrap(), entry))
+        .collect();
+    assert_eq!(by_family.len(), families.len(), "families are unique and sorted");
+
+    // Representative families from every provider, with i128 legs as canonical decimal strings.
+    for family in [
+        "anthropic/standard/opus-current",
+        "anthropic/fast/opus-4-7-conservative",
+        "openai/codex/gpt-5.6-sol",
+        "chatgpt/codex-credits/gpt-5.6-sol",
+        "google/gemini/gemini-2.5-pro",
+        "zhipu/glm/glm-5.2",
+        "zhipu/glm-credits/glm-5.2",
+        "moonshot/kimi/kimi-k3",
+        "openai/gpt-image-2",
+    ] {
+        let entry = by_family
+            .get(family)
+            .unwrap_or_else(|| panic!("compiled catalog is missing {family}"));
+        assert!(
+            entry["payload"].is_object(),
+            "{family} payload must be an object"
+        );
+    }
+    let opus = &by_family["anthropic/standard/opus-current"]["payload"];
+    assert_eq!(opus["input"], "5000");
+    assert_eq!(opus["output"], "25000");
+    assert!(opus["input"].is_string(), "money legs are decimal strings");
+    let glm_credits = &by_family["zhipu/glm-credits/glm-5.2"]["payload"];
+    assert_eq!(glm_credits["input_tenths"], "69");
+    let image = &by_family["openai/gpt-image-2"]["payload"];
+    assert_eq!(image["image_output"], "30000");
+    let gemini = &by_family["google/gemini/gemini-2.5-pro"]["payload"];
+    assert_eq!(gemini["search"]["kind"], "per_grounded_prompt");
+
+    // Sonnet 5 intro pricing is time-bounded: the family is published only while the compiled
+    // epoch has not flipped (2026-09-01T00:00:00Z = 1788220800).
+    let compiled_ts = body["compiled_ts"].as_i64().expect("compiled_ts");
+    assert_eq!(
+        by_family.contains_key("anthropic/standard/sonnet-5-intro"),
+        compiled_ts < 1_788_220_800,
+        "sonnet-5-intro presence must follow the compiled epoch"
+    );
 }
 
 async fn control_json_request(
