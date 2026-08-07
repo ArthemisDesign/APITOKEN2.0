@@ -572,6 +572,13 @@ impl GeminiAdmission {
         self.reservation.is_some()
     }
 
+    /// The request identity carried into the reservation and the ledger. Not a secret: it is the
+    /// same value the customer receives in `x-request-id`, and it is what makes a journal line
+    /// joinable to the settlement it describes.
+    pub(crate) fn request_id(&self) -> &str {
+        &self.calibration_request_id
+    }
+
     pub(crate) fn requests_post_turn_probe(&self) -> bool {
         self.exact_calibration_target
     }

@@ -1951,6 +1951,35 @@ struct SseTranslator {
     image_delivered: bool,
     audio_usage_hint: AudioUsageHint,
     audio_usage_failed: bool,
+    /// Content-free shape of the stream, kept only so a turn that ends without usage can say why in
+    /// one journal line instead of leaving the operator with a bare counter. No customer text, no
+    /// tool arguments, no identifiers — frame counts and the terminal finish reason.
+    shape: StreamShape,
+}
+
+/// Counters describing what the upstream actually sent, for diagnosing a turn that produced no
+/// usage. Every field is a count or a Google enum name; none of it is customer content.
+#[derive(Clone, Debug, Default)]
+struct StreamShape {
+    frames: u64,
+    envelope_only_frames: u64,
+    usage_frames: u64,
+    countless_usage_frames: u64,
+    last_finish_reason: Option<String>,
+}
+
+impl std::fmt::Display for StreamShape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "frames={} envelope_only={} usage_frames={} countless_usage_frames={} finish_reason={}",
+            self.frames,
+            self.envelope_only_frames,
+            self.usage_frames,
+            self.countless_usage_frames,
+            self.last_finish_reason.as_deref().unwrap_or("none"),
+        )
+    }
 }
 
 impl SseTranslator {
@@ -1973,6 +2002,33 @@ impl SseTranslator {
             image_delivered: false,
             audio_usage_hint,
             audio_usage_failed: false,
+            shape: StreamShape::default(),
+        }
+    }
+
+    /// Record the content-free usage shape of one upstream frame. `usageMetadata` present but
+    /// carrying no token counts is the case that used to erase an earlier good snapshot, so it is
+    /// counted apart from a frame that reports real counts.
+    fn observe_usage_shape(&mut self, wrapper: &Value) {
+        for metadata in [
+            wrapper.get("usageMetadata"),
+            wrapper.pointer("/response/usageMetadata"),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            self.shape.usage_frames = self.shape.usage_frames.saturating_add(1);
+            if metering::gemini::usage_from_metadata_value(metadata).total_tokens() == 0 {
+                self.shape.countless_usage_frames =
+                    self.shape.countless_usage_frames.saturating_add(1);
+            }
+        }
+        if let Some(reason) = wrapper
+            .pointer("/response/candidates/0/finishReason")
+            .or_else(|| wrapper.pointer("/candidates/0/finishReason"))
+            .and_then(Value::as_str)
+        {
+            self.shape.last_finish_reason = Some(reason.to_string());
         }
     }
 
@@ -2036,10 +2092,19 @@ impl SseTranslator {
         if !wrapper.is_object() {
             return Err(());
         }
+        self.shape.frames = self.shape.frames.saturating_add(1);
+        self.observe_usage_shape(&wrapper);
+        // Settlement reads usage from the envelope as well as from the response it carries. A frame
+        // that reports usage next to `response`, or in place of it, is still Google stating what the
+        // turn cost, and dropping it as "private" silently downgraded the turn to an unmetered one
+        // billed at the preflight hold. Reading is not exposing: the envelope itself is never framed
+        // to the client, only the public response fields below are.
+        metering::gemini::merge_stream_response_value(&mut self.usage, &wrapper);
         let Some(mut native) = wrapper
             .as_object_mut()
             .and_then(|object| object.remove("response"))
         else {
+            self.shape.envelope_only_frames = self.shape.envelope_only_frames.saturating_add(1);
             // A mid-stream upstream error must reach the client as a native error element rather
             // than a clean truncation that looks like success. Genuinely private credit/accounting
             // events carry no `error` and have no public representation, so they stay consumed.
@@ -2345,6 +2410,13 @@ async fn stream_response(
                 }
             }
         }
+        let usage = (!translator.audio_usage_failed && !translator.usage.is_zero())
+            .then_some(&translator.usage);
+        // A metered turn that ends with no usage is not a healthy turn however clean the stream
+        // looked: it settles at the conservative preflight hold instead of the measured cost. Decide
+        // that before classifying the profile, so the model is never credited with a success on the
+        // very turn that is about to be recorded as a usage failure.
+        let usage_missing = usage.is_none() && admission.requires_usage();
         if !aborted {
             match translator.provider_error {
                 Some(401 | 403) => {
@@ -2371,8 +2443,10 @@ async fn stream_response(
                     Metrics::inc(&metrics.gemini_backend_failures);
                     profile.mark_model_failure(&wire_model_id, "backend", gateway.config());
                 }
-                Some(_) if clean_eof => profile.mark_model_success(&wire_model_id),
-                None if clean_eof => profile.mark_model_success(&wire_model_id),
+                Some(_) if clean_eof && !usage_missing => {
+                    profile.mark_model_success(&wire_model_id)
+                }
+                None if clean_eof && !usage_missing => profile.mark_model_success(&wire_model_id),
                 _ if translator.audio_usage_failed => {
                     Metrics::inc(&metrics.gemini_usage_missing);
                     profile.mark_model_failure(&wire_model_id, "usage_metadata", gateway.config());
@@ -2385,13 +2459,25 @@ async fn stream_response(
                 _ => {}
             }
         }
-        let usage = (!translator.audio_usage_failed && !translator.usage.is_zero())
-            .then_some(&translator.usage);
-        if usage.is_none() && admission.requires_usage() {
+        if usage_missing {
             Metrics::inc(&metrics.gemini_usage_missing);
             if !aborted && !malformed && translator.provider_error.is_none() {
                 Metrics::inc(&metrics.gemini_malformed_responses);
                 profile.mark_model_failure(&wire_model_id, "usage_metadata", gateway.config());
+                // The counter alone could not say whether the upstream reported nothing or we threw
+                // its report away, and the settlement it drives is the customer's most expensive
+                // one. Name the request and the content-free stream shape so the next occurrence is
+                // diagnosable from the journal instead of from a live capture.
+                elog::warn(
+                    "gemini",
+                    format!(
+                        "gemini turn settled without usage metadata: request_id={} model={} profile={} {}",
+                        admission.request_id(),
+                        wire_model_id,
+                        profile.id(),
+                        translator.shape,
+                    ),
+                );
             }
         }
         let request_probe = admission.requests_post_turn_probe();

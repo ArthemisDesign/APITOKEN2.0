@@ -1400,6 +1400,69 @@ fn native_stream_error_value_is_sanitized() {
 }
 
 #[test]
+fn settlement_usage_survives_every_envelope_google_reports_it_in() {
+    // Three real stream shapes used to leave the turn unmetered. Each one settles the customer at
+    // the conservative preflight hold — a double-digit multiple of the measured cost — so each is
+    // pinned here with the counters that let the journal name which one occurred.
+    fn drive(frames: &[&str]) -> SseTranslator {
+        let mut translator = SseTranslator::new_with_image_usage(
+            StreamFraming::Sse,
+            "gemini-3.1-pro-preview",
+            0,
+            AudioUsageHint::default(),
+        );
+        for frame in frames {
+            translator.push(frame.as_bytes()).unwrap();
+        }
+        translator
+    }
+
+    // Usage reported beside the response envelope rather than inside it.
+    let beside = drive(&[concat!(
+        "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]},",
+        "\"finishReason\":\"STOP\"}]},",
+        "\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":5,\"totalTokenCount\":105}}\n\n"
+    )]);
+    assert!(!beside.usage.is_zero());
+    assert_eq!(beside.usage.input_tokens, 100);
+    assert_eq!(beside.shape.last_finish_reason.as_deref(), Some("STOP"));
+
+    // Usage reported in a trailing envelope that carries no response at all.
+    let trailing = drive(&[
+        "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}]}}\n\n",
+        "data: {\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":5,\"totalTokenCount\":105}}\n\n",
+    ]);
+    assert!(!trailing.usage.is_zero());
+    assert_eq!(trailing.usage.output_tokens, 5);
+    assert_eq!(trailing.shape.envelope_only_frames, 1);
+
+    // A terminal frame whose usageMetadata carries no counts must not erase the reported ones.
+    let annotated = drive(&[
+        concat!(
+            "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}],",
+            "\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":5,\"totalTokenCount\":105}}}\n\n"
+        ),
+        concat!(
+            "data: {\"response\":{\"candidates\":[{\"finishReason\":\"STOP\"}],",
+            "\"usageMetadata\":{\"trafficType\":\"PROVISIONED_THROUGHPUT\"}}}\n\n"
+        ),
+    ]);
+    assert!(!annotated.usage.is_zero());
+    assert_eq!(annotated.usage.input_tokens, 100);
+    assert_eq!(annotated.shape.usage_frames, 2);
+    assert_eq!(annotated.shape.countless_usage_frames, 1);
+
+    // A turn Google genuinely reports no usage for stays unmetered — and says so in its shape.
+    let silent = drive(&[concat!(
+        "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[",
+        "{\"functionCall\":{\"name\":\"f\",\"args\":{}}}]},\"finishReason\":\"STOP\"}]}}\n\n"
+    )]);
+    assert!(silent.usage.is_zero());
+    assert_eq!(silent.shape.usage_frames, 0);
+    assert_eq!(silent.shape.frames, 1);
+}
+
+#[test]
 fn json_array_framing_wraps_elements_and_closes() {
     let mut translator = SseTranslator::new_with_image_usage(
         StreamFraming::JsonArray,

@@ -537,6 +537,14 @@ For every request the runtime:
   A metered non-stream success without authoritative non-zero usage is withheld and refunded; once
   streaming bytes have been delivered, missing final usage settles the conservative hold and emits
   an operational counter instead of inventing a usage event or granting a free request.
+  Because that settlement is the most expensive one a customer can receive, the stream translator
+  reads `usageMetadata` from **every** envelope Google reports it in — beside `response`, in a
+  trailing envelope that carries no `response` at all, and inside it — and a frame whose
+  `usageMetadata` carries no token counts (a bare `trafficType`, an empty object) never erases the
+  counts an earlier frame reported. A turn that still ends unmetered is no longer credited to the
+  model as a success, and writes one content-free journal line naming the request id and the stream
+  shape (`frames`, `envelope_only`, `usage_frames`, `countless_usage_frames`, `finish_reason`) so
+  the remaining cause is diagnosable without a live capture.
 
 ### What the Gemini API-dollar estimate means
 

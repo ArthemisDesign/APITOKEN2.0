@@ -340,6 +340,12 @@ pub fn usage_from_response_value(value: &Value) -> Option<GeminiUsage> {
     Some(usage)
 }
 
+/// Parse one `usageMetadata` object on its own. Exposed so a caller can tell an annotation-only
+/// frame (no token counts) apart from a real cumulative snapshot without duplicating the field map.
+pub fn usage_from_metadata_value(metadata: &Value) -> GeminiUsage {
+    usage_from_metadata(metadata)
+}
+
 fn usage_from_metadata(metadata: &Value) -> GeminiUsage {
     let prompt = metadata
         .get("promptTokenCount")
@@ -428,13 +434,22 @@ fn merge_grounding_usage(usage: &mut GeminiUsage, value: &Value) {
 /// Merge one streaming GenerateContentResponse into the last authoritative usage snapshot. Token
 /// counts replace older cumulative counts; grounding facts survive when Google emits them in a
 /// different SSE frame from the final `usageMetadata`.
+///
+/// A `usageMetadata` object carrying no token counts at all — an annotation-only frame such as a
+/// bare `trafficType`, or an empty object — is NOT a newer cumulative snapshot and must never erase
+/// the counts an earlier frame already reported. Replacing them left the turn indistinguishable
+/// from "Google sent no usage", which settles the customer at the conservative preflight hold: a
+/// double-digit multiple of the real cost of the turn.
 pub fn merge_stream_response_value(usage: &mut GeminiUsage, value: &Value) {
     let search_queries = usage.search_queries;
     let grounded_search_prompts = usage.grounded_search_prompts;
     if let Some(metadata) = value.get("usageMetadata") {
-        *usage = usage_from_metadata(metadata);
-        usage.search_queries = search_queries;
-        usage.grounded_search_prompts = grounded_search_prompts;
+        let snapshot = usage_from_metadata(metadata);
+        if snapshot.total_tokens() > 0 || usage.total_tokens() == 0 {
+            *usage = snapshot;
+            usage.search_queries = search_queries;
+            usage.grounded_search_prompts = grounded_search_prompts;
+        }
     }
     merge_grounding_usage(usage, value);
 }
@@ -510,6 +525,50 @@ pub fn cost_nanodollars(usage: &GeminiUsage, prices: &GeminiPrices) -> i128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_annotation_only_usage_frame_never_erases_reported_counts() {
+        // Google reports usage as a cumulative snapshot, but not every frame that carries the key
+        // carries counts. Treating such a frame as the newer truth zeroed the turn, which is
+        // indistinguishable from "no usage at all" and settles the customer at the preflight hold.
+        let mut usage = GeminiUsage::default();
+        merge_stream_response_value(
+            &mut usage,
+            &serde_json::json!({
+                "usageMetadata": {
+                    "promptTokenCount": 100,
+                    "candidatesTokenCount": 5,
+                    "totalTokenCount": 105,
+                }
+            }),
+        );
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 5);
+
+        for countless in [
+            serde_json::json!({"usageMetadata": {}}),
+            serde_json::json!({"usageMetadata": {"trafficType": "PROVISIONED_THROUGHPUT"}}),
+        ] {
+            let mut after = usage.clone();
+            merge_stream_response_value(&mut after, &countless);
+            assert_eq!(after.input_tokens, 100, "counts survive {countless}");
+            assert_eq!(after.output_tokens, 5, "counts survive {countless}");
+            assert!(!after.is_zero());
+        }
+
+        // A later frame that does report counts still replaces the older cumulative snapshot.
+        merge_stream_response_value(
+            &mut usage,
+            &serde_json::json!({
+                "usageMetadata": {
+                    "promptTokenCount": 100,
+                    "candidatesTokenCount": 40,
+                    "totalTokenCount": 140,
+                }
+            }),
+        );
+        assert_eq!(usage.output_tokens, 40);
+    }
 
     #[test]
     fn standard_paid_catalog_matches_the_official_rates() {
