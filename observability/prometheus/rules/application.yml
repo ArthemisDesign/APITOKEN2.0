@@ -650,6 +650,21 @@ groups:
           description: '{{ $value }} account policy bindings sit in failed state; their owners stay without working API access until requeued after the cause is fixed.'
           runbook: 'docs/ops/MONITORING.md#pricingpolicydeliveryfailed'
 
+      # Settled money, not a dry run. The shadow evaluation lane that used to answer this question
+      # ran ahead of a rollout, wrote rows nothing read, and was silent during the cutover it
+      # existed to protect. This reads what customers were actually charged, so it cannot be
+      # skipped: a pricing change that charges the wrong amount fires it within the hour.
+      - alert: PricingChargeMismatch
+        expr: apitoken_pricing_charge_mismatch > 0
+        for: 10m
+        labels:
+          severity: critical
+          component: pricing
+        annotations:
+          summary: 'Charges do not match the multiplier they declare ({{ $labels.account_class }})'
+          description: '{{ $value }} settled charges in the last hour billed an amount that disagrees with the payable multiplier recorded on the same row. Either the customer was overcharged or revenue was lost; both are money defects.'
+          runbook: 'docs/ops/MONITORING.md#pricingchargemismatch'
+
       - alert: FailedWebhooksPresent
         expr: apitoken_webhook_failed > 0
         for: 2m

@@ -948,6 +948,39 @@ Typical causes are an invalid desired policy payload or a superseded desired ver
 cause, then re-drive the desired policy through the application's own idempotent write path
 (`packages/db` pricing policy write), never by editing `sync_state` directly.
 
+## PricingChargeMismatch
+
+A settled ledger row billed an amount that disagrees with the `payable_multiplier_bp` recorded on
+that same row, by more than the one basis point of tolerance integer rounding needs. Either a
+customer was overcharged or revenue was lost, so treat it as a money defect rather than a
+reporting one.
+
+Find the rows and read what they claim:
+
+```sql
+SELECT to_timestamp(ts), account_class, payable_multiplier_bp,
+       round(amount_nano::numeric / official_nano * 10000) AS charged_bp,
+       amount_nano, official_nano, rule_id, policy_id, policy_version
+FROM ledger
+WHERE ts > EXTRACT(EPOCH FROM now())::bigint - 3600
+  AND official_nano > 0 AND amount_nano > 0
+  AND ABS(amount_nano::numeric / official_nano * 10000 - payable_multiplier_bp) > 1
+ORDER BY ts DESC;
+```
+
+The row carries the whole decision — rule, policy version, catalog and switch generations — so the
+question is which of them disagreed with the charge, not which request it was. A cluster starting at
+one timestamp points at a pricing change; scattered rows on sub-cent charges are rounding and belong
+in the tolerance instead.
+
+Never edit `ledger`: it is the money record. Correct a customer through an adjustment, and fix the
+rule that produced the charge.
+
+This alert replaced the shadow evaluation lane. That lane compared new pricing against the live one
+ahead of a rollout, wrote 2654 rows nothing ever read, and was not running during the cutover it
+existed to protect. This one reads settled money on a rolling hour, so it cannot be skipped — and if
+the series stops appearing at all, `MonitoringTargetDown` covers the collector.
+
 ## FailedWebhooksPresent
 
 Verify provider signature/audit data and whether the event’s intended payment mutation committed.

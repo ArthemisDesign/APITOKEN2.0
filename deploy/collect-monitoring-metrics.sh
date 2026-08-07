@@ -69,6 +69,10 @@ cat >"$temporary" <<'METRICS'
 # TYPE apitoken_pricing_policy_oldest_pending_seconds gauge
 # HELP apitoken_pricing_policy_failed Account policy bindings whose engine activation terminally failed.
 # TYPE apitoken_pricing_policy_failed gauge
+# HELP apitoken_pricing_charge_mismatch Settled charges whose amount does not match the multiplier the same row declares.
+# TYPE apitoken_pricing_charge_mismatch gauge
+# HELP apitoken_pricing_effective_multiplier_bp Basis points actually charged against the official price, by account class.
+# TYPE apitoken_pricing_effective_multiplier_bp gauge
 METRICS
 
 psql_database commerce >>"$temporary" <<'SQL'
@@ -142,6 +146,32 @@ SQL
 if database_exists claude_engine; then
   psql_database claude_engine >>"$temporary" <<'SQL'
 SELECT 'apitoken_engine_settlement_pending ' || count(*) FROM settlement_outbox WHERE state <> 'done';
+-- What a customer was actually charged, checked against the multiplier the same settled row
+-- declares. This replaces the shadow evaluation lane, which computed the comparison ahead of a
+-- rollout, wrote 2654 rows that nothing ever read, and was not running during the cutover it
+-- existed to protect. This reads settled money instead of a dry run, so it cannot be skipped.
+-- One basis point of tolerance absorbs integer rounding on sub-cent charges.
+WITH settled AS (
+  SELECT account_class,
+         amount_nano::numeric / official_nano AS charged_ratio,
+         payable_multiplier_bp
+  FROM ledger
+  WHERE ts > EXTRACT(EPOCH FROM now())::bigint - 3600
+    AND official_nano > 0 AND amount_nano > 0
+    AND payable_multiplier_bp IS NOT NULL AND account_class IS NOT NULL
+)
+SELECT 'apitoken_pricing_charge_mismatch{account_class="' || account_class || '"} '
+       || count(*) FILTER (WHERE ABS(charged_ratio * 10000 - payable_multiplier_bp) > 1)
+FROM settled GROUP BY account_class;
+WITH settled AS (
+  SELECT account_class, amount_nano::numeric / official_nano AS charged_ratio
+  FROM ledger
+  WHERE ts > EXTRACT(EPOCH FROM now())::bigint - 3600
+    AND official_nano > 0 AND amount_nano > 0 AND account_class IS NOT NULL
+)
+SELECT 'apitoken_pricing_effective_multiplier_bp{account_class="' || account_class || '"} '
+       || round(avg(charged_ratio) * 10000)
+FROM settled GROUP BY account_class;
 SELECT 'apitoken_engine_expired_active_leases ' || (
   (SELECT count(*) FROM capacity_leases WHERE state = 'active' AND lease_until < EXTRACT(EPOCH FROM now())::bigint)
   + (SELECT count(*) FROM reservations WHERE state IN ('reserved','delivering','settlement_pending') AND lease_until < EXTRACT(EPOCH FROM now())::bigint)
