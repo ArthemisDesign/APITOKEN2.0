@@ -27,7 +27,10 @@ from typing import Any
 
 
 NANO_PER_USD = 1_000_000_000
-MAX_BUDGET_NANO = 100_000  # $0.0001 aggregate run budget; a CLI value above this is an error.
+# Authorized by the product owner on 2026-08-07: at most $10 of API-equivalent spend for the whole
+# calibration effort. Encoded literally, as the contract requires — this is a ceiling on the run,
+# not an estimate of it, and the observed spend is reported separately.
+MAX_BUDGET_NANO = 10_000_000_000  # $10.00 aggregate run budget; a CLI value above this is an error.
 # Separate ceiling for the tool/media probes. It is deliberately its own number: those legs exist
 # because the per-request unit cost of a tool call is unproven, so they cannot be bounded the way a
 # generation leg is, and letting them share the coverage budget would hide an unbounded spend
@@ -1024,7 +1027,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     try:
         budget_nano = usd_to_nano(args.budget_usd)
         if budget_nano <= 0 or budget_nano > MAX_BUDGET_NANO:
-            raise CalibrationError("--budget-usd must be positive and no greater than 0.0001")
+            raise CalibrationError("--budget-usd must be positive and no greater than 10.00")
         if args.capability_probe_budget_usd is not None:
             capability_probe_nano = usd_to_nano(args.capability_probe_budget_usd)
             if (

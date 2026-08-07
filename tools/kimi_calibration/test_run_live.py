@@ -176,19 +176,19 @@ class DryRunAndBudgetTests(unittest.TestCase):
         self.assertEqual(plan["mode"], "dry-run")
         self.assertEqual(plan["paid_requests"], 0)
         self.assertEqual(plan["budget_nanousd_total"], "100000")
-        self.assertEqual(plan["budget_hard_cap_nanousd"], "100000")
+        self.assertEqual(plan["budget_hard_cap_nanousd"], str(run_live.MAX_BUDGET_NANO))
         self.assertTrue(plan["legs"])
         self.assertTrue(all("upper_bound_nanousd" in leg for leg in plan["legs"]))
 
-    def test_budget_hard_cap_rejects_anything_above_a_ten_thousandth(self):
+    def test_budget_hard_cap_is_the_authorized_amount_and_nothing_above_it(self):
+        # The default stays the smallest useful run: raising the ceiling must not raise the amount
+        # an unattended invocation spends.
         self.assertEqual(run_live.parse_args([]).budget_usd, "0.0001")
+        self.assertEqual(run_live.parse_args(["--budget-usd", "10.00"]).budget_usd, "10.00")
         self.assertEqual(run_live.parse_args(["--budget-usd", "0.0001"]).budget_usd, "0.0001")
-        with self.assertRaises(SystemExit):
-            run_live.parse_args(["--budget-usd", "0.0002"])
-        with self.assertRaises(SystemExit):
-            run_live.parse_args(["--budget-usd", "1.5"])
-        with self.assertRaises(SystemExit):
-            run_live.parse_args(["--budget-usd", "0"])
+        for rejected in ("10.01", "11", "100", "0"):
+            with self.assertRaises(SystemExit):
+                run_live.parse_args(["--budget-usd", rejected])
 
     def test_budget_parser_is_a_strict_exact_decimal(self):
         self.assertEqual(run_live.usd_to_nano("0.0001"), 100_000)
