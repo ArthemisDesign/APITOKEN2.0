@@ -608,7 +608,13 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
     };
     router
         .with_state(state.clone())
-        .layer(middleware::from_fn_with_state(state, audit_customer_error))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            audit_customer_error,
+        ))
+        // Outermost, so the gauge covers the request from the first byte in to the last byte out,
+        // including everything the audit layer wraps.
+        .layer(middleware::from_fn_with_state(state, track_active_request))
 }
 
 async fn fixed_openai_not_found() -> Response {
@@ -617,6 +623,58 @@ async fn fixed_openai_not_found() -> Response {
         Json(unsupported_openai_endpoint_error()),
     )
         .into_response()
+}
+
+/// Hold the slot busy for the entire life of a customer request, body included.
+///
+/// A deploy may only stop a slot that owes nothing, and "owes nothing" cannot be read from the
+/// handler returning: the response body is where the answer streams and where the settlement is
+/// written when it ends. Counting until the body is dropped is what makes
+/// `claude_api_active_requests == 0` a safe stop signal. Provider-side in-flight gauges free their
+/// lease as soon as the upstream is done and would leave exactly that tail unprotected — the window
+/// in which reservations were abandoned in `delivering` and later charged the full preflight hold.
+/// Health and metrics endpoints are excluded so a readiness poll never keeps a draining slot busy.
+async fn track_active_request(
+    State(state): State<HttpState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if matches!(
+        request.uri().path(),
+        "/health" | "/live" | "/ready" | "/metrics"
+    ) {
+        return next.run(request).await;
+    }
+    let guard = ActiveRequestGuard::new(state.app.metrics.clone());
+    let response = next.run(request).await;
+    // The guard rides inside the body's stream adapter, so dropping the body — whether it ended
+    // cleanly or the client disconnected mid-answer — drops the closure that owns it.
+    response.map(|body| {
+        axum::body::Body::from_stream(futures_util::StreamExt::map(
+            body.into_data_stream(),
+            move |chunk| {
+                let _hold = &guard;
+                chunk
+            },
+        ))
+    })
+}
+
+struct ActiveRequestGuard {
+    metrics: Arc<forward::Metrics>,
+}
+
+impl ActiveRequestGuard {
+    fn new(metrics: Arc<forward::Metrics>) -> Self {
+        forward::Metrics::inc(&metrics.active_requests);
+        Self { metrics }
+    }
+}
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        forward::Metrics::dec(&self.metrics.active_requests);
+    }
 }
 
 /// One privacy-safe event for the terminal HTTP error actually returned to a metered customer.
@@ -1026,6 +1084,7 @@ async fn metrics(
          # TYPE claude_api_codex_history_wrong_tenant_total counter\nclaude_api_codex_history_wrong_tenant_total {}\n\
          # TYPE claude_api_codex_history_corrupt_total counter\nclaude_api_codex_history_corrupt_total {}\n\
          # TYPE claude_api_inflight gauge\nclaude_api_inflight {}\n\
+         # TYPE claude_api_active_requests gauge\nclaude_api_active_requests {}\n\
          # TYPE claude_api_subs gauge\nclaude_api_subs {}\n\
          # TYPE claude_api_cooling gauge\nclaude_api_cooling {}\n\
          # TYPE claude_api_breaker_open gauge\nclaude_api_breaker_open {}\n",
@@ -1067,6 +1126,7 @@ async fn metrics(
         history.map(|stats| stats.wrong_tenant).unwrap_or(0),
         history.map(|stats| stats.corrupt).unwrap_or(0),
         inflight,
+        g(&m.active_requests),
         app.pool.len(),
         cooling,
         breaker_open,
@@ -5633,12 +5693,16 @@ fn readiness_snapshot(
     accepting: &AtomicBool,
     authority_ready: &AtomicBool,
     provider_ready: Option<bool>,
+    active_requests: u64,
 ) -> (StatusCode, serde_json::Value) {
     if accepting.load(Ordering::Acquire)
         && authority_ready.load(Ordering::Acquire)
         && provider_ready.unwrap_or(true)
     {
-        (StatusCode::OK, json!({ "ready": true }))
+        (
+            StatusCode::OK,
+            json!({ "ready": true, "active_requests": active_requests }),
+        )
     } else {
         let reason = if !accepting.load(Ordering::Acquire) {
             "draining"
@@ -5647,9 +5711,12 @@ fn readiness_snapshot(
         } else {
             "provider_unavailable"
         };
+        // The deployer reads `active_requests` from exactly here. It is the unauthenticated
+        // endpoint it already polls, and a draining slot must be able to answer "am I empty yet"
+        // without holding a panel key.
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            json!({ "ready": false, "reason": reason }),
+            json!({ "ready": false, "reason": reason, "active_requests": active_requests }),
         )
     }
 }
@@ -5687,8 +5754,12 @@ async fn ready(State(state): State<HttpState>) -> Response {
     } else {
         None
     };
-    let (status, body) =
-        readiness_snapshot(&state.accepting, &state.app.authority_ready, provider_ready);
+    let (status, body) = readiness_snapshot(
+        &state.accepting,
+        &state.app.authority_ready,
+        provider_ready,
+        forward::Metrics::get(&state.app.metrics.active_requests),
+    );
     (status, Json(body)).into_response()
 }
 

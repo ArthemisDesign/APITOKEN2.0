@@ -554,6 +554,7 @@ dependencies = [
  "codex-credential",
  "elog",
  "forward",
+ "futures-util",
  "gemini-credential",
  "glm-credential",
  "kimi-credential",

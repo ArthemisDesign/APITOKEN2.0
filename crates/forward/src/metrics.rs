@@ -278,6 +278,15 @@ impl Default for PricingBridgeMetrics {
 #[derive(Default)]
 pub struct Metrics {
     pub requests: AtomicU64,     // всего обслуженных запросов (после авторизации)
+    /// Customer requests this process is serving right now, counted from the moment the request
+    /// enters the router until the last byte of its response body is gone.
+    ///
+    /// This is the only number that answers "may this slot be stopped safely". Provider-side
+    /// in-flight gauges free their lease as soon as the upstream is done, while the request still
+    /// owns money: the settlement is written after the body ends. A deploy that stopped a slot on
+    /// the provider gauge would cut exactly that tail — the window in which reservations were
+    /// abandoned in `delivering` and later charged the full preflight hold.
+    pub active_requests: AtomicU64,
     pub upstream_429: AtomicU64, // ответов апстрима 429 (квота подписки)
     pub upstream_auth: AtomicU64, // 401/403 (мёртвый токен → карантин)
     pub upstream_5xx: AtomicU64, // backend-fault (5xx/408/409/425)
@@ -345,6 +354,16 @@ impl Metrics {
     #[inline]
     pub fn get(c: &AtomicU64) -> u64 {
         c.load(Ordering::Relaxed)
+    }
+
+    /// Saturating decrement for the gauge-shaped counters. A gauge that underflows to `u64::MAX`
+    /// would read as "this slot is busy forever" and block every later deploy, so the floor is
+    /// clamped rather than wrapped.
+    #[inline]
+    pub fn dec(c: &AtomicU64) {
+        let _ = c.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            Some(value.saturating_sub(1))
+        });
     }
 
     pub fn execution_not_started(&self, plane: crate::ProviderMode) {

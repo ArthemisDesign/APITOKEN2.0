@@ -974,3 +974,16 @@ commit_activation() {
   ACTIVATION_ACTIVE=0
   trap - ERR EXIT INT TERM
 }
+
+# Requests the slot is still serving, body included. Empty output means the answer is unavailable —
+# an older binary without the field, or a slot already gone — and the caller must degrade rather
+# than block the deploy.
+parse_active_requests() {
+  sed -n 's/.*"active_requests"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p' | head -n1
+}
+
+slot_active_requests() {
+  local url=$1 body
+  body=$(curl --noproxy '*' -sS --max-time 2 "$url" 2>/dev/null) || return 1
+  printf '%s\n' "$body" | parse_active_requests
+}

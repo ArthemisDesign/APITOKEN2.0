@@ -2344,33 +2344,36 @@ fn readiness_flag_flips_before_drain() {
     let accepting = AtomicBool::new(true);
     let authority_ready = AtomicBool::new(true);
     assert_eq!(
-        readiness_snapshot(&accepting, &authority_ready, None),
-        (StatusCode::OK, json!({"ready": true}))
+        readiness_snapshot(&accepting, &authority_ready, None, 0),
+        (StatusCode::OK, json!({"ready": true, "active_requests": 0}))
     );
 
     accepting.store(false, Ordering::Release);
+    // A draining slot must report what it still owes: this is the number the deployer waits on
+    // before stopping the unit, so it has to survive the readiness flip rather than appear only
+    // while the slot is healthy.
     assert_eq!(
-        readiness_snapshot(&accepting, &authority_ready, Some(true)),
+        readiness_snapshot(&accepting, &authority_ready, Some(true), 3),
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            json!({"ready": false, "reason": "draining"}),
+            json!({"ready": false, "reason": "draining", "active_requests": 3}),
         )
     );
     accepting.store(true, Ordering::Release);
     authority_ready.store(false, Ordering::Release);
     assert_eq!(
-        readiness_snapshot(&accepting, &authority_ready, Some(true)),
+        readiness_snapshot(&accepting, &authority_ready, Some(true), 0),
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            json!({"ready": false, "reason": "authority_unavailable"}),
+            json!({"ready": false, "reason": "authority_unavailable", "active_requests": 0}),
         )
     );
     authority_ready.store(true, Ordering::Release);
     assert_eq!(
-        readiness_snapshot(&accepting, &authority_ready, Some(false)),
+        readiness_snapshot(&accepting, &authority_ready, Some(false), 0),
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            json!({"ready": false, "reason": "provider_unavailable"}),
+            json!({"ready": false, "reason": "provider_unavailable", "active_requests": 0}),
         )
     );
 }
@@ -3018,7 +3021,8 @@ async fn kimi_plane_serves_common_surface_and_kimi_subs_lattice() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), 4_096).await.unwrap();
     let body: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(body, json!({"ready": true}));
+    // The readiness probe itself is excluded from the gauge, so a healthy idle slot reads zero.
+    assert_eq!(body, json!({"ready": true, "active_requests": 0}));
 
     // /metrics exports the label-free KIMI series as zero gauges on this plane as well.
     let mut request = Request::builder()
@@ -3086,7 +3090,7 @@ async fn kimi_plane_readiness_tracks_gateway_liveness() {
     let body: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(
         body,
-        json!({"ready": false, "reason": "provider_unavailable"})
+        json!({"ready": false, "reason": "provider_unavailable", "active_requests": 0})
     );
 }
 
@@ -5392,4 +5396,43 @@ async fn anthropic_quota_snapshot_freshness_is_published_for_alerting() {
     assert!(body.contains(
         "claude_api_anthropic_quota_last_observation_timestamp_seconds 1800000000"
     ));
+}
+
+/// The deploy stops a slot when this gauge reaches zero, so it must not fall to zero while the
+/// customer is still being served. Historically the only in-flight numbers were provider-side: they
+/// free their lease when the upstream finishes, leaving the body — and the settlement written when
+/// it ends — unprotected. That tail is exactly where reservations were abandoned in `delivering`
+/// and later charged the full preflight hold.
+#[tokio::test]
+async fn the_active_request_gauge_spans_the_response_body_not_just_the_handler() {
+    let app = provider_test_app(forward::ProviderMode::Gemini);
+    let metrics = app.metrics.clone();
+    let service = router(app, Arc::new(AtomicBool::new(true)));
+    let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
+
+    assert_eq!(forward::Metrics::get(&metrics.active_requests), 0);
+
+    let mut request = Request::builder()
+        .method("GET")
+        .uri("/balance")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(peer);
+    let response = service.clone().oneshot(request).await.unwrap();
+
+    // The handler has returned, but the body is still owned by the caller: the slot still owes work.
+    assert_eq!(forward::Metrics::get(&metrics.active_requests), 1);
+    let _ = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(forward::Metrics::get(&metrics.active_requests), 0);
+
+    // A readiness poll must never make a draining slot look busy, or the deploy would never stop it.
+    let mut probe = Request::builder()
+        .method("GET")
+        .uri("/ready")
+        .body(Body::empty())
+        .unwrap();
+    probe.extensions_mut().insert(peer);
+    let probe = service.oneshot(probe).await.unwrap();
+    let _ = to_bytes(probe.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(forward::Metrics::get(&metrics.active_requests), 0);
 }

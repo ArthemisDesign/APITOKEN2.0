@@ -21,6 +21,10 @@ REQUESTED_TARGET_PORT=
 READINESS_TIMEOUT=${READINESS_TIMEOUT_SECONDS:-60}
 HEALTH_WINDOW_SECONDS=${CADDY_HEALTH_WINDOW_SECONDS:-6}
 PRE_DRAIN_SECONDS=${ENGINE_PRE_DRAIN_SECONDS:-6}
+# Emergency ceiling only. The old slot is stopped when it stops owing work, not when a clock says
+# so; this bound exists so one wedged request cannot block a deploy forever. Reaching it is an
+# incident signal, not a normal outcome.
+DRAIN_WAIT_SECONDS=${ENGINE_DRAIN_WAIT_SECONDS:-900}
 ENGINE_RELEASE_ROOT=${ENGINE_RELEASE_ROOT:-/srv/claude-api/releases}
 DEPLOY_LOCK_FILE=${DEPLOY_LOCK_FILE:-/run/lock/apitoken-deploy.lock}
 POSTGRES_ENV=${ENGINE_POSTGRES_ENV:-/srv/claude-api/data/engine-postgres.env}
@@ -137,6 +141,32 @@ draining_port() {
   status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 "$(slot_url "$port")" 2>/dev/null) || return 1
   [[ $status == 503 ]]
 }
+# Wait until a pre-drained slot owes nothing before it is stopped.
+#
+# This is the whole point of the pre-drain: readiness is already 503, so no new work arrives, and
+# everything still counted belongs to a customer who is being answered right now. Stopping on a
+# timer instead cut those answers mid-flight and left their reservations in `delivering`, which the
+# reconciler later charged at the full preflight hold.
+wait_slot_drained() {
+  local url=$1 label=$2 waited=0 count
+  [[ $DRY_RUN == 0 ]] || return 0
+  while ((waited < DRAIN_WAIT_SECONDS)); do
+    count=$(slot_active_requests "$url") || count=
+    if [[ -z $count ]]; then
+      log "$label: active-request count unavailable; stopping without the drain wait"
+      return 0
+    fi
+    if ((count == 0)); then
+      ((waited > 0)) && log "$label drained after ${waited}s"
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  warn "$label still serving ${count} request(s) after ${DRAIN_WAIT_SECONDS}s; stopping anyway"
+  return 0
+}
+
 control_ready() {
   local status
   status=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 2 "$CONTROL_READY_URL" 2>/dev/null) || return 1
@@ -967,6 +997,7 @@ if [[ -n $ACTIVE_UNIT && $ACTIVE_UNIT != "$TARGET_UNIT" ]]; then
     slot_serves_current "$TARGET_PORT" || post_admission_die "target lost readiness during old-engine pre-drain"
     control_ready || post_admission_die "stable Control API lost readiness during old-engine pre-drain"
   fi
+  wait_slot_drained "$(slot_url "$ACTIVE_PORT")" "$ACTIVE_UNIT"
   systemctl_command stop "$ACTIVE_UNIT" || post_admission_die "could not stop old engine unit $ACTIVE_UNIT"
   systemctl_command disable "$ACTIVE_UNIT" || post_admission_die "could not disable old engine unit $ACTIVE_UNIT"
   if [[ $DRY_RUN == 0 ]] && ! unit_stopped "$ACTIVE_UNIT"; then
@@ -1124,6 +1155,7 @@ if [[ -n $OPENAI_ACTIVE_UNIT && $OPENAI_ACTIVE_UNIT != "$OPENAI_TARGET_UNIT" ]];
     || post_admission_die "could not disable old OpenAI unit $OPENAI_ACTIVE_UNIT"
   if [[ $OPENAI_LEGACY_TARGET == 1 ]]; then
     # Ownership is moving back into the singleton, so no shared gateway may retain a connection.
+    wait_slot_drained "$(openai_slot_url "$OPENAI_ACTIVE_PORT")" "$OPENAI_ACTIVE_UNIT"
     systemctl_command stop "$OPENAI_ACTIVE_UNIT" \
       || post_admission_die "could not stop old OpenAI unit $OPENAI_ACTIVE_UNIT"
     if [[ $DRY_RUN == 0 ]] && ! unit_stopped "$OPENAI_ACTIVE_UNIT"; then
@@ -1287,14 +1319,17 @@ if [[ $GEMINI_SUPPORTED == 1 ]]; then
     systemctl_command disable "$GEMINI_ACTIVE_UNIT" \
       || post_admission_die "could not disable old Gemini unit $GEMINI_ACTIVE_UNIT"
     if [[ $GEMINI_LEGACY_TARGET == 1 ]]; then
+      wait_slot_drained "$(gemini_slot_url "$GEMINI_ACTIVE_PORT")" "$GEMINI_ACTIVE_UNIT"
       systemctl_command stop "$GEMINI_ACTIVE_UNIT" \
         || post_admission_die "could not stop old Gemini unit $GEMINI_ACTIVE_UNIT"
       if [[ $DRY_RUN == 0 ]] && ! unit_stopped "$GEMINI_ACTIVE_UNIT"; then
         post_admission_die "old Gemini cgroup remains active before legacy commit"
       fi
     else
-      # Readiness fencing removes this generation from new routing; asynchronous stop lets its
-      # established SSE requests finish under the normal bounded settlement deadline.
+      # Readiness fencing removes this generation from new routing; the drain wait then lets its
+      # established requests finish before SIGTERM, and the asynchronous stop keeps the deploy off
+      # the critical path for whatever settlement work remains.
+      wait_slot_drained "$(gemini_slot_url "$GEMINI_ACTIVE_PORT")" "$GEMINI_ACTIVE_UNIT"
       systemctl_command --no-block stop "$GEMINI_ACTIVE_UNIT" \
         || post_admission_die "could not queue retirement of old Gemini unit $GEMINI_ACTIVE_UNIT"
       wait_gemini_retirement_ack "$GEMINI_ACTIVE_UNIT" "$GEMINI_ACTIVE_PORT" \
@@ -1458,14 +1493,17 @@ if [[ $KIMI_SUPPORTED == 1 ]]; then
     systemctl_command disable "$KIMI_ACTIVE_UNIT" \
       || post_admission_die "could not disable old KIMI unit $KIMI_ACTIVE_UNIT"
     if [[ $KIMI_LEGACY_TARGET == 1 ]]; then
+      wait_slot_drained "$(kimi_slot_url "$KIMI_ACTIVE_PORT")" "$KIMI_ACTIVE_UNIT"
       systemctl_command stop "$KIMI_ACTIVE_UNIT" \
         || post_admission_die "could not stop old KIMI unit $KIMI_ACTIVE_UNIT"
       if [[ $DRY_RUN == 0 ]] && ! unit_stopped "$KIMI_ACTIVE_UNIT"; then
         post_admission_die "old KIMI cgroup remains active before legacy commit"
       fi
     else
-      # Readiness fencing removes this generation from new routing; asynchronous stop lets its
-      # established SSE requests finish under the normal bounded settlement deadline.
+      # Readiness fencing removes this generation from new routing; the drain wait then lets its
+      # established requests finish before SIGTERM, and the asynchronous stop keeps the deploy off
+      # the critical path for whatever settlement work remains.
+      wait_slot_drained "$(kimi_slot_url "$KIMI_ACTIVE_PORT")" "$KIMI_ACTIVE_UNIT"
       systemctl_command --no-block stop "$KIMI_ACTIVE_UNIT" \
         || post_admission_die "could not queue retirement of old KIMI unit $KIMI_ACTIVE_UNIT"
       wait_kimi_retirement_ack "$KIMI_ACTIVE_UNIT" "$KIMI_ACTIVE_PORT" \

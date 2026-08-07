@@ -189,6 +189,15 @@ releases carrying its provider marker, and slots require `.gemini-bluegreen-v1`;
 immediately preceding singleton release uses the retained legacy unit. Legacy
 restart mode refuses to run while the
 PostgreSQL credential is active.
+
+Every plane stops its old slot on **work, not on a clock**. After the readiness flip to HTTP 503 the
+controller polls that slot's own `/ready`, which reports `active_requests` — customer requests still
+being served, counted until the last byte of the response body — and issues `systemctl stop` only
+once it reads zero. Stopping on a timer instead cut answers mid-flight, and their reservations were
+left in `delivering` for the reconciler to charge at the full preflight hold. `ENGINE_DRAIN_WAIT_SECONDS`
+(default 900) is an emergency ceiling, not the mechanism: reaching it is logged as a warning and
+means something is wedged. A slot whose count cannot be read — an older binary without the field, an
+unparseable answer — is stopped immediately, so the gate can never wedge a deploy.
 Before any target slot is started, `engine-bluegreen.sh` invokes the fixed root-owned
 `engine-migrate.sh` helper for the selected release. Engine startup only verifies the installed
 schema and never runs DDL; pending migrations are applied explicitly, one version transaction at a

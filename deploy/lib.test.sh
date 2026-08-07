@@ -294,4 +294,26 @@ grep -Fq 'leaving authbot untouched' "$TEMP/current-failure.out" \
 grep -Fq 'automatic recovery was incomplete' "$TEMP/current-failure.out" \
   || fail "failed engine current restoration did not report incomplete recovery"
 
+# The deploy stops a slot only when it owes nothing, and this parser is what it reads. Two failure
+# modes matter and both must degrade rather than block: an old slot whose binary predates the field,
+# and a slot that answers something unparseable. Blocking on either would wedge every deploy.
+assert_active_requests() {
+  local body=$1 expected=$2 actual
+  actual=$(printf '%s' "$body" | parse_active_requests)
+  [[ $actual == "$expected" ]] \
+    || fail "active-request parse of '$body' gave '$actual', expected '$expected'"
+}
+
+assert_active_requests '{"ready":true,"active_requests":0}' 0
+assert_active_requests '{"ready":false,"reason":"draining","active_requests":7}' 7
+assert_active_requests '{"active_requests": 42, "ready": false}' 42
+# Pre-field binary: empty means "unknown", which the caller treats as drained.
+assert_active_requests '{"ready":false,"reason":"draining"}' ''
+assert_active_requests 'not json at all' ''
+assert_active_requests '' ''
+# A negative or non-numeric value is not a count and must not be mistaken for one.
+assert_active_requests '{"active_requests":-1}' ''
+
+printf 'deploy/lib.sh drain-gate parser tests passed\n'
+
 printf 'deploy/lib.sh activation journal tests passed\n'
