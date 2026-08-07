@@ -1695,6 +1695,13 @@ enum WriteCmd {
         lease_secs: i64,
         reply: oneshot::Sender<anyhow::Result<bool>>,
     },
+    /// Durable "this turn has cost at least X so far", so a death before settlement no longer
+    /// forces the reconciler to charge the ceiling. Fire-and-forget: a lost checkpoint only costs
+    /// accuracy on a turn that also has to die, and must never slow the answer down.
+    CheckpointMeasured {
+        request_id: String,
+        measured_nano: i64,
+    },
     RenewStreamLeases {
         request_id: Option<String>,
         capacity_lease_id: Option<String>,
@@ -3261,6 +3268,9 @@ impl AsyncBilling {
                             &conn, &request_id, lease_secs,
                         ));
                     }
+                    // The SQLite fallback has no cross-process reconciler, so there is no reader for
+                    // a checkpoint and nothing to protect against.
+                    WriteCmd::CheckpointMeasured { .. } => {}
                     WriteCmd::RenewStreamLeases { request_id, lease_secs, reply, .. } => {
                         let result = match request_id {
                             Some(request_id) => registry::sqlite_renew_reservation_lease(
@@ -4334,6 +4344,14 @@ impl AsyncBilling {
                                 |pg| pg.mark_delivering(&writer_owner, &request_id, lease_secs),
                             );
                             let _ = reply.send(result);
+                        }
+                        WriteCmd::CheckpointMeasured { request_id, measured_nano } => {
+                            let _ = run_pg_with_retry(
+                                &mut pg, &writer_url, &writer_owner, "measured-cost checkpoint",
+                                |pg| pg.checkpoint_measured(
+                                    &writer_owner, &request_id, measured_nano,
+                                ),
+                            );
                         }
                         WriteCmd::RenewStreamLeases {
                             request_id, capacity_lease_id, lease_secs, reply,
@@ -5740,6 +5758,22 @@ impl AsyncBilling {
             },
         );
     }
+    /// Publish the measured cost of a turn that is still streaming.
+    ///
+    /// Detached on purpose: this runs on the hot path of a live answer, and a customer must never
+    /// wait on a bookkeeping write. Losing one checkpoint costs a little accuracy on a turn that
+    /// also has to die before settlement; blocking the stream would cost every turn.
+    pub fn checkpoint_measured_detached(&self, request_id: &str, measured_nano: i64) {
+        dispatch_detached(
+            &self.writer,
+            &self.detached,
+            WriteCmd::CheckpointMeasured {
+                request_id: request_id.into(),
+                measured_nano,
+            },
+        );
+    }
+
     pub async fn mark_delivering(&self, request_id: &str, lease_secs: i64) -> anyhow::Result<bool> {
         let (reply, rx) = oneshot::channel();
         self.writer

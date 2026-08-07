@@ -193,9 +193,11 @@ const MIGRATION_0036: &str =
     include_str!("../migrations_pg/0036_pricing_tariff_overrides.sql");
 const MIGRATION_0037: &str =
     include_str!("../migrations_pg/0037_pricing_tariff_override_family_dots.sql");
+const MIGRATION_0038: &str =
+    include_str!("../migrations_pg/0038_reservation_measured_cost.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 37;
+pub const CURRENT_SCHEMA_VERSION: i64 = 38;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -236,6 +238,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (35, MIGRATION_0035),
     (36, MIGRATION_0036),
     (37, MIGRATION_0037),
+    (38, MIGRATION_0038),
 ];
 
 #[cfg(test)]
@@ -2864,6 +2867,40 @@ impl PgStore {
         Ok(ok)
     }
 
+    /// Record what the in-flight turn has cost so far, so a death that prevents settlement no longer
+    /// forces the reconciler to charge the ceiling.
+    ///
+    /// Monotonic by construction: a checkpoint never lowers an earlier one. Provider usage arrives
+    /// as a cumulative snapshot, but frames can be reordered under retry and an annotation-only
+    /// frame can parse as zero — either would otherwise erase a real measurement and hand the
+    /// customer's turn back to the full-hold fallback. Fenced on the owning epoch like every other
+    /// mutation, so a superseded generation cannot rewrite a live reservation.
+    pub fn checkpoint_measured(
+        &mut self,
+        owner: &Owner,
+        request_id: &str,
+        measured_nano: i64,
+    ) -> Result<bool> {
+        let ts = now();
+        let mut tx = self.client.transaction()?;
+        Self::assert_owner(&mut tx, owner, ts)?;
+        let changed = tx.execute(
+            "UPDATE reservations \
+                SET measured_nano=GREATEST(COALESCE(measured_nano,0),$4), updated_ts=$3 \
+              WHERE request_id=$1 AND owner_instance=$2 AND owner_epoch=$5 \
+                AND state IN ('reserved','delivering')",
+            &[
+                &request_id,
+                &owner.instance_id,
+                &ts,
+                &measured_nano.max(0),
+                &owner.epoch,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(changed == 1)
+    }
+
     /// Renew both durable request and capacity leases for a live response stream.
     pub fn renew_stream_leases(
         &mut self,
@@ -3520,7 +3557,7 @@ impl PgStore {
     pub fn reconcile_expired(&mut self, limit: usize) -> Result<ReconcileReport> {
         let ts = now();
         let rows = self.client.query(
-            "SELECT r.request_id,r.state,r.hold_nano FROM reservations r \
+            "SELECT r.request_id,r.state,r.hold_nano,r.measured_nano FROM reservations r \
              LEFT JOIN engine_instances i ON i.instance_id=r.owner_instance AND i.owner_epoch=r.owner_epoch \
              WHERE r.state IN ('reserved','delivering','settlement_pending') AND r.lease_until < $1 \
              AND (i.instance_id IS NULL OR i.lease_until < $1) ORDER BY r.created_ts LIMIT $2",
@@ -3531,16 +3568,26 @@ impl PgStore {
             let request_id: String = row.get(0);
             let state: String = row.get(1);
             let hold: i64 = row.get(2);
+            let measured: Option<i64> = row.get(3);
             match state.as_str() {
                 "reserved" => {
                     self.enqueue_outbox(&request_id, 0, "cancel", None, None)?;
                     report.canceled_before_delivery += 1;
                 }
                 "delivering" => {
+                    // The owner died mid-answer. If it managed to checkpoint what the turn had
+                    // measured, that is what the customer owes — never more. The full hold stays as
+                    // the fallback for a turn that died before any usage was reported, because a
+                    // silent zero there would hand out a paid provider call for free; it is a
+                    // conservative estimate of a turn nobody can describe, not a price.
+                    let (charge, reason) = match measured {
+                        Some(measured) => (measured.clamp(0, hold), "reconcile_measured"),
+                        None => (hold, "reconcile_full_hold"),
+                    };
                     self.enqueue_outbox(
                         &request_id,
-                        hold,
-                        "reconcile_full_hold",
+                        charge,
+                        reason,
                         Some("expired-delivery"),
                         None,
                     )?;
