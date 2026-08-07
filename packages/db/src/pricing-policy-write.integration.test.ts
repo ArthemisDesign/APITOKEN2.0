@@ -1096,6 +1096,91 @@ describe.runIf(Boolean(connectionString))("managed multi-discount policy writes"
     });
   });
 
+  it("re-materializes a dead provisioning delivery with live catalog pins", async () => {
+    const user = await createEmailUser(database, "stale-pin@example.test", "password-hash");
+    const engineAccountId = `acct_stale_${user.id.replaceAll("-", "")}`;
+    await seedClient.query(
+      "UPDATE engine_accounts SET engine_account_id = $2, status = 'active' WHERE user_id = $1",
+      [user.id, engineAccountId],
+    );
+    await runStage5Backfill(database, {
+      schema_version: 1,
+      engine_accounts: [{ account_id: engineAccountId, multiplier_bp: 5_000, status: "active" }],
+      openkeys_accounts: [],
+    }, { mode: "safe" });
+    // Move the global B2C source policy to static discount rules (the current managed shape;
+    // the backfill seeds the retired track shape).
+    const currentPolicy = await getManagedPricingPolicy(database, {
+      ownerType: "global_b2c",
+      ownerId: "global-b2c",
+    });
+    expect(currentPolicy).not.toBeNull();
+    await updateManagedPricingPolicy(database, {
+      ownerType: "global_b2c",
+      ownerId: "global-b2c",
+      expectedVersion: currentPolicy!.currentVersion,
+      rules: [ANTHROPIC_60, OPENAI_50],
+      actorId: "admin@example.test",
+      reason: "switch the fixture policy to discount rules",
+    });
+    const first = await materializeProvisionedUserPolicy(database, {
+      userId: user.id,
+      engineAccountId,
+    });
+    expect(first).toMatchObject({ policyRequired: true, ready: false });
+
+    // The delivery dies terminally (the engine rejects the stale dependency pins), then the
+    // catalog head advances before the customer returns.
+    await seedClient.query(`
+      UPDATE engine_policy_jobs
+      SET status = 'dead', last_error = 'account-policy prepare rejected with invalid',
+          updated_at = now()
+      WHERE binding_id IN (SELECT id FROM account_policy_bindings WHERE user_id = $1)
+    `, [user.id]);
+    const digest = (label: string) =>
+      `sha256:v1:${createHash("sha256").update(label, "utf8").digest("hex")}`;
+    await seedClient.query(`
+      INSERT INTO provider_capability_versions (generation, schema_version, content_digest, observed_at, created_at)
+      VALUES (2, 1, $1, now(), now())
+    `, [digest("capability-2")]);
+    await seedClient.query(`
+      INSERT INTO product_catalog_versions (
+        product_id, generation, schema_version, capability_generation, capability_digest,
+        content_digest, actor_type, reason, created_at
+      )
+      SELECT product_id, 2, schema_version, 2, $1, $2, 'operator', 'test catalog advance', now()
+      FROM product_catalog_versions WHERE product_id = 'main' AND generation = 1
+    `, [digest("capability-2"), digest("catalog-2")]);
+    await seedClient.query(`
+      UPDATE product_catalog_heads SET active_generation = 2, updated_at = now()
+      WHERE product_id = 'main'
+    `);
+
+    const second = await materializeProvisionedUserPolicy(database, {
+      userId: user.id,
+      engineAccountId,
+    });
+    expect(second).toMatchObject({ policyRequired: true, ready: false });
+    const versions = await seedClient.query<{
+      effective_version: string;
+      catalog_generation: string;
+    }>(`
+      SELECT effective_version::text, catalog_generation::text
+      FROM account_policy_versions
+      WHERE binding_id IN (SELECT id FROM account_policy_bindings WHERE user_id = $1)
+      ORDER BY effective_version
+    `, [user.id]);
+    expect(versions.rows.length).toBeGreaterThanOrEqual(2);
+    expect(versions.rows.at(-1)!.catalog_generation).toBe("2");
+    const jobs = await seedClient.query<{ status: string }>(`
+      SELECT status FROM engine_policy_jobs
+      WHERE binding_id IN (SELECT id FROM account_policy_bindings WHERE user_id = $1)
+      ORDER BY effective_version
+    `, [user.id]);
+    expect(jobs.rows[0]!.status).toBe("dead");
+    expect(jobs.rows.at(-1)!.status).toBe("pending");
+  });
+
   it("replaces only the exact dead strict + legacy_single delivery and preserves immutable history", async () => {
     const token = `repair-invite-${randomUUID()}`;
     const email = `policy-repair-${randomUUID()}@example.test`;

@@ -58,7 +58,11 @@ curl -X POST -H "x-admin-key: $COMMERCIAL_ADMIN_KEY" -H "x-admin-actor: <actor>"
 The capability generation pin must equal the generation the deployed constants plan for; a
 mismatch (forgotten or unmerged constants) dies immediately with the two numbers in `last_error`.
 `status=dead` with a non-drift blocker is terminal evidence — fix the producer, then stage a new
-intent with a new idempotency key. Only one orchestration is active at a time. Inventory drift is
+intent with a new idempotency key. `materialize_pair` dying with `commerce_status_drift` names an
+account whose registration provisioning is stuck in `pending`: since the provisioning repair lane
+(commit in the same delivery) the source policy re-pins itself to the live catalog head and the
+dead delivery re-materializes on the customer's next action — or an operator can complete it
+immediately via any key-issuance path for that user. Only one orchestration is active at a time. Inventory drift is
 classified and re-cycled at every stateful step — materialize, funding normalization (a mid-cycle
 signup dies there with "engine identity inventory no longer matches"), rollout and capture.
 

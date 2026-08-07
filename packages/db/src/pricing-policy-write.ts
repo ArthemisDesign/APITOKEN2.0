@@ -1957,17 +1957,21 @@ export async function materializeProvisionedUserPolicy(database: Database, input
         policy_digest: string;
         content_digest: string;
         job_id: string | null;
+        job_status: string | null;
       }>(`
         SELECT version.policy_version::text, version.policy_digest, version.content_digest,
-               job.id::text AS job_id
+               job.id::text AS job_id, job.status AS job_status
         FROM account_policy_versions version
         LEFT JOIN engine_policy_jobs job
           ON job.binding_id = version.binding_id AND job.effective_version = version.effective_version
         WHERE version.binding_id = $1 AND version.effective_version = $2
       `, [bindingRow.id, bindingRow.desired_effective_version]);
       const desiredRow = desired.rows[0];
+      // A desired version whose delivery died (terminal prepare rejection) must not be reused:
+      // falling through re-materializes a fresh effective version with live dependency pins.
       if (
         desiredRow
+        && desiredRow.job_status !== "dead"
         && positiveVersion(desiredRow.policy_version, "desired source policy version") === source.policy.version
         && desiredRow.policy_digest === source.policy.content_digest
         && desiredRow.content_digest === bindingRow.desired_digest
@@ -1983,7 +1987,74 @@ export async function materializeProvisionedUserPolicy(database: Database, input
         return { policyRequired: true, ready, jobId: desiredRow.job_id };
       }
     }
-    const staged = await materializeBinding(client, bindingRow.id, source.policy, source.catalogGeneration);
+    // A source policy versioned before the latest catalog advance pins a catalog generation the
+    // engine can no longer validate against the live switch head (capability lineage mismatch),
+    // which kills the fresh account's first delivery and strands it in pending forever. Re-pin
+    // the managed source policy first — a new immutable version with identical rules at the live
+    // catalog head — then materialize from it. Older effective policies keep referencing their
+    // own immutable source versions; nothing already delivered is rewritten.
+    let stagedSource = source;
+    const liveCatalog = await activeCatalog(client, source.policy.product_id);
+    if (source.catalogGeneration !== liveCatalog.generation) {
+      if (source.policy.rules.some((rule) =>
+        rule.pricing_mode !== "discount" || rule.discount_bps === null)) {
+        // The editor schema only carries static discount rules; a historical track-mode source
+        // needs an operator review, never a silent semantic change during provisioning.
+        throw new PricingPolicyWriteError(
+          "provisioning_policy_missing",
+          "managed source policy carries a legacy track rule and cannot be re-pinned automatically",
+        );
+      }
+      const repinned = buildSourcePolicy({
+        policyId: source.policy.policy_id,
+        ownerType: source.policy.owner_type,
+        ownerId: source.policy.owner_id,
+        productId: source.policy.product_id,
+        version: source.policy.version + 1,
+        rules: source.policy.rules.map((rule) => ({
+          scope: rule.scope_type === "provider"
+            ? { provider: { providerId: rule.provider_id } }
+            : {
+                model: {
+                  providerId: rule.provider_id,
+                  canonicalModelId: rule.canonical_model_id ?? "",
+                },
+              },
+          pricingMode: "discount" as const,
+          discountBps: rule.discount_bps,
+        })),
+      });
+      await storeSourcePolicyVersion(
+        client,
+        repinned,
+        liveCatalog.generation,
+        "pricing-release-provisioning",
+        `re-pin to live catalog generation ${liveCatalog.generation} (was ${source.catalogGeneration})`,
+      );
+      const bumped = await client.query(`
+        UPDATE pricing_policy_heads
+        SET current_version = $2, current_digest = $3, updated_at = now()
+        WHERE policy_id = $1 AND current_version = $4
+      `, [
+        source.policy.policy_id,
+        repinned.version,
+        repinned.content_digest,
+        source.policy.version,
+      ]);
+      if (bumped.rowCount !== 1) {
+        throw new PricingPolicyWriteError(
+          "version_conflict",
+          "managed source policy head moved during provisioning",
+        );
+      }
+      stagedSource = { policy: repinned, catalogGeneration: liveCatalog.generation };
+    }
+    const staged = await materializeBinding(
+      client,
+      bindingRow.id,
+      stagedSource.policy,
+      stagedSource.catalogGeneration,
+    );
     await linkRedeemedInvitation(client, input.userId, bindingRow.id, source.policy);
     await client.query("COMMIT");
     return { policyRequired: true, ready: false, jobId: staged.jobId };
