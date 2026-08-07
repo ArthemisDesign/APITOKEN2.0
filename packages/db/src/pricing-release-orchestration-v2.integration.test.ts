@@ -357,6 +357,82 @@ describe.runIf(Boolean(connectionString))("pricing release orchestration v2", ()
     expect(control.orchestrations[0]).toMatchObject({ step: "rollout", status: "active" });
   });
 
+  it("reads the confirmed activation without re-deriving the kind from the moved head", async () => {
+    const staged = await stageIntent();
+    const digest = (label: string) => "sha256:v2:" + Buffer.from(label.padEnd(64, "0")).toString("hex").slice(0, 64);
+    const evidenceDigest = digest("evidence-activate");
+    await seed.query(`
+      INSERT INTO pricing_policy_documents_v2 (
+        policy_id, policy_version, owner_type, owner_id, account_class,
+        product_id, billing_mode, schema_version, capability_generation, capability_digest,
+        catalog_generation, catalog_digest, switch_generation, switch_digest, content_digest
+      ) VALUES ('p', 1, 'global_b2c', 'global', 'b2c', 'main', 'balance', 2, 7, $1, 7, $2, 7, $3, $4)
+    `, [digest("capability"), digest("catalog"), digest("switches"), digest("policy")]);
+    for (const [generation, kind, planDigest] of [
+      [41, "target", digest("target-plan")],
+      [42, "recovery", digest("recovery-plan")],
+    ] as const) {
+      await seed.query(`
+        INSERT INTO pricing_release_plans_v2 (
+          generation, release_kind, schema_version,
+          commerce_inventory_digest, engine_inventory_digest,
+          openkeys_inventory_digest, service_inventory_digest,
+          policy_manifest_digest, assignment_manifest_digest,
+          funding_manifest_digest, engine_release_digest, content_digest, status
+        ) VALUES ($1, $2, 2, $3, $3, $3, $3, $3, $3, $3, $3, $4, 'materializing')
+      `, [generation, kind, digest("inventory"), planDigest]);
+      await seed.query(`
+        INSERT INTO pricing_release_assignments_v2 (
+          release_generation, engine_account_id, account_class, owner_context,
+          owner_id, policy_id, policy_version, policy_digest, billing_mode,
+          funding_generation, purpose, responsible, assignment_digest
+        ) VALUES ($1, 'acct_x', 'b2c', 'commerce', $2, 'p', 1, $3, 'balance', 7, NULL, NULL, $4)
+      `, [generation, randomUUID(), digest("policy"), digest(`assignment:${generation}`)]);
+      await seed.query(`
+        INSERT INTO pricing_funding_normalizations_v2 (
+          release_generation, engine_account_id, funding_generation,
+          expected_source_digest, target_funding_digest, applied_funding_digest,
+          normalization_source, blockers, status
+        ) VALUES ($1, 'acct_x', 7, $2, $3, $3, 'ledger_replay', NULL, 'ready')
+      `, [generation, digest("funding-source"), digest("account-funding")]);
+      await seed.query(`
+        UPDATE pricing_release_plans_v2 SET status = 'prepared', updated_at = now()
+        WHERE generation = $1
+      `, [generation]);
+    }
+    await seed.query(`
+      INSERT INTO pricing_stage8_evidence_v2 (
+        evidence_digest, target_generation, target_digest, recovery_generation, recovery_digest,
+        commerce_inventory_digest, engine_inventory_digest, openkeys_inventory_digest,
+        sales_contract_digest, funding_digest, shadow_digest, runtime_floor_digest,
+        legacy_inflight_count, blocker_count, passed, observed_at, valid_until
+      ) VALUES ($1, 41, $2, 42, $3, $4, $4, $4, $4, $4, $4, $4, 0, 0, true, now(), now() + interval '5 minutes')
+    `, [evidenceDigest, digest("target-plan"), digest("recovery-plan"), digest("inventory")]);
+    await seed.query(`
+      INSERT INTO pricing_release_control_jobs_v2 (
+        job_kind, release_generation, release_digest,
+        idempotency_key, payload_digest, expected_head_version,
+        stage8_evidence_digest, status, result_digest, confirmed_at
+      ) VALUES ('activate_successor', 41, $1, $2, $3, 2, $4, 'confirmed', $5, now())
+    `, [digest("target-plan"), `pricing:v2:activate:successor:${evidenceDigest}`, digest("payload"),
+      evidenceDigest, digest("result")]);
+    await seed.query(`
+      UPDATE pricing_release_orchestrations_v2
+      SET step = 'activate', target_generation = 41, recovery_generation = 42,
+          evidence_digest = $2, activation_kind = 'successor'
+      WHERE id = $1
+    `, [staged.orchestrationId, evidenceDigest]);
+    // The head already moved to the target: re-deriving the kind here would read 'recovery' and
+    // fail. The step must read the durable confirmed job instead.
+    const movedHead: PricingReleaseOrchestrationReadersV2 = {
+      engine: engineWithHead({ active_generation: 41, active_digest: digest("engine-target") }),
+      openkeys: readers.openkeys,
+    };
+    await advancePricingReleaseOrchestrationV2(database, movedHead);
+    const control = await readPricingReleaseOrchestrationControlV2(database);
+    expect(control.orchestrations[0]).toMatchObject({ step: "verify", status: "active" });
+  });
+
   it("confirms only when the engine head attests the orchestrated target", async () => {
     const staged = await stageIntent();
     await seed.query(`

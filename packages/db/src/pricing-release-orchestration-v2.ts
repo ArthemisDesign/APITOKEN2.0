@@ -692,32 +692,9 @@ async function stepActivate(
   readers: PricingReleaseOrchestrationReadersV2,
   row: OrchestrationRow,
 ): Promise<void> {
-  const head = await readers.engine.getPricingReleaseHeadV2();
-  const kind = head === null
-    ? "cutover"
-    : head.active_generation === Number(row.target_generation) ? "recovery" : "successor";
-  try {
-    await stagePricingReleaseActivationJobV2(database, {
-      activationKind: kind,
-      evidenceDigest: row.evidence_digest!,
-      operatorId: row.operator_id,
-      reason: row.reason,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/expired/i.test(message)) {
-      await transition(
-        database,
-        row.id,
-        "activate",
-        "step = 'capture', activation_kind = NULL, last_error = $3",
-        [`evidence expired before activation staging: ${message}`],
-      );
-      return;
-    }
-    throw error;
-  }
-  await transition(database, row.id, "activate", "activation_kind = $3", [kind]);
+  // Poll BEFORE any staging: once the CAS commits, the live head IS the target, so re-deriving
+  // the kind would read 'recovery' and the re-stage would throw (fresh-evidence guard) or fail
+  // validation — while the durable job already holds the terminal verdict.
   const job = await database.pool.query<{ id: string; status: string; last_error: string | null }>(`
     SELECT id::text, status, last_error
     FROM pricing_release_control_jobs_v2
@@ -727,7 +704,37 @@ async function stepActivate(
     LIMIT 1
   `, [row.evidence_digest]);
   const current = job.rows[0];
-  if (!current || current.status === "pending" || current.status === "processing"
+  if (!current) {
+    if (row.activation_kind !== null) throw permanent("activation job lost after staging");
+    const head = await readers.engine.getPricingReleaseHeadV2();
+    const kind = head === null
+      ? "cutover"
+      : head.active_generation === Number(row.target_generation) ? "recovery" : "successor";
+    try {
+      await stagePricingReleaseActivationJobV2(database, {
+        activationKind: kind,
+        evidenceDigest: row.evidence_digest!,
+        operatorId: row.operator_id,
+        reason: row.reason,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/expired/i.test(message)) {
+        await transition(
+          database,
+          row.id,
+          "activate",
+          "step = 'capture', activation_kind = NULL, last_error = $3",
+          [`evidence expired before activation staging: ${message}`],
+        );
+        return;
+      }
+      throw error;
+    }
+    await transition(database, row.id, "activate", "activation_kind = $3", [kind]);
+    return;
+  }
+  if (current.status === "pending" || current.status === "processing"
       || current.status === "retry") {
     return;
   }
