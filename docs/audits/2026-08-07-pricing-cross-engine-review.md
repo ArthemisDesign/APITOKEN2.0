@@ -139,9 +139,17 @@ the cost and without giving up single-authority money.
 
 1. Extend the coverage gate to assert a **catalog entry**, not only a `metering` tariff. This is
    the class that reached customers 953 times in a day and it is currently ungated.
+   *Done — `packages/db/src/pricing-catalog-coverage.test.ts`. The four models unpriced today are
+   recorded as a self-expiring exemption so the gate could land before generation 7 closes them.*
 2. Land generation 7 for `claude-opus-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`. That closes the
    remaining `529`s, including the regression in class D.
 3. Re-run or explicitly retire the 2181 blocked shadow jobs before the next generation, so the next
    rollout is not the second one without its evidence.
+   *Path: once the classifier fix below is deployed, an operator stages a fresh shadow rollout
+   through the existing admin surface (`stagePricingShadowRolloutV2`). The blocked rows stay as
+   history — they record what happened — and the new rollout re-runs the comparison. No new code.*
 4. Decide whether the shadow lane should be allowed to run against accounts the live rollout holds
    locked. Today it silently loses; either it waits, or it should not be scheduled during a cutover.
+   *Done — it now waits. `requireMutation` treated every engine rejection as permanent, so `locked`,
+   `missing_dependency` and `stale` — all of which clear as the rollout proceeds — were recorded as
+   terminal. They are retried now; a rejection that states a verdict still blocks.*

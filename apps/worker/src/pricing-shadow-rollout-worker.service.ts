@@ -40,6 +40,26 @@ function blocked(message: string): PricingShadowRolloutDeliveryError {
   return new PricingShadowRolloutDeliveryError(message, "blocked");
 }
 
+function retryable(message: string): PricingShadowRolloutDeliveryError {
+  return new PricingShadowRolloutDeliveryError(message, "retry");
+}
+
+/**
+ * Engine rejections that describe a moment, not a verdict.
+ *
+ * `locked` means the live rollout currently holds this account's policy; `missing_dependency` means
+ * a prerequisite has not landed yet; `stale` means the expectation moved under us. All three clear
+ * on their own as the rollout proceeds, and `release-provisioning.ts` already treats the last two
+ * that way. Treating them as permanent is what left 2181 shadow jobs blocked after the generation-6
+ * cutover — the entire OpenKeys class lost its shadow comparison, so the generation was activated
+ * with that evidence missing rather than merely delayed.
+ */
+const TRANSIENT_REJECTION_CODES: ReadonlySet<string> = new Set([
+  "locked",
+  "missing_dependency",
+  "stale",
+]);
+
 function sameBinding(
   left: { policy_enforcement: string; funding_enforcement: string; reconciliation_state: string },
   right: { policy_enforcement: string; funding_enforcement: string; reconciliation_state: string },
@@ -57,6 +77,9 @@ function requireMutation(
   if (ack.result !== "rejected") {
     if (accepted.includes(ack.result)) return;
     throw blocked(`${phase} returned unexpected result ${ack.result}`);
+  }
+  if (typeof ack.code === "string" && TRANSIENT_REJECTION_CODES.has(ack.code)) {
+    throw retryable(`${phase} rejected with ${ack.code}`);
   }
   throw blocked(`${phase} rejected with ${ack.code}`);
 }

@@ -259,3 +259,54 @@ test("classifies transient transport as retry and protocol failures as blocked",
     "blocked",
   );
 });
+
+test("retries a rejection that only describes the moment, instead of blocking forever", async () => {
+  // `locked` means the live rollout currently holds this account's policy, and it lets go when the
+  // cutover finishes. Recording that as terminal is what left 2181 shadow jobs blocked after the
+  // generation-6 cutover: the whole OpenKeys class lost its comparison, so the generation went live
+  // with that evidence missing rather than merely late.
+  for (const code of ["locked", "missing_dependency", "stale"] as const) {
+    const transient = await deliverPricingShadowPolicyJobV2(engine({
+      getAccountPricingState: async () => "unbound",
+      getActiveAccountPolicy: async () => null,
+      getAccountPolicyVersion: async () => null,
+      prepareAccountPolicy: async () => ({
+        result: "rejected" as const,
+        code,
+        identity: {},
+        rejection: {},
+      }),
+      activateAccountPolicy: async () => {
+        throw new Error("must not activate after a rejected prepare");
+      },
+      lockedOpenkeysPolicyTransition: async () => {
+        throw new Error("must not call the locked transition");
+      },
+    }), shadowJob()).catch((error) => error);
+    assert.ok(transient instanceof PricingShadowRolloutDeliveryError, code);
+    assert.equal(transient.disposition, "retry", code);
+    assert.match(transient.message, new RegExp(code));
+  }
+});
+
+test("still blocks a rejection that states a verdict", async () => {
+  const verdict = await deliverPricingShadowPolicyJobV2(engine({
+    getAccountPricingState: async () => "unbound",
+    getActiveAccountPolicy: async () => null,
+    getAccountPolicyVersion: async () => null,
+    prepareAccountPolicy: async () => ({
+      result: "rejected" as const,
+      code: "policy_cas_mismatch" as const,
+      identity: {},
+      rejection: {},
+    }),
+    activateAccountPolicy: async () => {
+      throw new Error("must not activate after a rejected prepare");
+    },
+    lockedOpenkeysPolicyTransition: async () => {
+      throw new Error("must not call the locked transition");
+    },
+  }), shadowJob()).catch((error) => error);
+  assert.ok(verdict instanceof PricingShadowRolloutDeliveryError);
+  assert.equal(verdict.disposition, "blocked");
+});
