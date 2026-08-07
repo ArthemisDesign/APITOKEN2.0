@@ -14,7 +14,7 @@ import {
   pricingReleaseActivationOperatorV2Schema,
   pricingStageControlMutationReasonV2Schema,
 } from "@claude-api/contracts";
-import type { EngineClient } from "@claude-api/engine-client";
+import { EngineClientError, type EngineClient } from "@claude-api/engine-client";
 import type { Database } from "./client.js";
 import {
   stageStoredPricingCatalogControlJob,
@@ -512,12 +512,26 @@ async function stepRollout(
   readers: PricingReleaseOrchestrationReadersV2,
   row: OrchestrationRow,
 ): Promise<void> {
-  await stagePricingShadowRolloutV2(database, readers.engine, {
-    idempotencyKey: randomUUID(),
-    stage5RunId: row.stage5_run_id!,
-    actorId: row.operator_id,
-    reason: row.reason,
-  });
+  try {
+    await stagePricingShadowRolloutV2(database, readers.engine, {
+      idempotencyKey: randomUUID(),
+      stage5RunId: row.stage5_run_id!,
+      actorId: row.operator_id,
+      reason: row.reason,
+    });
+  } catch (error) {
+    // A transient engine outage must not move the state machine at all: the next tick retries.
+    if (error instanceof EngineClientError && error.retryable) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    // The rollout refuses to stage against an inventory that moved after the Stage 5 run — the
+    // pair is stale; a fresh cycle re-materializes with the live inventory.
+    if (/inventory|drift/i.test(message)) {
+      await freshCycle(database, row, `rollout staging refused: ${message}`);
+      return;
+    }
+    await kill(database, row.id, "rollout", `rollout staging rejected: ${message}`);
+    return;
+  }
   const control = await readPricingShadowRolloutControlV2(database);
   const rollout = control.rollouts.find((entry) => entry.stage5RunId === row.stage5_run_id);
   if (!rollout) return;

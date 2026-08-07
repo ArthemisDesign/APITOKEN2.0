@@ -3,6 +3,7 @@ import { Client } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { EngineClientError } from "@claude-api/engine-client";
 import {
   advancePricingReleaseOrchestrationV2,
   createDatabase,
@@ -275,6 +276,28 @@ describe.runIf(Boolean(connectionString))("pricing release orchestration v2", ()
       stage5_run_id: null,
     });
     expect(control.orchestrations[0]?.last_error).toContain("fresh cycle");
+  });
+
+  it("keeps the rollout step in place on a transient engine outage", async () => {
+    const staged = await stageIntent();
+    await seed.query(`
+      UPDATE pricing_release_orchestrations_v2
+      SET step = 'rollout', stage5_run_id = $2, target_generation = 41, recovery_generation = 42
+      WHERE id = $1
+    `, [staged.orchestrationId, randomUUID()]);
+    const outage: PricingReleaseOrchestrationReadersV2 = {
+      engine: {
+        getPricingReleaseHeadV2: async () => null,
+        getPricingReleaseInventoryV2: async () => {
+          throw new EngineClientError("engine request timed out", undefined, true);
+        },
+      } as unknown as PricingReleaseOrchestrationReadersV2["engine"],
+      openkeys: readers.openkeys,
+    };
+    await expect(advancePricingReleaseOrchestrationV2(database, outage))
+      .rejects.toThrow("timed out");
+    const control = await readPricingReleaseOrchestrationControlV2(database);
+    expect(control.orchestrations[0]).toMatchObject({ step: "rollout", status: "active" });
   });
 
   it("confirms only when the engine head attests the orchestrated target", async () => {
