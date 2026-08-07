@@ -404,6 +404,120 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
     expect(state.applyCalls).toEqual([accountId]);
   });
 
+  // Stage 9 advances the head by re-snapshotting the whole inventory into a NEW target/recovery
+  // pair and activating it through the successor lane. An account registered after that snapshot
+  // is in no base assignment, so its very first key issuance depends on the successor receipt
+  // being recognised as a target-lane activation exactly like the initial cutover.
+  it("provisions an account against a successor-installed head", async () => {
+    const successorTargetEngineDigest = digest("successor-target-engine-release");
+    const successorRecoveryEngineDigest = digest("successor-recovery-engine-release");
+    const successorTargetCommerceDigest = digest("successor-target-commerce-plan");
+    const successorRecoveryCommerceDigest = digest("successor-recovery-commerce-plan");
+    const successorTarget = release(12, "target", successorTargetEngineDigest);
+    const successorRecovery = release(13, "recovery", successorRecoveryEngineDigest);
+    for (const [item, commerceDigest] of [
+      [successorTarget, successorTargetCommerceDigest],
+      [successorRecovery, successorRecoveryCommerceDigest],
+    ] as const) {
+      await seed.query(`
+        INSERT INTO pricing_release_plans_v2 (
+          generation,release_kind,schema_version,commerce_inventory_digest,engine_inventory_digest,
+          openkeys_inventory_digest,service_inventory_digest,policy_manifest_digest,
+          assignment_manifest_digest,funding_manifest_digest,engine_release_digest,content_digest,status
+        ) VALUES ($1,$2,2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'planned')
+      `, [
+        item.generation,
+        item.release_kind,
+        digest(`commerce:${item.generation}`),
+        item.inventory_digest,
+        digest(`openkeys:${item.generation}`),
+        digest(`service:${item.generation}`),
+        item.policy_manifest_digest,
+        item.assignment_manifest_digest,
+        item.funding_manifest_digest,
+        item.content_digest,
+        commerceDigest,
+      ]);
+      // A release may only be marked prepared once its assignment graph is nonempty: the
+      // successor snapshot carries the same pre-existing account the cutover pair carried.
+      await seed.query(`
+        INSERT INTO pricing_release_assignments_v2 (
+          release_generation,engine_account_id,account_class,owner_context,owner_id,
+          policy_id,policy_version,policy_digest,billing_mode,funding_generation,
+          purpose,responsible,assignment_digest
+        ) VALUES ($1,'acct_existing','b2c','commerce',$2,'release-v2:b2c:global',1,$3,'balance',1,NULL,NULL,$4)
+      `, [
+        item.generation,
+        userId,
+        digest("global-policy"),
+        digest(`base-assignment:${item.generation}`),
+      ]);
+      await seed.query(`
+        INSERT INTO pricing_funding_normalizations_v2 (
+          release_generation,engine_account_id,funding_generation,expected_source_digest,
+          target_funding_digest,applied_funding_digest,normalization_source,blockers,status
+        ) VALUES ($1,'acct_existing',1,$2,$3,$3,'stored_generation',NULL,'ready')
+      `, [item.generation, digest(`source:${item.generation}`), digest(`funding-assignment:${item.generation}`)]);
+      await seed.query(
+        "UPDATE pricing_release_plans_v2 SET status = 'prepared' WHERE generation = $1",
+        [item.generation],
+      );
+    }
+    const successorEvidenceDigest = digest("stage8-evidence-successor");
+    await seed.query(`
+      INSERT INTO pricing_stage8_evidence_v2 (
+        evidence_digest,target_generation,target_digest,recovery_generation,recovery_digest,
+        commerce_inventory_digest,engine_inventory_digest,openkeys_inventory_digest,
+        sales_contract_digest,funding_digest,shadow_digest,runtime_floor_digest,
+        legacy_inflight_count,blocker_count,passed,observed_at,valid_until
+      ) VALUES ($1,12,$2,13,$3,$4,$5,$6,$7,$8,$9,$10,0,0,true,now(),now()+interval '5 minutes')
+    `, [
+      successorEvidenceDigest,
+      successorTargetCommerceDigest,
+      successorRecoveryCommerceDigest,
+      digest("commerce-evidence-successor"),
+      successorTarget.inventory_digest,
+      digest("openkeys-evidence-successor"),
+      digest("sales-contract-successor"),
+      successorTarget.funding_manifest_digest,
+      digest("shadow-successor"),
+      digest("runtime-floor-successor"),
+    ]);
+    await seed.query(`
+      INSERT INTO pricing_release_activation_receipts_v2 (
+        activation_id,activation_kind,release_generation,release_digest,
+        evidence_digest,head_version,receipt_digest,activated_at
+      ) VALUES ($1,'successor',12,$2,$3,2,$4,now())
+    `, [
+      randomUUID(),
+      successorTargetCommerceDigest,
+      successorEvidenceDigest,
+      digest("successor-receipt"),
+    ]);
+
+    const state = fakeEngine({
+      head: {
+        active_generation: 12,
+        active_digest: successorTargetEngineDigest,
+        head_version: 2,
+        updated_ts: 2,
+      },
+      target: successorTarget,
+      recovery: successorRecovery,
+    });
+
+    await expect(ensurePricingReleaseProvisioningV2(database, state.engine, {
+      userId,
+      engineAccountId: accountId,
+    })).resolves.toEqual({ status: "extension", headVersion: 2, releaseGeneration: 12 });
+
+    // The successor pair is a pair like any cutover pair: the stored extension must carry the
+    // paired recovery member, or a later recovery activation would strand the account.
+    const extension = state.extensions.get(`2:${accountId}`)!;
+    expect(extension.members.map((member) => member.release_generation)).toEqual([12, 13]);
+    expect(extension.paired_recovery_generation).toBe(13);
+  });
+
   it("keeps the legacy path only while the global release head is absent", async () => {
     const state = fakeEngine({ head: null, target, recovery });
     await expect(ensurePricingReleaseProvisioningV2(database, state.engine, {

@@ -470,6 +470,14 @@ changed in the meantime, the writer returns a typed `stale`, provisioning re-rea
 active/recovery pair and repeats the step without a partial write. Only after an exact GET-readback
 is key issuance/activation allowed.
 
+The head the extension pins itself to may have been installed by any activation kind. Per-account
+provisioning therefore classifies the head's activation receipt by lane, not by name: a cutover and
+a successor advance both install the evidence TARGET (the extension is written paired with that
+pair's recovery generation), and only a recovery makes the paired recovery release active. Reading
+`successor` as anything other than a target-lane activation would fail every account created after
+a successor advance with `activation_receipt_missing` — those accounts are in no base manifest, so
+the extension path is their only way to a key.
+
 After the green engine producer SHA, a separate consumer checkpoint is connected:
 `packages/contracts` verifies the strict body/readback and the identical
 account/policy/funding semantics of the active/recovery pair, `packages/engine-client` provides

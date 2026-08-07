@@ -53,8 +53,20 @@ interface CommerceAccountV2 {
   multiplierBp: number;
 }
 
+type ActivationKindV2 = "cutover" | "recovery" | "successor";
+
+/**
+ * A cutover and a successor advance both install the evidence TARGET as the active head — they
+ * differ only in what they advance from (nothing vs a previous activation). Only a recovery
+ * activates the paired recovery release, so every kind check here asks "is this the target lane?"
+ * rather than "is this the initial cutover?".
+ */
+function installsTargetRelease(kind: ActivationKindV2): boolean {
+  return kind !== "recovery";
+}
+
 interface ActivationPairV2 {
-  activationKind: "cutover" | "recovery";
+  activationKind: ActivationKindV2;
   targetGeneration: number;
   targetDigest: string;
   targetHeadVersion: number;
@@ -109,7 +121,7 @@ async function activationPair(
   head: PricingReleaseHeadV2,
 ): Promise<ActivationPairV2> {
   const current = await database.pool.query<{
-    activation_kind: "cutover" | "recovery";
+    activation_kind: ActivationKindV2;
     target_generation: string;
     target_digest: string;
     recovery_generation: string;
@@ -135,7 +147,7 @@ async function activationPair(
       AND target.engine_release_digest IS NOT NULL
       AND recovery.engine_release_digest IS NOT NULL
       AND (
-        (receipt.activation_kind = 'cutover'
+        (receipt.activation_kind IN ('cutover', 'successor')
          AND receipt.release_generation = target.generation
          AND receipt.release_digest = target.content_digest
          AND target.generation = $2
@@ -160,7 +172,7 @@ async function activationPair(
   if (recoveryGeneration <= targetGeneration) {
     throw new PricingReleaseProvisioningV2Error("activation_receipt_missing", "activation receipt has invalid release order");
   }
-  const currentMatches = row.activation_kind === "cutover"
+  const currentMatches = installsTargetRelease(row.activation_kind)
     ? head.active_generation === targetGeneration && head.active_digest === row.target_digest
     : head.active_generation === recoveryGeneration && head.active_digest === row.recovery_digest;
   if (!currentMatches) {
@@ -171,6 +183,8 @@ async function activationPair(
   }
   let targetHeadVersion = head.head_version;
   if (row.activation_kind === "recovery") {
+    // The activation that INSTALLED this target may have been the initial cutover or a later
+    // successor advance; both are target-lane receipts and exactly one of them exists per target.
     const targetReceipt = await database.pool.query<{ head_version: string }>(`
       SELECT receipt.head_version::text
       FROM pricing_release_activation_receipts_v2 receipt
@@ -178,7 +192,7 @@ async function activationPair(
         ON target.generation = receipt.release_generation
        AND target.content_digest = receipt.release_digest
        AND target.release_kind = 'target'
-      WHERE receipt.activation_kind = 'cutover'
+      WHERE receipt.activation_kind IN ('cutover', 'successor')
         AND target.generation = $1
         AND target.engine_release_digest = $2
       ORDER BY receipt.head_version DESC
@@ -187,7 +201,7 @@ async function activationPair(
     if (targetReceipt.rows.length !== 1) {
       throw new PricingReleaseProvisioningV2Error(
         "activation_receipt_missing",
-        "recovery head has no unique originating cutover receipt",
+        "recovery head has no unique originating target activation receipt",
       );
     }
     targetHeadVersion = positiveSafeInteger(targetReceipt.rows[0]!.head_version, "target head version");
@@ -633,7 +647,7 @@ function buildExtension(input: {
   fundingGeneration: number;
   policy: PricingReleasePolicyV2;
 }): PricingReleaseAssignmentExtensionV2 {
-  const paired = input.pair.activationKind === "cutover";
+  const paired = installsTargetRelease(input.pair.activationKind);
   const generations = paired
     ? [input.head.active_generation, input.pair.recoveryGeneration]
     : [input.head.active_generation];
@@ -723,7 +737,7 @@ export async function ensurePricingReleaseProvisioningV2(
     }
 
     const pair = await activationPair(database, head);
-    const expectedReleaseKind = pair.activationKind === "cutover" ? "target" : "recovery";
+    const expectedReleaseKind = installsTargetRelease(pair.activationKind) ? "target" : "recovery";
     if (release.release_kind !== expectedReleaseKind) {
       throw new PricingReleaseProvisioningV2Error(
         "activation_receipt_missing",
@@ -749,7 +763,7 @@ export async function ensurePricingReleaseProvisioningV2(
     const fundingGeneration = await normalizedFundingGeneration(engine, input.engineAccountId);
     const policy = await policyForAccount(database, engine, account, input.userId, input.engineAccountId, release);
 
-    if (pair.activationKind === "cutover") {
+    if (installsTargetRelease(pair.activationKind)) {
       const link = await engine.getPricingReleaseRecoveryLinkV2(pair.targetGeneration, pair.recoveryGeneration);
       if (!link || link.target_digest !== pair.targetDigest || link.recovery_digest !== pair.recoveryDigest) {
         throw new PricingReleaseProvisioningV2Error("activation_receipt_missing", "engine recovery link differs from activation evidence");
