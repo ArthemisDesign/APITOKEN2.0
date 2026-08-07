@@ -121,6 +121,36 @@ Preflight checklist (everything is mandatory):
   non-empty paid plan;
 - the exact opaque profile id for `--profile` from `profiles[].id`.
 
+## Capability probes (tools and media)
+
+The plane refuses `tools`, `tool_choice`, `mcp_servers` and media parts with
+`kimi_tools_unpriced` / `kimi_media_unpriced`. That is not a missing feature: unknown 8 of the
+manifest is "the existence and cost of paid tool/search units on the subscription route", and the
+onboarding contract forbids dispatching a paid capability before a finite per-request unit ceiling
+is proved. A caller therefore cannot use tools or images on KIMI today.
+
+These probes are how that changes. They carry their own authorization, separate from the coverage
+budget, because their cost is exactly what is unproven — letting them share `--budget-usd` would
+hide an unbounded spend behind a bounded one:
+
+```bash
+python3 tools/kimi_calibration/run_live.py \
+  --execute --profile <opaque-profile-id> \
+  --production-capacity-over-ssh --production-api-over-ssh \
+  --budget-usd 0.0001 \
+  --capability-probe-budget-usd 0.0001 \
+  --report /tmp/kimi-calibration-report.json
+```
+
+Without `--capability-probe-budget-usd` the probes are recorded in `unavailable_capabilities` with
+`skipped_before_dispatch: true` and a reason naming the unproven cost — never silently omitted, so
+an untested capability can never read as a tested one.
+
+Each probe is the smallest thing that still exercises the surface: one tool with an empty schema
+that the model can call at most once, and a single 1x1 PNG part beside the prompt. They must stay
+that way. A probe that can fan out prices something other than one call, which is the number the
+plane needs before it can lift its refusal.
+
 ## Offline verification
 
 ```bash

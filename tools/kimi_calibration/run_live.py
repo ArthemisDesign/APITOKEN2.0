@@ -28,6 +28,12 @@ from typing import Any
 
 NANO_PER_USD = 1_000_000_000
 MAX_BUDGET_NANO = 100_000  # $0.0001 aggregate run budget; a CLI value above this is an error.
+# Separate ceiling for the tool/media probes. It is deliberately its own number: those legs exist
+# because the per-request unit cost of a tool call is unproven, so they cannot be bounded the way a
+# generation leg is, and letting them share the coverage budget would hide an unbounded spend
+# behind a bounded one.
+MAX_CAPABILITY_PROBE_USD = "0.0001"
+MAX_CAPABILITY_PROBE_NANO = 100_000
 DEFAULT_BUDGET_USD = "0.0001"
 MIN_RECENT_TURN_LIMIT = 512
 SAFE_READ_ATTEMPTS = 3
@@ -386,6 +392,11 @@ class Leg:
     context_mode: str
     reasoning_effort: str
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    # `None` for an ordinary generation leg; otherwise the capability this leg exists to price.
+    # A capability leg is the only way to learn what a tool call or a media part costs on the
+    # subscription route, and it is also the one thing the plane refuses to serve until that cost
+    # is known — so it never runs on the ordinary budget and never runs by default.
+    capability: str | None = None
 
 
 def build_coverage_legs(models: list[str] | tuple[str, ...]) -> list[Leg]:
@@ -405,6 +416,69 @@ def build_coverage_legs(models: list[str] | tuple[str, ...]) -> list[Leg]:
                 legs.append(
                     Leg(f"{alias}:{spec.context_mode}:{effort}", alias, served, spec.context_mode, effort)
                 )
+    return legs
+
+
+# One minimal probe per capability. The bodies are deliberately the smallest thing that still
+# exercises the surface: a single tool the model can call at most once, and a 1x1 image part. The
+# point is to learn the unit cost, not to test behaviour, so nothing here should ever grow.
+CAPABILITY_PROBES: dict[str, dict[str, Any]] = {
+    "tools": {
+        "tools": [
+            {
+                "name": "calibration_probe",
+                "description": "Return the string OK.",
+                "input_schema": {"type": "object", "properties": {}, "required": []},
+            }
+        ],
+        "tool_choice": {"type": "auto"},
+    },
+    "media": {
+        "_media_part": {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": (
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+                    "YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+                ),
+            },
+        }
+    },
+}
+
+
+def build_capability_legs(models: list[str] | tuple[str, ...]) -> list[Leg]:
+    """One probe per capability per model, on the narrowest context the alias accepts.
+
+    These are separated from `build_coverage_legs` because they are the legs whose price is
+    unknown by definition: the plane refuses tools and media precisely because no finite
+    per-request unit ceiling is proved. Running them is how that changes, and it is why they
+    carry their own explicit authorization rather than sharing the coverage budget.
+    """
+    legs: list[Leg] = []
+    for model in models:
+        if model not in RATE_CARD:
+            raise CalibrationError(f"unknown KIMI served model: {model}")
+        alias = min(
+            ALIASES_FOR_MODEL[model],
+            key=lambda name: (ALIAS_SPECS[name].input_token_limit, name),
+        )
+        spec = ALIAS_SPECS[alias]
+        effort = EFFORTS_BY_MODEL[model][0]
+        served = REROUTED_SERVED_MODEL if effort == "off" else spec.official_model
+        for capability in sorted(CAPABILITY_PROBES):
+            legs.append(
+                Leg(
+                    f"{alias}:{spec.context_mode}:{effort}:{capability}",
+                    alias,
+                    served,
+                    spec.context_mode,
+                    effort,
+                    capability=capability,
+                )
+            )
     return legs
 
 
@@ -440,12 +514,32 @@ def prompt_for_leg(leg: Leg, run_id: str) -> str:
 
 
 def body_for_leg(leg: Leg, run_id: str) -> dict[str, Any]:
-    return {
+    body: dict[str, Any] = {
         "model": leg.requested_model,
         "max_tokens": leg.max_output_tokens,
         "messages": [{"role": "user", "content": prompt_for_leg(leg, run_id)}],
         "reasoning_effort": leg.reasoning_effort,
     }
+    if leg.capability is None:
+        return body
+    probe = CAPABILITY_PROBES.get(leg.capability)
+    if probe is None:
+        raise CalibrationError(f"unknown KIMI capability probe: {leg.capability}")
+    media_part = probe.get("_media_part")
+    if media_part is not None:
+        body["messages"] = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt_for_leg(leg, run_id)},
+                    media_part,
+                ],
+            }
+        ]
+    for field, value in probe.items():
+        if field != "_media_part":
+            body[field] = value
+    return body
 
 
 @dataclasses.dataclass
@@ -897,6 +991,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--capacity-url")
     parser.add_argument("--control-key-env", default="CLAUDE_API_CONTROL_KEY")
     parser.add_argument("--budget-usd", default=DEFAULT_BUDGET_USD)
+    parser.add_argument(
+        "--capability-probe-budget-usd",
+        default=None,
+        help=(
+            "separate explicit authorization for the tool/media probes. Absent: the capabilities "
+            "are recorded as unavailable and nothing is spent on them. They never draw on "
+            "--budget-usd, because their per-request unit cost is exactly what is unproven."
+        ),
+    )
     parser.add_argument("--models", nargs="*")
     parser.add_argument(
         "--one-m-plans",
@@ -922,6 +1025,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         budget_nano = usd_to_nano(args.budget_usd)
         if budget_nano <= 0 or budget_nano > MAX_BUDGET_NANO:
             raise CalibrationError("--budget-usd must be positive and no greater than 0.0001")
+        if args.capability_probe_budget_usd is not None:
+            capability_probe_nano = usd_to_nano(args.capability_probe_budget_usd)
+            if (
+                capability_probe_nano <= 0
+                or capability_probe_nano > MAX_CAPABILITY_PROBE_NANO
+            ):
+                raise CalibrationError(
+                    "--capability-probe-budget-usd must be positive and no greater than "
+                    + MAX_CAPABILITY_PROBE_USD
+                )
         if args.profile is not None:
             validate_profile_id(args.profile)
         validate_production_ssh_target(args.production_ssh_target)
@@ -937,7 +1050,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def dry_run_plan(args: argparse.Namespace, budget_nano: int) -> dict[str, Any]:
     models = args.models or list(DEFAULT_MODELS)
     legs = []
-    for leg in build_coverage_legs(models):
+    planned = list(build_coverage_legs(models))
+    if args.capability_probe_budget_usd is not None:
+        planned += build_capability_legs(models)
+    for leg in planned:
         legs.append({
             "leg": leg.name,
             "requested_model": leg.requested_model,
@@ -1027,6 +1143,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     legs = build_coverage_legs(models)
     unavailable: list[dict[str, Any]] = []
+    # Without its own authorization a capability is reported as untested, never quietly dropped.
+    # `blocking=False` because an unproven tool price is the documented state of this provider,
+    # not a failure of this run.
+    if args.capability_probe_budget_usd is None:
+        for probe in build_capability_legs(models):
+            unavailable.append({
+                "profile_id": args.profile,
+                "model": probe.served_model,
+                "capability": probe.name,
+                "reason": (
+                    "per-request unit cost is unproven and no --capability-probe-budget-usd "
+                    "was authorized, so nothing was spent on it"
+                ),
+                "blocking": False,
+                "skipped_before_dispatch": True,
+            })
+    else:
+        legs = legs + build_capability_legs(models)
     stops: list[dict[str, str]] = []
     completed: set[str] = set()
     failure: str | None = None

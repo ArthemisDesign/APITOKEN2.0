@@ -548,10 +548,14 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(payload["complete"])
         gated = payload["unavailable_capabilities"]
-        self.assertEqual(len(gated), 4)
         self.assertTrue(all(item["skipped_before_dispatch"] for item in gated))
         self.assertTrue(all(not item["blocking"] for item in gated))
-        self.assertTrue(all("1m context" in item["reason"] for item in gated))
+        one_m = [item for item in gated if "1m context" in item["reason"]]
+        self.assertEqual(len(one_m), 4)
+        # Tools and media are reported as untested rather than silently dropped: their
+        # per-request unit cost is unproven, so no authorization means no spend and no claim.
+        probes = [item for item in gated if "unit cost is unproven" in item["reason"]]
+        self.assertEqual({item["capability"].rsplit(":", 1)[-1] for item in probes}, {"tools", "media"})
         self.assertEqual(len(calls), 4)
         self.assertTrue(all(context == "256k" for _, _, context in calls))
 
@@ -570,7 +574,9 @@ class MatrixTests(unittest.TestCase):
         )
         self.assertEqual(rc, 0)
         self.assertTrue(payload["complete"])
-        self.assertEqual(payload["unavailable_capabilities"], [])
+        # The 1m gate is lifted, but the capability probes still carry no authorization.
+        gated = payload["unavailable_capabilities"]
+        self.assertTrue(all("unit cost is unproven" in item["reason"] for item in gated))
         self.assertEqual(len(calls), 8)
         self.assertEqual({context for _, _, context in calls}, {"256k", "1m"})
 
@@ -933,3 +939,62 @@ class MainFlowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CapabilityProbeTests(unittest.TestCase):
+    """The tool and media probes are the legs whose price is unknown by definition.
+
+    The plane refuses tools and media precisely because no finite per-request unit ceiling is
+    proved, and these legs exist to change that. So they must never run on the coverage budget,
+    never run without their own authorization, and never disappear quietly when unauthorized —
+    a capability that is silently skipped reads as a capability that was tested and passed.
+    """
+
+    def test_probes_are_absent_from_the_plan_without_their_own_authorization(self):
+        args = run_live.parse_args(["--models", "kimi-k2.6"])
+        plan = run_live.dry_run_plan(args, 100_000)
+        self.assertTrue(all(":tools" not in leg["leg"] and ":media" not in leg["leg"] for leg in plan["legs"]))
+
+    def test_probes_enter_the_plan_only_when_authorized(self):
+        args = run_live.parse_args(
+            ["--models", "kimi-k2.6", "--capability-probe-budget-usd", "0.0001"]
+        )
+        plan = run_live.dry_run_plan(args, 100_000)
+        names = {leg["leg"] for leg in plan["legs"]}
+        self.assertTrue(any(name.endswith(":tools") for name in names))
+        self.assertTrue(any(name.endswith(":media") for name in names))
+
+    def test_probe_authorization_is_capped_like_the_coverage_budget(self):
+        # parse_args turns a rejected value into argparse's own exit, so the CLI cannot be
+        # coaxed past the ceiling by passing a larger number.
+        for rejected in ("1.00", "0", "0.001"):
+            with self.assertRaises(SystemExit):
+                run_live.parse_args(["--capability-probe-budget-usd", rejected])
+
+    def test_tool_probe_declares_exactly_one_callable_tool(self):
+        leg = next(
+            item for item in run_live.build_capability_legs(["kimi-k2.6"]) if item.capability == "tools"
+        )
+        body = run_live.body_for_leg(leg, "run-1")
+        self.assertEqual(len(body["tools"]), 1)
+        # A probe that could fan out would price something other than one call.
+        self.assertEqual(body["tools"][0]["input_schema"]["properties"], {})
+        self.assertEqual(body["max_tokens"], run_live.DEFAULT_MAX_OUTPUT_TOKENS)
+
+    def test_media_probe_sends_one_inline_part_beside_the_prompt(self):
+        leg = next(
+            item for item in run_live.build_capability_legs(["kimi-k2.6"]) if item.capability == "media"
+        )
+        body = run_live.body_for_leg(leg, "run-1")
+        content = body["messages"][0]["content"]
+        self.assertEqual([part["type"] for part in content], ["text", "image"])
+        self.assertNotIn("_media_part", body)
+        self.assertEqual(content[1]["source"]["media_type"], "image/png")
+
+    def test_ordinary_legs_carry_no_capability_payload(self):
+        for leg in run_live.build_coverage_legs(["kimi-k2.6"]):
+            body = run_live.body_for_leg(leg, "run-1")
+            self.assertIsNone(leg.capability)
+            self.assertNotIn("tools", body)
+            self.assertNotIn("tool_choice", body)
+            self.assertIsInstance(body["messages"][0]["content"], str)
