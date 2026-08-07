@@ -755,6 +755,28 @@ Do NOT shorten cooling, route KIMI aliases into the Claude pool, or add an unrev
 to `KIMI_REVIEWED_PLANS` without a dated live observation. If capacity is genuinely exhausted,
 wait for the provider window or authorize another distinct subscription through Auth Bot.
 
+## KimiUnreviewedPlanProfiles
+
+A live KIMI profile reports a `/me` plan outside the documented ladder in `KIMI_REVIEWED_PLANS`,
+so it is served base capabilities only: `kimi-for-coding` at 256K. `k3`, `k3-256k`, the 1M window
+and highspeed are refused inside our own process, before any request reaches the provider — the
+pool reports no eligible profile and the transparent envelope returns a `429` indistinguishable
+from an upstream rate limit. The subscription may be paying for a tier it never gets, and nothing
+in the request path names the plan. That is why this gauge exists: without it the degradation is
+silent, which is exactly how the empty ladder survived for months.
+
+Safely diagnose: `GET /kimi-subs` shows each profile's `plan`; the value `"unreviewed"` on a
+profile with `live: true` is what this alert counts. Compare the provider's actual
+`user_level_name` against the ladder in `docs/engine/KIMI_PROVIDER.md` §1.1. Lookup already
+ignores case and padding, so a miss means a genuinely new or renamed tier, not a spelling
+difference.
+
+Resolve by adding the tier to `KIMI_REVIEWED_PLANS` together with dated evidence in
+`docs/engine/KIMI_PROVIDER.md`, exactly as the existing six entries were added. Do NOT grant a
+capability the provider's published table does not list for that tier, and do NOT silence the
+alert by relabelling the plan: an under-served subscription is an ongoing loss, and the point of
+the gauge is that it stops being invisible.
+
 ## KimiCalibrationPersistenceFailed
 
 The KIMI turn FIFO could not persist spend or quota evidence to PostgreSQL. Traffic intentionally

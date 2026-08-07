@@ -177,6 +177,19 @@ pub const KIMI_REVIEWED_PLANS: &[ReviewedPlan] = &[
     },
 ];
 
+/// The canonical static name of a documented plan, or `None` when the plan is outside the ladder.
+///
+/// Callers that publish a plan label must go through this so the label and the capability decision
+/// can never disagree: resolving capabilities for `"vivace"` while labelling it `"unreviewed"`
+/// would make an operator hunt a tier problem that does not exist.
+pub fn reviewed_plan_name(plan_name: &str) -> Option<&'static str> {
+    let wanted = plan_name.trim();
+    KIMI_REVIEWED_PLANS
+        .iter()
+        .find(|entry| entry.plan_name.eq_ignore_ascii_case(wanted))
+        .map(|entry| entry.plan_name)
+}
+
 /// Capabilities for a plan, or `None` when the plan has not been reviewed.
 ///
 /// `None` does not mean "no access": it means only capabilities documented as available to every

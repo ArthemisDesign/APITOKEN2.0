@@ -177,6 +177,11 @@ pub struct KimiOperationalStatus {
     pub auth_quarantined_profiles: usize,
     pub transport_cooling_profiles: usize,
     pub quota_cooling_profiles: usize,
+    /// Live profiles whose `/me` plan is outside the documented ladder, so they serve base
+    /// capabilities only. This must never be inferred from a 429: an unreviewed plan silently
+    /// degrading to `kimi-for-coding` is exactly how a whole tier stayed invisible for months.
+    /// A non-zero value means a subscription is being under-served until its tier is added.
+    pub unreviewed_plan_profiles: usize,
     pub inflight_requests: u64,
     pub profiles: Vec<KimiProfileStatus>,
     pub delivery: DeliveryHealth,
@@ -188,11 +193,7 @@ pub struct KimiOperationalStatus {
 /// for a reviewed plan; anything else collapses to the bounded placeholder so an unreviewed
 /// provider string can never become a metric label or an admin-facing value.
 pub fn bounded_plan_label(plan: &str) -> &'static str {
-    kimi_credential::KIMI_REVIEWED_PLANS
-        .iter()
-        .find(|entry| entry.plan_name == plan)
-        .map(|entry| entry.plan_name)
-        .unwrap_or("unreviewed")
+    kimi_credential::reviewed_plan_name(plan).unwrap_or("unreviewed")
 }
 
 /// A cooling deadline is only meaningful while it is still in the future; an expired or never-set
@@ -993,6 +994,7 @@ impl KimiGateway {
         let mut auth_quarantined_profiles = 0;
         let mut transport_cooling_profiles = 0;
         let mut quota_cooling_profiles = 0;
+        let mut unreviewed_plan_profiles = 0;
         let mut inflight_requests = 0u64;
         let mut statuses = Vec::with_capacity(profiles.len());
         for profile in profiles.iter() {
@@ -1005,6 +1007,12 @@ impl KimiGateway {
             quota_cooling_profiles += usize::from(quota_until.is_some());
             let inflight = profile.inflight.load(Ordering::Acquire);
             inflight_requests += u64::from(inflight);
+            // Count only live profiles: a dead credential is already reported on its own axis, and
+            // folding it in here would hide the tier problem behind an auth problem.
+            if health.authenticated && kimi_credential::reviewed_plan_name(&profile.plan).is_none()
+            {
+                unreviewed_plan_profiles += 1;
+            }
             statuses.push(KimiProfileStatus {
                 id: profile.id.clone(),
                 plan: bounded_plan_label(&profile.plan),
@@ -1036,6 +1044,7 @@ impl KimiGateway {
             auth_quarantined_profiles,
             transport_cooling_profiles,
             quota_cooling_profiles,
+            unreviewed_plan_profiles,
             inflight_requests,
             profiles: statuses,
             delivery,

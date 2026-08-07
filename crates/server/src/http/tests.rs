@@ -2830,6 +2830,9 @@ fn unknown_kimi_status() -> forward::KimiOperationalStatus {
         auth_quarantined_profiles: 0,
         transport_cooling_profiles: 0,
         quota_cooling_profiles: 0,
+        // The fixture profile carries the placeholder plan, so it is exactly the case this
+        // counter exists to make visible.
+        unreviewed_plan_profiles: 1,
         inflight_requests: 2,
         profiles: vec![forward::KimiProfileStatus {
             id: "kimi-01".to_string(),

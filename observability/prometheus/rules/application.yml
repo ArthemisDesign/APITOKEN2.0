@@ -488,6 +488,17 @@ groups:
           description: 'Live profiles exist but none is eligible for selection; KIMI requests fail closed until a cooling axis clears.'
           runbook: 'docs/ops/MONITORING.md#kiminoavailableprofiles'
 
+      - alert: KimiUnreviewedPlanProfiles
+        expr: claude_api_kimi_enabled == 1 and claude_api_kimi_unreviewed_plan_profiles > 0
+        for: 30m
+        labels:
+          severity: warning
+          component: kimi-provider
+        annotations:
+          summary: 'A KIMI subscription is being served below its tier'
+          description: 'A live profile reports a plan outside the documented ladder, so it serves kimi-for-coding at 256K only. k3, the 1M window and highspeed are refused before any request reaches the provider, and the caller sees a 429 that looks like an upstream rate limit. Add the tier to KIMI_REVIEWED_PLANS with dated evidence.'
+          runbook: 'docs/ops/MONITORING.md#kimiunreviewedplanprofiles'
+
       - alert: KimiCalibrationPersistenceFailed
         expr: claude_api_kimi_enabled == 1 and claude_api_kimi_calibration_persistence_ok == 0
         for: 5m
