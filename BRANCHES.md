@@ -26,6 +26,12 @@ Check out the branch → its purpose is immediately visible.
    typical cycle. Take the branch into a **separate managed worktree** (`deploy/agent-worktree.sh
    create`), not by switching the current directory: another agent may be working in the same
    directory, and a raw `git worktree add` leaves no lifecycle metadata for safe emergency cleanup.
+   A task expected to change deployable `apps/web` behavior, content, assets, dependencies, or build
+   configuration uses the unique `preview/<task-slug>` prefix from creation; README-only and test-only
+   tasks that cannot affect the deployment retain their ordinary prefix.
+   Vercel tracks that prefix for human-review deployments. After pushing, the agent reports the exact
+   preview URL and waits for human approval before running `deploy/agent-merge.sh`. This is not a shared
+   `staging` branch; full preview and exception handling rules are in `AGENTS.md`.
 2. **Crate boundaries are respected** (see the root `CLAUDE.md` and `crates/<x>/CLAUDE.md`). The
    `comp/pool` branch must not pull in networking; `comp/forward` must not read env; and so on.
 3. **`master` = production trigger.** Merge only via `deploy/agent-merge.sh` and only when the

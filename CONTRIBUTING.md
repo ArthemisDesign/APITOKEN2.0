@@ -22,6 +22,22 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    cd "$worktree"
    ```
 
+   For a task expected to change the deployed Vercel customer frontend (user-visible content or
+   behavior, runtime code, public assets, dependencies, or build configuration under `apps/web`),
+   replace the ordinary branch name with a unique preview branch from the outset:
+
+   ```bash
+   worktree=$(./deploy/agent-worktree.sh create preview/task-slug task-slug)
+   ```
+
+   Vercel's custom pre-production environment tracks the `preview/` prefix; its catch-all Preview
+   environment is disabled. Once the frontend commit and local checks are ready, push the branch,
+   wait for the Vercel result, and send the exact preview URL and review focus to the person. Pause
+   before `deploy/agent-merge.sh` so the person can review it; merge only after approval or an explicit
+   instruction to skip preview review. Ordinary non-frontend tasks retain `fix/*`, `feat/*`, or other
+   appropriate prefixes and do not create Vercel previews; this includes README-only and test-only
+   changes that cannot affect the deployed frontend.
+
    The manager fetches `origin`, starts from the current `origin/master`, and records lifecycle
    metadata under Git's worktree administration directory. Raw `git worktree add/remove/prune`
    bypass those ownership and retention checks and are not an agent workflow.

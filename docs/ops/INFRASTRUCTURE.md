@@ -292,7 +292,11 @@ availability behavior remains in `deploy/README.md` and `deploy/CADDY.md`.
 The customer frontend lives in `apps/web` and deploys independently to Vercel. Configure the Vercel
 project with `apps/web` as its Root Directory, use the Next.js framework preset, set
 `NEXT_PUBLIC_BACKEND_URL=https://backend.apitoken.sale/v1`, and attach the production apex domain
-`apitoken.sale`. Vercel must install from the repository-level pnpm workspace and lockfile.
+`apitoken.sale`. Vercel must install from the repository-level pnpm workspace and lockfile. Production
+Branch Tracking is exactly `master`; a custom pre-production environment tracks branch names starting
+with `preview/`; the standard catch-all Preview environment has Branch Tracking disabled. This makes
+each intentional frontend task independently reviewable without deploying ordinary agent-validation
+branches. The agent naming and approval contract is in `AGENTS.md` and `apps/web/README.md`.
 
 Keep `apitoken.sale` as the canonical browser origin. The commercial API deliberately allows that
 one exact origin for credentialed CORS and state-changing requests. Redirect alternate frontend

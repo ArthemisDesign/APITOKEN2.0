@@ -97,6 +97,31 @@ routine setup back onto the person: create a new worktree and task branch off `o
 into them, and continue. Ask only if a safe unique name or the branch base genuinely cannot
 be determined from the task.
 
+## Frontend branches must produce a human-reviewable preview
+
+A task expected to change the deployable customer frontend—user-visible content or behavior, runtime
+code, public assets, dependencies, or build configuration under `apps/web`—MUST use a unique
+`preview/<task-slug>` branch from the first worktree creation, for example:
+
+```bash
+worktree=$(./deploy/agent-worktree.sh create preview/fix-checkout-copy fix-checkout-copy)
+```
+
+Vercel is configured with Production tracking `master`, a custom pre-production environment tracking
+branches whose names start with `preview/`, and catch-all Preview tracking disabled. Therefore ordinary
+`fix/*`, `feat/*`, `docs/*`, and agent-validation branches do not create frontend deployments, while
+each `preview/*` branch receives its own review URL. Never share or reuse one `staging` branch: the
+unique task branch and managed worktree rules still apply.
+
+After the frontend change is committed and locally verified, push the `preview/*` branch, wait for its
+Vercel deployment to finish, and give the person the exact preview URL plus a short list of what to
+review. Explicitly offer them the chance to inspect it before production. Do NOT run
+`deploy/agent-merge.sh` until the person approves the preview or explicitly tells you to merge without
+preview review. A failed preview is fixed with a new commit and a new deployment; it is never presented
+as ready. If Vercel/GitHub does not expose a URL, report that blocker honestly instead of inventing one.
+Backend-only, README-only, and test-only tasks that cannot affect the deployed frontend keep their normal
+branch prefixes and normal merge flow.
+
 ## Forbidden commands
 
 Without an explicit instruction from the person, NEVER: `git checkout <branch>`, `git switch`, `git stash`,

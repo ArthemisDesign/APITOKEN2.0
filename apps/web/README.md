@@ -24,6 +24,15 @@ Import the monorepo as a Vercel project with:
 - Environment: `NEXT_PUBLIC_BACKEND_URL=https://backend.apitoken.sale/v1`
 - Optional documentation host: `NEXT_PUBLIC_DOCS_URL=https://docs.apitoken.sale` (defaults to the standalone `/docs` portal)
 - Production domain: `apitoken.sale`
+- Production environment Branch Tracking: branch is `master`
+- Custom pre-production environment Branch Tracking: branch starts with `preview/`
+- Standard Preview environment Branch Tracking: disabled, so unassigned task branches do not deploy
+
+Frontend tasks use a unique `preview/<task-slug>` branch from worktree creation. Once a verified
+frontend commit is pushed, Vercel creates the corresponding pre-production deployment. The agent must
+send its exact URL and review focus to the person and wait for approval before merging to `master`;
+never reuse a shared `staging` branch. Non-frontend branches keep their normal prefixes and do not
+create Vercel deployments.
 
 Optional `GOOGLE_SITE_VERIFICATION`, `YANDEX_SITE_VERIFICATION`, and `BING_SITE_VERIFICATION`
 environment variables add the corresponding webmaster ownership meta tags during the production build.
