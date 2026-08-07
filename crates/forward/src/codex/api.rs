@@ -397,7 +397,8 @@ pub async fn models(
     // updates the last-good intersection in the background; before its first success, the local
     // reviewed/configured catalog keeps the endpoint useful during startup or an upstream outage.
     let available = gateway.cached_model_catalog().await;
-    let data = public_model_objects(&gateway, available.as_ref());
+    let mut data = public_model_objects(&gateway, available.as_ref());
+    data.extend(public_image_model_objects());
     json_response(
         StatusCode::OK,
         json!({"object": "list", "data": data}),
@@ -436,6 +437,41 @@ fn public_model_objects(
         .collect()
 }
 
+/// Discovery entries for the Images API models.
+///
+/// They are not part of `config().models`: the image pool has no upstream text catalog to
+/// intersect with, and its serving reality is exactly "the image routes are mounted". Their
+/// capability block is the honest one — image output, no streaming, no tools, no reasoning — so a
+/// client that reads modalities never sends them to a text lane.
+fn public_image_model_objects() -> Vec<Value> {
+    super::PUBLIC_IMAGE_MODEL_IDS
+        .iter()
+        .map(|id| image_model_object(id))
+        .collect()
+}
+
+fn image_model_object(id: &str) -> Value {
+    json!({
+        "id": id,
+        "object": "model",
+        "created": 0,
+        "owned_by": "apitoken",
+        "apitoken": {
+            "endpoints": ["/v1/images/generations", "/v1/images/edits"],
+            "capabilities": {
+                "reasoning_efforts": [],
+                "service_tiers": ["standard"],
+                "input_modalities": ["text", "image"],
+                "output_modalities": ["image"],
+                "tool_calling": false,
+                "structured_outputs": false,
+                "reasoning": false,
+                "streaming": false
+            }
+        }
+    })
+}
+
 pub async fn model(
     State(app): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -451,6 +487,14 @@ pub async fn model(
     };
     if let Err(error) = authorize_models(&app, &headers, &peer).await {
         return error.into_response();
+    }
+    // The image models are served by the mounted image routes, not by the text pool, so they are
+    // answered before the upstream text-catalog intersection below.
+    if let Some(id) = super::PUBLIC_IMAGE_MODEL_IDS
+        .iter()
+        .find(|id| **id == model_id)
+    {
+        return json_response(StatusCode::OK, image_model_object(id), &new_id("req"));
     }
     let Some(model) = gateway.config().model(&model_id) else {
         return ApiError::not_found(
@@ -946,6 +990,18 @@ pub(super) fn parse_responses_request(
         .strip_prefix("openai/")
         .unwrap_or(requested_model_id);
     let public_model = gateway.config().model(model_id).cloned().ok_or_else(|| {
+        // The image models are published in `/v1/models`, so "does not exist" would be a lie
+        // here. Fail closed with the endpoint that actually serves them instead of pretending a
+        // text lane could run an image model.
+        if super::PUBLIC_IMAGE_MODEL_IDS.contains(&model_id) {
+            return ApiError::invalid(
+                format!(
+                    "The model '{requested_model_id}' is an image model. Use \
+                     POST /v1/images/generations or POST /v1/images/edits."
+                ),
+                Some("model".to_string()),
+            );
+        }
         ApiError::not_found(
             format!(
                 "The model '{requested_model_id}' does not exist or you do not have access to it."

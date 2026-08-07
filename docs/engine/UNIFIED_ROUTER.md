@@ -556,6 +556,24 @@ object and does not overwrite limits/capabilities. Limits must not be derived fr
 the model id, pricing thresholds, or client tables; capabilities must not be guessed
 from namespace/`owned_by`.
 
+The Images API models are published by the OpenAI plane on the same surface, under
+exactly the two ids the paid image routes admit (`gpt-image-2` and its immutable
+snapshot `gpt-image-2-2026-04-21`), so discovery can never name an id those routes
+would refuse. They are the one catalog family whose serving reality is *not* the text
+pool: they carry no upstream text-catalog intersection and no invented token limits,
+their capability block is authoritative and negative almost everywhere
+(`output_modalities:["image"]`, `reasoning_efforts:[]`, `tool_calling:false`,
+`structured_outputs:false`, `reasoning:false`, `streaming:false`), and the additional
+`apitoken.endpoints` array names `/v1/images/generations` and `/v1/images/edits`. A
+client picks the endpoint by reading `output_modalities`; sending an image model to
+`/v1/chat/completions`, `/v1/responses` or `/v1/messages` is a fail-closed `400` that
+names the image routes, never a "model does not exist" `404` — the model does exist,
+the endpoint is wrong. Their key-scoped card prices the three token classes an
+OpenAI-compatible card can carry (text input, cached text input, generated output);
+the separately audited *image*-input class metered on edits has no field in the closed
+schema v1 card and is documented in `docs/commerce/PRICING.md` instead of being folded
+into a leg that would then misprice plain generation.
+
 `created:0` means only "the producer provided no shared OpenAI-compatible creation
 date". The router does not substitute this field with a release date from
 documentation or a model name. Active `preset/*` entries publish

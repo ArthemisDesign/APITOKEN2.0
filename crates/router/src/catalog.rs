@@ -1198,9 +1198,40 @@ mod tests {
         assert_eq!(entries[1].service_tiers, None);
     }
 
+    /// An image-only model carries a capability block that is `false`/empty almost everywhere.
+    /// Those are authoritative statements, not missing metadata, so none of them may be dropped or
+    /// promoted: a client picks the right endpoint by reading `output_modalities`.
     #[test]
-    fn gemini_envelope_strips_models_prefix() {
-        let body = serde_json::json!({"models": [
+    fn openai_image_models_keep_their_image_only_capabilities() {
+        let body = serde_json::json!({"object": "list", "data": [
+            {"id": "gpt-image-2", "object": "model", "created": 0, "owned_by": "apitoken",
+             "apitoken": {"endpoints": ["/v1/images/generations", "/v1/images/edits"],
+                 "capabilities": {"reasoning_efforts": [],
+                                  "service_tiers": ["standard"],
+                                  "input_modalities": ["text", "image"],
+                                  "output_modalities": ["image"],
+                                  "tool_calling": false,
+                                  "structured_outputs": false,
+                                  "reasoning": false,
+                                  "streaming": false}}}
+        ]});
+        let entries = parse_openai(&body).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "openai/gpt-image-2");
+        assert_eq!(entries[0].aliases, vec!["gpt-image-2".to_string()]);
+        assert_eq!(
+            entries[0].output_modalities.as_deref(),
+            Some(["image".to_string()].as_slice())
+        );
+        assert_eq!(entries[0].reasoning_efforts.as_deref(), Some([].as_slice()));
+        assert_eq!(entries[0].tool_calling, Some(false));
+        assert_eq!(entries[0].reasoning, Some(false));
+        assert_eq!(entries[0].streaming, Some(false));
+        assert_eq!(entries[0].limits, None);
+    }
+
+    #[test]
+    fn gemini_envelope_strips_models_prefix() {        let body = serde_json::json!({"models": [
             {"name": "models/gemini-2.5-pro", "displayName": "Gemini 2.5 Pro",
              "supportedGenerationMethods": ["generateContent"],
              "apitoken": {"limits": {"context": 1048576, "input": 1048576, "output": 65536},

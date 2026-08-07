@@ -348,8 +348,13 @@ and is overall watchdog-GREEN: two strict byte-different PNGs, exact generation/
 separate commit `3917a31b333899aed87396acd6e8e83e403cd3e6`: the generation-6 pricing release activated
 the immutable `gpt-image-2-2026-04-21` snapshot in the main and OpenKeys catalogs (release head 41),
 the unified router proxies both image routes as a native OpenAI lane and its preset lists the
-snapshot (`/v1/models` deliberately does not publish the image model), and the site catalog and
-public docs list the model.
+snapshot, and the site catalog and public docs list the model. That publication left one hole:
+`/v1/models` did not publish the image model, so agents that discover capabilities from the catalog
+concluded the pool had no image model and never reached the routes that in fact accept it. Discovery
+was closed afterwards — the OpenAI plane now lists both admitted ids with an image-only capability
+block and an `apitoken.endpoints` pointer, the router pricing producer resolves their rate card so
+the entry stays eligible, and the text lanes reject them with a `400` naming the image routes.
+Contract — `docs/engine/UNIFIED_ROUTER.md`.
 
 ## Control-surface probe outcome
 

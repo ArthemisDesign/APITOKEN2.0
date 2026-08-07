@@ -2443,8 +2443,11 @@ async fn image_routes_authenticate_before_body_parsing_or_gateway_discovery() {
     }
 }
 
+/// The image routes and the image model entries both live behind the OpenAI plane gateway. A
+/// deployment without that gateway must answer 404 for either, rather than advertising a model no
+/// pool can serve.
 #[tokio::test]
-async fn image_routes_are_openai_plane_only_and_not_published_as_models() {
+async fn image_routes_and_models_require_the_openai_plane_gateway() {
     let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
     let service = router(
         provider_test_app(forward::ProviderMode::Combined),

@@ -79,6 +79,13 @@ successor advance of the release head (13 -> 41) after the public production gen
 smoke turned overall watchdog-GREEN. There is still no reseller, separate image API key, or
 fallback: the model rides the existing sealed Codex OAuth pool, and its customer contract stays
 the narrow proved shape (`background=opaque`, `quality=low`, `size=auto`, one PNG).
+GPT Image 2 meters five disjoint legs (fresh/cached text input, fresh/cached **image** input on
+edits, and image output). The unified `/v1/models` rate card is the closed OpenAI-compatible schema
+v1 shape, which has fields only for input, cached input, cache write and output, so it publishes
+text input / cached text input / image output; the image-input legs are billed at their own audited
+rate from `metering::openai_image` (`$8/M` fresh, `$2/M` cached) and are visible in settlement, not
+in that card. Folding them into the published `input` leg would misprice plain generation, which
+has no image input at all.
 Generation 7 closes the Claude catalog hole: `claude-opus-4-6`, `claude-opus-4-5` and
 `claude-sonnet-4-5` join main and OpenKeys with their existing metering tariffs, and the dated
 snapshots (`claude-opus-4-5-20251101`, `claude-sonnet-4-5-20250929`, `claude-haiku-4-5-20251001`)

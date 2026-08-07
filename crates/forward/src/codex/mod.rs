@@ -36,7 +36,7 @@ pub use image_api::{edits as openai_image_edits, generations as openai_image_gen
 pub use images::{
     CodexImageError, CodexImageResult, GptImage2, ImageBackground, ImageEditRequest,
     ImageErrorContext, ImageGenerationRequest, ImageQuality, ImageReference, ImageSize,
-    ImageTurnId, GPT_IMAGE_2,
+    ImageTurnId, GPT_IMAGE_2, PUBLIC_IMAGE_MODEL_IDS,
 };
 pub(crate) use runner::{CodexTurnRequest, CodexTurnResult, CodexUsage, TurnUpdate};
 pub use skin::{count_tokens as codex_messages_count_tokens, messages as codex_messages_skin};

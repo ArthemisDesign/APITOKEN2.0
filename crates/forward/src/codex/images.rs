@@ -14,6 +14,12 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 pub const GPT_IMAGE_2: &str = "gpt-image-2";
+/// Public discovery identities of the Images API, in the order `/v1/models` lists them.
+///
+/// These are exactly the ids `image_api::validate_model` admits (the reviewed alias and its
+/// immutable snapshot), so discovery can never advertise an id the paid routes would refuse.
+/// They are served by `POST /v1/images/{generations,edits}` only; the text lanes reject them.
+pub const PUBLIC_IMAGE_MODEL_IDS: &[&str] = &[GPT_IMAGE_2, metering::GPT_IMAGE_2_SNAPSHOT];
 const MAX_PROMPT_CHARS: usize = 32_000;
 const MAX_PROMPT_BYTES: usize = 128 * 1024;
 const MAX_IMAGE_STORAGE_BYTES: usize = 16 * 1024 * 1024;

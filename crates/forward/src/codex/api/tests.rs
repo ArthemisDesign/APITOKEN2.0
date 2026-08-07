@@ -246,6 +246,63 @@ fn standard_model_list_uses_the_last_good_upstream_intersection() {
     assert_eq!(data[0]["name"], "GPT 5.6 Thinking");
 }
 
+/// Discovery must name the image models, because a client that cannot see them in `/v1/models`
+/// concludes the pool has no image model at all — even though the image routes accept them.
+#[test]
+fn image_models_are_published_with_their_real_capabilities() {
+    let data = public_image_model_objects();
+    assert_eq!(
+        data.iter().map(|model| &model["id"]).collect::<Vec<_>>(),
+        vec!["gpt-image-2", "gpt-image-2-2026-04-21"]
+    );
+    for model in &data {
+        // Both ids are exactly what the paid image routes admit.
+        assert!(metering::openai_image_tariff(model["id"].as_str().unwrap()).is_ok());
+        assert_eq!(model["object"], "model");
+        assert_eq!(
+            model["apitoken"]["capabilities"],
+            json!({
+                "reasoning_efforts": [],
+                "service_tiers": ["standard"],
+                "input_modalities": ["text", "image"],
+                "output_modalities": ["image"],
+                "tool_calling": false,
+                "structured_outputs": false,
+                "reasoning": false,
+                "streaming": false
+            })
+        );
+        assert_eq!(
+            model["apitoken"]["endpoints"],
+            json!(["/v1/images/generations", "/v1/images/edits"])
+        );
+        // No invented token limits: the image wire publishes none.
+        assert!(model["apitoken"].get("limits").is_none());
+    }
+}
+
+/// A published model that a text lane silently 404s as "does not exist" is worse than an unlisted
+/// one: the client cannot tell a typo from a wrong endpoint.
+#[test]
+fn text_lanes_reject_image_models_by_pointing_at_the_image_routes() {
+    let gateway = gateway();
+    for requested in ["gpt-image-2", "openai/gpt-image-2-2026-04-21"] {
+        let error =
+            parse_responses_request(&gateway, json!({"model": requested, "input": "draw a cat"}))
+                .expect_err("image model on a text lane");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(
+            error.message.contains("/v1/images/generations"),
+            "{}",
+            error.message
+        );
+    }
+
+    let unknown = parse_responses_request(&gateway, json!({"model": "gpt-nope", "input": "hi"}))
+        .expect_err("unknown model");
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+}
+
 fn model() -> CodexModel {
     CodexModel {
         id: "gpt-5.6".to_string(),

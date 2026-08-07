@@ -17,7 +17,7 @@ Public contract (unchanged from the app-server era):
 | `POST /v1/chat/completions` | supported adapter, streaming and non-streaming |
 | `POST /v1/images/generations` | supported (GPT Image 2); one `opaque/low/auto` PNG, non-streaming |
 | `POST /v1/images/edits` | supported (GPT Image 2); one to five strict PNG references, one edited PNG, non-streaming |
-| `GET /v1/models`, `GET /v1/models/{model}` | supported; last-good live intersection with the pinned billing catalog; GPT Image 2 is deliberately not listed — image models stay out of discovery |
+| `GET /v1/models`, `GET /v1/models/{model}` | supported; text models are the last-good live intersection with the pinned billing catalog; GPT Image 2 is listed too, under exactly the two ids the image routes admit, with an authoritative image-only capability block and `apitoken.endpoints` naming those routes. It is not intersected with the text catalog (it has no upstream text entry) and publishes no token limits. Sending it to a text lane is a `400` naming the image routes, not a `404`. |
 
 Everything else on the OpenAI hostname returns an OpenAI-shaped `404`; nothing is ever forwarded
 to Anthropic from it. The unified router (`router.apitoken.sale`) proxies both image routes to this

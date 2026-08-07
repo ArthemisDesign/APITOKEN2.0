@@ -194,6 +194,13 @@ Only after the advance is live and proven:
   `assertOpenKeysCatalog` and its tests;
 - `apps/admin` calculator `PRODUCT_CATALOG`;
 - `crates/router/routing-presets.json` if the router exposes it;
+- **discovery**: the serving plane's `GET /v1/models{,/{id}}` must list the model, and the plane's
+  `/internal/router/catalog/pricing` producer must resolve a rate card for it — the router drops
+  any catalog entry it cannot price. Both are required: a model that is missing from either is
+  invisible to every client that discovers capabilities from the catalog, even while its routes
+  accept it. This is not hypothetical — gpt-image-2 shipped that way, and agents reported "no image
+  model in this pool" against a working image endpoint. If the model is not routable on the text
+  lanes, the lanes must reject it with a `400` naming the right endpoint, never a `404`;
 - `docs/commerce/PRICING.md` and the provider doc;
 - walk the "New model (in an existing provider)" checklist in `docs/CHANGE_CHECKLISTS.md` in
   full and state the applied items in the commit body.

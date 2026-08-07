@@ -286,13 +286,43 @@ fn gemini_pricing(model_id: &str, prices: GeminiPrices) -> BasePricing {
     }
 }
 
+/// Rate card of an Images API model.
+///
+/// The public card carries the three legs that share its token classes with a text model: text
+/// input, cached text input and generated output tokens. GPT Image 2 also meters *image* input
+/// tokens on edits at their own audited rate; the closed OpenAI-compatible card has no field for
+/// that class, so it is documented in `docs/commerce/PRICING.md` rather than folded into a leg
+/// that would then misprice plain generation. This mirrors how the Gemini image model publishes
+/// one card for a model whose output tokens are images.
+fn openai_image_pricing(tariff: &metering::OpenAiImageTariffIdentity) -> BasePricing {
+    let prices = tariff.prices;
+    BasePricing {
+        canonical_model_id: tariff.canonical_model_id.to_owned(),
+        standard: RawRateCard {
+            input: prices.fresh_text_input,
+            output: prices.image_output,
+            cache_read: prices.cached_text_input,
+            // The image wire reports no cache-write token class; charging one would double count.
+            cache_write: 0,
+            cache_write_1h: None,
+        },
+        priority: None,
+        long_context: None,
+    }
+}
+
 fn base_pricing(candidate: &Candidate, now: i64) -> Option<BasePricing> {
     match candidate.provider_id.as_str() {
         "anthropic" => Some(anthropic_pricing(&candidate.model_id, now)),
         "openai" => metering::codex_catalog_at(now)
             .into_iter()
             .find(|model| model.id == candidate.model_id)
-            .map(|model| codex_pricing(&model)),
+            .map(|model| codex_pricing(&model))
+            .or_else(|| {
+                metering::openai_image_tariff(&candidate.model_id)
+                    .ok()
+                    .map(|tariff| openai_image_pricing(&tariff))
+            }),
         "google" => metering::gemini_prices_at(&candidate.model_id, now)
             .map(|prices| gemini_pricing(&candidate.model_id, prices)),
         _ => None,
@@ -473,9 +503,37 @@ mod tests {
         assert_eq!(long.priority.unwrap().output, 90_000);
     }
 
+    /// The router drops any catalog entry it cannot price, so an image model that this producer
+    /// does not resolve is invisible in `/v1/models` no matter what the plane publishes.
     #[test]
-    fn request_validation_is_bounded_and_provider_fixed() {
-        let valid = PricingRequest {
+    fn image_models_resolve_a_key_scoped_rate_card() {
+        for model_id in ["gpt-image-2", "gpt-image-2-2026-04-21"] {
+            let candidate = Candidate {
+                id: format!("openai/{model_id}"),
+                provider_id: "openai".to_owned(),
+                model_id: model_id.to_owned(),
+            };
+            let base = base_pricing(&candidate, 0).expect("image model is priced");
+            // Both public ids settle against the one immutable snapshot identity.
+            assert_eq!(base.canonical_model_id, "gpt-image-2-2026-04-21");
+            assert!(base.priority.is_none() && base.long_context.is_none());
+            let card = rate_card(base.standard, 10_000);
+            assert_eq!(card.input, "5000000000");
+            assert_eq!(card.output, "30000000000");
+            assert_eq!(card.cache_read, "1250000000");
+            assert_eq!(card.cache_write, "0");
+        }
+
+        let unknown = Candidate {
+            id: "openai/gpt-image-1".to_owned(),
+            provider_id: "openai".to_owned(),
+            model_id: "gpt-image-1".to_owned(),
+        };
+        assert!(base_pricing(&unknown, 0).is_none());
+    }
+
+    #[test]
+    fn request_validation_is_bounded_and_provider_fixed() {        let valid = PricingRequest {
             schema_version: 1,
             candidates: vec![Candidate {
                 id: "openai/gpt-5.6".to_owned(),
