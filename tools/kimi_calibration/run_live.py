@@ -240,8 +240,16 @@ def profile_state(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     cooling_until = max(
                         cooling_until, as_int(value, f"profile.cooling.{field}")
                     )
+        # `/kimi-subs` publishes the quota windows under `quota`. An absent or non-list value is
+        # contract drift, not an empty fleet: silently degrading to zero windows would strip the
+        # attribution evidence this runner exists to collect, so fail closed and name the seam.
+        raw_quota = raw.get("quota")
+        if not isinstance(raw_quota, list):
+            raise CalibrationError(
+                f"KIMI profile {profile_id} has no `quota` window list in /kimi-subs"
+            )
         windows: dict[int, dict[str, Any]] = {}
-        for window in raw.get("windows", []):
+        for window in raw_quota:
             if not isinstance(window, dict):
                 continue
             duration = as_int(window.get("duration_secs"), "window.duration_secs")
@@ -262,11 +270,19 @@ def profile_state(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "resets_at": optional_int(window.get("resets_at"), "window.resets_at"),
                 "observed_at": optional_int(window.get("observed_at"), "window.observed_at"),
             }
+        # Auth state is not a boolean on the wire: the engine expresses an authentication
+        # quarantine as the `cooling.auth_until` deadline. Keep it separate from the merged
+        # cooling deadline so a dead credential reports as such instead of as ordinary cooling.
+        auth_quarantined_until = 0
+        if isinstance(cooling, dict) and cooling.get("auth_until") is not None:
+            auth_quarantined_until = as_int(
+                cooling.get("auth_until"), "profile.cooling.auth_until"
+            )
         plan = raw.get("plan")
         states[profile_id] = {
             "plan": plan.strip() if isinstance(plan, str) else "",
             "live": raw.get("live") is True,
-            "authenticated": raw.get("authenticated") is True,
+            "auth_quarantined_until": auth_quarantined_until,
             "inflight": as_int(raw.get("inflight", 0), "profile.inflight"),
             "cooling_until": cooling_until,
             "quota_observed_at": optional_int(
@@ -284,8 +300,8 @@ def require_routable_profile(
         raise CalibrationError(f"exact KIMI profile is absent from /kimi-subs: {profile_id}")
     if not state["live"]:
         raise CalibrationError(f"exact KIMI profile is dead: {profile_id}")
-    if not state["authenticated"]:
-        raise CalibrationError(f"exact KIMI profile is not authenticated: {profile_id}")
+    if state["auth_quarantined_until"] > now:
+        raise CalibrationError(f"exact KIMI profile is auth-quarantined: {profile_id}")
     if state["cooling_until"] > now:
         raise CalibrationError(f"exact KIMI profile is cooling: {profile_id}")
     return state

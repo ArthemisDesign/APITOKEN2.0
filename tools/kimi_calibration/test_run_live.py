@@ -2,6 +2,8 @@ import contextlib
 import io
 import json
 import os
+import pathlib
+import re
 import subprocess
 import tempfile
 import unittest
@@ -64,22 +66,25 @@ def profile(
     profile_id: str = "profile-a",
     plan: str = "Moderato",
     live: bool = True,
-    authenticated: bool = True,
     cooling=None,
-    windows=None,
+    quota=None,
     quota_observed_at=100,
 ):
+    """Mirror the exact `/kimi-subs` profile shape emitted by `kimi_profile_value`.
+
+    There is no `authenticated` boolean on the wire and the window list is named `quota`;
+    inventing either here is what let the runner ship against a payload the engine never sent.
+    """
     return {
         "id": profile_id,
         "plan": plan,
         "live": live,
-        "authenticated": authenticated,
         "inflight": 0,
         "cooling": cooling
         if cooling is not None
         else {"auth_until": None, "transport_until": None, "quota_until": None},
         "quota_observed_at": quota_observed_at,
-        "windows": windows if windows is not None else [window()],
+        "quota": quota if quota is not None else [window()],
         "calibration": {
             "samples": 0,
             "confidence_bp": None,
@@ -150,7 +155,7 @@ class FakeSubs:
             observed = 160 if self.fresh_quota else 100
         payload = subs(events)
         payload["profiles"] = [
-            profile(windows=[window(used=used, fraction=fraction, observed_at=observed)])
+            profile(quota=[window(used=used, fraction=fraction, observed_at=observed)])
         ]
         return payload
 
@@ -392,10 +397,22 @@ class ProfileGateTests(unittest.TestCase):
         dead = run_live.profile_state(subs(profiles=[profile(live=False)]))
         with self.assertRaises(run_live.CalibrationError):
             run_live.require_routable_profile(dead.get("profile-a"), "profile-a", 100)
-        unauthenticated = run_live.profile_state(subs(profiles=[profile(authenticated=False)]))
+        quarantined = run_live.profile_state(
+            subs(
+                profiles=[
+                    profile(
+                        cooling={
+                            "auth_until": 500,
+                            "transport_until": None,
+                            "quota_until": None,
+                        }
+                    )
+                ]
+            )
+        )
         with self.assertRaises(run_live.CalibrationError):
             run_live.require_routable_profile(
-                unauthenticated.get("profile-a"), "profile-a", 100
+                quarantined.get("profile-a"), "profile-a", 100
             )
         with self.assertRaises(run_live.CalibrationError):
             run_live.require_routable_profile(None, "profile-a", 100)
@@ -998,3 +1015,36 @@ class CapabilityProbeTests(unittest.TestCase):
             self.assertNotIn("tools", body)
             self.assertNotIn("tool_choice", body)
             self.assertIsInstance(body["messages"][0]["content"], str)
+
+
+class KimiSubsWireContractTest(unittest.TestCase):
+    """Pin the fixtures to the engine's serializer instead of to our own imagination.
+
+    The runner once required an `authenticated` boolean and read the window list from
+    `windows`; the engine has always published `cooling.auth_until` and `quota`. Every
+    offline test was green because the fixtures invented the same payload the runner
+    expected, so the mismatch only surfaced against production. This test removes that
+    freedom: the fixture must carry exactly the top-level keys `kimi_profile_value` emits.
+    """
+
+    def engine_profile_keys(self) -> set:
+        source = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "crates"
+            / "server"
+            / "src"
+            / "http.rs"
+        ).read_text(encoding="utf-8")
+        start = source.index("fn kimi_profile_value")
+        body = source[start : source.index("\nfn ", start + 1)]
+        # Top-level `json!` members sit at exactly eight spaces; nested ones are deeper.
+        return set(re.findall(r'^ {8}"([a-z_]+)":', body, flags=re.MULTILINE))
+
+    def test_fixture_profile_matches_the_engine_serializer(self):
+        self.assertEqual(set(profile().keys()), self.engine_profile_keys())
+
+    def test_absent_quota_list_fails_closed_instead_of_reading_as_empty(self):
+        drifted = profile()
+        del drifted["quota"]
+        with self.assertRaises(run_live.CalibrationError):
+            run_live.profile_state(subs(profiles=[drifted]))
