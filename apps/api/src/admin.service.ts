@@ -8,6 +8,7 @@ import {
   pricingControlJobStageResponseV2Schema,
   pricingPolicyDeliveryRepairResponseV2Schema,
   pricingReleaseActivationReconcileResponseV2Schema,
+  pricingReleaseOrchestrationStageResponseV2Schema,
   pricingReleaseActivationStageResponseV2Schema,
   pricingStage5ControlResultV2Schema,
   pricingStage5RunV2Schema,
@@ -20,6 +21,7 @@ import {
   type PricingControlJobStageResponseV2,
   type PricingSwitchJobStageRequestV2,
   type PricingReleaseActivationReconcileRequestV2,
+  type PricingReleaseOrchestrationStageRequestV2,
   type PricingReleaseActivationStageRequestV2,
   type PricingPolicyDeliveryRepairRequestV2,
   type PricingPolicyDeliveryRepairResponseV2,
@@ -68,6 +70,8 @@ import {
   rotateBusinessInvite,
   setBusinessPricing,
   reconcileLostPricingActivationReceiptV2,
+  readPricingReleaseOrchestrationControlV2,
+  stagePricingReleaseOrchestrationV2,
   stagePricingReleaseActivationJobV2,
   stageFundingNormalizationJobV2,
   stagePricingShadowRolloutV2,
@@ -383,6 +387,27 @@ export class AdminService {
       job_id: jobId,
       activation_kind: input.activation_kind,
       evidence_digest: input.evidence_digest,
+      status: "accepted",
+    });
+  }
+
+  async getPricingReleaseOrchestrationControlV2(): Promise<unknown> {
+    return readPricingReleaseOrchestrationControlV2(this.database);
+  }
+
+  async stagePricingReleaseOrchestrationV2(
+    input: PricingReleaseOrchestrationStageRequestV2,
+    actorId: string,
+  ): Promise<Record<string, unknown>> {
+    const staged = await stagePricingReleaseOrchestrationV2(this.database, {
+      idempotencyKey: input.idempotency_key,
+      capabilityGeneration: input.capability_generation,
+      operatorId: actorId,
+      reason: input.reason,
+    });
+    return pricingReleaseOrchestrationStageResponseV2Schema.parse({
+      orchestration_id: staged.orchestrationId,
+      idempotent_replay: staged.idempotentReplay,
       status: "accepted",
     });
   }

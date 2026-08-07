@@ -39,6 +39,29 @@ happen; the generator exists because the gpt-image-2 admission hit several.
 
 One commit carries the constants + mirrors + materializer and merges through the standard gate.
 
+## Phase C/D — the orchestrated release cycle (one durable intent)
+
+With `pricing_release_orchestrations_v2` the whole cycle is one staging call; the pricing worker
+drives catalog/switch delivery → Stage 5 materialize → Stage 6 funding → Stage 7 rollout →
+Stage 8 capture → Stage 9 activation → verification through the existing durable sub-jobs and
+their unchanged gates, re-cycling up to 3 times on inventory drift and re-capturing on evidence
+TTL expiry:
+
+```bash
+curl -X POST -H "x-admin-key: $COMMERCIAL_ADMIN_KEY" -H "x-admin-actor: <actor>" \
+  -H 'content-type: application/json' \
+  -d '{"idempotency_key":"<uuid>","capability_generation":<N>,"reason":"release <model>"}' \
+  http://127.0.0.1:8791/v1/admin/pricing-release-orchestration-v2/stage
+# watch: GET /v1/admin/pricing-release-orchestration-v2
+```
+
+The capability generation pin must equal the generation the deployed constants plan for; a
+mismatch (forgotten or unmerged constants) dies immediately with the two numbers in `last_error`.
+`status=dead` with a non-drift blocker is terminal evidence — fix the producer, then stage a new
+intent with a new idempotency key. Only one orchestration is active at a time.
+
+The manual step-by-step lane below remains as the repair/debug path.
+
 ## Phase C — successor release cycle (Stage 5 → 7 converge)
 
 Once the constants are live and deployed, deliver the new catalog/switch generation to the

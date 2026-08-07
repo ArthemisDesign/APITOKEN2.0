@@ -1339,6 +1339,22 @@ export const pricingReleaseActivationStageResponseV2Schema = z.object({
 export type PricingReleaseActivationStageResponseV2 =
   z.infer<typeof pricingReleaseActivationStageResponseV2Schema>;
 
+export const pricingReleaseOrchestrationStageRequestV2Schema = z.object({
+  idempotency_key: z.string().uuid(),
+  capability_generation: pricingVersionSchema,
+  reason: pricingReleaseActivationReasonV2Schema,
+}).strict();
+export type PricingReleaseOrchestrationStageRequestV2 =
+  z.infer<typeof pricingReleaseOrchestrationStageRequestV2Schema>;
+
+export const pricingReleaseOrchestrationStageResponseV2Schema = z.object({
+  orchestration_id: z.string().uuid(),
+  idempotent_replay: z.boolean(),
+  status: z.literal("accepted"),
+}).strict();
+export type PricingReleaseOrchestrationStageResponseV2 =
+  z.infer<typeof pricingReleaseOrchestrationStageResponseV2Schema>;
+
 export const pricingReleaseActivationReconcileRequestV2Schema = z.object({
   job_id: z.string().uuid(),
   reason: pricingReleaseActivationReasonV2Schema,

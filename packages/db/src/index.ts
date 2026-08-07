@@ -34,3 +34,4 @@ export * from "./totp.js";
 export * from "./sales-feed.js";
 export * from "./content-studio.js";
 export * from "./schema.js";
+export * from "./pricing-release-orchestration-v2.js";

@@ -121,7 +121,9 @@ receipt, and the successor expectation only from the newest durable activation r
 successor (`activate_successor`) advances any exact active head to a newer prepared pair. The
 protected `POST /v1/admin/pricing-release-activation-v2/reconcile` in `apps/api` repairs a lost
 ACK (committed engine CAS, dead job, no receipt) from the read-only engine provisioning
-context. Startup, migration, the Stage 8 collector, and worker polling do not stage an
+context. The protected `POST /v1/admin/pricing-release-orchestration-v2/stage` (paired GET for
+status) drives one full successor cycle — delivery, Stage 5-9, verify — through these durable
+jobs automatically, re-cycling on inventory drift; at most one orchestration is active. Startup, migration, the Stage 8 collector, and worker polling do not stage an
 activation job. The only producer is the protected
 `POST /v1/admin/pricing-release-activation-v2/stage` in `apps/api`; the paired GET returns
 a bounded local snapshot and separately a timestamped engine head. `apps/admin` is wired

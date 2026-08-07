@@ -21,6 +21,7 @@ import {
   pricingPolicyDeliveryRepairRequestV2Schema,
   pricingReleaseActivationOperatorV2Schema,
   pricingReleaseActivationReconcileRequestV2Schema,
+  pricingReleaseOrchestrationStageRequestV2Schema,
   pricingReleaseActivationStageRequestV2Schema,
   pricingStage5DryRunRequestV2Schema,
   pricingStage5MaterializeRequestV2Schema,
@@ -44,6 +45,7 @@ import {
   PricingPolicyDeliveryRepairError,
   PricingPolicyWriteError,
   PricingReleaseActivationJobV2Error,
+  PricingReleaseOrchestrationV2Error,
   PricingShadowRolloutV2Error,
   Stage5MaterializerV2Error,
   PricingStage8CaptureJobV2Error,
@@ -455,6 +457,32 @@ export class AdminController {
       return await this.admin.stagePricingReleaseActivationV2(input.data, actor.data);
     } catch (error) {
       if (error instanceof PricingReleaseActivationJobV2Error) {
+        throw new HttpException(error.message, error.permanent ? 409 : 503);
+      }
+      throw error;
+    }
+  }
+
+  @Get("pricing-release-orchestration-v2")
+  @Header("Cache-Control", "no-store")
+  async getPricingReleaseOrchestrationV2(): Promise<unknown> {
+    return this.admin.getPricingReleaseOrchestrationControlV2();
+  }
+
+  @Post("pricing-release-orchestration-v2/stage")
+  @Header("Cache-Control", "no-store")
+  async stagePricingReleaseOrchestrationV2(
+    @Body() body: unknown,
+    @Headers("x-admin-actor") actorHeader?: string,
+  ): Promise<unknown> {
+    const input = pricingReleaseOrchestrationStageRequestV2Schema.safeParse(body);
+    const actor = pricingReleaseActivationOperatorV2Schema.safeParse(actorHeader?.trim());
+    if (!input.success) throw new BadRequestException(input.error.flatten());
+    if (!actor.success) throw new BadRequestException("verified admin actor is required");
+    try {
+      return await this.admin.stagePricingReleaseOrchestrationV2(input.data, actor.data);
+    } catch (error) {
+      if (error instanceof PricingReleaseOrchestrationV2Error) {
         throw new HttpException(error.message, error.permanent ? 409 : 503);
       }
       throw error;

@@ -7,6 +7,7 @@ import {
   advanceAccountStrictChain,
   claimNextPricingControlJob,
   claimNextPricingJob,
+  advancePricingReleaseOrchestrationV2,
   claimNextPricingReleaseActivationJobV2,
   completePricingProviderBackfill,
   completePricingUsageSync,
@@ -157,6 +158,9 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
         this.requestControlFlush();
         await this.flushPricingJobs();
         await this.flushPricingReleaseActivationJobs();
+        // The release orchestrator advances at most one step per tick; its sub-jobs run in the
+        // flushes above and in the dedicated capture/funding/rollout workers.
+        await this.advanceReleaseOrchestration();
       } catch (error) {
         this.logger.error(message(error));
       }
@@ -469,6 +473,16 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
       } catch (error) {
         this.logger.error(`strict chain sweep failed for ${candidate.userId}: ${message(error)}`);
       }
+    }
+  }
+
+  private async advanceReleaseOrchestration(): Promise<void> {
+    const orchestrationId = await advancePricingReleaseOrchestrationV2(this.database, {
+      engine: this.engine,
+      openkeys: this.openkeys,
+    });
+    if (orchestrationId) {
+      this.logger.log(`advanced pricing release orchestration ${orchestrationId}`);
     }
   }
 
