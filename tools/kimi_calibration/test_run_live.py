@@ -503,7 +503,7 @@ class QuotaAttributionTests(unittest.TestCase):
 
 
 class MatrixTests(unittest.TestCase):
-    def test_default_matrix_covers_models_contexts_efforts_and_dedupes_reroute(self):
+    def test_default_matrix_covers_models_contexts_and_efforts(self):
         legs = run_live.build_coverage_legs(list(run_live.DEFAULT_MODELS))
         names = {leg.name for leg in legs}
         self.assertEqual(names, {
@@ -520,13 +520,13 @@ class MatrixTests(unittest.TestCase):
             "kimi-for-coding-highspeed:256k:high",
             "kimi-for-coding-highspeed:256k:off",
         })
+        # The requested alias decides the tariff at every effort. Thinking-off was believed to
+        # re-route to kimi-k2.6; live evidence on 2026-08-07 priced `k3-256k` with effort `off`
+        # as kimi-k3, so the reroute never existed.
         for leg in legs:
-            if leg.reasoning_effort == "off":
-                self.assertEqual(leg.served_model, "kimi-k2.6")
-            else:
-                self.assertEqual(
-                    leg.served_model, run_live.ALIAS_SPECS[leg.requested_model].official_model
-                )
+            self.assertEqual(
+                leg.served_model, run_live.ALIAS_SPECS[leg.requested_model].official_model
+            )
 
     def test_unknown_served_model_fails_closed(self):
         with self.assertRaises(run_live.CalibrationError):

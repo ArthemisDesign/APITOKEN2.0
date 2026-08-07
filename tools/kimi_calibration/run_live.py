@@ -51,7 +51,11 @@ DEFAULT_PRODUCTION_CAPACITY_PORT = 8803
 DEFAULT_PRODUCTION_API_PORT = 8803
 KIMI_TARIFF_SCHEDULE_ID = "moonshot/kimi-open-platform/2026-08-03"
 FRACTION_UNITS_PER_PERCENT = 1_000_000  # KIMI_FRACTION_SCALE is 100_000_000 (1% == 1e6 units).
-REROUTED_SERVED_MODEL = "kimi-k2.6"  # Thinking off re-routes k3 and k2.7-code here.
+# Thinking-off was believed to re-route k3 and k2.7-code to kimi-k2.6. Disproved live on
+# 2026-08-07: `k3-256k` with effort `off` was served and priced as kimi-k3 (3000/15000 per token),
+# not k2.6. The belief survived earlier runs only because k2.6 and k2.7-code share input/write/
+# output rates, so the base model could not tell them apart. The requested model decides the
+# tariff; effort does not change it.
 EVENT_TOKEN_FIELDS = (
     "input_tokens",
     "cache_read_tokens",
@@ -463,7 +467,7 @@ def build_coverage_legs(models: list[str] | tuple[str, ...]) -> list[Leg]:
                 if key in seen:
                     continue
                 seen.add(key)
-                served = REROUTED_SERVED_MODEL if effort == "off" else spec.official_model
+                served = spec.official_model
                 legs.append(
                     Leg(f"{alias}:{spec.context_mode}:{effort}", alias, served, spec.context_mode, effort)
                 )
@@ -518,7 +522,7 @@ def build_capability_legs(models: list[str] | tuple[str, ...]) -> list[Leg]:
         )
         spec = ALIAS_SPECS[alias]
         effort = EFFORTS_BY_MODEL[model][0]
-        served = REROUTED_SERVED_MODEL if effort == "off" else spec.official_model
+        served = spec.official_model
         for capability in sorted(CAPABILITY_PROBES):
             legs.append(
                 Leg(
@@ -537,9 +541,8 @@ def upper_bound_candidates(leg: Leg) -> tuple[AliasSpec, set[str]]:
     spec = ALIAS_SPECS.get(leg.requested_model)
     if spec is None:
         raise CalibrationError(f"unknown KIMI subscription alias: {leg.requested_model}")
+    # Effort never changes the tariff: the requested alias decides it (live evidence 2026-08-07).
     candidates = {spec.official_model}
-    if leg.reasoning_effort == "off":
-        candidates.add(REROUTED_SERVED_MODEL)
     return spec, candidates
 
 
