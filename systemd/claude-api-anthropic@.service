@@ -15,7 +15,14 @@ EnvironmentFile=/srv/claude-api/data/engine-postgres.env
 # `/usr/bin/env` is deliberately at ExecStart: EnvironmentFile values override `Environment=`
 # regardless of their textual order, while argv-level assignments always win for the slot. The
 # shared secret env may later enable the OpenAI-only GPT fallback; never inherit it here.
-ExecStart=/usr/bin/env CLAUDE_API_PRICING_BRIDGE_ENABLED=1 CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP=10000 CLAUDE_API_PROVIDER=anthropic CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:anthropic:%i /srv/claude-api/releases/current/claude-api serve
+#
+# KIMI is composed here as well, not only on its own slot. `serves_kimi()` covers Anthropic mode by
+# design, and this is the only way a KIMI alias becomes reachable from outside the host: the public
+# entry resolves to these slots, while `claude-api-kimi@8805` listens on loopback only. Without it
+# a KIMI model falls through to the Claude pool, the upstream does not know the alias, and rotation
+# turns that into a 529 — observed end to end on 2026-08-07. A cold or broken KIMI roster stays a
+# fail-closed KIMI-only path and never removes Claude traffic from readiness.
+ExecStart=/usr/bin/env CLAUDE_API_PRICING_BRIDGE_ENABLED=1 CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP=10000 CLAUDE_API_PROVIDER=anthropic CLAUDE_API_CLAUDESTORE_CODEX_FALLBACK_ENABLED=0 CLAUDE_API_TRUST_LOOPBACK=0 CLAUDE_API_HOST=127.0.0.1 CLAUDE_API_PORT=%i CLAUDE_API_INSTANCE_ID=%H:engine:anthropic:%i CLAUDE_API_KIMI_ENABLED=1 /srv/claude-api/releases/current/claude-api serve
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM
