@@ -3695,7 +3695,7 @@ async fn successful_delivery_never_carries_not_started_and_charges_usage() {
 }
 
 #[tokio::test]
-async fn metered_stream_without_final_usage_charges_hold_without_fake_usage() {
+async fn a_metered_stream_without_final_usage_bills_nothing_and_invents_no_usage() {
     let (reply, drained) = MockReply::stream(vec![MockChunk::Data(Bytes::from_static(
         b"data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"delivered\"}]}}]}}\n\n",
     ))]);
@@ -3714,9 +3714,12 @@ async fn metered_stream_without_final_usage_charges_hold_without_fake_usage() {
     assert!(drained.load(Ordering::Acquire));
     let account = billing.account(ACCOUNT_ID).await.unwrap().unwrap();
     assert_eq!(account.reserved_nano, 0);
-    assert!(
-        account.spent_nano > 0,
-        "the conservative hold must be charged"
+    // The answer was delivered but its cost was never reported, and the preflight hold is an
+    // admission device rather than a price: billing it charged a double-digit multiple of the turn.
+    // The reservation is released instead, and no usage event is invented either way.
+    assert_eq!(
+        account.spent_nano, 0,
+        "an unmeasured turn must not be billed at the admission ceiling"
     );
     assert!(billing
         .usage_by_model(ACCOUNT_ID, 0)

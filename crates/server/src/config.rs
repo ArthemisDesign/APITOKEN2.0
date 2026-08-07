@@ -20,6 +20,11 @@ pub struct Settings {
     pub bind: String,
     pub fleet: Option<String>,
     pub billing: bool, // включён ли учёт баланса ключей (таблица api_keys)
+    /// Bill the preflight hold when a turn's real usage was never measured. Off: the hold is an
+    /// admission device, not a price, and charging it cost customers a double-digit multiple of the
+    /// turn. Kept as a switch so an operator facing a provider that stops reporting usage can
+    /// restore the conservative fallback without a deploy.
+    pub charge_hold_on_unknown_usage: bool,
     /// Reader connections this slot opens against the authority. See `CLAUDE_API_BILLING_READERS`.
     pub billing_readers: usize,
     pub mult_bp: i64,   // дефолтная наценка для `key issue` (× 10000; 900 = ×0.09)
@@ -1214,6 +1219,10 @@ impl Settings {
             bind: format!("{host}:{port}"),
             fleet: ev("SUBS_FLEET").filter(|f| f != "all"),
             billing: ev_bool("CLAUDE_API_BILLING", true),
+            charge_hold_on_unknown_usage: ev_bool(
+                "CLAUDE_API_CHARGE_HOLD_ON_UNKNOWN_USAGE",
+                false,
+            ),
             // Default preserves the previous host-sized behaviour; the bound exists so a deployment
             // whose authority is shared can fit every slot — plus the extra generation a blue-green
             // cutover runs — inside the server's connection limit.

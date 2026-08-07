@@ -1170,6 +1170,9 @@ fn sub_cmd(op: SubOp) -> Result<()> {
 async fn serve() -> Result<()> {
     let s = Settings::from_env();
     let serves_anthropic = s.provider.serves_anthropic();
+    // Fleet-wide settlement policy, installed before any plane can settle a turn: the preflight hold
+    // is an admission device and is never billed as a price for a turn nobody measured.
+    forward::settlement_policy::set_charge_hold_on_unknown_usage(s.charge_hold_on_unknown_usage);
     // Мягкий routing/spill threshold (env CLAUDE_API_MAX_INFLIGHT) ставим ДО создания пула.
     // Он балансирует нагрузку, но не является admission cap и никогда не блокирует dispatch.
     if serves_anthropic {
@@ -1224,7 +1227,10 @@ async fn serve() -> Result<()> {
             let mut recovery = registry::pg::ReconcileReport::default();
             if let Some(current) = owner.as_ref() {
                 let pg = db.postgres()?;
-                recovery = pg.reconcile_expired(10_000)?;
+                recovery = pg.reconcile_expired(
+                    10_000,
+                    forward::settlement_policy::charge_hold_on_unknown_usage(),
+                )?;
                 if !pg.heartbeat_instance_with_pricing_manifest(
                     current,
                     30,

@@ -2691,8 +2691,10 @@ pub async fn forward(
                     (reserved.as_ref(), app.billing.as_ref())
                 {
                     if !matches!(billing.mark_delivering(request_id, 3600).await, Ok(true)) {
-                        // The provider accepted the request, but the durable delivery marker was fenced.
-                        // Preserve the approved hold and fail closed instead of handing out untracked usage.
+                        // The provider accepted the request, but the durable delivery marker was
+                        // fenced. Nothing was measured, so the customer is not billed the admission
+                        // ceiling for it; the request still fails closed rather than streaming
+                        // untracked usage.
                         if priced_ts.is_some() {
                             billing
                                 .settle_detached(request_id, account_id, key, *hold, 0, None, None);
@@ -2702,7 +2704,7 @@ pub async fn forward(
                                 account_id,
                                 key,
                                 *hold,
-                                *hold,
+                                crate::settlement_policy::unknown_usage_charge(*hold),
                                 Some("delivery-marker-failed"),
                                 None,
                             );

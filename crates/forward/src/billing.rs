@@ -3301,7 +3301,12 @@ impl AsyncBilling {
                             )
                         })
                         .and_then(|_| {
-                            registry::sqlite_reconcile_expired(&conn, 10_000).map(|_| ())
+                            registry::sqlite_reconcile_expired(
+                                &conn,
+                                10_000,
+                                crate::settlement_policy::charge_hold_on_unknown_usage(),
+                            )
+                            .map(|_| ())
                         });
                         let _ = reply.send(result);
                     }

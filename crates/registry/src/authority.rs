@@ -576,10 +576,16 @@ impl Authority {
             Self::Postgres(pg) => pg.maintenance_prune(older_than_ts),
         }
     }
-    pub fn reconcile_expired(&mut self, limit: usize) -> Result<crate::pg::ReconcileReport> {
+    pub fn reconcile_expired(
+        &mut self,
+        limit: usize,
+        charge_hold_on_unknown_usage: bool,
+    ) -> Result<crate::pg::ReconcileReport> {
         match self {
-            Self::Sqlite(c) => crate::sqlite_reconcile_expired(c, limit),
-            Self::Postgres(pg) => pg.reconcile_expired(limit),
+            Self::Sqlite(c) => {
+                crate::sqlite_reconcile_expired(c, limit, charge_hold_on_unknown_usage)
+            }
+            Self::Postgres(pg) => pg.reconcile_expired(limit, charge_hold_on_unknown_usage),
         }
     }
     pub fn ledger_prune(&mut self, older_than_ts: i64) -> Result<usize> {

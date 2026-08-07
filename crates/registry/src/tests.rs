@@ -2885,7 +2885,7 @@ fn sqlite_pending_settlement_survives_until_recovery() {
     );
     let before = account_get(&c, "a").unwrap().unwrap();
     assert_eq!((before.balance_nano, before.reserved_nano), (500, 500));
-    let report = sqlite_reconcile_expired(&c, 100).unwrap();
+    let report = sqlite_reconcile_expired(&c, 100, false).unwrap();
     assert_eq!(report.processed_outbox, 1);
     let after = account_get(&c, "a").unwrap().unwrap();
     assert_eq!(
@@ -2903,8 +2903,33 @@ fn sqlite_expired_reservations_follow_delivery_state() {
     sqlite_mark_delivering(&c, "delivered", 60).unwrap();
     c.execute("UPDATE billing_reservations SET lease_until=0", [])
         .unwrap();
-    let report = sqlite_reconcile_expired(&c, 100).unwrap();
+    // Default policy: a turn that died before reporting any usage is released, not billed at the
+    // admission ceiling. The pre-delivery reservation is cancelled either way.
+    let report = sqlite_reconcile_expired(&c, 100, false).unwrap();
     assert_eq!(report.canceled_before_delivery, 1);
+    assert_eq!(report.charged_after_delivery, 1);
+    let account = account_get(&c, "a").unwrap().unwrap();
+    assert_eq!(
+        (
+            account.balance_nano,
+            account.spent_nano,
+            account.reserved_nano
+        ),
+        (1_000, 0, 0)
+    );
+}
+
+/// The conservative fallback is a switch, not a deletion: an operator facing a provider that stops
+/// reporting usage must be able to restore full-hold recovery without a deploy.
+#[test]
+fn sqlite_expired_delivery_bills_the_hold_only_when_the_fallback_is_re_armed() {
+    let c = db();
+    acct_with_key(&c, "a", "k", 1_000, 2000);
+    sqlite_reserve_request(&c, "delivered", "a", "k", 300, 60).unwrap();
+    sqlite_mark_delivering(&c, "delivered", 60).unwrap();
+    c.execute("UPDATE billing_reservations SET lease_until=0", [])
+        .unwrap();
+    let report = sqlite_reconcile_expired(&c, 100, true).unwrap();
     assert_eq!(report.charged_after_delivery, 1);
     let account = account_get(&c, "a").unwrap().unwrap();
     assert_eq!(

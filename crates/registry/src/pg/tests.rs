@@ -9774,7 +9774,7 @@ fn stage2_fault_matrix() {
             &[],
         )
         .unwrap();
-    let recovered = pg.reconcile_expired(100).unwrap();
+    let recovered = pg.reconcile_expired(100, false).unwrap();
     assert_eq!(recovered.canceled_before_delivery, 1);
     assert_eq!(recovered.charged_after_delivery, 1);
     assert_eq!(pg.account_get("acct").unwrap().unwrap().reserved_nano, 0);

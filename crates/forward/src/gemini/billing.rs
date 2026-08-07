@@ -757,10 +757,11 @@ fn settled_charge_or_hold(
 ) -> (i64, Option<registry::UsageEventInput>) {
     match usage.filter(|usage| !usage.is_zero()) {
         Some(usage) => settled_charge(model, usage, hold, mult_bp, now, settlement_pricing),
-        // Once streaming bytes were delivered, missing usage must never turn a paid provider call
-        // into a zero settlement. The conservative preflight hold is already bounded by balance;
-        // no synthetic token event is invented because it would corrupt authoritative analytics.
-        None => (hold.max(0), None),
+        // Usage never arrived. The preflight hold is an admission device, not a price — billing it
+        // charged a double-digit multiple of the real turn — so this settles at nothing unless an
+        // operator has deliberately re-armed the conservative fallback. No synthetic token event is
+        // invented either way: that would corrupt authoritative analytics.
+        None => (crate::settlement_policy::unknown_usage_charge(hold), None),
     }
 }
 
@@ -1800,8 +1801,30 @@ mod tests {
         assert_eq!(release, 150);
     }
 
+    /// An unmeasured turn is not billed at the admission ceiling. The hold covers a
+    /// byte-conservative input estimate plus the model's entire output limit, so charging it made
+    /// customers pay a double-digit multiple of the turn; it is a reservation, not a price. Both
+    /// shapes of "no usage" — absent and all-zero — settle the same way, and neither invents a usage
+    /// event.
     #[test]
-    fn missing_authoritative_usage_fails_closed_to_the_reserved_hold() {
+    fn an_unmeasured_turn_is_not_billed_at_the_admission_ceiling() {
+        let zero = metering::GeminiUsage::default();
+        for usage in [None, Some(&zero)] {
+            let (charge, event) = settled_charge_or_hold(
+                &model(),
+                usage,
+                123_456,
+                10_000,
+                0,
+                GeminiSettlementPricing::LegacyScalar,
+            );
+            assert_eq!(charge, 0);
+            assert!(event.is_none());
+        }
+
+        // The conservative fallback survives as an operator switch for a provider that stops
+        // reporting usage altogether.
+        crate::settlement_policy::set_charge_hold_on_unknown_usage(true);
         let (charge, event) = settled_charge_or_hold(
             &model(),
             None,
@@ -1810,19 +1833,8 @@ mod tests {
             0,
             GeminiSettlementPricing::LegacyScalar,
         );
+        crate::settlement_policy::set_charge_hold_on_unknown_usage(false);
         assert_eq!(charge, 123_456);
-        assert!(event.is_none());
-
-        let zero = metering::GeminiUsage::default();
-        let (charge, event) = settled_charge_or_hold(
-            &model(),
-            Some(&zero),
-            654_321,
-            10_000,
-            0,
-            GeminiSettlementPricing::LegacyScalar,
-        );
-        assert_eq!(charge, 654_321);
         assert!(event.is_none());
     }
 }

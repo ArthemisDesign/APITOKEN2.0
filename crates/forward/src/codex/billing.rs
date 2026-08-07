@@ -1279,11 +1279,13 @@ fn settled_openai_image_charge(
     priced_ts: i64,
     settlement_pricing: CodexSettlementPricing,
 ) -> (i64, Option<registry::UsageEventInput>) {
+    // No tariff and no computable cost both mean the turn was never measured, and an unmeasured
+    // turn is not billed at the admission ceiling.
     let Ok(tariff) = metering::openai_image_tariff(model_id) else {
-        return (hold.max(0), None);
+        return (crate::settlement_policy::unknown_usage_charge(hold), None);
     };
     let Ok(real_nano) = metering::openai_image_cost_nanodollars(usage, &tariff.prices) else {
-        return (hold.max(0), None);
+        return (crate::settlement_policy::unknown_usage_charge(hold), None);
     };
     let computed_charge = match settlement_pricing {
         CodexSettlementPricing::ReleaseV2 => metering::apply_multiplier_floor(real_nano, mult_bp),

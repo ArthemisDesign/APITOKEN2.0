@@ -56,7 +56,10 @@ pub async fn billing_recovery_loop(
                         return Ok::<_, anyhow::Error>(None);
                     }
                 }
-                Ok(Some(authority.reconcile_expired(BILLING_RECOVERY_BATCH)?))
+                Ok(Some(authority.reconcile_expired(
+                    BILLING_RECOVERY_BATCH,
+                    forward::settlement_policy::charge_hold_on_unknown_usage(),
+                )?))
             })
             .await;
 

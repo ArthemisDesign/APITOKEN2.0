@@ -3554,7 +3554,14 @@ impl PgStore {
     }
 
     /// Recover only reservations whose exact owner epoch is provably dead/fenced.
-    pub fn reconcile_expired(&mut self, limit: usize) -> Result<ReconcileReport> {
+    ///
+    /// `charge_hold_on_unknown_usage` is the fleet-wide fallback switch, off by default: a turn that
+    /// died before reporting any usage settles at nothing rather than at the admission ceiling.
+    pub fn reconcile_expired(
+        &mut self,
+        limit: usize,
+        charge_hold_on_unknown_usage: bool,
+    ) -> Result<ReconcileReport> {
         let ts = now();
         let rows = self.client.query(
             "SELECT r.request_id,r.state,r.hold_nano,r.measured_nano FROM reservations r \
@@ -3576,14 +3583,19 @@ impl PgStore {
                 }
                 "delivering" => {
                     // The owner died mid-answer. If it managed to checkpoint what the turn had
-                    // measured, that is what the customer owes — never more. The full hold stays as
-                    // the fallback for a turn that died before any usage was reported, because a
-                    // silent zero there would hand out a paid provider call for free; it is a
-                    // conservative estimate of a turn nobody can describe, not a price.
-                    let (charge, reason) = match measured {
-                        Some(measured) => (measured.clamp(0, hold), "reconcile_measured"),
-                        None => (hold, "reconcile_full_hold"),
+                    // measured, that is what the customer owes — never more. With nothing measured
+                    // the turn is not billed at all: the hold is an admission device, not a price,
+                    // and no customer can reach this branch on purpose — it needs our own process
+                    // to die. The operator switch restores the old conservative fallback.
+                    // The disposition names the recovery path, not the amount: it drives model
+                    // attribution and the billing invariant downstream, so every post-delivery
+                    // recovery keeps the one label and only the sum varies.
+                    let charge = match measured {
+                        Some(measured) => measured.clamp(0, hold),
+                        None if charge_hold_on_unknown_usage => hold,
+                        None => 0,
                     };
+                    let reason = "reconcile_full_hold";
                     self.enqueue_outbox(
                         &request_id,
                         charge,

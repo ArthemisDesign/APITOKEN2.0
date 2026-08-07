@@ -28,6 +28,7 @@ mod kimi_calibration;
 mod lifecycle;
 mod meter;
 mod metrics;
+pub mod settlement_policy;
 pub mod nodetls;
 mod openai_responses_stream;
 mod pricing;

@@ -2971,7 +2971,7 @@ pub fn key_issue_with_policy_ack(
 /// Backward-compatible startup entry point. Only expired request-scoped leases are touched; legacy
 /// aggregate holds remain fail-closed because they still have no provable owner or age.
 pub fn reconcile_reservations(conn: &Connection) -> Result<usize> {
-    let report = sqlite_reconcile_expired(conn, 10_000)?;
+    let report = sqlite_reconcile_expired(conn, 10_000, false)?;
     Ok(report.canceled_before_delivery + report.charged_after_delivery + report.processed_outbox)
 }
 
@@ -5534,6 +5534,7 @@ pub fn sqlite_cancel_request(
 pub fn sqlite_reconcile_expired(
     conn: &Connection,
     limit: usize,
+    charge_hold_on_unknown_usage: bool,
 ) -> Result<crate::pg::ReconcileReport> {
     let limit = limit.clamp(1, 10_000) as i64;
     let timestamp = now();
@@ -5578,7 +5579,10 @@ pub fn sqlite_reconcile_expired(
         rows
     };
     for (request_id, account_id, key, hold, state) in expired {
-        let actual = if state == "delivering" { hold } else { 0 };
+        let billed = state == "delivering" && charge_hold_on_unknown_usage;
+        let actual = if billed { hold } else { 0 };
+        // The disposition names the recovery path, not the amount, and is an allow-listed value
+        // downstream; only the settled sum changes with the policy.
         let disposition = if state == "delivering" {
             "reconcile_full_hold"
         } else {
