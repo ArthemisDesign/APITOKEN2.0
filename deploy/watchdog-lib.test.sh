@@ -4964,6 +4964,11 @@ surface_probe_gate_line=$(grep -nF '"$GPT_IMAGE_2_SURFACE_PROBE_PRODUCER_SHA")' 
 grep -Fq 'github_status success "deploy/gpt-image-2-probe-$surface_probe_name"' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 surface probe has no per-probe GREEN statuses'
+grep -Fq 'for surface_probe_name in medium high multi-ref; do' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'GPT Image 2 surface probe names must stay valid status contexts (hyphenated)'
+grep -Fq '"multi-ref":$multi_ref' "$ROOT/deploy/gpt-image-2-surface-probe-gate.sh" \
+  || wd_die 'GPT Image 2 surface probe summary key must match the hyphenated status name'
 
 # GPT Image 2 pricing admission uses one fixed root bridge: credential stays in procfs/stdin, while
 # the operator receives only bounded Stage 5/6 digests, states and counts.

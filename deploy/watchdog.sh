@@ -3027,11 +3027,11 @@ main() {
         (if .verdict == "honored" then .output_tokens > 0
          elif .verdict == "rejected" then .returned_quality == null and .output_tokens == 0
          else .returned_quality != null end);
-      (keys | sort) == (["high", "medium", "multi_ref"] | sort) and
-      (.medium | probe) and (.high | probe) and (.multi_ref | probe)
+      (keys | sort) == (["high", "medium", "multi-ref"] | sort) and
+      (.medium | probe) and (.high | probe) and (.["multi-ref"] | probe)
     ' <<<"$surface_probe_summary" >/dev/null \
       || wd_die "GPT Image 2 surface probe returned invalid evidence"
-    for surface_probe_name in medium high multi_ref; do
+    for surface_probe_name in medium high multi-ref; do
       surface_probe_status=$(jq -jr --arg name "$surface_probe_name" '
         .[$name] | "\($name): \(.verdict)" +
           (if .returned_quality == null then "" else " returned=\(.returned_quality)" end) +

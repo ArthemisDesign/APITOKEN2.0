@@ -214,4 +214,4 @@ multi_ref_verdict=$(probe_verdict multi-ref low "$MULTI_REF_BUDGET_NANOUSD")
 
 jq -nc --argjson medium "$medium_verdict" --argjson high "$high_verdict" \
   --argjson multi_ref "$multi_ref_verdict" \
-  '{medium:$medium,high:$high,multi_ref:$multi_ref}'
+  '{medium:$medium,high:$high,"multi-ref":$multi_ref}'
