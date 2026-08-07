@@ -239,7 +239,12 @@ invariants on mocks, but does not clear the provider-owned `unknown`s of §6:
   natural drop;
 - before the atomic swap the gateway takes the affected refresh locks and re-reads the roster: a
   snapshot made stale by a parallel rotating refresh/re-seal cannot become the new in-memory authority;
-- bearer redirect is forbidden; unknown tool/media surfaces and unsupported reasoning fail closed;
+- bearer redirect is forbidden; unsupported reasoning fails closed. Client-side tool
+  declarations, `tool_use`/`tool_result` blocks and inline media are accepted: they are text in
+  the request body, and the customer hold reserves one input-token price per body byte, so
+  their cost is bounded before dispatch. Only provider-executed work — `mcp_servers` and
+  server-side search/computer/code-execution tools — stays refused, because it may bill a unit
+  that is invisible in the body and not proportional to it (unknown 8);
 - synthetic errors pass through the common Anthropic-compatible sanitizer and do not disclose the
   internal backend name, roster, subscription, or provider body to the client;
 - an unverified plan receives only the base `kimi-for-coding`; the reviewed tier allowlist remains
@@ -426,7 +431,10 @@ controlled live run on our own subscription:
 5. Distinguishing 401/403 for "capability above plan" and "quota exhausted".
 6. The set and prices of pricing plans.
 7. Behavior when the shared monthly membership ceiling is exhausted.
-8. The existence and cost of paid tool/search units on the subscription route.
+8. The existence and cost of paid **provider-executed** tool/search units on the subscription
+   route. Client-side function calling and inline media are no longer part of this unknown:
+   they are priced as body tokens and bounded by the existing hold. Only work the provider
+   runs on the caller's behalf can bill a unit outside that bound, and only that stays closed.
 
 None of them blocks building the runtime, metering, credential, and calibration scheme —
 only the corresponding live gates are blocked (`PROVIDER_ONBOARDING.md` §2).

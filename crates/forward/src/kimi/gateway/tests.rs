@@ -1529,27 +1529,44 @@ fn output_reserve_bound_is_also_enforced_on_the_forwarded_body() {
 
 #[test]
 fn unknown_money_surfaces_fail_closed_before_transport() {
-    assert!(matches!(
-        validate_priced_surface(&json!({"tools": [{"name": "search"}]})),
-        Err(GatewayFailure::Unsupported("kimi_tools_unpriced"))
-    ));
+    // Refused: work the provider performs, which may bill a unit that is invisible in the request
+    // body and not proportional to it. That is manifest unknown 8, and it stays closed until a
+    // live run proves a finite per-request ceiling.
     for body in [
-        json!({"tools": "provider-default"}),
-        json!({"tool_choice": {"type": "auto"}}),
-        json!({"messages": [{"content": [{"type": "tool_result"}]}]}),
+        json!({"mcp_servers": [{"url": "https://example.invalid"}]}),
+        json!({"tools": [{"type": "web_search_20250305"}]}),
+        json!({"tools": [{"type": "computer_20250124"}]}),
+        json!({"tools": [{"type": "code_execution_20250522"}]}),
         json!({"messages": [{"content": [{"type": "web_search_tool_result"}]}]}),
     ] {
-        assert!(matches!(
-            validate_priced_surface(&body),
-            Err(GatewayFailure::Unsupported("kimi_tools_unpriced"))
-        ));
+        assert!(
+            matches!(
+                validate_priced_surface(&body),
+                Err(GatewayFailure::Unsupported("kimi_tools_unpriced"))
+            ),
+            "provider-executed work must stay refused: {body}"
+        );
     }
-    assert!(matches!(
-        validate_priced_surface(&json!({
-            "messages": [{"content": [{"type": "image", "source": {}}]}]
-        })),
-        Err(GatewayFailure::Unsupported("kimi_media_unpriced"))
-    ));
+
+    // Allowed: everything the customer hold already bounds. The hold reserves one input-token
+    // price per byte of the request body, and a token never occupies less than a byte, so tool
+    // declarations, tool results and inline media are covered before dispatch. Client-side
+    // function calling cannot fan out within one request either — the client runs the tool and
+    // returns the result as a new request carrying its own hold.
+    for body in [
+        json!({"tools": [{"name": "search", "input_schema": {}}]}),
+        json!({"tool_choice": {"type": "auto"}}),
+        json!({"messages": [{"content": [{"type": "tool_use", "name": "lookup"}]}]}),
+        json!({"messages": [{"content": [{"type": "tool_result", "content": "ok"}]}]}),
+        json!({"messages": [{"content": [{"type": "image", "source": {}}]}]}),
+        json!({"messages": [{"content": [{"type": "document", "source": {}}]}]}),
+    ] {
+        assert!(
+            validate_priced_surface(&body).is_ok(),
+            "the hold already bounds this; refusing it only blocked a working capability: {body}"
+        );
+    }
+
     assert_eq!(reasoning_effort(&json!({})).unwrap(), "high");
     assert_eq!(
         reasoning_effort(&json!({"reasoning_effort": "xhigh"})).unwrap(),

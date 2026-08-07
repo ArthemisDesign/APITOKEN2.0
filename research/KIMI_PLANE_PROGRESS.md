@@ -75,6 +75,8 @@
 
 | Live-runner: capability-probes на tools/media с отдельной авторизацией `--capability-probe-budget-usd`, запись «непроверено» вместо молчаливого пропуска, 6 новых офлайн-тестов | `tools/kimi_calibration/`, `docs/ops/KIMI_CALIBRATION.md` | этот коммит |
 
+| Паритет возможностей: сужен отказ `validate_priced_surface` до провайдер-исполняемой работы; client-side tools, `tool_use`/`tool_result` и inline-медиа разрешены (их уже ограничивает холд по длине тела) | `crates/forward/src/kimi/gateway.rs`, манифест | этот коммит |
+
 ## Открытые швы (выглядит подключённым, не работает)
 
 1. ~~`km_ready` не обработан.~~ **Закрыт.** Путь продавца проходится целиком: device-код, поллинг

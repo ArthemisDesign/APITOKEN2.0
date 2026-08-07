@@ -2413,6 +2413,27 @@ fn cap_to_balance(
     Some((effective, hold))
 }
 
+/// Refuse only what the customer hold cannot bound.
+///
+/// The hold reserves one input-token price per byte of the request body (`raw_body_len` in
+/// `reserve_customer`), and a token never occupies less than a byte of JSON — so anything carried
+/// *inside* the body is already covered, conservatively, before dispatch. That includes tool
+/// declarations, `tool_use`/`tool_result` blocks and inline base64 media: they are text in the
+/// body, priced as tokens, and bounded by its length.
+///
+/// Client-side function calling also cannot fan out within one request. The model emits a
+/// `tool_use` block — output tokens, capped by `max_tokens` — and the *client* executes the tool
+/// and returns the result as a new request carrying its own hold.
+///
+/// What remains genuinely unbounded is provider-executed work: an MCP server or a server-side
+/// search/computer/code-execution tool may bill a unit per invocation that appears nowhere in the
+/// request body and is not proportional to it. Manifest unknown 8 is about exactly that unit, and
+/// it stays refused until a live run proves a finite per-request ceiling.
+///
+/// The previous rule conflated the two, refusing anything tool- or media-shaped. That was not a
+/// tighter guard, it was a wider one: it blocked capabilities whose cost the hold already covered,
+/// and it made the refusal self-perpetuating — nothing could spend on them, so nothing could price
+/// them, so they could never be allowed.
 fn validate_priced_surface(body: &Value) -> Result<(), GatewayFailure> {
     let enabled = |value: &Value| match value {
         Value::Null => false,
@@ -2420,59 +2441,42 @@ fn validate_priced_surface(body: &Value) -> Result<(), GatewayFailure> {
         Value::Object(values) => !values.is_empty(),
         _ => true,
     };
-    if ["tools", "tool_choice", "mcp_servers"]
-        .into_iter()
-        .filter_map(|field| body.get(field))
-        .any(enabled)
-        || contains_unpriced_tool_content(body)
-    {
+    if body.get("mcp_servers").is_some_and(enabled) || contains_provider_executed_tool(body) {
         return Err(GatewayFailure::Unsupported("kimi_tools_unpriced"));
-    }
-    if contains_unpriced_media(body) {
-        return Err(GatewayFailure::Unsupported("kimi_media_unpriced"));
     }
     Ok(())
 }
 
-fn contains_unpriced_tool_content(value: &Value) -> bool {
+/// True when the request asks the *provider* to run something on the caller's behalf.
+///
+/// A declared function the client executes itself is ordinary text in the body. A server-side
+/// search, computer-use or code-execution tool, or an MCP server, is work the provider performs and
+/// may bill per invocation — a unit that is invisible in the request and not proportional to it.
+/// Only the second kind is refused.
+fn contains_provider_executed_tool(value: &Value) -> bool {
     match value {
-        Value::Array(values) => values.iter().any(contains_unpriced_tool_content),
+        Value::Array(values) => values.iter().any(contains_provider_executed_tool),
         Value::Object(object) => {
             if object
                 .get("type")
                 .and_then(Value::as_str)
                 .is_some_and(|kind| {
                     let kind = kind.to_ascii_lowercase();
-                    kind.contains("tool")
-                        || kind.contains("search")
+                    kind.contains("search")
                         || kind.contains("computer")
                         || kind.contains("code_execution")
+                        || kind.contains("mcp")
                 })
             {
                 return true;
             }
-            object.values().any(contains_unpriced_tool_content)
+            object.values().any(contains_provider_executed_tool)
         }
         _ => false,
     }
 }
 
-fn contains_unpriced_media(value: &Value) -> bool {
-    match value {
-        Value::Array(values) => values.iter().any(contains_unpriced_media),
-        Value::Object(object) => {
-            if object
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(|kind| matches!(kind, "image" | "document" | "audio" | "video"))
-            {
-                return true;
-            }
-            object.values().any(contains_unpriced_media)
-        }
-        _ => false,
-    }
-}
+
 
 fn context_mode(model: &str) -> &'static str {
     match model.to_ascii_lowercase().as_str() {
