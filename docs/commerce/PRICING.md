@@ -79,6 +79,10 @@ successor advance of the release head (13 -> 41) after the public production gen
 smoke turned overall watchdog-GREEN. There is still no reseller, separate image API key, or
 fallback: the model rides the existing sealed Codex OAuth pool, and its customer contract stays
 the narrow proved shape (`background=opaque`, `quality=low`, `size=auto`, one PNG).
+Generation 7 closes the Claude catalog hole: `claude-opus-4-6`, `claude-opus-4-5` and
+`claude-sonnet-4-5` join main and OpenKeys with their existing metering tariffs, and the dated
+snapshots (`claude-opus-4-5-20251101`, `claude-sonnet-4-5-20250929`, `claude-haiku-4-5-20251001`)
+keep resolving through the metering normalization onto exactly these canonical identities.
 
 Policy versions are immutable, content-addressed and delivered catalog → switches → policy. All
 accounts switch via a single active release head, not a sequential update of bindings.

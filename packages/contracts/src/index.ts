@@ -590,6 +590,52 @@ export const MULTI_DISCOUNT_GEN6_OPENKEYS_CATALOG_ENTRIES = Object.freeze([
 ]);
 
 /**
+ * Additive pricing capability generation 7. Generation 6 remains
+ * byte-identical because the active production release may still pin it; generation
+ * 7 adds only: claude-opus-4-6, claude-opus-4-5, claude-sonnet-4-5, plus capability aliases
+ * mapping the dated 4.x snapshots (opus-4-5-20251101, sonnet-4-5-20250929, haiku-4-5-20251001)
+ * onto their tariffed canonical identities.
+ */
+export const MULTI_DISCOUNT_GEN7_CAPABILITY_GENERATION = 7;
+export const MULTI_DISCOUNT_GEN7_CAPABILITY_DIGEST =
+  "sha256:v1:7e68adf53ba505f9d3f9cf80f859092a6f01fe2d8bcc26ff12b54613bdde6056";
+export const CLAUDE_OPUS_4_6_CANONICAL_MODEL = "claude-opus-4-6";
+export const CLAUDE_OPUS_4_5_CANONICAL_MODEL = "claude-opus-4-5";
+export const CLAUDE_SONNET_4_5_CANONICAL_MODEL = "claude-sonnet-4-5";
+
+const MULTI_DISCOUNT_GEN7_OPUS_4_6_CATALOG_ENTRY = Object.freeze({
+  provider_id: "anthropic" as const,
+  canonical_model_id: CLAUDE_OPUS_4_6_CANONICAL_MODEL,
+  enabled: true as const,
+});
+
+const MULTI_DISCOUNT_GEN7_OPUS_4_5_CATALOG_ENTRY = Object.freeze({
+  provider_id: "anthropic" as const,
+  canonical_model_id: CLAUDE_OPUS_4_5_CANONICAL_MODEL,
+  enabled: true as const,
+});
+
+const MULTI_DISCOUNT_GEN7_SONNET_4_5_CATALOG_ENTRY = Object.freeze({
+  provider_id: "anthropic" as const,
+  canonical_model_id: CLAUDE_SONNET_4_5_CANONICAL_MODEL,
+  enabled: true as const,
+});
+
+export const MULTI_DISCOUNT_GEN7_MAIN_CATALOG_ENTRIES = Object.freeze([
+  ...MULTI_DISCOUNT_GEN6_MAIN_CATALOG_ENTRIES,
+  MULTI_DISCOUNT_GEN7_OPUS_4_6_CATALOG_ENTRY,
+  MULTI_DISCOUNT_GEN7_OPUS_4_5_CATALOG_ENTRY,
+  MULTI_DISCOUNT_GEN7_SONNET_4_5_CATALOG_ENTRY,
+]);
+
+export const MULTI_DISCOUNT_GEN7_OPENKEYS_CATALOG_ENTRIES = Object.freeze([
+  ...MULTI_DISCOUNT_GEN6_OPENKEYS_CATALOG_ENTRIES,
+  MULTI_DISCOUNT_GEN7_OPUS_4_6_CATALOG_ENTRY,
+  MULTI_DISCOUNT_GEN7_OPUS_4_5_CATALOG_ENTRY,
+  MULTI_DISCOUNT_GEN7_SONNET_4_5_CATALOG_ENTRY,
+]);
+
+/**
  * Buyer/operator-facing supported-model list for OpenKeys issuance. Keep public display on the
  * generation-5 main set until generation 6 is activated and paid customer generation/edit pass;
  * publication then advances this authority in its own checkpoint.

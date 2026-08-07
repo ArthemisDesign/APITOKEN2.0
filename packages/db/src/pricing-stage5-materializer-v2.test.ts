@@ -159,7 +159,7 @@ describe("pricing Stage 5 v2 planner", () => {
     expect(switches.entries).toContainEqual({
       provider_id: "google",
       scope: { product: { product_id: "main" } },
-      catalog_generation: 6,
+      catalog_generation: 7,
       enabled: true,
     });
     expect(switches.entries).not.toContainEqual(expect.objectContaining({
@@ -177,10 +177,10 @@ describe("pricing Stage 5 v2 planner", () => {
     const plan = buildStage5V2Plan(completePlanInput());
 
     expect(plan.blockers).toEqual([]);
-    expect(plan.capability.generation).toBe(6);
-    expect(plan.catalogs.every((catalog) => catalog.generation === 6)).toBe(true);
-    expect(plan.switches.generation).toBe(6);
-    expect(plan.policies.every((policy) => policy.policy_version === 3)).toBe(true);
+    expect(plan.capability.generation).toBe(7);
+    expect(plan.catalogs.every((catalog) => catalog.generation === 7)).toBe(true);
+    expect(plan.switches.generation).toBe(7);
+    expect(plan.policies.every((policy) => policy.policy_version === 4)).toBe(true);
     expect(plan.target.assignments).toHaveLength(4);
     expect(plan.recovery.assignments).toHaveLength(4);
     expect(plan.target.assignments.every((item) => item.funding_generation === null)).toBe(true);

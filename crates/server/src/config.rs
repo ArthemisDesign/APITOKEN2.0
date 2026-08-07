@@ -1888,8 +1888,8 @@ mod tests {
     #[test]
     fn pricing_shadow_manifest_is_fixed_registry_canonical_evidence() {
         let manifest = pricing_shadow_runtime_manifest();
-        assert_eq!(manifest.manifest_generation(), 6);
-        assert_eq!(manifest.capabilities().len(), 6);
+        assert_eq!(manifest.manifest_generation(), 7);
+        assert_eq!(manifest.capabilities().len(), 7);
         for (index, generation, digest) in [
             (
                 0,
@@ -1920,6 +1920,11 @@ mod tests {
                 5,
                 6,
                 "sha256:v1:1652b971ce678094d5717173ed97b32d942d8507b183688cce613b6883e3c7d9",
+            ),
+            (
+                6,
+                7,
+                "sha256:v1:7e68adf53ba505f9d3f9cf80f859092a6f01fe2d8bcc26ff12b54613bdde6056",
             ),
         ] {
             assert_eq!(

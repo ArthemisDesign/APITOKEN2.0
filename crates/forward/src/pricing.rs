@@ -32,7 +32,10 @@ mod shadow;
 /// rejected dormant generation 4 (generation 3 plus Gemini 3 Flash Preview), admitted generation 5
 /// after that model passed the complete Pro+Ultra publication gate, and dormant generation 6 adding
 /// GPT Image 2 only after public generation and edit passed through the sealed OpenAI OAuth pool.
-/// Generation 4 is retained only because its digest is immutable and must never be materialized or
+/// Dormant generation 7 admits the three reviewed Claude identities missing from the catalog
+/// (`claude-opus-4-6`, `claude-opus-4-5`, `claude-sonnet-4-5`) plus capability aliases that map
+/// the dated 4.x snapshots onto their tariffed canonical identities. Generation 4 is retained only because its digest
+/// is immutable and must never be materialized or
 /// activated. Adding a member is inert — resolution keeps accepting the currently active pins until
 /// commerce materializes and the global release flow later activates a new catalog — and is required
 /// before preparation, because the resolver fails closed on any catalog/switch capability outside
@@ -63,6 +66,10 @@ pub fn builtin_pricing_runtime_manifest() -> PricingRuntimeManifestEvidence {
             6,
             "sha256:v1:1652b971ce678094d5717173ed97b32d942d8507b183688cce613b6883e3c7d9",
         ),
+        (
+            7,
+            "sha256:v1:7e68adf53ba505f9d3f9cf80f859092a6f01fe2d8bcc26ff12b54613bdde6056",
+        ),
     ]
     .into_iter()
     .map(|(capability_generation, capability_digest)| {
@@ -74,7 +81,7 @@ pub fn builtin_pricing_runtime_manifest() -> PricingRuntimeManifestEvidence {
         .expect("built-in pricing evaluator capability is valid")
     })
     .collect();
-    PricingRuntimeManifestEvidence::new(6, capabilities)
+    PricingRuntimeManifestEvidence::new(7, capabilities)
         .expect("built-in pricing evaluator manifest is valid")
 }
 

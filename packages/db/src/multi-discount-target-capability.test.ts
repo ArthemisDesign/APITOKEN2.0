@@ -10,6 +10,13 @@ import {
   MULTI_DISCOUNT_GEN5_MAIN_CATALOG_ENTRIES,
   MULTI_DISCOUNT_GEN5_OPENKEYS_CATALOG_ENTRIES,
   GPT_IMAGE_2_CANONICAL_MODEL,
+  CLAUDE_OPUS_4_6_CANONICAL_MODEL,
+  CLAUDE_OPUS_4_5_CANONICAL_MODEL,
+  CLAUDE_SONNET_4_5_CANONICAL_MODEL,
+  MULTI_DISCOUNT_GEN7_CAPABILITY_DIGEST,
+  MULTI_DISCOUNT_GEN7_CAPABILITY_GENERATION,
+  MULTI_DISCOUNT_GEN7_MAIN_CATALOG_ENTRIES,
+  MULTI_DISCOUNT_GEN7_OPENKEYS_CATALOG_ENTRIES,
   MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST,
   MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION,
   MULTI_DISCOUNT_GEN6_MAIN_CATALOG_ENTRIES,
@@ -126,6 +133,41 @@ describe("target pricing capability", () => {
     expect(generation6.entries).toHaveLength(22);
     expect(generation6.digest).toBe(MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST);
     expect(generation6.digest).not.toBe(MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST);
+
+    const generation7 = capabilityDigest(
+      MULTI_DISCOUNT_GEN7_CAPABILITY_GENERATION,
+      MULTI_DISCOUNT_GEN7_MAIN_CATALOG_ENTRIES,
+      [
+        {
+          provider_id: "anthropic",
+          alias_model_id: "claude-haiku-4-5-20251001",
+          canonical_model_id: "claude-haiku-4-5",
+        },
+        {
+          provider_id: "anthropic",
+          alias_model_id: "claude-opus-4-5-20251101",
+          canonical_model_id: CLAUDE_OPUS_4_5_CANONICAL_MODEL,
+        },
+        {
+          provider_id: "anthropic",
+          alias_model_id: "claude-sonnet-4-5-20250929",
+          canonical_model_id: CLAUDE_SONNET_4_5_CANONICAL_MODEL,
+        },
+        {
+          provider_id: "openai",
+          alias_model_id: "gpt-5.6",
+          canonical_model_id: "gpt-5.6-sol",
+        },
+        {
+          provider_id: "openai",
+          alias_model_id: "gpt-image-2",
+          canonical_model_id: GPT_IMAGE_2_CANONICAL_MODEL,
+        },
+      ],
+    );
+    expect(generation7.entries).toHaveLength(25);
+    expect(generation7.digest).toBe(MULTI_DISCOUNT_GEN7_CAPABILITY_DIGEST);
+    expect(generation7.digest).not.toBe(MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST);
   });
 
   it("keeps frozen OpenKeys generations and adds only GPT Image 2 in generation 6", () => {
@@ -141,6 +183,12 @@ describe("target pricing capability", () => {
         enabled: true,
       },
     ]);
+    expect(MULTI_DISCOUNT_GEN7_OPENKEYS_CATALOG_ENTRIES).toEqual([
+      ...MULTI_DISCOUNT_GEN6_OPENKEYS_CATALOG_ENTRIES,
+      { provider_id: "anthropic", canonical_model_id: CLAUDE_OPUS_4_6_CANONICAL_MODEL, enabled: true },
+      { provider_id: "anthropic", canonical_model_id: CLAUDE_OPUS_4_5_CANONICAL_MODEL, enabled: true },
+      { provider_id: "anthropic", canonical_model_id: CLAUDE_SONNET_4_5_CANONICAL_MODEL, enabled: true },
+    ]);
     expect(MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES)
       .toEqual(MULTI_DISCOUNT_GEN5_MAIN_CATALOG_ENTRIES);
     expect(MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES)
@@ -149,24 +197,34 @@ describe("target pricing capability", () => {
       .not.toContainEqual(expect.objectContaining({ canonical_model_id: GPT_IMAGE_2_CANONICAL_MODEL }));
   });
 
-  it("moves Stage 5 target and recovery materialization to admitted generation 6", () => {
+  it("moves Stage 5 target and recovery materialization to admitted generation 7", () => {
     const capability = buildStage5V2Capability();
     const graph = buildStage5V2CatalogsAndSwitches();
 
     expect(capability).toMatchObject({
-      generation: MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION,
-      content_digest: MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST,
+      generation: MULTI_DISCOUNT_GEN7_CAPABILITY_GENERATION,
+      content_digest: MULTI_DISCOUNT_GEN7_CAPABILITY_DIGEST,
     });
     expect(graph.catalogs.every((catalog) =>
-      catalog.capability_generation === MULTI_DISCOUNT_GEN6_CAPABILITY_GENERATION
-      && catalog.capability_digest === MULTI_DISCOUNT_GEN6_CAPABILITY_DIGEST
+      catalog.capability_generation === MULTI_DISCOUNT_GEN7_CAPABILITY_GENERATION
+      && catalog.capability_digest === MULTI_DISCOUNT_GEN7_CAPABILITY_DIGEST
     )).toBe(true);
     for (const productId of ["main", "openkeys"]) {
-      expect(graph.catalogs.find((catalog) => catalog.product_id === productId)?.entries)
-        .toContainEqual(expect.objectContaining({
-          provider_id: "openai",
-          canonical_model_id: GPT_IMAGE_2_CANONICAL_MODEL,
+      const entries = graph.catalogs.find((catalog) => catalog.product_id === productId)?.entries;
+      expect(entries).toContainEqual(expect.objectContaining({
+        provider_id: "openai",
+        canonical_model_id: GPT_IMAGE_2_CANONICAL_MODEL,
+      }));
+      for (const model of [
+        CLAUDE_OPUS_4_6_CANONICAL_MODEL,
+        CLAUDE_OPUS_4_5_CANONICAL_MODEL,
+        CLAUDE_SONNET_4_5_CANONICAL_MODEL,
+      ]) {
+        expect(entries).toContainEqual(expect.objectContaining({
+          provider_id: "anthropic",
+          canonical_model_id: model,
         }));
+      }
     }
   });
 });

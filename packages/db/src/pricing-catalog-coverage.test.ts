@@ -25,19 +25,18 @@ describe("advertised models are admitted to the published catalog", () => {
   /**
    * The gap this gate was written to expose, recorded so the gate can land before it is closed.
    *
-   * These four are advertised and unpriced today; the first three refuse live customer requests,
-   * and the fourth survives only because `crates/metering` normalises the dated snapshot to
-   * `claude-haiku-4-5` before admission looks anything up. Generation 7 admits them.
+   * These four were advertised and unpriced; the first three refused live customer requests,
+   * and the fourth survived only because `crates/metering` normalised the dated snapshot to
+   * `claude-haiku-4-5` before admission looked anything up. Generation 7 admitted them, so the
+   * exemption list is empty again.
    *
-   * The list is self-expiring: admitting a model here without deleting its line fails the second
+   * The list is self-expiring: admitting a model without deleting its line fails the second
    * test below. An exemption that outlives its reason is how a temporary allowance becomes
    * permanent, and this one cannot.
    */
-  const KNOWN_UNADMITTED = [
-    "anthropic/claude-opus-4-6",
-    "anthropic/claude-opus-4-5-20251101",
-    "anthropic/claude-sonnet-4-5-20250929",
-    "anthropic/claude-haiku-4-5-20251001",
+  const KNOWN_UNADMITTED: string[] = [
+    // Generation 7 admitted the four Claude identities this gate was written to expose; the list
+    // stays as the fail-closed scaffold for any future advertised-but-unpriced gap.
   ];
 
   function advertisedModels(): { provider: string; model: string }[] {
