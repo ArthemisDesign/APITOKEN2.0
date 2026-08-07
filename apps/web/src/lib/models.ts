@@ -556,7 +556,7 @@ export const openaiModels: OpenAiModel[] = [
     ],
     notes: [
       "gpt-image-2 is the alias of the immutable snapshot gpt-image-2-2026-04-21 — the same model at the same price.",
-      "Generation is POST /v1/images/generations, editing is POST /v1/images/edits with one reference PNG — on the unified router (router.apitoken.sale/v1) or the legacy OpenAI host; one non-streaming PNG per call.",
+      "Generation is POST /v1/images/generations, editing is POST /v1/images/edits with up to five reference PNGs — on the unified router (router.apitoken.sale/v1) or the legacy OpenAI host; one non-streaming PNG per call.",
       "The shipped contract is deliberately narrow: omit background/quality/size, or send only background=opaque, quality=low, size=auto — an explicit \"auto\" for background or quality is rejected with 400. The upstream subscription wire normalizes explicit sizes, so exact dimensions are not advertised.",
       "Image output bills per image-output token; cached text/image input bills at 25% of the fresh rate.",
     ],

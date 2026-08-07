@@ -121,7 +121,7 @@ GET  /v1/responses/{id}/input_items               (decision 5)
 
 POST /v1/images/generations                     OpenAI Images (GPT Image 2) — native OpenAI
                                                 lane, one non-streaming PNG
-POST /v1/images/edits                           one-reference PNG edit — native OpenAI lane
+POST /v1/images/edits                           one-to-five-reference PNG edit — native OpenAI lane
 
 POST /v1/chat/completions                         universal OpenAI-compatible entry
                                                   (stage 1a — OpenAI plane only,

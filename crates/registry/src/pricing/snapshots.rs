@@ -291,14 +291,13 @@ impl LegacyPremiumModifiers {
                     reference_count,
                 },
             ) => {
-                let expected_references = match operation {
-                    SnapshotOpenAiImageOperation::Generation => 0,
-                    SnapshotOpenAiImageOperation::Edit => 1,
+                let references_valid = match operation {
+                    SnapshotOpenAiImageOperation::Generation => *reference_count == 0,
+                    // Multi-reference edits are live-proved on the native subscription wire (up
+                    // to five strict PNG references); each reserves its own input envelope.
+                    SnapshotOpenAiImageOperation::Edit => (1..=5).contains(reference_count),
                 };
-                if background != "opaque"
-                    || quality != "low"
-                    || size != "auto"
-                    || *reference_count != expected_references
+                if background != "opaque" || quality != "low" || size != "auto" || !references_valid
                 {
                     bail!("invalid OpenAI image operation modifiers");
                 }
@@ -924,6 +923,26 @@ mod tests {
         };
         let changed = LegacyScalarAdmissionSnapshot::new(changed).unwrap();
         assert_ne!(snapshot.snapshot_digest(), changed.snapshot_digest());
+
+        let mut multi_reference = openai_image_input();
+        multi_reference.premium_modifiers = LegacyPremiumModifiers::OpenAiImageV1 {
+            operation: SnapshotOpenAiImageOperation::Edit,
+            background: "opaque".into(),
+            quality: "low".into(),
+            size: "auto".into(),
+            reference_count: 5,
+        };
+        LegacyScalarAdmissionSnapshot::new(multi_reference).unwrap();
+
+        let mut too_many_references = openai_image_input();
+        too_many_references.premium_modifiers = LegacyPremiumModifiers::OpenAiImageV1 {
+            operation: SnapshotOpenAiImageOperation::Edit,
+            background: "opaque".into(),
+            quality: "low".into(),
+            size: "auto".into(),
+            reference_count: 6,
+        };
+        assert!(LegacyScalarAdmissionSnapshot::new(too_many_references).is_err());
     }
 
     #[test]

@@ -16,7 +16,7 @@ Public contract (unchanged from the app-server era):
 | `POST /v1/responses/input_tokens` | supported; estimates input tokens without running a turn |
 | `POST /v1/chat/completions` | supported adapter, streaming and non-streaming |
 | `POST /v1/images/generations` | supported (GPT Image 2); one `opaque/low/auto` PNG, non-streaming |
-| `POST /v1/images/edits` | supported (GPT Image 2); one strict PNG reference, one edited PNG, non-streaming |
+| `POST /v1/images/edits` | supported (GPT Image 2); one to five strict PNG references, one edited PNG, non-streaming |
 | `GET /v1/models`, `GET /v1/models/{model}` | supported; last-good live intersection with the pinned billing catalog; GPT Image 2 is deliberately not listed — image models stay out of discovery |
 
 Everything else on the OpenAI hostname returns an OpenAI-shaped `404`; nothing is ever forwarded

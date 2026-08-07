@@ -45,7 +45,7 @@ struct GenerationBody {
 struct EditForm {
     model: Option<String>,
     prompt: Option<String>,
-    image: Option<Vec<u8>>,
+    images: Vec<Vec<u8>>,
     n: Option<String>,
     background: Option<String>,
     quality: Option<String>,
@@ -180,24 +180,27 @@ pub async fn edits(
                 .into_response()
         }
     };
-    let image = match form.image {
-        Some(image) => image,
-        None => {
-            return ApiError::invalid("Missing required PNG field: image.", "image".to_owned())
-                .into_response()
+    if form.images.is_empty() {
+        return ApiError::invalid("Missing required PNG field: image.", "image".to_owned())
+            .into_response();
+    }
+    let mut references = Vec::with_capacity(form.images.len());
+    for image in form.images {
+        match ImageReference::new(image) {
+            Ok(reference) => references.push(reference),
+            Err(error) => return validation_error(error).into_response(),
         }
+    }
+    let Some(operation) = OpenAiImageOperation::edit(references.len()) else {
+        return ApiError::invalid("Too many image fields.", "image".to_owned()).into_response();
     };
-    let reference = match ImageReference::new(image) {
-        Ok(reference) => reference,
-        Err(error) => return validation_error(error).into_response(),
-    };
-    let image_request = match ImageEditRequest::new(prompt, vec![reference]).map(|request| {
+    let image_request = match ImageEditRequest::new(prompt, references).map(|request| {
         request.with_controls(ImageBackground::Opaque, ImageQuality::Low, ImageSize::Auto)
     }) {
         Ok(request) => request,
         Err(error) => return validation_error(error).into_response(),
     };
-    execute_edit(app, gateway, pending, model, image_request).await
+    execute_edit(app, gateway, pending, model, image_request, operation).await
 }
 
 async fn execute_generation(
@@ -239,15 +242,13 @@ async fn execute_edit(
     pending: super::billing::PendingCodexAdmission,
     model: String,
     request: ImageEditRequest,
+    operation: OpenAiImageOperation,
 ) -> Response {
     let home = match preflight_home(&gateway).await {
         Ok(home) => home,
         Err(error) => return transport_error(error, None),
     };
-    let mut admission = match pending
-        .reserve_image(&app, &model, OpenAiImageOperation::Edit)
-        .await
-    {
+    let mut admission = match pending.reserve_image(&app, &model, operation).await {
         Ok(admission) => admission,
         Err(error) => return ApiError::from(error).into_response(),
     };
@@ -263,7 +264,7 @@ async fn execute_edit(
         Ok(result) => result,
         Err(error) => return transport_error(error, Some(admission)),
     };
-    completed_image(admission, &model, result, OpenAiImageOperation::Edit).await
+    completed_image(admission, &model, result, operation).await
 }
 
 async fn preflight_home(gateway: &CodexGateway) -> Result<String, CodexImageError> {
@@ -289,7 +290,7 @@ async fn completed_image(
     }
     let usage = match result.usage().and_then(|value| parse_usage(value).ok()) {
         Some(usage)
-            if operation != OpenAiImageOperation::Edit
+            if !matches!(operation, OpenAiImageOperation::Edit { .. })
                 || usage.metered.total_image_input_tokens > 0 =>
         {
             usage
@@ -378,9 +379,9 @@ async fn parse_edit_form(multipart: &mut Multipart) -> Result<EditForm, ApiError
         })?;
         match name.as_str() {
             "image" => {
-                if form.image.is_some() {
+                if form.images.len() >= 5 {
                     return Err(ApiError::invalid(
-                        "Exactly one image field is supported.",
+                        "At most five image fields are supported.",
                         "image".to_owned(),
                     ));
                 }
@@ -394,7 +395,7 @@ async fn parse_edit_form(multipart: &mut Multipart) -> Result<EditForm, ApiError
                         "image".to_owned(),
                     ));
                 }
-                form.image = Some(bytes.to_vec());
+                form.images.push(bytes.to_vec());
             }
             "model" | "prompt" | "n" | "background" | "quality" | "size" | "output_format"
             | "response_format" => {

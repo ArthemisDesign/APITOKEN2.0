@@ -351,6 +351,22 @@ the unified router proxies both image routes as a native OpenAI lane and its pre
 snapshot (`/v1/models` deliberately does not publish the image model), and the site catalog and
 public docs list the model.
 
+## Control-surface probe outcome
+
+The surface probe gate (delivery `a6da6f533b68a3d0a13d208d816d9f8ce6d8d096`) ran the three paid
+probes against the production pool and published sanitized verdicts:
+
+- `quality=medium` → **normalized**: the wire returned `low` with 229 output tokens. Quality tiers
+  are not honored on the subscription wire and stay rejected.
+- `quality=high` → **normalized** the same way.
+- two-reference edit → **honored**: a byte-different edited PNG with 2,048 image-input tokens (two
+  1024x1024 references) and 158 image-output tokens. Customer admission of up to five references
+  follows with the per-reference input envelope.
+
+The first probe delivery (`3108d9786cf9fda46ada9f8b007d23c80fc2a865`) executed all three probes but
+was quarantined after the gate: the watchdog posted the multi-reference verdict under an underscore
+status context that the GitHub helper rejects. The corrective delivery renamed the context to
+`multi-ref`; the gate re-run revalidated the fenced evidence without new paid operations.
 The official model contract is non-streaming. The public Image API guide also describes masks, output
 formats and Responses multi-turn editing, but the actual native subscription wire has not proved masks,
 transparent backgrounds, exact dimensions, medium/high quality, multiple references/outputs,

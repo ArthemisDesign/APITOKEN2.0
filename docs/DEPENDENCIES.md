@@ -403,8 +403,9 @@ is only what is needed to walk the relationships when making changes:
   `deploy/gpt-image-2-surface-probe-gate.sh` is the control-surface probe: pinned to the
   probe-capable producer `d69868fb700aaeb9b6723d8780bb29be4aab9c0d`, it runs one medium and one
   high generation plus one two-reference edit, each under its exact official authorization ceiling
-  in its own fenced root, and publishes sanitized honored/normalized/rejected verdicts; customer
-  admission of those controls stays unchanged until the verdicts land. Contract and blockers —
+  in its own fenced root, and publishes sanitized honored/normalized/rejected verdicts. Verdicts:
+  medium and high normalize to low on the wire (admission keeps rejecting them); the two-reference
+  edit is honored, so the producer admits up to five references with the per-reference envelope. Contract and blockers —
   `docs/engine/CODEX_PROVIDER.md`, `docs/ops/GPT_IMAGE_2_CANARY.md`, and
   `research/GPT_IMAGE_2_EVIDENCE.md`.
 - **Policy preflight contract (provider planes → router, phase 6.4a).** The producer is

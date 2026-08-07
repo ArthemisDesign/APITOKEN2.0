@@ -1133,7 +1133,7 @@ plus a fresh `x-codex-image-turn-id`. The native library keeps typed controls fo
 the customer producer deliberately accepts only the live-proven contract:
 `model=gpt-image-2|gpt-image-2-2026-04-21`, `n=1`, `background=opaque`, `quality=low`, `size=auto`,
 `output_format=png`, and base64 JSON output. `POST /v1/images/generations` accepts bounded JSON;
-`POST /v1/images/edits` accepts multipart with exactly one strict PNG `image`. Authentication precedes
+`POST /v1/images/edits` accepts multipart with one to five strict PNG `image` fields. Authentication precedes
 body buffering. Masks, multiple references/outputs, exact sizes, transparent background, medium/high,
 JPEG/WebP/compression, partial-image streaming, and Responses multi-turn image state fail closed.
 The response contains exactly one bounded PNG and reconstructed allow-listed terminal usage. A metered

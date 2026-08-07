@@ -12,33 +12,50 @@ const LOW_QUALITY_OUTPUT_CEILING_NANO: i64 = 19_770_000;
 const PUBLIC_PROMPT_CEILING_NANO: i64 = MAX_IMAGE_PROMPT_BYTES as i64 * 5_000;
 pub(super) const GENERATION_HOLD_NANO: i64 =
     PUBLIC_PROMPT_CEILING_NANO + LOW_QUALITY_OUTPUT_CEILING_NANO;
-pub(super) const EDIT_HOLD_NANO: i64 = 64_000_000_000 + GENERATION_HOLD_NANO;
+// Each edit reference reserves the whole published 8,000,000-TPM input envelope: OpenAI publishes
+// no normative GPT Image 2 high-fidelity input formula, so this stays an absolute authorization
+// envelope rather than an expected price.
+pub(super) const REFERENCE_ENVELOPE_NANO: i64 = 64_000_000_000;
+pub(super) const EDIT_HOLD_NANO: i64 = REFERENCE_ENVELOPE_NANO + GENERATION_HOLD_NANO;
+pub(super) const MAX_EDIT_REFERENCES: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum OpenAiImageOperation {
     Generation,
-    Edit,
+    Edit { references: i64 },
 }
 
 impl OpenAiImageOperation {
+    pub(super) fn edit(references: usize) -> Option<Self> {
+        if (1..=MAX_EDIT_REFERENCES).contains(&references) {
+            Some(Self::Edit {
+                references: references as i64,
+            })
+        } else {
+            None
+        }
+    }
+
     pub(super) const fn official_hold_nano(self) -> i64 {
         match self {
             Self::Generation => GENERATION_HOLD_NANO,
-            Self::Edit => EDIT_HOLD_NANO,
+            Self::Edit { references } => {
+                REFERENCE_ENVELOPE_NANO * references + GENERATION_HOLD_NANO
+            }
         }
     }
 
     const fn snapshot(self) -> SnapshotOpenAiImageOperation {
         match self {
             Self::Generation => SnapshotOpenAiImageOperation::Generation,
-            Self::Edit => SnapshotOpenAiImageOperation::Edit,
+            Self::Edit { .. } => SnapshotOpenAiImageOperation::Edit,
         }
     }
 
     const fn reference_count(self) -> i64 {
         match self {
             Self::Generation => 0,
-            Self::Edit => 1,
+            Self::Edit { references } => references,
         }
     }
 }
@@ -114,7 +131,17 @@ mod tests {
     fn generation_and_edit_quotes_pin_distinct_bounded_operations() {
         for (operation, expected_hold, expected_references) in [
             (OpenAiImageOperation::Generation, GENERATION_HOLD_NANO, 0),
-            (OpenAiImageOperation::Edit, EDIT_HOLD_NANO, 1),
+            (OpenAiImageOperation::edit(1).unwrap(), EDIT_HOLD_NANO, 1),
+            (
+                OpenAiImageOperation::edit(3).unwrap(),
+                3 * REFERENCE_ENVELOPE_NANO + GENERATION_HOLD_NANO,
+                3,
+            ),
+            (
+                OpenAiImageOperation::edit(5).unwrap(),
+                5 * REFERENCE_ENVELOPE_NANO + GENERATION_HOLD_NANO,
+                5,
+            ),
         ] {
             let quote = openai_image_quote(OpenAiImageQuoteInput {
                 request_id: request_id(),
@@ -140,6 +167,14 @@ mod tests {
             ));
             quote.validate().unwrap();
         }
+    }
+
+    #[test]
+    fn edit_operation_bounds_reference_count() {
+        assert!(OpenAiImageOperation::edit(0).is_none());
+        assert!(OpenAiImageOperation::edit(1).is_some());
+        assert!(OpenAiImageOperation::edit(MAX_EDIT_REFERENCES).is_some());
+        assert!(OpenAiImageOperation::edit(MAX_EDIT_REFERENCES + 1).is_none());
     }
 
     #[test]
