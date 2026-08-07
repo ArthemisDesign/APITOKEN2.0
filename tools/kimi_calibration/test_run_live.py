@@ -17,7 +17,7 @@ def turn_event(
     request_id: str = "req-1",
     profile: str = "profile-a",
     requested_model: str = "kimi-for-coding",
-    served_model: str = "kimi-k2.7-code",
+    served_model: str = "kimi-for-coding",
     completed_at: str = "100",
     tariff: str = run_live.KIMI_TARIFF_SCHEDULE_ID,
 ):
@@ -35,10 +35,13 @@ def turn_event(
     }
     value.update({field: "0" for field in run_live.EVENT_TOKEN_FIELDS})
     value.update({field: "0" for field in run_live.EVENT_MONEY_FIELDS})
+    # Exact kimi-k2.7-code tariff: 10 x 950 input, 1 x 4000 output. The runner recomputes every
+    # money leg from the token counts, so an invented vector no longer parses as a served turn.
     value["input_tokens"] = "10"
     value["output_tokens"] = "1"
-    value["api_input_nanousd"] = "100"
-    value["api_total_nanousd"] = "100"
+    value["api_input_nanousd"] = "9500"
+    value["api_output_nanousd"] = "4000"
+    value["api_total_nanousd"] = "13500"
     return value
 
 
@@ -272,7 +275,7 @@ class EvidenceTests(unittest.TestCase):
             "profile_id": "opaque-id",
             "plan": "Moderato",
             "requested_model": "kimi-for-coding",
-            "served_model": "kimi-k2.7-code",
+            "served_model": "kimi-for-coding",
             "context_mode": "256k",
             "reasoning_effort": "high",
             "tariff_schedule_id": "moonshot/kimi-open-platform/2026-08-03",
@@ -283,20 +286,20 @@ class EvidenceTests(unittest.TestCase):
             "cache_write_tokens": 0,
             "output_tokens": 50,
             "reasoning_output_tokens": 10,
-            "api_input_nanousd": "19000",
+            "api_input_nanousd": "95000",
             "api_cache_read_nanousd": "0",
             "api_cache_write_nanousd": "0",
             "api_output_nanousd": "200000",
-            "api_total_nanousd": "219000",
+            "api_total_nanousd": "295000",
         }
         payload = subs([contract_event])
         parsed = run_live.recent_turn_events(payload)
-        self.assertEqual(parsed["uuid-v4"]["api_total_nanousd"], 219_000)
+        self.assertEqual(parsed["uuid-v4"]["api_total_nanousd"], 295_000)
         self.assertEqual(parsed["uuid-v4"]["reasoning_output_tokens"], 10)
-        event = run_live.exact_new_turn(set(), payload, "uuid-v4", "opaque-id", "kimi-k2.7-code")
+        event = run_live.exact_new_turn(set(), payload, "uuid-v4", "opaque-id", for_coding_leg("high"))
         self.assertEqual(event["request_id"], "uuid-v4")
         with self.assertRaises(run_live.CalibrationError):
-            run_live.exact_new_turn({"uuid-v4"}, payload, "uuid-v4", "opaque-id", "kimi-k2.7-code")
+            run_live.exact_new_turn({"uuid-v4"}, payload, "uuid-v4", "opaque-id", for_coding_leg("high"))
 
     def test_exact_attribution_ignores_concurrent_unrelated_events(self):
         payload = subs([
@@ -304,10 +307,10 @@ class EvidenceTests(unittest.TestCase):
             turn_event("req-1"),
             turn_event("req-unrelated-2", profile="profile-a", served_model="kimi-k2.6"),
         ])
-        event = run_live.exact_new_turn(set(), payload, "req-1", "profile-a", "kimi-k2.7-code")
+        event = run_live.exact_new_turn(set(), payload, "req-1", "profile-a", for_coding_leg("high"))
         self.assertEqual(event["request_id"], "req-1")
         self.assertIsNone(
-            run_live.exact_new_turn(set(), subs([]), "req-1", "profile-a", "kimi-k2.7-code")
+            run_live.exact_new_turn(set(), subs([]), "req-1", "profile-a", for_coding_leg("high"))
         )
 
     def test_duplicate_same_id_events_fail_closed(self):
@@ -317,10 +320,10 @@ class EvidenceTests(unittest.TestCase):
     def test_rebind_of_profile_or_served_model_fails_closed(self):
         rebound_profile = subs([turn_event("req-1", profile="profile-b")])
         with self.assertRaises(run_live.CalibrationError):
-            run_live.exact_new_turn(set(), rebound_profile, "req-1", "profile-a", "kimi-k2.7-code")
+            run_live.exact_new_turn(set(), rebound_profile, "req-1", "profile-a", for_coding_leg("high"))
         rebound_model = subs([turn_event("req-1", served_model="kimi-k2.6")])
         with self.assertRaises(run_live.CalibrationError):
-            run_live.exact_new_turn(set(), rebound_model, "req-1", "profile-a", "kimi-k2.7-code")
+            run_live.exact_new_turn(set(), rebound_model, "req-1", "profile-a", for_coding_leg("high"))
 
     def test_incomplete_identity_fails_closed(self):
         incomplete = turn_event()
@@ -806,12 +809,12 @@ class RunnerEndToEndTests(unittest.TestCase):
         self.assertEqual(record["windows"][0]["status"], "resolved")
         self.assertEqual(record["windows"][0]["fraction_delta"], 1_000_000)
         self.assertEqual(record["windows"][0]["native_delta"], 10)
-        self.assertEqual(record["actual_nanousd"], "100")
+        self.assertEqual(record["actual_nanousd"], "13500")
         self.assertEqual(
             record["upper_bound_nanousd"], str(262_144 * 950 + 256 * 4_000)
         )
-        self.assertEqual(budget_runner.budget.total_nano, 100)
-        self.assertEqual(budget_runner.budget.by_profile["profile-a"], 100)
+        self.assertEqual(budget_runner.budget.total_nano, 13_500)
+        self.assertEqual(budget_runner.budget.by_profile["profile-a"], 13_500)
         self.assertNotIn("CALIBRATION_OK", json.dumps(record))
         self.assertIn("prompt_sha256_12", record)
 
@@ -844,7 +847,7 @@ class RunnerEndToEndTests(unittest.TestCase):
         self.assertEqual(record["windows"][0]["status"], "unresolved")
         self.assertIsNone(record["windows"][0]["fraction_delta"])
         self.assertEqual(run_live.model_profitability([record]), [])
-        self.assertEqual(budget_runner.budget.total_nano, 100)
+        self.assertEqual(budget_runner.budget.total_nano, 13_500)
 
     def test_aggregate_budget_stops_the_next_leg_before_dispatch(self):
         api = FakeApi()
@@ -854,7 +857,7 @@ class RunnerEndToEndTests(unittest.TestCase):
             with self.assertRaises(run_live.CalibrationError):
                 budget_runner.execute_leg(for_coding_leg("high"), "profile-a")
         self.assertEqual(len(api.calls), 1)
-        self.assertEqual(budget_runner.budget.total_nano, 100)
+        self.assertEqual(budget_runner.budget.total_nano, 13_500)
 
     def test_tariff_schedule_drift_fails_closed(self):
         api = FakeApi()
@@ -1048,3 +1051,24 @@ class KimiSubsWireContractTest(unittest.TestCase):
         del drifted["quota"]
         with self.assertRaises(run_live.CalibrationError):
             run_live.profile_state(subs(profiles=[drifted]))
+
+    def engine_keys(self, function: str) -> set:
+        source = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "crates"
+            / "server"
+            / "src"
+            / "http.rs"
+        ).read_text(encoding="utf-8")
+        start = source.index(f"fn {function}")
+        body = source[start : source.index("\nfn ", start + 1)]
+        return set(re.findall(r'^ {8}"([a-z_0-9]+)":', body, flags=re.MULTILINE))
+
+    def test_fixture_turn_matches_the_engine_serializer(self):
+        self.assertEqual(set(turn_event().keys()), self.engine_keys("kimi_turn_value"))
+
+    def test_served_model_is_the_provider_name_not_the_tariff_key(self):
+        # The engine reports what it asked the provider for; the tariff key is ours alone.
+        self.assertEqual(turn_event()["served_model"], "kimi-for-coding")
+        self.assertIn("kimi-k2.7-code", run_live.RATE_CARD)
+        self.assertNotIn(turn_event()["served_model"], run_live.RATE_CARD)

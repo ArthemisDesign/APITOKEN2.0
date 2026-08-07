@@ -353,12 +353,31 @@ def recent_turn_events(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return events
 
 
+def priced_under_expected_tariff(event: dict[str, Any], rates: ModelRates) -> bool:
+    """Every money leg must reproduce exactly under the expected tariff.
+
+    `kimi-k2.6` and `kimi-k2.7-code` are one provider model that differ only in the cached-input
+    rate, so the served name alone cannot tell them apart. Recomputing each leg from the exact
+    token counts is the only evidence that the tariff we expected is the tariff that was applied —
+    and with no cache read in the turn the two remain indistinguishable, which is recorded as an
+    open unknown rather than silently resolved.
+    """
+    legs = (
+        ("input_tokens", "api_input_nanousd", rates.input),
+        ("cache_read_tokens", "api_cache_read_nanousd", rates.cached_input),
+        ("cache_write_tokens", "api_cache_write_nanousd", rates.cache_write),
+        # Reasoning output is a subset of `output_tokens`, never an extra billed leg.
+        ("output_tokens", "api_output_nanousd", rates.output),
+    )
+    return all(event[tokens] * rate == event[money] for tokens, money, rate in legs)
+
+
 def exact_new_turn(
     before_ids: set[str],
     payload: dict[str, Any],
     request_id: str,
     profile_id: str,
-    served_model: str,
+    leg: "Leg",
 ) -> dict[str, Any] | None:
     if request_id in before_ids:
         raise CalibrationError(f"KIMI calibration request id already existed: {request_id}")
@@ -366,10 +385,23 @@ def exact_new_turn(
     event = events.get(request_id)
     if event is None:
         return None
-    if event["profile_id"] != profile_id or event["served_model"] != served_model:
+    # `served_model` on the wire is the provider-facing name we asked for, not the tariff key.
+    if event["profile_id"] != profile_id or event["served_model"] != leg.requested_model:
         raise CalibrationError(
             f"KIMI calibration request {request_id} was rebound to "
             f"{event['profile_id']}/{event['served_model']}"
+        )
+    if (
+        event["context_mode"] != leg.context_mode
+        or event["reasoning_effort"] != leg.reasoning_effort
+    ):
+        raise CalibrationError(
+            f"KIMI calibration request {request_id} was served as "
+            f"{event['context_mode']}/{event['reasoning_effort']}"
+        )
+    if not priced_under_expected_tariff(event, RATE_CARD[leg.served_model]):
+        raise CalibrationError(
+            f"KIMI calibration request {request_id} was not priced under {leg.served_model}"
         )
     return event
 
@@ -858,7 +890,7 @@ class Runner:
                 observed,
                 calibration_request_id,
                 profile_id,
-                leg.served_model,
+                leg,
             )
             if event is not None and observed.get("delivery", {}).get("pending_events") == 0:
                 break
