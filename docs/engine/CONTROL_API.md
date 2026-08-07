@@ -1146,11 +1146,16 @@ PostgreSQL-only, so an engine on the SQLite fallback answers `503 billing author
   stores, sorted by family, so an auditor can diff DB rows against the code. Read-only and
   authority-free: the answer is built from `metering` alone.
 - `POST /admin/pricing/tariffs/override` — publish the next version of one family. Body:
-  `{tariff_family, effective_from, payload, created_by, reason}` — **no version field**: the server
-  computes `head + 1` (2 when the family has no rows) and retries exactly once on a sequence race
-  with the authority-returned `expected_next`. `effective_from` must be `>= now - 60s` (the
-  determinism rule; validated early for a clean 400), `created_by`/`reason` non-empty, and the
-  payload must parse against the family's schema. Outcomes: `inserted` → 200 with the row;
+  `{tariff_family, effective_from, payload, created_by, reason, force?}` — **no version field**:
+  the server computes `head + 1` (2 when the family has no rows) and retries exactly once on a
+  sequence race with the authority-returned `expected_next`. `effective_from` must be
+  `>= now - 60s` (the determinism rule; validated early for a clean 400), `created_by`/`reason`
+  non-empty, and the payload must parse against the family's schema. **Sanity band:** an override
+  goes live fleet-wide within seconds, so when the family has a compiled baseline, every leg the
+  candidate shares with it must stay within a ×4 factor and may not cross zero; a deviation is a
+  400 listing the offending legs, and an intentional larger repricing resubmits with
+  `force: true`. A family with no compiled baseline (a brand-new model) has nothing to deviate
+  from and passes the band. Outcomes: `inserted` → 200 with the row;
   `unchanged` (exact replay) → 200; `invalid` → 400; `conflict` (same family+version, different
   content) → 409; `sequence_violation` still failing after the single retry → 409.
 - `POST /admin/pricing/tariffs/seed` — bridge compiled constants into the table. Body:

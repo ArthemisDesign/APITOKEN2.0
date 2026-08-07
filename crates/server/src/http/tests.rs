@@ -1114,6 +1114,80 @@ async fn tariff_override_route_validates_before_touching_the_authority() {
 }
 
 #[tokio::test]
+async fn tariff_override_route_guards_compiled_baseline_deviation() {
+    let (app, dir) = billing_test_app("tariff_override_sanity");
+    let service = router(app, Arc::new(AtomicBool::new(true)));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let body = |input: &str, force: bool| {
+        json!({
+            "tariff_family": "anthropic/standard/opus-current",
+            "effective_from": now,
+            "payload": {
+                "input": input,
+                "output": "25000",
+                "cache_read": "500",
+                "cache_write_5m": "6250",
+                "cache_write_1h": "10000"
+            },
+            "created_by": "operator-test",
+            "reason": "route test",
+            "force": force
+        })
+    };
+
+    // 21000 vs the compiled 5000 is a 4.2x deviation → 400 before the authority.
+    let (status, resp) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/override",
+        body("21000", false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(resp["code"], "invalid");
+    assert!(resp.to_string().contains(".input"), "{resp}");
+
+    // Zeroing a non-zero leg is a deviation too.
+    let (status, _) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/override",
+        body("0", false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // An intentional large repricing passes with force and reaches the authority.
+    let (status, _) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/override",
+        body("21000", true),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+    // A family with no compiled baseline (a brand-new model) has nothing to deviate from and
+    // reaches the authority.
+    let mut new_model = body("999999", false);
+    new_model["tariff_family"] = json!("anthropic/standard/opus-9000");
+    let (status, _) = control_json_request(
+        &service,
+        Method::POST,
+        "/admin/pricing/tariffs/override",
+        new_model,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+    drop(service);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
 async fn tariff_seed_rejects_unknown_families_and_requires_the_pg_authority() {
     let (app, dir) = billing_test_app("tariff_seed_validation");
     let service = router(app, Arc::new(AtomicBool::new(true)));

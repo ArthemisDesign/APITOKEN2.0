@@ -182,6 +182,62 @@ pub(crate) fn family_head_version(rows: &[TariffOverride], family: &str) -> i64 
         .unwrap_or(1)
 }
 
+/// An override leg may differ from its compiled baseline by at most this factor in either
+/// direction (and may not cross zero) without an explicit `force`. A hot override takes effect
+/// fleet-wide within seconds, so a fat-fingered number must be stopped at the API, not in a
+/// postmortem. Legitimate larger repricings pass with `force: true`.
+pub(crate) const SANITY_FACTOR: i128 = 4;
+
+fn leaf_number(value: &serde_json::Value) -> Option<i128> {
+    match value {
+        serde_json::Value::String(raw) => raw.parse::<i128>().ok(),
+        serde_json::Value::Number(number) => number
+            .as_i64()
+            .map(i128::from)
+            .or_else(|| number.as_u64().map(|v| v as i128)),
+        _ => None,
+    }
+}
+
+fn collect_deviations(path: &str, baseline: &serde_json::Value, candidate: &serde_json::Value, out: &mut Vec<String>) {
+    match (baseline, candidate) {
+        (serde_json::Value::Object(base), serde_json::Value::Object(cand)) => {
+            for (key, base_value) in base {
+                if let Some(cand_value) = cand.get(key) {
+                    collect_deviations(&format!("{path}.{key}"), base_value, cand_value, out);
+                }
+            }
+        }
+        _ => {
+            let (Some(base), Some(cand)) = (leaf_number(baseline), leaf_number(candidate)) else {
+                return;
+            };
+            let deviates = if base == 0 || cand == 0 {
+                base != cand
+            } else {
+                let (lo, hi) = if base <= cand { (base, cand) } else { (cand, base) };
+                hi > lo * SANITY_FACTOR
+            };
+            if deviates {
+                out.push(format!("{path}: compiled {base} vs override {cand}"));
+            }
+        }
+    }
+}
+
+/// Legs of `candidate` that deviate from the `baseline` payload by more than [`SANITY_FACTOR`]
+/// (or cross zero), as human-readable `path: compiled X vs override Y` entries. Only leaves
+/// present in BOTH payloads are compared — the payload schema is identical by construction, so
+/// this is every leg. Non-numeric leaves (billing kind tags) are skipped.
+pub(crate) fn payload_deviations(
+    baseline: &serde_json::Value,
+    candidate: &serde_json::Value,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_deviations("", baseline, candidate, &mut out);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +365,62 @@ mod tests {
         assert_eq!(family_head_version(&rows, "c/d"), 7);
         assert_eq!(family_head_version(&rows, "absent/family"), 1);
         assert_eq!(family_head_version(&[], "a/b"), 1);
+    }
+
+    #[test]
+    fn payload_deviations_flags_only_legs_outside_the_sanity_band() {
+        let baseline = serde_json::json!({
+            "input": "5000",
+            "output": "25000",
+            "long_context_threshold": 200000,
+            "search": {"kind": "per_query", "nano": "35000000"}
+        });
+        // Identical, exactly 4x up and exactly 4x down all pass.
+        for candidate in [
+            baseline.clone(),
+            serde_json::json!({
+                "input": "20000",
+                "output": "6250",
+                "long_context_threshold": 800000,
+                "search": {"kind": "per_query", "nano": "35000000"}
+            }),
+        ] {
+            assert!(
+                payload_deviations(&baseline, &candidate).is_empty(),
+                "{candidate}"
+            );
+        }
+        // Past the band, a zero crossing and a nested deviation are all flagged with their paths.
+        let deviating = serde_json::json!({
+            "input": "20001",
+            "output": "0",
+            "long_context_threshold": 200000,
+            "search": {"kind": "per_query", "nano": "35000001"}
+        });
+        let deviations = payload_deviations(&baseline, &deviating);
+        assert!(
+            deviations.iter().any(|entry| entry.contains(".input")),
+            "{deviations:?}"
+        );
+        assert!(
+            deviations.iter().any(|entry| entry.contains(".output")),
+            "{deviations:?}"
+        );
+        assert!(
+            !deviations.iter().any(|entry| entry.contains("threshold")),
+            "{deviations:?}"
+        );
+        // The nested search nano leg is 1 nano off — well inside the band.
+        assert!(
+            !deviations.iter().any(|entry| entry.contains("search")),
+            "{deviations:?}"
+        );
+        // A baseline zero may only stay zero.
+        let zero_base = serde_json::json!({"image_output": "0"});
+        assert!(payload_deviations(&zero_base, &serde_json::json!({"image_output": "0"})).is_empty());
+        assert_eq!(
+            payload_deviations(&zero_base, &serde_json::json!({"image_output": "1"})).len(),
+            1
+        );
     }
 }
