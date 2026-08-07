@@ -5,6 +5,7 @@ import {
   getCustomerPricingPolicyView,
   getPricingView,
   ensurePricingReleaseProvisioningV2,
+  isSerializationConflictV2,
   markEngineAccountMissing,
   markOwnedApiKeyDisabled,
   materializeProvisionedUserPolicy,
@@ -215,11 +216,16 @@ export class AccountService {
           engineAccountId,
         });
       } catch (error) {
-        // A failure here is not worse than the pending state the caller already has: keep the
+        const message = error instanceof Error ? error.message : String(error);
+        // A SERIALIZABLE conflict here is not a delivery failure — it is this account's own
+        // sibling requests (the dashboard opens keys, ledger, usage and account at once) racing
+        // on the same idempotent materialization. Giving up on it answers the customer's very
+        // first dashboard load with "waiting for synchronization" for whichever sources lost the
+        // race, so keep polling; the loop is bounded either way.
+        if (isSerializationConflictV2(message)) continue;
+        // Anything else is not worse than the pending state the caller already has: keep the
         // last observation and let the worker finish the delivery.
-        this.logger.warn(
-          `policy confirmation poll failed for user ${userId}: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        this.logger.warn(`policy confirmation poll failed for user ${userId}: ${message}`);
         return materialized;
       }
       if (materialized.ready) return materialized;

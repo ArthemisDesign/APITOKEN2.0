@@ -13,6 +13,7 @@ import { dashboardCopy, type DashboardCopy } from "@/lib/dashboard-copy";
 import { DOCS_URL } from "@/lib/site-links";
 import { trackFirstProductEvent, trackProductEvent } from "@/lib/product-analytics";
 import { modelLabel } from "@/lib/model-label";
+import { withProvisioningRetry } from "@/lib/provisioning-retry";
 import { dashboardHref, parseDashboardSection, type DashboardSection } from "./dashboard-route";
 import { clearDashboardShellCache, readDashboardShellCache, writeDashboardShellCache } from "./shell-cache";
 import { DashboardLoading } from "./dashboard-loading";
@@ -128,17 +129,17 @@ export function Dashboard() {
     });
     try {
       if (source === "keys") {
-        const result = await api.apiKeys();
+        const result = await withProvisioningRetry(() => api.apiKeys());
         if (lifecycle !== lifecycleGeneration.current || request !== optionalRequestGeneration.current[source]) return;
         setKeys(result.keys);
       } else if (source === "ledger") {
-        const result = await api.ledger(100);
+        const result = await withProvisioningRetry(() => api.ledger(100));
         if (lifecycle !== lifecycleGeneration.current || request !== optionalRequestGeneration.current[source]) return;
         setLedger(result.entries);
         if (result.entries.some((entry) => entry.kind === "topup")) trackFirstProductEvent("topup", "First Top Up", { detected_in: "dashboard" });
         if (result.entries.some((entry) => entry.kind === "charge")) trackFirstProductEvent("api_usage", "First API Usage", { detected_in: "dashboard" });
       } else {
-        const result = await api.usage("30d");
+        const result = await withProvisioningRetry(() => api.usage("30d"));
         if (lifecycle !== lifecycleGeneration.current || request !== optionalRequestGeneration.current[source]) return;
         setUsage(result);
         if (result.requests > 0) trackFirstProductEvent("api_usage", "First API Usage", { detected_in: "dashboard" });

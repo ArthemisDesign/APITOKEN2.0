@@ -65,7 +65,20 @@ retryable (network/timeout, HTTP ≥ 500, 429); mutations are never retried.
 When a retryable engine failure reaches `apps/api`, the account/payments controllers log the
 original engine error at warn level (message, HTTP status, retryable flag, provisioning cause)
 before answering the generic `503 "engine is temporarily unavailable"` — the public text is
-deliberately uninformative, so incident diagnosis starts from that log line.
+deliberately uninformative, so incident diagnosis starts from that log line. The same holds for
+the `502` (invalid engine response) and the uncaught-error `500`: an unlogged 5xx is
+indistinguishable from a browser-side failure when a customer reports a dashboard section that
+will not load. Typed HTTP exceptions (2FA required, policy conflict) are deliberate answers and
+are not logged as failures.
+
+A brand-new account provisions its engine mapping and pricing policy during its very first
+dashboard load, and the four section requests race each other through that provisioning. The
+confirmation poll therefore treats a SERIALIZABLE conflict as what it is — the account's own
+sibling requests, not a delivery failure — and keeps polling within its bounded window instead of
+reporting the policy as pending. The dashboard additionally waits out a `503` on an optional
+section (keys, ledger, usage) behind the skeleton for a few short attempts
+(`apps/web/src/lib/provisioning-retry.ts`) before showing the "could not be loaded" notice, so a
+first-time customer is not told their account is broken when it is one second old.
 
 Run the real PostgreSQL checkout/payment tests with:
 

@@ -7,6 +7,7 @@ import {
   Get,
   Header,
   HttpCode,
+  HttpException,
   Logger,
   NotFoundException,
   Param,
@@ -129,7 +130,16 @@ export class AccountController {
       }
       if (error instanceof EngineClientError || error instanceof z.ZodError ||
           (error instanceof Error && error.message.includes("invalid"))) {
+        // Same reasoning as the 503 above: the customer sees a generic 502, but an unlogged
+        // 502 is indistinguishable from a browser-side failure when a customer reports a
+        // dashboard section that will not load. Keep the classification recoverable.
+        this.logger.warn(`engine request failed, responding 502: ${describeEngineFailure(error)}`);
         throw new BadGatewayException("engine returned an invalid response");
+      }
+      // A typed HTTP exception is a deliberate answer (2FA required, policy conflict, …),
+      // not an engine failure — it must not be reported as an internal error.
+      if (!(error instanceof HttpException)) {
+        this.logger.error(`account request failed, responding 500: ${describeEngineFailure(error)}`);
       }
       throw error;
     }
