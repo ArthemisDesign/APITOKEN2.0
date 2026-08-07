@@ -97,6 +97,9 @@ fn config(root: &Path, base_url: String) -> KimiPlaneConfig {
         },
         readiness_probe: ProbeRoute::Identity,
         quota_poll_interval: Duration::from_secs(300),
+        // Deterministic tests must not sleep out a real smooth window: exhausted capacity has to
+        // answer immediately here, exactly as it does in production once the deadline passes.
+        smooth_wait: Duration::ZERO,
     }
 }
 
@@ -1711,4 +1714,54 @@ async fn the_projection_bounds_plan_labels_and_cannot_carry_the_subject() {
     let rendered = format!("{status:?}");
     assert!(!rendered.contains("subject-1"));
     assert!(!rendered.contains("unreviewed-base-plan"));
+}
+
+#[tokio::test]
+async fn an_empty_pool_waits_out_the_smooth_window_before_refusing() {
+    // A capacity gap that clears in milliseconds — a transport cool, a single-flight refresh, a
+    // blue-green generation swap — must not reach the caller as a synthetic 429. The wait is
+    // spent only on a round that never reached the provider; a real wall is answered immediately.
+    let fixture = Fixture::new();
+    let mut settings = config(&fixture.root, "https://example.invalid".into());
+    settings.smooth_wait = Duration::from_millis(700);
+    let gateway = Arc::new(KimiGateway::new_degraded(settings, None));
+
+    let body = json!({
+        "model": "kimi-for-coding",
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": "hello"}],
+    });
+    let started = std::time::Instant::now();
+    let response = gateway
+        .handle(KimiRequest {
+            headers: HeaderMap::new(),
+            raw_body_len: serde_json::to_vec(&body).unwrap().len(),
+            body,
+            model: "kimi-for-coding".into(),
+            execution: ExecutionAttempt::direct(),
+            billing: None,
+            affinity: None,
+            affinity_store: affinity(),
+            calibration: None,
+        })
+        .await;
+    let waited = started.elapsed();
+
+    // The window is honoured, then the honest refusal still arrives.
+    assert!(
+        waited >= Duration::from_millis(700),
+        "capacity gap refused after only {waited:?}"
+    );
+    assert!(
+        waited < Duration::from_secs(5),
+        "waiting must be bounded by the window, not open-ended: {waited:?}"
+    );
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response
+            .extensions()
+            .get::<crate::proxy::TerminalErrorReason>()
+            .map(|reason| reason.0),
+        Some("kimi_capacity_exhausted")
+    );
 }

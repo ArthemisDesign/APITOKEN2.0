@@ -260,13 +260,16 @@ const PRICING_SHADOW_ENV_KEYS: [&str; 11] = [
     "CLAUDE_API_PRICING_SHADOW_DB_READ_CONNECTIONS",
 ];
 
-const KIMI_ENV_KEYS: [&str; 6] = [
+const KIMI_ENV_KEYS: [&str; 7] = [
     "CLAUDE_API_KIMI_ENABLED",
     "CLAUDE_API_KIMI_ROSTER_DIR",
     "CLAUDE_API_KIMI_CREDENTIAL_KEYS",
     "CLAUDE_API_KIMI_BASE_URL",
     "CLAUDE_API_KIMI_AUTH_SCHEME",
     "CLAUDE_API_KIMI_QUOTA_POLL_SECS",
+    // Shared with the other planes on purpose: one operator dial for how long any provider may
+    // wait out a capacity gap before the caller sees an error.
+    "CLAUDE_API_SMOOTH_WAIT_MS",
 ];
 
 fn parse_kimi_config(values: &BTreeMap<String, String>) -> Result<Option<KimiPlaneConfig>, String> {
@@ -289,8 +292,22 @@ fn parse_kimi_config(values: &BTreeMap<String, String>) -> Result<Option<KimiPla
             })
         },
     )?;
+    let smooth_wait_ms = values.get("CLAUDE_API_SMOOTH_WAIT_MS").map_or(
+        Ok(defaults.smooth_wait_ms),
+        |value| {
+            value
+                .parse::<u64>()
+                .ok()
+                .filter(|parsed| *parsed <= 60_000)
+                .ok_or_else(|| {
+                    "CLAUDE_API_SMOOTH_WAIT_MS: expected an integer of milliseconds up to 60000"
+                        .to_string()
+                })
+        },
+    )?;
     let input = KimiPlaneInput {
         enabled,
+        smooth_wait_ms,
         roster_dir: values
             .get("CLAUDE_API_KIMI_ROSTER_DIR")
             .cloned()

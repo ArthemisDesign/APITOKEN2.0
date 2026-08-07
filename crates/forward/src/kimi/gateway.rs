@@ -1327,6 +1327,12 @@ impl KimiGateway {
             .calibration
             .as_ref()
             .map(|target| target.profile_id.clone());
+        // Smooth-wait deadline, mirroring the Claude/Gemini/Codex planes. It is spent only on a
+        // round that never reached the provider: every profile ineligible means the caller would
+        // otherwise get an immediate synthetic 429 for a condition that routinely clears in
+        // milliseconds — a transport cool, a single-flight refresh, a blue-green generation swap.
+        // A real provider verdict is never waited on.
+        let capacity_deadline = std::time::Instant::now() + self.config.smooth_wait;
         loop {
             let Some(profile) = (match pinned.as_deref() {
                 // Exact calibration target: the pinned profile is the only candidate, and only
@@ -1344,6 +1350,18 @@ impl KimiGateway {
                 Some(_) => None,
                 None => self.select_profile(&request.model, &excluded, placement),
             }) else {
+                // Only a first, un-attempted round may wait: once a candidate has been excluded we
+                // already carry a provider verdict, and the honest answer is the wall itself.
+                let remaining = excluded
+                    .is_empty()
+                    .then(|| capacity_deadline.saturating_duration_since(std::time::Instant::now()))
+                    .unwrap_or_default();
+                if let Some(step) =
+                    crate::proxy::smooth_step(0, remaining.as_millis()).filter(|_| !self.shutting_down.load(Ordering::Acquire))
+                {
+                    tokio::time::sleep(step).await;
+                    continue;
+                }
                 elog::warn("kimi", "kimi pool exhausted: no profile");
                 return error_response(GatewayFailure::Capacity);
             };

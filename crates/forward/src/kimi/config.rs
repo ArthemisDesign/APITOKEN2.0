@@ -26,6 +26,12 @@ pub struct KimiPlaneConfig {
     pub readiness_probe: ProbeRoute,
     /// How often the free quota poll runs when a profile is idle.
     pub quota_poll_interval: Duration,
+    /// How long a request may wait for capacity before failing, from `CLAUDE_API_SMOOTH_WAIT_MS`.
+    ///
+    /// Spent only while the round produced no provider verdict at all — every profile is cooling
+    /// and we never reached the upstream. A real provider wall is answered honestly and
+    /// immediately; waiting on it would only delay a `429` the caller must see.
+    pub smooth_wait: Duration,
 }
 
 impl std::fmt::Debug for KimiPlaneConfig {
@@ -48,6 +54,8 @@ pub struct KimiPlaneInput {
     pub base_url: String,
     pub auth_scheme: String,
     pub quota_poll_secs: u64,
+    /// `CLAUDE_API_SMOOTH_WAIT_MS`, shared with the other planes. Zero disables waiting.
+    pub smooth_wait_ms: u64,
 }
 
 impl Default for KimiPlaneInput {
@@ -59,6 +67,7 @@ impl Default for KimiPlaneInput {
             base_url: KIMI_CODE_BASE_URL.into(),
             auth_scheme: "bearer".into(),
             quota_poll_secs: 300,
+            smooth_wait_ms: 8_000,
         }
     }
 }
@@ -107,6 +116,7 @@ pub fn build(input: &KimiPlaneInput) -> Result<Option<KimiPlaneConfig>> {
         // route it cannot answer 200 for a dead credential.
         readiness_probe: ProbeRoute::Identity,
         quota_poll_interval: Duration::from_secs(input.quota_poll_secs),
+        smooth_wait: Duration::from_millis(input.smooth_wait_ms),
     }))
 }
 
