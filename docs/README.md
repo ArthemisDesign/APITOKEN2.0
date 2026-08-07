@@ -71,6 +71,7 @@ document, update this index.
 - [DEVBOT.md](ops/DEVBOT.md) — design of the Telegram dev bot (`apps/devbot`): topics, notifications, event sources (stages 1–3 implemented; stage 4 — business events — ahead).
 - [FRONTEND_VISUAL_QA.md](ops/FRONTEND_VISUAL_QA.md) — frontend visual QA.
 - [VERCEL_PRODUCT_ANALYTICS.md](ops/VERCEL_PRODUCT_ANALYTICS.md) — Vercel product analytics.
+- [VERCEL.md](ops/VERCEL.md) — Vercel deployment runbook for `apps/web`: trigger model, state triage via the GitHub API without Vercel access, failure signatures, access policy.
 
 ## audits/ — audits (append-only, never edited retroactively)
 

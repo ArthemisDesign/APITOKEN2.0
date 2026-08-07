@@ -270,7 +270,8 @@ walkthroughs of dependent places for typical cross-functional changes — `docs/
   `127.0.0.1:3800` (env `DEVBOT_PORT`), its own watchdog lane `deploy/devbot` with a release root at
   `/opt/apitoken/devbot-releases`; secrets — `/etc/apitoken/devbot.env`; until its provisioning,
   the unit and lane are disabled. Description — `docs/ops/DEVBOT.md`.
-- **`apps/web`** — the customer frontend, deployed to Vercel independently of the host watchdog.
+- **`apps/web`** — the customer frontend, deployed to Vercel independently of the host watchdog
+  (deployment runbook — `docs/ops/VERCEL.md`).
 - **`apps/content-studio`** (`content-studio.apitoken.sale`) — content studio, Next.js;
   rolled out by the host watchdog as a separate lane (`systemd/apitoken-content-studio.service`).
 - The CRM has been moved to a separate repository; the `crm.apitoken.sale` routing in `deploy/Caddyfile` and the
