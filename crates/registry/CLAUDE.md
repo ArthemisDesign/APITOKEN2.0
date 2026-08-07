@@ -394,6 +394,13 @@ side effect. `serve` may only perform the read-only schema verification before c
   `sha256:v2` payload digest and operator attribution, and is never updated or deleted — a
   correction is a newer version. The old runtime neither reads nor writes the table; the dependent
   resolver/writer ships in a separate SHA after a green migration/watchdog of this checkpoint.
+- **Hot tariff override family format checkpoint:** migration `0037` expand-only widens the
+  `tariff_family` CHECK of the 0036 table to admit the dot (`^[a-z0-9][a-z0-9/._-]{0,127}$`):
+  canonical model ids carry version dots (`gemini-2.5-pro`, `gpt-5.6-sol`, `glm-5.2`), so no
+  per-model override family could ever be inserted under the original rule. Every row valid
+  under the old rule stays valid; the append-only and sequence triggers are untouched, and the
+  old runtime still neither reads nor writes the table. The dependent resolver/writer ships in a
+  separate SHA after a green migration/watchdog of this checkpoint.
 - **Pricing release v2 runtime foundation:** the PostgreSQL resolver reads the head, assignment, policy,
   catalog/switch gates and rule precedence `model → provider → global` in one snapshot; service
   `meter_only` bypasses the product catalog but keeps the provider master-switch. Reserve re-resolves

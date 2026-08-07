@@ -191,9 +191,11 @@ const MIGRATION_0035: &str =
     include_str!("../migrations_pg/0035_pricing_release_successor_activation.sql");
 const MIGRATION_0036: &str =
     include_str!("../migrations_pg/0036_pricing_tariff_overrides.sql");
+const MIGRATION_0037: &str =
+    include_str!("../migrations_pg/0037_pricing_tariff_override_family_dots.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 36;
+pub const CURRENT_SCHEMA_VERSION: i64 = 37;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -233,6 +235,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (34, MIGRATION_0034),
     (35, MIGRATION_0035),
     (36, MIGRATION_0036),
+    (37, MIGRATION_0037),
 ];
 
 #[cfg(test)]
