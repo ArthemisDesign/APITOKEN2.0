@@ -195,6 +195,61 @@ describe.runIf(Boolean(connectionString))("pricing release orchestration v2", ()
     expect(control.orchestrations[0]?.last_error).toContain("openkeys_target_policy_not_one_to_one");
   });
 
+  it("re-cycles a funding normalization that died on inventory drift", async () => {
+    const staged = await stageIntent();
+    const runId = randomUUID();
+    const digest = (label: string) => "sha256:v2:" + Buffer.from(label.padEnd(64, "0")).toString("hex").slice(0, 64);
+    await seed.query(`
+      INSERT INTO pricing_stage5_runs_v2 (
+        run_id, schema_version, plan_digest, commerce_inventory_digest,
+        engine_scan_first_digest, engine_scan_second_digest,
+        openkeys_scan_first_digest, openkeys_scan_second_digest,
+        service_inventory_digest, funding_plan_digest,
+        target_generation, target_digest, recovery_generation, recovery_digest,
+        inventory_artifact, plan_artifact, blocker_count, status
+      ) VALUES ($1, 2, $2, $3, $3, $3, $4, $4, $5, $6, 41, NULL, 42, NULL,
+                '{}'::jsonb, '{}'::jsonb, 0, 'materializing')
+    `, [runId, digest("plan"), digest("commerce"), digest("openkeys"), digest("service"), digest("funding")]);
+    for (const [generation, kind, planDigest] of [
+      [41, "target", digest("target-plan")],
+      [42, "recovery", digest("recovery-plan")],
+    ] as const) {
+      await seed.query(`
+        INSERT INTO pricing_release_plans_v2 (
+          generation, release_kind, schema_version,
+          commerce_inventory_digest, engine_inventory_digest,
+          openkeys_inventory_digest, service_inventory_digest,
+          policy_manifest_digest, assignment_manifest_digest,
+          funding_manifest_digest, engine_release_digest, content_digest, status
+        ) VALUES ($1, $2, 2, $3, $3, $4, $5, $6, $6, NULL, NULL, $7, 'materializing')
+      `, [generation, kind, digest("inventory"), digest("openkeys"), digest("service"),
+        digest("policy-manifest"), planDigest]);
+    }
+    await seed.query(`
+      INSERT INTO pricing_release_control_jobs_v2 (
+        job_kind, release_generation, release_digest,
+        idempotency_key, payload_digest, status, attempts, last_error
+      ) VALUES ('normalize_funding', 41, $1, $2, $3, 'dead', 1,
+                'engine identity inventory no longer matches the target release plan')
+    `, [digest("target-plan"), `pricing:v2:normalize-funding:${digest("plan")}`, digest("payload")]);
+    await seed.query(`
+      UPDATE pricing_release_orchestrations_v2
+      SET step = 'normalize_funding', stage5_run_id = $2,
+          target_generation = 41, recovery_generation = 42
+      WHERE id = $1
+    `, [staged.orchestrationId, runId]);
+
+    await advancePricingReleaseOrchestrationV2(database, readers);
+    const control = await readPricingReleaseOrchestrationControlV2(database);
+    expect(control.orchestrations[0]).toMatchObject({
+      step: "materialize_pair",
+      cycle: 2,
+      status: "active",
+      stage5_run_id: null,
+    });
+    expect(control.orchestrations[0]?.last_error).toContain("fresh cycle");
+  });
+
   it("confirms only when the engine head attests the orchestrated target", async () => {
     const staged = await stageIntent();
     await seed.query(`

@@ -58,7 +58,9 @@ curl -X POST -H "x-admin-key: $COMMERCIAL_ADMIN_KEY" -H "x-admin-actor: <actor>"
 The capability generation pin must equal the generation the deployed constants plan for; a
 mismatch (forgotten or unmerged constants) dies immediately with the two numbers in `last_error`.
 `status=dead` with a non-drift blocker is terminal evidence — fix the producer, then stage a new
-intent with a new idempotency key. Only one orchestration is active at a time.
+intent with a new idempotency key. Only one orchestration is active at a time. Inventory drift is
+classified and re-cycled at every stateful step — materialize, funding normalization (a mid-cycle
+signup dies there with "engine identity inventory no longer matches"), rollout and capture.
 
 The manual step-by-step lane below remains as the repair/debug path.
 

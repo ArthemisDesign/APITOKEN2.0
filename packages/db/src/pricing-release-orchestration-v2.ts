@@ -474,18 +474,25 @@ async function stepNormalizeFunding(
   `, [row.stage5_run_id]);
   const planDigest = run.rows[0]?.plan_digest;
   if (!planDigest) throw permanent("orchestration lost its Stage 5 run");
-  await stageFundingNormalizationJobV2(database, {
-    planDigest,
-    audit: { actorId: row.operator_id, reason: row.reason },
-  });
-  const status = await getFundingNormalizationStageStatusV2(database, planDigest);
+  let status = await getFundingNormalizationStageStatusV2(database, planDigest);
+  if (status.job_id === null) {
+    // Stage once, then watch the durable job: re-staging an existing (even dead) job would
+    // either conflict with its immutable payload or shadow its verdict behind a fresh row.
+    await stageFundingNormalizationJobV2(database, {
+      planDigest,
+      audit: { actorId: row.operator_id, reason: row.reason },
+    });
+    status = await getFundingNormalizationStageStatusV2(database, planDigest);
+  }
   if (status.job_status === "dead") {
-    await kill(
-      database,
-      row.id,
-      "normalize_funding",
-      `funding normalization ${status.job_status}: ${status.job_last_error ?? "no error recorded"}`,
-    );
+    const message = `funding normalization dead: ${status.job_last_error ?? "no error recorded"}`;
+    // An account provisioned mid-cycle invalidates the pair's inventory; a fresh cycle
+    // re-materializes with the live inventory, exactly like capture/rollout drift.
+    if (/inventory|drift/i.test(message)) {
+      await freshCycle(database, row, message);
+      return;
+    }
+    await kill(database, row.id, "normalize_funding", message);
     return;
   }
   if (status.target_status !== "prepared" || status.recovery_status !== "prepared") return;
