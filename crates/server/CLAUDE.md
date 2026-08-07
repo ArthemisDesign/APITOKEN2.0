@@ -122,28 +122,29 @@ background loops and the HTTP router. Here — and only here — everything is w
   by the separate `db migrate-engine` before a blue-green slot is started.
 - Introduce a new env variable ONLY here and pass it further down through config structures.
 - `openai-image-canary` introduces no image key/origin/env. Dry-run validates the strict prompt,
-  optional one-to-five PNG references, optional opaque profile, private target paths and numeric
-  budget, then prints a sanitized plan without reading env/network or creating artifacts. Generation
-  is ready only at an explicit budget of at least `22_330_000` nanoUSD for the native
-  `opaque/low/auto` request: the official GPT Image 2 low-output calculator is exhaustively bounded at
-  659 image tokens over every request-valid resolution, plus the conservative 512-text-token prompt
-  allowance. `--execute` additionally requires an exact compile-time implementation SHA, reuses the
-  existing Codex OAuth roster/base URL/identity, freezes one admitted profile, runs its free
-  `/wham/usage` auth/quota preflight, and performs one exact-home attempt. A successful checkpoint
-  requires opaque/low metadata, a bounded native auto-size PNG and terminal usage; the provider
-  request-id header is optional because the official Codex Images response contract does not require it, while the local
-  image turn id remains mandatory. A parsed result that fails exact evidence persists only sanitized
-  returned identity flags, controls, dimensions, timestamp, numeric usage, optional request id, and the
-  image SHA-256 in the private mode-`0600` journal; it never persists or publishes the rejected image.
-  Edit validation still accepts one to five PNG references, but paid canary execution is deliberately
-  restricted to exactly one reference and requires `64_022_330_000` nanoUSD. OpenAI publishes no
-  GPT Image 2 high-fidelity input formula, so this is an absolute authorization envelope rather than an
-  expected price: the published Tier-5 maximum of 8,000,000 TPM is charged wholly at the fresh image-input
-  rate, then the generation ceiling is added. More than one reference remains blocked. Output/checkpoint
-  publication uses exclusive mode-`0600` files. The private command remains outside `AppState`, while
+  optional one-to-five PNG references, optional opaque profile, private target paths, numeric
+  budget and the `low|medium|high` quality knob (default `low`), then prints a sanitized plan without
+  reading env/network or creating artifacts. Generation is ready only at an explicit budget covering
+  the exact official output-token ceiling of the requested quality — `22_330_000` nanoUSD for `low`,
+  `180_460_000` for `medium`, `714_130_000` for `high`, from the exhaustive 16/48/96-cell maxima of
+  659/5,930/23,719 image tokens over every request-valid resolution — plus the conservative
+  512-text-token prompt allowance. `--execute` additionally requires an exact compile-time
+  implementation SHA, reuses the existing Codex OAuth roster/base URL/identity, freezes one admitted
+  profile, runs its free `/wham/usage` auth/quota preflight, and performs one exact-home attempt with
+  the requested quality. A successful checkpoint requires the returned quality to equal the requested
+  one, opaque metadata, a bounded native auto-size PNG and terminal usage; a normalized tier instead
+  lands in the sanitized mismatch journal with the returned controls, dimensions, numeric usage,
+  optional request id, and the image SHA-256 — the probe verdict — and never persists or publishes
+  the rejected image. Edit validation accepts one to five PNG references; paid execution authorizes
+  the whole published 8,000,000-TPM envelope per reference plus the generation ceiling
+  (`64_022_330_000` nanoUSD for one reference at `low`) because OpenAI publishes no GPT Image 2
+  high-fidelity input formula — an absolute authorization envelope, not an expected price.
+  Output/checkpoint publication uses exclusive mode-`0600` files. The private command remains outside
+  `AppState`, while
   `http.rs` now mounts producer-first `/v1/images/generations|edits` only on the OpenAI plane (and the
-  header-gated Combined bridge), with 256 KiB JSON and 17 MiB multipart route limits. The model remains
-  absent from discovery/catalog/defaults until the authenticated public smoke passes. Image auth runs
+  header-gated Combined bridge), with 256 KiB JSON and 17 MiB multipart route limits. The model is
+  published (pricing catalogs, site, unified-router native lane); `/v1/models` deliberately does not
+  list it. Image auth runs
   inside the handler before JSON or multipart extraction, so unauthenticated bodies are never buffered.
   Generation and edit evidence are watchdog-GREEN. `openai-image-public-smoke` adds no key, origin,
   fallback or env: dry-run reads no env/network, while `--preflight-only` and `--execute` require an exact

@@ -19,25 +19,38 @@ const DEFAULT_CANARY_CAP_NANOUSD: u64 = 100_000;
 const MAX_OUTPUT_EDGE: u32 = 3_840;
 const MIN_OUTPUT_PIXELS: u64 = 655_360;
 const MAX_OUTPUT_PIXELS: u64 = 8_294_400;
-const LOW_OUTPUT_TOKEN_LIMIT: u64 = match low_output_tokens(2_880, 2_880) {
+const LOW_OUTPUT_TOKEN_LIMIT: u64 = match output_tokens(2_880, 2_880, 16) {
+    Some(tokens) => tokens,
+    None => panic!("valid GPT Image 2 maximum-token resolution"),
+};
+const MEDIUM_OUTPUT_TOKEN_LIMIT: u64 = match output_tokens(2_880, 2_880, 48) {
+    Some(tokens) => tokens,
+    None => panic!("valid GPT Image 2 maximum-token resolution"),
+};
+const HIGH_OUTPUT_TOKEN_LIMIT: u64 = match output_tokens(2_880, 2_880, 96) {
     Some(tokens) => tokens,
     None => panic!("valid GPT Image 2 maximum-token resolution"),
 };
 const TEXT_INPUT_NANOUSD_PER_TOKEN: u64 = 5_000;
 const IMAGE_INPUT_NANOUSD_PER_TOKEN: u64 = 8_000;
 const IMAGE_OUTPUT_NANOUSD_PER_TOKEN: u64 = 30_000;
-const GENERATION_CEILING_NANOUSD: u64 = LOW_OUTPUT_TOKEN_LIMIT * IMAGE_OUTPUT_NANOUSD_PER_TOKEN
-    + MAX_PROMPT_BYTES as u64 * TEXT_INPUT_NANOUSD_PER_TOKEN;
+const fn generation_ceiling_nanousd(output_token_limit: u64) -> u64 {
+    output_token_limit * IMAGE_OUTPUT_NANOUSD_PER_TOKEN
+        + MAX_PROMPT_BYTES as u64 * TEXT_INPUT_NANOUSD_PER_TOKEN
+}
+const GENERATION_CEILING_NANOUSD: u64 = generation_ceiling_nanousd(LOW_OUTPUT_TOKEN_LIMIT);
+const MEDIUM_GENERATION_CEILING_NANOUSD: u64 =
+    generation_ceiling_nanousd(MEDIUM_OUTPUT_TOKEN_LIMIT);
+const HIGH_GENERATION_CEILING_NANOUSD: u64 = generation_ceiling_nanousd(HIGH_OUTPUT_TOKEN_LIMIT);
 // OpenAI publishes no GPT Image 2 high-fidelity input-token formula. Its model page does publish
 // 8,000,000 TPM as the highest tier, which is an absolute per-minute token admission envelope and
-// therefore a conservative bound for one request. Charge the whole envelope at the more expensive
-// fresh image-input rate, then add the independently bounded prompt and low output.
+// therefore a conservative bound for one reference. Charge the whole envelope at the more expensive
+// fresh image-input rate per reference, then add the independently bounded prompt and low output.
 const MAX_PUBLISHED_MODEL_TPM: u64 = 8_000_000;
-const EDIT_CEILING_NANOUSD: u64 =
-    MAX_PUBLISHED_MODEL_TPM * IMAGE_INPUT_NANOUSD_PER_TOKEN + GENERATION_CEILING_NANOUSD;
+const REFERENCE_ENVELOPE_NANOUSD: u64 = MAX_PUBLISHED_MODEL_TPM * IMAGE_INPUT_NANOUSD_PER_TOKEN;
+const EDIT_CEILING_NANOUSD: u64 = REFERENCE_ENVELOPE_NANOUSD + GENERATION_CEILING_NANOUSD;
 const GENERATION_BUDGET_BLOCKER: &str = "paid_dispatch_requires_generation_ceiling_authorization";
 const EDIT_BUDGET_BLOCKER: &str = "paid_dispatch_requires_edit_ceiling_authorization";
-const EDIT_REFERENCE_BLOCKER: &str = "paid_dispatch_requires_exactly_one_reference";
 
 pub(crate) struct OpenAiImageCanaryArgs {
     pub profile: Option<String>,
@@ -47,6 +60,7 @@ pub(crate) struct OpenAiImageCanaryArgs {
     pub checkpoint: PathBuf,
     pub budget_nanousd: u64,
     pub execute: bool,
+    pub quality: String,
 }
 
 struct ValidatedCanary {
@@ -61,6 +75,8 @@ struct ValidatedCanary {
     reference_bytes: usize,
     authorization_budget_nanousd: u64,
     execute: bool,
+    quality: ImageQuality,
+    quality_label: &'static str,
 }
 
 struct ValidatedTarget {
@@ -218,6 +234,13 @@ fn validate(args: OpenAiImageCanaryArgs) -> Result<ValidatedCanary> {
             .try_fold(0usize, |sum, image| sum.checked_add(image.bytes().len()))
             .context("image canary reference size overflow")?;
 
+        let (quality, quality_label) = match args.quality.as_str() {
+            "low" => (ImageQuality::Low, "low"),
+            "medium" => (ImageQuality::Medium, "medium"),
+            "high" => (ImageQuality::High, "high"),
+            _ => bail!("image canary quality must be low, medium, or high"),
+        };
+
         Ok(ValidatedCanary {
             profile: args.profile,
             prompt,
@@ -230,6 +253,8 @@ fn validate(args: OpenAiImageCanaryArgs) -> Result<ValidatedCanary> {
             reference_bytes,
             authorization_budget_nanousd: args.budget_nanousd,
             execute: args.execute,
+            quality,
+            quality_label,
         })
     }
 }
@@ -245,7 +270,7 @@ fn plan(validated: &ValidatedCanary) -> CanaryPlan<'_> {
         profile: validated.profile.as_deref().unwrap_or("auto-admitted"),
         model: GPT_IMAGE_2,
         background: "opaque",
-        quality: "low",
+        quality: validated.quality_label,
         size: "auto",
         reference_count: validated.references.len(),
         prompt_bytes: validated.prompt_bytes,
@@ -258,18 +283,28 @@ fn plan(validated: &ValidatedCanary) -> CanaryPlan<'_> {
     }
 }
 
-fn operation_gate(validated: &ValidatedCanary) -> (bool, Option<&'static str>, Option<u64>) {
-    if validated.references.len() > 1 {
-        return (
-            false,
-            Some(EDIT_REFERENCE_BLOCKER),
-            Some(EDIT_CEILING_NANOUSD),
-        );
+fn generation_ceiling_for(quality: ImageQuality) -> u64 {
+    match quality {
+        ImageQuality::Medium => MEDIUM_GENERATION_CEILING_NANOUSD,
+        ImageQuality::High => HIGH_GENERATION_CEILING_NANOUSD,
+        _ => GENERATION_CEILING_NANOUSD,
     }
-    let (ceiling, blocker) = if validated.references.is_empty() {
-        (GENERATION_CEILING_NANOUSD, GENERATION_BUDGET_BLOCKER)
+}
+
+fn required_ceiling(validated: &ValidatedCanary) -> u64 {
+    let generation = generation_ceiling_for(validated.quality);
+    if validated.references.is_empty() {
+        return generation;
+    }
+    REFERENCE_ENVELOPE_NANOUSD * validated.references.len() as u64 + generation
+}
+
+fn operation_gate(validated: &ValidatedCanary) -> (bool, Option<&'static str>, Option<u64>) {
+    let ceiling = required_ceiling(validated);
+    let blocker = if validated.references.is_empty() {
+        GENERATION_BUDGET_BLOCKER
     } else {
-        (EDIT_CEILING_NANOUSD, EDIT_BUDGET_BLOCKER)
+        EDIT_BUDGET_BLOCKER
     };
     if validated.authorization_budget_nanousd < ceiling {
         return (false, Some(blocker), Some(ceiling));
@@ -343,13 +378,13 @@ async fn execute_with_gateway(
         Request::Generation(
             ImageGenerationRequest::new(validated.prompt.clone())
                 .context("validate image generation request")?
-                .with_controls(ImageBackground::Opaque, ImageQuality::Low, ImageSize::Auto),
+                .with_controls(ImageBackground::Opaque, validated.quality, ImageSize::Auto),
         )
     } else {
         Request::Edit(
             ImageEditRequest::new(validated.prompt.clone(), validated.references.clone())
                 .context("validate image edit request")?
-                .with_controls(ImageBackground::Opaque, ImageQuality::Low, ImageSize::Auto),
+                .with_controls(ImageBackground::Opaque, validated.quality, ImageSize::Auto),
         )
     };
     let image_turn_id = new_image_turn_id()?;
@@ -458,7 +493,7 @@ fn valid_auto_output_size_metadata(size: &str, width: u32, height: u32) -> bool 
     size == "auto" || size == format!("{width}x{height}")
 }
 
-const fn low_output_tokens(width: u32, height: u32) -> Option<u64> {
+const fn output_tokens(width: u32, height: u32, cells: u64) -> Option<u64> {
     if width == 0
         || height == 0
         || width > MAX_OUTPUT_EDGE
@@ -475,10 +510,14 @@ const fn low_output_tokens(width: u32, height: u32) -> Option<u64> {
         return None;
     }
 
-    let short_grid = (16 * short + long / 2) / long;
-    let grid_cells = 16 * short_grid;
+    let short_grid = (cells * short + long / 2) / long;
+    let grid_cells = cells * short_grid;
     let numerator = grid_cells * (2_000_000 + pixels);
     Some((numerator + 3_999_999) / 4_000_000)
+}
+
+const fn low_output_tokens(width: u32, height: u32) -> Option<u64> {
+    output_tokens(width, height, 16)
 }
 
 fn persist_result(
@@ -495,7 +534,7 @@ fn persist_result(
     let exact_turn = result.image_turn_id() == image_turn_id;
     let exact_metadata = valid_auto_output_dimensions(result.width(), result.height())
         && result.background() == "opaque"
-        && result.quality() == "low"
+        && result.quality() == validated.quality_label
         && valid_auto_output_size_metadata(result.size(), result.width(), result.height())
         && result.output_format().is_none_or(|format| format == "png");
     let output_sha256 = format!("sha256:{}", sha256_hex(result.png()));
@@ -1111,6 +1150,7 @@ mod tests {
                 checkpoint: self.path("checkpoint.json"),
                 budget_nanousd,
                 execute,
+                quality: "low".to_owned(),
             }
         }
     }
@@ -1194,8 +1234,11 @@ mod tests {
         validated.references.push(ImageReference::new(png).unwrap());
         let multiple = serde_json::to_value(plan(&validated)).unwrap();
         assert_eq!(multiple["state"], "blocked");
-        assert_eq!(multiple["execution_blocker"], EDIT_REFERENCE_BLOCKER);
-        assert_eq!(multiple["required_ceiling_nanousd"], EDIT_CEILING_NANOUSD);
+        assert_eq!(multiple["execution_blocker"], EDIT_BUDGET_BLOCKER);
+        assert_eq!(
+            multiple["required_ceiling_nanousd"],
+            REFERENCE_ENVELOPE_NANOUSD * 2 + GENERATION_CEILING_NANOUSD
+        );
     }
 
     #[test]
@@ -1230,6 +1273,59 @@ mod tests {
         assert_eq!(maximum, LOW_OUTPUT_TOKEN_LIMIT);
         assert_eq!(GENERATION_CEILING_NANOUSD, 22_330_000);
         assert_eq!(EDIT_CEILING_NANOUSD, 64_022_330_000);
+    }
+
+    #[test]
+    fn official_medium_high_output_token_formula_is_bounded() {
+        // Reference vectors from the official GPT Image 2 token calculator:
+        // cells per quality are 16/48/96; 1024x1024 costs 196/1756/7024 output tokens.
+        assert_eq!(output_tokens(1_024, 1_024, 48), Some(1_756));
+        assert_eq!(output_tokens(1_024, 1_024, 96), Some(7_024));
+
+        for (cells, limit) in [
+            (48, MEDIUM_OUTPUT_TOKEN_LIMIT),
+            (96, HIGH_OUTPUT_TOKEN_LIMIT),
+        ] {
+            let mut maximum = 0;
+            for width in (16..=MAX_OUTPUT_EDGE).step_by(16) {
+                for height in (16..=MAX_OUTPUT_EDGE).step_by(16) {
+                    if let Some(tokens) = output_tokens(width, height, cells) {
+                        maximum = maximum.max(tokens);
+                    }
+                }
+            }
+            assert_eq!(maximum, limit);
+        }
+        assert_eq!(MEDIUM_OUTPUT_TOKEN_LIMIT, 5_930);
+        assert_eq!(MEDIUM_GENERATION_CEILING_NANOUSD, 180_460_000);
+        assert_eq!(HIGH_OUTPUT_TOKEN_LIMIT, 23_719);
+        assert_eq!(HIGH_GENERATION_CEILING_NANOUSD, 714_130_000);
+    }
+
+    #[test]
+    fn quality_scales_the_required_ceiling() {
+        let dir = TestDir::new();
+        let mut args = dir.args(false, GENERATION_CEILING_NANOUSD);
+        args.quality = "medium".to_owned();
+        let validated = validate(args).unwrap();
+        let medium = serde_json::to_value(plan(&validated)).unwrap();
+        assert_eq!(medium["state"], "blocked");
+        assert_eq!(
+            medium["required_ceiling_nanousd"],
+            MEDIUM_GENERATION_CEILING_NANOUSD
+        );
+        assert_eq!(medium["quality"], "medium");
+
+        let mut args = dir.args(false, HIGH_GENERATION_CEILING_NANOUSD);
+        args.quality = "high".to_owned();
+        let validated = validate(args).unwrap();
+        let high = serde_json::to_value(plan(&validated)).unwrap();
+        assert_eq!(high["state"], "ready");
+        assert_eq!(high["quality"], "high");
+
+        let mut args = dir.args(false, GENERATION_CEILING_NANOUSD);
+        args.quality = "ultra".to_owned();
+        assert!(validate(args).is_err());
     }
 
     #[test]

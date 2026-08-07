@@ -179,6 +179,9 @@ enum Cmd {
         /// Strict PNG reference. Repeat 1..=5 times to select edit instead of generation.
         #[arg(long = "reference")]
         references: Vec<std::path::PathBuf>,
+        /// Quality control under test: low (default), medium, or high.
+        #[arg(long, default_value = "low")]
+        quality: String,
         #[arg(long)]
         output: std::path::PathBuf,
         #[arg(long)]
@@ -397,6 +400,7 @@ fn main() -> Result<()> {
             checkpoint,
             budget_nanousd,
             execute,
+            quality,
         } => openai_image_canary::run(openai_image_canary::OpenAiImageCanaryArgs {
             profile,
             prompt_file,
@@ -405,6 +409,7 @@ fn main() -> Result<()> {
             checkpoint,
             budget_nanousd,
             execute,
+            quality,
         }),
         Cmd::OpenaiImagePublicSmoke {
             output,

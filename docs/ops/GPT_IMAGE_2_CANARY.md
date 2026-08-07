@@ -10,8 +10,11 @@ Generation and edit use the native subscription endpoints:
 - `POST {CodexConfig.base_url}/images/generations` for a prompt without references;
 - `POST {CodexConfig.base_url}/images/edits` when `--reference` is supplied one to five times.
 
-Both request `model: "gpt-image-2"`, `background: "opaque"`, `quality: "low"`, and
-`size: "auto"`. Edit adds strict PNG data URLs under `images[].image_url`. Production evidence shows
+Both request `model: "gpt-image-2"`, `background: "opaque"`, and `size: "auto"`. `quality` is `low`
+by default; `--quality medium|high` probes a higher tier against its exact official output-token
+ceiling (the 16/48/96-cell formula), and the returned metadata is what decides whether the wire
+honors the tier. Edit adds strict PNG data URLs under `images[].image_url`; each reference carries
+its own whole-envelope input authorization. Production evidence shows
 that the native Codex OAuth endpoint converts an explicit request size to an automatic provider-selected
 size, so this path intentionally makes no deterministic-dimension claim. It does not prove masks,
 partial-image streaming, JPEG/WebP output, output compression, multiple outputs, or Responses API
@@ -64,12 +67,22 @@ maximum prompt + low image output                          0.02233
 absolute one-reference authorization envelope            $64.02233
 ```
 
-Paid edit therefore requires exactly one PNG reference and at least `64_022_330_000` nanoUSD. This is a
-fail-closed authorization ceiling, not an expected charge, ChatGPT native-credit price, customer reserve,
-or assertion that a real edit uses eight million tokens. Two to five references remain valid for dry-run
-transport validation but report `paid_dispatch_requires_exactly_one_reference`; a one-reference request
-below the ceiling reports `paid_dispatch_requires_edit_ceiling_authorization` before configuration or
-network access.
+## Quality and reference-count probe ceilings
+
+The same official token calculator generalizes by quality: the 16-cell low grid becomes 48 cells for
+medium and 96 for high. The exhaustive maxima over every request-valid resolution are 659 / 5,930 /
+23,719 output tokens, so the exact generation ceilings are `22_330_000` / `180_460_000` /
+`714_130_000` nanoUSD, and each edit reference adds its own `64_000_000_000` envelope. `--quality`
+selects the probed tier; a successful checkpoint must echo the requested quality, so a wire that
+silently normalizes the tier (as it does for size) produces a sanitized `evidence_controls_mismatch`
+journal with the returned controls and usage instead of a false success.
+
+Paid edit therefore requires at least `64_022_330_000` nanoUSD per run — one whole reference envelope
+plus the generation ceiling — and each additional `--reference` (up to five) adds its own
+`64_000_000_000` envelope. This is a fail-closed authorization ceiling, not an expected charge,
+ChatGPT native-credit price, customer reserve, or assertion that a real edit uses eight million
+tokens. A request below its exact ceiling reports
+`paid_dispatch_requires_edit_ceiling_authorization` before configuration or network access.
 
 ## Local file and evidence contract
 
