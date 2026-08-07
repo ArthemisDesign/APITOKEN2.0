@@ -737,10 +737,12 @@ prepare. A lock on the active row — or on a lineage with no active row, where 
 still pending — still fails closed with `423 locked`. The transition changes neither live price nor funding authority: it only makes the
 canonical OpenKeys 1:1 successor available in shadow before the all-account Stage 9 release-head
 CAS. Consumers are connected after the GREEN producer SHA: strict request/identity schemas live in
-`packages/contracts`, the typed transport is
-`EngineClient.lockedOpenkeysPolicyTransition`, and the durable Stage 7 shadow-rollout lane
+`packages/contracts`, and the typed transport is
+`EngineClient.lockedOpenkeysPolicyTransition`. The durable Stage 7 shadow-rollout lane
 (`packages/db` store, bounded `apps/worker` delivery, AdminGuard staging/read endpoints in
-`apps/api`) is its only production caller — see `docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
+`apps/api`) that was its only production caller was removed with the dismantled release cycle —
+the endpoint currently has no live consumer; the historical protocol record is
+`docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
 
 ### Pricing release v2: producer and activation surface
 
@@ -953,16 +955,11 @@ After the exact producer SHA reached green `deploy/watchdog`, the commerce consu
 through the strict `packages/contracts` schema and the sole
 `EngineClient.capturePricingStage8EvidenceV2` transport. The client bounds the response to 16 MiB,
 verifies the canonical integer-preserving shape and explicit request identity, and returns both the
-parsed report and its exact raw bytes. `apps/worker` may call the producer only for a durable capture
-job explicitly staged through the AdminGuard-protected commerce route
-`POST /v1/admin/pricing-stage8-capture-v2/stage`; the paired GET is read-only status with bounded
-freshness and sanitized blocker metadata, never raw subject identities. The worker
-persists the untouched engine bytes before running the combined commerce/OpenKeys/service
-collector, then atomically stores the combined bytes and terminal `passed|blocked` result. An
-engine `passed=false` report is therefore a successful capture input. Retry/dead transitions are
-bounded, stale leases are recovered, and at most one capture job is processing globally. Migration,
-startup, polling and activation staging cannot infer or create a capture job; capture completion
-cannot create an activation job or move the release head.
+parsed report and its exact raw bytes. The durable commerce capture lane (the AdminGuard
+`POST /v1/admin/pricing-stage8-capture-v2/stage` route and the `apps/worker` collector) was
+removed with the dismantled release cycle; the producer is now driven only by the manual
+release-advance path in `docs/ops/MODEL_RELEASE_CYCLE.md`. An
+engine `passed=false` report is therefore a successful capture input.
 
 Sanitized engine blocker subjects retain their canonical `sha256:v1` domain, while commerce
 authority blockers use the canonical `sha256:v2` Stage 5 digest builder. The combined artifact and
@@ -1051,11 +1048,10 @@ whole transaction and return `result=rejected` with one typed code:
   `funding_invariant_drift`, `runtime_floor_drift` or `runtime_incompatible`.
 
 After the producer SHA reached green `deploy/watchdog`, `packages/contracts` added the strict
-request/receipt/rejection schemas, `packages/engine-client` added the sole typed transport, and
-`packages/db/src/pricing-release-activation-jobs.ts` plus `apps/worker` added a durable consumer.
-The worker can call this route only after an explicit immutable activation job exists. No API,
-startup hook, migration or Stage 8 collection automatically stages that job; a deployed consumer
-with an empty queue cannot create a head.
+request/receipt/rejection schemas and `packages/engine-client` added the sole typed transport. The
+durable commerce consumer (`packages/db/src/pricing-release-activation-jobs.ts` plus the
+`apps/worker` activation lane) was removed with the dismantled release cycle; activation is now
+driven only by the manual release-advance path in `docs/ops/MODEL_RELEASE_CYCLE.md`.
 
 Inventory is ordered by `account_id`, returns at most 500 rows plus `next_after_account_id`, and
 contains status, legacy scalar, integer balance/reserved/spent and nullable funding-v2 head identity.
@@ -1105,19 +1101,13 @@ if the head or authority changed, the key is disabled before the raw secret is r
 the consumer keeps the pre-cutover path and materializes nothing release-v2, so a deploy by itself does not
 start the cutover.
 Stage 8 evidence already supports zero-drain audit counts, and the activation producer performs one
-CAS. The strict contracts/client/durable worker consumer is connected producer-first: the request is persisted before
-the network, the complete ACK is persisted before `confirmed`, and a timeout retries only the exact body. The consumer does not
-create the job itself; until a separate Stage 8 source-capture/control-plane checkpoint, staging fails closed
-on nullable source fields. Data-plane reserve/settlement do not take the release control-plane lock.
+CAS. Data-plane reserve/settlement do not take the release control-plane lock.
 After each producer SHA reached a green exact-SHA `deploy/watchdog`, `packages/contracts` gained the
 strict release, funding-normalization, assignment-extension and activation wire schemas, while
 `packages/engine-client` gained typed prepare/read, account-local normalization/extension and the
-single activation method. The bounded application jobs are separate `apps/worker` consumers:
-it runs only for an explicitly staged target-release job, re-GETs exact plan digests before every
-POST, excludes service `meter_only` accounts and confirms only complete funding-manifest coverage.
-The activation lane likewise runs only for an explicitly staged immutable request and persists its
-full receipt. Merely having a typed client or a deployed worker does not materialize an account or
-move the release head.
+single activation method. The bounded `apps/worker` application-job consumers that used to run the
+staged target-release and activation jobs were removed with the dismantled release cycle; the
+`packages/db` job stores remain pending the follow-up cleanup.
 
 ### Hot tariff overrides (`/admin/pricing/tariffs*`)
 

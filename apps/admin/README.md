@@ -81,10 +81,6 @@ No secrets, and there never will be: the browser uses same-origin relative paths
   the exact 72-hour boundary are marked independently from `inventory.observed_at` (or browser time
   when invalid); null expiry is not marked. Credentials, proxy URL/IP and every other identity remain
   forbidden and nothing is persisted by the UI.
-- `src/app/pricing/activation-control.tsx` — a separate 5-second fail-closed poller of the bounded
-  activation snapshot: release pair, Stage 8 freshness/blockers, engine head, jobs/receipts, and
-  explicit cutover/recovery staging. Mutation requires a reason + the exact phrase and a repeated fresh GET;
-  canary/maintenance controls are forbidden here.
 - `src/app/api/health/route.ts` — `GET /api/health` → `{"ok":true}` for the watchdog.
 
 ## Page conventions

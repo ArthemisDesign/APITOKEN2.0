@@ -238,44 +238,13 @@ redemption changing the invitation no longer changes the client policy.
 Preview/email/registration describe the provider/model access and the account stays
 pending until engine ACK; no usable key is issued until the policy is confirmed.
 
-The admin panel does not perform Stage 5 assignment/backfill itself and does not derive
-B2B/service/OpenKeys assignments from names. The commerce producer provides a protected
-bounded snapshot of prepared target/recovery, Stage 8 freshness/source completeness,
-durable activation jobs/receipts and separately a timestamped engine head via
-`GET /admin/pricing-release-activation-v2`. The `/pricing` page polls this snapshot
-separately every 5 seconds and shows the release pair, inventory identities, evidence
-freshness/blockers, engine head, jobs and validated receipts. A stale/erroneous refresh is
-kept only for diagnostics and fail-closed disables mutations.
-
-The only mutation endpoint is the explicit `POST .../stage` with a verified actor/reason
-and a canonical evidence digest. For cutover and recovery the operator enters a meaningful
-reason and the exact phrase tied to the kind, generation and the suffix of the evidence
-digest. Before the POST the browser re-reads the control snapshot and requires an
-available engine, fresh passed/source-complete evidence without local blockers, a zero
-pricing backlog and the correct global head state; recovery additionally requires the
-exact target head and a durable cutover receipt. The backend remains the final authority
-and repeats the checks atomically. `accepted` means a durable job, not a dry-run: the
-worker may execute the global CAS immediately after fresh first-delivery revalidation.
-Per-account canary and maintenance-mode controls do not exist and are forbidden.
-
-Before activation, the same page hosts a separate `Managed Stage 8 capture` control. Every
-five seconds it reads the bounded `/admin/pricing-stage8-capture-v2`, shows queue counts,
-immutable request identities, attempts, exact engine/combined digests, freshness and only
-a sanitized blocker summary. Raw engine/combined JSON and the original account/request
-identities are never delivered to the browser. A new capture is staged only from an
-explicit form with a new UUID, target/recovery, a closed epoch window,
-provider/financial/Gemini bounds and a meaningful reason. The browser cross-checks the
-window against commerce database time, requires the exact confirmation phrase, repeats a
-fresh GET before POST and fail-closed forbids a second job while `pending|processing|retry`
-has not become terminal. The backend remains the authority for strict shape, time and
-idempotency conflict.
-
-Capture is a read-only evidence workflow: it does not create an activation job, does not
-move the head, does not change accounts/balances/policies and does not require a
-traffic/money-writer drain. `blocked` is displayed as terminal evidence; retry is allowed
-only by the worker state machine for uncertain failures. Activation remains a separate
-section with a separate explicit confirmation below, so a successful capture by itself
-does not switch clients over.
+The admin panel does not perform release assignment/backfill itself and does not derive
+B2B/service/OpenKeys assignments from names. The release-cycle control room that used to live on
+`/pricing` (the activation snapshot poller and the managed Stage 8 capture control) was removed
+with the dismantled release cycle: prices are hot tariff overrides and discounts are managed
+policy rules, so the page now carries only the hot delivery surfaces — provider switches, the
+Global B2C policy editor, and explicit service policies. The engine release-v2 producers remain
+for the manual new-model path in `docs/ops/MODEL_RELEASE_CYCLE.md`.
 
 ## Paying customers
 

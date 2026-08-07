@@ -137,23 +137,14 @@ issuance compensation disables the unfinished engine account. Therefore OpenKeys
 depend on the commerce activation tables and does not require stopping batch issuance
 during the global CAS.
 
-Stage 7 existing-inventory alignment runs only through the durable shadow-rollout lane
-(migration `0035_pricing_shadow_rollout_jobs.sql`), not through an OpenKeys-local
-backfill: the AdminGuard-protected producer `POST
-/v1/admin/pricing-shadow-rollout-v2/stage` in `apps/api` pins the exact prepared Stage 5
-target/recovery pair and materializes one immutable per-account job for each OpenKeys
-assignment, including replacement-locked legacy OpenKeys. For locked legacy bindings,
-delivery goes exclusively through the engine `POST
-/admin/pricing/policy/{account_id}/locked-openkeys-transition`; generic prepare/activate
-is forbidden for them (the engine answers `423 locked`). Canonical `official_1_to_1`
-accounts are advanced on their existing lineage (same policy identity, next monotonic
-version, rules from the release policy, pins the exact Stage 5 catalog/switch). The
-bounded worker `apps/worker` claims jobs with a lease, stores the exact ACK
-digest/payload and finishes the rollout as `confirmed|blocked|dead`; status is read via
-`GET /v1/admin/pricing-shadow-rollout-v2` with only subject digests. The lane does not
-change OpenKeys rows, balances, key status or history and does not activate the live
-price: the whole inventory is switched by a single Stage 9 release-head CAS. The full
-protocol is `docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
+The Stage 7 existing-inventory shadow-rollout lane (migration
+`0035_pricing_shadow_rollout_jobs.sql`) was removed with the dismantled release cycle: the
+`POST /v1/admin/pricing-shadow-rollout-v2/stage` producer (and its paired GET) in `apps/api`
+and the bounded `apps/worker` rollout consumer no longer exist. The completed gpt-image-2
+rollouts remain durable historical evidence; new OpenKeys issuance never depended on the lane
+(release-native from birth through the provisioning-context path above). The engine
+`locked-openkeys-transition` endpoint stays as expand-only contract surface with no live
+consumer. The historical protocol record is `docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
 
 ### Authoritative pricing inventory v2
 

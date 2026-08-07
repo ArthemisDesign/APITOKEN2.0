@@ -24,65 +24,6 @@ test("accepts authenticated Brevo STARTTLS configuration in production", () => {
 
   assert.equal(environment.SMTP_PORT, 587);
   assert.equal(environment.SMTP_SECURE, false);
-  assert.equal(environment.FUNDING_NORMALIZATION_BATCH_SIZE, 25);
-  assert.equal(environment.FUNDING_NORMALIZATION_INVENTORY_PAGE_SIZE, 500);
-  assert.equal(environment.FUNDING_NORMALIZATION_LEASE_MS, 300_000);
-  assert.equal(environment.STAGE8_CAPTURE_POLL_MS, 5_000);
-  assert.equal(environment.STAGE8_CAPTURE_LEASE_MS, 300_000);
-  assert.equal(environment.STAGE8_CAPTURE_RETRY_MS, 15_000);
-  assert.equal(environment.STAGE8_CAPTURE_MAX_ATTEMPTS, 10);
-  assert.equal(environment.OPENKEYS_INTERNAL_BASE_URL, "http://127.0.0.1:3410");
-  assert.equal(environment.OPENKEYS_CONTROL_KEY, undefined);
-});
-
-test("accepts a dedicated OpenKeys activation-authority endpoint", () => {
-  const environment = validateEnvironment({
-    ...productionEnvironment,
-    OPENKEYS_INTERNAL_BASE_URL: "http://127.0.0.1:4410",
-    OPENKEYS_CONTROL_KEY: "o".repeat(32),
-  });
-
-  assert.equal(environment.OPENKEYS_INTERNAL_BASE_URL, "http://127.0.0.1:4410");
-  assert.equal(environment.OPENKEYS_CONTROL_KEY, "o".repeat(32));
-  assert.throws(
-    () => validateEnvironment({
-      ...productionEnvironment,
-      OPENKEYS_CONTROL_KEY: "too-short",
-    }),
-    /at least 32 character/,
-  );
-});
-
-test("bounds funding normalization work and leases", () => {
-  assert.throws(
-    () => validateEnvironment({
-      ...productionEnvironment,
-      FUNDING_NORMALIZATION_BATCH_SIZE: "501",
-    }),
-    /less than or equal to 500/,
-  );
-  assert.throws(
-    () => validateEnvironment({
-      ...productionEnvironment,
-      FUNDING_NORMALIZATION_LEASE_MS: "29999",
-    }),
-    /greater than or equal to 30000/,
-  );
-});
-
-test("bounds managed Stage 8 capture polling, leases, and terminal attempts", () => {
-  assert.throws(
-    () => validateEnvironment({ ...productionEnvironment, STAGE8_CAPTURE_POLL_MS: "999" }),
-    /greater than or equal to 1000/,
-  );
-  assert.throws(
-    () => validateEnvironment({ ...productionEnvironment, STAGE8_CAPTURE_LEASE_MS: "29999" }),
-    /greater than or equal to 30000/,
-  );
-  assert.throws(
-    () => validateEnvironment({ ...productionEnvironment, STAGE8_CAPTURE_MAX_ATTEMPTS: "101" }),
-    /less than or equal to 100/,
-  );
 });
 
 test("requires STARTTLS for explicit-TLS SMTP in production", () => {

@@ -21,16 +21,6 @@ import {
   pricingPolicyDeliveryRepairRequestV2Schema,
   pricingReleaseActivationOperatorV2Schema,
   pricingStageControlMutationReasonV2Schema,
-  pricingReleaseActivationReconcileRequestV2Schema,
-  pricingReleaseOrchestrationStageRequestV2Schema,
-  pricingReleaseActivationStageRequestV2Schema,
-  pricingStage5DryRunRequestV2Schema,
-  pricingStage5MaterializeRequestV2Schema,
-  pricingStage5RunQueryV2Schema,
-  pricingStage6PlanQueryV2Schema,
-  pricingStage6StageRequestV2Schema,
-  pricingStage8CaptureStageRequestV2Schema,
-  pricingShadowRolloutStageRequestV2Schema,
   providerSwitchEditorMutationSchema,
   pricingPolicyMutationSchema,
   serviceAccountInventoryMutationV2Schema,
@@ -41,15 +31,9 @@ import {
   BusinessCustomerNotFoundError,
   BusinessInvitationConflictError,
   BusinessInvitationNotFoundError,
-  FundingNormalizationJobV2Error,
   PricingControlJobStageError,
   PricingPolicyDeliveryRepairError,
   PricingPolicyWriteError,
-  PricingReleaseActivationJobV2Error,
-  PricingReleaseOrchestrationV2Error,
-  PricingShadowRolloutV2Error,
-  Stage5MaterializerV2Error,
-  PricingStage8CaptureJobV2Error,
   ServiceAccountInventoryV2Error,
 } from "@claude-api/db";
 import { EngineClientError } from "@claude-api/engine-client";
@@ -264,88 +248,6 @@ export class AdminController {
     return this.admin.getServiceAccountInventoryV2();
   }
 
-  @Get("pricing-stage5-v2")
-  @Header("Cache-Control", "no-store")
-  async getPricingStage5RunV2(
-    @Query("plan_digest") planDigest: string | undefined,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    const input = pricingStage5RunQueryV2Schema.safeParse({ plan_digest: planDigest });
-    if (!input.success) throw new BadRequestException(input.error.flatten());
-    verifiedAdminActor(actorHeader);
-    const run = await this.admin.getPricingStage5RunV2(input.data.plan_digest);
-    if (run === null) throw new NotFoundException("exact Stage 5 plan does not exist");
-    return run;
-  }
-
-  @Post("pricing-stage5-v2/dry-run")
-  @Header("Cache-Control", "no-store")
-  async dryRunPricingStage5V2(
-    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    const input = pricingStage5DryRunRequestV2Schema.safeParse(body ?? {});
-    if (!input.success) throw new BadRequestException(input.error.flatten());
-    verifiedAdminActor(actorHeader);
-    try {
-      return await this.admin.dryRunPricingStage5V2();
-    } catch (error) {
-      throwPricingStageControlHttpError(error);
-      throw error;
-    }
-  }
-
-  @Post("pricing-stage5-v2/materialize")
-  @Header("Cache-Control", "no-store")
-  async materializePricingStage5V2(
-    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    const input = pricingStage5MaterializeRequestV2Schema.safeParse(body);
-    if (!input.success) throw new BadRequestException(input.error.flatten());
-    const actor = verifiedAdminActor(actorHeader);
-    try {
-      return await this.admin.materializePricingStage5V2(input.data, actor);
-    } catch (error) {
-      throwPricingStageControlHttpError(error);
-      throw error;
-    }
-  }
-
-  @Get("pricing-stage6-v2")
-  @Header("Cache-Control", "no-store")
-  async getPricingStage6V2(
-    @Query("plan_digest") planDigest: string | undefined,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    const input = pricingStage6PlanQueryV2Schema.safeParse({ plan_digest: planDigest });
-    if (!input.success) throw new BadRequestException(input.error.flatten());
-    verifiedAdminActor(actorHeader);
-    try {
-      return await this.admin.getPricingStage6V2(input.data.plan_digest);
-    } catch (error) {
-      throwPricingStageControlHttpError(error);
-      throw error;
-    }
-  }
-
-  @Post("pricing-stage6-v2/stage")
-  @Header("Cache-Control", "no-store")
-  async stagePricingStage6V2(
-    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    const input = pricingStage6StageRequestV2Schema.safeParse(body);
-    if (!input.success) throw new BadRequestException(input.error.flatten());
-    const actor = verifiedAdminActor(actorHeader);
-    try {
-      return await this.admin.stagePricingStage6V2(input.data, actor);
-    } catch (error) {
-      throwPricingStageControlHttpError(error);
-      throw error;
-    }
-  }
-
   @Post("pricing-catalog-jobs/stage")
   @Header("Cache-Control", "no-store")
   async stagePricingCatalogJobV2(
@@ -392,137 +294,6 @@ export class AdminController {
       return await this.admin.repairPricingPolicyDeliveryV2(input.data, actor);
     } catch (error) {
       throwPricingStageControlHttpError(error);
-      throw error;
-    }
-  }
-
-  @Get("pricing-release-activation-v2")
-  @Header("Cache-Control", "no-store")
-  getPricingReleaseActivationControlV2(): Promise<unknown> {
-    return this.admin.getPricingReleaseActivationControlV2();
-  }
-
-  @Get("pricing-stage8-capture-v2")
-  @Header("Cache-Control", "no-store")
-  getPricingStage8CaptureControlV2(): Promise<unknown> {
-    return this.admin.getPricingStage8CaptureControlV2();
-  }
-
-  @Post("pricing-stage8-capture-v2/stage")
-  @Header("Cache-Control", "no-store")
-  async stagePricingStage8CaptureV2(
-    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    const input = pricingStage8CaptureStageRequestV2Schema.safeParse(body);
-    const actor = pricingReleaseActivationOperatorV2Schema.safeParse(actorHeader?.trim());
-    if (!input.success) throw new BadRequestException(input.error.flatten());
-    if (!actor.success) throw new BadRequestException("verified admin actor is required");
-    try {
-      return await this.admin.stagePricingStage8CaptureV2(input.data, actor.data);
-    } catch (error) {
-      if (error instanceof PricingStage8CaptureJobV2Error) {
-        throw new HttpException(error.message, error.permanent ? 409 : 503);
-      }
-      throw error;
-    }
-  }
-
-  @Get("pricing-shadow-rollout-v2")
-  @Header("Cache-Control", "no-store")
-  getPricingShadowRolloutControlV2(): Promise<unknown> {
-    return this.admin.getPricingShadowRolloutControlV2();
-  }
-
-  @Post("pricing-shadow-rollout-v2/stage")
-  @Header("Cache-Control", "no-store")
-  async stagePricingShadowRolloutV2(
-    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    const input = pricingShadowRolloutStageRequestV2Schema.safeParse(body);
-    const actor = pricingReleaseActivationOperatorV2Schema.safeParse(actorHeader?.trim());
-    if (!input.success) throw new BadRequestException(input.error.flatten());
-    if (!actor.success) throw new BadRequestException("verified admin actor is required");
-    try {
-      return await this.admin.stagePricingShadowRolloutV2(input.data, actor.data);
-    } catch (error) {
-      if (error instanceof PricingShadowRolloutV2Error) {
-        const statusCode = error.permanent ? 409 : 503;
-        throw new HttpException({
-          statusCode,
-          message: error.permanent
-            ? "pricing shadow rollout conflicts with durable authority"
-            : "pricing shadow rollout authority is temporarily unavailable",
-          code: error.code,
-        }, statusCode);
-      }
-      throw error;
-    }
-  }
-
-  @Post("pricing-release-activation-v2/stage")
-  @Header("Cache-Control", "no-store")
-  async stagePricingReleaseActivationV2(
-    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    const input = pricingReleaseActivationStageRequestV2Schema.safeParse(body);
-    const actor = pricingReleaseActivationOperatorV2Schema.safeParse(actorHeader?.trim());
-    if (!input.success) throw new BadRequestException(input.error.flatten());
-    if (!actor.success) throw new BadRequestException("verified admin actor is required");
-    try {
-      return await this.admin.stagePricingReleaseActivationV2(input.data, actor.data);
-    } catch (error) {
-      if (error instanceof PricingReleaseActivationJobV2Error) {
-        throw new HttpException(error.message, error.permanent ? 409 : 503);
-      }
-      throw error;
-    }
-  }
-
-  @Get("pricing-release-orchestration-v2")
-  @Header("Cache-Control", "no-store")
-  async getPricingReleaseOrchestrationV2(): Promise<unknown> {
-    return this.admin.getPricingReleaseOrchestrationControlV2();
-  }
-
-  @Post("pricing-release-orchestration-v2/stage")
-  @Header("Cache-Control", "no-store")
-  async stagePricingReleaseOrchestrationV2(
-    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    const input = pricingReleaseOrchestrationStageRequestV2Schema.safeParse(body);
-    const actor = pricingReleaseActivationOperatorV2Schema.safeParse(actorHeader?.trim());
-    if (!input.success) throw new BadRequestException(input.error.flatten());
-    if (!actor.success) throw new BadRequestException("verified admin actor is required");
-    try {
-      return await this.admin.stagePricingReleaseOrchestrationV2(input.data, actor.data);
-    } catch (error) {
-      if (error instanceof PricingReleaseOrchestrationV2Error) {
-        throw new HttpException(error.message, error.permanent ? 409 : 503);
-      }
-      throw error;
-    }
-  }
-
-  @Post("pricing-release-activation-v2/reconcile")
-  @Header("Cache-Control", "no-store")
-  async reconcilePricingReleaseActivationV2(
-    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    const input = pricingReleaseActivationReconcileRequestV2Schema.safeParse(body);
-    const actor = pricingReleaseActivationOperatorV2Schema.safeParse(actorHeader?.trim());
-    if (!input.success) throw new BadRequestException(input.error.flatten());
-    if (!actor.success) throw new BadRequestException("verified admin actor is required");
-    try {
-      return await this.admin.reconcilePricingReleaseActivationV2(input.data, actor.data);
-    } catch (error) {
-      if (error instanceof PricingReleaseActivationJobV2Error) {
-        throw new HttpException(error.message, error.permanent ? 409 : 503);
-      }
       throw error;
     }
   }
@@ -756,20 +527,6 @@ function throwPricingStageControlHttpError(error: unknown): void {
       throw pricingStageControlException(error.message, error.code, 404);
     }
     throw pricingStageControlException(error.message, error.code, 409);
-  }
-  if (error instanceof Stage5MaterializerV2Error) {
-    throw pricingStageControlException(
-      error.message,
-      error.code,
-      error.code.endsWith("_unavailable") ? 503 : 409,
-    );
-  }
-  if (error instanceof FundingNormalizationJobV2Error) {
-    throw pricingStageControlException(
-      error.message,
-      error.terminal ? "funding_normalization_terminal" : "funding_normalization_unavailable",
-      error.terminal ? 409 : 503,
-    );
   }
   if (error instanceof EngineClientError) {
     throw pricingStageControlException(

@@ -6,11 +6,8 @@ import { EngineClient } from "@claude-api/engine-client";
 import { validateEnvironment, type Environment } from "./config.js";
 import { CreditWorkerService } from "./credit-worker.service.js";
 import { PricingWorkerService } from "./pricing-worker.service.js";
-import { FundingNormalizationWorkerService } from "./funding-normalization-worker.service.js";
 import { EmailWorkerService } from "./email-worker.service.js";
 import { PlategaReconcileService } from "./platega-reconcile.service.js";
-import { Stage8CaptureWorkerService } from "./stage8-capture-worker.service.js";
-import { PricingShadowRolloutWorkerService } from "./pricing-shadow-rollout-worker.service.js";
 import { DATABASE, ENGINE_CLIENT, WORKER_ID } from "./tokens.js";
 
 @Injectable()
@@ -42,9 +39,6 @@ class DatabaseShutdown implements OnApplicationShutdown {
     { provide: WORKER_ID, useFactory: () => `${hostname()}:${process.pid}` },
     CreditWorkerService,
     PricingWorkerService,
-    FundingNormalizationWorkerService,
-    Stage8CaptureWorkerService,
-    PricingShadowRolloutWorkerService,
     EmailWorkerService,
     PlategaReconcileService,
     DatabaseShutdown,

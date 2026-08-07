@@ -7,6 +7,21 @@ remains below the line is the removal of the retired progressive machinery (§6)
 Definition of Done sweep. This document supersedes the previous progressive-tariff design: the
 target system has no active `track` mode, no tier ladder, and no 30-day retention.
 
+> **Stage machinery removed (2026-08-07).** The commerce firing pins for the Stage 5–9 cycle —
+> the `apps/api` routes (`pricing-stage5-v2`, `pricing-stage6-v2`, `pricing-stage8-capture-v2`,
+> `pricing-shadow-rollout-v2`, `pricing-release-activation-v2`,
+> `pricing-release-orchestration-v2`), the `apps/worker` funding-normalization/Stage 8
+> capture/shadow-rollout/activation/orchestration lanes, the admin-panel control room, and the
+> fixed host gates — are deleted. Prices are now hot data (engine `pricing_tariff_overrides` via
+> `docs/engine/CONTROL_API.md` `/admin/pricing/tariffs/*`) and discounts ship as managed policy
+> rules through the durable pricing-control jobs, so the orchestrated cycle's only remaining
+> effect was hazardous (a silent B2C policy recompile at a hardcoded 5000 bps plus a head CAS).
+> The invariant descriptions below that still hold — ledger lineage, immutable snapshot pinning,
+> evidence-gated head CAS on the engine side — remain the contract; the engine producers under
+> `/admin/pricing/v2/*` are unchanged and are driven manually per
+> `docs/ops/MODEL_RELEASE_CYCLE.md`. The `packages/db` stage libraries remain pending a
+> follow-up cleanup commit.
+
 ## 1. Accepted product decisions
 
 1. Gemini is a full product provider alongside Anthropic and OpenAI.

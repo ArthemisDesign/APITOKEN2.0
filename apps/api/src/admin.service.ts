@@ -6,34 +6,13 @@ import {
 import { ConfigService } from "@nestjs/config";
 import {
   multiplierForDiscount,
-  pricingCatalogJobStageRequestV2Schema,
   pricingControlJobStageResponseV2Schema,
   pricingPolicyDeliveryRepairResponseV2Schema,
-  pricingReleaseActivationReconcileResponseV2Schema,
-  pricingReleaseOrchestrationStageResponseV2Schema,
-  pricingReleaseActivationStageResponseV2Schema,
-  pricingStage5ControlResultV2Schema,
-  pricingStage5RunV2Schema,
-  pricingStage6StatusV2Schema,
-  pricingStage8CaptureControlV2Schema,
-  pricingStage8CaptureStageResponseV2Schema,
-  pricingShadowRolloutControlV2Schema,
-  pricingShadowRolloutStageResponseV2Schema,
   type PricingCatalogJobStageRequestV2,
   type PricingControlJobStageResponseV2,
   type PricingSwitchJobStageRequestV2,
-  type PricingReleaseActivationReconcileRequestV2,
-  type PricingReleaseOrchestrationStageRequestV2,
-  type PricingReleaseActivationStageRequestV2,
   type PricingPolicyDeliveryRepairRequestV2,
   type PricingPolicyDeliveryRepairResponseV2,
-  type PricingStage5ControlResultV2,
-  type PricingStage5MaterializeRequestV2,
-  type PricingStage5RunV2,
-  type PricingStage6StageRequestV2,
-  type PricingStage6StatusV2,
-  type PricingStage8CaptureStageRequestV2,
-  type PricingShadowRolloutStageRequestV2,
   type PricingReleaseInventoryAccountV2,
   type PricingPolicyEditorRule,
   type ProviderSwitchEditorMutation,
@@ -43,7 +22,6 @@ import {
   BusinessCustomerNotFoundError,
   BusinessInvitationConflictError,
   BusinessInvitationNotFoundError,
-  createStage5OpenKeysInventoryReaderV2,
   createBusinessInvite,
   decodeAuthEncryptionKey,
   decryptAuthToken,
@@ -51,7 +29,6 @@ import {
   evaluateRefundEligibility,
   getManagedPricingPolicy,
   getManagedPricingCatalog,
-  getFundingNormalizationStageStatusV2,
   listManagedServicePricingPolicies,
   engineAccountIdentityInventoryDigestV2,
   getBusinessInviteToken,
@@ -59,26 +36,14 @@ import {
   listAdminUserOverview,
   recordAdminCredit,
   readServiceAccountInventoryV2,
-  readPricingReleaseActivationControlV2,
-  readPricingStage5RunV2,
-  readPricingShadowRolloutControlV2,
-  readPricingStage8CaptureControlV2,
   repairDeadPreCutoverPolicyDelivery,
   PricingPolicyDeliveryRepairError,
-  runStage5MaterializerV2,
   syncPricingReleasePolicyOverrideV2,
   PricingReleaseProvisioningV2Error,
   revokeBusinessInvite,
   rotateBusinessInvite,
   setBusinessPricing,
-  reconcileLostPricingActivationReceiptV2,
   materializeProvisionedUserPolicy,
-  readPricingReleaseOrchestrationControlV2,
-  stagePricingReleaseOrchestrationV2,
-  stagePricingReleaseActivationJobV2,
-  stageFundingNormalizationJobV2,
-  stagePricingShadowRolloutV2,
-  stagePricingStage8CaptureJobV2,
   stageStoredPricingCatalogControlJob,
   stageStoredProviderSwitchControlJob,
   updateManagedPricingPolicy,
@@ -87,10 +52,6 @@ import {
   type AdminUserOverviewRow,
   type AdminUserOverviewQuery,
   type Database,
-  type PricingReleaseActivationControlV2,
-  type PricingShadowRolloutControlV2,
-  type PricingStage8CaptureControlV2,
-  type Stage5MaterializerV2Result,
 } from "@claude-api/db";
 import {
   EngineClient,
@@ -260,56 +221,6 @@ export class AdminService {
     return readServiceAccountInventoryV2(this.database);
   }
 
-  async getPricingStage5RunV2(planDigest: string): Promise<PricingStage5RunV2 | null> {
-    const run = await readPricingStage5RunV2(this.database, planDigest);
-    return run === null ? null : pricingStage5RunV2Schema.parse(run);
-  }
-
-  async dryRunPricingStage5V2(): Promise<PricingStage5ControlResultV2> {
-    const result = await runStage5MaterializerV2(
-      this.database,
-      this.engine,
-      this.stage5OpenKeysInventoryReaderV2(),
-      { mode: "dry_run" },
-    );
-    return serializePricingStage5ControlResultV2(result);
-  }
-
-  async materializePricingStage5V2(
-    input: PricingStage5MaterializeRequestV2,
-    actorId: string,
-  ): Promise<PricingStage5ControlResultV2> {
-    const result = await runStage5MaterializerV2(
-      this.database,
-      this.engine,
-      this.stage5OpenKeysInventoryReaderV2(),
-      {
-        mode: "apply",
-        expectedPlanDigest: input.plan_digest,
-        audit: { actorId, reason: input.reason },
-      },
-    );
-    return serializePricingStage5ControlResultV2(result);
-  }
-
-  async getPricingStage6V2(planDigest: string): Promise<PricingStage6StatusV2> {
-    return pricingStage6StatusV2Schema.parse(
-      await getFundingNormalizationStageStatusV2(this.database, planDigest),
-    );
-  }
-
-  async stagePricingStage6V2(
-    input: PricingStage6StageRequestV2,
-    actorId: string,
-  ): Promise<PricingStage6StatusV2> {
-    const stagedJobId = await stageFundingNormalizationJobV2(this.database, {
-      planDigest: input.plan_digest,
-      audit: { actorId, reason: input.reason },
-    });
-    const status = await getFundingNormalizationStageStatusV2(this.database, input.plan_digest);
-    return pricingStage6StatusV2Schema.parse({ staged_job_id: stagedJobId, ...status });
-  }
-
   async stagePricingCatalogJobV2(
     input: PricingCatalogJobStageRequestV2,
     actorId: string,
@@ -357,43 +268,6 @@ export class AdminService {
     );
   }
 
-  async getPricingReleaseActivationControlV2(): Promise<Record<string, unknown>> {
-    const control = await readPricingReleaseActivationControlV2(this.database);
-    let engineHead: Awaited<ReturnType<EngineClient["getPricingReleaseHeadV2"]>> = null;
-    let engineAvailable = false;
-    try {
-      engineHead = await this.engine.getPricingReleaseHeadV2();
-      engineAvailable = true;
-    } catch {
-      // Local durable evidence remains observable, but the UI must fail closed before staging.
-    }
-    const engineObservedAt = new Date();
-    return serializePricingReleaseActivationControlV2(
-      control,
-      engineObservedAt,
-      engineAvailable,
-      engineHead,
-    );
-  }
-
-  async stagePricingReleaseActivationV2(
-    input: PricingReleaseActivationStageRequestV2,
-    actorId: string,
-  ): Promise<Record<string, unknown>> {
-    const jobId = await stagePricingReleaseActivationJobV2(this.database, {
-      activationKind: input.activation_kind,
-      evidenceDigest: input.evidence_digest,
-      operatorId: actorId,
-      reason: input.reason,
-    });
-    return pricingReleaseActivationStageResponseV2Schema.parse({
-      job_id: jobId,
-      activation_kind: input.activation_kind,
-      evidence_digest: input.evidence_digest,
-      status: "accepted",
-    });
-  }
-
   async repairUserProvisioningV2(
     userId: string,
     actorId: string,
@@ -428,100 +302,6 @@ export class AdminService {
       status: staged.ready ? "ready" : "staged",
       job_id: staged.jobId,
     };
-  }
-
-  async getPricingReleaseOrchestrationControlV2(): Promise<unknown> {
-    return readPricingReleaseOrchestrationControlV2(this.database);
-  }
-
-  async stagePricingReleaseOrchestrationV2(
-    input: PricingReleaseOrchestrationStageRequestV2,
-    actorId: string,
-  ): Promise<Record<string, unknown>> {
-    const staged = await stagePricingReleaseOrchestrationV2(this.database, {
-      idempotencyKey: input.idempotency_key,
-      capabilityGeneration: input.capability_generation,
-      operatorId: actorId,
-      reason: input.reason,
-    });
-    return pricingReleaseOrchestrationStageResponseV2Schema.parse({
-      orchestration_id: staged.orchestrationId,
-      idempotent_replay: staged.idempotentReplay,
-      status: "accepted",
-    });
-  }
-
-  async reconcilePricingReleaseActivationV2(
-    input: PricingReleaseActivationReconcileRequestV2,
-    actorId: string,
-  ): Promise<Record<string, unknown>> {
-    const result = await reconcileLostPricingActivationReceiptV2(
-      this.database,
-      { engine: this.engine },
-      { jobId: input.job_id, actorId, reason: input.reason },
-    );
-    return pricingReleaseActivationReconcileResponseV2Schema.parse({
-      job_id: result.jobId,
-      activation_id: result.activationId,
-      result_digest: result.resultDigest,
-      status: result.status,
-    });
-  }
-
-  async getPricingStage8CaptureControlV2(): Promise<Record<string, unknown>> {
-    return serializePricingStage8CaptureControlV2(
-      await readPricingStage8CaptureControlV2(this.database),
-    );
-  }
-
-  async stagePricingStage8CaptureV2(
-    input: PricingStage8CaptureStageRequestV2,
-    actorId: string,
-  ): Promise<Record<string, unknown>> {
-    const staged = await stagePricingStage8CaptureJobV2(this.database, {
-      idempotencyKey: input.idempotency_key,
-      request: {
-        target_generation: input.target_generation,
-        recovery_generation: input.recovery_generation,
-        window_start_ts: input.window_start_ts,
-        window_end_ts: input.window_end_ts,
-        min_samples_per_provider: input.min_samples_per_provider,
-        financial_sample_size: input.financial_sample_size,
-        gemini_client_admissions: input.gemini_client_admissions,
-      },
-      operatorId: actorId,
-      reason: input.reason,
-    });
-    return pricingStage8CaptureStageResponseV2Schema.parse({
-      job_id: staged.jobId,
-      request_digest: staged.requestDigest,
-      status: "accepted",
-    });
-  }
-
-  async getPricingShadowRolloutControlV2(): Promise<Record<string, unknown>> {
-    return serializePricingShadowRolloutControlV2(
-      await readPricingShadowRolloutControlV2(this.database),
-    );
-  }
-
-  async stagePricingShadowRolloutV2(
-    input: PricingShadowRolloutStageRequestV2,
-    actorId: string,
-  ): Promise<Record<string, unknown>> {
-    const staged = await stagePricingShadowRolloutV2(this.database, this.engine, {
-      idempotencyKey: input.idempotency_key,
-      stage5RunId: input.stage5_run_id,
-      actorId,
-      reason: input.reason,
-    });
-    return pricingShadowRolloutStageResponseV2Schema.parse({
-      rollout_id: staged.rolloutId,
-      rollout_digest: staged.rolloutDigest,
-      job_count: staged.jobCount,
-      idempotent_replay: staged.idempotentReplay,
-      status: "accepted",
-    });
   }
 
   async upsertServiceAccountInventoryV2(
@@ -665,14 +445,6 @@ export class AdminService {
       );
     }
     return second;
-  }
-
-  private stage5OpenKeysInventoryReaderV2() {
-    return createStage5OpenKeysInventoryReaderV2({
-      baseUrl: this.config.get("OPENKEYS_INTERNAL_BASE_URL", { infer: true }),
-      controlKey: this.config.get("OPENKEYS_CONTROL_KEY", { infer: true })
-        ?? this.config.get("ENGINE_CONTROL_KEY", { infer: true }),
-    });
   }
 
   async updateManagedPricingPolicy(
@@ -873,220 +645,6 @@ function serializeUser(
     api_keys: { active: row.apiKeysActive, total: row.apiKeysTotal },
     last_seen_at: row.lastSeenAt?.toISOString() ?? null,
   };
-}
-
-function serializePricingReleaseActivationControlV2(
-  control: PricingReleaseActivationControlV2,
-  engineObservedAt: Date,
-  engineAvailable: boolean,
-  engineHead: Awaited<ReturnType<EngineClient["getPricingReleaseHeadV2"]>>,
-): Record<string, unknown> {
-  return {
-    database_observed_at: control.databaseObservedAt.toISOString(),
-    unresolved_pricing_jobs: control.unresolvedPricingJobs,
-    engine: {
-      observed_at: engineObservedAt.toISOString(),
-      available: engineAvailable,
-      head: engineHead,
-    },
-    releases: control.releases.map((release) => ({
-      generation: release.generation,
-      release_kind: release.releaseKind,
-      status: release.status,
-      content_digest: release.contentDigest,
-      engine_release_digest: release.engineReleaseDigest,
-      commerce_inventory_digest: release.commerceInventoryDigest,
-      engine_inventory_digest: release.engineInventoryDigest,
-      openkeys_inventory_digest: release.openkeysInventoryDigest,
-      service_inventory_digest: release.serviceInventoryDigest,
-      created_at: release.createdAt.toISOString(),
-      updated_at: release.updatedAt.toISOString(),
-    })),
-    evidence: control.evidence.map((evidence) => ({
-      evidence_digest: evidence.evidenceDigest,
-      engine_evidence_digest: evidence.engineEvidenceDigest,
-      engine_captured_at: evidence.engineCapturedAt?.toISOString() ?? null,
-      target_generation: evidence.targetGeneration,
-      target_digest: evidence.targetDigest,
-      recovery_generation: evidence.recoveryGeneration,
-      recovery_digest: evidence.recoveryDigest,
-      service_inventory_digest: evidence.serviceInventoryDigest,
-      legacy_inflight_count: evidence.legacyInflightCount,
-      blocker_count: evidence.blockerCount,
-      passed: evidence.passed,
-      observed_at: evidence.observedAt.toISOString(),
-      valid_until: evidence.validUntil.toISOString(),
-      target_status: evidence.targetStatus,
-      recovery_status: evidence.recoveryStatus,
-      target_engine_digest: evidence.targetEngineDigest,
-      recovery_engine_digest: evidence.recoveryEngineDigest,
-      fresh: evidence.fresh,
-      source_complete: evidence.sourceComplete,
-      local_blockers: evidence.localBlockers,
-    })),
-    jobs: control.jobs.map((job) => ({
-      id: job.id,
-      activation_kind: job.activationKind,
-      release_generation: job.releaseGeneration,
-      release_digest: job.releaseDigest,
-      evidence_digest: job.evidenceDigest,
-      status: job.status,
-      attempts: job.attempts,
-      operator_id: job.operatorId,
-      reason: job.reason,
-      last_error: job.lastError,
-      result_digest: job.resultDigest,
-      confirmed_at: job.confirmedAt?.toISOString() ?? null,
-      created_at: job.createdAt.toISOString(),
-      updated_at: job.updatedAt.toISOString(),
-    })),
-    receipts: control.receipts.map((receipt) => ({
-      activation_id: receipt.activationId,
-      activation_kind: receipt.activationKind,
-      release_generation: receipt.releaseGeneration,
-      release_digest: receipt.releaseDigest,
-      evidence_digest: receipt.evidenceDigest,
-      head_version: receipt.headVersion,
-      receipt_digest: receipt.receiptDigest,
-      activated_at: receipt.activatedAt.toISOString(),
-      created_at: receipt.createdAt.toISOString(),
-    })),
-  };
-}
-
-function serializePricingShadowRolloutControlV2(
-  control: PricingShadowRolloutControlV2,
-): Record<string, unknown> {
-  return pricingShadowRolloutControlV2Schema.parse({
-    database_observed_at: control.databaseObservedAt.toISOString(),
-    counts_by_status: control.countsByStatus,
-    rollouts: control.rollouts.map((rollout) => ({
-      id: rollout.id,
-      idempotency_key: rollout.idempotencyKey,
-      stage5_run_id: rollout.stage5RunId,
-      rollout_digest: rollout.rolloutDigest,
-      target_generation: rollout.targetGeneration,
-      target_digest: rollout.targetDigest,
-      recovery_generation: rollout.recoveryGeneration,
-      recovery_digest: rollout.recoveryDigest,
-      catalog_generation: rollout.catalogGeneration,
-      main_catalog_digest: rollout.mainCatalogDigest,
-      openkeys_catalog_digest: rollout.openkeysCatalogDigest,
-      switch_generation: rollout.switchGeneration,
-      switch_digest: rollout.switchDigest,
-      engine_inventory_digest: rollout.engineInventoryDigest,
-      assignment_manifest_digest: rollout.assignmentManifestDigest,
-      policy_manifest_digest: rollout.policyManifestDigest,
-      assignment_count: rollout.assignmentCount,
-      job_count: rollout.jobCount,
-      job_counts_by_status: rollout.jobCountsByStatus,
-      actor_id: rollout.actorId,
-      reason: rollout.reason,
-      status: rollout.status,
-      last_error: rollout.lastError,
-      completed_at: rollout.completedAt?.toISOString() ?? null,
-      created_at: rollout.createdAt.toISOString(),
-      updated_at: rollout.updatedAt.toISOString(),
-    })),
-    jobs: control.jobs.map((job) => ({
-      id: job.id,
-      rollout_id: job.rolloutId,
-      subject_digest: job.subjectDigest,
-      account_status: job.accountStatus,
-      account_class: job.accountClass,
-      owner_context: job.ownerContext,
-      release_policy_digest: job.releasePolicyDigest,
-      content_digest: job.contentDigest,
-      expected_active_digest: job.expectedActiveDigest,
-      request_digest: job.requestDigest,
-      status: job.status,
-      attempts: job.attempts,
-      last_error: job.lastError,
-      ack_digest: job.ackDigest,
-      confirmed_at: job.confirmedAt?.toISOString() ?? null,
-      completed_at: job.completedAt?.toISOString() ?? null,
-      created_at: job.createdAt.toISOString(),
-      updated_at: job.updatedAt.toISOString(),
-    })),
-  });
-}
-
-function serializePricingStage8CaptureControlV2(
-  control: PricingStage8CaptureControlV2,
-): Record<string, unknown> {
-  return pricingStage8CaptureControlV2Schema.parse({
-    database_observed_at: control.databaseObservedAt.toISOString(),
-    counts_by_status: control.countsByStatus,
-    jobs: control.jobs.map((job) => ({
-      id: job.id,
-      idempotency_key: job.idempotencyKey,
-      request_digest: job.requestDigest,
-      target_generation: job.targetGeneration,
-      recovery_generation: job.recoveryGeneration,
-      window_start_at: job.windowStartAt.toISOString(),
-      window_end_at: job.windowEndAt.toISOString(),
-      min_samples_per_provider: job.minSamplesPerProvider,
-      financial_sample_size: job.financialSampleSize,
-      gemini_client_admissions: job.geminiClientAdmissions,
-      operator_id: job.operatorId,
-      reason: job.reason,
-      status: job.status,
-      attempts: job.attempts,
-      next_attempt_at: job.nextAttemptAt.toISOString(),
-      locked_at: job.lockedAt?.toISOString() ?? null,
-      locked_by: job.lockedBy,
-      last_error: job.lastError,
-      result_engine_evidence_digest: job.resultEngineEvidenceDigest,
-      result_combined_evidence_digest: job.resultCombinedEvidenceDigest,
-      result_passed: job.resultPassed,
-      completed_at: job.completedAt?.toISOString() ?? null,
-      created_at: job.createdAt.toISOString(),
-      updated_at: job.updatedAt.toISOString(),
-    })),
-    artifacts: control.artifacts.map((artifact) => ({
-      id: artifact.id,
-      job_id: artifact.jobId,
-      attempt: artifact.attempt,
-      engine_evidence_digest: artifact.engineEvidenceDigest,
-      engine_captured_at: artifact.engineCapturedAt.toISOString(),
-      combined_evidence_digest: artifact.combinedEvidenceDigest,
-      combined_passed: artifact.combinedPassed,
-      combined_write_result: artifact.combinedWriteResult,
-      combined_observed_at: artifact.combinedObservedAt?.toISOString() ?? null,
-      combined_valid_until: artifact.combinedValidUntil?.toISOString() ?? null,
-      combined_blocker_count: artifact.combinedBlockerCount,
-      combined_blockers: artifact.combinedBlockers,
-      combined_blockers_truncated: artifact.combinedBlockersTruncated,
-      completed_at: artifact.completedAt?.toISOString() ?? null,
-      created_at: artifact.createdAt.toISOString(),
-    })),
-  });
-}
-
-function serializePricingStage5ControlResultV2(
-  result: Stage5MaterializerV2Result,
-): PricingStage5ControlResultV2 {
-  return pricingStage5ControlResultV2Schema.parse({
-    mode: result.mode,
-    status: result.status,
-    plan_digest: result.plan.plan_digest,
-    run_id: result.run_id,
-    writes_committed: result.writes_committed,
-    engine_prepared: result.engine_prepared,
-    commerce_inventory_digest: result.plan.commerce_inventory_digest,
-    engine_scan_first_digest: result.plan.engine_scan_first_digest,
-    engine_scan_second_digest: result.plan.engine_scan_second_digest,
-    openkeys_scan_first_digest: result.plan.openkeys_scan_first_digest,
-    openkeys_scan_second_digest: result.plan.openkeys_scan_second_digest,
-    service_inventory_digest: result.plan.service_inventory_digest,
-    funding_plan_digest: result.plan.funding_plan_digest,
-    target_generation: result.plan.target_generation,
-    target_plan_digest: result.plan.target.content_digest,
-    recovery_generation: result.plan.recovery_generation,
-    recovery_plan_digest: result.plan.recovery.content_digest,
-    blocker_count: result.plan.blockers.length,
-    blockers: result.plan.blockers,
-  });
 }
 
 /** nano-USD (строка целого) → десятичная USD-строка с 4 знаками; без float. */

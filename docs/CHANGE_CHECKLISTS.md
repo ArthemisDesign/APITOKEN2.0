@@ -90,12 +90,12 @@ and immutable/dormant artifacts are not rewritten.
       `src/lib/md-pages.ts`, `src/lib/messages.json`, `src/lib/llms.ts`, `src/lib/learn-*.ts`).
       Determine the radius by grepping for the old figure, not from memory.
 - [ ] `docs/commerce/PRICING.md` — global/provider/model pricing, B2B/OpenKeys/service, and bonus.
-- [ ] `docs/commerce/MULTI-DISCOUNT.md` + Stage 5/6/8/9 — target/recovery release, full inventory,
-      100% shadow, and one-head activation; do not add per-account canary/maintenance rollout.
-- [ ] Production Stage 5/6 runs only through the protected AdminGuard producer API: verified actor,
-      fresh exact plan digest, meaningful mutation reason, attributed audit, and strict status;
-      package CLI/manual SSH does not count as an operator surface. Wire the UI consumer in a
-      separate commit only after GREEN producer SHA.
+- [ ] Prices are hot data: publish the new family version through
+      `POST /admin/pricing/tariffs/override` (or `.../seed`) on the engine Control API
+      (`docs/engine/CONTROL_API.md`) — the deleted Stage 5–9 release cycle, its orchestrator,
+      and its gates must not be revived for a price change; discounts ship as managed policy
+      rules through the durable pricing-control jobs, never one-off calls (invariant from
+      `CLAUDE.md`).
 - [ ] A terminal pre-cutover `strict + legacy_single` delivery is recovered only through exact-CAS
       `/v1/admin/pricing-policy-delivery-repairs`: never rewrite the old payload, never retry a
       generic dead job, and never fix commerce rows by hand.

@@ -268,17 +268,6 @@ border:1px solid var(--line);border-radius:10px;background:var(--panel2)}.policy
 .policy-switch-row>label{display:flex;align-items:center;gap:7px;font-size:11.5px}.policy-switch-row input{margin:0;padding:0;accent-color:var(--accent)}
 .policy-switch-row .master-switch{padding:6px 8px;border:1px solid var(--bad);border-radius:7px;background:var(--bad-soft);color:var(--bad);font-weight:650}
 @media(max-width:760px){.policy-model{grid-template-columns:1fr}.policy-rule-controls.compact{padding-left:25px}.policy-switch-row{grid-template-columns:1fr 1fr}.policy-switch-row>b{grid-column:1/-1}}
-.activation-control{display:grid;gap:0}.activation-control .cards{margin-bottom:2px}.activation-table{min-width:1120px}
-.activation-actions{display:grid;grid-template-columns:auto auto;gap:6px;align-items:start;min-width:280px}.activation-actions .activation-blockers{grid-column:1/-1;max-width:360px;white-space:normal;line-height:1.35}
-.activation-copy{min-width:220px;max-width:360px;white-space:normal;word-break:break-word}.activation-copy .sub{white-space:normal}
-@media(max-width:760px){.activation-actions{grid-template-columns:1fr}.activation-actions .activation-blockers{grid-column:1}}
-.capture-control{display:grid;gap:0}.capture-control .cards{margin-bottom:2px}.capture-table{min-width:1320px}
-.capture-form{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:12px;align-items:end}
-.capture-idempotency,.capture-reason,.capture-submit,.capture-form-message{grid-column:1/-1}.capture-inline-input{display:flex;gap:8px}.capture-inline-input input{flex:1;min-width:260px;font-family:var(--mono)}
-.capture-submit{display:flex;gap:16px;align-items:center;justify-content:space-between}.capture-submit .sub{max-width:900px;white-space:normal}.capture-copy,.capture-blockers{min-width:240px;max-width:380px;white-space:normal;word-break:break-word}.capture-blockers .sub{white-space:normal}
-.capture-subject{font-family:var(--mono)}
-@media(max-width:920px){.capture-form{grid-template-columns:repeat(2,minmax(150px,1fr))}}
-@media(max-width:600px){.capture-form{grid-template-columns:1fr}.capture-inline-input,.capture-submit{align-items:stretch;flex-direction:column}.capture-inline-input input{min-width:0}}
 
 /* ── Subscription fleet control room ───────────────────── */
 .fleet-capacity-overview{display:grid;gap:9px}.fleet-capacity-overview>header{display:flex;align-items:end;justify-content:space-between;gap:18px;padding:0 2px}

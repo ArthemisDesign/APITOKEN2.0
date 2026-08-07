@@ -14,8 +14,6 @@ import {
   type PricingRule,
 } from "../business/policy-editor";
 import { PANEL_REASON } from "../business/utils";
-import { PricingReleaseActivationControl } from "./activation-control";
-import { PricingStage8CaptureControl } from "./stage8-capture-control";
 
 interface PricingData {
   catalog: PricingCatalogView | null;
@@ -266,10 +264,6 @@ export default function PricingPage() {
         badge={data.catalog ? <Pill kind="ok">catalog g{data.catalog.catalogGeneration}</Pill> : <Pill kind="bad">foundation missing</Pill>}
       />
 
-      <PricingStage8CaptureControl />
-
-      <PricingReleaseActivationControl />
-
       <SectionHeader title="Provider switches" sub="master, product, B2C и B2B — независимые gates" />
       {data.catalog ? (
         <ProviderSwitchEditor key={data.catalog.switchGeneration} catalog={data.catalog} onChanged={refresh} />
@@ -286,7 +280,7 @@ export default function PricingPage() {
           onChanged={refresh}
         />
       ) : (
-        <div className="policy-rule-count bad">Global B2C policy отсутствует до Stage 5 materialization.</div>
+        <div className="policy-rule-count bad">Global B2C policy ещё не создана.</div>
       )}
 
       <SectionHeader title="Service policies" sub="только reviewed explicit assignments; создание по имени запрещено" />

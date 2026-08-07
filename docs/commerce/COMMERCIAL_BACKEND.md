@@ -207,10 +207,6 @@ PUT       /admin/service-account-inventory/{service_id}
 POST      /admin/pricing-policy-delivery-repairs
 POST      /admin/pricing-catalog-jobs/stage
 POST      /admin/pricing-switch-jobs/stage
-GET       /admin/pricing-stage8-capture-v2
-POST      /admin/pricing-stage8-capture-v2/stage
-GET       /admin/pricing-release-activation-v2
-POST      /admin/pricing-release-activation-v2/stage
 GET       /admin/finance/paying-users?days=1|7|30&limit=...&offset=...&funding=payments|manual|bonus|all|spenders&include_usage=true|false
 GET       /admin/finance/engine-spend?days=1|7|30
 ```
@@ -352,18 +348,6 @@ policy-based invitations persist a neutral `10000` placeholder. Edit, resend and
 independent exact snapshots, and redemption copies the selected invitation version into the new B2B
 client policy before provisioning.
 
-Stage 5 v2 consumes the already deployed engine/OpenKeys/service producers without changing a live
-head. Production uses only the AdminGuard-protected API with a verified `x-admin-actor`; it requires
-a fresh dry-run digest and then performs one attributed idempotent full-class apply:
-
-```text
-POST /v1/admin/pricing-stage5-v2/dry-run       body: {}
-POST /v1/admin/pricing-stage5-v2/materialize   body: {plan_digest, reason}
-```
-
-Stage 5/6 control errors extend the normal Nest error envelope with a stable machine-readable
-`code` while preserving `statusCode` and `message`; clients must ignore fields they do not know.
-
 If an account created before the pre-cutover compatibility fix is stuck on an exact terminal policy
 job with the historical `strict + legacy_single`, `POST /v1/admin/pricing-policy-delivery-repairs`
 accepts its UUID, effective version, content digest and reason. The producer works only while the
@@ -379,47 +363,13 @@ the stored immutable version: the request carries no payload, the version is re-
 storage, and engine delivery is idempotent (an exact replay returns `unchanged`). Staging moves only
 the commerce head and creates an audited delivery job; it does not change traffic, account policies
 or money. A replay does not create a second job and does not duplicate the audit.
-The operation exhausts engine and OpenKeys cursors twice, snapshots commerce/service in
-`REPEATABLE READ`, writes target/recovery skeletons in `SERIALIZABLE`, and records only exact
-prepare+readback ACKs for dormant catalogs, switches and policies. It never creates a Stage 6 job,
-prepares an engine release or moves capability/catalog/switch/release heads. Runtime credentials
-come only from `DATABASE_URL`, `ENGINE_BASE_URL`, `ENGINE_CONTROL_KEY` and optional loopback
-`OPENKEYS_INTERNAL_BASE_URL` / `OPENKEYS_CONTROL_KEY`; they are not request fields or output. The
-strict response exposes exact source/plan lineage and the complete blocker list. Materialization audit
-is committed with the local plan request; dry-run remains write-free.
 
-Stage 6 is explicitly staged and observed by the exact Stage 5 plan digest:
-
-```text
-GET  /v1/admin/pricing-stage6-v2?plan_digest=<exact-stage5-plan-digest>
-POST /v1/admin/pricing-stage6-v2/stage   body: {plan_digest, reason}
-```
-
-The protected API reads only commerce state; the deployed worker performs bounded account-local
-engine normalization and target/recovery prepare. Staging and its operator/reason audit commit in
-one transaction. It never creates an activation job or advances a head. Package CLIs are
-non-production diagnostics and must not be invoked through ad-hoc SSH; until the managed job is
-`confirmed`, Stage 6 is not complete.
-
-Stage 8 consumes the canonical schema-v2 engine report and emits one combined synchronization
-identity through the managed durable workflow described in `docs/ops/DEPLOYMENT.md`. Production
-capture is staged only by the protected explicit admin POST; it is not a manual CLI/file handoff.
-The worker preserves the exact source bytes and signed-i64 JSON money, independently recomputes the
-Rust evidence digest, requires an engine source no older than 120 seconds, exhausts engine and
-OpenKeys twice and observes
-commerce and service authority in one `SERIALIZABLE` snapshot. It binds exact prepared target/recovery
-generations, semantic assignments, funding/release lineage, current inventories, runtime/shadow
-evidence and the absence of pending or failed control jobs. A combined identity expires after 300
-seconds. Existing target/recovery plans allow both passed and blocked reports to be persisted
-immutably in `pricing_stage8_evidence_v2`; missing plans return `not_persisted`. Account and binding
-subjects are emitted only as SHA-256 digests. The capture job records `blocked` as terminal evidence;
-protocol corruption becomes `dead`, while bounded uncertain failures become `retry`. Neither path
-seeds a policy or advances a head. Runtime credentials come only from `DATABASE_URL`,
-required `ENGINE_CONTROL_KEY`, optional `ENGINE_BASE_URL`/`OPENKEYS_INTERNAL_BASE_URL`, and optional
-dedicated `OPENKEYS_CONTROL_KEY` (otherwise OpenKeys uses the shared engine key).
-
-The combined `sales_contract_digest` identifies the intended paid-funded commission schema but is
-not deployed-sales-runtime evidence. Stage 9 separately requires the sales v2 consumer checkpoint.
+The Stage 5–9 release-cycle machinery (managed Stage 5/6 preparation, Stage 8 capture, Stage 9
+activation, shadow rollout, orchestration) is removed from commerce: prices are hot tariff
+overrides on the engine Control API and discounts are hot managed policy rules delivered through
+the durable pricing-control jobs, so the cycle's routes, worker lanes, and gates were deleted
+(`docs/ops/MODEL_RELEASE_CYCLE.md`). The `packages/db` stage libraries remain pending a
+follow-up cleanup; the engine release-v2 producers under `/admin/pricing/v2/*` are unchanged.
 
 ## Authenticated client API
 

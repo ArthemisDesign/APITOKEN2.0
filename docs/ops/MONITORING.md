@@ -910,25 +910,31 @@ lower the plane's admission set; a plan that lapsed needs a paid renewal, not en
 Check the owning worker/service, its database lock/lease fields, retry schedule, and downstream
 dependency. A growing queue with a live process usually means dependency or poison-job failure.
 
-For the pricing control queues (`engine_catalog_jobs`, `engine_switch_jobs`,
-`pricing_release_control_jobs_v2`, `pricing_funding_normalizations_v2`,
-`pricing_shadow_policy_jobs_v2`, `pricing_shadow_rollouts_v2`,
-`pricing_stage8_capture_jobs_v2`) the owner is the `apitoken-worker` unit (pricing worker,
-funding normalization worker, shadow rollout worker, and Stage 8 capture worker; check
-`node_systemd_unit_state` and the unit journal). These are control-plane lanes, not customer
-traffic: a sustained backlog means a release rollout, activation, or evidence capture is not
-draining. The `/pricing` admin control room shows the same queue counts via the bounded
-`GET /admin/pricing-release-activation-v2` and `GET /admin/pricing-stage8-capture-v2` snapshots.
+For the live pricing control queues (`engine_catalog_jobs`, `engine_switch_jobs`) the owner is
+the `apitoken-worker` unit (pricing worker; check `node_systemd_unit_state` and the unit
+journal). These are control-plane lanes, not customer traffic: a sustained backlog means catalog
+or switch delivery is not draining.
+
+The release-v2 queues (`pricing_release_control_jobs_v2`, `pricing_funding_normalizations_v2`,
+`pricing_shadow_policy_jobs_v2`, `pricing_shadow_rollouts_v2`, `pricing_stage8_capture_jobs_v2`)
+lost their consumers when the release cycle was dismantled (see `docs/ops/MODEL_RELEASE_CYCLE.md`):
+no worker claims them anymore. The metrics collector still exports their
+`apitoken_queue_*` gauges, so a leftover non-terminal row would surface here as a backlog that
+nothing drains. Treat such a row as historical residue from the completed gpt-image-2 cycle:
+confirm it predates the dismantling, do not requeue it, and expect the dead gauges to be removed
+by the follow-up cleanup of the `packages/db` stage libraries.
 
 ## DurableQueueOldestItemStale
 
 Inspect the oldest row without editing it. Confirm lock expiry and worker heartbeat, then use the
 application’s idempotent retry path.
 
-On the pricing control queues a stale oldest item usually means the owning `apitoken-worker`
-lane is down, crash-looping, or every claim fails and re-arms `next_attempt_at`. All v2 queues
-use lease recovery plus `FOR UPDATE SKIP LOCKED` claiming, so once the cause is fixed the worker
-re-claims the row on its own — never update `status` or lock fields by hand.
+On the live pricing control queues a stale oldest item usually means the owning
+`apitoken-worker` lane is down, crash-looping, or every claim fails and re-arms
+`next_attempt_at`. The live queues use lease recovery plus `FOR UPDATE SKIP LOCKED` claiming, so
+once the cause is fixed the worker re-claims the row on its own — never update `status` or lock
+fields by hand. A stale row on a release-v2 queue is different: those lanes are deleted (see
+`DurableQueueBacklog`), so nothing will ever claim the row again.
 
 ## DurableQueueDeadItems
 
@@ -940,14 +946,10 @@ delivery failure as canceled merely to silence this alert.
 On the release-v2 pricing control queues the dead gauge maps the terminal failure state of each
 state machine: `dead` for `pricing_release_control_jobs_v2` and
 `pricing_stage8_capture_jobs_v2`, `blocked` or `dead` for `pricing_shadow_policy_jobs_v2` and
-`pricing_shadow_rollouts_v2` (`blocked` is a permanent delivery failure there), and `blocker`
-for `pricing_funding_normalizations_v2` (the engine reported a normalization blocker; the release
-cannot pass Stage 8 evidence while any account is blocked). Read `last_error` (and the `blockers`
-JSON for funding normalizations) on the row, fix the cause, and re-drive the work through the
-application's own idempotent paths — never by editing `status` directly. A dead activation or
-capture row blocks the release; the `/pricing` admin control room shows the same terminal states
-with their digests. Note the deliberate exception: a Stage 8 capture ending `blocked` (evidence
-gate did not pass) is terminal evidence, not a lane failure, and does not raise this alert.
+`pricing_shadow_rollouts_v2`, and `blocker` for `pricing_funding_normalizations_v2`. Those lanes
+are deleted with the dismantled release cycle, so a dead-gauge increment there can only be a row
+written before the dismantling — read `last_error` for the historical record, do not requeue it,
+and do not edit `status` by hand.
 
 ## PricingPolicyDeliveryStale
 

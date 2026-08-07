@@ -196,113 +196,17 @@ publish_authbot_runtime_helper() {
     /usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
 }
 
-publish_pricing_stage56_helper() {
-  publish_fixed_helper "$ROOT/deploy/pricing-stage56-admission-gate.sh" \
-    /usr/local/lib/apitoken-watchdog/controller/pricing-stage56-admission-gate.sh
-}
-
-publish_pricing_stage56_refresh_helper() {
-  publish_fixed_helper "$ROOT/deploy/pricing-stage56-refresh-gate.sh" \
-    /usr/local/lib/apitoken-watchdog/controller/pricing-stage56-refresh-gate.sh
-}
-
-publish_pricing_stage7_helper() {
-  publish_fixed_helper "$ROOT/deploy/pricing-stage7-admission-gate.sh" \
-    /usr/local/lib/apitoken-watchdog/controller/pricing-stage7-admission-gate.sh
-}
-
-publish_pricing_stage7_refresh_helper() {
-  publish_fixed_helper "$ROOT/deploy/pricing-stage7-refresh-gate.sh" \
-    /usr/local/lib/apitoken-watchdog/controller/pricing-stage7-refresh-gate.sh
-}
-
-publish_pricing_stage567_converge_helper() {
-  publish_fixed_helper "$ROOT/deploy/pricing-stage567-converge-gate.sh" \
-    /usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-gate.sh
-}
-
-publish_pricing_stage567_converge_v2_helper() {
-  publish_fixed_helper "$ROOT/deploy/pricing-stage567-converge-v2-gate.sh" \
-    /usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-v2-gate.sh
-}
-
-publish_pricing_stage567_converge_v3_helper() {
-  publish_fixed_helper "$ROOT/deploy/pricing-stage567-converge-v3-gate.sh" \
-    /usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-v3-gate.sh
-}
-
-publish_pricing_stage7_identity_diagnostic_helper() {
-  publish_fixed_helper "$ROOT/deploy/pricing-stage7-identity-diagnostic-gate.sh" \
-    /usr/local/lib/apitoken-watchdog/controller/pricing-stage7-identity-diagnostic-gate.sh
-}
-
 install_and_verify_sudo_policy() {
   local authbot_helper=/usr/local/lib/apitoken-watchdog/controller/authbot-runtime-state.sh
-  local pricing56_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage56-admission-gate.sh
-  local pricing56_refresh_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage56-refresh-gate.sh
-  local pricing7_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage7-admission-gate.sh
-  local pricing7_refresh_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage7-refresh-gate.sh
-  local pricing567_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-gate.sh
-  local pricing7_diagnostic_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage7-identity-diagnostic-gate.sh
   local authbot_backup=${authbot_helper}.rollback.$$
-  local pricing56_backup=${pricing56_helper}.rollback.$$
-  local pricing56_refresh_backup=${pricing56_refresh_helper}.rollback.$$
-  local pricing7_backup=${pricing7_helper}.rollback.$$
-  local pricing7_refresh_backup=${pricing7_refresh_helper}.rollback.$$
-  local pricing567_backup=${pricing567_helper}.rollback.$$
-  local pricing7_diagnostic_backup=${pricing7_diagnostic_helper}.rollback.$$
-  local had_authbot=0 had_pricing56=0 had_pricing56_refresh=0 had_pricing7=0 had_pricing7_refresh=0 had_pricing567=0 had_pricing7_diagnostic=0
+  local had_authbot=0
   if [[ -e $authbot_helper || -L $authbot_helper ]]; then
     [[ -f $authbot_helper && ! -L $authbot_helper ]] \
       || { echo "$authbot_helper must be a regular file" >&2; return 1; }
     cp -p -- "$authbot_helper" "$authbot_backup"
     had_authbot=1
   fi
-  if [[ -e $pricing56_helper || -L $pricing56_helper ]]; then
-    [[ -f $pricing56_helper && ! -L $pricing56_helper ]] \
-      || { echo "$pricing56_helper must be a regular file" >&2; return 1; }
-    cp -p -- "$pricing56_helper" "$pricing56_backup"
-    had_pricing56=1
-  fi
-  if [[ -e $pricing56_refresh_helper || -L $pricing56_refresh_helper ]]; then
-    [[ -f $pricing56_refresh_helper && ! -L $pricing56_refresh_helper ]] \
-      || { echo "$pricing56_refresh_helper must be a regular file" >&2; return 1; }
-    cp -p -- "$pricing56_refresh_helper" "$pricing56_refresh_backup"
-    had_pricing56_refresh=1
-  fi
-  if [[ -e $pricing7_helper || -L $pricing7_helper ]]; then
-    [[ -f $pricing7_helper && ! -L $pricing7_helper ]] \
-      || { echo "$pricing7_helper must be a regular file" >&2; return 1; }
-    cp -p -- "$pricing7_helper" "$pricing7_backup"
-    had_pricing7=1
-  fi
-  if [[ -e $pricing7_refresh_helper || -L $pricing7_refresh_helper ]]; then
-    [[ -f $pricing7_refresh_helper && ! -L $pricing7_refresh_helper ]] \
-      || { echo "$pricing7_refresh_helper must be a regular file" >&2; return 1; }
-    cp -p -- "$pricing7_refresh_helper" "$pricing7_refresh_backup"
-    had_pricing7_refresh=1
-  fi
-  if [[ -e $pricing567_helper || -L $pricing567_helper ]]; then
-    [[ -f $pricing567_helper && ! -L $pricing567_helper ]] \
-      || { echo "$pricing567_helper must be a regular file" >&2; return 1; }
-    cp -p -- "$pricing567_helper" "$pricing567_backup"
-    had_pricing567=1
-  fi
-  if [[ -e $pricing7_diagnostic_helper || -L $pricing7_diagnostic_helper ]]; then
-    [[ -f $pricing7_diagnostic_helper && ! -L $pricing7_diagnostic_helper ]] \
-      || { echo "$pricing7_diagnostic_helper must be a regular file" >&2; return 1; }
-    cp -p -- "$pricing7_diagnostic_helper" "$pricing7_diagnostic_backup"
-    had_pricing7_diagnostic=1
-  fi
   publish_authbot_runtime_helper
-  publish_pricing_stage56_helper
-  publish_pricing_stage56_refresh_helper
-  publish_pricing_stage7_helper
-  publish_pricing_stage7_refresh_helper
-  publish_pricing_stage567_converge_helper
-  publish_pricing_stage567_converge_v2_helper
-  publish_pricing_stage567_converge_v3_helper
-  publish_pricing_stage7_identity_diagnostic_helper
   install -o root -g root -m 0755 "$ROOT/deploy/install-sudoers.sh" \
     /usr/local/lib/apitoken-watchdog/install-sudoers.sh
   install -d -o root -g root -m 0755 /usr/local/lib/apitoken-watchdog/sudoers.d
@@ -313,17 +217,9 @@ install_and_verify_sudo_policy() {
   systemctl daemon-reload
   if ! systemctl start apitoken-sudoers-install.service; then
     if (( had_authbot == 1 )); then mv -f -- "$authbot_backup" "$authbot_helper"; else rm -f -- "$authbot_helper"; fi
-    if (( had_pricing56 == 1 )); then mv -f -- "$pricing56_backup" "$pricing56_helper"; else rm -f -- "$pricing56_helper"; fi
-    if (( had_pricing56_refresh == 1 )); then mv -f -- "$pricing56_refresh_backup" "$pricing56_refresh_helper"; else rm -f -- "$pricing56_refresh_helper"; fi
-    if (( had_pricing7 == 1 )); then mv -f -- "$pricing7_backup" "$pricing7_helper"; else rm -f -- "$pricing7_helper"; fi
-    if (( had_pricing7_refresh == 1 )); then mv -f -- "$pricing7_refresh_backup" "$pricing7_refresh_helper"; else rm -f -- "$pricing7_refresh_helper"; fi
-    if (( had_pricing567 == 1 )); then mv -f -- "$pricing567_backup" "$pricing567_helper"; else rm -f -- "$pricing567_helper"; fi
-    if (( had_pricing7_diagnostic == 1 )); then mv -f -- "$pricing7_diagnostic_backup" "$pricing7_diagnostic_helper"; else rm -f -- "$pricing7_diagnostic_helper"; fi
     return 1
   fi
-  rm -f -- "$authbot_backup" "$pricing56_backup" "$pricing56_refresh_backup" \
-    "$pricing7_backup" "$pricing7_refresh_backup" "$pricing567_backup" \
-    "$pricing7_diagnostic_backup"
+  rm -f -- "$authbot_backup"
 }
 
 install_controller_definitions() {
@@ -360,14 +256,6 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-diagnostic-gate.sh
   install -o root -g root -m 0755 "$ROOT/deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh" \
     /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-v2-diagnostic-gate.sh
-  publish_pricing_stage56_helper
-  publish_pricing_stage56_refresh_helper
-  publish_pricing_stage7_helper
-  publish_pricing_stage7_refresh_helper
-  publish_pricing_stage567_converge_helper
-  publish_pricing_stage567_converge_v2_helper
-  publish_pricing_stage567_converge_v3_helper
-  publish_pricing_stage7_identity_diagnostic_helper
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-test-db.sh" \
     /usr/local/lib/apitoken-watchdog/watchdog-test-db
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-backup.sh" \

@@ -282,62 +282,6 @@ require_permitted 'GPT Image 2 exact-producer settlement diagnostic' \
 require_permitted 'GPT Image 2 exact-producer settlement v2 diagnostic' \
   /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-settlement-v2-diagnostic-gate.sh \
   853fdc6c8d5be486c371b23df6772eeaf7a48029 --inspect
-pricing_stage56_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage56-admission-gate.sh
-if ! fixed_root_helper_is_trusted "$pricing_stage56_helper"; then
-  warn "MISSING or unsafe required fixed pricing Stage 5/6 helper or parent"
-  verify_failures=$((verify_failures + 1))
-fi
-require_permitted 'GPT Image 2 exact-admission pricing Stage 5/6 helper' \
-  "$pricing_stage56_helper" 3f412e33d631f2956a575e40f7f28f8b0b592106
-pricing_stage56_refresh_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage56-refresh-gate.sh
-if ! fixed_root_helper_is_trusted "$pricing_stage56_refresh_helper"; then
-  warn "MISSING or unsafe required fixed pricing Stage 5/6 refresh helper or parent"
-  verify_failures=$((verify_failures + 1))
-fi
-require_permitted 'GPT Image 2 exact-admission pricing Stage 5/6 inventory refresh helper' \
-  "$pricing_stage56_refresh_helper" 3f412e33d631f2956a575e40f7f28f8b0b592106
-pricing_stage7_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage7-admission-gate.sh
-if ! fixed_root_helper_is_trusted "$pricing_stage7_helper"; then
-  warn "MISSING or unsafe required fixed pricing Stage 7 helper or parent"
-  verify_failures=$((verify_failures + 1))
-fi
-require_permitted 'GPT Image 2 exact-admission pricing Stage 7 helper' \
-  "$pricing_stage7_helper" 3f412e33d631f2956a575e40f7f28f8b0b592106
-pricing_stage7_refresh_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage7-refresh-gate.sh
-if ! fixed_root_helper_is_trusted "$pricing_stage7_refresh_helper"; then
-  warn "MISSING or unsafe required fixed pricing Stage 7 refresh helper or parent"
-  verify_failures=$((verify_failures + 1))
-fi
-require_permitted 'GPT Image 2 exact-admission pricing Stage 7 inventory refresh helper' \
-  "$pricing_stage7_refresh_helper" 3f412e33d631f2956a575e40f7f28f8b0b592106
-pricing_stage567_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-gate.sh
-if ! fixed_root_helper_is_trusted "$pricing_stage567_helper"; then
-  warn "MISSING or unsafe required fixed pricing Stage 5-7 convergence helper or parent"
-  verify_failures=$((verify_failures + 1))
-fi
-require_permitted 'GPT Image 2 exact-admission pricing Stage 5-7 convergence helper' \
-  "$pricing_stage567_helper" 3f412e33d631f2956a575e40f7f28f8b0b592106
-pricing_stage567_v2_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-v2-gate.sh
-if ! fixed_root_helper_is_trusted "$pricing_stage567_v2_helper"; then
-  warn "MISSING or unsafe required fixed pricing Stage 5-7 convergence v2 helper or parent"
-  verify_failures=$((verify_failures + 1))
-fi
-require_permitted 'GPT Image 2 exact-admission pricing Stage 5-7 convergence v2 helper' \
-  "$pricing_stage567_v2_helper" 3f412e33d631f2956a575e40f7f28f8b0b592106
-pricing_stage567_v3_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage567-converge-v3-gate.sh
-if ! fixed_root_helper_is_trusted "$pricing_stage567_v3_helper"; then
-  warn "MISSING or unsafe required fixed pricing Stage 5-7 convergence v3 helper or parent"
-  verify_failures=$((verify_failures + 1))
-fi
-require_permitted 'GPT Image 2 exact-admission pricing Stage 5-7 convergence v3 helper' \
-  "$pricing_stage567_v3_helper" 3f412e33d631f2956a575e40f7f28f8b0b592106
-pricing_stage7_diagnostic_helper=/usr/local/lib/apitoken-watchdog/controller/pricing-stage7-identity-diagnostic-gate.sh
-if ! fixed_root_helper_is_trusted "$pricing_stage7_diagnostic_helper"; then
-  warn "MISSING or unsafe required fixed pricing Stage 7 identity diagnostic helper or parent"
-  verify_failures=$((verify_failures + 1))
-fi
-require_permitted 'GPT Image 2 exact-admission pricing Stage 7 identity diagnostic' \
-  "$pricing_stage7_diagnostic_helper" 3f412e33d631f2956a575e40f7f28f8b0b592106 --inspect
 require_permitted 'router promotion to slot A' \
   /usr/local/lib/apitoken-watchdog/controller/router-promote.sh 8800
 require_permitted 'router promotion to slot B' \
