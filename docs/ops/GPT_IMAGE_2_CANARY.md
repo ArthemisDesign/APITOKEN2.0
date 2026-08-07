@@ -321,8 +321,9 @@ and is overall watchdog-GREEN: two strict byte-different PNGs, exact generation/
 `settled`/`done`, and `charge_nano=0` under release-v2 `meter_only`. Publication followed in the
 separate commit `3917a31b333899aed87396acd6e8e83e403cd3e6`: the generation-6 pricing release activated
 the immutable `gpt-image-2-2026-04-21` snapshot in the main and OpenKeys catalogs (release head 41),
-the router preset advertises it in key-scoped `/v1/models` (the router does not proxy image routes),
-and the site catalog and public docs list the model.
+the unified router proxies both image routes as a native OpenAI lane and its preset lists the
+snapshot (`/v1/models` deliberately does not publish the image model), and the site catalog and
+public docs list the model.
 
 The official model contract is non-streaming. The public Image API guide also describes masks, output
 formats and Responses multi-turn editing, but the actual native subscription wire has not proved masks,

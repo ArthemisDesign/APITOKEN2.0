@@ -3,7 +3,6 @@
 // can never drift away from what the gateway actually serves.
 import {
   INTEGRATION_MODELS,
-  OPENAI_BASE_URL,
   ROUTER_BASE_URL,
   ROUTER_OPENAI_BASE_URL,
   type IntegrationLanguage,
@@ -226,7 +225,7 @@ console.log(response.choices[0]?.message.content);`;
 function imageRequestCode(apiLanguage: ApiLanguage): string {
   const prompt = "A watercolor lighthouse at dawn";
   if (apiLanguage === "curl") {
-    return `curl ${OPENAI_BASE_URL}/images/generations \\
+    return `curl ${ROUTER_OPENAI_BASE_URL}/images/generations \\
   -H "Authorization: Bearer $APITOKEN_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -241,7 +240,7 @@ from openai import OpenAI
 
 client = OpenAI(
     api_key=os.environ["APITOKEN_API_KEY"],
-    base_url="${OPENAI_BASE_URL}",
+    base_url="${ROUTER_OPENAI_BASE_URL}",
 )
 
 image = client.images.generate(
@@ -257,7 +256,7 @@ import OpenAI from "openai";
 
 const client = new OpenAI({
   apiKey: process.env["APITOKEN_API_KEY"],
-  baseURL: "${OPENAI_BASE_URL}",
+  baseURL: "${ROUTER_OPENAI_BASE_URL}",
 });
 
 const image = await client.images.generate({
@@ -351,14 +350,13 @@ export function buildApiGuide({
     codeLabel: apiLanguage === "curl" ? "HTTP" : languageName,
   });
 
-  // GPT Image 2 is served only on the OpenAI plane — the unified router advertises
-  // the model in /v1/models but does not proxy image routes.
+  // GPT Image 2 images are a native OpenAI lane on the unified router.
   if (provider === "openai" && native) {
     steps.push({
       title: localize(language, "Generate an image with GPT Image 2", "Сгенерируйте изображение через GPT Image 2"),
       text: localize(language,
-        `Images live on the OpenAI endpoint, not the unified router: \`POST ${OPENAI_BASE_URL}/images/generations\` returns one non-streaming base64 PNG billed to the same prepaid balance. The proved contract is deliberately narrow — background auto|opaque, quality auto|low, size auto. To edit, send multipart \`POST /v1/images/edits\` with one reference PNG on the same endpoint.`,
-        `Изображения обслуживает OpenAI endpoint, а не единый роутер: \`POST ${OPENAI_BASE_URL}/images/generations\` возвращает один непотоковый base64 PNG и списывает тот же предоплатный баланс. Доказанный контракт намеренно узкий — background auto|opaque, quality auto|low, size auto. Для редактирования отправьте multipart \`POST /v1/images/edits\` с одним reference PNG на том же endpoint.`),
+        `Images run on the same unified endpoint: \`POST ${ROUTER_OPENAI_BASE_URL}/images/generations\` returns one non-streaming base64 PNG billed to the same prepaid balance. The proved contract is deliberately narrow — omit background/quality/size, or send only background=opaque, quality=low, size=auto (an explicit "auto" for background or quality is rejected with 400). To edit, send multipart \`POST /v1/images/edits\` with one reference PNG. The legacy host openai.api.apitoken.sale serves the same routes.`,
+        `Изображения работают через тот же единый endpoint: \`POST ${ROUTER_OPENAI_BASE_URL}/images/generations\` возвращает один непотоковый base64 PNG и списывает тот же предоплатный баланс. Доказанный контракт намеренно узкий — не передавайте background/quality/size вовсе либо отправляйте только background=opaque, quality=low, size=auto (явное "auto" для background или quality отклоняется с 400). Для редактирования отправьте multipart \`POST /v1/images/edits\` с одним reference PNG. Legacy-хост openai.api.apitoken.sale обслуживает те же маршруты.`),
       code: imageRequestCode(apiLanguage),
       codeLabel: apiLanguage === "curl" ? "HTTP" : languageName,
     });

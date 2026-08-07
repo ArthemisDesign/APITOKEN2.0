@@ -129,7 +129,10 @@ planes only over HTTP via stable loopback origins (8790/8792/8794).
   the quota-free native `:countTokens` of Gemini.
 - Stored responses endpoints (`/v1/responses/input_tokens`, `/v1/responses/{id}`,
   `.../input_items`) use no dispatch — they remain a native OpenAI lane
-  (stored responses only for `openai/*`, decision 5).
+  (stored responses only for `openai/*`, decision 5). The Images API
+  (`POST /v1/images/generations`, `/v1/images/edits`) is likewise a native OpenAI lane:
+  a byte-faithful proxy to the OpenAI plane, which owns admission, billing, and the proved
+  narrow GPT Image 2 contract.
 - `catalog.rs` — the unified `/v1/models`: aggregation of the three planes, namespaced IDs
   + only globally unambiguous aliases, per-plane singleflight refresh sharing the result of a
   successful or failed in-flight attempt, a deterministically

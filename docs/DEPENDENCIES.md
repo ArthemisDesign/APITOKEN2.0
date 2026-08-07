@@ -393,8 +393,9 @@ is only what is needed to walk the relationships when making changes:
   watchdog-GREEN. Its sole paid consumer is the separately delivered
   `deploy/gpt-image-2-public-paid-smoke-v3-gate.sh`, pinned to the fresh v3 evidence root and allowed exactly
   one `--execute`; every partial result permanently fences replay. The direct OpenAI plane and header-gated Combined
-  bridge produce these routes; the router advertises the snapshot id in its key-scoped `/v1/models`
-  preset but does not proxy image routes. The v3 one-shot public generation+edit smoke (delivery
+  bridge produce these routes; the unified router proxies both image routes to the OpenAI plane as a
+  native lane, and its preset lists the snapshot id; `/v1/models` deliberately does not publish the
+  image model. The v3 one-shot public generation+edit smoke (delivery
   `d172c6fd0116ba73b051fc5aa02193a4885de5da`) is overall watchdog-GREEN, so the model is published:
   generation-6 pricing catalogs activated the immutable `gpt-image-2-2026-04-21` snapshot (release
   head 41), and the router preset, site catalog and public docs list it (publication commit

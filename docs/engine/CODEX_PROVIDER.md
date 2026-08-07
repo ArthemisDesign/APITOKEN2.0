@@ -17,10 +17,11 @@ Public contract (unchanged from the app-server era):
 | `POST /v1/chat/completions` | supported adapter, streaming and non-streaming |
 | `POST /v1/images/generations` | supported (GPT Image 2); one `opaque/low/auto` PNG, non-streaming |
 | `POST /v1/images/edits` | supported (GPT Image 2); one strict PNG reference, one edited PNG, non-streaming |
-| `GET /v1/models`, `GET /v1/models/{model}` | supported; last-good live intersection with the pinned billing catalog; GPT Image 2 advertised since the GREEN public smoke |
+| `GET /v1/models`, `GET /v1/models/{model}` | supported; last-good live intersection with the pinned billing catalog; GPT Image 2 is deliberately not listed — image models stay out of discovery |
 
 Everything else on the OpenAI hostname returns an OpenAI-shaped `404`; nothing is ever forwarded
-to Anthropic from it. The lenient SDK-compatibility rules (ignored sampling/store/unknown
+to Anthropic from it. The unified router (`router.apitoken.sale`) proxies both image routes to this
+plane as a native OpenAI lane. The lenient SDK-compatibility rules (ignored sampling/store/unknown
 fields, degraded forced `tool_choice`/`strict`, client-side `stop`/`max_tokens` enforcement,
 reasoning summaries as `reasoning_content`, heartbeat SSE every 15 s, `x-ratelimit-*` headers on
 non-stream responses) are unchanged.

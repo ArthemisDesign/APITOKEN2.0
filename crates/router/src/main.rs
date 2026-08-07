@@ -74,6 +74,8 @@ fn build_client() -> anyhow::Result<Client> {
 /// lanes с model-based dispatch (chat::proxy_chat, этап 3.1;
 /// responses::proxy_responses, этап 4.1; messages::proxy_messages, этап 5.1).
 /// Stored responses endpoints остаются native OpenAI lane (решение 5);
+/// `/v1/images/generations` и `/v1/images/edits` — тоже native OpenAI lane
+/// (байт-в-байт прокси на OpenAI-плоскость, биллинг и admission — в плоскости).
 /// Собственные поверхности router'а — агрегированный каталог /v1/models и
 /// dispatch universal-запросов.
 pub fn app(state: Arc<AppState>) -> Router {
@@ -92,6 +94,8 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/responses/input_tokens", post(proxy_openai))
         .route("/v1/responses/{id}", get(proxy_openai).delete(proxy_openai))
         .route("/v1/responses/{id}/input_items", get(proxy_openai))
+        .route("/v1/images/generations", post(proxy_openai))
+        .route("/v1/images/edits", post(proxy_openai))
         .route("/v1/chat/completions", post(chat::proxy_chat))
         .route("/v1beta/{*rest}", any(proxy_gemini))
         .fallback(error_fallback)

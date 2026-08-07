@@ -24,7 +24,10 @@ impl Lane {
     pub fn from_path(path: &str) -> Option<Lane> {
         if path == "/balance" || path.starts_with("/v1/messages") {
             Some(Lane::Anthropic)
-        } else if path.starts_with("/v1/responses") || path == "/v1/chat/completions" {
+        } else if path.starts_with("/v1/responses")
+            || path.starts_with("/v1/images/")
+            || path == "/v1/chat/completions"
+        {
             Some(Lane::OpenAi)
         } else if path.starts_with("/v1beta/") {
             Some(Lane::Gemini)

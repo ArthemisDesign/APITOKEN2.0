@@ -119,6 +119,10 @@ POST /v1/responses/input_tokens                   OpenAI token counting (openai-
 GET  /v1/responses/{id}                           stored response — openai/* only
 GET  /v1/responses/{id}/input_items               (decision 5)
 
+POST /v1/images/generations                     OpenAI Images (GPT Image 2) — native OpenAI
+                                                lane, one non-streaming PNG
+POST /v1/images/edits                           one-reference PNG edit — native OpenAI lane
+
 POST /v1/chat/completions                         universal OpenAI-compatible entry
                                                   (stage 1a — OpenAI plane only,
                                                    stage 3.1 — + any Claude catalog model

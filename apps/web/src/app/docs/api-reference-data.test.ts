@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   INTEGRATION_MODELS,
-  OPENAI_BASE_URL,
   ROUTER_BASE_URL,
   ROUTER_OPENAI_BASE_URL,
   type IntegrationLanguage,
@@ -114,9 +113,9 @@ describe("API reference guide", () => {
       const imageStep = openai.steps.at(-1)!;
       expect(imageStep.title).toContain("GPT Image 2");
       expect(imageStep.text).toContain("/v1/images/edits");
-      expect(imageStep.code).toContain(OPENAI_BASE_URL);
+      expect(imageStep.code).toContain(ROUTER_OPENAI_BASE_URL);
       if (apiLanguage === "curl") {
-        expect(imageStep.code).toContain(`${OPENAI_BASE_URL}/images/generations`);
+        expect(imageStep.code).toContain(`${ROUTER_OPENAI_BASE_URL}/images/generations`);
       }
       expect(imageStep.code).toContain('"gpt-image-2"');
       expect(imageStep.code).toContain("APITOKEN_API_KEY");

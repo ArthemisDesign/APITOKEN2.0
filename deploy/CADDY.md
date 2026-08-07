@@ -158,7 +158,7 @@ restricted to `/v1beta/*`, `/health`, and `/balance`. Every other path returns `
 
 `router.apitoken.sale` is the unified multi-provider entry point (stage 1b of
 `docs/engine/UNIFIED_ROUTER.md`). The vhost only terminates TLS: the whole public contract
-(`/v1/messages*`, `/v1/responses*`, `/v1/chat/completions`, `/v1/models*`, `/v1beta/*`,
+(`/v1/messages*`, `/v1/responses*`, `/v1/chat/completions`, `/v1/images/*`, `/v1/models*`, `/v1beta/*`,
 `/health`, `/balance`) imports the root-owned `router_backend` runtime snippet. In steady state it
 names exactly one `claude-router@` slot on loopback 8800 or 8801; the same snippet backs the
 loopback-only stable origin `127.0.0.1:8802` used by Prometheus and verification. The router owns path-shape routing to the

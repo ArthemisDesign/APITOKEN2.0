@@ -984,6 +984,8 @@ async fn gemini_and_stored_responses_paths_reach_their_planes() {
         ("GET", "/v1/responses/resp_42"),
         ("DELETE", "/v1/responses/resp_42"),
         ("GET", "/v1/responses/resp_42/input_items"),
+        ("POST", "/v1/images/generations"),
+        ("POST", "/v1/images/edits"),
     ] {
         client
             .request(method.parse().unwrap(), format!("{router}{path}"))
@@ -1006,7 +1008,7 @@ async fn gemini_and_stored_responses_paths_reach_their_planes() {
         .unwrap();
 
     assert_eq!(log_g.lock().unwrap().len(), 4);
-    assert_eq!(log_o.lock().unwrap().len(), 6);
+    assert_eq!(log_o.lock().unwrap().len(), 8);
     let anthropic_paths: Vec<String> = log_a
         .lock()
         .unwrap()

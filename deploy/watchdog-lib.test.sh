@@ -2220,7 +2220,7 @@ grep -Fq 'header Content-Type application/json*' <<<"$openai_api_vhost" \
 # The blue-green controller replaces that snippet atomically; the public path never lists slots or
 # gains compression, and Prometheus never has to discover the active slot.
 router_vhost=$(sed -n '/^router\.apitoken\.sale {$/,/^}$/p' "$ROOT/deploy/Caddyfile")
-grep -Fq '@public_core path /v1/messages* /v1/responses* /v1/chat/completions /v1/models* /v1beta/* /health /balance' \
+grep -Fq '@public_core path /v1/messages* /v1/responses* /v1/chat/completions /v1/images/* /v1/models* /v1beta/* /health /balance' \
   <<<"$router_vhost" \
   || wd_die 'unified router must forward exactly the documented public contract'
 grep -Fq 'import router_backend' <<<"$router_vhost" \
