@@ -33,6 +33,15 @@ The repository-level `pnpm-lock.yaml` is the dependency lock. Keep `apitoken.sal
 origin because the backend CORS and mutation-origin checks intentionally allow one exact frontend
 origin.
 
+`vercel.json` runs `scripts/vercel-ignore-build.sh` before allocating a frontend build. The script
+compares the current checkout with `VERCEL_GIT_PREVIOUS_SHA` across `apps/web` and the root lockfile,
+workspace definition, Node version, and workspace manifest. Because Vercel clones only a short Git
+history, it fetches an
+otherwise-missing previous commit by exact SHA. It skips only after a conclusive unchanged diff;
+missing variables, invalid or unfetchable commits, changes, and comparison errors all fail closed to
+a normal build instead of failing the deployment. Verify the contract with
+`bash apps/web/scripts/vercel-ignore-build.test.sh` from the repository root.
+
 ## Visual audit
 
 The complete workflow, capture matrix, fixture conventions, assertion patterns, and troubleshooting

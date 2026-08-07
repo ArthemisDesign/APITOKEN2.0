@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && bash scripts/vercel-ignore-build.test.sh",
     "audit:screenshots": "node scripts/capture-site.mjs",
     "audit:dashboard": "AUDIT_SCOPE=dashboard node scripts/capture-site.mjs",
     "indexnow": "node scripts/indexnow.mjs"
