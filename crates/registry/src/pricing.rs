@@ -12,6 +12,7 @@ mod release_v2;
 mod shadow;
 mod snapshots;
 mod sqlite;
+mod tariffs;
 
 pub(crate) use policy::PolicySnapshotLookup;
 pub use policy::{
@@ -64,6 +65,16 @@ pub use snapshots::{
 pub(crate) use sqlite::{
     sqlite_insert_legacy_scalar_admission_snapshot, sqlite_insert_policy_admission_snapshot,
     sqlite_legacy_scalar_snapshot_lookup, sqlite_policy_snapshot_lookup,
+};
+
+pub(crate) use tariffs::{postgres_insert_tariff_override, postgres_list_tariff_overrides};
+pub use tariffs::{
+    parse_tariff_override_payload, resolve_tariff_override, tariff_override_payload_digest,
+    validate_tariff_family, AnthropicTariffPrices, CodexTariffCreditRates, CodexTariffPrices,
+    GeminiTariffPrices, GeminiTariffSearchBilling, GlmTariffCreditRates, GlmTariffPrices,
+    KimiTariffPrices, OpenAiImageTariffPrices, TariffOverride, TariffOverrideInsert,
+    TariffOverrideInsertOutcome, TariffOverridePayload, TariffOverrideRejection,
+    TARIFF_OVERRIDE_CLOCK_SKEW_GRACE_SECS,
 };
 
 pub use sqlite::{

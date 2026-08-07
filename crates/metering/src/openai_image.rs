@@ -11,6 +11,16 @@ pub const OPENAI_IMAGE_ALIAS_GENERATION: i64 = 1;
 pub const GPT_IMAGE_2_ALIAS: &str = "gpt-image-2";
 pub const GPT_IMAGE_2_SNAPSHOT: &str = "gpt-image-2-2026-04-21";
 
+/// Hot-override tariff family of the GPT Image 2 card: `OPENAI_IMAGE_TARIFF_SCHEDULE_ID` minus
+/// its date/version suffix. One family covers both the alias and the immutable snapshot because
+/// they share one reviewed rate card.
+pub const OPENAI_IMAGE_TARIFF_FAMILY: &str = "openai/gpt-image-2";
+
+/// The hot-override tariff family a GPT Image 2 resolution prices against.
+pub fn openai_image_tariff_family() -> &'static str {
+    OPENAI_IMAGE_TARIFF_FAMILY
+}
+
 /// Five disjoint GPT Image billing rates in nanoUSD per token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OpenAiImagePrices {
@@ -255,5 +265,22 @@ mod tests {
             openai_image_cost_nanodollars(&usage, &prices),
             Err(OpenAiImageMeteringError::Overflow)
         );
+    }
+
+    #[test]
+    fn tariff_family_is_the_schedule_identity_without_date_and_version() {
+        assert_eq!(openai_image_tariff_family(), "openai/gpt-image-2");
+        assert!(
+            OPENAI_IMAGE_TARIFF_SCHEDULE_ID.starts_with(OPENAI_IMAGE_TARIFF_FAMILY),
+            "the family must remain a prefix of the pinned schedule id"
+        );
+        // Both accepted ids resolve to the same family the override authority targets.
+        for model in [GPT_IMAGE_2_ALIAS, GPT_IMAGE_2_SNAPSHOT] {
+            let identity = openai_image_tariff(model).unwrap();
+            assert_eq!(
+                identity.tariff_schedule_id.as_str(),
+                OPENAI_IMAGE_TARIFF_SCHEDULE_ID
+            );
+        }
     }
 }

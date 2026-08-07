@@ -7921,6 +7921,17 @@ impl PgStore {
         )
     }
 
+    pub fn list_tariff_overrides(&mut self) -> Result<Vec<crate::pricing::TariffOverride>> {
+        crate::pricing::postgres_list_tariff_overrides(&mut self.client)
+    }
+
+    pub fn insert_tariff_override(
+        &mut self,
+        insert: &crate::pricing::TariffOverrideInsert,
+    ) -> Result<crate::pricing::TariffOverrideInsertOutcome> {
+        crate::pricing::postgres_insert_tariff_override(&mut self.client, insert)
+    }
+
     pub fn pricing_release_v2(
         &mut self,
         generation: i64,

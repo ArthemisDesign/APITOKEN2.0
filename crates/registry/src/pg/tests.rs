@@ -11453,3 +11453,264 @@ fn postgres_stage9_strict_enforcement_guards() {
         )
         .unwrap();
 }
+
+/// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+/// pg::tests::tariff_overrides_postgres_matrix`
+#[test]
+fn tariff_overrides_postgres_matrix() {
+    use crate::pricing::{
+        resolve_tariff_override, TariffOverrideInsert, TariffOverrideInsertOutcome as O,
+        TariffOverrideRejection as R,
+    };
+
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!(
+            "skipping tariff override PostgreSQL matrix: CLAUDE_API_TEST_DATABASE_URL is unset"
+        );
+        return;
+    };
+    let mut pg = PgStore::connect(&url).unwrap();
+    pg.client
+        .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+        .unwrap();
+    pg.client
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    pg.client
+        .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+        .unwrap();
+    pg.migrate().unwrap();
+    pg.client
+        .batch_execute("TRUNCATE pricing_tariff_overrides")
+        .unwrap();
+
+    let family = "google/gemini/gemini-2.5-pro";
+    let gemini_payload = |cached_input: i128| {
+        serde_json::json!({
+            "input": "1250",
+            "audio_input": "1250",
+            "cached_input": cached_input.to_string(),
+            "cached_audio_input": "125",
+            "output": "10000",
+            "image_output": "0",
+            "long_context_threshold": 200000,
+            "long_input": "2500",
+            "long_audio_input": "2500",
+            "long_cached_input": "250",
+            "long_cached_audio_input": "250",
+            "long_output": "15000",
+            "search": {"kind": "per_grounded_prompt", "nano": "35000000"}
+        })
+    };
+    // The flat-price Gemini shape carries u64::MAX as the long-context threshold: the digest and
+    // the typed read must survive the jsonb numeric round trip at the exact u64 boundary.
+    let mut gemini_payload_max_threshold = gemini_payload(300);
+    gemini_payload_max_threshold["long_context_threshold"] =
+        serde_json::json!(u64::MAX);
+    let insert = |version: i64, effective_from: i64, payload: serde_json::Value| {
+        TariffOverrideInsert {
+            tariff_family: family.to_owned(),
+            version,
+            effective_from,
+            payload,
+            created_by: "matrix-operator".to_owned(),
+            reason: "postgres matrix".to_owned(),
+        }
+    };
+    let row_count = |pg: &mut PgStore| -> i64 {
+        pg.client
+            .query_one("SELECT COUNT(*)::bigint FROM pricing_tariff_overrides", &[])
+            .unwrap()
+            .get(0)
+    };
+
+    // Seed v2: effective_from = 0 is allowed only for the first override of a family.
+    let seeded = pg
+        .insert_tariff_override(&insert(2, 0, gemini_payload(125)))
+        .unwrap();
+    let O::Inserted(seed_receipt) = seeded else {
+        panic!("seed insert returned {seeded:?}");
+    };
+    assert_eq!(seed_receipt.tariff_family, family);
+    assert_eq!(seed_receipt.version, 2);
+    assert_eq!(seed_receipt.effective_from, 0);
+    assert!(seed_receipt.created_ts > 0);
+    assert!(seed_receipt.payload_digest.starts_with("sha256:v2:"));
+    assert_eq!(row_count(&mut pg), 1);
+
+    // A non-seed row may not reach into the past beyond the skew grace.
+    let past_seed = pg
+        .insert_tariff_override(&insert(3, 0, gemini_payload(125)))
+        .unwrap();
+    assert!(
+        matches!(past_seed, O::Rejected(R::Invalid { .. })),
+        "v3 with effective_from=0 must be rejected, got {past_seed:?}"
+    );
+    assert_eq!(row_count(&mut pg), 1);
+
+    // Exact replay of the seed (same family+version+payload+effective_from) is Unchanged even
+    // with a different operator attribution.
+    let mut replay_insert = insert(2, 0, gemini_payload(125));
+    replay_insert.created_by = "other-operator".to_owned();
+    let replay = pg.insert_tariff_override(&replay_insert).unwrap();
+    let O::Unchanged(replay_receipt) = replay else {
+        panic!("exact replay returned {replay:?}");
+    };
+    assert_eq!(replay_receipt, seed_receipt);
+    assert_eq!(row_count(&mut pg), 1);
+
+    // Same key, different payload: typed conflict, nothing written.
+    let conflict = pg
+        .insert_tariff_override(&insert(2, 0, gemini_payload(126)))
+        .unwrap();
+    assert_eq!(
+        conflict,
+        O::Rejected(R::Conflict {
+            existing_digest: seed_receipt.payload_digest.clone(),
+            existing_effective_from: 0,
+        })
+    );
+    assert_eq!(row_count(&mut pg), 1);
+
+    // Sequence enforcement: v4 while the head is v2 is a typed sequence violation.
+    let gap = pg
+        .insert_tariff_override(&insert(4, now(), gemini_payload(125)))
+        .unwrap();
+    assert_eq!(
+        gap,
+        O::Rejected(R::SequenceViolation { expected_next: 3 })
+    );
+    assert_eq!(row_count(&mut pg), 1);
+
+    let t0 = now();
+    // v3 effective now: allowed.
+    let v3 = pg
+        .insert_tariff_override(&insert(3, t0, gemini_payload(200)))
+        .unwrap();
+    let O::Inserted(v3_receipt) = v3 else {
+        panic!("v3 insert returned {v3:?}");
+    };
+    // v4 with a past effective_from (beyond the grace) is rejected...
+    let past_v4 = pg
+        .insert_tariff_override(&insert(4, t0 - 3_600, gemini_payload(300)))
+        .unwrap();
+    assert!(
+        matches!(past_v4, O::Rejected(R::Invalid { .. })),
+        "past v4 must be rejected, got {past_v4:?}"
+    );
+    // ...while a future effective_from is a scheduled republication and is allowed.
+    let v4 = pg
+        .insert_tariff_override(&insert(4, t0 + 3_600, gemini_payload_max_threshold.clone()))
+        .unwrap();
+    let O::Inserted(v4_receipt) = v4 else {
+        panic!("v4 insert returned {v4:?}");
+    };
+    assert_eq!(
+        v4_receipt.payload["long_context_threshold"],
+        serde_json::json!(u64::MAX)
+    );
+    assert_eq!(row_count(&mut pg), 3);
+
+    // Unknown families and malformed payloads never reach the database.
+    let mut unknown = insert(2, 0, gemini_payload(125));
+    unknown.tariff_family = "unknown/provider/model".to_owned();
+    let rejected = pg.insert_tariff_override(&unknown).unwrap();
+    assert!(
+        matches!(rejected, O::Rejected(R::Invalid { .. })),
+        "unknown family must be rejected, got {rejected:?}"
+    );
+    let mut malformed = insert(5, t0, gemini_payload(400));
+    malformed.payload["input"] = serde_json::json!(1250.5);
+    let rejected = pg.insert_tariff_override(&malformed).unwrap();
+    assert!(
+        matches!(rejected, O::Rejected(R::Invalid { .. })),
+        "float payload must be rejected, got {rejected:?}"
+    );
+    assert_eq!(row_count(&mut pg), 3);
+
+    // The read side verifies every digest and serves resolution across effective_from boundaries.
+    let rows = pg.list_tariff_overrides().unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0], seed_receipt);
+    assert_eq!(rows[1], v3_receipt);
+    // rows[2] carries u64::MAX as long_context_threshold: digest verification inside the list
+    // read proves the jsonb numeric round trip stayed exact at the u64 boundary.
+    assert_eq!(rows[2], v4_receipt);
+    assert_eq!(
+        resolve_tariff_override(&rows, family, 0).map(|row| row.version),
+        Some(2)
+    );
+    assert_eq!(
+        resolve_tariff_override(&rows, family, t0 - 1).map(|row| row.version),
+        Some(2)
+    );
+    assert_eq!(
+        resolve_tariff_override(&rows, family, t0).map(|row| row.version),
+        Some(3)
+    );
+    assert_eq!(
+        resolve_tariff_override(&rows, family, t0 + 3_600).map(|row| row.version),
+        Some(4)
+    );
+    assert_eq!(resolve_tariff_override(&rows, "google/gemini/gemini-2.5-flash", i64::MAX), None);
+
+    // A row whose stored digest does not match its payload fails the read closed. The writer
+    // cannot produce such a row, so it is injected by raw SQL with a well-formed wrong digest.
+    pg.client
+        .batch_execute(
+            "INSERT INTO pricing_tariff_overrides(
+                 tariff_family,version,effective_from,payload,payload_digest,created_ts,
+                 created_by,reason
+             ) VALUES(
+                 'tampered/family',2,0,'{}'::jsonb,
+                 'sha256:v2:0000000000000000000000000000000000000000000000000000000000000000',
+                 1,'matrix-operator','tampered digest'
+             )",
+        )
+        .unwrap();
+    let tampered = pg.list_tariff_overrides().expect_err("tampered row must fail closed");
+    assert!(
+        format!("{tampered:#}").contains("digest verification"),
+        "unexpected error: {tampered:#}"
+    );
+
+    // The append-only trigger rejects UPDATE and DELETE on any row, including the tampered one.
+    let updated = pg
+        .client
+        .batch_execute(
+            "UPDATE pricing_tariff_overrides SET reason='corrected' WHERE tariff_family='tampered/family'",
+        )
+        .expect_err("UPDATE must be rejected");
+    assert!(
+        updated
+            .as_db_error()
+            .is_some_and(|error| error.message().contains("append-only")),
+        "unexpected UPDATE error: {updated}"
+    );
+    let deleted = pg
+        .client
+        .batch_execute("DELETE FROM pricing_tariff_overrides WHERE tariff_family='tampered/family'")
+        .expect_err("DELETE must be rejected");
+    assert!(
+        deleted
+            .as_db_error()
+            .is_some_and(|error| error.message().contains("append-only")),
+        "unexpected DELETE error: {deleted}"
+    );
+
+    // Leave the shared throwaway database clean for the next run.
+    pg.client
+        .batch_execute("TRUNCATE pricing_tariff_overrides")
+        .unwrap();
+    assert_eq!(row_count(&mut pg), 0);
+
+    pg.client
+        .query_one(
+            "SELECT pg_advisory_unlock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+}

@@ -97,6 +97,12 @@ pub const CODEX_ALIAS_GENERATION: i64 = 1;
 /// Reviewed identity of the native ChatGPT Codex credit card used by calibration events.
 pub const CODEX_CREDIT_SCHEDULE_ID: &str = "chatgpt/codex-credits/2026-07-30/v1";
 
+/// Hot-override tariff family root of the native ChatGPT Codex credit card:
+/// `CODEX_CREDIT_SCHEDULE_ID` minus its date/version suffix. Per-model override families append
+/// the canonical upstream model id (`chatgpt/codex-credits/<model>`) because the compiled card
+/// prices each model separately.
+pub const CODEX_CREDIT_FAMILY: &str = "chatgpt/codex-credits";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CodexServiceTier {
     Standard,
@@ -141,6 +147,12 @@ struct CatalogEntry {
     reasoning_efforts: &'static [&'static str],
     subscription_fast_multiplier_basis_points: Option<i64>,
     credit_rates: CodexCreditRates,
+    /// Hot-override tariff family of the API-equivalent price card: `openai/codex/<upstream>`.
+    /// Keyed by the canonical upstream identity so the default alias and its concrete model share
+    /// one family, exactly as they share one schedule.
+    tariff_family: &'static str,
+    /// Hot-override tariff family of the native credit card: `chatgpt/codex-credits/<upstream>`.
+    credit_family: &'static str,
     /// Ordered oldest-first.
     schedule: &'static [IdentifiedCodexPriceEpoch],
 }
@@ -256,6 +268,8 @@ const CATALOG: &[CatalogEntry] = &[
         reasoning_efforts: EFFORTS_WITH_MAX,
         subscription_fast_multiplier_basis_points: FAST_25X,
         credit_rates: credits(125_000, 12_500, 750_000),
+        tariff_family: "openai/codex/gpt-5.6-sol",
+        credit_family: "chatgpt/codex-credits/gpt-5.6-sol",
         schedule: GPT_56_SOL_SCHEDULE,
     },
     CatalogEntry {
@@ -265,6 +279,8 @@ const CATALOG: &[CatalogEntry] = &[
         reasoning_efforts: EFFORTS_WITH_MAX,
         subscription_fast_multiplier_basis_points: FAST_25X,
         credit_rates: credits(125_000, 12_500, 750_000),
+        tariff_family: "openai/codex/gpt-5.6-sol",
+        credit_family: "chatgpt/codex-credits/gpt-5.6-sol",
         schedule: GPT_56_SOL_SCHEDULE,
     },
     CatalogEntry {
@@ -274,6 +290,8 @@ const CATALOG: &[CatalogEntry] = &[
         reasoning_efforts: EFFORTS_WITH_MAX,
         subscription_fast_multiplier_basis_points: FAST_25X,
         credit_rates: credits(50_000, 5_000, 300_000),
+        tariff_family: "openai/codex/gpt-5.6-terra",
+        credit_family: "chatgpt/codex-credits/gpt-5.6-terra",
         schedule: GPT_56_TERRA_SCHEDULE,
     },
     CatalogEntry {
@@ -283,6 +301,8 @@ const CATALOG: &[CatalogEntry] = &[
         reasoning_efforts: EFFORTS_WITH_MAX,
         subscription_fast_multiplier_basis_points: FAST_25X,
         credit_rates: credits(5_000, 500, 30_000),
+        tariff_family: "openai/codex/gpt-5.6-luna",
+        credit_family: "chatgpt/codex-credits/gpt-5.6-luna",
         schedule: GPT_56_LUNA_SCHEDULE,
     },
     CatalogEntry {
@@ -292,6 +312,8 @@ const CATALOG: &[CatalogEntry] = &[
         reasoning_efforts: EFFORTS_STANDARD,
         subscription_fast_multiplier_basis_points: FAST_25X,
         credit_rates: credits(125_000, 12_500, 750_000),
+        tariff_family: "openai/codex/gpt-5.5",
+        credit_family: "chatgpt/codex-credits/gpt-5.5",
         schedule: GPT_55_SCHEDULE,
     },
     CatalogEntry {
@@ -301,6 +323,8 @@ const CATALOG: &[CatalogEntry] = &[
         reasoning_efforts: EFFORTS_STANDARD,
         subscription_fast_multiplier_basis_points: FAST_20X,
         credit_rates: credits(62_500, 6_250, 375_000),
+        tariff_family: "openai/codex/gpt-5.4",
+        credit_family: "chatgpt/codex-credits/gpt-5.4",
         schedule: GPT_54_SCHEDULE,
     },
 ];
@@ -329,6 +353,41 @@ pub fn codex_prices_at(model_id: &str, now_unix: i64) -> Option<CodexPrices> {
         .iter()
         .find(|entry| entry.id == model_id)
         .map(|entry| prices_at(entry.schedule, now_unix))
+}
+
+/// The hot-override tariff family and prices of the catalog entry that prices `model_id`.
+///
+/// Same lookup as `codex_prices_at`, additionally reporting WHICH family the resolution used so a
+/// hot override row can target it. The family is keyed by the canonical upstream identity, so the
+/// `gpt-5.6` alias and `gpt-5.6-sol` share `openai/codex/gpt-5.6-sol`.
+pub fn codex_matched_tariff_at(model_id: &str, now_unix: i64) -> Option<(&'static str, CodexPrices)> {
+    CATALOG
+        .iter()
+        .find(|entry| entry.id == model_id)
+        .map(|entry| (entry.tariff_family, prices_at(entry.schedule, now_unix)))
+}
+
+/// The shared root of every native ChatGPT Codex credit override family
+/// (`CODEX_CREDIT_SCHEDULE_ID` minus its date/version suffix).
+pub fn codex_credit_rates_family() -> &'static str {
+    CODEX_CREDIT_FAMILY
+}
+
+/// Exact current ChatGPT credit rates for one advertised model.
+pub fn codex_credit_rates(model_id: &str) -> Option<CodexCreditRates> {
+    CATALOG
+        .iter()
+        .find(|entry| entry.id == model_id)
+        .map(|entry| entry.credit_rates)
+}
+
+/// Same lookup as `codex_credit_rates`, additionally reporting the per-model hot-override family
+/// (`chatgpt/codex-credits/<upstream>`) the compiled credit card resolved to.
+pub fn codex_matched_credit_rates_at(model_id: &str) -> Option<(&'static str, CodexCreditRates)> {
+    CATALOG
+        .iter()
+        .find(|entry| entry.id == model_id)
+        .map(|entry| (entry.credit_family, entry.credit_rates))
 }
 
 /// Resolve an exact snapshot identity without changing any live pricing behavior.
@@ -397,14 +456,6 @@ pub fn codex_subscription_fast_multiplier_basis_points(model_id: &str) -> Option
         .iter()
         .find(|entry| entry.id == model_id)
         .and_then(|entry| entry.subscription_fast_multiplier_basis_points)
-}
-
-/// Exact current ChatGPT credit rates for one advertised model.
-pub fn codex_credit_rates(model_id: &str) -> Option<CodexCreditRates> {
-    CATALOG
-        .iter()
-        .find(|entry| entry.id == model_id)
-        .map(|entry| entry.credit_rates)
 }
 
 /// Price one authoritative response-usage payload in official ChatGPT subscription credits.
@@ -846,5 +897,45 @@ mod tests {
         ] {
             assert_eq!(codex_credit_rates(model), Some(expected), "{model}");
         }
+    }
+
+    #[test]
+    fn matched_tariff_reports_the_upstream_family_and_identical_prices() {
+        for (model, family) in [
+            ("gpt-5.6", "openai/codex/gpt-5.6-sol"),
+            ("gpt-5.6-sol", "openai/codex/gpt-5.6-sol"),
+            ("gpt-5.6-terra", "openai/codex/gpt-5.6-terra"),
+            ("gpt-5.6-luna", "openai/codex/gpt-5.6-luna"),
+            ("gpt-5.5", "openai/codex/gpt-5.5"),
+            ("gpt-5.4", "openai/codex/gpt-5.4"),
+        ] {
+            for ts in [0, PRICE_CUT_2026_07_30 - 1, PRICE_CUT_2026_07_30, i64::MAX] {
+                let (matched_family, prices) =
+                    codex_matched_tariff_at(model, ts).expect("catalog model priced");
+                assert_eq!(matched_family, family, "{model} family");
+                assert_eq!(
+                    Some(prices),
+                    codex_prices_at(model, ts),
+                    "{model} helper prices must equal codex_prices_at"
+                );
+            }
+            let (credit_family, rates) =
+                codex_matched_credit_rates_at(model).expect("catalog model has credit rates");
+            assert_eq!(
+                credit_family,
+                family.replacen("openai/codex/", "chatgpt/codex-credits/", 1),
+                "{model} credit family"
+            );
+            assert_eq!(Some(rates), codex_credit_rates(model), "{model} credit rates");
+        }
+        // The default alias and its concrete model share one override family, exactly as they
+        // share one schedule; an unknown id has neither prices nor a family.
+        assert_eq!(
+            codex_matched_tariff_at("gpt-5.6", 0),
+            codex_matched_tariff_at("gpt-5.6-sol", 0)
+        );
+        assert_eq!(codex_credit_rates_family(), "chatgpt/codex-credits");
+        assert_eq!(codex_matched_tariff_at("gpt-4o", 0), None);
+        assert_eq!(codex_matched_credit_rates_at("gpt-4o"), None);
     }
 }

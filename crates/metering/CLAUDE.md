@@ -33,6 +33,20 @@
   canonical `claude-haiku-4-5` (the router rewrites the alias to the dated id on the wire, so the
   engine sees the dated id). There is no generic date-suffix stripping — any other dated/historical
   id still returns the typed fallback.
+- Hot tariff override family keys: every price lookup also has a `*_matched_tariff_at` twin
+  (`anthropic_matched_tariff_at`, `codex_matched_tariff_at`, `gemini_matched_tariff_at`,
+  `glm_matched_tariff_at`, `kimi_matched_tariff_at`) that returns the SAME prices plus the tariff
+  family key the resolution used, so a hot override row in the engine's `pricing_tariff_overrides`
+  table (registry authority, schema checkpoint 0036) can target exactly that family. Family keys are
+  the compiled schedule identities minus their date/version suffix: Anthropic heuristic branches
+  (`anthropic/standard/<branch>`, `anthropic/fast/<branch>`), per-model catalog keys
+  (`openai/codex/<upstream>`, `google/gemini/<id>`, `zhipu/glm/<official_id>`,
+  `moonshot/kimi/<official_id>`), per-model native credit cards (`chatgpt/codex-credits/<upstream>`,
+  `zhipu/glm-credits/<official_id>`) and the single image card `openai/gpt-image-2`
+  (`openai_image_tariff_family`). The helpers share one branch table with the existing matchers, so
+  helper prices can never diverge from them (regression tests assert equality across model/timestamp
+  matrices); a model no branch recognizes has no family and keeps its existing conservative
+  fallback. Adding a model or a price epoch means adding its family key in the same table row.
 
 **Invariants (verify with tests):**
 - 1M tokens of any bucket = the exact official rate (test `prices_exact_per_million`).

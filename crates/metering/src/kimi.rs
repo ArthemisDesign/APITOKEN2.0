@@ -116,6 +116,8 @@ struct CatalogEntry {
     id: &'static str,
     display_name: &'static str,
     input_token_limit: u64,
+    /// Hot-override tariff family of the official dollar card: `moonshot/kimi/<id>`.
+    tariff_family: &'static str,
     schedule: &'static [KimiPriceEpoch],
 }
 
@@ -161,24 +163,28 @@ const CATALOG: &[CatalogEntry] = &[
         id: "kimi-k3",
         display_name: "Kimi K3",
         input_token_limit: CONTEXT_1M,
+        tariff_family: "moonshot/kimi/kimi-k3",
         schedule: SCHEDULE_K3,
     },
     CatalogEntry {
         id: "kimi-k2.7-code",
         display_name: "Kimi K2.7 Code",
         input_token_limit: CONTEXT_256K,
+        tariff_family: "moonshot/kimi/kimi-k2.7-code",
         schedule: SCHEDULE_K27_CODE,
     },
     CatalogEntry {
         id: "kimi-k2.7-code-highspeed",
         display_name: "Kimi K2.7 Code HighSpeed",
         input_token_limit: CONTEXT_256K,
+        tariff_family: "moonshot/kimi/kimi-k2.7-code-highspeed",
         schedule: SCHEDULE_K27_CODE_HIGHSPEED,
     },
     CatalogEntry {
         id: "kimi-k2.6",
         display_name: "Kimi K2.6",
         input_token_limit: CONTEXT_256K,
+        tariff_family: "moonshot/kimi/kimi-k2.6",
         schedule: SCHEDULE_K26,
     },
 ];
@@ -267,11 +273,21 @@ pub fn kimi_resolve_subscription_model(alias: &str) -> Option<KimiSubscriptionMo
 /// This is the lookup billing should use on the **served** model reported by the provider,
 /// because a served model can be `kimi-k2.6` — a model no client ever asked for.
 pub fn kimi_prices_for_served_model(model_id: &str, now_unix: i64) -> Option<KimiPrices> {
-    if let Some(prices) = kimi_prices_at(model_id, now_unix) {
-        return Some(prices);
+    kimi_matched_tariff_at(model_id, now_unix).map(|(_, prices)| prices)
+}
+
+/// The hot-override tariff family and prices of the official rate card that prices `model_id`.
+///
+/// Same served-model resolution as `kimi_prices_for_served_model`, additionally reporting WHICH
+/// family the resolution used: `moonshot/kimi/<official_model_id>` of the entry that priced the
+/// id, so an alias and its official model share one override family.
+pub fn kimi_matched_tariff_at(model_id: &str, now_unix: i64) -> Option<(&'static str, KimiPrices)> {
+    if let Some(entry) = CATALOG.iter().find(|entry| entry.id == model_id) {
+        return Some((entry.tariff_family, prices_at(entry.schedule, now_unix)));
     }
     let resolved = kimi_resolve_subscription_model(model_id)?;
-    kimi_prices_at(resolved.official_model, now_unix)
+    let entry = CATALOG.iter().find(|entry| entry.id == resolved.official_model)?;
+    Some((entry.tariff_family, prices_at(entry.schedule, now_unix)))
 }
 
 // ── usage parsing ────────────────────────────────────────────────────────────
@@ -639,5 +655,40 @@ mod tests {
             KIMI_TARIFF_SCHEDULE_ID,
             "moonshot/kimi-open-platform/2026-08-03"
         );
+    }
+
+    #[test]
+    fn matched_tariff_reports_the_official_family_and_identical_prices() {
+        for (model, family) in [
+            ("kimi-k3", "moonshot/kimi/kimi-k3"),
+            ("kimi-k2.7-code", "moonshot/kimi/kimi-k2.7-code"),
+            (
+                "kimi-k2.7-code-highspeed",
+                "moonshot/kimi/kimi-k2.7-code-highspeed",
+            ),
+            ("kimi-k2.6", "moonshot/kimi/kimi-k2.6"),
+        ] {
+            let (matched_family, prices) = kimi_matched_tariff_at(model, NOW).expect("priced");
+            assert_eq!(matched_family, family, "{model} family");
+            assert_eq!(
+                Some(prices),
+                kimi_prices_for_served_model(model, NOW),
+                "{model} helper prices must equal kimi_prices_for_served_model"
+            );
+        }
+        // Aliases resolve to their official model's family, so one override covers both.
+        for alias in ["k3", "k3[1m]", "k3-256k", "kimi-for-coding"] {
+            let (family, prices) = kimi_matched_tariff_at(alias, NOW).expect("alias priced");
+            assert_eq!(Some(prices), kimi_prices_for_served_model(alias, NOW), "{alias}");
+            assert!(
+                family.starts_with("moonshot/kimi/"),
+                "{alias} resolved family {family}"
+            );
+        }
+        assert_eq!(
+            kimi_matched_tariff_at("k3", NOW).map(|(family, _)| family),
+            Some("moonshot/kimi/kimi-k3")
+        );
+        assert_eq!(kimi_matched_tariff_at("kimi-k4", NOW), None);
     }
 }

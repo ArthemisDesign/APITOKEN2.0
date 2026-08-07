@@ -146,6 +146,11 @@ struct CatalogEntry {
     input_token_limit: u64,
     max_output_tokens: u64,
     schedule: &'static [GlmPriceEpoch],
+    /// Hot-override tariff family of the official dollar card: `zhipu/glm/<id>`.
+    tariff_family: &'static str,
+    /// Hot-override tariff family of the native credit card: `zhipu/glm-credits/<id>`. Present
+    /// exactly when `credit_rates` is.
+    credit_family: Option<&'static str>,
     /// Official native credit multipliers. `None` for models with no published multipliers
     /// (`glm-5.1`/`glm-5` exist only so a served id can be *priced*; the provider re-routes
     /// them to `glm-5.2`, and a served id without published multipliers must fail closed on
@@ -220,6 +225,8 @@ const CATALOG: &[CatalogEntry] = &[
         input_token_limit: CONTEXT_1M,
         max_output_tokens: MAX_OUTPUT,
         schedule: SCHEDULE_GLM_5_2,
+        tariff_family: "zhipu/glm/glm-5.2",
+        credit_family: Some("zhipu/glm-credits/glm-5.2"),
         credit_rates: Some(&CREDIT_GLM_5_2),
     },
     CatalogEntry {
@@ -228,6 +235,8 @@ const CATALOG: &[CatalogEntry] = &[
         input_token_limit: CONTEXT_200K,
         max_output_tokens: MAX_OUTPUT,
         schedule: SCHEDULE_GLM_5_TURBO,
+        tariff_family: "zhipu/glm/glm-5-turbo",
+        credit_family: Some("zhipu/glm-credits/glm-5-turbo"),
         credit_rates: Some(&CREDIT_GLM_5_TURBO),
     },
     CatalogEntry {
@@ -236,6 +245,8 @@ const CATALOG: &[CatalogEntry] = &[
         input_token_limit: CONTEXT_200K,
         max_output_tokens: MAX_OUTPUT,
         schedule: SCHEDULE_GLM_4_7,
+        tariff_family: "zhipu/glm/glm-4.7",
+        credit_family: Some("zhipu/glm-credits/glm-4.7"),
         credit_rates: Some(&CREDIT_GLM_4_7),
     },
     CatalogEntry {
@@ -245,6 +256,8 @@ const CATALOG: &[CatalogEntry] = &[
         input_token_limit: CONTEXT_1M,
         max_output_tokens: MAX_OUTPUT,
         schedule: SCHEDULE_GLM_5_2,
+        tariff_family: "zhipu/glm/glm-5.1",
+        credit_family: None,
         credit_rates: None,
     },
     CatalogEntry {
@@ -253,6 +266,8 @@ const CATALOG: &[CatalogEntry] = &[
         input_token_limit: CONTEXT_1M,
         max_output_tokens: MAX_OUTPUT,
         schedule: SCHEDULE_GLM_5,
+        tariff_family: "zhipu/glm/glm-5",
+        credit_family: None,
         credit_rates: None,
     },
 ];
@@ -343,11 +358,21 @@ pub fn glm_resolve_subscription_model(alias: &str) -> Option<GlmSubscriptionMode
 /// because a served model can differ from the requested one: requests to `glm-5.1`/`glm-5`
 /// are silently served by `glm-5.2`.
 pub fn glm_prices_for_served_model(model_id: &str, now_unix: i64) -> Option<GlmPrices> {
-    if let Some(prices) = glm_prices_at(model_id, now_unix) {
-        return Some(prices);
+    glm_matched_tariff_at(model_id, now_unix).map(|(_, prices)| prices)
+}
+
+/// The hot-override tariff family and prices of the official rate card that prices `model_id`.
+///
+/// Same served-model resolution as `glm_prices_for_served_model`, additionally reporting WHICH
+/// family the resolution used: `zhipu/glm/<official_model_id>` of the entry that priced the id,
+/// so an alias and its official model share one override family.
+pub fn glm_matched_tariff_at(model_id: &str, now_unix: i64) -> Option<(&'static str, GlmPrices)> {
+    if let Some(entry) = CATALOG.iter().find(|entry| entry.id == model_id) {
+        return Some((entry.tariff_family, prices_at(entry.schedule, now_unix)));
     }
     let resolved = glm_resolve_subscription_model(model_id)?;
-    glm_prices_at(resolved.official_model, now_unix)
+    let entry = CATALOG.iter().find(|entry| entry.id == resolved.official_model)?;
+    Some((entry.tariff_family, prices_at(entry.schedule, now_unix)))
 }
 
 /// Official native credit multipliers for a **served** model id (official id or alias).
@@ -356,15 +381,22 @@ pub fn glm_prices_for_served_model(model_id: &str, now_unix: i64) -> Option<GlmP
 /// e.g. an echoed `glm-5.1`/`glm-5`, which the provider re-routes to `glm-5.2` — returns
 /// `None` so the credit ledger fails closed instead of borrowing `glm-5.2`'s rate.
 pub fn glm_credit_rates_for_served_model(model_id: &str) -> Option<GlmCreditRates> {
+    glm_matched_credit_rates_at(model_id).map(|(_, rates)| rates)
+}
+
+/// Same served-model resolution as `glm_credit_rates_for_served_model`, additionally reporting
+/// the hot-override family of the credit card that matched: `zhipu/glm-credits/<official_id>`.
+pub fn glm_matched_credit_rates_at(model_id: &str) -> Option<(&'static str, GlmCreditRates)> {
     if let Some(entry) = CATALOG.iter().find(|entry| entry.id == model_id) {
-        return entry.credit_rates.copied();
+        return entry
+            .credit_family
+            .zip(entry.credit_rates.copied());
     }
     let resolved = glm_resolve_subscription_model(model_id)?;
-    CATALOG
+    let entry = CATALOG
         .iter()
-        .find(|entry| entry.id == resolved.official_model)?
-        .credit_rates
-        .copied()
+        .find(|entry| entry.id == resolved.official_model)?;
+    entry.credit_family.zip(entry.credit_rates.copied())
 }
 
 // ── usage parsing ────────────────────────────────────────────────────────────
@@ -1090,5 +1122,56 @@ mod tests {
         // A turn priced at unix 0 must still resolve, so a clock skew cannot leave a turn
         // unpriceable.
         assert_eq!(glm_prices_at("glm-5.2", 0), glm_prices_at("glm-5.2", NOW));
+    }
+
+    #[test]
+    fn matched_tariff_reports_the_official_family_and_identical_prices() {
+        for (model, family) in [
+            ("glm-5.2", "zhipu/glm/glm-5.2"),
+            ("glm-5-turbo", "zhipu/glm/glm-5-turbo"),
+            ("glm-4.7", "zhipu/glm/glm-4.7"),
+            ("glm-5.1", "zhipu/glm/glm-5.1"),
+            ("glm-5", "zhipu/glm/glm-5"),
+        ] {
+            let (matched_family, prices) = glm_matched_tariff_at(model, NOW).expect("priced");
+            assert_eq!(matched_family, family, "{model} family");
+            assert_eq!(
+                Some(prices),
+                glm_prices_for_served_model(model, NOW),
+                "{model} helper prices must equal glm_prices_for_served_model"
+            );
+        }
+        // An alias resolves to its official model's family, so one override covers both.
+        assert_eq!(
+            glm_matched_tariff_at("glm-5.2[1m]", NOW).map(|(family, _)| family),
+            Some("zhipu/glm/glm-5.2")
+        );
+        assert_eq!(glm_matched_tariff_at("glm-9", NOW), None);
+    }
+
+    #[test]
+    fn matched_credit_rates_report_the_per_model_family() {
+        for (model, family) in [
+            ("glm-5.2", "zhipu/glm-credits/glm-5.2"),
+            ("glm-5-turbo", "zhipu/glm-credits/glm-5-turbo"),
+            ("glm-4.7", "zhipu/glm-credits/glm-4.7"),
+        ] {
+            let (matched_family, rates) =
+                glm_matched_credit_rates_at(model).expect("credit card exists");
+            assert_eq!(matched_family, family, "{model} credit family");
+            assert_eq!(
+                Some(rates),
+                glm_credit_rates_for_served_model(model),
+                "{model} credit rates"
+            );
+        }
+        // Aliases share their official model's credit family; ids without a published card fail
+        // closed on both the rates and the family.
+        assert_eq!(
+            glm_matched_credit_rates_at("glm-5.2[1m]").map(|(family, _)| family),
+            Some("zhipu/glm-credits/glm-5.2")
+        );
+        assert_eq!(glm_matched_credit_rates_at("glm-5.1"), None);
+        assert_eq!(glm_matched_credit_rates_at("glm-9"), None);
     }
 }

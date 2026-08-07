@@ -95,6 +95,9 @@ struct CatalogEntry {
     display_name: &'static str,
     input_token_limit: u64,
     output_token_limit: u64,
+    /// Hot-override tariff family of this model: `google/gemini/<id>`. Per model (not the shared
+    /// provider-date `TARIFF_SCHEDULE_ID`) so a hot override can reprice one model exactly.
+    tariff_family: &'static str,
     schedule: &'static [GeminiPriceEpoch],
 }
 
@@ -223,6 +226,7 @@ const CATALOG: &[CatalogEntry] = &[
         display_name: "Gemini 3.1 Flash Image (Nano Banana 2)",
         input_token_limit: 131_072,
         output_token_limit: 32_768,
+        tariff_family: "google/gemini/gemini-3.1-flash-image",
         schedule: GEMINI_31_FLASH_IMAGE,
     },
     CatalogEntry {
@@ -230,6 +234,7 @@ const CATALOG: &[CatalogEntry] = &[
         display_name: "Gemini 3.6 Flash",
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
+        tariff_family: "google/gemini/gemini-3.6-flash",
         schedule: GEMINI_36_FLASH,
     },
     CatalogEntry {
@@ -237,6 +242,7 @@ const CATALOG: &[CatalogEntry] = &[
         display_name: "Gemini 3.5 Flash",
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
+        tariff_family: "google/gemini/gemini-3.5-flash",
         schedule: GEMINI_35_FLASH,
     },
     CatalogEntry {
@@ -244,6 +250,7 @@ const CATALOG: &[CatalogEntry] = &[
         display_name: "Gemini 3 Flash Preview",
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
+        tariff_family: "google/gemini/gemini-3-flash-preview",
         schedule: GEMINI_3_FLASH_PREVIEW,
     },
     CatalogEntry {
@@ -251,6 +258,7 @@ const CATALOG: &[CatalogEntry] = &[
         display_name: "Gemini 3.1 Flash-Lite",
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
+        tariff_family: "google/gemini/gemini-3.1-flash-lite",
         schedule: GEMINI_31_FLASH_LITE,
     },
     CatalogEntry {
@@ -258,6 +266,7 @@ const CATALOG: &[CatalogEntry] = &[
         display_name: "Gemini 3.1 Pro Preview",
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
+        tariff_family: "google/gemini/gemini-3.1-pro-preview",
         schedule: GEMINI_31_PRO_PREVIEW,
     },
     CatalogEntry {
@@ -265,6 +274,7 @@ const CATALOG: &[CatalogEntry] = &[
         display_name: "Gemini 2.5 Pro",
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
+        tariff_family: "google/gemini/gemini-2.5-pro",
         schedule: GEMINI_25_PRO,
     },
     CatalogEntry {
@@ -272,6 +282,7 @@ const CATALOG: &[CatalogEntry] = &[
         display_name: "Gemini 2.5 Flash",
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
+        tariff_family: "google/gemini/gemini-2.5-flash",
         schedule: GEMINI_25_FLASH,
     },
     CatalogEntry {
@@ -279,6 +290,7 @@ const CATALOG: &[CatalogEntry] = &[
         display_name: "Gemini 2.5 Flash-Lite",
         input_token_limit: 1_048_576,
         output_token_limit: 65_536,
+        tariff_family: "google/gemini/gemini-2.5-flash-lite",
         schedule: GEMINI_25_FLASH_LITE,
     },
 ];
@@ -314,6 +326,21 @@ pub fn gemini_prices_at(model_id: &str, now_unix: i64) -> Option<GeminiPrices> {
         .iter()
         .find(|entry| entry.id == model_id)
         .map(|entry| prices_at(entry.schedule, now_unix))
+}
+
+/// The hot-override tariff family and prices of the catalog entry that prices `model_id`.
+///
+/// Same lookup as `gemini_prices_at`, additionally reporting WHICH family the resolution used:
+/// `google/gemini/<id>` of the canonical catalog model that matched, so a hot override row can
+/// reprice exactly one model.
+pub fn gemini_matched_tariff_at(
+    model_id: &str,
+    now_unix: i64,
+) -> Option<(&'static str, GeminiPrices)> {
+    CATALOG
+        .iter()
+        .find(|entry| entry.id == model_id)
+        .map(|entry| (entry.tariff_family, prices_at(entry.schedule, now_unix)))
 }
 
 fn count_modality(details: &Value, modality: &str) -> u64 {
@@ -948,5 +975,28 @@ data: {\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":7,\"t
             grounded_search_prompts: u64::MAX,
         };
         assert!(cost_nanodollars(&usage, &prices) > 0);
+    }
+
+    #[test]
+    fn matched_tariff_reports_the_per_model_family_and_identical_prices() {
+        for spec in gemini_catalog_at(0) {
+            for ts in [0, 1, i64::MAX] {
+                let (family, prices) =
+                    gemini_matched_tariff_at(spec.id, ts).expect("catalog model priced");
+                assert_eq!(
+                    family,
+                    format!("google/gemini/{}", spec.id),
+                    "{} family",
+                    spec.id
+                );
+                assert_eq!(
+                    Some(prices),
+                    gemini_prices_at(spec.id, ts),
+                    "{} helper prices must equal gemini_prices_at",
+                    spec.id
+                );
+            }
+        }
+        assert_eq!(gemini_matched_tariff_at("gemini-9-ultra", 0), None);
     }
 }
