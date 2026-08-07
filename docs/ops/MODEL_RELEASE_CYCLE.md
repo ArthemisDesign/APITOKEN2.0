@@ -114,7 +114,10 @@ Failure playbook (all observed during gpt-image-2):
 - Staging stops with HTTP 409 `openkeys_lock_drift` — a lineage state the rollout contract
   refuses (still-locked canonical lineage, or an unlocked legacy lineage whose live rules are
   not the canonical 1:1 successor). Read the engine lineage for the named account; the fix is in
-  the producer, never in editing the lineage by hand.
+  the producer, never in editing the lineage by hand. A canonical OpenKeys key issued AFTER the
+  cutover has no legacy engine lineage at all (release-native from birth) — the rollout skips it
+  by design since the fix in this delivery; an absent lineage blocks only legacy-contract
+  accounts.
 - `exact terminal Stage 6 result is unavailable or untrusted` / `plan fence is unavailable` —
   the helpers and the bridge disagree about the cycle namespace. The helpers accept the cycle
   root only from the provisioned namespaces; if you introduce a new bridge namespace, extend

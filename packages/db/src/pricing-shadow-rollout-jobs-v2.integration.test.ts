@@ -676,6 +676,21 @@ describe.runIf(Boolean(connectionString))("pricing shadow rollout v2 lane", () =
     expect(replay.rolloutDigest).toBe(staged.rolloutDigest);
   });
 
+  it("skips a canonical release-native account that never had an engine lineage", async () => {
+    const runId = randomUUID();
+    await seedStage5(seed, runId);
+    const reader = engineReader();
+    const originalState = reader.getAccountPricingState;
+    reader.getAccountPricingState = async (accountId: string) =>
+      accountId === "acct_ok_new" ? "unbound" as const : originalState(accountId);
+    const staged = await stagePricingShadowRolloutV2(database, reader, stageInput(runId));
+    expect(staged.jobCount).toBe(1);
+    const jobs = await seed.query<{ engine_account_id: string }>(`
+      SELECT engine_account_id FROM pricing_shadow_policy_jobs_v2
+    `);
+    expect(jobs.rows.map((row) => row.engine_account_id)).toEqual(["acct_ok_legacy"]);
+  });
+
   it("skips a legacy-contract account whose lineage already holds the canonical successor", async () => {
     const runId = randomUUID();
     await seedStage5(seed, runId);

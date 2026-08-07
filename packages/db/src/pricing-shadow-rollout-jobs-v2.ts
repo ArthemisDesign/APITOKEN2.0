@@ -710,8 +710,14 @@ export async function stagePricingShadowRolloutV2(
       }
       const lineageState = openkeysAdvance.get(assignment.engine_account_id);
       if (!lineageState || lineageState === "unbound" || "inactive" in lineageState) {
+        if (openkeysAccount!.pricing_contract !== "legacy") {
+          // A canonical OpenKeys account created after the cutover is release-native: it never
+          // received a legacy engine policy lineage (issuance writes only the release-v2
+          // policy/extension), so there is no shadow lineage to advance in place.
+          continue;
+        }
         throw permanent(
-          `${openkeysAccount!.pricing_contract === "legacy" ? "legacy" : "canonical"} OpenKeys account ${assignment.engine_account_id} has no active engine policy lineage`,
+          `legacy OpenKeys account ${assignment.engine_account_id} has no active engine policy lineage`,
         );
       }
       const lineage = lineageState.active.policy;
