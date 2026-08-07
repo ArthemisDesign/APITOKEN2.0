@@ -386,6 +386,14 @@ side effect. `serve` may only perform the read-only schema verification before c
   head-audit triggers are kind-agnostic and already cover the monotonic transition. No existing
   row, arm or semantic changes; the dependent capture/activation producer ships in a separate SHA
   after a green migration/watchdog of this checkpoint.
+- **Hot tariff override schema checkpoint:** migration `0036` expand-only creates the empty
+  append-only `pricing_tariff_overrides` authority so a tariff family price vector can be
+  republished as data without a recompile/redeploy. Compiled `metering` constants are the implicit
+  version 1 of each family; every override row carries version >= 2 in a strict per-family
+  sequence (trigger-enforced), an `effective_from` priced-timestamp bound, a canonical
+  `sha256:v2` payload digest and operator attribution, and is never updated or deleted — a
+  correction is a newer version. The old runtime neither reads nor writes the table; the dependent
+  resolver/writer ships in a separate SHA after a green migration/watchdog of this checkpoint.
 - **Pricing release v2 runtime foundation:** the PostgreSQL resolver reads the head, assignment, policy,
   catalog/switch gates and rule precedence `model → provider → global` in one snapshot; service
   `meter_only` bypasses the product catalog but keeps the provider master-switch. Reserve re-resolves
