@@ -584,7 +584,12 @@ async function stepCapture(
     `, [row.stage5_run_id]);
     const completedAt = rollout.rows[0]?.completed_at;
     if (!completedAt) return false;
-    return completedAt.getTime() / 1_000 + CAPTURE_WINDOW_SECONDS < databaseNow;
+    // The capture window ends 30 s before "now", so its start reaches WINDOW+LAG seconds back:
+    // the rollout churn must be older than that whole reach, or every staged window still
+    // contains the tail writes and arrives blocked (the fifth intent burned all five attempts
+    // in 25 seconds exactly this way).
+    return completedAt.getTime() / 1_000 + CAPTURE_WINDOW_SECONDS + CAPTURE_WINDOW_LAG_SECONDS
+      < databaseNow;
   };
   const stageNewCapture = async () => {
     const databaseNow = Math.floor(row.database_now.getTime() / 1_000);

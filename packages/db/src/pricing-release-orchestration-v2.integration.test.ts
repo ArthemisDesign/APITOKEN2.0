@@ -240,9 +240,19 @@ describe.runIf(Boolean(connectionString))("pricing release orchestration v2", ()
       ) VALUES ($1, $2, 41, $3, 42, $4, 7, $5, $5,
                 7, $5, $5, $5, $5, $5,
                 1, 1, 'pricing-control-worker:integration', 'drive the successor pair live',
-                'confirmed', now() - interval '20 minutes')
+                'confirmed', now() - interval '15 minutes 20 seconds')
     `, [randomUUID(), runId, "sha256:v2:" + "a".repeat(64), "sha256:v2:" + "b".repeat(64),
         "sha256:v2:" + "c".repeat(64)]);
+    // 15 min 20 s after the rollout the 15 min 30 s window still reaches the churn: no staging.
+    await advancePricingReleaseOrchestrationV2(database, readers);
+    const notYet = await seed.query<{ count: string }>(`
+      SELECT count(*)::text FROM pricing_stage8_capture_jobs_v2 WHERE target_generation = 41
+    `, []);
+    expect(Number(notYet.rows[0]!.count)).toBe(1);
+    await seed.query(`
+      UPDATE pricing_shadow_rollouts_v2 SET completed_at = now() - interval '20 minutes'
+      WHERE stage5_run_id = $1
+    `, [runId]);
     await advancePricingReleaseOrchestrationV2(database, readers);
     const transient = await readPricingReleaseOrchestrationControlV2(database);
     expect(transient.orchestrations[0]).toMatchObject({ step: "capture", status: "active" });
