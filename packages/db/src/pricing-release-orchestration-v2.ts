@@ -92,6 +92,11 @@ function permanent(message: string): PricingReleaseOrchestrationV2Error {
   return new PricingReleaseOrchestrationV2Error(message, true);
 }
 
+/** SERIALIZABLE conflicts and deadlocks are concurrency facts, not failures: retry next tick. */
+export function isSerializationConflictV2(message: string): boolean {
+  return /could not serialize|deadlock detected/i.test(message);
+}
+
 export interface StagePricingReleaseOrchestrationV2Input {
   idempotencyKey: string;
   capabilityGeneration: number;
@@ -366,6 +371,7 @@ async function stepMaterializePair(
       audit: { actorId: row.operator_id, reason: row.reason },
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     if (
       error instanceof Stage5MaterializerV2Error
       && (error as { code?: string }).code === "expected_plan_stale"
@@ -373,6 +379,7 @@ async function stepMaterializePair(
       // The inventory moved between the dry run and apply: wait a tick and re-plan.
       return;
     }
+    if (isSerializationConflictV2(message)) return;
     throw error;
   }
   if (applied.status !== "materializing" || applied.run_id === null) {
@@ -523,6 +530,8 @@ async function stepRollout(
     // A transient engine outage must not move the state machine at all: the next tick retries.
     if (error instanceof EngineClientError && error.retryable) throw error;
     const message = error instanceof Error ? error.message : String(error);
+    // A serialization conflict with a concurrent delivery is equally transient.
+    if (isSerializationConflictV2(message)) return;
     // The rollout refuses to stage against an inventory that moved after the Stage 5 run — the
     // pair is stale; a fresh cycle re-materializes with the live inventory.
     if (/inventory|drift/i.test(message)) {
