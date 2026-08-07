@@ -1685,10 +1685,11 @@ async fn publish_quota_retains_the_exact_per_window_snapshot() {
 
 #[tokio::test]
 async fn the_projection_bounds_plan_labels_and_cannot_carry_the_subject() {
-    // The reviewed list is empty today, so every provider-controlled string collapses to the
-    // bounded placeholder; a raw plan name must never reach logs, metrics or admin output.
+    // Documented tiers keep their exact name; anything outside the ladder collapses to the
+    // bounded placeholder, so a raw provider string never reaches logs, metrics or admin output.
     assert_eq!(bounded_plan_label("unreviewed-base-plan"), "unreviewed");
-    assert_eq!(bounded_plan_label("Moderato"), "unreviewed");
+    assert_eq!(bounded_plan_label("Presto"), "unreviewed");
+    assert_eq!(bounded_plan_label("Moderato"), "Moderato");
     for entry in kimi_credential::KIMI_REVIEWED_PLANS {
         assert_eq!(bounded_plan_label(entry.plan_name), entry.plan_name);
     }

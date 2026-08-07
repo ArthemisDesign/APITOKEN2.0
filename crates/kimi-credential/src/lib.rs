@@ -100,24 +100,98 @@ pub struct ReviewedPlan {
     pub reviewed_on: &'static str,
 }
 
-/// Plans whose capability set has been confirmed on a subscription we own.
+/// Every documented tier, with the capability set the provider publishes for it.
 ///
-/// Deliberately empty. The provider's own pages disagree about which tier unlocks Kimi Code, the
-/// USD and CNY ladders carry different names, and a mid-2026 split renamed the coding tiers
-/// again. Guessing here would hand a customer a model their plan cannot serve and burn a paid
-/// request to discover it. An entry is added only together with a dated live observation
-/// recorded in `docs/engine/KIMI_PROVIDER.md`.
-pub const KIMI_REVIEWED_PLANS: &[ReviewedPlan] = &[];
+/// This list was empty for a long time, and that was a mistake with a real cost: an empty table
+/// does not distinguish a free tier from the most expensive one. Every subscription, whatever its
+/// plan, silently collapsed to base capabilities — our own `supports()` refused `k3`/1M/highspeed
+/// before any request reached the provider, the pool reported "no profile", and the transparent
+/// envelope handed the caller a 429 indistinguishable from an upstream rate limit. Nothing in that
+/// chain named the plan, so the cause was invisible from the outside.
+///
+/// What is genuinely contradictory in the provider's sources is the **price ladder** — the CNY and
+/// USD lists carry different names and a mid-2026 split renamed the coding tiers. The
+/// **capability → tier mapping** is published (Kimi Code docs, models) and is what this table
+/// encodes. `reviewed_on` therefore carries the same meaning as in [`GLM_REVIEWED_PLANS`]: the day
+/// the entry was confirmed against official documentation, recorded in
+/// `docs/engine/KIMI_PROVIDER.md`.
+///
+/// [`GLM_REVIEWED_PLANS`]: https://docs.rs/glm-credential
+pub const KIMI_REVIEWED_PLANS: &[ReviewedPlan] = &[
+    // Entry tiers: every member gets `kimi-for-coding` at 256K and nothing beyond it.
+    ReviewedPlan {
+        plan_name: "Adagio",
+        capabilities: KimiPlanCapabilities {
+            allows_k3: false,
+            allows_1m_context: false,
+            allows_highspeed: false,
+        },
+        reviewed_on: "2026-08-07",
+    },
+    ReviewedPlan {
+        plan_name: "Andante",
+        capabilities: KimiPlanCapabilities {
+            allows_k3: false,
+            allows_1m_context: false,
+            allows_highspeed: false,
+        },
+        reviewed_on: "2026-08-07",
+    },
+    // `k3` / `k3-256k` unlock at Moderato; the full 1M window and highspeed do not.
+    ReviewedPlan {
+        plan_name: "Moderato",
+        capabilities: KimiPlanCapabilities {
+            allows_k3: true,
+            allows_1m_context: false,
+            allows_highspeed: false,
+        },
+        reviewed_on: "2026-08-07",
+    },
+    // Allegretto and above additionally unlock the 1M context and the highspeed SKU.
+    ReviewedPlan {
+        plan_name: "Allegretto",
+        capabilities: KimiPlanCapabilities {
+            allows_k3: true,
+            allows_1m_context: true,
+            allows_highspeed: true,
+        },
+        reviewed_on: "2026-08-07",
+    },
+    ReviewedPlan {
+        plan_name: "Allegro",
+        capabilities: KimiPlanCapabilities {
+            allows_k3: true,
+            allows_1m_context: true,
+            allows_highspeed: true,
+        },
+        reviewed_on: "2026-08-07",
+    },
+    ReviewedPlan {
+        plan_name: "Vivace",
+        capabilities: KimiPlanCapabilities {
+            allows_k3: true,
+            allows_1m_context: true,
+            allows_highspeed: true,
+        },
+        reviewed_on: "2026-08-07",
+    },
+];
 
 /// Capabilities for a plan, or `None` when the plan has not been reviewed.
 ///
 /// `None` does not mean "no access": it means only capabilities documented as available to every
 /// member — that is, `kimi-for-coding` at 256K — may be offered. See
 /// [`capabilities_or_base`].
+///
+/// Matching ignores surrounding whitespace and ASCII case. The plan is an operator-visible label,
+/// not a secret, and a subscription must not silently lose `k3` because the provider returned
+/// `"vivace"` where the docs print `"Vivace"`. A genuinely different tier still misses and still
+/// fails closed.
 pub fn reviewed_plan_capabilities(plan_name: &str) -> Option<KimiPlanCapabilities> {
+    let wanted = plan_name.trim();
     KIMI_REVIEWED_PLANS
         .iter()
-        .find(|entry| entry.plan_name == plan_name)
+        .find(|entry| entry.plan_name.eq_ignore_ascii_case(wanted))
         .map(|entry| entry.capabilities)
 }
 
@@ -675,13 +749,42 @@ mod tests {
 
     #[test]
     fn unreviewed_plans_get_base_capabilities_only() {
-        // The plan ladder is not verified, so nothing tier-gated may be offered.
-        assert!(KIMI_REVIEWED_PLANS.is_empty());
-        assert_eq!(reviewed_plan_capabilities("Vivace"), None);
-        let caps = oauth_credential().capabilities();
-        assert!(!caps.allows_k3);
-        assert!(!caps.allows_1m_context);
-        assert!(!caps.allows_highspeed);
+        // A plan outside the documented ladder is still refused everything tier-gated.
+        assert_eq!(reviewed_plan_capabilities("Presto"), None);
+        let base = capabilities_or_base("Presto");
+        assert!(!base.allows_k3);
+        assert!(!base.allows_1m_context);
+        assert!(!base.allows_highspeed);
+    }
+
+    #[test]
+    fn documented_ladder_grants_exactly_the_published_capabilities() {
+        // Entry tiers: base only. `k3` opens at Moderato, 1M and highspeed at Allegretto.
+        for entry in ["Adagio", "Andante"] {
+            let caps = reviewed_plan_capabilities(entry).expect("entry tier is documented");
+            assert!(!caps.allows_k3, "{entry} must not grant k3");
+            assert!(!caps.allows_1m_context);
+            assert!(!caps.allows_highspeed);
+        }
+        let moderato = reviewed_plan_capabilities("Moderato").expect("documented");
+        assert!(moderato.allows_k3);
+        assert!(!moderato.allows_1m_context, "1M opens only at Allegretto");
+        assert!(!moderato.allows_highspeed, "highspeed opens only at Allegretto");
+        for top in ["Allegretto", "Allegro", "Vivace"] {
+            let caps = reviewed_plan_capabilities(top).expect("top tier is documented");
+            assert!(caps.allows_k3, "{top} must grant k3");
+            assert!(caps.allows_1m_context, "{top} must grant the 1M window");
+            assert!(caps.allows_highspeed, "{top} must grant highspeed");
+        }
+    }
+
+    #[test]
+    fn plan_lookup_survives_case_and_padding_from_the_provider() {
+        // A subscription must not lose k3 because `/me` spelled the tier differently.
+        let canonical = reviewed_plan_capabilities("Vivace").expect("documented");
+        assert_eq!(reviewed_plan_capabilities("vivace"), Some(canonical));
+        assert_eq!(reviewed_plan_capabilities("  VIVACE  "), Some(canonical));
+        assert_eq!(reviewed_plan_capabilities("Vivace Plan"), None);
     }
 
     #[test]

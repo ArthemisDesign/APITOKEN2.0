@@ -71,6 +71,24 @@ authoritative paid plan identity for calibration cohorts. The marketing price is
 (error-reference). The source discrepancy is `unknown`; the handler must classify both as
 "capability not permitted by plan", not as auth death.
 
+`decision` **2026-08-07 — the ladder above is encoded in `KIMI_REVIEWED_PLANS`.** It was empty
+until this date, which cost more than it protected: an empty table cannot tell the free tier from
+the most expensive one, so every subscription collapsed to `kimi-for-coding` at 256K. Our own
+`supports()` refused `k3`/1M/highspeed before any request left the process, the pool reported "no
+profile", and the transparent envelope returned a `429` indistinguishable from an upstream rate
+limit — with the plan named nowhere in the chain. Verified live on 2026-08-07: the paid matrix on
+the connected Vivace subscription could reach only the base model, and the refusal was ours.
+
+The emptiness was justified by contradictory sources, but the contradiction is in the **price**
+ladder (CNY versus USD names, the mid-2026 coding-plan split), not in the capability mapping above,
+which is `official`, nor in the plan identity, which `/me` publishes machine-readably as
+`user_level_name`. Entries therefore carry the same meaning as `GLM_REVIEWED_PLANS`: confirmed
+against official documentation on the stated date. Adagio and Andante get base capabilities only,
+Moderato adds `k3`/`k3-256k`, and Allegretto, Allegro and Vivace additionally add the 1M window and
+highspeed. Lookup ignores case and padding so a spelling difference from `/me` cannot silently cost
+a subscription its tier; a plan outside the ladder still fails closed to base and must remain
+operationally visible instead of degrading quietly.
+
 `official` **Community Guidelines restrict the subscription to "personal interactive use only".**
 
 > `decision` This restriction is a real compliance risk for reselling capacity. It is precisely

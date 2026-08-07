@@ -40,12 +40,17 @@ XChaCha20-Poly1305, validation, normalization — and nothing else. It stands OU
    different calibration cohorts into one. The plan comes from `/me` (`user_level_name`).
 5. **Account status.** Only `USER_STATUS_NORMAL` is routed. Any other status is a rejection, not a
    warning.
-6. **Tariff capabilities fail closed.** `KIMI_REVIEWED_PLANS` is **intentionally empty**. Provider
-   sources disagree on which tier unlocks `k3`, the 1M window and highspeed, and the USD and CNY
-   ladders carry different names. Until a plan is confirmed by live observation on our subscription,
-   `reviewed_plan_capabilities` returns `None`, and only the base model `kimi-for-coding` at 256K is
-   available. A row is added to the table **only** together with dated evidence in
-   `docs/engine/KIMI_PROVIDER.md`.
+6. **Tariff capabilities fail closed, but the ladder is populated.** `KIMI_REVIEWED_PLANS` carries
+   every documented tier (Adagio, Andante, Moderato, Allegretto, Allegro, Vivace) with the
+   capability set the provider publishes: `kimi-for-coding` at 256K for any member, `k3`/`k3-256k`
+   from Moderato, the 1M window and highspeed from Allegretto. What the provider's sources actually
+   contradict is the **price** ladder, not the capability mapping — the table was empty for months
+   over that confusion, and an empty table treats the most expensive subscription exactly like the
+   free tier. A plan outside the ladder still returns `None` and gets base capabilities only.
+   Lookup ignores case and padding: a plan is an operator-visible label, and a subscription must not
+   lose `k3` because `/me` spelled the tier differently. A new tier is added **only** together with
+   dated evidence in `docs/engine/KIMI_PROVIDER.md`, and an unreviewed plan must stay operationally
+   visible rather than silently degrading to base.
 
 ## How to verify
 
