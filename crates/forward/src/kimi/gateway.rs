@@ -19,15 +19,18 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use kimi_credential::{capabilities_or_base, KimiCredential};
 use metering::kimi::{
-    cost_nanodollars, kimi_prices_for_served_model, kimi_resolve_subscription_model,
-    merge_stream_event, KimiPrices, KimiUsage, KIMI_TARIFF_SCHEDULE_ID,
+    cost_nanodollars, kimi_matched_tariff_at, kimi_resolve_subscription_model, merge_stream_event,
+    KimiPrices, KimiUsage, KIMI_TARIFF_SCHEDULE_ID,
 };
+#[cfg(test)]
+use metering::kimi::kimi_prices_for_served_model;
 use registry::{ExecutionAttempt, KimiTurnCalibrationEvent};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
 use crate::affinity::{AffinityInput, AffinityResolution, AffinityStore};
 use crate::billing::{AsyncBilling, KimiQuotaSnapshot};
+use crate::pricing::tariff_book::{self, PinnedTariff};
 use crate::proxy::{local_err_for, HoldGuard, LocalErr};
 use crate::state::{ActiveTaskGuard, ActiveTaskTracker};
 
@@ -475,6 +478,9 @@ struct Reservation {
     hold: i64,
     mult_bp: i64,
     priced_ts: i64,
+    /// The hot tariff override version admission priced the hold with; settlement replays exactly
+    /// this version. `None` is the compiled constants, byte-identical to before.
+    pinned_tariff: Option<PinnedTariff>,
 }
 
 #[derive(Clone)]
@@ -1702,8 +1708,19 @@ impl KimiGateway {
         ))?;
         let resolved = kimi_resolve_subscription_model(model)
             .ok_or(GatewayFailure::Unsupported("kimi_model_unavailable"))?;
-        let prices = kimi_prices_for_served_model(resolved.official_model, priced_ts)
+        // Hot tariff override: the matched family of the official served model resolves against
+        // the process-wide book; an override replaces only the base vector and pins
+        // `<family>/v<version>` for settlement.
+        let (family, compiled) = kimi_matched_tariff_at(resolved.official_model, priced_ts)
             .ok_or(GatewayFailure::Unsupported("kimi_price_unavailable"))?;
+        let resolved_base = tariff_book::reserve_base(
+            &tariff_book::snapshot(),
+            family,
+            priced_ts,
+            compiled,
+            tariff_book::as_kimi,
+        );
+        let prices = resolved_base.prices;
         let requested_max = bounded_requested_output(body);
         let mut balance = i128::from(input.available_nano);
         for _ in 0..4 {
@@ -1742,6 +1759,7 @@ impl KimiGateway {
                         hold,
                         mult_bp: input.mult_bp,
                         priced_ts,
+                        pinned_tariff: resolved_base.pin.clone(),
                     }));
                 }
                 None => {
@@ -2061,12 +2079,25 @@ impl KimiGateway {
         reservation: Option<Reservation>,
         parsed: ParsedAccounting,
     ) {
-        let priced = parsed
-            .terminal
-            .then_some(())
-            .and_then(|_| parsed.usage.as_ref())
-            .zip(parsed.served_model.as_deref())
-            .and_then(|(usage, served)| price_turn(usage, served, context.priced_ts).ok());
+        let pinned_tariff = reservation
+            .as_ref()
+            .and_then(|reservation| reservation.pinned_tariff.clone());
+        let priced = match (
+            parsed.terminal,
+            parsed.usage.as_ref(),
+            parsed.served_model.as_deref(),
+        ) {
+            (true, Some(usage), Some(served)) => price_turn_settlement(
+                self.billing.as_deref(),
+                usage,
+                served,
+                context.priced_ts,
+                pinned_tariff.as_ref(),
+            )
+            .await
+            .ok(),
+            _ => None,
+        };
 
         if let Some(reservation) = reservation {
             if let Some(billing) = &self.billing {
@@ -2268,9 +2299,12 @@ fn bounded_requested_output(body: &mut Value) -> u64 {
     bounded
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PricedTurn {
     prices: KimiPrices,
+    /// The tariff identity of the rate card this turn priced with: the compiled schedule id, or
+    /// `<family>/v<version>` when a hot override priced the turn.
+    tariff_schedule_id: String,
     input: i128,
     cache_read: i128,
     cache_write: i128,
@@ -2339,7 +2373,7 @@ impl PricedTurn {
             served_model: served_model.to_string(),
             context_mode: context.context_mode.clone(),
             reasoning_effort: context.reasoning_effort.clone(),
-            tariff_schedule_id: KIMI_TARIFF_SCHEDULE_ID.to_string(),
+            tariff_schedule_id: self.tariff_schedule_id.clone(),
             priced_ts: context.priced_ts,
             completed_at: now_unix(),
             input_tokens: i64_counter(usage.input_tokens)?,
@@ -2380,15 +2414,20 @@ fn non_stream_accounting(body: &[u8]) -> ParsedAccounting {
     }
 }
 
-fn price_turn(usage: &KimiUsage, served_model: &str, priced_ts: i64) -> anyhow::Result<PricedTurn> {
+/// The terminal-turn pricing core under one explicit rate card and tariff identity: the hot override vector
+/// admission pinned (or the served family's resolution at the pinned priced timestamp after a
+/// cross-family serve), compiled constants otherwise.
+fn price_turn_with_prices(
+    usage: &KimiUsage,
+    prices: KimiPrices,
+    tariff_schedule_id: String,
+) -> anyhow::Result<PricedTurn> {
     usage
         .validate()
         .map_err(|_| anyhow!("invalid KIMI usage"))?;
     if usage.is_zero() {
         anyhow::bail!("empty KIMI usage is not terminal evidence");
     }
-    let prices = kimi_prices_for_served_model(served_model, priced_ts)
-        .ok_or_else(|| anyhow!("unpriced KIMI served model"))?;
     let leg = |tokens: u64, rate: i128| {
         i128::from(tokens)
             .checked_mul(rate)
@@ -2401,12 +2440,69 @@ fn price_turn(usage: &KimiUsage, served_model: &str, priced_ts: i64) -> anyhow::
     let total = cost_nanodollars(usage, &prices).map_err(|_| anyhow!("KIMI cost overflow"))?;
     Ok(PricedTurn {
         prices,
+        tariff_schedule_id,
         input,
         cache_read,
         cache_write,
         output,
         total,
     })
+}
+
+/// Settlement-time pricing through the hot tariff book: the exact version pinned at admission
+/// (with one bounded refresh retry on a cache miss — this path is async), or the served family's
+/// override at the pinned priced timestamp after a cross-family serve, or the compiled constants.
+/// A pinned version that even the refresh cannot produce is an integrity error: the caller
+/// settles the documented conservative hold, never a silent compiled reprice.
+async fn price_turn_settlement(
+    billing: Option<&AsyncBilling>,
+    usage: &KimiUsage,
+    served_model: &str,
+    priced_ts: i64,
+    pinned: Option<&PinnedTariff>,
+) -> anyhow::Result<PricedTurn> {
+    usage
+        .validate()
+        .map_err(|_| anyhow!("invalid KIMI usage"))?;
+    if usage.is_zero() {
+        anyhow::bail!("empty KIMI usage is not terminal evidence");
+    }
+    let (family, compiled) = kimi_matched_tariff_at(served_model, priced_ts)
+        .ok_or_else(|| anyhow!("unpriced KIMI served model"))?;
+    let book = tariff_book::snapshot();
+    let (prices, tariff_schedule_id) = match pinned.filter(|pin| pin.family == family) {
+        Some(pin) => {
+            let payload = match billing {
+                Some(billing) => {
+                    tariff_book::version_payload_refreshed(billing, &pin.family, pin.version).await
+                }
+                None => book.version_payload(&pin.family, pin.version),
+            }
+            .ok_or_else(|| {
+                elog::error(
+                    "kimi",
+                    format!(
+                        "pinned tariff {} is absent from the override book; settlement left to the conservative hold",
+                        pin.schedule_id
+                    ),
+                );
+                anyhow!("pinned KIMI tariff version is absent from the override book")
+            })?;
+            let prices = tariff_book::as_kimi(&payload).ok_or_else(|| {
+                elog::error("kimi", "pinned KIMI tariff payload kind mismatch");
+                anyhow!("pinned KIMI tariff payload kind mismatch")
+            })?;
+            (prices, pin.schedule_id.clone())
+        }
+        None => match book.resolve(family, priced_ts) {
+            Some((pin, payload)) => match tariff_book::as_kimi(&payload) {
+                Some(prices) => (prices, pin.schedule_id),
+                None => (compiled, KIMI_TARIFF_SCHEDULE_ID.to_string()),
+            },
+            None => (compiled, KIMI_TARIFF_SCHEDULE_ID.to_string()),
+        },
+    };
+    price_turn_with_prices(usage, prices, tariff_schedule_id)
 }
 
 fn cap_to_balance(

@@ -1174,6 +1174,9 @@ async fn serve() -> Result<()> {
     // Fleet-wide settlement policy, installed before any plane can settle a turn: the preflight hold
     // is an admission device and is never billed as a price for a turn nobody measured.
     forward::settlement_policy::set_charge_hold_on_unknown_usage(s.charge_hold_on_unknown_usage);
+    // Hot tariff override kill switch, installed before any reserve can pin a version: off means
+    // the process-wide tariff book answers empty and every price is the compiled constant.
+    forward::tariff_book::install(s.tariff_overrides);
     // Мягкий routing/spill threshold (env CLAUDE_API_MAX_INFLIGHT) ставим ДО создания пула.
     // Он балансирует нагрузку, но не является admission cap и никогда не блокирует dispatch.
     if serves_anthropic {
@@ -1623,6 +1626,15 @@ async fn serve() -> Result<()> {
             owner.clone(),
             authority_ready.clone(),
         ));
+    }
+    // Hot tariff override refresher: the process-wide book re-reads the tiny append-only table
+    // through the billing reader actor and atomically swaps its snapshot. The authority is
+    // PostgreSQL-only, so on the SQLite authority the book simply stays empty (= compiled
+    // constants everywhere), and the kill switch keeps it empty regardless.
+    if authority.is_postgres() && s.tariff_overrides {
+        if let Some(billing) = app.billing.clone() {
+            tokio::spawn(forward::tariff_book::refresher_loop(billing));
+        }
     }
 
     if serves_anthropic {

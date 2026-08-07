@@ -85,7 +85,11 @@ background loops and the HTTP router. Here — and only here — everything is w
   family whose head is past version 2. The metering→registry payload converters live in
   `tariff_admin.rs`; writes go through the billing writer actor, reads through the reader pool,
   and the authority is PostgreSQL-only (SQLite answers 503). Contract — the hot tariff overrides
-  section of `docs/engine/CONTROL_API.md`.
+  section of `docs/engine/CONTROL_API.md`. The runtime consumption of the table lives in
+  `crates/forward` (`pricing/tariff_book.rs`): server installs the kill switch
+  `CLAUDE_API_TARIFF_OVERRIDES` (on/off, default on; off = the book always answers empty and every
+  price is the compiled constant) and spawns the 5-second refresher loop only on the PostgreSQL
+  authority.
 - `poller.rs` — EVENT-DRIVEN loops: `reload_loop` (re-reads the registry; wakes the poller via `Notify` when
   the fleet changes) + `poll_loop` (free count-tokens probe of matured subscriptions concurrently, then sleep
   EXACTLY until the nearest due time or until a `poke`). There is no fixed tick: reset is computed

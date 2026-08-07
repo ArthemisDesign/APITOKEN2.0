@@ -409,7 +409,8 @@ side effect. `serve` may only perform the read-only schema verification before c
   sequence gap is a typed `SequenceViolation`. The pure `resolve_tariff_override` picks the
   greatest version with `effective_from <= priced_ts`. SQLite has no entry points, exactly like
   the release-v2 producer. Real-PG gate: `pg::tests::tariff_overrides_postgres_matrix`. The
-  server/forward wiring that applies overrides to reserve/charge ships separately.
+  runtime consumption (process-wide tariff book, reserve pinning, settlement replay) lives in
+  `crates/forward` — contract in `crates/forward/CLAUDE.md`.
 - **Pricing release v2 runtime foundation:** the PostgreSQL resolver reads the head, assignment, policy,
   catalog/switch gates and rule precedence `model → provider → global` in one snapshot; service
   `meter_only` bypasses the product catalog but keeps the provider master-switch. Reserve re-resolves

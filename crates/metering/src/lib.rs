@@ -19,7 +19,8 @@ pub mod kimi;
 pub mod openai_image;
 pub use codex::{
     codex_catalog_at, codex_compiled_credit_rates, codex_compiled_tariffs_at,
-    codex_credit_cost_nano, codex_credit_rates, codex_credit_rates_family,
+    codex_credit_cost_nano, codex_credit_cost_nano_with_rates, codex_credit_rates,
+    codex_credit_rates_family,
     codex_matched_credit_rates_at, codex_matched_tariff_at, codex_prices_at,
     codex_subscription_fast_multiplier_basis_points, codex_tariff_capability_at,
     CodexAdmissionTariffIdentity, CodexContextTier, CodexCreditRates, CodexCreditUsage,

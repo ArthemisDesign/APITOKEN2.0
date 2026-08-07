@@ -25,6 +25,13 @@ pub struct Settings {
     /// turn. Kept as a switch so an operator facing a provider that stops reporting usage can
     /// restore the conservative fallback without a deploy.
     pub charge_hold_on_unknown_usage: bool,
+    /// Consume the hot tariff override table (`pricing_tariff_overrides`) at reserve/settlement
+    /// time. On (default): the process-wide tariff book republishes a family's base price vector
+    /// from the append-only override rows. Off: the book always answers empty and every price is
+    /// the compiled constant, exactly as before the override runtime existed. The kill switch is
+    /// installed once at startup and never re-read mid-flight, so an in-flight pinned version can
+    /// never lose its payload under a running process.
+    pub tariff_overrides: bool,
     /// Reader connections this slot opens against the authority. See `CLAUDE_API_BILLING_READERS`.
     pub billing_readers: usize,
     pub mult_bp: i64,   // дефолтная наценка для `key issue` (× 10000; 900 = ×0.09)
@@ -1223,6 +1230,10 @@ impl Settings {
                 "CLAUDE_API_CHARGE_HOLD_ON_UNKNOWN_USAGE",
                 false,
             ),
+            // Hot tariff overrides (on/off, default ON): the runtime consumption of
+            // `pricing_tariff_overrides`. Off makes the tariff book answer empty everywhere —
+            // reserve and settlement use the compiled constants byte-identically.
+            tariff_overrides: ev_bool("CLAUDE_API_TARIFF_OVERRIDES", true),
             // Default preserves the previous host-sized behaviour; the bound exists so a deployment
             // whose authority is shared can fit every slot — plus the extra generation a blue-green
             // cutover runs — inside the server's connection limit.

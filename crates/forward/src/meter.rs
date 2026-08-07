@@ -37,6 +37,10 @@ pub struct BillCtx {
     /// Strict policy settlement reuses the exact tariff timestamp pinned at admission. Legacy
     /// scalar requests keep `None` and preserve their existing completion-time tariff lookup.
     pub tariff_priced_ts: Option<i64>,
+    /// The hot tariff override version (`<family>/v<N>`, N >= 2) admission priced the hold with.
+    /// Settlement replays exactly this version through the tariff book; `None` is the compiled
+    /// constants, byte-identical to the pre-override behaviour.
+    pub tariff_pin: Option<crate::pricing::tariff_book::PinnedTariff>,
     pub settlement_pricing: AnthropicSettlementPricing,
     pub policy_fast: Option<bool>,
     pub policy_us_inference: Option<bool>,
@@ -369,7 +373,45 @@ impl TeeMeter {
             .as_ref()
             .and_then(|bill| bill.tariff_priced_ts)
             .unwrap_or(now_unix);
-        let prices = metering::model_prices_for_speed_at(price_model, priced_ts, fast);
+        let compiled_prices = metering::model_prices_for_speed_at(price_model, priced_ts, fast);
+        // Hot tariff override: settlement replays the exact version pinned at admission; a
+        // cross-family serve reprices by the served family at the pinned priced timestamp; an
+        // empty book is byte-identical to the compiled constants. A pinned version missing from
+        // the book is an integrity error (the table is append-only), never a silent reprice at
+        // compiled: the customer settle below is skipped and left to the reconciler. This sync
+        // finalize cannot await the bounded refresh retry the async planes perform; the miss is
+        // structurally unreachable because the pinning reserve read the row from this process.
+        let served_family = metering::anthropic_matched_tariff_at(price_model, priced_ts, fast)
+            .map(|(family, _)| family);
+        let pinned_tariff = ctx.bill.as_ref().and_then(|bill| bill.tariff_pin.as_ref());
+        let (prices, override_schedule_id, pinned_missing) =
+            match crate::pricing::tariff_book::charge_base(
+                &crate::pricing::tariff_book::snapshot(),
+                pinned_tariff,
+                served_family,
+                priced_ts,
+                compiled_prices,
+                crate::pricing::tariff_book::as_anthropic,
+            ) {
+                crate::pricing::tariff_book::ChargeBase::Compiled(prices) => (prices, None, false),
+                crate::pricing::tariff_book::ChargeBase::Override(prices, schedule_id) => {
+                    (prices, Some(schedule_id), false)
+                }
+                crate::pricing::tariff_book::ChargeBase::MissingPinned => {
+                    (compiled_prices, None, true)
+                }
+            };
+        if pinned_missing {
+            elog::error(
+                "meter",
+                format!(
+                    "pinned tariff {} is absent from the override book; settlement left to recovery",
+                    pinned_tariff
+                        .map(|pin| pin.schedule_id.as_str())
+                        .unwrap_or("<unknown>")
+                ),
+            );
+        }
         let base_breakdown = if usage.is_zero() {
             metering::CostBreakdown::default()
         } else {
@@ -412,7 +454,7 @@ impl TeeMeter {
                         metering::AnthropicInferenceGeo::Global
                     },
                 };
-                let tariff_schedule_id =
+                let tariff_schedule_id = override_schedule_id.clone().unwrap_or_else(|| {
                     metering::anthropic_tariff_capability_at(price_model, priced_ts, modifiers)
                         .map(|identity| identity.tariff_schedule_id.as_str().to_owned())
                         .unwrap_or_else(|_| {
@@ -428,7 +470,8 @@ impl TeeMeter {
                                 prices.output,
                                 metering::WEB_SEARCH_NANO,
                             )
-                        });
+                        })
+                });
                 let event = match (
                     to_i64(usage.input_tokens),
                     to_i64(usage.cache_read_tokens),
@@ -595,34 +638,38 @@ impl TeeMeter {
             };
             // finalize СИНХРОНЕН (Stream::poll / Drop) → шлём списание АСИНХРОННО через актор
             // (settle_detached не блокирует). Гарантия: осиротевшее при краше вернёт reconcile.
-            b.billing.settle_detached(
-                &b.request_id,
-                &b.account_id,
-                &b.key,
-                b.hold,
-                charge_i64,
-                b.reference.as_deref(),
-                usage_event,
-            );
-            if charge_i64 > 0 {
-                // хвост ключа для лога — по символам (не байтами: срез не на границе char паникует)
-                let tail: String = {
-                    let mut t: Vec<char> = b.key.chars().rev().take(4).collect();
-                    t.reverse();
-                    t.into_iter().collect()
-                };
-                elog::info(
-                    "meter",
-                    format!(
-                        "ключ …{tail}: −{} [{}]",
-                        metering::nano_to_usd_string(charge_i64 as i128),
-                        if price_model.is_empty() {
-                            "?"
-                        } else {
-                            price_model
-                        }
-                    ),
+            // A missing pinned override version never settles at compiled prices: the reservation
+            // is left to the reconciler instead of this settle.
+            if !pinned_missing {
+                b.billing.settle_detached(
+                    &b.request_id,
+                    &b.account_id,
+                    &b.key,
+                    b.hold,
+                    charge_i64,
+                    b.reference.as_deref(),
+                    usage_event,
                 );
+                if charge_i64 > 0 {
+                    // хвост ключа для лога — по символам (не байтами: срез не на границе char паникует)
+                    let tail: String = {
+                        let mut t: Vec<char> = b.key.chars().rev().take(4).collect();
+                        t.reverse();
+                        t.into_iter().collect()
+                    };
+                    elog::info(
+                        "meter",
+                        format!(
+                            "ключ …{tail}: −{} [{}]",
+                            metering::nano_to_usd_string(charge_i64 as i128),
+                            if price_model.is_empty() {
+                                "?"
+                            } else {
+                                price_model
+                            }
+                        ),
+                    );
+                }
             }
         }
     }
@@ -652,6 +699,14 @@ mod tests {
     }
 
     async fn bill_sse(sse: &[u8], drop_after_first_chunk: bool) -> BilledSse {
+        bill_sse_with_pin(sse, drop_after_first_chunk, None).await
+    }
+
+    async fn bill_sse_with_pin(
+        sse: &[u8],
+        drop_after_first_chunk: bool,
+        tariff_pin: Option<crate::pricing::tariff_book::PinnedTariff>,
+    ) -> BilledSse {
         let unique_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -720,6 +775,7 @@ mod tests {
                     mult_bp: 10_000,
                     hold: HOLD_NANO,
                     tariff_priced_ts: None,
+                    tariff_pin,
                     settlement_pricing: AnthropicSettlementPricing::LegacyScalar,
                     policy_fast: None,
                     policy_us_inference: None,
@@ -903,6 +959,145 @@ mod tests {
         assert_eq!(outcome.usage.output_tokens, 4_000);
         assert_eq!(outcome.usage.web_search_requests, 1);
         assert_eq!(outcome.usage.charge_nano, 70_030_000);
+    }
+
+    /// Settlement replays the exact override version pinned at admission: the same turn the
+    /// compiled card prices at 60_000 nano settles at the override card.
+    #[tokio::test]
+    async fn settlement_replays_the_pinned_override_version() {
+        let _lock = crate::pricing::tariff_book::GLOBAL_BOOK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // effective_from = i64::MAX keeps the row invisible to every timestamped resolve — and so
+        // to every concurrently running test; only the exact pinned-version lookup sees it.
+        crate::pricing::tariff_book::install_global_rows_for_test(vec![
+            crate::pricing::tariff_book::test_row(
+                "anthropic/standard/sonnet-current",
+                2,
+                i64::MAX,
+                serde_json::json!({
+                    "input": "6000",
+                    "output": "30000",
+                    "cache_read": "1000",
+                    "cache_write_5m": "12500",
+                    "cache_write_1h": "20000"
+                }),
+            ),
+        ]);
+        let sse = format!(
+            "{}data: {}\n\n",
+            message_start(),
+            serde_json::json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 2}
+            }),
+        );
+        let outcome = bill_sse_with_pin(
+            sse.as_bytes(),
+            false,
+            Some(crate::pricing::tariff_book::PinnedTariff {
+                family: "anthropic/standard/sonnet-current".to_owned(),
+                version: 2,
+                schedule_id: "anthropic/standard/sonnet-current/v2".to_owned(),
+            }),
+        )
+        .await;
+        crate::pricing::tariff_book::clear_global_book_for_test();
+        // 10 input × 6_000 + 2 output × 30_000 at the override card — compiled would be 60_000.
+        assert_eq!(outcome.balance_nano, TOPUP_NANO - 120_000);
+        assert_eq!(outcome.usage.charge_nano, 120_000);
+    }
+
+    /// A pinned version the book cannot produce is an integrity error: nothing is settled at
+    /// compiled prices and the reservation is left for durable recovery.
+    #[tokio::test]
+    async fn a_missing_pinned_override_version_never_settles_at_compiled() {
+        let _lock = crate::pricing::tariff_book::GLOBAL_BOOK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        crate::pricing::tariff_book::clear_global_book_for_test();
+        let unique_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let unique_sequence = BILL_DB_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "claude-api-tee-meter-missing-pin-{}-{unique_time}-{unique_sequence}.sqlite",
+            std::process::id(),
+        ));
+        let billing = Arc::new(
+            AsyncBilling::start(path.to_string_lossy().into_owned(), 1)
+                .expect("start test billing"),
+        );
+        billing
+            .create_account(ACCOUNT_ID, None, 10_000)
+            .await
+            .unwrap();
+        billing
+            .topup(ACCOUNT_ID, TOPUP_NANO, Some("seed"))
+            .await
+            .unwrap();
+        billing
+            .issue_key(KEY, ACCOUNT_ID, None, None, None)
+            .await
+            .unwrap();
+        billing
+            .reserve_request("missing-pin-request", ACCOUNT_ID, KEY, HOLD_NANO)
+            .await
+            .unwrap();
+
+        let sse = format!(
+            "{}data: {}\n\n",
+            message_start(),
+            serde_json::json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 2}
+            }),
+        );
+        let inner: ByteStream =
+            Box::pin(futures_util::stream::iter(vec![Ok::<_, std::io::Error>(
+                Bytes::from(sse),
+            )]));
+        let mut meter = TeeMeter::new(
+            inner,
+            MeterCtx {
+                model: "claude-sonnet-4-6".into(),
+                is_sse: true,
+                bill: Some(BillCtx {
+                    billing: Arc::clone(&billing),
+                    account_id: ACCOUNT_ID.into(),
+                    key: KEY.into(),
+                    mult_bp: 10_000,
+                    hold: HOLD_NANO,
+                    tariff_priced_ts: None,
+                    tariff_pin: Some(crate::pricing::tariff_book::PinnedTariff {
+                        family: "anthropic/standard/sonnet-current".to_owned(),
+                        version: 9,
+                        schedule_id: "anthropic/standard/sonnet-current/v9".to_owned(),
+                    }),
+                    settlement_pricing: AnthropicSettlementPricing::LegacyScalar,
+                    policy_fast: None,
+                    policy_us_inference: None,
+                    request_id: "missing-pin-request".into(),
+                    reference: None,
+                }),
+                subscription: None,
+            },
+        );
+        while meter.next().await.is_some() {}
+        // Give the (never dispatched) settle a chance to prove it does not exist.
+        billing.flush().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        billing.flush().await.unwrap();
+        let account = billing.account(ACCOUNT_ID).await.unwrap().unwrap();
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+        crate::pricing::tariff_book::clear_global_book_for_test();
+        // No settle happened: the hold stays reserved for the reconciler, nothing is spent.
+        assert_eq!(account.reserved_nano, HOLD_NANO);
+        assert_eq!(account.balance_nano, TOPUP_NANO - HOLD_NANO);
     }
 
     #[tokio::test]

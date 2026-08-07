@@ -4,7 +4,10 @@
 //! `metering` capability. The caller owns rollout selection and persistence; this module has no DB,
 //! env, metrics or clock and cannot invent provider, tariff, modifier or hold identity.
 
-use super::{billing::reserve_cost, CodexModel};
+use super::{billing::reserve_cost_with_prices, CodexModel};
+#[cfg(test)]
+use super::billing::reserve_cost;
+use crate::pricing::tariff_book::{self, PinnedTariff};
 use crate::pricing::{
     snapshot_identity_is_oversized, EnginePricingRequestId, PricingBridgeFallbackReason,
     PricingBridgePrepare,
@@ -38,15 +41,24 @@ pub(super) struct PreparedCodexLegacyQuote {
     payable_multiplier_bp: i64,
     identity: CodexAdmissionTariffIdentity,
     official_hold_nano: i64,
+    /// `<family>/v<version>` of the pinned hot override, or the compiled schedule id as today.
+    tariff_schedule_id: String,
+    pin: Option<PinnedTariff>,
 }
 
 pub(super) struct CodexLegacyQuote {
     snapshot: LegacyScalarAdmissionSnapshot,
+    pin: Option<PinnedTariff>,
 }
 
 impl CodexLegacyQuote {
     pub(super) fn snapshot(&self) -> &LegacyScalarAdmissionSnapshot {
         &self.snapshot
+    }
+
+    /// The hot override version this quote priced with; settlement replays exactly this version.
+    pub(super) fn pinned_tariff(&self) -> Option<PinnedTariff> {
+        self.pin.clone()
     }
 
     pub(super) fn into_snapshot(self) -> LegacyScalarAdmissionSnapshot {
@@ -118,11 +130,19 @@ pub(super) fn prepare_codex_legacy_quote(
         );
     }
 
-    let official_hold_nano = reserve_cost(
+    // Hot tariff override: the book replaces only the base price vector of the compiled family;
+    // the long-context and Fast modifiers stay code-applied on top inside the reserve formula.
+    let (prices, tariff_schedule_id, pin) = resolve_reserve_tariff(
+        &tariff_book::snapshot(),
         &input.model,
+        input.quote_ts,
+        identity.tariff_schedule_id.as_str(),
+    );
+    let official_hold_nano = reserve_cost_with_prices(
+        &input.model,
+        prices,
         estimated_input_tokens,
         input.requested_output_tokens,
-        input.quote_ts,
         input.fast,
     );
     let official_hold_nano = match i64::try_from(official_hold_nano) {
@@ -142,7 +162,35 @@ pub(super) fn prepare_codex_legacy_quote(
         payable_multiplier_bp: input.payable_multiplier_bp,
         identity,
         official_hold_nano,
+        tariff_schedule_id,
+        pin,
     }))
+}
+
+/// The reserve tariff decision, pure for testing: the override base vector and pin when the book
+/// resolves the compiled family at `quote_ts`, compiled constants otherwise.
+fn resolve_reserve_tariff(
+    book: &tariff_book::TariffBookSnapshot,
+    model: &CodexModel,
+    quote_ts: i64,
+    compiled_schedule_id: &str,
+) -> (metering::CodexPrices, String, Option<PinnedTariff>) {
+    let compiled = super::billing::effective_prices(model, quote_ts);
+    let resolved = match metering::codex_matched_tariff_at(&model.id, quote_ts) {
+        Some((family, _)) => {
+            tariff_book::reserve_base(book, family, quote_ts, compiled, tariff_book::as_codex)
+        }
+        None => tariff_book::ReserveBase {
+            prices: compiled,
+            pin: None,
+        },
+    };
+    let tariff_schedule_id = resolved
+        .pin
+        .as_ref()
+        .map(|pin| pin.schedule_id.clone())
+        .unwrap_or_else(|| compiled_schedule_id.to_owned());
+    (resolved.prices, tariff_schedule_id, resolved.pin)
 }
 
 impl PreparedCodexLegacyQuote {
@@ -180,7 +228,7 @@ impl PreparedCodexLegacyQuote {
             requested_model_id: self.requested_model_id.clone(),
             canonical_model_id: self.identity.canonical_model_id.to_owned(),
             alias_generation: self.identity.alias_generation,
-            tariff_schedule_id: self.identity.tariff_schedule_id.as_str().to_owned(),
+            tariff_schedule_id: self.tariff_schedule_id.clone(),
             tariff_priced_ts: self.quote_ts,
             admission_ts: self.quote_ts,
             payable_multiplier_bp: self.payable_multiplier_bp,
@@ -190,7 +238,10 @@ impl PreparedCodexLegacyQuote {
         })
         .context("build validated OpenAI legacy admission snapshot")?;
 
-        Ok(Some(CodexLegacyQuote { snapshot }))
+        Ok(Some(CodexLegacyQuote {
+            snapshot,
+            pin: self.pin.clone(),
+        }))
     }
 }
 
@@ -357,6 +408,53 @@ mod tests {
         // This is the exact existing Codex admission minimum; shadow later rejects it as a
         // balance/scalar-capped actual rather than rewriting history.
         assert_eq!(zero_scalar.snapshot().charged_hold_nano(), 1);
+    }
+
+    /// An override row replaces the reserve base vector and pins its exact version; the compiled
+    /// schedule id and prices are untouched while the book is empty.
+    #[test]
+    fn an_override_replaces_the_reserve_base_and_pins_its_version() {
+        let model = model("gpt-5.6-sol");
+        let compiled = crate::codex::billing::effective_prices(&model, QUOTE_TS);
+        const COMPILED_ID: &str = "openai/gpt-5.6-sol/2026-07-30/v2";
+        let (prices, schedule_id, pin) = resolve_reserve_tariff(
+            &tariff_book::TariffBookSnapshot::empty(),
+            &model,
+            QUOTE_TS,
+            COMPILED_ID,
+        );
+        assert_eq!(prices, compiled);
+        assert_eq!(schedule_id, COMPILED_ID);
+        assert!(pin.is_none());
+
+        let book = tariff_book::TariffBookSnapshot::from_rows(vec![tariff_book::test_row(
+            "openai/codex/gpt-5.6-sol",
+            2,
+            0,
+            serde_json::json!({
+                "input": "10000",
+                "cached_input": "1000",
+                "cache_write_input": "12500",
+                "output": "60000",
+                "api_fast_multiplier_basis_points": 25000,
+                "long_context_threshold": 272000,
+                "long_input_basis_points": 20000,
+                "long_output_basis_points": 15000
+            }),
+        )])
+        .unwrap();
+        let (prices, schedule_id, pin) =
+            resolve_reserve_tariff(&book, &model, QUOTE_TS, COMPILED_ID);
+        assert_eq!(prices.input, 10_000);
+        assert_eq!(prices.output, 60_000);
+        assert_eq!(schedule_id, "openai/codex/gpt-5.6-sol/v2");
+        let pin = pin.expect("the override version is pinned");
+        assert_eq!(pin.family, "openai/codex/gpt-5.6-sol");
+        assert_eq!(pin.version, 2);
+        // The hold formula runs on the override vector: input bills the max(input, cache-write)
+        // rate, output the override output rate.
+        let hold = reserve_cost_with_prices(&model, prices, 1_000, Some(500), false);
+        assert_eq!(hold, 1_000 * 12_500 + 500 * 60_000);
     }
 
     #[test]

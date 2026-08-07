@@ -17,7 +17,10 @@
   an exact-rate test; a separately metered server tool must not slip through for free.
 - The Codex catalog and the ChatGPT Fast credit multiplier also live only here. Fast is a tier of an
   existing model, not a separate model id: GPT-5.6/5.5 = 2.5x, GPT-5.4 = 2x. Change it only per the
-  published OpenAI table with an exact-multiplier test.
+  published OpenAI table with an exact-multiplier test. `codex_credit_cost_nano_with_rates` prices
+  the same credit legs from an explicitly supplied rate card (the hot override book's pinned or
+  resolved card) with the compiled model Fast multiplier; the model-keyed `codex_credit_cost_nano`
+  delegates to it, so the two can never diverge.
 - GPT Image 2 metering lives in `openai_image`: exact alias/snapshot tariff identity and five
   disjoint legs (fresh/cached text input, fresh/cached image input, image output). It is the official
   OpenAI API replacement tariff used by `forward` for customer image settlement, not ChatGPT native

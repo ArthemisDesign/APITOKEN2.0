@@ -6,6 +6,10 @@
 //! provider runtime, and either returns one exact rule or a typed fail-closed reason — under the
 //! per-account strict-policy flag that verdict rejects admission. It does not read a database,
 //! inspect HTTP input, calculate token costs, reserve money, or emit telemetry on its own.
+//!
+//! The sibling `tariff_book` module is the deliberate exception to that purity: the process-wide
+//! hot tariff override book, refreshed from the billing reader actor on a fixed cadence and read
+//! on the reserve/settlement hot paths. Contract — `crates/forward/CLAUDE.md`.
 
 use anyhow::{bail, Result};
 use registry::pricing::{
@@ -22,6 +26,7 @@ use std::collections::BTreeMap;
 mod bridge;
 mod runtime;
 mod shadow;
+pub mod tariff_book;
 
 /// Canonical compile-fixed capability evidence for the policy evaluator in this binary. Startup
 /// stamps this exact identity into the owner lease and strict reserve checks it transactionally.

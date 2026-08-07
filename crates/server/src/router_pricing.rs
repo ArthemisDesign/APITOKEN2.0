@@ -174,7 +174,20 @@ fn apply_basis_points(rate: i128, basis_points: i64) -> i128 {
 }
 
 fn anthropic_pricing(model_id: &str, now: i64) -> BasePricing {
-    let prices = metering::model_prices_at(model_id, now);
+    // Route through the same hot tariff book the engine charges with, so a router quote never
+    // diverges from a reserve/settlement of the same turn. A model no branch recognizes has no
+    // family and keeps the conservative compiled fallback.
+    let prices = match metering::anthropic_matched_tariff_at(model_id, now, false) {
+        Some((family, compiled)) => forward::tariff_book::reserve_base(
+            &forward::tariff_book::snapshot(),
+            family,
+            now,
+            compiled,
+            forward::tariff_book::as_anthropic,
+        )
+        .prices,
+        None => metering::model_prices_at(model_id, now),
+    };
     let canonical_model_id = metering::anthropic_tariff_capability_at(
         model_id,
         now,
@@ -217,8 +230,18 @@ fn codex_rate_card(prices: CodexPrices, input_bp: i64, output_bp: i64, fast: boo
     }
 }
 
-fn codex_pricing(spec: &CodexModelSpec) -> BasePricing {
-    let prices = spec.prices;
+fn codex_pricing(spec: &CodexModelSpec, now: i64) -> BasePricing {
+    let prices = match metering::codex_matched_tariff_at(spec.id, now) {
+        Some((family, compiled)) => forward::tariff_book::reserve_base(
+            &forward::tariff_book::snapshot(),
+            family,
+            now,
+            compiled,
+            forward::tariff_book::as_codex,
+        )
+        .prices,
+        None => spec.prices,
+    };
     let standard = codex_rate_card(prices, 10_000, 10_000, false);
     let priority = spec
         .subscription_fast_multiplier_basis_points
@@ -294,8 +317,15 @@ fn gemini_pricing(model_id: &str, prices: GeminiPrices) -> BasePricing {
 /// that class, so it is documented in `docs/commerce/PRICING.md` rather than folded into a leg
 /// that would then misprice plain generation. This mirrors how the Gemini image model publishes
 /// one card for a model whose output tokens are images.
-fn openai_image_pricing(tariff: &metering::OpenAiImageTariffIdentity) -> BasePricing {
-    let prices = tariff.prices;
+fn openai_image_pricing(tariff: &metering::OpenAiImageTariffIdentity, now: i64) -> BasePricing {
+    let prices = forward::tariff_book::reserve_base(
+        &forward::tariff_book::snapshot(),
+        metering::openai_image_tariff_family(),
+        now,
+        tariff.prices,
+        forward::tariff_book::as_openai_image,
+    )
+    .prices;
     BasePricing {
         canonical_model_id: tariff.canonical_model_id.to_owned(),
         standard: RawRateCard {
@@ -317,14 +347,25 @@ fn base_pricing(candidate: &Candidate, now: i64) -> Option<BasePricing> {
         "openai" => metering::codex_catalog_at(now)
             .into_iter()
             .find(|model| model.id == candidate.model_id)
-            .map(|model| codex_pricing(&model))
+            .map(|model| codex_pricing(&model, now))
             .or_else(|| {
                 metering::openai_image_tariff(&candidate.model_id)
                     .ok()
-                    .map(|tariff| openai_image_pricing(&tariff))
+                    .map(|tariff| openai_image_pricing(&tariff, now))
             }),
-        "google" => metering::gemini_prices_at(&candidate.model_id, now)
-            .map(|prices| gemini_pricing(&candidate.model_id, prices)),
+        "google" => metering::gemini_matched_tariff_at(&candidate.model_id, now).map(
+            |(family, compiled)| {
+                let prices = forward::tariff_book::reserve_base(
+                    &forward::tariff_book::snapshot(),
+                    family,
+                    now,
+                    compiled,
+                    forward::tariff_book::as_gemini,
+                )
+                .prices;
+                gemini_pricing(&candidate.model_id, prices)
+            },
+        ),
         _ => None,
     }
 }
@@ -492,7 +533,7 @@ mod tests {
             .into_iter()
             .find(|model| model.id == "gpt-5.6-sol")
             .unwrap();
-        let pricing = codex_pricing(&spec);
+        let pricing = codex_pricing(&spec, 1_785_369_601);
         let priority = pricing.priority.unwrap();
         assert_eq!(priority.input, 10_000);
         assert_eq!(priority.output, 60_000);

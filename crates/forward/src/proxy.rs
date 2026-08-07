@@ -19,7 +19,7 @@ use crate::meter::{
 };
 use crate::metrics::{Metrics, StrictPricingProvider, StrictPricingRejectionReason};
 use crate::pricing::{
-    build_policy_admission_snapshot, EnginePricingRequestId, PricingBridgeDecision,
+    build_policy_admission_snapshot, tariff_book, EnginePricingRequestId, PricingBridgeDecision,
     PricingBridgePrepare, PricingResolution, PricingResolutionRequest, RuntimePricingManifest,
 };
 use crate::state::AppState;
@@ -732,6 +732,7 @@ enum AnthropicReleaseReserveResult {
         hold_nano: i64,
         payable_multiplier_bp: i64,
         tariff_priced_ts: i64,
+        pinned_tariff: Option<tariff_book::PinnedTariff>,
     },
 }
 
@@ -838,6 +839,7 @@ async fn reserve_anthropic_release_v2(
             });
         };
         let effective_max_output_tokens = quote.effective_max_output_tokens();
+        let pinned_tariff = prepared.pinned_tariff();
         let release_quote = PricingReleaseQuoteV2::from_legacy_snapshot(quote.snapshot())?;
         match billing
             .reserve_request_with_pricing_release_v2_for_execution(
@@ -860,6 +862,7 @@ async fn reserve_anthropic_release_v2(
                         .map(|rule| rule.payable_multiplier_bp)
                         .unwrap_or(0),
                     tariff_priced_ts: snapshot.tariff_priced_ts,
+                    pinned_tariff,
                 });
             }
             PricingReleaseReserveOutcomeV2::NotReserved => {
@@ -1426,7 +1429,8 @@ pub async fn forward(
     // One stable internal ID spans reservation, all upstream attempts, settlement, and capacity leases.
     // It is generated before any money mutation and is never replaced by an upstream audit header.
     let engine_request_id = crate::upstream::fresh_request_id();
-    // Tuple: request/account/key/hold plus the payable multiplier and optional strict tariff pin.
+    // Tuple: request/account/key/hold plus the payable multiplier, the optional strict tariff pin
+    // and the hot tariff override version pinned at admission (None = compiled constants).
     let mut reserved: Option<(
         String,
         String,
@@ -1435,6 +1439,7 @@ pub async fn forward(
         i64,
         Option<i64>,
         AnthropicSettlementPricing,
+        Option<tariff_book::PinnedTariff>,
     )> = None;
     // Резервируем ТОЛЬКО под POST /v1/messages — единственный биллинговый эндпоинт. `count_tokens` и
     // `GET /v1/models` бесплатны у Anthropic; резерв мог бы ошибочно 402-ить их при нулевом балансе.
@@ -1542,7 +1547,29 @@ pub async fn forward(
             }
             None
         };
-        let mut p = metering::model_prices_reserve_for_speed_at(&model, price_ts, requested_fast);
+        // Hot tariff override: resolve the compiled family against the process-wide book. An
+        // override replaces ONLY the base vector — the geo premium below stays code-applied on
+        // top — and pins `<family>/v<version>` for settlement. A model no branch recognizes has
+        // no family and keeps the conservative MAX_PRICES fallback, exactly as today.
+        let matched_tariff = metering::anthropic_matched_tariff_at(&model, price_ts, requested_fast);
+        let compiled_base = matched_tariff.map(|(_, prices)| prices).unwrap_or_else(|| {
+            metering::model_prices_reserve_for_speed_at(&model, price_ts, requested_fast)
+        });
+        let resolved_tariff = match matched_tariff {
+            Some((family, _)) => tariff_book::reserve_base(
+                &tariff_book::snapshot(),
+                family,
+                price_ts,
+                compiled_base,
+                tariff_book::as_anthropic,
+            ),
+            None => tariff_book::ReserveBase {
+                prices: compiled_base,
+                pin: None,
+            },
+        };
+        let mut p = resolved_tariff.prices;
+        let mut tariff_pin = resolved_tariff.pin;
         if requested_us_inference {
             p = metering::premium_prices_ceil(p, 11_000);
         }
@@ -1592,11 +1619,13 @@ pub async fn forward(
                 hold_nano,
                 payable_multiplier_bp,
                 tariff_priced_ts,
+                pinned_tariff,
             }) => {
                 reserved_pair = Some((effective_max_output_tokens, hold_nano));
                 settlement_mult_bp = payable_multiplier_bp;
                 settlement_priced_ts = Some(tariff_priced_ts);
                 settlement_pricing = AnthropicSettlementPricing::ReleaseV2;
+                tariff_pin = pinned_tariff;
             }
             Err(error) => {
                 elog::error(
@@ -1840,6 +1869,7 @@ pub async fn forward(
                         settlement_mult_bp = resolved.rule.payable_multiplier_bp;
                         settlement_priced_ts = Some(price_ts);
                         settlement_pricing = AnthropicSettlementPricing::LegacyStrict;
+                        tariff_pin = prepared.pinned_tariff();
                         reserved_pair = Some((eff_mt, hold));
                     }
                     Ok(PolicyReserveOutcome::NotReserved) => {
@@ -1874,11 +1904,13 @@ pub async fn forward(
                             hold_nano,
                             payable_multiplier_bp,
                             tariff_priced_ts,
+                            pinned_tariff,
                         }) => {
                             reserved_pair = Some((effective_max_output_tokens, hold_nano));
                             settlement_mult_bp = payable_multiplier_bp;
                             settlement_priced_ts = Some(tariff_priced_ts);
                             settlement_pricing = AnthropicSettlementPricing::ReleaseV2;
+                            tariff_pin = pinned_tariff;
                         }
                         Ok(AnthropicReleaseReserveResult::LowBalance) => {
                             return local_err(LocalErr::LowBalance, None)
@@ -1965,6 +1997,7 @@ pub async fn forward(
                             if let Some(shadow) = &app.pricing_shadow {
                                 shadow.try_enqueue(&receipt.snapshot);
                             }
+                            tariff_pin = prepared.pinned_tariff();
                             reserved_pair = Some((eff_mt, hold));
                             break;
                         }
@@ -1973,6 +2006,7 @@ pub async fn forward(
                             if let Some(shadow) = &app.pricing_shadow {
                                 shadow.try_enqueue(&receipt.snapshot);
                             }
+                            tariff_pin = prepared.pinned_tariff();
                             reserved_pair = Some((eff_mt, hold));
                             break;
                         }
@@ -2004,10 +2038,12 @@ pub async fn forward(
                                 hold_nano,
                                 payable_multiplier_bp,
                                 tariff_priced_ts,
+                                pinned_tariff,
                             }) => {
                                 reserved_pair = Some((effective_max_output_tokens, hold_nano));
                                 settlement_mult_bp = payable_multiplier_bp;
                                 settlement_priced_ts = Some(tariff_priced_ts);
+                                tariff_pin = pinned_tariff;
                                 break;
                             }
                             Ok(AnthropicReleaseReserveResult::LowBalance) => {
@@ -2071,10 +2107,13 @@ pub async fn forward(
                                     hold_nano,
                                     payable_multiplier_bp,
                                     tariff_priced_ts,
+                                    pinned_tariff,
                                 }) => {
-                                    reserved_pair = Some((effective_max_output_tokens, hold_nano));
+                                    reserved_pair =
+                                        Some((effective_max_output_tokens, hold_nano));
                                     settlement_mult_bp = payable_multiplier_bp;
                                     settlement_priced_ts = Some(tariff_priced_ts);
+                                    tariff_pin = pinned_tariff;
                                     break;
                                 }
                                 Ok(AnthropicReleaseReserveResult::LowBalance) => {
@@ -2217,6 +2256,7 @@ pub async fn forward(
             settlement_mult_bp,
             settlement_priced_ts,
             settlement_pricing,
+            tariff_pin,
         ));
     }
     // Гард резерва: на любом не-успешном исходе И при отмене запроса вернёт hold клиенту. Создаём
@@ -2224,7 +2264,7 @@ pub async fn forward(
     // Разоружим на успехе — там hold закрывает tee-метеринг. Снимает утечку денег при disconnect.
     let mut hold_guard = reserved
         .as_ref()
-        .map(|(request_id, acct, k, h, _, _, _)| HoldGuard {
+        .map(|(request_id, acct, k, h, _, _, _, _)| HoldGuard {
             billing: app.billing.clone(),
             account_id: acct.clone(),
             key: k.clone(),
@@ -2687,7 +2727,7 @@ pub async fn forward(
                     }
                     app.affinity.mark_cache_warm(input, &home);
                 }
-                if let (Some((request_id, account_id, key, hold, _, priced_ts, _)), Some(billing)) =
+                if let (Some((request_id, account_id, key, hold, _, priced_ts, _, _)), Some(billing)) =
                     (reserved.as_ref(), app.billing.as_ref())
                 {
                     if !matches!(billing.mark_delivering(request_id, 3600).await, Ok(true)) {
@@ -2741,6 +2781,7 @@ pub async fn forward(
                             payable_multiplier_bp,
                             priced_ts,
                             settlement_pricing,
+                            tariff_pin,
                         )),
                     ) => app.billing.clone().map(|billing| BillCtx {
                         billing,
@@ -2749,6 +2790,7 @@ pub async fn forward(
                         mult_bp: payable_multiplier_bp,
                         hold,
                         tariff_priced_ts: priced_ts,
+                        tariff_pin,
                         settlement_pricing,
                         policy_fast: priced_ts.map(|_| requested_fast),
                         policy_us_inference: priced_ts.map(|_| requested_us_inference),
@@ -2872,6 +2914,7 @@ pub async fn forward(
                         payable_multiplier_bp,
                         priced_ts,
                         settlement_pricing,
+                        tariff_pin,
                     )) => app.billing.clone().map(|billing| BillCtx {
                         billing,
                         account_id,
@@ -2879,6 +2922,7 @@ pub async fn forward(
                         mult_bp: payable_multiplier_bp,
                         hold,
                         tariff_priced_ts: priced_ts,
+                        tariff_pin,
                         settlement_pricing,
                         policy_fast: priced_ts.map(|_| requested_fast),
                         policy_us_inference: priced_ts.map(|_| requested_us_inference),

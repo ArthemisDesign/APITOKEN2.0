@@ -501,13 +501,32 @@ pub fn codex_credit_cost_nano(
     fast: bool,
 ) -> Option<CodexCreditUsage> {
     let rates = codex_credit_rates(model_id)?;
-    let cached_input_tokens = cached_input_tokens.min(input_tokens);
-    let fresh_input_tokens = input_tokens.saturating_sub(cached_input_tokens);
     let fast_multiplier = if fast {
         codex_subscription_fast_multiplier_basis_points(model_id)?
     } else {
         10_000
     };
+    Some(codex_credit_cost_nano_with_rates(
+        &rates,
+        fast_multiplier,
+        input_tokens,
+        cached_input_tokens,
+        output_tokens,
+    ))
+}
+
+/// The same credit pricing with an explicitly supplied rate card: the hot tariff override book
+/// settles the native credit ledger from an exact pinned/published rate card while the Fast
+/// multiplier stays the compiled model capability (overrides carry rates, not capability gates).
+pub fn codex_credit_cost_nano_with_rates(
+    rates: &CodexCreditRates,
+    fast_multiplier: i64,
+    input_tokens: u64,
+    cached_input_tokens: u64,
+    output_tokens: u64,
+) -> CodexCreditUsage {
+    let cached_input_tokens = cached_input_tokens.min(input_tokens);
+    let fresh_input_tokens = input_tokens.saturating_sub(cached_input_tokens);
     let input_credit_nano = apply_multiplier(
         i128::from(fresh_input_tokens).saturating_mul(rates.input),
         fast_multiplier,
@@ -520,7 +539,7 @@ pub fn codex_credit_cost_nano(
         i128::from(output_tokens).saturating_mul(rates.output),
         fast_multiplier,
     );
-    Some(CodexCreditUsage {
+    CodexCreditUsage {
         fresh_input_tokens,
         cached_input_tokens,
         output_tokens,
@@ -530,7 +549,7 @@ pub fn codex_credit_cost_nano(
         total_credit_nano: input_credit_nano
             .saturating_add(cached_input_credit_nano)
             .saturating_add(output_credit_nano),
-    })
+    }
 }
 
 /// Resolve a schedule at a point in time: the newest entry that has already taken effect, or the
@@ -927,6 +946,41 @@ mod tests {
             ("gpt-5.4", credits(62_500, 6_250, 375_000)),
         ] {
             assert_eq!(codex_credit_rates(model), Some(expected), "{model}");
+        }
+    }
+
+    /// The rates-taking variant the hot override book settles with must reproduce the model-keyed
+    /// pricing exactly when fed the compiled card.
+    #[test]
+    fn credit_cost_with_rates_matches_the_model_keyed_pricing() {
+        for model in [
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.4",
+        ] {
+            let rates = codex_credit_rates(model).expect("catalog model has credit rates");
+            for fast in [false, true] {
+                let fast_bp = if fast {
+                    match codex_subscription_fast_multiplier_basis_points(model) {
+                        Some(bp) => bp,
+                        None => continue,
+                    }
+                } else {
+                    10_000
+                };
+                for (input, cached, output) in [(1_000, 400, 20), (0, 0, 1), (272_001, 0, 128_000)] {
+                    assert_eq!(
+                        codex_credit_cost_nano(model, input, cached, output, fast),
+                        Some(codex_credit_cost_nano_with_rates(
+                            &rates, fast_bp, input, cached, output
+                        )),
+                        "{model} fast={fast} input={input}"
+                    );
+                }
+            }
         }
     }
 

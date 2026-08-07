@@ -72,6 +72,7 @@ pub use metrics::{
     Metrics, StrictPricingProvider, StrictPricingRejectionReason,
     PRICING_BRIDGE_LATENCY_BUCKETS_MS, PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS,
 };
+pub use pricing::tariff_book;
 pub use pricing::{
     build_pricing_shadow_evaluation, builtin_pricing_runtime_manifest, resolve_pricing,
     PricingBridgeConfig, PricingBridgeConfigError, PricingBridgeDecision,

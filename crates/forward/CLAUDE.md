@@ -82,6 +82,42 @@ bypass the auth TTL cache; expiry and limit are re-checked inside the atomic res
 Pricing shadow adds a separately sized PostgreSQL read-actor pool; evaluation inserts remain on the
 same single writer and deliberately do not use the normal five-second money-operation retry loop.
 
+**Hot tariff overrides (`pricing/tariff_book.rs`):** the process-wide `TariffBook` (OnceLock +
+`RwLock<Arc<TariffBookSnapshot>>`, installed once by `server` from `CLAUDE_API_TARIFF_OVERRIDES`,
+default on) is the runtime consumer of the append-only `pricing_tariff_overrides` authority
+(registry, migrations 0036/0037; compiled `metering` constants are the implicit v1 of a family,
+rows are v2+). A background refresher in server main re-reads the whole tiny table through the
+billing reader actor every 5s and atomically swaps the snapshot; a refresh failure keeps the last
+good snapshot (startup: empty), a payload that fails typed parsing rejects the whole swap, and the
+kill switch makes the book answer empty. The book never blocks and never fails a request. The
+contract at the money paths:
+- **Reserve pins.** Every reserve/preflight price resolution first computes the compiled family
+  via the `metering::*_matched_tariff_at` helpers, then `tariff_book::reserve_base` resolves the
+  override effective at the priced ts. An override replaces ONLY the base price vector — the
+  speed/geo/long-context premiums, off-peak credit schedule and multipliers stay code-applied on
+  top — and the request pins `<family>/v<version>` (`PinnedTariff`), which the durable admission
+  snapshots carry as `tariff_schedule_id` (the compiled `<…>/v1`-style ids stay exactly as before
+  when no override applies). A model no branch recognizes has no family and keeps its conservative
+  MAX_PRICES-style fallback untouched; overrides exist only for known families.
+- **Settlement replays the pin.** Charge paths (`meter.rs` finalize, codex/gemini `settle`,
+  glm/kimi `price_turn_settlement`) call `tariff_book::charge_base`: the pinned family+version is
+  looked up exactly (never the newest), a cross-family serve reprices by the SERVED family's
+  override at the pinned priced ts, and no pin (or `<…>/v1`) is byte-identical compiled behavior.
+  A pinned version missing from the book is a hard integrity error (elog::error + the local
+  failure semantics: Anthropic/Codex/Gemini leave the reservation to the reconciler, GLM/KIMI
+  settle their documented conservative hold) — never a silent reprice at compiled, because the
+  table is append-only and the pinning reserve read the row from this process. The async GLM/KIMI
+  paths get one bounded refresh retry (`version_payload_refreshed`); the sync Anthropic/Codex/
+  Gemini settle paths read the cache only. Calibration/capacity events price from the same
+  resolution and record the override schedule id (codex `price_calibration_event` covers both the
+  USD and the `chatgpt/codex-credits/<upstream>` credit ledger; GLM both `zhipu/glm/*` and
+  `zhipu/glm-credits/*`).
+- metering stays pure: the registry-mirror → metering converters live in `tariff_book.rs` and are
+  a deliberate textual duplicate of the opposite-direction converters in
+  `crates/server/src/tariff_admin.rs`.
+- Router pricing parity: `/internal/router/catalog/pricing` (`server/src/router_pricing.rs`)
+  resolves the same book, so router quotes never diverge from engine charges.
+
 **Execution-state contract (stage 6.1 docs/engine/ROUTING_FENCING.md, `proxy.rs`
 `EXECUTION_STATE_HEADER` + helpers `with_not_started`/`without_not_started`):** planes
 set `x-apitoken-execution-state: not_started` on a response only when ALL three

@@ -1126,8 +1126,11 @@ The append-only `pricing_tariff_overrides` table (migrations 0036/0037) republis
 Compiled constants are the implicit **version 1** of every family; each row is version >= 2 in a
 strict per-family sequence enforced by database triggers, carries an `effective_from` priced-ts
 bound, a canonical `sha256:v2` payload digest and operator attribution, and is never updated or
-deleted — a correction is a newer version. The runtime resolver that applies overrides to
-reserve/charge ships separately; this surface only manages the data. i128 money legs are canonical
+deleted — a correction is a newer version. The runtime now consumes the table: a process-wide
+tariff book in `crates/forward` (contract — `crates/forward/CLAUDE.md`, "Hot tariff overrides")
+re-reads it through the billing reader actor every few seconds; reserve resolves the override
+effective at the priced timestamp and pins `<family>/v<version>`, and settlement replays exactly
+that pinned version. i128 money legs are canonical
 decimal **strings** in the payload JSON (JSON numbers are rejected); u64/i64 fields stay plain
 integers. Like the other pricing routes, no separate audit log is written: the table itself records
 `created_by`/`reason`/`created_ts` for every version.

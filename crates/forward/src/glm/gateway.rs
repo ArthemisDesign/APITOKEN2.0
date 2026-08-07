@@ -33,16 +33,19 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use glm_credential::{GlmCredential, GLM_ANTHROPIC_MESSAGES_PATH};
 use metering::glm::{
-    cost_nanodollars, glm_credit_cost_micro, glm_credit_rates_for_served_model, glm_is_peak_utc,
-    glm_prices_for_served_model, glm_resolve_subscription_model, merge_stream_event, GlmPrices,
-    GlmUsage, GLM_CREDIT_SCHEDULE_ID, GLM_TARIFF_SCHEDULE_ID,
+    cost_nanodollars, glm_credit_cost_micro, glm_is_peak_utc, glm_matched_credit_rates_at,
+    glm_matched_tariff_at, glm_resolve_subscription_model, merge_stream_event, GlmPrices, GlmUsage,
+    GLM_CREDIT_SCHEDULE_ID, GLM_TARIFF_SCHEDULE_ID,
 };
+#[cfg(test)]
+use metering::glm::{glm_credit_rates_for_served_model, glm_prices_for_served_model};
 use registry::{ExecutionAttempt, GlmTurnCalibrationEvent};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
 use crate::affinity::{AffinityInput, AffinityResolution, AffinityStore};
 use crate::billing::{AsyncBilling, GlmQuotaSnapshot};
+use crate::pricing::tariff_book::{self, PinnedTariff};
 use crate::proxy::{local_err_for, HoldGuard, LocalErr};
 use crate::state::{ActiveTaskGuard, ActiveTaskTracker};
 
@@ -423,6 +426,9 @@ struct Reservation {
     hold: i64,
     mult_bp: i64,
     priced_ts: i64,
+    /// The hot tariff override version admission priced the hold with; settlement replays exactly
+    /// this version. `None` is the compiled constants, byte-identical to before.
+    pinned_tariff: Option<PinnedTariff>,
 }
 
 #[derive(Clone)]
@@ -1328,8 +1334,19 @@ impl GlmGateway {
         ))?;
         let resolved = glm_resolve_subscription_model(model)
             .ok_or(GatewayFailure::Unsupported("glm_model_unavailable"))?;
-        let prices = glm_prices_for_served_model(resolved.official_model, priced_ts)
+        // Hot tariff override: the matched family of the official served model resolves against
+        // the process-wide book; an override replaces only the base vector and pins
+        // `<family>/v<version>` for settlement.
+        let (family, compiled) = glm_matched_tariff_at(resolved.official_model, priced_ts)
             .ok_or(GatewayFailure::Unsupported("glm_price_unavailable"))?;
+        let resolved_base = tariff_book::reserve_base(
+            &tariff_book::snapshot(),
+            family,
+            priced_ts,
+            compiled,
+            tariff_book::as_glm,
+        );
+        let prices = resolved_base.prices;
         let requested_max = bounded_requested_output(body);
         let mut balance = i128::from(input.available_nano);
         for _ in 0..4 {
@@ -1368,6 +1385,7 @@ impl GlmGateway {
                         hold,
                         mult_bp: input.mult_bp,
                         priced_ts,
+                        pinned_tariff: resolved_base.pin.clone(),
                     }));
                 }
                 None => {
@@ -1671,14 +1689,26 @@ impl GlmGateway {
         parsed: ParsedAccounting,
     ) {
         let completed_at = now_unix();
-        let priced = parsed
-            .terminal
-            .then_some(())
-            .and_then(|_| parsed.usage.as_ref())
-            .zip(parsed.served_model.as_deref())
-            .and_then(|(usage, served)| {
-                price_turn(usage, served, context.priced_ts, completed_at).ok()
-            });
+        let pinned_tariff = reservation
+            .as_ref()
+            .and_then(|reservation| reservation.pinned_tariff.clone());
+        let priced = match (
+            parsed.terminal,
+            parsed.usage.as_ref(),
+            parsed.served_model.as_deref(),
+        ) {
+            (true, Some(usage), Some(served)) => price_turn_settlement(
+                self.billing.as_deref(),
+                usage,
+                served,
+                context.priced_ts,
+                completed_at,
+                pinned_tariff.as_ref(),
+            )
+            .await
+            .ok(),
+            _ => None,
+        };
 
         if priced.is_none() {
             if parsed.terminal
@@ -1918,9 +1948,13 @@ fn bounded_requested_output(body: &mut Value) -> u64 {
 /// money leg exists only inside this struct — the immutable event folds it into the
 /// fresh-input leg, because GLM publishes no separate paid write rate ("Limited-time Free"
 /// storage; a write is a miss).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PricedTurn {
     prices: GlmPrices,
+    /// The tariff identities of the rate cards this turn priced with: the compiled schedule ids,
+    /// or `<family>/v<version>` when a hot override priced the leg.
+    api_schedule_id: String,
+    credit_schedule_id: String,
     input: i128,
     cache_read: i128,
     cache_write: i128,
@@ -2001,8 +2035,8 @@ impl PricedTurn {
             served_model: served_model.to_string(),
             context_mode: context.context_mode.clone(),
             reasoning_effort: context.reasoning_effort.clone(),
-            api_tariff_schedule_id: GLM_TARIFF_SCHEDULE_ID.to_string(),
-            credit_schedule_id: GLM_CREDIT_SCHEDULE_ID.to_string(),
+            api_tariff_schedule_id: self.api_schedule_id.clone(),
+            credit_schedule_id: self.credit_schedule_id.clone(),
             priced_ts: context.priced_ts,
             completed_at,
             fresh_input_tokens: i64_counter(usage.input_tokens)?,
@@ -2052,20 +2086,43 @@ fn non_stream_accounting(body: &[u8]) -> ParsedAccounting {
 /// an id without published credit multipliers (an echoed `glm-5`/`glm-5.1`, which the provider
 /// silently re-routes) cannot price the native ledger — either way the turn fails closed
 /// rather than borrowing a neighbour's rate (manifest §3).
+#[cfg(test)]
 fn price_turn(
     usage: &GlmUsage,
     served_model: &str,
     priced_ts: i64,
     completed_at: i64,
 ) -> anyhow::Result<PricedTurn> {
-    usage.validate().map_err(|_| anyhow!("invalid GLM usage"))?;
-    if usage.is_zero() {
-        anyhow::bail!("empty GLM usage is not terminal evidence");
-    }
     let prices = glm_prices_for_served_model(served_model, priced_ts)
         .ok_or_else(|| anyhow!("unpriced GLM served model"))?;
     let credit_rates = glm_credit_rates_for_served_model(served_model)
         .ok_or_else(|| anyhow!("GLM served model has no published credit rates"))?;
+    price_turn_with_rates(
+        usage,
+        prices,
+        credit_rates,
+        completed_at,
+        GLM_TARIFF_SCHEDULE_ID.to_string(),
+        GLM_CREDIT_SCHEDULE_ID.to_string(),
+    )
+}
+
+/// Price one terminal turn on both ledgers under explicit rate cards and tariff identities: the
+/// hot override vector admission pinned (or the served family's resolution at the pinned priced
+/// timestamp after a cross-family serve), compiled constants otherwise. The off-peak schedule
+/// stays code-applied on top of the override credit rates, exactly as over the compiled card.
+fn price_turn_with_rates(
+    usage: &GlmUsage,
+    prices: GlmPrices,
+    credit_rates: metering::glm::GlmCreditRates,
+    completed_at: i64,
+    api_schedule_id: String,
+    credit_schedule_id: String,
+) -> anyhow::Result<PricedTurn> {
+    usage.validate().map_err(|_| anyhow!("invalid GLM usage"))?;
+    if usage.is_zero() {
+        anyhow::bail!("empty GLM usage is not terminal evidence");
+    }
     let leg = |tokens: u64, rate: i128| {
         i128::from(tokens)
             .checked_mul(rate)
@@ -2094,6 +2151,8 @@ fn price_turn(
         .map_err(|_| anyhow!("GLM credit overflow"))?;
     Ok(PricedTurn {
         prices,
+        api_schedule_id,
+        credit_schedule_id,
         input,
         cache_read,
         cache_write,
@@ -2105,6 +2164,77 @@ fn price_turn(
         native_total,
         off_peak,
     })
+}
+
+/// Settlement-time pricing through the hot tariff book: the exact version pinned at admission
+/// (with one bounded refresh retry on a cache miss — this path is async), or the served family's
+/// override at the pinned priced timestamp after a cross-family serve, or the compiled constants.
+/// A pinned version that even the refresh cannot produce is an integrity error: the caller
+/// settles the documented conservative hold, never a silent compiled reprice.
+async fn price_turn_settlement(
+    billing: Option<&AsyncBilling>,
+    usage: &GlmUsage,
+    served_model: &str,
+    priced_ts: i64,
+    completed_at: i64,
+    pinned: Option<&PinnedTariff>,
+) -> anyhow::Result<PricedTurn> {
+    usage.validate().map_err(|_| anyhow!("invalid GLM usage"))?;
+    if usage.is_zero() {
+        anyhow::bail!("empty GLM usage is not terminal evidence");
+    }
+    let (usd_family, compiled_prices) = glm_matched_tariff_at(served_model, priced_ts)
+        .ok_or_else(|| anyhow!("unpriced GLM served model"))?;
+    let (credit_family, compiled_credit_rates) = glm_matched_credit_rates_at(served_model)
+        .ok_or_else(|| anyhow!("GLM served model has no published credit rates"))?;
+    let book = tariff_book::snapshot();
+    let (prices, api_schedule_id) = match pinned.filter(|pin| pin.family == usd_family) {
+        Some(pin) => {
+            let payload = match billing {
+                Some(billing) => {
+                    tariff_book::version_payload_refreshed(billing, &pin.family, pin.version).await
+                }
+                None => book.version_payload(&pin.family, pin.version),
+            }
+            .ok_or_else(|| {
+                elog::error(
+                    "glm",
+                    format!(
+                        "pinned tariff {} is absent from the override book; settlement left to the conservative hold",
+                        pin.schedule_id
+                    ),
+                );
+                anyhow!("pinned GLM tariff version is absent from the override book")
+            })?;
+            let prices = tariff_book::as_glm(&payload).ok_or_else(|| {
+                elog::error("glm", "pinned GLM tariff payload kind mismatch");
+                anyhow!("pinned GLM tariff payload kind mismatch")
+            })?;
+            (prices, pin.schedule_id.clone())
+        }
+        None => match book.resolve(usd_family, priced_ts) {
+            Some((pin, payload)) => match tariff_book::as_glm(&payload) {
+                Some(prices) => (prices, pin.schedule_id),
+                None => (compiled_prices, GLM_TARIFF_SCHEDULE_ID.to_string()),
+            },
+            None => (compiled_prices, GLM_TARIFF_SCHEDULE_ID.to_string()),
+        },
+    };
+    let (credit_rates, credit_schedule_id) = match book.resolve(credit_family, priced_ts) {
+        Some((pin, payload)) => match tariff_book::as_glm_credits(&payload) {
+            Some(rates) => (rates, pin.schedule_id),
+            None => (compiled_credit_rates, GLM_CREDIT_SCHEDULE_ID.to_string()),
+        },
+        None => (compiled_credit_rates, GLM_CREDIT_SCHEDULE_ID.to_string()),
+    };
+    price_turn_with_rates(
+        usage,
+        prices,
+        credit_rates,
+        completed_at,
+        api_schedule_id,
+        credit_schedule_id,
+    )
 }
 
 fn cap_to_balance(

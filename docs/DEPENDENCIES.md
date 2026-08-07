@@ -33,7 +33,8 @@ provider-qualified `ref`, cursor protocol `ledger` + `ledger/ack`), usage, keys,
 pricing (catalog/switches/policy, including the narrow atomic locked-OpenKeys transition),
 PostgreSQL-only release-v2 prepare/read/activation under `/admin/pricing/v2/*`, and hot
 tariff override list/compiled-dump/publish/seed under `/admin/pricing/tariffs*` (operator-only;
-no typed commerce consumer yet).
+no typed commerce consumer yet — the engine runtime itself consumes the table at
+reserve/settlement through the `crates/forward` tariff book, see `crates/forward/CLAUDE.md`).
 Legacy ledger provider recovery stays producer-owned: first the exact immutable
 `usage_events.provider` of the same `account_id + request_id` pair is used; for
 request-less history only a strict account/key/amount/ref/model/time settlement

@@ -8,6 +8,14 @@ Two phases, per the repository's two-stage model rule: the dormant implementatio
 proves itself live; publication (catalogs, release advance, storefronts) is a separate step after
 a GREEN exact implementation SHA.
 
+> **Price changes no longer require this cycle.** Since the hot tariff override runtime shipped,
+> repricing an EXISTING family is a data operation — `POST /admin/pricing/tariffs/override` (or
+> the compiled-bridge `.../seed`), see "Hot tariff overrides" in `docs/engine/CONTROL_API.md`:
+> the engine's process-wide tariff book picks the new version up within seconds, reserves pin it,
+> and in-flight turns settle at their pinned version. This runbook remains the path for admitting
+> a NEW model (new tariff family, capability generation, catalogs, storefronts); the release
+> cycle itself is dismantled only in a later phase.
+
 ## Phase A — dormant implementation
 
 1. Metering tariff in `crates/metering` (the provider catalog module, e.g. `openai_image.rs`):

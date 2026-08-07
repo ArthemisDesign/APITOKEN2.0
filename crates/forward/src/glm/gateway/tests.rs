@@ -1841,3 +1841,127 @@ async fn the_projection_bounds_plan_labels_and_cannot_carry_the_subject() {
     assert!(!rendered.contains(&profile.subject_id));
     assert!(!rendered.contains("zai-key-1"));
 }
+
+/// Settlement replays the exact override version pinned at admission on BOTH ledgers (API
+/// nanoUSD and native microcredits), never the compiled cards.
+#[tokio::test]
+async fn settlement_replays_the_pinned_override_version_on_both_ledgers() {
+    // Monday 15:00 SGT is peak (official schedule, UTC+8).
+    const PEAK: i64 = 4 * 86_400 + 15 * 3_600 - 8 * 3_600;
+    let _lock = crate::pricing::tariff_book::GLOBAL_BOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    // effective_from = i64::MAX keeps the rows invisible to every timestamped resolve — and so to
+    // every concurrently running test; only the exact pinned-version lookup sees them.
+    crate::pricing::tariff_book::install_global_rows_for_test(vec![
+        crate::pricing::tariff_book::test_row(
+            "zhipu/glm/glm-5.2",
+            2,
+            i64::MAX,
+            serde_json::json!({
+                "cached_input": "520",
+                "input": "2800",
+                "cache_write": "2800",
+                "output": "8800"
+            }),
+        ),
+    ]);
+    let usage = GlmUsage {
+        input_tokens: 1_000,
+        cache_read_tokens: 500,
+        cache_write_tokens: 50,
+        output_tokens: 100,
+        reasoning_output_tokens: 40,
+    };
+    let pin = PinnedTariff {
+        family: "zhipu/glm/glm-5.2".to_owned(),
+        version: 2,
+        schedule_id: "zhipu/glm/glm-5.2/v2".to_owned(),
+    };
+    let priced = price_turn_settlement(None, &usage, "glm-5.2", 1, PEAK, Some(&pin))
+        .await
+        .unwrap();
+    crate::pricing::tariff_book::clear_global_book_for_test();
+    // API ledger at the override card (2_800/520/2_800/8_800).
+    assert_eq!(priced.input, 1_000 * 2_800);
+    assert_eq!(priced.cache_read, 500 * 520);
+    assert_eq!(priced.cache_write, 50 * 2_800);
+    assert_eq!(priced.output, 100 * 8_800);
+    assert_eq!(priced.total, 2_800_000 + 260_000 + 140_000 + 880_000);
+    assert!(!priced.off_peak);
+    assert_eq!(priced.api_schedule_id, "zhipu/glm/glm-5.2/v2");
+}
+
+/// The credit-rate settlement under an override card: the native microcredit legs reprice from
+/// the override multipliers with the off-peak schedule still code-applied on top.
+#[test]
+fn the_credit_ledger_reprices_under_an_override_card() {
+    const PEAK: i64 = 4 * 86_400 + 15 * 3_600 - 8 * 3_600;
+    const OFF_PEAK: i64 = 4 * 86_400 + 12 * 3_600 - 8 * 3_600;
+    let usage = GlmUsage {
+        input_tokens: 1_000,
+        cache_read_tokens: 500,
+        cache_write_tokens: 50,
+        output_tokens: 100,
+        reasoning_output_tokens: 40,
+    };
+    let prices = glm_prices_for_served_model("glm-5.2", 1).unwrap();
+    let override_rates = metering::glm::GlmCreditRates {
+        input_tenths: 138,
+        cached_input_tenths: 34,
+        output_tenths: 480,
+    };
+    let peak = price_turn_with_rates(
+        &usage,
+        prices,
+        override_rates,
+        PEAK,
+        GLM_TARIFF_SCHEDULE_ID.to_string(),
+        "zhipu/glm-credits/glm-5.2/v2".to_string(),
+    )
+    .unwrap();
+    assert_eq!(peak.native_input, 1_000 * 138 * 10);
+    assert_eq!(peak.native_cache_read, 500 * 34 * 10);
+    assert_eq!(peak.native_output, 100 * 480 * 10);
+    assert_eq!(peak.native_total, 1_380_000 + 170_000 + 480_000);
+    assert_eq!(peak.credit_schedule_id, "zhipu/glm-credits/glm-5.2/v2");
+    // The dollar legs are untouched by the credit override, and off-peak still halves the
+    // native ledger.
+    assert_eq!(peak.total, 2_040_000);
+    let off_peak = price_turn_with_rates(
+        &usage,
+        prices,
+        override_rates,
+        OFF_PEAK,
+        GLM_TARIFF_SCHEDULE_ID.to_string(),
+        "zhipu/glm-credits/glm-5.2/v2".to_string(),
+    )
+    .unwrap();
+    assert_eq!(off_peak.native_total, peak.native_total / 2);
+}
+
+/// A pinned version the book cannot produce is an integrity error: the turn fails closed to the
+/// documented conservative hold, never a silent compiled reprice.
+#[tokio::test]
+async fn a_missing_pinned_override_version_fails_closed() {
+    const PEAK: i64 = 4 * 86_400 + 15 * 3_600 - 8 * 3_600;
+    let _lock = crate::pricing::tariff_book::GLOBAL_BOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    crate::pricing::tariff_book::clear_global_book_for_test();
+    let usage = GlmUsage {
+        input_tokens: 1_000,
+        cache_read_tokens: 500,
+        cache_write_tokens: 50,
+        output_tokens: 100,
+        reasoning_output_tokens: 40,
+    };
+    let pin = PinnedTariff {
+        family: "zhipu/glm/glm-5.2".to_owned(),
+        version: 9,
+        schedule_id: "zhipu/glm/glm-5.2/v9".to_owned(),
+    };
+    let missing = price_turn_settlement(None, &usage, "glm-5.2", 1, PEAK, Some(&pin)).await;
+    crate::pricing::tariff_book::clear_global_book_for_test();
+    assert!(missing.is_err());
+}

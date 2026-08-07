@@ -5,6 +5,7 @@
 //! persistence; this module has no DB, env, metrics or clock.
 
 use super::cap_to_balance;
+use crate::pricing::tariff_book::{self, PinnedTariff};
 use crate::pricing::{
     snapshot_identity_is_oversized, EnginePricingRequestId, PricingBridgeFallbackReason,
     PricingBridgePrepare,
@@ -45,6 +46,14 @@ pub(super) struct PreparedAnthropicLegacyQuote {
     quote_ts: i64,
     payable_multiplier_bp: i64,
     identity: AnthropicAdmissionTariffIdentity,
+    /// Base reserve vector admission actually prices with: the hot override payload when the
+    /// tariff book resolves one for the compiled family at `quote_ts`, else the compiled
+    /// constants, with the geo premium applied on top in both cases (identical to
+    /// `identity.effective_reserve_prices` while the book is empty).
+    reserve_prices: metering::Prices,
+    /// `<family>/v<version>` of the pinned override, or the compiled schedule id as today.
+    tariff_schedule_id: String,
+    pin: Option<PinnedTariff>,
     input_token_upper_bound: u64,
     web_search_requests: u64,
     client_max_output_tokens: u64,
@@ -122,11 +131,18 @@ pub(super) fn prepare_anthropic_legacy_quote(
             .requested_max_output_tokens
             .min(MAX_CLIENT_OUTPUT_TOKENS)
     };
+
+    // Hot tariff override: the compiled strict schedule id is `<family>/v1`, so the family key is
+    // the id minus its version suffix. An override replaces only the base vector; the geo premium
+    // stays code-applied on top, exactly as it is over the compiled base today.
+    let (reserve_prices, tariff_schedule_id, pin) =
+        resolve_reserve_tariff(&tariff_book::snapshot(), &identity, input.quote_ts);
+
     let maximum_official_hold = official_hold_nano(
         input_token_upper_bound,
         input.web_search_requests,
         client_max_output_tokens,
-        &identity,
+        &reserve_prices,
     );
     if i64::try_from(maximum_official_hold).is_err() {
         return Ok(PricingBridgePrepare::Fallback(
@@ -142,6 +158,9 @@ pub(super) fn prepare_anthropic_legacy_quote(
             quote_ts: input.quote_ts,
             payable_multiplier_bp: input.payable_multiplier_bp,
             identity,
+            reserve_prices,
+            tariff_schedule_id,
+            pin,
             input_token_upper_bound,
             web_search_requests: input.web_search_requests,
             client_max_output_tokens,
@@ -150,6 +169,11 @@ pub(super) fn prepare_anthropic_legacy_quote(
 }
 
 impl PreparedAnthropicLegacyQuote {
+    /// The hot override version this quote priced with; settlement replays exactly this version.
+    pub(super) fn pinned_tariff(&self) -> Option<PinnedTariff> {
+        self.pin.clone()
+    }
+
     /// Quote the same prepared identity at a possibly refreshed balance. `None` is the ordinary
     /// legacy not-affordable outcome, not an eligibility fallback.
     pub(super) fn quote(&self, balance_nano: i128) -> Result<Option<AnthropicLegacyQuote>> {
@@ -158,7 +182,7 @@ impl PreparedAnthropicLegacyQuote {
             balance_nano,
             self.input_token_upper_bound as i128,
             web_buffer_nano,
-            &self.identity.effective_reserve_prices,
+            &self.reserve_prices,
             self.payable_multiplier_bp,
             self.client_max_output_tokens,
         ) else {
@@ -169,7 +193,7 @@ impl PreparedAnthropicLegacyQuote {
             self.input_token_upper_bound,
             self.web_search_requests,
             effective_max_output_tokens,
-            &self.identity,
+            &self.reserve_prices,
         );
         let official_hold_nano = i64::try_from(official_hold_nano)
             .context("prepared Anthropic official hold exceeded its checked maximum")?;
@@ -202,7 +226,7 @@ impl PreparedAnthropicLegacyQuote {
             requested_model_id: self.requested_model_id.clone(),
             canonical_model_id: self.identity.canonical_model_id.to_owned(),
             alias_generation: self.identity.alias_generation,
-            tariff_schedule_id: self.identity.tariff_schedule_id.as_str().to_owned(),
+            tariff_schedule_id: self.tariff_schedule_id.clone(),
             tariff_priced_ts: self.quote_ts,
             admission_ts: self.quote_ts,
             payable_multiplier_bp: self.payable_multiplier_bp,
@@ -219,11 +243,53 @@ impl PreparedAnthropicLegacyQuote {
     }
 }
 
+/// The reserve tariff decision, pure for testing: the override base vector and pin when the book
+/// resolves the compiled family at `quote_ts`, compiled constants otherwise, with the geo premium
+/// applied on top in both cases.
+fn resolve_reserve_tariff(
+    book: &tariff_book::TariffBookSnapshot,
+    identity: &AnthropicAdmissionTariffIdentity,
+    quote_ts: i64,
+) -> (metering::Prices, String, Option<PinnedTariff>) {
+    let family = identity
+        .tariff_schedule_id
+        .as_str()
+        .strip_suffix("/v1")
+        .unwrap_or_else(|| identity.tariff_schedule_id.as_str());
+    let fast = identity.modifiers.speed == AnthropicSpeed::Fast;
+    let compiled_base = metering::model_prices_reserve_for_speed_at(
+        identity.canonical_model_id,
+        quote_ts,
+        fast,
+    );
+    let resolved = tariff_book::reserve_base(
+        book,
+        family,
+        quote_ts,
+        compiled_base,
+        tariff_book::as_anthropic,
+    );
+    let reserve_prices = if identity.modifiers.inference_geo == AnthropicInferenceGeo::Us {
+        metering::premium_prices_ceil(
+            resolved.prices,
+            identity.modifiers.inference_geo_basis_points(),
+        )
+    } else {
+        resolved.prices
+    };
+    let tariff_schedule_id = resolved
+        .pin
+        .as_ref()
+        .map(|pin| pin.schedule_id.clone())
+        .unwrap_or_else(|| identity.tariff_schedule_id.as_str().to_owned());
+    (reserve_prices, tariff_schedule_id, resolved.pin)
+}
+
 fn official_hold_nano(
     input_token_upper_bound: u64,
     web_search_requests: u64,
     output_tokens: u64,
-    identity: &AnthropicAdmissionTariffIdentity,
+    reserve_prices: &metering::Prices,
 ) -> i128 {
     metering::cost_nanodollars(
         &Usage {
@@ -232,13 +298,14 @@ fn official_hold_nano(
             web_search_requests,
             ..Usage::default()
         },
-        &identity.effective_reserve_prices,
+        reserve_prices,
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     const QUOTE_TS: i64 = 1_788_220_800;
 
@@ -450,5 +517,80 @@ mod tests {
         );
         invalid_scalar.payable_multiplier_bp = 10_001;
         assert!(prepare_anthropic_legacy_quote(invalid_scalar).is_err());
+    }
+
+    fn override_book(family: &str, input: i128, output: i128) -> Arc<tariff_book::TariffBookSnapshot> {
+        tariff_book::TariffBookSnapshot::from_rows(vec![tariff_book::test_row(
+            family,
+            2,
+            0,
+            serde_json::json!({
+                "input": input.to_string(),
+                "output": output.to_string(),
+                "cache_read": "500",
+                "cache_write_5m": "6250",
+                "cache_write_1h": "10000"
+            }),
+        )])
+        .unwrap()
+    }
+
+    /// An override row replaces the reserve base vector and pins its exact version; the compiled
+    /// schedule id and prices are untouched while the book is empty.
+    #[test]
+    fn an_override_replaces_the_reserve_base_and_pins_its_version() {
+        let identity = metering::anthropic_tariff_capability_at(
+            "claude-sonnet-4-6",
+            QUOTE_TS,
+            AnthropicAdmissionModifiers {
+                speed: AnthropicSpeed::Standard,
+                inference_geo: AnthropicInferenceGeo::Global,
+            },
+        )
+        .unwrap();
+        let (compiled_prices, compiled_id, no_pin) =
+            resolve_reserve_tariff(&tariff_book::TariffBookSnapshot::empty(), &identity, QUOTE_TS);
+        assert_eq!(compiled_prices, identity.effective_reserve_prices);
+        assert_eq!(compiled_id, "anthropic/standard/sonnet-current/v1");
+        assert!(no_pin.is_none());
+
+        let book = override_book("anthropic/standard/sonnet-current", 3_100, 15_500);
+        let (prices, schedule_id, pin) = resolve_reserve_tariff(&book, &identity, QUOTE_TS);
+        assert_eq!(prices.input, 3_100);
+        assert_eq!(prices.output, 15_500);
+        assert_eq!(prices.cache_read, 500);
+        assert_eq!(schedule_id, "anthropic/standard/sonnet-current/v2");
+        let pin = pin.expect("the override version is pinned");
+        assert_eq!(pin.family, "anthropic/standard/sonnet-current");
+        assert_eq!(pin.version, 2);
+    }
+
+    /// The US-inference geo premium stays code-applied ON TOP of the override base vector,
+    /// exactly as over the compiled one.
+    #[test]
+    fn the_geo_premium_applies_on_top_of_the_override_base() {
+        let identity = metering::anthropic_tariff_capability_at(
+            "claude-sonnet-4-6",
+            QUOTE_TS,
+            AnthropicAdmissionModifiers {
+                speed: AnthropicSpeed::Standard,
+                inference_geo: AnthropicInferenceGeo::Us,
+            },
+        )
+        .unwrap();
+        let book = override_book("anthropic/standard/sonnet-current", 3_100, 15_500);
+        let (prices, _, pin) = resolve_reserve_tariff(&book, &identity, QUOTE_TS);
+        let expected = metering::premium_prices_ceil(
+            metering::Prices {
+                input: 3_100,
+                output: 15_500,
+                cache_read: 500,
+                cache_write_5m: 6_250,
+                cache_write_1h: 10_000,
+            },
+            11_000,
+        );
+        assert_eq!(prices, expected);
+        assert!(pin.is_some());
     }
 }

@@ -7,7 +7,7 @@ use super::openai_snapshot::{prepare_codex_legacy_quote, CodexLegacyQuoteInput};
 use super::{CodexModel, CodexUsage};
 use crate::metrics::{Metrics, StrictPricingProvider, StrictPricingRejectionReason};
 use crate::pricing::{
-    build_policy_admission_snapshot, EnginePricingRequestId, PricingBridgeDecision,
+    build_policy_admission_snapshot, tariff_book, EnginePricingRequestId, PricingBridgeDecision,
     PricingBridgePrepare, PricingResolution, PricingResolutionRequest, RuntimePricingManifest,
 };
 use crate::proxy::{authorize, Authz, HoldGuard};
@@ -37,7 +37,14 @@ enum CodexSettlementPricing {
     ReleaseV2,
 }
 
-type CodexReserveResult = (String, i64, i64, Option<i64>, CodexSettlementPricing);
+type CodexReserveResult = (
+    String,
+    i64,
+    i64,
+    Option<i64>,
+    CodexSettlementPricing,
+    Option<tariff_book::PinnedTariff>,
+);
 
 enum LegacyCodexReserveResult {
     Reserved(CodexReserveResult),
@@ -51,6 +58,9 @@ struct Reservation {
     mult_bp: i64,
     hold: i64,
     tariff_priced_ts: Option<i64>,
+    /// The hot tariff override version admission priced the hold with; settlement replays exactly
+    /// this version. `None` is the compiled constants, byte-identical to before.
+    pinned_tariff: Option<tariff_book::PinnedTariff>,
     policy_fast: Option<bool>,
     settlement_pricing: CodexSettlementPricing,
     request_id: String,
@@ -102,25 +112,31 @@ impl PendingCodexAdmission {
                 },
                 Some(billing),
             ) => {
-                let (request_id, hold, reservation_mult_bp, tariff_priced_ts, settlement_pricing) =
-                    reserve_codex_metered(
-                        app,
-                        billing,
-                        account_id,
-                        key,
-                        model,
-                        estimated_input_tokens,
-                        requested_output_tokens,
-                        reserve_overhead_tokens,
-                        fast,
-                        *mult_bp,
-                        *available_nano,
-                        *strict_policy,
-                        *paid_available_nano,
-                        *track_available_nano,
-                        &self.execution,
-                    )
-                    .await?;
+                let (
+                    request_id,
+                    hold,
+                    reservation_mult_bp,
+                    tariff_priced_ts,
+                    settlement_pricing,
+                    pinned_tariff,
+                ) = reserve_codex_metered(
+                    app,
+                    billing,
+                    account_id,
+                    key,
+                    model,
+                    estimated_input_tokens,
+                    requested_output_tokens,
+                    reserve_overhead_tokens,
+                    fast,
+                    *mult_bp,
+                    *available_nano,
+                    *strict_policy,
+                    *paid_available_nano,
+                    *track_available_nano,
+                    &self.execution,
+                )
+                .await?;
                 Some(Reservation {
                     billing: billing.clone(),
                     account_id: account_id.clone(),
@@ -128,6 +144,7 @@ impl PendingCodexAdmission {
                     mult_bp: reservation_mult_bp,
                     hold,
                     tariff_priced_ts,
+                    pinned_tariff,
                     policy_fast: tariff_priced_ts.map(|_| fast),
                     settlement_pricing,
                     request_id: request_id.clone(),
@@ -261,8 +278,9 @@ async fn reserve_openai_image_metered(
                 AdmissionError::Unavailable
             })?
             .ok_or(AdmissionError::LowBalance)?;
+            let pinned_tariff = quote.pinned_tariff();
             let release_quote =
-                PricingReleaseQuoteV2::from_legacy_snapshot(&quote).map_err(|error| {
+                PricingReleaseQuoteV2::from_legacy_snapshot(quote.snapshot()).map_err(|error| {
                     elog::error(
                         "codex-billing",
                         format!("OpenAI image release quote conversion failed: {error:#}"),
@@ -294,6 +312,7 @@ async fn reserve_openai_image_metered(
                             .unwrap_or(0),
                         Some(snapshot.tariff_priced_ts),
                         CodexSettlementPricing::ReleaseV2,
+                        pinned_tariff,
                     ));
                 }
                 Ok(PricingReleaseReserveOutcomeV2::NotReserved) => {
@@ -381,14 +400,16 @@ async fn reserve_openai_image_metered(
                 AdmissionError::Unavailable
             })?
             .ok_or(AdmissionError::LowBalance)?;
-            let policy = build_policy_admission_snapshot(account_id, resolved.clone(), quote)
-                .map_err(|error| {
-                    elog::error(
-                        "codex-billing",
-                        format!("strict OpenAI image snapshot build failed: {error:#}"),
-                    );
-                    AdmissionError::Unavailable
-                })?;
+            let pinned_tariff = quote.pinned_tariff();
+            let policy =
+                build_policy_admission_snapshot(account_id, resolved.clone(), quote.into_snapshot())
+                    .map_err(|error| {
+                        elog::error(
+                            "codex-billing",
+                            format!("strict OpenAI image snapshot build failed: {error:#}"),
+                        );
+                        AdmissionError::Unavailable
+                    })?;
             match billing
                 .reserve_request_with_policy_snapshot_for_execution(key, policy, execution.clone())
                 .await
@@ -404,6 +425,7 @@ async fn reserve_openai_image_metered(
                         resolved.rule.payable_multiplier_bp,
                         Some(quote_ts),
                         CodexSettlementPricing::LegacyStrict,
+                        pinned_tariff,
                     ));
                 }
                 Ok(PolicyReserveOutcome::NotReserved) => return Err(AdmissionError::LowBalance),
@@ -437,8 +459,13 @@ async fn reserve_openai_image_metered(
             AdmissionError::Unavailable
         })?
         .ok_or(AdmissionError::LowBalance)?;
+        let pinned_tariff = quote.pinned_tariff();
         match billing
-            .reserve_request_with_legacy_snapshot_for_execution(key, quote, execution.clone())
+            .reserve_request_with_legacy_snapshot_for_execution(
+                key,
+                quote.into_snapshot(),
+                execution.clone(),
+            )
             .await
         {
             Ok(LegacyScalarReserveOutcome::Inserted(receipt))
@@ -453,6 +480,7 @@ async fn reserve_openai_image_metered(
                     snapshot.payable_multiplier_bp(),
                     None,
                     CodexSettlementPricing::LegacyScalar,
+                    pinned_tariff,
                 ));
             }
             Ok(LegacyScalarReserveOutcome::Conflict(
@@ -484,6 +512,7 @@ fn image_reservation(
     mult_bp: i64,
     tariff_priced_ts: Option<i64>,
     settlement_pricing: CodexSettlementPricing,
+    pinned_tariff: Option<tariff_book::PinnedTariff>,
 ) -> Reservation {
     Reservation {
         billing: billing.clone(),
@@ -492,6 +521,7 @@ fn image_reservation(
         mult_bp,
         hold,
         tariff_priced_ts,
+        pinned_tariff,
         policy_fast: None,
         settlement_pricing,
         guard: HoldGuard::new(
@@ -686,6 +716,7 @@ async fn reserve_codex_release_v2(
                 return Err(AdmissionError::Unavailable);
             }
         };
+        let pinned_tariff = quote.pinned_tariff();
         let release_quote =
             PricingReleaseQuoteV2::from_legacy_snapshot(quote.snapshot()).map_err(|error| {
                 elog::error(
@@ -717,6 +748,7 @@ async fn reserve_codex_release_v2(
                     settlement_multiplier,
                     Some(snapshot.tariff_priced_ts),
                     CodexSettlementPricing::ReleaseV2,
+                    pinned_tariff,
                 )));
             }
             Ok(PricingReleaseReserveOutcomeV2::NotReserved) => {
@@ -870,6 +902,7 @@ async fn reserve_codex_legacy_mode(
                 }
             };
             let hold = quote.snapshot().charged_hold_nano();
+            let pinned_tariff = quote.pinned_tariff();
             match billing
                 .reserve_request_with_legacy_snapshot_for_execution(
                     key,
@@ -889,6 +922,7 @@ async fn reserve_codex_legacy_mode(
                         mult_bp,
                         None,
                         CodexSettlementPricing::LegacyScalar,
+                        pinned_tariff.clone(),
                     )))
                 }
                 Ok(LegacyScalarReserveOutcome::Unchanged(receipt)) => {
@@ -902,6 +936,7 @@ async fn reserve_codex_legacy_mode(
                         mult_bp,
                         None,
                         CodexSettlementPricing::LegacyScalar,
+                        pinned_tariff,
                     )))
                 }
                 Ok(LegacyScalarReserveOutcome::Conflict(
@@ -1075,6 +1110,7 @@ async fn reserve_codex_strict(
         }
     };
     let hold = quote.snapshot().charged_hold_nano();
+    let pinned_tariff = quote.pinned_tariff();
     let policy_snapshot =
         build_policy_admission_snapshot(account_id, resolved.clone(), quote.into_snapshot())
             .map_err(|error| {
@@ -1104,6 +1140,7 @@ async fn reserve_codex_strict(
                 resolved.rule.payable_multiplier_bp,
                 Some(quote_ts),
                 CodexSettlementPricing::LegacyStrict,
+                pinned_tariff,
             )))
         }
         Ok(PolicyReserveOutcome::NotReserved) => {
@@ -1161,7 +1198,31 @@ async fn reserve_codex_legacy(
     execution: &registry::ExecutionAttempt,
 ) -> Result<LegacyCodexReserveResult, AdmissionError> {
     let estimated = estimated_input_tokens.saturating_add(reserve_overhead_tokens);
-    let base = reserve_cost(model, estimated, requested_output_tokens, pool::now(), fast);
+    let now = pool::now();
+    // Hot tariff override: the matched catalog family resolves against the process-wide book; an
+    // override replaces only the base vector (long-context/Fast modifiers stay code-applied on
+    // top) and pins `<family>/v<version>` for settlement.
+    let compiled = effective_prices(model, now);
+    let resolved = match metering::codex_matched_tariff_at(&model.id, now) {
+        Some((family, _)) => tariff_book::reserve_base(
+            &tariff_book::snapshot(),
+            family,
+            now,
+            compiled,
+            tariff_book::as_codex,
+        ),
+        None => tariff_book::ReserveBase {
+            prices: compiled,
+            pin: None,
+        },
+    };
+    let base = reserve_cost_with_prices(
+        model,
+        resolved.prices,
+        estimated,
+        requested_output_tokens,
+        fast,
+    );
     let hold = metering::apply_multiplier(base, mult_bp).clamp(1, i64::MAX as i128) as i64;
     // Preserve the scalar admission contract exactly: a conservative full-output estimate is
     // capped to the account balance, while exact settlement remains bounded by hold + overdraft.
@@ -1176,6 +1237,7 @@ async fn reserve_codex_legacy(
             mult_bp,
             None,
             CodexSettlementPricing::LegacyScalar,
+            resolved.pin,
         ))),
         Ok(None) => Err(AdmissionError::LowBalance),
         Err(error) if error.downcast_ref::<LegacyPricingPathClosedV2>().is_some() => {
@@ -1223,14 +1285,55 @@ impl OpenAiImageAdmission {
         };
         let priced_ts = reservation.tariff_priced_ts.unwrap_or_else(pool::now);
         let strict = reservation.settlement_pricing == CodexSettlementPricing::LegacyStrict;
-        let (charge, usage_event) = settled_openai_image_charge(
-            model_id,
-            usage,
-            reservation.hold,
-            reservation.mult_bp,
-            priced_ts,
-            reservation.settlement_pricing,
-        );
+        let (charge, usage_event) = match metering::openai_image_tariff(model_id) {
+            // No tariff means the turn was never measured, and an unmeasured turn is not billed
+            // at the admission ceiling.
+            Err(_) => (
+                crate::settlement_policy::unknown_usage_charge(reservation.hold),
+                None,
+            ),
+            Ok(tariff) => {
+                // Hot tariff override: replay the exact version pinned at admission; the single
+                // image family means a served id outside it is already rejected above. A pinned
+                // version missing from the book is an integrity error: leave the reservation to
+                // durable recovery, never reprice at compiled.
+                let prices = match tariff_book::charge_base(
+                    &tariff_book::snapshot(),
+                    reservation.pinned_tariff.as_ref(),
+                    Some(metering::openai_image_tariff_family()),
+                    priced_ts,
+                    tariff.prices,
+                    tariff_book::as_openai_image,
+                ) {
+                    tariff_book::ChargeBase::Compiled(prices)
+                    | tariff_book::ChargeBase::Override(prices, _) => prices,
+                    tariff_book::ChargeBase::MissingPinned => {
+                        elog::error(
+                            "codex-billing",
+                            format!(
+                                "pinned tariff {} is absent from the override book; settlement left to recovery",
+                                reservation
+                                    .pinned_tariff
+                                    .as_ref()
+                                    .map(|pin| pin.schedule_id.as_str())
+                                    .unwrap_or("<unknown>")
+                            ),
+                        );
+                        reservation.guard.disarm();
+                        return;
+                    }
+                };
+                settled_openai_image_charge_with_prices(
+                    model_id,
+                    usage,
+                    reservation.hold,
+                    reservation.mult_bp,
+                    priced_ts,
+                    reservation.settlement_pricing,
+                    prices,
+                )
+            }
+        };
         if strict && charge > reservation.hold {
             elog::error(
                 "codex-billing",
@@ -1271,6 +1374,7 @@ impl OpenAiImageAdmission {
     }
 }
 
+#[cfg(test)]
 fn settled_openai_image_charge(
     model_id: &str,
     usage: &metering::OpenAiImageUsage,
@@ -1284,7 +1388,30 @@ fn settled_openai_image_charge(
     let Ok(tariff) = metering::openai_image_tariff(model_id) else {
         return (crate::settlement_policy::unknown_usage_charge(hold), None);
     };
-    let Ok(real_nano) = metering::openai_image_cost_nanodollars(usage, &tariff.prices) else {
+    settled_openai_image_charge_with_prices(
+        model_id,
+        usage,
+        hold,
+        mult_bp,
+        priced_ts,
+        settlement_pricing,
+        tariff.prices,
+    )
+}
+
+/// `settled_openai_image_charge` under one explicit rate card: settlement replays the exact
+/// override version admission pinned, or the compiled tariff when no override applies.
+#[allow(clippy::too_many_arguments)]
+fn settled_openai_image_charge_with_prices(
+    model_id: &str,
+    usage: &metering::OpenAiImageUsage,
+    hold: i64,
+    mult_bp: i64,
+    priced_ts: i64,
+    settlement_pricing: CodexSettlementPricing,
+    prices: metering::OpenAiImagePrices,
+) -> (i64, Option<registry::UsageEventInput>) {
+    let Ok(real_nano) = metering::openai_image_cost_nanodollars(usage, &prices) else {
         return (crate::settlement_policy::unknown_usage_charge(hold), None);
     };
     let computed_charge = match settlement_pricing {
@@ -1301,12 +1428,12 @@ fn settled_openai_image_charge(
     let fresh_image = usage
         .total_image_input_tokens
         .saturating_sub(usage.cached_image_input_tokens);
-    let input_nano = i128::from(fresh_text) * tariff.prices.fresh_text_input
-        + i128::from(fresh_image) * tariff.prices.fresh_image_input;
+    let input_nano = i128::from(fresh_text) * prices.fresh_text_input
+        + i128::from(fresh_image) * prices.fresh_image_input;
     let cache_read_nano = i128::from(usage.cached_text_input_tokens)
-        * tariff.prices.cached_text_input
-        + i128::from(usage.cached_image_input_tokens) * tariff.prices.cached_image_input;
-    let output_nano = i128::from(usage.image_output_tokens) * tariff.prices.image_output;
+        * prices.cached_text_input
+        + i128::from(usage.cached_image_input_tokens) * prices.cached_image_input;
+    let output_nano = i128::from(usage.image_output_tokens) * prices.image_output;
     let input_tokens = usage
         .total_text_input_tokens
         .saturating_add(usage.total_image_input_tokens);
@@ -1364,7 +1491,43 @@ impl CodexAdmission {
         let priced_ts = reservation.tariff_priced_ts.unwrap_or_else(pool::now);
         let effective_fast = reservation.policy_fast.unwrap_or(fast);
         let strict = reservation.settlement_pricing == CodexSettlementPricing::LegacyStrict;
-        let (charge, usage_event) = settled_charge(
+        // Hot tariff override: replay the exact version pinned at admission; a cross-family serve
+        // reprices by the served model's family at the pinned priced timestamp; an empty book is
+        // byte-identical to the compiled constants. A pinned version missing from the book is an
+        // integrity error — the reservation is left to durable recovery, never repriced at
+        // compiled. This sync settle cannot await the bounded refresh retry the async planes
+        // perform; the miss is structurally unreachable because the pinning reserve read the row
+        // from this process.
+        let compiled = effective_prices(model, priced_ts);
+        let served_family =
+            metering::codex_matched_tariff_at(&model.id, priced_ts).map(|(family, _)| family);
+        let prices = match tariff_book::charge_base(
+            &tariff_book::snapshot(),
+            reservation.pinned_tariff.as_ref(),
+            served_family,
+            priced_ts,
+            compiled,
+            tariff_book::as_codex,
+        ) {
+            tariff_book::ChargeBase::Compiled(prices)
+            | tariff_book::ChargeBase::Override(prices, _) => prices,
+            tariff_book::ChargeBase::MissingPinned => {
+                elog::error(
+                    "codex-billing",
+                    format!(
+                        "pinned tariff {} is absent from the override book; settlement left to recovery",
+                        reservation
+                            .pinned_tariff
+                            .as_ref()
+                            .map(|pin| pin.schedule_id.as_str())
+                            .unwrap_or("<unknown>")
+                    ),
+                );
+                reservation.guard.disarm();
+                return;
+            }
+        };
+        let (charge, usage_event) = settled_charge_with_prices(
             model,
             usage,
             reservation.hold,
@@ -1377,6 +1540,7 @@ impl CodexAdmission {
             priced_ts,
             effective_fast,
             reservation.settlement_pricing,
+            prices,
         );
         if strict && charge > reservation.hold {
             elog::error(
@@ -1412,6 +1576,7 @@ impl CodexAdmission {
 /// Compute the exact customer debit and immutable provider-usage record before handing either to
 /// the asynchronous billing actor. Keeping this boundary pure makes the only Codex money mutation
 /// exhaustively testable without substituting a second pricing implementation in the test.
+#[cfg(test)]
 fn settled_charge(
     model: &CodexModel,
     usage: &CodexUsage,
@@ -1422,7 +1587,34 @@ fn settled_charge(
     fast: bool,
     settlement_pricing: CodexSettlementPricing,
 ) -> (i64, Option<registry::UsageEventInput>) {
-    let priced = price_usage(model, usage, now, fast);
+    settled_charge_with_prices(
+        model,
+        usage,
+        hold,
+        mult_bp,
+        requested_output_tokens,
+        now,
+        fast,
+        settlement_pricing,
+        effective_prices(model, now),
+    )
+}
+
+/// `settled_charge` under one explicit rate card: settlement replays the exact override version
+/// admission pinned, or the compiled vector when no override applies.
+#[allow(clippy::too_many_arguments)]
+fn settled_charge_with_prices(
+    model: &CodexModel,
+    usage: &CodexUsage,
+    hold: i64,
+    mult_bp: i64,
+    requested_output_tokens: Option<u64>,
+    now: i64,
+    fast: bool,
+    settlement_pricing: CodexSettlementPricing,
+    prices: metering::CodexPrices,
+) -> (i64, Option<registry::UsageEventInput>) {
+    let priced = price_usage_with_prices(usage, prices, fast);
     // Honest billing: the transport cannot hard-stop generation, so the model may emit more output
     // than the client's requested cap. The provider truly consumed those tokens (the immutable
     // usage_event and window calibration below record the real figures), but the customer is never
@@ -1432,7 +1624,7 @@ fn settled_charge(
         Some(cap) if usage.output_tokens > cap => {
             let mut capped_usage = usage.clone();
             capped_usage.output_tokens = cap;
-            price_usage(model, &capped_usage, now, fast).real_nano
+            price_usage_with_prices(&capped_usage, prices, fast).real_nano
         }
         _ => priced.real_nano,
     };
@@ -1509,10 +1701,11 @@ pub(crate) async fn begin_admission(
 /// authoritative, so a reviewed price change takes effect at its own epoch without a restart. The
 /// config-resolved rate remains the fallback for a model the catalog no longer advertises, which
 /// keeps an in-flight settlement priced exactly as it was admitted.
-fn effective_prices(model: &CodexModel, now: i64) -> metering::CodexPrices {
+pub(super) fn effective_prices(model: &CodexModel, now: i64) -> metering::CodexPrices {
     metering::codex_prices_at(&model.id, now).unwrap_or(model.prices)
 }
 
+#[cfg(test)]
 pub(super) fn reserve_cost(
     model: &CodexModel,
     estimated_input_tokens: u64,
@@ -1520,7 +1713,24 @@ pub(super) fn reserve_cost(
     now: i64,
     fast: bool,
 ) -> i128 {
-    let prices = effective_prices(model, now);
+    reserve_cost_with_prices(
+        model,
+        effective_prices(model, now),
+        estimated_input_tokens,
+        requested_output_tokens,
+        fast,
+    )
+}
+
+/// The reserve formula under one explicit rate card: the hot tariff override book substitutes the
+/// base vector here, while the long-context and Fast modifiers stay code-applied on top.
+pub(super) fn reserve_cost_with_prices(
+    model: &CodexModel,
+    prices: metering::CodexPrices,
+    estimated_input_tokens: u64,
+    requested_output_tokens: Option<u64>,
+    fast: bool,
+) -> i128 {
     let long = estimated_input_tokens > prices.long_context_threshold;
     let input_rate = prices.input.max(prices.cache_write_input);
     let input_rate = if long {
@@ -1573,7 +1783,23 @@ pub(crate) fn price_calibration_event(
     if usage.input_tokens == 0 && usage.output_tokens == 0 {
         anyhow::bail!("Codex turn completed without billable usage evidence");
     }
-    let priced = price_usage(model, usage, completed_at, fast);
+    // Hot tariff override: capacity evidence prices the official replacement cost from the same
+    // book the customer settlement replays, on both the USD and the native credit ledgers; the
+    // Fast multiplier stays the compiled model capability (overrides carry rates, not gates).
+    let book = tariff_book::snapshot();
+    let compiled = effective_prices(model, completed_at);
+    let (prices, api_schedule_id) = match metering::codex_matched_tariff_at(&model.id, completed_at)
+    {
+        Some((family, compiled)) => match book.resolve(family, completed_at) {
+            Some((pin, payload)) => match tariff_book::as_codex(&payload) {
+                Some(prices) => (prices, pin.schedule_id),
+                None => (compiled, String::new()),
+            },
+            None => (compiled, String::new()),
+        },
+        None => (compiled, String::new()),
+    };
+    let priced = price_usage_with_prices(usage, prices, fast);
     let service_tier = if fast {
         metering::CodexServiceTier::Fast
     } else {
@@ -1586,14 +1812,35 @@ pub(crate) fn price_calibration_event(
         usage.input_tokens,
     )
     .map_err(|error| anyhow::anyhow!("Codex tariff identity unavailable: {error:?}"))?;
-    let credits = metering::codex_credit_cost_nano(
-        &model.id,
+    let api_tariff_schedule_id = if api_schedule_id.is_empty() {
+        tariff.tariff_schedule_id.as_str().to_owned()
+    } else {
+        api_schedule_id
+    };
+    let (credit_rates, credit_schedule_id) =
+        match metering::codex_matched_credit_rates_at(&model.id) {
+            Some((family, compiled_rates)) => match book.resolve(family, completed_at) {
+                Some((pin, payload)) => match tariff_book::as_codex_credits(&payload) {
+                    Some(rates) => (rates, pin.schedule_id),
+                    None => (compiled_rates, metering::CODEX_CREDIT_SCHEDULE_ID.to_owned()),
+                },
+                None => (compiled_rates, metering::CODEX_CREDIT_SCHEDULE_ID.to_owned()),
+            },
+            None => anyhow::bail!("Codex subscription credit rate unavailable"),
+        };
+    let fast_multiplier = if fast {
+        metering::codex_subscription_fast_multiplier_basis_points(&model.id)
+            .context("Codex subscription credit rate unavailable")?
+    } else {
+        10_000
+    };
+    let credits = metering::codex_credit_cost_nano_with_rates(
+        &credit_rates,
+        fast_multiplier,
         usage.input_tokens,
         priced.cached_input,
         usage.output_tokens,
-        fast,
-    )
-    .context("Codex subscription credit rate unavailable")?;
+    );
     let token = |value: u64, name: &'static str| {
         i64::try_from(value).with_context(|| format!("Codex {name} exceeds bigint"))
     };
@@ -1606,8 +1853,8 @@ pub(crate) fn price_calibration_event(
         model_id: model.id.clone(),
         service_tier: if fast { "fast" } else { "standard" }.to_owned(),
         provider_reported_tier: provider_reported_tier.map(str::to_owned),
-        api_tariff_schedule_id: tariff.tariff_schedule_id.as_str().to_owned(),
-        credit_schedule_id: metering::CODEX_CREDIT_SCHEDULE_ID.to_owned(),
+        api_tariff_schedule_id,
+        credit_schedule_id,
         completed_at,
         input_tokens: token(usage.input_tokens, "input tokens")?,
         cached_input_tokens: token(priced.cached_input, "cached input tokens")?,
@@ -1644,8 +1891,18 @@ struct PricedUsage {
     real_nano: i128,
 }
 
+#[cfg(test)]
 fn price_usage(model: &CodexModel, usage: &CodexUsage, now: i64, fast: bool) -> PricedUsage {
-    let prices = effective_prices(model, now);
+    price_usage_with_prices(usage, effective_prices(model, now), fast)
+}
+
+/// The settlement formula under one explicit rate card: the same math as `price_usage`, priced
+/// from the exact override vector admission pinned (or the compiled vector when none applies).
+fn price_usage_with_prices(
+    usage: &CodexUsage,
+    prices: metering::CodexPrices,
+    fast: bool,
+) -> PricedUsage {
     let cached_input = usage.cached_input_tokens.min(usage.input_tokens);
     let remaining = usage.input_tokens.saturating_sub(cached_input);
     let cache_write_input = usage.cache_write_input_tokens.min(remaining);
@@ -2059,6 +2316,7 @@ mod tests {
                 mult_bp,
                 hold,
                 tariff_priced_ts: None,
+                pinned_tariff: None,
                 policy_fast: None,
                 settlement_pricing: CodexSettlementPricing::LegacyScalar,
                 request_id: request_id.to_string(),
@@ -2321,6 +2579,118 @@ mod tests {
         let priced = price_usage(&drifted, &usage, 0, false);
         assert_eq!(priced.input_nano, 1_000 * 5_000);
         assert_eq!(priced.output_nano, 20 * 30_000);
+    }
+
+    /// Settlement replays the exact override version pinned at admission, not the compiled
+    /// constants and not a newer version.
+    #[tokio::test]
+    async fn settlement_replays_the_pinned_override_version() {
+        let _lock = tariff_book::GLOBAL_BOOK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // effective_from = i64::MAX keeps the row invisible to every timestamped resolve — and so
+        // to every concurrently running test; only the exact pinned-version lookup sees it.
+        tariff_book::install_global_rows_for_test(vec![tariff_book::test_row(
+            "openai/codex/gpt-5.6-sol",
+            2,
+            i64::MAX,
+            serde_json::json!({
+                "input": "10000",
+                "cached_input": "1000",
+                "cache_write_input": "12500",
+                "output": "60000",
+                "api_fast_multiplier_basis_points": 25000,
+                "long_context_threshold": 272000,
+                "long_input_basis_points": 20000,
+                "long_output_basis_points": 15000
+            }),
+        )]);
+        const TOPUP: i64 = 1_000_000_000;
+        let (mut admission, billing, path) =
+            reserved_admission(10_000, TOPUP, 500_000_000, "codex-pinned-override").await;
+        admission
+            .reservation
+            .as_mut()
+            .expect("reservation")
+            .pinned_tariff = Some(tariff_book::PinnedTariff {
+            family: "openai/codex/gpt-5.6-sol".to_owned(),
+            version: 2,
+            schedule_id: "openai/codex/gpt-5.6-sol/v2".to_owned(),
+        });
+        admission.settle(
+            &model(),
+            &CodexUsage {
+                input_tokens: 1_000,
+                output_tokens: 20,
+                ..CodexUsage::default()
+            },
+            None,
+            false,
+        );
+        billing.flush().await.unwrap();
+        let account = billing
+            .account("codex-settlement-account")
+            .await
+            .unwrap()
+            .unwrap();
+        let usage = billing
+            .usage_by_model("codex-settlement-account", 0)
+            .await
+            .unwrap();
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+        tariff_book::clear_global_book_for_test();
+        // 1_000 × 10_000 + 20 × 60_000 at the override card (×1.0 multiplier) — the compiled card
+        // would have charged 5_600_000.
+        assert_eq!(account.spent_nano, 11_200_000);
+        assert_eq!(account.reserved_nano, 0);
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].charge_nano, 11_200_000);
+    }
+
+    /// A pinned version the book cannot produce is an integrity error: nothing is settled at
+    /// compiled prices and the reservation is left for durable recovery.
+    #[tokio::test]
+    async fn a_missing_pinned_override_version_never_settles_at_compiled() {
+        let _lock = tariff_book::GLOBAL_BOOK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        tariff_book::clear_global_book_for_test();
+        const TOPUP: i64 = 1_000_000_000;
+        const HOLD: i64 = 500_000_000;
+        let (mut admission, billing, path) =
+            reserved_admission(10_000, TOPUP, HOLD, "codex-missing-pinned-override").await;
+        admission
+            .reservation
+            .as_mut()
+            .expect("reservation")
+            .pinned_tariff = Some(tariff_book::PinnedTariff {
+            family: "openai/codex/gpt-5.6-sol".to_owned(),
+            version: 7,
+            schedule_id: "openai/codex/gpt-5.6-sol/v7".to_owned(),
+        });
+        admission.settle(
+            &model(),
+            &CodexUsage {
+                input_tokens: 1_000,
+                output_tokens: 20,
+                ..CodexUsage::default()
+            },
+            None,
+            false,
+        );
+        billing.flush().await.unwrap();
+        let account = billing
+            .account("codex-settlement-account")
+            .await
+            .unwrap()
+            .unwrap();
+        drop(billing);
+        let _ = std::fs::remove_file(path);
+        tariff_book::clear_global_book_for_test();
+        // No settle happened at all: the hold stays reserved for the reconciler, nothing is spent.
+        assert_eq!(account.spent_nano, 0);
+        assert_eq!(account.reserved_nano, HOLD);
     }
 
     #[test]

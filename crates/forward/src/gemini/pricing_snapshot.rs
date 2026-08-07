@@ -8,6 +8,7 @@ use super::{
     billing::{reservation_for_budget_with_prices, reserve_cost_with_prices},
     config::GeminiModel,
 };
+use crate::pricing::tariff_book::{self, PinnedTariff};
 use crate::pricing::{
     snapshot_identity_is_oversized, EnginePricingRequestId, PricingBridgeFallbackReason,
     PricingBridgePrepare,
@@ -40,6 +41,9 @@ pub(super) struct PreparedGeminiLegacyQuote {
     quote_ts: i64,
     payable_multiplier_bp: i64,
     prices: metering::GeminiPrices,
+    /// `<family>/v<version>` of the pinned hot override, or the compiled schedule id as today.
+    tariff_schedule_id: String,
+    pin: Option<PinnedTariff>,
     estimated_input_tokens: u64,
     requested_output_tokens: u64,
     image_output_tokens: u64,
@@ -50,6 +54,7 @@ pub(super) struct PreparedGeminiLegacyQuote {
 pub(super) struct GeminiLegacyQuote {
     effective_output_tokens: u64,
     snapshot: LegacyScalarAdmissionSnapshot,
+    pin: Option<PinnedTariff>,
 }
 
 impl GeminiLegacyQuote {
@@ -59,6 +64,11 @@ impl GeminiLegacyQuote {
 
     pub(super) fn snapshot(&self) -> &LegacyScalarAdmissionSnapshot {
         &self.snapshot
+    }
+
+    /// The hot override version this quote priced with; settlement replays exactly this version.
+    pub(super) fn pinned_tariff(&self) -> Option<PinnedTariff> {
+        self.pin.clone()
     }
 
     pub(super) fn into_snapshot(self) -> LegacyScalarAdmissionSnapshot {
@@ -98,7 +108,11 @@ pub(super) fn prepare_gemini_legacy_quote(
             && input.model.output_token_limit == spec.output_token_limit,
         "Gemini runtime model limits differ from the audited capability"
     );
-    let prices = spec.prices;
+    // Hot tariff override: the book replaces only the base price vector of the compiled family;
+    // the conservative-maximum/long-context selection stays code-applied on top inside the
+    // reserve formula.
+    let (prices, tariff_schedule_id, pin) =
+        resolve_reserve_tariff(&tariff_book::snapshot(), &input.model, input.quote_ts, spec.prices);
     let maximum_official_hold = reserve_cost_with_prices(
         prices,
         input.estimated_input_tokens,
@@ -119,12 +133,39 @@ pub(super) fn prepare_gemini_legacy_quote(
         quote_ts: input.quote_ts,
         payable_multiplier_bp: input.payable_multiplier_bp,
         prices,
+        tariff_schedule_id,
+        pin,
         estimated_input_tokens: input.estimated_input_tokens,
         requested_output_tokens: input.requested_output_tokens,
         image_output_tokens: input.image_output_tokens,
         grounding_enabled: input.grounding_enabled,
         allow_output_cap: input.allow_output_cap,
     }))
+}
+
+/// The reserve tariff decision, pure for testing: the override base vector and pin when the book
+/// resolves the compiled family at `quote_ts`, compiled constants otherwise.
+fn resolve_reserve_tariff(
+    book: &tariff_book::TariffBookSnapshot,
+    model: &GeminiModel,
+    quote_ts: i64,
+    compiled: metering::GeminiPrices,
+) -> (metering::GeminiPrices, String, Option<PinnedTariff>) {
+    let resolved = match metering::gemini_matched_tariff_at(&model.id, quote_ts) {
+        Some((family, _)) => {
+            tariff_book::reserve_base(book, family, quote_ts, compiled, tariff_book::as_gemini)
+        }
+        None => tariff_book::ReserveBase {
+            prices: compiled,
+            pin: None,
+        },
+    };
+    let tariff_schedule_id = resolved
+        .pin
+        .as_ref()
+        .map(|pin| pin.schedule_id.clone())
+        .unwrap_or_else(|| metering::gemini::TARIFF_SCHEDULE_ID.to_owned());
+    (resolved.prices, tariff_schedule_id, resolved.pin)
 }
 
 impl PreparedGeminiLegacyQuote {
@@ -175,7 +216,7 @@ impl PreparedGeminiLegacyQuote {
             requested_model_id: self.requested_model_id.clone(),
             canonical_model_id: self.requested_model_id.clone(),
             alias_generation: GEMINI_ALIAS_GENERATION,
-            tariff_schedule_id: metering::gemini::TARIFF_SCHEDULE_ID.to_owned(),
+            tariff_schedule_id: self.tariff_schedule_id.clone(),
             tariff_priced_ts: self.quote_ts,
             admission_ts: self.quote_ts,
             payable_multiplier_bp: self.payable_multiplier_bp,
@@ -193,6 +234,7 @@ impl PreparedGeminiLegacyQuote {
         Ok(Some(GeminiLegacyQuote {
             effective_output_tokens,
             snapshot,
+            pin: self.pin.clone(),
         }))
     }
 }
@@ -245,6 +287,55 @@ mod tests {
             PricingBridgePrepare::Eligible(prepared) => prepared,
             PricingBridgePrepare::Fallback(reason) => panic!("unexpected fallback: {reason:?}"),
         }
+    }
+
+    /// An override row replaces the reserve base vector and pins its exact version; the compiled
+    /// schedule id and prices are untouched while the book is empty.
+    #[test]
+    fn an_override_replaces_the_reserve_base_and_pins_its_version() {
+        let model = model("gemini-2.5-flash");
+        let compiled = model.prices;
+        let (prices, schedule_id, pin) = resolve_reserve_tariff(
+            &tariff_book::TariffBookSnapshot::empty(),
+            &model,
+            QUOTE_TS,
+            compiled,
+        );
+        assert_eq!(prices, compiled);
+        assert_eq!(schedule_id, metering::gemini::TARIFF_SCHEDULE_ID);
+        assert!(pin.is_none());
+
+        let payload = serde_json::json!({
+            "input": (compiled.input * 2).to_string(),
+            "audio_input": (compiled.audio_input * 2).to_string(),
+            "cached_input": (compiled.cached_input * 2).to_string(),
+            "cached_audio_input": (compiled.cached_audio_input * 2).to_string(),
+            "output": (compiled.output * 2).to_string(),
+            "image_output": (compiled.image_output * 2).to_string(),
+            "long_context_threshold": compiled.long_context_threshold,
+            "long_input": (compiled.long_input * 2).to_string(),
+            "long_audio_input": (compiled.long_audio_input * 2).to_string(),
+            "long_cached_input": (compiled.long_cached_input * 2).to_string(),
+            "long_cached_audio_input": (compiled.long_cached_audio_input * 2).to_string(),
+            "long_output": (compiled.long_output * 2).to_string(),
+            "search": {"kind": "per_grounded_prompt", "nano": "35000000"},
+        });
+        let book = tariff_book::TariffBookSnapshot::from_rows(vec![tariff_book::test_row(
+            "google/gemini/gemini-2.5-flash",
+            2,
+            0,
+            payload,
+        )])
+        .unwrap();
+        let (prices, schedule_id, pin) =
+            resolve_reserve_tariff(&book, &model, QUOTE_TS, compiled);
+        assert_eq!(prices.input, compiled.input * 2);
+        assert_eq!(prices.output, compiled.output * 2);
+        assert_eq!(prices.long_context_threshold, compiled.long_context_threshold);
+        assert_eq!(schedule_id, "google/gemini/gemini-2.5-flash/v2");
+        let pin = pin.expect("the override version is pinned");
+        assert_eq!(pin.family, "google/gemini/gemini-2.5-flash");
+        assert_eq!(pin.version, 2);
     }
 
     #[test]

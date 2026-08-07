@@ -1765,3 +1765,73 @@ async fn an_empty_pool_waits_out_the_smooth_window_before_refusing() {
         Some("kimi_capacity_exhausted")
     );
 }
+
+/// Settlement replays the exact override version pinned at admission, never the compiled card.
+#[tokio::test]
+async fn settlement_replays_the_pinned_override_version() {
+    let _lock = crate::pricing::tariff_book::GLOBAL_BOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    // effective_from = i64::MAX keeps the row invisible to every timestamped resolve — and so to
+    // every concurrently running test; only the exact pinned-version lookup sees it.
+    crate::pricing::tariff_book::install_global_rows_for_test(vec![
+        crate::pricing::tariff_book::test_row(
+            "moonshot/kimi/kimi-k3",
+            2,
+            i64::MAX,
+            serde_json::json!({
+                "cached_input": "600",
+                "input": "6000",
+                "cache_write": "6000",
+                "output": "30000"
+            }),
+        ),
+    ]);
+    let usage = KimiUsage {
+        input_tokens: 1_000,
+        cache_read_tokens: 500,
+        cache_write_tokens: 50,
+        output_tokens: 100,
+        reasoning_output_tokens: 40,
+    };
+    let pin = PinnedTariff {
+        family: "moonshot/kimi/kimi-k3".to_owned(),
+        version: 2,
+        schedule_id: "moonshot/kimi/kimi-k3/v2".to_owned(),
+    };
+    let priced = price_turn_settlement(None, &usage, "kimi-k3", 1, Some(&pin))
+        .await
+        .unwrap();
+    crate::pricing::tariff_book::clear_global_book_for_test();
+    assert_eq!(priced.input, 1_000 * 6_000);
+    assert_eq!(priced.cache_read, 500 * 600);
+    assert_eq!(priced.cache_write, 50 * 6_000);
+    assert_eq!(priced.output, 100 * 30_000);
+    assert_eq!(priced.total, 6_000_000 + 300_000 + 300_000 + 3_000_000);
+    assert_eq!(priced.tariff_schedule_id, "moonshot/kimi/kimi-k3/v2");
+}
+
+/// A pinned version the book cannot produce is an integrity error: the turn fails closed to the
+/// documented conservative hold, never a silent compiled reprice.
+#[tokio::test]
+async fn a_missing_pinned_override_version_fails_closed() {
+    let _lock = crate::pricing::tariff_book::GLOBAL_BOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    crate::pricing::tariff_book::clear_global_book_for_test();
+    let usage = KimiUsage {
+        input_tokens: 1_000,
+        cache_read_tokens: 500,
+        cache_write_tokens: 50,
+        output_tokens: 100,
+        reasoning_output_tokens: 40,
+    };
+    let pin = PinnedTariff {
+        family: "moonshot/kimi/kimi-k3".to_owned(),
+        version: 9,
+        schedule_id: "moonshot/kimi/kimi-k3/v9".to_owned(),
+    };
+    let missing = price_turn_settlement(None, &usage, "kimi-k3", 1, Some(&pin)).await;
+    crate::pricing::tariff_book::clear_global_book_for_test();
+    assert!(missing.is_err());
+}
