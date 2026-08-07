@@ -7,7 +7,6 @@ import type {
   ProviderSwitchSpec,
 } from "@claude-api/contracts";
 import {
-  CURRENT_PRODUCT_CATALOG_ENTRIES,
   MAIN_PRICING_PRODUCT_ID,
   MULTI_DISCOUNT_CAPABILITY_DIGEST,
   MULTI_DISCOUNT_CAPABILITY_GENERATION,
@@ -18,6 +17,9 @@ import { buildOfficialOpenKeysPolicy } from "@claude-api/engine-client";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import type { Database } from "./client.js";
+import { stage5Digest, STAGE5_CATALOG_MODELS } from "./pricing-release-digest.js";
+
+export { stage5Digest, STAGE5_CATALOG_MODELS } from "./pricing-release-digest.js";
 
 type AccountPolicyRule = AccountPolicySpec["rules"][number];
 
@@ -26,7 +28,6 @@ export const STAGE5_CAPABILITY_GENERATION = MULTI_DISCOUNT_CAPABILITY_GENERATION
 export const STAGE5_CAPABILITY_DIGEST = MULTI_DISCOUNT_CAPABILITY_DIGEST;
 export const STAGE5_MAIN_PRODUCT_ID = MAIN_PRICING_PRODUCT_ID;
 export const STAGE5_OPENKEYS_PRODUCT_ID = OPENKEYS_PRICING_PRODUCT_ID;
-export const STAGE5_CATALOG_MODELS = CURRENT_PRODUCT_CATALOG_ENTRIES;
 
 const inventoryAccountSchema = z.object({
   account_id: z.string().startsWith("acct_").max(200),
@@ -271,14 +272,6 @@ function canonicalValue(value: unknown): unknown {
 
 function canonicalJson(value: unknown): string {
   return JSON.stringify(canonicalValue(value));
-}
-
-export function stage5Digest(label: string, value: unknown): string {
-  const hex = createHash("sha256")
-    .update(`multi-discount-stage5:${label}\n`, "utf8")
-    .update(canonicalJson(value), "utf8")
-    .digest("hex");
-  return `sha256:v1:${hex}`;
 }
 
 function deterministicUuid(label: string): string {

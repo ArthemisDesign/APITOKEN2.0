@@ -26,10 +26,11 @@ import {
   type ServiceAccountInventoryV2,
 } from "@claude-api/contracts";
 import {
-  canonicalPricingReleaseV2Json,
-  pricingReleaseV2Digest,
   type EngineClient,
 } from "@claude-api/engine-client";
+import { stage5V2CanonicalJson, stage5V2Digest } from "./pricing-release-digest.js";
+
+export { stage5V2CanonicalJson, stage5V2Digest } from "./pricing-release-digest.js";
 
 export const STAGE5_V2_CATALOG_GENERATION = 7;
 export const STAGE5_V2_SWITCH_GENERATION = 7;
@@ -202,14 +203,6 @@ export class Stage5MaterializerV2Error extends Error {
 
 function compareUtf8(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
-}
-
-export function stage5V2CanonicalJson(value: unknown): string {
-  return canonicalPricingReleaseV2Json(value);
-}
-
-export function stage5V2Digest(label: string, value: unknown): string {
-  return pricingReleaseV2Digest(label, value);
 }
 
 function legacyStage5Digest(label: string, value: unknown): string {

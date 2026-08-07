@@ -12,7 +12,7 @@ import {
 import type { EngineClient } from "@claude-api/engine-client";
 import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
-import { stage5V2CanonicalJson, stage5V2Digest } from "./pricing-stage5-materializer-v2.js";
+import { stage5V2CanonicalJson, stage5V2Digest } from "./pricing-release-digest.js";
 
 export type PricingReleaseProvisioningEngineV2 = Pick<
   EngineClient,

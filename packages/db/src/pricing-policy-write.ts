@@ -16,7 +16,7 @@ import {
 } from "@claude-api/contracts";
 import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
-import { stage5Digest } from "./multi-discount-backfill.js";
+import { stage5Digest } from "./pricing-release-digest.js";
 import { pricingReleaseCutoverCompleted } from "./pricing-control-jobs.js";
 
 type ManagedOwnerType = "global_b2c" | "b2b_client" | "b2b_invitation" | "service";

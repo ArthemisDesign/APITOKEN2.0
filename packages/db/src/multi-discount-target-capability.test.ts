@@ -29,7 +29,7 @@ import {
   MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES,
 } from "@claude-api/contracts";
 import { describe, expect, it } from "vitest";
-import { stage5Digest } from "./multi-discount-backfill.js";
+import { stage5Digest } from "./pricing-release-digest.js";
 import {
   buildStage5V2Capability,
   buildStage5V2CatalogsAndSwitches,

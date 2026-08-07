@@ -14,6 +14,7 @@ export * from "./admin-finance.js";
 export * from "./admin-pipelines.js";
 export * from "./payments.js";
 export * from "./pricing.js";
+export * from "./pricing-release-digest.js";
 export * from "./pricing-policy-write.js";
 export * from "./pricing-control-jobs.js";
 export * from "./pricing-control-notify.js";
