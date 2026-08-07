@@ -564,6 +564,19 @@ async function stepCapture(
     LIMIT 1
   `, [row.target_generation, row.recovery_generation]);
   const current = latest.rows[0];
+  // A capture whose 15-minute window still covers the rollout's own policy writes (or any other
+  // recent authority churn) is guaranteed to arrive blocked. Wait until the rollout that fed
+  // this pair completed at least one full window ago; registrations landing inside the window
+  // remain covered by the bounded transient re-capture below.
+  const quietForCapture = async (): Promise<boolean> => {
+    const databaseNow = Math.floor(row.database_now.getTime() / 1_000);
+    const rollout = await database.pool.query<{ completed_at: Date | null }>(`
+      SELECT completed_at FROM pricing_shadow_rollouts_v2 WHERE stage5_run_id = $1
+    `, [row.stage5_run_id]);
+    const completedAt = rollout.rows[0]?.completed_at;
+    if (!completedAt) return false;
+    return completedAt.getTime() / 1_000 + CAPTURE_WINDOW_SECONDS < databaseNow;
+  };
   const stageNewCapture = async () => {
     const databaseNow = Math.floor(row.database_now.getTime() / 1_000);
     const windowEnd = databaseNow - CAPTURE_WINDOW_LAG_SECONDS;
@@ -585,7 +598,7 @@ async function stepCapture(
     });
   };
   if (!current) {
-    await stageNewCapture();
+    if (await quietForCapture()) await stageNewCapture();
     return;
   }
   if (current.status === "pending" || current.status === "processing"
@@ -641,8 +654,9 @@ async function stepCapture(
         );
         return;
       }
-      // The pair is intact; only the window/plane was busy. Stage a fresh capture right away —
-      // the next tick polls the new job instead of re-classifying the blocked one.
+      // The pair is intact; only the window/plane was busy. Wait for a quiet window first —
+      // the same blocked job is re-evaluated each tick until the fresh capture can start clean.
+      if (!await quietForCapture()) return;
       await stageNewCapture();
       await transition(
         database,

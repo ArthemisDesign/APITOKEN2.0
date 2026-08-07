@@ -186,16 +186,63 @@ describe.runIf(Boolean(connectionString))("pricing release orchestration v2", ()
       WHERE id = $1
     `, [staged.orchestrationId]);
     // A transient blocker (busy authority window / backlog) re-captures instead of dying.
+    const runId = randomUUID();
     await seed.query(`
       UPDATE pricing_release_orchestrations_v2
       SET step = 'capture', target_generation = 41, recovery_generation = 42,
-          status = 'active', cycle = 1
+          status = 'active', cycle = 1, stage5_run_id = $2
       WHERE id = $1
-    `, [staged.orchestrationId]);
+    `, [staged.orchestrationId, runId]);
     await seed.query(`
       UPDATE pricing_stage8_capture_artifacts_v2
       SET combined_payload_json = $1::jsonb, created_at = now()
     `, [JSON.stringify({ blockers: [{ code: "authority_changed_during_validation_window" }] })]);
+    // The quiet gate: without a long-completed rollout the transient re-capture does not stage.
+    await advancePricingReleaseOrchestrationV2(database, readers);
+    const quietRow = await readPricingReleaseOrchestrationControlV2(database);
+    expect(quietRow.orchestrations[0]).toMatchObject({ step: "capture", status: "active" });
+    const quiet = await seed.query<{ count: string }>(`
+      SELECT count(*)::text FROM pricing_stage8_capture_jobs_v2 WHERE target_generation = 41
+    `, []);
+    expect(Number(quiet.rows[0]!.count)).toBe(1);
+    await seed.query(`
+      INSERT INTO pricing_stage5_runs_v2 (
+        run_id, schema_version, plan_digest, commerce_inventory_digest,
+        engine_scan_first_digest, engine_scan_second_digest,
+        openkeys_scan_first_digest, openkeys_scan_second_digest,
+        service_inventory_digest, funding_plan_digest,
+        target_generation, target_digest, recovery_generation, recovery_digest,
+        inventory_artifact, plan_artifact, blocker_count, status
+      ) VALUES ($1, 2, $2, $3, $3, $3, $3, $3, $3, $3, 41, NULL, 42, NULL,
+                '{}'::jsonb, '{}'::jsonb, 0, 'materializing')
+    `, [runId, "sha256:v2:" + "9".repeat(64), "sha256:v2:" + "8".repeat(64)]);
+    for (const [generation, kind, planDigest] of [
+      [41, "target", "sha256:v2:" + "a".repeat(64)],
+      [42, "recovery", "sha256:v2:" + "b".repeat(64)],
+    ] as const) {
+      await seed.query(`
+        INSERT INTO pricing_release_plans_v2 (
+          generation, release_kind, schema_version,
+          commerce_inventory_digest, engine_inventory_digest,
+          openkeys_inventory_digest, service_inventory_digest,
+          policy_manifest_digest, assignment_manifest_digest,
+          funding_manifest_digest, engine_release_digest, content_digest, status
+        ) VALUES ($1, $2, 2, $3, $3, $3, $3, $3, $3, NULL, NULL, $4, 'materializing')
+      `, [generation, kind, "sha256:v2:" + "8".repeat(64), planDigest]);
+    }
+    await seed.query(`
+      INSERT INTO pricing_shadow_rollouts_v2 (
+        idempotency_key, stage5_run_id, target_generation, target_digest,
+        recovery_generation, recovery_digest, catalog_generation,
+        main_catalog_digest, openkeys_catalog_digest, switch_generation, switch_digest,
+        engine_inventory_digest, assignment_manifest_digest, policy_manifest_digest,
+        rollout_digest, assignment_count, job_count, actor_id, reason, status, completed_at
+      ) VALUES ($1, $2, 41, $3, 42, $4, 7, $5, $5,
+                7, $5, $5, $5, $5, $5,
+                1, 1, 'pricing-control-worker:integration', 'drive the successor pair live',
+                'confirmed', now() - interval '20 minutes')
+    `, [randomUUID(), runId, "sha256:v2:" + "a".repeat(64), "sha256:v2:" + "b".repeat(64),
+        "sha256:v2:" + "c".repeat(64)]);
     await advancePricingReleaseOrchestrationV2(database, readers);
     const transient = await readPricingReleaseOrchestrationControlV2(database);
     expect(transient.orchestrations[0]).toMatchObject({ step: "capture", status: "active" });
