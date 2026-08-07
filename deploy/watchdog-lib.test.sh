@@ -1277,6 +1277,7 @@ for controller_definition in \
   deploy/gpt-image-2-public-paid-inspect-gate.sh \
   deploy/gpt-image-2-settlement-diagnostic-gate.sh \
   deploy/gpt-image-2-settlement-v2-diagnostic-gate.sh \
+  deploy/gpt-image-2-surface-probe-gate.sh \
   deploy/watchdog-infrastructure.sh \
   deploy/deploy.sh \
   deploy/authbot-runtime-state.sh \
@@ -4914,6 +4915,55 @@ settlement_v2_diagnostic_gate_line=$(grep -nF '"$GPT_IMAGE_2_SETTLEMENT_V2_DIAGN
 grep -Fq 'github_status success deploy/gpt-image-2-settlement-v2-diagnostic' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die 'GPT Image 2 settlement v2 diagnostic has no sanitized GREEN status'
+
+# The surface probe is the only paid multi-control gate: medium/high generations and a
+# two-reference edit, each under its exact official authorization ceiling, with sanitized verdicts.
+wd_path_is_gpt_image_2_surface_probe_gate_trigger \
+  deploy/gpt-image-2-surface-probe-gate.sh \
+  || wd_die 'GPT Image 2 surface probe file does not trigger its gate'
+for path in deploy/watchdog.sh deploy/watchdog-lib.sh deploy/gpt-image-2-public-paid-smoke-v3-gate.sh; do
+  if wd_path_is_gpt_image_2_surface_probe_gate_trigger "$path"; then
+    wd_die "unrelated path triggers GPT Image 2 surface probe: $path"
+  fi
+done
+grep -Fq '"$ROOT/deploy/gpt-image-2-surface-probe-gate.sh"' \
+  "$ROOT/deploy/install-watchdog.sh" \
+  || wd_die 'GPT Image 2 surface probe is not installed as a fixed controller'
+grep -Fxq 'PRODUCER_SHA=d69868fb700aaeb9b6723d8780bb29be4aab9c0d' \
+  "$ROOT/deploy/gpt-image-2-surface-probe-gate.sh" \
+  || wd_die 'GPT Image 2 surface probe is not pinned to the probe-capable producer'
+grep -Fxq 'EVIDENCE_PARENT=$STATE_ROOT/gpt-image-2-surface-probe' \
+  "$ROOT/deploy/gpt-image-2-surface-probe-gate.sh" \
+  || wd_die 'GPT Image 2 surface probe does not use its own evidence root'
+[[ $(grep -Fc -- '--execute' "$ROOT/deploy/gpt-image-2-surface-probe-gate.sh") -eq 1 ]] \
+  || wd_die 'GPT Image 2 surface probe does not funnel execution through one flag path'
+grep -Fxq 'MEDIUM_BUDGET_NANOUSD=180460000' "$ROOT/deploy/gpt-image-2-surface-probe-gate.sh" \
+  || wd_die 'GPT Image 2 surface probe medium ceiling drifted from the official formula'
+grep -Fxq 'HIGH_BUDGET_NANOUSD=714130000' "$ROOT/deploy/gpt-image-2-surface-probe-gate.sh" \
+  || wd_die 'GPT Image 2 surface probe high ceiling drifted from the official formula'
+grep -Fxq 'MULTI_REF_BUDGET_NANOUSD=128022330000' "$ROOT/deploy/gpt-image-2-surface-probe-gate.sh" \
+  || wd_die 'GPT Image 2 surface probe multi-reference envelope drifted'
+! grep -Eiq 'APIYI|laozhang|aihubproxy|apixo|whataicc' \
+  "$ROOT/deploy/gpt-image-2-surface-probe-gate.sh" \
+  || wd_die 'GPT Image 2 surface probe contains a reseller path'
+grep -Fq '/usr/local/lib/apitoken-watchdog/controller/gpt-image-2-surface-probe-gate.sh d69868fb700aaeb9b6723d8780bb29be4aab9c0d' \
+  "$ROOT/deploy/sudoers.d/95-apitoken-deploy" \
+  || wd_die 'GPT Image 2 surface probe lacks an exact-producer sudo bridge'
+grep -A2 -F "require_permitted 'GPT Image 2 exact-producer surface probe gate'" \
+  "$ROOT/deploy/install-sudoers.sh" \
+  | grep -Fq 'd69868fb700aaeb9b6723d8780bb29be4aab9c0d' \
+  || wd_die 'GPT Image 2 surface probe sudo self-check is not aligned with policy'
+grep -Fxq 'GPT_IMAGE_2_SURFACE_PROBE_PRODUCER_SHA=d69868fb700aaeb9b6723d8780bb29be4aab9c0d' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'watchdog does not pin the GPT Image 2 surface probe producer'
+surface_probe_gate_line=$(grep -nF '"$GPT_IMAGE_2_SURFACE_PROBE_PRODUCER_SHA")' \
+  "$ROOT/deploy/watchdog.sh" | cut -d: -f1)
+[[ -n $surface_probe_gate_line && -n $processed_line && \
+   $surface_probe_gate_line -lt $processed_line ]] \
+  || wd_die 'GPT Image 2 surface probe does not run before processed/green'
+grep -Fq 'github_status success "deploy/gpt-image-2-probe-$surface_probe_name"' \
+  "$ROOT/deploy/watchdog.sh" \
+  || wd_die 'GPT Image 2 surface probe has no per-probe GREEN statuses'
 
 # GPT Image 2 pricing admission uses one fixed root bridge: credential stays in procfs/stdin, while
 # the operator receives only bounded Stage 5/6 digests, states and counts.

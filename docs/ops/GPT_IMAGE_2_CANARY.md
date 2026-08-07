@@ -77,6 +77,19 @@ selects the probed tier; a successful checkpoint must echo the requested quality
 silently normalizes the tier (as it does for size) produces a sanitized `evidence_controls_mismatch`
 journal with the returned controls and usage instead of a false success.
 
+## Surface probe gate
+
+`deploy/gpt-image-2-surface-probe-gate.sh` is the one-shot host controller that runs the control
+probes on the production pool, pinned to the probe-capable producer SHA through the fixed root
+bridge. It performs exactly three paid operations, each in its own fenced subdirectory of
+`/var/lib/apitoken/watchdog/gpt-image-2-surface-probe/<sha>`: a `medium` generation (budget
+`180_460_000`), a `high` generation (budget `714_130_000`), and a two-reference `low` edit against
+two static embedded 1024x1024 PNGs (budget `128_022_330_000`, two whole input envelopes). A probe
+verdict is `honored` (exact checkpoint echoing the requested control), `normalized` (sanitized
+controls-mismatch journal with the returned controls and usage), or `rejected` (clean pre-dispatch
+refusal); `outcome_unknown` or malformed evidence fails the delivery instead of reporting a verdict.
+The watchdog validates the bounded JSON summary and publishes one ≤140-character status per probe.
+
 Paid edit therefore requires at least `64_022_330_000` nanoUSD per run — one whole reference envelope
 plus the generation ceiling — and each additional `--reference` (up to five) adds its own
 `64_000_000_000` envelope. This is a fail-closed authorization ceiling, not an expected charge,

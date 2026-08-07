@@ -44,6 +44,8 @@ GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V2_GATE=$CONTROLLER_ROOT/gpt-image-2-public-paid-s
 GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V2_PRODUCER_SHA=853fdc6c8d5be486c371b23df6772eeaf7a48029
 GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V3_GATE=$CONTROLLER_ROOT/gpt-image-2-public-paid-smoke-v3-gate.sh
 GPT_IMAGE_2_PUBLIC_PAID_SMOKE_V3_PRODUCER_SHA=8b68d73a2a6ba6ffae2f24692b283059f15b7c63
+GPT_IMAGE_2_SURFACE_PROBE_GATE=$CONTROLLER_ROOT/gpt-image-2-surface-probe-gate.sh
+GPT_IMAGE_2_SURFACE_PROBE_PRODUCER_SHA=d69868fb700aaeb9b6723d8780bb29be4aab9c0d
 GPT_IMAGE_2_PUBLIC_PAID_INSPECT_GATE=$CONTROLLER_ROOT/gpt-image-2-public-paid-inspect-gate.sh
 GPT_IMAGE_2_PUBLIC_PAID_INSPECT_PRODUCER_SHA=63972f2ddfd5906d7c30a87406053eb3782f4223
 GPT_IMAGE_2_SETTLEMENT_DIAGNOSTIC_GATE=$CONTROLLER_ROOT/gpt-image-2-settlement-diagnostic-gate.sh
@@ -2453,6 +2455,7 @@ main() {
   local gpt_image_2_public_preflight_gate=0 gpt_image_2_public_preflight_v2_gate=0
   local gpt_image_2_public_preflight_v3_gate=0 gpt_image_2_public_paid_smoke_gate=0
   local gpt_image_2_public_paid_smoke_v2_gate=0 gpt_image_2_public_paid_smoke_v3_gate=0
+  local gpt_image_2_surface_probe_gate=0
   local gpt_image_2_public_paid_inspect_gate=0 gpt_image_2_settlement_diagnostic_gate=0
   local gpt_image_2_settlement_v2_diagnostic_gate=0
   local typescript_required=0 typescript_full=0 typescript_base= rust_required=0 static_required=0
@@ -2581,6 +2584,8 @@ main() {
     wd_path_is_gpt_image_2_settlement_diagnostic_gate_trigger && gpt_image_2_settlement_diagnostic_gate=1
   wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
     wd_path_is_gpt_image_2_settlement_v2_diagnostic_gate_trigger && gpt_image_2_settlement_v2_diagnostic_gate=1
+  wd_range_has_class "$SOURCE_REPO" "$PROCESSED_SHA" "$CANDIDATE_SHA" \
+    wd_path_is_gpt_image_2_surface_probe_gate_trigger && gpt_image_2_surface_probe_gate=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_engine \
     && engine_changed=1
   wd_range_has_class "$SOURCE_REPO" "$ENGINE_SHA" "$CANDIDATE_SHA" wd_path_is_codex_tooling \
@@ -3004,6 +3009,39 @@ main() {
     status "GPT Image 2 settlement v2 diagnostic: $public_image_settlement_status"
     github_status success deploy/gpt-image-2-settlement-v2-diagnostic \
       "$public_image_settlement_status"
+  fi
+
+  if (( gpt_image_2_surface_probe_gate == 1 )); then
+    CURRENT_PHASE=verifying-gpt-image-2-surface-probe
+    CURRENT_PHASE_BEFORE_FAILURE=verifying-gpt-image-2-surface-probe
+    status "probing GPT Image 2 quality tiers and multi-reference edits on the native wire"
+    surface_probe_summary=$(sudo -n "$GPT_IMAGE_2_SURFACE_PROBE_GATE" \
+      "$GPT_IMAGE_2_SURFACE_PROBE_PRODUCER_SHA")
+    jq -e '
+      def probe:
+        (keys | sort) == (["image_input_tokens", "output_tokens", "returned_quality", "verdict"] | sort) and
+        (.verdict | IN("honored", "normalized", "rejected")) and
+        ((.returned_quality == null) or (.returned_quality | IN("auto", "low", "medium", "high"))) and
+        (.output_tokens | type == "number" and floor == . and . >= 0 and . <= 100000) and
+        (.image_input_tokens | type == "number" and floor == . and . >= 0 and . <= 100000000) and
+        (if .verdict == "honored" then .output_tokens > 0
+         elif .verdict == "rejected" then .returned_quality == null and .output_tokens == 0
+         else .returned_quality != null end);
+      (keys | sort) == (["high", "medium", "multi_ref"] | sort) and
+      (.medium | probe) and (.high | probe) and (.multi_ref | probe)
+    ' <<<"$surface_probe_summary" >/dev/null \
+      || wd_die "GPT Image 2 surface probe returned invalid evidence"
+    for surface_probe_name in medium high multi_ref; do
+      surface_probe_status=$(jq -jr --arg name "$surface_probe_name" '
+        .[$name] | "\($name): \(.verdict)" +
+          (if .returned_quality == null then "" else " returned=\(.returned_quality)" end) +
+          " out=\(.output_tokens)" +
+          (if .image_input_tokens > 0 then " in=\(.image_input_tokens)" else "" end)
+      ' <<<"$surface_probe_summary")
+      (( ${#surface_probe_status} <= 140 )) \
+        || wd_die "GPT Image 2 surface probe status exceeds the GitHub bound"
+      github_status success "deploy/gpt-image-2-probe-$surface_probe_name" "$surface_probe_status"
+    done
   fi
 
   wd_atomic_write "$PROCESSED_FILE" "$CANDIDATE_SHA"

@@ -270,6 +270,9 @@ require_permitted 'GPT Image 2 exact-producer public paid smoke v2 gate' \
 require_permitted 'GPT Image 2 exact-producer public paid smoke v3 gate' \
   /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-paid-smoke-v3-gate.sh \
   8b68d73a2a6ba6ffae2f24692b283059f15b7c63
+require_permitted 'GPT Image 2 exact-producer surface probe gate' \
+  /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-surface-probe-gate.sh \
+  d69868fb700aaeb9b6723d8780bb29be4aab9c0d
 require_permitted 'GPT Image 2 exact-producer public paid inspector' \
   /usr/local/lib/apitoken-watchdog/controller/gpt-image-2-public-paid-inspect-gate.sh \
   63972f2ddfd5906d7c30a87406053eb3782f4223 --inspect

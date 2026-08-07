@@ -399,7 +399,12 @@ is only what is needed to walk the relationships when making changes:
   `d172c6fd0116ba73b051fc5aa02193a4885de5da`) is overall watchdog-GREEN, so the model is published:
   generation-6 pricing catalogs activated the immutable `gpt-image-2-2026-04-21` snapshot (release
   head 41), and the router preset, site catalog and public docs list it (publication commit
-  `3917a31b333899aed87396acd6e8e83e403cd3e6`). Contract and blockers —
+  `3917a31b333899aed87396acd6e8e83e403cd3e6`). The separately delivered
+  `deploy/gpt-image-2-surface-probe-gate.sh` is the control-surface probe: pinned to the
+  probe-capable producer `d69868fb700aaeb9b6723d8780bb29be4aab9c0d`, it runs one medium and one
+  high generation plus one two-reference edit, each under its exact official authorization ceiling
+  in its own fenced root, and publishes sanitized honored/normalized/rejected verdicts; customer
+  admission of those controls stays unchanged until the verdicts land. Contract and blockers —
   `docs/engine/CODEX_PROVIDER.md`, `docs/ops/GPT_IMAGE_2_CANARY.md`, and
   `research/GPT_IMAGE_2_EVIDENCE.md`.
 - **Policy preflight contract (provider planes → router, phase 6.4a).** The producer is
