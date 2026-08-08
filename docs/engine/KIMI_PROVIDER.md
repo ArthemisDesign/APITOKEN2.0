@@ -517,8 +517,18 @@ controlled live run on our own subscription:
    they are priced as body tokens and bounded by the existing hold. Only work the provider
    runs on the caller's behalf can bill a unit outside that bound, and only that stays closed.
 
-None of them blocks building the runtime, metering, credential, and calibration scheme —
-only the corresponding live gates are blocked (`PROVIDER_ONBOARDING.md` §2).
+Cleared by the live coverage matrix of 2026-08-09 (run ids `kimi-cal-1786225227-26c2b02a` and
+its profile-2 twin, 24 paid turns, $0.021 total): 1 and 2 — every turn returned terminal usage
+with the exact leg vector, and each money leg reproduced from the token counts; 4 — `/usages`
+`used` moved in whole native units against settled spend (13 units on the 5h window for a
+12-leg run, 3 on the weekly). 3, 5, 7 and 8 remain open. 6 was closed earlier by the encoded
+plan ladder.
+
+Also proven for the first time: the **1M context**. It had been carried as untested because its
+worst-case bound was ~$3.15 a leg; the four `k3:1m` legs actually settled at $0.0049 together.
+
+None of the remaining unknowns blocks building the runtime, metering, credential, and calibration
+scheme — only the corresponding live gates are blocked (`PROVIDER_ONBOARDING.md` §2).
 
 ## 7. Delivery status
 
@@ -546,7 +556,7 @@ table below says so.
 | observability, alerts, admin projection | `crates/{forward,server}`, `observability/**`, `docs/ops/MONITORING.md` | done: extended operational status, admin-only `GET /kimi-subs`, fixed-cardinality aggregate metrics, `kimi-provider` alerts with runbook and consistency test |
 | blue-green | `systemd/claude-api-kimi{,@}.service`, `deploy/**`, `observability/prometheus/prometheus.yml` | done: two slot units 8804/8805 + stable loopback origin 8803, capability marker, rollback branch stops all incarnations, scrape target `provider: kimi`, `ProviderMode::Kimi` with fail-closed `/v1/messages`; plane **enabled** by the reviewed argv pin `CLAUDE_API_KIMI_ENABLED=1` after live evidence 2026-08-04 |
 | safe live-runner | `tools/kimi_calibration/`, `docs/ops/KIMI_CALIBRATION.md` | done offline: dry-run by default, aggregate ceiling $0.0001, exact request-id attribution via admin-only headers, 43 offline tests; paid runs only with explicit permission |
-| live matrix on our subscription | — | Vivace subscription connected 2026-08-04; smoke (`/me`, `/usages`, one minimal generation with exact metering) passed; full matrix awaits budget permission and the weekly quota reset |
+| live matrix on our subscription | `/tmp/kimi-matrix-p1b.json`, `/tmp/kimi-matrix-p3.json` | **done 2026-08-09**: 12/12 legs `complete: true` on each of the two available Vivace profiles — 4 model families × both context modes (256k and 1M) × every accepted reasoning effort, $0.0105 per profile, every money leg recomputed from exact token counts and every quota delta resolved by a post-turn observation. The third profile was refused before dispatch (`exact KIMI profile is cooling`, weekly 100/100) and is recorded as unavailable, not skipped. `kimi-k2.6` is absent from the matrix because no published alias reaches it — the same reason it is not advertised. Tools and inline media stayed `unavailable` with `skipped_before_dispatch: true`: their per-request unit cost is unproven and no probe budget was authorized |
 | router publication | `crates/server/src/router_catalog.rs`, `crates/router/src/{catalog,policy,routing,presets}.rs`, `crates/router/routing-presets.json` | done: internal discovery producer, fourth optional catalog plane over the Anthropic lane, `kimi` arm in the router pricing producer, five aliases advertised |
 
 The next producer-first step is a controlled live run through the live matrix on the connected
