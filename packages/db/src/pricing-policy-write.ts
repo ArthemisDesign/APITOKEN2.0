@@ -1848,6 +1848,55 @@ export async function provisionBusinessClientPolicy(client: PoolClient, input: {
   };
 }
 
+/**
+ * Aligns the commerce-side scalar mirrors (`customer_profiles.multiplier_bp` +
+ * `engine_accounts.mult_bp`) with the account's release-effective fallback. Post-cutover the
+ * scalar is dormant for current billing — the release authority prices every non-opted-out
+ * account and never reads `accounts.mult_bp` — but it is the fallback the strict/policy_v1
+ * admission applies to scopes without a matching policy rule (e.g. providers outside the
+ * strict policy's provider rules), so by opt-out time it must equal what the release path
+ * resolves for those scopes. The ENGINE-side write is owned by the caller's lane (the
+ * backfill writes `account_set_mult_bp` directly and asserts it before arming; new accounts
+ * are born aligned) — the legacy `engine_pricing_jobs` stream is deliberately not used here
+ * because `claimNextPricingJob` drains scalar jobs for strict-bound accounts without an
+ * engine write. Idempotent: a no-op when both mirrors already match.
+ */
+export async function syncProvisionedAccountScalar(client: PoolClient, input: {
+  userId: string;
+  engineAccountId: string;
+  multiplierBp: number;
+}): Promise<void> {
+  await client.query(`
+    UPDATE customer_profiles
+    SET multiplier_bp = $2
+    WHERE user_id = $1 AND multiplier_bp <> $2
+  `, [input.userId, input.multiplierBp]);
+  await client.query(`
+    UPDATE engine_accounts
+    SET mult_bp = $2, updated_at = now()
+    WHERE user_id = $1 AND mult_bp <> $2
+  `, [input.userId, input.multiplierBp]);
+}
+
+/** Standalone variant of syncProvisionedAccountScalar for callers outside a materialization transaction. */
+export async function alignProvisionedAccountScalar(database: Database, input: {
+  userId: string;
+  engineAccountId: string;
+  multiplierBp: number;
+}): Promise<void> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    await syncProvisionedAccountScalar(client, input);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function materializeProvisionedUserPolicy(database: Database, input: {
   userId: string;
   engineAccountId: string;
@@ -1859,6 +1908,16 @@ export async function materializeProvisionedUserPolicy(database: Database, input
    * arms the flag itself only after the check passes.
    */
   armStrictChain?: boolean;
+  /**
+   * The release-effective fallback multiplier the scalar mirrors are aligned to. The
+   * existing-account backfill passes the value DERIVED from the account's live release
+   * policy (global rule payable, else full price). The default is the class identity:
+   * B2C 5000 (the engine-validated release global) and B2B 10000 (release B2B policies
+   * cannot carry a global rule, so rule-less scopes have no release fallback and full
+   * price is the only honest strict fallback). New accounts are born aligned, so for
+   * registration this is a convergence no-op.
+   */
+  alignScalarBp?: number;
 }): Promise<{ policyRequired: boolean; ready: boolean; jobId: string | null }> {
   const armChain = options?.armStrictChain ?? true;
   const client = await database.pool.connect();
@@ -1883,6 +1942,11 @@ export async function materializeProvisionedUserPolicy(database: Database, input
     if (row.engine_account_id !== null && row.engine_account_id !== input.engineAccountId) {
       throw new PricingPolicyWriteError("provisioning_policy_missing", "engine account mapping changed during provisioning");
     }
+    await syncProvisionedAccountScalar(client, {
+      userId: input.userId,
+      engineAccountId: input.engineAccountId,
+      multiplierBp: options?.alignScalarBp ?? (row.customer_type === "b2c" ? 5_000 : 10_000),
+    });
     const ownerType: ManagedOwnerType = row.customer_type === "b2c" ? "global_b2c" : "b2b_client";
     const ownerId = row.customer_type === "b2c" ? "global-b2c" : input.userId;
     const identity = await client.query<{ id: string }>(`

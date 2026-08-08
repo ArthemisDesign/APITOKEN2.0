@@ -108,6 +108,8 @@ type ReleaseFixture = {
   policies: Record<string, PricingReleasePolicyV2>;
   /** Accounts whose extension read throws (transport failure isolation). */
   throwOnExtensionFor?: ReadonlySet<string>;
+  /** Engine-side scalar per account before the lane aligns it (default: already aligned). */
+  initialScalarBp?: Record<string, number>;
   optOut?: PricingReleaseOptOutAckV2;
 };
 
@@ -132,8 +134,11 @@ type BackfillTestTransport = PricingBackfillReleaseTransport
 function fakeEngine(fixture: ReleaseFixture): {
   transport: BackfillTestTransport;
   keyStamps: Array<{ keyId: string; ack: unknown }>;
+  scalarWrites: Array<{ accountId: string; multiplierBp: number }>;
 } {
   const keyStamps: Array<{ keyId: string; ack: unknown }> = [];
+  const scalarWrites: Array<{ accountId: string; multiplierBp: number }> = [];
+  const scalars = new Map<string, number>(Object.entries(fixture.initialScalarBp ?? {}));
   const optOutAck: PricingReleaseOptOutAckV2 = fixture.optOut ?? {
     result: "applied",
     identity: { account_id: "acct_test" },
@@ -160,6 +165,21 @@ function fakeEngine(fixture: ReleaseFixture): {
     },
     getPricingReleasePolicyV2: async (policyId: string, policyVersion: number) =>
       fixture.policies[`${policyId}@${policyVersion}`] ?? null,
+    getAccount: async (accountId: string) => ({
+      account: accountId,
+      balance_nano: "0",
+      spent_nano: "0",
+      reserved_nano: "0",
+      balance: "$0.000000000",
+      // Unlisted accounts start aligned with the release fallback of their fixture policy.
+      mult_bp: scalars.get(accountId) ?? 5_000,
+      status: "active",
+      handle: null,
+    }),
+    setAccountMultiplier: async (accountId: string, multiplierBp: number) => {
+      scalarWrites.push({ accountId, multiplierBp });
+      scalars.set(accountId, multiplierBp);
+    },
     getFundingNormalizationPlanV2: async () => null,
     applyFundingNormalizationV2: async () => null,
     getAccountPricingState: async () => shadowPricingState(),
@@ -171,7 +191,7 @@ function fakeEngine(fixture: ReleaseFixture): {
     },
     optOutPricingReleaseV2: async () => optOutAck,
   };
-  return { transport: transport as unknown as BackfillTestTransport, keyStamps };
+  return { transport: transport as unknown as BackfillTestTransport, keyStamps, scalarWrites };
 }
 
 describe.runIf(Boolean(connectionString))("existing-account pricing release backfill (phase 2.2)", () => {
@@ -436,6 +456,58 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
     expect(health.counts).toEqual({ eligible: 1, inFlight: 0, done: 1, failed: 0, pending: 0 });
   });
 
+  it("aligns the legacy 4000-scalar B2C cohort to the release fallback before the gate and the opt-out", async () => {
+    // The production cohort that the gate correctly blocked before this fix: engine
+    // accounts.mult_bp=4000 (legacy scalar, dormant under the release path), release
+    // assignment release-v2:b2c:global at 5000, strict global-b2c rules for
+    // anthropic/google/openai only — glm/kimi scopes resolve to the scalar on the strict
+    // side vs the release global, so the scalar must be aligned FIRST.
+    const { userId, engineAccountId } = await provisionedB2cUser("backfill-legacy@example.test");
+    await seedClient.query(`
+      UPDATE customer_profiles SET multiplier_bp = 4_000 WHERE user_id = $1
+    `, [userId]);
+    await seedClient.query(`
+      UPDATE engine_accounts SET mult_bp = 4_000 WHERE user_id = $1
+    `, [userId]);
+    const engine = fakeEngine({
+      ...b2cRelease(engineAccountId),
+      initialScalarBp: { [engineAccountId]: 4_000 },
+    });
+
+    const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
+    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], failed: [] });
+    // The engine scalar write (account_set_mult_bp) landed BEFORE the arm — and therefore
+    // before the opt-out marker — and the commerce mirrors converged in the same pass.
+    expect(engine.scalarWrites).toEqual([{ accountId: engineAccountId, multiplierBp: 5_000 }]);
+    const scalars = await seedClient.query<{ profile_mult: number; engine_mult: number }>(`
+      SELECT profile.multiplier_bp AS profile_mult, account.mult_bp AS engine_mult
+      FROM customer_profiles profile
+      JOIN engine_accounts account ON account.user_id = profile.user_id
+      WHERE profile.user_id = $1
+    `, [userId]);
+    expect(scalars.rows).toEqual([{ profile_mult: 5_000, engine_mult: 5_000 }]);
+
+    // The gate passes after the alignment and the unmodified chain retires the account.
+    await confirmShadowDelivery(userId);
+    const staged = await advanceAccountStrictChain(
+      database,
+      engine.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    );
+    expect(staged.status).toBe("staged");
+    await confirmStrictDelivery(userId);
+    await expect(advanceAccountStrictChain(
+      database,
+      engine.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    )).resolves.toEqual({ status: "opted_out" });
+    const audit = await seedClient.query(`
+      SELECT 1 FROM audit_log
+      WHERE action = 'pricing_release.opt_out' AND target_type = 'engine_account' AND target_id = $1
+    `, [engineAccountId]);
+    expect(audit.rows).toHaveLength(1);
+  });
+
   it("arms a B2B account whose model-scoped release rules match the strict policy exactly", async () => {
     const user = await createEmailUser(database, "backfill-b2b@example.test", "password-hash");
     const engineAccountId = `acct_backfill_${user.id.replaceAll("-", "")}`;
@@ -484,6 +556,9 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
     const engine = fakeEngine({
       extensions: { [engineAccountId]: releaseAssignment(engineAccountId, policy) },
       policies: { [`${policy.policy_id}@${policy.policy_version}`]: policy },
+      // The negotiated conversion scalar (4000) is the pre-alignment state: release B2B has
+      // no rule-less fallback, so the derived target is full price.
+      initialScalarBp: { [engineAccountId]: 4_000 },
     });
     const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
     expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], failed: [] });
@@ -491,6 +566,16 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
       strict_chain_pending: true,
       last_error: null,
     });
+    // The fallback was DERIVED from the release policy (no global rule → full price), not
+    // hardcoded and not inherited from the negotiated 4000: engine write, then mirrors.
+    expect(engine.scalarWrites).toEqual([{ accountId: engineAccountId, multiplierBp: 10_000 }]);
+    const scalars = await seedClient.query<{ profile_mult: number; engine_mult: number }>(`
+      SELECT profile.multiplier_bp AS profile_mult, account.mult_bp AS engine_mult
+      FROM customer_profiles profile
+      JOIN engine_accounts account ON account.user_id = profile.user_id
+      WHERE profile.user_id = $1
+    `, [user.id]);
+    expect(scalars.rows).toEqual([{ profile_mult: 10_000, engine_mult: 10_000 }]);
   });
 
   it("never selects service accounts, even when a customer binding shares the engine account id", async () => {

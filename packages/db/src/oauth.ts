@@ -177,8 +177,11 @@ export async function completeExternalSignIn(
       : null;
     const customerType = invite ? "b2b" : "b2c";
     // Post-cutover the scalar is a display/legacy field only — the release authority prices
-    // every account. New B2C registrations get the flat-policy placeholder (50% off).
-    const engineMultiplierBp = invite?.multiplierBp ?? 5_000;
+    // every account — and after the strict opt-out it is the fallback for scopes with no
+    // matching policy rule. New B2C registrations get the flat-policy identity (50% off);
+    // B2B invitees get full price as the fallback: the negotiated discount lives in the
+    // copied policy RULES, and a scope outside them must not inherit the negotiated rate.
+    const engineMultiplierBp = invite ? 10_000 : 5_000;
     const monthStart = utcMonthStart();
     await client.query(`
       INSERT INTO users (id, email, display_name, email_verified, password_hash) VALUES ($1, $2, $3, true, NULL)

@@ -266,14 +266,19 @@ The pre-existing fleet moves to the direct strict path through a bounded, resuma
 canary-first backfill — never a bulk flip. The commerce lane lives in
 `packages/db/src/pricing-backfill.ts` and runs on the pricing worker's slow sweep
 (`PRICING_BACKFILL_ENABLED`, `PRICING_BACKFILL_BATCH_SIZE` default 5/pass,
-`PRICING_BACKFILL_ACCOUNT_ALLOWLIST` for canary mode). Per account it (1) re-materializes
+`PRICING_BACKFILL_ACCOUNT_ALLOWLIST` for canary mode). Per account it (1) aligns the dormant
+engine scalar (`accounts.mult_bp`, unread by the release path but the strict admission's
+fallback for rule-less scopes) to the fallback DERIVED from the live release policy —
+B2C 5000 by engine validation, B2B full price (release B2B policies cannot carry a global
+rule) — via an idempotent `account_set_mult_bp` plus commerce mirror sync, (2) re-materializes
 the managed policy at the live catalog head through the registration writer with arming
 disabled (B2C — the current `policy:main:global-b2c` head; B2B — the account's own
-`b2b_client` policy, per-model/provider scopes preserved exactly), (2) proves the mechanical
+`b2b_client` policy, per-model/provider scopes preserved exactly), (3) proves the mechanical
 equivalence — the release-side resolution (assignment extension over base, model → provider
-→ global) must equal the strict policy's payable multiplier at every scope; B2C is the
+→ global) must equal the strict policy's payable multiplier at every scope, and the engine
+scalar must observably equal the aligned fallback; B2C is the
 5000-global identity, B2B is exact scope-set equality over normalized scope→payable maps
-(stored digests are never compared across the frozen v1/v2 domains) — and (3) arms the same
+(stored digests are never compared across the frozen v1/v2 domains) — and (4) arms the same
 `strict_chain_pending` direct chain new accounts use, which finishes with the one-way engine
 opt-out marker and a durable `pricing_release.opt_out` audit entry (the terminal "done" for
 candidate selection and the `pricing_backfill` section of `GET /v1/admin/pipeline-health`).

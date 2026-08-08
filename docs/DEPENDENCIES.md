@@ -95,7 +95,10 @@ returning the secret; OpenKeys issuance activates the strict 1:1 policy, credits
 value, issues the ACKed key and then opts out the account. The pre-existing fleet follows in
 phase 2.2 (`docs/ops/PRICING_RELEASE_BACKFILL.md`): the `apps/worker` slow sweep
 (`packages/db/src/pricing-backfill.ts`, knobs `PRICING_BACKFILL_ENABLED` /
-`PRICING_BACKFILL_BATCH_SIZE` / `PRICING_BACKFILL_ACCOUNT_ALLOWLIST`) re-materializes each
+`PRICING_BACKFILL_BATCH_SIZE` / `PRICING_BACKFILL_ACCOUNT_ALLOWLIST`) aligns the dormant
+engine scalar to the release-derived rule-less fallback (idempotent `account_set_mult_bp`,
+asserted before arming; B2C 5000, B2B full price — B2B invitee registrations are born at the
+neutral 10000 placeholder), re-materializes each
 eligible commerce binding at the live catalog head, proves release/strict payable equivalence
 per scope (assignment extension over base, model → provider → global; B2C is the 5000-global
 identity, B2B exact scope-set equality — never a cross-domain digest compare) and arms the

@@ -5,6 +5,7 @@ import type {
 import type { EngineClient } from "@claude-api/engine-client";
 import type { Database } from "./client.js";
 import {
+  alignProvisionedAccountScalar,
   materializeProvisionedUserPolicy,
   PricingPolicyWriteError,
 } from "./pricing-policy-write.js";
@@ -16,24 +17,31 @@ import { PRICING_RELEASE_OPT_OUT_AUDIT_ACTION } from "./strict-chain.js";
  * docs/ops/PRICING_RELEASE_BACKFILL.md). Phase 2.1 graduates only NEW accounts through the
  * direct strict chain; this lane moves the pre-existing fleet, canary-first and resumable.
  *
- * One pass over one account does exactly three things, in order:
+ * One pass over one account does exactly four things, in order:
  *
- * 1. materialize — the account's managed policy is re-pinned and materialized at the live
+ * 1. align — the dormant engine scalar (`accounts.mult_bp`, never read by the release path
+ *    for billing, but the strict admission's fallback for rule-less scopes) is set to the
+ *    fallback DERIVED from the account's live release policy (`deriveReleaseFallbackBp`:
+ *    the global rule's payable, else full price), and the commerce mirrors
+ *    (`customer_profiles`/`engine_accounts`) are synced in the materialization transaction;
+ * 2. materialize — the account's managed policy is re-pinned and materialized at the live
  *    catalog head through the SAME writer registration provisioning uses
  *    (`materializeProvisionedUserPolicy` with the arming step disabled): B2C takes the
  *    current head of `policy:main:global-b2c`, B2B the account's own `b2b_client` policy,
  *    with per-model/provider scopes preserved exactly by the materializer. A binding that
  *    is already strict skips this step — its enforced policy is already the desired one.
- * 2. equivalence — the account's release-side resolution (assignment extension over base,
+ * 3. equivalence — the account's release-side resolution (assignment extension over base,
  *    pinned policy, model → provider → global precedence — mirroring the engine's
  *    `pricing_release_resolution_v2_in_transaction`) must resolve every scope to exactly
- *    the payable multiplier the strict policy charges (`assertReleaseStrictEquivalence`).
- *    For B2C this is the 5000-global identity; for B2B the two rule sets were built from
- *    the same `pricing_policy_rules` source, so a scope-walk comparison is exact. A
- *    mismatch is never forced: the account keeps its release coverage, the reason lands on
- *    the binding's last_error, and the next pass re-evaluates — an operator fix
- *    (e.g. a corrected assignment extension) is picked up automatically.
- * 3. arm — `strict_chain_pending` is armed, handing the account to the UNMODIFIED
+ *    the payable multiplier the strict policy charges (`assertReleaseStrictEquivalence`),
+ *    and the engine scalar must observably equal the aligned fallback — the proof that the
+ *    alignment landed BEFORE the chain proceeds. For B2C this is the 5000-global identity;
+ *    for B2B the two rule sets were built from the same `pricing_policy_rules` source, so a
+ *    scope-walk comparison is exact. A mismatch is never forced: the account keeps its
+ *    release coverage, the reason lands on the binding's last_error, and the next pass
+ *    re-evaluates — an operator fix (e.g. a corrected assignment extension) is picked up
+ *    automatically.
+ * 4. arm — `strict_chain_pending` is armed, handing the account to the UNMODIFIED
  *    new-account chain (`packages/db/src/strict-chain.ts`): the fast-tick flush drives the
  *    shared preflight, the durable strict staging, and the one-way engine opt-out marker,
  *    which disarms the flag and records the durable `pricing_release.opt_out` audit entry
@@ -58,7 +66,6 @@ export type PricingBackfillCandidate = {
   engineAccountId: string;
   accountClass: "b2c" | "b2b";
   policyEnforcement: string;
-  multiplierBp: number;
 };
 
 export type PricingBackfillAdvanceResult =
@@ -91,14 +98,32 @@ export type PricingBackfillStrictRule = {
 
 export type PricingBackfillReleaseTransport = Pick<
   EngineClient,
+  | "getAccount"
   | "getPricingReleaseAssignmentExtensionV2"
   | "getPricingReleaseHeadV2"
   | "getPricingReleasePolicyV2"
   | "getPricingReleaseV2"
+  | "setAccountMultiplier"
 >;
 
 const B2C_GLOBAL_PAYABLE_BP = 5_000;
 const STRICT_B2B_FALLBACK_BP = 10_000;
+
+/**
+ * The account's release-resolution fallback for rule-less scopes, DERIVED from the live
+ * release policy (never hardcoded): the global rule's payable when the policy carries one
+ * (B2C — the engine-validated 5000), else full price. Release B2B policies cannot carry a
+ * global rule (engine validation), so their rule-less scopes are simply not served under
+ * release and 10000 is the only honest strict fallback. The strict/policy_v1 admission
+ * applies `accounts.mult_bp` to exactly those scopes, so the scalar — dormant for current
+ * billing — must be aligned to this value before the opt-out marker lands.
+ */
+export function deriveReleaseFallbackBp(
+  policy: Pick<PricingReleasePolicyV2, "rules">,
+): number {
+  const globalRule = policy.rules.find((rule) => rule.scope.scope === "global");
+  return globalRule?.payable_multiplier_bp ?? STRICT_B2B_FALLBACK_BP;
+}
 
 /**
  * One bounded page of backfill candidates, oldest-touch first so a persistently failing
@@ -116,12 +141,11 @@ export async function listPricingBackfillCandidates(
     engine_account_id: string;
     account_class: "b2c" | "b2b";
     policy_enforcement: string;
-    multiplier_bp: number;
   }>(
     `
     SELECT binding.id::text AS binding_id, binding.user_id::text,
            binding.engine_account_id, binding.account_class,
-           binding.policy_enforcement, profile.multiplier_bp
+           binding.policy_enforcement
     FROM account_policy_bindings binding
     JOIN customer_profiles profile ON profile.user_id = binding.user_id
     WHERE binding.user_id IS NOT NULL
@@ -149,7 +173,6 @@ export async function listPricingBackfillCandidates(
     engineAccountId: row.engine_account_id,
     accountClass: row.account_class,
     policyEnforcement: row.policy_enforcement,
-    multiplierBp: row.multiplier_bp,
   }));
 }
 
@@ -367,8 +390,26 @@ async function notePricingBackfillFailure(
 }
 
 /**
- * Advances one existing account one lane step: materialize at the live catalog head (unless
- * already strict), prove release/strict equivalence, then arm the shared strict chain.
+ * Advances one existing account one lane step, in an order that keeps the dormant scalar
+ * faithful at every moment:
+ *
+ * 1. resolve the account's live release policy and DERIVE the rule-less-scope fallback
+ *    (`deriveReleaseFallbackBp`);
+ * 2. align the ENGINE scalar (`account_set_mult_bp`, idempotent) — under the release path
+ *    `accounts.mult_bp` is never read for billing (the reserve multiplier comes from the
+ *    release resolution), so this cannot change what the account pays today; it only fixes
+ *    the fallback the strict admission will apply to rule-less scopes after the opt-out.
+ *    The legacy `engine_pricing_jobs` stream is deliberately not used: `claimNextPricingJob`
+ *    drains scalar jobs for strict-bound accounts without an engine write, and this lane is
+ *    itself the durable, resumable driver that re-asserts the value before arming;
+ * 3. materialize the managed policy at the live catalog head with the commerce scalar
+ *    mirrors aligned in the same transaction (already-strict bindings get the standalone
+ *    mirror sync instead — their enforced policy is already the desired one);
+ * 4. prove release/strict equivalence, now including the engine-side scalar convergence —
+ *    this is what makes the alignment provably land BEFORE the chain (and therefore the
+ *    opt-out marker) is allowed to proceed;
+ * 5. arm the shared strict chain.
+ *
  * Typed precondition failures are recorded on the binding and returned; transport failures
  * propagate to the sweep, which isolates them per account and retries on the next pass.
  */
@@ -377,12 +418,30 @@ export async function advancePricingBackfillAccount(
   engine: PricingBackfillReleaseTransport,
   candidate: PricingBackfillCandidate,
 ): Promise<PricingBackfillAdvanceResult> {
-  if (candidate.policyEnforcement !== "strict") {
+  let releasePolicy: PricingReleasePolicyV2;
+  try {
+    releasePolicy = await resolveAccountReleasePolicy(engine, candidate.engineAccountId);
+  } catch (error) {
+    if (error instanceof PricingBackfillEquivalenceError) {
+      return notePricingBackfillFailure(database, candidate.bindingId, error.message);
+    }
+    throw error;
+  }
+  const fallbackBp = deriveReleaseFallbackBp(releasePolicy);
+  await engine.setAccountMultiplier(candidate.engineAccountId, fallbackBp);
+
+  if (candidate.policyEnforcement === "strict") {
+    await alignProvisionedAccountScalar(database, {
+      userId: candidate.userId,
+      engineAccountId: candidate.engineAccountId,
+      multiplierBp: fallbackBp,
+    });
+  } else {
     try {
       const materialized = await materializeProvisionedUserPolicy(
         database,
         { userId: candidate.userId, engineAccountId: candidate.engineAccountId },
-        { armStrictChain: false },
+        { armStrictChain: false, alignScalarBp: fallbackBp },
       );
       if (!materialized.policyRequired) {
         return notePricingBackfillFailure(
@@ -431,12 +490,11 @@ export async function advancePricingBackfillAccount(
     [candidate.bindingId, desired],
   );
   try {
-    const releasePolicy = await resolveAccountReleasePolicy(engine, candidate.engineAccountId);
     assertReleaseStrictEquivalence({
       accountClass: candidate.accountClass,
-      strictFallbackBp: candidate.accountClass === "b2c"
-        ? candidate.multiplierBp
-        : STRICT_B2B_FALLBACK_BP,
+      // The strict fallback the engine will apply after the opt-out IS the aligned scalar —
+      // use the derived release fallback, not the (just overwritten) commerce mirror.
+      strictFallbackBp: fallbackBp,
       strictRules: rules.rows.map((rule) => ({
         scopeType: rule.scope_type,
         providerId: rule.provider_id,
@@ -445,6 +503,15 @@ export async function advancePricingBackfillAccount(
       })),
       releasePolicy,
     });
+    // The ordering proof: the engine scalar must observably equal the aligned fallback
+    // before the chain is armed — a concurrent re-point (e.g. an admin multiplier save)
+    // between the write above and this read blocks the arm and is retried next pass.
+    const engineAccount = await engine.getAccount(candidate.engineAccountId);
+    if (engineAccount.mult_bp !== fallbackBp) {
+      throw new PricingBackfillEquivalenceError(
+        `engine account scalar is ${engineAccount.mult_bp} bp, expected the aligned ${fallbackBp} bp`,
+      );
+    }
   } catch (error) {
     if (error instanceof PricingBackfillEquivalenceError) {
       return notePricingBackfillFailure(database, candidate.bindingId, error.message);

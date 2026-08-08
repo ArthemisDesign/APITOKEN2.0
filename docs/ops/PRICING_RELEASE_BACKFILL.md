@@ -13,25 +13,48 @@ One slow-sweep pass of the pricing worker (`flushPricingBackfill` in
 `packages/db/src/pricing-backfill.ts`) takes up to `PRICING_BACKFILL_BATCH_SIZE` candidates
 and advances each independently:
 
-1. **Materialize** — the account's managed policy is re-pinned and materialized at the live
+1. **Align the dormant scalar** — the account's live release policy is resolved first and
+   the rule-less-scope fallback is DERIVED from it (`deriveReleaseFallbackBp`: the global
+   rule's payable — B2C 5000 by engine validation — else full price; release B2B policies
+   cannot carry a global rule, so 10000 is the only honest strict fallback). The engine
+   scalar is then written idempotently via `account_set_mult_bp` and the commerce mirrors
+   (`customer_profiles.multiplier_bp`, `engine_accounts.mult_bp`) are synced in the
+   materialization transaction. This cannot change current billing: the release reserve
+   takes its multiplier from the release resolution and never reads `accounts.mult_bp`
+   (verified in `crates/forward/src/proxy.rs` — `resolution.payable_multiplier_bp()`); the
+   scalar matters only after the opt-out, where the strict/policy_v1 admission applies it
+   to scopes with no matching policy rule (e.g. glm/kimi for a strict policy whose provider
+   rules cover anthropic/google/openai only). The legacy `engine_pricing_jobs` stream is
+   deliberately NOT used for this write: `claimNextPricingJob` drains scalar jobs for
+   strict-bound accounts without an engine write — this lane is itself the durable,
+   resumable driver and re-asserts the value in step 3.
+2. **Materialize** — the account's managed policy is re-pinned and materialized at the live
    catalog head through the same writer registration uses
    (`materializeProvisionedUserPolicy` with arming disabled): B2C takes the current head of
    `policy:main:global-b2c`, B2B the account's own `b2b_client` policy with per-model/provider
    scopes preserved exactly. Already-strict bindings skip this step.
-2. **Equivalence** — before anything is armed, the account's release-side resolution
+3. **Equivalence** — before anything is armed, the account's release-side resolution
    (assignment extension over base, pinned policy, model → provider → global precedence —
    the engine's own resolution order) must resolve every scope to exactly the payable
-   multiplier the strict policy charges. B2C is the 5000-global identity; B2B is exact
+   multiplier the strict policy charges, AND the engine scalar must observably equal the
+   aligned fallback (`getAccount` read-back) — the proof that the alignment landed before
+   the chain proceeds. B2C is the 5000-global identity; B2B is exact
    scope-set equality (both sides were built from the same `pricing_policy_rules` source; the
    comparison walks normalized scope→payable maps, never the stored digests — they live in
    different frozen digest domains). A mismatch is never forced: the account keeps its
    release coverage, the reason lands on the binding's `last_error`, and the next pass
    re-evaluates, so an operator fix is picked up automatically.
-3. **Arm** — `strict_chain_pending` is armed and the UNMODIFIED new-account strict chain
+4. **Arm** — `strict_chain_pending` is armed and the UNMODIFIED new-account strict chain
    (`packages/db/src/strict-chain.ts`, fast tick) takes over: shared engine preflight,
    durable strict staging once the shadow delivery confirms, then the one-way engine opt-out
    marker. The opt-out disarms the flag and writes the durable `pricing_release.opt_out`
    `audit_log` entry — the terminal "done" that removes the account from every future sweep.
+
+New accounts need no alignment pass: B2C registrations are born with `mult_bp=5000`, and B2B
+invitee registrations now start at the full-price fallback (10000) — the negotiated discount
+lives only in the copied policy rules, so a scope outside them never inherits the negotiated
+rate after the strict opt-out (registration: `packages/db/src/auth.ts`,
+`packages/db/src/oauth.ts`; the neutral 10000 placeholder matches `rotateBusinessInvite`).
 
 In-flight release reservations are not special-cased: the migration-0016 strict trigger
 rejects the engine-side flip while they drain, which surfaces as a retryable 503 in the
@@ -62,7 +85,10 @@ control-job lane's exponential backoff — calm retries, never a hot loop, never
    `… resolves to N bp …` in `last_error` means a genuine pricing divergence between the
    release policy and the strict policy — investigate the account, fix the divergence
    (usually a stale assignment extension), and the lane re-checks it on the next pass.
-   Do NOT force accounts through.
+   Do NOT force accounts through. A legacy scalar mismatch
+   (`effective multiplier is 4000 bp …`) needs no action: the lane aligns the dormant scalar
+   to the release-derived fallback itself and the account passes on a later pass — only a
+   mismatch that persists after the alignment is a real divergence.
 4. Clear `PRICING_BACKFILL_ACCOUNT_ALLOWLIST` (empty = full eligible sweep) and raise
    `PRICING_BACKFILL_BATCH_SIZE` gradually (5 → 25). At ~173 eligible bindings the full
    sweep drains in tens of passes; completion is `pending = 0, in_flight = 0, failed = 0`.

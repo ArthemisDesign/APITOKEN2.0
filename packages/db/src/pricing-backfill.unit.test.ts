@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PricingReleasePolicyV2 } from "@claude-api/contracts";
 import {
   assertReleaseStrictEquivalence,
+  deriveReleaseFallbackBp,
   PricingBackfillEquivalenceError,
   type PricingBackfillStrictRule,
 } from "./pricing-backfill.js";
@@ -51,6 +52,29 @@ function releasePolicy(input: {
     })),
   };
 }
+
+describe("deriveReleaseFallbackBp (rule-less-scope fallback derived from the release policy)", () => {
+  it("derives the B2C identity from the release global rule, never a constant", () => {
+    expect(deriveReleaseFallbackBp(releasePolicy({
+      accountClass: "b2c",
+      rules: [{ scope: "global", payableMultiplierBp: 5_000 }],
+    }))).toBe(5_000);
+  });
+
+  it("derives full price for B2B (release B2B policies cannot carry a global rule)", () => {
+    expect(deriveReleaseFallbackBp(releasePolicy({
+      accountClass: "b2b",
+      rules: [{ scope: "provider", providerId: "anthropic", payableMultiplierBp: 6_000 }],
+    }))).toBe(10_000);
+  });
+
+  it("derives mechanically from whatever global payable the policy carries", () => {
+    expect(deriveReleaseFallbackBp(releasePolicy({
+      accountClass: "b2c",
+      rules: [{ scope: "global", payableMultiplierBp: 4_000 }],
+    }))).toBe(4_000);
+  });
+});
 
 describe("assertReleaseStrictEquivalence (B2C 5000-global identity)", () => {
   it("passes when every strict rule is 5000 and release is the single global 5000", () => {
@@ -141,6 +165,33 @@ describe("assertReleaseStrictEquivalence (B2C 5000-global identity)", () => {
         account_class: "b2b",
       },
     })).toThrowError(/account_class b2b, expected b2c/);
+  });
+
+  it("passes a strict policy whose provider rules do not cover glm/kimi once the fallback is aligned (the prod 4000-scalar cohort)", () => {
+    // The strict global-b2c policy carries provider rules for anthropic/google/openai only;
+    // glm/kimi scopes have no rule on either side, so they resolve to the RELEASE global
+    // (5000) and to the STRICT scalar fallback — equal only after the scalar is aligned from
+    // the legacy 4000 to the release-effective 5000.
+    const strictRules = ["anthropic", "google", "openai"].map((providerId) =>
+      strictRule("provider", providerId, 5_000));
+    const release = releasePolicy({
+      accountClass: "b2c",
+      rules: [{ scope: "global", payableMultiplierBp: 5_000 }],
+    });
+    expect(() => assertReleaseStrictEquivalence({
+      accountClass: "b2c",
+      strictFallbackBp: 5_000,
+      strictRules,
+      releasePolicy: release,
+    })).not.toThrow();
+    // The exact production failure before the alignment fix: the stale scalar (4000) would
+    // have under-charged glm/kimi after the opt-out, so the gate must keep blocking it.
+    expect(() => assertReleaseStrictEquivalence({
+      accountClass: "b2c",
+      strictFallbackBp: 4_000,
+      strictRules,
+      releasePolicy: release,
+    })).toThrowError(/effective multiplier is 4000 bp/);
   });
 
   it("fails a meter-only release policy (service accounts are never backfilled)", () => {
