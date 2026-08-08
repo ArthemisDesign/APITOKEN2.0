@@ -1,6 +1,16 @@
 use super::*;
 use std::sync::{Arc, Barrier};
 
+#[test]
+fn legacy_pricing_path_closed_unit_predicate() {
+    // Dual-path closure predicate: closed only while a head exists AND the account has not
+    // opted out. Every other combination keeps the writer open.
+    assert!(!legacy_pricing_path_closed(false, false));
+    assert!(!legacy_pricing_path_closed(false, true));
+    assert!(legacy_pricing_path_closed(true, false));
+    assert!(!legacy_pricing_path_closed(true, true));
+}
+
 fn release_settlement_snapshot(
     billing_mode: crate::pricing::BillingModeV2,
     provider_id: &str,
@@ -5039,6 +5049,935 @@ fn pricing_release_ledger_attribution_v2_postgres_matrix() {
         .unwrap()
         .get(0);
     assert_eq!(service_ledger_count, 0);
+
+    pg.client
+        .batch_execute(
+            "TRUNCATE pricing_release_policy_versions,pricing_release_versions,
+             account_policy_bindings,account_policy_rules,account_policy_versions,
+             provider_switch_head,provider_switch_entries,provider_switch_versions,
+             pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
+             execution_group_winner,settlement_outbox,reservations,capacity_leases,
+             leader_leases,engine_instances,usage_events,ledger,api_keys,accounts,pool_state,
+             subs RESTART IDENTITY CASCADE",
+        )
+        .unwrap();
+    pg.client
+        .query_one(
+            "SELECT pg_advisory_unlock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+}
+
+/// Dual path of the release-v2 retirement: the opt-out marker branch of the resolver, the
+/// account-aware legacy-path closure gate, the guarded one-way opt-out writer and the mixed
+/// in-flight drain of a release-v2 reservation across the opt-out.
+///
+/// The drain account is opted out at the FIXTURE level (direct marker UPDATE): the guarded
+/// writer requires a `strict/strict/verified` binding, and migration 0016's strict triggers
+/// (a) forbid the strict binding cutover while a non-policy reservation is in flight and
+/// (b) forbid settling a release-format reservation once the binding is strict, so a
+/// production account can only ever reach the guarded writer fully drained. The drain
+/// scenario therefore pairs a non-strict binding with a fixture opt-out and proves that
+/// settlement is dispatched by the immutable reserve-time snapshot, never by the marker.
+///
+/// `CLAUDE_API_TEST_DATABASE_URL=postgresql://... cargo test -p registry \
+/// pg::tests::pricing_release_opt_out_dual_path_postgres_matrix`
+#[test]
+fn pricing_release_opt_out_dual_path_postgres_matrix() {
+    use crate::pricing::{
+        AccountClass, BillingModeV2, PricingMutation, PricingRejection,
+        PricingReleaseAssignmentV2, PricingReleaseKindV2, PricingReleaseOptOutOutcomeV2,
+        PricingReleaseOptOutV2, PricingReleasePolicyRuleV2, PricingReleasePolicyV2,
+        PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2, PricingReleaseRuleScopeV2,
+        PricingReleaseV2,
+    };
+
+    const TARGET_GENERATION: i64 = 94_001;
+    const RECOVERY_GENERATION: i64 = 94_002;
+    let Ok(url) = std::env::var("CLAUDE_API_TEST_DATABASE_URL") else {
+        eprintln!("skipping pricing release opt-out dual-path matrix: test URL is unset");
+        return;
+    };
+    let mut pg = PgStore::connect(&url).unwrap();
+    pg.client
+        .batch_execute("SET statement_timeout=0; SET lock_timeout=0")
+        .unwrap();
+    pg.client
+        .query_one(
+            "SELECT pg_advisory_lock($1)",
+            &[&POSTGRES_DESTRUCTIVE_TEST_LOCK],
+        )
+        .unwrap();
+    pg.client
+        .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+        .unwrap();
+    pg.migrate().unwrap();
+    pg.client
+        .batch_execute(
+            "TRUNCATE pricing_release_policy_versions,pricing_release_versions,
+             account_policy_bindings,account_policy_rules,account_policy_versions,
+             provider_switch_head,provider_switch_entries,provider_switch_versions,
+             pricing_catalog_heads,pricing_catalog_entries,pricing_catalog_versions,
+             execution_group_winner,settlement_outbox,reservations,capacity_leases,
+             leader_leases,engine_instances,usage_events,ledger,api_keys,accounts,pool_state,
+             subs RESTART IDENTITY CASCADE",
+        )
+        .unwrap();
+
+    let manifest = stage8_pg_manifest();
+    let owner = pg
+        .claim_instance_with_pricing_manifest("dual-path-engine", 600, &manifest)
+        .unwrap();
+    pg.account_create("dual-drain", None, 5_000).unwrap();
+    pg.account_topup("dual-drain", 10_060, Some("dual-drain-seed"))
+        .unwrap();
+    pg.key_issue("dual-drain-key", "dual-drain", None).unwrap();
+    pg.account_create("dual-ctl", None, 10_000).unwrap();
+    pg.account_topup("dual-ctl", 2_000, Some("dual-ctl-seed"))
+        .unwrap();
+    pg.key_issue("dual-ctl-key", "dual-ctl", None).unwrap();
+    pg.account_create("dual-legacy", None, 10_000).unwrap();
+    pg.key_issue("dual-legacy-key", "dual-legacy", None).unwrap();
+
+    for catalog in [stage8_pg_catalog("main"), stage8_pg_catalog("openkeys")] {
+        assert_eq!(
+            pg.prepare_pricing_catalog(&catalog).unwrap(),
+            PricingMutation::Stored
+        );
+        assert_eq!(
+            pg.activate_pricing_catalog(
+                &catalog.product_id,
+                &catalog.target(),
+                &crate::pricing::ActiveExpectation::Absent,
+            )
+            .unwrap(),
+            PricingMutation::Applied
+        );
+    }
+    let switches = stage8_pg_switches();
+    assert_eq!(
+        pg.prepare_provider_switches(&switches).unwrap(),
+        PricingMutation::Stored
+    );
+    assert_eq!(
+        pg.activate_provider_switches(
+            &switches.target(),
+            &crate::pricing::ActiveExpectation::Absent,
+        )
+        .unwrap(),
+        PricingMutation::Applied
+    );
+
+    pg.client
+        .batch_execute(
+            "BEGIN;
+             INSERT INTO account_funding_generations_v2(
+                 account_id,generation,schema_version,source_state_digest,
+                 normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                 normalized_ts,updated_ts
+             ) VALUES(
+                 'dual-drain',1,2,'dual-drain-source','dual-drain-normalization',
+                 10060,0,0,1,100,100
+             );
+             INSERT INTO funding_lots_v2(
+                 lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                 reserved_nano,spent_nano,version,status,created_ts,updated_ts
+             ) VALUES
+                 ('dual-drain-bonus','dual-drain',1,'welcome_bonus',
+                  'signup-bonus:dual-drain',60,0,0,1,'active',100,100),
+                 ('dual-drain-paid','dual-drain',1,'paid','dual-drain-seed',
+                  10000,0,0,1,'active',100,100);
+             INSERT INTO account_funding_head_v2(
+                 account_id,active_generation,head_version,updated_ts
+             ) VALUES('dual-drain',1,1,100);
+             INSERT INTO account_funding_generations_v2(
+                 account_id,generation,schema_version,source_state_digest,
+                 normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                 normalized_ts,updated_ts
+             ) VALUES(
+                 'dual-ctl',1,2,'dual-ctl-source','dual-ctl-normalization',
+                 2000,0,0,1,100,100
+             );
+             INSERT INTO funding_lots_v2(
+                 lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                 reserved_nano,spent_nano,version,status,created_ts,updated_ts
+             ) VALUES(
+                 'dual-ctl-paid','dual-ctl',1,'paid','dual-ctl-seed',
+                 2000,0,0,1,'active',100,100
+             );
+             INSERT INTO account_funding_head_v2(
+                 account_id,active_generation,head_version,updated_ts
+             ) VALUES('dual-ctl',1,1,100);
+             INSERT INTO account_funding_generations_v2(
+                 account_id,generation,schema_version,source_state_digest,
+                 normalization_digest,balance_nano,reserved_nano,spent_nano,version,
+                 normalized_ts,updated_ts
+             ) VALUES(
+                 'dual-legacy',1,2,'dual-legacy-source','dual-legacy-normalization',
+                 0,0,0,1,100,100
+             );
+             INSERT INTO funding_lots_v2(
+                 lot_id,account_id,funding_generation,source_type,source_ref,balance_nano,
+                 reserved_nano,spent_nano,version,status,created_ts,updated_ts
+             ) VALUES(
+                 'dual-legacy-paid','dual-legacy',1,'paid','dual-legacy-anchor',
+                 0,0,0,1,'active',100,100
+             );
+             INSERT INTO account_funding_head_v2(
+                 account_id,active_generation,head_version,updated_ts
+             ) VALUES('dual-legacy',1,1,100);
+             SET CONSTRAINTS ALL IMMEDIATE;
+             COMMIT;",
+        )
+        .unwrap();
+
+    let drain_policy = PricingReleasePolicyV2 {
+        policy_id: "dual-drain-policy".into(),
+        policy_version: 1,
+        owner_type: crate::pricing::PolicyOwnerType::GlobalB2c,
+        owner_id: "global".into(),
+        account_class: AccountClass::B2c,
+        product_id: Some("main".into()),
+        billing_mode: BillingModeV2::Balance,
+        schema_version: 2,
+        capability_generation: 1,
+        capability_digest: "stage8-capability-1".into(),
+        catalog_generation: Some(1),
+        catalog_digest: Some("stage8-main-catalog-1".into()),
+        switch_generation: Some(1),
+        switch_digest: Some("stage8-switches-1".into()),
+        content_digest: "dual-drain-policy-digest".into(),
+        rules: vec![PricingReleasePolicyRuleV2 {
+            rule_id: "dual-drain-global-50".into(),
+            rule_digest: "dual-drain-global-50-digest".into(),
+            scope: PricingReleaseRuleScopeV2::Global,
+            discount_bps: 5_000,
+            payable_multiplier_bp: 5_000,
+        }],
+    };
+    let ctl_policy = PricingReleasePolicyV2 {
+        policy_id: "dual-ctl-policy".into(),
+        content_digest: "dual-ctl-policy-digest".into(),
+        rules: vec![PricingReleasePolicyRuleV2 {
+            rule_id: "dual-ctl-global".into(),
+            rule_digest: "dual-ctl-global-digest".into(),
+            scope: PricingReleaseRuleScopeV2::Global,
+            discount_bps: 5_000,
+            payable_multiplier_bp: 5_000,
+        }],
+        ..drain_policy.clone()
+    };
+    let legacy_policy = PricingReleasePolicyV2 {
+        policy_id: "dual-legacy-policy".into(),
+        content_digest: "dual-legacy-policy-digest".into(),
+        rules: vec![PricingReleasePolicyRuleV2 {
+            rule_id: "dual-legacy-global".into(),
+            rule_digest: "dual-legacy-global-digest".into(),
+            scope: PricingReleaseRuleScopeV2::Global,
+            discount_bps: 5_000,
+            payable_multiplier_bp: 5_000,
+        }],
+        ..drain_policy.clone()
+    };
+    for policy in [&drain_policy, &ctl_policy, &legacy_policy] {
+        assert_eq!(
+            pg.prepare_pricing_release_policy_v2(policy).unwrap(),
+            PricingMutation::Stored
+        );
+    }
+
+    let assignments = vec![
+        PricingReleaseAssignmentV2 {
+            account_id: "dual-drain".into(),
+            account_class: AccountClass::B2c,
+            policy_id: drain_policy.policy_id.clone(),
+            policy_version: 1,
+            policy_digest: drain_policy.content_digest.clone(),
+            billing_mode: BillingModeV2::Balance,
+            funding_generation: Some(1),
+            purpose: None,
+            responsible: None,
+            assignment_digest: "dual-drain-assignment".into(),
+        },
+        PricingReleaseAssignmentV2 {
+            account_id: "dual-ctl".into(),
+            account_class: AccountClass::B2c,
+            policy_id: ctl_policy.policy_id.clone(),
+            policy_version: 1,
+            policy_digest: ctl_policy.content_digest.clone(),
+            billing_mode: BillingModeV2::Balance,
+            funding_generation: Some(1),
+            purpose: None,
+            responsible: None,
+            assignment_digest: "dual-ctl-assignment".into(),
+        },
+        PricingReleaseAssignmentV2 {
+            account_id: "dual-legacy".into(),
+            account_class: AccountClass::B2c,
+            policy_id: legacy_policy.policy_id.clone(),
+            policy_version: 1,
+            policy_digest: legacy_policy.content_digest.clone(),
+            billing_mode: BillingModeV2::Balance,
+            funding_generation: Some(1),
+            purpose: None,
+            responsible: None,
+            assignment_digest: "dual-legacy-assignment".into(),
+        },
+    ];
+    let release = |generation, release_kind, digest: &str| PricingReleaseV2 {
+        generation,
+        release_kind,
+        schema_version: 2,
+        capability_generation: 1,
+        capability_digest: "stage8-capability-1".into(),
+        main_catalog_generation: 1,
+        main_catalog_digest: "stage8-main-catalog-1".into(),
+        openkeys_catalog_generation: 1,
+        openkeys_catalog_digest: "stage8-openkeys-catalog-1".into(),
+        switch_generation: 1,
+        switch_digest: "stage8-switches-1".into(),
+        inventory_digest: "dual-path-inventory".into(),
+        policy_manifest_digest: format!("dual-path-policies-{generation}"),
+        assignment_manifest_digest: format!("dual-path-assignments-{generation}"),
+        funding_manifest_digest: "dual-path-funding".into(),
+        minimum_runtime_schema_version: 2,
+        content_digest: digest.into(),
+        assignments: assignments.clone(),
+    };
+    let target = release(
+        TARGET_GENERATION,
+        PricingReleaseKindV2::Target,
+        "dual-path-target",
+    );
+    let recovery = release(
+        RECOVERY_GENERATION,
+        PricingReleaseKindV2::Recovery,
+        "dual-path-recovery",
+    );
+    assert_eq!(
+        pg.prepare_pricing_release_v2(&target).unwrap(),
+        PricingMutation::Stored
+    );
+    assert_eq!(
+        pg.prepare_pricing_release_v2(&recovery).unwrap(),
+        PricingMutation::Stored
+    );
+    assert_eq!(
+        pg.prepare_pricing_release_recovery_link_v2(&PricingReleaseRecoveryLinkV2 {
+            target_generation: TARGET_GENERATION,
+            target_digest: target.content_digest.clone(),
+            recovery_generation: RECOVERY_GENERATION,
+            recovery_digest: recovery.content_digest.clone(),
+            link_digest: "dual-path-recovery-link".into(),
+        })
+        .unwrap(),
+        PricingMutation::Stored
+    );
+
+    let activated_ts = now();
+    pg.client
+        .execute(
+            "INSERT INTO pricing_stage8_evidence_v2(
+                 evidence_digest,target_generation,target_digest,recovery_generation,
+                 recovery_digest,inventory_digest,funding_digest,shadow_digest,
+                 runtime_floor_digest,legacy_inflight_count,blocker_count,passed,
+                 observed_ts,valid_until_ts
+             ) VALUES(
+                 'dual-path-evidence',$1,$2,$3,$4,'dual-path-inventory',
+                 'dual-path-funding','dual-path-shadow','dual-path-floor',
+                 0,0,true,$5,$6
+             )",
+            &[
+                &TARGET_GENERATION,
+                &target.content_digest,
+                &RECOVERY_GENERATION,
+                &recovery.content_digest,
+                &activated_ts,
+                &activated_ts.saturating_add(600),
+            ],
+        )
+        .unwrap();
+    pg.client
+        .batch_execute(&format!(
+            "BEGIN;
+             INSERT INTO pricing_release_activations_v2(
+                 activation_kind,from_generation,from_digest,to_generation,to_digest,
+                 expected_head_version,resulting_head_version,evidence_digest,operator_id,
+                 reason,activated_ts
+             ) VALUES(
+                 'cutover',NULL,NULL,{TARGET_GENERATION},'dual-path-target',0,1,
+                 'dual-path-evidence','dual-path-test','dual path matrix',{activated_ts}
+             );
+             INSERT INTO pricing_release_head_v2(
+                 singleton,active_generation,active_digest,head_version,updated_ts
+             ) VALUES(1,{TARGET_GENERATION},'dual-path-target',1,{activated_ts});
+             SET CONSTRAINTS ALL IMMEDIATE;
+             COMMIT;"
+        ))
+        .unwrap();
+
+    // Strict fixtures (migration-0016 compliant: ACK'd keys BEFORE the binding insert, no
+    // in-flight reservations, policy-capable engine manifest already claimed above).
+    pg.client
+        .batch_execute(
+            "BEGIN;
+             INSERT INTO accounts(
+                 id,balance_nano,reserved_nano,mult_bp,status,created_ts,created
+             ) VALUES
+                 ('dual-strict',1000,0,10000,'active',1,''),
+                 ('dual-stale',500,0,10000,'active',1,'');
+             INSERT INTO account_policy_versions(
+                 account_id,effective_version,policy_id,policy_version,source_policy_digest,
+                 owner_type,owner_id,account_class,product_id,schema_version,
+                 catalog_generation,switch_generation,content_digest,replacement_locked,created_ts
+             ) VALUES
+                 ('dual-strict',1,'dual-strict-policy',1,'dual-strict-source-v1',
+                  'global_b2c','global','b2c','main',1,1,1,'dual-strict-policy-v1',false,1),
+                 ('dual-stale',1,'dual-stale-policy',1,'dual-stale-source-v1',
+                  'global_b2c','global','b2c','main',1,1,1,'dual-stale-policy-v1',false,1),
+                 ('dual-stale',2,'dual-stale-policy',2,'dual-stale-source-v2',
+                  'global_b2c','global','b2c','main',1,1,1,'dual-stale-policy-v2',false,2);
+             INSERT INTO account_policy_rules(
+                 account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
+                 canonical_model_id,pricing_mode,rule_origin,discount_bps,
+                 payable_multiplier_bp,track_eligible,retention_eligible,commission_eligible
+             ) VALUES
+                 ('dual-strict',1,'dual-strict-rule','dual-strict-rule-v1','provider',
+                  'anthropic',NULL,'track','managed',NULL,10000,true,true,false),
+                 ('dual-stale',1,'dual-stale-rule','dual-stale-rule-v1','provider',
+                  'anthropic',NULL,'track','managed',NULL,10000,true,true,false);
+             INSERT INTO funding_buckets(
+                 bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
+                 reserved_nano,spent_nano,version,status,created_ts,updated_ts
+             ) VALUES
+                 ('dual-strict-paid','dual-strict','paid','primary','any',
+                  1000,0,0,1,'active',1,1),
+                 ('dual-stale-paid','dual-stale','paid','primary','any',
+                  500,0,0,1,'active',1,1);
+             INSERT INTO api_keys(
+                 key,key_id,account_id,status,created_ts,created,
+                 activation_policy_effective_version,activation_policy_digest,
+                 activation_policy_ack_ts
+             ) VALUES
+                 ('dual-strict-key','key_dual_strict','dual-strict','active',1,'',
+                  1,'dual-strict-policy-v1',1),
+                 ('dual-stale-key','key_dual_stale','dual-stale','active',1,'',
+                  1,'dual-stale-policy-v1',1);
+             INSERT INTO account_policy_bindings(
+                 account_id,product_id,account_class,active_effective_version,
+                 policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
+             ) VALUES
+                 ('dual-strict','main','b2c',1,'strict','strict','verified',1),
+                 ('dual-stale','main','b2c',1,'strict','strict','verified',1);
+             UPDATE api_keys
+                SET activation_policy_effective_version=2,
+                    activation_policy_digest='dual-stale-policy-v2'
+              WHERE key='dual-stale-key';
+             SET CONSTRAINTS ALL IMMEDIATE;
+             COMMIT;",
+        )
+        .unwrap();
+
+    // A. Baseline: both assigned accounts resolve through the head; the strict account without
+    // an assignment fails closed exactly like before the dual path.
+    let drain_resolution = pg
+        .pricing_release_resolution_v2("dual-drain", crate::PROVIDER_GOOGLE, "gemini-3-flash-preview")
+        .unwrap()
+        .expect("dual-drain resolves through the active release head");
+    assert_eq!(drain_resolution.payable_multiplier_bp(), Some(5_000));
+    assert!(pg
+        .pricing_release_resolution_v2("dual-ctl", crate::PROVIDER_GOOGLE, "gemini-3-flash-preview")
+        .unwrap()
+        .is_some());
+    assert!(pg
+        .pricing_release_resolution_v2("dual-strict", "anthropic", "claude-sonnet-5")
+        .is_err());
+
+    // B. Non-opted accounts keep the closed errors on every non-release reserve writer.
+    let closed_error = pg
+        .reserve_request(&owner, "dual-ctl-plain", "dual-ctl", "dual-ctl-key", 100, 600)
+        .expect_err("plain reserve of a non-opted account must stay closed");
+    assert!(closed_error
+        .downcast_ref::<crate::pricing::LegacyPricingPathClosedV2>()
+        .is_some());
+    assert!(matches!(
+        pg.reserve_request_with_legacy_snapshot(
+            &owner,
+            "dual-ctl-key",
+            600,
+            &legacy_snapshot("dual-ctl-scalar", "dual-ctl", 100, 100),
+        )
+        .unwrap(),
+        crate::pricing::LegacyScalarReserveOutcome::Conflict(
+            crate::pricing::LegacyScalarReserveConflict::ActivePricingRelease
+        )
+    ));
+
+    let strict_admission_ts = now();
+    let strict_snapshot = crate::pricing::PolicyAdmissionSnapshot::new(
+        crate::pricing::PolicyAdmissionSnapshotInput {
+            request_id: "dual-strict-request".into(),
+            account_id: "dual-strict".into(),
+            provider: crate::pricing::SnapshotProvider::Anthropic,
+            product_id: "main".into(),
+            account_class: AccountClass::B2c,
+            requested_model_id: "claude-sonnet-5".into(),
+            canonical_model_id: "claude-sonnet-5".into(),
+            alias_generation: 1,
+            rule_id: "dual-strict-rule".into(),
+            rule_digest: "dual-strict-rule-v1".into(),
+            rule_scope: crate::pricing::PolicyRuleScope::Provider {
+                provider_id: "anthropic".into(),
+            },
+            pricing_mode: crate::pricing::PricingMode::Track,
+            rule_origin: crate::pricing::RuleOrigin::Managed,
+            discount_bps: None,
+            payable_multiplier_bp: 10_000,
+            policy_id: "dual-strict-policy".into(),
+            policy_version: 1,
+            effective_policy_version: 1,
+            source_policy_digest: "dual-strict-source-v1".into(),
+            policy_digest: "dual-strict-policy-v1".into(),
+            policy_catalog_generation: 1,
+            policy_switch_generation: 1,
+            admission_catalog_generation: 1,
+            admission_catalog_digest: "stage8-main-catalog-1".into(),
+            admission_switch_generation: 1,
+            admission_switch_digest: "stage8-switches-1".into(),
+            runtime_manifest_generation: manifest.manifest_generation(),
+            runtime_manifest_digest: manifest.manifest_digest().into(),
+            tariff_schedule_id: "dual-strict-tariff-v1".into(),
+            tariff_priced_ts: strict_admission_ts,
+            admission_ts: strict_admission_ts,
+            official_hold_nano: 100,
+            charged_hold_nano: 100,
+            track_eligible: true,
+            retention_eligible: true,
+            commission_eligible: false,
+            premium_modifiers: crate::pricing::LegacyPremiumModifiers::AnthropicV1 {
+                speed: crate::pricing::SnapshotAnthropicSpeed::Standard,
+                inference_geo: crate::pricing::SnapshotAnthropicInferenceGeo::Global,
+                inference_geo_basis_points: 10_000,
+            },
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        pg.reserve_request_with_policy_snapshot(&owner, "dual-strict-key", 600, &strict_snapshot)
+            .unwrap(),
+        crate::pricing::PolicyReserveOutcome::Conflict(
+            crate::pricing::PolicyReserveConflict::ActivePricingRelease
+        )
+    ));
+
+    // C. The guarded writer fails closed: no strict path, stale ACK, unknown account, garbage.
+    let opt_out = |account_id: &str| PricingReleaseOptOutV2 {
+        account_id: account_id.into(),
+        created_by: Some("dual-path-operator".into()),
+        reason: Some("dual path matrix".into()),
+    };
+    assert!(matches!(
+        pg.pricing_release_opt_out_v2(&opt_out("dual-legacy")).unwrap(),
+        PricingReleaseOptOutOutcomeV2::Rejected(PricingRejection::MissingDependency {
+            dependency
+        }) if dependency == "active_strict_policy_binding"
+    ));
+    assert!(matches!(
+        pg.pricing_release_opt_out_v2(&opt_out("dual-stale")).unwrap(),
+        PricingReleaseOptOutOutcomeV2::Rejected(PricingRejection::MissingDependency {
+            dependency
+        }) if dependency == "active_strict_policy_binding"
+    ));
+    assert!(matches!(
+        pg.pricing_release_opt_out_v2(&opt_out("dual-missing")).unwrap(),
+        PricingReleaseOptOutOutcomeV2::Rejected(PricingRejection::MissingDependency {
+            dependency
+        }) if dependency == "account"
+    ));
+    assert!(matches!(
+        pg.pricing_release_opt_out_v2(&PricingReleaseOptOutV2 {
+            account_id: " ".into(),
+            created_by: None,
+            reason: None,
+        })
+        .unwrap(),
+        PricingReleaseOptOutOutcomeV2::Rejected(PricingRejection::Invalid { .. })
+    ));
+    let marker_absent: i64 = pg
+        .client
+        .query_one(
+            "SELECT count(*)::bigint FROM accounts
+              WHERE pricing_release_opt_out_ts IS NOT NULL",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(marker_absent, 0);
+
+    // D. The guarded writer sets the marker idempotently and the resolver falls through.
+    let applied_ts = match pg.pricing_release_opt_out_v2(&opt_out("dual-strict")).unwrap() {
+        PricingReleaseOptOutOutcomeV2::Applied {
+            pricing_release_opt_out_ts,
+        } => pricing_release_opt_out_ts,
+        other => panic!("unexpected opt-out outcome: {other:?}"),
+    };
+    let stored_ts: Option<i64> = pg
+        .client
+        .query_one(
+            "SELECT pricing_release_opt_out_ts FROM accounts WHERE id='dual-strict'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(stored_ts, Some(applied_ts));
+    for replay in [
+        opt_out("dual-strict"),
+        PricingReleaseOptOutV2 {
+            account_id: "dual-strict".into(),
+            created_by: Some("another-operator".into()),
+            reason: Some("repeated call with different attribution".into()),
+        },
+    ] {
+        assert_eq!(
+            pg.pricing_release_opt_out_v2(&replay).unwrap(),
+            PricingReleaseOptOutOutcomeV2::Unchanged {
+                pricing_release_opt_out_ts: applied_ts
+            }
+        );
+    }
+    assert_eq!(
+        pg.client
+            .query_one(
+                "SELECT pricing_release_opt_out_ts FROM accounts WHERE id='dual-strict'",
+                &[],
+            )
+            .unwrap()
+            .get::<_, Option<i64>>(0),
+        Some(applied_ts)
+    );
+    // Dual path: with the marker set the resolver answers "no release" instead of the
+    // coverage error, while the head keeps serving everyone else.
+    assert!(pg
+        .pricing_release_resolution_v2("dual-strict", "anthropic", "claude-sonnet-5")
+        .unwrap()
+        .is_none());
+    assert!(pg
+        .pricing_release_resolution_v2("dual-ctl", crate::PROVIDER_GOOGLE, "gemini-3-flash-preview")
+        .unwrap()
+        .is_some());
+
+    // E. Post-opt-out strict reserve settles through the policy settlement path.
+    assert!(matches!(
+        pg.reserve_request_with_policy_snapshot(&owner, "dual-strict-key", 600, &strict_snapshot)
+            .unwrap(),
+        crate::pricing::PolicyReserveOutcome::Inserted(_)
+    ));
+    let strict_reserve_allocation: (String, i64) = {
+        let row = pg
+            .client
+            .query_one(
+                "SELECT bucket_id,reserved_nano FROM reservation_funding_allocations
+                  WHERE request_id='dual-strict-request'",
+                &[],
+            )
+            .unwrap();
+        (row.get(0), row.get(1))
+    };
+    assert_eq!(
+        strict_reserve_allocation,
+        ("dual-strict-paid".to_string(), 100)
+    );
+    let strict_usage = UsageEventInput {
+        model: "claude-sonnet-5".into(),
+        provider: "anthropic".into(),
+        input_tokens: 8,
+        output_tokens: 4,
+        real_nano: 40,
+        charge_basis_nano: 40,
+        input_nano: 20,
+        output_nano: 20,
+        priced_ts: strict_admission_ts,
+        ..UsageEventInput::default()
+    };
+    assert_eq!(
+        pg.settle_request(
+            "dual-strict-request",
+            40,
+            Some("dual-strict-settle"),
+            Some(&strict_usage),
+        )
+        .unwrap(),
+        Some(960)
+    );
+    assert_eq!(
+        pg.settle_request(
+            "dual-strict-request",
+            40,
+            Some("dual-strict-settle"),
+            Some(&strict_usage),
+        )
+        .unwrap(),
+        Some(960)
+    );
+    let strict_state: (i64, i64, i64, i64, i64, i64, String, String, i64) = {
+        let row = pg
+            .client
+            .query_one(
+                "SELECT
+                     (SELECT balance_nano FROM accounts WHERE id='dual-strict'),
+                     (SELECT reserved_nano FROM accounts WHERE id='dual-strict'),
+                     (SELECT spent_nano FROM accounts WHERE id='dual-strict'),
+                     (SELECT balance_nano FROM funding_buckets
+                       WHERE bucket_id='dual-strict-paid'),
+                     (SELECT charged_nano FROM reservation_funding_allocations
+                       WHERE request_id='dual-strict-request'),
+                     (SELECT released_nano FROM reservation_funding_allocations
+                       WHERE request_id='dual-strict-request'),
+                     (SELECT state FROM reservations WHERE request_id='dual-strict-request'),
+                     (SELECT snapshot_kind FROM settlement_outbox
+                       WHERE request_id='dual-strict-request'),
+                     (SELECT count(*)::bigint FROM ledger
+                       WHERE account_id='dual-strict' AND kind='charge')",
+                &[],
+            )
+            .unwrap();
+        (
+            row.get(0),
+            row.get(1),
+            row.get(2),
+            row.get(3),
+            row.get(4),
+            row.get(5),
+            row.get(6),
+            row.get(7),
+            row.get(8),
+        )
+    };
+    assert_eq!(
+        strict_state,
+        (960, 0, 40, 960, 40, 60, "settled".to_string(), "policy_v1".to_string(), 1)
+    );
+
+    // F. Mixed in-flight drain: a release-v2 reservation created BEFORE the opt-out settles
+    // exactly once with the correct paid/bonus split AFTER the opt-out.
+    let drain_admission_ts = now();
+    let drain_legacy_snapshot = crate::pricing::LegacyScalarAdmissionSnapshot::new(
+        crate::pricing::LegacyScalarAdmissionSnapshotInput {
+            request_id: "dual-drain-release-request".into(),
+            account_id: "dual-drain".into(),
+            provider: crate::pricing::SnapshotProvider::Google,
+            requested_model_id: "gemini-3-flash-preview".into(),
+            canonical_model_id: "gemini-3-flash-preview".into(),
+            alias_generation: 1,
+            tariff_schedule_id: "google/dual-drain/v1".into(),
+            tariff_priced_ts: drain_admission_ts,
+            admission_ts: drain_admission_ts,
+            payable_multiplier_bp: 5_000,
+            official_hold_nano: 200,
+            charged_hold_nano: 100,
+            premium_modifiers: crate::pricing::LegacyPremiumModifiers::GeminiV1 {
+                context_rate: crate::pricing::SnapshotGeminiContextRate::ConservativeMaximum,
+                search_billing: crate::pricing::SnapshotGeminiSearchBilling::PerQuery,
+                grounding_enabled: false,
+                search_reserve_units: 0,
+            },
+        },
+    )
+    .unwrap();
+    let drain_quote =
+        crate::pricing::PricingReleaseQuoteV2::from_legacy_snapshot(&drain_legacy_snapshot)
+            .unwrap();
+    assert!(matches!(
+        pg.reserve_request_with_pricing_release_v2(
+            &owner,
+            "dual-drain-key",
+            600,
+            &drain_resolution,
+            &drain_quote,
+        )
+        .unwrap(),
+        PricingReleaseReserveOutcomeV2::Inserted(_)
+    ));
+    let drain_reserve_allocations: Vec<(String, i64, i64)> = pg
+        .client
+        .query(
+            "SELECT lot_source_type,allocation_order,reserved_nano
+               FROM pricing_request_funding_allocations_v2
+              WHERE request_id='dual-drain-release-request' ORDER BY allocation_order",
+            &[],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2)))
+        .collect();
+    assert_eq!(
+        drain_reserve_allocations,
+        vec![
+            ("welcome_bonus".to_string(), 1, 60),
+            ("paid".to_string(), 2, 40),
+        ]
+    );
+
+    let fixture_opt_out_ts = now();
+    pg.client
+        .execute(
+            "UPDATE accounts SET pricing_release_opt_out_ts=$1 WHERE id='dual-drain'",
+            &[&fixture_opt_out_ts],
+        )
+        .unwrap();
+    // The head still exists and still serves the non-opted account; the drain account falls
+    // through to the direct paths from here on.
+    assert!(pg
+        .pricing_release_resolution_v2("dual-drain", crate::PROVIDER_GOOGLE, "gemini-3-flash-preview")
+        .unwrap()
+        .is_none());
+    assert!(pg
+        .pricing_release_resolution_v2("dual-ctl", crate::PROVIDER_GOOGLE, "gemini-3-flash-preview")
+        .unwrap()
+        .is_some());
+
+    let drain_usage = UsageEventInput {
+        model: "gemini-3-flash-preview".into(),
+        provider: crate::PROVIDER_GOOGLE.into(),
+        input_tokens: 8,
+        output_tokens: 4,
+        real_nano: 80,
+        charge_basis_nano: 80,
+        input_nano: 40,
+        output_nano: 40,
+        priced_ts: drain_admission_ts,
+        ..UsageEventInput::default()
+    };
+    assert_eq!(
+        pg.settle_request(
+            "dual-drain-release-request",
+            40,
+            Some("dual-drain-settle"),
+            Some(&drain_usage),
+        )
+        .unwrap(),
+        Some(10_020)
+    );
+    assert_eq!(
+        pg.settle_request(
+            "dual-drain-release-request",
+            40,
+            Some("dual-drain-settle"),
+            Some(&drain_usage),
+        )
+        .unwrap(),
+        Some(10_020)
+    );
+    let drain_charges = pg.ledger_after("dual-drain", 0, 10).unwrap();
+    let charge = drain_charges
+        .iter()
+        .find(|entry| entry.kind == "charge")
+        .expect("drain settlement wrote exactly one charge");
+    assert_eq!(charge.amount_nano, 40);
+    assert_eq!(
+        charge.request_id.as_deref(),
+        Some("dual-drain-release-request")
+    );
+    let attribution = charge
+        .attribution
+        .as_ref()
+        .expect("drain charge keeps its immutable release-v2 attribution");
+    assert_eq!(attribution.snapshot_kind.as_deref(), Some("release_v2"));
+    assert_eq!(
+        (
+            attribution.paid_funded_nano,
+            attribution.bonus_funded_nano,
+            attribution.other_funded_nano,
+        ),
+        (Some(0), Some(40), Some(0))
+    );
+    let durable_allocations: Vec<(String, String, i64)> = pg
+        .client
+        .query(
+            "SELECT lot_id,lot_source_type,amount_nano
+               FROM funding_ledger_allocations_v2
+              WHERE ledger_id=$1 ORDER BY allocation_order",
+            &[&charge.id],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2)))
+        .collect();
+    assert_eq!(
+        durable_allocations,
+        vec![("dual-drain-bonus".to_string(), "welcome_bonus".to_string(), 40)]
+    );
+    let drain_state: (i64, i64, i64, String, i64) = {
+        let row = pg
+            .client
+            .query_one(
+                "SELECT
+                     (SELECT balance_nano FROM accounts WHERE id='dual-drain'),
+                     (SELECT reserved_nano FROM accounts WHERE id='dual-drain'),
+                     (SELECT spent_nano FROM accounts WHERE id='dual-drain'),
+                     (SELECT state FROM reservations
+                       WHERE request_id='dual-drain-release-request'),
+                     (SELECT count(*)::bigint FROM ledger
+                       WHERE account_id='dual-drain' AND kind='charge')",
+                &[],
+            )
+            .unwrap();
+        (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4))
+    };
+    assert_eq!(drain_state, (10_020, 0, 40, "settled".to_string(), 1));
+
+    // After the opt-out every non-release reserve writer serves the drain account again.
+    assert_eq!(
+        pg.reserve_request(
+            &owner,
+            "dual-drain-plain-request",
+            "dual-drain",
+            "dual-drain-key",
+            50,
+            600,
+        )
+        .unwrap(),
+        Some(9_970)
+    );
+    assert_eq!(
+        pg.cancel_request("dual-drain-plain-request").unwrap(),
+        Some(10_020)
+    );
+    assert!(matches!(
+        pg.reserve_request_with_legacy_snapshot(
+            &owner,
+            "dual-drain-key",
+            600,
+            &legacy_snapshot("dual-drain-scalar-request", "dual-drain", 100, 100),
+        )
+        .unwrap(),
+        crate::pricing::LegacyScalarReserveOutcome::Inserted(_)
+    ));
+    assert_eq!(
+        pg.cancel_request("dual-drain-scalar-request").unwrap(),
+        Some(10_020)
+    );
+
+    // G. The head still closes the non-opted account on every writer.
+    let still_closed = pg
+        .reserve_request(&owner, "dual-ctl-plain-2", "dual-ctl", "dual-ctl-key", 100, 600)
+        .expect_err("plain reserve of a non-opted account must remain closed");
+    assert!(still_closed
+        .downcast_ref::<crate::pricing::LegacyPricingPathClosedV2>()
+        .is_some());
+    assert!(matches!(
+        pg.reserve_request_with_legacy_snapshot(
+            &owner,
+            "dual-ctl-key",
+            600,
+            &legacy_snapshot("dual-ctl-scalar-2", "dual-ctl", 100, 100),
+        )
+        .unwrap(),
+        crate::pricing::LegacyScalarReserveOutcome::Conflict(
+            crate::pricing::LegacyScalarReserveConflict::ActivePricingRelease
+        )
+    ));
 
     pg.client
         .batch_execute(

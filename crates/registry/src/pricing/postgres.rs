@@ -3876,6 +3876,21 @@ pub(crate) fn pricing_release_resolution_v2_in_transaction<C: GenericClient>(
         bail!("pricing release provider is outside the fixed runtime plane");
     }
 
+    // Dual path of the release-v2 retirement (head 55 is final): an account with a non-NULL
+    // `pricing_release_opt_out_ts` is served by the strict-policy/legacy reserve paths exactly
+    // as if the release did not cover it. Returning `None` here lets every caller take its
+    // existing no-active-release fallthrough without a data-plane change. The account row is a
+    // primary-key read in the same transaction/snapshot as the release read below.
+    let opted_out: bool = client
+        .query_opt(
+            "SELECT pricing_release_opt_out_ts IS NOT NULL FROM accounts WHERE id=$1",
+            &[&account_id],
+        )?
+        .is_some_and(|row| row.get(0));
+    if opted_out {
+        return Ok(None);
+    }
+
     let Some(row) = client.query_opt(
         "SELECT head.active_generation,head.active_digest,head.head_version,head.updated_ts,
                 release.schema_version,
@@ -4159,6 +4174,102 @@ pub(crate) fn postgres_pricing_release_resolution_v2(
     )?;
     transaction.commit()?;
     Ok(resolved)
+}
+
+/// One-way, fail-closed writer of the release-v2 opt-out marker (dual-path retirement).
+///
+/// The whole decision runs in ONE transaction on the billing single writer: the account row is
+/// locked `FOR UPDATE`, an existing marker is an exact replay (`Unchanged`, no mutation), and a
+/// new marker is written only when the account proves a LIVE strict path — an active account, a
+/// `strict/strict/verified` policy binding (the same state the strict reserve gate and the
+/// migration-0016 strict triggers require) and at least one active, unexpired key whose
+/// activation ACK matches the active binding exactly (the `KeyAuth::active_at` strict-ack check:
+/// `activation_policy_effective_version = active_effective_version`,
+/// `activation_policy_digest = policy.content_digest`, non-NULL `activation_policy_ack_ts`).
+/// Without that proof the write is rejected as a missing dependency: opting out an account with
+/// no live strict path would silently strand it on the stale `accounts.mult_bp` scalar.
+///
+/// In-flight release-v2 reservations of the account are NOT a blocker and need none: settlement
+/// is dispatched by the immutable reserve-time snapshot, never by the marker. The migration-0016
+/// `account_policy_bindings_strict_state` trigger independently forbids the strict cutover while
+/// such reservations are active, so by the time the guard can pass the account is already
+/// drained. There is no opt-in endpoint; repair is a support migration.
+pub(crate) fn postgres_pricing_release_opt_out_v2(
+    client: &mut Client,
+    request: &super::PricingReleaseOptOutV2,
+) -> Result<super::PricingReleaseOptOutOutcomeV2> {
+    if let Err(error) = super::validate_pricing_release_opt_out_v2(request) {
+        return Ok(super::PricingReleaseOptOutOutcomeV2::Rejected(
+            PricingRejection::Invalid {
+                reason: error.to_string(),
+            },
+        ));
+    }
+    let mut transaction = client
+        .transaction()
+        .context("begin PostgreSQL pricing release opt-out v2")?;
+    let Some(account) = transaction
+        .query_opt(
+            "SELECT pricing_release_opt_out_ts FROM accounts WHERE id=$1 FOR UPDATE",
+            &[&request.account_id],
+        )
+        .context("lock PostgreSQL pricing release opt-out account")?
+    else {
+        transaction.rollback()?;
+        return Ok(super::PricingReleaseOptOutOutcomeV2::Rejected(
+            PricingRejection::MissingDependency {
+                dependency: "account".to_owned(),
+            },
+        ));
+    };
+    if let Some(opt_out_ts) = account.get::<_, Option<i64>>(0) {
+        transaction.commit()?;
+        return Ok(super::PricingReleaseOptOutOutcomeV2::Unchanged {
+            pricing_release_opt_out_ts: opt_out_ts,
+        });
+    }
+    let opt_out_ts = now();
+    let strict_path_live: bool = transaction
+        .query_one(
+            "SELECT EXISTS(
+                 SELECT 1
+                   FROM accounts account
+                   JOIN account_policy_bindings binding ON binding.account_id=account.id
+                   JOIN account_policy_versions policy
+                     ON policy.account_id=binding.account_id
+                    AND policy.effective_version=binding.active_effective_version
+                   JOIN api_keys key ON key.account_id=account.id
+                  WHERE account.id=$1
+                    AND account.status='active'
+                    AND binding.policy_enforcement='strict'
+                    AND binding.funding_enforcement='strict'
+                    AND binding.reconciliation_state='verified'
+                    AND key.status='active'
+                    AND (key.expires_ts IS NULL OR key.expires_ts>$2)
+                    AND key.activation_policy_effective_version=binding.active_effective_version
+                    AND key.activation_policy_digest=policy.content_digest
+                    AND key.activation_policy_ack_ts IS NOT NULL
+             )",
+            &[&request.account_id, &opt_out_ts],
+        )?
+        .get(0);
+    if !strict_path_live {
+        transaction.rollback()?;
+        return Ok(super::PricingReleaseOptOutOutcomeV2::Rejected(
+            PricingRejection::MissingDependency {
+                dependency: "active_strict_policy_binding".to_owned(),
+            },
+        ));
+    }
+    transaction.execute(
+        "UPDATE accounts SET pricing_release_opt_out_ts=$2
+          WHERE id=$1 AND pricing_release_opt_out_ts IS NULL",
+        &[&request.account_id, &opt_out_ts],
+    )?;
+    transaction.commit()?;
+    Ok(super::PricingReleaseOptOutOutcomeV2::Applied {
+        pricing_release_opt_out_ts: opt_out_ts,
+    })
 }
 
 pub(crate) fn pricing_request_snapshot_v2_in_transaction<C: GenericClient>(

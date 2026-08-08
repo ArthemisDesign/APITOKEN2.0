@@ -21,7 +21,8 @@ use registry::pricing::{
     LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome, LockedOpenKeysPolicyTransitionSpec,
     PolicyActiveExpectation, PolicyAdmissionSnapshot, PolicyReserveOutcome, PricingCatalogSpec,
     PricingMutation, PricingReadBundle, PricingReleaseAssignmentExtensionV2, PricingReleaseHeadV2,
-    PricingReleaseInventoryPageV2, PricingReleasePolicyV2, PricingReleaseProvisioningContextV2,
+    PricingReleaseInventoryPageV2, PricingReleaseOptOutOutcomeV2, PricingReleaseOptOutV2,
+    PricingReleasePolicyV2, PricingReleaseProvisioningContextV2,
     PricingReleaseQuoteV2, PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2,
     PricingReleaseResolutionV2, PricingReleaseV2, PricingShadowAdmissionEvaluationInput,
     PricingShadowEvaluationWrite, ProviderSwitchSpec, TariffOverride, TariffOverrideInsert,
@@ -1598,6 +1599,10 @@ enum WriteCmd {
     PreparePricingReleaseAssignmentExtensionV2 {
         extension: PricingReleaseAssignmentExtensionV2,
         reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
+    },
+    PricingReleaseOptOutV2 {
+        request: PricingReleaseOptOutV2,
+        reply: oneshot::Sender<anyhow::Result<PricingReleaseOptOutOutcomeV2>>,
     },
     ApplyFundingNormalizationV2 {
         account_id: String,
@@ -3189,6 +3194,11 @@ impl AsyncBilling {
                             "pricing release v2 authority requires PostgreSQL"
                         )));
                     }
+                    WriteCmd::PricingReleaseOptOutV2 { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "pricing release v2 authority requires PostgreSQL"
+                        )));
+                    }
                     WriteCmd::ApplyFundingNormalizationV2 { reply, .. } => {
                         let _ = reply.send(Err(anyhow::anyhow!(
                             "funding normalization v2 authority requires PostgreSQL"
@@ -4262,6 +4272,16 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
+                        WriteCmd::PricingReleaseOptOutV2 { request, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg,
+                                &writer_url,
+                                &writer_owner,
+                                "pricing release opt-out v2",
+                                |pg| pg.pricing_release_opt_out_v2(&request),
+                            );
+                            let _ = reply.send(result);
+                        }
                         WriteCmd::ApplyFundingNormalizationV2 {
                             account_id,
                             request,
@@ -5020,6 +5040,22 @@ impl AsyncBilling {
         let (reply, result) = oneshot::channel();
         self.writer
             .send(WriteCmd::PreparePricingReleaseAssignmentExtensionV2 { extension, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        result
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+
+    /// One-way release-path opt-out through the billing single writer; the registry guard
+    /// rejects an account without a live strict policy path fail-closed.
+    pub async fn pricing_release_opt_out_v2(
+        &self,
+        request: PricingReleaseOptOutV2,
+    ) -> anyhow::Result<PricingReleaseOptOutOutcomeV2> {
+        let (reply, result) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::PricingReleaseOptOutV2 { request, reply })
             .await
             .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
         result

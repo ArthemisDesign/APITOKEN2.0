@@ -22,12 +22,14 @@ pub use policy::{
 pub(crate) use release_v2::build_pricing_request_snapshot_v2;
 pub use release_v2::{
     is_model_unpriced, validate_pricing_release_assignment_extension_v2,
-    validate_pricing_release_policy_v2, validate_pricing_release_recovery_link_v2,
-    validate_pricing_release_v2, BillingModeV2, LegacyPricingPathClosedV2,
+    validate_pricing_release_opt_out_v2, validate_pricing_release_policy_v2,
+    validate_pricing_release_recovery_link_v2, validate_pricing_release_v2, BillingModeV2,
+    LegacyPricingPathClosedV2,
     PricingReleaseActivationKindV2, PricingReleaseAssignmentExtensionMemberV2,
     PricingReleaseAssignmentExtensionV2, PricingReleaseAssignmentV2, PricingReleaseHeadV2,
     PricingReleaseInventoryAccountV2, PricingReleaseInventoryPageV2, PricingReleaseKindV2,
-    PricingReleaseModelUnpriced, PricingReleasePolicyRuleV2, PricingReleasePolicyV2,
+    PricingReleaseModelUnpriced, PricingReleaseOptOutOutcomeV2, PricingReleaseOptOutV2,
+    PricingReleasePolicyRuleV2, PricingReleasePolicyV2,
     PricingReleaseProvisioningActivationV2, PricingReleaseProvisioningContextV2,
     PricingReleaseProvisioningRecoveryV2, PricingReleaseProvisioningReleaseV2,
     PricingReleaseQuoteV2, PricingReleaseRecoveryLinkV2, PricingReleaseReserveConflictV2,

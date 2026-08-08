@@ -24,6 +24,15 @@ use postgres::{Client, IsolationLevel, Row, Transaction};
 use std::collections::HashSet;
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+/// Account-aware legacy-path closure predicate (dual path of the release-v2 retirement): the
+/// legacy/strict reserve writers are closed while a global release head exists, EXCEPT for an
+/// account that carries the one-way opt-out marker. Kept pure so the decision is unit-testable
+/// without a database; the SQL in `legacy_pricing_path_is_closed` only materializes the two
+/// booleans in the same transaction.
+fn legacy_pricing_path_closed(head_exists: bool, account_opted_out: bool) -> bool {
+    head_exists && !account_opted_out
+}
+
 fn pg_provider_turn_event(row: &Row) -> ProviderTurnCalibrationEvent {
     ProviderTurnCalibrationEvent {
         provider: row.get(0),
@@ -1645,13 +1654,22 @@ impl PgStore {
     /// cross a committed global release head. The check runs in the same transaction immediately
     /// before any new money mutation; an overlapping head activation can be linearized after this
     /// reserve without serializing unrelated data-plane transactions on a global lock.
-    fn legacy_pricing_path_is_closed(tx: &mut Transaction<'_>) -> Result<bool> {
-        Ok(tx
-            .query_one(
-                "SELECT EXISTS(SELECT 1 FROM pricing_release_head_v2 WHERE singleton=1)",
-                &[],
-            )?
-            .get(0))
+    ///
+    /// Dual path of the release-v2 retirement: the gate is account-aware. An account carrying a
+    /// non-NULL `pricing_release_opt_out_ts` (one-way, guarded by the strict-path proof in
+    /// `postgres_pricing_release_opt_out_v2`) may use the legacy/strict writers again while the
+    /// head keeps closing them for everyone else. A missing account row counts as NOT opted out,
+    /// preserving the pre-dual-path error for unknown accounts.
+    fn legacy_pricing_path_is_closed(tx: &mut Transaction<'_>, account_id: &str) -> Result<bool> {
+        let row = tx.query_one(
+            "SELECT EXISTS(SELECT 1 FROM pricing_release_head_v2 WHERE singleton=1),
+                    COALESCE(
+                        (SELECT pricing_release_opt_out_ts IS NOT NULL FROM accounts WHERE id=$1),
+                        false
+                    )",
+            &[&account_id],
+        )?;
+        Ok(legacy_pricing_path_closed(row.get(0), row.get(1)))
     }
 
     /// Atomically reserve money for one generated request ID. An exact retry is idempotent.
@@ -1728,7 +1746,7 @@ impl PgStore {
             tx.commit()?;
             return Ok(Some(balance));
         }
-        if Self::legacy_pricing_path_is_closed(&mut tx)? {
+        if Self::legacy_pricing_path_is_closed(&mut tx, account_id)? {
             tx.rollback()?;
             return Err(crate::pricing::LegacyPricingPathClosedV2.into());
         }
@@ -1964,7 +1982,7 @@ impl PgStore {
             return Ok(outcome);
         }
 
-        if Self::legacy_pricing_path_is_closed(&mut tx)? {
+        if Self::legacy_pricing_path_is_closed(&mut tx, account_id)? {
             tx.rollback()?;
             return Ok(Outcome::Conflict(Conflict::ActivePricingRelease));
         }
@@ -2212,7 +2230,7 @@ impl PgStore {
             return Ok(outcome);
         }
 
-        if Self::legacy_pricing_path_is_closed(&mut tx)? {
+        if Self::legacy_pricing_path_is_closed(&mut tx, account_id)? {
             tx.rollback()?;
             return Ok(Outcome::Conflict(Conflict::ActivePricingRelease));
         }
@@ -8058,6 +8076,15 @@ impl PgStore {
             provisioning_head_version,
             account_id,
         )
+    }
+
+    /// One-way, guarded writer of the dual-path opt-out marker: exact replay returns
+    /// `Unchanged`, an account without a live strict path is rejected fail-closed.
+    pub fn pricing_release_opt_out_v2(
+        &mut self,
+        request: &crate::pricing::PricingReleaseOptOutV2,
+    ) -> Result<crate::pricing::PricingReleaseOptOutOutcomeV2> {
+        crate::pricing::postgres::postgres_pricing_release_opt_out_v2(&mut self.client, request)
     }
 
     pub fn pricing_release_head_v2(

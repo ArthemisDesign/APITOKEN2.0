@@ -15,11 +15,13 @@ use registry::pricing::{
     validate_account_policy_shape, validate_active_expectation,
     validate_locked_openkeys_policy_transition, validate_policy_active_expectation,
     validate_pricing_catalog, validate_pricing_release_assignment_extension_v2,
-    validate_pricing_release_policy_v2, validate_pricing_release_recovery_link_v2,
+    validate_pricing_release_opt_out_v2, validate_pricing_release_policy_v2,
+    validate_pricing_release_recovery_link_v2,
     validate_pricing_release_v2, validate_provider_switches, validate_tariff_family,
     AccountPolicyActivationSpec, AccountPolicyBindingSpec, AccountPolicySpec, ActiveExpectation,
     LockedOpenKeysPolicyTransitionSpec, PolicyActiveExpectation, PricingCatalogSpec,
-    PricingMutation, PricingRejection, PricingReleaseAssignmentExtensionV2, PricingReleasePolicyV2,
+    PricingMutation, PricingRejection, PricingReleaseAssignmentExtensionV2,
+    PricingReleaseOptOutOutcomeV2, PricingReleaseOptOutV2, PricingReleasePolicyV2,
     PricingReleaseRecoveryLinkV2, PricingReleaseV2, ProviderSwitchSpec, TariffOverrideInsert,
     TariffOverrideInsertOutcome, TariffOverrideRejection, TARIFF_OVERRIDE_CLOCK_SKEW_GRACE_SECS,
 };
@@ -1139,6 +1141,32 @@ fn invalid_pricing_request(reason: impl Into<String>, identity: Value) -> Respon
     )
 }
 
+/// Dual-path opt-out responses mirror the pricing-mutation shape and add the marker timestamp;
+/// rejections reuse the shared typed mapping (invalid → 400, missing dependency → 409).
+fn pricing_opt_out_response(outcome: PricingReleaseOptOutOutcomeV2, identity: Value) -> Response {
+    match outcome {
+        PricingReleaseOptOutOutcomeV2::Applied {
+            pricing_release_opt_out_ts,
+        } => Json(json!({
+            "result": "applied",
+            "identity": identity,
+            "pricing_release_opt_out_ts": pricing_release_opt_out_ts,
+        }))
+        .into_response(),
+        PricingReleaseOptOutOutcomeV2::Unchanged {
+            pricing_release_opt_out_ts,
+        } => Json(json!({
+            "result": "unchanged",
+            "identity": identity,
+            "pricing_release_opt_out_ts": pricing_release_opt_out_ts,
+        }))
+        .into_response(),
+        PricingReleaseOptOutOutcomeV2::Rejected(rejection) => {
+            pricing_mutation_response(PricingMutation::Rejected(rejection), identity)
+        }
+    }
+}
+
 fn invalid_pricing_path(message: &'static str) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response()
 }
@@ -1777,6 +1805,35 @@ pub async fn prepare_pricing_release_assignment_extension_v2(
     {
         Ok(mutation) => pricing_mutation_response(mutation, identity),
         Err(error) => authority_unavailable("pricing assignment extension v2 prepare", error),
+    }
+}
+
+/// POST /admin/pricing/v2/opt-out — one-way release-path opt-out with the strict-path guard.
+///
+/// Sets `accounts.pricing_release_opt_out_ts` on the billing single writer; exact replay returns
+/// `unchanged` with the stored timestamp. The registry guard fails closed
+/// (`missing_dependency`, 409) unless the account proves a live strict path
+/// (`strict/strict/verified` binding + an active unexpired key with a current activation ACK).
+/// There is no opt-in endpoint by design; repair is a support migration.
+pub async fn pricing_release_opt_out_v2(
+    State(app): State<AppState>,
+    Json(request): Json<PricingReleaseOptOutV2>,
+) -> Response {
+    let identity = json!({
+        "account_id": request.account_id,
+        "created_by": request.created_by,
+        "reason": request.reason,
+    });
+    if let Err(error) = validate_pricing_release_opt_out_v2(&request) {
+        return invalid_pricing_request(error.to_string(), identity);
+    }
+    let billing = match billing(&app) {
+        Ok(billing) => billing,
+        Err(response) => return response,
+    };
+    match billing.pricing_release_opt_out_v2(request).await {
+        Ok(outcome) => pricing_opt_out_response(outcome, identity),
+        Err(error) => authority_unavailable("pricing release opt-out v2", error),
     }
 }
 

@@ -177,6 +177,41 @@ pub struct PricingReleaseV2 {
     pub assignments: Vec<PricingReleaseAssignmentV2>,
 }
 
+/// One-way opt-out of the active pricing release (dual-path retirement of the release-v2
+/// resolver, head 55 final). The engine owns the marker timestamp; `created_by`/`reason` are
+/// operator attribution echoed in the mutation response — migration 0039 added only the marker
+/// column, so this SHA has no durable attribution storage and the request metadata is not
+/// persisted. Once the marker exists, any well-formed request is an exact replay and returns
+/// `Unchanged` with the stored timestamp; there is no opt-in by design.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingReleaseOptOutV2 {
+    pub account_id: String,
+    pub created_by: Option<String>,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PricingReleaseOptOutOutcomeV2 {
+    Applied { pricing_release_opt_out_ts: i64 },
+    Unchanged { pricing_release_opt_out_ts: i64 },
+    Rejected(super::PricingRejection),
+}
+
+pub fn validate_pricing_release_opt_out_v2(request: &PricingReleaseOptOutV2) -> Result<()> {
+    require_id("pricing release opt-out account id", &request.account_id)?;
+    for (label, value) in [
+        ("pricing release opt-out created_by", &request.created_by),
+        ("pricing release opt-out reason", &request.reason),
+    ] {
+        if let Some(value) = value {
+            require_id(label, value)?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PricingReleaseRecoveryLinkV2 {

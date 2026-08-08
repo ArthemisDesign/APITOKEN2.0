@@ -49,7 +49,13 @@ append-only assignment extension for the exact active/recovery pair: for an acco
 after cutover, for a base-covered account as an exact same-policy version override (engine
 migration 0030), and for a base-covered `b2c` account as a `b2c`→`b2b` class-changing conversion
 onto a new B2B policy lineage with identical balance billing, funding generation and metadata
-(engine migration 0034); every other class transition stays rejected. The read-only Stage 8 capture returns the same blocker-preserving report
+(engine migration 0034); every other class transition stays rejected. The one-way dual-path
+opt-out writer `POST /admin/pricing/v2/opt-out` (the engine migration 0039 marker,
+`accounts.pricing_release_opt_out_ts`) is a producer-first route with NO commerce consumer in
+this SHA: the guarded single-writer mutation sets the marker only for an account that proves a
+live strict path (`strict/strict/verified` binding + a current activation ACK on an active key),
+an opted-out account falls through to the strict-policy/legacy reserve paths while the release
+head keeps serving everyone else, and the consumer ships with the commerce migration phase. The read-only Stage 8 capture returns the same blocker-preserving report
 as the CLI through a bounded PostgreSQL reader and does not stage collection/activation
 work. Read-only
 `GET /admin/pricing/v2/provisioning-context` publishes in one snapshot the exact

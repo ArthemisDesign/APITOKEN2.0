@@ -381,6 +381,13 @@ define_admin_routes!(
         admin::prepare_pricing_release_assignment_extension_v2
     ),
     (
+        post,
+        POST,
+        "/admin/pricing/v2/opt-out",
+        "/admin/pricing/v2/opt-out",
+        admin::pricing_release_opt_out_v2
+    ),
+    (
         get,
         GET,
         "/admin/pricing/v2/assignment-extension/{head_version}/{account_id}",

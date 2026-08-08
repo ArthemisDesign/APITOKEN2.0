@@ -386,6 +386,31 @@ side effect. `serve` may only perform the read-only schema verification before c
   strict-policy/legacy reserve paths while the head keeps serving everyone else. The column has
   no default and no constraint, so this SHA changes no behavior; the dependent dual-path resolver
   and opt-out writer ship in a separate SHA after a green migration/watchdog of this checkpoint.
+- **Pricing release opt-out dual path:** the dependent runtime of the 0039 marker.
+  `pricing_release_resolution_v2_in_transaction` answers `None` for an account with a non-NULL
+  `pricing_release_opt_out_ts` (a primary-key read in the same transaction/snapshot as the
+  release read), so every plane takes its existing no-active-release fallthrough to the
+  strict-policy/legacy paths with no data-plane change; a non-opted account resolves exactly as
+  before. `legacy_pricing_path_is_closed` became account-aware: the three non-release reserve
+  writers (scalar, legacy-snapshot, strict-policy) stay closed with `LegacyPricingPathClosedV2` /
+  `ActivePricingRelease` while the head exists, except for an opted-out account; a missing
+  account row counts as NOT opted out, preserving the pre-dual-path error. The pure predicate
+  `head_exists AND NOT opted_out` is unit-tested; the SQL only materializes the two booleans.
+  `postgres_pricing_release_opt_out_v2` (route `POST /admin/pricing/v2/opt-out`, contract —
+  `docs/engine/CONTROL_API.md`) is the one-way guarded writer on the billing single writer: one
+  transaction locks the account `FOR UPDATE`, an existing marker is an exact replay (`Unchanged`
+  with the stored ts, no mutation), and a new marker requires a LIVE strict path — an `active`
+  account, a `strict/strict/verified` binding (the state the strict reserve gate and the
+  migration-0016 triggers require) and an active unexpired key with a current activation ACK (the
+  `KeyAuth::active_at` strict-ack check) — otherwise `MissingDependency`
+  (`active_strict_policy_binding`, or `account` for an unknown id). `created_by`/`reason` are
+  request attribution echoed in the response, not persisted (0039 added no column for them).
+  In-flight release-v2 reservations need no special handling: settlement is dispatched by the
+  immutable reserve-time snapshot, and migration 0016's `account_policy_bindings_strict_state`
+  trigger independently forbids the strict cutover until they drain. There is no opt-in by
+  design. Real-PG gate: `pg::tests::pricing_release_opt_out_dual_path_postgres_matrix` (resolver
+  branch, all three writers in both marker states, writer idempotency/guard, mixed in-flight
+  drain with the exact paid/bonus split, post-opt-out policy settlement).
 - **Hot tariff override runtime authority:** `pricing::tariffs` is the PostgreSQL-only
   read/write side of the 0036 table (migration `0037` widens the family CHECK to admit the dots
   that canonical model ids carry; the old runtime still neither reads nor writes the table).

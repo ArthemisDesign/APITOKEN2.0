@@ -68,7 +68,13 @@ background loops and the HTTP router. Here — and only here — everything is w
   Post-cutover `/admin/pricing/v2/assignment-extension/prepare` atomically appends the exact
   current-head active/recovery assignment pair, and
   `GET /admin/pricing/v2/assignment-extension/{head_version}/{account_id}` provides exact readback.
-  Both remain PostgreSQL-only actor calls and do not issue keys. The release-advance producers
+  Both remain PostgreSQL-only actor calls and do not issue keys. The one-way
+  `POST /admin/pricing/v2/opt-out` (dual path of the release-v2 retirement) writes
+  `accounts.pricing_release_opt_out_ts` through the same single writer; the registry guard fails
+  closed (409 `missing_dependency`) unless the account proves a live strict path
+  (`strict/strict/verified` binding + an active unexpired key with a current activation ACK),
+  exact replay returns `unchanged` with the stored timestamp, and there is no opt-in route by
+  design. The release-advance producers
   `POST /admin/pricing/v2/stage8-evidence/capture` and `POST /admin/pricing/v2/activate` were
   retired with head 55 (the final pricing release) and are deleted; the compile-fixed runtime
   manifest from `AppState` stays for owner-epoch claim stamping and the pricing shadow/resolver.

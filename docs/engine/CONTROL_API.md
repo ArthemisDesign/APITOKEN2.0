@@ -764,6 +764,7 @@ POST /admin/pricing/v2/recovery-link/prepare
 GET  /admin/pricing/v2/recovery-link/{target_generation}/{recovery_generation}
 POST /admin/pricing/v2/assignment-extension/prepare
 GET  /admin/pricing/v2/assignment-extension/{head_version}/{account_id}
+POST /admin/pricing/v2/opt-out
 GET  /admin/pricing/v2/head
 GET  /admin/pricing/v2/provisioning-context
 GET  /admin/pricing/v2/inventory?after_account_id=<id>&limit=500
@@ -784,6 +785,36 @@ release manifest or change balances.
 An assignment extension can make one post-cutover account resolvable under an already-active head;
 the provisioning consumer must therefore complete its exact readback before issuing or enabling a
 usable customer key.
+
+`POST /admin/pricing/v2/opt-out` is the one-way dual-path writer of the release-v2 retirement
+(head 55 is final). The request shape is `{account_id, created_by?, reason?}` (unknown fields are
+rejected; each supplied string must be non-empty and trimmed). `created_by`/`reason` are operator
+attribution echoed back in the response identity — migration 0039 added only the marker column,
+so they are not durably stored; the durable authority is the marker timestamp itself. The write
+runs on the billing single writer in one transaction:
+
+- the account row is locked `FOR UPDATE`; an existing `pricing_release_opt_out_ts` makes any
+  well-formed call an exact replay returning `{"result":"unchanged","pricing_release_opt_out_ts":
+  <stored ts>}` without a mutation (the marker is keyed by the account; attribution is not part
+  of the replay identity);
+- otherwise the guard fails closed: the account must prove a LIVE strict path — an `active`
+  account, a `strict/strict/verified` policy binding (the same state the strict reserve gate and
+  the migration-0016 strict triggers require) and at least one active, unexpired key whose
+  activation ACK matches the active binding exactly (the `KeyAuth::active_at` strict-ack check).
+  Without that proof the route answers 409 `missing_dependency`
+  (`active_strict_policy_binding`, or `account` for an unknown id): opting out an account with no
+  live strict path would silently strand it on the stale `accounts.mult_bp` scalar;
+- on success it answers 200 `{"result":"applied","pricing_release_opt_out_ts":<engine now()>}`
+  and the account's requests fall through to the strict-policy/legacy reserve paths while the
+  release head keeps serving every other account.
+
+In-flight release-v2 reservations of the account are unaffected and settle exactly once from
+their immutable reserve-time snapshots (settlement is dispatched by the snapshot, never by the
+marker); migration 0016's `account_policy_bindings_strict_state` trigger independently forbids
+the strict binding cutover while such reservations are active, so a guarded opt-out can only
+succeed on an already drained account. There is NO opt-in endpoint by design; repair is a
+support migration. No commerce consumer ships with this producer — the consumer arrives with the
+commerce migration phase.
 
 `GET /admin/pricing/v2/provisioning-context` is the post-cutover discovery authority for account
 provisioning outside the commerce database. It returns `{ "context": null }` before cutover. After
