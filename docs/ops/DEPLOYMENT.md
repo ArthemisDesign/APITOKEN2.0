@@ -437,9 +437,11 @@ and the fixed root bridges (`pricing-stage56-admission-gate.sh`,
 Prices and discounts no longer ride a release cycle: prices are hot tariff overrides
 (`POST /admin/pricing/tariffs/override`, see `docs/engine/CONTROL_API.md`) and discounts are
 managed policy rules delivered through the durable pricing-control jobs. Admitting a NEW model
-still advances the engine release pair; the remaining manual path is documented in
-`docs/ops/MODEL_RELEASE_CYCLE.md`. The durable release/evidence rows from past cycles stay in
-the database as immutable historical evidence; never edit or delete them.
+no longer advances the engine release pair either: head 55 is the final pricing release, the
+Stage 5 pair-preparation materializer cluster and the manual release-advance runbook are
+retired, and new models are priced through the engine's `is_model_unpriced` fallthrough plus a
+hot tariff seed (`docs/ops/MODEL_RELEASE_CYCLE.md`). The durable release/evidence rows from
+past cycles stay in the database as immutable historical evidence; never edit or delete them.
 
 ## Local pre-push test gate
 

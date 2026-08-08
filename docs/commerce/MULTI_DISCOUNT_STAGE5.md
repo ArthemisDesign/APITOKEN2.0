@@ -1,9 +1,10 @@
 # Stage 5 — materialization of the target pricing release
 
-> **Superseded (2026-08-07).** The commerce firing pins for this stage (admin routes, worker lanes, deploy gates) were removed with the dismantled release cycle — see `docs/ops/MODEL_RELEASE_CYCLE.md`. This file is kept as the protocol record; the engine-side producers under `/admin/pricing/v2/*` are unchanged.
+> **Superseded (2026-08-07).** The commerce firing pins for this stage (admin routes, worker lanes, deploy gates) were removed with the dismantled release cycle — see `docs/ops/MODEL_RELEASE_CYCLE.md`. This file is kept as the protocol record; the engine-side producers under `/admin/pricing/v2/*` are unchanged. The Stage 5 materializer cluster itself (`packages/db/src/pricing-stage5-materializer-v2{,-store,-cli}.ts`) and the OpenKeys pricing-inventory producer were deleted when the release advance was retired — head 55 is the final pricing release.
 
-Status: the two-phase consumer is implemented in
-`packages/db/src/pricing-stage5-materializer-v2{,-store}.ts` after separate GREEN producer and
+Status: the two-phase consumer was implemented in
+`packages/db/src/pricing-stage5-materializer-v2{,-store}.ts` (deleted with the retired release
+advance) after separate GREEN producer and
 migration checkpoints. The OpenKeys authoritative cursor, the admin-managed service inventory, the
 compile-fixed runtime capability generations 3–6, and migration
 `0029_pricing_release_two_phase_finalize.sql` are already its deployed prerequisites. Stage 5

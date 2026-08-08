@@ -18,9 +18,11 @@ target system has no active `track` mode, no tier ladder, and no 30-day retentio
 > effect was hazardous (a silent B2C policy recompile at a hardcoded 5000 bps plus a head CAS).
 > The invariant descriptions below that still hold — ledger lineage, immutable snapshot pinning,
 > evidence-gated head CAS on the engine side — remain the contract; the engine producers under
-> `/admin/pricing/v2/*` are unchanged and are driven manually per
-> `docs/ops/MODEL_RELEASE_CYCLE.md`. The `packages/db` stage libraries are deleted as well, except
-> the Stage 5 pair-preparation materializer cluster used by the manual release advance.
+> `/admin/pricing/v2/*` are unchanged but no longer driven: the release advance is retired with
+> head 55 as the final pricing release (`docs/ops/MODEL_RELEASE_CYCLE.md`). The `packages/db`
+> stage libraries are deleted as well, including the Stage 5 pair-preparation materializer
+> cluster; new models are priced through the `is_model_unpriced` fallthrough plus a hot tariff
+> seed.
 
 ## 1. Accepted product decisions
 

@@ -30,10 +30,6 @@ import {
 } from "@claude-api/contracts";
 import { describe, expect, it } from "vitest";
 import { stage5Digest } from "./pricing-release-digest.js";
-import {
-  buildStage5V2Capability,
-  buildStage5V2CatalogsAndSwitches,
-} from "./pricing-stage5-materializer-v2.js";
 
 describe("target pricing capability", () => {
   const capabilityDigest = (
@@ -195,36 +191,5 @@ describe("target pricing capability", () => {
       .toContainEqual(expect.objectContaining({ provider_id: "google" }));
     expect(MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES)
       .not.toContainEqual(expect.objectContaining({ canonical_model_id: GPT_IMAGE_2_CANONICAL_MODEL }));
-  });
-
-  it("moves Stage 5 target and recovery materialization to admitted generation 7", () => {
-    const capability = buildStage5V2Capability();
-    const graph = buildStage5V2CatalogsAndSwitches();
-
-    expect(capability).toMatchObject({
-      generation: MULTI_DISCOUNT_GEN7_CAPABILITY_GENERATION,
-      content_digest: MULTI_DISCOUNT_GEN7_CAPABILITY_DIGEST,
-    });
-    expect(graph.catalogs.every((catalog) =>
-      catalog.capability_generation === MULTI_DISCOUNT_GEN7_CAPABILITY_GENERATION
-      && catalog.capability_digest === MULTI_DISCOUNT_GEN7_CAPABILITY_DIGEST
-    )).toBe(true);
-    for (const productId of ["main", "openkeys"]) {
-      const entries = graph.catalogs.find((catalog) => catalog.product_id === productId)?.entries;
-      expect(entries).toContainEqual(expect.objectContaining({
-        provider_id: "openai",
-        canonical_model_id: GPT_IMAGE_2_CANONICAL_MODEL,
-      }));
-      for (const model of [
-        CLAUDE_OPUS_4_6_CANONICAL_MODEL,
-        CLAUDE_OPUS_4_5_CANONICAL_MODEL,
-        CLAUDE_SONNET_4_5_CANONICAL_MODEL,
-      ]) {
-        expect(entries).toContainEqual(expect.objectContaining({
-          provider_id: "anthropic",
-          canonical_model_id: model,
-        }));
-      }
-    }
   });
 });

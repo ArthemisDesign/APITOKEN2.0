@@ -23,16 +23,12 @@ import {
   pricingPolicySnapshotSchema,
   pricingReleaseAssignmentExtensionIdentityV2Schema,
   pricingReleaseAssignmentExtensionV2Schema,
-  pricingReleaseActivationAckV2Schema,
-  pricingReleaseActivationRequestV2Schema,
   pricingReleaseHeadV2Schema,
   pricingReleaseInventoryPageV2Schema,
   pricingReleasePolicyV2Schema,
   pricingReleaseProvisioningContextEnvelopeV2Schema,
   pricingReleaseRecoveryLinkV2Schema,
   pricingReleaseV2Schema,
-  pricingStage8CaptureRequestV2Schema,
-  pricingStage8EngineEvidenceV2Schema,
   providerSwitchSpecSchema,
   type AccountPolicyBinding,
   type AccountPolicySpec,
@@ -56,16 +52,12 @@ import {
   type PricingPolicySnapshot,
   type PricingReleaseAssignmentExtensionIdentityV2,
   type PricingReleaseAssignmentExtensionV2,
-  type PricingReleaseActivationAckV2,
-  type PricingReleaseActivationRequestV2,
   type PricingReleaseHeadV2,
   type PricingReleaseInventoryPageV2,
   type PricingReleasePolicyV2,
   type PricingReleaseProvisioningContextV2,
   type PricingReleaseRecoveryLinkV2,
   type PricingReleaseV2,
-  type PricingStage8CaptureRequestV2,
-  type PricingStage8EngineEvidenceV2,
   type ProviderSwitchSpec,
 } from "@claude-api/contracts";
 import { z } from "zod";
@@ -183,11 +175,6 @@ const releasePolicyV2PrepareIdentitySchema = pricingReleasePolicyV2Schema.pick({
   policy_version: true,
   content_digest: true,
 });
-const releaseV2PrepareIdentitySchema = pricingReleaseV2Schema.pick({
-  generation: true,
-  content_digest: true,
-  release_kind: true,
-});
 const releaseRecoveryLinkV2PrepareIdentitySchema = pricingReleaseRecoveryLinkV2Schema.pick({
   target_generation: true,
   recovery_generation: true,
@@ -195,7 +182,6 @@ const releaseRecoveryLinkV2PrepareIdentitySchema = pricingReleaseRecoveryLinkV2S
 });
 const releaseInventoryLimitV2Schema = z.number().int().min(1).max(500);
 const fundingNormalizationAccountIdV2Schema = z.string().startsWith("acct_").max(200);
-const stage8EvidenceMaxResponseBytes = 16 * 1024 * 1024;
 // One extra attempt for idempotent GET reads: engine blue-green slot cutovers fail individual
 // requests for a sub-second window, and pausing briefly lets the health-gated origin settle.
 const transientGetRetryDelayMs = 300;
@@ -766,45 +752,6 @@ export class EngineClient {
     return policy;
   }
 
-  async getLatestPricingReleasePolicyV2(
-    policyId: string,
-  ): Promise<PricingReleasePolicyV2 | null> {
-    const target = releasePolicyV2PrepareIdentitySchema
-      .pick({ policy_id: true })
-      .parse({ policy_id: policyId });
-    const { response, payload } = await this.request(
-      `/admin/pricing/v2/policy/${encodeURIComponent(target.policy_id)}/latest`,
-      { acceptedStatuses: [404] },
-    );
-    if (response.status === 404) return null;
-    const policy = this.parsePricingResponse(
-      z.object({ policy: pricingReleasePolicyV2Schema }).strict(),
-      payload,
-      response,
-    ).policy;
-    if (policy.policy_id !== target.policy_id) {
-      throw new EngineClientError("engine returned a different latest pricing release policy", response.status, false);
-    }
-    return policy;
-  }
-
-  async preparePricingReleaseV2(
-    input: PricingReleaseV2,
-  ): Promise<TypedPricingMutationAck<z.infer<typeof releaseV2PrepareIdentitySchema>>> {
-    const release = pricingReleaseV2Schema.parse(input);
-    const identity = releaseV2PrepareIdentitySchema.parse({
-      generation: release.generation,
-      content_digest: release.content_digest,
-      release_kind: release.release_kind,
-    });
-    return this.pricingMutation(
-      "/admin/pricing/v2/release/prepare",
-      release,
-      releaseV2PrepareIdentitySchema,
-      identity,
-    );
-  }
-
   async getPricingReleaseV2(generation: number): Promise<PricingReleaseV2 | null> {
     const targetGeneration = pricingReleaseV2Schema.shape.generation.parse(generation);
     const { response, payload } = await this.request(
@@ -821,26 +768,6 @@ export class EngineClient {
       throw new EngineClientError("engine returned a different pricing release", response.status, false);
     }
     return release;
-  }
-
-  async preparePricingReleaseRecoveryLinkV2(
-    input: PricingReleaseRecoveryLinkV2,
-  ): Promise<TypedPricingMutationAck<z.infer<typeof releaseRecoveryLinkV2PrepareIdentitySchema>>> {
-    const recoveryLink = pricingReleaseRecoveryLinkV2Schema.parse(input);
-    if (recoveryLink.recovery_generation <= recoveryLink.target_generation) {
-      throw new RangeError("recovery_generation must be newer than target_generation");
-    }
-    const identity = releaseRecoveryLinkV2PrepareIdentitySchema.parse({
-      target_generation: recoveryLink.target_generation,
-      recovery_generation: recoveryLink.recovery_generation,
-      link_digest: recoveryLink.link_digest,
-    });
-    return this.pricingMutation(
-      "/admin/pricing/v2/recovery-link/prepare",
-      recoveryLink,
-      releaseRecoveryLinkV2PrepareIdentitySchema,
-      identity,
-    );
   }
 
   async getPricingReleaseRecoveryLinkV2(
@@ -931,57 +858,6 @@ export class EngineClient {
       payload,
       response,
     ).context;
-  }
-
-  /**
-   * Captures one read-only engine Stage 8 artifact. The exact raw response is returned alongside
-   * the strict normalized view so the commerce worker can durably preserve and independently
-   * verify the canonical integer-preserving evidence digest.
-   */
-  async capturePricingStage8EvidenceV2(
-    input: PricingStage8CaptureRequestV2,
-  ): Promise<{ evidence: PricingStage8EngineEvidenceV2; raw: string }> {
-    const request = pricingStage8CaptureRequestV2Schema.parse(input);
-    const { response, payload, rawText } = await this.request(
-      "/admin/pricing/v2/stage8-evidence/capture",
-      {
-        method: "POST",
-        body: JSON.stringify(request),
-        maxResponseBytes: stage8EvidenceMaxResponseBytes,
-      },
-    );
-    const evidence = this.parsePricingResponse(pricingStage8EngineEvidenceV2Schema, payload, response);
-    if (
-      evidence.release.target_generation !== String(request.target_generation)
-      || evidence.release.recovery_generation !== String(request.recovery_generation)
-      || evidence.window_start_ts !== String(request.window_start_ts)
-      || evidence.window_end_ts !== String(request.window_end_ts)
-      || evidence.min_samples_per_provider !== String(request.min_samples_per_provider)
-      || evidence.gemini_client_admissions !== String(request.gemini_client_admissions)
-      || evidence.financial_samples.length > request.financial_sample_size
-    ) {
-      throw new EngineClientError(
-        "engine Stage 8 evidence does not match the explicit capture request",
-        response.status,
-        false,
-      );
-    }
-    return { evidence, raw: rawText };
-  }
-
-  async activatePricingReleaseV2(
-    input: PricingReleaseActivationRequestV2,
-  ): Promise<PricingReleaseActivationAckV2> {
-    const request = pricingReleaseActivationRequestV2Schema.parse(input);
-    const { response, payload } = await this.request("/admin/pricing/v2/activate", {
-      method: "POST",
-      body: JSON.stringify(request),
-      acceptedStatuses: [400, 409],
-    });
-    const ack = this.parsePricingResponse(pricingReleaseActivationAckV2Schema, payload, response);
-    if (ack.result === "rejected") return ack;
-    assertPricingReleaseActivationReceipt(request, ack);
-    return ack;
   }
 
   /** Returns one bounded page. Callers building release evidence must exhaust the cursor. */
@@ -1240,48 +1116,5 @@ export class EngineClient {
       throw new EngineClientError(error, response.status, response.status >= 500 || response.status === 429);
     }
     return payload;
-  }
-}
-
-function assertPricingReleaseActivationReceipt(
-  request: PricingReleaseActivationRequestV2,
-  ack: Extract<PricingReleaseActivationAckV2, { result: "applied" | "unchanged" }>,
-): void {
-  const receipt = ack.activation;
-  const expectation = request.expectation;
-  const expectedFrom = expectation === "absent"
-    ? { generation: null, digest: null, headVersion: 0 }
-    : {
-        generation: expectation.exact.active_generation,
-        digest: expectation.exact.active_digest,
-        headVersion: expectation.exact.head_version,
-      };
-  const expectedHead = request.activation_kind === "recovery"
-    ? {
-        generation: request.evidence.recovery_generation,
-        digest: request.evidence.recovery_digest,
-      }
-    : {
-        generation: request.evidence.target_generation,
-        digest: request.evidence.target_digest,
-      };
-  if (
-    receipt.activation_kind !== request.activation_kind
-    || receipt.from_generation !== expectedFrom.generation
-    || receipt.from_digest !== expectedFrom.digest
-    || receipt.expected_head_version !== expectedFrom.headVersion
-    || receipt.head.active_generation !== expectedHead.generation
-    || receipt.head.active_digest !== expectedHead.digest
-    || receipt.head.head_version !== expectedFrom.headVersion + 1
-    || receipt.head.updated_ts !== receipt.activated_ts
-    || receipt.evidence_digest !== request.evidence.evidence_digest
-    || receipt.operator_id !== request.operator_id
-    || receipt.reason !== request.reason
-  ) {
-    throw new EngineClientError(
-      "engine pricing release activation receipt does not match the immutable request",
-      undefined,
-      false,
-    );
   }
 }

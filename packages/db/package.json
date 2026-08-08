@@ -16,7 +16,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --no-file-parallelism",
     "test:integration": "vitest run --no-file-parallelism src/*.integration.test.ts",
-    "pricing:stage5-v2": "pnpm run build && node dist/pricing-stage5-materializer-v2-cli.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "pnpm run build && node dist/migrate.js"
   },

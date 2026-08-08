@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   PricingReleaseAssignmentExtensionV2,
-  PricingReleaseActivationRequestV2,
   PricingReleasePolicyV2,
   PricingReleaseProvisioningContextV2,
   PricingReleaseRecoveryLinkV2,
@@ -1040,31 +1039,8 @@ describe("EngineClient", () => {
         if (url.endsWith("/pricing/v2/policy/global-b2c-v2/version/1")) {
           return Response.json({ policy });
         }
-        if (url.endsWith("/pricing/v2/policy/global-b2c-v2/latest")) {
-          return Response.json({ policy });
-        }
-        if (url.endsWith("/pricing/v2/release/prepare")) {
-          return Response.json({
-            result: "unchanged",
-            identity: {
-              generation: release.generation,
-              content_digest: release.content_digest,
-              release_kind: release.release_kind,
-            },
-          });
-        }
         if (url.endsWith("/pricing/v2/release/10")) {
           return Response.json({ release });
-        }
-        if (url.endsWith("/pricing/v2/recovery-link/prepare")) {
-          return Response.json({
-            result: "stored",
-            identity: {
-              target_generation: recoveryLink.target_generation,
-              recovery_generation: recoveryLink.recovery_generation,
-              link_digest: recoveryLink.link_digest,
-            },
-          });
         }
         if (url.endsWith("/pricing/v2/recovery-link/10/11")) {
           return Response.json({ recovery_link: recoveryLink });
@@ -1113,10 +1089,7 @@ describe("EngineClient", () => {
 
     await expect(client.preparePricingReleasePolicyV2(policy)).resolves.toMatchObject({ result: "stored" });
     await expect(client.getPricingReleasePolicyV2(policy.policy_id, 1)).resolves.toEqual(policy);
-    await expect(client.getLatestPricingReleasePolicyV2(policy.policy_id)).resolves.toEqual(policy);
-    await expect(client.preparePricingReleaseV2(release)).resolves.toMatchObject({ result: "unchanged" });
     await expect(client.getPricingReleaseV2(10)).resolves.toEqual(release);
-    await expect(client.preparePricingReleaseRecoveryLinkV2(recoveryLink)).resolves.toMatchObject({ result: "stored" });
     await expect(client.getPricingReleaseRecoveryLinkV2(10, 11)).resolves.toEqual(recoveryLink);
     await expect(client.preparePricingReleaseAssignmentExtensionV2(extension)).resolves.toMatchObject({
       result: "stored",
@@ -1146,8 +1119,6 @@ describe("EngineClient", () => {
     });
     expect(requests.find((request) => request.url.endsWith("/pricing/v2/policy/prepare")))
       .toMatchObject({ method: "POST", body: policy });
-    expect(requests.find((request) => request.url.endsWith("/pricing/v2/release/prepare")))
-      .toMatchObject({ method: "POST", body: release });
     expect(requests.find((request) => request.url.endsWith("/pricing/v2/assignment-extension/prepare")))
       .toMatchObject({ method: "POST", body: extension });
     expect(requests.find((request) => request.url.endsWith("/pricing/v2/funding/acct_test/normalization")
@@ -1248,268 +1219,6 @@ describe("EngineClient", () => {
       }),
     });
     await expect(forged.getPricingReleaseProvisioningContextV2())
-      .rejects.toThrow("malformed pricing response");
-  });
-
-  it("captures Stage 8 as raw integer-preserving JSON and keeps blocked evidence successful", async () => {
-    const digestV2 = `sha256:v2:${"2".repeat(64)}`;
-    const digestV1 = `sha256:v1:${"1".repeat(64)}`;
-    const raw = JSON.stringify({
-      schema_version: 2,
-      captured_ts: 2_000,
-      window_start_ts: 1_000,
-      window_end_ts: 1_900,
-      min_samples_per_provider: 1,
-      gemini_client_admissions: 7,
-      passed: false,
-      release: {
-        target_generation: 41,
-        target_digest: digestV2,
-        recovery_generation: 42,
-        recovery_digest: digestV2,
-        recovery_link_digest: digestV2,
-        inventory_digest: digestV2,
-        funding_digest: digestV2,
-        target_assignment_count: 1,
-        recovery_assignment_count: 1,
-        active_head: null,
-      },
-      runtime_manifest: {
-        generation: 3,
-        digest: digestV2,
-        capabilities: [{ schema_version: 2, generation: 3, digest: digestV2 }],
-      },
-      catalogs: [],
-      switches: null,
-      counts: {
-        total_accounts: 1,
-        active_accounts: 1,
-        account_classes: { b2c: 1 },
-        reconciled_accounts: 1,
-        snapshots_by_provider: { anthropic: 1, google: 1, openai: 1 },
-        evaluations_by_outcome: { resolved: 3 },
-        comparisons: { different: 3 },
-        scalar_parity_rows: 0,
-        policy_divergence_rows: 3,
-        gemini_usage_rows: 1,
-        gemini_outbox_rows: 1,
-        live_runtime_instances: 2,
-        release_capable_runtime_instances: 1,
-        legacy_inflight_reservations: 3,
-        legacy_inflight_outbox_rows: 2,
-      },
-      financial_samples: [{
-        subject_digest: digestV1,
-        evaluation_digest: digestV2,
-        provider_id: "google",
-        account_class: "b2c",
-        authorized_multiplier_bp: 10_000,
-        payable_multiplier_bp: 5_000,
-        official_hold_nano: "9223372036854775807",
-        legacy_hold_nano: "9223372036854775807",
-        policy_hold_nano: "4611686018427387904",
-        comparison_result: "different",
-      }],
-      engine_inventory_digest: digestV2,
-      funding_digest: digestV2,
-      shadow_digest: digestV2,
-      runtime_floor_digest: digestV2,
-      legacy_inflight_count: 5,
-      blockers: [{
-        code: "live_runtime_below_release_v2_floor",
-        count: 1,
-        subject_digests: [digestV1],
-      }],
-      evidence_digest: digestV2,
-    })
-      .replace('"9223372036854775807"', "9223372036854775807")
-      .replace('"9223372036854775807"', "9223372036854775807")
-      .replace('"4611686018427387904"', "4611686018427387904");
-    let request: { url: string; body: unknown } | undefined;
-    let jsonCalled = false;
-    const client = new EngineClient({
-      baseUrl: "http://engine.test",
-      controlKey: "test-control-key",
-      fetch: async (input, init) => {
-        request = { url: String(input), body: JSON.parse(String(init?.body)) };
-        const response = new Response(raw);
-        Object.defineProperty(response, "json", {
-          value: () => {
-            jsonCalled = true;
-            throw new Error("response.json must not be used for Stage 8 evidence");
-          },
-        });
-        return response;
-      },
-    });
-    const capture = {
-      target_generation: 41,
-      recovery_generation: 42,
-      window_start_ts: 1_000,
-      window_end_ts: 1_900,
-      min_samples_per_provider: 1,
-      financial_sample_size: 100,
-      gemini_client_admissions: 7,
-    };
-
-    await expect(client.capturePricingStage8EvidenceV2(capture)).resolves.toMatchObject({
-      raw,
-      evidence: {
-        passed: false,
-        legacy_inflight_count: "5",
-        financial_samples: [{ official_hold_nano: "9223372036854775807" }],
-      },
-    });
-    expect(jsonCalled).toBe(false);
-    expect(request).toEqual({
-      url: "http://engine.test/admin/pricing/v2/stage8-evidence/capture",
-      body: capture,
-    });
-  });
-
-  it("stops reading Stage 8 evidence at the raw response bound", async () => {
-    const chunk = new Uint8Array(1024 * 1024);
-    let emitted = 0;
-    const client = new EngineClient({
-      baseUrl: "http://engine.test",
-      controlKey: "test-control-key",
-      fetch: async () => new Response(new ReadableStream<Uint8Array>({
-        pull(controller) {
-          if (emitted === 17) {
-            controller.close();
-            return;
-          }
-          emitted += 1;
-          controller.enqueue(chunk);
-        },
-      })),
-    });
-
-    await expect(client.capturePricingStage8EvidenceV2({
-      target_generation: 41,
-      recovery_generation: 42,
-      window_start_ts: 1_000,
-      window_end_ts: 1_900,
-      min_samples_per_provider: 1,
-      financial_sample_size: 100,
-      gemini_client_admissions: 7,
-    })).rejects.toMatchObject({
-      message: "engine Stage 8 evidence exceeds the bounded response size",
-      retryable: false,
-    });
-    expect(emitted).toBe(17);
-  });
-
-  it("validates the exact pricing release activation request, receipt, and rejection", async () => {
-    const digest = (value: string): string => `sha256:v2:${value.repeat(64)}`;
-    const request: PricingReleaseActivationRequestV2 = {
-      activation_kind: "cutover",
-      expectation: "absent",
-      evidence: {
-        evidence_digest: digest("a"),
-        target_generation: 41,
-        target_digest: digest("b"),
-        recovery_generation: 42,
-        recovery_digest: digest("c"),
-        engine_inventory_digest: digest("d"),
-        funding_digest: digest("e"),
-        shadow_digest: digest("f"),
-        runtime_floor_digest: digest("0"),
-        legacy_inflight_count: 7,
-        engine_captured_ts: 1_000,
-        observed_ts: 1_100,
-        valid_until_ts: 1_400,
-      },
-      operator_id: "pricing-control-worker:test",
-      reason: "activate exact prepared Stage 9 target",
-    };
-    let body: unknown;
-    const client = new EngineClient({
-      baseUrl: "http://engine.test",
-      controlKey: "test-control-key",
-      fetch: async (_input, init) => {
-        body = JSON.parse(String(init?.body));
-        return Response.json({
-          result: "applied",
-          activation: {
-            activation_id: 1,
-            activation_kind: "cutover",
-            from_generation: null,
-            from_digest: null,
-            expected_head_version: 0,
-            head: {
-              active_generation: 41,
-              active_digest: digest("b"),
-              head_version: 1,
-              updated_ts: 1_200,
-            },
-            evidence_digest: digest("a"),
-            operator_id: "pricing-control-worker:test",
-            reason: "activate exact prepared Stage 9 target",
-            activated_ts: 1_200,
-          },
-        });
-      },
-    });
-    await expect(client.activatePricingReleaseV2(request)).resolves.toMatchObject({
-      result: "applied",
-      activation: { activation_id: "1", head: { head_version: 1 } },
-    });
-    expect(body).toEqual(request);
-
-    const rejected = new EngineClient({
-      baseUrl: "http://engine.test",
-      controlKey: "test-control-key",
-      fetch: async () => Response.json({
-        result: "rejected",
-        code: "evidence_stale",
-        rejection: {
-          evidence_stale: { now_ts: 1_401, observed_ts: 1_100, valid_until_ts: 1_400 },
-        },
-      }, { status: 409 }),
-    });
-    await expect(rejected.activatePricingReleaseV2(request)).resolves.toMatchObject({
-      result: "rejected",
-      code: "evidence_stale",
-    });
-
-    const forged = new EngineClient({
-      baseUrl: "http://engine.test",
-      controlKey: "test-control-key",
-      fetch: async () => Response.json({
-        result: "unchanged",
-        activation: {
-          activation_id: 1,
-          activation_kind: "cutover",
-          from_generation: null,
-          from_digest: null,
-          expected_head_version: 0,
-          head: {
-            active_generation: 41,
-            active_digest: digest("9"),
-            head_version: 1,
-            updated_ts: 1_200,
-          },
-          evidence_digest: digest("a"),
-          operator_id: "pricing-control-worker:test",
-          reason: "activate exact prepared Stage 9 target",
-          activated_ts: 1_200,
-        },
-      }),
-    });
-    await expect(forged.activatePricingReleaseV2(request))
-      .rejects.toThrow("receipt does not match the immutable request");
-
-    const mismatchedRejection = new EngineClient({
-      baseUrl: "http://engine.test",
-      controlKey: "test-control-key",
-      fetch: async () => Response.json({
-        result: "rejected",
-        code: "invalid",
-        rejection: { cas_mismatch: { actual: null } },
-      }, { status: 400 }),
-    });
-    await expect(mismatchedRejection.activatePricingReleaseV2(request))
       .rejects.toThrow("malformed pricing response");
   });
 

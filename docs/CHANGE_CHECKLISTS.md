@@ -61,15 +61,12 @@ and immutable/dormant artifacts are not rewritten.
       `ANTHROPIC_DATED_SNAPSHOT_ALIASES` — the alias table stays deliberate so an unpublished
       future snapshot can never inherit today's price.
 - [ ] `docs/engine/<provider>.md` — provider's model list.
-- [ ] `docs/commerce/MULTI-DISCOUNT.md` §7 — a new model is NOT included automatically:
-      an explicit catalog generation is required (catalogs/switches/policies in
-      `crates/registry/src/pricing/` via the versioned pricing protocol of the Control API).
-- [ ] A new capability generation's frozen constants and mirrors are GENERATED, never edited by
-      hand: `node tools/pricing-next-generation.mjs <spec.json>` emits the exact
-      `packages/contracts` block, the Rust manifests (`crates/forward/src/pricing.rs`,
-      `crates/server/src/config.rs`), and the Stage 5 v2 materializer constants with the canonical
-      digests already computed; `node --test 'tools/**/*.test.mjs'` replays GEN5→GEN6 and
-      GEN6→GEN7 byte-for-byte.
+- [ ] `docs/commerce/MULTI-DISCOUNT.md` §7 — head 55 is the final pricing release: a new model
+      gets NO capability/catalog generation and no release advance. It is priced through the
+      engine's `is_model_unpriced` → exact-legacy-tariff fallthrough, so the compiled
+      `crates/metering` tariff must be exact and bridged into the hot tariff table
+      (`POST /admin/pricing/tariffs/seed`, "Hot tariff overrides" in
+      `docs/engine/CONTROL_API.md`); later corrections ride `.../override`.
 - [ ] `apps/openkeys` — `assertOpenKeysCatalog()` is checked against `CURRENT_PRODUCT_CATALOG_ENTRIES`
       from `packages/contracts`: without a catalog update OpenKeys fails closed.
 - [ ] `docs/commerce/PRICING.md` — if the model changes customer pricing.

@@ -33,7 +33,7 @@ document, update this index.
 - [AUTHENTICATION.md](commerce/AUTHENTICATION.md) — authentication and authorization.
 - [PRICING.md](commerce/PRICING.md) — B2C 50%/overrides, B2B, OpenKeys, service, bonus, and referral.
 - [MULTI-DISCOUNT.md](commerce/MULTI-DISCOUNT.md) — final discount contract and zero-downtime full-inventory cutover.
-- [MULTI_DISCOUNT_STAGE5.md](commerce/MULTI_DISCOUNT_STAGE5.md) — Stage 5 v2: authoritative inventory and dormant target/recovery materialization (superseded: the commerce firing pins are removed; kept as the protocol record).
+- [MULTI_DISCOUNT_STAGE5.md](commerce/MULTI_DISCOUNT_STAGE5.md) — Stage 5 v2: authoritative inventory and dormant target/recovery materialization (superseded: the commerce firing pins and the materializer cluster are removed; kept as the protocol record).
 - [MULTI_DISCOUNT_STAGE6.md](commerce/MULTI_DISCOUNT_STAGE6.md) — Stage 6: funding reconciliation (superseded: commerce routes/worker lane removed).
 - [MULTI_DISCOUNT_STAGE7.md](commerce/MULTI_DISCOUNT_STAGE7.md) — Stage 7: OpenKeys 1:1 cutover (superseded: the shadow-rollout lane is removed).
 - [MULTI_DISCOUNT_STAGE9.md](commerce/MULTI_DISCOUNT_STAGE9.md) — Stage 9: zero-downtime atomic full-inventory cutover (superseded: the activation lane is removed; the engine CAS producer remains).
@@ -59,7 +59,7 @@ document, update this index.
 
 - [DEPLOYMENT.md](ops/DEPLOYMENT.md) — production deployment runbook (operator-facing).
 - [INFRASTRUCTURE.md](ops/INFRASTRUCTURE.md) — production infrastructure and hosts.
-- [MODEL_RELEASE_CYCLE.md](ops/MODEL_RELEASE_CYCLE.md) — adding a model to the live pricing authority: dormant proof, generated release constants, hot catalog/switch delivery, the manual engine-side release advance, publication. Prices and discounts themselves are hot data and do not use this cycle.
+- [MODEL_RELEASE_CYCLE.md](ops/MODEL_RELEASE_CYCLE.md) — adding a model to the live pricing authority: dormant proof, hot tariff seed with the `is_model_unpriced` fallthrough (head 55 is the final pricing release; the release advance is retired), publication. Prices and discounts themselves are hot data and do not use this cycle.
 - [MONITORING.md](ops/MONITORING.md) — monitoring and alert runbook anchors (`docs/ops/MONITORING.md#<alert>`).
 - [REDIS.md](ops/REDIS.md) — Redis topology (both instances), standing rules for new consumers, and the ranked map of where Redis pays off next.
 - [DELETE_WORKTREE.md](ops/DELETE_WORKTREE.md) — permanent fail-closed cleanup of merged worktrees and explicitly registered clones on macOS.

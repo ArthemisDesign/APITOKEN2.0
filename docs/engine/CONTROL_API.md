@@ -957,9 +957,10 @@ through the strict `packages/contracts` schema and the sole
 verifies the canonical integer-preserving shape and explicit request identity, and returns both the
 parsed report and its exact raw bytes. The durable commerce capture lane (the AdminGuard
 `POST /v1/admin/pricing-stage8-capture-v2/stage` route and the `apps/worker` collector) was
-removed with the dismantled release cycle; the producer is now driven only by the manual
-release-advance path in `docs/ops/MODEL_RELEASE_CYCLE.md`. An
-engine `passed=false` report is therefore a successful capture input.
+removed with the dismantled release cycle, and the typed transport plus the manual
+release-advance runbook were retired with head 55 as the final pricing release
+(`docs/ops/MODEL_RELEASE_CYCLE.md`): the producer now has no caller and stays as expand-only
+contract surface. An engine `passed=false` report is a successful capture input.
 
 Sanitized engine blocker subjects retain their canonical `sha256:v1` domain, while commerce
 authority blockers use the canonical `sha256:v2` Stage 5 digest builder. The combined artifact and
@@ -1107,7 +1108,11 @@ strict release, funding-normalization, assignment-extension and activation wire 
 `packages/engine-client` gained typed prepare/read, account-local normalization/extension and the
 single activation method. The bounded `apps/worker` application-job consumers that used to run the
 staged target-release and activation jobs were removed with the dismantled release cycle; the
-`packages/db` job stores are deleted; activation runs through the typed transport only.
+`packages/db` job stores are deleted. With the release advance retired (head 55 is the final
+pricing release — `docs/ops/MODEL_RELEASE_CYCLE.md`) the release-advance transports
+(`preparePricingReleaseV2`, `preparePricingReleaseRecoveryLinkV2`,
+`getLatestPricingReleasePolicyV2`, `capturePricingStage8EvidenceV2`, `activatePricingReleaseV2`)
+are deleted from the client as well, and the activation producer has no remaining caller.
 
 ### Hot tariff overrides (`/admin/pricing/tariffs*`)
 

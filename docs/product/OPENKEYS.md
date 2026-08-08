@@ -146,34 +146,15 @@ rollouts remain durable historical evidence; new OpenKeys issuance never depende
 `locked-openkeys-transition` endpoint stays as expand-only contract surface with no live
 consumer. The historical protocol record is `docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
 
-### Authoritative pricing inventory v2
+### Authoritative pricing inventory v2 — removed
 
-OpenKeys publishes an additive read-only producer for the Stage 5 v2 materializer only on
-the loopback/internal surface:
-
-```text
-GET /api/internal/pricing/v2/inventory?after_account_id=<id>&limit=500
-x-openkeys-control-key: <ENGINE_CONTROL_KEY>
-```
-
-The response `{inventory:{inventory_digest,accounts[],next_after_account_id}}` is
-strictly validated by `packages/contracts`. The cursor walks `account_id` in byte order,
-page size is bounded to `1..500`, and `inventory_digest=sha256:v2` describes the full
-manifest, not a single page. Each account identity contains only `account_id`, the durable
-source-row `source_id`, the lifecycle `active|disabled|removed`, the source
-`pricing_contract`, the historical `source_multiplier_bp` and its own content digest.
-
-The producer includes all durable `openkeys_keys`, including disabled, removed and legacy
-ones, as well as engine accounts created from the issuance journal that are not yet
-represented by a key row. An unfinished journal account counts as active, a compensated
-one — as disabled; the appearance of the final key row replaces the journal identity in
-the next snapshot without duplicating the account and changes the manifest/content
-digest. It does not return the key secret, ciphertext, view token, live balance or the
-seller's personal data. The `packages/db` Stage 5 v2 consumer must exhaust the cursor,
-require one digest across all pages and repeat the full scan; inventory changing between
-pages makes the result stale. The endpoint materializes nothing, changes no OpenKeys/engine
-rows and does not activate pricing. The consumer is connected on a separate checkpoint
-only after a GREEN exact producer SHA and likewise does not change OpenKeys rows.
+The loopback/internal `GET /api/internal/pricing/v2/inventory` producer (bounded cursor + full
+`sha256:v2` manifest under `X-OpenKeys-Control-Key`) existed only for the Stage 5 v2
+materializer and the release-advance preflight. With the release advance retired (head 55 is
+the final pricing release — `docs/ops/MODEL_RELEASE_CYCLE.md`) its only consumers are gone, so
+the route and `apps/openkeys/src/lib/pricing-inventory.ts` are deleted; the
+`openKeysPricingInventory*V2` wire schemas in `packages/contracts` remain as expand-only
+contract surface until a separate removal pass.
 
 ## Administrative interfaces
 
