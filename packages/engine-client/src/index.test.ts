@@ -3,7 +3,6 @@ import type {
   PricingReleaseAssignmentExtensionV2,
   PricingReleasePolicyV2,
   PricingReleaseProvisioningContextV2,
-  PricingReleaseRecoveryLinkV2,
   PricingReleaseV2,
 } from "@claude-api/contracts";
 import { EngineClient, EngineClientError } from "./index.js";
@@ -957,13 +956,6 @@ describe("EngineClient", () => {
         assignment_digest: "assignment-acct-test-v2",
       }],
     };
-    const recoveryLink: PricingReleaseRecoveryLinkV2 = {
-      target_generation: 10,
-      target_digest: "target-release-v2",
-      recovery_generation: 11,
-      recovery_digest: "recovery-release-v2",
-      link_digest: "target-recovery-link-v2",
-    };
     const extension: PricingReleaseAssignmentExtensionV2 = {
       provisioning_head_generation: 10,
       provisioning_head_digest: "target-release-v2",
@@ -1042,8 +1034,16 @@ describe("EngineClient", () => {
         if (url.endsWith("/pricing/v2/release/10")) {
           return Response.json({ release });
         }
-        if (url.endsWith("/pricing/v2/recovery-link/10/11")) {
-          return Response.json({ recovery_link: recoveryLink });
+        if (url.endsWith("/pricing/v2/opt-out")) {
+          return Response.json({
+            result: "applied",
+            identity: {
+              account_id: "acct_new",
+              created_by: "commerce-worker",
+              reason: "new-account direct strict provisioning",
+            },
+            pricing_release_opt_out_ts: 1_700_000_000,
+          });
         }
         if (url.endsWith("/pricing/v2/assignment-extension/prepare")) {
           return Response.json({
@@ -1090,7 +1090,19 @@ describe("EngineClient", () => {
     await expect(client.preparePricingReleasePolicyV2(policy)).resolves.toMatchObject({ result: "stored" });
     await expect(client.getPricingReleasePolicyV2(policy.policy_id, 1)).resolves.toEqual(policy);
     await expect(client.getPricingReleaseV2(10)).resolves.toEqual(release);
-    await expect(client.getPricingReleaseRecoveryLinkV2(10, 11)).resolves.toEqual(recoveryLink);
+    await expect(client.optOutPricingReleaseV2({
+      accountId: "acct_new",
+      createdBy: "commerce-worker",
+      reason: "new-account direct strict provisioning",
+    })).resolves.toEqual({
+      result: "applied",
+      identity: {
+        account_id: "acct_new",
+        created_by: "commerce-worker",
+        reason: "new-account direct strict provisioning",
+      },
+      pricing_release_opt_out_ts: 1_700_000_000,
+    });
     await expect(client.preparePricingReleaseAssignmentExtensionV2(extension)).resolves.toMatchObject({
       result: "stored",
       identity: { account_id: "acct_new", provisioning_head_version: 1 },
@@ -1264,7 +1276,7 @@ describe("EngineClient", () => {
     await expect(client.preparePricingReleasePolicyV2(malformedPolicy)).rejects.toThrow();
     await expect(client.getPricingReleaseInventoryV2({ limit: 501 })).rejects.toThrow();
     await expect(client.getPricingReleaseInventoryV2({ afterAccountId: "not-an-account" })).rejects.toThrow();
-    await expect(client.getPricingReleaseRecoveryLinkV2(10, 10)).rejects.toThrow("newer");
+    await expect(client.optOutPricingReleaseV2({ accountId: "not-an-account" })).rejects.toThrow();
     await expect(client.getFundingNormalizationPlanV2("not-an-account")).rejects.toThrow();
     await expect(client.applyFundingNormalizationV2("acct_test", {
       expected_source_state_digest: "sha256:v2:not-canonical",

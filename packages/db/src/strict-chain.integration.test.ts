@@ -4,15 +4,14 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FundingNormalizationPlanV2 } from "@claude-api/contracts";
+import type { FundingNormalizationPlanV2, PricingReleaseOptOutAckV2 } from "@claude-api/contracts";
 import type { AccountStrictCutoverPreflightTransport } from "@claude-api/engine-client";
 import { createEmailUser } from "./auth.js";
 import { createDatabase, type Database } from "./client.js";
 import { MIGRATIONS_FOLDER } from "./migrate.js";
 import { runStage5Backfill } from "./multi-discount-backfill.js";
 import { convertCustomerToBusiness } from "./pricing.js";
-import { stageAccountStrictCutoverJob } from "./pricing-control-jobs.js";
-import { updateManagedPricingPolicy } from "./pricing-policy-write.js";
+import { materializeProvisionedUserPolicy, updateManagedPricingPolicy } from "./pricing-policy-write.js";
 import { advanceAccountStrictChain, listPendingStrictChainAccounts } from "./strict-chain.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -58,9 +57,21 @@ function shadowPricingState() {
   };
 }
 
-function fakePreflight(input: { plan?: FundingNormalizationPlanV2 | null } = {}) {
+type StrictChainTestTransport = AccountStrictCutoverPreflightTransport & {
+  optOutPricingReleaseV2(input: { accountId: string }): Promise<PricingReleaseOptOutAckV2>;
+};
+
+function fakeEngine(input: {
+  plan?: FundingNormalizationPlanV2 | null;
+  optOut?: PricingReleaseOptOutAckV2;
+} = {}) {
   const keyStamps: Array<{ keyId: string; ack: unknown }> = [];
   const calls: string[] = [];
+  const optOutAck: PricingReleaseOptOutAckV2 = input.optOut ?? {
+    result: "applied",
+    identity: { account_id: "acct_test" },
+    pricing_release_opt_out_ts: 1_700_000_000,
+  };
   const transport = {
     getFundingNormalizationPlanV2: vi.fn(async () => {
       calls.push("plan");
@@ -84,11 +95,15 @@ function fakePreflight(input: { plan?: FundingNormalizationPlanV2 | null } = {})
     setKeyStatus: vi.fn(async (keyId: string, _status: string, ack: unknown) => {
       keyStamps.push({ keyId, ack });
     }),
-  } as unknown as AccountStrictCutoverPreflightTransport;
+    optOutPricingReleaseV2: vi.fn(async () => {
+      calls.push("opt-out");
+      return optOutAck;
+    }),
+  } as unknown as StrictChainTestTransport;
   return { transport, keyStamps, calls };
 }
 
-describe.runIf(Boolean(connectionString))("automatic strict chain", () => {
+describe.runIf(Boolean(connectionString))("new-account direct strict chain", () => {
   let admin: Client;
   let seedClient: Client;
   let database: Database;
@@ -138,18 +153,24 @@ describe.runIf(Boolean(connectionString))("automatic strict chain", () => {
     }
   }, TEST_TIMEOUT_MS);
 
-  async function convertUser(email: string): Promise<{ userId: string; engineAccountId: string }> {
+  // The real registration arming path: a fresh user whose engine account is provisioned gets
+  // the managed global B2C policy materialized, and provisioning arms the direct strict chain.
+  async function registerUser(email: string): Promise<{ userId: string; engineAccountId: string }> {
     const user = await createEmailUser(database, email, "password-hash");
     const engineAccountId = `acct_chain_${user.id.replaceAll("-", "")}`;
     await seedClient.query(`
       UPDATE engine_accounts SET engine_account_id = $2, status = 'active' WHERE user_id = $1
     `, [user.id, engineAccountId]);
-    await convertCustomerToBusiness(database, {
+    await runStage5Backfill(database, {
+      schema_version: 1,
+      engine_accounts: [{ account_id: engineAccountId, multiplier_bp: 5_000, status: "active" }],
+      openkeys_accounts: [],
+    }, { mode: "safe" });
+    const materialized = await materializeProvisionedUserPolicy(database, {
       userId: user.id,
-      actorId: "admin@example.test",
-      reason: "customer negotiated business terms",
-      multiplierBp: 4_000,
+      engineAccountId,
     });
+    expect(materialized.policyRequired).toBe(true);
     return { userId: user.id, engineAccountId };
   }
 
@@ -159,7 +180,8 @@ describe.runIf(Boolean(connectionString))("automatic strict chain", () => {
       UPDATE account_policy_bindings
       SET applied_effective_version = desired_effective_version,
           applied_digest = desired_digest,
-          policy_enforcement = 'shadow', last_ack_at = now(), sync_state = 'confirmed'
+          policy_enforcement = 'shadow', reconciliation_state = 'verified',
+          last_ack_at = now(), sync_state = 'confirmed'
       WHERE user_id = $1
     `, [userId]);
     await seedClient.query(`
@@ -192,7 +214,7 @@ describe.runIf(Boolean(connectionString))("automatic strict chain", () => {
   }
 
   // A durable cutover receipt with its FK parents, marking the post-cutover era for the
-  // commerce-local check. The receipt payload is what the real activation writer stores.
+  // commerce-local check in the policy writers.
   async function markCutoverCompleted(): Promise<void> {
     for (const [generation, kind] of [[901, "target"], [902, "recovery"]] as const) {
       await seedClient.query(`
@@ -248,30 +270,30 @@ describe.runIf(Boolean(connectionString))("automatic strict chain", () => {
     ]);
   }
 
-  it("waits for the shadow confirmation, then stages the strict cutover and disarms", async () => {
-    const { userId } = await convertUser("chain-staged@example.test");
+  it("provisioning arms the chain, which then drives shadow→strict→opt-out idempotently", async () => {
+    const { userId } = await registerUser("chain-register@example.test");
 
-    // The conversion armed the chain; while the shadow delivery is in flight the sweep finds
-    // the candidate but makes no engine call and changes nothing.
+    // Registration provisioning armed the chain; while the shadow delivery is in flight the
+    // sweep finds the candidate but makes no engine call and changes nothing.
     const pending = await listPendingStrictChainAccounts(database, 10);
     expect(pending.map((candidate) => candidate.userId)).toEqual([userId]);
-    const idle = fakePreflight();
+    const idle = fakeEngine();
     await expect(advanceAccountStrictChain(database, idle.transport, pending[0]!))
       .resolves.toEqual({ status: "pending" });
     expect(idle.calls).toEqual([]);
     expect(await bindingState(userId)).toMatchObject({
-      policy_enforcement: "legacy_scalar",
       strict_chain_pending: true,
       last_error: null,
     });
 
     // The worker's delivery confirms the shadow policy: the chain now runs the shared
     // preflight (exact ACK on the active key only) and stages the atomic strict binding.
+    // The flag stays armed — it is disarmed only by the opt-out step.
     await confirmShadowDelivery(userId);
-    const engine = fakePreflight();
+    const staging = fakeEngine();
     const advanced = await advanceAccountStrictChain(
       database,
-      engine.transport,
+      staging.transport,
       (await listPendingStrictChainAccounts(database, 10))[0]!,
     );
     expect(advanced).toMatchObject({
@@ -279,8 +301,8 @@ describe.runIf(Boolean(connectionString))("automatic strict chain", () => {
       funding: "nothing_to_normalize",
       keysStamped: 1,
     });
-    expect(engine.calls).toEqual(["plan", "state", "keys"]);
-    expect(engine.keyStamps).toEqual([{
+    expect(staging.calls).toEqual(["plan", "state", "keys"]);
+    expect(staging.keyStamps).toEqual([{
       keyId: "key_active",
       ack: { effectivePolicyVersion: 1, policyDigest: "engine-digest-v1" },
     }]);
@@ -289,7 +311,7 @@ describe.runIf(Boolean(connectionString))("automatic strict chain", () => {
       funding_enforcement: "strict",
       reconciliation_state: "verified",
       sync_state: "confirmed",
-      strict_chain_pending: false,
+      strict_chain_pending: true,
       last_error: null,
     });
     const job = await seedClient.query<{ status: string; binding: unknown }>(`
@@ -305,30 +327,75 @@ describe.runIf(Boolean(connectionString))("automatic strict chain", () => {
       },
     });
 
-    // The flag is disarmed by the staging transaction: the next sweep finds nothing, and a
-    // direct cutover replay reports the already-strict state instead of a duplicate.
+    // While the engine has not durably flipped (its guard answers missing_dependency), the
+    // chain waits quietly: armed, no error recorded, and the account is NOT opted out.
+    const waiting = fakeEngine({
+      optOut: {
+        result: "rejected",
+        code: "missing_dependency",
+        identity: {},
+        rejection: { missing_dependency: { dependency: "active_strict_policy_binding" } },
+      },
+    });
+    await expect(advanceAccountStrictChain(
+      database,
+      waiting.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    )).resolves.toEqual({ status: "pending" });
+    expect(waiting.calls).toEqual(["opt-out"]);
+    expect(await bindingState(userId)).toMatchObject({
+      strict_chain_pending: true,
+      last_error: null,
+    });
+
+    // The strict delivery confirmed engine-side: the opt-out marker lands and the flag disarms.
+    const completing = fakeEngine();
+    await expect(advanceAccountStrictChain(
+      database,
+      completing.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    )).resolves.toEqual({ status: "opted_out" });
+    expect(completing.calls).toEqual(["opt-out"]);
+    expect(await bindingState(userId)).toMatchObject({
+      policy_enforcement: "strict",
+      strict_chain_pending: false,
+      last_error: null,
+    });
     expect(await listPendingStrictChainAccounts(database, 10)).toEqual([]);
+
+    // Worker redelivery or a duplicate sweep pass can never double-apply: the engine replay is
+    // `unchanged`, which is also a completed chain.
     await seedClient.query(`
       UPDATE account_policy_bindings SET strict_chain_pending = true WHERE user_id = $1
     `, [userId]);
-    await expect(stageAccountStrictCutoverJob(database, { userId }))
-      .resolves.toMatchObject({ status: "already_strict" });
+    const replay = fakeEngine({
+      optOut: {
+        result: "unchanged",
+        identity: { account_id: "acct_test" },
+        pricing_release_opt_out_ts: 1_700_000_000,
+      },
+    });
+    await expect(advanceAccountStrictChain(
+      database,
+      replay.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    )).resolves.toEqual({ status: "opted_out" });
     expect((await bindingState(userId))?.strict_chain_pending).toBe(false);
   });
 
   it("records a blocked funding preflight on the binding and keeps the chain armed", async () => {
-    const { userId, engineAccountId } = await convertUser("chain-blocked@example.test");
+    const { userId, engineAccountId } = await registerUser("chain-blocked@example.test");
     await confirmShadowDelivery(userId);
 
-    const engine = fakePreflight({ plan: blockedPlan(engineAccountId) });
+    const engine = fakeEngine({ plan: blockedPlan(engineAccountId) });
     const candidate = (await listPendingStrictChainAccounts(database, 10))[0]!;
     const result = await advanceAccountStrictChain(database, engine.transport, candidate);
     expect(result.status).toBe("failed");
     expect((result as { error: string }).error).toContain(
       "active_legacy_reservation: reservation r1 is open",
     );
-    // The failure is loud on the binding and the chain stays armed for the next sweep —
-    // resolving the blocker lets a later pass complete without operator re-staging.
+    // The failure is loud on the binding and the chain stays armed for the next sweep — the
+    // account is never opted out and keeps working on its current path.
     expect(await bindingState(userId)).toMatchObject({
       policy_enforcement: "shadow",
       strict_chain_pending: true,
@@ -337,82 +404,54 @@ describe.runIf(Boolean(connectionString))("automatic strict chain", () => {
     expect(engine.calls).toEqual(["plan"]);
   });
 
-  it("disarms a flagged binding that is already strict without engine I/O", async () => {
-    const { userId } = await convertUser("chain-strict@example.test");
+  it("records a non-transient opt-out rejection on the binding and keeps the chain armed", async () => {
+    const { userId } = await registerUser("chain-rejected@example.test");
     await confirmShadowDelivery(userId);
-    // A concurrent manual cutover flipped enforcement first; the sweep only disarms the flag.
-    await seedClient.query(`
-      UPDATE account_policy_bindings SET policy_enforcement = 'strict' WHERE user_id = $1
-    `, [userId]);
+    const staging = fakeEngine();
+    await advanceAccountStrictChain(
+      database,
+      staging.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    );
 
-    const engine = fakePreflight();
-    const candidate = (await listPendingStrictChainAccounts(database, 10))[0]!;
-    await expect(advanceAccountStrictChain(database, engine.transport, candidate))
-      .resolves.toEqual({ status: "already_strict" });
-    expect(engine.calls).toEqual([]);
-    expect((await bindingState(userId))?.strict_chain_pending).toBe(false);
+    const rejected = fakeEngine({
+      optOut: {
+        result: "rejected",
+        code: "invalid",
+        identity: {},
+        rejection: { invalid: { reason: "account is disabled" } },
+      },
+    });
+    const result = await advanceAccountStrictChain(
+      database,
+      rejected.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    );
+    expect(result.status).toBe("failed");
+    expect(await bindingState(userId)).toMatchObject({
+      strict_chain_pending: true,
+      last_error: "pricing release opt-out rejected with invalid",
+    });
   });
 
-  it("drops a permanently impossible chain target with a loud binding error", async () => {
-    // A plain B2C account never enters the chain through conversion/saves; a stray flag on a
-    // non-B2B binding is a permanent configuration error, not a retryable one.
-    const user = await createEmailUser(database, "chain-b2c@example.test", "password-hash");
+  it("stops arming the legacy conversion chain for post-cutover conversions and saves", async () => {
+    await markCutoverCompleted();
+    const user = await createEmailUser(database, "chain-post-cutover@example.test", "password-hash");
     const engineAccountId = `acct_chain_${user.id.replaceAll("-", "")}`;
     await seedClient.query(`
       UPDATE engine_accounts SET engine_account_id = $2, status = 'active' WHERE user_id = $1
     `, [user.id, engineAccountId]);
-    await runStage5Backfill(database, {
-      schema_version: 1,
-      engine_accounts: [{ account_id: engineAccountId, multiplier_bp: 5_000, status: "active" }],
-      openkeys_accounts: [],
-    }, { mode: "safe" });
-    await confirmShadowDelivery(user.id);
-    await seedClient.query(`
-      UPDATE account_policy_bindings
-      SET strict_chain_pending = true, reconciliation_state = 'verified'
-      WHERE user_id = $1
-    `, [user.id]);
-
-    const engine = fakePreflight();
-    const candidate = (await listPendingStrictChainAccounts(database, 10))[0]!;
-    const result = await advanceAccountStrictChain(database, engine.transport, candidate);
-    expect(result.status).toBe("failed");
-    expect((result as { error: string }).error).toContain("converted B2B clients only");
-    expect(await bindingState(user.id)).toMatchObject({
-      strict_chain_pending: false,
-      last_error: "per-account strict cutover is supported for converted B2B clients only",
+    await convertCustomerToBusiness(database, {
+      userId: user.id,
+      actorId: "admin@example.test",
+      reason: "customer negotiated business terms",
+      multiplierBp: 4_000,
     });
-  });
-
-  it("disarms a pending chain as superseded once the global cutover is durable", async () => {
-    const { userId } = await convertUser("chain-superseded@example.test");
-    await confirmShadowDelivery(userId);
-    // The fleet head CAS lands while the chain is still armed: the release-v2 authority takes
-    // over the account, so the legacy lane must stand down without engine I/O.
-    await markCutoverCompleted();
-
-    const engine = fakePreflight();
-    const candidate = (await listPendingStrictChainAccounts(database, 10))[0]!;
-    await expect(advanceAccountStrictChain(database, engine.transport, candidate))
-      .resolves.toEqual({ status: "superseded" });
-    expect(engine.calls).toEqual([]);
-    expect((await bindingState(userId))?.strict_chain_pending).toBe(false);
-
-    // The legacy staging lane itself refuses post-cutover, and the sweep never lists the
-    // disarmed binding again.
-    await expect(stageAccountStrictCutoverJob(database, { userId }))
-      .rejects.toMatchObject({ code: "post_cutover" });
-    expect(await listPendingStrictChainAccounts(database, 10)).toEqual([]);
-  });
-
-  it("stops arming the legacy chain for post-cutover conversions and saves", async () => {
-    await markCutoverCompleted();
-    const { userId } = await convertUser("chain-post-cutover@example.test");
-    expect((await bindingState(userId))?.strict_chain_pending).toBe(false);
+    expect((await bindingState(user.id))?.strict_chain_pending).toBe(false);
 
     await updateManagedPricingPolicy(database, {
       ownerType: "b2b_client",
-      ownerId: userId,
+      ownerId: user.id,
       expectedVersion: 1,
       rules: [{
         scope: { provider: { providerId: "anthropic" } },
@@ -422,7 +461,7 @@ describe.runIf(Boolean(connectionString))("automatic strict chain", () => {
       actorId: "admin@example.test",
       reason: "post-cutover policy save",
     });
-    expect((await bindingState(userId))?.strict_chain_pending).toBe(false);
+    expect((await bindingState(user.id))?.strict_chain_pending).toBe(false);
     expect(await listPendingStrictChainAccounts(database, 10)).toEqual([]);
 
     // The global B2C policy is pinned by the active release: post-cutover edits fail loudly

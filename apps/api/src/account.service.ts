@@ -4,17 +4,18 @@ import {
   findOwnedApiKey,
   getCustomerPricingPolicyView,
   getPricingView,
-  ensurePricingReleaseProvisioningV2,
   isSerializationConflictV2,
   markEngineAccountMissing,
   markOwnedApiKeyDisabled,
   materializeProvisionedUserPolicy,
-  PricingReleaseProvisioningV2Error,
+  optOutStrictChainAccount,
   PricingPolicyWriteError,
+  readUserPolicyBindingState,
   saveIssuedApiKey,
   syncEngineApiKey,
   type Database,
   type StoredApiKey,
+  type UserPolicyBindingState,
 } from "@claude-api/db";
 import { EngineClient, EngineClientError, type EngineKeyActivationPolicyAck } from "@claude-api/engine-client";
 import {
@@ -361,23 +362,49 @@ export class AccountService {
       throw error;
     }
     await this.ensurePolicyReadyForKey(userId);
+    // Release-v2 retirement (phase 2.1): a newly provisioned account is armed for the direct
+    // strict chain and must be strict/strict/verified with the exact ACK before its first key
+    // exists — the engine serves uncovered accounts only after the one-way opt-out marker, and
+    // the marker's guard requires a strict binding plus one ACKed key. Existing accounts are
+    // not armed and keep their release coverage untouched.
+    const chainBinding = await this.awaitDirectStrictChain(userId);
     const spendLimitNano = input.spendLimitUsd === undefined ? undefined : usdToNano(input.spendLimitUsd);
     const expiresAt = input.expiresAt === undefined ? undefined : new Date(input.expiresAt);
     const { accountId, value: issued } = await this.withEngineAccountId(
       userId,
       async (id) => {
-        await this.ensureReleaseReadyForKey(userId, id);
+        const activationAck = await this.strictKeyActivationAck(id);
+        if (chainBinding?.strictChainPending && !("activationPolicyAck" in activationAck)) {
+          // The commerce binding says strict but the engine flip has not landed yet: issuing
+          // now would create a key that cannot pass the opt-out guard. Wait for the worker.
+          throw new ConflictException("engine account strict policy is waiting for synchronization");
+        }
         return this.engine.issueKey(id, {
           ...(input.label !== undefined ? { label: input.label } : {}),
           ...(spendLimitNano !== undefined ? { spendLimitNano } : {}),
           ...(expiresAt !== undefined ? { expiresAt } : {}),
-          ...(await this.strictKeyActivationAck(id)),
+          ...activationAck,
         });
       },
     );
     try {
       await this.ensurePolicyReadyForKey(userId);
-      await this.ensureReleaseReadyForKey(userId, accountId);
+      if (chainBinding?.strictChainPending) {
+        // The key was born with the exact activation ACK, so the opt-out guard's last
+        // precondition now holds: write the one-way retirement marker BEFORE the secret is
+        // returned. Without the marker the engine refuses to serve the uncovered account, so a
+        // settled chain is part of key issuance, not an asynchronous afterthought. The call is
+        // replay-safe and the worker's chain pass applies the same marker idempotently.
+        const optOut = await optOutStrictChainAccount(this.database, this.engine, {
+          bindingId: chainBinding.bindingId,
+          engineAccountId: accountId,
+          createdBy: "commerce-api",
+          reason: "new-account direct strict provisioning",
+        });
+        if (optOut !== "opted_out") {
+          throw new ConflictException("pricing release opt-out is still settling");
+        }
+      }
     } catch (error) {
       try {
         await this.engine.disableKey(issued.key_id);
@@ -545,17 +572,27 @@ export class AccountService {
     }
   }
 
-  private async ensureReleaseReadyForKey(userId: string, engineAccountId: string): Promise<void> {
-    try {
-      await ensurePricingReleaseProvisioningV2(this.database, this.engine, { userId, engineAccountId });
-    } catch (error) {
-      if (error instanceof PricingReleaseProvisioningV2Error) {
-        // The code distinguishes a transient head race from a permanent assignment conflict —
-        // surface it instead of claiming everything is "still pending".
-        throw new ConflictException(`pricing release provisioning failed: ${error.code}`);
-      }
-      throw error;
+  /**
+   * Bounded, read-only wait for the direct strict chain of a newly provisioned account. Returns
+   * the latest binding state: `strictChainPending` tells the caller whether the opt-out marker
+   * still has to be written (an armed chain) or is already done (disarmed by the worker).
+   * Existing accounts are not armed and return immediately; an armed chain that cannot reach
+   * strict/strict/verified inside the budget fails closed with the pending signal — the
+   * account is never opted out and no unusable key is issued.
+   */
+  private async awaitDirectStrictChain(userId: string): Promise<UserPolicyBindingState | null> {
+    let binding = await readUserPolicyBindingState(this.database, userId);
+    if (!binding?.strictChainPending) return binding;
+    for (let attempt = 0; attempt < STRICT_CHAIN_CONFIRMATION_ATTEMPTS; attempt += 1) {
+      if (isStrictChainConfirmed(binding)) return binding;
+      await new Promise((resolve) => setTimeout(resolve, PROVISIONING_CONFIRMATION_DELAY_MS));
+      binding = await readUserPolicyBindingState(this.database, userId);
+      if (!binding) return null;
+      // The worker may complete the whole chain (including the opt-out) while we wait.
+      if (!binding.strictChainPending) return binding;
     }
+    if (isStrictChainConfirmed(binding) || !binding.strictChainPending) return binding;
+    throw new ConflictException("engine account strict policy is waiting for synchronization");
   }
 
   private async withEngineAccountId<T>(
@@ -742,6 +779,18 @@ function maskApiKey(key: string): string {
 // case settles inside one request, without ever turning a dashboard load into a long hang.
 const PROVISIONING_CONFIRMATION_ATTEMPTS = 6;
 const PROVISIONING_CONFIRMATION_DELAY_MS = 500;
+// The strict chain needs one staging pass plus one delivery pass of the worker's fast tick
+// after the shadow confirmation, so its budget is wider than the single-delivery wait above.
+const STRICT_CHAIN_CONFIRMATION_ATTEMPTS = 16;
+
+function isStrictChainConfirmed(binding: UserPolicyBindingState): boolean {
+  return binding.policyEnforcement === "strict"
+    && binding.syncState === "confirmed"
+    && binding.desiredEffectiveVersion !== null
+    && binding.desiredEffectiveVersion === binding.appliedEffectiveVersion
+    && binding.desiredDigest !== null
+    && binding.desiredDigest === binding.appliedDigest;
+}
 
 export function isRetryableEngineFailure(error: unknown): boolean {
   // A 404 is deliberately NOT here. "No such account" is a permanent answer, and reporting it as

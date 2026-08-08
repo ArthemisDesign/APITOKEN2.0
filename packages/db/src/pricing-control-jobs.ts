@@ -851,9 +851,10 @@ export class AccountStrictCutoverError extends Error {
 /**
  * Commerce-local proof that the global release cutover has completed: a complete cutover
  * activation receipt is durable. Post-cutover the release-v2 authority owns admission and
- * pricing, so the legacy per-account strict lane must not fire — B2B enforcement moves through
- * the append-only assignment extension lane (syncPricingReleasePolicyOverrideV2 /
- * ensurePricingReleaseProvisioningV2) instead.
+ * pricing, so the legacy per-account strict lane (the admin B2B-conversion cutover endpoint)
+ * must not fire — per-account B2B enforcement for release-covered accounts moves through the
+ * append-only assignment extension lane (syncPricingReleasePolicyOverrideV2), and new accounts
+ * go through the direct strict chain instead (packages/db/src/strict-chain.ts).
  */
 export async function pricingReleaseCutoverCompleted(client: PoolClient): Promise<boolean> {
   const result = await client.query<{ present: boolean }>(`
@@ -981,6 +982,106 @@ export async function stageAccountStrictCutoverJob(
       UPDATE account_policy_bindings SET strict_chain_pending = false, updated_at = now()
       WHERE id = $1 AND strict_chain_pending
     `, [row.id]);
+    await client.query("COMMIT");
+    return {
+      status: "staged",
+      jobId,
+      jobStatus: "pending",
+      engineAccountId: row.engine_account_id,
+      effectiveVersion,
+      contentDigest: loaded.spec.content_digest,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * The strict staging half of the new-account direct strict chain (release-v2 retirement,
+ * phase 2.1): a durable account-policy control job carrying the atomic strict policy + strict
+ * funding + verified binding for exactly the version the engine already confirmed under shadow,
+ * for any provisioned account class — unlike `stageAccountStrictCutoverJob` (the retired
+ * pre-cutover B2B-conversion lane) there is no post-cutover or account-class guard, because
+ * this lane IS the post-cutover provisioning path.
+ *
+ * The engine enforces the flip atomically: funding buckets must equal the account aggregates
+ * and every active key must carry the exact active-policy ACK at flip time. The chain driver
+ * (`packages/db/src/strict-chain.ts`) arranges both through the shared preflight before staging
+ * and keeps them converged while the delivery is in flight; the delivery worker re-stamps keys
+ * on the new head. The account's chain flag is NOT disarmed here — it is disarmed only after
+ * the engine opt-out marker lands, so a replay of this staging never skips the retirement
+ * step. Idempotent: an exact replay returns the already-staged job, and an already-strict
+ * binding is a reported no-op.
+ */
+export async function stageProvisionedAccountStrictJob(
+  database: Database,
+  input: { userId: string },
+): Promise<AccountStrictCutoverStageResult> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const binding = await client.query<{
+      id: string;
+      engine_account_id: string;
+      policy_enforcement: string;
+      applied_effective_version: string | null;
+      reconciliation_state: string;
+    }>(`
+      SELECT id::text, engine_account_id, policy_enforcement,
+             applied_effective_version::text, reconciliation_state
+      FROM account_policy_bindings WHERE user_id = $1 FOR UPDATE
+    `, [input.userId]);
+    const row = binding.rows[0];
+    if (!row) {
+      throw new AccountStrictCutoverError("no_binding", "user has no account policy binding");
+    }
+    if (row.policy_enforcement === "strict") {
+      const existing = await client.query<{ id: string; status: string }>(`
+        SELECT id::text, status FROM engine_policy_jobs
+        WHERE binding_id = $1 AND effective_version = $2
+        ORDER BY created_at DESC LIMIT 1
+      `, [row.id, row.applied_effective_version]);
+      await client.query("COMMIT");
+      return {
+        status: "already_strict",
+        jobId: existing.rows[0]?.id ?? null,
+        jobStatus: existing.rows[0]?.status ?? null,
+        engineAccountId: row.engine_account_id,
+        effectiveVersion: row.applied_effective_version === null
+          ? null
+          : safeVersion(row.applied_effective_version, "applied effective policy version"),
+        contentDigest: null,
+      };
+    }
+    if (row.policy_enforcement !== "shadow") {
+      throw new AccountStrictCutoverError(
+        "not_shadow",
+        `binding enforcement ${row.policy_enforcement} has no engine-confirmed policy to cut over`,
+      );
+    }
+    if (row.applied_effective_version === null) {
+      throw new AccountStrictCutoverError(
+        "no_confirmed_version",
+        "binding has no engine-confirmed applied policy version",
+      );
+    }
+    if (row.reconciliation_state !== "verified") {
+      throw new AccountStrictCutoverError(
+        "unverified",
+        "strict cutover requires reconciliation_state 'verified'",
+      );
+    }
+    const effectiveVersion = safeVersion(row.applied_effective_version, "applied effective policy version");
+    const loaded = await loadAccountPolicySpecByVersion(client, row.engine_account_id, effectiveVersion);
+    if (!loaded) throw new Error("account policy version and binding must exist before its job is staged");
+    const jobId = await stageAccountPolicyControlJobTx(client, loaded.spec, {
+      policy_enforcement: "strict",
+      funding_enforcement: "strict",
+      reconciliation_state: "verified",
+    });
     await client.query("COMMIT");
     return {
       status: "staged",

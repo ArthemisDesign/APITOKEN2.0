@@ -117,6 +117,11 @@ export class PricingPolicyWriteError extends Error {
   }
 }
 
+/** SERIALIZABLE conflicts and deadlocks are concurrency facts, not failures: retry next tick. */
+export function isSerializationConflictV2(message: string): boolean {
+  return /could not serialize|deadlock detected/i.test(message);
+}
+
 export class PricingPolicyDeliveryRepairError extends Error {
   constructor(
     public readonly code:
@@ -1982,6 +1987,7 @@ export async function materializeProvisionedUserPolicy(database: Database, input
         if (ready) {
           await client.query(`UPDATE engine_accounts SET status = 'active', updated_at = now() WHERE user_id = $1`, [input.userId]);
         }
+        await armDirectStrictChain(client, bindingRow.id);
         await linkRedeemedInvitation(client, input.userId, bindingRow.id, source.policy);
         await client.query("COMMIT");
         return { policyRequired: true, ready, jobId: desiredRow.job_id };
@@ -2055,6 +2061,7 @@ export async function materializeProvisionedUserPolicy(database: Database, input
       stagedSource.policy,
       stagedSource.catalogGeneration,
     );
+    await armDirectStrictChain(client, bindingRow.id);
     await linkRedeemedInvitation(client, input.userId, bindingRow.id, source.policy);
     await client.query("COMMIT");
     return { policyRequired: true, ready: false, jobId: staged.jobId };
@@ -2064,6 +2071,21 @@ export async function materializeProvisionedUserPolicy(database: Database, input
   } finally {
     client.release();
   }
+}
+
+/**
+ * New-account provisioning arms the direct strict chain (release-v2 retirement, phase 2.1):
+ * the pricing worker drives the binding shadow→strict and then writes the engine opt-out
+ * marker. Re-arming an already-armed binding is a no-op, so provisioning retries and the
+ * bounded confirmation polls stay idempotent; an already-strict binding is left untouched —
+ * its chain finishes through the opt-out step, not through re-staging.
+ */
+async function armDirectStrictChain(client: PoolClient, bindingId: string): Promise<void> {
+  await client.query(`
+    UPDATE account_policy_bindings
+    SET strict_chain_pending = true, updated_at = now()
+    WHERE id = $1 AND policy_enforcement <> 'strict'
+  `, [bindingId]);
 }
 
 async function linkRedeemedInvitation(
@@ -2131,4 +2153,61 @@ export async function assertUserPolicyReadyForKey(database: Database, userId: st
       "pricing policy is still waiting for an exact engine ACK",
     );
   }
+}
+
+export interface UserPolicyBindingState {
+  bindingId: string;
+  engineAccountId: string;
+  policyEnforcement: string;
+  syncState: string;
+  strictChainPending: boolean;
+  desiredEffectiveVersion: number | null;
+  appliedEffectiveVersion: number | null;
+  desiredDigest: string | null;
+  appliedDigest: string | null;
+}
+
+/**
+ * Read-side view of one account's policy binding for the request-path strict-chain checks in
+ * key issuance. `strictChainConfirmed` semantics are evaluated by the caller: enforcement
+ * strict + sync confirmed + desired = applied (version and digest).
+ */
+export async function readUserPolicyBindingState(
+  database: Database,
+  userId: string,
+): Promise<UserPolicyBindingState | null> {
+  const result = await database.pool.query<{
+    binding_id: string;
+    engine_account_id: string;
+    policy_enforcement: string;
+    sync_state: string;
+    strict_chain_pending: boolean;
+    desired_effective_version: string | null;
+    applied_effective_version: string | null;
+    desired_digest: string | null;
+    applied_digest: string | null;
+  }>(`
+    SELECT id::text AS binding_id, engine_account_id, policy_enforcement, sync_state,
+           strict_chain_pending, desired_effective_version::text, applied_effective_version::text,
+           desired_digest, applied_digest
+    FROM account_policy_bindings
+    WHERE user_id = $1
+  `, [userId]);
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    bindingId: row.binding_id,
+    engineAccountId: row.engine_account_id,
+    policyEnforcement: row.policy_enforcement,
+    syncState: row.sync_state,
+    strictChainPending: row.strict_chain_pending,
+    desiredEffectiveVersion: row.desired_effective_version === null
+      ? null
+      : positiveVersion(row.desired_effective_version, "desired effective policy version"),
+    appliedEffectiveVersion: row.applied_effective_version === null
+      ? null
+      : positiveVersion(row.applied_effective_version, "applied effective policy version"),
+    desiredDigest: row.desired_digest,
+    appliedDigest: row.applied_digest,
+  };
 }

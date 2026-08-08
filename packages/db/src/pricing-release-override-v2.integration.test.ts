@@ -2,23 +2,22 @@ import { createHash, randomUUID } from "node:crypto";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client } from "pg";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-  FundingNormalizationPlanV2,
   PricingReleaseAssignmentExtensionV2,
   PricingReleaseHeadV2,
   PricingReleasePolicyV2,
-  PricingReleaseRecoveryLinkV2,
   PricingReleaseV2,
 } from "@claude-api/contracts";
 import { createDatabase, type Database } from "./client.js";
 import { MIGRATIONS_FOLDER } from "./migrate.js";
+import { runStage5Backfill } from "./multi-discount-backfill.js";
+import { stageProvisionedAccountStrictJob } from "./pricing-control-jobs.js";
+import { materializeProvisionedUserPolicy } from "./pricing-policy-write.js";
 import {
-  ensurePricingReleaseProvisioningV2,
-  PricingReleaseProvisioningV2Error,
   syncPricingReleasePolicyOverrideV2,
-  type PricingReleaseProvisioningEngineV2,
-} from "./pricing-provisioning-v2.js";
+  type PricingReleaseOverrideEngineV2,
+} from "./pricing-release-override-v2.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
 const TEST_TIMEOUT_MS = 120_000;
@@ -70,65 +69,31 @@ function fakeEngine(input: {
   head: PricingReleaseHeadV2 | null;
   target: PricingReleaseV2;
   recovery: PricingReleaseV2;
-  blockedFunding?: boolean;
 }): {
-  engine: PricingReleaseProvisioningEngineV2;
+  engine: PricingReleaseOverrideEngineV2;
   extensions: Map<string, PricingReleaseAssignmentExtensionV2>;
   policies: Map<string, PricingReleasePolicyV2>;
-  applyCalls: string[];
-  setHead(head: PricingReleaseHeadV2 | null): void;
+  calls: string[];
 } {
   const extensions = new Map<string, PricingReleaseAssignmentExtensionV2>();
   const policies = new Map<string, PricingReleasePolicyV2>();
-  const applyCalls: string[] = [];
-  let currentHead = input.head;
-  let normalized = false;
-  const sourceDigest = digest("funding-source");
-  const normalizationDigest = digest("funding-target");
-  const plan = (status: "ready" | "blocked" | "normalized"): FundingNormalizationPlanV2 => ({
-    account_id: "acct_post_cutover",
-    account_status: "active",
-    status,
-    source: status === "normalized" ? "stored_generation" : "aggregate_paid_only",
-    source_state_digest: sourceDigest,
-    normalization_digest: status === "blocked" ? null : normalizationDigest,
-    funding_generation: status === "blocked" ? null : 7,
-    funding_head_version: status === "blocked" ? null : 1,
-    balance_nano: "5000000000",
-    reserved_nano: "0",
-    spent_nano: "0",
-    lots: status === "blocked" ? [] : [{
-      lot_id: "fundv2_signup",
-      source_type: "welcome_bonus",
-      source_ref: "signup-bonus:test",
-      balance_nano: "5000000000",
-      reserved_nano: "0",
-      spent_nano: "0",
-      version: 1,
-      status: "active",
-    }],
-    blockers: status === "blocked" ? [{ code: "active_legacy_reservation", detail: "legacy request" }] : [],
-  });
-  const link: PricingReleaseRecoveryLinkV2 = {
-    target_generation: input.target.generation,
-    target_digest: input.target.content_digest,
-    recovery_generation: input.recovery.generation,
-    recovery_digest: input.recovery.content_digest,
-    link_digest: digest("recovery-link"),
-  };
+  const calls: string[] = [];
   return {
     extensions,
     policies,
-    applyCalls,
-    setHead: (head) => { currentHead = head; },
+    calls,
     engine: {
-      getPricingReleaseHeadV2: async () => currentHead,
-      getPricingReleaseV2: async (generation) =>
-        generation === input.target.generation ? input.target
-          : generation === input.recovery.generation ? input.recovery : null,
-      getPricingReleaseRecoveryLinkV2: async (targetGeneration, recoveryGeneration) =>
-        targetGeneration === link.target_generation && recoveryGeneration === link.recovery_generation ? link : null,
-      preparePricingReleasePolicyV2: async (policy) => {
+      getPricingReleaseHeadV2: async () => {
+        calls.push("head");
+        return input.head;
+      },
+      getPricingReleaseV2: async (generation: number) => {
+        calls.push("release");
+        return generation === input.target.generation ? input.target
+          : generation === input.recovery.generation ? input.recovery : null;
+      },
+      preparePricingReleasePolicyV2: async (policy: PricingReleasePolicyV2) => {
+        calls.push("policy-prepare");
         const key = `${policy.policy_id}:${policy.policy_version}`;
         const result = policies.has(key) ? "unchanged" as const : "stored" as const;
         policies.set(key, structuredClone(policy));
@@ -141,18 +106,16 @@ function fakeEngine(input: {
           },
         } as never;
       },
-      getPricingReleasePolicyV2: async (policyId, policyVersion) =>
-        policies.get(`${policyId}:${policyVersion}`) ?? null,
-      getFundingNormalizationPlanV2: async () =>
-        plan(input.blockedFunding ? "blocked" : normalized ? "normalized" : "ready"),
-      applyFundingNormalizationV2: async (accountId) => {
-        applyCalls.push(accountId);
-        normalized = true;
-        return { status: "stored", normalization: plan("normalized") };
+      getPricingReleasePolicyV2: async (policyId: string, policyVersion: number) => {
+        calls.push("policy-readback");
+        return policies.get(`${policyId}:${policyVersion}`) ?? null;
       },
-      getPricingReleaseAssignmentExtensionV2: async (headVersion, accountId) =>
-        extensions.get(`${headVersion}:${accountId}`) ?? null,
-      preparePricingReleaseAssignmentExtensionV2: async (extension) => {
+      getPricingReleaseAssignmentExtensionV2: async (headVersion: number, accountId: string) => {
+        calls.push("extension-readback");
+        return extensions.get(`${headVersion}:${accountId}`) ?? null;
+      },
+      preparePricingReleaseAssignmentExtensionV2: async (extension: PricingReleaseAssignmentExtensionV2) => {
+        calls.push("extension-prepare");
         const accountId = extension.members[0]!.assignment.account_id;
         const key = `${extension.provisioning_head_version}:${accountId}`;
         const result = extensions.has(key) ? "unchanged" as const : "stored" as const;
@@ -171,7 +134,7 @@ function fakeEngine(input: {
   };
 }
 
-describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provisioning", () => {
+describe.runIf(Boolean(connectionString))("post-cutover B2B release policy override", () => {
   let admin: Client;
   let seed: Client;
   let database: Database;
@@ -192,7 +155,7 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
   };
 
   beforeAll(async () => {
-    databaseName = `pricing_provision_${process.pid}_${randomUUID().replaceAll("-", "").slice(0, 8)}`;
+    databaseName = `pricing_override_${process.pid}_${randomUUID().replaceAll("-", "").slice(0, 8)}`;
     admin = new Client({ connectionString });
     await admin.connect();
     await admin.query(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
@@ -201,7 +164,7 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
     seed = new Client({ connectionString: url.toString() });
     await seed.connect();
     await migrate(drizzle(seed), { migrationsFolder: MIGRATIONS_FOLDER });
-    database = createDatabase(url.toString(), "pricing-provisioning-v2-test");
+    database = createDatabase(url.toString(), "pricing-release-override-v2-test");
   }, TEST_TIMEOUT_MS);
 
   beforeEach(async () => {
@@ -356,219 +319,22 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
     }
   }, TEST_TIMEOUT_MS);
 
-  it("normalizes funding and stores one exact active/recovery extension before succeeding", async () => {
-    const state = fakeEngine({ head, target, recovery });
-    await expect(ensurePricingReleaseProvisioningV2(database, state.engine, {
-      userId,
-      engineAccountId: accountId,
-    })).resolves.toEqual({ status: "extension", headVersion: 1, releaseGeneration: 10 });
-
-    expect(state.applyCalls).toEqual([accountId]);
-    const extension = state.extensions.get(`1:${accountId}`)!;
-    expect(extension.members.map((member) => member.release_generation)).toEqual([10, 11]);
-    expect(extension.members.map((member) => member.assignment.funding_generation)).toEqual([7, 7]);
-    expect(extension.members[0]!.assignment.policy_digest).toBe(digest("global-policy"));
-    expect(extension.extension_group_digest).toMatch(/^sha256:v2:[0-9a-f]{64}$/);
-
-    await expect(ensurePricingReleaseProvisioningV2(database, state.engine, {
-      userId,
-      engineAccountId: accountId,
-    })).resolves.toMatchObject({ status: "extension" });
-    expect(state.extensions.size).toBe(1);
-  });
-
-  it("reuses the paired member after a forward recovery head activation", async () => {
-    const state = fakeEngine({ head, target, recovery });
-    await ensurePricingReleaseProvisioningV2(database, state.engine, {
-      userId,
-      engineAccountId: accountId,
-    });
-    await seed.query(`
-      INSERT INTO pricing_release_activation_receipts_v2 (
-        activation_id,activation_kind,release_generation,release_digest,
-        evidence_digest,head_version,receipt_digest,activated_at
-      ) VALUES ($1,'recovery',11,$2,$3,2,$4,now())
-    `, [randomUUID(), recoveryCommerceDigest, digest("stage8-evidence"), digest("recovery-receipt")]);
-    state.setHead({
-      active_generation: 11,
-      active_digest: recoveryEngineDigest,
-      head_version: 2,
-      updated_ts: 2,
-    });
-
-    await expect(ensurePricingReleaseProvisioningV2(database, state.engine, {
-      userId,
-      engineAccountId: accountId,
-    })).resolves.toEqual({ status: "extension", headVersion: 2, releaseGeneration: 11 });
-    expect(state.extensions.size).toBe(1);
-    expect(state.applyCalls).toEqual([accountId]);
-  });
-
-  // Stage 9 advances the head by re-snapshotting the whole inventory into a NEW target/recovery
-  // pair and activating it through the successor lane. An account registered after that snapshot
-  // is in no base assignment, so its very first key issuance depends on the successor receipt
-  // being recognised as a target-lane activation exactly like the initial cutover.
-  it("provisions an account against a successor-installed head", async () => {
-    const successorTargetEngineDigest = digest("successor-target-engine-release");
-    const successorRecoveryEngineDigest = digest("successor-recovery-engine-release");
-    const successorTargetCommerceDigest = digest("successor-target-commerce-plan");
-    const successorRecoveryCommerceDigest = digest("successor-recovery-commerce-plan");
-    const successorTarget = release(12, "target", successorTargetEngineDigest);
-    const successorRecovery = release(13, "recovery", successorRecoveryEngineDigest);
-    for (const [item, commerceDigest] of [
-      [successorTarget, successorTargetCommerceDigest],
-      [successorRecovery, successorRecoveryCommerceDigest],
-    ] as const) {
-      await seed.query(`
-        INSERT INTO pricing_release_plans_v2 (
-          generation,release_kind,schema_version,commerce_inventory_digest,engine_inventory_digest,
-          openkeys_inventory_digest,service_inventory_digest,policy_manifest_digest,
-          assignment_manifest_digest,funding_manifest_digest,engine_release_digest,content_digest,status
-        ) VALUES ($1,$2,2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'planned')
-      `, [
-        item.generation,
-        item.release_kind,
-        digest(`commerce:${item.generation}`),
-        item.inventory_digest,
-        digest(`openkeys:${item.generation}`),
-        digest(`service:${item.generation}`),
-        item.policy_manifest_digest,
-        item.assignment_manifest_digest,
-        item.funding_manifest_digest,
-        item.content_digest,
-        commerceDigest,
-      ]);
-      // A release may only be marked prepared once its assignment graph is nonempty: the
-      // successor snapshot carries the same pre-existing account the cutover pair carried.
-      await seed.query(`
-        INSERT INTO pricing_release_assignments_v2 (
-          release_generation,engine_account_id,account_class,owner_context,owner_id,
-          policy_id,policy_version,policy_digest,billing_mode,funding_generation,
-          purpose,responsible,assignment_digest
-        ) VALUES ($1,'acct_existing','b2c','commerce',$2,'release-v2:b2c:global',1,$3,'balance',1,NULL,NULL,$4)
-      `, [
-        item.generation,
-        userId,
-        digest("global-policy"),
-        digest(`base-assignment:${item.generation}`),
-      ]);
-      await seed.query(`
-        INSERT INTO pricing_funding_normalizations_v2 (
-          release_generation,engine_account_id,funding_generation,expected_source_digest,
-          target_funding_digest,applied_funding_digest,normalization_source,blockers,status
-        ) VALUES ($1,'acct_existing',1,$2,$3,$3,'stored_generation',NULL,'ready')
-      `, [item.generation, digest(`source:${item.generation}`), digest(`funding-assignment:${item.generation}`)]);
-      await seed.query(
-        "UPDATE pricing_release_plans_v2 SET status = 'prepared' WHERE generation = $1",
-        [item.generation],
-      );
-    }
-    const successorEvidenceDigest = digest("stage8-evidence-successor");
-    await seed.query(`
-      INSERT INTO pricing_stage8_evidence_v2 (
-        evidence_digest,target_generation,target_digest,recovery_generation,recovery_digest,
-        commerce_inventory_digest,engine_inventory_digest,openkeys_inventory_digest,
-        sales_contract_digest,funding_digest,shadow_digest,runtime_floor_digest,
-        legacy_inflight_count,blocker_count,passed,observed_at,valid_until
-      ) VALUES ($1,12,$2,13,$3,$4,$5,$6,$7,$8,$9,$10,0,0,true,now(),now()+interval '5 minutes')
-    `, [
-      successorEvidenceDigest,
-      successorTargetCommerceDigest,
-      successorRecoveryCommerceDigest,
-      digest("commerce-evidence-successor"),
-      successorTarget.inventory_digest,
-      digest("openkeys-evidence-successor"),
-      digest("sales-contract-successor"),
-      successorTarget.funding_manifest_digest,
-      digest("shadow-successor"),
-      digest("runtime-floor-successor"),
-    ]);
-    await seed.query(`
-      INSERT INTO pricing_release_activation_receipts_v2 (
-        activation_id,activation_kind,release_generation,release_digest,
-        evidence_digest,head_version,receipt_digest,activated_at
-      ) VALUES ($1,'successor',12,$2,$3,2,$4,now())
-    `, [
-      randomUUID(),
-      successorTargetCommerceDigest,
-      successorEvidenceDigest,
-      digest("successor-receipt"),
-    ]);
-
-    const state = fakeEngine({
-      head: {
-        active_generation: 12,
-        active_digest: successorTargetEngineDigest,
-        head_version: 2,
-        updated_ts: 2,
-      },
-      target: successorTarget,
-      recovery: successorRecovery,
-    });
-
-    await expect(ensurePricingReleaseProvisioningV2(database, state.engine, {
-      userId,
-      engineAccountId: accountId,
-    })).resolves.toEqual({ status: "extension", headVersion: 2, releaseGeneration: 12 });
-
-    // The successor pair is a pair like any cutover pair: the stored extension must carry the
-    // paired recovery member, or a later recovery activation would strand the account.
-    const extension = state.extensions.get(`2:${accountId}`)!;
-    expect(extension.members.map((member) => member.release_generation)).toEqual([12, 13]);
-    expect(extension.paired_recovery_generation).toBe(13);
-  });
-
-  it("keeps the legacy path only while the global release head is absent", async () => {
-    const state = fakeEngine({ head: null, target, recovery });
-    await expect(ensurePricingReleaseProvisioningV2(database, state.engine, {
-      userId,
-      engineAccountId: accountId,
-    })).resolves.toEqual({ status: "pre_cutover", headVersion: null, releaseGeneration: null });
-    expect(state.applyCalls).toEqual([]);
-    expect(state.extensions.size).toBe(0);
-  });
-
-  it("fails closed on a blocked account-local funding plan", async () => {
-    const state = fakeEngine({ head, target, recovery, blockedFunding: true });
-    const failure = await ensurePricingReleaseProvisioningV2(database, state.engine, {
-      userId,
-      engineAccountId: accountId,
-    }).catch((error) => error);
-    expect(failure).toBeInstanceOf(PricingReleaseProvisioningV2Error);
-    expect(failure).toMatchObject({ code: "funding_not_ready" });
-    expect(state.extensions.size).toBe(0);
-  });
-
-  it("materializes a new B2B scalar only as an Anthropic release rule", async () => {
+  it("keeps the pre-cutover bypass while the global release head is absent", async () => {
     await seed.query(`
       UPDATE customer_profiles
       SET customer_type = 'b2b', current_tier = NULL, multiplier_bp = 7000
       WHERE user_id = $1
     `, [userId]);
     await seed.query("UPDATE engine_accounts SET mult_bp = 7000 WHERE user_id = $1", [userId]);
-    const state = fakeEngine({ head, target, recovery });
-
-    await expect(ensurePricingReleaseProvisioningV2(database, state.engine, {
+    const state = fakeEngine({ head: null, target, recovery });
+    await expect(syncPricingReleasePolicyOverrideV2(database, state.engine, {
       userId,
       engineAccountId: accountId,
-    })).resolves.toMatchObject({ status: "extension" });
-
-    const policy = [...state.policies.values()][0]!;
-    expect(policy).toMatchObject({
-      owner_type: "b2b_client",
-      owner_id: userId,
-      account_class: "b2b",
-      rules: [{
-        scope: { scope: "provider", provider_id: "anthropic" },
-        discount_bps: 3000,
-        payable_multiplier_bp: 7000,
-      }],
-    });
-    expect(policy.rules).toHaveLength(1);
-    expect(state.extensions.get(`1:${accountId}`)?.members[0]?.assignment.account_class).toBe("b2b");
+    })).resolves.toEqual({ status: "pre_cutover" });
+    expect(state.extensions.size).toBe(0);
   });
 
-  it("overrides a base-covered B2B assignment with a strictly newer policy version", async () => {
+  it("overrides a base-covered B2B assignment with a strictly newer policy version, idempotently", async () => {
     const b2bAccountId = "acct_override_b2b";
     await seed.query(`
       UPDATE customer_profiles
@@ -583,7 +349,7 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
     await seed.query(`
       INSERT INTO provider_capability_versions (
         generation, schema_version, content_digest, source_runtime, source_revision, observed_at
-      ) VALUES (3, 1, 'override-capability', 'pricing-provisioning-v2-test', 'test-revision', now())
+      ) VALUES (3, 1, 'override-capability', 'pricing-release-override-v2-test', 'test-revision', now())
     `);
     await seed.query(`
       INSERT INTO product_catalog_versions (
@@ -591,7 +357,7 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
         capability_digest, content_digest, actor_type, actor_id, reason
       ) VALUES (
         'main', 3, 1, 3, 'override-capability', 'override-catalog',
-        'system', 'pricing-provisioning-v2-test', 'integration fixture'
+        'system', 'pricing-release-override-v2-test', 'integration fixture'
       )
     `);
     await seed.query(`
@@ -670,17 +436,26 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
       funding_generation: 1,
     });
 
+    // Double-run idempotency: the exact replay stores nothing new and succeeds again.
     await expect(syncPricingReleasePolicyOverrideV2(database, state.engine, {
       userId,
       engineAccountId: b2bAccountId,
     })).resolves.toMatchObject({ status: "override" });
+    expect(state.extensions.size).toBe(1);
+    expect(state.policies.size).toBe(1);
   });
 
   // Post-cutover conversion fixture: commerce already says b2b, but the immutable base
   // assignment in the active release still says b2c — the exact state convertCustomerToBusiness
   // leaves behind until the class-changing extension lands.
-  function convertedTarget(): PricingReleaseV2 {
-    return {
+  it("propagates a post-cutover B2C-to-B2B conversion through the class-changing extension", async () => {
+    await seed.query(`
+      UPDATE customer_profiles
+      SET customer_type = 'b2b', current_tier = NULL, multiplier_bp = 7000
+      WHERE user_id = $1
+    `, [userId]);
+    await seed.query("UPDATE engine_accounts SET mult_bp = 7000 WHERE user_id = $1", [userId]);
+    const convertedTarget: PricingReleaseV2 = {
       ...target,
       assignments: [
         ...target.assignments,
@@ -698,20 +473,7 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
         },
       ],
     };
-  }
-
-  async function convertFixtureToBusiness(multiplierBp: number): Promise<void> {
-    await seed.query(`
-      UPDATE customer_profiles
-      SET customer_type = 'b2b', current_tier = NULL, multiplier_bp = $2
-      WHERE user_id = $1
-    `, [userId, multiplierBp]);
-    await seed.query("UPDATE engine_accounts SET mult_bp = $2 WHERE user_id = $1", [userId, multiplierBp]);
-  }
-
-  it("propagates a post-cutover B2C-to-B2B conversion through the class-changing extension", async () => {
-    await convertFixtureToBusiness(7_000);
-    const state = fakeEngine({ head, target: convertedTarget(), recovery });
+    const state = fakeEngine({ head, target: convertedTarget, recovery });
 
     await expect(syncPricingReleasePolicyOverrideV2(database, state.engine, {
       userId,
@@ -736,61 +498,71 @@ describe.runIf(Boolean(connectionString))("post-cutover pricing assignment provi
       billing_mode: "balance",
       funding_generation: 7,
     });
-
-    // Key issuance after the conversion resolves through the stored extension instead of a
-    // permanent assignment_conflict against the immutable b2c base.
-    await expect(ensurePricingReleaseProvisioningV2(database, state.engine, {
-      userId,
-      engineAccountId: accountId,
-    })).resolves.toMatchObject({ status: "extension" });
   });
 
-  it("self-heals a converted account at key issuance by creating the class-changing extension", async () => {
-    await convertFixtureToBusiness(7_000);
-    const state = fakeEngine({ head, target: convertedTarget(), recovery });
-
-    await expect(ensurePricingReleaseProvisioningV2(database, state.engine, {
+  // Phase 2.1 of the release-v2 retirement: an account whose commerce binding is already strict
+  // (a new-account direct strict chain graduate or a pre-cutover strict conversion) is owned by
+  // the policy_v1 delivery lane — the override must not write any release-v2 state for it.
+  it("returns policy_owned for a strict binding without touching the release authority", async () => {
+    // Build the strict binding through the real chain machinery: managed global policy
+    // materialized, shadow delivery confirmed, atomic strict staging applied.
+    await runStage5Backfill(database, {
+      schema_version: 1,
+      engine_accounts: [{ account_id: accountId, multiplier_bp: 5_000, status: "active" }],
+      openkeys_accounts: [],
+    }, { mode: "safe" });
+    const materialized = await materializeProvisionedUserPolicy(database, {
       userId,
       engineAccountId: accountId,
-    })).resolves.toMatchObject({ status: "extension" });
-    expect(state.extensions.get(`1:${accountId}`)?.members[0]?.assignment.account_class).toBe("b2b");
+    });
+    expect(materialized.policyRequired).toBe(true);
+    await seed.query(`
+      UPDATE account_policy_bindings
+      SET applied_effective_version = desired_effective_version,
+          applied_digest = desired_digest,
+          policy_enforcement = 'shadow', reconciliation_state = 'verified',
+          last_ack_at = now(), sync_state = 'confirmed'
+      WHERE user_id = $1
+    `, [userId]);
+    await seed.query(`
+      UPDATE engine_policy_jobs
+      SET status = 'confirmed', last_error = NULL, confirmed_at = now(),
+          ack_effective_version = effective_version,
+          ack_policy_version = policy_version,
+          ack_catalog_generation = catalog_generation,
+          ack_switch_generation = switch_generation,
+          ack_schema_version = schema_version,
+          ack_content_digest = content_digest,
+          ack_payload = payload
+    `);
+    await expect(stageProvisionedAccountStrictJob(database, { userId }))
+      .resolves.toMatchObject({ status: "staged" });
 
-    await expect(ensurePricingReleaseProvisioningV2(database, state.engine, {
+    const state = fakeEngine({ head, target, recovery });
+    await expect(syncPricingReleasePolicyOverrideV2(database, state.engine, {
       userId,
       engineAccountId: accountId,
-    })).resolves.toMatchObject({ status: "extension" });
-    expect(state.extensions.size).toBe(1);
-  });
-
-  it("still fails closed when the base class conflicts outside the b2c-to-b2b conversion", async () => {
-    // Commerce says b2c (fixture default) but the base assignment is open_keys — no conversion
-    // path may repair that, it is a genuine ownership conflict.
-    const conflictTarget: PricingReleaseV2 = {
-      ...target,
-      assignments: [
-        ...target.assignments,
-        {
-          account_id: accountId,
-          account_class: "open_keys" as const,
-          policy_id: "release-v2:openkeys:1to1",
-          policy_version: 1,
-          policy_digest: digest("openkeys-policy"),
-          billing_mode: "balance" as const,
-          funding_generation: 7,
-          purpose: null,
-          responsible: null,
-          assignment_digest: digest("conflicting-base-assignment"),
-        },
-      ],
-    };
-    const state = fakeEngine({ head, target: conflictTarget, recovery });
-
-    const failure = await ensurePricingReleaseProvisioningV2(database, state.engine, {
-      userId,
-      engineAccountId: accountId,
-    }).catch((error) => error);
-    expect(failure).toBeInstanceOf(PricingReleaseProvisioningV2Error);
-    expect(failure).toMatchObject({ code: "assignment_conflict" });
+    })).resolves.toEqual({ status: "policy_owned" });
+    expect(state.calls).toEqual([]);
+    expect(state.policies.size).toBe(0);
     expect(state.extensions.size).toBe(0);
+
+    // A shadow binding keeps the release-lane behavior: the head is consulted as before.
+    await seed.query(`
+      UPDATE customer_profiles
+      SET customer_type = 'b2b', current_tier = NULL, multiplier_bp = 7000
+      WHERE user_id = $1
+    `, [userId]);
+    await seed.query("UPDATE engine_accounts SET mult_bp = 7000 WHERE user_id = $1", [userId]);
+    await seed.query(`
+      UPDATE account_policy_bindings
+      SET policy_enforcement = 'shadow', funding_enforcement = 'legacy_single'
+      WHERE user_id = $1
+    `, [userId]);
+    await expect(syncPricingReleasePolicyOverrideV2(database, state.engine, {
+      userId,
+      engineAccountId: accountId,
+    })).resolves.toEqual({ status: "not_covered" });
+    expect(state.calls).toContain("head");
   });
 });

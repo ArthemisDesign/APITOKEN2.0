@@ -14,42 +14,39 @@ import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
 import { stage5V2CanonicalJson, stage5V2Digest } from "./pricing-release-digest.js";
 
-export type PricingReleaseProvisioningEngineV2 = Pick<
+export type PricingReleaseOverrideEngineV2 = Pick<
   EngineClient,
   | "getPricingReleaseHeadV2"
   | "getPricingReleaseV2"
-  | "getPricingReleaseRecoveryLinkV2"
   | "getPricingReleasePolicyV2"
   | "preparePricingReleasePolicyV2"
-  | "getFundingNormalizationPlanV2"
-  | "applyFundingNormalizationV2"
   | "getPricingReleaseAssignmentExtensionV2"
   | "preparePricingReleaseAssignmentExtensionV2"
 >;
 
-export type PricingReleaseProvisioningResultV2 =
-  | { status: "pre_cutover"; headVersion: null; releaseGeneration: null }
-  | { status: "base_assignment" | "extension"; headVersion: number; releaseGeneration: number };
+export type PricingReleasePolicyOverrideResultV2 =
+  | { status: "pre_cutover" }
+  | { status: "not_covered" }
+  // The account is owned by the strict policy_v1 delivery lane (a new-account direct strict
+  // chain graduate — the only accounts with a strict commerce binding post-cutover — or a
+  // pre-cutover strict conversion). A CAS save already staged the strict→strict delivery via
+  // materializeBinding in the same transaction, so no release extension is written.
+  | { status: "policy_owned" }
+  | { status: "unchanged" | "override"; headVersion: number; policyVersion: number };
 
-/** SERIALIZABLE conflicts and deadlocks are concurrency facts, not failures: retry next tick. */
-export function isSerializationConflictV2(message: string): boolean {
-  return /could not serialize|deadlock detected/i.test(message);
-}
-
-export class PricingReleaseProvisioningV2Error extends Error {
+export class PricingReleaseOverrideV2Error extends Error {
   constructor(
     public readonly code:
       | "account_mapping_mismatch"
       | "active_release_missing"
       | "activation_receipt_missing"
       | "assignment_conflict"
-      | "funding_not_ready"
       | "policy_not_ready"
       | "head_changed",
     message: string,
   ) {
     super(message);
-    this.name = "PricingReleaseProvisioningV2Error";
+    this.name = "PricingReleaseOverrideV2Error";
   }
 }
 
@@ -86,7 +83,7 @@ function compareUtf8(left: string, right: string): number {
 function positiveSafeInteger(value: string, label: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed <= 0 || String(parsed) !== value) {
-    throw new PricingReleaseProvisioningV2Error("policy_not_ready", `${label} is not a positive safe integer`);
+    throw new PricingReleaseOverrideV2Error("policy_not_ready", `${label} is not a positive safe integer`);
   }
   return parsed;
 }
@@ -113,7 +110,7 @@ async function commerceAccount(
   const row = result.rows[0];
   if (!row || row.engine_account_id !== engineAccountId
       || !Number.isSafeInteger(row.multiplier_bp) || row.multiplier_bp < 0 || row.multiplier_bp > 10_000) {
-    throw new PricingReleaseProvisioningV2Error(
+    throw new PricingReleaseOverrideV2Error(
       "account_mapping_mismatch",
       "commerce account mapping changed or has an invalid multiplier during release provisioning",
     );
@@ -167,7 +164,7 @@ async function activationPair(
   `, [head.head_version, head.active_generation, head.active_digest]);
   const row = current.rows[0];
   if (!row) {
-    throw new PricingReleaseProvisioningV2Error(
+    throw new PricingReleaseOverrideV2Error(
       "activation_receipt_missing",
       "the active pricing head has no exact commerce activation receipt yet",
     );
@@ -175,13 +172,13 @@ async function activationPair(
   const targetGeneration = positiveSafeInteger(row.target_generation, "target release generation");
   const recoveryGeneration = positiveSafeInteger(row.recovery_generation, "recovery release generation");
   if (recoveryGeneration <= targetGeneration) {
-    throw new PricingReleaseProvisioningV2Error("activation_receipt_missing", "activation receipt has invalid release order");
+    throw new PricingReleaseOverrideV2Error("activation_receipt_missing", "activation receipt has invalid release order");
   }
   const currentMatches = installsTargetRelease(row.activation_kind)
     ? head.active_generation === targetGeneration && head.active_digest === row.target_digest
     : head.active_generation === recoveryGeneration && head.active_digest === row.recovery_digest;
   if (!currentMatches) {
-    throw new PricingReleaseProvisioningV2Error(
+    throw new PricingReleaseOverrideV2Error(
       "activation_receipt_missing",
       "activation receipt does not describe the exact active pricing head",
     );
@@ -204,7 +201,7 @@ async function activationPair(
       LIMIT 2
     `, [targetGeneration, row.target_digest]);
     if (targetReceipt.rows.length !== 1) {
-      throw new PricingReleaseProvisioningV2Error(
+      throw new PricingReleaseOverrideV2Error(
         "activation_receipt_missing",
         "recovery head has no unique originating target activation receipt",
       );
@@ -219,72 +216,6 @@ async function activationPair(
     recoveryGeneration,
     recoveryDigest: row.recovery_digest,
   };
-}
-
-function extensionCoversHead(
-  extension: PricingReleaseAssignmentExtensionV2,
-  head: PricingReleaseHeadV2,
-  accountId: string,
-): boolean {
-  if (extension.members.some((member) => member.assignment.account_id !== accountId)) return false;
-  if (extension.provisioning_head_generation === head.active_generation
-      && extension.provisioning_head_digest === head.active_digest) return true;
-  return extension.paired_recovery_generation === head.active_generation
-    && extension.paired_recovery_digest === head.active_digest;
-}
-
-async function existingExtension(
-  engine: PricingReleaseProvisioningEngineV2,
-  pair: ActivationPairV2,
-  head: PricingReleaseHeadV2,
-  accountId: string,
-): Promise<PricingReleaseAssignmentExtensionV2 | null> {
-  const versions = pair.activationKind === "recovery"
-    ? [pair.targetHeadVersion, head.head_version]
-    : [head.head_version];
-  for (const headVersion of [...new Set(versions)]) {
-    const extension = await engine.getPricingReleaseAssignmentExtensionV2(headVersion, accountId);
-    if (extension && extensionCoversHead(extension, head, accountId)) return extension;
-  }
-  return null;
-}
-
-async function normalizedFundingGeneration(
-  engine: PricingReleaseProvisioningEngineV2,
-  accountId: string,
-): Promise<number> {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const plan = await engine.getFundingNormalizationPlanV2(accountId);
-    if (!plan) {
-      throw new PricingReleaseProvisioningV2Error("funding_not_ready", "engine account disappeared during funding normalization");
-    }
-    if (plan.status === "normalized" && plan.funding_generation !== null && plan.funding_head_version !== null) {
-      return plan.funding_generation;
-    }
-    if (plan.status === "blocked" || plan.normalization_digest === null || plan.funding_generation === null) {
-      throw new PricingReleaseProvisioningV2Error(
-        "funding_not_ready",
-        `funding normalization is ${plan.status}${plan.blockers[0] ? `: ${plan.blockers[0].code}` : ""}`,
-      );
-    }
-    const applied = await engine.applyFundingNormalizationV2(accountId, {
-      expected_source_state_digest: plan.source_state_digest,
-      expected_normalization_digest: plan.normalization_digest,
-    });
-    if (!applied) {
-      throw new PricingReleaseProvisioningV2Error("funding_not_ready", "engine account disappeared during funding apply");
-    }
-    if ((applied.status === "stored" || applied.status === "unchanged")
-        && applied.normalization.status === "normalized"
-        && applied.normalization.funding_generation !== null
-        && applied.normalization.funding_head_version !== null) {
-      return applied.normalization.funding_generation;
-    }
-    if (applied.status === "blocked") {
-      throw new PricingReleaseProvisioningV2Error("funding_not_ready", "engine rejected the account-local funding plan as blocked");
-    }
-  }
-  throw new PricingReleaseProvisioningV2Error("funding_not_ready", "funding state kept changing during normalization");
 }
 
 async function readStoredPolicy(
@@ -420,7 +351,7 @@ async function storePolicy(client: PoolClient, policy: PricingReleasePolicyV2): 
   }
   const stored = await readStoredPolicy(client, policy.policy_id, policy.policy_version);
   if (!stored || !sameCanonical(stored, policy)) {
-    throw new PricingReleaseProvisioningV2Error(
+    throw new PricingReleaseOverrideV2Error(
       "policy_not_ready",
       `stored release-v2 policy ${policy.policy_id}/${policy.policy_version} conflicts with provisioning semantics`,
     );
@@ -489,7 +420,7 @@ async function dynamicB2bPolicy(
         rule.pricing_mode !== "discount"
         || rule.discount_bps === null
         || rule.payable_multiplier_bp !== 10_000 - rule.discount_bps)) {
-        throw new PricingReleaseProvisioningV2Error(
+        throw new PricingReleaseOverrideV2Error(
           "policy_not_ready",
           "B2B source policy contains legacy track or incomplete discount semantics",
         );
@@ -547,103 +478,6 @@ async function dynamicB2bPolicy(
   }
 }
 
-async function policyForAccount(
-  database: Database,
-  engine: PricingReleaseProvisioningEngineV2,
-  account: CommerceAccountV2,
-  userId: string,
-  engineAccountId: string,
-  release: PricingReleaseV2,
-): Promise<PricingReleasePolicyV2> {
-  const client = await database.pool.connect();
-  let policy: PricingReleasePolicyV2 | null = null;
-  let expectedPolicyDigest: string | null = null;
-  try {
-    if (account.customerType === "b2c") {
-      const candidates = new Map<string, { policyId: string; policyVersion: number; policyDigest: string }>();
-      for (const assignment of release.assignments.filter((item) => item.account_class === "b2c")) {
-        candidates.set(
-          `${assignment.policy_id}\0${assignment.policy_version}\0${assignment.policy_digest}`,
-          {
-            policyId: assignment.policy_id,
-            policyVersion: assignment.policy_version,
-            policyDigest: assignment.policy_digest,
-          },
-        );
-      }
-      if (candidates.size !== 1) {
-        throw new PricingReleaseProvisioningV2Error(
-          "policy_not_ready",
-          "active release has no unique assignment-pinned global B2C policy",
-        );
-      }
-      const candidate = [...candidates.values()][0]!;
-      expectedPolicyDigest = candidate.policyDigest;
-      policy = await readStoredPolicy(
-        client,
-        candidate.policyId,
-        candidate.policyVersion,
-      );
-    } else {
-      const snapshots = await client.query<{ policy_id: string; policy_version: string; policy_digest: string }>(`
-        SELECT snapshot.policy_id, snapshot.policy_version::text, snapshot.policy_digest
-        FROM business_invites invitation
-        JOIN business_invite_policy_snapshots_v2 snapshot ON snapshot.invite_id = invitation.id
-        WHERE invitation.consumed_by_user_id = $1
-        ORDER BY invitation.created_at DESC
-        LIMIT 2
-      `, [userId]);
-      if (snapshots.rows.length > 1) {
-        throw new PricingReleaseProvisioningV2Error("policy_not_ready", "B2B user has ambiguous release-v2 invitation snapshots");
-      }
-      if (snapshots.rows[0]) {
-        expectedPolicyDigest = snapshots.rows[0].policy_digest;
-        policy = await readStoredPolicy(
-          client,
-          snapshots.rows[0].policy_id,
-          positiveSafeInteger(snapshots.rows[0].policy_version, "B2B invitation policy version"),
-        );
-      }
-    }
-  } finally {
-    client.release();
-  }
-  if (!policy && account.customerType === "b2b") {
-    policy = await dynamicB2bPolicy(database, userId, engineAccountId, account.multiplierBp, release);
-  }
-  if (!policy || policy.account_class !== account.customerType || policy.billing_mode !== "balance") {
-    throw new PricingReleaseProvisioningV2Error("policy_not_ready", "pricing release policy does not match the commerce account class");
-  }
-  if (policy.product_id !== MAIN_PRICING_PRODUCT_ID
-      || policy.capability_generation !== release.capability_generation
-      || policy.capability_digest !== release.capability_digest
-      || policy.catalog_generation !== release.main_catalog_generation
-      || policy.catalog_digest !== release.main_catalog_digest
-      || policy.switch_generation !== release.switch_generation
-      || policy.switch_digest !== release.switch_digest) {
-    throw new PricingReleaseProvisioningV2Error(
-      "policy_not_ready",
-      "pricing release policy lineage does not match the exact active release",
-    );
-  }
-  if (expectedPolicyDigest !== null && policy.content_digest !== expectedPolicyDigest) {
-    throw new PricingReleaseProvisioningV2Error("policy_not_ready", "pricing release policy differs from its pinned assignment authority");
-  }
-  const prepared = await engine.preparePricingReleasePolicyV2(policy);
-  if (prepared.result !== "stored" && prepared.result !== "unchanged") {
-    const result = prepared.result === "rejected" ? prepared.code : prepared.result;
-    throw new PricingReleaseProvisioningV2Error(
-      "policy_not_ready",
-      `engine rejected pricing release policy with ${result}`,
-    );
-  }
-  const readback = await engine.getPricingReleasePolicyV2(policy.policy_id, policy.policy_version);
-  if (!readback || !sameCanonical(readback, policy)) {
-    throw new PricingReleaseProvisioningV2Error("policy_not_ready", "engine policy readback differs from commerce authority");
-  }
-  return policy;
-}
-
 function buildExtension(input: {
   head: PricingReleaseHeadV2;
   pair: ActivationPairV2;
@@ -699,144 +533,43 @@ function buildExtension(input: {
 }
 
 /**
- * Completes the post-cutover account-local chain before a raw customer key may be returned.
- * A null head is the only pre-cutover bypass. Once a head exists, every success is backed by an
- * immutable base assignment or an exact assignment-extension GET readback for the active release.
- */
-export async function ensurePricingReleaseProvisioningV2(
-  database: Database,
-  engine: PricingReleaseProvisioningEngineV2,
-  input: { userId: string; engineAccountId: string },
-): Promise<PricingReleaseProvisioningResultV2> {
-  let observedHead = false;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const head = await engine.getPricingReleaseHeadV2();
-    if (!head) {
-      if (observedHead) {
-        throw new PricingReleaseProvisioningV2Error("head_changed", "pricing release head disappeared during provisioning");
-      }
-      return { status: "pre_cutover", headVersion: null, releaseGeneration: null };
-    }
-    observedHead = true;
-    const release = await engine.getPricingReleaseV2(head.active_generation);
-    if (!release || release.content_digest !== head.active_digest) {
-      throw new PricingReleaseProvisioningV2Error("active_release_missing", "active release readback does not match its head");
-    }
-    const base = release.assignments.find((assignment) => assignment.account_id === input.engineAccountId);
-    if (base) {
-      const account = await commerceAccount(database, input.userId, input.engineAccountId);
-      if (base.account_class === account.customerType && base.billing_mode === "balance") {
-        return {
-          status: "base_assignment",
-          headVersion: head.head_version,
-          releaseGeneration: head.active_generation,
-        };
-      }
-      // A post-cutover B2C→B2B conversion supersedes the immutable b2c base assignment through
-      // the append-only class-changing assignment extension — fall through to the extension
-      // readback/provisioning path instead of failing key issuance forever. Any other mismatch
-      // is a genuine conflict.
-      if (!(base.account_class === "b2c" && account.customerType === "b2b" && base.billing_mode === "balance")) {
-        throw new PricingReleaseProvisioningV2Error("assignment_conflict", "base assignment conflicts with commerce ownership");
-      }
-    }
-
-    const pair = await activationPair(database, head);
-    const expectedReleaseKind = installsTargetRelease(pair.activationKind) ? "target" : "recovery";
-    if (release.release_kind !== expectedReleaseKind) {
-      throw new PricingReleaseProvisioningV2Error(
-        "activation_receipt_missing",
-        "active release kind does not match its exact activation receipt",
-      );
-    }
-    const alreadyStored = await existingExtension(engine, pair, head, input.engineAccountId);
-    if (alreadyStored) {
-      const account = await commerceAccount(database, input.userId, input.engineAccountId);
-      const activeMember = alreadyStored.members.find((member) =>
-        member.release_generation === head.active_generation);
-      if (!activeMember
-          || activeMember.assignment.account_class !== account.customerType
-          || activeMember.assignment.billing_mode !== "balance") {
-        throw new PricingReleaseProvisioningV2Error(
-          "assignment_conflict",
-          "stored assignment extension conflicts with commerce ownership",
-        );
-      }
-      return { status: "extension", headVersion: head.head_version, releaseGeneration: head.active_generation };
-    }
-    const account = await commerceAccount(database, input.userId, input.engineAccountId);
-    const fundingGeneration = await normalizedFundingGeneration(engine, input.engineAccountId);
-    const policy = await policyForAccount(database, engine, account, input.userId, input.engineAccountId, release);
-
-    if (installsTargetRelease(pair.activationKind)) {
-      const link = await engine.getPricingReleaseRecoveryLinkV2(pair.targetGeneration, pair.recoveryGeneration);
-      if (!link || link.target_digest !== pair.targetDigest || link.recovery_digest !== pair.recoveryDigest) {
-        throw new PricingReleaseProvisioningV2Error("activation_receipt_missing", "engine recovery link differs from activation evidence");
-      }
-    }
-    const extension = buildExtension({
-      head,
-      pair,
-      accountId: input.engineAccountId,
-      accountClass: account.customerType,
-      fundingGeneration,
-      policy,
-    });
-    const prepared = await engine.preparePricingReleaseAssignmentExtensionV2(extension);
-    if (prepared.result === "rejected") {
-      if (prepared.code === "stale" || prepared.code === "missing_dependency") continue;
-      throw new PricingReleaseProvisioningV2Error(
-        "assignment_conflict",
-        `engine rejected assignment extension with ${prepared.code}`,
-      );
-    }
-    const readback = await engine.getPricingReleaseAssignmentExtensionV2(
-      extension.provisioning_head_version,
-      input.engineAccountId,
-    );
-    if (!readback || !sameCanonical(readback, extension)) {
-      throw new PricingReleaseProvisioningV2Error("assignment_conflict", "assignment extension readback differs from the request");
-    }
-    const finalHead = await engine.getPricingReleaseHeadV2();
-    if (finalHead && extensionCoversHead(readback, finalHead, input.engineAccountId)) {
-      return {
-        status: "extension",
-        headVersion: finalHead.head_version,
-        releaseGeneration: finalHead.active_generation,
-      };
-    }
-  }
-  throw new PricingReleaseProvisioningV2Error("head_changed", "pricing release head kept changing during key provisioning");
-}
-
-export type PricingReleasePolicyOverrideResultV2 =
-  | { status: "pre_cutover" }
-  | { status: "not_covered" }
-  | { status: "unchanged" | "override"; headVersion: number; policyVersion: number };
-
-/**
  * Propagates an operator CAS replacement of a live B2B commerce policy head into the release-v2
  * authority for an account already covered by the active release's base manifest. The immutable
  * base assignment is never rewritten: a strictly newer release policy version is prepared and
  * pinned through the append-only assignment extension, and the resolver prefers the extension.
+ *
+ * Phase 2.1 of the release-v2 retirement split the account population in two. Accounts that
+ * still live on the release path keep this extension write. Accounts owned by the strict
+ * policy_v1 delivery lane — new accounts that graduated the direct strict chain and were opted
+ * out, and any pre-cutover strict conversion — are detected by their strict commerce binding
+ * and answered `policy_owned` without any release write: the same CAS save already staged the
+ * strict→strict delivery through `materializeBinding`, and an extension for a strict account
+ * would be both dead (the opt-out marker bypasses the resolver) and wrong (a strict binding
+ * forbids release-format settlement).
  */
 export async function syncPricingReleasePolicyOverrideV2(
   database: Database,
-  engine: PricingReleaseProvisioningEngineV2,
+  engine: PricingReleaseOverrideEngineV2,
   input: { userId: string; engineAccountId: string },
 ): Promise<PricingReleasePolicyOverrideResultV2> {
+  const binding = await database.pool.query<{ policy_enforcement: string }>(`
+    SELECT policy_enforcement FROM account_policy_bindings WHERE user_id = $1
+  `, [input.userId]);
+  if (binding.rows[0]?.policy_enforcement === "strict") {
+    return { status: "policy_owned" };
+  }
   const head = await engine.getPricingReleaseHeadV2();
   if (!head) return { status: "pre_cutover" };
   const release = await engine.getPricingReleaseV2(head.active_generation);
   if (!release || release.content_digest !== head.active_digest) {
-    throw new PricingReleaseProvisioningV2Error(
+    throw new PricingReleaseOverrideV2Error(
       "active_release_missing",
       "active release readback does not match its head",
     );
   }
   const account = await commerceAccount(database, input.userId, input.engineAccountId);
   if (account.customerType !== "b2b") {
-    throw new PricingReleaseProvisioningV2Error(
+    throw new PricingReleaseOverrideV2Error(
       "assignment_conflict",
       "release policy override is only defined for B2B accounts",
     );
@@ -850,7 +583,7 @@ export async function syncPricingReleasePolicyOverrideV2(
   if (!(base.account_class === "b2b" || classChange)
       || base.billing_mode !== "balance"
       || base.funding_generation === null) {
-    throw new PricingReleaseProvisioningV2Error(
+    throw new PricingReleaseOverrideV2Error(
       "assignment_conflict",
       "base assignment conflicts with B2B balance ownership",
     );
@@ -863,7 +596,7 @@ export async function syncPricingReleasePolicyOverrideV2(
   // starts the per-account b2b lineage, whose version 1 is not comparable to the global b2c
   // base version.
   if (base.policy_id === policy.policy_id && policy.policy_version <= base.policy_version) {
-    throw new PricingReleaseProvisioningV2Error(
+    throw new PricingReleaseOverrideV2Error(
       "policy_not_ready",
       `release policy override must advance beyond base version ${base.policy_version}`,
     );
@@ -875,7 +608,7 @@ export async function syncPricingReleasePolicyOverrideV2(
       || policy.catalog_digest !== release.main_catalog_digest
       || policy.switch_generation !== release.switch_generation
       || policy.switch_digest !== release.switch_digest) {
-    throw new PricingReleaseProvisioningV2Error(
+    throw new PricingReleaseOverrideV2Error(
       "policy_not_ready",
       "pricing release policy lineage does not match the exact active release",
     );
@@ -883,14 +616,14 @@ export async function syncPricingReleasePolicyOverrideV2(
   const preparedPolicy = await engine.preparePricingReleasePolicyV2(policy);
   if (preparedPolicy.result !== "stored" && preparedPolicy.result !== "unchanged") {
     const result = preparedPolicy.result === "rejected" ? preparedPolicy.code : preparedPolicy.result;
-    throw new PricingReleaseProvisioningV2Error(
+    throw new PricingReleaseOverrideV2Error(
       "policy_not_ready",
       `engine rejected pricing release policy with ${result}`,
     );
   }
   const policyReadback = await engine.getPricingReleasePolicyV2(policy.policy_id, policy.policy_version);
   if (!policyReadback || !sameCanonical(policyReadback, policy)) {
-    throw new PricingReleaseProvisioningV2Error(
+    throw new PricingReleaseOverrideV2Error(
       "policy_not_ready",
       "engine policy readback differs from commerce authority",
     );
@@ -907,9 +640,9 @@ export async function syncPricingReleasePolicyOverrideV2(
   const prepared = await engine.preparePricingReleaseAssignmentExtensionV2(extension);
   if (prepared.result === "rejected") {
     if (prepared.code === "stale") {
-      throw new PricingReleaseProvisioningV2Error("head_changed", "pricing release head changed during the policy override");
+      throw new PricingReleaseOverrideV2Error("head_changed", "pricing release head changed during the policy override");
     }
-    throw new PricingReleaseProvisioningV2Error(
+    throw new PricingReleaseOverrideV2Error(
       "assignment_conflict",
       `engine rejected the policy override extension with ${prepared.code}`,
     );
@@ -919,7 +652,7 @@ export async function syncPricingReleasePolicyOverrideV2(
     input.engineAccountId,
   );
   if (!readback || !sameCanonical(readback, extension)) {
-    throw new PricingReleaseProvisioningV2Error(
+    throw new PricingReleaseOverrideV2Error(
       "assignment_conflict",
       "policy override extension readback differs from the request",
     );

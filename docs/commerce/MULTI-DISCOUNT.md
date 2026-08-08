@@ -493,18 +493,30 @@ a successor advance both install the evidence TARGET (the extension is written p
 pair's recovery generation), and only a recovery makes the paired recovery release active. Reading
 `successor` as anything other than a target-lane activation would fail every account created after
 a successor advance with `activation_receipt_missing` — those accounts are in no base manifest, so
-the extension path is their only way to a key.
+before the retirement phase the extension path was their only way to a key.
 
 After the green engine producer SHA, a separate consumer checkpoint is connected:
 `packages/contracts` verifies the strict body/readback and the identical
 account/policy/funding semantics of the active/recovery pair, `packages/engine-client` provides
-typed prepare/GET, and `packages/db/src/pricing-provisioning-v2.ts` runs the account-local
-orchestration. At `head=null` it keeps the pre-cutover path. After the head appears, it accepts
-only a base assignment or performs funding normalization, prepares the exact release-v2 policy,
-writes the extension, and reconciles the full GET-readback. `apps/api` performs this check before
-remote issue and again before returning the raw key; a postflight error disables the just-issued
-key. The consumer's presence does not activate the release and does not create the account in
-advance: until Stage 9 it is dormant.
+typed prepare/GET, and `packages/db/src/pricing-provisioning-v2.ts` ran the account-local
+orchestration. At `head=null` it kept the pre-cutover path. After the head appeared, it accepted
+only a base assignment or performed funding normalization, prepared the exact release-v2 policy,
+wrote the extension, and reconciled the full GET-readback. `apps/api` performed this check before
+remote issue and again before returning the raw key; a postflight error disabled the just-issued
+key. The consumer's presence did not activate the release and did not create the account in
+advance: until Stage 9 it stayed dormant.
+
+With the release-v2 retirement (phase 2.1) this registration extension orchestration is deleted
+together with `packages/db/src/pricing-provisioning-v2.ts`: the B2B override sync for
+release-covered accounts moved to `packages/db/src/pricing-release-override-v2.ts` (reporting
+`policy_owned` for strict/opted-out accounts, whose saves ride the policy_v1 delivery lane), and
+new accounts reach a usable key through the new-account direct strict chain instead — registration
+provisioning arms `strict_chain_pending`, the pricing worker drives the shared engine preflight,
+the `stageProvisionedAccountStrictJob` staging and the engine opt-out marker, and `createApiKey`
+waits for the strict flip, issues the key with its exact activation ACK and writes the one-way
+marker before returning the secret. Existing accounts keep their release coverage until the
+backfill phase; service `meter_only` accounts stay on the release path because the engine has no
+meter-only lane outside release-v2.
 
 Data-plane reserve/settlement does not take this global lock. During the CAS, only account
 creation/activation may wait for milliseconds, but never customer traffic.

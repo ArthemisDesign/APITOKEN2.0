@@ -1,11 +1,9 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import {
-  OPENKEYS_PRICING_PRODUCT_ID,
   PRICING_RELEASE_SCHEMA_VERSION_V2,
   pricingReleaseAssignmentExtensionV2Schema,
   pricingReleasePolicyV2Schema,
-  type FundingNormalizationPlanV2,
   type PricingReleaseAssignmentExtensionV2,
   type PricingReleasePolicyV2,
   type PricingReleaseProvisioningContextV2,
@@ -16,8 +14,6 @@ import type { EngineClient, TypedPricingMutationAck } from "./index.js";
 
 export type PricingReleaseProvisioningTransportV2 = Pick<
   EngineClient,
-  | "applyFundingNormalizationV2"
-  | "getFundingNormalizationPlanV2"
   | "getPricingReleaseAssignmentExtensionV2"
   | "getPricingReleasePolicyV2"
   | "getPricingReleaseProvisioningContextV2"
@@ -36,7 +32,6 @@ export class PricingReleaseAccountProvisioningV2Error extends Error {
       | "assignment_conflict"
       | "context_disappeared"
       | "context_changed"
-      | "funding_not_ready"
       | "policy_not_ready",
     message: string,
   ) {
@@ -76,18 +71,6 @@ export function pricingReleaseV2Digest(label: string, value: unknown): string {
   return `sha256:v2:${hex}`;
 }
 
-function policyRule(input: {
-  rule_id: string;
-  scope: PricingReleasePolicyV2["rules"][number]["scope"];
-  discount_bps: number;
-}): PricingReleasePolicyV2["rules"][number] {
-  const base = {
-    ...input,
-    payable_multiplier_bp: 10_000 - input.discount_bps,
-  };
-  return { ...base, rule_digest: pricingReleaseV2Digest("policy-rule", base) };
-}
-
 function buildPolicy(input: Omit<PricingReleasePolicyV2, "content_digest">): PricingReleasePolicyV2 {
   const normalized = {
     ...input,
@@ -101,19 +84,6 @@ function buildPolicy(input: Omit<PricingReleasePolicyV2, "content_digest">): Pri
   });
 }
 
-function customerLineage(release: PricingReleaseProvisioningReleaseV2) {
-  return {
-    billing_mode: "balance" as const,
-    schema_version: PRICING_RELEASE_SCHEMA_VERSION_V2,
-    capability_generation: release.capability_generation,
-    capability_digest: release.capability_digest,
-    catalog_generation: release.openkeys_catalog_generation,
-    catalog_digest: release.openkeys_catalog_digest,
-    switch_generation: release.switch_generation,
-    switch_digest: release.switch_digest,
-  };
-}
-
 function externalOwnerPolicyVersion(release: PricingReleaseProvisioningReleaseV2): number {
   if (release.capability_generation <= 3) return 1;
   if (release.capability_generation === 4) {
@@ -123,25 +93,6 @@ function externalOwnerPolicyVersion(release: PricingReleaseProvisioningReleaseV2
   if (release.capability_generation === 6) return 3;
   if (release.capability_generation === 7) return 4;
   throw new Error("pricing_release_unsupported_capability_generation");
-}
-
-export function buildOpenKeysPricingReleasePolicyV2(
-  context: PricingReleaseProvisioningContextV2,
-): PricingReleasePolicyV2 {
-  return buildPolicy({
-    policy_id: "release-v2:openkeys:global",
-    policy_version: externalOwnerPolicyVersion(context.active_release),
-    owner_type: "open_keys",
-    owner_id: "openkeys",
-    account_class: "open_keys",
-    product_id: OPENKEYS_PRICING_PRODUCT_ID,
-    ...customerLineage(context.active_release),
-    rules: [policyRule({
-      rule_id: "global-one-to-one",
-      scope: { scope: "global" },
-      discount_bps: 0,
-    })],
-  });
 }
 
 export function buildServicePricingReleasePolicyV2(
@@ -169,12 +120,12 @@ export function buildServicePricingReleasePolicyV2(
 
 interface AssignmentSemanticsV2 {
   account_id: string;
-  account_class: "open_keys" | "service";
+  account_class: "service";
   policy_id: string;
   policy_version: number;
   policy_digest: string;
-  billing_mode: "balance" | "meter_only";
-  funding_generation: number | null;
+  billing_mode: "meter_only";
+  funding_generation: null;
   purpose: string | null;
   responsible: string | null;
 }
@@ -269,70 +220,37 @@ function projectionMatchesRelease(
     && projection.content_digest === release.content_digest;
 }
 
-async function normalizedFundingGeneration(
+/**
+ * Completes the post-cutover release-v2 chain for one meter-only service account: the exact
+ * rule-free service policy and the account-local assignment extension for the active head (and
+ * its paired recovery). Service accounts are the one account class that stays on the release
+ * path in the retirement phase: the engine has no meter-only lane outside release-v2 (a
+ * rule-free strict policy admits nothing, managed discounts cap at 9500 bps, and the legacy
+ * scalar lane cannot express meter-only), so they are never opted out. An exact replay returns
+ * the stored base assignment or extension; every success is backed by an exact GET readback.
+ */
+export async function ensureServicePricingReleaseProvisioningV2(
   engine: PricingReleaseProvisioningTransportV2,
-  accountId: string,
-): Promise<number> {
-  const complete = (plan: FundingNormalizationPlanV2): number | null =>
-    plan.status === "normalized" && plan.funding_generation !== null && plan.funding_head_version !== null
-      ? plan.funding_generation
-      : null;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const plan = await engine.getFundingNormalizationPlanV2(accountId);
-    if (!plan) {
-      throw new PricingReleaseAccountProvisioningV2Error(
-        "funding_not_ready",
-        "engine account disappeared during funding normalization",
-      );
-    }
-    const existing = complete(plan);
-    if (existing !== null) return existing;
-    if (plan.status === "blocked" || plan.normalization_digest === null || plan.funding_generation === null) {
-      throw new PricingReleaseAccountProvisioningV2Error(
-        "funding_not_ready",
-        `funding normalization is ${plan.status}${plan.blockers[0] ? `: ${plan.blockers[0].code}` : ""}`,
-      );
-    }
-    const result = await engine.applyFundingNormalizationV2(accountId, {
-      expected_source_state_digest: plan.source_state_digest,
-      expected_normalization_digest: plan.normalization_digest,
-    });
-    if (!result) {
-      throw new PricingReleaseAccountProvisioningV2Error(
-        "funding_not_ready",
-        "engine account disappeared during funding apply",
-      );
-    }
-    const applied = complete(result.normalization);
-    if ((result.status === "stored" || result.status === "unchanged") && applied !== null) return applied;
-    if (result.status === "blocked") {
-      throw new PricingReleaseAccountProvisioningV2Error(
-        "funding_not_ready",
-        "engine rejected the account-local funding plan as blocked",
-      );
-    }
-  }
-  throw new PricingReleaseAccountProvisioningV2Error(
-    "funding_not_ready",
-    "funding state kept changing during normalization",
-  );
-}
-
-interface ProvisioningInputV2 {
-  accountId: string;
-  releaseRequired: boolean;
-  allowBaseAssignment: boolean;
-  policy(context: PricingReleaseProvisioningContextV2): PricingReleasePolicyV2;
-  assignment(policy: PricingReleasePolicyV2, fundingGeneration: number | null): AssignmentSemanticsV2;
-  normalizeFunding: boolean;
-}
-
-async function ensurePricingReleaseAccountProvisioningV2(
-  engine: PricingReleaseProvisioningTransportV2,
-  input: ProvisioningInputV2,
+  input: {
+    accountId: string;
+    serviceId: string;
+    purpose: string;
+    responsible: string;
+    releaseRequired?: boolean;
+  },
 ): Promise<PricingReleaseAccountProvisioningResultV2> {
-  let observedContext = input.releaseRequired;
-  let fundingGeneration: number | null = null;
+  const assignment = (policy: PricingReleasePolicyV2): AssignmentSemanticsV2 => ({
+    account_id: input.accountId,
+    account_class: "service",
+    policy_id: policy.policy_id,
+    policy_version: policy.policy_version,
+    policy_digest: policy.content_digest,
+    billing_mode: "meter_only",
+    funding_generation: null,
+    purpose: input.purpose,
+    responsible: input.responsible,
+  });
+  let observedContext = input.releaseRequired ?? false;
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const context = await engine.getPricingReleaseProvisioningContextV2();
     if (context === null) {
@@ -345,46 +263,41 @@ async function ensurePricingReleaseAccountProvisioningV2(
       return { status: "pre_cutover", headVersion: null, releaseGeneration: null };
     }
     observedContext = true;
-    const policy = input.policy(context);
-    if (input.allowBaseAssignment) {
-      const fullRelease = await engine.getPricingReleaseV2(context.active_release.generation);
-      if (!fullRelease || !projectionMatchesRelease(context.active_release, fullRelease)) {
+    const policy = buildServicePricingReleasePolicyV2(context, input.serviceId);
+    const fullRelease = await engine.getPricingReleaseV2(context.active_release.generation);
+    if (!fullRelease || !projectionMatchesRelease(context.active_release, fullRelease)) {
+      throw new PricingReleaseAccountProvisioningV2Error(
+        "context_changed",
+        "full release readback differs from the provisioning context",
+      );
+    }
+    const base = fullRelease.assignments.find((item) => item.account_id === input.accountId);
+    if (base) {
+      const expected = assignment(policy);
+      const comparable = {
+        account_id: base.account_id,
+        account_class: base.account_class,
+        policy_id: base.policy_id,
+        policy_version: base.policy_version,
+        policy_digest: base.policy_digest,
+        billing_mode: base.billing_mode,
+        funding_generation: base.funding_generation,
+        purpose: base.purpose,
+        responsible: base.responsible,
+      };
+      if (!sameCanonical(comparable, expected)) {
         throw new PricingReleaseAccountProvisioningV2Error(
-          "context_changed",
-          "full release readback differs from the provisioning context",
+          "assignment_conflict",
+          "immutable base assignment conflicts with the requested account owner",
         );
       }
-      const base = fullRelease.assignments.find((assignment) => assignment.account_id === input.accountId);
-      if (base) {
-        const expected = input.assignment(policy, base.funding_generation);
-        const comparable = {
-          account_id: base.account_id,
-          account_class: base.account_class,
-          policy_id: base.policy_id,
-          policy_version: base.policy_version,
-          policy_digest: base.policy_digest,
-          billing_mode: base.billing_mode,
-          funding_generation: base.funding_generation,
-          purpose: base.purpose,
-          responsible: base.responsible,
-        };
-        if (!sameCanonical(comparable, expected)) {
-          throw new PricingReleaseAccountProvisioningV2Error(
-            "assignment_conflict",
-            "immutable base assignment conflicts with the requested account owner",
-          );
-        }
-        return {
-          status: "base_assignment",
-          headVersion: context.head.head_version,
-          releaseGeneration: context.head.active_generation,
-        };
-      }
+      return {
+        status: "base_assignment",
+        headVersion: context.head.head_version,
+        releaseGeneration: context.head.active_generation,
+      };
     }
 
-    if (input.normalizeFunding && fundingGeneration === null) {
-      fundingGeneration = await normalizedFundingGeneration(engine, input.accountId);
-    }
     const policyAck = await engine.preparePricingReleasePolicyV2(policy);
     if (!mutationAccepted(policyAck, "policy")) continue;
     const policyReadback = await engine.getPricingReleasePolicyV2(policy.policy_id, policy.policy_version);
@@ -394,10 +307,7 @@ async function ensurePricingReleaseAccountProvisioningV2(
         "pricing release policy readback differs from the requested policy",
       );
     }
-    const extension = buildPricingReleaseAssignmentExtensionV2(
-      context,
-      input.assignment(policy, fundingGeneration),
-    );
+    const extension = buildPricingReleaseAssignmentExtensionV2(context, assignment(policy));
     const extensionAck = await engine.preparePricingReleaseAssignmentExtensionV2(extension);
     if (!mutationAccepted(extensionAck, "assignment extension")) continue;
     const readback = await engine.getPricingReleaseAssignmentExtensionV2(
@@ -423,58 +333,4 @@ async function ensurePricingReleaseAccountProvisioningV2(
     "context_changed",
     "pricing release provisioning context kept changing",
   );
-}
-
-export async function ensureOpenKeysPricingReleaseProvisioningV2(
-  engine: PricingReleaseProvisioningTransportV2,
-  input: { accountId: string; releaseRequired?: boolean },
-): Promise<PricingReleaseAccountProvisioningResultV2> {
-  return ensurePricingReleaseAccountProvisioningV2(engine, {
-    accountId: input.accountId,
-    releaseRequired: input.releaseRequired ?? false,
-    allowBaseAssignment: false,
-    normalizeFunding: true,
-    policy: buildOpenKeysPricingReleasePolicyV2,
-    assignment: (policy, fundingGeneration) => ({
-      account_id: input.accountId,
-      account_class: "open_keys",
-      policy_id: policy.policy_id,
-      policy_version: policy.policy_version,
-      policy_digest: policy.content_digest,
-      billing_mode: "balance",
-      funding_generation: fundingGeneration,
-      purpose: null,
-      responsible: null,
-    }),
-  });
-}
-
-export async function ensureServicePricingReleaseProvisioningV2(
-  engine: PricingReleaseProvisioningTransportV2,
-  input: {
-    accountId: string;
-    serviceId: string;
-    purpose: string;
-    responsible: string;
-    releaseRequired?: boolean;
-  },
-): Promise<PricingReleaseAccountProvisioningResultV2> {
-  return ensurePricingReleaseAccountProvisioningV2(engine, {
-    accountId: input.accountId,
-    releaseRequired: input.releaseRequired ?? false,
-    allowBaseAssignment: true,
-    normalizeFunding: false,
-    policy: (context) => buildServicePricingReleasePolicyV2(context, input.serviceId),
-    assignment: (policy) => ({
-      account_id: input.accountId,
-      account_class: "service",
-      policy_id: policy.policy_id,
-      policy_version: policy.policy_version,
-      policy_digest: policy.content_digest,
-      billing_mode: "meter_only",
-      funding_generation: null,
-      purpose: input.purpose,
-      responsible: input.responsible,
-    }),
-  });
 }

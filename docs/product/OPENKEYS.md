@@ -123,26 +123,27 @@ be read with the historical multiplier only until Stage 9. After the global cuto
 live reserve of any OpenKeys uses the canonical 1:1; the legacy contract cannot be chosen
 for a new batch and cannot be carried into the target release.
 
-Issuance uses `GET /admin/pricing/v2/provisioning-context` as a linear cutover boundary.
-While the context is `null`, the previous catalog/switch policy-before-credit path is
-preserved. After cutover the account first receives exactly the face value without a
-usable secret, then the writer account-local normalizes funding, prepares the canonical
-release-v2 OpenKeys policy with a single global rule
-`discount_bps=0/payable_multiplier_bp=10000`, records the exact active/recovery assignment
-extension, reads it back and re-reads the fresh context. Only after the readback matches
-is the `sk-pool` secret issued. The active target always uses the evidence-selected
-recovery from the context; the active recovery gets one member. Any rejected ACK, funding
-blocker, readback mismatch or head drift leaves the secret unissued, and the existing
-issuance compensation disables the unfinished engine account. Therefore OpenKeys does not
-depend on the commerce activation tables and does not require stopping batch issuance
-during the global CAS.
+Issuance no longer touches the release-v2 assignment extension: with the release-v2 retirement
+(phase 2.1) a new OpenKeys account is born directly on the strict policy path
+(`provisionOfficialOpenKeysCredential` in `apps/openkeys/src/lib/openkeys-pricing.ts`). After the
+read-only authority check (`resolveOpenKeysPricingAuthority`) the writer activates the canonical
+official 1:1 policy on a `strict/strict/verified` binding (`officialOpenKeysStrictBinding`) — on a
+zero-key, zero-balance account the unbound→strict activation is vacuously valid — then credits
+exactly the face value (allocated into strict funding buckets), issues the `sk-pool` secret WITH
+its exact activation ACK, and finally writes the one-way engine opt-out marker through
+`EngineClient.optOutPricingReleaseV2`. Only after the marker lands is the uncovered account
+servable at all, so the usable secret is returned last. Every step is idempotent under the
+issuance job's retry; any rejected ACK, credit failure or opt-out guard rejection aborts the
+issuance job, and the existing issuance compensation disables the half-provisioned engine
+account. Pre-existing OpenKeys accounts keep working on the release path — the retirement does
+not backfill them in this phase.
 
 The Stage 7 existing-inventory shadow-rollout lane (migration
 `0035_pricing_shadow_rollout_jobs.sql`) was removed with the dismantled release cycle: the
 `POST /v1/admin/pricing-shadow-rollout-v2/stage` producer (and its paired GET) in `apps/api`
 and the bounded `apps/worker` rollout consumer no longer exist. The completed gpt-image-2
 rollouts remain durable historical evidence; new OpenKeys issuance never depended on the lane
-(release-native from birth through the provisioning-context path above). The engine
+(release-native from birth through the direct strict provisioning path above). The engine
 `locked-openkeys-transition` endpoint stays as expand-only contract surface with no live
 consumer. The historical protocol record is `docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
 

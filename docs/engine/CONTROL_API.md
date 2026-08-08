@@ -813,8 +813,12 @@ their immutable reserve-time snapshots (settlement is dispatched by the snapshot
 marker); migration 0016's `account_policy_bindings_strict_state` trigger independently forbids
 the strict binding cutover while such reservations are active, so a guarded opt-out can only
 succeed on an already drained account. There is NO opt-in endpoint by design; repair is a
-support migration. No commerce consumer ships with this producer — the consumer arrives with the
-commerce migration phase.
+support migration. The commerce consumer ships with the release-v2 retirement: the new-account
+direct strict chain (`packages/db/src/strict-chain.ts`), key issuance for a chain-armed account
+(`apps/api/src/account.service.ts`) and OpenKeys issuance
+(`apps/openkeys/src/lib/openkeys-pricing.ts`) call this route through
+`EngineClient.optOutPricingReleaseV2`, and the strict request/response zod contracts live in
+`packages/contracts` (`pricingReleaseOptOutRequestV2Schema`/`pricingReleaseOptOutAckV2Schema`).
 
 `GET /admin/pricing/v2/provisioning-context` is the post-cutover discovery authority for account
 provisioning outside the commerce database. It returns `{ "context": null }` before cutover. After
@@ -842,7 +846,7 @@ assignment parity and the evidence-selected recovery link. Any disagreement retu
 unavailable; it never falls back to an arbitrary prepared link. An active target has exactly one
 `paired_recovery`; an active recovery has `paired_recovery=null` because no later pair has been
 confirmed by that head transition. The projection deliberately omits full base assignments: the
-account-specific extension remains the sole post-cutover write contract.
+account-specific extension remains the sole post-cutover assignment write contract.
 
 `PricingReleasePolicyV2` has the following exact shape (all unknown fields are rejected):
 
@@ -985,16 +989,25 @@ or mixed active/revoked evidence returns `invalid_ledger_evidence`, not a guesse
 Assignment-extension typed TS consumers are connected only after the green exact producer SHA.
 `packages/contracts` strictly validates the nullable provisioning context and the exact active/recovery pair;
 `packages/engine-client` is the sole typed transport and the owner of the canonical Stage 5 v2
-policy/assignment digest builder. With a non-null context, the commerce, OpenKeys and service writers
-complete the required account-local chain, the exact policy/extension prepare+GET readback and a fresh
+policy/assignment digest builder. As originally connected, with a non-null context the commerce,
+OpenKeys and service writers
+completed the required account-local chain, the exact policy/extension prepare+GET readback and a fresh
 final context check before issuing a usable key or declaring a service account available.
-OpenKeys first credits the face value, then normalizes funding and persists the global 1:1 policy;
+OpenKeys first credited the face value, then normalized funding and persisted the global 1:1 policy;
 the service policy is rule-free, `meter_only`, without funding/catalog/switch pins and with mandatory
 purpose/responsible. An active target gets only the evidence-selected recovery member; an active
-recovery gets one member. `apps/api` additionally repeats the commerce key check after the remote issue;
-if the head or authority changed, the key is disabled before the raw secret is returned. With `context=null`
+recovery gets one member. `apps/api` additionally repeated the commerce key check after the remote issue;
+if the head or authority changed, the key was disabled before the raw secret was returned. With `context=null`
 the consumer keeps the pre-cutover path and materializes nothing release-v2, so a deploy by itself does not
 start the cutover.
+With the release-v2 retirement (phase 2.1) the commerce registration and OpenKeys extension writers
+are deleted: new accounts of both contexts reach a usable key through the direct strict path and the
+`POST /admin/pricing/v2/opt-out` marker above. The remaining extension writers are the service
+writer (`ensureServicePricingReleaseProvisioningV2` — service `meter_only` accounts stay on the
+release path because the engine has no meter-only lane outside release-v2) and the B2B override
+sync (`packages/db/src/pricing-release-override-v2.ts`), which pins a strictly newer same-policy
+version or a class-changing conversion only for release-covered accounts; strict/opted-out
+accounts report `policy_owned` and their saves ride the policy_v1 delivery lane.
 Data-plane reserve/settlement do not take the release control-plane lock.
 After each producer SHA reached a green exact-SHA `deploy/watchdog`, `packages/contracts` gained the
 strict release, funding-normalization and assignment-extension wire schemas, while

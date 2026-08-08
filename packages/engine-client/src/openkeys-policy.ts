@@ -270,3 +270,18 @@ export function officialOpenKeysBinding(): AccountPolicyBinding {
     reconciliation_state: "pending",
   };
 }
+
+/**
+ * The direct strict binding for new OpenKeys issuance in the release-retirement flow: the
+ * account is born strict/strict/verified (zero keys and zero balance make the engine's atomic
+ * strict preconditions vacuous at activation), the face-value credit allocates its funding
+ * bucket, and the first key is issued with the exact activation ACK so the release opt-out
+ * guard can mark the account immediately.
+ */
+export function officialOpenKeysStrictBinding(): AccountPolicyBinding {
+  return {
+    policy_enforcement: "strict",
+    funding_enforcement: "strict",
+    reconciliation_state: "verified",
+  };
+}

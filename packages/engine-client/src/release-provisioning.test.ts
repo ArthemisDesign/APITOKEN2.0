@@ -1,5 +1,4 @@
 import type {
-  FundingNormalizationPlanV2,
   PricingReleaseAssignmentExtensionV2,
   PricingReleasePolicyV2,
   PricingReleaseProvisioningContextV2,
@@ -8,9 +7,7 @@ import type {
 } from "@claude-api/contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
-  buildOpenKeysPricingReleasePolicyV2,
   buildServicePricingReleasePolicyV2,
-  ensureOpenKeysPricingReleaseProvisioningV2,
   ensureServicePricingReleaseProvisioningV2,
   type PricingReleaseProvisioningTransportV2,
 } from "./release-provisioning.js";
@@ -100,39 +97,11 @@ function fullRelease(item: PricingReleaseProvisioningReleaseV2): PricingReleaseV
   };
 }
 
-function fundingPlan(status: "ready" | "normalized"): FundingNormalizationPlanV2 {
-  return {
-    account_id: "acct_new",
-    account_status: "active",
-    status,
-    source: status === "normalized" ? "stored_generation" : "aggregate_paid_only",
-    source_state_digest: digest("8"),
-    normalization_digest: digest("9"),
-    funding_generation: 7,
-    funding_head_version: 1,
-    balance_nano: "5000000000",
-    reserved_nano: "0",
-    spent_nano: "0",
-    lots: [{
-      lot_id: "fundv2_openkeys",
-      source_type: "paid",
-      source_ref: "openkeys:test",
-      balance_nano: "5000000000",
-      reserved_nano: "0",
-      spent_nano: "0",
-      version: 1,
-      status: "active",
-    }],
-    blockers: [],
-  };
-}
-
 function fakeTransport(contexts: PricingReleaseProvisioningContextV2[]) {
   const policies = new Map<string, PricingReleasePolicyV2>();
   const extensions = new Map<string, PricingReleaseAssignmentExtensionV2>();
   const trace: string[] = [];
   let contextRead = 0;
-  let normalized = false;
   const currentContext = (): PricingReleaseProvisioningContextV2 =>
     contexts[Math.min(contextRead, contexts.length - 1)]!;
   const engine = {
@@ -147,15 +116,6 @@ function fakeTransport(contexts: PricingReleaseProvisioningContextV2[]) {
       if (generation === target.generation) return fullRelease(target);
       if (generation === recovery.generation) return fullRelease(recovery);
       return null;
-    }),
-    getFundingNormalizationPlanV2: vi.fn(async () => {
-      trace.push("funding-plan");
-      return fundingPlan(normalized ? "normalized" : "ready");
-    }),
-    applyFundingNormalizationV2: vi.fn(async () => {
-      trace.push("funding-apply");
-      normalized = true;
-      return { status: "stored" as const, normalization: fundingPlan("normalized") };
     }),
     preparePricingReleasePolicyV2: vi.fn(async (policy: PricingReleasePolicyV2) => {
       trace.push("policy-prepare");
@@ -197,69 +157,36 @@ function fakeTransport(contexts: PricingReleaseProvisioningContextV2[]) {
   return { engine, policies, extensions, trace };
 }
 
-describe("release-v2 external-owner provisioning", () => {
-  it("versions external-owner policies by admitted capability generation", () => {
-    expect(buildOpenKeysPricingReleasePolicyV2(targetContext()).policy_version).toBe(1);
+const serviceInput = {
+  accountId: "acct_new",
+  serviceId: "crm-parsing",
+  purpose: "CRM ingestion",
+  responsible: "platform",
+  releaseRequired: true,
+} as const;
+
+describe("release-v2 service provisioning", () => {
+  it("versions service policies by admitted capability generation", () => {
     expect(buildServicePricingReleasePolicyV2(targetContext(), "worker").policy_version).toBe(1);
 
     const generation5 = targetContext();
     generation5.active_release = { ...generation5.active_release, capability_generation: 5 };
-    expect(buildOpenKeysPricingReleasePolicyV2(generation5).policy_version).toBe(2);
     expect(buildServicePricingReleasePolicyV2(generation5, "worker").policy_version).toBe(2);
 
     const generation6 = targetContext();
     generation6.active_release = { ...generation6.active_release, capability_generation: 6 };
-    expect(buildOpenKeysPricingReleasePolicyV2(generation6).policy_version).toBe(3);
     expect(buildServicePricingReleasePolicyV2(generation6, "worker").policy_version).toBe(3);
 
     const rejected = targetContext();
     rejected.active_release = { ...rejected.active_release, capability_generation: 4 };
-    expect(() => buildOpenKeysPricingReleasePolicyV2(rejected))
+    expect(() => buildServicePricingReleasePolicyV2(rejected, "worker"))
       .toThrow("pricing_release_rejected_capability_generation");
-  });
-
-  it("normalizes OpenKeys funding and stores the exact target/recovery pair", async () => {
-    const state = fakeTransport([targetContext()]);
-    await expect(ensureOpenKeysPricingReleaseProvisioningV2(state.engine, {
-      accountId: "acct_new",
-      releaseRequired: true,
-    })).resolves.toEqual({ status: "extension", headVersion: 1, releaseGeneration: 10 });
-
-    const policy = [...state.policies.values()][0]!;
-    expect(policy).toMatchObject({
-      owner_type: "open_keys",
-      account_class: "open_keys",
-      product_id: "openkeys",
-      rules: [{
-        scope: { scope: "global" },
-        discount_bps: 0,
-        payable_multiplier_bp: 10_000,
-      }],
-    });
-    const extension = [...state.extensions.values()][0]!;
-    expect(extension.members.map((member) => member.release_generation)).toEqual([10, 11]);
-    expect(extension.members.map((member) => member.assignment.funding_generation)).toEqual([7, 7]);
-    expect(state.trace).toEqual([
-      "context",
-      "funding-plan",
-      "funding-apply",
-      "policy-prepare",
-      "policy-readback",
-      "extension-prepare",
-      "extension-readback",
-      "context",
-    ]);
   });
 
   it("creates a single rule-free meter-only member under an active recovery", async () => {
     const state = fakeTransport([recoveryContext()]);
-    await expect(ensureServicePricingReleaseProvisioningV2(state.engine, {
-      accountId: "acct_new",
-      serviceId: "crm-parsing",
-      purpose: "CRM ingestion",
-      responsible: "platform",
-      releaseRequired: true,
-    })).resolves.toEqual({ status: "extension", headVersion: 2, releaseGeneration: 11 });
+    await expect(ensureServicePricingReleaseProvisioningV2(state.engine, serviceInput))
+      .resolves.toEqual({ status: "extension", headVersion: 2, releaseGeneration: 11 });
 
     const policy = [...state.policies.values()][0]!;
     expect(policy).toMatchObject({
@@ -286,24 +213,36 @@ describe("release-v2 external-owner provisioning", () => {
         },
       }],
     });
-    expect(state.engine.getFundingNormalizationPlanV2).not.toHaveBeenCalled();
+    expect(state.trace).toEqual([
+      "context",
+      "release",
+      "policy-prepare",
+      "policy-readback",
+      "extension-prepare",
+      "extension-readback",
+      "context",
+    ]);
+  });
+
+  it("stores the exact target/recovery pair under an active target", async () => {
+    const state = fakeTransport([targetContext()]);
+    await expect(ensureServicePricingReleaseProvisioningV2(state.engine, serviceInput))
+      .resolves.toEqual({ status: "extension", headVersion: 1, releaseGeneration: 10 });
+    const extension = [...state.extensions.values()][0]!;
+    expect(extension.members.map((member) => member.release_generation)).toEqual([10, 11]);
   });
 
   it("accepts a target extension when the final fresh context advances to its paired recovery", async () => {
     const state = fakeTransport([targetContext(), recoveryContext()]);
-    await expect(ensureOpenKeysPricingReleaseProvisioningV2(state.engine, {
-      accountId: "acct_new",
-      releaseRequired: true,
-    })).resolves.toEqual({ status: "extension", headVersion: 2, releaseGeneration: 11 });
+    await expect(ensureServicePricingReleaseProvisioningV2(state.engine, serviceInput))
+      .resolves.toEqual({ status: "extension", headVersion: 2, releaseGeneration: 11 });
     expect(state.extensions.size).toBe(1);
   });
 
   it("fails closed when exact extension readback does not match", async () => {
     const state = fakeTransport([targetContext()]);
     vi.mocked(state.engine.getPricingReleaseAssignmentExtensionV2).mockResolvedValue(null);
-    await expect(ensureOpenKeysPricingReleaseProvisioningV2(state.engine, {
-      accountId: "acct_new",
-      releaseRequired: true,
-    })).rejects.toMatchObject({ code: "assignment_conflict" });
+    await expect(ensureServicePricingReleaseProvisioningV2(state.engine, serviceInput))
+      .rejects.toMatchObject({ code: "assignment_conflict" });
   });
 });

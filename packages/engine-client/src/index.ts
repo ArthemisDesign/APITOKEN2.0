@@ -25,9 +25,10 @@ import {
   pricingReleaseAssignmentExtensionV2Schema,
   pricingReleaseHeadV2Schema,
   pricingReleaseInventoryPageV2Schema,
+  pricingReleaseOptOutAckV2Schema,
+  pricingReleaseOptOutRequestV2Schema,
   pricingReleasePolicyV2Schema,
   pricingReleaseProvisioningContextEnvelopeV2Schema,
-  pricingReleaseRecoveryLinkV2Schema,
   pricingReleaseV2Schema,
   providerSwitchSpecSchema,
   type AccountPolicyBinding,
@@ -54,9 +55,9 @@ import {
   type PricingReleaseAssignmentExtensionV2,
   type PricingReleaseHeadV2,
   type PricingReleaseInventoryPageV2,
+  type PricingReleaseOptOutAckV2,
   type PricingReleasePolicyV2,
   type PricingReleaseProvisioningContextV2,
-  type PricingReleaseRecoveryLinkV2,
   type PricingReleaseV2,
   type ProviderSwitchSpec,
 } from "@claude-api/contracts";
@@ -70,6 +71,7 @@ export {
   OFFICIAL_ONE_TO_ONE_CONTRACT,
   OFFICIAL_ONE_TO_ONE_MULT_BP,
   officialOpenKeysBinding,
+  officialOpenKeysStrictBinding,
   OPENKEYS_POLICY_PROVIDERS,
   OpenKeysPolicyError,
   stage7OpenKeysDigest,
@@ -77,11 +79,9 @@ export {
 } from "./openkeys-policy.js";
 
 export {
-  buildOpenKeysPricingReleasePolicyV2,
   buildPricingReleaseAssignmentExtensionV2,
   buildServicePricingReleasePolicyV2,
   canonicalPricingReleaseV2Json,
-  ensureOpenKeysPricingReleaseProvisioningV2,
   ensureServicePricingReleaseProvisioningV2,
   PricingReleaseAccountProvisioningV2Error,
   pricingReleaseV2Digest,
@@ -174,11 +174,6 @@ const releasePolicyV2PrepareIdentitySchema = pricingReleasePolicyV2Schema.pick({
   policy_id: true,
   policy_version: true,
   content_digest: true,
-});
-const releaseRecoveryLinkV2PrepareIdentitySchema = pricingReleaseRecoveryLinkV2Schema.pick({
-  target_generation: true,
-  recovery_generation: true,
-  link_digest: true,
 });
 const releaseInventoryLimitV2Schema = z.number().int().min(1).max(500);
 const fundingNormalizationAccountIdV2Schema = z.string().startsWith("acct_").max(200);
@@ -770,34 +765,31 @@ export class EngineClient {
     return release;
   }
 
-  async getPricingReleaseRecoveryLinkV2(
-    targetGeneration: number,
-    recoveryGeneration: number,
-  ): Promise<PricingReleaseRecoveryLinkV2 | null> {
-    const generations = releaseRecoveryLinkV2PrepareIdentitySchema
-      .omit({ link_digest: true })
-      .parse({
-        target_generation: targetGeneration,
-        recovery_generation: recoveryGeneration,
-      });
-    if (generations.recovery_generation <= generations.target_generation) {
-      throw new RangeError("recoveryGeneration must be newer than targetGeneration");
+  /**
+   * `POST /admin/pricing/v2/opt-out` — the one-way release-path retirement marker for an
+   * account already proven to live on the strict policy path. The engine guard fails closed
+   * with 409 `missing_dependency` unless the account is active, holds a strict/strict/verified
+   * binding, and has at least one active unexpired key carrying the exact active-policy ACK.
+   * An already-marked account is an exact replay (`unchanged`), so callers may retry freely.
+   */
+  async optOutPricingReleaseV2(
+    input: { accountId: string; createdBy?: string; reason?: string },
+  ): Promise<PricingReleaseOptOutAckV2> {
+    const request = pricingReleaseOptOutRequestV2Schema.parse({
+      account_id: input.accountId,
+      ...(input.createdBy === undefined ? {} : { created_by: input.createdBy }),
+      ...(input.reason === undefined ? {} : { reason: input.reason }),
+    });
+    const { response, payload } = await this.request("/admin/pricing/v2/opt-out", {
+      method: "POST",
+      body: JSON.stringify(request),
+      acceptedStatuses: [400, 409, 423],
+    });
+    const ack = this.parsePricingResponse(pricingReleaseOptOutAckV2Schema, payload, response);
+    if (ack.result !== "rejected" && response.status !== 200) {
+      throw new EngineClientError("engine returned an inconsistent pricing opt-out status", response.status, false);
     }
-    const { response, payload } = await this.request(
-      `/admin/pricing/v2/recovery-link/${generations.target_generation}/${generations.recovery_generation}`,
-      { acceptedStatuses: [404] },
-    );
-    if (response.status === 404) return null;
-    const recoveryLink = this.parsePricingResponse(
-      z.object({ recovery_link: pricingReleaseRecoveryLinkV2Schema }).strict(),
-      payload,
-      response,
-    ).recovery_link;
-    if (recoveryLink.target_generation !== generations.target_generation ||
-        recoveryLink.recovery_generation !== generations.recovery_generation) {
-      throw new EngineClientError("engine returned a different pricing recovery link", response.status, false);
-    }
-    return recoveryLink;
+    return ack;
   }
 
   async preparePricingReleaseAssignmentExtensionV2(

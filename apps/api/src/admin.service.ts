@@ -39,7 +39,7 @@ import {
   repairDeadPreCutoverPolicyDelivery,
   PricingPolicyDeliveryRepairError,
   syncPricingReleasePolicyOverrideV2,
-  PricingReleaseProvisioningV2Error,
+  PricingReleaseOverrideV2Error,
   revokeBusinessInvite,
   rotateBusinessInvite,
   setBusinessPricing,
@@ -580,7 +580,7 @@ export class AdminService {
       });
       return result;
     } catch (error) {
-      if (error instanceof PricingReleaseProvisioningV2Error) {
+      if (error instanceof PricingReleaseOverrideV2Error) {
         return { status: "error", code: error.code, message: error.message };
       }
       throw error;

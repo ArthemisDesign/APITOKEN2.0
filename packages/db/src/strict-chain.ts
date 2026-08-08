@@ -2,29 +2,37 @@ import {
   AccountStrictCutoverPreflightError,
   ensureAccountStrictCutoverPreflight,
   type AccountStrictCutoverPreflightTransport,
+  type EngineClient,
 } from "@claude-api/engine-client";
 import type { Database } from "./client.js";
 import {
   AccountStrictCutoverError,
-  pricingReleaseCutoverCompleted,
-  stageAccountStrictCutoverJob,
+  stageProvisionedAccountStrictJob,
 } from "./pricing-control-jobs.js";
 
 /**
- * Automatic half of the per-account strict cutover lane (docs/commerce/PRICING.md,
- * docs/commerce/MULTI-DISCOUNT.md decisions 13–14). A B2C→B2B conversion and every
- * b2b_client policy save set `strict_chain_pending` on the account binding; the pricing worker
- * sweep then advances the chain account-locally once the exact saved policy version is
- * confirmed under shadow: shared engine preflight (funding normalization + active-key ACK
- * stamps), then the atomic strict+strict+verified staging. The staging transaction clears the
- * flag, so a replay never duplicates the cutover, and a binding that is already strict is just
- * disarmed. A failed precondition is recorded on the binding's last_error and retried on the
- * next sweep; it never produces a partial silent state.
+ * The new-account direct strict chain of the release-v2 retirement (docs/commerce/PRICING.md,
+ * docs/commerce/MULTI-DISCOUNT.md). Registration provisioning arms `strict_chain_pending` on the
+ * fresh binding; the pricing worker then drives the account to its retirement target state, one
+ * durable step per pass:
  *
- * The lane is pre-cutover only: once the global release cutover receipt is durable, the
- * release-v2 authority owns admission and pricing, and per-account B2B enforcement moves
- * through the append-only assignment extension lane. The writers stop arming the flag at that
- * point, and the sweep disarms any straggler as `superseded` without touching the engine.
+ * 1. once the shadow delivery of the exact materialized policy version confirms
+ *    (shadow/verified/confirmed, desired = applied), the shared engine preflight runs (funding
+ *    normalization + active-key ACK stamps) and the atomic strict/strict/verified staging is
+ *    written for that same version;
+ * 2. while the strict delivery is in flight the preflight is re-run on every pass, so a key
+ *    created between staging and the engine flip is stamped before the flip requires it;
+ * 3. once the strict delivery confirms, the engine `POST /admin/pricing/v2/opt-out` marker is
+ *    written and the flag is disarmed. The marker is one-way and replay-safe (`unchanged`),
+ *    so worker redelivery and the synchronous opt-out in key issuance can never double-apply.
+ *
+ * Failure discipline is fail-closed: a precondition that cannot advance is recorded on the
+ * binding's last_error and retried on the next pass; the account is never opted out — it keeps
+ * working on the release path exactly as before (new accounts have no release coverage, so a
+ * stuck chain simply leaves the account in its pre-strict provisioning state, visible in the
+ * admin panel and the worker error log). An opt-out rejected with `missing_dependency` is the
+ * normal "no active ACKed key yet" waiting state (the guard requires at least one): it stays
+ * armed quietly until the first key is issued with its activation ACK.
  */
 
 export type PendingStrictChainAccount = {
@@ -40,15 +48,16 @@ export type PendingStrictChainAccount = {
 
 export type AccountStrictChainAdvanceResult =
   | { status: "staged"; jobId: string | null; funding: string; keysStamped: number }
-  | { status: "already_strict" }
-  // The global release cutover has completed; the flag was disarmed without engine I/O because
-  // the assignment extension lane owns per-account enforcement now.
-  | { status: "superseded" }
-  // The shadow delivery of the target version is still in flight (or a newer save moved the
-  // desired target mid-sweep); the next pass re-evaluates quietly.
+  // The engine opt-out marker landed (applied or exact replay); the chain is complete and the
+  // flag was disarmed.
+  | { status: "opted_out" }
+  // The shadow delivery is still in flight, the strict delivery is still in flight, or the
+  // account is waiting for its first ACKed key; the next pass re-evaluates quietly.
   | { status: "pending" }
   // A precondition failed loudly; last_error is recorded and the next pass retries.
   | { status: "failed"; error: string };
+
+export type StrictChainOptOutTransport = Pick<EngineClient, "optOutPricingReleaseV2">;
 
 export async function listPendingStrictChainAccounts(
   database: Database,
@@ -87,26 +96,73 @@ export async function listPendingStrictChainAccounts(
   }));
 }
 
+/**
+ * Writes the one-way engine opt-out marker for one strict-chain account and disarms the flag.
+ * Idempotent: an already-marked account is an `unchanged` replay and also disarms. A guard
+ * rejection maps to `awaiting_key` (`missing_dependency` — no active ACKed key yet, a normal
+ * waiting state) or a recorded `failed`; transport errors propagate to the caller's retry.
+ */
+export async function optOutStrictChainAccount(
+  database: Database,
+  engine: StrictChainOptOutTransport,
+  input: { bindingId: string; engineAccountId: string; createdBy: string; reason: string },
+): Promise<"opted_out" | "awaiting_key" | "failed"> {
+  const ack = await engine.optOutPricingReleaseV2({
+    accountId: input.engineAccountId,
+    createdBy: input.createdBy,
+    reason: input.reason,
+  });
+  if (ack.result !== "rejected") {
+    await clearStrictChainPending(database, input.bindingId);
+    return "opted_out";
+  }
+  if (ack.code === "missing_dependency") return "awaiting_key";
+  await noteStrictChainFailure(
+    database,
+    input.bindingId,
+    `pricing release opt-out rejected with ${ack.code}`,
+  );
+  return "failed";
+}
+
 export async function advanceAccountStrictChain(
   database: Database,
-  engine: AccountStrictCutoverPreflightTransport,
+  engine: AccountStrictCutoverPreflightTransport & StrictChainOptOutTransport,
   candidate: PendingStrictChainAccount,
 ): Promise<AccountStrictChainAdvanceResult> {
-  {
-    const client = await database.pool.connect();
-    try {
-      if (await pricingReleaseCutoverCompleted(client)) {
-        await clearStrictChainPending(database, candidate.bindingId);
-        return { status: "superseded" };
-      }
-    } finally {
-      client.release();
-    }
+  const strictConfirmed = candidate.policyEnforcement === "strict"
+    && candidate.reconciliationState === "verified"
+    && candidate.syncState === "confirmed"
+    && candidate.appliedEffectiveVersion !== null
+    && candidate.desiredEffectiveVersion === candidate.appliedEffectiveVersion;
+  if (strictConfirmed) {
+    const result = await optOutStrictChainAccount(database, engine, {
+      bindingId: candidate.bindingId,
+      engineAccountId: candidate.engineAccountId,
+      createdBy: "pricing-worker",
+      reason: "new-account direct strict chain",
+    });
+    if (result === "opted_out") return { status: "opted_out" };
+    if (result === "awaiting_key") return { status: "pending" };
+    return { status: "failed", error: "pricing release opt-out was rejected by the engine guard" };
   }
+
   if (candidate.policyEnforcement === "strict") {
-    await clearStrictChainPending(database, candidate.bindingId);
-    return { status: "already_strict" };
+    // The strict delivery is staged but not yet confirmed. Keep the engine-side preconditions
+    // converged so a key created between staging and the engine flip is stamped before the
+    // strict trigger requires it; the delivery itself is owned by the control-job lane.
+    try {
+      await ensureAccountStrictCutoverPreflight(engine, candidate.engineAccountId);
+    } catch (error) {
+      if (error instanceof AccountStrictCutoverPreflightError) {
+        await noteStrictChainFailure(database, candidate.bindingId, error.message);
+        return { status: "failed", error: error.message };
+      }
+      throw error;
+    }
+    return { status: "pending" };
   }
+
   // The strict staging targets exactly the engine-confirmed version, so the chain may fire only
   // when the shadow delivery of the desired version has fully landed; anything else is retried.
   const ready = candidate.policyEnforcement === "shadow"
@@ -128,8 +184,8 @@ export async function advanceAccountStrictChain(
   }
 
   try {
-    const staged = await stageAccountStrictCutoverJob(database, { userId: candidate.userId });
-    if (staged.status === "already_strict") return { status: "already_strict" };
+    const staged = await stageProvisionedAccountStrictJob(database, { userId: candidate.userId });
+    if (staged.status === "already_strict") return { status: "pending" };
     return {
       status: "staged",
       jobId: staged.jobId,
@@ -138,18 +194,13 @@ export async function advanceAccountStrictChain(
     };
   } catch (error) {
     if (error instanceof AccountStrictCutoverError) {
-      // not_shadow/no_confirmed_version/unverified mean the delivery moved under the sweep —
-      // retried next pass. A permanently impossible target leaves the chain with a loud error.
-      if (error.code === "no_binding" || error.code === "not_b2b") {
+      // no_binding means the intent outlived its binding: record it and disarm. The other codes
+      // (not_shadow/no_confirmed_version/unverified) mean the delivery moved under the sweep —
+      // retried next pass.
+      if (error.code === "no_binding") {
         await noteStrictChainFailure(database, candidate.bindingId, error.message);
         await clearStrictChainPending(database, candidate.bindingId);
         return { status: "failed", error: error.message };
-      }
-      if (error.code === "post_cutover") {
-        // The head CAS landed between the sweep's read and staging: disarm, the release
-        // authority owns this account now.
-        await clearStrictChainPending(database, candidate.bindingId);
-        return { status: "superseded" };
       }
       return { status: "pending" };
     }

@@ -106,15 +106,21 @@ Re-running the conversion on a customer who is already B2B repairs a missing pol
 converted before this provisioning existed) against the multiplier already in effect, and is
 otherwise a no-op — it never rewrites an existing policy.
 
-Conversion and every later B2B policy save are enforced per account. Post-cutover the
-enforcement lane is the append-only assignment extension: the save
-(`syncPricingReleasePolicyOverrideV2`) and the post-cutover provisioning flow
-(`ensurePricingReleaseProvisioningV2`) prepare the account's release policy — a strictly newer
+Conversion and every later B2B policy save are enforced per account. Post-cutover there are
+two lanes, chosen by the account's commerce binding. For a release-covered (shadow/legacy)
+account the enforcement lane is the append-only assignment extension: the admin sync
+(`syncPricingReleasePolicyOverrideV2` in `packages/db/src/pricing-release-override-v2.ts`)
+prepares the account's release policy — a strictly newer
 version for an already-B2B base, or the first version of the new per-account B2B lineage for a
-converted B2C base — and pin it for the exact active head and its paired recovery, and the
-runtime resolver prefers the extension over the immutable base assignment. The conversion API
-reports the propagation outcome in its `release_v2` response field, and a converted account's
-key issuance self-heals through the same extension when the admin sync did not run. The
+converted B2C base — and pins it for the exact active head and its paired recovery, and the
+runtime resolver prefers the extension over the immutable base assignment. For a strict account
+(a new-account direct strict chain graduate — an opted-out account — or a pre-cutover strict
+conversion) the save rides the policy_v1 delivery lane instead: the strict→strict delivery is
+staged by `materializeBinding` in the same policy-save transaction, and the sync reports
+`policy_owned` without touching the release authority. The conversion API
+reports the propagation outcome in its `release_v2` response field. The class-changing extension
+for a converted release-covered account is written only by this admin sync / conversion lane —
+key issuance no longer self-heals through the extension. The
 client's own policy is therefore the only
 enforced price for new charges and every B2C input — the global default, its provider/model
 overrides, the legacy scalar, any progressive remnant — is dead for the account. The flip never
@@ -134,8 +140,18 @@ Before the fleet cutover the same contract ran through the per-account strict la
 and saves armed `strict_chain_pending`, and the pricing worker chained funding normalization,
 exact key ACK stamps, and the atomic strict+strict+verified delivery once the exact client
 policy version was shadow-confirmed and reconciliation-verified. Once the cutover receipt
-became durable the lane stood down: writers no longer arm the flag, the sweep disarms
-stragglers as `superseded`, and the staging entry point refuses with `post_cutover`.
+became durable the B2B lane stood down: conversion and save writers no longer arm the flag, and
+the manual staging entry point `stageAccountStrictCutoverJob` refuses with `post_cutover`. The
+flag itself was re-purposed for the release-v2 retirement (phase 2.1): registration
+provisioning (`materializeProvisionedUserPolicy` in `packages/db/src/pricing-policy-write.ts`)
+arms `strict_chain_pending` on the fresh binding, and the pricing worker drives the new-account
+direct strict chain (`packages/db/src/strict-chain.ts`) — once the materialized policy version
+confirms under shadow, the shared engine preflight (funding normalization + active-key ACK
+stamps) runs and the atomic strict/strict/verified delivery is staged via
+`stageProvisionedAccountStrictJob`; once the strict delivery confirms, the worker writes the
+one-way engine opt-out marker and disarms the flag. The chain is fail-closed: a precondition
+that cannot advance is recorded on the binding and retried, and the account is never opted out
+before its strict path is live.
 
 The legacy engine delivery lane keeps an immutable policy lineage per strict account and rejects
 any prepare that switches identity (global B2C → client policy) with `version_conflict`; a shadow
@@ -146,11 +162,13 @@ engine-confirmed applied state.
 ## Per-account strict cutover (pre-cutover lane, stood down)
 
 The fleet-wide Stage 9 release CAS completed on 2026-08-04 (see
-`docs/commerce/MULTI_DISCOUNT_STAGE9.md`), so this lane is stood down: the writers stop arming
-`strict_chain_pending`, the worker sweep disarms stragglers as `superseded`, and the manual
-endpoint `POST /v1/admin/users/:id/policy-enforcement-cutover` refuses with `post_cutover`.
+`docs/commerce/MULTI_DISCOUNT_STAGE9.md`), so this lane is stood down: the conversion/save
+writers stop arming
+`strict_chain_pending`, and the manual
+endpoint `POST /v1/admin/users/:id/policy-enforcement-cutover` (via
+`stageAccountStrictCutoverJob`) refuses with `post_cutover`.
 Post-cutover per-account B2B enforcement belongs to the assignment extension lane described
-above. The mechanics below remain as the record of how the lane enforced one individually
+above, and the flag now belongs to the new-account direct strict chain (previous section). The mechanics below remain as the record of how the lane enforced one individually
 negotiated B2B client ahead of the fleet CAS — it made the client's confirmed
 per-provider policy the enforced price instead of the legacy scalar by orchestrating
 the full precondition set the engine enforces atomically at the flip:
@@ -209,7 +227,12 @@ close a provider, and a model without a runtime tariff fails closed at quote tim
 Service accounts have `billing_mode=meter_only`: all runtime-capable models are available, official
 usage and tariff lineage are preserved, but no balance reserve/debit is performed and a zero balance
 does not produce a 402. Restrictions of a specific domain live in that domain's code, not in the
-pricing policy.
+pricing policy. Service accounts deliberately stay on the release path in the release-v2 retirement
+(phase 2.1): the engine has no meter-only lane outside release-v2 — a rule-free strict policy admits
+nothing, managed discounts cap at 9500 bps so payable 0 is impossible, the legacy scalar lane cannot
+express meter-only and rejects zero-balance accounts, and an uncovered non-opted-out account is not
+served at all — so `ensureServicePricingReleaseProvisioningV2` keeps completing their exact
+`meter_only` policy/extension until the backfill phase or an engine meter-only lane exists.
 
 ## Referral commission
 
@@ -224,8 +247,12 @@ evidence and cursor in one transaction; the sales feed receives only the confirm
 ## Post-cutover operation
 
 The fleet cutover completed on 2026-08-04 (release generation 13, one head CAS, no traffic
-stop). New accounts are covered by append-only assignment extensions before a usable key is
-issued, and B2B policy saves propagate through the same extension lane. Reservations started
+stop). New accounts complete the direct strict chain before a usable key is issued: a
+strict/strict/verified binding, a key born with the exact activation ACK, and the one-way
+`pricing_release_opt_out_ts` marker; existing accounts keep their release coverage until the
+backfill phase. B2B policy saves propagate through the assignment extension lane for
+release-covered accounts and through the policy_v1 delivery lane (`policy_owned`) for opted-out
+accounts. Reservations started
 before the head CAS settled against their immutable reserve-time snapshots; legacy-format
 outbox rows completed without a drain. The recovery path is a forward CAS to the paired
 recovery generation, never a rollback to an old binary. The full runbook and evidence chain:

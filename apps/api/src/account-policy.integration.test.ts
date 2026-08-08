@@ -3,11 +3,14 @@ import { ConflictException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  advanceAccountStrictChain,
   copyBusinessInvitationPolicyToUser,
   claimNextPricingControlJob,
   confirmPricingControlJob,
   createBusinessInvite,
   createDatabase,
+  listPendingStrictChainAccounts,
+  materializeProvisionedUserPolicy,
   runMigrations,
   runStage5Backfill,
   type Database,
@@ -143,59 +146,74 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
     expect(issued).toBe(1);
   });
 
-  it("does not issue a key when a live release head lacks its exact provisioning receipt", async () => {
+  it("does not issue a key while the direct strict chain is still settling", async () => {
     const userId = randomUUID();
-    const accountId = `acct_release_pending_${userId.replaceAll("-", "")}`;
-    await database.pool.query("INSERT INTO users (id, email, display_name) VALUES ($1,$2,'Release pending')", [
+    const accountId = `acct_chain_pending_${userId.replaceAll("-", "")}`;
+    await database.pool.query("INSERT INTO users (id, email, display_name) VALUES ($1,$2,'Chain pending')", [
       userId,
-      `release-pending-${userId}@example.test`,
+      `chain-pending-${userId}@example.test`,
     ]);
     await database.pool.query(`
       INSERT INTO customer_profiles (user_id, customer_type, current_tier, multiplier_bp, pricing_month_start)
-      VALUES ($1,'b2b',NULL,7000,date_trunc('month',now())::date)
+      VALUES ($1,'b2c',0,5000,date_trunc('month',now())::date)
     `, [userId]);
     await database.pool.query(`
       INSERT INTO engine_accounts (id,user_id,engine_account_id,mult_bp,status)
-      VALUES ($1,$2,$3,7000,'active')
+      VALUES ($1,$2,$3,5000,'active')
     `, [randomUUID(), userId, accountId]);
+    // The real registration path: the managed global policy is materialized and provisioning
+    // arms the direct strict chain. The shadow delivery is then confirmed, but the strict
+    // staging has not landed — key issuance must wait instead of handing out an unusable
+    // secret (an uncovered account is served only after the opt-out marker). The global policy
+    // is seeded directly: running the Stage 5 backfill again would conflict with the
+    // invitations other tests of this file already created.
+    const catalogHead = await database.pool.query<{ active_generation: string }>(
+      "SELECT active_generation::text FROM product_catalog_heads WHERE product_id = 'main'",
+    );
+    const catalogGeneration = Number(catalogHead.rows[0]!.active_generation);
+    await database.pool.query(`
+      INSERT INTO pricing_policies (id, owner_type, owner_id, product_id, replacement_locked, status)
+      VALUES ('policy:main:global-b2c', 'global_b2c', 'global-b2c', 'main', false, 'active')
+    `);
+    await database.pool.query(`
+      INSERT INTO pricing_policy_versions (
+        policy_id, version, schema_version, product_id, catalog_generation,
+        content_digest, actor_type, actor_id, reason
+      ) VALUES ('policy:main:global-b2c', 1, 1, 'main', $1, 'chain-pending-source',
+                'admin', 'account-policy-test', 'strict chain fixture')
+    `, [catalogGeneration]);
+    await database.pool.query(`
+      INSERT INTO pricing_policy_heads (policy_id, current_version, current_digest)
+      VALUES ('policy:main:global-b2c', 1, 'chain-pending-source')
+    `);
+    const materialized = await materializeProvisionedUserPolicy(database, {
+      userId,
+      engineAccountId: accountId,
+    });
+    expect(materialized.policyRequired).toBe(true);
+    await database.pool.query(`
+      UPDATE account_policy_bindings
+      SET applied_effective_version = desired_effective_version,
+          applied_digest = desired_digest,
+          policy_enforcement = 'shadow', reconciliation_state = 'verified',
+          last_ack_at = now(), sync_state = 'confirmed'
+      WHERE user_id = $1
+    `, [userId]);
+    // What confirmPricingControlJob writes on the account once the binding is fully confirmed.
+    await database.pool.query(
+      "UPDATE engine_accounts SET status = 'active', last_error = NULL, updated_at = now() WHERE user_id = $1",
+      [userId],
+    );
     let issued = 0;
-    const releaseDigest = `sha256:v2:${createHash("sha256").update("release-pending").digest("hex")}`;
     const engine = new EngineClient({
       baseUrl: "http://engine.test",
       controlKey: "test-control-key",
       fetch: async (input, init) => {
         const path = new URL(String(input)).pathname;
-        if (path === "/admin/pricing/v2/head") {
-          return Response.json({
-            head: { active_generation: 10, active_digest: releaseDigest, head_version: 1, updated_ts: 1 },
-          });
-        }
         if (path.includes("/pricing/policy/") && path.endsWith("/state")) {
           return Response.json({
             state: { account_id: decodeURIComponent(path.split("/")[4] ?? ""), policy: "unbound" },
           });
-        }
-        if (path === "/admin/pricing/v2/release/10") {
-          return Response.json({ release: {
-            generation: 10,
-            release_kind: "target",
-            schema_version: 2,
-            capability_generation: 3,
-            capability_digest: "capability-v3",
-            main_catalog_generation: 3,
-            main_catalog_digest: "main-v3",
-            openkeys_catalog_generation: 3,
-            openkeys_catalog_digest: "openkeys-v3",
-            switch_generation: 3,
-            switch_digest: "switch-v3",
-            inventory_digest: "inventory-v3",
-            policy_manifest_digest: "policies-v3",
-            assignment_manifest_digest: "assignments-v3",
-            funding_manifest_digest: "funding-v3",
-            minimum_runtime_schema_version: 2,
-            content_digest: releaseDigest,
-            assignments: [],
-          } });
         }
         if (path === "/admin/key" && init?.method === "POST") issued += 1;
         return Response.json({ error: "not found" }, { status: 404 });
@@ -205,6 +223,11 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
     await expect(new AccountService(database, engine).createApiKey(userId, { label: "blocked" }))
       .rejects.toBeInstanceOf(ConflictException);
     expect(issued).toBe(0);
+    const binding = await database.pool.query<{ strict_chain_pending: boolean }>(
+      "SELECT strict_chain_pending FROM account_policy_bindings WHERE user_id = $1",
+      [userId],
+    );
+    expect(binding.rows[0]?.strict_chain_pending).toBe(true);
   });
 
   it("materializes a managed policy while recovering an account before key preflight", async () => {
@@ -307,7 +330,7 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
     });
   });
 
-  it("keeps invited provisioning pending until exact ACK and permits a key only afterwards", async () => {
+  it("keeps invited provisioning pending until exact ACK, then completes the strict chain and opts out at first key", async () => {
     const inviteToken = randomBytes(32).toString("base64url");
     await createBusinessInvite(database, {
       email: "invited-auth@example.test",
@@ -334,15 +357,26 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
 
     let createdAccountId = "";
     let issuedKeys = 0;
+    let activePolicyState: unknown = "unbound";
+    const optOutCalls: string[] = [];
+    const issuedActivationAcks: unknown[] = [];
     const engine = new EngineClient({
       baseUrl: "http://engine.test",
       controlKey: "test-control-key",
       fetch: async (input, init) => {
         const path = new URL(String(input)).pathname;
-        if (path === "/admin/pricing/v2/head") return Response.json({ head: null });
         if (path.includes("/pricing/policy/") && path.endsWith("/state")) {
           return Response.json({
-            state: { account_id: decodeURIComponent(path.split("/")[4] ?? ""), policy: "unbound" },
+            state: { account_id: decodeURIComponent(path.split("/")[4] ?? ""), policy: activePolicyState },
+          });
+        }
+        if (path === "/admin/pricing/v2/opt-out" && init?.method === "POST") {
+          const body = JSON.parse(String(init.body)) as { account_id: string };
+          optOutCalls.push(body.account_id);
+          return Response.json({
+            result: "applied",
+            identity: { account_id: body.account_id },
+            pricing_release_opt_out_ts: 1_700_000_000,
           });
         }
         if (path === "/admin/account" && init?.method === "POST") {
@@ -351,11 +385,16 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
           return Response.json({ account: createdAccountId, mult_bp: body.mult_bp, handle: body.handle });
         }
         if (path === "/admin/key" && init?.method === "POST") {
-          const body = JSON.parse(String(init.body)) as { account_id: string; label?: string };
+          const body = JSON.parse(String(init.body)) as {
+            account_id: string;
+            label?: string;
+            activation_policy_ack?: unknown;
+          };
           issuedKeys += 1;
+          issuedActivationAcks.push(body.activation_policy_ack ?? null);
           return Response.json({
             key: rawKey,
-            key_id: "key_after_policy_ack",
+            key_id: `key_after_policy_ack_${issuedKeys}`,
             account: body.account_id,
             label: body.label ?? "default",
             spend_limit_nano: null,
@@ -386,16 +425,20 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
     });
     expect(registration.user).toMatchObject({ customerType: "b2b", engineAccountStatus: "pending" });
     expect(createdAccountId).toMatch(/^acct_invited_/);
-    const beforeAck = await database.pool.query<{ status: string; policy_enforcement: string; sync_state: string }>(`
-      SELECT account.status, binding.policy_enforcement, binding.sync_state
+    const beforeAck = await database.pool.query<{
+      status: string; policy_enforcement: string; sync_state: string; strict_chain_pending: boolean;
+    }>(`
+      SELECT account.status, binding.policy_enforcement, binding.sync_state, binding.strict_chain_pending
       FROM engine_accounts account
       JOIN account_policy_bindings binding ON binding.user_id = account.user_id
       WHERE account.user_id = $1
     `, [registration.user.id]);
+    // Registration provisioning arms the direct strict chain from the first materialization.
     expect(beforeAck.rows[0]).toEqual({
       status: "pending",
       policy_enforcement: "legacy_scalar",
       sync_state: "pending",
+      strict_chain_pending: true,
     });
 
     const account = new AccountService(database, engine);
@@ -445,8 +488,104 @@ describe.runIf(Boolean(connectionString))("policy-before-key issuance race", () 
       WHERE account.user_id = $1
     `, [registration.user.id]);
     expect(afterAck.rows[0]).toEqual({ status: "active", policy_enforcement: "shadow", sync_state: "confirmed" });
+
+    // The shadow delivery is confirmed: the worker chain stages the atomic strict cutover. The
+    // engine opt-out guard still refuses (no active ACKed key exists yet), so the chain stays
+    // armed — key issuance is the step that closes it.
+    const chainTransport = {
+      getFundingNormalizationPlanV2: async () => null,
+      applyFundingNormalizationV2: async () => null,
+      getAccountPricingState: async () => ({
+        active: {
+          policy: { effective_version: 1, content_digest: "engine-digest" },
+          binding: {
+            policy_enforcement: "shadow",
+            funding_enforcement: "legacy_single",
+            reconciliation_state: "verified",
+          },
+        },
+      }),
+      listKeys: async () => [],
+      setKeyStatus: async () => undefined,
+      optOutPricingReleaseV2: async () => ({
+        result: "rejected" as const,
+        code: "missing_dependency" as const,
+        identity: {},
+        rejection: { missing_dependency: { dependency: "active_strict_policy_binding" } },
+      }),
+    } as unknown as Parameters<typeof advanceAccountStrictChain>[1];
+    const candidate = (await listPendingStrictChainAccounts(database, 10))
+      .find((item) => item.userId === registration.user.id);
+    expect(candidate).toBeDefined();
+    await expect(advanceAccountStrictChain(database, chainTransport, candidate!))
+      .resolves.toMatchObject({ status: "staged", keysStamped: 0 });
+
+    const strictJob = await claimNextPricingControlJob(database, "auth-strict-0");
+    expect(strictJob?.kind).toBe("policy");
+    if (strictJob?.kind !== "policy") throw new Error("strict job missing");
+    expect(strictJob.binding).toEqual({
+      policy_enforcement: "strict",
+      funding_enforcement: "strict",
+      reconciliation_state: "verified",
+    });
+    await confirmPricingControlJob(database, strictJob, {
+      result: "applied",
+      identity: {
+        policy: strictJob.spec,
+        activation: {
+          account_id: strictJob.spec.account_id,
+          effective_version: strictJob.spec.effective_version,
+          content_digest: strictJob.spec.content_digest,
+          binding: strictJob.binding,
+        },
+        expectation: "unbound",
+      },
+    });
+    const strictBinding = await database.pool.query<{
+      policy_enforcement: string; funding_enforcement: string;
+      reconciliation_state: string; sync_state: string; strict_chain_pending: boolean;
+    }>(`
+      SELECT policy_enforcement, funding_enforcement, reconciliation_state, sync_state, strict_chain_pending
+      FROM account_policy_bindings WHERE user_id = $1
+    `, [registration.user.id]);
+    expect(strictBinding.rows[0]).toEqual({
+      policy_enforcement: "strict",
+      funding_enforcement: "strict",
+      reconciliation_state: "verified",
+      sync_state: "confirmed",
+      strict_chain_pending: true,
+    });
+    // A second chain pass still cannot opt out (the account has no ACKed key yet).
+    await expect(advanceAccountStrictChain(database, chainTransport, {
+      ...candidate!,
+      policyEnforcement: "strict",
+      reconciliationState: "verified",
+      syncState: "confirmed",
+    })).resolves.toEqual({ status: "pending" });
+    activePolicyState = {
+      active: { policy: strictJob.spec, binding: strictJob.binding },
+    };
+
+    // First key: born with the exact activation ACK, then the one-way opt-out marker is written
+    // synchronously and the chain disarms. The second key is a plain strict issuance.
     await expect(account.createApiKey(registration.user.id, { label: "after-ack" }))
       .resolves.toMatchObject({ key: rawKey, status: "active" });
     expect(issuedKeys).toBe(1);
+    expect(issuedActivationAcks).toEqual([{
+      effective_policy_version: strictJob.spec.effective_version,
+      policy_digest: strictJob.spec.content_digest,
+    }]);
+    expect(optOutCalls).toEqual([createdAccountId]);
+    const disarmed = await database.pool.query<{ strict_chain_pending: boolean }>(
+      "SELECT strict_chain_pending FROM account_policy_bindings WHERE user_id = $1",
+      [registration.user.id],
+    );
+    expect(disarmed.rows[0]?.strict_chain_pending).toBe(false);
+
+    await expect(account.createApiKey(registration.user.id, { label: "second" }))
+      .resolves.toMatchObject({ key: rawKey, status: "active" });
+    expect(issuedKeys).toBe(2);
+    expect(optOutCalls).toEqual([createdAccountId]);
+    expect(issuedActivationAcks).toHaveLength(2);
   });
 }, TEST_TIMEOUT_MS);

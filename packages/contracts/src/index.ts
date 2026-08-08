@@ -1081,6 +1081,31 @@ export const pricingReleaseHeadV2Schema = z.object({
 }).strict();
 export type PricingReleaseHeadV2 = z.infer<typeof pricingReleaseHeadV2Schema>;
 
+/**
+ * `POST /admin/pricing/v2/opt-out` — the one-way release-path retirement marker
+ * (docs/engine/CONTROL_API.md). The engine rejects unknown request fields and every supplied
+ * string must be non-empty and trimmed; `created_by`/`reason` are attribution echoed in the
+ * response identity, never durably stored. Success (`applied`) and the exact replay
+ * (`unchanged`) carry the marker timestamp as a JSON number of seconds; rejections use the
+ * shared typed pricing envelope (guard failures are `missing_dependency`).
+ */
+export const pricingReleaseOptOutRequestV2Schema = z.object({
+  account_id: z.string().startsWith("acct_").max(200),
+  created_by: pricingIdentifierSchema.optional(),
+  reason: pricingIdentifierSchema.optional(),
+}).strict();
+export type PricingReleaseOptOutRequestV2 = z.infer<typeof pricingReleaseOptOutRequestV2Schema>;
+
+export const pricingReleaseOptOutAckV2Schema = z.union([
+  z.object({
+    result: z.enum(["applied", "unchanged"]),
+    identity: z.unknown(),
+    pricing_release_opt_out_ts: z.number().int().safe().positive(),
+  }).strict(),
+  pricingMutationRejectedAckSchema,
+]);
+export type PricingReleaseOptOutAckV2 = z.infer<typeof pricingReleaseOptOutAckV2Schema>;
+
 export const pricingReleaseActivationKindV2Schema = z.enum(["cutover", "recovery", "successor"]);
 
 export const pricingReleaseProvisioningReleaseV2Schema = z.object({

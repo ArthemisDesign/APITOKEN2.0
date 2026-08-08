@@ -12,8 +12,7 @@ import {
   EngineClientError,
   OFFICIAL_ONE_TO_ONE_CONTRACT,
   OFFICIAL_ONE_TO_ONE_MULT_BP,
-  officialOpenKeysBinding,
-  ensureOpenKeysPricingReleaseProvisioningV2,
+  officialOpenKeysStrictBinding,
   OpenKeysPolicyError as OpenKeysPricingError,
   type EngineClient,
   type OpenKeysPricingAuthority,
@@ -69,16 +68,9 @@ type OpenKeysPricingEngine = Pick<
   | "getActiveAccountPolicy"
   | "getActivePricingCatalog"
   | "getActiveProviderSwitches"
-  | "getFundingNormalizationPlanV2"
-  | "getPricingReleaseAssignmentExtensionV2"
-  | "getPricingReleasePolicyV2"
-  | "getPricingReleaseProvisioningContextV2"
-  | "getPricingReleaseV2"
   | "issueKey"
-  | "applyFundingNormalizationV2"
+  | "optOutPricingReleaseV2"
   | "prepareAccountPolicy"
-  | "preparePricingReleaseAssignmentExtensionV2"
-  | "preparePricingReleasePolicyV2"
 >;
 
 /** Read-only authority check: this application never invents or overwrites global switches. */
@@ -154,7 +146,7 @@ export async function activateOfficialOpenKeysPolicy(
   authority: OpenKeysPricingAuthority,
 ): Promise<AccountPolicySpec> {
   const policy = buildOfficialOpenKeysPolicy(accountId, authority);
-  const binding = officialOpenKeysBinding();
+  const binding = officialOpenKeysStrictBinding();
   const prepared = await engine.prepareAccountPolicy(policy);
   assertMutationAccepted(prepared, "prepare");
 
@@ -186,13 +178,22 @@ export async function activateOfficialOpenKeysPolicy(
   return policy;
 }
 
-/** Exact face-value funding and every applicable pricing ACK precede the usable secret. */
+/**
+ * Release-v2 retirement (phase 2.1): a new OpenKeys account is born directly on the strict
+ * policy path — there is no release assignment extension any more. The order is strict:
+ * strict/strict/verified activation first (zero keys and zero balance make the engine's atomic
+ * strict preconditions vacuous), then the exact face-value credit (allocated into strict
+ * funding buckets), then the key WITH its activation ACK (a strict account accepts no
+ * ACK-less key), and finally the one-way engine opt-out marker — only then is the account
+ * servable at all, so the usable secret is issued last. Every step is idempotent under the
+ * issuance job's retry/compensation: activation and credit replay as unchanged, and the
+ * opt-out replay returns the stored marker.
+ */
 export async function provisionOfficialOpenKeysCredential(
   engine: OpenKeysPricingEngine,
   input: {
     accountId: string;
     authority: OpenKeysPricingAuthority | null;
-    releaseRequired: boolean;
     faceValueNano: bigint;
     creditReference: string;
     keyLabel: string;
@@ -202,14 +203,32 @@ export async function provisionOfficialOpenKeysCredential(
   if (input.faceValueNano <= 0n) {
     throw new OpenKeysPricingError("invalid_face_value", "OpenKeys face value must be positive");
   }
-  if (input.authority !== null) {
-    await activateOfficialOpenKeysPolicy(engine, input.accountId, input.authority);
+  if (input.authority === null) {
+    throw new OpenKeysPricingError(
+      "pricing_authority_missing",
+      "OpenKeys product catalog and provider switches must be active before issuance",
+    );
   }
+  const policy = await activateOfficialOpenKeysPolicy(engine, input.accountId, input.authority);
   await engine.creditAccount(input.accountId, input.faceValueNano, input.creditReference);
   await input.onCredited?.();
-  await ensureOpenKeysPricingReleaseProvisioningV2(engine, {
-    accountId: input.accountId,
-    releaseRequired: input.releaseRequired,
+  const key = await engine.issueKey(input.accountId, {
+    label: input.keyLabel,
+    activationPolicyAck: {
+      effectivePolicyVersion: policy.effective_version,
+      policyDigest: policy.content_digest,
+    },
   });
-  return engine.issueKey(input.accountId, { label: input.keyLabel });
+  const optOut = await engine.optOutPricingReleaseV2({
+    accountId: input.accountId,
+    createdBy: "openkeys",
+    reason: "new OpenKeys issuance on the direct strict path",
+  });
+  if (optOut.result === "rejected") {
+    throw new OpenKeysPricingError(
+      "pricing_opt_out_rejected",
+      `engine rejected the OpenKeys pricing release opt-out with ${optOut.code}`,
+    );
+  }
+  return key;
 }

@@ -20,7 +20,7 @@ import {
   setAdminUserStatus,
   stageAccountStrictCutoverJob,
   syncPricingReleasePolicyOverrideV2,
-  PricingReleaseProvisioningV2Error,
+  PricingReleaseOverrideV2Error,
   type AdminTopupsQuery,
   type AdminAuditQuery,
   type Database,
@@ -337,7 +337,7 @@ export class AdminOperationsService {
         engineAccountId,
       });
     } catch (error) {
-      if (error instanceof PricingReleaseProvisioningV2Error) {
+      if (error instanceof PricingReleaseOverrideV2Error) {
         return { status: "error", code: error.code, message: error.message };
       }
       throw error;

@@ -17,7 +17,6 @@ import {
   type AccountPolicyBinding,
   type AccountPolicySpec,
   type PricingCatalogSpec,
-  type PricingReleasePolicyV2,
   type ProviderSwitchSpec,
 } from "@claude-api/contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -408,13 +407,13 @@ describe("OpenKeys official 1:1 pricing", () => {
     });
   });
 
-  it("durably ACKs policy before exact face-value credit and issues the secret last", async () => {
+  it("activates strict, credits, issues the ACKed key, and opts out before returning the secret", async () => {
     const trace: string[] = [];
     let preparedPolicy: AccountPolicySpec | null = null;
     const binding: AccountPolicyBinding = {
-      policy_enforcement: "shadow",
-      funding_enforcement: "legacy_single",
-      reconciliation_state: "pending",
+      policy_enforcement: "strict",
+      funding_enforcement: "strict",
+      reconciliation_state: "verified",
     };
     const prepareAccountPolicy = vi.fn(async (policy: AccountPolicySpec) => {
       trace.push("prepare-policy");
@@ -448,6 +447,10 @@ describe("OpenKeys official 1:1 pricing", () => {
         expires_ts: null,
       };
     });
+    const optOutPricingReleaseV2 = vi.fn(async () => {
+      trace.push("opt-out");
+      return { result: "applied" as const, identity: {}, pricing_release_opt_out_ts: 1_700_000_000 };
+    });
     const engine = {
       prepareAccountPolicy,
       getAccountPricingState,
@@ -455,22 +458,20 @@ describe("OpenKeys official 1:1 pricing", () => {
       getActiveAccountPolicy,
       creditAccount,
       issueKey,
-      getPricingReleaseProvisioningContextV2: vi.fn(async () => {
-        trace.push("read-release-context");
-        return null;
-      }),
+      optOutPricingReleaseV2,
     } as unknown as PricingEngine;
 
     await expect(provisionOfficialOpenKeysCredential(engine, {
       accountId: "acct_openkeys_new",
       authority: authority(),
-      releaseRequired: false,
       faceValueNano: 50_000_000_000n,
       creditReference: "openkeys:batch:0",
       keyLabel: "openkeys current",
       onCredited: async () => { trace.push("credit-journal"); },
     })).resolves.toMatchObject({ key: "sk-pool-official-secret" });
 
+    // Strict activation → credit → ACKed key → opt-out: the account is servable (the opt-out
+    // guard sees the strict binding and the ACKed key) before the secret is ever returned.
     expect(trace).toEqual([
       "prepare-policy",
       "read-state",
@@ -478,19 +479,32 @@ describe("OpenKeys official 1:1 pricing", () => {
       "readback-policy",
       "credit",
       "credit-journal",
-      "read-release-context",
       "issue-secret",
+      "opt-out",
     ]);
     expect(creditAccount).toHaveBeenCalledWith(
       "acct_openkeys_new",
       50_000_000_000n,
       "openkeys:batch:0",
     );
+    expect(issueKey).toHaveBeenCalledWith("acct_openkeys_new", {
+      label: "openkeys current",
+      activationPolicyAck: {
+        effectivePolicyVersion: 1,
+        policyDigest: preparedPolicy!.content_digest,
+      },
+    });
+    expect(optOutPricingReleaseV2).toHaveBeenCalledWith({
+      accountId: "acct_openkeys_new",
+      createdBy: "openkeys",
+      reason: "new OpenKeys issuance on the direct strict path",
+    });
   });
 
   it("never credits or issues after a rejected policy ACK", async () => {
     const creditAccount = vi.fn();
     const issueKey = vi.fn();
+    const optOutPricingReleaseV2 = vi.fn();
     const engine = {
       prepareAccountPolicy: vi.fn(async (policy: AccountPolicySpec) => ({
         result: "rejected" as const,
@@ -502,139 +516,72 @@ describe("OpenKeys official 1:1 pricing", () => {
       getActiveAccountPolicy: vi.fn(),
       creditAccount,
       issueKey,
-      getPricingReleaseProvisioningContextV2: vi.fn(async () => null),
+      optOutPricingReleaseV2,
     } as unknown as PricingEngine;
 
     await expect(provisionOfficialOpenKeysCredential(engine, {
       accountId: "acct_openkeys_rejected",
       authority: authority(),
-      releaseRequired: false,
       faceValueNano: 1_000_000_000n,
       creditReference: "openkeys:batch:1",
       keyLabel: "openkeys rejected",
     })).rejects.toMatchObject({ code: "policy_ack_rejected" });
     expect(creditAccount).not.toHaveBeenCalled();
     expect(issueKey).not.toHaveBeenCalled();
+    expect(optOutPricingReleaseV2).not.toHaveBeenCalled();
   });
 
-  it("credits safely but never issues a secret when post-cutover extension ACK is rejected", async () => {
-    const digest = (seed: string): string => `sha256:v2:${seed.repeat(64)}`;
-    const target = {
-      generation: 10,
-      release_kind: "target" as const,
-      schema_version: 2 as const,
-      capability_generation: 3,
-      capability_digest: digest("a"),
-      main_catalog_generation: 3,
-      main_catalog_digest: digest("b"),
-      openkeys_catalog_generation: 3,
-      openkeys_catalog_digest: digest("c"),
-      switch_generation: 3,
-      switch_digest: digest("d"),
-      inventory_digest: digest("e"),
-      funding_manifest_digest: digest("f"),
-      minimum_runtime_schema_version: 2,
-      content_digest: digest("1"),
-    };
-    const recovery = {
-      ...target,
-      generation: 11,
-      release_kind: "recovery" as const,
-      content_digest: digest("2"),
-    };
-    const context = {
-      head: {
-        active_generation: 10,
-        active_digest: target.content_digest,
-        head_version: 1,
-        updated_ts: 1,
-      },
-      activation: {
-        activation_id: "1",
-        activation_kind: "cutover" as const,
-        evidence_digest: digest("3"),
-        activated_ts: 1,
-      },
-      active_release: target,
-      paired_recovery: {
-        release: recovery,
-        recovery_link: {
-          target_generation: 10,
-          target_digest: target.content_digest,
-          recovery_generation: 11,
-          recovery_digest: recovery.content_digest,
-          link_digest: digest("4"),
-        },
-      },
-    };
-    const fullRelease = {
-      ...target,
-      policy_manifest_digest: digest("5"),
-      assignment_manifest_digest: digest("6"),
-      assignments: [],
-    };
-    const normalized = {
-      account_id: "acct_openkeys_post_cutover",
-      account_status: "active" as const,
-      status: "normalized" as const,
-      source: "stored_generation" as const,
-      source_state_digest: digest("7"),
-      normalization_digest: digest("8"),
-      funding_generation: 7,
-      funding_head_version: 1,
-      balance_nano: "1000000000",
-      reserved_nano: "0",
-      spent_nano: "0",
-      lots: [{
-        lot_id: "fundv2_openkeys",
-        source_type: "paid" as const,
-        source_ref: "openkeys:test",
-        balance_nano: "1000000000",
-        reserved_nano: "0",
-        spent_nano: "0",
-        version: 1,
-        status: "active" as const,
-      }],
-      blockers: [],
-    };
-    let preparedPolicy: PricingReleasePolicyV2 | null = null;
-    const creditAccount = vi.fn(async () => ({
-      account: "acct_openkeys_post_cutover",
-      balance_nano: "1000000000",
-      balance: "$1.000000000",
-      reference: "openkeys:test",
+  it("fails the issuance loudly when the engine rejects the opt-out marker", async () => {
+    const optOutPricingReleaseV2 = vi.fn(async () => ({
+      result: "rejected" as const,
+      code: "missing_dependency" as const,
+      identity: {},
+      rejection: { missing_dependency: { dependency: "active_strict_policy_binding" } },
     }));
-    const issueKey = vi.fn();
+    let preparedPolicy: AccountPolicySpec | null = null;
+    const binding: AccountPolicyBinding = {
+      policy_enforcement: "strict",
+      funding_enforcement: "strict",
+      reconciliation_state: "verified",
+    };
     const engine = {
-      creditAccount,
-      issueKey,
-      getPricingReleaseProvisioningContextV2: vi.fn(async () => context),
-      getPricingReleaseV2: vi.fn(async () => fullRelease),
-      getFundingNormalizationPlanV2: vi.fn(async () => normalized),
-      applyFundingNormalizationV2: vi.fn(),
-      preparePricingReleasePolicyV2: vi.fn(async (policy: PricingReleasePolicyV2) => {
+      prepareAccountPolicy: vi.fn(async (policy: AccountPolicySpec) => {
         preparedPolicy = policy;
-        return { result: "stored" as const, identity: {} } as never;
+        return { result: "stored" as const, identity: { policy } };
       }),
-      getPricingReleasePolicyV2: vi.fn(async () => preparedPolicy),
-      preparePricingReleaseAssignmentExtensionV2: vi.fn(async () => ({
-        result: "rejected" as const,
-        code: "invalid" as const,
-        rejection: { invalid: { reason: "test rejection" } },
-        identity: {},
-      } as never)),
-      getPricingReleaseAssignmentExtensionV2: vi.fn(),
+      getAccountPricingState: vi.fn(async () => "unbound" as const),
+      activateAccountPolicy: vi.fn(async (policy: AccountPolicySpec) => ({
+        result: "applied" as const,
+        identity: { policy },
+      })),
+      getActiveAccountPolicy: vi.fn(async () =>
+        preparedPolicy === null ? null : { policy: preparedPolicy, binding }),
+      creditAccount: vi.fn(async (accountId: string) => ({
+        account: accountId,
+        balance_nano: "1000000000",
+        balance: "$1.000000000",
+        reference: "openkeys:test",
+      })),
+      issueKey: vi.fn(async (accountId: string) => ({
+        key: "sk-pool-never-returned",
+        key_id: "key_never_returned",
+        account: accountId,
+        label: "openkeys",
+        spend_limit_nano: null,
+        expires_ts: null,
+      })),
+      optOutPricingReleaseV2,
     } as unknown as PricingEngine;
 
+    // The throw aborts the issuance job: its compensation disables the half-provisioned account
+    // instead of handing out a secret the engine refuses to serve.
     await expect(provisionOfficialOpenKeysCredential(engine, {
-      accountId: "acct_openkeys_post_cutover",
-      authority: null,
-      releaseRequired: true,
+      accountId: "acct_openkeys_guarded",
+      authority: authority(),
       faceValueNano: 1_000_000_000n,
       creditReference: "openkeys:test",
-      keyLabel: "openkeys post-cutover",
-    })).rejects.toMatchObject({ code: "assignment_conflict" });
-    expect(creditAccount).toHaveBeenCalledOnce();
-    expect(issueKey).not.toHaveBeenCalled();
+      keyLabel: "openkeys guarded",
+    })).rejects.toMatchObject({ code: "pricing_opt_out_rejected" });
+    expect(optOutPricingReleaseV2).toHaveBeenCalledOnce();
   });
 });

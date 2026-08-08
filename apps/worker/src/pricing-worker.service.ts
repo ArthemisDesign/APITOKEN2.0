@@ -39,8 +39,8 @@ const PROVIDER_BACKFILL_MAX_PAGES_PER_SYNC = 4;
 // Догоняющий скан истории пополнений — разовая работа на аккаунт, поэтому лимит страниц за цикл
 // держим таким же скромным: цель не «быстро», а «без всплеска нагрузки на движок».
 const TOPUP_BACKFILL_MAX_PAGES_PER_SYNC = 4;
-// The strict chain fires once per converted/edited B2B account, so a small bound keeps a sweep
-// cycle fast; the remainder is picked up by the next pass.
+// The strict chain advances one durable step per account per pass, so a small bound keeps a
+// flush fast; the remainder is picked up by the next pass.
 const STRICT_CHAIN_MAX_ACCOUNTS_PER_SWEEP = 25;
 
 @Injectable()
@@ -132,9 +132,13 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
     while (!this.stopped) {
       try {
         // Delivery first and every tick: never behind the sweep. Control jobs go through the
-        // coalescing dispatcher so a tick never doubles a LISTEN/NOTIFY-triggered pass.
+        // coalescing dispatcher so a tick never doubles a LISTEN/NOTIFY-triggered pass. The
+        // strict chain advances on the same fast tick: a newly provisioned account's first key
+        // issuance waits on the shadow→strict staging plus delivery, so it is latency-sensitive
+        // delivery work, not background recovery.
         this.requestControlFlush();
         await this.flushPricingJobs();
+        await this.flushPendingStrictChains();
       } catch (error) {
         this.logger.error(message(error));
       }
@@ -165,10 +169,6 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
             this.logger.error(`pricing usage sync failed for ${target.userId}: ${message(error)}`);
           }
         }
-
-        // Strict chains stay inside the sweep: that flush is part of the recovery workload,
-        // not latency-sensitive delivery.
-        await this.flushPendingStrictChains();
       } catch (error) {
         this.logger.error(message(error));
       }
@@ -356,6 +356,15 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
       ["stored", "unchanged"],
       "account-policy prepare",
     );
+    if (job.binding.policy_enforcement === "strict") {
+      // The strict trigger requires every active key to carry the exact ACK at flip time.
+      // Re-stamp before the activation attempt too: a key created between the chain's preflight
+      // and this delivery would otherwise reject the flip again and again.
+      await this.restampActiveKeysForStrictPolicy(job.spec.account_id, {
+        effectivePolicyVersion: job.spec.effective_version,
+        policyDigest: job.spec.content_digest,
+      });
+    }
     const state = await this.engine.getAccountPricingState(job.spec.account_id);
     let expectation: PolicyActiveExpectation;
     if (state === "unbound") {
@@ -412,12 +421,14 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
   }
 
   /**
-   * Automatic half of the per-account strict lane (docs/commerce/PRICING.md): a B2C→B2B
-   * conversion and every b2b_client policy save flag the binding strict_chain_pending, and
-   * this sweep runs the shared preflight + durable strict staging as soon as the shadow
-   * delivery of that exact version confirms. The staging transaction disarms the flag, so a
-   * replay never duplicates the cutover; a failed precondition is recorded on the binding and
-   * retried on the next pass instead of producing a partial state.
+   * The new-account direct strict chain of the release-v2 retirement (docs/commerce/PRICING.md):
+   * registration provisioning flags the binding strict_chain_pending, and this flush advances
+   * the chain account-locally — shared preflight + durable strict staging once the exact
+   * version confirms under shadow, then the engine opt-out marker once the strict delivery
+   * confirms. The opt-out disarms the flag, so a replay never duplicates the chain; a failed
+   * precondition is recorded on the binding and retried on the next pass instead of producing
+   * a partial state, and an account that cannot reach strict/strict/verified is never opted
+   * out — it keeps working on its current path.
    */
   private async flushPendingStrictChains(): Promise<void> {
     const candidates = await listPendingStrictChainAccounts(
@@ -433,9 +444,9 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
             `strict chain staged for ${candidate.userId}: job ${result.jobId} ` +
             `(funding ${result.funding}, ${result.keysStamped} active keys stamped)`,
           );
-        } else if (result.status === "superseded") {
+        } else if (result.status === "opted_out") {
           this.logger.log(
-            `strict chain for ${candidate.userId} disarmed: the global release cutover owns enforcement now`,
+            `strict chain completed for ${candidate.userId}: pricing release opt-out marker applied`,
           );
         } else if (result.status === "failed") {
           this.logger.error(`strict chain for ${candidate.userId} cannot advance: ${result.error}`);
