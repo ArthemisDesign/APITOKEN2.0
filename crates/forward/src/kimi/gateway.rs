@@ -1849,11 +1849,34 @@ impl KimiGateway {
             .filter(|profile| !excluded.contains(&profile.id))
             .map(|profile| profile.candidate(model, now))
             .collect::<Vec<_>>();
-        let selected = select(
-            &candidates,
-            sticky,
-            self.cursor.fetch_add(1, Ordering::Relaxed),
-        )?;
+        let cursor = self.cursor.fetch_add(1, Ordering::Relaxed);
+        // Escape hatch, mirroring Gemini's `select_routed_ignoring_env_cooling` and Codex's
+        // `admission_ignoring_soft_cooling`. When nothing is eligible, a profile held only by an
+        // environment-derived reason is still real capacity: an auth refusal here arrives after a
+        // successful refresh, and a wedged transport is ours to rebuild. Refusing the request
+        // instead turns one refusal wave into a fleet-wide outage — exactly what took Gemini's
+        // pool to zero nine times in August 2026. Provider verdicts stay walls: a quota wall and a
+        // capability the plan does not grant are never relaxed here.
+        let relaxed: Vec<Candidate>;
+        let selected = match select(&candidates, sticky, cursor) {
+            Some(candidate) => candidate,
+            None => {
+                relaxed = candidates
+                    .iter()
+                    .cloned()
+                    .map(|mut candidate| {
+                        if candidate
+                            .ineligible
+                            .is_some_and(crate::kimi::selection::Ineligible::is_environmental)
+                        {
+                            candidate.ineligible = None;
+                        }
+                        candidate
+                    })
+                    .collect();
+                select(&relaxed, sticky, cursor)?
+            }
+        };
         profiles
             .into_iter()
             .find(|profile| profile.id == selected.profile_id)

@@ -293,6 +293,21 @@ invariants on mocks, but does not clear the provider-owned `unknown`s of §6:
 quota (retry is useless)". `decision` → this is exactly the axis separation of §8.4: quota bucket
 separate from transport health.
 
+`decision` **2026-08-08 — an environment-derived reason may never take the last capacity out of
+service.** Selection now runs a second, relaxed pass when the strict pass finds nothing: a profile
+held only by `AuthQuarantined` or `TransportWedged` becomes selectable again. Both are our own
+reading of the environment, not a provider statement about capacity — an auth refusal on this plane
+arrives *after* a successful token refresh, and the provider returns 401 for a proxy-side block and,
+per its own error reference, for "capability above your plan" as well. `QuotaWall` and
+`CapabilityNotInPlan` are provider verdicts and stay walls; relaxing them would burn a request that
+cannot succeed. `ModelCooling` also stays, because it is scoped to one model while the profile's
+other models keep serving.
+
+Without this, one refusal wave walking the roster zeroes the plane for the full
+`AUTH_QUARANTINE_SECS`. That is not hypothetical: Gemini's pool went to zero nine times over two
+days in August 2026 for exactly this reason, Codex carries `admission_ignoring_soft_cooling` for
+it, and Claude never had the defect. KIMI was the last plane without the hatch.
+
 `unknown` 403 combines quota exhaustion and missing plan capability. They can be distinguished
 only from the error body; until live confirmation the handler fails closed by classifying an
 indistinguishable 403 as a quota wall (conservatively — the profile is taken out of rotation

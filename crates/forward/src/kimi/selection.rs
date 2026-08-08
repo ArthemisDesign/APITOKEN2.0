@@ -25,6 +25,25 @@ pub enum Ineligible {
     ModelCooling,
 }
 
+impl Ineligible {
+    /// Whether this reason came from our own reading of the environment rather than from a
+    /// provider statement about capacity.
+    ///
+    /// An auth refusal on this plane arrives *after* a successful token refresh, so it cannot mean
+    /// the credential died: the provider returns 401 for a proxy-side block and, per its own error
+    /// reference, also for "capability above your plan". A wedged transport is likewise ours to
+    /// rebuild. Neither says the subscription is out of quota, so neither may take the last
+    /// capacity out of service — Gemini learned this in August 2026, when one refusal wave walked
+    /// the roster and zeroed a healthy pool nine times.
+    ///
+    /// `QuotaWall` and `CapabilityNotInPlan` are deliberately absent: those are provider verdicts,
+    /// and serving through them would burn a request that cannot succeed. `ModelCooling` is absent
+    /// too — it is scoped to one model while the profile's other models stay eligible.
+    pub fn is_environmental(self) -> bool {
+        matches!(self, Self::AuthQuarantined | Self::TransportWedged)
+    }
+}
+
 /// A candidate profile as the selector sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
@@ -293,5 +312,76 @@ mod tests {
         // No arbitrary minimum fleet size: a single working profile must serve.
         let candidates = vec![candidate("kimi-01")];
         assert_eq!(select(&candidates, None, 0).unwrap().profile_id, "kimi-01");
+    }
+}
+
+#[cfg(test)]
+mod escape_hatch_tests {
+    use super::*;
+
+    fn candidate(id: &str, reason: Option<Ineligible>) -> Candidate {
+        Candidate {
+            profile_id: id.into(),
+            ineligible: reason,
+            used_fraction_units: Some(0),
+            quota_age_secs: Some(0),
+            inflight: 0,
+        }
+    }
+
+    #[test]
+    fn only_environment_derived_reasons_may_be_relaxed() {
+        // The split is the whole point: our own reading of the environment may be overridden when
+        // it is the last capacity, a provider verdict may not.
+        assert!(Ineligible::AuthQuarantined.is_environmental());
+        assert!(Ineligible::TransportWedged.is_environmental());
+        assert!(!Ineligible::QuotaWall.is_environmental());
+        assert!(!Ineligible::CapabilityNotInPlan.is_environmental());
+        assert!(!Ineligible::ModelCooling.is_environmental());
+    }
+
+    #[test]
+    fn a_fleet_held_only_by_auth_refusals_still_serves() {
+        // One 401 wave walking the roster must not zero the plane: after relaxing the
+        // environmental reasons a profile is selectable again.
+        let held = vec![
+            candidate("a", Some(Ineligible::AuthQuarantined)),
+            candidate("b", Some(Ineligible::TransportWedged)),
+        ];
+        assert!(select(&held, None, 0).is_none(), "strict pass must find nothing");
+
+        let relaxed: Vec<Candidate> = held
+            .iter()
+            .cloned()
+            .map(|mut candidate| {
+                if candidate.ineligible.is_some_and(Ineligible::is_environmental) {
+                    candidate.ineligible = None;
+                }
+                candidate
+            })
+            .collect();
+        assert!(select(&relaxed, None, 0).is_some(), "relaxed pass must serve");
+    }
+
+    #[test]
+    fn a_quota_wall_is_never_relaxed_into_a_doomed_request() {
+        let walled = vec![
+            candidate("a", Some(Ineligible::QuotaWall)),
+            candidate("b", Some(Ineligible::CapabilityNotInPlan)),
+        ];
+        let relaxed: Vec<Candidate> = walled
+            .iter()
+            .cloned()
+            .map(|mut candidate| {
+                if candidate.ineligible.is_some_and(Ineligible::is_environmental) {
+                    candidate.ineligible = None;
+                }
+                candidate
+            })
+            .collect();
+        assert!(
+            select(&relaxed, None, 0).is_none(),
+            "a provider verdict must stay a wall even when it is the last profile"
+        );
     }
 }
