@@ -2212,10 +2212,6 @@ pub struct TariffOverrideReq {
     pub payload: Value,
     pub created_by: String,
     pub reason: String,
-    /// Bypass the compiled-baseline sanity band (any leg deviating by more than
-    /// [`crate::tariff_admin::SANITY_FACTOR`] or crossing zero). Required for legitimate large
-    /// repricings; the deviation list is returned with the 400 either way.
-    pub force: Option<bool>,
 }
 
 /// POST /admin/pricing/tariffs/override — publish the next version of one family. The request
@@ -2246,30 +2242,6 @@ pub async fn publish_tariff_override(
         return invalid_pricing_request(format!("{error:#}"), identity);
     }
     let now = now_unix();
-    // Fat-finger guard: an override goes live fleet-wide within seconds, so a leg deviating from
-    // the compiled baseline by more than SANITY_FACTOR (or crossing zero) needs an explicit
-    // force. A family with no compiled baseline (a brand-new model's family) has nothing to
-    // deviate from and passes.
-    if req.force != Some(true) {
-        if let Some(baseline) = compiled_tariff_catalog_at(now)
-            .into_iter()
-            .find(|entry| entry.tariff_family == req.tariff_family)
-        {
-            let deviations =
-                crate::tariff_admin::payload_deviations(&baseline.payload, &req.payload);
-            if !deviations.is_empty() {
-                return invalid_pricing_request(
-                    format!(
-                        "payload legs deviate from the compiled baseline by more than {}x; \
-                         resubmit with force=true if this repricing is intentional: {}",
-                        crate::tariff_admin::SANITY_FACTOR,
-                        deviations.join("; ")
-                    ),
-                    identity,
-                );
-            }
-        }
-    }
     if req.effective_from < now - TARIFF_OVERRIDE_CLOCK_SKEW_GRACE_SECS {
         return invalid_pricing_request(
             format!(
