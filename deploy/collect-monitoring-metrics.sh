@@ -91,45 +91,19 @@ SELECT 'apitoken_queue_oldest_ready_seconds{queue="engine_pricing"} ' || COALESC
 SELECT 'apitoken_queue_ready{queue="engine_policy_jobs"} ' || count(*) FROM engine_policy_jobs WHERE status IN ('pending','retry');
 SELECT 'apitoken_queue_dead{queue="engine_policy_jobs"} ' || count(*) FROM engine_policy_jobs WHERE status = 'dead';
 SELECT 'apitoken_queue_oldest_ready_seconds{queue="engine_policy_jobs"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM engine_policy_jobs WHERE status IN ('pending','retry');
--- The remaining legacy pricing control lanes claimed by claimNextPricingControlJob: a stalled
+-- The catalog/switch pricing control lanes claimed by claimNextPricingControlJob: a stalled
 -- catalog or switch generation blocks every dependent policy job, so they get the same generic
--- durable-queue gauges as engine_policy_jobs.
+-- durable-queue gauges as engine_policy_jobs. The release-v2 cycle queues
+-- (pricing_release_control_jobs_v2, pricing_funding_normalizations_v2,
+-- pricing_shadow_policy_jobs_v2, pricing_shadow_rollouts_v2, pricing_stage8_capture_jobs_v2)
+-- are deliberately not exported: their lanes were deleted with the dismantled release cycle and
+-- no consumer will ever drain them again.
 SELECT 'apitoken_queue_ready{queue="engine_catalog_jobs"} ' || count(*) FROM engine_catalog_jobs WHERE status IN ('pending','retry');
 SELECT 'apitoken_queue_dead{queue="engine_catalog_jobs"} ' || count(*) FROM engine_catalog_jobs WHERE status = 'dead';
 SELECT 'apitoken_queue_oldest_ready_seconds{queue="engine_catalog_jobs"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM engine_catalog_jobs WHERE status IN ('pending','retry');
 SELECT 'apitoken_queue_ready{queue="engine_switch_jobs"} ' || count(*) FROM engine_switch_jobs WHERE status IN ('pending','retry');
 SELECT 'apitoken_queue_dead{queue="engine_switch_jobs"} ' || count(*) FROM engine_switch_jobs WHERE status = 'dead';
 SELECT 'apitoken_queue_oldest_ready_seconds{queue="engine_switch_jobs"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM engine_switch_jobs WHERE status IN ('pending','retry');
--- Release-v2 pricing control plane. pricing_release_control_jobs_v2 carries all five durable job
--- kinds (materialize_release, normalize_funding, collect_stage8, activate_release,
--- activate_recovery) claimed through claimNextPricingReleaseActivationJobV2; a stalled row here
--- freezes the whole release pipeline and previously raised no alert.
-SELECT 'apitoken_queue_ready{queue="pricing_release_control_jobs_v2"} ' || count(*) FROM pricing_release_control_jobs_v2 WHERE status IN ('pending','retry');
-SELECT 'apitoken_queue_dead{queue="pricing_release_control_jobs_v2"} ' || count(*) FROM pricing_release_control_jobs_v2 WHERE status = 'dead';
-SELECT 'apitoken_queue_oldest_ready_seconds{queue="pricing_release_control_jobs_v2"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM pricing_release_control_jobs_v2 WHERE status IN ('pending','retry');
--- pricing_funding_normalizations_v2 has no 'dead' status: its terminal failure is 'blocker'
--- (the engine reported a normalization blocker for the account), which keeps Stage 8 evidence
--- from passing until an operator resolves it, so it is exported as the dead gauge.
-SELECT 'apitoken_queue_ready{queue="pricing_funding_normalizations_v2"} ' || count(*) FROM pricing_funding_normalizations_v2 WHERE status IN ('pending','retry');
-SELECT 'apitoken_queue_dead{queue="pricing_funding_normalizations_v2"} ' || count(*) FROM pricing_funding_normalizations_v2 WHERE status = 'blocker';
-SELECT 'apitoken_queue_oldest_ready_seconds{queue="pricing_funding_normalizations_v2"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM pricing_funding_normalizations_v2 WHERE status IN ('pending','retry');
--- Shadow rollout per-account jobs: 'blocked' is a permanent delivery failure (terminal, like
--- 'dead'), so both count towards the dead gauge. The rollout header has no retry state: it sits
--- in 'pending' until its first job batch is claimed and ends 'confirmed', 'blocked' (some jobs
--- permanently failed) or 'dead'.
-SELECT 'apitoken_queue_ready{queue="pricing_shadow_policy_jobs_v2"} ' || count(*) FROM pricing_shadow_policy_jobs_v2 WHERE status IN ('pending','retry');
-SELECT 'apitoken_queue_dead{queue="pricing_shadow_policy_jobs_v2"} ' || count(*) FROM pricing_shadow_policy_jobs_v2 WHERE status IN ('blocked','dead');
-SELECT 'apitoken_queue_oldest_ready_seconds{queue="pricing_shadow_policy_jobs_v2"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM pricing_shadow_policy_jobs_v2 WHERE status IN ('pending','retry');
-SELECT 'apitoken_queue_ready{queue="pricing_shadow_rollouts_v2"} ' || count(*) FROM pricing_shadow_rollouts_v2 WHERE status = 'pending';
-SELECT 'apitoken_queue_dead{queue="pricing_shadow_rollouts_v2"} ' || count(*) FROM pricing_shadow_rollouts_v2 WHERE status IN ('blocked','dead');
-SELECT 'apitoken_queue_oldest_ready_seconds{queue="pricing_shadow_rollouts_v2"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM pricing_shadow_rollouts_v2 WHERE status = 'pending';
--- Managed Stage 8 capture jobs. 'blocked' is deliberately NOT a dead item: it is the terminal
--- evidence-gate outcome (the capture ran and the combined evidence did not pass), staged and
--- read by the operator in the pricing control room. Only 'dead' (exhausted attempts or an
--- invalid durable row) means the lane itself failed.
-SELECT 'apitoken_queue_ready{queue="pricing_stage8_capture_jobs_v2"} ' || count(*) FROM pricing_stage8_capture_jobs_v2 WHERE status IN ('pending','retry');
-SELECT 'apitoken_queue_dead{queue="pricing_stage8_capture_jobs_v2"} ' || count(*) FROM pricing_stage8_capture_jobs_v2 WHERE status = 'dead';
-SELECT 'apitoken_queue_oldest_ready_seconds{queue="pricing_stage8_capture_jobs_v2"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM pricing_stage8_capture_jobs_v2 WHERE status IN ('pending','retry');
 SELECT 'apitoken_pricing_policy_pending ' || count(*) FROM account_policy_bindings WHERE sync_state = 'pending';
 SELECT 'apitoken_pricing_policy_oldest_pending_seconds ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM account_policy_bindings WHERE sync_state = 'pending';
 SELECT 'apitoken_pricing_policy_failed ' || count(*) FROM account_policy_bindings WHERE sync_state = 'failed';

@@ -31,6 +31,11 @@ export type PricingReleaseProvisioningResultV2 =
   | { status: "pre_cutover"; headVersion: null; releaseGeneration: null }
   | { status: "base_assignment" | "extension"; headVersion: number; releaseGeneration: number };
 
+/** SERIALIZABLE conflicts and deadlocks are concurrency facts, not failures: retry next tick. */
+export function isSerializationConflictV2(message: string): boolean {
+  return /could not serialize|deadlock detected/i.test(message);
+}
+
 export class PricingReleaseProvisioningV2Error extends Error {
   constructor(
     public readonly code:

@@ -27,8 +27,10 @@ a GREEN exact implementation SHA.
 > removed. Reason: once prices moved to hot tariff overrides and discounts to hot policy rules,
 > the cycle's only remaining effect was hazardous — its materializer would silently recompile the
 > B2C policy at a hardcoded 5000 bps and CAS the engine release head, invalidating the live
-> provisioning context. The `packages/db` libraries remain in the tree pending a follow-up
-> cleanup commit and must not be wired to new callers.
+> provisioning context. The `packages/db` cycle libraries (orchestration, funding normalization,
+> shadow rollout, Stage 8 capture, activation jobs/authority, Stage 8 evidence, catalog-gen2) are
+> deleted with it; only the Stage 5 pair-preparation materializer cluster
+> (`pricing-stage5-materializer-v2{,-store,-cli}.ts`) remains, as the runner for Phase D below.
 
 ## Phase A — dormant implementation
 

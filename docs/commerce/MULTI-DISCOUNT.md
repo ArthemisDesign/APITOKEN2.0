@@ -19,8 +19,8 @@ target system has no active `track` mode, no tier ladder, and no 30-day retentio
 > The invariant descriptions below that still hold — ledger lineage, immutable snapshot pinning,
 > evidence-gated head CAS on the engine side — remain the contract; the engine producers under
 > `/admin/pricing/v2/*` are unchanged and are driven manually per
-> `docs/ops/MODEL_RELEASE_CYCLE.md`. The `packages/db` stage libraries remain pending a
-> follow-up cleanup commit.
+> `docs/ops/MODEL_RELEASE_CYCLE.md`. The `packages/db` stage libraries are deleted as well, except
+> the Stage 5 pair-preparation materializer cluster used by the manual release advance.
 
 ## 1. Accepted product decisions
 

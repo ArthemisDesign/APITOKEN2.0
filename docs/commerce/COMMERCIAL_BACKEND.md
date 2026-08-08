@@ -367,9 +367,10 @@ or money. A replay does not create a second job and does not duplicate the audit
 The Stage 5–9 release-cycle machinery (managed Stage 5/6 preparation, Stage 8 capture, Stage 9
 activation, shadow rollout, orchestration) is removed from commerce: prices are hot tariff
 overrides on the engine Control API and discounts are hot managed policy rules delivered through
-the durable pricing-control jobs, so the cycle's routes, worker lanes, and gates were deleted
-(`docs/ops/MODEL_RELEASE_CYCLE.md`). The `packages/db` stage libraries remain pending a
-follow-up cleanup; the engine release-v2 producers under `/admin/pricing/v2/*` are unchanged.
+the durable pricing-control jobs, so the cycle's routes, worker lanes, gates, and `packages/db`
+job/store libraries were deleted (`docs/ops/MODEL_RELEASE_CYCLE.md`). Only the Stage 5
+pair-preparation materializer cluster remains, as the runner for the manual new-model release
+advance; the engine release-v2 producers under `/admin/pricing/v2/*` are unchanged.
 
 ## Authenticated client API
 

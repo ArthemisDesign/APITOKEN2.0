@@ -37,7 +37,7 @@ document, update this index.
 - [MULTI_DISCOUNT_STAGE6.md](commerce/MULTI_DISCOUNT_STAGE6.md) — Stage 6: funding reconciliation (superseded: commerce routes/worker lane removed).
 - [MULTI_DISCOUNT_STAGE7.md](commerce/MULTI_DISCOUNT_STAGE7.md) — Stage 7: OpenKeys 1:1 cutover (superseded: the shadow-rollout lane is removed).
 - [MULTI_DISCOUNT_STAGE9.md](commerce/MULTI_DISCOUNT_STAGE9.md) — Stage 9: zero-downtime atomic full-inventory cutover (superseded: the activation lane is removed; the engine CAS producer remains).
-- [MULTI_DISCOUNT_CATALOG_GEN2.md](commerce/MULTI_DISCOUNT_CATALOG_GEN2.md) — catalog generation 2 (`claude-opus-5`, `claude-fable-5`): inert delivery and activation.
+- [MULTI_DISCOUNT_CATALOG_GEN2.md](commerce/MULTI_DISCOUNT_CATALOG_GEN2.md) — catalog generation 2 (`claude-opus-5`, `claude-fable-5`): inert delivery and activation (historical; the gen2 library/CLI are deleted).
 - [CRYPTOMUS_INTEGRATION.md](commerce/CRYPTOMUS_INTEGRATION.md) — accepting payments via Cryptomus.
 - [PLATEGA_INTEGRATION.md](commerce/PLATEGA_INTEGRATION.md) — accepting payments via Platega (default provider).
 - [DIGISELLER_INTEGRATION.md](commerce/DIGISELLER_INTEGRATION.md) — DigiSeller: provider disabled, adapter groundwork and enablement conditions.

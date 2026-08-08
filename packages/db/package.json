@@ -16,11 +16,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --no-file-parallelism",
     "test:integration": "vitest run --no-file-parallelism src/*.integration.test.ts",
-    "pricing:stage5": "pnpm run build && node dist/multi-discount-backfill-cli.js",
     "pricing:stage5-v2": "pnpm run build && node dist/pricing-stage5-materializer-v2-cli.js",
-    "pricing:stage6-v2": "pnpm run build && node dist/pricing-stage6-v2-cli.js",
-    "pricing:stage8-evidence": "pnpm run build && node dist/multi-discount-stage8-evidence-cli.js",
-    "pricing:catalog-gen2": "pnpm run build && node dist/multi-discount-catalog-gen2-cli.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "pnpm run build && node dist/migrate.js"
   },

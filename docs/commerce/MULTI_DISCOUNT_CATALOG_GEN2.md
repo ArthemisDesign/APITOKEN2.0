@@ -32,8 +32,8 @@ rewrite these generation-2 constants or reuse their generation/digests. The repl
 - is referenced by prepared target and recovery pricing releases;
 - remains dormant until the full-inventory Stage 9 head CAS.
 
-The old `pricing:catalog-gen2 apply` command must be disabled or made fail closed with a
-`superseded_generation` result before the final rollout. It is not a supported production recovery
+The old `pricing:catalog-gen2 apply` command was deleted with the dismantled release cycle (the
+`packages/db` catalog-gen2 library and CLI are gone). It is not a supported production recovery
 step.
 
 Activation and rollback for the replacement are specified in

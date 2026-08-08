@@ -422,8 +422,8 @@ export const CURRENT_PRODUCT_CATALOG_ENTRIES = Object.freeze([
  * `{generation: 2, schema_version: 1, entries, aliases}` where each entry carries
  * `entry_digest = stage5Digest("capability-entry", {provider_id, canonical_model_id,
  * enabled: true, capability_data: {pricing_supported: true}})` and the only alias
- * remains `gpt-5.6 -> gpt-5.6-sol`; the exact builder lives in
- * `packages/db/src/multi-discount-catalog-gen2.ts` and is pinned by unit tests.
+ * remains `gpt-5.6 -> gpt-5.6-sol`; the canonical digest primitive lives in
+ * `packages/db/src/pricing-release-digest.ts` and is pinned by unit tests.
  * Generation 2 becomes live only when the commerce operator materializes it and
  * the pricing worker activates it in the engine authority; until then every
  * runtime check keeps validating against generation 1.

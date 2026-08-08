@@ -915,14 +915,13 @@ the `apitoken-worker` unit (pricing worker; check `node_systemd_unit_state` and 
 journal). These are control-plane lanes, not customer traffic: a sustained backlog means catalog
 or switch delivery is not draining.
 
-The release-v2 queues (`pricing_release_control_jobs_v2`, `pricing_funding_normalizations_v2`,
-`pricing_shadow_policy_jobs_v2`, `pricing_shadow_rollouts_v2`, `pricing_stage8_capture_jobs_v2`)
-lost their consumers when the release cycle was dismantled (see `docs/ops/MODEL_RELEASE_CYCLE.md`):
-no worker claims them anymore. The metrics collector still exports their
-`apitoken_queue_*` gauges, so a leftover non-terminal row would surface here as a backlog that
-nothing drains. Treat such a row as historical residue from the completed gpt-image-2 cycle:
-confirm it predates the dismantling, do not requeue it, and expect the dead gauges to be removed
-by the follow-up cleanup of the `packages/db` stage libraries.
+The release-v2 cycle queues (`pricing_release_control_jobs_v2`,
+`pricing_funding_normalizations_v2`, `pricing_shadow_policy_jobs_v2`,
+`pricing_shadow_rollouts_v2`, `pricing_stage8_capture_jobs_v2`) are gone from monitoring
+entirely: their worker lanes were deleted with the dismantled release cycle (see
+`docs/ops/MODEL_RELEASE_CYCLE.md`) and the collector no longer exports their `apitoken_queue_*`
+gauges, so they cannot raise this alert. Any rows left in those tables are immutable historical
+evidence from the completed gpt-image-2 cycle — never requeue or edit them.
 
 ## DurableQueueOldestItemStale
 
@@ -933,8 +932,8 @@ On the live pricing control queues a stale oldest item usually means the owning
 `apitoken-worker` lane is down, crash-looping, or every claim fails and re-arms
 `next_attempt_at`. The live queues use lease recovery plus `FOR UPDATE SKIP LOCKED` claiming, so
 once the cause is fixed the worker re-claims the row on its own — never update `status` or lock
-fields by hand. A stale row on a release-v2 queue is different: those lanes are deleted (see
-`DurableQueueBacklog`), so nothing will ever claim the row again.
+fields by hand. The release-v2 cycle queues are no longer exported (see `DurableQueueBacklog`),
+so a row stranded there stays invisible to this alert by design.
 
 ## DurableQueueDeadItems
 
@@ -943,13 +942,12 @@ requeueing; all money mutations must remain idempotent. Intentionally obsolete c
 use the separate `canceled` state and `apitoken_queue_canceled` metric. Never relabel a genuine
 delivery failure as canceled merely to silence this alert.
 
-On the release-v2 pricing control queues the dead gauge maps the terminal failure state of each
-state machine: `dead` for `pricing_release_control_jobs_v2` and
-`pricing_stage8_capture_jobs_v2`, `blocked` or `dead` for `pricing_shadow_policy_jobs_v2` and
-`pricing_shadow_rollouts_v2`, and `blocker` for `pricing_funding_normalizations_v2`. Those lanes
-are deleted with the dismantled release cycle, so a dead-gauge increment there can only be a row
-written before the dismantling — read `last_error` for the historical record, do not requeue it,
-and do not edit `status` by hand.
+The release-v2 pricing control queues (`pricing_release_control_jobs_v2`,
+`pricing_stage8_capture_jobs_v2`, `pricing_shadow_policy_jobs_v2`,
+`pricing_shadow_rollouts_v2`, `pricing_funding_normalizations_v2`) no longer feed this alert:
+their lanes were deleted with the dismantled release cycle and the collector does not export
+their dead gauges anymore. Terminal rows remaining in those tables are historical evidence from
+the completed cycle — read `last_error` for the record, never requeue, never edit `status`.
 
 ## PricingPolicyDeliveryStale
 

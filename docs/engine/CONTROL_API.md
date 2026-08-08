@@ -1107,7 +1107,7 @@ strict release, funding-normalization, assignment-extension and activation wire 
 `packages/engine-client` gained typed prepare/read, account-local normalization/extension and the
 single activation method. The bounded `apps/worker` application-job consumers that used to run the
 staged target-release and activation jobs were removed with the dismantled release cycle; the
-`packages/db` job stores remain pending the follow-up cleanup.
+`packages/db` job stores are deleted; activation runs through the typed transport only.
 
 ### Hot tariff overrides (`/admin/pricing/tariffs*`)
 
