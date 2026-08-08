@@ -22,6 +22,11 @@ client documentation are in progress and are tracked separately.
   therefore goes through a new internal producer, `GET /internal/router/catalog/kimi`, and the
   router treats KIMI as a fourth **catalog plane** over the existing Anthropic **lane**. See
   "Catalog planes vs protocol lanes" in `docs/engine/UNIFIED_ROUTER.md`.
+- `decision` 2026-08-08 — admission accepts both the bare alias and the router's `kimi/<alias>`
+  spelling, normalizing to the bare alias before anything downstream reads the body. The plane
+  strips only its own `anthropic/` prefix, so publishing the namespace without this made every
+  catalogue-driven client fail on its first request: the id matched no alias, skipped the KIMI
+  dispatch and went verbatim to the Claude upstream.
 - `decision` 2026-08-08 — advertise only the five subscription aliases. The official Open
   Platform ids are tariff keys the gateway refuses on the wire, so publishing one would put a
   model in the catalog that admission then rejects. `kimi-k2.6` is not advertised at all: no

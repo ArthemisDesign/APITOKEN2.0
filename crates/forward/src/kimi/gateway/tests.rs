@@ -1835,3 +1835,42 @@ async fn a_missing_pinned_override_version_fails_closed() {
     crate::pricing::tariff_book::clear_global_book_for_test();
     assert!(missing.is_err());
 }
+
+/// The router advertises `kimi/<alias>`, and this plane strips only its own `anthropic/` prefix.
+/// Before this resolution existed, a namespaced KIMI id matched no alias, skipped the dispatch and
+/// was forwarded verbatim to the Claude upstream — so every catalogue-driven client failed on its
+/// first request.
+#[test]
+fn namespaced_router_ids_resolve_to_the_bare_subscription_alias() {
+    for entry in metering::kimi_subscription_models() {
+        assert_eq!(
+            KimiGateway::resolve_public_model(entry.alias),
+            Some(entry.alias),
+            "bare {}",
+            entry.alias
+        );
+        assert_eq!(
+            KimiGateway::resolve_public_model(&format!("kimi/{}", entry.alias)),
+            Some(entry.alias),
+            "namespaced {}",
+            entry.alias
+        );
+    }
+}
+
+#[test]
+fn foreign_namespaces_and_tariff_keys_never_reach_the_kimi_plane() {
+    // Another plane's namespace must not be swallowed here, and the official Open Platform ids
+    // are tariff keys the subscription endpoint refuses on the wire.
+    for foreign in [
+        "anthropic/claude-opus-5",
+        "google/gemini-3.6-flash",
+        "kimi/kimi-k3",
+        "kimi-k3",
+        "kimi-k2.6",
+        "kimi/",
+        "kimi/kimi/k3",
+    ] {
+        assert_eq!(KimiGateway::resolve_public_model(foreign), None, "{foreign}");
+    }
+}

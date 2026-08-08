@@ -1220,8 +1220,7 @@ pub async fn forward(
         .as_ref()
         .and_then(|value| value.get("model"))
         .and_then(Value::as_str)
-        .filter(|model| crate::kimi::KimiGateway::model_is_kimi(model))
-        .map(str::to_string);
+        .and_then(crate::kimi::KimiGateway::resolve_public_model);
     if billable {
         if let Some(kimi_model) = kimi_model {
             let Some(gateway) = app.kimi.as_ref() else {
@@ -1229,7 +1228,12 @@ pub async fn forward(
                 // plane is disabled or failed before composition.
                 return local_err_for(LocalErr::Overloaded, "kimi_gateway_unavailable", Some(2));
             };
-            let kimi_body = parsed.take().expect("KIMI model came from parsed body");
+            let mut kimi_body = parsed.take().expect("KIMI model came from parsed body");
+            // The client may have addressed the model through the router's `kimi/` namespace.
+            // Normalize to the bare alias once, here, so nothing downstream — pricing, the
+            // gateway's own alias→wire rewrite, the durable turn event — has to know both
+            // spellings.
+            kimi_body["model"] = Value::String(kimi_model.to_string());
             // Admin-only exact calibration targeting, mirroring the Gemini admission contract:
             // both headers together, validated, never forwarded upstream (send_generation passes
             // through only the two named Anthropic headers). A customer carrying them, a
@@ -1269,7 +1273,7 @@ pub async fn forward(
                     headers: parts.headers.clone(),
                     body: kimi_body,
                     raw_body_len: raw.len(),
-                    model: kimi_model,
+                    model: kimi_model.to_string(),
                     execution,
                     billing,
                     affinity: kimi_affinity,

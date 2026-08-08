@@ -625,8 +625,20 @@ impl KimiGateway {
         }
     }
 
-    pub fn model_is_kimi(model: &str) -> bool {
-        kimi_resolve_subscription_model(model).is_some()
+    /// Resolve a client-supplied model id to the exact subscription alias, accepting the unified
+    /// router's namespaced spelling.
+    ///
+    /// The router advertises `kimi/<alias>`, but this plane only ever stripped its own
+    /// `anthropic/` prefix — so a namespaced KIMI id matched no alias, fell through the dispatch
+    /// in `proxy.rs`, and was forwarded verbatim to the Claude upstream, which does not know it.
+    /// Publishing the namespace without teaching admission to read it made every catalogue-driven
+    /// client fail on its first request.
+    ///
+    /// Returns the bare alias so pricing, attribution and the durable turn event key on the same
+    /// identity no matter which spelling the client used.
+    pub fn resolve_public_model(model: &str) -> Option<&'static str> {
+        let bare = model.strip_prefix("kimi/").unwrap_or(model);
+        kimi_resolve_subscription_model(bare).map(|resolved| resolved.alias)
     }
 
     fn profiles_snapshot(&self) -> Vec<Arc<RuntimeProfile>> {
