@@ -35,13 +35,30 @@ client documentation are in progress and are tracked separately.
 - `decision` This file is an internal engineering instruction (required by `AGENTS.md`,
   "Documentation is a living contract"), not a public storefront.
 
-A key under **strict** policy still cannot use KIMI: the gateway refuses it outright
-(`kimi_strict_pricing_unavailable`) because the pricing release catalog has no `kimi` provider,
-and the router consequently quotes no `kimi/*` rate for such a key. This is the same position
-Gemini is in, and it is a known gap rather than a router defect. It does not block publication:
-since generation 55 was ratified as final, new models ship through the engine's
-`is_model_unpriced` → exact-legacy-tariff fallthrough plus a hot tariff seed, which is exactly
-the path KIMI already reserves on.
+A key under **strict** policy cannot use KIMI at all, and this is the one blocker between the
+published catalog entry and actually selling the provider.
+
+`KimiGateway::handle` refuses a strict key with `kimi_strict_pricing_unavailable` as its very
+first check, before any pricing attempt, and `router_pricing.rs` therefore quotes no `kimi/*` rate
+for such a key — the surfaces stay consistent, so the customer sees a clean absence rather than a
+mystery 5xx.
+
+**This is not the position Gemini is in**, and an earlier revision of this file said so wrongly.
+`reserve_gemini_billing` tries `reserve_gemini_release_v2` *first* and serves the strict account
+from it; its strict refusal is only a fallback for the case where no release resolves at all. KIMI
+has no such path, because `SnapshotProvider` (`crates/registry/src/pricing/snapshots.rs`) knows
+only `anthropic`/`openai`/`google`.
+
+The urgency comes from the release-v2 retirement: `00348678` provisions new accounts (B2C and
+invited B2B) directly on the strict path, and `5b1af567` backfills the existing cohort behind
+`PRICING_BACKFILL_ENABLED`. As that backfill proceeds, KIMI stops being reachable for essentially
+the whole customer base. OpenKeys keys are strict by construction, so KIMI is already unavailable
+there.
+
+The fix mirrors Gemini rather than reviving the retired release machinery: add
+`SnapshotProvider::Kimi`, and replace the unconditional refusal with a release resolution that
+falls through to the exact legacy tariff on `registry::pricing::is_model_unpriced` — the path
+ratified when generation 55 became final, and the one KIMI already reserves on for legacy keys.
 
 Until the live matrix is executed, the GA criterion of §1 `PROVIDER_ONBOARDING.md` is **not
 claimed**. The terminal state of this work is a verified **preview**: runtime and calibration are
