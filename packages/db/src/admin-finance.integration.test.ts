@@ -209,7 +209,7 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
         bonusFundedSpentNano: "100",
         otherFundedSpentNano: "0",
         unattributedSpentNano: "0",
-        providerSpendNano: { anthropic: "100", openai: "0", google: "0", other: "0" },
+        providerSpendNano: { anthropic: "100", openai: "0", google: "0", kimi: "0", other: "0" },
         engineAccountId: `acct-${users.get("bonus")}`,
       }),
     ]);
@@ -324,5 +324,12 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
       days: 30, funding: "all", provider: "openai",
     });
     expect(new Set(openai.rows.map((row) => row.userId))).toEqual(new Set([users.get("paid")]));
+
+    // The KIMI predicate is new. With no KIMI events in the window it must select nobody — a
+    // filter that silently matched everything would be indistinguishable from "no filter" here.
+    const kimi = await listAdminPayingUsers(database, {
+      days: 30, funding: "all", provider: "kimi",
+    });
+    expect(kimi.rows).toEqual([]);
   });
 });
