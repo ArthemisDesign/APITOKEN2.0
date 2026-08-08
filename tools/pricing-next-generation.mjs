@@ -13,7 +13,7 @@
  * edits the target files — a human/agent applies and reviews the blocks.
  *
  * Canonical digest algorithm (the only authority, mirrored from
- * `packages/db/src/multi-discount-backfill.ts` `stage5Digest` and
+ * `packages/db/src/pricing-release-digest.ts` `stage5Digest` and
  * `packages/db/src/pricing-stage5-materializer-v2.ts` `legacyStage5Digest`):
  *
  *   digest(label, value) = "sha256:v1:" + sha256hex(
@@ -46,8 +46,16 @@
  *       "products": ["main", "openkeys"]                  // optional; default both
  *     }
  *   ],
+ *   "addAliases": [                                       // optional standalone capability aliases
+ *     { "provider_id": "anthropic", "alias_model_id": "claude-haiku-4-5-20251001",
+ *       "canonical_model_id": "claude-haiku-4-5" }        // may target an EXISTING model
+ *   ],
  *   "summary": "one-line review note for the generated doc comments"  // optional
  * }
+ *
+ * The capability alias array is digested in canonical (provider_id, alias_model_id) UTF-8
+ * byte order — the generator sorts the union of base aliases, addition aliases and
+ * addAliases, so the frozen arrays in the materializer must stay in that order.
  */
 
 import { createHash } from "node:crypto";
@@ -78,7 +86,7 @@ export function canonicalJson(value) {
   return JSON.stringify(canonicalValue(value));
 }
 
-/** Exact mirror of `stage5Digest` in packages/db/src/multi-discount-backfill.ts. */
+/** Exact mirror of `stage5Digest` in packages/db/src/pricing-release-digest.ts. */
 export function stage5Digest(label, value) {
   const hex = createHash("sha256")
     .update(`multi-discount-stage5:${label}\n`, "utf8")
@@ -209,6 +217,22 @@ function requireString(value, path) {
   return value;
 }
 
+function normalizeAlias(alias, path) {
+  if (alias === null || typeof alias !== "object") throw new SpecError(`${path} must be an object`);
+  return {
+    provider_id: requireString(alias.provider_id, `${path}.provider_id`),
+    alias_model_id: requireString(alias.alias_model_id, `${path}.alias_model_id`),
+    canonical_model_id: requireString(alias.canonical_model_id, `${path}.canonical_model_id`),
+  };
+}
+
+/** Canonical capability-alias order: (provider_id, alias_model_id) in UTF-8 byte order. */
+function sortAliases(aliases) {
+  return [...aliases].sort((left, right) =>
+    compareUtf8(left.provider_id, right.provider_id)
+    || compareUtf8(left.alias_model_id, right.alias_model_id));
+}
+
 export function buildNextGeneration(spec) {
   if (spec === null || typeof spec !== "object") throw new SpecError("spec must be an object");
   const currentGeneration = spec.currentGeneration;
@@ -273,14 +297,18 @@ export function buildNextGeneration(spec) {
     ...normalizedAdditions.filter((addition) => addition.products.includes("openkeys"))
       .map((addition) => addition.entry),
   ];
-  const aliases = [
-    ...base.aliases,
+  const addedAliases = [
     ...normalizedAdditions.filter((addition) => addition.alias !== null).map((addition) => ({
       provider_id: addition.provider_id,
       alias_model_id: addition.alias,
       canonical_model_id: addition.canonical_model_id,
     })),
+    ...(spec.addAliases ?? []).map((alias, index) => normalizeAlias(alias, `spec.addAliases[${index}]`)),
   ];
+  const aliases = sortAliases([
+    ...base.aliases.map((alias, index) => normalizeAlias(alias, `spec.base.aliases[${index}]`)),
+    ...addedAliases,
+  ]);
 
   const capabilityDigest = buildCapabilityDigest(generation, schemaVersion, mainEntries, aliases);
   const mainCatalog = buildCatalog(
@@ -298,6 +326,7 @@ export function buildNextGeneration(spec) {
     mainEntries,
     openkeysEntries,
     aliases,
+    addedAliases,
     openkeysChanged: normalizedAdditions.some((addition) => addition.products.includes("openkeys")),
     capabilityDigest,
     mainCatalogDigest: mainCatalog.content_digest,
@@ -395,15 +424,16 @@ function renderMaterializerBlock(plan) {
     `export const STAGE5_V2_POLICY_VERSION = ${plan.policyVersion};`,
     "// 3) replace every remaining " + prev + "_ reference in the file with " + gen + "_",
   ];
-  const newAliases = plan.additions.filter((addition) => addition.alias !== null);
+  const newAliases = plan.addedAliases;
   if (newAliases.length > 0) {
-    lines.push("// 4) append to the aliases array in buildStage5V2Capability():");
-    for (const addition of newAliases) {
+    lines.push("// 4) merge into the aliases array in buildStage5V2Capability(), keeping canonical");
+    lines.push("//    (provider_id, alias_model_id) UTF-8 byte order — the digest is order-sensitive:");
+    for (const alias of newAliases) {
       lines.push(
         "      {",
-        `        provider_id: "${addition.provider_id}",`,
-        `        alias_model_id: "${addition.alias}",`,
-        `        canonical_model_id: "${addition.canonical_model_id}",`,
+        `        provider_id: "${alias.provider_id}",`,
+        `        alias_model_id: "${alias.alias_model_id}",`,
+        `        canonical_model_id: "${alias.canonical_model_id}",`,
         "      },",
       );
     }
