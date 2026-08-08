@@ -1255,6 +1255,17 @@ impl KimiGateway {
             return error_response(error);
         }
         let context_mode = context_mode(&request.model).to_string();
+        // Our catalogue alias is not always what the provider accepts. `k3[1m]` is the bracket
+        // convention borrowed from the Claude catalogue; the subscription endpoint has no such id
+        // and rejects it, so forwarding the alias verbatim turned every such request into an
+        // upstream failure that surfaced as a capacity 429. Rewrite to the wire id once, here,
+        // before anything reads the body — selection, pricing and the durable event keep using the
+        // requested alias, so attribution and the rate card are unchanged.
+        if let Some(resolved) = metering::kimi_resolve_subscription_model(&request.model) {
+            if resolved.wire_model != resolved.alias {
+                request.body["model"] = json!(resolved.wire_model);
+            }
+        }
         let reasoning_effort = match reasoning_effort(&request.body) {
             Ok(value) => value,
             Err(error) => return error_response(error),

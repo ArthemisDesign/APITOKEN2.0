@@ -9,9 +9,13 @@
 //! Two properties of this provider drive the shape below and are documented in
 //! `docs/engine/KIMI_PROVIDER.md`:
 //!
-//! 1. **Billing follows the served model, not the requested one.** Disabling thinking re-routes
-//!    both `k3` and `kimi-for-coding` to K2.6, which has a different rate card. Callers must
-//!    resolve prices from the model the provider reports it served.
+//! 1. **Billing follows the served model, not the requested one.** The provider reports which
+//!    model it served, and that is what prices the turn. An earlier note here claimed that
+//!    disabling thinking re-routes `k3` and `kimi-for-coding` to K2.6; live evidence on
+//!    2026-08-07 disproved it — `k3-256k` with thinking off was priced at 3000/15000 per token,
+//!    the K3 card. The claim was unfalsifiable on the coding aliases because K2.6 and K2.7 Code
+//!    share every leg except the cache-hit rate. K2.6 stays catalogued because the provider may
+//!    still report it, and an unpriceable served model must fail closed.
 //! 2. **There is no published cache-write rate.** Kimi documents only a cache-hit and a
 //!    cache-miss input rate, with caching described as automatic. Cache-creation tokens were by
 //!    definition a miss, so they are priced at the miss rate rather than silently at zero. The
@@ -57,8 +61,17 @@ pub struct KimiModelSpec {
 /// One subscription-facing model id and the official model whose rate card prices it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KimiSubscriptionModel {
-    /// Model id as accepted on `api.kimi.com/coding`.
+    /// Model id clients address us with. Not necessarily what goes on the wire — see [`Self::wire_model`].
     pub alias: &'static str,
+    /// Model id actually accepted on `api.kimi.com/coding`.
+    ///
+    /// Equal to `alias` for every id the provider itself publishes. The exception is the bracket
+    /// form `k3[1m]`, which is our own convention borrowed from the Claude catalogue: the
+    /// subscription endpoint has no such id and rejects it, while plain `k3` already *is* the
+    /// 1M-window model. Sending the alias verbatim made every `k3[1m]` request fail upstream and
+    /// surface as a capacity 429 — proven live on 2026-08-08, where `k3` answered 200 and
+    /// `k3[1m]` never did.
+    pub wire_model: &'static str,
     /// Official Open Platform model id used for replacement-cost pricing.
     pub official_model: &'static str,
     /// Accepted input context window for this alias specifically.
@@ -196,26 +209,32 @@ const CATALOG: &[CatalogEntry] = &[
 const SUBSCRIPTION_MODELS: &[KimiSubscriptionModel] = &[
     KimiSubscriptionModel {
         alias: "kimi-for-coding",
+        wire_model: "kimi-for-coding",
         official_model: "kimi-k2.7-code",
         input_token_limit: CONTEXT_256K,
     },
     KimiSubscriptionModel {
         alias: "kimi-for-coding-highspeed",
+        wire_model: "kimi-for-coding-highspeed",
         official_model: "kimi-k2.7-code-highspeed",
         input_token_limit: CONTEXT_256K,
     },
     KimiSubscriptionModel {
         alias: "k3",
+        wire_model: "k3",
         official_model: "kimi-k3",
         input_token_limit: CONTEXT_1M,
     },
     KimiSubscriptionModel {
         alias: "k3[1m]",
+        // The provider has no bracket form; plain `k3` is the same 1M model.
+        wire_model: "k3",
         official_model: "kimi-k3",
         input_token_limit: CONTEXT_1M,
     },
     KimiSubscriptionModel {
         alias: "k3-256k",
+        wire_model: "k3-256k",
         official_model: "kimi-k3",
         input_token_limit: CONTEXT_256K,
     },
@@ -500,6 +519,21 @@ mod tests {
         let k3 = kimi_resolve_subscription_model("k3").unwrap();
         assert_eq!(k3.official_model, "kimi-k3");
         assert_eq!(k3.input_token_limit, CONTEXT_1M);
+    }
+
+    #[test]
+    fn every_alias_carries_a_wire_id_and_only_the_bracket_form_differs() {
+        // The wire id is what actually reaches api.kimi.com/coding. Every provider-published id
+        // is its own wire id; `k3[1m]` is our convention alone and must be sent as plain `k3`,
+        // otherwise the endpoint rejects an unknown model and the failure reads as capacity.
+        for entry in kimi_subscription_models() {
+            assert!(!entry.wire_model.is_empty(), "{} has no wire id", entry.alias);
+            if entry.alias == "k3[1m]" {
+                assert_eq!(entry.wire_model, "k3");
+            } else {
+                assert_eq!(entry.wire_model, entry.alias, "{} must go out verbatim", entry.alias);
+            }
+        }
     }
 
     #[test]

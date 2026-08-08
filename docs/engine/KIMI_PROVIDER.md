@@ -155,6 +155,16 @@ Open Platform rate card (`platform.kimi.ai/docs/pricing/*`).
 that enables the 1M window. Ordinary API calls use `k3`. Our canonical id is `k3`
 with an explicit context mode; the bracket form is accepted as an alias.
 
+`decision` **2026-08-08 — an alias and its wire id are separate fields.**
+`KimiSubscriptionModel` now carries `wire_model` beside `alias`. For every id the provider
+publishes the two are equal; only `k3[1m]` differs and goes out as plain `k3`. This was a live
+defect, not a cleanup: the gateway forwarded the request body's `model` verbatim, so the bracket
+form reached an endpoint that has no such id. Every `k3[1m]` request failed upstream and the
+exhausted rotation surfaced it as a capacity `429` naming neither the model nor the cause, while
+`k3` — same tariff, same window, same capability branch — answered 200 on the same profile. The
+rewrite happens once before anything reads the body, so selection, pricing, the immutable turn
+event and attribution all continue to use the requested alias.
+
 `official` **Reasoning controls differ by family:**
 
 - `k3`: always reasons, `reasoning_effort` ∈ {`low`, `high`, `max`}, default `high`.
