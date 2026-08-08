@@ -493,7 +493,7 @@ CREATE TABLE IF NOT EXISTS account_policy_rules (
             pricing_mode = 'discount'
             AND rule_origin = 'managed'
             AND discount_bps IS NOT NULL
-            AND discount_bps BETWEEN 0 AND 9500
+            AND discount_bps BETWEEN 0 AND 10000
             AND discount_bps % 100 = 0
             AND payable_multiplier_bp = 10000 - discount_bps
         )
@@ -685,7 +685,10 @@ CREATE TABLE IF NOT EXISTS pricing_admission_snapshots (
                     pricing_mode = 'discount'
                     AND rule_origin = 'managed'
                     AND discount_bps IS NOT NULL
-                    AND discount_bps BETWEEN 0 AND 9500
+                    AND (
+                        discount_bps BETWEEN 0 AND 9500
+                        OR (account_class = 'service' AND discount_bps BETWEEN 0 AND 10000)
+                    )
                     AND discount_bps % 100 = 0
                     AND payable_multiplier_bp = 10000 - discount_bps
                     AND track_eligible = 0
@@ -745,6 +748,43 @@ BEFORE UPDATE ON pricing_admission_snapshots
 FOR EACH ROW
 BEGIN
     SELECT RAISE(ABORT, 'pricing admission snapshots are immutable');
+END;
+-- Service meter-only lane: a managed discount above 9500 bps (payable 0) is valid only under a
+-- service-class parent policy; every other class keeps the engine's 9500 bps cap. Mirrors the
+-- PostgreSQL account_policy_rules_service_meter_only trigger from migration 0040.
+CREATE TRIGGER IF NOT EXISTS account_policy_rules_service_meter_only_insert
+BEFORE INSERT ON account_policy_rules
+FOR EACH ROW
+WHEN NEW.pricing_mode = 'discount'
+  AND NEW.rule_origin = 'managed'
+  AND NEW.discount_bps IS NOT NULL
+  AND NEW.discount_bps > 9500
+  AND NOT EXISTS (
+      SELECT 1
+      FROM account_policy_versions
+      WHERE account_id = NEW.account_id
+        AND effective_version = NEW.effective_version
+        AND account_class = 'service'
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'payable-zero managed discount rules are reserved for service policies');
+END;
+CREATE TRIGGER IF NOT EXISTS account_policy_rules_service_meter_only_update
+BEFORE UPDATE ON account_policy_rules
+FOR EACH ROW
+WHEN NEW.pricing_mode = 'discount'
+  AND NEW.rule_origin = 'managed'
+  AND NEW.discount_bps IS NOT NULL
+  AND NEW.discount_bps > 9500
+  AND NOT EXISTS (
+      SELECT 1
+      FROM account_policy_versions
+      WHERE account_id = NEW.account_id
+        AND effective_version = NEW.effective_version
+        AND account_class = 'service'
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'payable-zero managed discount rules are reserved for service policies');
 END;
 
 CREATE UNIQUE INDEX IF NOT EXISTS pricing_admission_snapshots_shadow_actual_identity
@@ -2288,8 +2328,9 @@ fn install_sqlite_attribution_guards(conn: &Connection) -> Result<()> {
             AND NEW.pricing_mode NOT IN ('track', 'discount', 'legacy_scalar'))
         OR (NEW.rule_origin IS NOT NULL AND NEW.rule_origin NOT IN ('managed', 'legacy'))
         OR (NEW.discount_bps IS NOT NULL
-            AND (NEW.discount_bps < 0 OR NEW.discount_bps > 9500
-                 OR NEW.discount_bps % 100 <> 0))
+            AND (NEW.discount_bps < 0 OR NEW.discount_bps % 100 <> 0
+                 OR (NEW.discount_bps > 9500
+                     AND (NEW.discount_bps > 10000 OR NEW.account_class IS NOT 'service'))))
         OR (NEW.payable_multiplier_bp IS NOT NULL
             AND (NEW.payable_multiplier_bp < 0 OR NEW.payable_multiplier_bp > 10000))
         OR (NEW.track_eligible IS NOT NULL AND NEW.track_eligible NOT IN (0, 1))
@@ -4464,6 +4505,9 @@ pub fn sqlite_reserve_request_with_policy_snapshot_guarded_for_execution(
     } else {
         "any"
     };
+    // Service meter-only reserve holds no customer money: a zero/negative balance must not reject
+    // it. The flag is false for every customer class, keeping the balance gate byte-identical.
+    let meter_only = snapshot.is_service_meter_only();
     let buckets: Vec<(String, i64, i64)> = {
         let mut statement = tx.prepare(
             "SELECT bucket_id,version,balance_nano
@@ -4497,9 +4541,9 @@ pub fn sqlite_reserve_request_with_policy_snapshot_guarded_for_execution(
     let balance: i64 = match tx.query_row(
         "UPDATE accounts
             SET balance_nano=balance_nano-?1,reserved_nano=reserved_nano+?1
-          WHERE id=?2 AND status='active' AND balance_nano>=?1
+          WHERE id=?2 AND status='active' AND (balance_nano>=?1 OR ?3)
           RETURNING balance_nano",
-        rusqlite::params![hold, account_id],
+        rusqlite::params![hold, account_id, meter_only],
         |row| row.get(0),
     ) {
         Ok(balance) => balance,
@@ -4650,6 +4694,20 @@ struct PolicyFundingEvidence {
     bonus_funded_nano: i64,
     other_funded_nano: i64,
     allocation_json: String,
+}
+
+impl PolicyFundingEvidence {
+    /// Service meter-only settlement: no money moved at reserve, so there is no funding
+    /// allocation to terminalize and the paid/bonus/other split is exactly zero.
+    fn meter_only() -> Self {
+        Self {
+            allocations: Vec::new(),
+            paid_funded_nano: 0,
+            bonus_funded_nano: 0,
+            other_funded_nano: 0,
+            allocation_json: "[]".to_owned(),
+        }
+    }
 }
 
 fn sqlite_policy_funding_evidence(
@@ -5050,7 +5108,13 @@ fn sqlite_enqueue_settlement(
         }
     }
     if let Some(snapshot) = policy_snapshot.as_ref() {
-        let funding = sqlite_policy_funding_evidence(&tx, request_id, stored_hold, actual)?;
+        // Service meter-only: no funding allocations exist for a zero hold; the outbox
+        // attribution records the exact zero paid/bonus/other split instead.
+        let funding = if snapshot.is_service_meter_only() {
+            PolicyFundingEvidence::meter_only()
+        } else {
+            sqlite_policy_funding_evidence(&tx, request_id, stored_hold, actual)?
+        };
         sqlite_write_policy_attribution(
             &tx,
             "billing_settlement_outbox",
@@ -5079,7 +5143,17 @@ fn sqlite_process_policy_settlement(
     update_outbox_attribution: bool,
 ) -> Result<i64> {
     validate_policy_settlement(snapshot, hold_nano, actual_nano, usage, disposition)?;
-    let funding = sqlite_policy_funding_evidence(conn, request_id, hold_nano, actual_nano)?;
+    // Service meter-only settlement carries no customer money: no funding allocations exist, no
+    // charge row is written, but the usage event and its policy attribution are fully recorded.
+    let meter_only = snapshot.is_service_meter_only();
+    if meter_only && (hold_nano != 0 || actual_nano != 0) {
+        anyhow::bail!("service meter-only settlement attempted a customer debit");
+    }
+    let funding = if meter_only {
+        PolicyFundingEvidence::meter_only()
+    } else {
+        sqlite_policy_funding_evidence(conn, request_id, hold_nano, actual_nano)?
+    };
     let released_total = hold_nano - actual_nano;
     let balance: i64 = conn
         .query_row(
@@ -5161,54 +5235,56 @@ fn sqlite_process_policy_settlement(
     }
 
     if let Some(usage) = usage {
-        let ledger_id: i64 = conn.query_row(
-            "INSERT INTO ledger(
+        if !meter_only {
+            let ledger_id: i64 = conn.query_row(
+                "INSERT INTO ledger(
                  account_id,key,kind,request_id,amount_nano,ref,balance_after_nano,ts,model,
                  provider,official_nano)
              VALUES(?1,?2,'charge',?3,?4,?5,?6,?7,NULLIF(?8,''),?9,?10)
              RETURNING id",
-            rusqlite::params![
-                account_id,
-                key,
+                rusqlite::params![
+                    account_id,
+                    key,
+                    request_id,
+                    actual_nano,
+                    reference,
+                    balance,
+                    timestamp,
+                    usage.model,
+                    usage.provider,
+                    usage.real_nano,
+                ],
+                |row| row.get(0),
+            )?;
+            sqlite_write_policy_attribution(
+                conn,
+                "ledger",
                 request_id,
-                actual_nano,
-                reference,
-                balance,
-                timestamp,
-                usage.model,
-                usage.provider,
-                usage.real_nano,
-            ],
-            |row| row.get(0),
-        )?;
-        sqlite_write_policy_attribution(
-            conn,
-            "ledger",
-            request_id,
-            snapshot,
-            Some(usage),
-            disposition,
-            &funding,
-        )?;
-        for allocation in funding
-            .allocations
-            .iter()
-            .filter(|allocation| allocation.charged_nano > 0)
-        {
-            conn.execute(
-                "INSERT INTO ledger_funding_allocations(
+                snapshot,
+                Some(usage),
+                disposition,
+                &funding,
+            )?;
+            for allocation in funding
+                .allocations
+                .iter()
+                .filter(|allocation| allocation.charged_nano > 0)
+            {
+                conn.execute(
+                    "INSERT INTO ledger_funding_allocations(
                      ledger_id,account_id,bucket_id,bucket_source_type,bucket_version,
                      direction,amount_nano)
                  VALUES(?1,?2,?3,?4,?5,'debit',?6)",
-                rusqlite::params![
-                    ledger_id,
-                    account_id,
-                    allocation.bucket_id,
-                    allocation.source_type,
-                    allocation.bucket_version,
-                    allocation.charged_nano,
-                ],
-            )?;
+                    rusqlite::params![
+                        ledger_id,
+                        account_id,
+                        allocation.bucket_id,
+                        allocation.source_type,
+                        allocation.bucket_version,
+                        allocation.charged_nano,
+                    ],
+                )?;
+            }
         }
         conn.execute(
             "INSERT INTO usage_events(

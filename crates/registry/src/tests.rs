@@ -4525,3 +4525,315 @@ fn strict_policy_reserve_settlement_and_topup_preserve_funding_identity() {
         0
     );
 }
+
+#[test]
+fn service_meter_only_strict_sqlite_lane_meters_without_a_charge_row() {
+    use crate::pricing::{
+        AccountClass, LegacyPremiumModifiers, PolicyAdmissionSnapshot,
+        PolicyAdmissionSnapshotInput, PolicyReserveOutcome, PolicyRuleScope, PricingMode,
+        RuleOrigin, SnapshotAnthropicInferenceGeo, SnapshotAnthropicSpeed, SnapshotProvider,
+    };
+
+    let c = db();
+    account_create(&c, "svc-meter", None, 5_000).unwrap();
+    account_create(&c, "svc-b2c", None, 5_000).unwrap();
+    c.execute_batch(
+        "INSERT INTO pricing_catalog_versions(
+             product_id,generation,schema_version,capability_generation,capability_digest,
+             content_digest,created_ts
+         ) VALUES('main',1,1,1,'capability','catalog-digest',1);
+         INSERT INTO pricing_catalog_entries(
+             product_id,generation,provider_id,canonical_model_id,enabled
+         ) VALUES('main',1,'anthropic','claude-test',1);
+         INSERT INTO pricing_catalog_heads(product_id,active_generation,updated_ts)
+         VALUES('main',1,1);
+         INSERT INTO provider_switch_versions(
+             generation,schema_version,capability_generation,capability_digest,
+             content_digest,created_ts
+         ) VALUES(1,1,1,'capability','switch-digest',1);
+         INSERT INTO provider_switch_entries(
+             generation,provider_id,scope_type,product_id,segment,catalog_generation,enabled
+         ) VALUES
+             (1,'anthropic','master','','',NULL,1),
+             (1,'anthropic','product','main','',1,1),
+             (1,'anthropic','segment','main','b2c',1,1);
+         INSERT INTO provider_switch_head(singleton,active_generation,updated_ts)
+         VALUES(1,1,1);
+         INSERT INTO account_policy_versions(
+             account_id,effective_version,policy_id,policy_version,source_policy_digest,
+             owner_type,owner_id,account_class,product_id,schema_version,catalog_generation,
+             switch_generation,content_digest,replacement_locked,created_ts
+         ) VALUES
+             ('svc-meter',1,'svc-policy',1,'svc-source','service','svc-meter','service',
+              'main',1,1,1,'svc-digest',0,1),
+             ('svc-b2c',1,'b2c-policy',1,'b2c-source','global_b2c','global','b2c',
+              'main',1,1,1,'b2c-digest',0,1);
+         INSERT INTO account_policy_rules(
+             account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
+             canonical_model_id,pricing_mode,rule_origin,discount_bps,payable_multiplier_bp,
+             track_eligible,retention_eligible,commission_eligible
+         ) VALUES
+             ('svc-meter',1,'svc-rule','svc-rule-digest','provider','anthropic',NULL,
+              'discount','managed',10000,0,0,0,0),
+             ('svc-b2c',1,'b2c-rule','b2c-rule-digest','provider','anthropic',NULL,
+              'track','managed',NULL,10000,1,1,0);
+         INSERT INTO account_policy_bindings(
+             account_id,product_id,account_class,active_effective_version,
+             policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
+         ) VALUES
+             ('svc-meter','main','service',1,'strict','strict','verified',1),
+             ('svc-b2c','main','b2c',1,'strict','strict','verified',1);",
+    )
+    .unwrap();
+    // The SQLite trigger mirrors the PostgreSQL service binding: a payable-0 managed rule under
+    // a customer-class policy cannot be inserted even below the engine writer.
+    assert!(c
+        .execute(
+            "INSERT INTO account_policy_rules(
+                 account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
+                 canonical_model_id,pricing_mode,rule_origin,discount_bps,payable_multiplier_bp,
+                 track_eligible,retention_eligible,commission_eligible
+             ) VALUES(
+                 'svc-b2c',1,'b2c-sneak','b2c-sneak-digest','provider','openai',NULL,
+                 'discount','managed',10000,0,0,0,0
+             )",
+            [],
+        )
+        .is_err());
+    for (key, account, digest) in [
+        ("svc-key", "svc-meter", "svc-digest"),
+        ("b2c-key", "svc-b2c", "b2c-digest"),
+    ] {
+        key_issue_with_policy_ack(
+            &c,
+            key,
+            account,
+            None,
+            None,
+            None,
+            Some(&KeyActivationPolicyAck {
+                effective_policy_version: 1,
+                policy_digest: digest.into(),
+            }),
+        )
+        .unwrap();
+    }
+    // A negative balance must not reject the meter-only lane; it never moves.
+    c.execute("UPDATE accounts SET balance_nano=-50 WHERE id='svc-meter'", [])
+        .unwrap();
+    c.execute("UPDATE accounts SET balance_nano=0 WHERE id='svc-b2c'", [])
+        .unwrap();
+
+    // Snapshot validation: payable-0 builds only for the service class; a customer class keeps
+    // the exact typed rejection, and a non-zero charged hold under a payable-0 rule is invalid.
+    let admission_ts = now();
+    let snapshot = |request_id: &str, account_class: AccountClass, charged: i64| {
+        PolicyAdmissionSnapshot::new(PolicyAdmissionSnapshotInput {
+            request_id: request_id.into(),
+            account_id: "svc-meter".into(),
+            provider: SnapshotProvider::Anthropic,
+            product_id: "main".into(),
+            account_class,
+            requested_model_id: "claude-test".into(),
+            canonical_model_id: "claude-test".into(),
+            alias_generation: 1,
+            rule_id: "svc-rule".into(),
+            rule_digest: "svc-rule-digest".into(),
+            rule_scope: PolicyRuleScope::Provider {
+                provider_id: "anthropic".into(),
+            },
+            pricing_mode: PricingMode::Discount,
+            rule_origin: RuleOrigin::Managed,
+            discount_bps: Some(10_000),
+            payable_multiplier_bp: 0,
+            policy_id: "svc-policy".into(),
+            policy_version: 1,
+            effective_policy_version: 1,
+            source_policy_digest: "svc-source".into(),
+            policy_digest: "svc-digest".into(),
+            policy_catalog_generation: 1,
+            policy_switch_generation: 1,
+            admission_catalog_generation: 1,
+            admission_catalog_digest: "catalog-digest".into(),
+            admission_switch_generation: 1,
+            admission_switch_digest: "switch-digest".into(),
+            runtime_manifest_generation: 1,
+            runtime_manifest_digest: "runtime-manifest".into(),
+            tariff_schedule_id: "anthropic/claude-test/v1".into(),
+            tariff_priced_ts: admission_ts,
+            admission_ts,
+            official_hold_nano: 100,
+            charged_hold_nano: charged,
+            track_eligible: false,
+            retention_eligible: false,
+            commission_eligible: false,
+            premium_modifiers: LegacyPremiumModifiers::AnthropicV1 {
+                speed: SnapshotAnthropicSpeed::Standard,
+                inference_geo: SnapshotAnthropicInferenceGeo::Global,
+                inference_geo_basis_points: 10_000,
+            },
+        })
+    };
+    assert!(snapshot("svc-rejected-b2c", AccountClass::B2c, 0).is_err());
+    assert!(snapshot("svc-rejected-b2b", AccountClass::B2b, 0).is_err());
+    assert!(snapshot("svc-rejected-openkeys", AccountClass::OpenKeys, 0).is_err());
+    assert!(snapshot("svc-rejected-sneak", AccountClass::Service, 1).is_err());
+    let meter_snapshot = snapshot("svc-request", AccountClass::Service, 0).unwrap();
+    assert!(meter_snapshot.is_service_meter_only());
+
+    // Reserve: zero hold admitted at a negative balance, no funding allocation, no money moved.
+    assert!(matches!(
+        sqlite_reserve_request_with_policy_snapshot(&c, "svc-key", 60, &meter_snapshot).unwrap(),
+        PolicyReserveOutcome::Inserted(_)
+    ));
+    let reserve_state: (i64, i64, i64, i64) = c
+        .query_row(
+            "SELECT
+                 (SELECT hold_nano FROM billing_reservations WHERE request_id='svc-request'),
+                 (SELECT balance_nano FROM accounts WHERE id='svc-meter'),
+                 (SELECT reserved_nano FROM accounts WHERE id='svc-meter'),
+                 (SELECT COUNT(*) FROM reservation_funding_allocations
+                   WHERE request_id='svc-request')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(reserve_state, (0, -50, 0, 0));
+
+    // Settlement: full official usage metered, charge exactly zero, NO ledger charge row, the
+    // usage event carries the immutable service/payable-0 attribution.
+    let usage = UsageEventInput {
+        model: "claude-test".into(),
+        provider: PROVIDER_ANTHROPIC.into(),
+        input_tokens: 1,
+        real_nano: 40,
+        charge_basis_nano: 40,
+        input_nano: 40,
+        priced_ts: admission_ts,
+        speed: "standard".into(),
+        inference_geo: "global".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        sqlite_settle_request(
+            &c,
+            "svc-request",
+            "svc-meter",
+            "svc-key",
+            0,
+            0,
+            Some("svc-settle"),
+            Some(&usage),
+        )
+        .unwrap(),
+        Some(-50)
+    );
+    let settled_state: (i64, i64, i64, i64, i64, i64, String) = c
+        .query_row(
+            "SELECT
+                 (SELECT balance_nano FROM accounts WHERE id='svc-meter'),
+                 (SELECT spent_nano FROM accounts WHERE id='svc-meter'),
+                 (SELECT COUNT(*) FROM ledger
+                   WHERE account_id='svc-meter' AND kind='charge'),
+                 (SELECT COUNT(*) FROM usage_events WHERE request_id='svc-request'),
+                 (SELECT charge_nano FROM usage_events WHERE request_id='svc-request'),
+                 (SELECT discount_bps FROM usage_events WHERE request_id='svc-request'),
+                 (SELECT account_class FROM usage_events WHERE request_id='svc-request')",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        settled_state,
+        (0 - 50, 0, 0, 1, 0, 10_000, "service".to_string())
+    );
+
+    // A payable-0 rule cannot sneak a positive charge: settlement recomputes from the pinned
+    // multiplier and rejects before any money mutation.
+    let sneak_snapshot = snapshot("svc-sneak-request", AccountClass::Service, 0).unwrap();
+    assert!(matches!(
+        sqlite_reserve_request_with_policy_snapshot(&c, "svc-key", 60, &sneak_snapshot).unwrap(),
+        PolicyReserveOutcome::Inserted(_)
+    ));
+    assert!(sqlite_settle_request(
+        &c,
+        "svc-sneak-request",
+        "svc-meter",
+        "svc-key",
+        0,
+        50,
+        Some("svc-sneak"),
+        Some(&usage),
+    )
+    .is_err());
+    let sneak_charges: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM ledger WHERE account_id='svc-meter' AND kind='charge'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(sneak_charges, 0);
+
+    // Customer classes are byte-identical: a zero-balance b2c strict reserve is still NotReserved.
+    let b2c_snapshot = PolicyAdmissionSnapshot::new(PolicyAdmissionSnapshotInput {
+        request_id: "svc-b2c-request".into(),
+        account_id: "svc-b2c".into(),
+        provider: SnapshotProvider::Anthropic,
+        product_id: "main".into(),
+        account_class: AccountClass::B2c,
+        requested_model_id: "claude-test".into(),
+        canonical_model_id: "claude-test".into(),
+        alias_generation: 1,
+        rule_id: "b2c-rule".into(),
+        rule_digest: "b2c-rule-digest".into(),
+        rule_scope: PolicyRuleScope::Provider {
+            provider_id: "anthropic".into(),
+        },
+        pricing_mode: PricingMode::Track,
+        rule_origin: RuleOrigin::Managed,
+        discount_bps: None,
+        payable_multiplier_bp: 10_000,
+        policy_id: "b2c-policy".into(),
+        policy_version: 1,
+        effective_policy_version: 1,
+        source_policy_digest: "b2c-source".into(),
+        policy_digest: "b2c-digest".into(),
+        policy_catalog_generation: 1,
+        policy_switch_generation: 1,
+        admission_catalog_generation: 1,
+        admission_catalog_digest: "catalog-digest".into(),
+        admission_switch_generation: 1,
+        admission_switch_digest: "switch-digest".into(),
+        runtime_manifest_generation: 1,
+        runtime_manifest_digest: "runtime-manifest".into(),
+        tariff_schedule_id: "anthropic/claude-test/v1".into(),
+        tariff_priced_ts: admission_ts,
+        admission_ts,
+        official_hold_nano: 100,
+        charged_hold_nano: 100,
+        track_eligible: true,
+        retention_eligible: true,
+        commission_eligible: false,
+        premium_modifiers: LegacyPremiumModifiers::AnthropicV1 {
+            speed: SnapshotAnthropicSpeed::Standard,
+            inference_geo: SnapshotAnthropicInferenceGeo::Global,
+            inference_geo_basis_points: 10_000,
+        },
+    })
+    .unwrap();
+    assert!(matches!(
+        sqlite_reserve_request_with_policy_snapshot(&c, "b2c-key", 60, &b2c_snapshot).unwrap(),
+        PolicyReserveOutcome::NotReserved
+    ));
+}

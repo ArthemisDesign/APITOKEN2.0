@@ -204,7 +204,18 @@ impl PreparedCodexLegacyQuote {
             metering::apply_multiplier(self.official_hold_nano as i128, self.payable_multiplier_bp)
                 .clamp(1, i64::MAX as i128) as i64;
         let charged_hold_nano = charged_hold_nano.min(available_nano.max(1));
+        self.build_quote(charged_hold_nano).map(Some)
+    }
 
+    /// The service meter-only strict lane: the same frozen official identity with an exactly zero
+    /// charged hold and no balance gate. Only a service-class payable-0 resolution may call it;
+    /// the legacy clamp-to-one above is the deliberate customer-class admission minimum and is
+    /// not reused here.
+    pub(super) fn quote_service_meter_only(&self) -> Result<CodexLegacyQuote> {
+        self.build_quote(0)
+    }
+
+    fn build_quote(&self, charged_hold_nano: i64) -> Result<CodexLegacyQuote> {
         let modifiers = LegacyPremiumModifiers::OpenAiV1 {
             service_tier: match self.identity.modifiers.service_tier {
                 CodexServiceTier::Standard => SnapshotOpenAiServiceTier::Standard,
@@ -238,10 +249,10 @@ impl PreparedCodexLegacyQuote {
         })
         .context("build validated OpenAI legacy admission snapshot")?;
 
-        Ok(Some(CodexLegacyQuote {
+        Ok(CodexLegacyQuote {
             snapshot,
             pin: self.pin.clone(),
-        }))
+        })
     }
 }
 

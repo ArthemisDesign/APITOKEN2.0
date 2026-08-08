@@ -284,6 +284,12 @@ impl PolicyAdmissionSnapshot {
         &self.snapshot_digest
     }
 
+    /// True for the service meter-only lane: a service-class admission priced at a zero customer
+    /// charge (payable 0). Usage is still fully metered; the ledger never gets a charge row.
+    pub fn is_service_meter_only(&self) -> bool {
+        service_meter_only_facts(self.account_class, self.payable_multiplier_bp)
+    }
+
     /// Apply the pinned policy multiplier with the same exact integer half-up rule used for the
     /// admission hold. Settlement callers use this instead of reconstructing money math.
     pub fn charge_for_official_nano(&self, official_nano: i64) -> Result<i64> {
@@ -443,6 +449,14 @@ pub(crate) enum PolicySnapshotLookup {
     Policy(Box<PolicyAdmissionSnapshot>),
 }
 
+fn service_meter_only_facts(account_class: AccountClass, payable_multiplier_bp: i64) -> bool {
+    account_class == AccountClass::Service && payable_multiplier_bp == 0
+}
+
+fn service_meter_only_input(input: &PolicyAdmissionSnapshotInput) -> bool {
+    service_meter_only_facts(input.account_class, input.payable_multiplier_bp)
+}
+
 fn validate_input(input: &PolicyAdmissionSnapshotInput) -> Result<()> {
     for (label, value) in [
         ("request id", input.request_id.as_str()),
@@ -500,12 +514,17 @@ fn validate_input(input: &PolicyAdmissionSnapshotInput) -> Result<()> {
         (PricingMode::Track, RuleOrigin::Managed, None)
             if input.track_eligible && input.retention_eligible => {}
         (PricingMode::Discount, RuleOrigin::Managed, Some(discount))
-            if (0..=9_500).contains(&discount)
-                && discount % 100 == 0
+            if discount % 100 == 0
                 && input.payable_multiplier_bp == 10_000 - discount
                 && !input.track_eligible
                 && !input.retention_eligible
-                && !input.commission_eligible => {}
+                && !input.commission_eligible
+                && if input.account_class == AccountClass::Service {
+                    // Service meter-only lane: a 100% discount (payable 0) is valid only here.
+                    (0..=10_000).contains(&discount)
+                } else {
+                    (0..=9_500).contains(&discount)
+                } => {}
         (PricingMode::Discount, RuleOrigin::Legacy, None)
             if (1..=10_000).contains(&input.payable_multiplier_bp)
                 && !input.track_eligible
@@ -522,7 +541,14 @@ fn validate_input(input: &PolicyAdmissionSnapshotInput) -> Result<()> {
     {
         bail!("invalid policy snapshot timestamps");
     }
-    if input.official_hold_nano <= 0 || input.charged_hold_nano <= 0 {
+    if service_meter_only_input(input) {
+        // A service meter-only admission carries no customer money: the charged hold is exactly
+        // zero while the official hold still meters the full upstream cost (and may itself be
+        // zero for a plane that cannot pre-price the request). Customer classes are untouched.
+        if input.official_hold_nano < 0 || input.charged_hold_nano != 0 {
+            bail!("service meter-only policy snapshot must have a zero charged hold");
+        }
+    } else if input.official_hold_nano <= 0 || input.charged_hold_nano <= 0 {
         bail!("strict policy snapshot holds must be positive");
     }
     let numerator = i128::from(input.official_hold_nano)

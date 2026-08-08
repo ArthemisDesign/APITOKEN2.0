@@ -227,13 +227,16 @@ close a provider, and a model without a runtime tariff fails closed at quote tim
 Service accounts have `billing_mode=meter_only`: all runtime-capable models are available, official
 usage and tariff lineage are preserved, but no balance reserve/debit is performed and a zero balance
 does not produce a 402. Restrictions of a specific domain live in that domain's code, not in the
-pricing policy. Service accounts deliberately stay on the release path in the release-v2 retirement
-(phases 2.1–2.2): the engine has no meter-only lane outside release-v2 — a rule-free strict policy admits
-nothing, managed discounts cap at 9500 bps so payable 0 is impossible, the legacy scalar lane cannot
-express meter-only and rejects zero-balance accounts, and an uncovered non-opted-out account is not
-served at all — so `ensureServicePricingReleaseProvisioningV2` keeps completing their exact
-`meter_only` policy/extension until an engine meter-only lane exists (phase 3); the phase 2.2
-backfill deliberately excludes them (`docs/ops/PRICING_RELEASE_BACKFILL.md`).
+pricing policy. The engine meter-only strict lane now exists (phase 3, migration 0040): a
+service-class strict policy may carry managed discount rules with `payable_multiplier_bp=0` —
+engine validation admits payable 0 for `account_class='service'` only, the strict reserve holds
+exactly zero, settlement meters full official usage with no ledger charge row, and the balance
+gate never rejects the account. Service accounts therefore migrate to the direct strict path
+through the same `POST /admin/pricing/v2/opt-out` guard as every other class once their strict
+policy is armed, and `ensureServicePricingReleaseProvisioningV2` keeps their exact `meter_only`
+release policy/extension until that migration runs (`docs/ops/PRICING_RELEASE_BACKFILL.md`; the
+engine's public image smoke reader keeps reading the release assignment while they stay on
+release).
 
 ## Referral commission
 

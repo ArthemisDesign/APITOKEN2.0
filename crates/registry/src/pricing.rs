@@ -1060,7 +1060,15 @@ pub fn validate_account_policy(
                 let Some(discount_bps) = rule.discount_bps else {
                     bail!("managed discount rule requires discount basis points");
                 };
-                if !(0..=9_500).contains(&discount_bps)
+                // The service class is the engine's meter-only lane: a 100% discount (payable 0)
+                // prices the request at zero customer charge while usage stays fully metered.
+                // Every customer class keeps the 9500 bps cap and the same typed rejection.
+                let max_discount_bps = if spec.owner_type == PolicyOwnerType::Service {
+                    10_000
+                } else {
+                    9_500
+                };
+                if !(0..=max_discount_bps).contains(&discount_bps)
                     || discount_bps % 100 != 0
                     || rule.payable_multiplier_bp != 10_000 - discount_bps
                     || rule.track_eligible

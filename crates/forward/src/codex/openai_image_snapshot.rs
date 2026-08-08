@@ -124,6 +124,49 @@ pub(super) fn openai_image_quote(
         input.available_nano > 0,
         "OpenAI image quote requires positive available balance"
     );
+    let charged_hold_nano =
+        metering::apply_multiplier(i128::from(input_official_hold(&input)?), input.payable_multiplier_bp)
+            .clamp(1, i128::from(i64::MAX)) as i64;
+    if charged_hold_nano > input.available_nano {
+        return Ok(None);
+    }
+    build_openai_image_quote(input, charged_hold_nano).map(Some)
+}
+
+/// The service meter-only strict lane: the same official identity with an exactly zero charged
+/// hold and no balance precondition. Only a service-class payable-0 resolution may call it; the
+/// customer-class clamp-to-one minimum above is deliberate and is not reused here.
+pub(super) fn openai_image_service_meter_only_quote(
+    input: OpenAiImageQuoteInput,
+) -> Result<OpenAiImageQuote> {
+    build_openai_image_quote(input, 0)
+}
+
+fn input_official_hold(input: &OpenAiImageQuoteInput) -> Result<i64> {
+    let tariff = metering::openai_image_tariff(&input.requested_model_id)
+        .map_err(|_| anyhow::anyhow!("unsupported OpenAI image model identity"))?;
+    let resolved = tariff_book::reserve_base(
+        &tariff_book::snapshot(),
+        metering::openai_image_tariff_family(),
+        input.quote_ts,
+        tariff.prices,
+        tariff_book::as_openai_image,
+    );
+    Ok(input.operation.official_hold_nano(&resolved.prices))
+}
+
+fn build_openai_image_quote(
+    input: OpenAiImageQuoteInput,
+    charged_hold_nano: i64,
+) -> Result<OpenAiImageQuote> {
+    ensure!(
+        input.quote_ts > 0,
+        "OpenAI image quote timestamp must be positive"
+    );
+    ensure!(
+        (0..=10_000).contains(&input.payable_multiplier_bp),
+        "OpenAI image multiplier is outside the snapshot contract"
+    );
     let tariff = metering::openai_image_tariff(&input.requested_model_id)
         .map_err(|_| anyhow::anyhow!("unsupported OpenAI image model identity"))?;
     let resolved = tariff_book::reserve_base(
@@ -134,12 +177,6 @@ pub(super) fn openai_image_quote(
         tariff_book::as_openai_image,
     );
     let official_hold_nano = input.operation.official_hold_nano(&resolved.prices);
-    let charged_hold_nano =
-        metering::apply_multiplier(i128::from(official_hold_nano), input.payable_multiplier_bp)
-            .clamp(1, i128::from(i64::MAX)) as i64;
-    if charged_hold_nano > input.available_nano {
-        return Ok(None);
-    }
     let tariff_schedule_id = resolved
         .pin
         .as_ref()
@@ -167,10 +204,10 @@ pub(super) fn openai_image_quote(
         },
     })
     .context("build OpenAI image admission snapshot")?;
-    Ok(Some(OpenAiImageQuote {
+    Ok(OpenAiImageQuote {
         snapshot,
         pin: resolved.pin,
-    }))
+    })
 }
 
 #[cfg(test)]

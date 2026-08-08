@@ -808,6 +808,15 @@ runs on the billing single writer in one transaction:
   and the account's requests fall through to the strict-policy/legacy reserve paths while the
   release head keeps serving every other account.
 
+Service accounts migrate through the same guard unchanged: once their service-class strict policy
+carries managed discount rules with `payable_multiplier_bp=0` (the meter-only strict lane,
+migration 0040 — engine validation admits payable 0 only for `account_class='service'`), a
+`strict/strict/verified` service binding with an ACK'd key proves the live strict path. After the
+opt-out the strict reserve holds exactly zero for such a rule, settlement meters full official
+usage into `usage_events` with the immutable policy attribution and creates NO ledger charge row,
+and the balance gate never rejects the account — the strict-path equivalent of release
+`meter_only`.
+
 In-flight release-v2 reservations of the account are unaffected and settle exactly once from
 their immutable reserve-time snapshots (settlement is dispatched by the snapshot, never by the
 marker); migration 0016's `account_policy_bindings_strict_state` trigger independently forbids

@@ -1,7 +1,8 @@
 //! Shared customer admission and exact API-equivalent settlement for Codex turns.
 
 use super::openai_image_snapshot::{
-    openai_image_quote, OpenAiImageOperation, OpenAiImageQuoteInput,
+    openai_image_quote, openai_image_service_meter_only_quote, OpenAiImageOperation,
+    OpenAiImageQuoteInput,
 };
 use super::openai_snapshot::{prepare_codex_legacy_quote, CodexLegacyQuoteInput};
 use super::{CodexModel, CodexUsage};
@@ -345,7 +346,7 @@ async fn reserve_openai_image_metered(
             }
         }
 
-        if available_nano <= 0 {
+        if available_nano <= 0 && !strict_policy {
             return Err(AdmissionError::LowBalance);
         }
         if strict_policy {
@@ -359,6 +360,11 @@ async fn reserve_openai_image_metered(
                     );
                     AdmissionError::Unavailable
                 })?;
+            // Customer classes keep the balance-first rejection order; only a service-class
+            // binding (the meter-only lane) may quote with a zero/negative balance.
+            if available_nano <= 0 && !crate::pricing::bundle_binds_service_class(&bundle) {
+                return Err(AdmissionError::LowBalance);
+            }
             let resolved = match crate::pricing::resolve_pricing(
                 &bundle,
                 &PricingResolutionRequest {
@@ -382,11 +388,13 @@ async fn reserve_openai_image_metered(
                 PricingMode::Track => track_available_nano.unwrap_or(0),
                 PricingMode::Discount => paid_available_nano.unwrap_or(0),
             };
-            if strict_available <= 0 {
+            // The service meter-only lane (service class + payable 0) holds and charges zero:
+            // the balance gate must not reject it. Customer classes are rejected as before.
+            if strict_available <= 0 && !resolved.is_service_meter_only() {
                 return Err(AdmissionError::LowBalance);
             }
             let quote_ts = pool::now();
-            let quote = openai_image_quote(OpenAiImageQuoteInput {
+            let quote_input = OpenAiImageQuoteInput {
                 request_id: typed_request_id.clone(),
                 account_id: account_id.to_owned(),
                 requested_model_id: requested_model_id.to_owned(),
@@ -394,12 +402,26 @@ async fn reserve_openai_image_metered(
                 payable_multiplier_bp: resolved.rule.payable_multiplier_bp,
                 operation,
                 available_nano: strict_available,
-            })
-            .map_err(|error| {
-                elog::error("codex-billing", format!("strict OpenAI image quote failed: {error:#}"));
-                AdmissionError::Unavailable
-            })?
-            .ok_or(AdmissionError::LowBalance)?;
+            };
+            let quote = if resolved.is_service_meter_only() {
+                openai_image_service_meter_only_quote(quote_input).map_err(|error| {
+                    elog::error(
+                        "codex-billing",
+                        format!("strict OpenAI image meter-only quote failed: {error:#}"),
+                    );
+                    AdmissionError::Unavailable
+                })?
+            } else {
+                openai_image_quote(quote_input)
+                    .map_err(|error| {
+                        elog::error(
+                            "codex-billing",
+                            format!("strict OpenAI image quote failed: {error:#}"),
+                        );
+                        AdmissionError::Unavailable
+                    })?
+                    .ok_or(AdmissionError::LowBalance)?
+            };
             let pinned_tariff = quote.pinned_tariff();
             let policy =
                 build_policy_admission_snapshot(account_id, resolved.clone(), quote.into_snapshot())
@@ -579,7 +601,7 @@ async fn reserve_codex_metered(
             );
             return Err(AdmissionError::Unavailable);
         }
-        if available_nano <= 0 {
+        if available_nano <= 0 && !strict_policy {
             return Err(AdmissionError::LowBalance);
         }
 
@@ -1003,6 +1025,15 @@ async fn reserve_codex_strict(
             );
             AdmissionError::Unavailable
         })?;
+    // Customer classes keep the balance-first rejection order (the pre-strict gate rejects a
+    // non-positive balance before any policy read). Only a service-class binding — the
+    // meter-only lane — may resolve and quote with a zero/negative balance.
+    if !crate::pricing::bundle_binds_service_class(&bundle)
+        && paid_available_nano.unwrap_or(0) <= 0
+        && track_available_nano.unwrap_or(0) <= 0
+    {
+        return Err(AdmissionError::LowBalance);
+    }
     let manifest = RuntimePricingManifest::from_evidence(&app.pricing_manifest);
     let resolved = match crate::pricing::resolve_pricing(
         &bundle,
@@ -1035,7 +1066,9 @@ async fn reserve_codex_strict(
         PricingMode::Track => track_available_nano.unwrap_or(0),
         PricingMode::Discount => paid_available_nano.unwrap_or(0),
     };
-    if available_nano <= 0 {
+    // The service meter-only lane (service class + payable 0) holds and charges zero: the
+    // balance gate must not reject it. Customer classes are rejected exactly as before.
+    if available_nano <= 0 && !resolved.is_service_meter_only() {
         app.metrics.strict_pricing_rejected(
             StrictPricingProvider::OpenAi,
             StrictPricingRejectionReason::LowBalance,
@@ -1091,22 +1124,44 @@ async fn reserve_codex_strict(
             return Err(AdmissionError::Unavailable);
         }
     };
-    let quote = match prepared.quote(available_nano) {
-        Ok(Some(quote)) => quote,
-        Ok(None) => {
-            app.metrics.strict_pricing_rejected(
-                StrictPricingProvider::OpenAi,
-                StrictPricingRejectionReason::LowBalance,
-            );
-            return Err(AdmissionError::LowBalance);
+    let quote = if resolved.is_service_meter_only() {
+        // Meter-only: the official identity is quoted in full, the charged hold is exactly zero
+        // and no balance cap applies (the lane carries no customer money).
+        match prepared.quote_service_meter_only() {
+            Ok(quote) => quote,
+            Err(error) => {
+                elog::error(
+                    "codex-billing",
+                    format!("strict OpenAI meter-only quote failed: {error:#}"),
+                );
+                app.metrics.strict_pricing_rejected(
+                    StrictPricingProvider::OpenAi,
+                    StrictPricingRejectionReason::QuoteInvariant,
+                );
+                return Err(AdmissionError::Unavailable);
+            }
         }
-        Err(error) => {
-            elog::error("codex-billing", format!("strict OpenAI balance quote failed: {error:#}"));
-            app.metrics.strict_pricing_rejected(
-                StrictPricingProvider::OpenAi,
-                StrictPricingRejectionReason::QuoteInvariant,
-            );
-            return Err(AdmissionError::Unavailable);
+    } else {
+        match prepared.quote(available_nano) {
+            Ok(Some(quote)) => quote,
+            Ok(None) => {
+                app.metrics.strict_pricing_rejected(
+                    StrictPricingProvider::OpenAi,
+                    StrictPricingRejectionReason::LowBalance,
+                );
+                return Err(AdmissionError::LowBalance);
+            }
+            Err(error) => {
+                elog::error(
+                    "codex-billing",
+                    format!("strict OpenAI balance quote failed: {error:#}"),
+                );
+                app.metrics.strict_pricing_rejected(
+                    StrictPricingProvider::OpenAi,
+                    StrictPricingRejectionReason::QuoteInvariant,
+                );
+                return Err(AdmissionError::Unavailable);
+            }
         }
     };
     let hold = quote.snapshot().charged_hold_nano();

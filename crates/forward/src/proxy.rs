@@ -1658,7 +1658,7 @@ pub async fn forward(
                 );
             }
         }
-        if reserved_pair.is_none() && bal <= 0 {
+        if reserved_pair.is_none() && bal <= 0 && !*strict_policy {
             return local_err(LocalErr::LowBalance, None);
         }
         if reserved_pair.is_none() {
@@ -1712,6 +1712,12 @@ pub async fn forward(
                     }
                 };
                 let manifest = RuntimePricingManifest::from_evidence(&app.pricing_manifest);
+                // Customer classes keep the exact pre-quote balance-first rejection (no strict
+                // metric, same 402). Only a service-class binding — the meter-only lane — may
+                // quote with a zero/negative balance; its payable-0 rule carries no money.
+                if bal <= 0 && !crate::pricing::bundle_binds_service_class(&bundle) {
+                    return local_err(LocalErr::LowBalance, None);
+                }
                 let resolved = match crate::pricing::resolve_pricing(
                     &bundle,
                     &PricingResolutionRequest {
@@ -1744,7 +1750,9 @@ pub async fn forward(
                     PricingMode::Track => track_available_nano.unwrap_or(0),
                     PricingMode::Discount => paid_available_nano.unwrap_or(0),
                 };
-                if current_balance <= 0 {
+                // The service meter-only lane (service class + payable 0) holds and charges zero:
+                // the balance gate must not reject it. Customer classes are rejected as before.
+                if current_balance <= 0 && !resolved.is_service_meter_only() {
                     app.metrics.strict_pricing_rejected(
                         StrictPricingProvider::Anthropic,
                         StrictPricingRejectionReason::LowBalance,

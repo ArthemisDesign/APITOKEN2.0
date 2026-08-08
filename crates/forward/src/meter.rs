@@ -608,7 +608,15 @@ impl TeeMeter {
             let charge_i64 = computed_charge.clamp(0, charge_ceiling) as i64;
             // Разбивка токенов/модели для клиентского дашборда — пишется рядом с charge (аналитика).
             // Только при авторитетном usage; C8-preserved hold не изображаем как токеновое событие.
-            let usage_event = if charge_i64 > 0 && real > 0 {
+            // The service meter-only strict lane charges exactly zero but must still meter the
+            // turn: without the usage event the registry strict settlement would reject the
+            // outbox row (a usage-less settle is only a cancel/full-hold recovery).
+            let meter_only_strict = b.mult_bp == 0
+                && matches!(
+                    b.settlement_pricing,
+                    AnthropicSettlementPricing::LegacyStrict
+                );
+            let usage_event = if (charge_i64 > 0 || meter_only_strict) && real > 0 {
                 Some(registry::UsageEventInput {
                     model: price_model.to_string(),
                     provider: registry::PROVIDER_ANTHROPIC.to_string(),

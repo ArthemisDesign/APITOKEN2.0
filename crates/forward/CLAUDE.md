@@ -263,6 +263,22 @@ commands are deleted with the retired release advance: head 55 is the final pric
 caller remained, and data-plane readers never took the release control lock anyway. The
 compile-fixed runtime manifest is still attached only by `crates/server`, never by an HTTP caller.
 
+**Service meter-only strict lane:** engine validation admits managed discount rules with
+`payable_multiplier_bp=0` (discount 10000 bps) only for `account_class='service'` policies
+(registry contract — `crates/registry/CLAUDE.md`). `build_policy_admission_snapshot` still rejects
+a payable-0 resolution for every customer class and builds the immutable snapshot with an exactly
+zero charged hold for the service lane (`ResolvedPricingRule::is_service_meter_only`). The
+Anthropic (`proxy.rs`), Codex chat/responses (`codex/billing.rs`) and OpenAI image admission paths
+consult the bundle's class (`bundle_binds_service_class`) before resolution, so customer classes
+keep their exact balance-first 402 ordering (same body, no strict metric), and skip the
+post-resolution balance gate only for a service payable-0 rule. Codex/image quotes use the
+dedicated `quote_service_meter_only`/`openai_image_service_meter_only_quote` constructors (zero
+charged hold, no balance cap); the deliberate customer-class clamp-to-one admission minimum is
+unchanged. Anthropic settlement attaches the usage event even at charge 0 for this lane
+(`meter_only_strict` in `meter.rs`) — Codex/image settlement already attaches at `real>0`; strict
+Gemini stays forbidden. Reserve holds nothing and registry settlement writes the usage event with
+no ledger charge row: the balance gate never rejects a meter-only request and money never moves.
+
 The read-only router policy preflight of phase 6.4a reuses the public `resolve_pricing` and
 `RuntimePricingManifest::from_evidence` through `crates/server` composition: the same customer key and one
 coherent bundle filter the bounded catalog chain before the first router attempt. This caller never builds a

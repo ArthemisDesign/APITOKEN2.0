@@ -509,7 +509,9 @@ pub(crate) fn reserve_funding_v2(
     } else {
         head.balance_nano
     };
-    if available_floor < hold_nano {
+    // A zero hold (the service meter-only strict lane) needs no coverage: even a negative
+    // generation balance cannot be exceeded by holding nothing. Positive holds are unchanged.
+    if hold_nano > 0 && available_floor < hold_nano {
         bail!("pre-cutover funding v2 generation cannot cover the hold");
     }
     let lots: Vec<FundingLotV2> = tx

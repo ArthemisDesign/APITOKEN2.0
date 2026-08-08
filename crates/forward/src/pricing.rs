@@ -195,6 +195,25 @@ pub struct ResolvedPricingRule {
     pub rule: AccountPolicyRuleSpec,
 }
 
+impl ResolvedPricingRule {
+    /// The service meter-only lane: a service-class rule priced at a zero customer charge.
+    /// Reserve holds nothing, settlement meters usage without a charge row, and the balance
+    /// gates must not reject the request. False for every customer class.
+    pub fn is_service_meter_only(&self) -> bool {
+        self.account_class == AccountClass::Service && self.rule.payable_multiplier_bp == 0
+    }
+}
+
+/// True when the bundle's active policy binds the account to the service class. Balance gates
+/// consult this before resolution so customer classes keep their balance-first rejection order.
+pub(crate) fn bundle_binds_service_class(bundle: &PricingReadBundle) -> bool {
+    matches!(
+        &bundle.policy,
+        PricingPolicySnapshot::Active(active)
+            if active.policy.account_class == AccountClass::Service
+    )
+}
+
 /// Convert one provider-canonical official quote into the immutable strict policy snapshot. The
 /// provider adapter remains the sole owner of tariff/model/modifier identity; this layer adds only
 /// the already-resolved policy, lineage, eligibility and runtime-manifest facts.
@@ -223,9 +242,9 @@ pub(crate) fn build_policy_admission_snapshot(
     {
         bail!("provider quote identity differs from the strict pricing resolution");
     }
-    if resolved.rule.payable_multiplier_bp == 0 {
+    if resolved.rule.payable_multiplier_bp == 0 && !resolved.is_service_meter_only() {
         bail!(
-            "zero-charge strict admission is unsupported until it has an explicit funding contract"
+            "zero-charge strict admission is reserved for the service meter-only lane"
         );
     }
 
@@ -2027,53 +2046,106 @@ mod tests {
     }
 
     #[test]
-    fn strict_snapshot_builder_rejects_zero_charge_without_inventing_funding_identity() {
+    fn strict_snapshot_builder_binds_zero_charge_to_the_service_meter_only_lane() {
         let mut bundle = bundle();
         let PricingPolicySnapshot::Active(active) = &mut bundle.policy else {
             unreachable!()
         };
         active.binding.policy_enforcement = PolicyEnforcement::Strict;
         active.binding.funding_enforcement = FundingEnforcement::Strict;
-        let PricingResolution::Resolved(mut resolved) =
+        let quote = |charged_hold_nano: i64| {
+            LegacyScalarAdmissionSnapshot::new(
+                registry::pricing::LegacyScalarAdmissionSnapshotInput {
+                    request_id: "00000000-0000-4000-8000-000000000001".into(),
+                    account_id: "acct".into(),
+                    provider: registry::pricing::SnapshotProvider::OpenAi,
+                    requested_model_id: "gpt-5.6-sol".into(),
+                    canonical_model_id: "gpt-5.6-sol".into(),
+                    alias_generation: 1,
+                    tariff_schedule_id: "openai/gpt-5.6-sol/test/v1".into(),
+                    tariff_priced_ts: 1,
+                    admission_ts: 1,
+                    payable_multiplier_bp: 0,
+                    official_hold_nano: 100,
+                    charged_hold_nano,
+                    premium_modifiers: registry::pricing::LegacyPremiumModifiers::OpenAiV1 {
+                        service_tier: registry::pricing::SnapshotOpenAiServiceTier::Standard,
+                        service_tier_multiplier_basis_points: 10_000,
+                        context_tier: registry::pricing::SnapshotOpenAiContextTier::Standard,
+                        input_multiplier_basis_points: 10_000,
+                        output_multiplier_basis_points: 10_000,
+                    },
+                },
+            )
+            .unwrap()
+        };
+
+        // A customer-class zero charge stays a typed rejection, exactly as before the lane
+        // existed: payable 0 without a service class never builds a funding identity.
+        let PricingResolution::Resolved(mut customer_resolved) =
             resolve_pricing(&bundle, &request("openai", "gpt-5.6-sol"), &manifest())
         else {
             panic!("fixture must resolve")
         };
-        resolved.rule.pricing_mode = PricingMode::Track;
-        resolved.rule.rule_origin = RuleOrigin::Managed;
-        resolved.rule.discount_bps = None;
-        resolved.rule.payable_multiplier_bp = 0;
-        resolved.rule.track_eligible = true;
-        resolved.rule.retention_eligible = true;
-        resolved.rule.commission_eligible = false;
-        let quote = LegacyScalarAdmissionSnapshot::new(
-            registry::pricing::LegacyScalarAdmissionSnapshotInput {
-                request_id: "00000000-0000-4000-8000-000000000001".into(),
-                account_id: "acct".into(),
-                provider: registry::pricing::SnapshotProvider::OpenAi,
-                requested_model_id: "gpt-5.6-sol".into(),
-                canonical_model_id: "gpt-5.6-sol".into(),
-                alias_generation: 1,
-                tariff_schedule_id: "openai/gpt-5.6-sol/test/v1".into(),
-                tariff_priced_ts: 1,
-                admission_ts: 1,
-                payable_multiplier_bp: 0,
-                official_hold_nano: 100,
-                charged_hold_nano: 0,
-                premium_modifiers: registry::pricing::LegacyPremiumModifiers::OpenAiV1 {
-                    service_tier: registry::pricing::SnapshotOpenAiServiceTier::Standard,
-                    service_tier_multiplier_basis_points: 10_000,
-                    context_tier: registry::pricing::SnapshotOpenAiContextTier::Standard,
-                    input_multiplier_basis_points: 10_000,
-                    output_multiplier_basis_points: 10_000,
-                },
-            },
-        )
-        .unwrap();
-
-        let error = build_policy_admission_snapshot("acct", resolved, quote).unwrap_err();
+        customer_resolved.rule.pricing_mode = PricingMode::Track;
+        customer_resolved.rule.rule_origin = RuleOrigin::Managed;
+        customer_resolved.rule.discount_bps = None;
+        customer_resolved.rule.payable_multiplier_bp = 0;
+        customer_resolved.rule.track_eligible = true;
+        customer_resolved.rule.retention_eligible = true;
+        customer_resolved.rule.commission_eligible = false;
+        assert!(!customer_resolved.is_service_meter_only());
+        let error =
+            build_policy_admission_snapshot("acct", customer_resolved, quote(0)).unwrap_err();
         assert!(error
             .to_string()
-            .contains("zero-charge strict admission is unsupported"));
+            .contains("zero-charge strict admission is reserved for the service meter-only lane"));
+
+        // The service meter-only lane builds the same immutable snapshot with an exactly zero
+        // charged hold: usage is metered, no customer money is held.
+        let PricingResolution::Resolved(mut service_resolved) =
+            resolve_pricing(&bundle, &request("openai", "gpt-5.6-sol"), &manifest())
+        else {
+            panic!("fixture must resolve")
+        };
+        service_resolved.account_class = AccountClass::Service;
+        service_resolved.rule.pricing_mode = PricingMode::Discount;
+        service_resolved.rule.rule_origin = RuleOrigin::Managed;
+        service_resolved.rule.discount_bps = Some(10_000);
+        service_resolved.rule.payable_multiplier_bp = 0;
+        service_resolved.rule.track_eligible = false;
+        service_resolved.rule.retention_eligible = false;
+        service_resolved.rule.commission_eligible = false;
+        assert!(service_resolved.is_service_meter_only());
+        let snapshot = build_policy_admission_snapshot("acct", service_resolved, quote(0))
+            .expect("service meter-only admission snapshot is valid");
+        assert!(snapshot.is_service_meter_only());
+        assert_eq!(snapshot.charged_hold_nano(), 0);
+        assert_eq!(snapshot.official_hold_nano(), 100);
+        // A sneaked non-zero charge under a payable-0 rule cannot become a valid snapshot:
+        // the registry-side validation of the same contract is covered by the registry suites.
+        let sneaked = build_policy_admission_snapshot(
+            "acct",
+            service_resolved_for_sneak(&bundle),
+            quote(1),
+        );
+        assert!(sneaked.is_err());
+    }
+
+    fn service_resolved_for_sneak(bundle: &PricingReadBundle) -> ResolvedPricingRule {
+        let PricingResolution::Resolved(mut resolved) =
+            resolve_pricing(bundle, &request("openai", "gpt-5.6-sol"), &manifest())
+        else {
+            panic!("fixture must resolve")
+        };
+        resolved.account_class = AccountClass::Service;
+        resolved.rule.pricing_mode = PricingMode::Discount;
+        resolved.rule.rule_origin = RuleOrigin::Managed;
+        resolved.rule.discount_bps = Some(10_000);
+        resolved.rule.payable_multiplier_bp = 0;
+        resolved.rule.track_eligible = false;
+        resolved.rule.retention_eligible = false;
+        resolved.rule.commission_eligible = false;
+        resolved
     }
 }
