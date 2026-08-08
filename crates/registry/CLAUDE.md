@@ -386,6 +386,17 @@ side effect. `serve` may only perform the read-only schema verification before c
   strict-policy/legacy reserve paths while the head keeps serving everyone else. The column has
   no default and no constraint, so this SHA changes no behavior; the dependent dual-path resolver
   and opt-out writer ship in a separate SHA after a green migration/watchdog of this checkpoint.
+- **Service meter-only strict schema checkpoint:** migration `0040` expand-only admits a
+  payable-zero managed discount rule for the service class so service accounts (internal,
+  metered-but-never-charged) can migrate to the direct strict-policy path. Every durable surface
+  binds the allowance to the class: `account_policy_rules` keeps a row-level 0..10000 range with
+  a BEFORE trigger binding any discount above 9500 to a service parent policy;
+  `pricing_admission_snapshots` and the `settlement_outbox`/`usage_events` attribution ranges
+  admit >9500 only for `account_class='service'` rows (NOT VALID + VALIDATE, supersets); and
+  `assert_strict_reservation` permits zero funding allocations only for a zero-hold reservation
+  whose pinned snapshot is service/payable-0. No existing row, arm or semantic changes; the old
+  runtime neither reads nor writes the new allowance, and the dependent runtime ships in a
+  separate SHA after a green migration/watchdog of this checkpoint.
 - **Pricing release opt-out dual path:** the dependent runtime of the 0039 marker.
   `pricing_release_resolution_v2_in_transaction` answers `None` for an account with a non-NULL
   `pricing_release_opt_out_ts` (a primary-key read in the same transaction/snapshot as the
