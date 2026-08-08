@@ -108,6 +108,10 @@ fn make_router_with(
             host: "127.0.0.1".into(),
             port: 0,
             anthropic_origin: anthropic.into(),
+            // Dead by default: these fixtures count requests against the mock planes, and pointing
+            // the KIMI producer at the Anthropic mock would add one hit per aggregate to every
+            // such count. An absent optional plane is a supported state, so this stays honest.
+            kimi_origin: "http://127.0.0.1:1".into(),
             openai_origin: openai.into(),
             gemini_origin: gemini.into(),
             fallback_enabled,
@@ -3781,6 +3785,13 @@ fn advertised_models_all_have_an_exact_tariff() {
             "openai" => {
                 metering::codex_prices_at(model_id, PRICED_AT).is_some()
                     || metering::openai_image_tariff(model_id).is_ok()
+            }
+            // Only a published subscription alias is admissible: the official Open Platform ids
+            // are tariff keys the gateway refuses on the wire, so resolving one here would let a
+            // model into the catalog that admission then rejects.
+            "kimi" => {
+                metering::kimi_resolve_subscription_model(model_id).is_some()
+                    && metering::kimi_matched_tariff_at(model_id, PRICED_AT).is_some()
             }
             other => panic!("advertised model has an unknown provider namespace: {other}"),
         };

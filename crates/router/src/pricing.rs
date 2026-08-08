@@ -399,6 +399,7 @@ mod tests {
             anthropic: "http://127.0.0.1:0",
             openai: &origin,
             gemini: "http://127.0.0.1:0",
+            kimi: "http://127.0.0.1:0",
         };
 
         let ids: Vec<_> = (0..257)

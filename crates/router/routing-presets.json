@@ -26,7 +26,13 @@
     { "id": "google/gemini-3.1-pro-preview", "price_rank": 65, "latency_rank": 40, "context_tokens": 1000000 },
     { "id": "google/gemini-3.1-flash-lite", "price_rank": 20, "latency_rank": 5, "context_tokens": 1000000 },
     { "id": "google/gemini-2.5-flash", "price_rank": 25, "latency_rank": 15, "context_tokens": 1000000 },
-    { "id": "google/gemini-2.5-flash-lite", "price_rank": 10, "latency_rank": 5, "context_tokens": 1000000 }
+    { "id": "google/gemini-2.5-flash-lite", "price_rank": 10, "latency_rank": 5, "context_tokens": 1000000 },
+
+    { "id": "kimi/k3", "price_rank": 30, "latency_rank": 30, "context_tokens": 1000000 },
+    { "id": "kimi/k3[1m]", "price_rank": 30, "latency_rank": 30, "context_tokens": 1000000 },
+    { "id": "kimi/k3-256k", "price_rank": 30, "latency_rank": 25, "context_tokens": 256000 },
+    { "id": "kimi/kimi-for-coding", "price_rank": 20, "latency_rank": 25, "context_tokens": 256000 },
+    { "id": "kimi/kimi-for-coding-highspeed", "price_rank": 25, "latency_rank": 10, "context_tokens": 256000 }
   ],
   "presets": [
     {

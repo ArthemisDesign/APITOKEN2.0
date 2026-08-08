@@ -27,6 +27,7 @@ pub enum ProviderNamespace {
     Anthropic,
     OpenAi,
     Google,
+    Kimi,
 }
 
 impl ProviderNamespace {
@@ -35,6 +36,7 @@ impl ProviderNamespace {
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
             Self::Google => "google",
+            Self::Kimi => "kimi",
         }
     }
 
@@ -43,6 +45,11 @@ impl ProviderNamespace {
             Self::Anthropic => Lane::Anthropic,
             Self::OpenAi => Lane::OpenAi,
             Self::Google => Lane::Gemini,
+            // KIMI speaks the Anthropic Messages protocol, and `Lane` selects the wire contract —
+            // envelope shape, path prefixes, SSE dictionary — not the provider. Its traffic
+            // therefore rides the Anthropic lane, whose slots compose the KIMI gateway. A separate
+            // lane would only duplicate the Anthropic envelope everywhere it is matched.
+            Self::Kimi => Lane::Anthropic,
         }
     }
 }

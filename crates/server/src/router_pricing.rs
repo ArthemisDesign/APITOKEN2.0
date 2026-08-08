@@ -121,7 +121,7 @@ fn validate(request: &PricingRequest) -> bool {
             && valid_id(&candidate.model_id)
             && matches!(
                 candidate.provider_id.as_str(),
-                "anthropic" | "openai" | "google"
+                "anthropic" | "openai" | "google" | "kimi"
             )
             && ids.insert(candidate.id.as_str())
     })
@@ -295,6 +295,29 @@ fn gemini_rate_card(prices: GeminiPrices, long: bool) -> RawRateCard {
     }
 }
 
+/// Rate card of a KIMI subscription alias.
+///
+/// The four published legs map one to one: a cache hit is the read rate, a cache miss is plain
+/// input, and KIMI publishes no separate write rate — a write *is* a miss — so `cache_write`
+/// equals `input` rather than the zero a "no write class" reading would suggest. Reasoning tokens
+/// are a subset of output at the output rate and never form a fifth leg. There is no long-context
+/// tier: the 1M window is a different alias, not a different price, so quoting a threshold here
+/// would invent a step that settlement does not charge.
+fn kimi_pricing(canonical_model_id: &str, prices: metering::KimiPrices) -> BasePricing {
+    BasePricing {
+        canonical_model_id: canonical_model_id.to_owned(),
+        standard: RawRateCard {
+            input: prices.input,
+            output: prices.output,
+            cache_read: prices.cached_input,
+            cache_write: prices.cache_write,
+            cache_write_1h: None,
+        },
+        priority: None,
+        long_context: None,
+    }
+}
+
 fn gemini_pricing(model_id: &str, prices: GeminiPrices) -> BasePricing {
     let long_context = (prices.long_context_threshold != u64::MAX).then(|| RawContextTier {
         threshold_tokens: prices.long_context_threshold,
@@ -364,6 +387,23 @@ fn base_pricing(candidate: &Candidate, now: i64) -> Option<BasePricing> {
                 )
                 .prices;
                 gemini_pricing(&candidate.model_id, prices)
+            },
+        ),
+        // Only a published subscription alias is quotable. `kimi_matched_tariff_at` also answers
+        // for the official Open Platform ids, but those are tariff keys we never accept on the
+        // wire, so quoting one would advertise a model the plane refuses.
+        "kimi" => metering::kimi_resolve_subscription_model(&candidate.model_id).and_then(
+            |resolved| {
+                let (family, compiled) = metering::kimi_matched_tariff_at(&candidate.model_id, now)?;
+                let prices = forward::tariff_book::reserve_base(
+                    &forward::tariff_book::snapshot(),
+                    family,
+                    now,
+                    compiled,
+                    forward::tariff_book::as_kimi,
+                )
+                .prices;
+                Some(kimi_pricing(resolved.official_model, prices))
             },
         ),
         _ => None,
@@ -479,8 +519,11 @@ pub(crate) async fn pricing(
         .into_iter()
         .filter_map(|(candidate, base)| {
             // Strict Gemini admission is intentionally unavailable today; the catalog must not
-            // advertise a personalized rate for a model that this key cannot execute.
-            if candidate.provider_id == "google" {
+            // advertise a personalized rate for a model that this key cannot execute. KIMI is in
+            // the same position for a different reason: its gateway refuses a strict key outright
+            // (`kimi_strict_pricing_unavailable`) because the release catalog has no `kimi`
+            // provider yet, so a quote here would be an offer we cannot honour.
+            if candidate.provider_id == "google" || candidate.provider_id == "kimi" {
                 return None;
             }
             match resolve_pricing(
@@ -571,6 +614,46 @@ mod tests {
             model_id: "gpt-image-1".to_owned(),
         };
         assert!(base_pricing(&unknown, 0).is_none());
+    }
+
+    /// Only a subscription alias is quotable, and every leg is the audited KIMI card: a cache
+    /// write is a miss (never zero, as it would be for Gemini), and there is no long-context step
+    /// because the 1M window is a different alias rather than a different price.
+    #[test]
+    fn kimi_quotes_only_published_aliases_at_the_audited_card() {
+        const NOW: i64 = 1_788_220_800;
+        for alias in [
+            "kimi-for-coding",
+            "kimi-for-coding-highspeed",
+            "k3",
+            "k3[1m]",
+            "k3-256k",
+        ] {
+            let candidate = Candidate {
+                id: format!("kimi/{alias}"),
+                provider_id: "kimi".to_owned(),
+                model_id: alias.to_owned(),
+            };
+            let base = base_pricing(&candidate, NOW)
+                .unwrap_or_else(|| panic!("{alias} must resolve a rate card"));
+            let expected = metering::kimi_prices_for_served_model(alias, NOW).expect("priced");
+            assert_eq!(base.standard.input, expected.input, "{alias}");
+            assert_eq!(base.standard.output, expected.output, "{alias}");
+            assert_eq!(base.standard.cache_read, expected.cached_input, "{alias}");
+            assert_eq!(base.standard.cache_write, expected.input, "{alias}");
+            assert!(base.long_context.is_none() && base.priority.is_none(), "{alias}");
+        }
+
+        // The official Open Platform ids are tariff keys, not wire ids: `kimi_matched_tariff_at`
+        // answers for them, so quoting one would advertise a model the gateway refuses.
+        for official in ["kimi-k3", "kimi-k2.6", "kimi-k2.7-code"] {
+            let candidate = Candidate {
+                id: format!("kimi/{official}"),
+                provider_id: "kimi".to_owned(),
+                model_id: official.to_owned(),
+            };
+            assert!(base_pricing(&candidate, NOW).is_none(), "{official}");
+        }
     }
 
     #[test]

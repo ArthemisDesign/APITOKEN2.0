@@ -17,6 +17,7 @@ mod openai_image_public_smoke;
 mod openai_image_settlement_diagnostic;
 mod poller;
 mod router_auth;
+mod router_catalog;
 mod router_policy;
 mod router_pricing;
 mod tariff_admin;

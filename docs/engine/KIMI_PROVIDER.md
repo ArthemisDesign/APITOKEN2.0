@@ -10,21 +10,37 @@ Every claim below is labeled per the evidence hierarchy from §3.1: `official`, 
 
 ## 0. Scope and intentional limitations
 
-The KIMI plane is built **backend-only**: engine runtime, metering, calibration, Auth Bot,
-and the internal live-runner. The provider is **not published** to the public catalog, to the router's
-`/v1/models`, to commerce/OpenKeys pricing, to the site, or to client documentation. This is a
-deliberate product-owner decision: the integration is needed for internal tests and calibration
-runs, not for sale.
+The KIMI plane was built **backend-only**, and that scope was widened by the product owner on
+2026-08-08: the provider is now published to the unified **router** catalog under the `kimi/*`
+namespace. It remains unpublished on the marketing site. Commerce/OpenKeys pricing surfaces and
+client documentation are in progress and are tracked separately.
 
-- `decision` The provider stays behind a disabled switch; no public surface receives a KIMI row.
-  The `docs/CHANGE_CHECKLISTS.md` "new provider" checklist is applied partially, with the
-  publication items marked not applicable for this reason.
+- `decision` 2026-08-08 — publish through the router, not through the plane's own `/v1/models`.
+  `GET /v1/models` on the Anthropic plane is a byte-for-byte proxy of `api.anthropic.com`, and
+  KIMI rides that same plane because it speaks Anthropic Messages. Appending our aliases there
+  would break transparency for every client, including those who never asked for KIMI. Discovery
+  therefore goes through a new internal producer, `GET /internal/router/catalog/kimi`, and the
+  router treats KIMI as a fourth **catalog plane** over the existing Anthropic **lane**. See
+  "Catalog planes vs protocol lanes" in `docs/engine/UNIFIED_ROUTER.md`.
+- `decision` 2026-08-08 — advertise only the five subscription aliases. The official Open
+  Platform ids are tariff keys the gateway refuses on the wire, so publishing one would put a
+  model in the catalog that admission then rejects. `kimi-k2.6` is not advertised at all: no
+  alias reaches it.
+- `decision` The site keeps no KIMI row until the owner says otherwise.
 - `decision` This file is an internal engineering instruction (required by `AGENTS.md`,
   "Documentation is a living contract"), not a public storefront.
 
-Until publication happens, the GA criterion of §1 `PROVIDER_ONBOARDING.md` is **not claimed**. The
-terminal state of this work is a verified **preview**: runtime and calibration are proven on mock
-gates; live gates are executed separately on our own subscription.
+A key under **strict** policy still cannot use KIMI: the gateway refuses it outright
+(`kimi_strict_pricing_unavailable`) because the pricing release catalog has no `kimi` provider,
+and the router consequently quotes no `kimi/*` rate for such a key. This is the same position
+Gemini is in, and it is a known gap rather than a router defect. It does not block publication:
+since generation 55 was ratified as final, new models ship through the engine's
+`is_model_unpriced` → exact-legacy-tariff fallthrough plus a hot tariff seed, which is exactly
+the path KIMI already reserves on.
+
+Until the live matrix is executed, the GA criterion of §1 `PROVIDER_ONBOARDING.md` is **not
+claimed**. The terminal state of this work is a verified **preview**: runtime and calibration are
+proven on mock gates; live gates are executed separately on our own subscription.
 
 ## 1. Product / plan
 
@@ -484,9 +500,10 @@ only the corresponding live gates are blocked (`PROVIDER_ONBOARDING.md` §2).
 
 ## 7. Delivery status
 
-The current chain continues from `master` with producer-first checkpoints. The plane remains
-default-off and backend-only: no public surface contains a KIMI row. The server already composes
-the gateway, but production activation and live proofs are not yet claimed.
+The current chain continues from `master` with producer-first checkpoints. The plane is enabled on
+the Anthropic slots and published in the unified router catalog; the marketing site still contains
+no KIMI row. Production activation of the router entry and live proofs are claimed only where the
+table below says so.
 
 | Stage | Artifact | Status |
 |---|---|---|
@@ -508,10 +525,11 @@ the gateway, but production activation and live proofs are not yet claimed.
 | blue-green | `systemd/claude-api-kimi{,@}.service`, `deploy/**`, `observability/prometheus/prometheus.yml` | done: two slot units 8804/8805 + stable loopback origin 8803, capability marker, rollback branch stops all incarnations, scrape target `provider: kimi`, `ProviderMode::Kimi` with fail-closed `/v1/messages`; plane **enabled** by the reviewed argv pin `CLAUDE_API_KIMI_ENABLED=1` after live evidence 2026-08-04 |
 | safe live-runner | `tools/kimi_calibration/`, `docs/ops/KIMI_CALIBRATION.md` | done offline: dry-run by default, aggregate ceiling $0.0001, exact request-id attribution via admin-only headers, 43 offline tests; paid runs only with explicit permission |
 | live matrix on our subscription | — | Vivace subscription connected 2026-08-04; smoke (`/me`, `/usages`, one minimal generation with exact metering) passed; full matrix awaits budget permission and the weekly quota reset |
+| router publication | `crates/server/src/router_catalog.rs`, `crates/router/src/{catalog,policy,routing,presets}.rs`, `crates/router/routing-presets.json` | done: internal discovery producer, fourth optional catalog plane over the Anthropic lane, `kimi` arm in the router pricing producer, five aliases advertised |
 
 The next producer-first step is a controlled live run through the live matrix on the connected
-Vivace subscription (after its weekly quota resets and budget permission). Publication is not
-planned at all (see §0).
+Vivace subscription (after its weekly quota resets and budget permission), then the commerce/
+OpenKeys and client-documentation surfaces.
 
 ## 8. Sources
 

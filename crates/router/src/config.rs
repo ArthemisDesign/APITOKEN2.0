@@ -14,6 +14,9 @@ pub struct Config {
     pub openai_origin: String,
     /// Stable origin Gemini-плоскости.
     pub gemini_origin: String,
+    /// Origin, публикующий каталог KIMI. По умолчанию совпадает с Anthropic-плоскостью:
+    /// KIMI-шлюз скомпонован в тех же слотах и говорит на том же протоколе.
+    pub kimi_origin: String,
     /// Явный rollout-флаг advanced routing. По умолчанию выключен: `models`,
     /// `provider` и `preset/*` отклоняются до catalog/policy/plane work.
     pub fallback_enabled: bool,
@@ -36,12 +39,14 @@ fn parse_strict_bool(key: &str, value: Option<&str>, default: bool) -> anyhow::R
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
+        let anthropic_origin = env_or("CLAUDE_ROUTER_ANTHROPIC_ORIGIN", "http://127.0.0.1:8790");
         let cfg = Config {
             host: env_or("CLAUDE_ROUTER_HOST", "127.0.0.1"),
             port: env_or("CLAUDE_ROUTER_PORT", "8798")
                 .parse()
                 .map_err(|e| anyhow::anyhow!("CLAUDE_ROUTER_PORT: {e}"))?,
-            anthropic_origin: env_or("CLAUDE_ROUTER_ANTHROPIC_ORIGIN", "http://127.0.0.1:8790"),
+            kimi_origin: env_or("CLAUDE_ROUTER_KIMI_ORIGIN", &anthropic_origin),
+            anthropic_origin,
             openai_origin: env_or("CLAUDE_ROUTER_OPENAI_ORIGIN", "http://127.0.0.1:8792"),
             gemini_origin: env_or("CLAUDE_ROUTER_GEMINI_ORIGIN", "http://127.0.0.1:8794"),
             fallback_enabled: parse_strict_bool(
@@ -56,6 +61,7 @@ impl Config {
             ("CLAUDE_ROUTER_ANTHROPIC_ORIGIN", &cfg.anthropic_origin),
             ("CLAUDE_ROUTER_OPENAI_ORIGIN", &cfg.openai_origin),
             ("CLAUDE_ROUTER_GEMINI_ORIGIN", &cfg.gemini_origin),
+            ("CLAUDE_ROUTER_KIMI_ORIGIN", &cfg.kimi_origin),
         ] {
             anyhow::ensure!(
                 origin.starts_with("http://") || origin.starts_with("https://"),

@@ -423,6 +423,7 @@ mod tests {
             anthropic: &first,
             openai: &second,
             gemini: "http://127.0.0.1:0",
+            kimi: &first,
         };
 
         let result = tokio::time::timeout(
@@ -449,6 +450,7 @@ mod tests {
             anthropic: "http://127.0.0.1:0",
             openai: &valid,
             gemini: "http://127.0.0.1:0",
+            kimi: "http://127.0.0.1:0",
         };
         assert!(startup_probe(&reqwest::Client::new(), &origins).await);
 
@@ -463,6 +465,7 @@ mod tests {
             anthropic: &malformed,
             openai: "http://127.0.0.1:0",
             gemini: "http://127.0.0.1:0",
+            kimi: &malformed,
         };
         assert!(!startup_probe(&reqwest::Client::new(), &origins).await);
     }

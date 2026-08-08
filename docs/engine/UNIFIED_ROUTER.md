@@ -471,7 +471,7 @@ migration is soft only, with no single "old shutdown" date:
 ## Models and catalog
 
 The unified catalog publishes namespaced IDs: `anthropic/claude-*`, `openai/gpt-*`,
-`google/gemini-*`. The namespace denotes the model family, not necessarily a single
+`google/gemini-*`, `kimi/*`. The namespace denotes the model family, not necessarily a single
 executor: when alternative backends of one model appear (Anthropic direct, Bedrock,
 Vertex), the route planner will be able to choose between them. A native ID is
 advertised as an alias only while it is globally unambiguous. If two planes publish
@@ -492,9 +492,36 @@ whole refresh malformed. An expired refresh has a separate per-plane singlefligh
 waiting callers use both the successful and the failed/oversized result of the same
 in-flight attempt, but the next independent request retries immediately with no
 negative cache/circuit breaker. The 30-second TTL is deterministically skewed to
-27/30/33 seconds for Anthropic/OpenAI/Gemini so that one warm aggregate does not
+27/30/33/36 seconds for Anthropic/OpenAI/Gemini/KIMI so that one warm aggregate does not
 create a synchronous refresh burst of all providers. An oversized/malformed producer
 keeps last-good and marks the namespace degraded.
+
+### Catalog planes vs protocol lanes
+
+A **lane** is a wire protocol — envelope shape, path prefixes, SSE dictionary — and there are
+exactly three. A **plane** is where a model list comes from, and there are four: KIMI needs its
+own even though it speaks Anthropic Messages and therefore dispatches over the Anthropic lane.
+The reason is the transparency invariant: `GET /v1/models` on the Anthropic plane is a
+byte-for-byte proxy of `api.anthropic.com`, so appending our KIMI aliases to it would let every
+client — including those who never asked for KIMI — tell our fleet from Anthropic's. Discovery
+therefore moves to an internal producer, `GET /internal/router/catalog/kimi`, published beside
+`/internal/router/catalog/pricing` on the same slot. The router reads it as the `kimi` plane and
+routes `kimi/*` over the Anthropic lane; `CLAUDE_ROUTER_KIMI_ORIGIN` defaults to the Anthropic
+origin because the gateway is composed into those same slots.
+
+The KIMI plane is **optional**: a slot with `CLAUDE_API_KIMI_ENABLED` unset answers the producer
+with an empty list, and a build predating the producer has no such route at all. Neither state
+marks the catalog degraded for clients — absence of models we never advertised is not degradation
+— but `claude_router_catalog_degraded_total{namespace="kimi"}` still moves, so a real outage
+stays visible to us. The three mandatory planes keep the old behaviour: missing means degraded.
+
+Only published subscription aliases are advertised (`k3`, `k3[1m]`, `k3-256k`,
+`kimi-for-coding`, `kimi-for-coding-highspeed`). The official Open Platform ids
+(`kimi-k3`, `kimi-k2.6`, `kimi-k2.7-code…`) are tariff keys the gateway refuses on the wire, so
+neither the producer nor `/internal/router/catalog/pricing` resolves them. A key under strict
+policy sees no `kimi/*` rate at all, mirroring Gemini: the KIMI gateway refuses strict keys
+(`kimi_strict_pricing_unavailable`) until the release catalog gains a `kimi` provider, and the
+router drops any candidate it cannot price.
 
 Normalized `reasoning_efforts` and `service_tiers` are published both in
 `apitoken.capabilities` and as the previous top-level mirrors for client

@@ -499,6 +499,10 @@ pub fn router(app: AppState, accepting: Arc<AtomicBool>) -> Router {
             "/internal/router/catalog/pricing",
             post(crate::router_pricing::pricing)
                 .layer(axum::extract::DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route(
+            "/internal/router/catalog/kimi",
+            get(crate::router_catalog::kimi),
         );
     let router = match provider {
         forward::ProviderMode::Combined => common

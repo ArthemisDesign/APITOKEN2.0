@@ -186,6 +186,7 @@ pub(crate) fn origins(state: &AppState) -> PlaneOrigins<'_> {
         anthropic: &state.cfg.anthropic_origin,
         openai: &state.cfg.openai_origin,
         gemini: &state.cfg.gemini_origin,
+        kimi: &state.cfg.kimi_origin,
     }
 }
 

@@ -167,7 +167,7 @@ fn parse_manifest() -> anyhow::Result<RoutingManifest> {
             model.id
         );
         anyhow::ensure!(
-            matches!(model.id.split_once('/'), Some(("anthropic" | "openai" | "google", native)) if !native.is_empty()),
+            matches!(model.id.split_once('/'), Some(("anthropic" | "openai" | "google" | "kimi", native)) if !native.is_empty()),
             "ranked model must use a supported namespace: {:?}",
             model.id
         );

@@ -21,7 +21,7 @@ use futures_util::{stream, StreamExt};
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::auth::{self, AuthError};
-use crate::catalog::{self, NS_ANTHROPIC, NS_GOOGLE, NS_OPENAI};
+use crate::catalog::{self, NS_ANTHROPIC, NS_GOOGLE, NS_KIMI, NS_OPENAI};
 use crate::error::{self, Lane};
 use crate::metrics::{AuthOutcome, PolicyFailure, RouterMetrics};
 use crate::policy::{
@@ -991,6 +991,7 @@ fn provider_for_namespace(namespace: &str) -> Option<ProviderNamespace> {
         NS_ANTHROPIC => Some(ProviderNamespace::Anthropic),
         NS_OPENAI => Some(ProviderNamespace::OpenAi),
         NS_GOOGLE => Some(ProviderNamespace::Google),
+        NS_KIMI => Some(ProviderNamespace::Kimi),
         _ => None,
     }
 }
@@ -1202,6 +1203,7 @@ mod tests {
                 host: "127.0.0.1".into(),
                 port: 0,
                 anthropic_origin: "http://127.0.0.1:1".into(),
+                kimi_origin: "http://127.0.0.1:1".into(),
                 openai_origin: "http://127.0.0.1:2".into(),
                 gemini_origin: "http://127.0.0.1:3".into(),
                 fallback_enabled: false,
@@ -1240,6 +1242,7 @@ mod tests {
                 host: "127.0.0.1".into(),
                 port: 0,
                 anthropic_origin: "http://127.0.0.1:1".into(),
+                kimi_origin: "http://127.0.0.1:1".into(),
                 openai_origin: "http://127.0.0.1:2".into(),
                 gemini_origin: "http://127.0.0.1:3".into(),
                 fallback_enabled: false,

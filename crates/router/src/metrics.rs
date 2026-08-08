@@ -7,10 +7,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::catalog::Plane;
 use crate::error::Lane;
 use crate::proxy::RetryReason;
 
 const NAMESPACE_COUNT: usize = 3;
+/// Catalog snapshot sources. One more than the lane count: KIMI publishes its own model list but
+/// rides the Anthropic protocol, so it needs its own catalog series without a fourth lane.
+const PLANE_COUNT: usize = 4;
 const REASON_COUNT: usize = 2;
 const AUTH_OUTCOME_COUNT: usize = 3;
 const CATALOG_REFRESH_OUTCOME_COUNT: usize = 4;
@@ -129,9 +133,9 @@ pub struct RouterMetrics {
     body_read_timeout: AtomicU64,
     auth_outcomes: [AtomicU64; AUTH_OUTCOME_COUNT],
     auth_duration_micros: [AtomicU64; AUTH_OUTCOME_COUNT],
-    catalog_cache_hits: [AtomicU64; NAMESPACE_COUNT],
-    catalog_refreshes: [AtomicU64; NAMESPACE_COUNT * CATALOG_REFRESH_OUTCOME_COUNT],
-    catalog_degraded: [AtomicU64; NAMESPACE_COUNT],
+    catalog_cache_hits: [AtomicU64; PLANE_COUNT],
+    catalog_refreshes: [AtomicU64; PLANE_COUNT * CATALOG_REFRESH_OUTCOME_COUNT],
+    catalog_degraded: [AtomicU64; PLANE_COUNT],
     pricing_failures: [AtomicU64; PRICING_FAILURE_COUNT],
     policy_failures: [AtomicU64; POLICY_FAILURE_COUNT],
     response_header_timeouts: [AtomicU64; NAMESPACE_COUNT],
@@ -148,10 +152,10 @@ impl Default for RouterMetrics {
             body_read_timeout: AtomicU64::new(0),
             auth_outcomes: [const { AtomicU64::new(0) }; AUTH_OUTCOME_COUNT],
             auth_duration_micros: [const { AtomicU64::new(0) }; AUTH_OUTCOME_COUNT],
-            catalog_cache_hits: [const { AtomicU64::new(0) }; NAMESPACE_COUNT],
+            catalog_cache_hits: [const { AtomicU64::new(0) }; PLANE_COUNT],
             catalog_refreshes: [const { AtomicU64::new(0) };
-                NAMESPACE_COUNT * CATALOG_REFRESH_OUTCOME_COUNT],
-            catalog_degraded: [const { AtomicU64::new(0) }; NAMESPACE_COUNT],
+                PLANE_COUNT * CATALOG_REFRESH_OUTCOME_COUNT],
+            catalog_degraded: [const { AtomicU64::new(0) }; PLANE_COUNT],
             pricing_failures: [const { AtomicU64::new(0) }; PRICING_FAILURE_COUNT],
             policy_failures: [const { AtomicU64::new(0) }; POLICY_FAILURE_COUNT],
             response_header_timeouts: [const { AtomicU64::new(0) }; NAMESPACE_COUNT],
@@ -212,17 +216,17 @@ impl RouterMetrics {
         );
     }
 
-    pub fn catalog_cache_hit(&self, lane: Lane) {
-        self.catalog_cache_hits[namespace_index(lane)].fetch_add(1, Ordering::Relaxed);
+    pub fn catalog_cache_hit(&self, plane: Plane) {
+        self.catalog_cache_hits[plane.index()].fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn catalog_refresh(&self, lane: Lane, outcome: CatalogRefreshOutcome) {
-        let index = namespace_index(lane) * CATALOG_REFRESH_OUTCOME_COUNT + outcome.index();
+    pub fn catalog_refresh(&self, plane: Plane, outcome: CatalogRefreshOutcome) {
+        let index = plane.index() * CATALOG_REFRESH_OUTCOME_COUNT + outcome.index();
         self.catalog_refreshes[index].fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn catalog_degraded(&self, lane: Lane) {
-        self.catalog_degraded[namespace_index(lane)].fetch_add(1, Ordering::Relaxed);
+    pub fn catalog_degraded(&self, plane: Plane) {
+        self.catalog_degraded[plane.index()].fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn pricing_failure(&self, failure: PricingFailure) {
@@ -346,27 +350,32 @@ impl RouterMetrics {
             "counter",
             "Bounded read-only balance attempts that exceeded the response-header deadline.",
         );
-        for (lane, namespace) in NAMESPACES {
-            let lane_index = namespace_index(lane);
+        for plane in Plane::ALL {
+            let namespace = plane.namespace();
+            let plane_index = plane.index();
             let _ = writeln!(
                 body,
                 "claude_router_catalog_cache_hit_total{{namespace=\"{namespace}\"}} {}",
-                self.catalog_cache_hits[lane_index].load(Ordering::Relaxed)
+                self.catalog_cache_hits[plane_index].load(Ordering::Relaxed)
             );
             let _ = writeln!(
                 body,
                 "claude_router_catalog_degraded_total{{namespace=\"{namespace}\"}} {}",
-                self.catalog_degraded[lane_index].load(Ordering::Relaxed)
+                self.catalog_degraded[plane_index].load(Ordering::Relaxed)
             );
+            for (outcome, label) in CatalogRefreshOutcome::ALL {
+                let index = plane_index * CATALOG_REFRESH_OUTCOME_COUNT + outcome.index();
+                let _ = writeln!(body, "claude_router_catalog_refresh_total{{namespace=\"{namespace}\",outcome=\"{label}\"}} {}", self.catalog_refreshes[index].load(Ordering::Relaxed));
+            }
+        }
+        // The header-timeout series stays lane-scoped: it counts a transport deadline on a wire
+        // protocol, and KIMI shares the Anthropic one.
+        for (lane, namespace) in NAMESPACES {
             let _ = writeln!(
                 body,
                 "claude_router_response_header_timeout_total{{namespace=\"{namespace}\"}} {}",
-                self.response_header_timeouts[lane_index].load(Ordering::Relaxed)
+                self.response_header_timeouts[namespace_index(lane)].load(Ordering::Relaxed)
             );
-            for (outcome, label) in CatalogRefreshOutcome::ALL {
-                let index = lane_index * CATALOG_REFRESH_OUTCOME_COUNT + outcome.index();
-                let _ = writeln!(body, "claude_router_catalog_refresh_total{{namespace=\"{namespace}\",outcome=\"{label}\"}} {}", self.catalog_refreshes[index].load(Ordering::Relaxed));
-            }
         }
 
         metric_header(
@@ -468,7 +477,7 @@ mod tests {
         let metrics = RouterMetrics::new();
         metrics.fallback(Lane::Anthropic, Lane::OpenAi, RetryReason::NotStarted);
         metrics.balance_failover(Lane::Anthropic, Lane::OpenAi);
-        metrics.catalog_refresh(Lane::Gemini, CatalogRefreshOutcome::Oversized);
+        metrics.catalog_refresh(Plane::Gemini, CatalogRefreshOutcome::Oversized);
         metrics.auth(AuthOutcome::Success, Duration::from_millis(12));
 
         let body = metrics.render();
@@ -488,7 +497,7 @@ mod tests {
             body.lines()
                 .filter(|line| line.starts_with("claude_router_catalog_refresh_total{"))
                 .count(),
-            NAMESPACE_COUNT * CATALOG_REFRESH_OUTCOME_COUNT
+            PLANE_COUNT * CATALOG_REFRESH_OUTCOME_COUNT
         );
         assert!(body.contains(
             "claude_router_catalog_refresh_total{namespace=\"google\",outcome=\"oversized\"} 1"

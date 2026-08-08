@@ -50,6 +50,59 @@ pub const DEGRADED_HEADER: &str = "x-apitoken-catalog-degraded";
 pub const NS_ANTHROPIC: &str = "anthropic";
 pub const NS_OPENAI: &str = "openai";
 pub const NS_GOOGLE: &str = "google";
+pub const NS_KIMI: &str = "kimi";
+
+/// One snapshot source of the unified catalog.
+///
+/// Deliberately NOT the same thing as [`Lane`]. `Lane` names the wire protocol — envelope shape,
+/// path prefixes, SSE dictionary — and there are exactly three of those. A `Plane` names where a
+/// model list comes from, and KIMI needs its own even though it speaks the Anthropic protocol: the
+/// Anthropic plane's `/v1/models` is a byte-for-byte proxy of `api.anthropic.com`, so appending our
+/// KIMI aliases there would break the transparency invariant for every client. KIMI therefore
+/// publishes a separate internal producer and rides the Anthropic lane for dispatch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Plane {
+    Anthropic,
+    OpenAi,
+    Gemini,
+    Kimi,
+}
+
+impl Plane {
+    pub const ALL: [Plane; 4] = [Plane::Anthropic, Plane::OpenAi, Plane::Gemini, Plane::Kimi];
+
+    pub fn namespace(self) -> &'static str {
+        match self {
+            Plane::Anthropic => NS_ANTHROPIC,
+            Plane::OpenAi => NS_OPENAI,
+            Plane::Gemini => NS_GOOGLE,
+            Plane::Kimi => NS_KIMI,
+        }
+    }
+
+    /// Wire protocol this plane's traffic is dispatched over.
+    pub fn lane(self) -> Lane {
+        match self {
+            Plane::Anthropic | Plane::Kimi => Lane::Anthropic,
+            Plane::OpenAi => Lane::OpenAi,
+            Plane::Gemini => Lane::Gemini,
+        }
+    }
+
+    /// Whether the unified catalog is complete without this plane. Only KIMI is: its discovery
+    /// producer is composed per slot, so its absence is a deployment state rather than an outage.
+    pub fn optional(self) -> bool {
+        matches!(self, Plane::Kimi)
+    }
+
+    pub fn index(self) -> usize {        match self {
+            Plane::Anthropic => 0,
+            Plane::OpenAi => 1,
+            Plane::Gemini => 2,
+            Plane::Kimi => 3,
+        }
+    }
+}
 
 const REASONING_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 const ANTHROPIC_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -70,12 +123,10 @@ pub(crate) fn namespace_lane(model: &str) -> Option<Lane> {
     if native.is_empty() {
         return None;
     }
-    match prefix {
-        NS_ANTHROPIC => Some(Lane::Anthropic),
-        NS_OPENAI => Some(Lane::OpenAi),
-        NS_GOOGLE => Some(Lane::Gemini),
-        _ => None,
-    }
+    Plane::ALL
+        .into_iter()
+        .find(|plane| plane.namespace() == prefix)
+        .map(Plane::lane)
 }
 
 /// Одна модель единого каталога.
@@ -193,12 +244,13 @@ struct PlaneCache {
     fetched_at: Instant,
 }
 
-/// In-memory кэш трёх плоскостей. Statelessness router'а относится к
+/// In-memory кэш плоскостей. Statelessness router'а относится к
 /// запросам и деньгам; кэш каталога — деградационный и не влияет на биллинг.
 pub struct Catalog {
     anthropic: PlaneState,
     openai: PlaneState,
     gemini: PlaneState,
+    kimi: PlaneState,
     ttl: Duration,
 }
 
@@ -265,29 +317,31 @@ impl Catalog {
             anthropic: PlaneState::new(),
             openai: PlaneState::new(),
             gemini: PlaneState::new(),
+            kimi: PlaneState::new(),
             ttl,
         }
     }
 
-    fn plane(&self, lane: Lane) -> &PlaneState {
-        match lane {
-            Lane::Anthropic => &self.anthropic,
-            Lane::OpenAi => &self.openai,
-            Lane::Gemini => &self.gemini,
+    fn plane(&self, plane: Plane) -> &PlaneState {
+        match plane {
+            Plane::Anthropic => &self.anthropic,
+            Plane::OpenAi => &self.openai,
+            Plane::Gemini => &self.gemini,
+            Plane::Kimi => &self.kimi,
         }
     }
 
-    fn read(&self, lane: Lane) -> Option<PlaneCache> {
-        self.plane(lane)
+    fn read(&self, plane: Plane) -> Option<PlaneCache> {
+        self.plane(plane)
             .cache
             .lock()
             .expect("catalog cache poisoned")
             .clone()
     }
 
-    fn write(&self, lane: Lane, entries: Vec<CatalogEntry>) {
+    fn write(&self, plane: Plane, entries: Vec<CatalogEntry>) {
         *self
-            .plane(lane)
+            .plane(plane)
             .cache
             .lock()
             .expect("catalog cache poisoned") = Some(PlaneCache {
@@ -298,18 +352,19 @@ impl Catalog {
 
     /// Deterministic per-plane skew prevents a warm aggregate request from expiring every provider
     /// snapshot on the same instant. Zero remains zero for expiry tests.
-    fn plane_ttl(&self, lane: Lane) -> Duration {
-        let multiplier = match lane {
-            Lane::Anthropic => 0.9,
-            Lane::OpenAi => 1.0,
-            Lane::Gemini => 1.1,
+    fn plane_ttl(&self, plane: Plane) -> Duration {
+        let multiplier = match plane {
+            Plane::Anthropic => 0.9,
+            Plane::OpenAi => 1.0,
+            Plane::Gemini => 1.1,
+            Plane::Kimi => 1.2,
         };
         self.ttl.mul_f64(multiplier)
     }
 
-    fn fresh(&self, lane: Lane) -> Option<PlaneCache> {
-        self.read(lane)
-            .filter(|cache| cache.fetched_at.elapsed() < self.plane_ttl(lane))
+    fn fresh(&self, plane: Plane) -> Option<PlaneCache> {
+        self.read(plane)
+            .filter(|cache| cache.fetched_at.elapsed() < self.plane_ttl(plane))
     }
 
     /// Опрос одной плоскости: сначала свежий кэш, затем живой fetch с
@@ -318,62 +373,60 @@ impl Catalog {
         &self,
         client: &reqwest::Client,
         origin: &str,
-        lane: Lane,
+        plane: Plane,
         auth: &HeaderMap,
         metrics: &RouterMetrics,
     ) -> PlaneOutcome {
-        if let Some(cache) = self.fresh(lane) {
-            metrics.catalog_cache_hit(lane);
+        if let Some(cache) = self.fresh(plane) {
+            metrics.catalog_cache_hit(plane);
             return PlaneOutcome::Fresh(cache.entries);
         }
-        let plane = self.plane(lane);
-        let observed_failed_generation = plane
-            .failed_refresh_generation
-            .load(AtomicOrdering::Acquire);
-        let _refresh = plane.refresh.lock().await;
+        let state = self.plane(plane);
+        let observed_failed_generation = state.failed_refresh_generation.load(AtomicOrdering::Acquire);
+        let _refresh = state.refresh.lock().await;
         // Singleflight followers recheck after the leader publishes its snapshot.
-        if let Some(cache) = self.fresh(lane) {
-            metrics.catalog_cache_hit(lane);
+        if let Some(cache) = self.fresh(plane) {
+            metrics.catalog_cache_hit(plane);
             return PlaneOutcome::Fresh(cache.entries);
         }
         // Reuse only a failure that completed while this caller waited. This coalesces one failed
         // wave without adding negative-cache/circuit-breaker state between independent requests.
-        if plane
+        if state
             .failed_refresh_generation
             .load(AtomicOrdering::Acquire)
             != observed_failed_generation
         {
-            return match self.read(lane) {
+            return match self.read(plane) {
                 Some(cache) => PlaneOutcome::Stale(cache.entries),
                 None => PlaneOutcome::Missing,
             };
         }
-        match fetch_plane(client, origin, lane, auth).await {
+        match fetch_plane(client, origin, plane, auth).await {
             FetchResult::Entries(entries) => {
-                metrics.catalog_refresh(lane, CatalogRefreshOutcome::Success);
-                self.write(lane, entries.clone());
+                metrics.catalog_refresh(plane, CatalogRefreshOutcome::Success);
+                self.write(plane, entries.clone());
                 PlaneOutcome::Fresh(entries)
             }
             FetchResult::AuthRejected => {
-                metrics.catalog_refresh(lane, CatalogRefreshOutcome::AuthRejected);
+                metrics.catalog_refresh(plane, CatalogRefreshOutcome::AuthRejected);
                 PlaneOutcome::AuthRejected
             }
             FetchResult::Failed => {
-                plane
+                state
                     .failed_refresh_generation
                     .fetch_add(1, AtomicOrdering::Release);
-                metrics.catalog_refresh(lane, CatalogRefreshOutcome::Failed);
-                match self.read(lane) {
+                metrics.catalog_refresh(plane, CatalogRefreshOutcome::Failed);
+                match self.read(plane) {
                     Some(cache) => PlaneOutcome::Stale(cache.entries),
                     None => PlaneOutcome::Missing,
                 }
             }
             FetchResult::Oversized => {
-                plane
+                state
                     .failed_refresh_generation
                     .fetch_add(1, AtomicOrdering::Release);
-                metrics.catalog_refresh(lane, CatalogRefreshOutcome::Oversized);
-                match self.read(lane) {
+                metrics.catalog_refresh(plane, CatalogRefreshOutcome::Oversized);
+                match self.read(plane) {
                     Some(cache) => PlaneOutcome::Stale(cache.entries),
                     None => PlaneOutcome::Missing,
                 }
@@ -389,44 +442,60 @@ impl Catalog {
         auth: &HeaderMap,
         metrics: &RouterMetrics,
     ) -> Aggregate {
-        let (anthropic, openai, gemini) = tokio::join!(
-            self.plane_entries(client, origins.anthropic, Lane::Anthropic, auth, metrics),
-            self.plane_entries(client, origins.openai, Lane::OpenAi, auth, metrics),
-            self.plane_entries(client, origins.gemini, Lane::Gemini, auth, metrics),
+        let (anthropic, openai, gemini, kimi) = tokio::join!(
+            self.plane_entries(client, origins.anthropic, Plane::Anthropic, auth, metrics),
+            self.plane_entries(client, origins.openai, Plane::OpenAi, auth, metrics),
+            self.plane_entries(client, origins.gemini, Plane::Gemini, auth, metrics),
+            self.plane_entries(client, origins.kimi, Plane::Kimi, auth, metrics),
         );
         let mut aggregate = Aggregate {
             entries: Vec::new(),
             degraded: Vec::new(),
             auth_rejected: false,
         };
-        for (namespace, lane, outcome) in [
-            (NS_ANTHROPIC, Lane::Anthropic, anthropic),
-            (NS_OPENAI, Lane::OpenAi, openai),
-            (NS_GOOGLE, Lane::Gemini, gemini),
+        for (plane, outcome) in [
+            (Plane::Anthropic, anthropic),
+            (Plane::OpenAi, openai),
+            (Plane::Gemini, gemini),
+            (Plane::Kimi, kimi),
         ] {
             match &outcome {
                 PlaneOutcome::AuthRejected => aggregate.auth_rejected = true,
-                PlaneOutcome::Stale(_) | PlaneOutcome::Missing => {
-                    aggregate.degraded.push(namespace);
-                    metrics.catalog_degraded(lane);
+                PlaneOutcome::Stale(_) => {
+                    aggregate.degraded.push(plane.namespace());
+                    metrics.catalog_degraded(plane);
+                }
+                PlaneOutcome::Missing => {
+                    metrics.catalog_degraded(plane);
+                    // A plane that never produced a snapshot is degradation only if it was
+                    // supposed to be there. KIMI's producer is per-slot optional — an engine
+                    // built before it existed simply has no such route — so telling every client
+                    // the catalog is degraded over models we never advertised would be a false
+                    // alarm on a header they act on. The counter still moves, so a real KIMI
+                    // outage is visible to us.
+                    if !plane.optional() {
+                        aggregate.degraded.push(plane.namespace());
+                    }
                 }
                 PlaneOutcome::Fresh(_) => {}
             }
             if let Some(entries) = outcome.entries() {
                 aggregate
                     .entries
-                    .extend(entries.iter().map(|e| (namespace.to_string(), e.clone())));
+                    .extend(entries.iter().map(|e| (plane.namespace().to_string(), e.clone())));
             }
         }
         aggregate
     }
 }
 
-/// Origins трёх плоскостей — срез конфига для опроса каталога.
+/// Origins плоскостей — срез конфига для опроса каталога.
 pub struct PlaneOrigins<'a> {
     pub anthropic: &'a str,
     pub openai: &'a str,
     pub gemini: &'a str,
+    /// Обычно совпадает с `anthropic`: KIMI-шлюз скомпонован в тех же слотах.
+    pub kimi: &'a str,
 }
 
 /// Результат живого fetch'а каталога плоскости.
@@ -440,13 +509,16 @@ enum FetchResult {
 async fn fetch_plane(
     client: &reqwest::Client,
     origin: &str,
-    lane: Lane,
+    plane: Plane,
     auth: &HeaderMap,
 ) -> FetchResult {
-    let url = match lane {
-        Lane::Anthropic => format!("{origin}/v1/models?limit=1000"),
-        Lane::OpenAi => format!("{origin}/v1/models"),
-        Lane::Gemini => format!("{origin}/v1beta/models?pageSize=1000"),
+    let url = match plane {
+        Plane::Anthropic => format!("{origin}/v1/models?limit=1000"),
+        Plane::OpenAi => format!("{origin}/v1/models"),
+        Plane::Gemini => format!("{origin}/v1beta/models?pageSize=1000"),
+        // Not `/v1/models`: that path on this same origin is Anthropic's own list, proxied
+        // verbatim. See [`Plane`].
+        Plane::Kimi => format!("{origin}/internal/router/catalog/kimi"),
     };
     let response = match client
         .get(&url)
@@ -459,7 +531,7 @@ async fn fetch_plane(
         Err(e) => {
             elog::warn(
                 "router-catalog",
-                format!("plane {lane:?} catalog fetch failed: {e}"),
+                format!("plane {plane:?} catalog fetch failed: {e}"),
             );
             return FetchResult::Failed;
         }
@@ -472,7 +544,7 @@ async fn fetch_plane(
         elog::warn(
             "router-catalog",
             format!(
-                "plane {lane:?} catalog fetch failed: non-success status {}",
+                "plane {plane:?} catalog fetch failed: non-success status {}",
                 status.as_u16()
             ),
         );
@@ -483,14 +555,14 @@ async fn fetch_plane(
         Err(ReadError::Oversized) => {
             elog::warn(
                 "router-catalog",
-                format!("plane {lane:?} catalog fetch failed: oversized body"),
+                format!("plane {plane:?} catalog fetch failed: oversized body"),
             );
             return FetchResult::Oversized;
         }
         Err(ReadError::Transport) => {
             elog::warn(
                 "router-catalog",
-                format!("plane {lane:?} catalog fetch failed: body transport"),
+                format!("plane {plane:?} catalog fetch failed: body transport"),
             );
             return FetchResult::Failed;
         }
@@ -500,40 +572,46 @@ async fn fetch_plane(
         Err(_) => {
             elog::warn(
                 "router-catalog",
-                format!("plane {lane:?} catalog fetch failed: invalid JSON"),
+                format!("plane {plane:?} catalog fetch failed: invalid JSON"),
             );
             return FetchResult::Failed;
         }
     };
-    let model_count = match lane {
-        Lane::Anthropic | Lane::OpenAi => body.get("data").and_then(Value::as_array),
-        Lane::Gemini => body.get("models").and_then(Value::as_array),
+    let model_count = match plane {
+        Plane::Anthropic | Plane::OpenAi | Plane::Kimi => {
+            body.get("data").and_then(Value::as_array)
+        }
+        Plane::Gemini => body.get("models").and_then(Value::as_array),
     };
     if model_count.is_some_and(|models| models.len() > MAX_MODELS_PER_PLANE) {
         elog::warn(
             "router-catalog",
-            format!("plane {lane:?} catalog fetch failed: too many models"),
+            format!("plane {plane:?} catalog fetch failed: too many models"),
         );
         return FetchResult::Oversized;
     }
-    let entries = match lane {
-        Lane::Anthropic => parse_anthropic(&body),
-        Lane::OpenAi => parse_openai(&body),
-        Lane::Gemini => parse_gemini(&body),
+    let entries = match plane {
+        Plane::Anthropic => parse_anthropic(&body),
+        Plane::OpenAi => parse_openai(&body),
+        Plane::Gemini => parse_gemini(&body),
+        Plane::Kimi => parse_kimi(&body),
     };
     let Ok(entries) = entries else {
         elog::warn(
             "router-catalog",
-            format!("plane {lane:?} catalog fetch failed: malformed catalog"),
+            format!("plane {plane:?} catalog fetch failed: malformed catalog"),
         );
         return FetchResult::Failed;
     };
-    if entries.is_empty() {
+    // An empty KIMI list is the honest answer from a slot where the plane is switched off, not a
+    // misconfiguration: the producer says so explicitly rather than failing. Caching it keeps the
+    // namespace absent instead of marking it degraded and serving a stale snapshot.
+    if entries.is_empty() && plane != Plane::Kimi {
         // Пустой каталог от живой плоскости — аномалия конфигурации; не
         // закрепляем его в кэше, чтобы не опустошать единый каталог.
         elog::error(
             "router-catalog",
-            format!("plane {lane:?} returned an empty catalog"),
+            format!("plane {plane:?} returned an empty catalog"),
         );
         return FetchResult::Failed;
     }
@@ -918,8 +996,80 @@ fn parse_gemini(body: &Value) -> ParseResult {
     )
 }
 
-fn parse_owned_models<Id, Display>(
-    models: Option<&Vec<Value>>,
+/// KIMI's list comes from our own internal producer, not from a provider echo, so its shape is a
+/// contract we own: exactly the fields a catalog entry needs, with `null` for a capability the
+/// plane has not proved. Everything else is fixed by what the gateway actually accepts —
+/// streaming and tool calling are exercised on every served turn, and the only output modality is
+/// text.
+fn parse_kimi(body: &Value) -> ParseResult {
+    let models = body.get("data").and_then(Value::as_array).ok_or(())?;
+    if models.len() > MAX_MODELS_PER_PLANE {
+        return Err(());
+    }
+    unique_plane_entries(
+        models
+            .iter()
+            .filter_map(|model| {
+                let model = match model.as_object() {
+                    Some(model) => model,
+                    None => return Some(Err(())),
+                };
+                let id = match bounded_model_id(
+                    model.get("id").and_then(Value::as_str),
+                ) {
+                    Ok(Some(id)) => id,
+                    Ok(None) => return None,
+                    Err(()) => return Some(Err(())),
+                };
+                let namespaced_id = match namespaced_id(NS_KIMI, &id) {
+                    Ok(id) => id,
+                    Err(()) => return Some(Err(())),
+                };
+                let display_name = match bounded_display_name(
+                    model
+                        .get("display_name")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                ) {
+                    Ok(name) => name,
+                    Err(()) => return Some(Err(())),
+                };
+                let context = match positive_limit(model, "max_input_tokens") {
+                    Ok(value) => value,
+                    Err(()) => return Some(Err(())),
+                };
+                let reasoning_efforts = match closed_list(model, "reasoning_efforts", REASONING_EFFORTS)
+                {
+                    Ok(value) => value,
+                    Err(()) => return Some(Err(())),
+                };
+                Some(Ok(CatalogEntry {
+                    id: namespaced_id,
+                    native_id: id.clone(),
+                    aliases: vec![id],
+                    display_name,
+                    limits: context.map(|context| CatalogLimits {
+                        context: Some(context),
+                        input: Some(context),
+                        output: None,
+                    }),
+                    reasoning_efforts,
+                    service_tiers: Some(vec!["standard".to_string()]),
+                    input_modalities: Some(vec!["text".to_string()]),
+                    output_modalities: Some(vec!["text".to_string()]),
+                    tool_calling: Some(true),
+                    structured_outputs: model
+                        .get("structured_outputs")
+                        .and_then(Value::as_bool),
+                    reasoning: model.get("reasoning").and_then(Value::as_bool),
+                    streaming: Some(true),
+                }))
+            })
+            .collect::<ParseResult>()?,
+    )
+}
+
+fn parse_owned_models<Id, Display>(    models: Option<&Vec<Value>>,
     namespace: &str,
     id_of: Id,
     display_of: Display,
@@ -1033,6 +1183,52 @@ mod tests {
         );
         assert_eq!(namespace_lane("openai/gpt-5.6"), Some(Lane::OpenAi));
         assert_eq!(namespace_lane("google/gemini-2.5-pro"), Some(Lane::Gemini));
+        // KIMI is its own catalog plane but not its own protocol: it dispatches over the
+        // Anthropic lane, whose slots compose the gateway.
+        assert_eq!(namespace_lane("kimi/k3"), Some(Lane::Anthropic));
+        assert_eq!(Plane::Kimi.lane(), Lane::Anthropic);
+        assert_ne!(Plane::Kimi.namespace(), Plane::Anthropic.namespace());
+    }
+
+    #[test]
+    fn kimi_producer_envelope_becomes_namespaced_entries() {
+        let body = serde_json::json!({"schema_version": 1, "data": [
+            {
+                "id": "k3[1m]",
+                "display_name": "Kimi K3 (1M)",
+                "max_input_tokens": 1_000_000,
+                "reasoning_efforts": ["none", "low", "high", "max"],
+                "reasoning": true,
+                "image_input": null,
+                "structured_outputs": null,
+            }
+        ]});
+        let entries = parse_kimi(&body).expect("producer envelope parses");
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        // The bracket alias survives verbatim: it is what the gateway maps to the wire id, so
+        // rewriting it here would break the 1M selection.
+        assert_eq!(entry.id, "kimi/k3[1m]");
+        assert_eq!(entry.native_id, "k3[1m]");
+        assert_eq!(entry.display_name.as_deref(), Some("Kimi K3 (1M)"));
+        let limits = entry.limits.as_ref().expect("context published");
+        assert_eq!(limits.context, Some(1_000_000));
+        assert_eq!(limits.output, None);
+        assert_eq!(entry.reasoning, Some(true));
+        // Unproved capabilities stay unknown rather than becoming a false `false`.
+        assert_eq!(entry.structured_outputs, None);
+    }
+
+    #[test]
+    fn kimi_producer_envelope_rejects_an_effort_outside_the_closed_vocabulary() {
+        let body = serde_json::json!({"data": [
+            {"id": "k3", "reasoning_efforts": ["turbo"]}
+        ]});
+        assert!(parse_kimi(&body).is_err());
+        assert!(parse_kimi(&serde_json::json!({"models": []})).is_err());
+        assert!(parse_kimi(&serde_json::json!({"data": []}))
+            .expect("an empty list is a valid disabled plane")
+            .is_empty());
     }
 
     #[test]
@@ -1338,6 +1534,9 @@ mod tests {
                         serde_json::json!({"models": [{"name": "models/gemini-x"}]})
                     }
                     Some(_) => serde_json::json!({"data": [{"id": "claude-x"}]}),
+                    None if request.uri().path().ends_with("/kimi") => {
+                        serde_json::json!({"data": [{"id": "kimi-x"}]})
+                    }
                     None => serde_json::json!({"data": [{"id": "gpt-x"}]}),
                 };
                 Response::builder()
@@ -1354,6 +1553,7 @@ mod tests {
             anthropic: &origin,
             openai: &origin,
             gemini: &origin,
+            kimi: &origin,
         };
         let catalog = Catalog::with_ttl(Duration::from_millis(20));
         let metrics = RouterMetrics::new();
@@ -1361,7 +1561,7 @@ mod tests {
         catalog
             .aggregate(&client, &origins, &HeaderMap::new(), &metrics)
             .await;
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
         tokio::time::sleep(Duration::from_millis(30)).await;
 
         let auth = HeaderMap::new();
@@ -1369,10 +1569,10 @@ mod tests {
             join_all((0..10).map(|_| catalog.aggregate(&client, &origins, &auth, &metrics))).await;
         assert!(aggregates
             .iter()
-            .all(|aggregate| aggregate.entries.len() == 3));
+            .all(|aggregate| aggregate.entries.len() == 4));
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            6,
+            8,
             "one leader per provider plane must refresh after TTL"
         );
     }
@@ -1400,6 +1600,7 @@ mod tests {
             anthropic: &origin,
             openai: &origin,
             gemini: &origin,
+            kimi: &origin,
         };
         let catalog = Catalog::with_ttl(Duration::ZERO);
         let metrics = RouterMetrics::new();
@@ -1410,17 +1611,19 @@ mod tests {
             join_all((0..10).map(|_| catalog.aggregate(&client, &origins, &auth, &metrics))).await;
         assert!(aggregates
             .iter()
+            // KIMI is absent rather than degraded: it never published a snapshot, so the
+            // client-visible marker stays limited to the three mandatory planes.
             .all(|aggregate| { aggregate.entries.is_empty() && aggregate.degraded.len() == 3 }));
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            3,
+            4,
             "one failed fetch per plane must be shared by concurrent followers"
         );
 
         catalog.aggregate(&client, &origins, &auth, &metrics).await;
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            6,
+            8,
             "a later independent request must retry without a negative-cache delay"
         );
     }
