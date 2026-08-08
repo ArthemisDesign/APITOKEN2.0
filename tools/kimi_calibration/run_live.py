@@ -14,6 +14,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -50,6 +51,20 @@ DEFAULT_PRODUCTION_SSH_TARGET = "apitokensale"
 DEFAULT_PRODUCTION_CAPACITY_PORT = 8803
 DEFAULT_PRODUCTION_API_PORT = 8803
 KIMI_TARIFF_SCHEDULE_ID = "moonshot/kimi-open-platform/2026-08-03"
+# A hot tariff override pins `<family>/v<version>` instead of the compiled schedule id. The
+# override is seeded from the same reviewed card, so its rates are the reviewed rates — but the
+# identity string legitimately differs, and rejecting it would stop the run on a naming
+# difference rather than on a pricing difference. The proof that the card was actually applied
+# stays where it belongs: `priced_under_expected_tariff` recomputes every money leg from the
+# exact token counts, so a genuinely different rate still fails, whichever identity it carries.
+KIMI_TARIFF_OVERRIDE_PIN = re.compile(r"^moonshot/kimi/(?P<model>[a-z0-9.\-]+)/v(?P<version>[1-9][0-9]*)$")
+
+
+def tariff_identity_is_reviewed(tariff_schedule_id: str, served_model: str) -> bool:
+    if tariff_schedule_id == KIMI_TARIFF_SCHEDULE_ID:
+        return True
+    matched = KIMI_TARIFF_OVERRIDE_PIN.match(tariff_schedule_id)
+    return matched is not None and matched.group("model") == served_model
 FRACTION_UNITS_PER_PERCENT = 1_000_000  # KIMI_FRACTION_SCALE is 100_000_000 (1% == 1e6 units).
 # Thinking-off was believed to re-route k3 and k2.7-code to kimi-k2.6. Disproved live on
 # 2026-08-07: `k3-256k` with effort `off` was served and priced as kimi-k3 (3000/15000 per token),
@@ -899,10 +914,11 @@ class Runner:
                 break
         if event is None:
             raise CalibrationError(f"{leg.name}: exact immutable KIMI event did not appear")
-        if event["tariff_schedule_id"] != KIMI_TARIFF_SCHEDULE_ID:
+        if not tariff_identity_is_reviewed(event["tariff_schedule_id"], leg.served_model):
             raise CalibrationError(
-                f"{leg.name}: immutable event tariff {event['tariff_schedule_id']!r} "
-                f"does not match the reviewed {KIMI_TARIFF_SCHEDULE_ID!r} rate card"
+                f"{leg.name}: immutable event tariff {event['tariff_schedule_id']!r} is neither "
+                f"the reviewed {KIMI_TARIFF_SCHEDULE_ID!r} card nor a hot override of "
+                f"{leg.served_model!r}"
             )
         actual = event["api_total_nanousd"]
         self.budget.charge(profile_id, actual, upper)

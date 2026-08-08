@@ -1072,3 +1072,44 @@ class KimiSubsWireContractTest(unittest.TestCase):
         self.assertEqual(turn_event()["served_model"], "kimi-for-coding")
         self.assertIn("kimi-k2.7-code", run_live.RATE_CARD)
         self.assertNotIn(turn_event()["served_model"], run_live.RATE_CARD)
+
+
+class TariffIdentityTest(unittest.TestCase):
+    """A hot override renames the tariff identity without changing the reviewed rates.
+
+    The engine pins `<family>/v<version>` once an override is seeded, so an exact string match
+    against the compiled schedule id stopped the run on a naming difference rather than on a
+    pricing difference. The rate proof stays in `priced_under_expected_tariff`, which recomputes
+    every money leg — so widening the identity check cannot widen what counts as correctly priced.
+    """
+
+    def test_compiled_schedule_and_matching_override_are_both_reviewed(self):
+        self.assertTrue(
+            run_live.tariff_identity_is_reviewed(run_live.KIMI_TARIFF_SCHEDULE_ID, "kimi-k3")
+        )
+        self.assertTrue(
+            run_live.tariff_identity_is_reviewed("moonshot/kimi/kimi-k3/v2", "kimi-k3")
+        )
+        self.assertTrue(
+            run_live.tariff_identity_is_reviewed(
+                "moonshot/kimi/kimi-k2.7-code-highspeed/v11", "kimi-k2.7-code-highspeed"
+            )
+        )
+
+    def test_another_family_or_an_invalid_version_is_never_reviewed(self):
+        # An override of a different model would mean the turn was priced off another card.
+        self.assertFalse(
+            run_live.tariff_identity_is_reviewed("moonshot/kimi/kimi-k2.6/v2", "kimi-k3")
+        )
+        # Override versions start at 1; `v0` and unpadded junk are not identities we issue.
+        for bogus in (
+            "moonshot/kimi/kimi-k3/v0",
+            "moonshot/kimi/kimi-k3/v",
+            "moonshot/kimi/kimi-k3",
+            "moonshot/kimi/kimi-k3/v2/extra",
+            "anthropic/claude-opus-5/v1",
+            "",
+        ):
+            self.assertFalse(
+                run_live.tariff_identity_is_reviewed(bogus, "kimi-k3"), bogus
+            )

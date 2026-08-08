@@ -121,6 +121,15 @@ Preflight checklist (everything is mandatory):
   non-empty paid plan;
 - the exact opaque profile id for `--profile` from `profiles[].id`.
 
+The turn's `tariff_schedule_id` is accepted either as the compiled reviewed card
+(`moonshot/kimi-open-platform/2026-08-03`) or as a hot override pinned for the served model
+(`moonshot/kimi/<served-model>/v<n>`). An override is seeded from the same reviewed card, so its
+rates are the reviewed rates and only the identity string differs; an exact string match stopped
+the run on a naming difference rather than on a pricing difference. The rate proof is unchanged
+and lives in `priced_under_expected_tariff`, which recomputes every money leg from the exact
+token counts — an override of a *different* model, or any rate that does not reproduce, still
+fails closed.
+
 ## Capability probes (tools and media)
 
 The plane refuses `tools`, `tool_choice`, `mcp_servers` and media parts with
