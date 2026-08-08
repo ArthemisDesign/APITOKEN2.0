@@ -1,5 +1,7 @@
 const ACRONYMS: Readonly<Record<string, string>> = {
   gpt: "GPT",
+  k3: "K3",
+  "k3[1m]": "K3 (1M)",
 };
 
 function titleCase(part: string): string {
@@ -41,10 +43,17 @@ export function modelLabel(id: string): string {
 }
 
 /** Billing provider behind a public model ID — display grouping only, never pricing input. */
-export function modelProvider(id: string): "anthropic" | "openai" | "gemini" | "other" {
-  const family = id.split("-", 1)[0]?.toLowerCase();
+export function modelProvider(id: string): "anthropic" | "openai" | "gemini" | "kimi" | "other" {
+  // Unified-router ids arrive namespaced (`kimi/k3`); usage events carry the bare alias. Accept
+  // both so the same model is not grouped two different ways depending on where the id came from.
+  const bare = id.includes("/") ? id.slice(id.indexOf("/") + 1) : id;
+  const family = bare.split("-", 1)[0]?.toLowerCase();
   if (family === "claude") return "anthropic";
   if (family === "gpt") return "openai";
   if (family === "gemini") return "gemini";
+  // KIMI publishes two unrelated-looking alias shapes: `kimi-for-coding…` and the bare `k3`
+  // family (`k3`, `k3[1m]`, `k3-256k`). Matching only the first would send half the catalog to
+  // the neutral bucket.
+  if (family === "kimi" || family === "k3" || family === "k3[1m]") return "kimi";
   return "other";
 }

@@ -14,4 +14,21 @@ describe("dashboard provider metadata", () => {
       docsPath: "/docs",
     });
   });
+
+  it("gives KIMI a card on the Anthropic protocol with its own colour", () => {
+    const kimi = DASHBOARD_PROVIDERS.find((provider) => provider.id === "kimi");
+
+    expect(kimi).toMatchObject({
+      name: "Kimi",
+      // KIMI speaks Anthropic Messages, so the connection line must be the Anthropic one.
+      api: "Anthropic Messages API",
+      endpoint: "router.apitoken.sale",
+      auth: "x-api-key",
+      docsPath: "/docs",
+    });
+    // No borrowed glyph: without an asset the card draws the initial, which is honest.
+    expect(kimi?.logo).toBeUndefined();
+    const colors = DASHBOARD_PROVIDERS.map((provider) => provider.color);
+    expect(new Set(colors).size).toBe(colors.length);
+  });
 });

@@ -50,6 +50,19 @@ export const DASHBOARD_PROVIDERS: DashboardProvider[] = [
     auth: "x-goog-api-key",
     docsPath: "/docs",
   },
+  {
+    // The engine tags KIMI turns with this id, and the router publishes the same namespace.
+    // KIMI speaks the Anthropic Messages protocol, so its connection line is the Anthropic one.
+    // No glyph yet: `fallbackProvider` draws the initial, which is honest, and a borrowed logo
+    // would not be.
+    id: "kimi",
+    name: "Kimi",
+    api: "Anthropic Messages API",
+    color: "#b8348c",
+    endpoint: "router.apitoken.sale",
+    auth: "x-api-key",
+    docsPath: "/docs",
+  },
 ];
 
 /** Авто-карточка для провайдера, которого нет в реестре (например, «other»). */
