@@ -135,8 +135,16 @@ its exact activation ACK, and finally writes the one-way engine opt-out marker t
 servable at all, so the usable secret is returned last. Every step is idempotent under the
 issuance job's retry; any rejected ACK, credit failure or opt-out guard rejection aborts the
 issuance job, and the existing issuance compensation disables the half-provisioned engine
-account. Pre-existing OpenKeys accounts keep working on the release path — the retirement does
-not backfill them in this phase.
+account. Pre-existing OpenKeys accounts keep working on the release path until the bounded
+backfill sweep retires them (release-v2 retirement, phase 2.2): the internal admin endpoint
+`POST /api/internal/admin/strict-backfill` (`apps/openkeys/src/lib/strict-backfill.ts`)
+advances each warehouse-owned account — `openkeys` funding-class proof, shared strict-cutover
+preflight, exact-CAS activation of the same official 1:1 strict policy over the observed
+active policy, key re-stamp on the new head, one-way opt-out marker — idempotently,
+batch-limited (`limit`, `account_ids` canary list), one account's failure never blocking the
+batch, and service/meter-only accounts excluded by construction (they are never in
+`openkeys_keys`) and by the engine funding-class check. Ops sequence:
+`docs/ops/PRICING_RELEASE_BACKFILL.md`.
 
 The Stage 7 existing-inventory shadow-rollout lane (migration
 `0035_pricing_shadow_rollout_jobs.sql`) was removed with the dismantled release cycle: the

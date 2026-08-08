@@ -2,6 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import {
   getAdminEmailOutboxHealth,
   getAdminEngineCreditHealth,
+  getAdminPricingBackfillHealth,
   getAdminPricingJobHealth,
   getAdminWebhookHealth,
   type Database,
@@ -35,11 +36,12 @@ export class AdminPipelinesService {
   constructor(@Inject(DATABASE) private readonly database: Database) {}
 
   async pipelineHealth(): Promise<Record<string, unknown>> {
-    const [credits, webhooks, email, pricingJobs] = await Promise.all([
+    const [credits, webhooks, email, pricingJobs, pricingBackfill] = await Promise.all([
       getAdminEngineCreditHealth(this.database),
       getAdminWebhookHealth(this.database),
       getAdminEmailOutboxHealth(this.database),
       getAdminPricingJobHealth(this.database),
+      getAdminPricingBackfillHealth(this.database),
     ]);
 
     const badReasons: string[] = [];
@@ -107,6 +109,18 @@ export class AdminPipelinesService {
           status: row.status,
           attempts: row.attempts,
           last_error: row.lastError,
+        })),
+      },
+      // Прогресс release-v2 backfill (фаза 2.2). Не участвует в вердикте: это фоновый
+      // догоняющий lane, а не денежный pipeline — застрявший аккаунт просто остаётся на
+      // release path и ждёт разбора, риска для денег клиента нет.
+      pricing_backfill: {
+        counts: pricingBackfill.counts,
+        recent_failures: pricingBackfill.recentFailures.map((row) => ({
+          engine_account_id: row.engineAccountId,
+          account_class: row.accountClass,
+          last_error: row.lastError,
+          updated_at: row.updatedAt.toISOString(),
         })),
       },
     };

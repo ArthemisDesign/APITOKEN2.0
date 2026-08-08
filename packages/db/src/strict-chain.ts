@@ -59,6 +59,17 @@ export type AccountStrictChainAdvanceResult =
 
 export type StrictChainOptOutTransport = Pick<EngineClient, "optOutPricingReleaseV2">;
 
+/**
+ * Durable commerce-local proof that the engine opt-out marker landed for an account
+ * (audit_log, target = the engine account id). The existing-account backfill
+ * (`packages/db/src/pricing-backfill.ts`) uses it as its terminal "done" exclusion: the
+ * engine marker itself is not readable through the Control API, and the audit entry is
+ * written in the same transaction that disarms the chain flag, so a completed account can
+ * never re-enter a sweep. Self-healing: if the audit write were ever lost, the chain
+ * simply replays the opt-out (`unchanged`) and rewrites it.
+ */
+export const PRICING_RELEASE_OPT_OUT_AUDIT_ACTION = "pricing_release.opt_out";
+
 export async function listPendingStrictChainAccounts(
   database: Database,
   limit: number,
@@ -113,7 +124,41 @@ export async function optOutStrictChainAccount(
     reason: input.reason,
   });
   if (ack.result !== "rejected") {
-    await clearStrictChainPending(database, input.bindingId);
+    // Disarm + durable done-proof in one transaction: the backfill lane's candidate
+    // selection and the progress surface both read the audit entry as the terminal state.
+    const client = await database.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `
+        UPDATE account_policy_bindings SET strict_chain_pending = false, updated_at = now()
+        WHERE id = $1 AND strict_chain_pending
+      `,
+        [input.bindingId],
+      );
+      await client.query(
+        `
+        INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+        VALUES ('system', $1, $2, 'engine_account', $3, $4::jsonb)
+      `,
+        [
+          input.createdBy,
+          PRICING_RELEASE_OPT_OUT_AUDIT_ACTION,
+          input.engineAccountId,
+          JSON.stringify({
+            bindingId: input.bindingId,
+            result: ack.result,
+            reason: input.reason,
+          }),
+        ],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
     return "opted_out";
   }
   if (ack.code === "missing_dependency") return "awaiting_key";

@@ -60,6 +60,20 @@ test("advances flagged strict chains once the shadow delivery confirms", () => {
   assert.doesNotMatch(source, /UPDATE account_policy_bindings/);
 });
 
+test("runs the existing-account backfill arm lane on the slow sweep with canary knobs", () => {
+  // Phase 2.2 of the release-v2 retirement: the slow sweep arms a bounded page of eligible
+  // accounts into the SAME direct strict chain (never a fork) through the canonical database
+  // module; the enable flag, batch size and allowlist are env-driven for the canary sequence
+  // (docs/ops/PRICING_RELEASE_BACKFILL.md), and per-account armed/failed lines are logged.
+  assert.match(source, /await this\.flushPricingBackfill\(\);/);
+  assert.match(source, /if \(!this\.config\.get\("PRICING_BACKFILL_ENABLED", \{ infer: true \}\)\) return;/);
+  assert.match(source, /this\.config\.get\("PRICING_BACKFILL_BATCH_SIZE", \{ infer: true \}\)/);
+  assert.match(source, /this\.config\.get\("PRICING_BACKFILL_ACCOUNT_ALLOWLIST", \{ infer: true \}\)/);
+  assert.match(source, /runPricingBackfillSweep\(this\.database, this\.engine, \{/);
+  assert.match(source, /pricing backfill armed the direct strict chain for \$\{accountId\}/);
+  assert.match(source, /pricing backfill for \$\{failure\.engineAccountId\} cannot advance/);
+});
+
 test("re-stamps active keys with the exact new ACK after every strict policy activation", () => {
   // Strict request auth admits only keys stamped with the current policy head, so the delivery
   // worker must re-stamp before the job confirms — otherwise each strict activation (the

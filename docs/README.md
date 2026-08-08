@@ -60,6 +60,7 @@ document, update this index.
 - [DEPLOYMENT.md](ops/DEPLOYMENT.md) — production deployment runbook (operator-facing).
 - [INFRASTRUCTURE.md](ops/INFRASTRUCTURE.md) — production infrastructure and hosts.
 - [MODEL_RELEASE_CYCLE.md](ops/MODEL_RELEASE_CYCLE.md) — adding a model to the live pricing authority: dormant proof, hot tariff seed with the `is_model_unpriced` fallthrough (head 55 is the final pricing release; the release advance is retired), publication. Prices and discounts themselves are hot data and do not use this cycle.
+- [PRICING_RELEASE_BACKFILL.md](ops/PRICING_RELEASE_BACKFILL.md) — release-v2 retirement phase 2.2: canary-first backfill of existing commerce and OpenKeys accounts to the direct strict path (knobs, canary sequence, progress surface; service accounts intentionally stay on release).
 - [MONITORING.md](ops/MONITORING.md) — monitoring and alert runbook anchors (`docs/ops/MONITORING.md#<alert>`).
 - [REDIS.md](ops/REDIS.md) — Redis topology (both instances), standing rules for new consumers, and the ranked map of where Redis pays off next.
 - [DELETE_WORKTREE.md](ops/DELETE_WORKTREE.md) — permanent fail-closed cleanup of merged worktrees and explicitly registered clones on macOS.

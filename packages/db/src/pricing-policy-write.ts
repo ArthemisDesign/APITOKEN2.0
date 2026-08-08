@@ -1851,7 +1851,16 @@ export async function provisionBusinessClientPolicy(client: PoolClient, input: {
 export async function materializeProvisionedUserPolicy(database: Database, input: {
   userId: string;
   engineAccountId: string;
+}, options?: {
+  /**
+   * Registration provisioning (the default) arms the direct strict chain in the same
+   * transaction. The existing-account backfill passes `false`: it must prove
+   * release/strict equivalence BEFORE the chain is allowed to stage the cutover, so it
+   * arms the flag itself only after the check passes.
+   */
+  armStrictChain?: boolean;
 }): Promise<{ policyRequired: boolean; ready: boolean; jobId: string | null }> {
+  const armChain = options?.armStrictChain ?? true;
   const client = await database.pool.connect();
   try {
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
@@ -1987,7 +1996,7 @@ export async function materializeProvisionedUserPolicy(database: Database, input
         if (ready) {
           await client.query(`UPDATE engine_accounts SET status = 'active', updated_at = now() WHERE user_id = $1`, [input.userId]);
         }
-        await armDirectStrictChain(client, bindingRow.id);
+        if (armChain) await armDirectStrictChain(client, bindingRow.id);
         await linkRedeemedInvitation(client, input.userId, bindingRow.id, source.policy);
         await client.query("COMMIT");
         return { policyRequired: true, ready, jobId: desiredRow.job_id };
@@ -2061,7 +2070,7 @@ export async function materializeProvisionedUserPolicy(database: Database, input
       stagedSource.policy,
       stagedSource.catalogGeneration,
     );
-    await armDirectStrictChain(client, bindingRow.id);
+    if (armChain) await armDirectStrictChain(client, bindingRow.id);
     await linkRedeemedInvitation(client, input.userId, bindingRow.id, source.policy);
     await client.query("COMMIT");
     return { policyRequired: true, ready: false, jobId: staged.jobId };

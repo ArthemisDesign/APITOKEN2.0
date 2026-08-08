@@ -228,11 +228,12 @@ Service accounts have `billing_mode=meter_only`: all runtime-capable models are 
 usage and tariff lineage are preserved, but no balance reserve/debit is performed and a zero balance
 does not produce a 402. Restrictions of a specific domain live in that domain's code, not in the
 pricing policy. Service accounts deliberately stay on the release path in the release-v2 retirement
-(phase 2.1): the engine has no meter-only lane outside release-v2 — a rule-free strict policy admits
+(phases 2.1–2.2): the engine has no meter-only lane outside release-v2 — a rule-free strict policy admits
 nothing, managed discounts cap at 9500 bps so payable 0 is impossible, the legacy scalar lane cannot
 express meter-only and rejects zero-balance accounts, and an uncovered non-opted-out account is not
 served at all — so `ensureServicePricingReleaseProvisioningV2` keeps completing their exact
-`meter_only` policy/extension until the backfill phase or an engine meter-only lane exists.
+`meter_only` policy/extension until an engine meter-only lane exists (phase 3); the phase 2.2
+backfill deliberately excludes them (`docs/ops/PRICING_RELEASE_BACKFILL.md`).
 
 ## Referral commission
 
@@ -250,13 +251,37 @@ The fleet cutover completed on 2026-08-04 (release generation 13, one head CAS, 
 stop). New accounts complete the direct strict chain before a usable key is issued: a
 strict/strict/verified binding, a key born with the exact activation ACK, and the one-way
 `pricing_release_opt_out_ts` marker; existing accounts keep their release coverage until the
-backfill phase. B2B policy saves propagate through the assignment extension lane for
-release-covered accounts and through the policy_v1 delivery lane (`policy_owned`) for opted-out
+backfill lane retires them (phase 2.2, below). B2B policy saves propagate through the
+assignment extension lane for release-covered accounts and through the policy_v1 delivery
+lane (`policy_owned`) for opted-out
 accounts. Reservations started
 before the head CAS settled against their immutable reserve-time snapshots; legacy-format
 outbox rows completed without a drain. The recovery path is a forward CAS to the paired
 recovery generation, never a rollback to an old binary. The full runbook and evidence chain:
 `docs/commerce/MULTI_DISCOUNT_STAGE9.md`.
+
+## Existing-account backfill (release-v2 retirement, phase 2.2)
+
+The pre-existing fleet moves to the direct strict path through a bounded, resumable,
+canary-first backfill — never a bulk flip. The commerce lane lives in
+`packages/db/src/pricing-backfill.ts` and runs on the pricing worker's slow sweep
+(`PRICING_BACKFILL_ENABLED`, `PRICING_BACKFILL_BATCH_SIZE` default 5/pass,
+`PRICING_BACKFILL_ACCOUNT_ALLOWLIST` for canary mode). Per account it (1) re-materializes
+the managed policy at the live catalog head through the registration writer with arming
+disabled (B2C — the current `policy:main:global-b2c` head; B2B — the account's own
+`b2b_client` policy, per-model/provider scopes preserved exactly), (2) proves the mechanical
+equivalence — the release-side resolution (assignment extension over base, model → provider
+→ global) must equal the strict policy's payable multiplier at every scope; B2C is the
+5000-global identity, B2B is exact scope-set equality over normalized scope→payable maps
+(stored digests are never compared across the frozen v1/v2 domains) — and (3) arms the same
+`strict_chain_pending` direct chain new accounts use, which finishes with the one-way engine
+opt-out marker and a durable `pricing_release.opt_out` audit entry (the terminal "done" for
+candidate selection and the `pricing_backfill` section of `GET /v1/admin/pipeline-health`).
+A mismatch is skipped with `last_error`, never forced; per-account failures are isolated.
+Pre-existing OpenKeys accounts are swept by the bounded internal admin endpoint
+`POST /api/internal/admin/strict-backfill` in `apps/openkeys` (official 1:1 strict policy,
+key ACK, opt-out — idempotent). Service accounts intentionally remain on the release path
+(see "Service"). Ops sequence: `docs/ops/PRICING_RELEASE_BACKFILL.md`.
 
 ## Retired progressive machinery
 

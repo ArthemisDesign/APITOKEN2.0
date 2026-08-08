@@ -21,6 +21,7 @@ import {
   recoverStalePricingJobs,
   releasePricingControlJob,
   retryPricingJob,
+  runPricingBackfillSweep,
   type Database,
   type ClaimedPricingControlJob,
   type PricingControlJobDisposition,
@@ -160,6 +161,7 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
         // getPricingUsageCursor reconciles durable confirmed-credit accrual markers, including
         // refund/dispute reversal, before any engine network I/O. Keep one authority for that
         // mutation: a separate worker-side refund loop can subtract the same marker twice.
+        await this.flushPricingBackfill();
         const targets = await listPricingSyncTargets(this.database);
         for (const target of targets) {
           if (this.stopped) break;
@@ -454,6 +456,38 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
       } catch (error) {
         this.logger.error(`strict chain sweep failed for ${candidate.userId}: ${message(error)}`);
       }
+    }
+  }
+
+  /**
+   * The existing-account backfill of the release-v2 retirement (phase 2.2, runbook
+   * docs/ops/PRICING_RELEASE_BACKFILL.md): a bounded arm lane on the slow sweep. Each pass
+   * takes up to PRICING_BACKFILL_BATCH_SIZE eligible accounts (optionally restricted to the
+   * PRICING_BACKFILL_ACCOUNT_ALLOWLIST canary set), materializes the account's policy at the
+   * live catalog head, proves release/strict equivalence, and arms the SAME direct strict
+   * chain the fast tick already drives — nothing here forks or re-implements the chain.
+   * Per-account failures are recorded on the binding (last_error) by the canonical module
+   * and logged loudly; one account never blocks the others, and a completed account leaves
+   * the candidate set via the durable opt-out audit marker, so the lane is resumable and
+   * replay-safe. The per-account completion log line ("strict chain completed …") is
+   * emitted by flushPendingStrictChains when the engine opt-out marker lands.
+   */
+  private async flushPricingBackfill(): Promise<void> {
+    if (!this.config.get("PRICING_BACKFILL_ENABLED", { infer: true })) return;
+    const batchSize = this.config.get("PRICING_BACKFILL_BATCH_SIZE", { infer: true });
+    const allowlist = this.config.get("PRICING_BACKFILL_ACCOUNT_ALLOWLIST", { infer: true })
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+    const summary = await runPricingBackfillSweep(this.database, this.engine, {
+      limit: batchSize,
+      ...(allowlist.length > 0 ? { allowlist } : {}),
+    });
+    for (const accountId of summary.armed) {
+      this.logger.log(`pricing backfill armed the direct strict chain for ${accountId}`);
+    }
+    for (const failure of summary.failed) {
+      this.logger.error(`pricing backfill for ${failure.engineAccountId} cannot advance: ${failure.error}`);
     }
   }
 

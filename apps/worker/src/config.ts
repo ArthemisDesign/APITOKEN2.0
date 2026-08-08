@@ -18,6 +18,15 @@ const environmentSchema = z.object({
   // A newly provisioned account's policy is what the customer's first dashboard load waits on, so
   // that latency must not be a function of how many accounts the fleet already has.
   PRICING_DISPATCH_MS: z.coerce.number().int().min(250).max(60_000).default(2_000),
+  // Release-v2 retirement backfill (phase 2.2, docs/ops/PRICING_RELEASE_BACKFILL.md): the
+  // existing-account arm lane runs on the slow sweep, bounded per pass. Default ON — flip
+  // PRICING_BACKFILL_ENABLED=false to halt arming instantly (the strict chain itself keeps
+  // finishing already-armed accounts). The allowlist is a comma-separated list of engine
+  // account ids; empty means the full eligible sweep. Production starts in allowlist mode
+  // with 1–2 internal accounts before the full sweep.
+  PRICING_BACKFILL_ENABLED: z.enum(["true", "false"]).transform((value) => value === "true").default("true"),
+  PRICING_BACKFILL_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(5),
+  PRICING_BACKFILL_ACCOUNT_ALLOWLIST: z.string().default(""),
   EMAIL_DELIVERY_MODE: z.enum(["disabled", "smtp"]).default("disabled"),
   EMAIL_POLL_MS: z.coerce.number().int().min(100).default(1000),
   AUTH_TOKEN_ENCRYPTION_KEY: z.string().regex(/^[A-Za-z0-9_-]{43}$/),

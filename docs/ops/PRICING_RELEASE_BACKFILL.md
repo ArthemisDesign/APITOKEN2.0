@@ -1,0 +1,108 @@
+# Pricing release backfill — retiring existing accounts to the direct strict path (phase 2.2)
+
+The runbook for moving the PRE-EXISTING account fleet off the release pricing path. New
+accounts graduate at registration (phase 2.1, `docs/commerce/PRICING.md`); this lane handles
+everyone who already existed: commerce B2C/B2B accounts via the `apps/worker` arm lane, and
+pre-existing OpenKeys engine accounts via the admin-triggered sweep in `apps/openkeys`.
+Service accounts are intentionally OUT OF SCOPE — see the last section.
+
+## How the commerce lane works
+
+One slow-sweep pass of the pricing worker (`flushPricingBackfill` in
+`apps/worker/src/pricing-worker.service.ts`, canonical module
+`packages/db/src/pricing-backfill.ts`) takes up to `PRICING_BACKFILL_BATCH_SIZE` candidates
+and advances each independently:
+
+1. **Materialize** — the account's managed policy is re-pinned and materialized at the live
+   catalog head through the same writer registration uses
+   (`materializeProvisionedUserPolicy` with arming disabled): B2C takes the current head of
+   `policy:main:global-b2c`, B2B the account's own `b2b_client` policy with per-model/provider
+   scopes preserved exactly. Already-strict bindings skip this step.
+2. **Equivalence** — before anything is armed, the account's release-side resolution
+   (assignment extension over base, pinned policy, model → provider → global precedence —
+   the engine's own resolution order) must resolve every scope to exactly the payable
+   multiplier the strict policy charges. B2C is the 5000-global identity; B2B is exact
+   scope-set equality (both sides were built from the same `pricing_policy_rules` source; the
+   comparison walks normalized scope→payable maps, never the stored digests — they live in
+   different frozen digest domains). A mismatch is never forced: the account keeps its
+   release coverage, the reason lands on the binding's `last_error`, and the next pass
+   re-evaluates, so an operator fix is picked up automatically.
+3. **Arm** — `strict_chain_pending` is armed and the UNMODIFIED new-account strict chain
+   (`packages/db/src/strict-chain.ts`, fast tick) takes over: shared engine preflight,
+   durable strict staging once the shadow delivery confirms, then the one-way engine opt-out
+   marker. The opt-out disarms the flag and writes the durable `pricing_release.opt_out`
+   `audit_log` entry — the terminal "done" that removes the account from every future sweep.
+
+In-flight release reservations are not special-cased: the migration-0016 strict trigger
+rejects the engine-side flip while they drain, which surfaces as a retryable 503 in the
+control-job lane's exponential backoff — calm retries, never a hot loop, never a dead job.
+
+## Knobs (apps/worker env)
+
+- `PRICING_BACKFILL_ENABLED` (default `true`) — master switch for the arm lane. Flipping to
+  `false` halts NEW arming instantly; already-armed chains still finish (the chain flush is
+  independent), which is the desired drain behavior.
+- `PRICING_BACKFILL_BATCH_SIZE` (default `5`, max 100) — max accounts armed per slow-sweep
+  pass (pass cadence = `PRICING_POLL_MS`, default 60s).
+- `PRICING_BACKFILL_ACCOUNT_ALLOWLIST` (default empty) — comma-separated engine account ids.
+  Non-empty = canary mode: ONLY the listed accounts are ever armed.
+
+## Canary sequence (production)
+
+1. Deploy with `PRICING_BACKFILL_ENABLED=true`,
+   `PRICING_BACKFILL_ACCOUNT_ALLOWLIST=acct_<internal_1>,acct_<internal_2>` and
+   `PRICING_BACKFILL_BATCH_SIZE=2`. Nothing outside the list can move.
+2. Watch the two internal accounts through to done: worker log lines
+   `pricing backfill armed the direct strict chain for acct_…` →
+   `strict chain completed for <userId>: pricing release opt-out marker applied`, and the
+   `pricing_backfill` section of `GET /v1/admin/pipeline-health`
+   (`pending`/`in_flight`/`done`/`failed` counts plus the five most recent failures).
+3. Widen the allowlist to a second small cohort (a real B2C account, a B2B account with
+   model-scoped rules). Repeat the watch. A `failed` count with
+   `… resolves to N bp …` in `last_error` means a genuine pricing divergence between the
+   release policy and the strict policy — investigate the account, fix the divergence
+   (usually a stale assignment extension), and the lane re-checks it on the next pass.
+   Do NOT force accounts through.
+4. Clear `PRICING_BACKFILL_ACCOUNT_ALLOWLIST` (empty = full eligible sweep) and raise
+   `PRICING_BACKFILL_BATCH_SIZE` gradually (5 → 25). At ~173 eligible bindings the full
+   sweep drains in tens of passes; completion is `pending = 0, in_flight = 0, failed = 0`.
+5. Leave the lane ON after the sweep: it is the standing safety net for any account that
+   ever lands outside the registration chain (repairs, imports). An eligible set of zero
+   makes every pass a no-op.
+
+Rollback at any point: set `PRICING_BACKFILL_ENABLED=false`. Accounts already opted out stay
+opted out (the marker is one-way by design); armed-but-not-finished accounts finish their
+chain; everyone else simply keeps release coverage.
+
+## OpenKeys sweep
+
+Pre-existing OpenKeys engine accounts (owned in `openkeys_keys`, never service/meter-only by
+construction) are backfilled by the internal admin endpoint, one bounded batch per call:
+
+```
+POST /openkeys-admin/api/internal/admin/strict-backfill
+{ "limit": 5, "account_ids": ["acct_…", "acct_…"] }
+```
+
+(`account_ids` is the canary list; omit it for the warehouse-order sweep. Same Caddy
+managed-admin perimeter as the other `/api/internal/admin/*` routes.) Per account the sweep
+proves the `openkeys` funding class, runs the shared strict-cutover preflight, activates the
+deterministic official 1:1 strict policy by exact CAS over the observed active policy,
+re-stamps active keys on the new head, and writes the one-way opt-out marker. Every step is
+idempotent (already-official accounts skip straight to the opt-out, which replays as
+`unchanged`), one account's failure never blocks the batch, and a drain-blocked flip
+(engine 503) is simply retried by the next call. The response carries the per-account
+outcome (`opted_out`/`skipped`/`failed` with the reason). Suggested sequence: one internal
+warehouse account by `account_ids`, then `limit` 5 → 25 until a batch returns only
+`opted_out`/`skipped` with `candidates` below the limit.
+
+## Service accounts stay on release — intentionally
+
+Service accounts (`billing_mode=meter_only`) are excluded everywhere in this phase: the
+engine has no meter-only lane outside release-v2, so there is no strict state to move them
+to. The commerce lane excludes them twice (the binding identity CHECK never gives a service
+binding a `user_id`, and candidates are additionally probed against
+`service_account_inventory_v2`); the OpenKeys sweep requires the engine funding snapshot to
+prove `account_class='openkeys'` before any mutation. They remain on the release path until
+the engine meter-only lane lands (phase 3) — `ensureServicePricingReleaseProvisioningV2`
+keeps completing their exact `meter_only` policy/extension as today.

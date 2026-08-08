@@ -6,6 +6,7 @@ vi.mock("@claude-api/db", async (importOriginal) => {
     ...actual,
     getAdminEmailOutboxHealth: vi.fn(),
     getAdminEngineCreditHealth: vi.fn(),
+    getAdminPricingBackfillHealth: vi.fn(),
     getAdminPricingJobHealth: vi.fn(),
     getAdminWebhookHealth: vi.fn(),
   };
@@ -14,10 +15,12 @@ vi.mock("@claude-api/db", async (importOriginal) => {
 import {
   getAdminEmailOutboxHealth,
   getAdminEngineCreditHealth,
+  getAdminPricingBackfillHealth,
   getAdminPricingJobHealth,
   getAdminWebhookHealth,
   type AdminEmailOutboxHealth,
   type AdminEngineCreditHealth,
+  type AdminPricingBackfillHealth,
   type AdminPricingJobHealth,
   type AdminWebhookHealth,
 } from "@claude-api/db";
@@ -27,6 +30,7 @@ const creditsMock = vi.mocked(getAdminEngineCreditHealth);
 const webhooksMock = vi.mocked(getAdminWebhookHealth);
 const emailMock = vi.mocked(getAdminEmailOutboxHealth);
 const pricingJobsMock = vi.mocked(getAdminPricingJobHealth);
+const pricingBackfillMock = vi.mocked(getAdminPricingBackfillHealth);
 
 // db-слой замокан на уровне функций-репозиториев, поэтому Database не используется.
 const service = new AdminPipelinesService({} as never);
@@ -58,16 +62,25 @@ function healthyPricingJobs(): AdminPricingJobHealth {
   };
 }
 
+function healthyPricingBackfill(): AdminPricingBackfillHealth {
+  return {
+    counts: { eligible: 0, inFlight: 0, done: 0, failed: 0, pending: 0 },
+    recentFailures: [],
+  };
+}
+
 function mockAll(overrides: {
   credits?: AdminEngineCreditHealth;
   webhooks?: AdminWebhookHealth;
   email?: AdminEmailOutboxHealth;
   pricingJobs?: AdminPricingJobHealth;
+  pricingBackfill?: AdminPricingBackfillHealth;
 } = {}): void {
   creditsMock.mockResolvedValue(overrides.credits ?? healthyCredits());
   webhooksMock.mockResolvedValue(overrides.webhooks ?? healthyWebhooks());
   emailMock.mockResolvedValue(overrides.email ?? healthyEmail());
   pricingJobsMock.mockResolvedValue(overrides.pricingJobs ?? healthyPricingJobs());
+  pricingBackfillMock.mockResolvedValue(overrides.pricingBackfill ?? healthyPricingBackfill());
 }
 
 beforeEach(() => {
@@ -121,6 +134,17 @@ describe("admin pipeline health mapping", () => {
         oldestUnconfirmedCreatedAt: oldestJob,
         oldestUnconfirmedAgeSeconds: 259200,
       },
+      pricingBackfill: {
+        counts: { eligible: 3, inFlight: 1, done: 1, failed: 1, pending: 0 },
+        recentFailures: [
+          {
+            engineAccountId: "acct_mismatch",
+            accountClass: "b2c",
+            lastError: "global rule resolves to 4000",
+            updatedAt: receivedAt,
+          },
+        ],
+      },
     });
 
     const value = await service.pipelineHealth() as Record<string, any>;
@@ -169,6 +193,17 @@ describe("admin pipeline health mapping", () => {
           status: "processing",
           attempts: 2,
           last_error: "engine 502",
+        },
+      ],
+    });
+    expect(value.pricing_backfill).toEqual({
+      counts: { eligible: 3, inFlight: 1, done: 1, failed: 1, pending: 0 },
+      recent_failures: [
+        {
+          engine_account_id: "acct_mismatch",
+          account_class: "b2c",
+          last_error: "global rule resolves to 4000",
+          updated_at: receivedAt.toISOString(),
         },
       ],
     });

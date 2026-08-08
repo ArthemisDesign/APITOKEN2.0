@@ -19,6 +19,7 @@ export * from "./pricing-policy-write.js";
 export * from "./pricing-control-jobs.js";
 export * from "./pricing-control-notify.js";
 export * from "./strict-chain.js";
+export * from "./pricing-backfill.js";
 export * from "./pricing-release-override-v2.js";
 export * from "./service-account-inventory-v2.js";
 export * from "./multi-discount-backfill.js";
