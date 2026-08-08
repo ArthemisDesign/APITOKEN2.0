@@ -1996,6 +1996,7 @@ impl PricedTurn {
             },
             web_search_requests: 0,
             real_nano: clamp(self.total),
+            charge_basis_nano: clamp(self.total),
             speed: "standard".to_string(),
             inference_geo: String::new(),
             input_nano: clamp(self.input),

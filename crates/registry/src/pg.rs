@@ -895,8 +895,17 @@ fn postgres_process_policy_settlement(
         let provider = usage
             .map(|value| value.provider.as_str())
             .unwrap_or_else(|| snapshot.provider().as_str());
+        // The official price of what the customer was billed for. Equal to the full turn everywhere
+        // except a `max_tokens` overshoot, where the customer is charged only up to the ceiling it
+        // asked for: recording the full generation here made `amount_nano / official_nano` disagree
+        // with the multiplier on the same row and fired PricingChargeMismatch on rows where both
+        // numbers were individually correct. The absorbed overage stays visible as the gap to
+        // `usage_events.real_nano`.
         let official_nano = usage
-            .map(|value| value.real_nano)
+            .map(|value| match value.charge_basis_nano {
+                0 => value.real_nano,
+                basis => basis,
+            })
             .unwrap_or_else(|| snapshot.official_hold_nano());
         let ledger_id: i64 = tx
             .query_one(
@@ -1090,8 +1099,12 @@ fn postgres_process_pricing_release_settlement_v2(
         let model = usage
             .map(|event| event.model.as_str())
             .unwrap_or(snapshot.canonical_model_id.as_str());
+        // Same basis rule as the ledger write above: bill-side official, not the full generation.
         let official_nano = usage
-            .map(|event| event.real_nano)
+            .map(|event| match event.charge_basis_nano {
+                0 => event.real_nano,
+                basis => basis,
+            })
             .unwrap_or(snapshot.official_hold_nano);
         let (rule_id, rule_digest, rule_scope, discount_bps, payable_multiplier_bp) = snapshot
             .rule
@@ -3295,6 +3308,7 @@ impl PgStore {
                     cache_write_1h_tokens: row.get(8),
                     web_search_requests: row.get(9),
                     real_nano: row.get(10),
+                    charge_basis_nano: row.get(10),
                     speed: row.get(11),
                     inference_geo: row.get(12),
                     input_nano: row.get(13),
@@ -3324,6 +3338,7 @@ impl PgStore {
             cache_write_1h_tokens: row.get(8),
             web_search_requests: row.get(9),
             real_nano: row.get(10),
+            charge_basis_nano: row.get(10),
             speed: row.get(11),
             inference_geo: row.get(12),
             input_nano: row.get(13),

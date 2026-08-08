@@ -1450,6 +1450,7 @@ fn settled_openai_image_charge_with_prices(
         cache_write_1h_tokens: 0,
         web_search_requests: 0,
         real_nano: real_nano.min(i64::MAX as i128) as i64,
+        charge_basis_nano: real_nano.min(i64::MAX as i128) as i64,
         speed: "standard".to_owned(),
         inference_geo: String::new(),
         input_nano: input_nano.min(i64::MAX as i128) as i64,
@@ -1648,6 +1649,10 @@ fn settled_charge_with_prices(
         cache_write_1h_tokens: priced.cache_write_input.min(i64::MAX as u64) as i64,
         web_search_requests: 0,
         real_nano: priced.real_nano.min(i64::MAX as i128) as i64,
+        // What the customer is billed for: the capped slice when the model overshot the ceiling it
+        // asked for. The ledger's multiplier invariant is checked against this, while the full
+        // `real_nano` above keeps the pool's absorbed overage measurable.
+        charge_basis_nano: charge_basis_nano.min(i64::MAX as i128) as i64,
         speed: if fast { "fast" } else { "standard" }.to_string(),
         inference_geo: String::new(),
         input_nano: priced.input_nano.min(i64::MAX as i128) as i64,
@@ -2809,6 +2814,54 @@ mod tests {
         );
         assert_eq!(charge as i128, hold as i128 + metering::OVERDRAFT_NANO);
         assert!(event.is_some());
+    }
+
+    /// A customer that caps its turn with `max_tokens` is billed to that ceiling and no further, but
+    /// the ledger must still be able to prove the amount matches the multiplier it declares.
+    /// Recording the full generation as the official price put those two numbers on different bases
+    /// and made the production invariant check report a money defect on rows where both were right.
+    #[test]
+    fn a_capped_turn_reports_the_billed_basis_and_keeps_the_full_cost_visible() {
+        let usage = CodexUsage {
+            input_tokens: 300,
+            output_tokens: 20_000,
+            ..CodexUsage::default()
+        };
+        let (charge, event) = settled_charge(
+            &settlement_model(),
+            &usage,
+            i64::MAX,
+            1_500,
+            Some(4_000),
+            0,
+            false,
+            CodexSettlementPricing::LegacyScalar,
+        );
+        let event = event.expect("a priced turn emits a usage event");
+
+        // The full generation stays recorded — that is what the pool actually paid for.
+        assert_eq!(event.output_tokens, 20_000);
+        assert!(event.real_nano > event.charge_basis_nano);
+        // The charge is exactly the declared multiplier of the billed basis: the invariant that
+        // production checks on every settled row.
+        assert_eq!(
+            charge as i128,
+            metering::apply_multiplier(event.charge_basis_nano as i128, 1_500)
+        );
+
+        // An uncapped turn leaves both figures identical, so nothing changes elsewhere.
+        let (_, uncapped) = settled_charge(
+            &settlement_model(),
+            &usage,
+            i64::MAX,
+            1_500,
+            None,
+            0,
+            false,
+            CodexSettlementPricing::LegacyScalar,
+        );
+        let uncapped = uncapped.expect("a priced turn emits a usage event");
+        assert_eq!(uncapped.real_nano, uncapped.charge_basis_nano);
     }
 
     #[test]

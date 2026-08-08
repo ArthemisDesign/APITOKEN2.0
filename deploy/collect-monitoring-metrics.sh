@@ -71,6 +71,8 @@ cat >"$temporary" <<'METRICS'
 # TYPE apitoken_pricing_policy_failed gauge
 # HELP apitoken_pricing_charge_mismatch Settled charges whose amount does not match the multiplier the same row declares.
 # TYPE apitoken_pricing_charge_mismatch gauge
+# HELP apitoken_pricing_output_overage_absorbed_nano Provider cost of output generated past the ceiling a customer asked for, absorbed by the pool in the last hour.
+# TYPE apitoken_pricing_output_overage_absorbed_nano gauge
 # HELP apitoken_pricing_effective_multiplier_bp Basis points actually charged against the official price, by account class.
 # TYPE apitoken_pricing_effective_multiplier_bp gauge
 METRICS
@@ -146,6 +148,17 @@ WITH settled AS (
 SELECT 'apitoken_pricing_effective_multiplier_bp{account_class="' || account_class || '"} '
        || round(avg(charged_ratio) * 10000)
 FROM settled GROUP BY account_class;
+-- A customer that sends `max_tokens` is billed only up to that ceiling, exactly as the emulated
+-- API would bill it, but this transport cannot stop generation: the provider may overshoot and the
+-- pool eats the difference. That absorption used to be invisible, and the only thing that surfaced
+-- it was PricingChargeMismatch firing on rows where both numbers were individually correct. Measure
+-- it directly instead, as the gap between what the provider produced and what was billable.
+SELECT 'apitoken_pricing_output_overage_absorbed_nano ' || COALESCE(SUM(real_nano - charge_basis)::bigint, 0)
+FROM (
+  SELECT u.real_nano, LEAST(l.official_nano, u.real_nano) AS charge_basis
+  FROM usage_events u JOIN ledger l ON l.request_id = u.request_id AND l.kind = 'charge'
+  WHERE u.ts > EXTRACT(EPOCH FROM now())::bigint - 3600 AND u.real_nano > 0
+) absorbed;
 SELECT 'apitoken_engine_expired_active_leases ' || (
   (SELECT count(*) FROM capacity_leases WHERE state = 'active' AND lease_until < EXTRACT(EPOCH FROM now())::bigint)
   + (SELECT count(*) FROM reservations WHERE state IN ('reserved','delivering','settlement_pending') AND lease_until < EXTRACT(EPOCH FROM now())::bigint)

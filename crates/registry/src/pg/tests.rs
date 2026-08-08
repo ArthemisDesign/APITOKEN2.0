@@ -52,6 +52,7 @@ fn release_settlement_preserves_provider_adapter_customer_cap() {
         model: "provider-model".into(),
         provider: crate::PROVIDER_OPENAI.into(),
         real_nano: 30_500_000,
+        charge_basis_nano: 30_500_000,
         output_tokens: 1_000,
         ..UsageEventInput::default()
     };
@@ -77,6 +78,7 @@ fn release_settlement_fails_closed_on_lineage_and_meter_only_debit() {
     let wrong_provider = UsageEventInput {
         provider: crate::PROVIDER_GOOGLE.into(),
         real_nano: 1,
+        charge_basis_nano: 1,
         ..UsageEventInput::default()
     };
     assert!(pricing_release_settlement_actual_v2(
@@ -5706,6 +5708,7 @@ fn pricing_release_runtime_v2_postgres_matrix() {
         input_tokens: 8,
         output_tokens: 4,
         real_nano: 80,
+        charge_basis_nano: 80,
         input_nano: 40,
         output_nano: 40,
         priced_ts: admission_ts,
@@ -5821,6 +5824,7 @@ fn pricing_release_runtime_v2_postgres_matrix() {
         provider: crate::PROVIDER_GOOGLE.into(),
         input_tokens: 10,
         real_nano: 500,
+        charge_basis_nano: 500,
         input_nano: 500,
         priced_ts: admission_ts,
         ..UsageEventInput::default()
@@ -6732,6 +6736,7 @@ fn pricing_release_ledger_attribution_v2_postgres_matrix() {
         input_tokens: 8,
         output_tokens: 4,
         real_nano: 160,
+        charge_basis_nano: 160,
         input_nano: 80,
         output_nano: 80,
         priced_ts: admission_ts,
@@ -6956,6 +6961,7 @@ fn pricing_release_ledger_attribution_v2_postgres_matrix() {
         provider: crate::PROVIDER_GOOGLE.into(),
         input_tokens: 10,
         real_nano: 500,
+        charge_basis_nano: 500,
         input_nano: 500,
         priced_ts: admission_ts,
         ..UsageEventInput::default()
@@ -8990,6 +8996,7 @@ fn stage2_fault_matrix() {
                 cache_write_1h_tokens: 15,
                 web_search_requests: 16,
                 real_nano: 180,
+                charge_basis_nano: 180,
                 speed: "fast".into(),
                 inference_geo: "us-east".into(),
                 input_nano: 21,
@@ -9493,6 +9500,7 @@ fn stage2_fault_matrix() {
         input_tokens: 10,
         output_tokens: 20,
         real_nano: 200,
+        charge_basis_nano: 200,
         ..Default::default()
     };
     assert_eq!(

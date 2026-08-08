@@ -2375,6 +2375,7 @@ impl PricedTurn {
             },
             web_search_requests: 0,
             real_nano: clamp(self.total),
+            charge_basis_nano: clamp(self.total),
             speed: if served_model.eq_ignore_ascii_case("kimi-k2.7-code-highspeed") {
                 "highspeed".to_string()
             } else {

@@ -619,6 +619,7 @@ impl TeeMeter {
                     cache_write_1h_tokens: usage.cache_write_1h_tokens as i64,
                     web_search_requests: usage.web_search_requests as i64,
                     real_nano: real.clamp(0, i64::MAX as i128) as i64,
+                    charge_basis_nano: real.clamp(0, i64::MAX as i128) as i64,
                     speed: if fast { "fast" } else { "standard" }.to_string(),
                     inference_geo: if us_inference {
                         "us".to_string()

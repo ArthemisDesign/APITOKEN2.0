@@ -3843,7 +3843,16 @@ pub struct UsageEventInput {
     pub cache_write_5m_tokens: i64,
     pub cache_write_1h_tokens: i64,
     pub web_search_requests: i64,
+    /// Official price of the full turn the provider actually produced.
     pub real_nano: i64,
+    /// Official price of the slice the customer is billed for. Equal to `real_nano` everywhere
+    /// except a turn the customer capped with `max_tokens`: the transport cannot stop generation,
+    /// so the provider may overshoot, and the customer is charged only up to the ceiling it asked
+    /// for — exactly what the emulated API would bill. Keeping both figures is what lets the
+    /// ledger's multiplier invariant hold on the billed basis while the absorbed overage stays
+    /// visible as the difference between the two.
+    #[serde(default)]
+    pub charge_basis_nano: i64,
     pub speed: String,
     pub inference_geo: String,
     pub input_nano: i64,

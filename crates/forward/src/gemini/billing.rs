@@ -1284,6 +1284,7 @@ fn settled_charge_with_prices(
         cache_write_1h_tokens: 0,
         web_search_requests: search_requests.min(i64::MAX as u64) as i64,
         real_nano: clamp(real),
+        charge_basis_nano: clamp(real),
         speed: "standard".to_string(),
         inference_geo: String::new(),
         input_nano: clamp(input_nano),

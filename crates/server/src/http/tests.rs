@@ -5310,6 +5310,7 @@ async fn spend_stats_includes_served_model_breakdown() {
     let usage = registry::UsageEventInput {
         model: "claude-opus-5".into(),
         real_nano: 100_000_000,
+        charge_basis_nano: 100_000_000,
         ..Default::default()
     };
     registry::usage_event_add(&conn, "acct", None, &usage, 50_000_000, Some("r1")).unwrap();
@@ -5414,6 +5415,7 @@ async fn spend_stats_custom_range_aggregates_window() {
     let usage = registry::UsageEventInput {
         model: "claude-opus-5".into(),
         real_nano: 100_000_000,
+        charge_basis_nano: 100_000_000,
         ..Default::default()
     };
     registry::usage_event_add(&conn, "acct", None, &usage, 50_000_000, Some("r1")).unwrap();

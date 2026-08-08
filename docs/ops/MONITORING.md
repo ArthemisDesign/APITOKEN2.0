@@ -993,6 +993,18 @@ that same row, by more than the one basis point of tolerance integer rounding ne
 customer was overcharged or revenue was lost, so treat it as a money defect rather than a
 reporting one.
 
+`official_nano` is the official price of **what the customer was billed for**, not always of what
+the provider produced. They differ on one path: a customer that caps its turn with `max_tokens` is
+charged only up to that ceiling — exactly what the emulated API would bill, since there hitting the
+cap stops generation — while this transport cannot stop generation and the provider may overshoot.
+The pool absorbs that overage. Before 2026-08-08 the full generation was recorded as the official
+price, so those rows tripped this alert while both of their numbers were individually correct; on
+2026-08-08 it saw four `gpt-5.6-sol` turns whose output ran 5.6k-21.5k tokens against a ~4k cap.
+The absorbed cost is now its own signal, `apitoken_pricing_output_overage_absorbed_nano`, measured
+as the gap between `usage_events.real_nano` (full generation) and `ledger.official_nano` (billable
+slice). A rising value is a supply-side cost to investigate, not a billing defect — this alert
+firing still means a real mismatch.
+
 Find the rows and read what they claim:
 
 ```sql

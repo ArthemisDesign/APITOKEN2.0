@@ -3051,6 +3051,7 @@ fn usage_events_aggregate_by_model() {
         cache_write_1h_tokens: 50,
         web_search_requests: 2,
         real_nano: 20_000_000,
+        charge_basis_nano: 20_000_000,
         ..Default::default()
     };
     usage_event_add(&c, "a", Some("k"), &opus, 8_000_000, Some("req1")).unwrap();
@@ -3060,6 +3061,7 @@ fn usage_events_aggregate_by_model() {
         input_tokens: 300,
         output_tokens: 100,
         real_nano: 5_000_000,
+        charge_basis_nano: 5_000_000,
         ..Default::default()
     };
     usage_event_add(&c, "a", Some("k"), &sonnet, 2_000_000, Some("req3")).unwrap();
@@ -3097,6 +3099,7 @@ fn usage_report_uses_one_exact_window_for_daily_and_key_totals() {
         model: "claude-opus-4-8".into(),
         input_tokens: 10,
         real_nano: 20_000_000,
+        charge_basis_nano: 20_000_000,
         input_nano: 20_000_000,
         ..Default::default()
     };
@@ -3105,6 +3108,7 @@ fn usage_report_uses_one_exact_window_for_daily_and_key_totals() {
         provider: PROVIDER_OPENAI.into(),
         output_tokens: 10,
         real_nano: 30_000_000,
+        charge_basis_nano: 30_000_000,
         output_nano: 30_000_000,
         ..Default::default()
     };
@@ -3112,6 +3116,7 @@ fn usage_report_uses_one_exact_window_for_daily_and_key_totals() {
         model: "claude-sonnet-5".into(),
         cache_read_tokens: 10,
         real_nano: 5_000_000,
+        charge_basis_nano: 5_000_000,
         cache_read_nano: 5_000_000,
         ..Default::default()
     };
@@ -3204,12 +3209,14 @@ fn spend_is_attributed_to_the_serving_provider() {
         model: "claude-opus-5".into(),
         provider: PROVIDER_ANTHROPIC.into(),
         real_nano: 20_000_000,
+        charge_basis_nano: 20_000_000,
         ..Default::default()
     };
     let codex = UsageEventInput {
         model: "gpt-5.6".into(),
         provider: PROVIDER_OPENAI.into(),
         real_nano: 5_000_000,
+        charge_basis_nano: 5_000_000,
         ..Default::default()
     };
     usage_event_add(&c, "a", Some("k"), &claude, 8_000_000, Some("req1")).unwrap();
@@ -3238,6 +3245,7 @@ fn usage_written_before_attribution_reads_as_the_claude_fleet() {
     let legacy = UsageEventInput {
         model: "claude-opus-5".into(),
         real_nano: 1_000_000,
+        charge_basis_nano: 1_000_000,
         ..Default::default()
     };
     usage_event_add(&c, "a", Some("k"), &legacy, 1_000_000, Some("req1")).unwrap();
@@ -3265,12 +3273,14 @@ fn spend_is_broken_down_by_served_model() {
     let opus = UsageEventInput {
         model: "claude-opus-5".into(),
         real_nano: 20_000_000,
+        charge_basis_nano: 20_000_000,
         ..Default::default()
     };
     let gpt = UsageEventInput {
         model: "gpt-5.6".into(),
         provider: PROVIDER_OPENAI.into(),
         real_nano: 5_000_000,
+        charge_basis_nano: 5_000_000,
         ..Default::default()
     };
     usage_event_add(&c, "a", Some("k"), &opus, 8_000_000, Some("req1")).unwrap();
@@ -3304,6 +3314,7 @@ fn spend_range_honors_upper_bound() {
     let usage = UsageEventInput {
         model: "claude-opus-5".into(),
         real_nano: 10_000_000,
+        charge_basis_nano: 10_000_000,
         ..Default::default()
     };
     for (i, ts) in [1_000i64, 2_000, 3_000].iter().enumerate() {
@@ -3466,6 +3477,7 @@ fn settle_writes_usage_event_in_same_tx() {
         input_tokens: 100,
         output_tokens: 50,
         real_nano: 5_000_000,
+        charge_basis_nano: 5_000_000,
         ..Default::default()
     };
     account_settle(
@@ -3546,6 +3558,7 @@ fn hot_batch_sequential_and_atomic() {
         model: "claude-opus-4-8".into(),
         input_tokens: 10,
         real_nano: 1000,
+        charge_basis_nano: 1000,
         ..Default::default()
     };
     let ops2 = vec![
@@ -4168,6 +4181,7 @@ fn strict_policy_reserve_settlement_and_topup_preserve_funding_identity() {
         provider: PROVIDER_ANTHROPIC.into(),
         input_tokens: 1,
         real_nano: 600,
+        charge_basis_nano: 600,
         input_nano: 600,
         priced_ts: admission_ts,
         speed: "standard".into(),
