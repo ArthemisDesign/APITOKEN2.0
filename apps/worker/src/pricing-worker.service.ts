@@ -486,6 +486,9 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
     for (const accountId of summary.armed) {
       this.logger.log(`pricing backfill armed the direct strict chain for ${accountId}`);
     }
+    for (const accountId of summary.armedWithoutReleaseCoverage) {
+      this.logger.log(`pricing backfill for ${accountId}: no release coverage; direct path only`);
+    }
     for (const failure of summary.failed) {
       this.logger.error(`pricing backfill for ${failure.engineAccountId} cannot advance: ${failure.error}`);
     }

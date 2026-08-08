@@ -70,7 +70,10 @@ export type PricingBackfillCandidate = {
 
 export type PricingBackfillAdvanceResult =
   // The chain flag is armed; the existing fast-tick strict chain owns the account from here.
-  | { status: "armed" }
+  // `noReleaseCoverage` marks accounts that had no release assignment/extension at all (the
+  // broken-window cohort): their equivalence gate was skipped by design — the release
+  // resolver already fails closed on them today, exactly like phase-2.1 new accounts.
+  | { status: "armed"; noReleaseCoverage: boolean }
   // A precondition failed loudly; last_error is recorded and the next pass re-evaluates.
   | { status: "failed"; error: string };
 
@@ -78,6 +81,8 @@ export type PricingBackfillSweepSummary = {
   examined: number;
   /** Engine account ids whose strict chain was armed during this pass. */
   armed: string[];
+  /** Armed accounts with NO release coverage under the active head (gate skipped by design). */
+  armedWithoutReleaseCoverage: string[];
   /** Per-account failures, isolated: one account never blocks the others. */
   failed: Array<{ engineAccountId: string; error: string }>;
 };
@@ -316,11 +321,21 @@ export function assertReleaseStrictEquivalence(input: {
   }
 }
 
-/** The release assignment the account resolves under: the head-pinned extension wins over the base. */
+/**
+ * The release assignment the account resolves under: the head-pinned extension wins over the base.
+ * Returns null ONLY when the account has no release coverage at all under the active head
+ * (no extension and no base assignment) — accounts registered in the window between the
+ * extension-removal and the backfill have a confirmed commerce binding but were never
+ * written into the release authority, and the release resolver already fails closed on them
+ * today: there is no release-side resolution to diverge from, exactly like a phase-2.1
+ * new account. Every OTHER anomaly (moved head, unreadable release/policy, digest drift,
+ * extension contract violation) stays a hard equivalence error — a present-but-divergent
+ * assignment must keep blocking.
+ */
 async function resolveAccountReleasePolicy(
   engine: PricingBackfillReleaseTransport,
   accountId: string,
-): Promise<PricingReleasePolicyV2> {
+): Promise<PricingReleasePolicyV2 | null> {
   const head = await engine.getPricingReleaseHeadV2();
   if (head === null) {
     throw new PricingBackfillEquivalenceError("engine has no active pricing release head");
@@ -343,9 +358,12 @@ async function resolveAccountReleasePolicy(
       throw new PricingBackfillEquivalenceError("pricing release head moved during the equivalence check");
     }
     assignment = release.assignments.find((candidate) => candidate.account_id === accountId);
-    if (assignment === undefined) {
-      throw new PricingBackfillEquivalenceError("account has no assignment in the active pricing release");
-    }
+  }
+  if (assignment === undefined) {
+    // Pin the head before concluding "no coverage": a head CAS between the probe reads could
+    // have carried the account's first assignment under a newer head.
+    await assertReleaseHeadUnchanged(engine, head);
+    return null;
   }
   const policy = await engine.getPricingReleasePolicyV2(assignment.policy_id, assignment.policy_version);
   if (policy === null) {
@@ -361,6 +379,14 @@ async function resolveAccountReleasePolicy(
   // The whole check is pinned to ONE head: a head CAS between the first read and here (an
   // operator event) could have re-pinned the assignment/extension under a newer head while we
   // compared against the old one. Re-read the head and refuse — the next pass re-checks.
+  await assertReleaseHeadUnchanged(engine, head);
+  return policy;
+}
+
+async function assertReleaseHeadUnchanged(
+  engine: PricingBackfillReleaseTransport,
+  head: { active_generation: number; active_digest: string; head_version: number },
+): Promise<void> {
   const closingHead = await engine.getPricingReleaseHeadV2();
   if (
     closingHead === null
@@ -370,7 +396,6 @@ async function resolveAccountReleasePolicy(
   ) {
     throw new PricingBackfillEquivalenceError("pricing release head moved during the equivalence check");
   }
-  return policy;
 }
 
 async function notePricingBackfillFailure(
@@ -407,7 +432,12 @@ async function notePricingBackfillFailure(
  *    mirror sync instead — their enforced policy is already the desired one);
  * 4. prove release/strict equivalence, now including the engine-side scalar convergence —
  *    this is what makes the alignment provably land BEFORE the chain (and therefore the
- *    opt-out marker) is allowed to proceed;
+ *    opt-out marker) is allowed to proceed. The scope-walk gate is skipped ONLY for
+ *    accounts with no release coverage at all under the active head (no extension, no base
+ *    assignment): the release resolver already fails closed on them today, so there is no
+ *    release-side resolution to diverge from — they proceed exactly like phase-2.1 new
+ *    accounts, and the skip is reported (`noReleaseCoverage`). A present-but-divergent
+ *    assignment keeps blocking;
  * 5. arm the shared strict chain.
  *
  * Typed precondition failures are recorded on the binding and returned; transport failures
@@ -418,7 +448,7 @@ export async function advancePricingBackfillAccount(
   engine: PricingBackfillReleaseTransport,
   candidate: PricingBackfillCandidate,
 ): Promise<PricingBackfillAdvanceResult> {
-  let releasePolicy: PricingReleasePolicyV2;
+  let releasePolicy: PricingReleasePolicyV2 | null;
   try {
     releasePolicy = await resolveAccountReleasePolicy(engine, candidate.engineAccountId);
   } catch (error) {
@@ -427,7 +457,11 @@ export async function advancePricingBackfillAccount(
     }
     throw error;
   }
-  const fallbackBp = deriveReleaseFallbackBp(releasePolicy);
+  // With no release coverage there is no policy to derive from: the class identity is the
+  // faithful fallback (B2C 5000, B2B full price — the same default provisioning uses).
+  const fallbackBp = releasePolicy === null
+    ? (candidate.accountClass === "b2c" ? B2C_GLOBAL_PAYABLE_BP : STRICT_B2B_FALLBACK_BP)
+    : deriveReleaseFallbackBp(releasePolicy);
   await engine.setAccountMultiplier(candidate.engineAccountId, fallbackBp);
 
   if (candidate.policyEnforcement === "strict") {
@@ -490,19 +524,25 @@ export async function advancePricingBackfillAccount(
     [candidate.bindingId, desired],
   );
   try {
-    assertReleaseStrictEquivalence({
-      accountClass: candidate.accountClass,
-      // The strict fallback the engine will apply after the opt-out IS the aligned scalar —
-      // use the derived release fallback, not the (just overwritten) commerce mirror.
-      strictFallbackBp: fallbackBp,
-      strictRules: rules.rows.map((rule) => ({
-        scopeType: rule.scope_type,
-        providerId: rule.provider_id,
-        canonicalModelId: rule.canonical_model_id,
-        payableMultiplierBp: rule.payable_multiplier_bp,
-      })),
-      releasePolicy,
-    });
+    // The scope-walk gate applies ONLY to accounts with release coverage: an account with no
+    // assignment/extension under the active head is unservable-by-design on the release path
+    // today, so there is no release-side resolution to diverge from — it proceeds like a
+    // phase-2.1 new account. A present-but-divergent assignment still blocks in here.
+    if (releasePolicy !== null) {
+      assertReleaseStrictEquivalence({
+        accountClass: candidate.accountClass,
+        // The strict fallback the engine will apply after the opt-out IS the aligned scalar —
+        // use the derived release fallback, not the (just overwritten) commerce mirror.
+        strictFallbackBp: fallbackBp,
+        strictRules: rules.rows.map((rule) => ({
+          scopeType: rule.scope_type,
+          providerId: rule.provider_id,
+          canonicalModelId: rule.canonical_model_id,
+          payableMultiplierBp: rule.payable_multiplier_bp,
+        })),
+        releasePolicy,
+      });
+    }
     // The ordering proof: the engine scalar must observably equal the aligned fallback
     // before the chain is armed — a concurrent re-point (e.g. an admin multiplier save)
     // between the write above and this read blocks the arm and is retried next pass.
@@ -530,7 +570,7 @@ export async function advancePricingBackfillAccount(
   `,
     [candidate.bindingId],
   );
-  return { status: "armed" };
+  return { status: "armed", noReleaseCoverage: releasePolicy === null };
 }
 
 /**
@@ -545,12 +585,20 @@ export async function runPricingBackfillSweep(
   options: { limit: number; allowlist?: readonly string[] },
 ): Promise<PricingBackfillSweepSummary> {
   const candidates = await listPricingBackfillCandidates(database, options);
-  const summary: PricingBackfillSweepSummary = { examined: candidates.length, armed: [], failed: [] };
+  const summary: PricingBackfillSweepSummary = {
+    examined: candidates.length,
+    armed: [],
+    armedWithoutReleaseCoverage: [],
+    failed: [],
+  };
   for (const candidate of candidates) {
     try {
       const result = await advancePricingBackfillAccount(database, engine, candidate);
       if (result.status === "armed") {
         summary.armed.push(candidate.engineAccountId);
+        if (result.noReleaseCoverage) {
+          summary.armedWithoutReleaseCoverage.push(candidate.engineAccountId);
+        }
       } else {
         summary.failed.push({ engineAccountId: candidate.engineAccountId, error: result.error });
       }

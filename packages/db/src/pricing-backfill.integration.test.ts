@@ -413,7 +413,7 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
 
     // 1. The sweep materializes (idempotent reuse), proves the identity, and arms the chain.
     const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
-    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], failed: [] });
+    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], armedWithoutReleaseCoverage: [], failed: [] });
     expect(await bindingState(userId)).toMatchObject({
       // The materialized shadow delivery is staged; the strict flip comes from the chain.
       policy_enforcement: "shadow",
@@ -475,7 +475,7 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
     });
 
     const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
-    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], failed: [] });
+    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], armedWithoutReleaseCoverage: [], failed: [] });
     // The engine scalar write (account_set_mult_bp) landed BEFORE the arm — and therefore
     // before the opt-out marker — and the commerce mirrors converged in the same pass.
     expect(engine.scalarWrites).toEqual([{ accountId: engineAccountId, multiplierBp: 5_000 }]);
@@ -506,6 +506,49 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
       WHERE action = 'pricing_release.opt_out' AND target_type = 'engine_account' AND target_id = $1
     `, [engineAccountId]);
     expect(audit.rows).toHaveLength(1);
+  });
+
+  it("a confirmed binding with ZERO release coverage skips the gate and goes end-to-end (broken-window cohort)", async () => {
+    // Accounts registered in the window between the assignment-extension removal and the
+    // backfill have a confirmed commerce binding but no release rows at all: the release
+    // resolver already fails closed on them today, so there is no release-side resolution
+    // to diverge from — the lane must skip the scope-walk gate (like a phase-2.1 new
+    // account), still align the scalar, and retire the account through the unmodified chain.
+    const { userId, engineAccountId } = await provisionedB2cUser("backfill-uncovered@example.test");
+    const engine = fakeEngine({ assignments: [], policies: {} });
+
+    const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
+    expect(sweep).toEqual({
+      examined: 1,
+      armed: [engineAccountId],
+      armedWithoutReleaseCoverage: [engineAccountId],
+      failed: [],
+    });
+    expect(engine.scalarWrites).toEqual([{ accountId: engineAccountId, multiplierBp: 5_000 }]);
+    expect(await bindingState(userId)).toMatchObject({
+      strict_chain_pending: true,
+      last_error: null,
+    });
+
+    await confirmShadowDelivery(userId);
+    const staged = await advanceAccountStrictChain(
+      database,
+      engine.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    );
+    expect(staged.status).toBe("staged");
+    await confirmStrictDelivery(userId);
+    await expect(advanceAccountStrictChain(
+      database,
+      engine.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    )).resolves.toEqual({ status: "opted_out" });
+    const audit = await seedClient.query(`
+      SELECT 1 FROM audit_log
+      WHERE action = 'pricing_release.opt_out' AND target_type = 'engine_account' AND target_id = $1
+    `, [engineAccountId]);
+    expect(audit.rows).toHaveLength(1);
+    expect(await listPricingBackfillCandidates(database, { limit: 5 })).toEqual([]);
   });
 
   it("arms a B2B account whose model-scoped release rules match the strict policy exactly", async () => {
@@ -561,7 +604,7 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
       initialScalarBp: { [engineAccountId]: 4_000 },
     });
     const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
-    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], failed: [] });
+    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], armedWithoutReleaseCoverage: [], failed: [] });
     expect(await bindingState(user.id)).toMatchObject({
       strict_chain_pending: true,
       last_error: null,
@@ -627,7 +670,7 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
     // identity); the next pass re-checks and arms without any manual state repair.
     const healed = fakeEngine(b2cRelease(engineAccountId));
     const retry = await runPricingBackfillSweep(database, healed.transport, { limit: 5 });
-    expect(retry).toEqual({ examined: 1, armed: [engineAccountId], failed: [] });
+    expect(retry).toEqual({ examined: 1, armed: [engineAccountId], armedWithoutReleaseCoverage: [], failed: [] });
     expect(await bindingState(userId)).toMatchObject({
       strict_chain_pending: true,
       last_error: null,
@@ -646,7 +689,7 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
       limit: 5,
       allowlist: [first.engineAccountId],
     });
-    expect(canarySweep).toEqual({ examined: 1, armed: [first.engineAccountId], failed: [] });
+    expect(canarySweep).toEqual({ examined: 1, armed: [first.engineAccountId], armedWithoutReleaseCoverage: [], failed: [] });
     expect((await listPricingBackfillCandidates(database, { limit: 10 }))
       .map((candidate) => candidate.engineAccountId).sort())
       .toEqual([second.engineAccountId, third.engineAccountId].sort());
@@ -703,7 +746,7 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
     // materialization, re-proves equivalence against the strict rules, and re-arms — the
     // chain's opt-out step then retires the account.
     const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
-    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], failed: [] });
+    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], armedWithoutReleaseCoverage: [], failed: [] });
     const completing = await advanceAccountStrictChain(
       database,
       engine.transport,

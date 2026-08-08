@@ -71,6 +71,7 @@ test("runs the existing-account backfill arm lane on the slow sweep with canary 
   assert.match(source, /this\.config\.get\("PRICING_BACKFILL_ACCOUNT_ALLOWLIST", \{ infer: true \}\)/);
   assert.match(source, /runPricingBackfillSweep\(this\.database, this\.engine, \{/);
   assert.match(source, /pricing backfill armed the direct strict chain for \$\{accountId\}/);
+  assert.match(source, /pricing backfill for \$\{accountId\}: no release coverage; direct path only/);
   assert.match(source, /pricing backfill for \$\{failure\.engineAccountId\} cannot advance/);
 });
 

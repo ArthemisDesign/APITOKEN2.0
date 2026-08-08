@@ -43,7 +43,13 @@ and advances each independently:
    comparison walks normalized scope→payable maps, never the stored digests — they live in
    different frozen digest domains). A mismatch is never forced: the account keeps its
    release coverage, the reason lands on the binding's `last_error`, and the next pass
-   re-evaluates, so an operator fix is picked up automatically.
+   re-evaluates, so an operator fix is picked up automatically. The scope-walk is skipped
+   ONLY for accounts with no release coverage at all under the active head (no extension,
+   no base assignment — the broken-window cohort registered between the extension removal
+   and the backfill; the release resolver already fails closed on them today, so there is
+   nothing to diverge from): they proceed like phase-2.1 new accounts, and the worker logs
+   an explicit `no release coverage; direct path only` line per account. A
+   present-but-divergent assignment still blocks.
 4. **Arm** — `strict_chain_pending` is armed and the UNMODIFIED new-account strict chain
    (`packages/db/src/strict-chain.ts`, fast tick) takes over: shared engine preflight,
    durable strict staging once the shadow delivery confirms, then the one-way engine opt-out
