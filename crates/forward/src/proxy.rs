@@ -1264,7 +1264,7 @@ pub async fn forward(
                     unreachable!("KIMI dispatch runs only after shared authorization")
                 }
             };
-            return gateway
+            let response = gateway
                 .handle(crate::kimi::KimiRequest {
                     headers: parts.headers.clone(),
                     body: kimi_body,
@@ -1277,6 +1277,21 @@ pub async fn forward(
                     calibration,
                 })
                 .await;
+            // One instrumentation point for the whole plane: everything a caller can receive
+            // passes through here and already carries its terminal reason. Counting inside the
+            // gateway would mean touching every exit and would still miss one.
+            Metrics::inc(&app.metrics.kimi_requests);
+            if !response.status().is_success() {
+                Metrics::inc(&app.metrics.kimi_failures);
+                if response
+                    .extensions()
+                    .get::<TerminalErrorReason>()
+                    .is_some_and(|reason| reason.0 == "kimi_capacity_exhausted")
+                {
+                    Metrics::inc(&app.metrics.kimi_capacity_exhausted);
+                }
+            }
+            return response;
         }
     }
     // GLM is the second internal backend of the Anthropic Messages plane (static API key,

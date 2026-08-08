@@ -755,6 +755,22 @@ Do NOT shorten cooling, route KIMI aliases into the Claude pool, or add an unrev
 to `KIMI_REVIEWED_PLANS` without a dated live observation. If capacity is genuinely exhausted,
 wait for the provider window or authorize another distinct subscription through Auth Bot.
 
+## KimiErrorShareHigh
+
+More than a fifth of KIMI requests over the last 15 minutes ended non-2xx. Until 2026-08-08 this
+number did not exist: the plane had no request counter, so the error share — the first thing anyone
+asks during an incident — could not be computed at all. The Gemini investigation of 2026-08-06 lost
+a day to exactly that blindness.
+
+Safely diagnose by splitting the failures. `claude_api_kimi_capacity_exhausted_total` counts our own
+capacity refusals; the rest are upstream or transport. A capacity-dominated share means the fleet is
+quota-walled and the honest fix is more subscriptions, not a code change — check `GET /kimi-subs`
+for `quota_cooling_profiles` and each window's `resets_at`. A share that is NOT capacity-dominated
+points at the provider or the egress path; check the failure classes in the journal.
+
+Do NOT widen cooling windows or relax the selection escape hatch to make this number smaller: both
+would trade a visible error for an invisible one.
+
 ## KimiUnreviewedPlanProfiles
 
 A live KIMI profile reports a `/me` plan outside the documented ladder in `KIMI_REVIEWED_PLANS`,

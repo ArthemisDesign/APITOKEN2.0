@@ -3571,7 +3571,7 @@ fn kimi_subs_recent_turns_join_through_the_opaque_id_and_bound_the_plan() {
 #[test]
 fn prometheus_kimi_series_are_zero_gauges_without_a_plane_and_never_labelled() {
     let mut body = String::new();
-    write_kimi_operational_metrics(&mut body, false, None);
+    write_kimi_operational_metrics(&mut body, false, None, &forward::Metrics::default());
     for sample in [
         "claude_api_kimi_enabled 0",
         "claude_api_kimi_profiles 0",
@@ -3604,7 +3604,7 @@ fn prometheus_kimi_series_are_zero_gauges_without_a_plane_and_never_labelled() {
 fn prometheus_kimi_series_report_fleet_aggregates_and_the_freshest_observation() {
     let status = unknown_kimi_status();
     let mut body = String::new();
-    write_kimi_operational_metrics(&mut body, true, Some(&status));
+    write_kimi_operational_metrics(&mut body, true, Some(&status), &forward::Metrics::default());
     for sample in [
         "claude_api_kimi_enabled 1",
         "claude_api_kimi_profiles 1",

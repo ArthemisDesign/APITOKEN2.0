@@ -488,6 +488,23 @@ groups:
           description: 'Live profiles exist but none is eligible for selection; KIMI requests fail closed until a cooling axis clears.'
           runbook: 'docs/ops/MONITORING.md#kiminoavailableprofiles'
 
+      - alert: KimiErrorShareHigh
+        expr: |
+          claude_api_kimi_enabled == 1
+          and rate(claude_api_kimi_requests_total[15m]) > 0
+          and (
+            rate(claude_api_kimi_failures_total[15m])
+            / rate(claude_api_kimi_requests_total[15m])
+          ) > 0.2
+        for: 15m
+        labels:
+          severity: warning
+          component: kimi-provider
+        annotations:
+          summary: 'More than a fifth of KIMI requests are failing'
+          description: 'Compare claude_api_kimi_capacity_exhausted_total against the failure rate: a capacity-dominated share means the fleet is quota-walled and needs another subscription, while failures without it point at the upstream or the transport.'
+          runbook: 'docs/ops/MONITORING.md#kimierrorsharehigh'
+
       - alert: KimiUnreviewedPlanProfiles
         expr: claude_api_kimi_enabled == 1 and claude_api_kimi_unreviewed_plan_profiles > 0
         for: 30m

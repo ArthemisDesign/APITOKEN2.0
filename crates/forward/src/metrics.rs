@@ -313,6 +313,15 @@ pub struct Metrics {
     pub claudestore_fallback_attempts: AtomicU64,
     pub claudestore_fallback_successes: AtomicU64,
     pub claudestore_fallback_failures: AtomicU64,
+    /// KIMI request outcomes. The plane had no request counter at all, so the error share — the
+    /// first number anyone asks for during an incident — was uncomputable; the Gemini investigation
+    /// of 2026-08-06 lost a day to exactly that blindness. Deliberately three fixed counters with
+    /// no model, account, profile or upstream-error labels.
+    pub kimi_requests: AtomicU64,
+    /// Non-2xx responses the plane actually returned to a caller.
+    pub kimi_failures: AtomicU64,
+    /// The subset of failures that are our own capacity refusal rather than a provider verdict.
+    pub kimi_capacity_exhausted: AtomicU64,
     /// Successful Gemini generations that ended without authoritative usage. Metered non-stream
     /// delivery is withheld; a stream already delivered settles its conservative hold.
     pub gemini_usage_missing: AtomicU64,

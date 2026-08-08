@@ -2045,7 +2045,7 @@ async fn metrics(
         );
     }
     let kimi_status = app.kimi.as_ref().map(|kimi| kimi.operational_status());
-    write_kimi_operational_metrics(&mut body, app.kimi.is_some(), kimi_status.as_ref());
+    write_kimi_operational_metrics(&mut body, app.kimi.is_some(), kimi_status.as_ref(), &app.metrics);
     let glm_status = app.glm.as_ref().map(|glm| glm.operational_status());
     write_glm_operational_metrics(&mut body, app.glm.is_some(), glm_status.as_ref());
     (
@@ -2071,6 +2071,7 @@ fn write_kimi_operational_metrics(
     body: &mut String,
     enabled: bool,
     status: Option<&forward::KimiOperationalStatus>,
+    m: &forward::Metrics,
 ) {
     use std::fmt::Write as _;
 
@@ -2093,6 +2094,12 @@ fn write_kimi_operational_metrics(
          claude_api_kimi_quota_cooling_profiles {}\n\
          # TYPE claude_api_kimi_unreviewed_plan_profiles gauge\n\
          claude_api_kimi_unreviewed_plan_profiles {}\n\
+         # TYPE claude_api_kimi_requests_total counter\n\
+         claude_api_kimi_requests_total {}\n\
+         # TYPE claude_api_kimi_failures_total counter\n\
+         claude_api_kimi_failures_total {}\n\
+         # TYPE claude_api_kimi_capacity_exhausted_total counter\n\
+         claude_api_kimi_capacity_exhausted_total {}\n\
          # TYPE claude_api_kimi_calibration_pending_events gauge\n\
          claude_api_kimi_calibration_pending_events {}\n\
          # TYPE claude_api_kimi_calibration_dropped_events_total counter\n\
@@ -2107,6 +2114,9 @@ fn write_kimi_operational_metrics(
         status.map_or(0, |status| status.transport_cooling_profiles),
         status.map_or(0, |status| status.quota_cooling_profiles),
         status.map_or(0, |status| status.unreviewed_plan_profiles),
+        Metrics::get(&m.kimi_requests),
+        Metrics::get(&m.kimi_failures),
+        Metrics::get(&m.kimi_capacity_exhausted),
         status.map_or(0, |status| status.delivery.pending_events),
         status.map_or(0, |status| status.delivery.dropped_events),
         status.map_or(0, |status| u8::from(status.delivery.persistence_ok)),
