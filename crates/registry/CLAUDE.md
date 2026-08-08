@@ -379,6 +379,13 @@ side effect. `serve` may only perform the read-only schema verification before c
   `sha256:v2` payload digest and operator attribution, and is never updated or deleted — a
   correction is a newer version. The old runtime neither reads nor writes the table; the dependent
   resolver/writer ships in a separate SHA after a green migration/watchdog of this checkpoint.
+- **Pricing release opt-out schema checkpoint:** migration `0039` expand-only adds the nullable
+  `accounts.pricing_release_opt_out_ts` marker for the phased retirement of the release-v2
+  resolver (head 55 is final). NULL — every existing account — keeps today's release-path
+  pricing; a non-NULL timestamp opts the account out, letting its requests fall through to the
+  strict-policy/legacy reserve paths while the head keeps serving everyone else. The column has
+  no default and no constraint, so this SHA changes no behavior; the dependent dual-path resolver
+  and opt-out writer ship in a separate SHA after a green migration/watchdog of this checkpoint.
 - **Hot tariff override runtime authority:** `pricing::tariffs` is the PostgreSQL-only
   read/write side of the 0036 table (migration `0037` widens the family CHECK to admit the dots
   that canonical model ids carry; the old runtime still neither reads nor writes the table).
