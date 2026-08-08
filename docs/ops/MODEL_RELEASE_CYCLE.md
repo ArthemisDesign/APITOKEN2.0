@@ -47,7 +47,11 @@ implementation SHA.
 > B2C policy at a hardcoded 5000 bps and CAS the engine release head, invalidating the live
 > provisioning context. The `packages/db` cycle libraries (orchestration, funding normalization,
 > shadow rollout, Stage 8 capture, activation jobs/authority, Stage 8 evidence, catalog-gen2) are
-> deleted with it.
+> deleted with it. The engine-side release-advance producers followed in the engine retirement
+> phase: `POST /admin/pricing/v2/stage8-evidence/capture`, `POST /admin/pricing/v2/activate`, the
+> `claude-api db stage8-evidence` CLI, the `crates/registry::stage8` evidence builder and the
+> `postgres_activate_pricing_release_v2` head CAS are deleted; the evidence/activation tables stay
+> as dormant history that the provisioning-context read still joins.
 
 ## Phase A — dormant implementation
 

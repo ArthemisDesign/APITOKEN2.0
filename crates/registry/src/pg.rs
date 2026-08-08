@@ -7782,13 +7782,6 @@ impl PgStore {
 }
 
 impl PgStore {
-    pub fn stage8_engine_evidence(
-        &mut self,
-        request: &crate::stage8::Stage8EngineEvidenceRequest,
-    ) -> Result<crate::stage8::Stage8EngineEvidenceReport> {
-        crate::stage8::postgres_stage8_engine_evidence(&mut self.client, request)
-    }
-
     pub fn pricing_shadow_admission_evaluation(
         &mut self,
         request_id: &str,
@@ -8074,18 +8067,6 @@ impl PgStore {
         &mut self,
     ) -> Result<Option<crate::pricing::PricingReleaseProvisioningContextV2>> {
         crate::pricing::postgres::postgres_pricing_release_provisioning_context_v2(&mut self.client)
-    }
-
-    pub fn activate_pricing_release_v2(
-        &mut self,
-        request: &crate::pricing::PricingReleaseActivationRequestV2,
-        runtime_manifest: &crate::pricing::PricingRuntimeManifestEvidence,
-    ) -> Result<crate::pricing::PricingReleaseActivationOutcomeV2> {
-        crate::pricing::postgres::postgres_activate_pricing_release_v2(
-            &mut self.client,
-            request,
-            runtime_manifest,
-        )
     }
 
     pub fn pricing_release_resolution_v2(

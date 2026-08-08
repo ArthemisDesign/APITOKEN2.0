@@ -68,13 +68,10 @@ background loops and the HTTP router. Here — and only here — everything is w
   Post-cutover `/admin/pricing/v2/assignment-extension/prepare` atomically appends the exact
   current-head active/recovery assignment pair, and
   `GET /admin/pricing/v2/assignment-extension/{head_version}/{account_id}` provides exact readback.
-  Both remain PostgreSQL-only actor calls and do not issue keys. Producer-first
-  `POST /admin/pricing/v2/stage8-evidence/capture` accepts only explicit window/sample/release
-  inputs, attaches the compile-fixed runtime manifest from `AppState` and returns the same
-  PostgreSQL schema-v2 report even when `passed=false`; it is read-only and never stages a job.
-  The separate
-  `POST /admin/pricing/v2/activate` accepts a strict fresh-evidence/CAS body and is the only
-  release-head mutation.
+  Both remain PostgreSQL-only actor calls and do not issue keys. The release-advance producers
+  `POST /admin/pricing/v2/stage8-evidence/capture` and `POST /admin/pricing/v2/activate` were
+  retired with head 55 (the final pricing release) and are deleted; the compile-fixed runtime
+  manifest from `AppState` stays for owner-epoch claim stamping and the pricing shadow/resolver.
   Key issue/list also carries optional `spend_limit_nano`/`expires_ts` policy metadata. The
   account-scoped `/admin/account/{id}/key-id/{key_id}/policy` endpoint replaces both nullable
   guardrails; validation is at this HTTP boundary while enforcement remains in registry reservation
@@ -122,7 +119,7 @@ background loops and the HTTP router. Here — and only here — everything is w
   the gateway owns the idle/epoch boundary, the turn-before-quota ordering and the durable observation/CAS,
   server owns only the cadence.
 - `main.rs` — clap CLI: `serve`, `sub add/add-file/list/rm/status/proxy/fleet/set-plan/detect-plan/health`,
-  the PostgreSQL-only read evidence `db stage8-evidence`, the private `openai-image-canary`, the
+  the private `openai-image-canary`, the
   one-shot `openai-image-public-smoke`, and the read-only `openai-image-settlement-diagnostic`. The private
   canary can freeze an explicitly named opaque Codex profile or the first currently admitted pool profile.
   The diagnostic accepts its fenced UUIDv4 only on stdin and emits identifier-free JSON. None of these
@@ -238,8 +235,7 @@ background loops and the HTTP router. Here — and only here — everything is w
   on a non-pricing plane (KIMI) the same shared env does not stop startup — the producer remains inert
   with an explicit notice, because the fleet env file is shared by all planes. Server assembles the fixed
   versioned runtime manifest, starts the separate read actors/worker and drains the worker before the billing
-  FIFO flush. This permits Google legacy-snapshot shadow evidence but does not enable strict Gemini
-  or Stage 9 release activation.
+  FIFO flush. This permits Google legacy-snapshot shadow evidence but does not enable strict Gemini.
 - The same compile-fixed pricing manifest is used regardless of shadow enablement when claiming the
   PostgreSQL owner epoch, at the startup heartbeat and at every regular heartbeat. Active strict
   dependencies missing from the manifest do not get a new owner; drift after the claim drops
@@ -248,15 +244,6 @@ background loops and the HTTP router. Here — and only here — everything is w
   `activation_policy_ack {effective_policy_version, policy_digest}`. For a strict binding an exact ACK
   is mandatory; a missing/stale/wrong identity yields 409, a malformed identity — 400. Disable does not
   require an ACK. The key secret is still issued once and only after the durable ACK check.
-- `db stage8-evidence` and the protected
-  `POST /admin/pricing/v2/stage8-evidence/capture` receive the same compile-fixed runtime manifest
-  from `Settings`/`AppState`, require an exact target/recovery, explicit frozen window/sample limits and
-  the external aggregate of Gemini admissions. The report schema v2 binds the prepared release pair to the current
-  inventory/funding/shadow/runtime-floor digests and the legacy-inflight count. The CLI prints JSON and
-  returns an error after printing on any blocker; HTTP always returns the valid report itself with
-  `200`, including `passed=false`. Until Stage 9 runtime claims, the absence of release/funding schema v2 on
-  any live instance intentionally keeps the report red. Neither path changes heads, bindings or
-  money; HTTP goes only through the bounded PostgreSQL reader, not the writer.
 - Redis is only configured here; `AffinityStore` lives in `forward`, and pool stays network-free.
 - Router policy preflight does not open the authority itself: a metered credential is resolved via
   `AsyncBilling`, a strict account reads exactly one `PricingReadBundle`, and each model's decision
@@ -373,18 +360,18 @@ background loops and the HTTP router. Here — and only here — everything is w
   Anthropic exact-capacity/coverage/delivery gauges, as well as three execution-not-started series.
   Raw client IDs, prompt content, account IDs, model IDs, credential/group/request identity and
   subscription IDs never reach Redis/metrics.
-- Stage 9 runtime delivery does not itself activate a production pricing release. Stage 5/6 materialization
-  and full-inventory Stage 8 evidence must complete before the one global release-head CAS. A manual
-  assignment matrix, canary accounts, a maintenance window and a zero-active-reservations gate are not
-  used; authoritative inventories must cover all accounts exactly.
+- Stage 9 runtime delivery never activated a production pricing release by itself; the one global
+  release-head CAS ran only after Stage 5/6 materialization and full-inventory Stage 8 evidence,
+  without a manual assignment matrix, canary accounts, a maintenance window or a
+  zero-active-reservations gate. With head 55 as the final pricing release the release-advance
+  producers (`db stage8-evidence`, `/admin/pricing/v2/stage8-evidence/capture`,
+  `/admin/pricing/v2/activate`) are deleted; the runtime-claim fence above stays live.
 - `/admin/pricing/v2/*` is a producer-first surface: immutable policy/release/recovery, exact and
-  newest-per-policy reads, cursor inventory, nullable head, account-local funding normalization and
-  one activation CAS. The latest-policy read returns one complete immutable PostgreSQL row plus its
-  sorted rules and is only for fail-closed reconciliation of lagging consumer evidence. The handler
-  passes the compile-fixed runtime manifest; registry re-checks the evidence TTL,
-  inventory/funding/runtime owner epochs and atomically writes evidence/audit/head. Contracts/client and the
-  durable commerce caller are added only after a GREEN exact producer SHA; therefore the deploy route
-  by itself does not change traffic.
+  newest-per-policy reads, cursor inventory, nullable head read and account-local funding
+  normalization. The latest-policy read returns one complete immutable PostgreSQL row plus its
+  sorted rules and is only for fail-closed reconciliation of lagging consumer evidence. The
+  release-head mutation (`/admin/pricing/v2/activate`) was deleted with the retired release
+  advance; the deploy route by itself does not change traffic.
 - **loopback trust is explicit opt-in only** `CLAUDE_API_TRUST_LOOPBACK=1` + a real loopback bind
   (otherwise behind a reverse proxy an anonymous caller would get admin access).
 - OpenAI shutdown first waits for detached Codex stream/history/settlement tasks (the native provider

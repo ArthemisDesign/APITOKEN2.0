@@ -253,16 +253,11 @@ assignment-extension prepare goes through the single writer, exact
 materializes the assignment from an immutable base manifest or an exact current-head extension; forward neither
 assembles the pair nor opens PostgreSQL directly. This producer does not issue keys.
 
-Stage 9 activation runs as a separate typed command of the same single writer: the handler passes the strict
-request and compile-fixed `PricingRuntimeManifestEvidence`, registry performs a single PostgreSQL CAS and
-returns `applied|unchanged|typed rejection`. SQLite is always unavailable. The presence of the actor method
-neither creates a caller/job nor activates the head by itself; data-plane readers never take this control lock.
-
-Stage 8 engine capture uses the opposite lane: `AsyncBilling::stage8_engine_evidence`
-hands the full request only to the bounded reader pool, PostgreSQL executes a single `REPEATABLE READ
-READ ONLY` report, and SQLite returns authority unavailable. The actor has no fallback to the writer,
-never turns `passed=false` into an error and never changes head, account, balance, reservation or traffic.
-The compile-fixed runtime manifest is attached only by `crates/server`, never by the HTTP caller.
+Stage 9 activation ran as a separate typed command of the same single writer, and Stage 8 engine
+capture used the opposite bounded-reader lane (`AsyncBilling::stage8_engine_evidence`). Both actor
+commands are deleted with the retired release advance: head 55 is the final pricing release, no
+caller remained, and data-plane readers never took the release control lock anyway. The
+compile-fixed runtime manifest is still attached only by `crates/server`, never by an HTTP caller.
 
 The read-only router policy preflight of phase 6.4a reuses the public `resolve_pricing` and
 `RuntimePricingManifest::from_evidence` through `crates/server` composition: the same customer key and one

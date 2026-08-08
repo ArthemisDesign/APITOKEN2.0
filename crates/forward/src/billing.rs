@@ -20,13 +20,12 @@ use registry::pricing::{
     AccountPolicyActivationSpec, AccountPolicySpec, ActiveAccountPolicy, ActiveExpectation,
     LegacyScalarAdmissionSnapshot, LegacyScalarReserveOutcome, LockedOpenKeysPolicyTransitionSpec,
     PolicyActiveExpectation, PolicyAdmissionSnapshot, PolicyReserveOutcome, PricingCatalogSpec,
-    PricingMutation, PricingReadBundle, PricingReleaseActivationOutcomeV2,
-    PricingReleaseActivationRequestV2, PricingReleaseAssignmentExtensionV2, PricingReleaseHeadV2,
+    PricingMutation, PricingReadBundle, PricingReleaseAssignmentExtensionV2, PricingReleaseHeadV2,
     PricingReleaseInventoryPageV2, PricingReleasePolicyV2, PricingReleaseProvisioningContextV2,
     PricingReleaseQuoteV2, PricingReleaseRecoveryLinkV2, PricingReleaseReserveOutcomeV2,
-    PricingReleaseResolutionV2, PricingReleaseV2, PricingRuntimeManifestEvidence,
-    PricingShadowAdmissionEvaluationInput, PricingShadowEvaluationWrite, ProviderSwitchSpec,
-    TariffOverride, TariffOverrideInsert, TariffOverrideInsertOutcome, VersionTarget,
+    PricingReleaseResolutionV2, PricingReleaseV2, PricingShadowAdmissionEvaluationInput,
+    PricingShadowEvaluationWrite, ProviderSwitchSpec, TariffOverride, TariffOverrideInsert,
+    TariffOverrideInsertOutcome, VersionTarget,
 };
 use registry::{
     AccountFundingSnapshot, AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation,
@@ -1600,11 +1599,6 @@ enum WriteCmd {
         extension: PricingReleaseAssignmentExtensionV2,
         reply: oneshot::Sender<anyhow::Result<PricingMutation>>,
     },
-    ActivatePricingReleaseV2 {
-        request: PricingReleaseActivationRequestV2,
-        runtime_manifest: PricingRuntimeManifestEvidence,
-        reply: oneshot::Sender<anyhow::Result<PricingReleaseActivationOutcomeV2>>,
-    },
     ApplyFundingNormalizationV2 {
         account_id: String,
         request: FundingNormalizationApplyRequestV2,
@@ -1870,10 +1864,6 @@ enum ReadCmd {
     FundingNormalizationPlanV2 {
         account_id: String,
         reply: oneshot::Sender<anyhow::Result<Option<FundingNormalizationPlanV2>>>,
-    },
-    Stage8EngineEvidence {
-        request: registry::stage8::Stage8EngineEvidenceRequest,
-        reply: oneshot::Sender<anyhow::Result<registry::stage8::Stage8EngineEvidenceReport>>,
     },
     ListTariffOverrides(oneshot::Sender<anyhow::Result<Vec<TariffOverride>>>),
     SpendByModel {
@@ -3199,11 +3189,6 @@ impl AsyncBilling {
                             "pricing release v2 authority requires PostgreSQL"
                         )));
                     }
-                    WriteCmd::ActivatePricingReleaseV2 { reply, .. } => {
-                        let _ = reply.send(Err(anyhow::anyhow!(
-                            "pricing release v2 authority requires PostgreSQL"
-                        )));
-                    }
                     WriteCmd::ApplyFundingNormalizationV2 { reply, .. } => {
                         let _ = reply.send(Err(anyhow::anyhow!(
                             "funding normalization v2 authority requires PostgreSQL"
@@ -3543,11 +3528,6 @@ impl AsyncBilling {
                             ReadCmd::FundingNormalizationPlanV2 { reply, .. } => {
                                 let _ = reply.send(Err(anyhow::anyhow!(
                                     "funding normalization v2 authority requires PostgreSQL"
-                                )));
-                            }
-                            ReadCmd::Stage8EngineEvidence { reply, .. } => {
-                                let _ = reply.send(Err(anyhow::anyhow!(
-                                    "Stage 8 engine evidence requires PostgreSQL authority"
                                 )));
                             }
                             ReadCmd::ListTariffOverrides(reply) => {
@@ -4282,22 +4262,6 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
-                        WriteCmd::ActivatePricingReleaseV2 {
-                            request,
-                            runtime_manifest,
-                            reply,
-                        } => {
-                            let result = run_pg_with_retry(
-                                &mut pg,
-                                &writer_url,
-                                &writer_owner,
-                                "pricing release v2 activation",
-                                |pg| {
-                                    pg.activate_pricing_release_v2(&request, &runtime_manifest)
-                                },
-                            );
-                            let _ = reply.send(result);
-                        }
                         WriteCmd::ApplyFundingNormalizationV2 {
                             account_id,
                             request,
@@ -4771,9 +4735,6 @@ impl AsyncBilling {
                             ReadCmd::FundingNormalizationPlanV2 { account_id, reply } => {
                                 answer!(reply, pg.funding_normalization_plan_v2(&account_id))
                             }
-                            ReadCmd::Stage8EngineEvidence { request, reply } => {
-                                answer!(reply, pg.stage8_engine_evidence(&request))
-                            }
                             ReadCmd::ListTariffOverrides(reply) => {
                                 answer!(reply, pg.list_tariff_overrides())
                             }
@@ -5059,25 +5020,6 @@ impl AsyncBilling {
         let (reply, result) = oneshot::channel();
         self.writer
             .send(WriteCmd::PreparePricingReleaseAssignmentExtensionV2 { extension, reply })
-            .await
-            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
-        result
-            .await
-            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
-    }
-
-    pub async fn activate_pricing_release_v2(
-        &self,
-        request: PricingReleaseActivationRequestV2,
-        runtime_manifest: PricingRuntimeManifestEvidence,
-    ) -> anyhow::Result<PricingReleaseActivationOutcomeV2> {
-        let (reply, result) = oneshot::channel();
-        self.writer
-            .send(WriteCmd::ActivatePricingReleaseV2 {
-                request,
-                runtime_manifest,
-                reply,
-            })
             .await
             .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
         result
@@ -5407,23 +5349,6 @@ impl AsyncBilling {
                 account_id: account_id.to_owned(),
                 reply,
             })
-            .await
-            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
-        result
-            .await
-            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
-    }
-
-    /// Capture one read-only Stage 8 report on a bounded PostgreSQL reader. The registry performs
-    /// the full evidence scan in a repeatable-read, read-only transaction; this actor never sends
-    /// the request through the billing writer or changes release/money state.
-    pub async fn stage8_engine_evidence(
-        &self,
-        request: registry::stage8::Stage8EngineEvidenceRequest,
-    ) -> anyhow::Result<registry::stage8::Stage8EngineEvidenceReport> {
-        let (reply, result) = oneshot::channel();
-        self.reader()
-            .send(ReadCmd::Stage8EngineEvidence { request, reply })
             .await
             .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
         result

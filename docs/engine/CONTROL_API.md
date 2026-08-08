@@ -744,11 +744,15 @@ CAS. Consumers are connected after the GREEN producer SHA: strict request/identi
 the endpoint currently has no live consumer; the historical protocol record is
 `docs/commerce/MULTI_DISCOUNT_STAGE7.md`.
 
-### Pricing release v2: producer and activation surface
+### Pricing release v2: producer and read surface
 
 Engine PostgreSQL exposes an additive producer-first surface for the immutable release/funding-v2
-authority. Immutable preparation remains traffic-neutral; activation is a separate evidence-gated
-operation:
+authority. Head 55 is the final pricing release (`docs/ops/MODEL_RELEASE_CYCLE.md`): the
+release-advance producers `POST /admin/pricing/v2/stage8-evidence/capture` and
+`POST /admin/pricing/v2/activate` (and the `claude-api db stage8-evidence` CLI) were deleted with
+their last caller. The rest of the v2 surface — immutable prepare/read, head,
+provisioning-context, inventory, assignment extensions and funding normalization — stays live
+while the release resolver and post-cutover provisioning consume it:
 
 ```text
 POST /admin/pricing/v2/policy/prepare
@@ -760,8 +764,6 @@ POST /admin/pricing/v2/recovery-link/prepare
 GET  /admin/pricing/v2/recovery-link/{target_generation}/{recovery_generation}
 POST /admin/pricing/v2/assignment-extension/prepare
 GET  /admin/pricing/v2/assignment-extension/{head_version}/{account_id}
-POST /admin/pricing/v2/stage8-evidence/capture
-POST /admin/pricing/v2/activate
 GET  /admin/pricing/v2/head
 GET  /admin/pricing/v2/provisioning-context
 GET  /admin/pricing/v2/inventory?after_account_id=<id>&limit=500
@@ -775,8 +777,9 @@ monotonic by policy version or release generation. `GET .../policy/{policy_id}/l
 read-only reconciliation surface for a consumer whose local evidence can lag a successfully prepared
 engine policy; it does not allocate a version or weaken prepare-time monotonicity. Prepare returns the
 same typed `stored|unchanged|stale|version_conflict|missing_dependency|invalid` result envelope as
-Stage 3C. `GET .../head` returns `{ "head": null }` until a protected consumer submits a fresh passed Stage 8
-identity to the activation route. Prepare routes cannot move the global head, mutate an immutable
+Stage 3C. `GET .../head` returns the singleton head (`{ "head": null }` only where no release was
+ever activated); with the release advance retired, no route moves it any more.
+Prepare routes cannot move the global head, mutate an immutable
 release manifest or change balances.
 An assignment extension can make one post-cutover account resolvable under an already-active head;
 the provisioning consumer must therefore complete its exact readback before issuing or enabling a
@@ -869,7 +872,8 @@ members[] = {
 }
 ```
 
-Prepare takes the same pricing-release control-plane advisory lock as activation and accepts
+Prepare takes the pricing-release control-plane advisory lock (the lock the retired activation CAS
+also used) and accepts
 only the exact current head. If that active target's activation evidence selected a recovery link,
 `members` must contain that exact atomic active/recovery pair; another prepared link or an omitted
 pair returns typed `missing_dependency`. An active recovery contains exactly the active member.
@@ -903,156 +907,15 @@ release-v2 snapshot invariants accept either the base lineage or the exact exten
 (engine migration 0031). This surface does
 not create or activate a head.
 
-`POST /admin/pricing/v2/stage8-evidence/capture` is the producer-first machine transport for the
-same schema-v2 report as `claude-api db stage8-evidence`. Its body is strict and contains only
-explicit capture inputs; caller-supplied runtime evidence is rejected:
-
-```json
-{
-  "target_generation": 41,
-  "recovery_generation": 42,
-  "window_start_ts": 1785700000,
-  "window_end_ts": 1785700300,
-  "min_samples_per_provider": 100,
-  "financial_sample_size": 100,
-  "gemini_client_admissions": 27
-}
-```
-
-Target must be positive and recovery strictly newer. The window is a positive non-empty half-open
-past interval; provider minimum is `1..=1000000`, financial sample size `1..=1000`, and Gemini
-admissions is a nonnegative external aggregate. The server attaches its compile-fixed
-`PricingRuntimeManifestEvidence` from `AppState`; the HTTP caller cannot choose runtime capability
-lineage. A bounded `AsyncBilling` reader executes the existing PostgreSQL `REPEATABLE READ READ
-ONLY` collector. It never enters the billing writer and cannot update a release head, account,
-funding authority, balance, reservation, ledger, activation evidence or traffic state. Stage 8
-uses the exact release-v2 assignment plus active funding generation/head/lot aggregates as the
-cutover authority. A legacy shadow binding may still have `reconciliation_state=pending`; that
-state and the retired `funding_buckets` projection are not duplicate activation preconditions.
-
-The capture has three modes, selected by the active release head alone. With an absent head it
-builds cutover evidence against the full live inventory. With the head equal to the requested
-target it builds recovery evidence: the immutable base inventory identity plus exact paired
-assignment extensions for later accounts. With the head behind the requested pair it builds
-successor evidence: the legacy shadow-coverage, shadow-evaluation and legacy-binding gates no
-longer apply (that lane froze at the first cutover and post-cutover accounts may resolve outside
-the legacy store), the requested target must be strictly newer than the active head, and both
-generations must cover the exact full live inventory in their base manifests — an assignment
-extension never substitutes for base coverage under a new head. Every other structural gate
-(prepared pair identity, recovery link, runtime lineage, funding parity, active catalog/switch
-graph, runtime floor, quiet authority window) applies identically in all modes.
-
-A successfully captured report is the unwrapped schema-v2 JSON object with HTTP `200` regardless
-of its `passed` value. In particular, `passed=false` plus `blockers[]` is valid durable evidence and
-must be persisted by the consumer rather than translated into a transport failure.
-Malformed bounds are `400`, a shape/type/unknown-field error is `422`, missing control auth is
-`401`, and non-PostgreSQL or unavailable authority is `503`. The report contains signed-i64
-nanoUSD JSON numbers. TypeScript consumers must read the response as raw text and parse it with
-`json-bigint`; `response.json()` is forbidden because it can round those integers before evidence
-digest verification.
-
-After the exact producer SHA reached green `deploy/watchdog`, the commerce consumer was connected
-through the strict `packages/contracts` schema and the sole
-`EngineClient.capturePricingStage8EvidenceV2` transport. The client bounds the response to 16 MiB,
-verifies the canonical integer-preserving shape and explicit request identity, and returns both the
-parsed report and its exact raw bytes. The durable commerce capture lane (the AdminGuard
-`POST /v1/admin/pricing-stage8-capture-v2/stage` route and the `apps/worker` collector) was
-removed with the dismantled release cycle, and the typed transport plus the manual
-release-advance runbook were retired with head 55 as the final pricing release
-(`docs/ops/MODEL_RELEASE_CYCLE.md`): the producer now has no caller and stays as expand-only
-contract surface. An engine `passed=false` report is a successful capture input.
-
-Sanitized engine blocker subjects retain their canonical `sha256:v1` domain, while commerce
-authority blockers use the canonical `sha256:v2` Stage 5 digest builder. The combined artifact and
-paired GET therefore accept both versioned forms for opaque `subject_digests`; all evidence,
-release, inventory and request identities remain canonical `sha256:v2` only.
-
-`POST /admin/pricing/v2/activate` is the only global live mutation. All unknown fields are rejected.
-The initial cutover request has this exact shape:
-
-```json
-{
-  "activation_kind": "cutover",
-  "expectation": "absent",
-  "evidence": {
-    "evidence_digest": "sha256:v2:<combined-commerce-evidence>",
-    "target_generation": 41,
-    "target_digest": "sha256:v2:<engine-target-release>",
-    "recovery_generation": 42,
-    "recovery_digest": "sha256:v2:<engine-recovery-release>",
-    "engine_inventory_digest": "sha256:v2:<engine-inventory>",
-    "funding_digest": "sha256:v2:<funding-manifest>",
-    "shadow_digest": "sha256:v2:<shadow-window>",
-    "runtime_floor_digest": "sha256:v2:<runtime-floor>",
-    "legacy_inflight_count": 7,
-    "engine_captured_ts": 1785700000,
-    "observed_ts": 1785700010,
-    "valid_until_ts": 1785700310
-  },
-  "operator_id": "pricing-control-worker:<instance>",
-  "reason": "activate exact prepared Stage 9 target"
-}
-```
-
-The combined evidence TTL is at most 300 seconds; its source engine capture may be at most 120
-seconds older than `observed_ts` (with at most five seconds of source clock skew). The protected
-commerce consumer must first verify the canonical source engine digest, exact persisted
-`passed=true` combined row, commerce/service/OpenKeys authority, job backlog and sales runtime.
-`evidence_digest` is that combined-row audit identity, while target/recovery digests are the engine
-release identities, not commerce plan digests.
-
-For forward recovery, `activation_kind` is `recovery` and `expectation` is the complete exact target
-head returned by the cutover:
-
-```json
-{
-  "exact": {
-    "active_generation": 41,
-    "active_digest": "sha256:v2:<engine-target-release>",
-    "head_version": 1,
-    "updated_ts": 1785700012
-  }
-}
-```
-
-Cutover is accepted only from an absent head and only to the prepared target. Recovery is accepted
-only as a monotonic CAS from that exact target to its linked newer recovery. A successor
-(`activation_kind="successor"`) advances an active head to a NEWER prepared target/recovery pair:
-the expectation is the complete exact current head (any kind, behind the evidence target), the
-activated release is the evidence target, and the from identity records the outgoing head. Engine
-runs one
-`SERIALIZABLE` transaction under `pricing-release-v2:control-plane`, locks the singleton head,
-re-reads the immutable pair/link and active catalog/switch heads, and independently recomputes the
-base inventory, funding manifest/parity and live runtime-floor digest. Every live instance must
-claim release/funding schema v2, the exact compile-fixed runtime digest and its own current owner
-epoch. A recovery also proves that any account created after cutover has the exact atomic
-target/recovery assignment extension. A successor instead requires the exact FULL live inventory
-inside both base manifests: assignment extensions bind to the outgoing head and never transfer, so
-an account provisioned after the successor pair was prepared fails activation closed and the
-consumer stages a fresh pair that includes it. With the exact target head active, the Stage 8
-engine report
-keeps the immutable base inventory identity and validates every later account through that paired
-extension and its live funding head, so fresh recovery evidence remains obtainable after the
-original 300-second cutover proof expires. Only then does the transaction append the evidence row
-and activation audit and insert/update one head row. It does not write accounts, balances, funding
-lots, reservations, ledger or usage rows, and it does not take data-plane request locks.
-
-Success is `200` with `result=applied|unchanged` and an `activation` receipt containing the durable
-activation id/kind, from identity, expected head version, resulting complete head, evidence digest,
-operator/reason and timestamp. Exact replay of the same committed request returns `unchanged` from
-the durable audit, including after its original evidence TTL elapsed. Rejections roll back the
-whole transaction and return `result=rejected` with one typed code:
-
-- `400 invalid`;
-- `409 missing_dependency`, `cas_mismatch`, `evidence_stale`, `evidence_conflict`;
-- `409 release_lineage_drift`, `authority_drift`, `inventory_drift`, `funding_drift`,
-  `funding_invariant_drift`, `runtime_floor_drift` or `runtime_incompatible`.
-
-After the producer SHA reached green `deploy/watchdog`, `packages/contracts` added the strict
-request/receipt/rejection schemas and `packages/engine-client` added the sole typed transport. The
-durable commerce consumer (`packages/db/src/pricing-release-activation-jobs.ts` plus the
-`apps/worker` activation lane) was removed with the dismantled release cycle; activation is now
-driven only by the manual release-advance path in `docs/ops/MODEL_RELEASE_CYCLE.md`.
+The retired release-advance producers — `POST /admin/pricing/v2/stage8-evidence/capture`,
+`POST /admin/pricing/v2/activate` and the `claude-api db stage8-evidence` CLI — were deleted
+together with their engine billing-actor commands, the `crates/registry::stage8` evidence builder
+and the `postgres_activate_pricing_release_v2` head CAS. Their durable commerce consumers were
+already removed with the dismantled release cycle, and the manual release-advance runbook was
+retired with head 55 as the final pricing release (`docs/ops/MODEL_RELEASE_CYCLE.md`). The
+`pricing_stage8_evidence_v2` and `pricing_release_activations_v2` tables remain as dormant
+history: the provisioning context above still joins the exact head-version activation audit to its
+persisted passed Stage 8 evidence.
 
 Inventory is ordered by `account_id`, returns at most 500 rows plus `next_after_account_id`, and
 contains status, legacy scalar, integer balance/reserved/spent and nullable funding-v2 head identity.
@@ -1101,18 +964,18 @@ recovery gets one member. `apps/api` additionally repeats the commerce key check
 if the head or authority changed, the key is disabled before the raw secret is returned. With `context=null`
 the consumer keeps the pre-cutover path and materializes nothing release-v2, so a deploy by itself does not
 start the cutover.
-Stage 8 evidence already supports zero-drain audit counts, and the activation producer performs one
-CAS. Data-plane reserve/settlement do not take the release control-plane lock.
+Data-plane reserve/settlement do not take the release control-plane lock.
 After each producer SHA reached a green exact-SHA `deploy/watchdog`, `packages/contracts` gained the
-strict release, funding-normalization, assignment-extension and activation wire schemas, while
-`packages/engine-client` gained typed prepare/read, account-local normalization/extension and the
-single activation method. The bounded `apps/worker` application-job consumers that used to run the
+strict release, funding-normalization and assignment-extension wire schemas, while
+`packages/engine-client` gained typed prepare/read and account-local normalization/extension
+transports. The bounded `apps/worker` application-job consumers that used to run the
 staged target-release and activation jobs were removed with the dismantled release cycle; the
 `packages/db` job stores are deleted. With the release advance retired (head 55 is the final
 pricing release — `docs/ops/MODEL_RELEASE_CYCLE.md`) the release-advance transports
 (`preparePricingReleaseV2`, `preparePricingReleaseRecoveryLinkV2`,
 `getLatestPricingReleasePolicyV2`, `capturePricingStage8EvidenceV2`, `activatePricingReleaseV2`)
-are deleted from the client as well, and the activation producer has no remaining caller.
+are deleted from the client, and the engine capture/activation producers they called are deleted
+as well.
 
 ### Hot tariff overrides (`/admin/pricing/tariffs*`)
 

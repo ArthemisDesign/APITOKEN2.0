@@ -241,29 +241,16 @@ side effect. `serve` may only perform the read-only schema verification before c
   performs no persistence. Timed PostgreSQL wrappers set transaction-local statement/lock timeout;
   live reads use a separate bounded actor budget, while inserts pass through the existing billing
   writer without transient retry. SQLite APIs remain for parity/tests and have no live producer.
-- **Stage 8 engine evidence v2:** the PostgreSQL-only read report is materialized in one
-  `REPEATABLE READ READ ONLY` transaction and accepts exact target/recovery generations. Besides the
-  active main/openkeys graph, classifications and full actual→shadow coverage, it re-reads the
-  prepared target/recovery releases and the recovery link, verifies both full-inventory assignment sets,
-  their shared funding identity, live funding heads/lots with aggregates, the current canonical
-  `engine_inventory_digest`/`funding_digest`, the target rule precedence and the observed audit count
-  of unfinished legacy-format inflight without requiring zero. The compile-fixed pricing capability and
-  the separate release schema version are not
-  mixed: every live `engine_instances` must declare release/funding schema v2 and a
-  non-empty runtime digest; the absence of at least one such claim is a blocker until the separate Stage 9
-  runtime checkpoint. `shadow_digest`, `runtime_floor_digest` and the entire report get the canonical
-  `sha256:v2` identity. The external Gemini admission aggregate and the durable provider=`google`
-  usage/outbox remain bounded audit counts but do not replace the mandatory Google actual snapshots
-  and shadow evaluations. Subject identities come out only as SHA-256 digests. The report does not
-  activate or fix anything; any blocker must stop Stage 9.
-  With an absent release head, inventory means the full base manifest for cutover. With an exact target
-  head the same endpoint builds fresh recovery evidence from the immutable base inventory and accepts a
-  post-cutover account only via an exact paired target/recovery extension with live funding parity.
-  With the head behind the requested pair the same endpoint builds successor evidence: the frozen
-  legacy shadow/binding gates no longer apply, the target must be strictly newer than the active
-  head, and both generations must cover the exact full live inventory in their BASE manifests —
-  extensions bind to the outgoing head and never transfer, so a later account fails the capture
-  closed and the consumer stages a fresh pair.
+- **Stage 8 engine evidence v2 — retired:** the PostgreSQL-only read report (the
+  `crates/registry::stage8` builder, the `stage8_engine_evidence` billing-reader command, the
+  `POST /admin/pricing/v2/stage8-evidence/capture` route and the `claude-api db stage8-evidence`
+  CLI) was deleted with the retired release advance: head 55 is the final pricing release and no
+  consumer remained. The `pricing_stage8_evidence_v2` table stays as dormant history and is still
+  joined by the provisioning-context read to its exact head-version activation audit. The
+  compile-fixed runtime manifest and the release/funding schema-v2 claim stamping the report
+  reused stay live for the Stage 9 runtime-claim fence. The real-PG matrices
+  `pg::tests::postgres_stage8_engine_evidence_contract` and
+  `pg::tests::postgres_stage8_consistent_rejection_evidence` were removed with the producers.
 - **Target Stage 5/6/9 contract:** authoritative inventories fully replace the manual assignment
   matrix. Funding normalizes online account-local transactions: exact historical welcome remains
   bonus, residual counts as paid; new `$5` grants, reviewer artifacts and a global money drain are not
@@ -345,7 +332,7 @@ side effect. `serve` may only perform the read-only schema verification before c
   SHA.
 - **Stage 9 zero-drain/provisioning schema checkpoint:** migration `0026` relaxes only the
   DB constraint of Stage 8 evidence: `legacy_inflight_count` remains a mandatory audit count, and
-  the engine report now returns `passed=true` with zero real blockers while old-format
+  the (since retired) engine report returned `passed=true` with zero real blockers while old-format
   requests complete normally against their immutable snapshots. The same migration creates an empty
   append-only `pricing_release_assignment_extensions_v2` for accounts that appeared after the cutover.
   Each extension is bound to the exact current head activation and an atomic active/recovery pair;
@@ -365,27 +352,25 @@ side effect. `serve` may only perform the read-only schema verification before c
   dependencies. A disabled account intentionally remains in the immutable release so that a later
   enablement does not create a hole in the policy/funding authority. SQLite returns unavailable instead of
   a local authority.
-- **Stage 9 activation producer:** `postgres_activate_pricing_release_v2` is the only writer of the
-  global head. In one `SERIALIZABLE` transaction under `PRICING_RELEASE_CONTROL_LOCK_V2` it requires
-  fresh combined evidence, an exact absent/target CAS, the immutable target/recovery link, current
-  catalog/switch lineage, the full base inventory (or exact paired extensions on recovery), funding
-  parity and the compile-fixed runtime floor with exact owner-epoch claims. Evidence, the activation audit and one
-  head row commit together; a rejection rolls back entirely. Exact audit replay returns
-  `unchanged`; recovery moves only forward from the target. A successor activation (migration
-  `0035`) advances any exact active head to a newer prepared target: the from identity records the
-  outgoing head, inventory authority is the full live engine inventory (extensions never
-  transfer), and the provisioning context afterwards exposes the new target as active with its
-  paired recovery, exactly as after a cutover. Accounts, balances, lots, reservations,
-  ledger/usage are not written. Real-PG coverage —
-  `pg::tests::postgres_stage8_engine_evidence_contract`.
+- **Stage 9 activation producer — retired:** `postgres_activate_pricing_release_v2` was the only
+  writer of the global head: one `SERIALIZABLE` transaction under
+  `PRICING_RELEASE_CONTROL_LOCK_V2` with fresh combined evidence, an exact absent/target CAS, the
+  immutable target/recovery link, catalog/switch lineage, full base inventory (or exact paired
+  extensions on recovery), funding parity and the compile-fixed runtime floor with exact
+  owner-epoch claims. It was deleted with the retired release advance (head 55 is the final
+  pricing release) together with its actor command, route and validation types. The
+  `pricing_release_activations_v2` audit and the head row remain as dormant history; the
+  provisioning context keeps exposing the active release through the exact activation audit, and
+  reserve/settlement paths are unchanged. Its real-PG coverage
+  (`pg::tests::postgres_stage8_engine_evidence_contract`) was removed with the producer.
 - **Stage 9 successor activation schema checkpoint:** migration `0035` expand-only admits the
   `successor` activation kind in `pricing_release_activations_v2` and adds its arm to the
   activation-evidence trigger: a successor audit names the exact previous head
   (`from_generation`/`from_digest`, distinct from the evidence target) and the newer prepared
   target it activates, backed by the same fresh passed Stage 8 evidence. The head-step and
   head-audit triggers are kind-agnostic and already cover the monotonic transition. No existing
-  row, arm or semantic changes; the dependent capture/activation producer ships in a separate SHA
-  after a green migration/watchdog of this checkpoint.
+  row, arm or semantic changes; the dependent capture/activation producer shipped in a separate
+  SHA and was retired with the release advance, leaving this schema as dormant history.
 - **Hot tariff override schema checkpoint:** migration `0036` expand-only creates the empty
   append-only `pricing_tariff_overrides` authority so a tariff family price vector can be
   republished as data without a recompile/redeploy. Compiled `metering` constants are the implicit
@@ -423,8 +408,8 @@ side effect. `serve` may only perform the read-only schema verification before c
   only exact terminal replay is allowed, without repeating the money mutation. The provider adapter passes the already
   computed customer debit; registry verifies the provider, non-negative usage and the
   `hold+$1` ceiling, but does not recompute the debit from full official usage (Codex may honestly limit the billed
-  output). The runtime itself does not invoke the activation producer: until a separate protected commerce consumer,
-  the head remains absent. The PostgreSQL-only public image smoke reader is deliberately narrower than
+  output). The runtime never invoked the activation producer; with the release advance retired the
+  activation producer is deleted and the head is final. The PostgreSQL-only public image smoke reader is deliberately narrower than
   normal key CRUD: it resolves the unique engine account handle `crm-parsing` without comparing its opaque
   account ID to an external service ID, and requires the active assignment plus its linked policy to remain
   canonical service/meter-only with the OpenAI master switch enabled. It selects exactly one active

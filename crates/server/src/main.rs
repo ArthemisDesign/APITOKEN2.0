@@ -219,30 +219,6 @@ enum DbOp {
     MigrateEngine,
     /// Verify the already-installed PostgreSQL schema without issuing DDL.
     VerifyPostgres,
-    /// Print read-only Stage 8 engine synchronization and shadow evidence as JSON.
-    Stage8Evidence {
-        /// Exact prepared target pricing release generation.
-        #[arg(long)]
-        target_generation: i64,
-        /// Exact prepared recovery pricing release generation.
-        #[arg(long)]
-        recovery_generation: i64,
-        /// Frozen authority window start, inclusive, as Unix epoch seconds.
-        #[arg(long)]
-        window_start_ts: i64,
-        /// Frozen evidence window end, exclusive, as Unix epoch seconds.
-        #[arg(long)]
-        window_end_ts: i64,
-        /// Required actual-snapshot count for each of Anthropic and OpenAI.
-        #[arg(long)]
-        min_samples_per_provider: i64,
-        /// Deterministic typed financial rows to revalidate and include in the report.
-        #[arg(long)]
-        financial_sample_size: usize,
-        /// Aggregated client-side Gemini admissions observed in the same window.
-        #[arg(long)]
-        gemini_client_admissions: i64,
-    },
 }
 
 #[derive(Subcommand)]
@@ -618,32 +594,6 @@ fn db_cmd(op: DbOp) -> Result<()> {
                 "✓ engine PostgreSQL schema={} balance_nano={} spent_nano={} reserved_nano={}",
                 version, totals.balance_nano, totals.spent_nano, totals.reserved_nano,
             );
-        }
-        DbOp::Stage8Evidence {
-            target_generation,
-            recovery_generation,
-            window_start_ts,
-            window_end_ts,
-            min_samples_per_provider,
-            financial_sample_size,
-            gemini_client_admissions,
-        } => {
-            pg.verify_schema()?;
-            let request = registry::stage8::Stage8EngineEvidenceRequest {
-                target_generation,
-                recovery_generation,
-                window_start_ts,
-                window_end_ts,
-                min_samples_per_provider,
-                financial_sample_size,
-                gemini_client_admissions,
-                runtime_manifest: s.pricing_shadow_manifest,
-            };
-            let report = pg.stage8_engine_evidence(&request)?;
-            println!("{}", serde_json::to_string_pretty(&report)?);
-            if !report.passed {
-                bail!("Stage 8 engine evidence contains blockers");
-            }
         }
     }
     Ok(())

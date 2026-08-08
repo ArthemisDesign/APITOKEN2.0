@@ -388,20 +388,6 @@ define_admin_routes!(
         admin::pricing_release_assignment_extension_v2
     ),
     (
-        post,
-        POST,
-        "/admin/pricing/v2/stage8-evidence/capture",
-        "/admin/pricing/v2/stage8-evidence/capture",
-        admin::capture_stage8_engine_evidence
-    ),
-    (
-        post,
-        POST,
-        "/admin/pricing/v2/activate",
-        "/admin/pricing/v2/activate",
-        admin::activate_pricing_release_v2
-    ),
-    (
         get,
         GET,
         "/admin/pricing/v2/head",
