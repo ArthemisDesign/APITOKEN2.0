@@ -89,6 +89,37 @@ describe("Платящие (paying users page)", () => {
     expect(filtered).not.toContain("включая mixed/legacy/unattributed");
   });
 
+  it("Kimi — собственная колонка провайдера, а не «Другое / legacy»", () => {
+    const provider_spend = {
+      anthropic_nano: "0",
+      openai_nano: "0",
+      google_nano: "0",
+      kimi_nano: "6000000000",
+      other_nano: "0",
+    };
+
+    const row = renderToString(<table><tbody><PayingRow row={{
+      email: "kimi@example.com",
+      funding_kind: "spend_only",
+      spent_nano: "6000000000",
+      provider_spend,
+      usage: { status: "unavailable", window: "30d", account_count: 0, available_account_count: 0, unavailable_account_count: 0, requests: "0", total_official_nano: "0", total_charged_nano: "0", models: [] },
+    }} rank={1} days={30} /></tbody></table>);
+    expect(row).toContain("paying-provider-cell kimi");
+    expect(row).toContain("$6.00");
+
+    const ledger = renderToString(<PayingLedger
+      data={{ days: 30, summary: { spent_nano: "6000000000", provider_spend, provider_users: { kimi: 1, other: 0 } } }}
+      funding="spenders"
+      activeProvider=""
+      onProviderSelect={() => undefined}
+    />);
+    expect(ledger).toContain("paying-provider-summary kimi");
+    expect(ledger).toContain("Kimi");
+    // The named bucket must leave "other", otherwise the same money is shown twice.
+    expect(ledger).not.toContain("Другое / legacy");
+  });
+
   it("SSR manual-only row не выдаёт ручное пополнение за provider payment", () => {
     const html = renderToString(<table><tbody><PayingRow row={{
       email: "manual@example.com",

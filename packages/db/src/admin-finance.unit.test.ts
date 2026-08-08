@@ -30,8 +30,10 @@ function fakeDatabase(options: { selectError?: Error; rollbackError?: Error } = 
         paying_users: "8", cohort_users: "10", bonus_only_users: "2", active_spenders: "7",
         paid_nano: "90000000000", manual_paid_nano: "10000000000", spent_nano: "34000000000",
         bonus_only_spent_nano: "2000000000", anthropic_nano: "14000000000",
-        openai_nano: "15000000000", google_nano: "4000000000", other_nano: "1000000000",
-        anthropic_users: "5", openai_users: "4", google_users: "2", other_users: "1",
+        openai_nano: "15000000000", google_nano: "4000000000", kimi_nano: "3000000000",
+        other_nano: "1000000000",
+        anthropic_users: "5", openai_users: "4", google_users: "2", kimi_users: "3",
+        other_users: "1",
       }] });
     }
     if (text.includes("admin-finance:paying-users-count")) {
@@ -45,7 +47,8 @@ function fakeDatabase(options: { selectError?: Error; rollbackError?: Error } = 
       spent_nano: "7000000000", paid_funded_nano: "4000000000", bonus_funded_nano: "2000000000",
       other_funded_nano: "500000000", unattributed_nano: "500000000",
       anthropic_nano: "2000000000", openai_nano: "4000000000",
-      google_nano: "1000000000", other_nano: "0", engine_account_id: "acct-user-1",
+      google_nano: "1000000000", kimi_nano: "750000000", other_nano: "0",
+      engine_account_id: "acct-user-1",
       usage_account_ids: ["acct-historical", "acct-user-1"], active_api_keys: "1",
       last_seen_at: new Date("2026-08-01T10:00:00Z"), created_at: new Date("2026-06-01T10:00:00Z"),
     }] });
@@ -98,7 +101,10 @@ describe("listAdminPayingUsers", () => {
         bonusFundedSpentNano: "2000000000",
         otherFundedSpentNano: "500000000",
         unattributedSpentNano: "500000000",
-        providerSpendNano: { anthropic: "2000000000", openai: "4000000000", google: "1000000000", other: "0" },
+        providerSpendNano: {
+          anthropic: "2000000000", openai: "4000000000", google: "1000000000",
+          kimi: "750000000", other: "0",
+        },
         engineAccountId: "acct-user-1",
         usageAccountIds: ["acct-historical", "acct-user-1"],
       }],
@@ -109,11 +115,25 @@ describe("listAdminPayingUsers", () => {
         activeSpenders: 7,
         bonusOnlySpentNano: "2000000000",
         providerSpendNano: {
-          anthropic: "14000000000", openai: "15000000000", google: "4000000000", other: "1000000000",
+          anthropic: "14000000000", openai: "15000000000", google: "4000000000",
+          kimi: "3000000000", other: "1000000000",
         },
-        providerUsers: { anthropic: 5, openai: 4, google: 2, other: 1 },
+        providerUsers: { anthropic: 5, openai: 4, google: 2, kimi: 3, other: 1 },
       },
     });
+  });
+
+  it("считает Kimi отдельным провайдером и убирает его из «другого»", async () => {
+    const { database, queries } = fakeDatabase();
+    await listAdminPayingUsers(database, { days: 30, provider: "kimi" });
+
+    const rowQuery = queries[0]!.text;
+    expect(rowQuery).toContain("FILTER (WHERE provider_id = 'kimi'), 0) AS kimi_nano");
+    // Named providers must all be excluded from the residual bucket: leaving `kimi` in it would
+    // show the same money twice — once in its own column and once as «другое / legacy».
+    expect(rowQuery).toContain("NOT IN ('anthropic', 'openai', 'google', 'kimi')");
+    expect(rowQuery).toContain("$4 = 'kimi' AND COALESCE(usage.kimi_nano, 0) > 0");
+    expect(queries[0]!.params).toContain("kimi");
   });
 
   it("сужает и страницу, и сводку, когда задана когорта источника денег", async () => {

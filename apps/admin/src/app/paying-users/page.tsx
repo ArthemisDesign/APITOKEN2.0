@@ -62,6 +62,7 @@ const PROVIDERS = [
   { id: "anthropic", label: "Claude", className: "claude" },
   { id: "openai", label: "GPT", className: "gpt" },
   { id: "google", label: "Gemini", className: "gemini" },
+  { id: "kimi", label: "Kimi", className: "kimi" },
 ] as const;
 
 const WINDOWS: Array<{ days: PayingUserDays; label: string }> = [
@@ -423,7 +424,7 @@ function CustomerCohort({ page, search, setPage, setSearch, onTotalChange }: Cus
             </select>
             <label className="sr-only" htmlFor="paying-provider">Провайдер</label>
             <select id="paying-provider" value={page.provider} onChange={(event) => patchPage({ provider: event.target.value as PayingUsersPageState["provider"] })}>
-              <option value="">все провайдеры</option><option value="anthropic">Claude</option><option value="openai">GPT</option><option value="google">Gemini</option><option value="other">другое / legacy</option>
+              <option value="">все провайдеры</option><option value="anthropic">Claude</option><option value="openai">GPT</option><option value="google">Gemini</option><option value="kimi">Kimi</option><option value="other">другое / legacy</option>
             </select>
             <label className="sr-only" htmlFor="paying-funding">Фильтр spender-когорты</label>
             <select id="paying-funding" value={page.funding} title="Выберите всех spenders, lifetime money funding или строгий bonus-only" onChange={(event) => patchPage({ funding: event.target.value as PayingUsersPageState["funding"] })}>

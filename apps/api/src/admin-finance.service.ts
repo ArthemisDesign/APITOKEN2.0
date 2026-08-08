@@ -225,10 +225,13 @@ export class AdminFinanceService {
     const usage = query.includeUsage
       ? await loadAdminPayingUserUsage(this.engine, value.rows, `${value.days}d`)
       : undefined;
-    const providerMoney = (amounts: Record<"anthropic" | "openai" | "google" | "other", string>) => ({
+    const providerMoney = (
+      amounts: Record<"anthropic" | "openai" | "google" | "kimi" | "other", string>,
+    ) => ({
       anthropic_nano: amounts.anthropic,
       openai_nano: amounts.openai,
       google_nano: amounts.google,
+      kimi_nano: amounts.kimi,
       other_nano: amounts.other,
     });
     return {
@@ -251,6 +254,7 @@ export class AdminFinanceService {
           anthropic: value.summary.providerUsers.anthropic,
           openai: value.summary.providerUsers.openai,
           google: value.summary.providerUsers.google,
+          kimi: value.summary.providerUsers.kimi,
           other: value.summary.providerUsers.other,
         },
       },

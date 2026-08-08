@@ -82,7 +82,7 @@ export interface AdminFinanceChurnRow {
   spent30dNano: string;
 }
 
-export type AdminPayingUserProvider = "anthropic" | "openai" | "google" | "other";
+export type AdminPayingUserProvider = "anthropic" | "openai" | "google" | "kimi" | "other";
 export type AdminPayingUserSort = "spent" | "paid" | "last_paid" | "last_seen";
 export type AdminPayingUserFunding = "payments" | "manual" | "bonus" | "all" | "spenders";
 export type AdminPayingUserFundingKind =
@@ -381,7 +381,7 @@ export async function listAdminPayingUsers(
   const sortExpr = PAYING_USER_SORT_SQL[sort];
   if (sortExpr === undefined) throw new Error(`unsupported paying users sort: ${String(query.sort)}`);
   if (dir !== "asc" && dir !== "desc") throw new Error(`unsupported paying users sort dir: ${String(query.dir)}`);
-  if (provider && !["anthropic", "openai", "google", "other"].includes(provider)) {
+  if (provider && !["anthropic", "openai", "google", "kimi", "other"].includes(provider)) {
     throw new Error(`unsupported paying users provider: ${String(query.provider)}`);
   }
   if (status && status !== "active" && status !== "disabled") {
@@ -458,8 +458,11 @@ export async function listAdminPayingUsers(
         COALESCE(sum(amount_nano) FILTER (WHERE provider_id = 'anthropic'), 0) AS anthropic_nano,
         COALESCE(sum(amount_nano) FILTER (WHERE provider_id = 'openai'), 0) AS openai_nano,
         COALESCE(sum(amount_nano) FILTER (WHERE provider_id = 'google'), 0) AS google_nano,
+        COALESCE(sum(amount_nano) FILTER (WHERE provider_id = 'kimi'), 0) AS kimi_nano,
+        -- Every named provider must also leave this bucket, or its spend would be counted twice:
+        -- once in its own column and once as "other".
         COALESCE(sum(amount_nano) FILTER (
-          WHERE provider_id IS NULL OR provider_id NOT IN ('anthropic', 'openai', 'google')
+          WHERE provider_id IS NULL OR provider_id NOT IN ('anthropic', 'openai', 'google', 'kimi')
         ), 0) AS other_nano
       FROM window_events
       GROUP BY user_id
@@ -525,6 +528,7 @@ export async function listAdminPayingUsers(
       OR ($4 = 'anthropic' AND COALESCE(usage.anthropic_nano, 0) > 0)
       OR ($4 = 'openai' AND COALESCE(usage.openai_nano, 0) > 0)
       OR ($4 = 'google' AND COALESCE(usage.google_nano, 0) > 0)
+      OR ($4 = 'kimi' AND COALESCE(usage.kimi_nano, 0) > 0)
       OR ($4 = 'other' AND COALESCE(usage.other_nano, 0) > 0))
   `;
   const client = await database.pool.connect();
@@ -538,7 +542,8 @@ export async function listAdminPayingUsers(
       last_paid_at: Date | null; manual_paid_nano: string; manual_topups_count: string;
       spent_nano: string; paid_funded_nano: string; bonus_funded_nano: string;
       other_funded_nano: string; unattributed_nano: string;
-      anthropic_nano: string; openai_nano: string; google_nano: string; other_nano: string;
+      anthropic_nano: string; openai_nano: string; google_nano: string; kimi_nano: string;
+      other_nano: string;
       engine_account_id: string | null; usage_account_ids: string[]; active_api_keys: string;
       last_seen_at: Date | null; created_at: Date;
     }>(`
@@ -556,6 +561,7 @@ export async function listAdminPayingUsers(
         COALESCE(usage.anthropic_nano, 0)::text AS anthropic_nano,
         COALESCE(usage.openai_nano, 0)::text AS openai_nano,
         COALESCE(usage.google_nano, 0)::text AS google_nano,
+        COALESCE(usage.kimi_nano, 0)::text AS kimi_nano,
         COALESCE(usage.other_nano, 0)::text AS other_nano,
         ea.engine_account_id,
         CASE
@@ -589,8 +595,10 @@ export async function listAdminPayingUsers(
       paying_users: string; cohort_users: string; bonus_only_users: string;
       active_spenders: string; paid_nano: string; manual_paid_nano: string;
       spent_nano: string; bonus_only_spent_nano: string;
-      anthropic_nano: string; openai_nano: string; google_nano: string; other_nano: string;
-      anthropic_users: string; openai_users: string; google_users: string; other_users: string;
+      anthropic_nano: string; openai_nano: string; google_nano: string; kimi_nano: string;
+      other_nano: string;
+      anthropic_users: string; openai_users: string; google_users: string; kimi_users: string;
+      other_users: string;
     }>(`
       /* admin-finance:paying-users-summary */
       ${commonCtes(2)}
@@ -608,10 +616,12 @@ export async function listAdminPayingUsers(
         COALESCE(sum(usage.anthropic_nano), 0)::text AS anthropic_nano,
         COALESCE(sum(usage.openai_nano), 0)::text AS openai_nano,
         COALESCE(sum(usage.google_nano), 0)::text AS google_nano,
+        COALESCE(sum(usage.kimi_nano), 0)::text AS kimi_nano,
         COALESCE(sum(usage.other_nano), 0)::text AS other_nano,
         count(*) FILTER (WHERE COALESCE(usage.anthropic_nano, 0) > 0)::text AS anthropic_users,
         count(*) FILTER (WHERE COALESCE(usage.openai_nano, 0) > 0)::text AS openai_users,
         count(*) FILTER (WHERE COALESCE(usage.google_nano, 0) > 0)::text AS google_users,
+        count(*) FILTER (WHERE COALESCE(usage.kimi_nano, 0) > 0)::text AS kimi_users,
         count(*) FILTER (WHERE COALESCE(usage.other_nano, 0) > 0)::text AS other_users
       FROM paid
       LEFT JOIN usage ON usage.user_id = paid.user_id
@@ -622,8 +632,8 @@ export async function listAdminPayingUsers(
   const summary = summaryResult.rows[0] ?? {
     paying_users: "0", cohort_users: "0", bonus_only_users: "0", active_spenders: "0",
     paid_nano: "0", manual_paid_nano: "0", spent_nano: "0", bonus_only_spent_nano: "0",
-    anthropic_nano: "0", openai_nano: "0", google_nano: "0", other_nano: "0",
-    anthropic_users: "0", openai_users: "0", google_users: "0", other_users: "0",
+    anthropic_nano: "0", openai_nano: "0", google_nano: "0", kimi_nano: "0", other_nano: "0",
+    anthropic_users: "0", openai_users: "0", google_users: "0", kimi_users: "0", other_users: "0",
   };
   return {
     rows: pageResult.rows.map((row) => ({
@@ -649,6 +659,7 @@ export async function listAdminPayingUsers(
         anthropic: row.anthropic_nano,
         openai: row.openai_nano,
         google: row.google_nano,
+        kimi: row.kimi_nano,
         other: row.other_nano,
       },
       engineAccountId: row.engine_account_id,
@@ -674,12 +685,14 @@ export async function listAdminPayingUsers(
         anthropic: summary.anthropic_nano,
         openai: summary.openai_nano,
         google: summary.google_nano,
+        kimi: summary.kimi_nano,
         other: summary.other_nano,
       },
       providerUsers: {
         anthropic: Number(summary.anthropic_users),
         openai: Number(summary.openai_users),
         google: Number(summary.google_users),
+        kimi: Number(summary.kimi_users),
         other: Number(summary.other_users),
       },
     },

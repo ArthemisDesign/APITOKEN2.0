@@ -9,7 +9,7 @@ export const PAYING_USER_SORTS = [
 ] as const;
 
 export type PayingUserSort = (typeof PAYING_USER_SORTS)[number][0];
-export type PayingUserProvider = "anthropic" | "openai" | "google" | "other";
+export type PayingUserProvider = "anthropic" | "openai" | "google" | "kimi" | "other";
 export type PayingUserFunding = "spenders" | "all" | "payments" | "manual" | "bonus";
 export type PayingUserFundingKind = "payments" | "payments_and_manual" | "manual" | "bonus_only" | "spend_only";
 
@@ -27,6 +27,7 @@ export interface ProviderSpend {
   anthropic_nano?: string;
   openai_nano?: string;
   google_nano?: string;
+  kimi_nano?: string;
   other_nano?: string;
 }
 
@@ -214,6 +215,7 @@ export const PAYING_USERS_CSV_HEADER = [
   "claude_nanoUSD_text",
   "gpt_nanoUSD_text",
   "gemini_nanoUSD_text",
+  "kimi_nanoUSD_text",
   "другое_nanoUSD_text",
   "последняя_оплата",
   "последняя_активность",
@@ -262,6 +264,7 @@ export function buildPayingUsersCsvRows(rows: PayingUserRow[]): unknown[][] {
       spreadsheetExactInteger(providerNano(row.provider_spend, "anthropic")),
       spreadsheetExactInteger(providerNano(row.provider_spend, "openai")),
       spreadsheetExactInteger(providerNano(row.provider_spend, "google")),
+      spreadsheetExactInteger(providerNano(row.provider_spend, "kimi")),
       spreadsheetExactInteger(providerNano(row.provider_spend, "other")),
       spreadsheetSafeText(row.last_paid_at ?? ""),
       spreadsheetSafeText(row.last_seen_at ?? ""),

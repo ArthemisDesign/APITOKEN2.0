@@ -328,8 +328,8 @@ describe("admin finance paying users", () => {
       summary: {
         payingUsers: 1, cohortUsers: 1, bonusOnlyUsers: 0, activeSpenders: 1,
         paidNano: "10", manualPaidNano: "0", spentNano: "1", bonusOnlySpentNano: "0",
-        providerSpendNano: { anthropic: "1", openai: "0", google: "0", other: "0" },
-        providerUsers: { anthropic: 1, openai: 0, google: 0, other: 0 },
+        providerSpendNano: { anthropic: "1", openai: "0", google: "0", kimi: "0", other: "0" },
+        providerUsers: { anthropic: 1, openai: 0, google: 0, kimi: 0, other: 0 },
       },
       rows: [{
         userId: "u1", email: "paid@example.com", displayName: "Paid", status: "active",
@@ -337,7 +337,7 @@ describe("admin finance paying users", () => {
         paidNano: "10", paymentsCount: 1, manualPaidNano: "0", manualTopupsCount: 0,
         lastPaidAt: null, spentNano: "1", paidFundedSpentNano: "1",
         bonusFundedSpentNano: "0", otherFundedSpentNano: "0", unattributedSpentNano: "0",
-        providerSpendNano: { anthropic: "1", openai: "0", google: "0", other: "0" },
+        providerSpendNano: { anthropic: "1", openai: "0", google: "0", kimi: "0", other: "0" },
         engineAccountId: "acct_current", usageAccountIds: ["acct_old", "acct_current"],
         activeApiKeys: 1, lastSeenAt: null, createdAt: new Date("2026-06-01T10:00:00Z"),
       }],
@@ -370,9 +370,9 @@ describe("admin finance paying users", () => {
         spentNano: "123456789012345678901234567890",
         bonusOnlySpentNano: "99999999999999999999999999999",
         providerSpendNano: {
-          anthropic: "12000000000", openai: "15000000000", google: "5000000000", other: "0",
+          anthropic: "12000000000", openai: "15000000000", google: "5000000000", kimi: "0", other: "0",
         },
-        providerUsers: { anthropic: 2, openai: 3, google: 1, other: 0 },
+        providerUsers: { anthropic: 2, openai: 3, google: 1, kimi: 0, other: 0 },
       },
       rows: [{
         userId: "u1",
@@ -394,7 +394,7 @@ describe("admin finance paying users", () => {
         otherFundedSpentNano: "0",
         unattributedSpentNano: "0",
         providerSpendNano: {
-          anthropic: "2000000000", openai: "4000000000", google: "1000000000", other: "0",
+          anthropic: "2000000000", openai: "4000000000", google: "1000000000", kimi: "0", other: "0",
         },
         engineAccountId: "acct_u1",
         usageAccountIds: ["acct_u1", "acct_old_u1", "acct_u1"],
@@ -544,7 +544,7 @@ describe("admin finance paying users", () => {
       manualPaidNano: "0", manualTopupsCount: 0, lastPaidAt: null,
       spentNano: "1", paidFundedSpentNano: "0", bonusFundedSpentNano: "0",
       otherFundedSpentNano: "0", unattributedSpentNano: "1",
-      providerSpendNano: { anthropic: "0", openai: "0", google: "0", other: "1" },
+      providerSpendNano: { anthropic: "0", openai: "0", google: "0", kimi: "0", other: "1" },
       activeApiKeys: 0, lastSeenAt: null, createdAt: new Date("2026-06-01T10:00:00Z"),
     };
     const rows = Array.from({ length: 6 }, (_, index) => ({
@@ -560,8 +560,8 @@ describe("admin finance paying users", () => {
       summary: {
         payingUsers: 0, cohortUsers: 6, bonusOnlyUsers: 0, activeSpenders: 6,
         paidNano: "0", manualPaidNano: "0", spentNano: "6", bonusOnlySpentNano: "0",
-        providerSpendNano: { anthropic: "0", openai: "0", google: "0", other: "6" },
-        providerUsers: { anthropic: 0, openai: 0, google: 0, other: 6 },
+        providerSpendNano: { anthropic: "0", openai: "0", google: "0", kimi: "0", other: "6" },
+        providerUsers: { anthropic: 0, openai: 0, google: 0, kimi: 0, other: 6 },
       },
     });
 
@@ -620,7 +620,7 @@ describe("admin finance paying users", () => {
       manualPaidNano: "0", manualTopupsCount: 0, lastPaidAt: null,
       spentNano: "1", paidFundedSpentNano: "0", bonusFundedSpentNano: "0",
       otherFundedSpentNano: "0", unattributedSpentNano: "1",
-      providerSpendNano: { anthropic: "0", openai: "0", google: "0", other: "1" },
+      providerSpendNano: { anthropic: "0", openai: "0", google: "0", kimi: "0", other: "1" },
       activeApiKeys: 0, lastSeenAt: null, createdAt: new Date("2026-06-01T10:00:00Z"),
     };
     payingUsersMock.mockResolvedValue({
@@ -632,8 +632,8 @@ describe("admin finance paying users", () => {
       summary: {
         payingUsers: 0, cohortUsers: 6, bonusOnlyUsers: 0, activeSpenders: 6,
         paidNano: "0", manualPaidNano: "0", spentNano: "6", bonusOnlySpentNano: "0",
-        providerSpendNano: { anthropic: "0", openai: "0", google: "0", other: "6" },
-        providerUsers: { anthropic: 0, openai: 0, google: 0, other: 6 },
+        providerSpendNano: { anthropic: "0", openai: "0", google: "0", kimi: "0", other: "6" },
+        providerUsers: { anthropic: 0, openai: 0, google: 0, kimi: 0, other: 6 },
       },
     });
     getUsage.mockImplementation((_account: string, _window: string, options: { signal: AbortSignal }) =>

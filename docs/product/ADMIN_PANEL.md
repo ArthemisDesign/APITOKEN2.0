@@ -281,9 +281,12 @@ the consumer; only bounded coverage counts and the 0–10000 provider-share basi
 The top ledger separates lifetime money received (`paid_nano`, including the manual amount
 in its copy) from strict selected-window bonus-only (`bonus_only_spent_nano` and
 `bonus_only_users`); bonus spend is not revenue. A separate window card and the proportional
-Claude/GPT/Gemini rail cover all selected spenders, explicitly including mixed, legacy and
+Claude/GPT/Gemini/Kimi rail cover all selected spenders, explicitly including mixed, legacy and
 unattributed rows. The page therefore never calls this cohort "money-paying customers".
-Provider segments also serve as quick filters.
+Provider segments also serve as quick filters. A named provider is subtracted from the residual
+`другое / legacy` bucket in the same query that names it — otherwise its spend would appear twice,
+once in its own column and once as residue — so Kimi moving into its own column reduces `другое`
+by exactly the amount it now shows. GLM is still counted as residue: it has no column yet.
 
 Commerce CSV preserves the exact funding legs and provider totals, then emits one row per
 user × producer-authored provider × model. A complete/partial report without models and an
