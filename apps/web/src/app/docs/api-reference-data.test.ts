@@ -8,7 +8,7 @@ import {
 } from "./integration-builder-data";
 import { buildApiGuide, namespacedModelId, type ApiLanguage, type ApiStyle } from "./api-reference-data";
 
-const providers: IntegrationProvider[] = ["anthropic", "openai", "gemini"];
+const providers: IntegrationProvider[] = ["anthropic", "openai", "gemini", "kimi"];
 const apiStyles: ApiStyle[] = ["native", "openai-compatible"];
 const apiLanguages: ApiLanguage[] = ["curl", "python", "typescript"];
 const languages: IntegrationLanguage[] = ["en", "ru"];
@@ -16,6 +16,8 @@ const nativeEndpoints: Record<IntegrationProvider, string> = {
   anthropic: ROUTER_BASE_URL,
   openai: ROUTER_OPENAI_BASE_URL,
   gemini: ROUTER_BASE_URL,
+  // KIMI speaks Anthropic Messages, so its native surface is the Anthropic endpoint.
+  kimi: ROUTER_BASE_URL,
 };
 
 describe("API reference guide", () => {

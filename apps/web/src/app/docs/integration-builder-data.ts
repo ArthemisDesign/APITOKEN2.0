@@ -11,7 +11,21 @@ export const ANTHROPIC_BASE_URL = "https://api.apitoken.sale";
 export const OPENAI_BASE_URL = "https://openai.api.apitoken.sale/v1";
 export const GEMINI_BASE_URL = "https://gemini.api.apitoken.sale";
 
-export type IntegrationProvider = "anthropic" | "openai" | "gemini";
+export type IntegrationProvider = "anthropic" | "openai" | "gemini" | "kimi";
+
+/**
+ * The wire protocol a provider is spoken to over.
+ *
+ * KIMI is not a fourth dialect — it is a set of models reachable on the Anthropic Messages
+ * protocol through the unified router, under its own namespace. Every switch below therefore
+ * branches on the protocol, not on the provider: an `else → openai` chain would have silently
+ * handed KIMI the OpenAI adapter.
+ */
+type IntegrationProtocol = "anthropic" | "openai" | "gemini";
+
+function protocolOf(provider: IntegrationProvider): IntegrationProtocol {
+  return provider === "kimi" ? "anthropic" : provider;
+}
 export type IntegrationTool = "claude-code" | "codex" | "gemini-cli" | "opencode" | "pi" | "hermes";
 export type IntegrationOs = "unix" | "powershell" | "cmd";
 export type IntegrationLanguage = "en" | "ru";
@@ -65,14 +79,27 @@ export const INTEGRATION_MODELS: Record<IntegrationProvider, readonly Integratio
     { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Flash-Lite" },
     { id: "gemini-3.1-flash-image", name: "Gemini 3.1 Flash Image (Nano Banana 2)" },
   ],
+  // Subscription aliases exactly as the router advertises them. `k3[1m]` is not a separate
+  // model: it is the bracket spelling of the same 1M window, kept because tools configured
+  // against the Claude catalogue use that convention.
+  kimi: [
+    { id: "k3", name: "Kimi K3 (1M)" },
+    { id: "k3[1m]", name: "Kimi K3 (1M alias)" },
+    { id: "k3-256k", name: "Kimi K3 (256K)" },
+    { id: "kimi-for-coding", name: "Kimi for Coding" },
+    { id: "kimi-for-coding-highspeed", name: "Kimi for Coding High Speed" },
+  ],
 };
 
 export const TOOL_COMPATIBILITY: Record<IntegrationTool, readonly IntegrationProvider[]> = {
   "claude-code": ["anthropic"],
   codex: ["openai"],
   "gemini-cli": ["gemini"],
-  opencode: ["anthropic", "openai", "gemini"],
-  pi: ["anthropic", "openai", "gemini"],
+  // Claude Code is deliberately absent for KIMI: its model discovery ignores ids outside the
+  // claude/anthropic prefixes, so a published guide would not survive first contact. OpenCode
+  // and Pi take an explicit model id and do.
+  opencode: ["anthropic", "openai", "gemini", "kimi"],
+  pi: ["anthropic", "openai", "gemini", "kimi"],
   hermes: ["openai"],
 };
 
@@ -91,6 +118,7 @@ const PROVIDER_ENDPOINTS: Record<IntegrationProvider, string> = {
   anthropic: ROUTER_BASE_URL,
   openai: ROUTER_OPENAI_BASE_URL,
   gemini: ROUTER_BASE_URL,
+  kimi: ROUTER_BASE_URL,
 };
 
 function localize(language: IntegrationLanguage, en: string, ru: string): string {
@@ -233,17 +261,24 @@ function geminiCliGuide(model: IntegrationModel, os: IntegrationOs, language: In
 function openCodeConfig(provider: IntegrationProvider, model: IntegrationModel): string {
   // The Google ai-sdk package expects the baseURL including the /v1beta prefix,
   // while the Anthropic one wants the /v1 suffix; OpenAI already carries it.
-  const npmProvider = provider === "anthropic"
+  const protocol = protocolOf(provider);
+  const npmProvider = protocol === "anthropic"
     ? "@ai-sdk/anthropic"
-    : provider === "gemini"
+    : protocol === "gemini"
       ? "@ai-sdk/google"
       : "@ai-sdk/openai-compatible";
-  const baseURL = provider === "anthropic"
+  const baseURL = protocol === "anthropic"
     ? `${ROUTER_BASE_URL}/v1`
-    : provider === "gemini"
+    : protocol === "gemini"
       ? `${ROUTER_BASE_URL}/v1beta`
       : ROUTER_OPENAI_BASE_URL;
-  const label = provider === "anthropic" ? "Claude" : provider === "gemini" ? "Gemini" : "GPT";
+  const label = provider === "anthropic"
+    ? "Claude"
+    : provider === "gemini"
+      ? "Gemini"
+      : provider === "kimi"
+        ? "Kimi"
+        : "GPT";
   return JSON.stringify({
     $schema: "https://opencode.ai/config.json",
     provider: {
@@ -339,7 +374,11 @@ function piConfig(provider: IntegrationProvider, model: IntegrationModel): strin
         baseUrl: PROVIDER_ENDPOINTS[provider],
         // Pi's OpenAI completions adapter is the broadest-compatible path for
         // gateways. Responses remains the dedicated wire format for Codex.
-        api: provider === "anthropic" ? "anthropic-messages" : provider === "gemini" ? "google-generative-ai" : "openai-completions",
+        api: protocolOf(provider) === "anthropic"
+          ? "anthropic-messages"
+          : protocolOf(provider) === "gemini"
+            ? "google-generative-ai"
+            : "openai-completions",
         apiKey: "$APITOKEN_API_KEY",
         models: [{
           id: model.id,

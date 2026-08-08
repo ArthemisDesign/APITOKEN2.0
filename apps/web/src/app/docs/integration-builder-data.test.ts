@@ -19,17 +19,19 @@ import {
 
 const operatingSystems: IntegrationOs[] = ["unix", "powershell", "cmd"];
 const languages: IntegrationLanguage[] = ["en", "ru"];
-const providers: IntegrationProvider[] = ["anthropic", "openai", "gemini"];
+const providers: IntegrationProvider[] = ["anthropic", "openai", "gemini", "kimi"];
 const tools = Object.keys(TOOL_COMPATIBILITY) as IntegrationTool[];
 const providerEndpoints: Record<IntegrationProvider, string> = {
   anthropic: ROUTER_BASE_URL,
   openai: ROUTER_OPENAI_BASE_URL,
   gemini: ROUTER_BASE_URL,
+  kimi: ROUTER_BASE_URL,
 };
 const providerTitleNames: Record<IntegrationProvider, string> = {
   anthropic: "Claude",
   openai: "GPT",
   gemini: "Gemini",
+  kimi: "Kimi",
 };
 
 describe("integration builder guide", () => {
@@ -45,6 +47,32 @@ describe("integration builder guide", () => {
     expect(INTEGRATION_MODELS.anthropic.every(({ name }) => name.length > 0)).toBe(true);
     expect(INTEGRATION_MODELS.openai.every(({ name }) => name.length > 0)).toBe(true);
     expect(INTEGRATION_MODELS.gemini.every(({ name }) => name.length > 0)).toBe(true);
+    // KIMI has no entry in the SEO registry (it is not published on the marketing site), so its
+    // catalog is pinned here instead: exactly the five aliases the router advertises, and never
+    // an official Open Platform id, which the gateway refuses on the wire.
+    expect(INTEGRATION_MODELS.kimi.map(({ id }) => id)).toEqual([
+      "k3", "k3[1m]", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed",
+    ]);
+    expect(INTEGRATION_MODELS.kimi.every(({ name }) => name.startsWith("Kimi"))).toBe(true);
+  });
+
+  it("routes KIMI over the Anthropic protocol under its own namespace", () => {
+    const openCode = buildIntegrationGuide({ provider: "kimi", tool: "opencode", os: "unix", modelId: "k3", language: "en" });
+    // The namespace is KIMI's own — unlike Gemini, whose catalog namespace is `google`.
+    expect(openCode.steps[1].code).toContain("apitoken/kimi/k3");
+    const config = JSON.parse(openCode.steps[2].code) as { provider: { apitoken: { npm: string; options: { baseURL: string } } } };
+    // Anthropic Messages, not the OpenAI-compatible adapter an `else` branch would have chosen.
+    expect(config.provider.apitoken.npm).toBe("@ai-sdk/anthropic");
+    expect(config.provider.apitoken.options.baseURL).toBe(`${ROUTER_BASE_URL}/v1`);
+
+    const pi = buildIntegrationGuide({ provider: "kimi", tool: "pi", os: "unix", modelId: "k3", language: "en" });
+    const piConfig = JSON.parse(pi.steps[0].code) as { providers: { apitoken: { baseUrl: string; api: string } } };
+    expect(piConfig.providers.apitoken.api).toBe("anthropic-messages");
+    expect(piConfig.providers.apitoken.baseUrl).toBe(ROUTER_BASE_URL);
+
+    // Claude Code ignores ids outside the claude/anthropic prefixes, so a KIMI guide for it
+    // would not survive first contact and must not be offered.
+    expect(isToolCompatible("claude-code", "kimi")).toBe(false);
   });
 
   it("builds every compatible provider, tool, OS, and language combination", () => {

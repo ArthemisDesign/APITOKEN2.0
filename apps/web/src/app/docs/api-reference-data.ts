@@ -37,19 +37,35 @@ function localize(language: IntegrationLanguage, en: string, ru: string): string
 // On the OpenAI-compatible lane they are the safe way to address a model of any
 // provider; bare native IDs work only while they are globally unambiguous.
 export function namespacedModelId(provider: IntegrationProvider, modelId: string): string {
-  const namespace = provider === "anthropic" ? "anthropic" : provider === "gemini" ? "google" : "openai";
+  const namespace = provider === "anthropic"
+    ? "anthropic"
+    : provider === "gemini"
+      ? "google"
+      : provider === "kimi"
+        ? "kimi"
+        : "openai";
   return `${namespace}/${modelId}`;
+}
+
+/**
+ * The wire protocol behind a provider. KIMI has no dialect of its own: it is served over the
+ * Anthropic Messages protocol, so every native example, credential scheme and SDK below is the
+ * Anthropic one. Branching on the provider with an `else → openai` tail would have documented
+ * the wrong client for it.
+ */
+function protocolOf(provider: IntegrationProvider): "anthropic" | "openai" | "gemini" {
+  return provider === "kimi" ? "anthropic" : provider;
 }
 
 function endpointFor(provider: IntegrationProvider, style: ApiStyle): string {
   if (style === "openai-compatible") return ROUTER_OPENAI_BASE_URL;
-  return provider === "openai" ? ROUTER_OPENAI_BASE_URL : ROUTER_BASE_URL;
+  return protocolOf(provider) === "openai" ? ROUTER_OPENAI_BASE_URL : ROUTER_BASE_URL;
 }
 
 function authFor(provider: IntegrationProvider, style: ApiStyle): string {
   if (style === "openai-compatible") return "Authorization: Bearer";
-  if (provider === "anthropic") return "x-api-key · anthropic-version";
-  if (provider === "gemini") return "x-goog-api-key";
+  if (protocolOf(provider) === "anthropic") return "x-api-key · anthropic-version";
+  if (protocolOf(provider) === "gemini") return "x-goog-api-key";
   return "Authorization: Bearer";
 }
 
@@ -271,8 +287,12 @@ function installStep(provider: IntegrationProvider, style: ApiStyle, apiLanguage
   if (apiLanguage === "curl") return null;
   const native = style === "native";
   const pkg = apiLanguage === "python"
-    ? (native && provider === "anthropic" ? "anthropic" : native && provider === "gemini" ? "google-genai" : "openai")
-    : (native && provider === "anthropic" ? "@anthropic-ai/sdk" : native && provider === "gemini" ? "@google/genai" : "openai");
+    ? (native && protocolOf(provider) === "anthropic"
+        ? "anthropic"
+        : native && protocolOf(provider) === "gemini" ? "google-genai" : "openai")
+    : (native && protocolOf(provider) === "anthropic"
+        ? "@anthropic-ai/sdk"
+        : native && protocolOf(provider) === "gemini" ? "@google/genai" : "openai");
   const command = apiLanguage === "python" ? `pip install ${pkg}` : `npm install ${pkg}`;
   return {
     title: localize(language,
@@ -291,6 +311,11 @@ function summaryFor(provider: IntegrationProvider, style: ApiStyle, language: In
     return localize(language,
       "One OpenAI-compatible route for every catalog model — any provider, any OpenAI client. Address the model by its namespaced catalog ID; unsupported parameters fail closed with a clear 400 instead of being silently dropped.",
       "Один OpenAI-совместимый маршрут для всех моделей каталога — любой провайдер, любой OpenAI-клиент. Модель указывайте namespaced ID из каталога; неподдерживаемые параметры fail-closed с понятным 400, а не молча отбрасываются.");
+  }
+  if (provider === "kimi") {
+    return localize(language,
+      "KIMI on the unified endpoint, spoken as Anthropic Messages — the same protocol and the same sk-pool key in `x-api-key`, with the model addressed under the `kimi/` namespace.",
+      "KIMI на едином endpoint по протоколу Anthropic Messages — тот же протокол и тот же ключ sk-pool в `x-api-key`, модель адресуется в namespace `kimi/`.");
   }
   if (provider === "anthropic") {
     return localize(language,
@@ -319,7 +344,13 @@ export function buildApiGuide({
   language: IntegrationLanguage;
 }): ApiGuide {
   const model = INTEGRATION_MODELS[provider][0];
-  const providerName = provider === "anthropic" ? "Claude" : provider === "gemini" ? "Gemini" : "GPT";
+  const providerName = provider === "anthropic"
+    ? "Claude"
+    : provider === "gemini"
+      ? "Gemini"
+      : provider === "kimi"
+        ? "Kimi"
+        : "GPT";
   const languageName = apiLanguage === "curl" ? "cURL" : apiLanguage === "python" ? "Python" : "TypeScript";
   const native = apiStyle === "native";
 

@@ -20,6 +20,9 @@ const providers: Array<{ id: IntegrationProvider; name: string; en: string; ru: 
   { id: "anthropic", name: "Claude", en: "Anthropic Messages API", ru: "Anthropic Messages API" },
   { id: "openai", name: "GPT", en: "OpenAI-compatible API", ru: "OpenAI-совместимый API" },
   { id: "gemini", name: "Gemini", en: "Google Gemini API", ru: "Google Gemini API" },
+  // KIMI rides the Anthropic protocol under its own namespace — the label states the wire
+  // format the user will actually configure, not a dialect we do not have.
+  { id: "kimi", name: "Kimi", en: "Anthropic Messages API", ru: "Anthropic Messages API" },
 ];
 
 const tools: Array<{ id: IntegrationTool; name: string; en: string; ru: string }> = [
@@ -41,6 +44,8 @@ const defaultTool: Record<IntegrationProvider, IntegrationTool> = {
   anthropic: "claude-code",
   openai: "codex",
   gemini: "gemini-cli",
+  // KIMI has no native agent of its own; OpenCode is the first tool that accepts its ids.
+  kimi: "opencode",
 };
 
 function tr(language: IntegrationLanguage, en: string, ru: string): string {
@@ -51,6 +56,7 @@ const PROVIDER_SHORT_NAMES: Record<IntegrationProvider, string> = {
   anthropic: "Claude",
   openai: "GPT",
   gemini: "Gemini",
+  kimi: "Kimi",
 };
 
 function compatibilityTag(language: IntegrationLanguage, tool: IntegrationTool): string {
