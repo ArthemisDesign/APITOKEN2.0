@@ -6,6 +6,10 @@
 import { learnRu } from "./learn-ru";
 import { learnZh } from "./learn-zh";
 import { learnKo } from "./learn-ko";
+import { learnProviderEn } from "./learn-provider-en";
+import { learnProviderRu } from "./learn-provider-ru";
+import { learnProviderZh } from "./learn-provider-zh";
+import { learnProviderKo } from "./learn-provider-ko";
 
 export type LearnCluster = "buy" | "free" | "integrate" | "compare" | "explain";
 
@@ -58,30 +62,30 @@ export type LocalizedContent = {
 
 export const clusterLabels: Record<Locale, Record<LearnCluster, { label: string; blurb: string }>> = {
   en: {
-    buy: { label: "Buying a key", blurb: "Get a Claude or GPT API key, pay your way, start in minutes." },
-    free: { label: "Free & low cost", blurb: "Try every Claude and GPT model before you spend a cent." },
-    integrate: { label: "Tool setup", blurb: "Wire the API into Cursor, VS Code, Claude Code, Codex and SDKs." },
+    buy: { label: "Buying a key", blurb: "Get one API key for Claude, GPT, Gemini and Kimi, then start in minutes." },
+    free: { label: "Free & low cost", blurb: "Try supported models across all four providers before you top up." },
+    integrate: { label: "Tool setup", blurb: "Connect native APIs, SDKs, coding agents and image routes." },
     compare: { label: "Compare", blurb: "How apiToken.sale stacks up against the alternatives." },
     explain: { label: "How it works", blurb: "Pricing, billing, activation and support, explained." },
   },
   ru: {
-    buy: { label: "Покупка ключа", blurb: "Получите ключ Claude или GPT API, оплатите удобным способом, начните за минуты." },
-    free: { label: "Бесплатно и дёшево", blurb: "Попробуйте любую модель Claude и GPT, не потратив ни цента." },
-    integrate: { label: "Настройка инструментов", blurb: "Подключите API к Cursor, VS Code, Claude Code, Codex и SDK." },
+    buy: { label: "Покупка ключа", blurb: "Один API-ключ для Claude, GPT, Gemini и Kimi — начните за несколько минут." },
+    free: { label: "Бесплатно и дёшево", blurb: "Попробуйте поддерживаемые модели всех четырёх провайдеров до пополнения." },
+    integrate: { label: "Настройка инструментов", blurb: "Подключите нативные API, SDK, coding agents и image routes." },
     compare: { label: "Сравнения", blurb: "Чем apiToken.sale отличается от альтернатив." },
     explain: { label: "Как это работает", blurb: "Цены, оплата, активация и поддержка — простыми словами." },
   },
   zh: {
-    buy: { label: "购买密钥", blurb: "获取 Claude 或 GPT API 密钥，自由付款，几分钟即可上手。" },
-    free: { label: "免费与低成本", blurb: "先免费试用每一个 Claude 和 GPT 模型，再决定充值。" },
-    integrate: { label: "工具接入", blurb: "将 API 接入 Cursor、VS Code、Claude Code、Codex 和 SDK。" },
+    buy: { label: "购买密钥", blurb: "一个 API 密钥即可使用 Claude、GPT、Gemini 与 Kimi，几分钟内开始。" },
+    free: { label: "免费与低成本", blurb: "充值前先试用四个提供商的支持模型。" },
+    integrate: { label: "工具接入", blurb: "连接原生 API、SDK、编程代理与图像路由。" },
     compare: { label: "对比", blurb: "apiToken.sale 与其他方案的对比。" },
     explain: { label: "工作原理", blurb: "价格、计费、激活与支持，通俗讲解。" },
   },
   ko: {
-    buy: { label: "키 구매", blurb: "Claude 또는 GPT API 키를 받고, 원하는 방식으로 결제하고, 몇 분 안에 시작하세요." },
-    free: { label: "무료 및 저비용", blurb: "충전하기 전에 모든 Claude와 GPT 모델을 무료로 사용해 보세요." },
-    integrate: { label: "도구 설정", blurb: "Cursor, VS Code, Claude Code, Codex, SDK에 API를 연결하세요." },
+    buy: { label: "키 구매", blurb: "하나의 API 키로 Claude, GPT, Gemini, Kimi를 몇 분 안에 시작하세요." },
+    free: { label: "무료 및 저비용", blurb: "충전 전에 네 provider의 지원 모델을 사용해 보세요." },
+    integrate: { label: "도구 설정", blurb: "native API, SDK, coding agent, image route를 연결하세요." },
     compare: { label: "비교", blurb: "apiToken.sale과 다른 대안들의 비교." },
     explain: { label: "작동 방식", blurb: "가격, 결제, 활성화, 지원을 쉽게 설명합니다." },
   },
@@ -107,16 +111,16 @@ export const learnUi: Record<Locale, {
   ctaVariants: string[];
 }> = {
   en: {
-    guidesEyebrow: "Claude & GPT API guides",
-    backToHub: "← Claude & GPT API guides",
+    guidesEyebrow: "Multi-provider API guides",
+    backToHub: "← API guides",
     faqHeading: "Frequently asked questions",
     relatedHeading: "Related guides",
     getKey: "Get API key",
     readDocs: "Read documentation",
     docsBack: "← Documentation",
-    hubTitle: "Claude & GPT API Guides & Tutorials",
-    hubDescription: "Practical guides for buying, setting up and getting the most from the Claude and GPT APIs with apiToken.sale — pricing, integrations, payment, and model choice.",
-    hubKeywords: ["claude api guide", "gpt api guide", "claude api tutorial", "how to use claude api", "openai compatible api", "claude api docs"],
+    hubTitle: "Claude, GPT, Gemini & Kimi API Guides",
+    hubDescription: "Practical guides for buying, configuring and choosing Claude, GPT, Gemini and Kimi APIs with one apiToken.sale key — pricing, models, SDKs, coding agents and images.",
+    hubKeywords: ["claude api guide", "gpt api guide", "gemini api guide", "kimi api guide", "openai compatible api", "multi provider api"],
     crumbHome: "Home",
     crumbDocs: "Docs",
     crumbGuides: "Guides",
@@ -131,16 +135,16 @@ export const learnUi: Record<Locale, {
     ],
   },
   ru: {
-    guidesEyebrow: "Гайды по Claude и GPT API",
-    backToHub: "← Гайды по Claude и GPT API",
+    guidesEyebrow: "Гайды по API разных провайдеров",
+    backToHub: "← Гайды по API",
     faqHeading: "Частые вопросы",
     relatedHeading: "Похожие гайды",
     getKey: "Получить API-ключ",
     readDocs: "Открыть документацию",
     docsBack: "← Документация",
-    hubTitle: "Гайды и инструкции по Claude и GPT API",
-    hubDescription: "Практические гайды по покупке, настройке и эффективному использованию API Claude и GPT с apiToken.sale — цены, интеграции, оплата и выбор модели.",
-    hubKeywords: ["claude api гайд", "gpt api гайд", "claude api инструкция", "как использовать claude api", "openai совместимый api", "claude api документация"],
+    hubTitle: "Гайды по Claude, GPT, Gemini и Kimi API",
+    hubDescription: "Практические гайды по покупке, настройке и выбору Claude, GPT, Gemini и Kimi API с одним ключом apiToken.sale — цены, модели, SDK, coding agents и изображения.",
+    hubKeywords: ["claude api гайд", "gpt api гайд", "gemini api гайд", "kimi api гайд", "openai совместимый api", "api нескольких провайдеров"],
     crumbHome: "Главная",
     crumbDocs: "Документация",
     crumbGuides: "Гайды",
@@ -155,16 +159,16 @@ export const learnUi: Record<Locale, {
     ],
   },
   zh: {
-    guidesEyebrow: "Claude 与 GPT API 指南",
-    backToHub: "← Claude 与 GPT API 指南",
+    guidesEyebrow: "多提供商 API 指南",
+    backToHub: "← API 指南",
     faqHeading: "常见问题",
     relatedHeading: "相关指南",
     getKey: "获取 API 密钥",
     readDocs: "阅读文档",
     docsBack: "← 文档",
-    hubTitle: "Claude 与 GPT API 指南与教程",
-    hubDescription: "关于购买、配置并充分利用 apiToken.sale Claude 与 GPT API 的实用指南——价格、集成、支付与模型选择。",
-    hubKeywords: ["claude api 指南", "gpt api 指南", "claude api 教程", "如何使用 claude api", "openai 兼容 api", "claude api 文档"],
+    hubTitle: "Claude、GPT、Gemini 与 Kimi API 指南",
+    hubDescription: "使用一个 apiToken.sale 密钥购买、配置和选择 Claude、GPT、Gemini 与 Kimi API 的实用指南——价格、模型、SDK、编程代理与图像。",
+    hubKeywords: ["claude api 指南", "gpt api 指南", "gemini api 指南", "kimi api 指南", "openai 兼容 api", "多提供商 api"],
     crumbHome: "首页",
     crumbDocs: "文档",
     crumbGuides: "指南",
@@ -179,16 +183,16 @@ export const learnUi: Record<Locale, {
     ],
   },
   ko: {
-    guidesEyebrow: "Claude & GPT API 가이드",
-    backToHub: "← Claude & GPT API 가이드",
+    guidesEyebrow: "멀티 provider API 가이드",
+    backToHub: "← API 가이드",
     faqHeading: "자주 묻는 질문",
     relatedHeading: "관련 가이드",
     getKey: "API 키 받기",
     readDocs: "문서 읽기",
     docsBack: "← 문서",
-    hubTitle: "Claude & GPT API 가이드 및 튜토리얼",
-    hubDescription: "apiToken.sale로 Claude와 GPT API를 구매·설정하고 최대한 활용하기 위한 실용 가이드 — 가격, 통합, 결제, 모델 선택.",
-    hubKeywords: ["claude api 가이드", "gpt api 가이드", "claude api 튜토리얼", "claude api 사용법", "openai 호환 api", "claude api 문서"],
+    hubTitle: "Claude, GPT, Gemini, Kimi API 가이드",
+    hubDescription: "하나의 apiToken.sale 키로 Claude, GPT, Gemini, Kimi API를 구매·설정·선택하는 실용 가이드 — 가격, 모델, SDK, coding agent, 이미지.",
+    hubKeywords: ["claude api 가이드", "gpt api 가이드", "gemini api 가이드", "kimi api 가이드", "openai 호환 api", "멀티 provider api"],
     crumbHome: "홈",
     crumbDocs: "문서",
     crumbGuides: "가이드",
@@ -213,14 +217,14 @@ const quickSetupSteps: LearnBlock = {
   type: "steps",
   items: [
     "Create a free account and open the dashboard — no approval or waitlist.",
-    "Generate one API key (it looks like sk-pool-…). The same key works across every supported Claude and GPT model.",
-    `Point any Anthropic-compatible tool at ${BASE} and send requests to /v1/messages with the x-api-key header. For GPT models, point any OpenAI-compatible tool at ${OPENAI_BASE} with Authorization: Bearer.`,
+    "Generate one API key (it looks like sk-pool-…). The same key works across supported Claude, GPT, Gemini and Kimi models.",
+    `Choose the client protocol: Anthropic Messages at ${BASE} with x-api-key, OpenAI-compatible at ${OPENAI_BASE} with Authorization: Bearer, or native Gemini at ${BASE} with x-goog-api-key. Kimi works on Anthropic Messages and through the universal OpenAI-compatible lane.`,
   ],
 };
 
-const cta = (): LearnBlock => ({ type: "note", text: "New accounts created with Google or GitHub start with $5 of platform bonus credit — valid on Claude, GPT and Gemini models; email/password accounts do not receive the bonus." });
+const cta = (): LearnBlock => ({ type: "note", text: "New accounts created with Google or GitHub start with $5 of platform bonus credit — valid on supported Claude, GPT, Gemini and Kimi models; email/password accounts do not receive the bonus." });
 
-export const learnArticles: LearnArticle[] = [
+const coreLearnArticles: LearnArticle[] = [
   // ─────────────────────────── BUY ───────────────────────────
   {
     slug: "how-to-buy-claude-api-key",
@@ -1088,17 +1092,17 @@ export const learnArticles: LearnArticle[] = [
     cluster: "explain",
     title: "How Billing Works on apiToken.sale",
     h1: "How billing works",
-    description: "Understand apiToken.sale billing: prepaid balance, per-request metering at official provider rates, your flat discount across Claude and GPT, and token-level usage in the dashboard.",
-    keywords: ["claude api billing", "gpt api billing", "how apitoken billing works", "prepaid claude api", "prepaid gpt api", "claude api usage tracking", "claude api balance", "claude api pricing", "how claude api works", "anthropic api"],
-    dek: "Billing is prepaid and transparent. You fund one balance, and each request — Claude or GPT — draws down official provider spend minus your discount, with a full breakdown you can audit.",
+    description: "Understand one prepaid balance for Claude, GPT, Gemini and Kimi: exact provider-rate metering, a flat B2C discount and token-level usage in the dashboard.",
+    keywords: ["multi provider api billing", "claude api billing", "gpt api billing", "gemini api billing", "kimi api billing", "prepaid api balance", "api usage tracking"],
+    dek: "Billing is prepaid and transparent. Claude, GPT, Gemini and Kimi requests draw from one balance after exact provider-rate metering and your discount, with a breakdown you can audit.",
     sections: [
       { h2: "Prepaid balance", blocks: [
-        { type: "p", text: "You top up any whole-dollar amount. Balance never expires and there is no subscription, so idle time costs nothing. One balance covers both providers: Claude models on the Anthropic surface and GPT models on the OpenAI-compatible surface." },
+        { type: "p", text: "You top up any whole-dollar amount. Balance never expires and there is no customer subscription, so idle time costs nothing. The same balance covers supported Claude, GPT, Gemini and Kimi models." },
       ] },
       { h2: "Per-request metering", blocks: [
         { type: "list", items: [
-          "Each call is converted to official provider spend by token — Anthropic rates for Claude, OpenAI rates for GPT, including cache and long-context buckets.",
-          "Your flat 50% B2C discount is subtracted — the same rate applies to both providers.",
+          "Each call is converted to official provider spend by its exact usage legs: input, output, cache and any model-specific long-context or image buckets.",
+          "Your flat 50% B2C discount is subtracted across every supported provider.",
           "The net amount is deducted from your prepaid balance.",
         ] },
       ] },
@@ -1109,11 +1113,11 @@ export const learnArticles: LearnArticle[] = [
     ],
     faq: [
       { q: "Is billing prepaid or postpaid?", a: "Prepaid. You fund a balance in advance and requests draw it down; there is no monthly invoice." },
-      { q: "Does one balance really cover Claude and GPT?", a: "Yes. Claude usage is metered at official Anthropic rates and GPT usage at official OpenAI rates, then the same discount applies and both draw on the single prepaid balance." },
+      { q: "Does one balance cover Claude, GPT, Gemini and Kimi?", a: "Yes. Each provider is metered against its own official rate card, then the same B2C discount applies and the charge draws from one prepaid balance." },
       { q: "Can I see token-level usage?", a: "Yes. The dashboard breaks usage down by model, provider and token bucket." },
     ],
-    related: ["claude-api-pricing-explained", "openai-api-quickstart", "claude-api-refund-policy", "cheapest-claude-api"],
-    updated: "2026-07-29",
+    related: ["claude-api-pricing-explained", "gpt-api-pricing", "gemini-api-pricing", "kimi-api-pricing"],
+    updated: "2026-08-09",
   },
   {
     slug: "claude-api-activation-time",
@@ -1378,31 +1382,31 @@ export const learnArticles: LearnArticle[] = [
     cluster: "compare",
     title: "Why Choose apiToken.sale",
     h1: "Why choose apiToken.sale",
-    description: "Why developers pick apiToken.sale for Claude and GPT: the official Anthropic and OpenAI-compatible APIs at a flat 50% off, instant access with no provider account, and card or crypto payment.",
-    keywords: ["why apitoken.sale", "claude api discount", "gpt api discount", "claude api tokens", "best claude api provider", "openai compatible api", "claude api no anthropic account", "claude api pricing", "how claude api works", "anthropic api"],
-    dek: "apiToken.sale is built for one thing: the same Claude and GPT APIs, cheaper and easier to start. One key, one balance, two official API surfaces — here is what that means in practice.",
+    description: "Why developers use one apiToken.sale key for Claude, GPT, Gemini and Kimi: native or compatible APIs, 50% off B2C pricing, and card or crypto payment.",
+    keywords: ["why apitoken.sale", "multi provider api", "claude api discount", "gpt api discount", "gemini api discount", "kimi api key", "openai compatible api"],
+    dek: "apiToken.sale puts four provider families behind one key and prepaid balance while preserving the protocol each client expects. Here is what that means in practice.",
     sections: [
       { h2: "The short version", blocks: [
         { type: "list", items: [
-          "The exact Anthropic Messages API with every current Claude model, plus an OpenAI-compatible API (Responses and Chat Completions) with the GPT-5 line.",
-          "A flat 50% off official spend on prepaid balance that never expires — one rate covers both providers.",
-          "Instant, self-serve access — no Anthropic or OpenAI account, waitlist or billing country.",
+          "Anthropic Messages for Claude and Kimi, OpenAI-compatible routes for GPT and cross-provider clients (including Kimi), and native Gemini generateContent routes.",
+          "A flat 50% off official spend on prepaid balance that never expires — one B2C rate covers supported models across all providers.",
+          "Instant, self-serve access without separate Anthropic, OpenAI, Google Cloud or Kimi billing accounts.",
           "Pay by bank card or cryptocurrency.",
           "An optional lifetime spending limit and expiration date per key, plus token-level usage in the dashboard.",
         ] },
         cta(),
       ] },
       { h2: "Discounted API tokens on one balance", blocks: [
-        { type: "p", text: "Think of it as Claude and GPT API tokens on sale: you prepay a balance once, get a flat 50% off official token rates, and spend it across every model and tool on both providers. The balance never expires and there is no subscription." },
+        { type: "p", text: "Prepay one balance, get a flat 50% off official B2C spend, and use it across supported Claude, GPT, Gemini and Kimi models. The balance never expires and there is no customer subscription." },
       ] },
     ],
     faq: [
-      { q: "What makes apiToken.sale different?", a: "It is the same Claude and GPT APIs at 50% less, with instant access and no provider account, payable by card or crypto." },
-      { q: "Is anything about the API changed?", a: "No — the protocols, models and responses are the standard Anthropic and OpenAI-compatible ones. Only price and onboarding differ." },
-      { q: "What is apiToken.sale?", a: "An independent multi-provider API gateway that sells discounted, prepaid access to the official Anthropic API and an OpenAI-compatible API — the same models, 50% cheaper, with no provider account." },
+      { q: "What makes apiToken.sale different?", a: "One key and balance cover four provider families at a flat 50% B2C discount, while each client keeps the appropriate native or compatible protocol." },
+      { q: "Is every provider forced through one translated API?", a: "No. Claude and Kimi keep Anthropic Messages, GPT uses OpenAI-compatible routes, and Gemini keeps its native Google-shaped API. Kimi is additionally reachable through the universal OpenAI-compatible lane for clients that require it." },
+      { q: "What is apiToken.sale?", a: "An independent multi-provider API gateway for discounted prepaid access to supported Claude, GPT, Gemini and Kimi models without separate provider billing accounts." },
     ],
-    related: ["apitoken-vs-anthropic-direct", "cheapest-claude-api", "openai-api-quickstart", "how-to-buy-claude-api-key"],
-    updated: "2026-07-29",
+    related: ["how-to-buy-claude-api-key", "how-to-buy-gpt-api-key", "how-to-buy-gemini-api-key", "how-to-buy-kimi-api-key"],
+    updated: "2026-08-09",
   },
 
   // ─────────────────────────── EXPLAIN (expansion) ───────────────────────────
@@ -1631,17 +1635,17 @@ export const learnArticles: LearnArticle[] = [
         { type: "link", text: "Full per-model specs and discounted prices", href: "/models" },
       ] },
       { h2: "What the endpoint does and does not cover", blocks: [
-        { type: "p", text: "This is an independent OpenAI-compatible service, not the OpenAI Platform. It deliberately serves text generation only: model discovery, Responses, and Chat Completions with streaming and image input. Audio, files, realtime, assistants, batches and fine-tuning are not available." },
+        { type: "p", text: "This is an independent OpenAI-compatible service, not the OpenAI Platform. It serves model discovery, streaming Responses and Chat Completions, plus dedicated GPT Image 2 generation and edit routes. Audio, file, realtime, assistants, batch and fine-tuning endpoints are not available." },
         { type: "note", text: "Errors come in the OpenAI envelope — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}. A 401 means the key or the auth header is wrong (use Bearer, not x-api-key), a 402 means the shared prepaid balance needs a top-up, and a 404 means the model ID is not enabled — check GET https://router.apitoken.sale/v1/models." },
       ] },
     ],
     faq: [
-      { q: "Does the same key really work for Claude and GPT?", a: "Yes. One sk-pool key and one prepaid balance cover both surfaces: the Anthropic Messages API at router.apitoken.sale for Claude models and the OpenAI-compatible API at router.apitoken.sale/v1 for GPT models. The discount is shared too." },
+      { q: "Does the same key work beyond GPT?", a: "Yes. One sk-pool key and prepaid balance also cover supported Claude, Gemini and Kimi models; use the protocol and authentication header documented for each provider." },
       { q: "Which auth header does the OpenAI-compatible endpoint use?", a: "Authorization: Bearer sk-pool-…. The x-api-key header is only for the Anthropic surface — sending it to the OpenAI endpoint returns a 401." },
       { q: "Responses or Chat Completions?", a: "Both are served with SSE streaming. Use Responses for new code and the official SDKs; Chat Completions works for clients and frameworks that expect the classic shape." },
       { q: "How is GPT usage billed?", a: "Per token at official OpenAI rates — including cached-input and long-context pricing — then your flat 50% B2C discount is subtracted before the charge touches your prepaid balance, exactly like Claude usage." },
     ],
-    related: ["codex-cli-setup", "how-billing-works", "why-choose-apitoken", "how-to-buy-claude-api-key"],
+    related: ["how-to-buy-gpt-api-key", "gpt-api-pricing", "gpt-5-6-sol-vs-terra-vs-luna", "codex-cli-setup"],
     published: "2026-07-29",
     updated: "2026-07-29",
   },
@@ -1685,7 +1689,7 @@ export const learnArticles: LearnArticle[] = [
       { q: "Is the discount the same as for Claude?", a: "Yes. GPT-5.6 usage is metered at official OpenAI token rates and your flat 50% B2C discount applies to the same prepaid balance." },
       { q: "Responses or Chat Completions for wire_api?", a: "Use wire_api = \"responses\" — the gateway serves both, and Codex is built around the Responses stream. The Chat Completions shape exists for clients that require it." },
     ],
-    related: ["openai-api-quickstart", "claude-code-api-key", "how-billing-works", "why-choose-apitoken"],
+    related: ["openai-api-quickstart", "gpt-5-6-sol-vs-terra-vs-luna", "gpt-api-pricing", "how-billing-works"],
     published: "2026-07-29",
     updated: "2026-07-29",
   },
@@ -1788,14 +1792,16 @@ export const learnArticles: LearnArticle[] = [
   },
 ];
 
+export const learnArticles: LearnArticle[] = [...coreLearnArticles, ...learnProviderEn];
+
 export const learnArticlesBySlug: Record<string, LearnArticle> = Object.fromEntries(
   learnArticles.map((article) => [article.slug, article]),
 );
 
 const translations: Record<Exclude<Locale, "en">, Record<string, LocalizedContent>> = {
-  ru: learnRu,
-  zh: learnZh,
-  ko: learnKo,
+  ru: { ...learnRu, ...learnProviderRu },
+  zh: { ...learnZh, ...learnProviderZh },
+  ko: { ...learnKo, ...learnProviderKo },
 };
 
 function enContent(article: LearnArticle): LocalizedContent {

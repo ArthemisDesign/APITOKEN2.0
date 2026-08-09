@@ -7,6 +7,7 @@ import {
   renderLearnMarkdown,
   resolveArticle,
 } from "./learn";
+import { learnProviderEn } from "./learn-provider-en";
 
 describe("learn cluster", () => {
   it("has unique slugs", () => {
@@ -38,6 +39,21 @@ describe("learn cluster", () => {
     expect(md).toContain("---");
     expect(md).toContain(`# ${article.content.h1}`);
   });
+  it("publishes distinct high-intent clusters for GPT, Gemini and Kimi", () => {
+    expect(learnProviderEn).toHaveLength(16);
+    expect(learnProviderEn.filter((article) => article.slug.includes("gpt"))).toHaveLength(4);
+    expect(learnProviderEn.filter((article) => article.slug.includes("gemini") || article.slug.includes("nano-banana"))).toHaveLength(5);
+    expect(learnProviderEn.filter((article) => article.slug.includes("kimi"))).toHaveLength(7);
+    expect(new Set(learnProviderEn.map((article) => article.title)).size).toBe(learnProviderEn.length);
+    expect(new Set(learnProviderEn.map((article) => article.description)).size).toBe(learnProviderEn.length);
+
+    for (const article of learnProviderEn) {
+      expect(article.sections.length, `${article.slug} sections`).toBeGreaterThanOrEqual(2);
+      expect(article.faq.length, `${article.slug} FAQs`).toBeGreaterThanOrEqual(3);
+      expect(article.published, `${article.slug} published`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(article.updated, `${article.slug} updated`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    }
+  });
 });
 
 describe("learn localization", () => {
@@ -68,6 +84,30 @@ describe("learn localization", () => {
     for (const resolved of [ru, zh]) {
       expect(flatten(resolved)).toContain("https://router.apitoken.sale");
       expect(flatten(resolved)).toContain("claude-opus-4-8");
+    }
+  });
+
+  it("keeps each provider on its real protocol in every locale", () => {
+    for (const locale of LOCALES) {
+      const gpt = JSON.stringify(resolveArticle("how-to-buy-gpt-api-key", locale)!.content);
+      const gemini = JSON.stringify(resolveArticle("gemini-api-quickstart", locale)!.content);
+      const kimi = JSON.stringify(resolveArticle("kimi-api-quickstart", locale)!.content);
+      const kimiOpenCode = JSON.stringify(resolveArticle("kimi-api-for-opencode", locale)!.content);
+      const kimiClaudeCode = JSON.stringify(resolveArticle("kimi-api-for-claude-code", locale)!.content);
+      const kimiCode = JSON.stringify(resolveArticle("kimi-api-for-kimi-code", locale)!.content);
+
+      expect(gpt, locale).toContain("Authorization: Bearer");
+      expect(gpt, locale).toContain("gpt-5.6-terra");
+      expect(gemini, locale).toContain("x-goog-api-key");
+      expect(gemini, locale).toContain("gemini-3.6-flash");
+      expect(kimi, locale).toContain("x-api-key");
+      expect(kimi, locale).toContain("kimi/kimi-for-coding");
+      expect(kimiOpenCode, locale).toContain("apitoken/kimi/kimi-for-coding");
+      expect(kimiClaudeCode, locale).toContain("ANTHROPIC_DEFAULT_OPUS_MODEL=k3");
+      expect(kimiClaudeCode, locale).toContain("claude --model k3");
+      expect(kimiCode, locale).toContain('type = \\"openai\\"');
+      expect(kimiCode, locale).toContain('base_url = \\"https://router.apitoken.sale/v1\\"');
+      expect(kimiCode, locale).toContain('model = \\"kimi/k3\\"');
     }
   });
 

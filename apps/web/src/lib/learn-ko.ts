@@ -665,16 +665,16 @@ export const learnKo: Record<string, LocalizedContent> = {
     title: "apiToken.sale의 과금 방식",
     h1: "과금은 어떻게 작동하는가",
     description: "apiToken.sale 과금 이해하기: 선불 잔액, 공식 요율의 요청 단위 측정, 통일 할인, 대시보드의 토큰 단위 사용량.",
-    keywords: ["claude api 과금", "apitoken 과금 방식", "선불 claude api", "claude api 사용량 추적", "claude api 잔액"],
-    dek: "과금은 선불이며 투명합니다. 잔액을 충전하면 각 요청이 공식 소비에서 할인을 뺀 금액을 차감하고, 감사할 수 있는 전체 내역을 제공합니다.",
+    keywords: ["멀티 프로바이더 api 과금", "claude api 과금", "gpt api 과금", "gemini api 과금", "kimi api 과금", "선불 api 잔액"],
+    dek: "과금은 선불이며 투명합니다. Claude, GPT, Gemini, Kimi 요청은 정확한 사용량 계산과 할인 후 하나의 잔액에서 차감되며, 전체 내역을 확인할 수 있습니다.",
     sections: [
       { h2: "선불 잔액", blocks: [
-        { type: "p", text: "달러 단위 정수 금액으로 충전합니다. 잔액은 만료되지 않고 구독이 없으므로, 사용하지 않는 시간에는 비용이 들지 않습니다." },
+        { type: "p", text: "달러 단위 정수 금액으로 충전합니다. 잔액은 만료되지 않고 별도의 고객 구독이 없으며, 지원되는 Claude, GPT, Gemini, Kimi가 하나의 공용 잔액을 사용합니다." },
       ] },
       { h2: "요청 단위 측정", blocks: [
         { type: "list", items: [
-          "각 호출은 토큰 단위로 공식 Anthropic 소비로 환산됩니다.",
-          "통일 할인(B2C의 경우 50%)이 차감됩니다.",
+          "각 호출은 입력, 출력, 캐시, 장문 컨텍스트, 이미지 등 프로바이더별 정확한 usage 구성 요소와 공식 요율로 계산됩니다.",
+          "지원되는 모든 프로바이더에 통일 B2C 할인 50%가 적용됩니다.",
           "순금액이 선불 잔액에서 차감됩니다.",
         ] },
       ] },
@@ -685,7 +685,7 @@ export const learnKo: Record<string, LocalizedContent> = {
     ],
     faq: [
       { q: "과금은 선불인가요, 후불인가요?", a: "선불입니다. 잔액을 미리 충전하면 요청이 그것을 차감하며, 월별 청구서가 없습니다." },
-      { q: "하나의 잔액으로 정말 Claude와 GPT를 모두 쓸 수 있나요?", a: "네. Claude 사용량은 Anthropic 공식 요금으로, GPT 사용량은 OpenAI 공식 요금으로 측정된 뒤 같은 할인이 적용되며, 둘 다 하나의 선불 잔액에서 차감됩니다." },
+      { q: "하나의 잔액으로 Claude, GPT, Gemini, Kimi를 모두 쓸 수 있나요?", a: "네. 각 프로바이더는 자체 공식 요금표에 따라 계산되고 동일한 B2C 할인이 적용된 뒤, 하나의 공용 선불 잔액에서 차감됩니다." },
       { q: "토큰 단위 사용량을 볼 수 있나요?", a: "네. 대시보드는 사용량을 모델, 프로바이더, 토큰 버킷별로 세분화합니다." },
     ],
   },
@@ -921,28 +921,28 @@ export const learnKo: Record<string, LocalizedContent> = {
   "why-choose-apitoken": {
     title: "왜 apiToken.sale을 선택하는가",
     h1: "왜 apiToken.sale을 선택하는가",
-    description: "개발자들이 Claude와 GPT에 apiToken.sale을 고르는 이유: 공식 Anthropic 및 OpenAI 호환 API를 50% 저렴하게, 프로바이더 계정 없이 즉시 접근, 카드 또는 암호화폐 결제.",
-    keywords: ["왜 apitoken.sale", "최고의 claude api 제공자", "claude api 할인 제공자", "openai 호환 api", "anthropic 계정 없이 claude api"],
-    dek: "apiToken.sale은 한 가지를 위해 만들어졌습니다. 동일한 Claude와 GPT API를 더 싸고 더 쉽게 시작하는 것. 하나의 키, 하나의 잔액, 두 개의 공식 API 서피스 — 그것이 실제로 무엇을 뜻하는지 살펴봅니다.",
+    description: "Claude, GPT, Gemini, Kimi에 하나의 apiToken.sale 키를 쓰는 이유: 네이티브 또는 호환 API, B2C 50% 할인, 간편한 결제.",
+    keywords: ["왜 apitoken.sale", "멀티 프로바이더 api", "claude api 할인", "gpt api 할인", "gemini api 할인", "kimi api 키"],
+    dek: "apiToken.sale은 네 가지 프로바이더 제품군을 하나의 키와 선불 잔액으로 묶으면서, 각 클라이언트가 기대하는 네이티브 또는 호환 프로토콜을 유지합니다.",
     sections: [
       { h2: "요약", blocks: [
         { type: "list", items: [
-          "정확히 동일한 Anthropic Messages API와 모든 현행 Claude 모델, 그리고 GPT-5 라인업을 갖춘 OpenAI 호환 API(Responses 및 Chat Completions).",
-          "만료되지 않는 선불 잔액에 공식 소비 대비 50% 통일 할인 — 하나의 요율이 두 프로바이더를 모두 커버합니다.",
-          "즉시, 셀프 서비스 접근 — Anthropic이나 OpenAI 계정, 대기열, 청구 국가 없음.",
+          "Claude와 Kimi에는 Anthropic Messages, GPT와 Kimi를 포함한 multi-provider client에는 OpenAI 호환 routes, Gemini에는 native generateContent를 제공합니다.",
+          "지원되는 모든 프로바이더 모델에 공식 소비 대비 50% 통일 할인이 적용되며, 선불 잔액은 만료되지 않습니다.",
+          "Anthropic, OpenAI, Google Cloud, Kimi의 별도 결제 계정 없이 즉시 셀프 서비스로 시작할 수 있습니다.",
           "은행 카드 또는 암호화폐로 결제.",
           "키마다 선택 가능한 평생 누적 지출 한도와 만료일, 그리고 대시보드의 토큰 단위 사용량.",
         ] },
         { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "하나의 잔액으로 쓰는 할인된 API 토큰", blocks: [
-        { type: "p", text: "Claude와 GPT API 토큰 할인 판매라고 생각하면 됩니다. 잔액을 한 번 선불로 충전하면 공식 토큰 요율에서 50% 통일 할인을 받고, 두 프로바이더의 모든 모델과 도구에서 사용할 수 있습니다. 잔액은 만료되지 않고 구독도 없습니다." },
+        { type: "p", text: "잔액을 한 번 선불로 충전하면 공식 소비에서 B2C 50% 할인을 받고 지원되는 Claude, GPT, Gemini, Kimi에 사용할 수 있습니다. 잔액은 만료되지 않고 별도의 고객 구독도 없습니다." },
       ] },
     ],
     faq: [
-      { q: "apiToken.sale은 무엇이 다른가요?", a: "동일한 Claude와 GPT API를 50% 저렴하게, 프로바이더 계정 없이 즉시 접근으로, 카드나 암호화폐로 결제할 수 있는 것입니다." },
-      { q: "API에 대해 바뀐 것이 있나요?", a: "아니요 — 프로토콜, 모델, 응답은 표준 Anthropic 및 OpenAI 호환 버전입니다. 가격과 온보딩만 다릅니다." },
-      { q: "apiToken.sale은 무엇인가요?", a: "공식 Anthropic API와 OpenAI 호환 API에 대한 할인된 선불 접근을 판매하는 독립 멀티 프로바이더 API 게이트웨이입니다. 같은 모델을 50% 저렴하게, 프로바이더 계정 없이 이용할 수 있습니다." },
+      { q: "apiToken.sale은 무엇이 다른가요?", a: "하나의 키와 잔액으로 네 가지 프로바이더 제품군을 이용하고 통일 B2C 할인 50%를 받으면서, 클라이언트에는 알맞은 네이티브 또는 호환 프로토콜을 유지합니다." },
+      { q: "모든 프로바이더가 하나의 API 형식으로 변환되나요?", a: "아니요. Claude와 Kimi는 Anthropic Messages를, GPT는 OpenAI 호환 routes를, Gemini는 native Google schema를 유지합니다. OpenAI 형식이 필요한 client는 unified route에서 Kimi도 호출할 수 있습니다." },
+      { q: "apiToken.sale은 무엇인가요?", a: "Anthropic, OpenAI, Google Cloud, Kimi의 별도 결제 계정 없이 지원되는 Claude, GPT, Gemini, Kimi에 선불로 접근할 수 있는 독립 멀티 프로바이더 API 게이트웨이입니다." },
     ],
   },
   "claude-api-gateway": {
@@ -1122,7 +1122,7 @@ export const learnKo: Record<string, LocalizedContent> = {
           "GET https://router.apitoken.sale/v1/models로 활성화된 모델을 확인하세요 — 통합 카탈로그는 ID를 제공자별로 구분합니다(anthropic/*, openai/*, google/*) — 그런 다음 Responses 요청을 보내세요.",
         ] },
         { type: "code", code: `curl https://router.apitoken.sale/v1/responses \\\n  -H "Authorization: Bearer $APITOKEN_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-sol",\n    "input": "Reply with exactly: connected"\n  }'` },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다 — Claude, GPT, Gemini 모델에 유효하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다 — 지원되는 Claude, GPT, Gemini, Kimi 모델에 유효하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "공식 OpenAI SDK 사용", blocks: [
         { type: "p", text: "공식 SDK는 그대로 동작합니다 — base_url과 키만 바뀝니다. 프로덕션에서는 키를 서버 측 환경 변수에 보관하세요." },
@@ -1148,12 +1148,12 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "link", text: "모델별 전체 사양과 할인 가격", href: "/models" },
       ] },
       { h2: "엔드포인트가 커버하는 범위", blocks: [
-        { type: "p", text: "이것은 OpenAI Platform이 아닌 독립적인 OpenAI 호환 서비스입니다. 의도적으로 텍스트 생성만 제공합니다: 모델 목록, Responses, Chat Completions(스트리밍 및 이미지 입력 포함). 오디오, 파일, realtime, assistants, batches, fine-tuning은 제공되지 않습니다." },
+        { type: "p", text: "이것은 OpenAI Platform이 아닌 독립적인 OpenAI 호환 서비스입니다. 모델 카탈로그, 스트리밍 Responses와 Chat Completions뿐 아니라 GPT Image 2 전용 이미지 생성 및 편집 routes도 제공합니다. audio, files, realtime, assistants, batch, fine-tuning endpoints는 제공되지 않습니다." },
         { type: "note", text: "오류는 OpenAI 봉투로 반환됩니다 — {\"error\":{\"message\",\"type\",\"param\",\"code\"}}. 401은 키 또는 인증 헤더 오류(Bearer 사용, x-api-key 아님), 402는 공유 선불 잔액 충전 필요, 404는 모델 ID 미활성화를 의미합니다 — GET https://router.apitoken.sale/v1/models를 확인하세요." },
       ] },
     ],
     faq: [
-      { q: "정말 같은 키로 Claude와 GPT를 모두 쓸 수 있나요?", a: "네. 하나의 sk-pool 키와 하나의 선불 잔액이 두 서피스를 모두 커버합니다: Claude 모델용 router.apitoken.sale의 Anthropic Messages API와 GPT 모델용 router.apitoken.sale/v1의 OpenAI 호환 API. 할인도 공유됩니다." },
+      { q: "같은 키를 GPT 외의 모델에도 쓸 수 있나요?", a: "네. 하나의 sk-pool 키와 잔액으로 지원되는 Claude, Gemini, Kimi도 이용할 수 있습니다. 각 프로바이더에 맞는 프로토콜과 인증 헤더를 사용하세요." },
       { q: "OpenAI 호환 엔드포인트는 어떤 인증 헤더를 쓰나요?", a: "Authorization: Bearer sk-pool-… 입니다. x-api-key 헤더는 Anthropic 서피스 전용입니다 — OpenAI 엔드포인트에내면 401이 반환됩니다." },
       { q: "Responses와 Chat Completions 중 무엇을 쓰나요?", a: "둘 다 SSE 스트리밍으로 제공됩니다. 새 코드와 공식 SDK에는 Responses를, 클래식 형태를 기대하는 클라이언트와 프레임워크에는 Chat Completions를 사용하세요." },
       { q: "GPT 사용량은 어떻게 과금되나요?", a: "캐시 입력과 장문 컨텍스트 가격을 포함한 공식 OpenAI 요금으로 토큰당 과금된 후, 50% B2C 통일 할인이 차감되어 선불 잔액에서 청구됩니다 — Claude 사용량과 정확히 같습니다." },
@@ -1170,7 +1170,7 @@ export const learnKo: Record<string, LocalizedContent> = {
         { type: "p", text: "다음을 ~/.codex/apitoken.config.toml로 저장하세요. 이름 있는 프로필은 기본 Codex 설정과 기존 ChatGPT 로그인을 건드리지 않습니다 — 실행할 때 명시적으로 선택합니다." },
         { type: "code", code: `# ~/.codex/apitoken.config.toml\nmodel = "gpt-5.6-sol"\nmodel_provider = "apitoken"\n\n[model_providers.apitoken]\nname = "apiToken.sale"\nbase_url = "https://router.apitoken.sale/v1"\nwire_api = "responses"\nenv_key = "APITOKEN_API_KEY"` },
         { type: "p", text: "env_key는 Codex가 키를 읽는 환경 변수의 이름을 지정합니다 — 시크릿은 셸에만 있고 TOML 파일에는 절대 들어가지 않습니다." },
-        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다 — Claude, GPT, Gemini 모델에 유효하며 이메일/비밀번호 계정은 제외됩니다." },
+        { type: "note", text: "Google 또는 GitHub로 만든 신규 계정은 $5 플랫폼 웰컴 보너스 크레딧으로 시작합니다 — 지원되는 Claude, GPT, Gemini, Kimi 모델에 유효하며 이메일/비밀번호 계정은 제외됩니다." },
       ] },
       { h2: "실행과 확인", blocks: [
         { type: "code", code: `export APITOKEN_API_KEY=sk-pool-•••\ncodex --profile apitoken` },

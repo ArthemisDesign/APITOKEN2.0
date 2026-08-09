@@ -662,16 +662,16 @@ export const learnZh: Record<string, LocalizedContent> = {
     title: "apitoken.sale 的计费如何运作",
     h1: "计费如何运作",
     description: "了解 apitoken.sale 的计费：预付余额、按官方费率的逐次请求计量、你的统一折扣，以及控制台中的 token 级用量。",
-    keywords: ["claude api 计费", "apitoken 计费如何运作", "预付 claude api", "claude api 用量追踪", "claude api 余额"],
-    dek: "计费是预付且透明的。你充入一份余额，每次请求按官方消费减去你的折扣扣减，并提供可供你审计的完整明细。",
+    keywords: ["多提供商 api 计费", "claude api 计费", "gpt api 计费", "gemini api 计费", "kimi api 计费", "预付 api 余额"],
+    dek: "计费采用透明预付模式。Claude、GPT、Gemini 与 Kimi 请求按各自官方费率精确计量、应用折扣后，从同一余额扣除，并提供可审计明细。",
     sections: [
       { h2: "预付余额", blocks: [
-        { type: "p", text: "你充值任意整数美元金额。余额永不过期，也没有订阅，因此闲置时间不花一分钱。" },
+        { type: "p", text: "你可以充值任意整数美元金额。余额永不过期，无需客户订阅；支持的 Claude、GPT、Gemini 与 Kimi 共用这一余额。" },
       ] },
       { h2: "逐次请求计量", blocks: [
         { type: "list", items: [
-          "每次调用按 token 换算为官方 Anthropic 消费。",
-          "减去你的统一折扣（B2C 为 50%）。",
+          "每次调用按所属提供商的精确用量项换算为官方消费，包括输入、输出、缓存、长上下文与图像。",
+          "所有支持的提供商统一减去 B2C 50% 折扣。",
           "净额从你的预付余额中扣除。",
         ] },
       ] },
@@ -682,7 +682,7 @@ export const learnZh: Record<string, LocalizedContent> = {
     ],
     faq: [
       { q: "计费是预付还是后付？", a: "预付。你预先充入一份余额，请求从中扣减；没有月度账单。" },
-      { q: "一份余额真的能同时覆盖 Claude 和 GPT 吗？", a: "能。Claude 用量按 Anthropic 官方费率计量，GPT 用量按 OpenAI 官方费率计量，然后应用同一个折扣，两者都从这份预付余额中扣减。" },
+      { q: "一份余额能覆盖 Claude、GPT、Gemini 与 Kimi 吗？", a: "能。每个提供商按自己的官方费率表计量，再应用同一 B2C 折扣，最终费用从同一份预付余额扣除。" },
       { q: "我能看到 token 级用量吗？", a: "可以。控制台会按模型、提供商和 token 桶分解显示用量。" },
     ],
   },
@@ -918,28 +918,28 @@ export const learnZh: Record<string, LocalizedContent> = {
   "why-choose-apitoken": {
     title: "为什么选择 apiToken.sale",
     h1: "为什么选择 apiToken.sale",
-    description: "开发者选择 apiToken.sale 使用 Claude 和 GPT 的理由：官方 Anthropic 与 OpenAI 兼容 API 统一便宜 50%，无需提供商账户即时开通，支持银行卡或加密货币支付。",
-    keywords: ["为什么选 apitoken.sale", "最佳 claude api 服务商", "claude api 折扣服务商", "openai 兼容 api", "claude api 无需 anthropic 账号"],
-    dek: "apiToken.sale 只为一件事而生：同一套 Claude 和 GPT API，更便宜、更好上手。一个密钥、一份余额、两个官方 API 表面——以下是它在实践中的意义。",
+    description: "为什么开发者用一个 apiToken.sale 密钥访问 Claude、GPT、Gemini 与 Kimi：原生或兼容 API、B2C 五折，以及银行卡或加密货币付款。",
+    keywords: ["为什么选 apitoken.sale", "多提供商 api", "claude api 折扣", "gpt api 折扣", "gemini api 折扣", "kimi api 密钥"],
+    dek: "apiToken.sale 用一个密钥和预付余额连接四个提供商系列，同时保留每种客户端所需的原生或兼容协议。",
     sections: [
       { h2: "一句话版本", blocks: [
         { type: "list", items: [
-          "一模一样的 Anthropic Messages API 和所有当前的 Claude 模型，外加带 GPT-5 系列的 OpenAI 兼容 API（Responses 与 Chat Completions）。",
-          "在永不过期的预付余额上，官方消费统一立省 50%——同一费率覆盖两家提供商。",
-          "即时、自助开通——无需 Anthropic 或 OpenAI 账户、无需排队、不限计费国家。",
+          "Claude 与 Kimi 使用 Anthropic Messages；GPT 与多提供商客户端（包括 Kimi）可用 OpenAI 兼容路由；Gemini 保留原生 generateContent。",
+          "在永不过期的预付余额上，所有支持模型的官方消费统一享受 B2C 五折。",
+          "即时、自助开通，无需分别配置 Anthropic、OpenAI、Google Cloud 或 Kimi 计费账户。",
           "支持银行卡或加密货币付款。",
           "每把密钥可选终身累计消费上限和到期日期，并在控制台查看 token 级用量明细。",
         ] },
         { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额；邮箱密码账户不享受此奖励。" },
       ] },
       { h2: "同一余额上的折扣 API token", blocks: [
-        { type: "p", text: "把它当作打折出售的 Claude 和 GPT API token：你一次性充值余额，享受官方 token 费率统一 50% 的折扣，并在两家提供商的所有模型和工具上使用。余额永不过期，也没有订阅。" },
+        { type: "p", text: "一次充值，同一余额即可按 B2C 五折使用支持的 Claude、GPT、Gemini 与 Kimi 模型。余额永不过期，也没有客户订阅。" },
       ] },
     ],
     faq: [
-      { q: "apiToken.sale 有什么不同？", a: "它是同一套 Claude 和 GPT API，统一便宜 50%，即时开通、无需提供商账户，支持银行卡或加密货币付款。" },
-      { q: "API 有任何改动吗？", a: "没有——协议、模型和响应都是标准的 Anthropic 与 OpenAI 兼容版本。只有价格和开通方式不同。" },
-      { q: "apiToken.sale 是什么？", a: "一个独立的多提供商 API 网关，以折扣价预付出售官方 Anthropic API 和 OpenAI 兼容 API 的访问权——同样的模型，统一便宜 50%，无需提供商账户。" },
+      { q: "apiToken.sale 有什么不同？", a: "一个密钥和余额覆盖四个提供商系列，并统一享受 B2C 五折；客户端仍使用适合该提供商的原生或兼容协议。" },
+      { q: "所有提供商都会转换成同一种 API 吗？", a: "不会。Claude 与 Kimi 保留 Anthropic Messages，GPT 使用 OpenAI 兼容路由，Gemini 保持 Google 原生结构；需要 OpenAI 形状的客户端也可通过统一路由调用 Kimi。" },
+      { q: "apiToken.sale 是什么？", a: "一个独立的多提供商 API 网关，为支持的 Claude、GPT、Gemini 与 Kimi 提供折扣预付访问，无需分别开通提供商计费账户。" },
     ],
   },
   "claude-api-gateway": {
@@ -1119,7 +1119,7 @@ export const learnZh: Record<string, LocalizedContent> = {
           "用 GET https://router.apitoken.sale/v1/models 确认已启用的模型——统一目录按提供方命名 ID（anthropic/*、openai/*、google/*）——然后发送 Responses 请求。",
         ] },
         { type: "code", code: `curl https://router.apitoken.sale/v1/responses \\\n  -H "Authorization: Bearer $APITOKEN_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "gpt-5.6-sol",\n    "input": "Reply with exactly: connected"\n  }'` },
-        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额——适用于 Claude、GPT 和 Gemini 模型；邮箱密码账户不参与。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额——适用于支持的 Claude、GPT、Gemini 与 Kimi 模型；邮箱密码账户不参与。" },
       ] },
       { h2: "使用官方 OpenAI SDK", blocks: [
         { type: "p", text: "官方 SDK 无需改动——只需更换 base_url 和密钥。生产环境请把密钥放在服务端环境变量中。" },
@@ -1145,12 +1145,12 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "link", text: "完整的模型规格与折后价格", href: "/models" },
       ] },
       { h2: "端点的覆盖范围", blocks: [
-        { type: "p", text: "这是独立的 OpenAI 兼容服务，并非 OpenAI Platform。它仅提供文本生成：模型列表、Responses 与 Chat Completions（含流式输出与图片输入）。音频、文件、realtime、assistants、batches 与 fine-tuning 均不可用。" },
+        { type: "p", text: "这是独立的 OpenAI 兼容服务，并非 OpenAI Platform。它提供模型目录、流式 Responses 与 Chat Completions，以及 GPT Image 2 专用生成和编辑路由。音频、文件、realtime、assistants、batch 与 fine-tuning 端点不可用。" },
         { type: "note", text: "错误以 OpenAI 信封返回——{\"error\":{\"message\",\"type\",\"param\",\"code\"}}。401 表示密钥或认证头错误（应使用 Bearer 而非 x-api-key）；402 表示共享预付余额需要充值；404 表示模型 ID 未启用——请查询 GET https://router.apitoken.sale/v1/models。" },
       ] },
     ],
     faq: [
-      { q: "同一个密钥真的能同时用于 Claude 和 GPT 吗？", a: "能。一个 sk-pool 密钥和一个预付余额覆盖两个表面：router.apitoken.sale 上的 Anthropic Messages API 用于 Claude 模型，router.apitoken.sale/v1 上的 OpenAI 兼容 API 用于 GPT 模型。折扣也共用。" },
+      { q: "同一个密钥还能用于 GPT 之外的模型吗？", a: "能。同一个 sk-pool 密钥和余额也支持 Claude、Gemini 与 Kimi；请使用对应提供商文档中的协议和认证请求头。" },
       { q: "OpenAI 兼容端点使用哪个认证头？", a: "Authorization: Bearer sk-pool-…。x-api-key 仅用于 Anthropic 表面——把它发给 OpenAI 端点会返回 401。" },
       { q: "选 Responses 还是 Chat Completions？", a: "两者都支持 SSE 流式输出。新代码和官方 SDK 用 Responses；需要经典形状的客户端和框架用 Chat Completions。" },
       { q: "GPT 用量如何计费？", a: "按官方 OpenAI 费率逐 token 计费——包括缓存输入和长上下文定价——然后在计入预付余额前减去你的 50% B2C 统一折扣，与 Claude 用量完全一致。" },
@@ -1167,7 +1167,7 @@ export const learnZh: Record<string, LocalizedContent> = {
         { type: "p", text: "将以下内容保存为 ~/.codex/apitoken.config.toml。命名配置档不会改动你的默认 Codex 配置和可能的 ChatGPT 登录——每次运行显式选择启用。" },
         { type: "code", code: `# ~/.codex/apitoken.config.toml\nmodel = "gpt-5.6-sol"\nmodel_provider = "apitoken"\n\n[model_providers.apitoken]\nname = "apiToken.sale"\nbase_url = "https://router.apitoken.sale/v1"\nwire_api = "responses"\nenv_key = "APITOKEN_API_KEY"` },
         { type: "p", text: "env_key 指定 Codex 读取密钥的环境变量名——密钥留在 shell 中，绝不写入 TOML 文件。" },
-        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额——适用于 Claude、GPT 和 Gemini 模型；邮箱密码账户不参与。" },
+        { type: "note", text: "通过 Google 或 GitHub 创建的新账户可获 $5 平台欢迎奖励余额——适用于支持的 Claude、GPT、Gemini 与 Kimi 模型；邮箱密码账户不参与。" },
       ] },
       { h2: "运行与验证", blocks: [
         { type: "code", code: `export APITOKEN_API_KEY=sk-pool-•••\ncodex --profile apitoken` },
