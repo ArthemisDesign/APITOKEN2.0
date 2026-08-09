@@ -68,22 +68,9 @@ pub use gemini::{
     GEMINI_NODE_FETCH_TRANSPORT_PROFILE, GEMINI_NODE_TRANSPORT_PROFILE,
 };
 pub use kimi::{KimiGateway, KimiOperationalStatus, KimiProfileStatus, KimiQuotaWindowStatus};
-pub use metrics::{
-    Metrics, StrictPricingProvider, StrictPricingRejectionReason,
-    PRICING_BRIDGE_LATENCY_BUCKETS_MS, PRICING_SHADOW_QUEUE_AGE_BUCKETS_SECS,
-};
+pub use metrics::Metrics;
 pub use pricing::tariff_book;
-pub use pricing::{
-    build_pricing_shadow_evaluation, builtin_pricing_runtime_manifest, resolve_pricing,
-    PricingBridgeConfig, PricingBridgeConfigError, PricingBridgeDecision,
-    PricingBridgeFallbackReason, PricingDependencyKind, PricingResolution,
-    PricingResolutionLineage, PricingResolutionRejection, PricingResolutionRequest,
-    PricingShadowConfig, PricingShadowConfigError, PricingShadowConfigValues,
-    PricingShadowEnqueueResult, PricingShadowEvaluationSource, PricingShadowProcessingResult,
-    PricingShadowReadFailure, PricingShadowRuntime, PricingShadowWorkItem,
-    PricingShadowWorkItemError, ResolvedPricingDependency, ResolvedPricingLineage,
-    ResolvedPricingRule, RuntimePricingCapability, RuntimePricingManifest,
-};
+pub use pricing::PricingBridgeFallbackReason;
 pub use proxy::{
     authed, client_keys, control_authed, forward, is_exact_not_started_response, readonly_authed,
     resolve_client_key, resolve_client_keys, TerminalErrorReason,

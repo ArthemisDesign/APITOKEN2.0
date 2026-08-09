@@ -872,7 +872,6 @@ pub async fn poll_loop(
 pub async fn owner_heartbeat_loop(
     authority: registry::authority::AuthorityConfig,
     owner: registry::pg::Owner,
-    pricing_manifest: registry::pricing::PricingRuntimeManifestEvidence,
     authority_ready: Arc<std::sync::atomic::AtomicBool>,
 ) {
     use std::sync::atomic::Ordering;
@@ -880,10 +879,9 @@ pub async fn owner_heartbeat_loop(
         tokio::time::sleep(Duration::from_secs(10)).await;
         let config = authority.clone();
         let current = owner.clone();
-        let manifest = pricing_manifest.clone();
         let renewed = tokio::task::spawn_blocking(move || {
             let mut db = config.connect()?;
-            db.heartbeat_instance_with_pricing_manifest(&current, 30, &manifest)
+            db.heartbeat_instance(&current, 30)
         })
         .await;
         match renewed {

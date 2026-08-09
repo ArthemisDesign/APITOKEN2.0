@@ -1169,16 +1169,11 @@ async fn serve() -> Result<()> {
     let startup_billing = s.billing;
     let startup_is_postgres = authority.is_postgres();
     let startup_load_anthropic = serves_anthropic;
-    let startup_pricing_manifest = s.pricing_shadow_manifest.clone();
     let (owner, subs, recovery, pool_rows, health_rows, sqlite_reconcile) =
         tokio::task::spawn_blocking(move || {
             let mut db = startup_authority.connect()?;
             db.verify_schema()?;
-            let owner = db.claim_instance_with_pricing_manifest(
-                &startup_instance,
-                30,
-                &startup_pricing_manifest,
-            )?;
+            let owner = db.claim_instance(&startup_instance, 30)?;
             let mut recovery = registry::pg::ReconcileReport::default();
             if let Some(current) = owner.as_ref() {
                 let pg = db.postgres()?;
@@ -1186,11 +1181,7 @@ async fn serve() -> Result<()> {
                     10_000,
                     forward::settlement_policy::charge_hold_on_unknown_usage(),
                 )?;
-                if !pg.heartbeat_instance_with_pricing_manifest(
-                    current,
-                    30,
-                    &startup_pricing_manifest,
-                )? {
+                if !pg.heartbeat_instance(current, 30)? {
                     bail!("engine PostgreSQL owner epoch was fenced during startup");
                 }
             }
@@ -1253,31 +1244,6 @@ async fn serve() -> Result<()> {
     }
     let n = subs.len();
 
-    let pricing_shadow_plane = matches!(
-        s.provider,
-        forward::ProviderMode::Anthropic
-            | forward::ProviderMode::OpenAi
-            | forward::ProviderMode::Gemini
-    );
-    let pricing_shadow_active = s.proxy.pricing_shadow.enabled() && pricing_shadow_plane;
-    if s.proxy.pricing_shadow.enabled() && !pricing_shadow_plane {
-        // The fleet env file is shared by every plane; shadow pricing only exists on the three
-        // pricing planes, so a non-pricing plane (KIMI) must stay inert instead of failing
-        // closed on a config it cannot act on.
-        elog::warn(
-            "server",
-            "pricing shadow: env enabled, but this provider plane has no pricing shadow producer; staying inert",
-        );
-    }
-    if pricing_shadow_active {
-        if !authority.is_postgres() {
-            bail!("pricing shadow producer requires PostgreSQL authority");
-        }
-        if !s.billing {
-            bail!("pricing shadow producer requires billing to be enabled");
-        }
-    }
-
     // Биллинг — async DB-акторы (синхронный SQLite на выделенных потоках, не на воркерах рантайма):
     // 1 writer + N reader-потоков (WAL параллелит чтения). N ограничен диапазоном 4..=16.
     let billing = if s.billing {
@@ -1295,19 +1261,8 @@ async fn serve() -> Result<()> {
         // атомарно, а кэш чистится при смене статуса ключа/аккаунта.
         let billing_authority = authority.clone();
         let billing_owner = owner.clone();
-        let pricing_shadow_readers = if pricing_shadow_active {
-            s.proxy.pricing_shadow.db_read_connections()
-        } else {
-            0
-        };
         let actor = tokio::task::spawn_blocking(move || {
-            forward::AsyncBilling::start_authority_with_pricing_shadow(
-                billing_authority,
-                billing_owner,
-                readers,
-                pricing_shadow_readers,
-                0,
-            )
+            forward::AsyncBilling::start_authority(billing_authority, billing_owner, readers, 0)
         })
         .await
         .context("billing authority startup task failed")??;
@@ -1478,34 +1433,6 @@ async fn serve() -> Result<()> {
     } else {
         None
     };
-    let pricing_shadow = Some(forward::PricingShadowRuntime::start(
-        if pricing_shadow_active {
-            s.proxy.pricing_shadow
-        } else {
-            forward::PricingShadowConfig::default()
-        },
-        s.pricing_shadow_manifest.clone(),
-        billing.clone(),
-        metrics.clone(),
-    )?);
-    if pricing_shadow_active {
-        elog::info(
-            "server",
-            format!(
-                "pricing shadow: enabled sample={}bp queue={} workers={} timeout={}ms max_age={}s rate={}/s burst={} db_readers={}",
-                s.proxy.pricing_shadow.sample_bp(),
-                s.proxy.pricing_shadow.queue_capacity(),
-                s.proxy.pricing_shadow.worker_concurrency(),
-                s.proxy.pricing_shadow.timeout_ms(),
-                s.proxy.pricing_shadow.max_queue_age_secs(),
-                s.proxy.pricing_shadow.rate_per_sec(),
-                s.proxy.pricing_shadow.rate_burst(),
-                s.proxy.pricing_shadow.db_read_connections(),
-            ),
-        );
-    } else {
-        elog::info("server", "pricing shadow: disabled (default-off)");
-    }
     let app = AppState {
         provider: s.provider,
         cfg: Arc::new(s.proxy.clone()),
@@ -1524,8 +1451,6 @@ async fn serve() -> Result<()> {
         kimi,
         glm,
         billing,
-        pricing_shadow,
-        pricing_manifest: Arc::new(s.pricing_shadow_manifest.clone()),
         authority_ready: authority_ready.clone(),
         breaker: Arc::new(forward::Breaker::new(fleet_size)),
         metrics,
@@ -1567,7 +1492,6 @@ async fn serve() -> Result<()> {
         tokio::spawn(poller::owner_heartbeat_loop(
             authority.clone(),
             owner.clone(),
-            s.pricing_shadow_manifest.clone(),
             authority_ready.clone(),
         ));
     }
@@ -1744,9 +1668,6 @@ async fn serve() -> Result<()> {
         // delivery, then the final turn-before-quota pass runs inside the same deadline. The
         // billing writer stays open until every finalizer has crossed this barrier.
         glm.shutdown_until(shutdown_deadline).await;
-    }
-    if let Some(pricing_shadow) = &flush_app.pricing_shadow {
-        pricing_shadow.shutdown_until(shutdown_deadline).await;
     }
     elog::info("server", "graceful shutdown: дренирую очередь биллинга + флаш пула");
     // Завершённые/оборванные стримы поставили settle в очередь DB-актора. Даже после deadline ждём

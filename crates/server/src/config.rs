@@ -6,7 +6,7 @@ use forward::{
     glm::transport::GlmIdentityHeaders,
     kimi::config::{KimiPlaneConfig, KimiPlaneInput},
     ClaudeStoreFallbackConfig, CodexConfig, CodexModel, GeminiConfig, GeminiModel,
-    PricingBridgeConfig, PricingShadowConfig, PricingShadowConfigValues, ProviderMode, ProxyConfig,
+    ProviderMode, ProxyConfig,
     CLAUDE_CODE_IDENTITY,
 };
 use std::{collections::BTreeMap, env, net::IpAddr};
@@ -70,7 +70,6 @@ pub struct Settings {
     /// the sealed credential.
     pub glm: Option<GlmPlaneConfig>,
     /// Compile-versioned evaluator capability evidence, assembled by trusted server composition.
-    pub pricing_shadow_manifest: registry::pricing::PricingRuntimeManifestEvidence,
     pub proxy: ProxyConfig,
 }
 
@@ -241,36 +240,7 @@ fn validate_claudestore_credential_separation(
     Ok(())
 }
 
-fn parse_pricing_bridge_config(
-    enabled: Option<&str>,
-    sample_bp: Option<&str>,
-) -> Result<PricingBridgeConfig, String> {
-    let enabled = parse_strict_bool("CLAUDE_API_PRICING_BRIDGE_ENABLED", enabled, false)?;
-    let sample_bp = sample_bp.unwrap_or("0").parse::<i64>().map_err(|_| {
-        "CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP: expected an integer in 0..=10000".to_string()
-    })?;
-    PricingBridgeConfig::from_parts(enabled, sample_bp).map_err(|error| {
-        format!(
-            "invalid pricing bridge config ({}): disabled requires sample 0; enabled requires \
-             sample 1..=10000",
-            error.code()
-        )
-    })
-}
 
-const PRICING_SHADOW_ENV_KEYS: [&str; 11] = [
-    "CLAUDE_API_PRICING_SHADOW_ENABLED",
-    "CLAUDE_API_PRICING_SHADOW_SAMPLE_BP",
-    "CLAUDE_API_PRICING_SHADOW_QUEUE_CAPACITY",
-    "CLAUDE_API_PRICING_SHADOW_WORKER_CONCURRENCY",
-    "CLAUDE_API_PRICING_SHADOW_TIMEOUT_MS",
-    "CLAUDE_API_PRICING_SHADOW_MAX_QUEUE_AGE_SECS",
-    "CLAUDE_API_PRICING_SHADOW_MAX_FIELD_BYTES",
-    "CLAUDE_API_PRICING_SHADOW_MAX_ITEM_BYTES",
-    "CLAUDE_API_PRICING_SHADOW_RATE_PER_SEC",
-    "CLAUDE_API_PRICING_SHADOW_RATE_BURST",
-    "CLAUDE_API_PRICING_SHADOW_DB_READ_CONNECTIONS",
-];
 
 const KIMI_ENV_KEYS: [&str; 7] = [
     "CLAUDE_API_KIMI_ENABLED",
@@ -496,79 +466,7 @@ fn glm_config() -> Option<GlmPlaneConfig> {
     parse_glm_config(&values).unwrap_or_else(|message| panic!("{message}"))
 }
 
-fn parse_pricing_shadow_config(
-    values: &BTreeMap<String, String>,
-) -> Result<PricingShadowConfig, String> {
-    let defaults = PricingShadowConfigValues::default();
-    let parse_i64 = |name: &str, default: i64| -> Result<i64, String> {
-        values.get(name).map_or(Ok(default), |value| {
-            value
-                .parse::<i64>()
-                .map_err(|_| format!("{name}: expected a base-10 integer"))
-        })
-    };
-    let parse_u64 = |name: &str, default: u64| -> Result<u64, String> {
-        values.get(name).map_or(Ok(default), |value| {
-            value
-                .parse::<u64>()
-                .map_err(|_| format!("{name}: expected a non-negative base-10 integer"))
-        })
-    };
-    let parse_usize = |name: &str, default: usize| -> Result<usize, String> {
-        let value = parse_u64(name, default as u64)?;
-        usize::try_from(value).map_err(|_| format!("{name}: value does not fit usize"))
-    };
-    let configured = PricingShadowConfigValues {
-        enabled: parse_strict_bool(
-            "CLAUDE_API_PRICING_SHADOW_ENABLED",
-            values
-                .get("CLAUDE_API_PRICING_SHADOW_ENABLED")
-                .map(String::as_str),
-            defaults.enabled,
-        )?,
-        sample_bp: parse_i64("CLAUDE_API_PRICING_SHADOW_SAMPLE_BP", defaults.sample_bp)?,
-        queue_capacity: parse_usize(
-            "CLAUDE_API_PRICING_SHADOW_QUEUE_CAPACITY",
-            defaults.queue_capacity,
-        )?,
-        worker_concurrency: parse_usize(
-            "CLAUDE_API_PRICING_SHADOW_WORKER_CONCURRENCY",
-            defaults.worker_concurrency,
-        )?,
-        timeout_ms: parse_u64("CLAUDE_API_PRICING_SHADOW_TIMEOUT_MS", defaults.timeout_ms)?,
-        max_queue_age_secs: parse_i64(
-            "CLAUDE_API_PRICING_SHADOW_MAX_QUEUE_AGE_SECS",
-            defaults.max_queue_age_secs,
-        )?,
-        max_field_bytes: parse_usize(
-            "CLAUDE_API_PRICING_SHADOW_MAX_FIELD_BYTES",
-            defaults.max_field_bytes,
-        )?,
-        max_item_bytes: parse_usize(
-            "CLAUDE_API_PRICING_SHADOW_MAX_ITEM_BYTES",
-            defaults.max_item_bytes,
-        )?,
-        rate_per_sec: parse_u64(
-            "CLAUDE_API_PRICING_SHADOW_RATE_PER_SEC",
-            defaults.rate_per_sec,
-        )?,
-        rate_burst: parse_u64("CLAUDE_API_PRICING_SHADOW_RATE_BURST", defaults.rate_burst)?,
-        db_read_connections: parse_usize(
-            "CLAUDE_API_PRICING_SHADOW_DB_READ_CONNECTIONS",
-            defaults.db_read_connections,
-        )?,
-    };
-    PricingShadowConfig::from_values(configured).map_err(|error| {
-        format!(
-            "invalid pricing shadow config ({}); see bounded rollout limits",
-            error.code()
-        )
-    })
-}
 
-fn pricing_shadow_runtime_manifest() -> registry::pricing::PricingRuntimeManifestEvidence {
-    forward::builtin_pricing_runtime_manifest()
-}
 
 fn bounded_u64(k: &str, default: u64, min: u64, max: u64) -> u64 {
     match ev(k).and_then(|value| value.parse::<u64>().ok()) {
@@ -1172,17 +1070,6 @@ impl Settings {
             2000,
             ev_opt_in("CLAUDE_API_ALLOW_ZERO_MULT_BP"),
         );
-        let pricing_bridge = parse_pricing_bridge_config(
-            ev("CLAUDE_API_PRICING_BRIDGE_ENABLED").as_deref(),
-            ev("CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP").as_deref(),
-        )
-        .unwrap_or_else(|message| panic!("{message}"));
-        let pricing_shadow_values = PRICING_SHADOW_ENV_KEYS
-            .into_iter()
-            .filter_map(|name| ev(name).map(|value| (name.to_owned(), value)))
-            .collect::<BTreeMap<_, _>>();
-        let pricing_shadow = parse_pricing_shadow_config(&pricing_shadow_values)
-            .unwrap_or_else(|message| panic!("{message}"));
         // Two Redis instances with independent memory budgets and eviction policies. History keeps
         // CLAUDE_API_REDIS_URL and its stored conversations; affinity moves to its own instance.
         // The fallback keeps a host that has not yet been provisioned with the second instance
@@ -1291,14 +1178,11 @@ impl Settings {
             gemini,
             kimi,
             glm,
-            pricing_shadow_manifest: pricing_shadow_runtime_manifest(),
             proxy: ProxyConfig {
                 api_keys,
                 control_keys,
                 panel_keys,
                 default_mult_bp: mult_bp,
-                pricing_bridge,
-                pricing_shadow,
                 trust_loopback,
                 // OAuth-токены можно отправлять только на канонический Anthropic origin. Локальный HTTP
                 // mock разрешается исключительно явным opt-in и только на literal loopback IP.
