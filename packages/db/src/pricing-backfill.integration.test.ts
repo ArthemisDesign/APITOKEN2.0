@@ -1355,4 +1355,78 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
     expect((await listPricingBackfillCandidates(database, { limit: 5 }))
       .map((candidate) => candidate.engineAccountId)).toEqual([engineAccountId]);
   });
+
+  it("re-drives an ARMED account whose strict re-delivery went DEAD on the ACK mismatch (the two stragglers)", async () => {
+    const { userId, engineAccountId, fixture } = await armedVerifiedSyncPendingB2b("backfill-dead-job@example.test");
+    // The stragglers' exact state: the strict→strict re-delivery job died on
+    // "activation_policy_ack does not match the active policy" (pre-fix), and the release
+    // path marked the binding sync_state='failed' — outside the old candidate predicate.
+    await seedClient.query(`
+      UPDATE engine_policy_jobs
+      SET status = 'dead', last_error = 'account-policy activation rejected with missing_dependency',
+          locked_at = NULL, locked_by = NULL, confirmed_at = NULL,
+          ack_effective_version = NULL, ack_policy_version = NULL,
+          ack_catalog_generation = NULL, ack_switch_generation = NULL,
+          ack_schema_version = NULL, ack_content_digest = NULL, ack_payload = NULL,
+          updated_at = now()
+      WHERE binding_id IN (SELECT id FROM account_policy_bindings WHERE user_id = $1)
+    `, [userId]);
+    await seedClient.query(`
+      UPDATE account_policy_bindings SET sync_state = 'failed' WHERE user_id = $1
+    `, [userId]);
+    const before = await seedClient.query<{ desired: string; n: string }>(`
+      SELECT binding.desired_effective_version::text AS desired,
+             (SELECT count(*)::text FROM account_policy_versions WHERE binding_id = binding.id) AS n
+      FROM account_policy_bindings binding WHERE binding.user_id = $1
+    `, [userId]);
+    const desiredBefore = Number(before.rows[0]!.desired);
+    const versionsBefore = Number(before.rows[0]!.n);
+    // sync 'failed' is covered now: the account is a candidate again.
+    expect((await listPricingBackfillCandidates(database, { limit: 5 }))
+      .map((candidate) => candidate.engineAccountId)).toEqual([engineAccountId]);
+
+    const engine = fakeEngine({
+      ...fixture,
+      pricingStatePolicy: await desiredPricingState(userId),
+    });
+    const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
+    // The dead desired version is never reused: the materialize step re-stages a FRESH
+    // delivery (new effective version, current catalog pin, new pending job), and the
+    // account rotates quietly while it is unconverged.
+    expect(sweep).toEqual({
+      examined: 1,
+      armed: [],
+      armedWithoutReleaseCoverage: [],
+      pending: [engineAccountId],
+      failed: [],
+    });
+    const after = await seedClient.query<{ desired: string; n: string; pending_jobs: string }>(`
+      SELECT binding.desired_effective_version::text AS desired,
+             (SELECT count(*)::text FROM account_policy_versions WHERE binding_id = binding.id) AS n,
+             (SELECT count(*)::text FROM engine_policy_jobs
+              WHERE binding_id = binding.id AND status = 'pending') AS pending_jobs
+      FROM account_policy_bindings binding WHERE binding.user_id = $1
+    `, [userId]);
+    expect(Number(after.rows[0]!.desired)).toBe(desiredBefore + 1);
+    expect(Number(after.rows[0]!.n)).toBe(versionsBefore + 1);
+    expect(after.rows[0]!.pending_jobs).toBe("1");
+    expect(await bindingState(userId)).toMatchObject({
+      strict_chain_pending: true,
+      sync_state: "pending",
+    });
+
+    // The fresh delivery confirms (the worker's delivery path re-stamps keys correctly now —
+    // covered in apps/worker); the chain retires the account.
+    await confirmStrictDelivery(userId);
+    const converged = fakeEngine({
+      ...fixture,
+      pricingStatePolicy: await desiredPricingState(userId),
+    });
+    await expect(advanceAccountStrictChain(
+      database,
+      converged.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    )).resolves.toEqual({ status: "opted_out" });
+    expect(await listPricingBackfillCandidates(database, { limit: 5 })).toEqual([]);
+  });
 });

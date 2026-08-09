@@ -28,9 +28,11 @@ import {
   type PricingSyncTarget,
 } from "@claude-api/db";
 import type {
+  AccountPolicyBinding,
   PolicyActiveExpectation,
   PricingActiveExpectation,
   PricingMutationAck,
+  PricingPolicySnapshot,
 } from "@claude-api/contracts";
 import { EngineClient, EngineClientError, type EngineKeyActivationPolicyAck } from "@claude-api/engine-client";
 import type { Environment } from "./config.js";
@@ -358,7 +360,8 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
       ["stored", "unchanged"],
       "account-policy prepare",
     );
-    if (job.binding.policy_enforcement === "strict") {
+    const state = await this.engine.getAccountPricingState(job.spec.account_id);
+    if (strictActivationNeedsPreRestamp(state, job.spec, job.binding)) {
       // The strict trigger requires every active key to carry the exact ACK at flip time.
       // Re-stamp before the activation attempt too: a key created between the chain's preflight
       // and this delivery would otherwise reject the flip again and again.
@@ -367,7 +370,6 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
         policyDigest: job.spec.content_digest,
       });
     }
-    const state = await this.engine.getAccountPricingState(job.spec.account_id);
     let expectation: PolicyActiveExpectation;
     if (state === "unbound") {
       expectation = "unbound";
@@ -576,8 +578,39 @@ export function requirePricingMutation(
   throw new PricingControlDeliveryError(`${phase} rejected with ${ack.code}`, disposition);
 }
 
+/**
+ * Whether the pre-activation key re-stamp is possible for a strict-class policy delivery.
+ * The engine accepts a key-ACK write only when the ACK matches the CURRENTLY ACTIVE policy
+ * exactly (a strict account's `key set status` with a not-yet-active ACK is rejected with
+ * 409 "activation_policy_ack does not match the active policy"). The shadow→strict cutover
+ * targets exactly the shadow-confirmed version, so the pre-stamp is accepted there — and it
+ * is required, because the migration-0016 trigger checks key ACKs when the OLD enforcement
+ * was not strict. A strict→strict advance targets a version that is not active yet: the
+ * trigger deliberately skips the key check for old=strict flips, the pre-stamp would only
+ * 409, and the post-activation re-stamp converges the keys onto the new head instead.
+ */
+export function strictActivationNeedsPreRestamp(
+  state: PricingPolicySnapshot,
+  spec: { effective_version: number; content_digest: string },
+  binding: AccountPolicyBinding,
+): boolean {
+  if (binding.policy_enforcement !== "strict") return false;
+  return typeof state === "object" && state !== null && "active" in state
+    && state.active.policy.effective_version === spec.effective_version
+    && state.active.policy.content_digest === spec.content_digest;
+}
+
 export function pricingControlDisposition(error: unknown): PricingControlJobDisposition {
   if (error instanceof PricingControlDeliveryError) return error.disposition;
+  // The key-ACK conflict is a transient ordering artifact by construction (a policy advance
+  // landed between the state read and the stamp): retry, never dead.
+  if (
+    error instanceof EngineClientError
+    && error.status === 409
+    && error.message.includes("activation_policy_ack")
+  ) {
+    return "retry";
+  }
   if (error instanceof EngineClientError) return error.retryable ? "retry" : "dead";
   return "retry";
 }

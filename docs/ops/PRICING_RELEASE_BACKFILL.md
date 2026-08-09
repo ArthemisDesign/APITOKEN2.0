@@ -86,6 +86,14 @@ and advances each independently:
    runs for strict bindings too — the reuse branch is a no-op when the pinned catalog
    generation is current (no new version, no churn), and re-pins to the live head exactly
    when the pin is stale; the release-covered equivalence gate still applies to them.
+   Sync-'failed' armed accounts (a strict re-delivery that went DEAD) are covered the same
+   way: the materialize step never reuses a dead desired version, so it re-stages a fresh
+   delivery automatically on the next pass — no manual repair route needed. On the delivery
+   side, the worker's pre-activation key re-stamp runs only when the strict target is the
+   currently active version (the engine accepts a key-ACK write only when it matches the
+   active policy; a strict→strict advance converges keys with the post-activation re-stamp
+   instead), and the engine's 409 `activation_policy_ack` conflict is classified retryable,
+   never dead — it is a transient ordering artifact by construction.
 
 New accounts need no alignment pass: B2C registrations are born with `mult_bp=5000`, and B2B
 invitee registrations now start at the full-price fallback (10000) — the negotiated discount

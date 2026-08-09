@@ -6,6 +6,7 @@ import { EngineClientError } from "@claude-api/engine-client";
 import {
   pricingControlDisposition,
   requirePricingMutation,
+  strictActivationNeedsPreRestamp,
 } from "./pricing-worker.service.js";
 
 const source = readFileSync(new URL("./pricing-worker.service.ts", import.meta.url), "utf8");
@@ -78,13 +79,60 @@ test("runs the existing-account backfill arm lane on the slow sweep with canary 
 test("re-stamps active keys with the exact new ACK after every strict policy activation", () => {
   // Strict request auth admits only keys stamped with the current policy head, so the delivery
   // worker must re-stamp before the job confirms — otherwise each strict activation (the
-  // cutover and every later policy save) would break the account's keys.
-  assert.match(source, /job\.binding\.policy_enforcement === "strict"/);
+  // cutover and every later policy save) would break the account's keys. The PRE-activation
+  // re-stamp runs only when the strict target is the currently active version (the engine
+  // accepts a key-ACK write only when it matches the active policy): the shadow→strict flip.
+  // On a strict→strict advance to a new version the post-activation re-stamp converges keys.
+  assert.match(source, /strictActivationNeedsPreRestamp\(state, job\.spec, job\.binding\)/);
   assert.match(source, /restampActiveKeysForStrictPolicy\(job\.spec\.account_id, \{/);
   assert.match(source, /effectivePolicyVersion: job\.spec\.effective_version/);
   assert.match(source, /policyDigest: job\.spec\.content_digest/);
   assert.match(source, /if \(key\.status !== "active"\) continue;/);
   assert.match(source, /await this\.engine\.setKeyStatus\(key\.key_id, "active", ack\)/);
+});
+
+test("pre-activation re-stamp timing follows the currently active version", () => {
+  const strictBinding = {
+    policy_enforcement: "strict",
+    funding_enforcement: "strict",
+    reconciliation_state: "verified",
+  } as const;
+  const shadowBinding = {
+    policy_enforcement: "shadow",
+    funding_enforcement: "legacy_single",
+    reconciliation_state: "verified",
+  } as const;
+  const spec = { effective_version: 5, content_digest: "digest-v5" };
+  const activeAt = (version: number, digest: string) => ({
+    active: {
+      policy: { effective_version: version, content_digest: digest },
+      binding: shadowBinding,
+    },
+  });
+
+  // Shadow→strict cutover: the target IS the shadow-confirmed active version — the engine
+  // accepts the pre-stamp and the 0016 trigger requires it.
+  assert.equal(
+    strictActivationNeedsPreRestamp(activeAt(5, "digest-v5") as never, spec, strictBinding),
+    true,
+  );
+  // Strict→strict advance to a NOT-yet-active version: the pre-stamp would be rejected with
+  // the 409 ACK conflict; the post-activation re-stamp converges the keys instead.
+  assert.equal(
+    strictActivationNeedsPreRestamp(activeAt(4, "digest-v4") as never, spec, strictBinding),
+    false,
+  );
+  // Same version but a different digest is not the active policy either.
+  assert.equal(
+    strictActivationNeedsPreRestamp(activeAt(5, "digest-other") as never, spec, strictBinding),
+    false,
+  );
+  // Non-strict deliveries never re-stamp before activation.
+  assert.equal(
+    strictActivationNeedsPreRestamp(activeAt(5, "digest-v5") as never, spec, shadowBinding),
+    false,
+  );
+  assert.equal(strictActivationNeedsPreRestamp("unbound" as never, spec, strictBinding), false);
 });
 
 test("classifies typed pricing rejections without retrying permanent failures", () => {
@@ -139,5 +187,15 @@ test("classifies typed pricing rejections without retrying permanent failures", 
 
   assert.equal(pricingControlDisposition(new EngineClientError("bad response", 200, false)), "dead");
   assert.equal(pricingControlDisposition(new EngineClientError("timeout", undefined, true)), "retry");
+  // The key-ACK conflict (a policy advance landed between the state read and the stamp) is a
+  // transient ordering artifact by construction — retry, never dead.
+  assert.equal(
+    pricingControlDisposition(
+      new EngineClientError("activation_policy_ack does not match the active policy", 409, false),
+    ),
+    "retry",
+  );
+  // Other non-retryable 409s stay terminal.
+  assert.equal(pricingControlDisposition(new EngineClientError("key already exists", 409, false)), "dead");
   assert.equal(pricingControlDisposition(new Error("database unavailable")), "retry");
 });

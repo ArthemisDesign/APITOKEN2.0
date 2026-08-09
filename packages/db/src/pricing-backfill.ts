@@ -181,13 +181,15 @@ export async function listPricingBackfillCandidates(
     WHERE binding.user_id IS NOT NULL
       AND binding.account_class IN ('b2c', 'b2b')
       -- Unarmed accounts, plus armed ones the chain structurally cannot advance
-      -- (reconciliation 'pending': unverifiable; sync 'pending': the strict delivery has
-      -- not confirmed — the sweep re-materializes a stale catalog pin first, then verifies
-      -- account-locally) and hands them back; armed accounts the chain can already drive
-      -- stay exclusively with the fast lane.
+      -- (reconciliation 'pending': unverifiable; sync 'pending'/'failed': the strict
+      -- delivery has not confirmed — a 'failed' delivery means the desired job went dead,
+      -- and the materialize step re-stages a fresh version because the reuse branch refuses
+      -- dead-job desired versions; a stale catalog pin is re-pinned the same way). Verified
+      -- accounts are handed back after the account-local verification; armed accounts the
+      -- chain can already drive stay exclusively with the fast lane.
       AND (NOT binding.strict_chain_pending
            OR binding.reconciliation_state = 'pending'
-           OR binding.sync_state = 'pending')
+           OR binding.sync_state IN ('pending', 'failed'))
       AND (binding.last_error IS NULL OR binding.last_error NOT LIKE 'terminal: %')
       AND NOT EXISTS (
         SELECT 1 FROM service_account_inventory_v2 service
