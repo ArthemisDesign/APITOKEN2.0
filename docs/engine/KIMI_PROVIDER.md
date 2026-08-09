@@ -30,7 +30,11 @@ client documentation are in progress and are tracked separately.
 - `decision` 2026-08-08 — advertise only the five subscription aliases. The official Open
   Platform ids are tariff keys the gateway refuses on the wire, so publishing one would put a
   model in the catalog that admission then rejects. `kimi-k2.6` is not advertised at all: no
-  alias reaches it.
+  alias reaches it. It is a tariff key, not an addressable model — it carries the official API
+  rate needed to price replacement cost, and the subscription route publishes no id for it. The
+  widely repeated claim that a thinking-off request silently reroutes K3/K2.7 down to K2.6 is
+  contradicted by our own live turns: the `k3:*:off` legs of the coverage matrix priced under
+  `moonshot/kimi/kimi-k3/v2`.
 - `decision` The site keeps no KIMI row until the owner says otherwise.
 - `decision` This file is an internal engineering instruction (required by `AGENTS.md`,
   "Documentation is a living contract"), not a public storefront.

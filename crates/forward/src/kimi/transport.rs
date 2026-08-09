@@ -8,9 +8,12 @@
 //! * **The refresh family rotates.** Every refresh invalidates its predecessor, so refreshes are
 //!   single-flight per profile: the winner re-seals before releasing the lock, and losers reuse
 //!   the winner's token instead of spending a token that is already dead.
-//! * **`/v1/models` is ungated.** It answers 200 for an invalid key while generation then returns
-//!   403, so it must never be used as a health probe. [`ProbeRoute`] encodes that as a type rather
-//!   than a comment.
+//! * **`/v1/models` is not a health probe.** It was recorded here as "ungated, answers 200 for an
+//!   invalid key"; a live check on 2026-08-09 returned `invalid_authentication_error` for a
+//!   nonsense key instead, so the provider has since gated it. Either way it stays unusable as a
+//!   liveness signal — one reading would have made a dead key look healthy, and the other makes a
+//!   healthy key indistinguishable from an unreachable endpoint. [`ProbeRoute`] encodes that as a
+//!   type rather than a comment.
 
 use std::collections::HashMap;
 use std::sync::Arc;
