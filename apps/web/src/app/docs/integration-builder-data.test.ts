@@ -4,6 +4,7 @@ import {
   ANTHROPIC_BASE_URL,
   GEMINI_BASE_URL,
   INTEGRATION_MODELS,
+  MODEL_WINDOWS,
   OPENAI_BASE_URL,
   OPENCODE_INSTALLER_URL,
   ROUTER_BASE_URL,
@@ -70,9 +71,35 @@ describe("integration builder guide", () => {
     expect(piConfig.providers.apitoken.api).toBe("anthropic-messages");
     expect(piConfig.providers.apitoken.baseUrl).toBe(ROUTER_BASE_URL);
 
-    // Claude Code ignores ids outside the claude/anthropic prefixes, so a KIMI guide for it
-    // would not survive first contact and must not be offered.
-    expect(isToolCompatible("claude-code", "kimi")).toBe(false);
+    expect(isToolCompatible("claude-code", "kimi")).toBe(true);
+  });
+
+  it("pins every Claude Code model tier on KIMI and matches the window to the alias", () => {
+    const oneM = buildIntegrationGuide({ provider: "kimi", tool: "claude-code", os: "unix", modelId: "k3[1m]", language: "en" });
+    const env = oneM.steps[0].code;
+    // Claude Code resolves a model per tier. An unpinned tier fails only in subagents and
+    // background tasks, which reads as a gateway fault rather than a configuration gap.
+    for (const name of [
+      "ANTHROPIC_MODEL",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "CLAUDE_CODE_SUBAGENT_MODEL",
+    ]) {
+      expect(env).toContain(`${name}="k3[1m]"`);
+    }
+    // The bracket alias is the whole reason the 1M window is reachable from this agent.
+    expect(env).toContain("CLAUDE_CODE_MAX_CONTEXT_TOKENS=\"1048576\"");
+
+    // A 256k alias must not claim the 1M window, or the agent would compact far too late.
+    const short = buildIntegrationGuide({ provider: "kimi", tool: "claude-code", os: "unix", modelId: "k3-256k", language: "en" });
+    expect(short.steps[0].code).toContain('ANTHROPIC_MODEL="k3-256k"');
+    expect(short.steps[0].code).not.toContain("CLAUDE_CODE_MAX_CONTEXT_TOKENS");
+
+    // Anthropic's own guide must stay exactly as it was: no tier pinning, no window override.
+    const anthropic = buildIntegrationGuide({ provider: "anthropic", tool: "claude-code", os: "unix", modelId: "claude-opus-5", language: "en" });
+    expect(anthropic.steps[0].code).not.toContain("ANTHROPIC_DEFAULT_OPUS_MODEL");
+    expect(anthropic.steps[0].code).not.toContain("CLAUDE_CODE_SUBAGENT_MODEL");
   });
 
   it("builds every compatible provider, tool, OS, and language combination", () => {
@@ -85,7 +112,12 @@ describe("integration builder guide", () => {
             const guide = buildIntegrationGuide({ provider, tool, os, modelId, language });
 
             expect(guide.steps).toHaveLength(3);
-            expect(guide.endpoint).toBe(providerEndpoints[provider]);
+            // Kimi Code speaks the universal OpenAI-compatible lane for every provider, so its
+            // endpoint is the `/v1` one even when the provider's native lane is elsewhere.
+            const expectedEndpoint = tool === "kimi-code"
+              ? ROUTER_OPENAI_BASE_URL
+              : providerEndpoints[provider];
+            expect(guide.endpoint).toBe(expectedEndpoint);
             expect(guide.title).toContain(providerTitleNames[provider]);
             expect(guide.steps.every((step) => step.code.trim().length > 0)).toBe(true);
             expect(JSON.stringify(guide)).not.toContain("YOUR_SK_POOL_API_KEY");
@@ -93,6 +125,38 @@ describe("integration builder guide", () => {
         }
       }
     }
+  });
+
+  it("emits a Kimi Code config that names our lane, the wire id and a reviewed window", () => {
+    const guide = buildIntegrationGuide({ provider: "kimi", tool: "kimi-code", os: "unix", modelId: "k3", language: "en" });
+    const config = guide.steps[1].code;
+    // An ordinary OpenAI-compatible provider entry — this is why one entry reaches the whole
+    // catalogue and not just KIMI.
+    expect(config).toContain('type = "openai"');
+    expect(config).toContain(`base_url = "${ROUTER_OPENAI_BASE_URL}"`);
+    // The alias on the left is local; what goes on the wire is the namespaced catalogue id.
+    expect(config).toContain('[models."apitoken/k3"]');
+    expect(config).toContain('model = "kimi/k3"');
+    expect(config).toContain("max_context_size = 1048576");
+    // Kimi Code refuses to read credentials from the shell, so the file holds the key and must
+    // be locked down — dropping that line would publish a world-readable secret.
+    expect(config).toContain("chmod 600 ~/.kimi-code/config.toml");
+    expect(guide.securityNote).toContain("config.toml");
+
+    // Gemini keeps its `google/` catalogue namespace here, exactly as in OpenCode.
+    const gemini = buildIntegrationGuide({ provider: "gemini", tool: "kimi-code", os: "unix", modelId: "gemini-3.6-flash", language: "en" });
+    expect(gemini.steps[1].code).toContain('model = "google/gemini-3.6-flash"');
+    // GPT bills a 400K window but caps one request at 272K; compaction must respect the smaller.
+    const gpt = buildIntegrationGuide({ provider: "openai", tool: "kimi-code", os: "unix", modelId: "gpt-5.6-sol", language: "en" });
+    expect(gpt.steps[1].code).toContain("max_context_size = 400000");
+    expect(gpt.steps[1].code).toContain("max_input_size = 272000");
+  });
+
+  it("has a reviewed context window for every published model", () => {
+    // `max_context_size` is required by Kimi Code and decides when it compacts, so a model may
+    // not reach the builder without one — and a stale entry for a dropped model is dead weight.
+    const published = Object.values(INTEGRATION_MODELS).flatMap((models) => models.map(({ id }) => id));
+    expect(Object.keys(MODEL_WINDOWS).sort()).toEqual([...published].sort());
   });
 
   it("rejects an incompatible provider/tool pair and an unknown model", () => {

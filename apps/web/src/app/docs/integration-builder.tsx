@@ -29,6 +29,7 @@ const tools: Array<{ id: IntegrationTool; name: string; en: string; ru: string }
   { id: "claude-code", name: "Claude Code", en: "Native Claude agent", ru: "Нативный агент Claude" },
   { id: "codex", name: "Codex", en: "Responses API agent", ru: "Агент Responses API" },
   { id: "gemini-cli", name: "Gemini CLI", en: "Native Gemini agent", ru: "Нативный агент Gemini" },
+  { id: "kimi-code", name: "Kimi Code", en: "Native Kimi agent", ru: "Нативный агент Kimi" },
   { id: "opencode", name: "OpenCode", en: "Open-source terminal", ru: "Open-source терминал" },
   { id: "pi", name: "Pi", en: "Minimal coding harness", ru: "Минималистичный harness" },
   { id: "hermes", name: "Hermes", en: "General agent · advanced", ru: "Универсальный · advanced" },
@@ -44,8 +45,9 @@ const defaultTool: Record<IntegrationProvider, IntegrationTool> = {
   anthropic: "claude-code",
   openai: "codex",
   gemini: "gemini-cli",
-  // KIMI has no native agent of its own; OpenCode is the first tool that accepts its ids.
-  kimi: "opencode",
+  // The KIMI subscription is built around Claude Code — that agent's bracket spelling is where
+  // `k3[1m]` comes from — so it is the default rather than a fallback.
+  kimi: "claude-code",
 };
 
 function tr(language: IntegrationLanguage, en: string, ru: string): string {

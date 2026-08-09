@@ -26,7 +26,7 @@ type IntegrationProtocol = "anthropic" | "openai" | "gemini";
 function protocolOf(provider: IntegrationProvider): IntegrationProtocol {
   return provider === "kimi" ? "anthropic" : provider;
 }
-export type IntegrationTool = "claude-code" | "codex" | "gemini-cli" | "opencode" | "pi" | "hermes";
+export type IntegrationTool = "claude-code" | "codex" | "gemini-cli" | "kimi-code" | "opencode" | "pi" | "hermes";
 export type IntegrationOs = "unix" | "powershell" | "cmd";
 export type IntegrationLanguage = "en" | "ru";
 
@@ -91,13 +91,56 @@ export const INTEGRATION_MODELS: Record<IntegrationProvider, readonly Integratio
   ],
 };
 
+/**
+ * Context windows, in tokens, for clients that must be told the window explicitly.
+ *
+ * Kimi Code declares every model in its own config and treats `max_context_size` as required, so
+ * a wrong or missing number is not cosmetic: it decides when the agent compacts. `input` is set
+ * only where the accepted input is narrower than the window — GPT bills a 400K window but caps a
+ * single request at 272K, and compaction must respect the smaller one.
+ *
+ * The key set is asserted against `INTEGRATION_MODELS` in the tests, so a model cannot be
+ * published here without a window.
+ */
+export const MODEL_WINDOWS: Record<string, { context: number; input?: number }> = {
+  "claude-opus-5": { context: 1_000_000 },
+  "claude-fable-5": { context: 1_000_000 },
+  "claude-opus-4-8": { context: 1_000_000 },
+  "claude-opus-4-7": { context: 1_000_000 },
+  "claude-sonnet-5": { context: 1_000_000 },
+  "claude-sonnet-4-6": { context: 1_000_000 },
+  "claude-haiku-4-5": { context: 200_000 },
+  "gpt-5.6-sol": { context: 400_000, input: 272_000 },
+  "gpt-5.6-terra": { context: 400_000, input: 272_000 },
+  "gpt-5.6-luna": { context: 400_000, input: 272_000 },
+  "gpt-5.5": { context: 400_000, input: 272_000 },
+  "gpt-5.4": { context: 400_000, input: 272_000 },
+  "gpt-image-2": { context: 131_072 },
+  "gemini-3.6-flash": { context: 1_000_000 },
+  "gemini-3.5-flash": { context: 1_000_000 },
+  "gemini-3-flash-preview": { context: 1_000_000 },
+  "gemini-3.1-pro-preview": { context: 1_000_000 },
+  "gemini-3.1-flash-lite": { context: 1_000_000 },
+  "gemini-2.5-flash": { context: 1_000_000 },
+  "gemini-2.5-flash-lite": { context: 1_000_000 },
+  "gemini-3.1-flash-image": { context: 131_072 },
+  k3: { context: 1_048_576 },
+  "k3[1m]": { context: 1_048_576 },
+  "k3-256k": { context: 262_144 },
+  "kimi-for-coding": { context: 262_144 },
+  "kimi-for-coding-highspeed": { context: 262_144 },
+};
+
 export const TOOL_COMPATIBILITY: Record<IntegrationTool, readonly IntegrationProvider[]> = {
-  "claude-code": ["anthropic"],
+  // KIMI's subscription is designed for Claude Code: `k3[1m]` is literally that agent's bracket
+  // spelling for the 1M window. Pinning every tier is what makes it work end to end.
+  "claude-code": ["anthropic", "kimi"],
   codex: ["openai"],
   "gemini-cli": ["gemini"],
-  // Claude Code is deliberately absent for KIMI: its model discovery ignores ids outside the
-  // claude/anthropic prefixes, so a published guide would not survive first contact. OpenCode
-  // and Pi take an explicit model id and do.
+  // KIMI's own agent, and the place a KIMI subscription is normally used. It is not KIMI-only:
+  // a provider entry is an ordinary OpenAI-compatible endpoint, so our universal lane serves the
+  // whole catalogue through it.
+  "kimi-code": ["anthropic", "openai", "gemini", "kimi"],
   opencode: ["anthropic", "openai", "gemini", "kimi"],
   pi: ["anthropic", "openai", "gemini", "kimi"],
   hermes: ["openai"],
@@ -107,6 +150,7 @@ const TOOL_NAMES: Record<IntegrationTool, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
   "gemini-cli": "Gemini CLI",
+  "kimi-code": "Kimi Code",
   opencode: "OpenCode",
   pi: "Pi",
   hermes: "Hermes",
@@ -149,14 +193,48 @@ function environmentCommand(os: IntegrationOs, values: Record<string, string>, u
   return [...removals, ...assignments].join("\n");
 }
 
-function claudeCodeGuide(model: IntegrationModel, os: IntegrationOs, language: IntegrationLanguage): IntegrationGuide {
-  const connection = environmentCommand(os, {
+/** Context window of a KIMI alias, mirroring the catalogue the plane admits. */
+function kimiContextTokens(modelId: string): number {
+  return modelId === "k3" || modelId === "k3[1m]" ? 1_048_576 : 262_144;
+}
+
+function claudeCodeGuide(
+  provider: IntegrationProvider,
+  model: IntegrationModel,
+  os: IntegrationOs,
+  language: IntegrationLanguage,
+): IntegrationGuide {
+  // Claude Code resolves a model per *tier*, not once. On a non-Anthropic model the tier
+  // variables have nothing to fall back to, so subagents and background tasks fail with an
+  // unknown-model error while the main session looks fine — the failure is silent and easy to
+  // misread as the gateway. Pin every tier to the same id.
+  const kimi = provider === "kimi";
+  const environment: Record<string, string> = {
     ANTHROPIC_BASE_URL: ROUTER_BASE_URL,
     ANTHROPIC_API_KEY: keyPlaceholder,
-  }, ["ANTHROPIC_AUTH_TOKEN"]);
+  };
+  if (kimi) {
+    environment.ANTHROPIC_MODEL = model.id;
+    environment.ANTHROPIC_DEFAULT_OPUS_MODEL = model.id;
+    environment.ANTHROPIC_DEFAULT_SONNET_MODEL = model.id;
+    environment.ANTHROPIC_DEFAULT_HAIKU_MODEL = model.id;
+    environment.CLAUDE_CODE_SUBAGENT_MODEL = model.id;
+    const context = kimiContextTokens(model.id);
+    if (context > 262_144) {
+      // Claude Code compacts against its own default window, so a 1M model would be truncated
+      // long before the provider's limit without these.
+      environment.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(context);
+      environment.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(context);
+    }
+  }
+  const connection = environmentCommand(os, environment, ["ANTHROPIC_AUTH_TOKEN"]);
   return {
     title: `Claude Code · ${model.name}`,
-    summary: localize(language, "Native Claude coding agent through the Anthropic Messages API.", "Нативный coding agent Claude через Anthropic Messages API."),
+    summary: kimi
+      ? localize(language,
+          "Claude Code on KIMI — the agent speaks Anthropic Messages, so the KIMI catalogue is reached by pinning every model tier to one KIMI id.",
+          "Claude Code на KIMI — агент говорит по Anthropic Messages, поэтому каталог KIMI подключается закреплением всех модельных тиров на один id KIMI.")
+      : localize(language, "Native Claude coding agent through the Anthropic Messages API.", "Нативный coding agent Claude через Anthropic Messages API."),
     endpoint: ROUTER_BASE_URL,
     steps: [
       {
@@ -167,13 +245,21 @@ function claudeCodeGuide(model: IntegrationModel, os: IntegrationOs, language: I
       },
       {
         title: localize(language, "Start Claude Code", "Запустите Claude Code"),
-        text: localize(language, "The explicit model flag avoids inheriting a model from an old login or project setting.", "Явный model flag не даст подхватить модель из старого логина или настроек проекта."),
+        text: kimi
+          ? localize(language,
+              "Keep thinking enabled: the plane accepts `none`/`off` as a reasoning effort, but a disabled-thinking request is the one setting third-party guides report as changing which model answers.",
+              "Не отключайте thinking: плоскость принимает `none`/`off`, но именно запрос с выключенным thinking сторонние руководства называют переключающим отвечающую модель.")
+          : localize(language, "The explicit model flag avoids inheriting a model from an old login or project setting.", "Явный model flag не даст подхватить модель из старого логина или настроек проекта."),
         code: `claude --model ${model.id}`,
         codeLabel: localize(language, "Run", "Запуск"),
       },
       {
         title: localize(language, "Verify inside Claude Code", "Проверьте внутри Claude Code"),
-        text: localize(language, "The status screen must show apiToken.sale as the Anthropic base URL and ANTHROPIC_API_KEY as the credential source.", "В статусе должны быть apiToken.sale как Anthropic base URL и ANTHROPIC_API_KEY как источник ключа."),
+        text: kimi
+          ? localize(language,
+              "Check `/status`, not the model's self-description: Claude Code's own system prompt tells any model that it is Claude, so asking it who it is proves nothing. The base URL must read apiToken.sale.",
+              "Смотрите `/status`, а не то, как модель себя называет: системный промпт Claude Code сообщает любой модели, что она Claude, поэтому вопрос «кто ты» ничего не доказывает. В base URL должен быть apiToken.sale.")
+          : localize(language, "The status screen must show apiToken.sale as the Anthropic base URL and ANTHROPIC_API_KEY as the credential source.", "В статусе должны быть apiToken.sale как Anthropic base URL и ANTHROPIC_API_KEY как источник ключа."),
         code: `/status\n\nReply with exactly: connected`,
         codeLabel: localize(language, "Inside Claude Code", "В Claude Code"),
       },
@@ -295,6 +381,83 @@ function openCodeConfig(provider: IntegrationProvider, model: IntegrationModel):
       },
     },
   }, null, 2);
+}
+
+export const KIMI_CODE_INSTALLER_URL = "https://code.kimi.com/kimi-code/install.sh";
+export const KIMI_CODE_INSTALLER_PS1 = "https://code.kimi.com/kimi-code/install.ps1";
+
+function kimiCodeGuide(
+  provider: IntegrationProvider,
+  model: IntegrationModel,
+  os: IntegrationOs,
+  language: IntegrationLanguage,
+): IntegrationGuide {
+  const namespace = provider === "gemini" ? "google" : provider;
+  const wireModel = `${namespace}/${model.id}`;
+  const alias = `apitoken/${model.id}`;
+  const window = MODEL_WINDOWS[model.id];
+  // `max_context_size` is required by Kimi Code and decides when it compacts, so a model without
+  // a reviewed window must not be emitted with a guess.
+  if (!window) throw new Error(`Unknown context window for ${model.id}`);
+  const inputLine = window.input === undefined ? "" : `\nmax_input_size = ${window.input}`;
+  // Kimi Code reads credentials ONLY from this file — it deliberately does not fall back to the
+  // shell — so the key is written here and the file must be locked down.
+  const config = `default_model = "${alias}"
+
+[providers.apitoken]
+type = "openai"
+base_url = "${ROUTER_OPENAI_BASE_URL}"
+api_key = "${keyPlaceholder}"
+
+[models."${alias}"]
+provider = "apitoken"
+model = "${wireModel}"
+max_context_size = ${window.context}${inputLine}
+display_name = "${model.name}"`;
+  const path = isWindows(os)
+    ? "%USERPROFILE%\\.kimi-code\\config.toml"
+    : "~/.kimi-code/config.toml";
+  const lock = isWindows(os)
+    ? `# ${localize(language, "Windows: restrict the file to your account in its Properties → Security.", "Windows: ограничьте доступ к файлу своей учётной записью в Свойства → Безопасность.")}`
+    : "chmod 600 ~/.kimi-code/config.toml";
+  return {
+    title: `Kimi Code · ${model.name}`,
+    summary: localize(language,
+      "Kimi's own terminal agent, pointed at the unified OpenAI-compatible lane — one provider entry serves the whole catalogue, not only KIMI models.",
+      "Собственный терминальный агент Kimi, направленный на единый OpenAI-совместимый маршрут — одна запись провайдера обслуживает весь каталог, а не только модели KIMI."),
+    endpoint: ROUTER_OPENAI_BASE_URL,
+    securityNote: localize(language,
+      "Kimi Code reads credentials only from `config.toml` and never from the shell environment, so the key is stored in that file — keep it readable by your account alone.",
+      "Kimi Code читает учётные данные только из `config.toml` и никогда из окружения оболочки, поэтому ключ лежит в этом файле — держите его доступным только вашей учётной записи."),
+    steps: [
+      {
+        title: localize(language, "Install Kimi Code", "Установите Kimi Code"),
+        text: localize(language,
+          "The official installer. Do not run `/login` — that binds the CLI to a Kimi membership; the provider entry below is what points it at apiToken.sale instead.",
+          "Официальный установщик. Не выполняйте `/login` — он привяжет CLI к подписке Kimi; вместо этого маршрут на apiToken.sale задаёт запись провайдера ниже."),
+        code: isWindows(os)
+          ? `irm ${KIMI_CODE_INSTALLER_PS1} | iex`
+          : `curl -fsSL ${KIMI_CODE_INSTALLER_URL} | bash`,
+        codeLabel: localize(language, "Terminal", "Терминал"),
+      },
+      {
+        title: localize(language, "Declare the provider and the model", "Опишите провайдера и модель"),
+        text: localize(language,
+          `Save as \`${path}\`, then restrict it: ${isWindows(os) ? "the file holds your key in plain text." : "the file holds your key in plain text."} The model id is the namespaced catalogue id; the alias on the left is only how you address it locally.`,
+          `Сохраните как \`${path}\` и ограничьте доступ: файл хранит ключ в открытом виде. В поле model — namespaced id из каталога; алиас слева нужен только для локального обращения.`),
+        code: `${config}\n\n${lock}`,
+        codeLabel: path,
+      },
+      {
+        title: localize(language, "Start and verify", "Запустите и проверьте"),
+        text: localize(language,
+          "`/status` must show the apiToken.sale base URL. Do not judge by the model's self-description — an agent's system prompt can make any model introduce itself as something else.",
+          "В `/status` должен быть base URL apiToken.sale. Не судите по тому, как модель себя называет — системный промпт агента может заставить любую модель представиться иначе."),
+        code: `kimi -m ${alias}\n\n/status\n\nReply with exactly: connected`,
+        codeLabel: localize(language, "Run", "Запуск"),
+      },
+    ],
+  };
 }
 
 export const OPENCODE_INSTALLER_URL =
@@ -482,9 +645,10 @@ export function buildIntegrationGuide({
   const model = INTEGRATION_MODELS[provider].find((candidate) => candidate.id === modelId);
   if (!model) throw new Error(`Unknown ${provider} model: ${modelId}`);
 
-  if (tool === "claude-code") return claudeCodeGuide(model, os, language);
+  if (tool === "claude-code") return claudeCodeGuide(provider, model, os, language);
   if (tool === "codex") return codexGuide(model, os, language);
   if (tool === "gemini-cli") return geminiCliGuide(model, os, language);
+  if (tool === "kimi-code") return kimiCodeGuide(provider, model, os, language);
   if (tool === "opencode") return openCodeGuide(provider, model, os, language);
   if (tool === "pi") return piGuide(provider, model, os, language);
   return hermesGuide(model, os, language);

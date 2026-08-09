@@ -22,12 +22,11 @@ describe("dashboard provider metadata", () => {
       name: "Kimi",
       // KIMI speaks Anthropic Messages, so the connection line must be the Anthropic one.
       api: "Anthropic Messages API",
+      logo: "/assets/providers/kimi.svg",
       endpoint: "router.apitoken.sale",
       auth: "x-api-key",
       docsPath: "/docs",
     });
-    // No borrowed glyph: without an asset the card draws the initial, which is honest.
-    expect(kimi?.logo).toBeUndefined();
     const colors = DASHBOARD_PROVIDERS.map((provider) => provider.color);
     expect(new Set(colors).size).toBe(colors.length);
   });
