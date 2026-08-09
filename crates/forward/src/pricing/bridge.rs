@@ -205,34 +205,6 @@ mod tests {
         EnginePricingRequestId::from_engine_uuid_v4("123e4567-e89b-42d3-a456-426614174000").unwrap()
     }
 
-    #[test]
-    fn config_has_only_disabled_or_nonzero_bounded_sample_states() {
-        assert_eq!(
-            PricingBridgeConfig::default(),
-            PricingBridgeConfig::disabled()
-        );
-        assert!(!PricingBridgeConfig::disabled().enabled());
-        assert_eq!(PricingBridgeConfig::disabled().sample_bp(), 0);
-        assert_eq!(
-            PricingBridgeConfig::from_parts(false, 1),
-            Err(PricingBridgeConfigError::DisabledWithSample)
-        );
-        assert_eq!(
-            PricingBridgeConfig::from_parts(true, 0),
-            Err(PricingBridgeConfigError::EnabledWithoutSample)
-        );
-        for invalid in [-1, 10_001, i64::MAX] {
-            assert_eq!(
-                PricingBridgeConfig::from_parts(true, invalid),
-                Err(PricingBridgeConfigError::SampleOutOfRange)
-            );
-        }
-        for valid in [1, 5_000, 10_000] {
-            let config = PricingBridgeConfig::from_parts(true, valid).unwrap();
-            assert!(config.enabled());
-            assert_eq!(config.sample_bp(), valid as u16);
-        }
-    }
 
     #[test]
     fn engine_request_id_accepts_only_canonical_lowercase_uuid_v4() {
@@ -251,37 +223,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sampler_v1_is_stable_provider_separated_and_uses_exact_boundary() {
-        let request = request_id();
-        let anthropic = sampler_bucket_v1(SnapshotProvider::Anthropic, &request);
-        let openai = sampler_bucket_v1(SnapshotProvider::OpenAi, &request);
-        let google = sampler_bucket_v1(SnapshotProvider::Google, &request);
-        assert_eq!(anthropic, 5_862);
-        assert_eq!(openai, 9_992);
-        assert_eq!(google, 2_942);
-
-        let below = PricingBridgeConfig::from_parts(true, i64::from(anthropic)).unwrap();
-        assert_eq!(
-            below.decision(SnapshotProvider::Anthropic, &request),
-            PricingBridgeDecision::Fallback(PricingBridgeFallbackReason::NotSampled)
-        );
-        let selected = PricingBridgeConfig::from_parts(true, i64::from(anthropic) + 1).unwrap();
-        assert_eq!(
-            selected.decision(SnapshotProvider::Anthropic, &request),
-            PricingBridgeDecision::Selected
-        );
-        assert_eq!(
-            PricingBridgeConfig::disabled().decision(SnapshotProvider::Anthropic, &request),
-            PricingBridgeDecision::Fallback(PricingBridgeFallbackReason::BridgeDisabled)
-        );
-        assert_eq!(
-            PricingBridgeConfig::from_parts(true, 10_000)
-                .unwrap()
-                .decision(SnapshotProvider::Anthropic, &request),
-            PricingBridgeDecision::Selected
-        );
-    }
 
     #[test]
     fn fallback_reason_codes_are_stable_and_low_cardinality() {

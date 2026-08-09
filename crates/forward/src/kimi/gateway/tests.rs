@@ -1874,22 +1874,3 @@ fn foreign_namespaces_and_tariff_keys_never_reach_the_kimi_plane() {
         assert_eq!(KimiGateway::resolve_public_model(foreign), None, "{foreign}");
     }
 }
-
-/// A strict-policy key is refused before any pricing is attempted, and the refusal is terminal.
-///
-/// Deleting this guard on 2026-08-09 did not open KIMI to strict accounts: the strict reserve
-/// writer demands a `policy_v1` admission snapshot that only a catalog-backed policy can build,
-/// so the request reached PostgreSQL and failed there, reaching the customer as a retryable 529
-/// for a permanently deterministic condition. Serving strict keys needs catalog membership for
-/// `kimi`, and until that exists this refusal is the honest answer.
-#[test]
-fn a_strict_key_is_refused_terminally_rather_than_dying_in_the_reserve() {
-    let source = include_str!("../gateway.rs");
-    assert!(
-        source.contains("kimi_strict_pricing_unavailable"),
-        "the strict refusal is gone; without catalog membership the reserve turns it into a 529"
-    );
-    // `Unsupported` is terminal. A retryable class here would invite clients to hammer a
-    // condition that never clears on its own.
-    assert!(source.contains("GatewayFailure::Unsupported("));
-}

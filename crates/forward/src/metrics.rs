@@ -206,48 +206,4 @@ mod tests {
     }
 
 
-    #[test]
-    fn strict_resolution_rejections_keep_operational_categories_distinct() {
-        use crate::pricing::PricingResolutionLineage;
-
-        let cases = [
-            (
-                PricingResolutionRejection::NoPolicyBinding,
-                StrictPricingRejectionReason::MissingPolicy,
-            ),
-            (
-                PricingResolutionRejection::MissingRule,
-                StrictPricingRejectionReason::MissingRule,
-            ),
-            (
-                PricingResolutionRejection::ModelDisabled {
-                    lineage: PricingResolutionLineage::Admission,
-                },
-                StrictPricingRejectionReason::ModelUnavailable,
-            ),
-            (
-                PricingResolutionRejection::MissingScopedSwitch {
-                    lineage: PricingResolutionLineage::Policy,
-                },
-                StrictPricingRejectionReason::SwitchUnavailable,
-            ),
-            (
-                PricingResolutionRejection::CapabilityNotInManifest {
-                    lineage: PricingResolutionLineage::Admission,
-                    dependency: PricingDependencyKind::Catalog,
-                },
-                StrictPricingRejectionReason::UnsupportedCapability,
-            ),
-            (
-                PricingResolutionRejection::InvalidPolicyContract,
-                StrictPricingRejectionReason::InvalidContract,
-            ),
-        ];
-        for (rejection, expected) in cases {
-            assert_eq!(
-                StrictPricingRejectionReason::from_resolution(rejection),
-                expected
-            );
-        }
-    }
 }

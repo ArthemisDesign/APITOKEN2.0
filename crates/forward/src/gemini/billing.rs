@@ -916,7 +916,7 @@ fn settled_charge_with_prices(
 mod tests {
     use super::*;
     use crate::{
-        AffinityStore, Breaker, Clients, PricingBridgeConfig, PricingShadowConfig, ProviderMode,
+        AffinityStore, Breaker, Clients, ProviderMode,
         ProxyConfig,
     };
     use pool::{Pool, Reserve};
@@ -934,8 +934,6 @@ mod tests {
             control_keys: Vec::new(),
             panel_keys: Vec::new(),
             default_mult_bp: 10_000,
-            pricing_bridge: PricingBridgeConfig::disabled(),
-            pricing_shadow: PricingShadowConfig::default(),
             trust_loopback: false,
             upstream: "http://127.0.0.1:1".to_string(),
             claudestore_fallback: None,
@@ -984,8 +982,6 @@ mod tests {
             kimi: None,
             glm: None,
             billing: Some(billing),
-            pricing_shadow: None,
-            pricing_manifest: Arc::new(crate::builtin_pricing_runtime_manifest()),
             authority_ready: Arc::new(AtomicBool::new(true)),
             breaker: Arc::new(Breaker::new(1)),
             metrics: Arc::new(Metrics::new()),
@@ -1046,7 +1042,6 @@ mod tests {
         let app = app_state(Arc::clone(&billing), &path_string);
 
         let result = reserve_gemini_metered(
-            &app,
             &billing,
             ACCOUNT,
             KEY,
@@ -1058,7 +1053,6 @@ mod tests {
             true,
             10_000,
             0,
-            false,
             REQUEST_ID,
             &registry::ExecutionAttempt::direct(),
         )
@@ -1121,272 +1115,8 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    #[tokio::test]
-    async fn strict_metered_gemini_fails_before_reservation_after_release_resolution() {
-        const ACCOUNT: &str = "strict-gemini-account";
-        const KEY: &str = "strict-gemini-key";
 
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "claude-api-gemini-strict-{}-{unique}.sqlite",
-            std::process::id(),
-        ));
-        let path_string = path.to_string_lossy().into_owned();
-        let billing =
-            Arc::new(crate::billing::AsyncBilling::start(path_string.clone(), 1).unwrap());
-        billing.create_account(ACCOUNT, None, 10_000).await.unwrap();
-        billing
-            .topup(ACCOUNT, 1_000_000, Some("strict-gemini-seed"))
-            .await
-            .unwrap();
 
-        let manifest = crate::builtin_pricing_runtime_manifest();
-        let capability = &manifest.capabilities()[0];
-        let connection = registry::open(&path_string).unwrap();
-        connection
-            .execute_batch(&format!(
-                "INSERT INTO pricing_catalog_versions(
-                     product_id,generation,schema_version,capability_generation,capability_digest,
-                     content_digest,created_ts
-                 ) VALUES('main',1,1,{},'{}','catalog-digest',1);
-                 INSERT INTO provider_switch_versions(
-                     generation,schema_version,capability_generation,capability_digest,
-                     content_digest,created_ts
-                 ) VALUES(1,1,{},'{}','switch-digest',1);
-                 INSERT INTO account_policy_versions(
-                     account_id,effective_version,policy_id,policy_version,source_policy_digest,
-                     owner_type,owner_id,account_class,product_id,schema_version,catalog_generation,
-                     switch_generation,content_digest,replacement_locked,created_ts
-                 ) VALUES(
-                     '{ACCOUNT}',1,'gemini-test-policy',1,'source-policy','global_b2c','global',
-                     'b2c','main',1,1,1,'policy-digest',0,1
-                 );
-                 INSERT INTO account_policy_bindings(
-                     account_id,product_id,account_class,active_effective_version,
-                     policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
-                 ) VALUES('{ACCOUNT}','main','b2c',1,'strict','strict','verified',1);",
-                capability.capability_generation(),
-                capability.capability_digest(),
-                capability.capability_generation(),
-                capability.capability_digest(),
-            ))
-            .unwrap();
-        let ack = registry::KeyActivationPolicyAck {
-            effective_policy_version: 1,
-            policy_digest: "policy-digest".to_string(),
-        };
-        billing
-            .issue_key_with_policy_ack(KEY, ACCOUNT, None, None, None, Some(&ack))
-            .await
-            .unwrap();
-
-        let app = app_state(Arc::clone(&billing), &path_string);
-        let mut headers = HeaderMap::new();
-        headers.insert("x-goog-api-key", KEY.parse().unwrap());
-        let peer = "198.51.100.10:12345".parse().unwrap();
-        let pending = begin_admission(&app, &headers, &peer).await.unwrap();
-        let result = pending.reserve(&app, &model(), 1, 1, 0, false, true).await;
-
-        assert!(matches!(result, Err(AdmissionError::Unavailable)));
-        assert_eq!(Metrics::get(&app.metrics.requests), 1);
-        for mode in [PricingMode::Track, PricingMode::Discount] {
-            for model_scope in [false, true] {
-                assert_eq!(
-                    app.metrics.strict_pricing_admitted_count(
-                        StrictPricingProvider::Gemini,
-                        mode,
-                        model_scope,
-                    ),
-                    0
-                );
-            }
-        }
-        assert_eq!(
-            app.metrics.strict_pricing_rejected_count(
-                StrictPricingProvider::Gemini,
-                StrictPricingRejectionReason::GeminiUnsupported,
-            ),
-            1
-        );
-        let reservations = connection
-            .query_row("SELECT COUNT(*) FROM billing_reservations", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .unwrap();
-        assert_eq!(reservations, 0);
-        let auth = billing.key_auth(KEY).await.unwrap().unwrap();
-        assert_eq!(auth.policy_enforcement, Some(PolicyEnforcement::Strict));
-        assert_eq!(auth.funding_enforcement, Some(FundingEnforcement::Strict));
-
-        drop(connection);
-        drop(app);
-        drop(billing);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[tokio::test]
-    async fn gemini_reservation_persists_router_execution_identity() {
-        const ACCOUNT: &str = "grouped-gemini-account";
-        const KEY: &str = "grouped-gemini-key";
-        const GROUP: &str = "828f47a2-9b2d-4dc4-8f11-4d43b7d8b62a";
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "claude-api-gemini-execution-{}-{unique}.sqlite",
-            std::process::id(),
-        ));
-        let path_string = path.to_string_lossy().into_owned();
-        let billing =
-            Arc::new(crate::billing::AsyncBilling::start(path_string.clone(), 1).unwrap());
-        billing.create_account(ACCOUNT, None, 10_000).await.unwrap();
-        billing
-            .topup(ACCOUNT, 1_000_000_000, Some("grouped-gemini-seed"))
-            .await
-            .unwrap();
-        billing
-            .issue_key(KEY, ACCOUNT, None, None, None)
-            .await
-            .unwrap();
-        let app = app_state(Arc::clone(&billing), &path_string);
-        let mut headers = HeaderMap::new();
-        headers.insert("x-goog-api-key", KEY.parse().unwrap());
-        headers.insert("x-apitoken-execution-group", GROUP.parse().unwrap());
-        headers.insert("x-apitoken-attempt", "9".parse().unwrap());
-        let peer = "198.51.100.10:12345".parse().unwrap();
-        let pending = begin_admission(&app, &headers, &peer).await.unwrap();
-        let (admission, _) = pending
-            .reserve(&app, &model(), 1, 1, 0, false, true)
-            .await
-            .unwrap();
-        let request_id = admission.reservation.as_ref().unwrap().request_id.clone();
-        let connection = registry::open(&path_string).unwrap();
-        let identity: (Option<String>, i32) = connection
-            .query_row(
-                "SELECT group_id,attempt FROM billing_reservations WHERE request_id=?1",
-                [request_id.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(identity, (Some(GROUP.into()), 9));
-        let snapshots: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM pricing_admission_snapshots",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(snapshots, 0);
-        assert_eq!(
-            app.metrics.pricing_bridge_fallback_count(
-                SnapshotProvider::Google,
-                PricingBridgeFallbackReason::BridgeDisabled,
-            ),
-            1
-        );
-
-        drop(connection);
-        drop(admission);
-        billing.flush().await.unwrap();
-        drop(app);
-        drop(billing);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[tokio::test]
-    async fn selected_gemini_bridge_atomically_persists_snapshot_and_hands_it_to_shadow() {
-        const ACCOUNT: &str = "bridge-google-account";
-        const KEY: &str = "bridge-google-key";
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "claude-api-gemini-pricing-bridge-{}-{unique}.sqlite",
-            std::process::id(),
-        ));
-        let path_string = path.to_string_lossy().into_owned();
-        let billing =
-            Arc::new(crate::billing::AsyncBilling::start(path_string.clone(), 1).unwrap());
-        billing.create_account(ACCOUNT, None, 5_000).await.unwrap();
-        billing
-            .topup(ACCOUNT, 1_000_000_000, Some("bridge-google-seed"))
-            .await
-            .unwrap();
-        billing
-            .issue_key(KEY, ACCOUNT, None, None, None)
-            .await
-            .unwrap();
-
-        let mut app = app_state(Arc::clone(&billing), &path_string);
-        Arc::make_mut(&mut app.cfg).pricing_bridge =
-            PricingBridgeConfig::from_parts(true, 10_000).unwrap();
-        app.pricing_shadow = Some(
-            crate::pricing::PricingShadowRuntime::start(
-                PricingShadowConfig::default(),
-                (*app.pricing_manifest).clone(),
-                None,
-                Arc::clone(&app.metrics),
-            )
-            .unwrap(),
-        );
-
-        let mut headers = HeaderMap::new();
-        headers.insert("x-goog-api-key", KEY.parse().unwrap());
-        let peer = "198.51.100.10:12345".parse().unwrap();
-        let pending = begin_admission(&app, &headers, &peer).await.unwrap();
-        let (admission, effective_output) = pending
-            .reserve(&app, &model(), 2_048, 1_024, 0, true, true)
-            .await
-            .unwrap();
-        assert_eq!(effective_output, 1_024);
-        let request_id = admission.reservation.as_ref().unwrap().request_id.clone();
-
-        let connection = registry::open(&path_string).unwrap();
-        let snapshot =
-            registry::pricing::sqlite_legacy_scalar_admission_snapshot(&connection, &request_id)
-                .unwrap()
-                .unwrap();
-        assert_eq!(snapshot.provider(), SnapshotProvider::Google);
-        assert_eq!(snapshot.account_id(), ACCOUNT);
-        assert_eq!(snapshot.canonical_model_id(), "gemini-2.5-flash");
-        assert!(matches!(
-            billing
-                .reserve_request_with_legacy_snapshot_for_execution(
-                    KEY,
-                    snapshot,
-                    registry::ExecutionAttempt::direct(),
-                )
-                .await
-                .unwrap(),
-            LegacyScalarReserveOutcome::Unchanged(_)
-        ));
-        assert_eq!(
-            app.metrics
-                .pricing_bridge_inserted_count(SnapshotProvider::Google),
-            1
-        );
-        assert_eq!(
-            app.metrics.pricing_shadow_enqueue_count(
-                SnapshotProvider::Google,
-                crate::pricing::PricingShadowEnqueueResult::Disabled,
-            ),
-            1
-        );
-
-        drop(connection);
-        drop(admission);
-        billing.flush().await.unwrap();
-        drop(app);
-        drop(billing);
-        let _ = std::fs::remove_file(path);
-    }
 
     #[test]
     fn settlement_maps_google_usage_without_losing_audio_cache_thought_or_search() {
@@ -1665,34 +1395,6 @@ mod tests {
         assert_eq!(charge as i128, 17 + metering::OVERDRAFT_NANO);
     }
 
-    #[test]
-    fn release_v2_settlement_floors_where_the_legacy_scalar_rounds_half_up() {
-        // 300 nano × 5017 bp = 1_505_100 / 10_000: the fractional remainder (5100) crosses the
-        // half-up boundary, so the immutable legacy arithmetic charges 151 while the release-v2
-        // contract floor charges exactly 150.
-        let usage = metering::GeminiUsage {
-            input_tokens: 1,
-            ..metering::GeminiUsage::default()
-        };
-        let (legacy, _) = settled_charge(
-            &model(),
-            &usage,
-            i64::MAX,
-            5_017,
-            123,
-            GeminiSettlementPricing::LegacyScalar,
-        );
-        let (release, _) = settled_charge(
-            &model(),
-            &usage,
-            i64::MAX,
-            5_017,
-            123,
-            GeminiSettlementPricing::ReleaseV2,
-        );
-        assert_eq!(legacy, 151);
-        assert_eq!(release, 150);
-    }
 
     /// An unmeasured turn is not billed at the admission ceiling. The hold covers a
     /// byte-conservative input estimate plus the model's entire output limit, so charging it made

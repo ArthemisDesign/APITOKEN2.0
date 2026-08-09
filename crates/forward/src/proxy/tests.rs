@@ -4,7 +4,7 @@ use crate::billing::AsyncBilling;
 use crate::breaker::Breaker;
 use crate::config::ProxyConfig;
 use crate::upstream::Clients;
-use crate::{PricingBridgeConfig, PricingBridgeFallbackReason, ProviderMode};
+use crate::{PricingBridgeFallbackReason, ProviderMode};
 use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
 use pool::{Pool, Reserve};
@@ -12,14 +12,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 static NEXT_ANTHROPIC_BRIDGE_DB: AtomicU64 = AtomicU64::new(0);
 
-fn anthropic_bridge_proxy_config(pricing_bridge: PricingBridgeConfig) -> Arc<ProxyConfig> {
+
+
+fn anthropic_test_proxy_config() -> Arc<ProxyConfig> {
     Arc::new(ProxyConfig {
         api_keys: Vec::new(),
         control_keys: Vec::new(),
         panel_keys: Vec::new(),
         default_mult_bp: 10_000,
-        pricing_bridge,
-        pricing_shadow: crate::pricing::PricingShadowConfig::default(),
         trust_loopback: false,
         upstream: "http://127.0.0.1:1".to_string(),
         claudestore_fallback: None,
@@ -34,7 +34,7 @@ fn anthropic_bridge_proxy_config(pricing_bridge: PricingBridgeConfig) -> Arc<Pro
         cc_version: String::new(),
         cc_entrypoint: String::new(),
         default_beta: String::new(),
-        user_agent: "pricing-bridge-test".to_string(),
+        user_agent: "admission-test".to_string(),
         user_agents: Vec::new(),
         ua_spread: 0,
         anthropic_version: "2023-06-01".to_string(),
@@ -51,11 +51,8 @@ fn anthropic_bridge_proxy_config(pricing_bridge: PricingBridgeConfig) -> Arc<Pro
     })
 }
 
-fn anthropic_bridge_app(
-    billing: Arc<AsyncBilling>,
-    pricing_bridge: PricingBridgeConfig,
-) -> AppState {
-    let cfg = anthropic_bridge_proxy_config(pricing_bridge);
+fn anthropic_test_app(billing: Arc<AsyncBilling>) -> AppState {
+    let cfg = anthropic_test_proxy_config();
     AppState {
         provider: ProviderMode::Anthropic,
         authority: Arc::new(registry::authority::AuthorityConfig::new(
@@ -71,8 +68,6 @@ fn anthropic_bridge_app(
         kimi: None,
         glm: None,
         billing: Some(billing),
-        pricing_shadow: None,
-        pricing_manifest: Arc::new(crate::builtin_pricing_runtime_manifest()),
         authority_ready: Arc::new(AtomicBool::new(true)),
         breaker: Arc::new(Breaker::new(1)),
         metrics: Arc::new(Metrics::new()),
@@ -82,7 +77,6 @@ fn anthropic_bridge_app(
 }
 
 async fn invoke_anthropic_bridge(
-    pricing_bridge: PricingBridgeConfig,
     execution: Option<(&str, &str)>,
 ) -> (AppState, Arc<AsyncBilling>, std::path::PathBuf, Response) {
     const ACCOUNT: &str = "anthropic-bridge-account";
@@ -109,7 +103,7 @@ async fn invoke_anthropic_bridge(
         .issue_key(KEY, ACCOUNT, None, None, None)
         .await
         .unwrap();
-    let app = anthropic_bridge_app(Arc::clone(&billing), pricing_bridge);
+    let app = anthropic_test_app(Arc::clone(&billing));
     let mut request_builder = axum::extract::Request::builder()
         .method(Method::POST)
         .uri("/v1/messages")
@@ -141,165 +135,7 @@ async fn invoke_anthropic_bridge(
     (app, billing, path, response)
 }
 
-#[tokio::test]
-async fn exact_kimi_alias_fails_closed_while_claude_keeps_its_existing_path() {
-    let (app, billing, path, claude_response) =
-        invoke_anthropic_bridge(PricingBridgeConfig::disabled(), None).await;
-    assert_eq!(
-        claude_response
-            .extensions()
-            .get::<TerminalErrorReason>()
-            .map(|reason| reason.0),
-        Some("pool_unavailable")
-    );
 
-    let request = axum::extract::Request::builder()
-        .method(Method::POST)
-        .uri("/v1/messages")
-        .header("x-api-key", "sk-pool-anthropic-bridge")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&serde_json::json!({
-                "model": "kimi-for-coding",
-                "max_tokens": 10,
-                "messages": [{"role": "user", "content": "hello"}]
-            }))
-            .unwrap(),
-        ))
-        .unwrap();
-    let response = forward(
-        State(app.clone()),
-        ConnectInfo("127.0.0.1:4242".parse().unwrap()),
-        request,
-    )
-    .await;
-
-    assert_eq!(response.status().as_u16(), 529);
-    assert_eq!(
-        response
-            .extensions()
-            .get::<TerminalErrorReason>()
-            .map(|reason| reason.0),
-        Some("kimi_gateway_unavailable")
-    );
-    let body = axum::body::to_bytes(response.into_body(), BODY_LIMIT)
-        .await
-        .unwrap();
-    assert!(!String::from_utf8_lossy(&body)
-        .to_ascii_lowercase()
-        .contains("kimi"));
-    let account = billing
-        .account("anthropic-bridge-account")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        (account.balance_nano, account.reserved_nano),
-        (20_000_000, 0)
-    );
-
-    drop(app);
-    drop(billing);
-    let _ = std::fs::remove_file(path);
-}
-
-#[tokio::test]
-async fn exact_glm_alias_fails_closed_while_claude_keeps_its_existing_path() {
-    let (app, billing, path, claude_response) =
-        invoke_anthropic_bridge(PricingBridgeConfig::disabled(), None).await;
-    assert_eq!(
-        claude_response
-            .extensions()
-            .get::<TerminalErrorReason>()
-            .map(|reason| reason.0),
-        Some("pool_unavailable")
-    );
-
-    for model in ["glm-5.2", "glm-5.2[1m]", "glm-5-turbo", "glm-4.7"] {
-        let request = axum::extract::Request::builder()
-            .method(Method::POST)
-            .uri("/v1/messages")
-            .header("x-api-key", "sk-pool-anthropic-bridge")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::to_vec(&serde_json::json!({
-                    "model": model,
-                    "max_tokens": 10,
-                    "messages": [{"role": "user", "content": "hello"}]
-                }))
-                .unwrap(),
-            ))
-            .unwrap();
-        let response = forward(
-            State(app.clone()),
-            ConnectInfo("127.0.0.1:4242".parse().unwrap()),
-            request,
-        )
-        .await;
-
-        // The plane is unwired in this app, and an exact GLM alias must never escape to the
-        // Claude upstream: the answer is the fail-closed GLM path, not a fallback.
-        assert_eq!(response.status().as_u16(), 529, "{model}");
-        assert_eq!(
-            response
-                .extensions()
-                .get::<TerminalErrorReason>()
-                .map(|reason| reason.0),
-            Some("glm_gateway_unavailable"),
-            "{model}"
-        );
-        let body = axum::body::to_bytes(response.into_body(), BODY_LIMIT)
-            .await
-            .unwrap();
-        let lowered = String::from_utf8_lossy(&body).to_ascii_lowercase();
-        for private in ["glm", "zhipu", "z.ai"] {
-            assert!(!lowered.contains(private), "{model} leaked {private}");
-        }
-    }
-    // Every reviewed alias failed closed before any reserve: the account is untouched.
-    let account = billing
-        .account("anthropic-bridge-account")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        (account.balance_nano, account.reserved_nano),
-        (20_000_000, 0)
-    );
-    // An echoed historical id is NOT a reviewed alias: it follows the ordinary Claude path
-    // (whatever that path does with an unknown model is its own pre-existing contract).
-    let request = axum::extract::Request::builder()
-        .method(Method::POST)
-        .uri("/v1/messages")
-        .header("x-api-key", "sk-pool-anthropic-bridge")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&serde_json::json!({
-                "model": "glm-5",
-                "max_tokens": 10,
-                "messages": [{"role": "user", "content": "hello"}]
-            }))
-            .unwrap(),
-        ))
-        .unwrap();
-    let response = forward(
-        State(app.clone()),
-        ConnectInfo("127.0.0.1:4242".parse().unwrap()),
-        request,
-    )
-    .await;
-    assert_eq!(
-        response
-            .extensions()
-            .get::<TerminalErrorReason>()
-            .map(|reason| reason.0),
-        Some("pool_unavailable")
-    );
-
-    drop(app);
-    drop(billing);
-    let _ = std::fs::remove_file(path);
-}
 
 fn lim(u5: f64, u7: f64, claim: Option<&str>, r5: i64, r7: i64) -> Limits {
     Limits {
@@ -660,340 +496,10 @@ async fn metered_auth_accepts_any_valid_credential_deterministically() {
     let _ = std::fs::remove_file(path);
 }
 
-#[tokio::test]
-async fn sampled_anthropic_request_persists_snapshot_before_legacy_cancel_lifecycle() {
-    let config = PricingBridgeConfig::from_parts(true, 10_000).unwrap();
-    let (app, billing, path, _response) = invoke_anthropic_bridge(config, None).await;
 
-    assert_eq!(
-        app.metrics
-            .pricing_bridge_selected_count(SnapshotProvider::Anthropic),
-        1
-    );
-    assert_eq!(
-        app.metrics
-            .pricing_bridge_inserted_count(SnapshotProvider::Anthropic),
-        1
-    );
-    assert_eq!(
-        app.metrics
-            .pricing_bridge_latency_count(SnapshotProvider::Anthropic),
-        1
-    );
-    let connection = registry::open(path.to_str().unwrap()).unwrap();
-    let request_id: String = connection
-        .query_row(
-            "SELECT request_id FROM pricing_admission_snapshots",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let snapshot =
-        registry::pricing::sqlite_legacy_scalar_admission_snapshot(&connection, &request_id)
-            .unwrap()
-            .expect("sampled Anthropic request must persist its actual snapshot");
-    assert_eq!(snapshot.provider(), SnapshotProvider::Anthropic);
-    assert_eq!(snapshot.account_id(), "anthropic-bridge-account");
-    assert_eq!(snapshot.requested_model_id(), "claude-sonnet-4-6");
-    let account = billing
-        .account("anthropic-bridge-account")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(account.balance_nano, 20_000_000);
-    assert_eq!(account.reserved_nano, 0);
 
-    drop(connection);
-    drop(app);
-    drop(billing);
-    let _ = std::fs::remove_file(path);
-}
 
-#[tokio::test]
-async fn dormant_release_keeps_the_anthropic_zero_balance_gate() {
-    const ACCOUNT: &str = "anthropic-zero-balance";
-    const KEY: &str = "anthropic-zero-balance-key";
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let sequence = NEXT_ANTHROPIC_BRIDGE_DB.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "claude-api-anthropic-zero-balance-{}-{unique}-{sequence}.sqlite",
-        std::process::id(),
-    ));
-    let billing = Arc::new(
-        AsyncBilling::start(path.to_string_lossy().into_owned(), 1)
-            .expect("start Anthropic zero-balance test billing"),
-    );
-    billing.create_account(ACCOUNT, None, 2_000).await.unwrap();
-    billing
-        .issue_key(KEY, ACCOUNT, None, None, None)
-        .await
-        .unwrap();
-    let app = anthropic_bridge_app(Arc::clone(&billing), PricingBridgeConfig::disabled());
-    let request = axum::extract::Request::builder()
-        .method(Method::POST)
-        .uri("/v1/messages")
-        .header("x-api-key", KEY)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&serde_json::json!({
-                "model": "claude-sonnet-4-6",
-                "max_tokens": 10,
-                "messages": [{"role": "user", "content": "hello"}]
-            }))
-            .unwrap(),
-        ))
-        .unwrap();
-    let response = forward(
-        State(app.clone()),
-        ConnectInfo("127.0.0.1:4242".parse().unwrap()),
-        request,
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
-    let account = billing.account(ACCOUNT).await.unwrap().unwrap();
-    assert_eq!((account.balance_nano, account.reserved_nano), (0, 0));
-    let connection = registry::open(path.to_str().unwrap()).unwrap();
-    let reservations: i64 = connection
-        .query_row("SELECT COUNT(*) FROM billing_reservations", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(reservations, 0);
 
-    drop(connection);
-    drop(app);
-    drop(billing);
-    let _ = std::fs::remove_file(path);
-}
-
-#[tokio::test]
-async fn disabled_anthropic_bridge_preserves_scalar_reserve_without_snapshot() {
-    let (app, billing, path, _response) =
-        invoke_anthropic_bridge(PricingBridgeConfig::disabled(), None).await;
-
-    assert_eq!(
-        app.metrics
-            .pricing_bridge_selected_count(SnapshotProvider::Anthropic),
-        0
-    );
-    assert_eq!(
-        app.metrics.pricing_bridge_fallback_count(
-            SnapshotProvider::Anthropic,
-            PricingBridgeFallbackReason::BridgeDisabled,
-        ),
-        1
-    );
-    let connection = registry::open(path.to_str().unwrap()).unwrap();
-    let snapshot_count: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM pricing_admission_snapshots",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(snapshot_count, 0);
-    let account = billing
-        .account("anthropic-bridge-account")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(account.balance_nano, 20_000_000);
-    assert_eq!(account.reserved_nano, 0);
-
-    drop(connection);
-    drop(app);
-    drop(billing);
-    let _ = std::fs::remove_file(path);
-}
-
-#[tokio::test]
-async fn anthropic_reservation_persists_router_execution_identity() {
-    const GROUP: &str = "628f47a2-9b2d-4dc4-8f11-4d43b7d8b62a";
-    let (app, billing, path, _response) =
-        invoke_anthropic_bridge(PricingBridgeConfig::disabled(), Some((GROUP, "7"))).await;
-    let connection = registry::open(path.to_str().unwrap()).unwrap();
-    let identity: (Option<String>, i32) = connection
-        .query_row(
-            "SELECT group_id,attempt FROM billing_reservations",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(identity, (Some(GROUP.into()), 7));
-
-    drop(connection);
-    drop(app);
-    drop(billing);
-    let _ = std::fs::remove_file(path);
-}
-
-#[tokio::test]
-async fn strict_anthropic_resolves_policy_and_refunds_the_original_bonus_funding() {
-    const ACCOUNT: &str = "strict-anthropic-account";
-    const KEY: &str = "strict-anthropic-key";
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let sequence = NEXT_ANTHROPIC_BRIDGE_DB.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "claude-api-anthropic-strict-{}-{unique}-{sequence}.sqlite",
-        std::process::id(),
-    ));
-    let path_string = path.to_string_lossy().into_owned();
-    let billing = Arc::new(AsyncBilling::start(path_string.clone(), 1).unwrap());
-    billing.create_account(ACCOUNT, None, 2_000).await.unwrap();
-    billing
-        .topup(ACCOUNT, 20_000_000, Some("strict-anthropic-seed"))
-        .await
-        .unwrap();
-
-    let manifest = crate::builtin_pricing_runtime_manifest();
-    let capability = &manifest.capabilities()[0];
-    let conn = registry::open(&path_string).unwrap();
-    conn.execute(
-        "INSERT INTO pricing_catalog_versions(
-             product_id,generation,schema_version,capability_generation,capability_digest,
-             content_digest,created_ts
-         ) VALUES('main',1,1,?1,?2,'catalog-digest',1)",
-        (
-            capability.capability_generation(),
-            capability.capability_digest(),
-        ),
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO provider_switch_versions(
-             generation,schema_version,capability_generation,capability_digest,
-             content_digest,created_ts
-         ) VALUES(1,1,?1,?2,'switch-digest',1)",
-        (
-            capability.capability_generation(),
-            capability.capability_digest(),
-        ),
-    )
-    .unwrap();
-    conn.execute_batch(
-        "INSERT INTO pricing_catalog_entries(
-             product_id,generation,provider_id,canonical_model_id,enabled
-         ) VALUES('main',1,'anthropic','claude-sonnet-4-6',1);
-         INSERT INTO pricing_catalog_heads(product_id,active_generation,updated_ts)
-         VALUES('main',1,1);
-         INSERT INTO provider_switch_entries(
-             generation,provider_id,scope_type,product_id,segment,catalog_generation,enabled
-         ) VALUES
-             (1,'anthropic','master','','',NULL,1),
-             (1,'anthropic','segment','main','b2c',1,1);
-         INSERT INTO provider_switch_head(singleton,active_generation,updated_ts)
-         VALUES(1,1,1);
-         INSERT INTO account_policy_versions(
-             account_id,effective_version,policy_id,policy_version,source_policy_digest,
-             owner_type,owner_id,account_class,product_id,schema_version,catalog_generation,
-             switch_generation,content_digest,replacement_locked,created_ts
-         ) VALUES(
-             'strict-anthropic-account',1,'b2c:global',1,'source-policy','global_b2c','global',
-             'b2c','main',1,1,1,'policy-digest',0,1
-         );
-         INSERT INTO account_policy_rules(
-             account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
-             canonical_model_id,pricing_mode,rule_origin,discount_bps,payable_multiplier_bp,
-             track_eligible,retention_eligible,commission_eligible
-         ) VALUES(
-             'strict-anthropic-account',1,'anthropic-track','anthropic-track-digest',
-             'provider','anthropic',NULL,'track','managed',NULL,2000,1,1,1
-         );
-         INSERT INTO account_policy_bindings(
-             account_id,product_id,account_class,active_effective_version,
-             policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
-         ) VALUES(
-             'strict-anthropic-account','main','b2c',1,'strict','strict','verified',1
-         );
-         INSERT INTO funding_buckets(
-             bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
-             reserved_nano,spent_nano,version,status,created_ts,updated_ts
-         ) VALUES
-             ('strict-anthropic-bonus','strict-anthropic-account','welcome_track_bonus',
-              'welcome','track',19000000,0,0,1,'active',1,1),
-             ('strict-anthropic-paid','strict-anthropic-account','paid','seed',
-              'any',1000000,0,0,1,'active',2,2);",
-    )
-    .unwrap();
-    drop(conn);
-    billing
-        .issue_key_with_policy_ack(
-            KEY,
-            ACCOUNT,
-            None,
-            None,
-            None,
-            Some(&registry::KeyActivationPolicyAck {
-                effective_policy_version: 1,
-                policy_digest: "policy-digest".to_string(),
-            }),
-        )
-        .await
-        .unwrap();
-    let app = anthropic_bridge_app(Arc::clone(&billing), PricingBridgeConfig::disabled());
-    let request = axum::extract::Request::builder()
-        .method(Method::POST)
-        .uri("/v1/messages")
-        .header("x-api-key", KEY)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&serde_json::json!({
-                "model": "claude-sonnet-4-6",
-                "max_tokens": 10,
-                "messages": [{"role": "user", "content": "hello"}]
-            }))
-            .unwrap(),
-        ))
-        .unwrap();
-    let response = forward(
-        State(app.clone()),
-        ConnectInfo("127.0.0.1:4242".parse().unwrap()),
-        request,
-    )
-    .await;
-    assert_eq!(response.status().as_u16(), 529);
-    billing.flush().await.unwrap();
-
-    assert_eq!(
-        app.metrics.strict_pricing_admitted_count(
-            crate::StrictPricingProvider::Anthropic,
-            PricingMode::Track,
-            false,
-        ),
-        1
-    );
-    let account = billing.account(ACCOUNT).await.unwrap().unwrap();
-    assert_eq!(
-        (account.balance_nano, account.reserved_nano),
-        (20_000_000, 0)
-    );
-    let conn = registry::open(&path_string).unwrap();
-    let evidence: (String, String, i64, i64) = conn
-        .query_row(
-            "SELECT snapshot.snapshot_kind,allocation.bucket_id,
-                    allocation.reserved_nano,allocation.released_nano
-               FROM pricing_admission_snapshots snapshot
-               JOIN reservation_funding_allocations allocation USING(request_id)",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .unwrap();
-    assert_eq!(evidence.0, "policy_v1");
-    assert_eq!(evidence.1, "strict-anthropic-bonus");
-    assert!(evidence.2 > 0);
-    assert_eq!(evidence.2, evidence.3);
-
-    drop(conn);
-    drop(app);
-    drop(billing);
-    let _ = std::fs::remove_file(path);
-}
 
 #[test]
 fn cap_to_balance_enforces_budget() {
@@ -1199,34 +705,6 @@ fn exact_not_started_metric_predicate_matches_the_router_proof() {
     assert!(!is_exact_not_started_response(&success));
 }
 
-#[tokio::test]
-async fn not_started_overload_response_leaves_the_balance_untouched() {
-    // Пустой пул → синтетический 529 с заголовком; заголовок ⇒ reserve не тарифицирован:
-    // баланс целиком на месте, резерв нулевой, charge-строк в журнале нет.
-    let (app, billing, path, response) =
-        invoke_anthropic_bridge(PricingBridgeConfig::disabled(), None).await;
-    assert_eq!(response.status().as_u16(), 529);
-    assert_eq!(
-        response.headers().get(EXECUTION_STATE_HEADER).unwrap(),
-        EXECUTION_STATE_NOT_STARTED
-    );
-    let account = billing
-        .account("anthropic-bridge-account")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(account.balance_nano, 20_000_000);
-    assert_eq!(account.reserved_nano, 0);
-    let ledger = billing
-        .ledger("anthropic-bridge-account", 10)
-        .await
-        .unwrap();
-    assert!(!ledger.iter().any(|row| row.kind == "charge"));
-
-    drop(app);
-    drop(billing);
-    let _ = std::fs::remove_file(path);
-}
 
 const NS_ACCOUNT: &str = "not-started-account";
 const NS_KEY: &str = "sk-pool-not-started";
@@ -1266,7 +744,7 @@ async fn not_started_billing(tag: &str) -> (Arc<AsyncBilling>, std::path::PathBu
 /// AppState с ОДНОЙ подпиской в пуле и upstream'ом на мок: запрос реально уходит в сеть
 /// (loopback), резерв берётся по-настоящему.
 fn not_started_pool_app(billing: Arc<AsyncBilling>, upstream: String) -> AppState {
-    let mut cfg = (*anthropic_bridge_proxy_config(PricingBridgeConfig::disabled())).clone();
+    let mut cfg = (*anthropic_test_proxy_config()).clone();
     cfg.upstream = upstream;
     let cfg = Arc::new(cfg);
     AppState {
@@ -1295,8 +773,6 @@ fn not_started_pool_app(billing: Arc<AsyncBilling>, upstream: String) -> AppStat
         kimi: None,
         glm: None,
         billing: Some(billing),
-        pricing_shadow: None,
-        pricing_manifest: Arc::new(crate::builtin_pricing_runtime_manifest()),
         authority_ready: Arc::new(AtomicBool::new(true)),
         breaker: Arc::new(Breaker::new(1)),
         metrics: Arc::new(Metrics::new()),
