@@ -55,6 +55,20 @@ and advances each independently:
    durable strict staging once the shadow delivery confirms, then the one-way engine opt-out
    marker. The opt-out disarms the flag and writes the durable `pricing_release.opt_out`
    `audit_log` entry — the terminal "done" that removes the account from every future sweep.
+   Arming happens ONLY for a verifiable binding: the strict chain (and the engine's own
+   triggers) require `reconciliation_state='verified'`, and nothing in the live system flips
+   'pending' → 'verified' any more (the shadow-rollout lane that did it was deleted with the
+   release orchestration). The backfill therefore performs that verification account-locally
+   right before arming — the durable ACK proof the rollout used (`sync_state='confirmed'`,
+   desired=applied with matching digests, `last_ack_at` present), cross-checked against the
+   engine's active policy state (version + digest) — and an unconverged binding
+   (desired≠applied, or a cross-check mismatch) is left un-armed and quiet, rotating to the
+   back of the queue until the delivery lane converges it. Accounts that can never advance
+   inside the lane (today: no managed pricing policy to materialize) are marked
+   `terminal: …` in `last_error` ONCE and excluded from every future pass — the hot-loop
+   guard; they stay visible in `pipeline-health` (`pricing_backfill.failed`), and an
+   operator repair clears the marker (`last_error = NULL`) to return the account to the
+   sweep.
 
 New accounts need no alignment pass: B2C registrations are born with `mult_bp=5000`, and B2B
 invitee registrations now start at the full-price fallback (10000) — the negotiated discount

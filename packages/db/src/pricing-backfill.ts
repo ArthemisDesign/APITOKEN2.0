@@ -74,6 +74,11 @@ export type PricingBackfillAdvanceResult =
   // broken-window cohort): their equivalence gate was skipped by design — the release
   // resolver already fails closed on them today, exactly like phase-2.1 new accounts.
   | { status: "armed"; noReleaseCoverage: boolean }
+  // The binding's delivery has not converged to a verifiable state yet (desired≠applied, or
+  // the engine cross-check disagrees): left un-armed and quiet, rotated to the back of the
+  // queue, re-evaluated on a later pass. Arming earlier would hand the chain a binding it
+  // cannot stage (it requires reconciliation 'verified') — the deadlock this state avoids.
+  | { status: "pending" }
   // A precondition failed loudly; last_error is recorded and the next pass re-evaluates.
   | { status: "failed"; error: string };
 
@@ -83,9 +88,20 @@ export type PricingBackfillSweepSummary = {
   armed: string[];
   /** Armed accounts with NO release coverage under the active head (gate skipped by design). */
   armedWithoutReleaseCoverage: string[];
+  /** Candidates whose delivery is still converging (not armed, no error, quiet). */
+  pending: string[];
   /** Per-account failures, isolated: one account never blocks the others. */
   failed: Array<{ engineAccountId: string; error: string }>;
 };
+
+/**
+ * Terminal skip marker (last_error prefix): a failure that cannot self-heal inside the lane
+ * (today: no managed pricing policy to materialize) is written ONCE and excluded from
+ * candidate selection forever after — the hot-loop guard. The account stays visible in the
+ * pipeline-health failed count and recent-failures list; an operator repair clears the
+ * marker (`last_error = NULL`) after fixing the policy, returning the account to the sweep.
+ */
+export const PRICING_BACKFILL_TERMINAL_SKIP_PREFIX = "terminal: ";
 
 export class PricingBackfillEquivalenceError extends Error {
   constructor(message: string) {
@@ -104,6 +120,7 @@ export type PricingBackfillStrictRule = {
 export type PricingBackfillReleaseTransport = Pick<
   EngineClient,
   | "getAccount"
+  | "getAccountPricingState"
   | "getPricingReleaseAssignmentExtensionV2"
   | "getPricingReleaseHeadV2"
   | "getPricingReleasePolicyV2"
@@ -156,6 +173,7 @@ export async function listPricingBackfillCandidates(
     WHERE binding.user_id IS NOT NULL
       AND binding.account_class IN ('b2c', 'b2b')
       AND NOT binding.strict_chain_pending
+      AND (binding.last_error IS NULL OR binding.last_error NOT LIKE 'terminal: %')
       AND NOT EXISTS (
         SELECT 1 FROM service_account_inventory_v2 service
         WHERE service.engine_account_id = binding.engine_account_id
@@ -415,6 +433,97 @@ async function notePricingBackfillFailure(
 }
 
 /**
+ * Terminal variant of notePricingBackfillFailure: writes the failure ONCE under the
+ * PRICING_BACKFILL_TERMINAL_SKIP_PREFIX, which removes the account from candidate selection
+ * — the deterministic hot-loop guard. (The transient failure path alone could not guarantee
+ * quietness: the control-job delivery lane writes binding.last_error/updated_at
+ * unconditionally on its own confirm/release cadence, so a plain last_error could be
+ * overwritten and the account re-selected and re-logged every pass.)
+ */
+async function notePricingBackfillTerminalSkip(
+  database: Database,
+  bindingId: string,
+  error: string,
+): Promise<{ status: "failed"; error: string }> {
+  return notePricingBackfillFailure(
+    database,
+    bindingId,
+    `${PRICING_BACKFILL_TERMINAL_SKIP_PREFIX}${error}`,
+  );
+}
+
+/**
+ * The deleted shadow-rollout lane's verification step, revived account-locally for the
+ * backfill: the strict chain (and the engine's own strict triggers and opt-out guard)
+ * require reconciliation_state='verified', but nothing in the live system flips a
+ * shadow|strict + 'pending' binding to 'verified' any more — the rollout lane that did it
+ * was deleted with the release orchestration, and the delivery confirm path carries the
+ * job's own ('pending') reconciliation forward.
+ *
+ * The evidence is exactly the durable ACK proof the rollout used: sync_state='confirmed'
+ * with desired_effective_version = applied_effective_version, matching digests and a
+ * recorded last_ack_at — the engine already ACKed and applied precisely this immutable
+ * version. It is cross-checked cheaply against the engine's active policy state (version +
+ * digest must equal the desired head); a mismatch or desired≠applied means the delivery is
+ * still converging and the binding is left 'pending'. Works for shadow and strict bindings
+ * alike (the opt-out guard needs strict/strict/verified too).
+ */
+async function verifyBackfillShadowReconciliation(
+  database: Database,
+  engine: PricingBackfillReleaseTransport,
+  candidate: PricingBackfillCandidate,
+): Promise<"verified" | "pending"> {
+  const binding = await database.pool.query<{
+    reconciliation_state: string;
+    sync_state: string;
+    desired_effective_version: string | null;
+    applied_effective_version: string | null;
+    desired_digest: string | null;
+    applied_digest: string | null;
+    last_ack_at: Date | null;
+  }>(
+    `
+    SELECT reconciliation_state, sync_state,
+           desired_effective_version::text, applied_effective_version::text,
+           desired_digest, applied_digest, last_ack_at
+    FROM account_policy_bindings WHERE id = $1
+  `,
+    [candidate.bindingId],
+  );
+  const row = binding.rows[0];
+  if (!row) return "pending";
+  if (row.reconciliation_state === "verified") return "verified";
+  const converged = row.sync_state === "confirmed"
+    && row.desired_effective_version !== null
+    && row.desired_effective_version === row.applied_effective_version
+    && row.desired_digest !== null
+    && row.desired_digest === row.applied_digest
+    && row.last_ack_at !== null;
+  if (!converged) return "pending";
+  const state = await engine.getAccountPricingState(candidate.engineAccountId);
+  if (typeof state !== "object" || state === null || !("active" in state)) return "pending";
+  if (
+    state.active.policy.effective_version !== Number(row.desired_effective_version)
+    || state.active.policy.content_digest !== row.desired_digest
+  ) {
+    return "pending";
+  }
+  const updated = await database.pool.query(
+    `
+    UPDATE account_policy_bindings
+    SET reconciliation_state = 'verified', updated_at = now()
+    WHERE id = $1 AND reconciliation_state = 'pending'
+      AND sync_state = 'confirmed'
+      AND desired_effective_version IS NOT NULL
+      AND desired_effective_version = applied_effective_version
+      AND desired_digest = applied_digest
+  `,
+    [candidate.bindingId],
+  );
+  return (updated.rowCount ?? 0) === 1 ? "verified" : "pending";
+}
+
+/**
  * Advances one existing account one lane step, in an order that keeps the dormant scalar
  * faithful at every moment:
  *
@@ -478,7 +587,10 @@ export async function advancePricingBackfillAccount(
         { armStrictChain: false, alignScalarBp: fallbackBp },
       );
       if (!materialized.policyRequired) {
-        return notePricingBackfillFailure(
+        // Permanent skip: there is no managed policy to materialize from, so nothing in the
+        // lane can ever advance this account — mark it terminal instead of re-logging it
+        // every pass. Stays visible in pipeline-health; an operator repair clears the marker.
+        return notePricingBackfillTerminalSkip(
           database,
           candidate.bindingId,
           "account has no managed pricing policy to materialize",
@@ -559,6 +671,22 @@ export async function advancePricingBackfillAccount(
     throw error;
   }
 
+  // The deleted rollout lane's verification step, account-locally: the chain can stage (and
+  // the engine opt-out guard can pass) only a 'verified' binding, and nothing else in the
+  // live system flips 'pending' → 'verified' any more. Converged bindings are verified here
+  // with the durable ACK proof + engine cross-check; unconverged ones stay un-armed and
+  // rotate quietly — arming them is precisely the deadlock.
+  const reconciliation = await verifyBackfillShadowReconciliation(database, engine, candidate);
+  if (reconciliation === "pending") {
+    await database.pool.query(
+      `
+      UPDATE account_policy_bindings SET updated_at = now() WHERE id = $1
+    `,
+      [candidate.bindingId],
+    );
+    return { status: "pending" };
+  }
+
   // Hand the account to the unmodified direct strict chain: the fast-tick flush drives the
   // preflight, the durable strict staging and the opt-out marker from here. last_error is
   // cleared so the progress surface reflects the fresh armed state.
@@ -589,6 +717,7 @@ export async function runPricingBackfillSweep(
     examined: candidates.length,
     armed: [],
     armedWithoutReleaseCoverage: [],
+    pending: [],
     failed: [],
   };
   for (const candidate of candidates) {
@@ -599,6 +728,8 @@ export async function runPricingBackfillSweep(
         if (result.noReleaseCoverage) {
           summary.armedWithoutReleaseCoverage.push(candidate.engineAccountId);
         }
+      } else if (result.status === "pending") {
+        summary.pending.push(candidate.engineAccountId);
       } else {
         summary.failed.push({ engineAccountId: candidate.engineAccountId, error: result.error });
       }

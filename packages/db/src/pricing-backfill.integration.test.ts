@@ -110,13 +110,15 @@ type ReleaseFixture = {
   throwOnExtensionFor?: ReadonlySet<string>;
   /** Engine-side scalar per account before the lane aligns it (default: already aligned). */
   initialScalarBp?: Record<string, number>;
+  /** Engine active policy identity for the reconciliation cross-check (default: v1 fixture). */
+  pricingStatePolicy?: { effective_version: number; content_digest: string };
   optOut?: PricingReleaseOptOutAckV2;
 };
 
-function shadowPricingState() {
+function shadowPricingState(fixture: ReleaseFixture) {
   return {
     active: {
-      policy: { effective_version: 1, content_digest: "engine-digest-v1" },
+      policy: fixture.pricingStatePolicy ?? { effective_version: 1, content_digest: "engine-digest-v1" },
       binding: {
         policy_enforcement: "shadow",
         funding_enforcement: "legacy_single",
@@ -182,7 +184,7 @@ function fakeEngine(fixture: ReleaseFixture): {
     },
     getFundingNormalizationPlanV2: async () => null,
     applyFundingNormalizationV2: async () => null,
-    getAccountPricingState: async () => shadowPricingState(),
+    getAccountPricingState: async () => shadowPricingState(fixture),
     listKeys: async () => [
       { key_id: "key_active", key_masked: "sk-pool-act…ive", label: "prod", status: "active", spent_nano: "0", spent: "$0.000000000" },
     ],
@@ -286,11 +288,12 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
   async function bindingState(userId: string) {
     const result = await seedClient.query<{
       policy_enforcement: string;
+      reconciliation_state: string;
       sync_state: string;
       strict_chain_pending: boolean;
       last_error: string | null;
     }>(`
-      SELECT policy_enforcement, sync_state, strict_chain_pending, last_error
+      SELECT policy_enforcement, reconciliation_state, sync_state, strict_chain_pending, last_error
       FROM account_policy_bindings WHERE user_id = $1
     `, [userId]);
     return result.rows[0];
@@ -330,6 +333,25 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
           reconciliation_state = 'verified', last_ack_at = now(), sync_state = 'confirmed'
       WHERE user_id = $1
     `, [userId]);
+  }
+
+  // The engine-side active policy identity the reconciliation cross-check compares against:
+  // exactly the binding's desired (engine-ACKed) head.
+  async function desiredPricingState(userId: string): Promise<{
+    effective_version: number;
+    content_digest: string;
+  }> {
+    const row = await seedClient.query<{
+      desired_effective_version: string;
+      desired_digest: string;
+    }>(`
+      SELECT desired_effective_version::text, desired_digest
+      FROM account_policy_bindings WHERE user_id = $1
+    `, [userId]);
+    return {
+      effective_version: Number(row.rows[0]!.desired_effective_version),
+      content_digest: row.rows[0]!.desired_digest,
+    };
   }
 
   // A durable cutover receipt with its FK parents: production is post-cutover, so nothing in
@@ -411,9 +433,13 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
     const { userId, engineAccountId } = await provisionedB2cUser("backfill-b2c@example.test");
     const engine = fakeEngine(b2cRelease(engineAccountId));
 
+    // The shadow delivery is confirmed and verified BEFORE the sweep: only a verifiable
+    // binding may be armed (arming an unconverged one is the deadlock this lane avoids).
+    await confirmShadowDelivery(userId);
+
     // 1. The sweep materializes (idempotent reuse), proves the identity, and arms the chain.
     const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
-    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], armedWithoutReleaseCoverage: [], failed: [] });
+    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], armedWithoutReleaseCoverage: [], pending: [], failed: [] });
     expect(await bindingState(userId)).toMatchObject({
       // The materialized shadow delivery is staged; the strict flip comes from the chain.
       policy_enforcement: "shadow",
@@ -423,9 +449,8 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
     // Armed accounts leave the candidate set immediately (the fast lane owns them now).
     expect(await listPricingBackfillCandidates(database, { limit: 5 })).toEqual([]);
 
-    // 2. The UNMODIFIED new-account chain drives the account: shadow delivery confirms →
-    //    strict staging → strict delivery confirms → the one-way opt-out marker.
-    await confirmShadowDelivery(userId);
+    // 2. The UNMODIFIED new-account chain drives the account: strict staging → strict
+    //    delivery confirms → the one-way opt-out marker.
     const staging = await advanceAccountStrictChain(
       database,
       engine.transport,
@@ -473,9 +498,10 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
       ...b2cRelease(engineAccountId),
       initialScalarBp: { [engineAccountId]: 4_000 },
     });
+    await confirmShadowDelivery(userId);
 
     const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
-    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], armedWithoutReleaseCoverage: [], failed: [] });
+    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], armedWithoutReleaseCoverage: [], pending: [], failed: [] });
     // The engine scalar write (account_set_mult_bp) landed BEFORE the arm — and therefore
     // before the opt-out marker — and the commerce mirrors converged in the same pass.
     expect(engine.scalarWrites).toEqual([{ accountId: engineAccountId, multiplierBp: 5_000 }]);
@@ -488,7 +514,6 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
     expect(scalars.rows).toEqual([{ profile_mult: 5_000, engine_mult: 5_000 }]);
 
     // The gate passes after the alignment and the unmodified chain retires the account.
-    await confirmShadowDelivery(userId);
     const staged = await advanceAccountStrictChain(
       database,
       engine.transport,
@@ -516,12 +541,14 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
     // account), still align the scalar, and retire the account through the unmodified chain.
     const { userId, engineAccountId } = await provisionedB2cUser("backfill-uncovered@example.test");
     const engine = fakeEngine({ assignments: [], policies: {} });
+    await confirmShadowDelivery(userId);
 
     const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
     expect(sweep).toEqual({
       examined: 1,
       armed: [engineAccountId],
       armedWithoutReleaseCoverage: [engineAccountId],
+      pending: [],
       failed: [],
     });
     expect(engine.scalarWrites).toEqual([{ accountId: engineAccountId, multiplierBp: 5_000 }]);
@@ -530,7 +557,6 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
       last_error: null,
     });
 
-    await confirmShadowDelivery(userId);
     const staged = await advanceAccountStrictChain(
       database,
       engine.transport,
@@ -584,6 +610,9 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
       reason: "model-scoped negotiated policy",
     });
     expect((await bindingState(user.id))?.strict_chain_pending).toBe(false);
+    // The shadow delivery of the negotiated policy confirms BEFORE the sweep, so the binding
+    // is verifiable (the lane arms only converged, verified bindings).
+    await confirmShadowDelivery(user.id);
 
     // Post-cutover the account's override propagates through the assignment EXTENSION —
     // the extension-wins path of the equivalence resolver.
@@ -604,7 +633,7 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
       initialScalarBp: { [engineAccountId]: 4_000 },
     });
     const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
-    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], armedWithoutReleaseCoverage: [], failed: [] });
+    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], armedWithoutReleaseCoverage: [], pending: [], failed: [] });
     expect(await bindingState(user.id)).toMatchObject({
       strict_chain_pending: true,
       last_error: null,
@@ -668,9 +697,10 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
 
     // The operator fixes the divergence (here: the release side returns to the 5000
     // identity); the next pass re-checks and arms without any manual state repair.
+    await confirmShadowDelivery(userId);
     const healed = fakeEngine(b2cRelease(engineAccountId));
     const retry = await runPricingBackfillSweep(database, healed.transport, { limit: 5 });
-    expect(retry).toEqual({ examined: 1, armed: [engineAccountId], armedWithoutReleaseCoverage: [], failed: [] });
+    expect(retry).toEqual({ examined: 1, armed: [engineAccountId], armedWithoutReleaseCoverage: [], pending: [], failed: [] });
     expect(await bindingState(userId)).toMatchObject({
       strict_chain_pending: true,
       last_error: null,
@@ -684,12 +714,13 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
     await provisionExistingB2cCohort([first, second, third]);
 
     // Canary mode: only the listed account is touched, everything else stays a candidate.
+    await confirmShadowDelivery(first.userId);
     const canary = fakeEngine(b2cRelease(first.engineAccountId));
     const canarySweep = await runPricingBackfillSweep(database, canary.transport, {
       limit: 5,
       allowlist: [first.engineAccountId],
     });
-    expect(canarySweep).toEqual({ examined: 1, armed: [first.engineAccountId], armedWithoutReleaseCoverage: [], failed: [] });
+    expect(canarySweep).toEqual({ examined: 1, armed: [first.engineAccountId], armedWithoutReleaseCoverage: [], pending: [], failed: [] });
     expect((await listPricingBackfillCandidates(database, { limit: 10 }))
       .map((candidate) => candidate.engineAccountId).sort())
       .toEqual([second.engineAccountId, third.engineAccountId].sort());
@@ -746,7 +777,7 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
     // materialization, re-proves equivalence against the strict rules, and re-arms — the
     // chain's opt-out step then retires the account.
     const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
-    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], armedWithoutReleaseCoverage: [], failed: [] });
+    expect(sweep).toEqual({ examined: 1, armed: [engineAccountId], armedWithoutReleaseCoverage: [], pending: [], failed: [] });
     const completing = await advanceAccountStrictChain(
       database,
       engine.transport,
@@ -772,8 +803,8 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
         rejection: { missing_dependency: { dependency: "active_strict_policy_binding" } },
       },
     });
-    await runPricingBackfillSweep(database, rejected.transport, { limit: 5 });
     await confirmShadowDelivery(userId);
+    await runPricingBackfillSweep(database, rejected.transport, { limit: 5 });
     await advanceAccountStrictChain(
       database,
       rejected.transport,
@@ -794,5 +825,168 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
     });
     const health = await getAdminPricingBackfillHealth(database);
     expect(health.counts).toEqual({ eligible: 1, inFlight: 1, done: 0, failed: 0, pending: 0 });
+  });
+
+  it("verifies a shadow+confirmed binding stuck in reconciliation 'pending' before arming (the deleted rollout lane's step)", async () => {
+    const { userId, engineAccountId } = await provisionedB2cUser("backfill-reconcile@example.test");
+    // The deadlock cohort's exact shape: delivery confirmed (desired=applied, sync
+    // confirmed), but nothing ever flipped reconciliation to 'verified'.
+    await confirmShadowDelivery(userId);
+    await seedClient.query(`
+      UPDATE account_policy_bindings SET reconciliation_state = 'pending' WHERE user_id = $1
+    `, [userId]);
+
+    // An engine cross-check that disagrees with the durable ACK proof keeps the account
+    // un-armed and quiet — no error, still a candidate.
+    const mismatched = fakeEngine({
+      ...b2cRelease(engineAccountId),
+      pricingStatePolicy: { effective_version: 1, content_digest: "engine-digest-v1" },
+    });
+    const blocked = await runPricingBackfillSweep(database, mismatched.transport, { limit: 5 });
+    expect(blocked).toEqual({
+      examined: 1,
+      armed: [],
+      armedWithoutReleaseCoverage: [],
+      pending: [engineAccountId],
+      failed: [],
+    });
+    expect(await bindingState(userId)).toMatchObject({
+      reconciliation_state: "pending",
+      strict_chain_pending: false,
+      last_error: null,
+    });
+
+    // The cross-check matching the engine-ACKed head: verified in the same pass, then armed,
+    // and the unmodified chain retires the account.
+    const engine = fakeEngine({
+      ...b2cRelease(engineAccountId),
+      pricingStatePolicy: await desiredPricingState(userId),
+    });
+    const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
+    expect(sweep).toEqual({
+      examined: 1,
+      armed: [engineAccountId],
+      armedWithoutReleaseCoverage: [],
+      pending: [],
+      failed: [],
+    });
+    expect(await bindingState(userId)).toMatchObject({
+      reconciliation_state: "verified",
+      strict_chain_pending: true,
+    });
+    const staged = await advanceAccountStrictChain(
+      database,
+      engine.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    );
+    expect(staged.status).toBe("staged");
+    await confirmStrictDelivery(userId);
+    await expect(advanceAccountStrictChain(
+      database,
+      engine.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    )).resolves.toEqual({ status: "opted_out" });
+  });
+
+  it("a shadow binding with desired≠applied stays un-armed and quiet until the delivery converges", async () => {
+    const { userId, engineAccountId } = await provisionedB2cUser("backfill-converging@example.test");
+    // Materialized but not delivered: desired is set, applied is NULL — the delivery lane
+    // converges it first; arming now would be the deadlock.
+    const engine = fakeEngine(b2cRelease(engineAccountId));
+    const first = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
+    expect(first).toEqual({
+      examined: 1,
+      armed: [],
+      armedWithoutReleaseCoverage: [],
+      pending: [engineAccountId],
+      failed: [],
+    });
+    expect(await bindingState(userId)).toMatchObject({
+      strict_chain_pending: false,
+      last_error: null,
+    });
+    // Rotated, not dropped: still a candidate for the next pass.
+    expect((await listPricingBackfillCandidates(database, { limit: 5 }))
+      .map((candidate) => candidate.engineAccountId)).toEqual([engineAccountId]);
+
+    // The delivery confirms (with the deadlock-era 'pending' reconciliation): the next pass
+    // verifies with the engine cross-check and arms.
+    await confirmShadowDelivery(userId);
+    await seedClient.query(`
+      UPDATE account_policy_bindings SET reconciliation_state = 'pending' WHERE user_id = $1
+    `, [userId]);
+    const converged = fakeEngine({
+      ...b2cRelease(engineAccountId),
+      pricingStatePolicy: await desiredPricingState(userId),
+    });
+    const second = await runPricingBackfillSweep(database, converged.transport, { limit: 5 });
+    expect(second).toEqual({
+      examined: 1,
+      armed: [engineAccountId],
+      armedWithoutReleaseCoverage: [],
+      pending: [],
+      failed: [],
+    });
+    expect(await bindingState(userId)).toMatchObject({
+      reconciliation_state: "verified",
+      strict_chain_pending: true,
+    });
+  });
+
+  it("an account with no managed policy is marked terminal once and leaves the candidate set (hot-loop guard)", async () => {
+    const user = await createEmailUser(database, "backfill-no-policy@example.test", "password-hash");
+    const engineAccountId = `acct_backfill_${user.id.replaceAll("-", "")}`;
+    await seedClient.query(`
+      UPDATE engine_accounts SET engine_account_id = $2, status = 'active' WHERE user_id = $1
+    `, [user.id, engineAccountId]);
+    await runStage5Backfill(database, {
+      schema_version: 1,
+      engine_accounts: [{ account_id: engineAccountId, multiplier_bp: 5_000, status: "active" }],
+      openkeys_accounts: [],
+    }, { mode: "safe" });
+    await convertCustomerToBusiness(database, {
+      userId: user.id,
+      actorId: "admin@example.test",
+      reason: "negotiated business terms",
+      multiplierBp: 4_000,
+    });
+    // The managed policy is gone (the hot-looping production account's state): there is
+    // nothing to materialize from, and there never will be inside this lane.
+    await seedClient.query(`
+      UPDATE pricing_policies SET status = 'archived', updated_at = now()
+      WHERE owner_type = 'b2b_client' AND owner_id = $1
+    `, [user.id]);
+    const policy = releasePolicy({
+      policyId: `release-v2:b2b:${engineAccountId}`,
+      accountClass: "b2b",
+      rules: [{ scope: "provider", providerId: "anthropic", payableMultiplierBp: 4_000 }],
+    });
+    const engine = fakeEngine({
+      extensions: { [engineAccountId]: releaseAssignment(engineAccountId, policy) },
+      policies: { [`${policy.policy_id}@${policy.policy_version}`]: policy },
+    });
+
+    const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
+    expect(sweep.examined).toBe(1);
+    expect(sweep.armed).toEqual([]);
+    expect(sweep.failed).toHaveLength(1);
+    expect(sweep.failed[0]!.error).toContain("no managed pricing policy");
+    expect((await bindingState(user.id))?.last_error)
+      .toBe("terminal: account has no managed pricing policy to materialize");
+
+    // The terminal marker is durable AND quiet: the account is excluded from every future
+    // pass (no re-log, no retry), while pipeline-health keeps it visible as failed.
+    expect(await listPricingBackfillCandidates(database, { limit: 5 })).toEqual([]);
+    const second = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
+    expect(second).toEqual({
+      examined: 0,
+      armed: [],
+      armedWithoutReleaseCoverage: [],
+      pending: [],
+      failed: [],
+    });
+    const health = await getAdminPricingBackfillHealth(database);
+    expect(health.counts).toEqual({ eligible: 1, inFlight: 0, done: 0, failed: 1, pending: 0 });
+    expect(health.recentFailures[0]?.lastError).toContain("no managed pricing policy");
   });
 });
