@@ -47,41 +47,12 @@ background loops and the HTTP router. Here — and only here — everything is w
   (the control key, SEPARATE from forwarding-admin). All writes go through the single-writer actor `AsyncBilling`
   (the same discipline as reserve/settle). The engine remains the authority on the LIVE balance; commerce only
   creates accounts/keys and credits (idempotently by `ref`). The full contract is `docs/engine/CONTROL_API.md`.
-  Account pricing is updated by `/admin/account/{id}/pricing`; cursor ledger reads use `after_id` for
+  Account pricing is updated by `/admin/account/{id}/pricing` (the default discount) and
+  `GET|POST /admin/account/{id}/discounts` (per-provider overrides — the whole B2B pricing
+  surface, `docs/commerce/PRICING_MODEL.md`); cursor ledger reads use `after_id` for
   the commercial pricing worker. Account reads include the coherent paid/bonus/other/unattributed
   funding summary. Ledger rows add stored immutable attribution and normalized funding allocations;
   old rows remain null/empty and are never reclassified at the HTTP boundary.
-  Stage 3C adds authenticated `/admin/pricing/*` prepare/read/activate routes for immutable product
-  catalogs, provider switches and account policies. Requests/ACKs preserve complete version/digest,
-  capability lineage and binding identity; typed CAS errors stay distinguishable. Routes only
-  expose the registry contract through `AsyncBilling` actors and cannot backfill, issue keys,
-  enable strict enforcement or reorder catalog → switches → policy activation. The additive
-  `POST /admin/pricing/policy/{account_id}/locked-openkeys-transition` producer is intentionally
-  narrower than generic activation: it accepts only the exact next managed provider-only OpenKeys
-  1:1 successor of the exact active replacement-locked legacy policy and commits insert plus
-  `shadow + legacy_single + verified` binding CAS atomically. Generic locked-policy routes remain
-  locked; the endpoint neither changes traffic/release head nor admits discounts/model rules.
-  Account-local `/admin/pricing/v2/funding/{account_id}/normalization` is the narrow exception to
-  “cannot backfill”: GET builds a read-only content-addressed plan, POST applies only its exact
-  source/target digests under the registry funding lock. It cannot activate a pricing release and
-  never performs a global drain.
-  Post-cutover `/admin/pricing/v2/assignment-extension/prepare` atomically appends the exact
-  current-head active/recovery assignment pair, and
-  `GET /admin/pricing/v2/assignment-extension/{head_version}/{account_id}` provides exact readback.
-  Both remain PostgreSQL-only actor calls and do not issue keys. The one-way
-  `POST /admin/pricing/v2/opt-out` (dual path of the release-v2 retirement) writes
-  `accounts.pricing_release_opt_out_ts` through the same single writer; the registry guard fails
-  closed (409 `missing_dependency`) unless the account proves a live strict path
-  (`strict/strict/verified` binding + an active unexpired key with a current activation ACK),
-  exact replay returns `unchanged` with the stored timestamp, and there is no opt-in route by
-  design. The release-advance producers
-  `POST /admin/pricing/v2/stage8-evidence/capture` and `POST /admin/pricing/v2/activate` were
-  retired with head 55 (the final pricing release) and are deleted; the compile-fixed runtime
-  manifest from `AppState` stays for owner-epoch claim stamping and the pricing shadow/resolver.
-  Key issue/list also carries optional `spend_limit_nano`/`expires_ts` policy metadata. The
-  account-scoped `/admin/account/{id}/key-id/{key_id}/policy` endpoint replaces both nullable
-  guardrails; validation is at this HTTP boundary while enforcement remains in registry reservation
-  transactions.
   Hot tariff overrides are exposed under `/admin/pricing/tariffs*`: list, a read-only compiled
   catalog dump built from `metering` (authority-free), next-version publish (server computes
   `head + 1`, one sequence-race retry) and idempotent version-2 seeding that never overwrites a
@@ -227,36 +198,18 @@ background loops and the HTTP router. Here — and only here — everything is w
   `GlmIdentityHeaders::default`. GLM intentionally does not read `CLAUDE_API_UA_SPREAD`: the patch-level UA
   spread was removed from the Claude persona as a source of within-request anomalies (`persona_ua` in
   `forward::upstream`); there is nothing to mirror.
-- The atomic legacy snapshot bridge config is read only here:
-  `CLAUDE_API_PRICING_BRIDGE_ENABLED`/`CLAUDE_API_PRICING_BRIDGE_SAMPLE_BP`. The default is strictly
-  `false/0`; the bool accepts only `0|1|false|true`, the sample — integer `0..=10000`; inconsistent
-  pairs are rejected. Enabled requires sample `1..=10000` and activates only the atomic actual-snapshot
-  reserve caller of the fixed Anthropic/OpenAI/Gemini plane (the durable Gemini provider ID is `google`);
-  it does not itself enable the policy shadow/resolver. The rollout is performed
-  in separate observable config steps, not by changing the safe default.
-- The pricing shadow config is read only here under `CLAUDE_API_PRICING_SHADOW_*`. Default —
-  disabled/0 bp; queue 256, workers 2, timeout 750ms, max age 300s, field 512 B, item 16 KiB,
-  rate 20/s burst 40, PostgreSQL readers 2. All values are strict-validated; max age is always `<24h`.
-  Enabled requires billing + PostgreSQL and is active only on the fixed Anthropic/OpenAI/Gemini plane;
-  on a non-pricing plane (KIMI) the same shared env does not stop startup — the producer remains inert
-  with an explicit notice, because the fleet env file is shared by all planes. Server assembles the fixed
-  versioned runtime manifest, starts the separate read actors/worker and drains the worker before the billing
-  FIFO flush. This permits Google legacy-snapshot shadow evidence but does not enable strict Gemini.
-- The same compile-fixed pricing manifest is used regardless of shadow enablement when claiming the
-  PostgreSQL owner epoch, at the startup heartbeat and at every regular heartbeat. Active strict
-  dependencies missing from the manifest do not get a new owner; drift after the claim drops
-  readiness and fences the slot. Scalar-only `claim_instance` remains incompatible with strict heads.
+- Pricing has no env surface: an account carries one discount, overridden per provider where the
+  customer's terms differ, and both live in the engine authority. The retired
+  `CLAUDE_API_PRICING_BRIDGE_*` and `CLAUDE_API_PRICING_SHADOW_*` variables are gone; the fleet env
+  file may still carry them and the server ignores them.
 - `POST /admin/key` and reactivation via `/admin/key-id/{key_id}/status` accept a nested
   `activation_policy_ack {effective_policy_version, policy_digest}`. For a strict binding an exact ACK
   is mandatory; a missing/stale/wrong identity yields 409, a malformed identity — 400. Disable does not
   require an ACK. The key secret is still issued once and only after the durable ACK check.
 - Redis is only configured here; `AffinityStore` lives in `forward`, and pool stays network-free.
-- Router policy preflight does not open the authority itself: a metered credential is resolved via
-  `AsyncBilling`, a strict account reads exactly one `PricingReadBundle`, and each model's decision
-  uses the same `forward::resolve_pricing` and compile-fixed runtime manifest as the live strict
-  admission. Legacy/shadow/unbound accounts and forwarding-admin remain unrestricted; Google for a
-  strict binding is filtered out while Gemini strict admission itself is not fail-closed available. Responses and
-  logs contain no credential/account/model-rule identity; decisions are not cached.
+- Router policy preflight answers `unrestricted` for every authenticated key: every model of every
+  enabled provider is available to everyone, and pricing is a discount, never an allow-list. It
+  still authenticates through `AsyncBilling` and returns no credential/account identity.
 - Router auth preflight uses the same `authed`/`resolve_client_key` as live admission: an
   inactive/unknown credential gets 401, a billing authority failure — 503, and success does not reveal
   key/account identity and does not reserve/settle. The endpoint is identical on all fixed planes and
@@ -361,23 +314,11 @@ background loops and the HTTP router. Here — and only here — everything is w
   Fixed KIMI `/ready` with an assembled gateway requires live>=1 && persistence_ok
   (otherwise `provider_unavailable`); with no gateway (argv-pinned default-off) the slot stays
   ready and serves the stable disabled envelope.
-- `/metrics` publishes privacy-safe affinity counters, including soft cache-root hits/writes,
-  fixed-cardinality strict admission/rejection counters for Anthropic/OpenAI/Gemini and fleet-only
-  Anthropic exact-capacity/coverage/delivery gauges, as well as three execution-not-started series.
+- `/metrics` publishes privacy-safe affinity counters, including soft cache-root hits/writes, and
+  fleet-only Anthropic exact-capacity/coverage/delivery gauges, as well as three
+  execution-not-started series.
   Raw client IDs, prompt content, account IDs, model IDs, credential/group/request identity and
   subscription IDs never reach Redis/metrics.
-- Stage 9 runtime delivery never activated a production pricing release by itself; the one global
-  release-head CAS ran only after Stage 5/6 materialization and full-inventory Stage 8 evidence,
-  without a manual assignment matrix, canary accounts, a maintenance window or a
-  zero-active-reservations gate. With head 55 as the final pricing release the release-advance
-  producers (`db stage8-evidence`, `/admin/pricing/v2/stage8-evidence/capture`,
-  `/admin/pricing/v2/activate`) are deleted; the runtime-claim fence above stays live.
-- `/admin/pricing/v2/*` is a producer-first surface: immutable policy/release/recovery, exact and
-  newest-per-policy reads, cursor inventory, nullable head read and account-local funding
-  normalization. The latest-policy read returns one complete immutable PostgreSQL row plus its
-  sorted rules and is only for fail-closed reconciliation of lagging consumer evidence. The
-  release-head mutation (`/admin/pricing/v2/activate`) was deleted with the retired release
-  advance; the deploy route by itself does not change traffic.
 - **loopback trust is explicit opt-in only** `CLAUDE_API_TRUST_LOOPBACK=1` + a real loopback bind
   (otherwise behind a reverse proxy an anonymous caller would get admin access).
 - OpenAI shutdown first waits for detached Codex stream/history/settlement tasks (the native provider

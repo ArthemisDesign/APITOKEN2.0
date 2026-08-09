@@ -420,6 +420,17 @@ POST /admin/account/{id}/credit         {"amount_nano": "25000000000",
                                          by another payment)
 POST /admin/account/{id}/status         {"status":"active"|"disabled"}  → 200 {account,status,updated} | 404
 POST /admin/account/{id}/pricing        {"mult_bp":0..10000}             → 200 {account,mult_bp,updated} | 404
+GET  /admin/account/{id}/discounts                                    → 200 {account,mult_bp,
+                                                                            providers:{<provider_id>:mult_bp}} | 404
+POST /admin/account/{id}/discounts      {"provider_id":"anthropic|openai|google|kimi|glm",
+                                         "mult_bp":0..10000|null}     → 200 {account,provider_id,mult_bp,changed}
+                                                                        | 400 | 404
+                                        (the whole pricing policy: an account default plus one
+                                         override per provider whose terms differ. `mult_bp:null`
+                                         removes the override. A write is live on the next
+                                         request — there is no version to activate and no
+                                         snapshot that can disagree with the balance. Model —
+                                         docs/commerce/PRICING_MODEL.md)
 GET  /admin/account/{id}/keys                                        → 200 {keys:[{key_id,key_masked,label,status,
                                                                             spent_nano,spent,reserved_nano,
                                                                             spend_limit_nano,expires_ts,

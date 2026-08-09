@@ -22,19 +22,8 @@ key does NOT forward `/v1` (neither admin nor metered → 401). `AsyncBilling` i
 (`create_account`/`issue_key`/`account_status`/`key_status_by_id`) through the SAME single-writer (no races).
 Pricing sync uses the same actors: multiplier writes go through the writer and cursor ledger reads
 through a reader; HTTP code never opens the authority directly.
-Stage 3C versioned pricing control follows the same ownership: catalog/switch/policy prepare and
-activate commands share the single writer, while immutable-version/head/bundle reads use the normal
-bounded reader pool. SQLite and PostgreSQL dispatch the same registry typed outcomes; no HTTP
-handler opens a second connection or assembles a policy bundle from separate reads. The constrained
-locked-OpenKeys transition is another single-writer command: it delegates one atomic
-insert-plus-binding-CAS to registry and never decomposes it into generic prepare/activate calls.
-Release-v2 exact and newest-per-policy reads use the same bounded reader pool; the latter returns one
-complete immutable policy for fail-closed reconciliation and remains PostgreSQL-only. Funding-v2
-normalization follows that split: read-only account plans use a bounded reader, exact apply uses the
-existing single writer and PostgreSQL account lock, and SQLite fails closed. The one-way
-release-v2 opt-out writer (`pricing_release_opt_out_v2`, route
-`POST /admin/pricing/v2/opt-out`) is another single-writer command of the same lane: the typed
-guard/outcome lives entirely in registry, forward only relays it, and SQLite fails closed. Hot
+Account discount writes follow the same ownership: the per-provider override write goes through the
+single writer, the control-plane listing through a bounded reader. Hot
 tariff overrides
 follow the same ownership: `list_tariff_overrides` uses a bounded reader and
 `insert_tariff_override` the single writer; both delegate validation/sequencing to the
@@ -43,34 +32,19 @@ Credentials in `x-api-key`, `x-goog-api-key` and `Authorization: Bearer` have OR
 header priority: any single valid one is sufficient. This is critical for Claude Code,
 which may send a stale `ANTHROPIC_API_KEY` and a current `ANTHROPIC_AUTH_TOKEN` at the same time.
 
-**Multi-provider pricing Stage 3B1b/3B1c (`pricing.rs`, `pricing/shadow.rs`,
-`pricing/runtime.rs`):** pure
-fail-closed resolver consumes
-one transactionally materialized `registry::pricing::PricingReadBundle` (including the live legacy
-scalar, exact policy dependencies and current admission heads), provider-fixed identities and a
-runtime-owned manifest of exact `(schema, capability generation, digest)` tuples. Policy and
-admission catalog/switch gates are independent: current heads need not equal policy pins, and a
-mixed `C2/S1/P1` rollout must keep the old common model available while the policy lineage still
-blocks a new C2-only model. The S1 catalog pin is accepted beside C2 only while it matches the
-policy's C1 catalog; malformed `C2/S1/P2` fails closed. Exact model rule replaces provider rule.
-Resolved output preserves both lineage pairs plus manifest identity;
-malformed/missing/schema/capability/model/switch failures use stable typed reasons. A separate pure
-work-item pins only the validated actual snapshot reference, full registry-canonical manifest
-evidence and explicit enqueue timestamp. Its builder derives request/manifest identity internally,
-resolves exactly one coherent bundle, verifies manifest/provider/model identity and converts all
-resolved/rejected/read-error variants into a validated immutable registry input. It rejects early
-timestamps and actual holds above the checked scalar quote before enqueue. A lower actual is an
-exact funding ceiling shared by scalar and policy candidates and remains eligible. A bundle for
-another outer account is an integrity error, not a durable rejection carrying that account's
-scalar. The modules have no
-HTTP/env and never feed shadow output into admission, reserve, settlement or `/ready`. The
-default-off runtime producer is called only after successful atomic Anthropic/OpenAI snapshot
-reserve, applies deterministic sampling, byte limits and an integer token bucket, then performs
-exactly one `try_send`. Its bounded PostgreSQL-only workers use separate read actors, the existing
-billing writer for immutable insert, per-operation PostgreSQL timeouts, queue expiry `<24h` and
-fixed-cardinality metrics. Full/closed/rate-limited/oversized work drops fail-open;
-read/write/timeout/replay/conflict outcomes never change customer response or money. SQLite keeps
-API/test parity but cannot start live shadow readers.
+**Pricing (`pricing.rs`, `pricing/tariff_book.rs`):** an account is priced by one number — its
+discount — overridden per provider where a customer negotiated different terms. Authorization
+carries both (`KeyAuth::provider_mult_bp`) and every plane resolves the same way through
+`Authz::mult_for(provider_id)`; a provider without an override keeps the account default. Model and
+control surface — `docs/commerce/PRICING_MODEL.md`.
+
+There is no policy resolver, no catalog/switch lineage, no release generation and no shadow
+evaluation. They were deleted on 2026-08-09: strict admission priced from a per-account policy and
+funded from `funding_buckets`, while normalization had moved funding into `funding_lots_v2`, so 166
+of 168 strict accounts read zero available funds and every request was refused with 402 while the
+balance was intact. Money has exactly one authority — the account balance — and price has exactly
+one — the account discount. `pricing.rs` keeps only the engine-owned request identity helpers used
+by the provider quote builders, plus the hot tariff book below.
 
 **Billing (async, `billing.rs` + tee-metering `meter.rs`):** authorization (`authorize`, async):
 the env admin is checked FIRST in memory; otherwise the client key → `key_account` (JOIN key→account)
@@ -83,8 +57,6 @@ with `max_tokens` clamped down (`cap_to_balance`)
 → the client never receives a single token/cent above their balance. 4xx/errors/rotation are NOT metered.
 For policy keys the cap takes the minimum of the account balance and the remaining lifetime limit. Such keys
 bypass the auth TTL cache; expiry and limit are re-checked inside the atomic reserve transaction.
-Pricing shadow adds a separately sized PostgreSQL read-actor pool; evaluation inserts remain on the
-same single writer and deliberately do not use the normal five-second money-operation retry loop.
 
 **Hot tariff overrides (`pricing/tariff_book.rs`):** the process-wide `TariffBook` (OnceLock +
 `RwLock<Arc<TariffBookSnapshot>>`, installed once by `server` from `CLAUDE_API_TARIFF_OVERRIDES`,
@@ -150,8 +122,7 @@ header and 2xx are not counted.
 ingress. Admission parses the pair exactly once before money mutation: both absent → direct execution;
 both present exactly once → canonical lowercase UUIDv4 + canonical positive decimal;
 partial/duplicate/malformed/noncanonical → fail closed. Anthropic parses in `proxy::forward`,
-Codex/Gemini — in `begin_admission`; identity passes through the scalar, legacy-snapshot and strict-policy
-reserve in `AsyncBilling`. When sending to the external Anthropic upstream both internal headers
+Codex/Gemini — in `begin_admission`; identity passes through the reserve in `AsyncBilling`. When sending to the external Anthropic upstream both internal headers
 are removed. A plane never generates or repairs identity on its own.
 
 **Claude capacity calibration (`anthropic_calibration.rs`, `billing.rs`, `meter.rs`):** every
@@ -198,99 +169,6 @@ semantics for the pinned continuation. This ties exact API-nanoUSD and quota del
 without opening manual profile selection to clients. Attribution of the test turn itself is taken not from the aggregate
 delta, but from a bounded set of new immutable event request IDs with exact profile/model/tier/token
 vector; customer traffic in the same aggregate row therefore does not contaminate the result.
-
-**Stage 3B1c.2 atomic legacy snapshot bridge — live caller, default-off:** a separate
-`ReserveWithLegacySnapshot`/`reserve_request_with_legacy_snapshot` hands the writer a ready owned
-typed snapshot as the single source of request/account/hold and invokes a guarded registry commit.
-Its guard may cancel only `PENDING → CANCELED` before the commit gate. After
-`COMMIT_DECIDED` a compensating `CancelReserve` is forbidden: a lost reply leaves an active reservation
-for exact replay or standard lease recovery, without a terminal reservation/outbox. PostgreSQL
-retries a transient operation only until the commit decision; an ambiguous commit error is returned
-as an error and resolved by a subsequent exact replay. The existing scalar `Reserve` and its prior
-RAII compensation are unchanged. Bridge preflight uses a validated config
-(`disabled/0` or `sampled/1..=10000 bp`), a SHA-256 v1 sampler over the trusted fixed provider and the internal
-canonical lowercase UUIDv4 request ID, stable typed decisions/reasons. The sampler never reads clock/DB,
-and provider-owned builders next to the current
-legacy quote implementations derive the canonical/tariff/modifier identity themselves via `metering` and
-build a validated snapshot from a single frozen timestamp. The Anthropic builder calls the unchanged
-`cap_to_balance`, the OpenAI pricing builder — the unchanged `reserve_cost`, the Google builder — the same
-`reservation_for_budget`/conservative Gemini rates and search reserve units as the scalar path;
-the caller never sets provider/canonical/tariff and hold.
-
-Live metered Anthropic/OpenAI/Gemini admission now applies the sampler before money. The durable identity
-of the Gemini plane is `google`; the deprecated provider ID `gemini` is never created. Disabled/not-sampled and typed
-pre-money fallback go to a byte-equivalent scalar reserve without snapshot; a selected request atomically
-persists reservation+actual snapshot. Once the atomic path is chosen, an invariant/DB/handoff or
-idempotency conflict fails closed without a second scalar reserve. A successful hold continues the prior
-mark-delivering/cancel/settlement lifecycle and only after durable success hands the snapshot to the
-bounded shadow queue. The default config stays `false/0`; enabling requires an explicit bounded sample.
-Metrics have only three fixed provider labels, bounded reason labels and a fixed-bucket atomic
-reserve latency histogram. Strict Gemini, release-v2 reserve/settlement snapshot and Stage 9
-activation are not included in this producer checkpoint.
-
-**Target Stage 9 runtime:** the active pricing release is chosen by a single global head. B2C uses
-discount rules with priority model → provider → global 50%; B2B has an independent policy,
-OpenKeys — strictly 1:1. Anthropic/OpenAI/Gemini pin the provider-owned canonical model/tariff,
-release/policy rule and ordered funding allocations in one immutable reserve snapshot. The welcome
-bonus is available to any B2C discount rule and is spent before paid; commission eligibility does not
-depend on the pricing mode. The `meter_only` service preserves official usage without balance reserve/debit.
-Settlement uses the pinned multiplier/tariff; cancel/RAII returns allocations. The old
-`track`/tier path is only a migration source and must not receive new logic.
-
-**Stage 9 release-v2 runtime foundation:** every metered admission first reads the global head.
-While the head is absent, Anthropic/OpenAI/Google continue the prior scalar/bridge/strict path with no
-price change. After the head appears, a new reserve must re-resolve the exact
-release/assignment/policy/rule under money locks and atomically persist the release/funding snapshot;
-the legacy writer, after its request-id replay check, no longer creates a new row. A lost
-reply of the old reserve stays replayable through the original format-aware writer. Settlement chooses the
-format from the immutable request snapshot and accepts a provider-adapter customer debit separately from
-the full official usage (this preserves the Codex requested-output cap). An active settlement requires
-that the pinned funding generation is still current: an account head must not be advanced on top of
-unfinished allocations. After monotonic advance only a terminal replay without repeated
-money mutation is allowed. `meter_only` writes usage with a zero customer debit and never reads the balance as an admission
-gate. The runtime path never creates or moves a release head itself; until the protected Stage 9 consumer it
-stays dormant.
-
-Post-cutover provisioning uses the same `AsyncBilling` ownership split: append-only
-assignment-extension prepare goes through the single writer, exact
-`(provisioning_head_version,account_id)` readback — through a bounded reader. The registry resolver
-materializes the assignment from an immutable base manifest or an exact current-head extension; forward neither
-assembles the pair nor opens PostgreSQL directly. This producer does not issue keys.
-
-Stage 9 activation ran as a separate typed command of the same single writer, and Stage 8 engine
-capture used the opposite bounded-reader lane (`AsyncBilling::stage8_engine_evidence`). Both actor
-commands are deleted with the retired release advance: head 55 is the final pricing release, no
-caller remained, and data-plane readers never took the release control lock anyway. The
-compile-fixed runtime manifest is still attached only by `crates/server`, never by an HTTP caller.
-
-**Service meter-only strict lane:** engine validation admits managed discount rules with
-`payable_multiplier_bp=0` (discount 10000 bps) only for `account_class='service'` policies
-(registry contract — `crates/registry/CLAUDE.md`). `build_policy_admission_snapshot` still rejects
-a payable-0 resolution for every customer class and builds the immutable snapshot with an exactly
-zero charged hold for the service lane (`ResolvedPricingRule::is_service_meter_only`). The
-Anthropic (`proxy.rs`), Codex chat/responses (`codex/billing.rs`) and OpenAI image admission paths
-consult the bundle's class (`bundle_binds_service_class`) before resolution, so customer classes
-keep their exact balance-first 402 ordering (same body, no strict metric), and skip the
-post-resolution balance gate only for a service payable-0 rule. Codex/image quotes use the
-dedicated `quote_service_meter_only`/`openai_image_service_meter_only_quote` constructors (zero
-charged hold, no balance cap); the deliberate customer-class clamp-to-one admission minimum is
-unchanged. Anthropic settlement attaches the usage event even at charge 0 for this lane
-(`meter_only_strict` in `meter.rs`) — Codex/image settlement already attaches at `real>0`; strict
-Gemini stays forbidden. Reserve holds nothing and registry settlement writes the usage event with
-no ledger charge row: the balance gate never rejects a meter-only request and money never moves.
-
-The read-only router policy preflight of phase 6.4a reuses the public `resolve_pricing` and
-`RuntimePricingManifest::from_evidence` through `crates/server` composition: the same customer key and one
-coherent bundle filter the bounded catalog chain before the first router attempt. This caller never builds a
-quote/snapshot, never reserves money and never changes admission; legacy/shadow/unbound stay
-unrestricted, strict Gemini — forbidden per the live admission above.
-
-Strict counters have only the fixed `provider`, `mode`, `scope`, `reason`; Gemini is part of the
-fixed provider set and after product activation must have observable admitted coverage. Typed resolver
-rejections collapse into bounded operational classes (missing policy/rule, unavailable model/switch,
-unsupported capability, invalid contract), without account/model labels. The presence of this runtime code
-by itself neither advances the active release nor replaces full-inventory Stage 8 evidence or Stage
-5/6 materialization. Final enablement is a single-head CAS without canary and traffic drain.
 
 **What's inside:** `ProxyConfig`, `AppState`, `Clients` (http-client cache per proxy),
 `limits_from_headers`/`Limits` (unified-ratelimit from a response), `poll_sub` (active polling of idle),
