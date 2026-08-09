@@ -26,7 +26,7 @@ the end rather than quietly dropped.
 | 10 | Public rate card | on the pricing page | Kimi panel, rates from the audited card | parity |
 | 11 | Client docs | builder + API reference | both, plus Kimi Code and Claude Code guides | parity |
 | 12 | **Strict-policy admission** | **served** | **refused, terminally** | **not parity** |
-| 13 | Live coverage matrix | n/a | 12/12 legs × 2 of 3 profiles | partial, quota-bound |
+| 13 | Live coverage matrix | n/a | all 4 subscription model ids; 12/12 legs × 2 of 3 profiles | models complete, profiles quota-bound |
 | 14 | Paid tool/search units | proved for others | unproved, recorded unavailable | not parity, by contract |
 
 ## Axis 12 — the one that matters
@@ -56,10 +56,23 @@ The third (`kimi-3e80dc1f94df83de`) is at its weekly wall (100/100) and the runn
 before dispatch, spending nothing. It is unavailable, not skipped. The command is in
 `research/KIMI_PLANE_PROGRESS.md`.
 
-`kimi-k2.6` is absent from the matrix because no published alias reaches it: it is a tariff key
-carrying the official API rate used to price replacement cost, and the subscription route
-publishes no id for it. The widely repeated claim that a thinking-off request reroutes K3 down to
-K2.6 is contradicted by our own turns — the `off` legs priced under the K3 card.
+**Model coverage is complete.** Moonshot's own subscription documentation
+(`kimi.com/code/docs/en/kimi-code/models.html`, read 2026-08-09) states that Kimi Code "offers two
+models — Kimi K3 and Kimi K2.7 Code — across four model IDs": `k3`, `k3-256k`, `kimi-for-coding`
+and `kimi-for-coding-highspeed`. Those are exactly the four the matrix exercised, so every model
+the subscription can address is covered.
+
+`kimi-k2.6` has **no subscription model ID** — it cannot be requested by name, which is why no
+alias points at it. It exists in `crates/metering` as a tariff key carrying the official API rate
+used to price replacement cost. Moonshot documents it as reachable only implicitly ("K3 / K2.7
+without Thinking routes to K2.6"), and our own turns contradict that on this route: the `off` legs
+priced under the K3 card (`moonshot/kimi/kimi-k3/v2`), not the K2.6 one. Either way there is
+nothing to publish and nothing to test.
+
+Two quota facts from the same page explain the consumption numbers above and are worth carrying:
+`k3` costs about twice the quota of `k3-256k` for equivalent work inside 256k, and HighSpeed
+trades 3× quota for 6× speed. The 1M window requires an Allegretto plan or above; all three of our
+profiles are Vivace, so it is available on all of them.
 
 ## Defects this audit surfaced, and their fixes
 

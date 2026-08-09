@@ -30,8 +30,10 @@ Commerce/OpenKeys catalogue mirrors and unsupported capabilities remain tracked 
   dispatch and went verbatim to the Claude upstream.
 - `decision` 2026-08-08 — advertise only the five subscription aliases. The official Open
   Platform ids are tariff keys the gateway refuses on the wire, so publishing one would put a
-  model in the catalog that admission then rejects. `kimi-k2.6` is not advertised at all: no
-  alias reaches it. It is a tariff key, not an addressable model — it carries the official API
+  model in the catalog that admission then rejects. `kimi-k2.6` is not advertised at all: it has
+  no subscription model ID. Moonshot's own subscription docs state that Kimi Code offers two
+  models across exactly four ids — `k3`, `k3-256k`, `kimi-for-coding`,
+  `kimi-for-coding-highspeed` — which is precisely the published set here. It is a tariff key, not an addressable model — it carries the official API
   rate needed to price replacement cost, and the subscription route publishes no id for it. The
   widely repeated claim that a thinking-off request silently reroutes K3/K2.7 down to K2.6 is
   contradicted by our own live turns: the `k3:*:off` legs of the coverage matrix priced under
