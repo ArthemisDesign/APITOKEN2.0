@@ -1254,23 +1254,30 @@ impl KimiGateway {
         if self.shutting_down.load(Ordering::Acquire) {
             return error_response(GatewayFailure::Unavailable("kimi_shutdown"));
         }
-        // A strict-policy key was refused here, before any pricing was attempted, on the
-        // assumption that serving one required a release-pinned catalog entry for `kimi`. The
-        // release-v2 retirement removed that requirement: head 55 is final, a model outside the
-        // pinned catalog is a product gap rather than a fault, and it is billed on the account's
-        // legacy multiplier through the exact legacy tariff — which is how this plane already
-        // reserves (`docs/ops/MODEL_RELEASE_CYCLE.md` Phase B, `docs/commerce/MULTI-DISCOUNT.md`
-        // §7.1a).
+        // A strict-policy key is refused here, before any pricing is attempted, and the refusal is
+        // terminal rather than retryable.
         //
-        // The remaining condition is enforced by the authority rather than guessed here:
-        // `legacy_pricing_path_closed` keeps the legacy and strict writers shut while a release
-        // head exists unless the account carries the one-way opt-out marker, so an account that
-        // has not been migrated still cannot spend on this plane — it is refused once, in the
-        // place that owns the decision.
+        // Removing this on 2026-08-09 looked justified — after the release-v2 retirement a model
+        // outside the pinned catalog bills on the account's legacy multiplier — and it was wrong.
+        // There is a second gate behind the one I checked: the strict reserve writer itself
+        // demands a `policy_v1` admission snapshot, which only the providers that resolve a
+        // catalog-backed policy can build. KIMI reserves on the plain legacy writer, so the
+        // request reached PostgreSQL and died there with `strict reservation lacks a policy_v1
+        // admission snapshot`, surfacing to the customer as a 529 with `Retry-After` — a
+        // retryable error for a permanently deterministic condition, which is exactly the shape
+        // this repository fixed everywhere else.
         //
-        // Keeping the blanket refusal would have made KIMI unreachable for the whole customer
-        // base as strict provisioning and its backfill progress, which is the opposite of what
-        // publishing the provider was for.
+        // Serving a strict key therefore needs catalog membership for `kimi`, not a smaller
+        // change. Until that exists the honest answer is this one refusal.
+        if request
+            .billing
+            .as_ref()
+            .is_some_and(|input| input.strict_policy)
+        {
+            return error_response(GatewayFailure::Unsupported(
+                "kimi_strict_pricing_unavailable",
+            ));
+        }
         if let Err(error) = validate_priced_surface(&request.body) {
             return error_response(error);
         }

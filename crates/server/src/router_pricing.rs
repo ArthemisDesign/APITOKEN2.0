@@ -519,18 +519,13 @@ pub(crate) async fn pricing(
         .into_iter()
         .filter_map(|(candidate, base)| {
             // Strict Gemini admission is intentionally unavailable today; the catalog must not
-            // advertise a personalized rate for a model that this key cannot execute.
-            if candidate.provider_id == "google" {
+            // advertise a personalized rate for a model that this key cannot execute. KIMI is in
+            // the same position: its gateway refuses a strict key, because the strict reserve
+            // writer needs a `policy_v1` admission snapshot that only a catalog-backed policy can
+            // build, and `kimi` has no catalog entry. Quoting either would be an offer we cannot
+            // honour.
+            if candidate.provider_id == "google" || candidate.provider_id == "kimi" {
                 return None;
-            }
-            // KIMI is the opposite case, and dropping it here would now be the bug. Its models
-            // sit outside the release-pinned catalog by design (head 55 is final), so
-            // `resolve_pricing` would reject them as `ModelNotInCatalog` and the router would
-            // hide from a strict key a provider its own plane serves. Settlement for such a model
-            // bills the account's legacy multiplier through the exact legacy tariff, so quoting
-            // that same multiplier is what makes the catalog match the invoice.
-            if candidate.provider_id == "kimi" {
-                return Some(priced_entry(candidate.id.clone(), base, auth.mult_bp));
             }
             match resolve_pricing(
                 &bundle,

@@ -519,12 +519,10 @@ Only published subscription aliases are advertised (`k3`, `k3[1m]`, `k3-256k`,
 `kimi-for-coding`, `kimi-for-coding-highspeed`). The official Open Platform ids
 (`kimi-k3`, `kimi-k2.6`, `kimi-k2.7-code…`) are tariff keys the gateway refuses on the wire, so
 neither the producer nor `/internal/router/catalog/pricing` resolves them. A key under strict
-policy **is** quoted for `kimi/*`, at the account's legacy multiplier — KIMI's models sit outside
-the release-pinned catalog by design (head 55 is final), so `resolve_pricing` would reject them as
-`ModelNotInCatalog` and the router would hide a provider its own plane serves. Settlement bills a
-model in that position on the same legacy multiplier, so quoting it is what keeps the catalog and
-the invoice in agreement. Gemini is the genuinely unavailable one and is still dropped. See
-`docs/engine/KIMI_PROVIDER.md` §0.
+policy sees no `kimi/*` rate at all: the KIMI gateway refuses strict keys terminally, because the
+strict reserve writer needs a `policy_v1` admission snapshot that only a catalog-backed policy can
+build and `kimi` has no catalog entry. The producer drops those candidates so the catalog agrees
+with what admission will actually serve. See `docs/engine/KIMI_PROVIDER.md` §0.
 
 A namespaced `kimi/<alias>` is resolved by the Anthropic plane's admission back to the bare
 alias before dispatch (`KimiGateway::resolve_public_model`). The plane strips only its own

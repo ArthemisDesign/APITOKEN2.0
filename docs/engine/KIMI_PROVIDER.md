@@ -41,33 +41,32 @@ Commerce/OpenKeys catalogue mirrors and unsupported capabilities remain tracked 
 - `decision` This file is an internal engineering instruction (required by `AGENTS.md`,
   "Documentation is a living contract"), not a public storefront.
 
-A key under **strict** policy is served, as of 2026-08-09. It was not, and that refusal was the
-one blocker between the published catalog entry and selling the provider.
+A key under **strict** policy is **not** served, and this is the one blocker between the
+published catalog entry and selling the provider.
 
-`KimiGateway::handle` used to refuse a strict key with `kimi_strict_pricing_unavailable` as its
-very first check, before any pricing attempt. The premise was that serving one required a
-release-pinned catalog entry for `kimi`. The release-v2 retirement made that premise false: head
-55 is final, a model outside the pinned catalog is a product gap rather than a fault, and it is
-billed on the account's legacy multiplier through the exact legacy tariff
-(`docs/ops/MODEL_RELEASE_CYCLE.md` Phase B, `docs/commerce/MULTI-DISCOUNT.md` §7.1a) — which is
-exactly how this plane already reserves.
+`KimiGateway::handle` refuses a strict key with `kimi_strict_pricing_unavailable` before any
+pricing is attempted, and the refusal is terminal rather than retryable.
 
-- `decision` 2026-08-09 (owner-approved) — delete the blanket refusal. The one condition that
-  remains is whether this account may use the legacy writers at all, and that is enforced by
-  `legacy_pricing_path_closed` (`crates/registry/src/pg.rs`) inside the transaction that moves the
-  money: the writers stay shut while a release head exists **unless** the account carries the
-  one-way opt-out marker. An unmigrated account is therefore still refused, once, by the authority
-  that owns the decision instead of by a guess in the gateway. GLM keeps its own refusal for now —
-  its money path has no live coverage.
+- `decision` 2026-08-09 — the refusal was removed and restored the same day. Removing it looked
+  justified: after the release-v2 retirement a model outside the pinned catalog bills on the
+  account's legacy multiplier, and `legacy_pricing_path_closed` already gates whether an account
+  may use the legacy writers at all. There is a **second** gate behind that one. The strict
+  reserve writer itself demands a `policy_v1` admission snapshot, which only a provider that
+  resolves a catalog-backed policy can build; KIMI reserves on the plain legacy writer, so the
+  request reached PostgreSQL and died there with `strict reservation lacks a policy_v1 admission
+  snapshot`. The customer saw a `529` with `Retry-After` — a retryable error for a permanently
+  deterministic condition, which is strictly worse than the clean refusal it replaced. Verified
+  live against a real strict account before the restore.
+- `decision` Serving a strict key therefore needs catalog membership for `kimi`, not a smaller
+  change. That is an owner decision about the pricing catalog, not a gateway edit.
 
-`router_pricing.rs` follows: it quotes `kimi/*` to a strict key at the account's legacy
-multiplier, because that is what settlement bills. Dropping those candidates — as it did while the
-gateway refused them — would now hide from a strict key a provider its own plane serves.
+`router_pricing.rs` matches: it quotes no `kimi/*` rate to a strict key, so the catalog and
+admission agree and the customer sees a clean absence rather than a rate they cannot spend.
 
-The urgency was real: `00348678` provisions new accounts (B2C and invited B2B) directly on the
+The urgency is real: `00348678` provisions new accounts (B2C and invited B2B) directly on the
 strict path and `5b1af567` backfills the existing cohort behind `PRICING_BACKFILL_ENABLED`, so the
-refusal was removing customers from KIMI as the migration progressed. OpenKeys keys are strict by
-construction and were affected first.
+reachable audience for KIMI shrinks as the migration proceeds. OpenKeys keys are strict by
+construction and cannot reach it at all.
 
 Until the live matrix is executed on every profile, the GA criterion of §1
 `PROVIDER_ONBOARDING.md` is **not claimed**. The terminal state of this work is a verified
