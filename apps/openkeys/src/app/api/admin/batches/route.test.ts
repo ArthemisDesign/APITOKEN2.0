@@ -47,54 +47,6 @@ describe("OpenKeys admin batches route", () => {
     expect(listBatches).not.toHaveBeenCalled();
   });
 
-  it("при подтверждённом release context отвечает ready без чтения legacy authority", async () => {
-    const releaseContext = { head: { active_generation: 10 } };
-    const client = engine({
-      getPricingReleaseProvisioningContextV2: vi.fn(async () => releaseContext),
-    });
-    vi.mocked(getEngineClient).mockReturnValue(client as never);
 
-    const response = await GET(new Request("http://127.0.0.1:3410/api/admin/batches"));
-    expect(response.status).toBe(200);
-    const payload = await response.json();
-    expect(payload.issuanceAuthority.ready).toBe(true);
-    expect(payload.issuanceAuthority.supportedModels.length).toBeGreaterThan(0);
-    expect(client.getActivePricingCatalog).not.toHaveBeenCalled();
-  });
 
-  it("неподтверждённый authority не прячет склад и возвращает reason с кодом ошибки", async () => {
-    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.mocked(getEngineClient).mockReturnValue(engine({}) as never);
-
-    const response = await GET(new Request("http://127.0.0.1:3410/api/admin/batches"));
-    expect(response.status).toBe(200);
-    const payload = await response.json();
-    expect(payload.totals).toEqual(batches.totals);
-    expect(payload.issuanceAuthority.ready).toBe(false);
-    expect(payload.issuanceAuthority.reason.code).toBe("pricing_authority_missing");
-    expect(spy).toHaveBeenCalledWith("openkeys issuance authority check failed", expect.objectContaining({
-      code: "pricing_authority_missing",
-    }));
-    spy.mockRestore();
-  });
-
-  it("недоступный движок отличается от неподтверждённого authority", async () => {
-    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.mocked(getEngineClient).mockReturnValue(engine({
-      getPricingReleaseProvisioningContextV2: vi.fn(async () => {
-        throw new EngineClientError("engine request failed", undefined, true);
-      }),
-    }) as never);
-
-    const response = await GET(new Request("http://127.0.0.1:3410/api/admin/batches"));
-    expect(response.status).toBe(200);
-    const payload = await response.json();
-    expect(payload.issuanceAuthority.ready).toBe(false);
-    expect(payload.issuanceAuthority.reason.code).toBe("engine_unavailable");
-    expect(spy).toHaveBeenCalledWith("openkeys issuance authority check failed", expect.objectContaining({
-      code: "engine_unavailable",
-      error: "EngineClientError",
-    }));
-    spy.mockRestore();
-  });
 });

@@ -8,7 +8,6 @@ import {
   describeIssuanceBlock,
   OFFICIAL_ONE_TO_ONE_CONTRACT,
   OpenKeysPricingError,
-  resolveOpenKeysPricingAuthority,
 } from "@/lib/openkeys-pricing";
 import { currentAdmin } from "@/lib/session";
 import { guardRequest, readJsonLimited } from "@/lib/request-guard";
@@ -41,12 +40,8 @@ export async function GET(request: Request): Promise<NextResponse> {
   const batches = await listBatches(admin, { limit, offset, q });
   try {
     const engine = getEngineClient();
-    const context = await engine.getPricingReleaseProvisioningContextV2();
-    const supportedModels = context === null
-      ? (await resolveOpenKeysPricingAuthority(engine)).catalog.entries
-        .map((entry) => entry.canonical_model_id)
-      : MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES
-        .map((entry) => entry.canonical_model_id);
+    const supportedModels = MULTI_DISCOUNT_TARGET_OPENKEYS_CATALOG_ENTRIES
+      .map((entry) => entry.canonical_model_id);
     return NextResponse.json({
       admin,
       ...batches,

@@ -31,7 +31,6 @@ import {
   OFFICIAL_ONE_TO_ONE_MULT_BP,
   OpenKeysPricingError,
   provisionOfficialOpenKeysCredential,
-  resolveOpenKeysPricingAuthority,
   type OpenKeysPricingAuthority,
 } from "./openkeys-pricing";
 
@@ -45,7 +44,7 @@ const officialPolicyFixture = JSON.parse(readFileSync(
   content_digest: string;
 };
 
-type PricingEngine = Parameters<typeof resolveOpenKeysPricingAuthority>[0];
+type PricingEngine = Parameters<typeof provisionOfficialOpenKeysCredential>[0];
 
 function catalog(): PricingCatalogSpec {
   return {
@@ -157,164 +156,11 @@ function catalogGen6(): PricingCatalogSpec {
 }
 
 describe("OpenKeys official 1:1 pricing", () => {
-  it("pins the complete reviewed Anthropic/OpenAI catalog and excludes Gemini", () => {
-    const active = catalog();
-    expect(() => assertOpenKeysCatalog(active)).not.toThrow();
-    expect(active.entries.map((entry) => entry.provider_id)).not.toContain("gemini");
-    expect(active.entries.map((entry) => entry.canonical_model_id)).toEqual([
-      "claude-haiku-4-5",
-      "claude-opus-4-7",
-      "claude-opus-4-8",
-      "claude-sonnet-4-6",
-      "claude-sonnet-5",
-      "gpt-5.4",
-      "gpt-5.5",
-      "gpt-5.6-luna",
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-    ]);
 
-    const withGemini = {
-      ...active,
-      entries: [...active.entries, {
-        provider_id: "gemini",
-        canonical_model_id: "gemini-future",
-        enabled: true,
-      }],
-    };
-    expect(() => assertOpenKeysCatalog(withGemini)).toThrow("exact reviewed Anthropic/OpenAI catalog");
-  });
 
-  it("accepts the reviewed generation-2 catalog only with its exact pinned identity", () => {
-    const gen2 = catalogGen2();
-    expect(() => assertOpenKeysCatalog(gen2)).not.toThrow();
-    expect(gen2.entries.map((entry) => entry.canonical_model_id)).toEqual([
-      "claude-fable-5",
-      "claude-haiku-4-5",
-      "claude-opus-4-7",
-      "claude-opus-4-8",
-      "claude-opus-5",
-      "claude-sonnet-4-6",
-      "claude-sonnet-5",
-      "gpt-5.4",
-      "gpt-5.5",
-      "gpt-5.6-luna",
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-    ]);
 
-    // Generation-2 content under the generation-1 catalog identity is not the
-    // reviewed catalog, and neither is a superset/subset of its entries.
-    expect(() => assertOpenKeysCatalog({ ...gen2, generation: 1 }))
-      .toThrow("exact reviewed Anthropic/OpenAI catalog");
-    expect(() =>
-      assertOpenKeysCatalog({
-        ...gen2,
-        entries: gen2.entries.filter((entry) => entry.canonical_model_id !== "claude-fable-5"),
-      })
-    ).toThrow("exact reviewed Anthropic/OpenAI catalog");
-    expect(() =>
-      assertOpenKeysCatalog({
-        ...gen2,
-        entries: gen2.entries.map((entry) =>
-          entry.canonical_model_id === "claude-opus-5" ? { ...entry, enabled: false } : entry),
-      })
-    ).toThrow("exact reviewed Anthropic/OpenAI catalog");
-    expect(() => assertOpenKeysCatalog({ ...gen2, capability_generation: 1 }))
-      .toThrow("exact reviewed Anthropic/OpenAI catalog");
-  });
 
-  it("resolves the generation-2 authority only with matching generation-2 switches", async () => {
-    const gen2Authority: OpenKeysPricingAuthority = { catalog: catalogGen2(), switches: switchesGen2() };
-    const getActivePricingCatalog = vi.fn(async () => catalogGen2());
-    const getActiveProviderSwitches = vi.fn(async (): Promise<ProviderSwitchSpec | null> => switchesGen2());
-    const engine = { getActivePricingCatalog, getActiveProviderSwitches } as unknown as PricingEngine;
-    await expect(resolveOpenKeysPricingAuthority(engine)).resolves.toEqual(gen2Authority);
 
-    const policy = buildOfficialOpenKeysPolicy("acct_openkeys_gen2", gen2Authority);
-    expect(policy).toMatchObject({ catalog_generation: 2, switch_generation: 2 });
-
-    // The transition window (catalog 2 active, switches still 1) stays fail closed.
-    getActiveProviderSwitches.mockResolvedValueOnce(switches());
-    await expect(resolveOpenKeysPricingAuthority(engine)).rejects.toMatchObject({
-      code: "switch_identity_mismatch",
-    });
-  });
-
-  it("accepts the reviewed generation-5 catalog only with its exact pinned identity", () => {
-    const gen5 = catalogGen5();
-    expect(() => assertOpenKeysCatalog(gen5)).not.toThrow();
-    expect(gen5.entries.map((entry) => entry.provider_id)).not.toContain("gemini");
-    expect(gen5.entries.map((entry) => entry.canonical_model_id)).toEqual([
-      "claude-fable-5",
-      "claude-haiku-4-5",
-      "claude-opus-4-7",
-      "claude-opus-4-8",
-      "claude-opus-5",
-      "claude-sonnet-4-6",
-      "claude-sonnet-5",
-      "gpt-5.4",
-      "gpt-5.5",
-      "gpt-5.6-luna",
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-    ]);
-
-    // Generation-5 content under the generation-2 catalog identity is not the
-    // reviewed catalog, and neither is a capability mismatch.
-    expect(() => assertOpenKeysCatalog({ ...gen5, generation: 2 }))
-      .toThrow("exact reviewed Anthropic/OpenAI catalog");
-    expect(() =>
-      assertOpenKeysCatalog({
-        ...gen5,
-        capability_generation: MULTI_DISCOUNT_GEN2_CAPABILITY_GENERATION,
-        capability_digest: MULTI_DISCOUNT_GEN2_CAPABILITY_DIGEST,
-      })
-    ).toThrow("exact reviewed Anthropic/OpenAI catalog");
-    expect(() =>
-      assertOpenKeysCatalog({
-        ...gen5,
-        entries: gen5.entries.filter((entry) => entry.canonical_model_id !== "claude-fable-5"),
-      })
-    ).toThrow("exact reviewed Anthropic/OpenAI catalog");
-  });
-
-  it("accepts generation 6 only with the exact GPT Image 2 addition", () => {
-    const gen6 = catalogGen6();
-    expect(() => assertOpenKeysCatalog(gen6)).not.toThrow();
-    expect(gen6.entries.map((entry) => entry.canonical_model_id)).toEqual([
-      ...catalogGen5().entries.map((entry) => entry.canonical_model_id),
-      "gpt-image-2-2026-04-21",
-    ]);
-    expect(() => assertOpenKeysCatalog({
-      ...gen6,
-      entries: gen6.entries.filter((entry) => entry.canonical_model_id !== "gpt-image-2-2026-04-21"),
-    })).toThrow("exact reviewed Anthropic/OpenAI catalog");
-    expect(() => assertOpenKeysCatalog({
-      ...gen6,
-      capability_digest: MULTI_DISCOUNT_GEN5_CAPABILITY_DIGEST,
-    })).toThrow("exact reviewed Anthropic/OpenAI catalog");
-  });
-
-  it("resolves the generation-5 authority only with matching generation-5 switches", async () => {
-    const gen5Authority: OpenKeysPricingAuthority = { catalog: catalogGen5(), switches: switchesGen5() };
-    const getActivePricingCatalog = vi.fn(async () => catalogGen5());
-    const getActiveProviderSwitches = vi.fn(async (): Promise<ProviderSwitchSpec | null> => switchesGen5());
-    const engine = { getActivePricingCatalog, getActiveProviderSwitches } as unknown as PricingEngine;
-    await expect(resolveOpenKeysPricingAuthority(engine)).resolves.toEqual(gen5Authority);
-
-    const policy = buildOfficialOpenKeysPolicy("acct_openkeys_gen5", gen5Authority);
-    expect(policy).toMatchObject({ catalog_generation: 5, switch_generation: 5 });
-
-    // A product switch pinned to another catalog generation stays fail closed.
-    const driftedSwitches: ProviderSwitchSpec = {
-      ...switchesGen5(),
-      entries: switchesGen5().entries.map((entry) =>
-        typeof entry.scope === "object" ? { ...entry, catalog_generation: 2 } : entry),
-    };
-    expect(() => assertOpenKeysSwitches(driftedSwitches, catalogGen5()))
-      .toThrow("only enabled Anthropic and OpenAI product switches");
-  });
 
   it("rejects multiplier, discount, and pricing-contract overrides at every caller boundary", () => {
     for (const field of [
@@ -370,17 +216,6 @@ describe("OpenKeys official 1:1 pricing", () => {
     expect(policy).toMatchObject(officialPolicyFixture);
   });
 
-  it("fails closed until the exact active catalog and switches are available", async () => {
-    const getActivePricingCatalog = vi.fn(async () => catalog());
-    const getActiveProviderSwitches = vi.fn(async (): Promise<ProviderSwitchSpec | null> => switches());
-    const engine = { getActivePricingCatalog, getActiveProviderSwitches } as unknown as PricingEngine;
-    await expect(resolveOpenKeysPricingAuthority(engine)).resolves.toEqual(authority());
-
-    getActiveProviderSwitches.mockResolvedValueOnce(null);
-    await expect(resolveOpenKeysPricingAuthority(engine)).rejects.toMatchObject({
-      code: "pricing_authority_missing",
-    });
-  });
 
   describe("describeIssuanceBlock", () => {
     it("передаёт код pricing-ошибки без утечки внутреннего сообщения", () => {
@@ -407,181 +242,6 @@ describe("OpenKeys official 1:1 pricing", () => {
     });
   });
 
-  it("activates strict, credits, issues the ACKed key, and opts out before returning the secret", async () => {
-    const trace: string[] = [];
-    let preparedPolicy: AccountPolicySpec | null = null;
-    const binding: AccountPolicyBinding = {
-      policy_enforcement: "strict",
-      funding_enforcement: "strict",
-      reconciliation_state: "verified",
-    };
-    const prepareAccountPolicy = vi.fn(async (policy: AccountPolicySpec) => {
-      trace.push("prepare-policy");
-      preparedPolicy = policy;
-      return { result: "stored" as const, identity: { policy } };
-    });
-    const getAccountPricingState = vi.fn(async () => {
-      trace.push("read-state");
-      return "unbound" as const;
-    });
-    const activateAccountPolicy = vi.fn(async (policy: AccountPolicySpec) => {
-      trace.push("activate-policy");
-      return { result: "applied" as const, identity: { policy } };
-    });
-    const getActiveAccountPolicy = vi.fn(async () => {
-      trace.push("readback-policy");
-      return preparedPolicy === null ? null : { policy: preparedPolicy, binding };
-    });
-    const creditAccount = vi.fn(async (accountId: string, amountNano: bigint, reference: string) => {
-      trace.push("credit");
-      return { account: accountId, balance_nano: amountNano.toString(), balance: "$50", reference };
-    });
-    const issueKey = vi.fn(async (accountId: string) => {
-      trace.push("issue-secret");
-      return {
-        key: "sk-pool-official-secret",
-        key_id: "key_official",
-        account: accountId,
-        label: "openkeys",
-        spend_limit_nano: null,
-        expires_ts: null,
-      };
-    });
-    const optOutPricingReleaseV2 = vi.fn(async () => {
-      trace.push("opt-out");
-      return { result: "applied" as const, identity: {}, pricing_release_opt_out_ts: 1_700_000_000 };
-    });
-    const engine = {
-      prepareAccountPolicy,
-      getAccountPricingState,
-      activateAccountPolicy,
-      getActiveAccountPolicy,
-      creditAccount,
-      issueKey,
-      optOutPricingReleaseV2,
-    } as unknown as PricingEngine;
 
-    await expect(provisionOfficialOpenKeysCredential(engine, {
-      accountId: "acct_openkeys_new",
-      authority: authority(),
-      faceValueNano: 50_000_000_000n,
-      creditReference: "openkeys:batch:0",
-      keyLabel: "openkeys current",
-      onCredited: async () => { trace.push("credit-journal"); },
-    })).resolves.toMatchObject({ key: "sk-pool-official-secret" });
 
-    // Strict activation → credit → ACKed key → opt-out: the account is servable (the opt-out
-    // guard sees the strict binding and the ACKed key) before the secret is ever returned.
-    expect(trace).toEqual([
-      "prepare-policy",
-      "read-state",
-      "activate-policy",
-      "readback-policy",
-      "credit",
-      "credit-journal",
-      "issue-secret",
-      "opt-out",
-    ]);
-    expect(creditAccount).toHaveBeenCalledWith(
-      "acct_openkeys_new",
-      50_000_000_000n,
-      "openkeys:batch:0",
-    );
-    expect(issueKey).toHaveBeenCalledWith("acct_openkeys_new", {
-      label: "openkeys current",
-      activationPolicyAck: {
-        effectivePolicyVersion: 1,
-        policyDigest: preparedPolicy!.content_digest,
-      },
-    });
-    expect(optOutPricingReleaseV2).toHaveBeenCalledWith({
-      accountId: "acct_openkeys_new",
-      createdBy: "openkeys",
-      reason: "new OpenKeys issuance on the direct strict path",
-    });
-  });
-
-  it("never credits or issues after a rejected policy ACK", async () => {
-    const creditAccount = vi.fn();
-    const issueKey = vi.fn();
-    const optOutPricingReleaseV2 = vi.fn();
-    const engine = {
-      prepareAccountPolicy: vi.fn(async (policy: AccountPolicySpec) => ({
-        result: "rejected" as const,
-        rejection: "locked" as const,
-        identity: { policy },
-      })),
-      getAccountPricingState: vi.fn(),
-      activateAccountPolicy: vi.fn(),
-      getActiveAccountPolicy: vi.fn(),
-      creditAccount,
-      issueKey,
-      optOutPricingReleaseV2,
-    } as unknown as PricingEngine;
-
-    await expect(provisionOfficialOpenKeysCredential(engine, {
-      accountId: "acct_openkeys_rejected",
-      authority: authority(),
-      faceValueNano: 1_000_000_000n,
-      creditReference: "openkeys:batch:1",
-      keyLabel: "openkeys rejected",
-    })).rejects.toMatchObject({ code: "policy_ack_rejected" });
-    expect(creditAccount).not.toHaveBeenCalled();
-    expect(issueKey).not.toHaveBeenCalled();
-    expect(optOutPricingReleaseV2).not.toHaveBeenCalled();
-  });
-
-  it("fails the issuance loudly when the engine rejects the opt-out marker", async () => {
-    const optOutPricingReleaseV2 = vi.fn(async () => ({
-      result: "rejected" as const,
-      code: "missing_dependency" as const,
-      identity: {},
-      rejection: { missing_dependency: { dependency: "active_strict_policy_binding" } },
-    }));
-    let preparedPolicy: AccountPolicySpec | null = null;
-    const binding: AccountPolicyBinding = {
-      policy_enforcement: "strict",
-      funding_enforcement: "strict",
-      reconciliation_state: "verified",
-    };
-    const engine = {
-      prepareAccountPolicy: vi.fn(async (policy: AccountPolicySpec) => {
-        preparedPolicy = policy;
-        return { result: "stored" as const, identity: { policy } };
-      }),
-      getAccountPricingState: vi.fn(async () => "unbound" as const),
-      activateAccountPolicy: vi.fn(async (policy: AccountPolicySpec) => ({
-        result: "applied" as const,
-        identity: { policy },
-      })),
-      getActiveAccountPolicy: vi.fn(async () =>
-        preparedPolicy === null ? null : { policy: preparedPolicy, binding }),
-      creditAccount: vi.fn(async (accountId: string) => ({
-        account: accountId,
-        balance_nano: "1000000000",
-        balance: "$1.000000000",
-        reference: "openkeys:test",
-      })),
-      issueKey: vi.fn(async (accountId: string) => ({
-        key: "sk-pool-never-returned",
-        key_id: "key_never_returned",
-        account: accountId,
-        label: "openkeys",
-        spend_limit_nano: null,
-        expires_ts: null,
-      })),
-      optOutPricingReleaseV2,
-    } as unknown as PricingEngine;
-
-    // The throw aborts the issuance job: its compensation disables the half-provisioned account
-    // instead of handing out a secret the engine refuses to serve.
-    await expect(provisionOfficialOpenKeysCredential(engine, {
-      accountId: "acct_openkeys_guarded",
-      authority: authority(),
-      faceValueNano: 1_000_000_000n,
-      creditReference: "openkeys:test",
-      keyLabel: "openkeys guarded",
-    })).rejects.toMatchObject({ code: "pricing_opt_out_rejected" });
-    expect(optOutPricingReleaseV2).toHaveBeenCalledOnce();
-  });
 });

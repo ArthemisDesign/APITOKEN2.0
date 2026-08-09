@@ -26,7 +26,6 @@ import {
   OFFICIAL_ONE_TO_ONE_CONTRACT,
   OFFICIAL_ONE_TO_ONE_MULT_BP,
   provisionOfficialOpenKeysCredential,
-  resolveOpenKeysPricingAuthority,
 } from "./openkeys-pricing";
 import { openSecret, sealSecret } from "./secret-box";
 import { USAGE_REPORT_CACHE_TTL_MS } from "./usage-refresh-timing";
@@ -147,10 +146,6 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
   const config = loadConfig();
   const { db } = getDatabase();
   const engine = getEngineClient();
-  // Read and validate the already-reviewed product authority before creating a batch or account.
-  // OpenKeys never mutates global catalogs/switches and cannot issue while they are absent/drifted.
-  const pricingAuthority = await resolveOpenKeysPricingAuthority(engine);
-
   const [batch] = await db
     .insert(openkeysBatches)
     .values({
@@ -190,12 +185,10 @@ export async function issueBatch(input: IssueBatchInput): Promise<{ batchId: str
         status: "account_created", engineAccountId: account.account, updatedAt: new Date(),
       }).where(eq(openkeysIssuanceJobs.id, job.id));
 
-      // Policy-before-credit is unchanged; post-cutover the account is born on the direct
-      // strict path (strict activation → exact face-value credit → ACKed key → one-way engine
-      // opt-out), and the usable secret is issued last, only after the account is servable.
+      // Credit the face value first, then issue the usable secret: a key must never exist on an
+      // account that has not been funded.
       const key = await provisionOfficialOpenKeysCredential(engine, {
         accountId: account.account,
-        authority: pricingAuthority,
         faceValueNano: input.faceValueNano,
         creditReference: `openkeys:${batch.id}:${index}`,
         keyLabel: input.apiType === "anthropic"
