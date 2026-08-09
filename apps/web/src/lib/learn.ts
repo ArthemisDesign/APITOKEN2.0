@@ -10,6 +10,12 @@ import { learnProviderEn } from "./learn-provider-en";
 import { learnProviderRu } from "./learn-provider-ru";
 import { learnProviderZh } from "./learn-provider-zh";
 import { learnProviderKo } from "./learn-provider-ko";
+import {
+  learnProviderParityEn,
+  learnProviderParityKo,
+  learnProviderParityRu,
+  learnProviderParityZh,
+} from "./learn-provider-parity";
 
 export type LearnCluster = "buy" | "free" | "integrate" | "compare" | "explain";
 
@@ -1792,7 +1798,11 @@ const coreLearnArticles: LearnArticle[] = [
   },
 ];
 
-export const learnArticles: LearnArticle[] = [...coreLearnArticles, ...learnProviderEn];
+export const learnArticles: LearnArticle[] = [
+  ...coreLearnArticles,
+  ...learnProviderEn,
+  ...learnProviderParityEn,
+];
 
 // Put the broadest provider entry points first inside each hub cluster. The
 // remaining guides keep their source order, so new long-tail content does not
@@ -1857,9 +1867,9 @@ export const learnArticlesBySlug: Record<string, LearnArticle> = Object.fromEntr
 );
 
 const translations: Record<Exclude<Locale, "en">, Record<string, LocalizedContent>> = {
-  ru: { ...learnRu, ...learnProviderRu },
-  zh: { ...learnZh, ...learnProviderZh },
-  ko: { ...learnKo, ...learnProviderKo },
+  ru: { ...learnRu, ...learnProviderRu, ...learnProviderParityRu },
+  zh: { ...learnZh, ...learnProviderZh, ...learnProviderParityZh },
+  ko: { ...learnKo, ...learnProviderKo, ...learnProviderParityKo },
 };
 
 function enContent(article: LearnArticle): LocalizedContent {

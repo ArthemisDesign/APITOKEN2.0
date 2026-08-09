@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { buildSitemap } from "../app/sitemap";
 import {
   articlesForLocale,
+  learnPath,
   learnArticles,
   learnArticlesBySlug,
   LOCALES,
@@ -9,6 +11,14 @@ import {
   resolveArticle,
 } from "./learn";
 import { learnProviderEn } from "./learn-provider-en";
+import {
+  CLAUDE_PROVIDER_PARITY,
+  learnProviderParityEn,
+  PARITY_PROVIDERS,
+} from "./learn-provider-parity";
+import { buildArticleJsonLd, buildArticleMetadata } from "./learn-page";
+import { buildLlms } from "./llms";
+import { absoluteUrl } from "./seo";
 
 describe("learn cluster", () => {
   it("has unique slugs", () => {
@@ -53,6 +63,115 @@ describe("learn cluster", () => {
       expect(article.faq.length, `${article.slug} FAQs`).toBeGreaterThanOrEqual(3);
       expect(article.published, `${article.slug} published`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       expect(article.updated, `${article.slug} updated`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    }
+  });
+
+  it("maps every article in the original 47-page catalog to GPT, Gemini and Kimi", () => {
+    const providerArticleSlugs = new Set([
+      ...learnProviderEn.map((article) => article.slug),
+      ...learnProviderParityEn.map((article) => article.slug),
+    ]);
+    const originalCatalogSlugs = learnArticles
+      .filter((article) => !providerArticleSlugs.has(article.slug))
+      .map((article) => article.slug)
+      .sort();
+
+    expect(originalCatalogSlugs).toHaveLength(47);
+    expect(Object.keys(CLAUDE_PROVIDER_PARITY).sort()).toEqual(originalCatalogSlugs);
+
+    for (const [source, targets] of Object.entries(CLAUDE_PROVIDER_PARITY)) {
+      expect(learnArticlesBySlug[source], source).toBeDefined();
+      expect(Object.keys(targets).sort(), source).toEqual([...PARITY_PROVIDERS].sort());
+      for (const provider of PARITY_PROVIDERS) {
+        const target = targets[provider];
+        expect(learnArticlesBySlug[target], `${source} -> ${provider}: ${target}`).toBeDefined();
+        for (const locale of LOCALES) {
+          expect(resolveArticle(target, locale), `${source} -> ${provider}: ${target} @ ${locale}`).not.toBeNull();
+        }
+      }
+    }
+  });
+
+  it("keeps generated provider guides substantive, unique and fully localized", () => {
+    expect(learnProviderParityEn).toHaveLength(119);
+    expect(new Set(learnProviderParityEn.map((article) => article.slug)).size).toBe(learnProviderParityEn.length);
+    expect(new Set(learnProviderParityEn.map((article) => article.title)).size).toBe(learnProviderParityEn.length);
+    expect(new Set(learnProviderParityEn.map((article) => article.description)).size).toBe(learnProviderParityEn.length);
+
+    for (const locale of LOCALES) {
+      const localized = learnProviderParityEn.map((article) => resolveArticle(article.slug, locale)!.content);
+      expect(new Set(localized.map((content) => content.title)).size, `${locale} titles`).toBe(localized.length);
+      expect(new Set(localized.map((content) => content.description)).size, `${locale} descriptions`).toBe(localized.length);
+    }
+
+    for (const article of learnProviderParityEn) {
+      expect(article.sections.length, `${article.slug} sections`).toBeGreaterThanOrEqual(4);
+      expect(article.faq.length, `${article.slug} FAQs`).toBeGreaterThanOrEqual(3);
+      expect(article.related.length, `${article.slug} related`).toBeGreaterThanOrEqual(3);
+      expect(article.published, `${article.slug} published`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(article.updated, `${article.slug} updated`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+      for (const locale of LOCALES) {
+        const resolved = resolveArticle(article.slug, locale)!;
+        expect(resolved.content.sections.length, `${article.slug} @ ${locale} sections`).toBe(article.sections.length);
+        expect(resolved.content.faq.length, `${article.slug} @ ${locale} FAQs`).toBe(article.faq.length);
+        expect(JSON.stringify(resolved.content).length, `${article.slug} @ ${locale} depth`).toBeGreaterThan(1_800);
+      }
+    }
+  });
+
+  it("keeps exact provider protocols in every generated guide", () => {
+    for (const article of learnProviderParityEn) {
+      for (const locale of LOCALES) {
+        const content = JSON.stringify(resolveArticle(article.slug, locale)!.content);
+        if (article.slug.startsWith("gpt-")) {
+          expect(content, `${article.slug} @ ${locale}`).toContain("Authorization: Bearer");
+          expect(content, `${article.slug} @ ${locale}`).toContain("gpt-5.6-terra");
+        } else if (article.slug.startsWith("gemini-")) {
+          expect(content, `${article.slug} @ ${locale}`).toContain("x-goog-api-key");
+          expect(content, `${article.slug} @ ${locale}`).toContain("gemini-3.6-flash");
+        } else if (article.slug.startsWith("kimi-")) {
+          expect(content, `${article.slug} @ ${locale}`).toContain("x-api-key");
+          expect(content, `${article.slug} @ ${locale}`).toContain("kimi/kimi-for-coding");
+          expect(content, `${article.slug} @ ${locale}`).not.toMatch(/incremental SSE|инкрементальн.*SSE|增量 SSE|증분 SSE/i);
+        }
+      }
+    }
+  });
+
+  it("publishes every localized parity URL with canonical, hreflang and structured data", () => {
+    const sitemapUrls = new Set(buildSitemap().map((entry) => entry.url));
+
+    for (const article of learnProviderParityEn) {
+      for (const locale of LOCALES) {
+        const path = learnPath(article.slug, locale);
+        expect(sitemapUrls, `${article.slug} @ ${locale} sitemap`).toContain(absoluteUrl(path));
+
+        const metadata = buildArticleMetadata(article.slug, locale)!;
+        expect(metadata.alternates?.canonical, `${article.slug} @ ${locale} canonical`).toBe(absoluteUrl(path));
+        expect(Object.keys(metadata.alternates?.languages ?? {}).sort(), `${article.slug} @ ${locale} hreflang`).toEqual([
+          "en",
+          "ko",
+          "ru",
+          "x-default",
+          "zh-CN",
+        ]);
+        expect(metadata.robots, `${article.slug} @ ${locale} robots`).toBeUndefined();
+
+        const graph = buildArticleJsonLd(article.slug, locale)?.["@graph"] ?? [];
+        expect(graph.some((node) => node["@type"] === "Article"), `${article.slug} @ ${locale} Article schema`).toBe(true);
+        expect(graph.some((node) => node["@type"] === "FAQPage"), `${article.slug} @ ${locale} FAQ schema`).toBe(true);
+      }
+    }
+  });
+
+  it("exposes GPT, Gemini and Kimi parity to AI-readable indexes", () => {
+    for (const locale of LOCALES) {
+      const llms = buildLlms(locale);
+      expect(llms, locale).toContain("Kimi");
+      expect(llms, locale).toContain("kimi/k3");
+      expect(llms, locale).toContain(learnPath("kimi-api-prompt-caching", locale));
+      expect(llms, locale).toContain("Kimi uses the Messages shape and accepts stream:true, but public chunk incrementality remains a preview capability under live validation");
     }
   });
 
