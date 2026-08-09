@@ -5426,7 +5426,8 @@ fn pricing_release_opt_out_dual_path_postgres_matrix() {
                  id,balance_nano,reserved_nano,mult_bp,status,created_ts,created
              ) VALUES
                  ('dual-strict',1000,0,10000,'active',1,''),
-                 ('dual-stale',500,0,10000,'active',1,'');
+                 ('dual-stale',500,0,10000,'active',1,''),
+                 ('dual-keyless',300,0,10000,'active',1,'');
              INSERT INTO account_policy_versions(
                  account_id,effective_version,policy_id,policy_version,source_policy_digest,
                  owner_type,owner_id,account_class,product_id,schema_version,
@@ -5437,7 +5438,9 @@ fn pricing_release_opt_out_dual_path_postgres_matrix() {
                  ('dual-stale',1,'dual-stale-policy',1,'dual-stale-source-v1',
                   'global_b2c','global','b2c','main',1,1,1,'dual-stale-policy-v1',false,1),
                  ('dual-stale',2,'dual-stale-policy',2,'dual-stale-source-v2',
-                  'global_b2c','global','b2c','main',1,1,1,'dual-stale-policy-v2',false,2);
+                  'global_b2c','global','b2c','main',1,1,1,'dual-stale-policy-v2',false,2),
+                 ('dual-keyless',1,'dual-keyless-policy',1,'dual-keyless-source-v1',
+                  'global_b2c','global','b2c','main',1,1,1,'dual-keyless-policy-v1',false,1);
              INSERT INTO account_policy_rules(
                  account_id,effective_version,rule_id,rule_digest,scope_type,provider_id,
                  canonical_model_id,pricing_mode,rule_origin,discount_bps,
@@ -5446,6 +5449,8 @@ fn pricing_release_opt_out_dual_path_postgres_matrix() {
                  ('dual-strict',1,'dual-strict-rule','dual-strict-rule-v1','provider',
                   'anthropic',NULL,'track','managed',NULL,10000,true,true,false),
                  ('dual-stale',1,'dual-stale-rule','dual-stale-rule-v1','provider',
+                  'anthropic',NULL,'track','managed',NULL,10000,true,true,false),
+                 ('dual-keyless',1,'dual-keyless-rule','dual-keyless-rule-v1','provider',
                   'anthropic',NULL,'track','managed',NULL,10000,true,true,false);
              INSERT INTO funding_buckets(
                  bucket_id,account_id,source_type,source_ref,eligibility,balance_nano,
@@ -5454,7 +5459,9 @@ fn pricing_release_opt_out_dual_path_postgres_matrix() {
                  ('dual-strict-paid','dual-strict','paid','primary','any',
                   1000,0,0,1,'active',1,1),
                  ('dual-stale-paid','dual-stale','paid','primary','any',
-                  500,0,0,1,'active',1,1);
+                  500,0,0,1,'active',1,1),
+                 ('dual-keyless-paid','dual-keyless','paid','primary','any',
+                  300,0,0,1,'active',1,1);
              INSERT INTO api_keys(
                  key,key_id,account_id,status,created_ts,created,
                  activation_policy_effective_version,activation_policy_digest,
@@ -5469,7 +5476,8 @@ fn pricing_release_opt_out_dual_path_postgres_matrix() {
                  policy_enforcement,funding_enforcement,reconciliation_state,updated_ts
              ) VALUES
                  ('dual-strict','main','b2c',1,'strict','strict','verified',1),
-                 ('dual-stale','main','b2c',1,'strict','strict','verified',1);
+                 ('dual-stale','main','b2c',1,'strict','strict','verified',1),
+                 ('dual-keyless','main','b2c',1,'strict','strict','verified',1);
              UPDATE api_keys
                 SET activation_policy_effective_version=2,
                     activation_policy_digest='dual-stale-policy-v2'
@@ -5614,6 +5622,24 @@ fn pricing_release_opt_out_dual_path_postgres_matrix() {
         .unwrap()
         .get(0);
     assert_eq!(marker_absent, 0);
+
+    // D0. A strict account with NO active keys is admitted too: nothing can be served with a
+    // stale ACK, and the first later key is born with the current ACK through strict issuance.
+    let keyless_ts = match pg.pricing_release_opt_out_v2(&opt_out("dual-keyless")).unwrap() {
+        PricingReleaseOptOutOutcomeV2::Applied {
+            pricing_release_opt_out_ts,
+        } => pricing_release_opt_out_ts,
+        other => panic!("unexpected keyless opt-out outcome: {other:?}"),
+    };
+    let keyless_stored: Option<i64> = pg
+        .client
+        .query_one(
+            "SELECT pricing_release_opt_out_ts FROM accounts WHERE id='dual-keyless'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(keyless_stored, Some(keyless_ts));
 
     // D. The guarded writer sets the marker idempotently and the resolver falls through.
     let applied_ts = match pg.pricing_release_opt_out_v2(&opt_out("dual-strict")).unwrap() {

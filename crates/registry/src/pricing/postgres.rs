@@ -4180,14 +4180,17 @@ pub(crate) fn postgres_pricing_release_resolution_v2(
 ///
 /// The whole decision runs in ONE transaction on the billing single writer: the account row is
 /// locked `FOR UPDATE`, an existing marker is an exact replay (`Unchanged`, no mutation), and a
-/// new marker is written only when the account proves a LIVE strict path — an active account, a
-/// `strict/strict/verified` policy binding (the same state the strict reserve gate and the
-/// migration-0016 strict triggers require) and at least one active, unexpired key whose
-/// activation ACK matches the active binding exactly (the `KeyAuth::active_at` strict-ack check:
+/// new marker is written only when the account proves a LIVE strict path — an active account
+/// and a `strict/strict/verified` policy binding (the same state the strict reserve gate and the
+/// migration-0016 strict triggers require) — plus key safety: either the account has NO active
+/// unexpired keys at all (nothing can be served with a stale ACK, so there is nothing to
+/// protect; the first later key is born with the current ACK through the strict issuance path),
+/// or at least one active unexpired key whose activation ACK matches the active binding exactly
+/// (the `KeyAuth::active_at` strict-ack check:
 /// `activation_policy_effective_version = active_effective_version`,
 /// `activation_policy_digest = policy.content_digest`, non-NULL `activation_policy_ack_ts`).
-/// Without that proof the write is rejected as a missing dependency: opting out an account with
-/// no live strict path would silently strand it on the stale `accounts.mult_bp` scalar.
+/// An account with active keys and no current ACK is rejected as a missing dependency: opting it
+/// out would silently strand it on the stale `accounts.mult_bp` scalar.
 ///
 /// In-flight release-v2 reservations of the account are NOT a blocker and need none: settlement
 /// is dispatched by the immutable reserve-time snapshot, never by the marker. The migration-0016
@@ -4235,20 +4238,32 @@ pub(crate) fn postgres_pricing_release_opt_out_v2(
                  SELECT 1
                    FROM accounts account
                    JOIN account_policy_bindings binding ON binding.account_id=account.id
-                   JOIN account_policy_versions policy
-                     ON policy.account_id=binding.account_id
-                    AND policy.effective_version=binding.active_effective_version
-                   JOIN api_keys key ON key.account_id=account.id
                   WHERE account.id=$1
                     AND account.status='active'
                     AND binding.policy_enforcement='strict'
                     AND binding.funding_enforcement='strict'
                     AND binding.reconciliation_state='verified'
-                    AND key.status='active'
-                    AND (key.expires_ts IS NULL OR key.expires_ts>$2)
-                    AND key.activation_policy_effective_version=binding.active_effective_version
-                    AND key.activation_policy_digest=policy.content_digest
-                    AND key.activation_policy_ack_ts IS NOT NULL
+             ) AND (
+                 NOT EXISTS(
+                     SELECT 1 FROM api_keys key
+                      WHERE key.account_id=$1
+                        AND key.status='active'
+                        AND (key.expires_ts IS NULL OR key.expires_ts>$2)
+                 )
+                 OR EXISTS(
+                     SELECT 1
+                       FROM account_policy_bindings binding
+                       JOIN account_policy_versions policy
+                         ON policy.account_id=binding.account_id
+                        AND policy.effective_version=binding.active_effective_version
+                       JOIN api_keys key ON key.account_id=binding.account_id
+                      WHERE binding.account_id=$1
+                        AND key.status='active'
+                        AND (key.expires_ts IS NULL OR key.expires_ts>$2)
+                        AND key.activation_policy_effective_version=binding.active_effective_version
+                        AND key.activation_policy_digest=policy.content_digest
+                        AND key.activation_policy_ack_ts IS NOT NULL
+                 )
              )",
             &[&request.account_id, &opt_out_ts],
         )?

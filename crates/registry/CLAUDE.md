@@ -420,7 +420,9 @@ side effect. `serve` may only perform the read-only schema verification before c
   transaction locks the account `FOR UPDATE`, an existing marker is an exact replay (`Unchanged`
   with the stored ts, no mutation), and a new marker requires a LIVE strict path — an `active`
   account, a `strict/strict/verified` binding (the state the strict reserve gate and the
-  migration-0016 triggers require) and an active unexpired key with a current activation ACK (the
+  migration-0016 triggers require) and key safety — either NO active unexpired keys at all
+  (nothing can be served with a stale ACK; the first later key is born with the current ACK
+  through strict issuance) or an active unexpired key with a current activation ACK (the
   `KeyAuth::active_at` strict-ack check) — otherwise `MissingDependency`
   (`active_strict_policy_binding`, or `account` for an unknown id). `created_by`/`reason` are
   request attribution echoed in the response, not persisted (0039 added no column for them).

@@ -798,12 +798,14 @@ runs on the billing single writer in one transaction:
   <stored ts>}` without a mutation (the marker is keyed by the account; attribution is not part
   of the replay identity);
 - otherwise the guard fails closed: the account must prove a LIVE strict path — an `active`
-  account, a `strict/strict/verified` policy binding (the same state the strict reserve gate and
-  the migration-0016 strict triggers require) and at least one active, unexpired key whose
+  account and a `strict/strict/verified` policy binding (the same state the strict reserve gate
+  and the migration-0016 strict triggers require) — plus key safety: either the account has NO
+  active unexpired keys at all (nothing can be served with a stale ACK; the first later key is
+  born with the current ACK through strict issuance), or at least one active, unexpired key whose
   activation ACK matches the active binding exactly (the `KeyAuth::active_at` strict-ack check).
-  Without that proof the route answers 409 `missing_dependency`
-  (`active_strict_policy_binding`, or `account` for an unknown id): opting out an account with no
-  live strict path would silently strand it on the stale `accounts.mult_bp` scalar;
+  An account with active keys and no current ACK is rejected: opting it out would silently strand
+  it on the stale `accounts.mult_bp` scalar. Without the proof the route answers 409
+  `missing_dependency` (`active_strict_policy_binding`, or `account` for an unknown id);
 - on success it answers 200 `{"result":"applied","pricing_release_opt_out_ts":<engine now()>}`
   and the account's requests fall through to the strict-policy/legacy reserve paths while the
   release head keeps serving every other account.
