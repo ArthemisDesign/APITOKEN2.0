@@ -22,6 +22,7 @@ export const PROVIDER_COLORS = {
   anthropic: "#d97757",
   openai: "#10a37f",
   gemini: "#4b8bf5",
+  kimi: "#b8348c",
   unattributed: "#6f7a8a",
 } as const;
 
@@ -55,5 +56,17 @@ export const PROVIDER_REGISTRY: ProviderDescriptor[] = [
     docsPath: UNIVERSAL_CONNECTIONS.gemini.docsPath,
     color: PROVIDER_COLORS.gemini,
     logo: "/assets/providers/gemini.svg",
+  },
+  {
+    // The engine tags KIMI turns with this id, and it is what `usageProviderOf` now returns —
+    // before that, KIMI spend was reported to the customer under Claude.
+    id: "kimi",
+    name: "Kimi",
+    api: "Anthropic Messages API",
+    baseUrl: UNIVERSAL_CONNECTIONS.kimi.baseUrl,
+    authHeader: UNIVERSAL_CONNECTIONS.kimi.authHeader,
+    docsPath: UNIVERSAL_CONNECTIONS.kimi.docsPath,
+    color: PROVIDER_COLORS.kimi,
+    logo: "/assets/providers/kimi.svg",
   },
 ];

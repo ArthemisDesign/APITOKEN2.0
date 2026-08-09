@@ -15,6 +15,22 @@ const model = (overrides: Partial<UsageModelRow>): UsageModelRow => ({
 });
 
 describe("разбивка USAGE по API", () => {
+  it("относит трафик Kimi к Kimi, а не к Claude", () => {
+    // Раньше неизвестный префикс модели попадал в catch-all, а catch-all это не «неизвестно»,
+    // а «Claude» — расход Kimi показывался клиенту как расход Anthropic.
+    for (const id of ["k3", "k3[1m]", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"]) {
+      expect(usageProviderOf(id), id).toBe("kimi");
+      expect(usageProviderOf(`kimi/${id}`), id).toBe("kimi");
+    }
+    expect(usageProviderOf("anything", "kimi")).toBe("kimi");
+    // Разбивка должна включать бакет Kimi, иначе агрегат его молча потеряет.
+    const rows = aggregateUsageProviders([model({ model: "k3", provider: "kimi", official_nano: "700", charged_nano: "350" })]);
+    const kimi = rows.find((row) => row.provider === "kimi");
+    expect(kimi?.officialNano).toBe(700n);
+    expect(kimi?.chargedNano).toBe(350n);
+    expect(rows.find((row) => row.provider === "claude")?.officialNano).toBe(0n);
+  });
+
   it("относит GPT-модели к OpenAI, Gemini-модели к Google, а текущие остальные модели к Claude", () => {
     expect(usageProviderOf("gpt-5.6-sol")).toBe("openai");
     expect(usageProviderOf("GPT-5.6-sol")).toBe("openai");

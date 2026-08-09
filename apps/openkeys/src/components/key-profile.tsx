@@ -24,27 +24,27 @@ import {
   usageWindowDays,
 } from "@/lib/format";
 import { buildUtcUsageSeries } from "@/lib/usage-series";
-import { aggregateUsageProviders, usageProviderOf } from "@/lib/usage-providers";
+import { aggregateUsageProviders, usageProviderOf, USAGE_PROVIDER_LABELS } from "@/lib/usage-providers";
 import { UNIVERSAL_CONNECTIONS } from "@/lib/universal-key";
 import { PROVIDER_COLORS, PROVIDER_REGISTRY, type ProviderDescriptor } from "@/lib/providers";
 import { KEY_PROFILE_FALLBACK_INTERVAL_MS } from "@/lib/usage-refresh-timing";
 
 const copy = {
   en: {
-    titleBar: "Key usage", eyebrow: "CLAUDE + GPT + GEMINI · SHARED BALANCE", title: "Universal API key",
-    lead: "One key and one balance work across the Claude, GPT/OpenAI-compatible, and Google Gemini APIs. Usage is combined below, while every request keeps the official price of the model that served it.",
+    titleBar: "Key usage", eyebrow: "CLAUDE + GPT + GEMINI + KIMI · SHARED BALANCE", title: "Universal API key",
+    lead: "One key and one balance work across the Claude, GPT/OpenAI-compatible, Google Gemini and Kimi APIs. Usage is combined below, while every request keeps the official price of the model that served it.",
     offline: "Offline — waiting for connection", syncing: "Syncing", updated: "Updated", loaded: "Data loaded",
     automatic: "live balance · updates arrive the moment anything changes", refresh: "Refresh data", copy: "Copy", copied: "Copied",
     balance: "Key balance", faceValue: "face value", remainingCompleted: "Remaining after completed requests",
     spent: "Actually spent", reserved: "Temporarily reserved", available: "Available for new requests",
     reserveNote: "After the response, the hold is replaced by the exact charge — it is not spent in full. The unused amount returns to available balance automatically.",
     key: "Key", active: "active", disabled: "disabled", issued: "issued", connectClaude: "Connect Claude",
-    connectGpt: "Connect GPT", connectGemini: "Connect Gemini", signOut: "Sign out", signingOut: "Signing out…", signOutRetry: "Sign out failed — retry", connections: "Three connections", oneKey: "one key", yourKey: "Your key",
-    providersTitle: "Connected providers", providersDesc: "All three APIs run on this one key — point each tool at its endpoint and every request shows up here.",
+    connectGpt: "Connect GPT", connectGemini: "Connect Gemini", signOut: "Sign out", signingOut: "Signing out…", signOutRetry: "Sign out failed — retry", connections: "Every connection", oneKey: "one key", yourKey: "Your key",
+    providersTitle: "Connected providers", providersDesc: "Every API runs on this one key — point each tool at its endpoint and every request shows up here.",
     statusReady: "ready", guide: "Setup guide", noUsageYet: "No usage yet — connect it to start",
     officialCost: "Official cost", officialPrices: "at official prices of the models used", chargedKey: "Charged to key",
     last30: "last 30 days", requests: "Requests", processing: "Processing now", processingNote: "temporary hold for active requests",
-    apiSpend: "Usage by API", apiSpendDesc: "One balance, with Claude, GPT/OpenAI, and Gemini usage shown separately for the last 30 days.",
+    apiSpend: "Usage by API", apiSpendDesc: "One balance, with Claude, GPT/OpenAI, Gemini and Kimi usage shown separately for the last 30 days.",
     requestWord: "requests", tokenWord: "tokens", chargedLower: "charged", spendByDay: "Daily usage",
     noSpend: "No charges in this period yet", periodSummary: "Period summary", charged: "Charged", peakDay: "Peak day",
     dailyAverage: "Daily average", tokensModels: "Tokens and models", tokensModelsDesc: "How the cost was formed: input, output, and cache are billed at their own rates.",
@@ -56,20 +56,20 @@ const copy = {
     remaining: "Remaining",
   },
   ru: {
-    titleBar: "Расход ключа", eyebrow: "CLAUDE + GPT + GEMINI · ОБЩИЙ БАЛАНС", title: "Универсальный API-ключ",
-    lead: "Один ключ и один баланс работают на Claude, GPT/OpenAI-совместимом и Google Gemini API. Расход объединён, а каждый запрос сохраняет официальный прайс модели, которая его обработала.",
+    titleBar: "Расход ключа", eyebrow: "CLAUDE + GPT + GEMINI + KIMI · ОБЩИЙ БАЛАНС", title: "Универсальный API-ключ",
+    lead: "Один ключ и один баланс работают на Claude, GPT/OpenAI-совместимом, Google Gemini и Kimi API. Расход объединён, а каждый запрос сохраняет официальный прайс модели, которая его обработала.",
     offline: "Нет сети — ждём подключения", syncing: "Синхронизация", updated: "Обновлено", loaded: "Данные загружены",
     automatic: "живой баланс · обновления приходят сразу при изменениях", refresh: "Обновить данные", copy: "Скопировать", copied: "Скопировано",
     balance: "Баланс ключа", faceValue: "номинал", remainingCompleted: "Остаток после завершённых запросов",
     spent: "Фактически потрачено", reserved: "Временно в обработке", available: "Доступно новым запросам",
     reserveNote: "После ответа резерв заменится точной стоимостью, а не спишется целиком. Неиспользованная часть автоматически вернётся в доступный баланс.",
     key: "Ключ", active: "активен", disabled: "отключён", issued: "выпущен", connectClaude: "Подключить Claude",
-    connectGpt: "Подключить GPT", connectGemini: "Подключить Gemini", signOut: "Выйти", signingOut: "Выходим…", signOutRetry: "Не вышло — повторить", connections: "Три подключения", oneKey: "один ключ", yourKey: "Ваш ключ",
-    providersTitle: "Подключённые провайдеры", providersDesc: "Все три API работают на этом ключе — направьте каждый инструмент на его адрес, и каждый запрос появится здесь.",
+    connectGpt: "Подключить GPT", connectGemini: "Подключить Gemini", signOut: "Выйти", signingOut: "Выходим…", signOutRetry: "Не вышло — повторить", connections: "Все подключения", oneKey: "один ключ", yourKey: "Ваш ключ",
+    providersTitle: "Подключённые провайдеры", providersDesc: "Все API работают на этом ключе — направьте каждый инструмент на его адрес, и каждый запрос появится здесь.",
     statusReady: "готов", guide: "Инструкция", noUsageYet: "Пока нет расхода — подключите, чтобы начать",
     officialCost: "Официальная стоимость", officialPrices: "по официальным прайсам использованных моделей", chargedKey: "Списано с ключа",
     last30: "за 30 дней", requests: "Запросов", processing: "Сейчас в обработке", processingNote: "временный резерв активных запросов",
-    apiSpend: "Расход по API", apiSpendDesc: "Один баланс, отдельно показано использование Claude, GPT/OpenAI и Gemini за последние 30 дней.",
+    apiSpend: "Расход по API", apiSpendDesc: "Один баланс, отдельно показано использование Claude, GPT/OpenAI, Gemini и Kimi за последние 30 дней.",
     requestWord: "запросов", tokenWord: "токенов", chargedLower: "списано", spendByDay: "Расход по дням",
     noSpend: "За этот период списаний ещё не было", periodSummary: "Сводка за период", charged: "Списано", peakDay: "Пиковый день",
     dailyAverage: "В среднем в день", tokensModels: "Токены и модели", tokensModelsDesc: "Из чего сложился расход: вход, выход и кэш считаются по своим ставкам.",
@@ -802,7 +802,7 @@ export function KeyProfile({ view, showSignOut = false, providers = PROVIDER_REG
                             {modelLabel(model.model, model.provider)}
                           </span>
                         </td>
-                        <td><span className="chip">{{ openai: "GPT", gemini: "Gemini", claude: "Claude" }[usageProviderOf(model.model, model.provider)]}</span></td>
+                        <td><span className="chip">{USAGE_PROVIDER_LABELS[usageProviderOf(model.model, model.provider)]}</span></td>
                         <td className="tnum">{model.requests.toLocaleString(locale)}</td>
                         <td className="tnum">{fmtTokens(model.input_tokens)}</td>
                         <td className="tnum">{fmtTokens(model.output_tokens)}</td>

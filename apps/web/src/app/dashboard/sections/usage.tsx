@@ -94,9 +94,16 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
     agg.chargedNano += BigInt(model.chargedNano);
     providerAgg.set(id, agg);
   }
+  // Providers served outside the pinned policy catalog have no policy entry to be found in, so
+  // without this they were invisible until the first request — a provider we sell, absent from
+  // the list of providers we sell.
+  const outsidePolicyIds = DASHBOARD_PROVIDERS
+    .filter((provider) => provider.outsidePolicyCatalog)
+    .map((provider) => provider.id);
   const providerIds = new Set([
     ...(appliedPolicy?.providers.map((provider) => provider.providerId) ?? []),
     ...providerAgg.keys(),
+    ...outsidePolicyIds,
   ]);
   const providerCards = [...providerIds].sort().map((id) => {
     const metadata = providerMetadata(id);
@@ -211,7 +218,14 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
       <div className="uprovider-grid">
         {providerCards.map((card) => {
           const isActive = (card.agg?.requests ?? 0) > 0;
-          const ruleSummary = providerRuleSummary(card.policy?.models ?? [], localPolicyCopy);
+          // A provider outside the pinned catalog is available whenever its plane is, and its
+          // discount is the account multiplier settlement actually applies — reading the policy
+          // for it would report "unavailable" for a provider that serves.
+          const outsidePolicy = card.outsidePolicyCatalog === true;
+          const available = outsidePolicy || card.policy?.available === true;
+          const ruleSummary = outsidePolicy
+            ? accountDiscountLabel(account.markupBasisPoints, localPolicyCopy)
+            : providerRuleSummary(card.policy?.models ?? [], localPolicyCopy);
           return <article
             className="uprovider-card"
             key={card.id}
@@ -225,7 +239,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
                 <strong>{card.name}</strong>
                 <span>{card.api}</span>
               </div>
-              <span className={`uprovider-status${card.policy?.available ? " is-active" : ""}`}>{card.policy?.available ? copy.ready : localPolicyCopy.unavailable}</span>
+              <span className={`uprovider-status${available ? " is-active" : ""}`}>{available ? copy.ready : localPolicyCopy.unavailable}</span>
               <span className="uprovider-discount" title={localPolicyCopy.pricingRule}>{ruleSummary}</span>
             </div>
             {card.endpoint && (
@@ -498,6 +512,23 @@ function pricingRuleLabel(
   if (!rule) return copy.noRule;
   if (rule.discountBps !== null) return `−${rule.discountBps / 100}%`;
   return `${copy.legacy} · ${(100 - rule.payableMultiplierBp / 100).toLocaleString()}%`;
+}
+
+/**
+ * Discount label for a provider the pinned policy does not describe.
+ *
+ * `markupBasisPoints` is the account multiplier the engine bills such a model with, so this is
+ * the same number the invoice will show rather than a nearby approximation.
+ */
+function accountDiscountLabel(
+  markupBasisPoints: number,
+  copy: typeof policyCopy.en | typeof policyCopy.ru,
+): string {
+  if (!Number.isFinite(markupBasisPoints) || markupBasisPoints <= 0 || markupBasisPoints >= 10_000) {
+    return copy.noRule;
+  }
+  const percent = Math.round((10_000 - markupBasisPoints) / 100);
+  return percent > 0 ? `-${percent}%` : copy.noRule;
 }
 
 function providerRuleSummary(

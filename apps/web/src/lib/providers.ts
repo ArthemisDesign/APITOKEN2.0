@@ -17,6 +17,17 @@ export interface DashboardProvider {
   auth?: string;
   /** Куда ведёт ссылка «Setup guide». */
   docsPath?: string;
+  /**
+   * Провайдер обслуживается вне закреплённого каталога тарифной политики.
+   *
+   * Карточки «Connected providers» строятся из применённой политики плюс фактического расхода,
+   * поэтому провайдер, которого политика не описывает, не появлялся вовсе — даже когда плоскость
+   * его обслуживает. После ретайрмента release-v2 это норма, а не исключение: модель вне
+   * закреплённого каталога тарифицируется по легаси-мультипликатору аккаунта через точный
+   * легаси-тариф. Флаг говорит дашборду показать такого провайдера и взять скидку из
+   * мультипликатора аккаунта — ровно ту, что применит списание.
+   */
+  outsidePolicyCatalog?: boolean;
 }
 
 export const DASHBOARD_PROVIDERS: DashboardProvider[] = [
@@ -56,6 +67,7 @@ export const DASHBOARD_PROVIDERS: DashboardProvider[] = [
     id: "kimi",
     name: "Kimi",
     api: "Anthropic Messages API",
+    outsidePolicyCatalog: true,
     color: "#b8348c",
     logo: "/assets/providers/kimi.svg",
     endpoint: "router.apitoken.sale",
