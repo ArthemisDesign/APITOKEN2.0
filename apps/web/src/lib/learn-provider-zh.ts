@@ -439,7 +439,7 @@ export const learnProviderZh: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "打开 /status，确认 Anthropic base URL 为 apiToken.sale。",
           "不要询问模型身份：Claude Code 的 system prompt 可能让任何后端自称 Claude。",
-          "保持 thinking 开启；关闭它可能改变实际提供请求的 Kimi 模型。",
+          "将 none/off 视为关闭 K3 推理，而不是选择另一模型。实测覆盖仍按 K3 费率结算；kimi-k2.6 不是可公开寻址的模型。",
           "长期固定别名前先检查 GET /v1/models。",
         ] },
       ] },

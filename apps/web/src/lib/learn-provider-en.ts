@@ -555,7 +555,7 @@ claude --model k3` },
         { type: "list", items: [
           "Open /status and confirm that the Anthropic base URL is apiToken.sale.",
           "Do not ask the model to identify itself: Claude Code's system prompt can make any backend call itself Claude.",
-          "Keep thinking enabled. Turning it off can change which underlying Kimi model serves the request.",
+          "Treat none/off as disabling K3 reasoning, not as a model selector. Live coverage kept those turns on the K3 tariff; kimi-k2.6 is not an addressable public model.",
           "Check GET /v1/models before pinning an alias for a long-lived environment.",
         ] },
       ] },

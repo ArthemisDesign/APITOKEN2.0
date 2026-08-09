@@ -439,7 +439,7 @@ export const learnProviderKo: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "/status를 열어 Anthropic base URL이 apiToken.sale인지 확인합니다.",
           "모델에게 정체를 묻지 마세요. Claude Code system prompt 때문에 어떤 backend도 Claude라고 답할 수 있습니다.",
-          "thinking을 켜 두세요. 끄면 실제로 요청을 처리하는 Kimi 모델이 바뀔 수 있습니다.",
+          "none/off는 다른 model 선택이 아니라 K3 reasoning 비활성화로 취급하세요. live coverage에서도 K3 tariff가 유지됐고 kimi-k2.6은 public addressable model이 아닙니다.",
           "alias를 장기 pin하기 전에 GET /v1/models를 확인합니다.",
         ] },
       ] },

@@ -439,7 +439,7 @@ export const learnProviderRu: Record<string, LocalizedContent> = {
         { type: "list", items: [
           "Откройте /status и убедитесь, что Anthropic base URL указывает на apiToken.sale.",
           "Не спрашивайте модель, кто она: system prompt Claude Code может заставить любой backend назвать себя Claude.",
-          "Не отключайте thinking — это может изменить фактически обслуживающую Kimi-модель.",
+          "Считайте none/off отключением reasoning K3, а не выбором другой модели. Live-матрица оставила такие turns на тарифе K3; kimi-k2.6 не является публично адресуемой моделью.",
           "Перед долгим закреплением alias проверьте GET /v1/models.",
         ] },
       ] },
