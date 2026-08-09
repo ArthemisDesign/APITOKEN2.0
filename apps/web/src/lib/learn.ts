@@ -11,6 +11,7 @@ import { learnProviderRu } from "./learn-provider-ru";
 import { learnProviderZh } from "./learn-provider-zh";
 import { learnProviderKo } from "./learn-provider-ko";
 import {
+  enrichExistingProviderParityContent,
   learnProviderParityEn,
   learnProviderParityKo,
   learnProviderParityRu,
@@ -1910,11 +1911,13 @@ export function resolveArticle(slug: string, locale: Locale): ResolvedArticle | 
   const base = learnArticlesBySlug[slug];
   if (!base) return null;
   if (locale === "en") {
-    return { slug, cluster: base.cluster, related: base.related, locale, content: stripBoilerplateCta(enContent(base)) };
+    const content = enrichExistingProviderParityContent(slug, locale, enContent(base));
+    return { slug, cluster: base.cluster, related: base.related, locale, content: stripBoilerplateCta(content) };
   }
   const content = translations[locale][slug];
   if (!content) return null;
-  return { slug, cluster: base.cluster, related: base.related, locale, content: stripBoilerplateCta(content) };
+  const enriched = enrichExistingProviderParityContent(slug, locale, content);
+  return { slug, cluster: base.cluster, related: base.related, locale, content: stripBoilerplateCta(enriched) };
 }
 
 /** The day the learn cluster first shipped — the default published/modified date. */

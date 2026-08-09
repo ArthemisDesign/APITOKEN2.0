@@ -1,9 +1,14 @@
 import type {
   LearnArticle,
+  LearnSection,
   LearnCluster,
   Locale,
   LocalizedContent,
 } from "./learn";
+import {
+  PROVIDER_EXISTING_FOCUS,
+  PROVIDER_TOPIC_RISKS,
+} from "./learn-provider-depth";
 
 export type ParityProvider = "gpt" | "gemini" | "kimi";
 
@@ -28,6 +33,7 @@ function interpolate(value: string, facts: ProviderFacts): string {
     .replaceAll("{flagship}", facts.models.flagship)
     .replaceAll("{balanced}", facts.models.balanced)
     .replaceAll("{fast}", facts.models.fast)
+    .replaceAll("{economy}", facts.models.economy)
     .replaceAll("{previous}", facts.previousGeneration)
     .replaceAll("{current}", facts.currentGeneration)
     .replaceAll("{cacheMode}", facts.cacheMode.en)
@@ -62,7 +68,7 @@ type ProviderFacts = {
   catalogRoute: string;
   sdk: string;
   cli: string;
-  models: { flagship: string; balanced: string; fast: string };
+  models: { flagship: string; balanced: string; fast: string; economy: string };
   previousGeneration: string;
   currentGeneration: string;
   quickstartSlug: string;
@@ -86,7 +92,7 @@ const PROVIDERS: Record<ParityProvider, ProviderFacts> = {
     catalogRoute: "GET /v1/models",
     sdk: "OpenAI SDK",
     cli: "Codex CLI",
-    models: { flagship: "gpt-5.6-sol", balanced: "gpt-5.6-terra", fast: "gpt-5.6-luna" },
+    models: { flagship: "gpt-5.6-sol", balanced: "gpt-5.6-terra", fast: "gpt-5.6-luna", economy: "gpt-5.6-luna" },
     previousGeneration: "GPT-5.5",
     currentGeneration: "GPT-5.6",
     quickstartSlug: "openai-api-quickstart",
@@ -118,7 +124,7 @@ const PROVIDERS: Record<ParityProvider, ProviderFacts> = {
     catalogRoute: "GET /v1beta/models",
     sdk: "Google GenAI SDK",
     cli: "Gemini CLI",
-    models: { flagship: "gemini-3.6-pro", balanced: "gemini-3.6-flash", fast: "gemini-3.6-flash-lite" },
+    models: { flagship: "gemini-3.6-pro", balanced: "gemini-3.6-flash", fast: "gemini-3.6-flash-lite", economy: "gemini-3.6-flash-lite" },
     previousGeneration: "Gemini 3.1",
     currentGeneration: "Gemini 3.6",
     quickstartSlug: "gemini-api-quickstart",
@@ -150,7 +156,7 @@ const PROVIDERS: Record<ParityProvider, ProviderFacts> = {
     catalogRoute: "GET /v1/models",
     sdk: "Anthropic SDK",
     cli: "Kimi Code",
-    models: { flagship: "kimi/k3", balanced: "kimi/kimi-for-coding", fast: "kimi/kimi-for-coding-highspeed" },
+    models: { flagship: "kimi/k3", balanced: "kimi/kimi-for-coding", fast: "kimi/kimi-for-coding-highspeed", economy: "kimi/kimi-for-coding" },
     previousGeneration: "Kimi for Coding",
     currentGeneration: "Kimi K3",
     quickstartSlug: "kimi-api-quickstart",
@@ -200,7 +206,7 @@ const accessTopics: TopicSpec[] = [
     description: l("Compare direct {provider} API spend with apiToken.sale pricing, model routing, caching and prepaid controls to find the lowest sustainable cost without hiding usage.", "Сравните прямые расходы {provider} API с ценами apiToken.sale, маршрутизацией моделей, кэшированием и предоплатой — без скрытого usage.", "比较 {provider} API 直连费用与 apiToken.sale 定价、模型路由、缓存和预付费控制，在不隐藏 usage 的前提下降低成本。", "{provider} API 직접 비용과 apiToken.sale 가격, 모델 routing, caching, 선불 control을 비교해 usage를 숨기지 않는 최저 지속 비용을 찾습니다."),
     keywords: ll(["cheapest {provider} api", "cheap {provider} api", "{provider} api discount", "lower {provider} token cost"], ["дешёвый {provider} api", "самый дешёвый {provider} api", "скидка {provider} api", "снизить цену токенов {provider}"], ["最便宜 {provider} api", "低价 {provider} api", "{provider} api 折扣", "降低 {provider} token 成本"], ["저렴한 {provider} api", "가장 싼 {provider} api", "{provider} api 할인", "{provider} token 비용 절감"]),
     dek: l("The cheapest route is not one headline rate. It combines the right model tier, real cache usage, bounded output and a discount applied to settled provider spend.", "Самый дешёвый маршрут — не одна ставка. Нужны подходящий tier, реальный cache usage, ограниченный output и скидка от фактического расхода провайдера.", "最低成本不是单一报价，而是合适的模型层级、真实缓存 usage、受控 output，以及对结算后提供商费用应用的折扣。", "최저 비용은 하나의 headline rate가 아니라 적절한 model tier, 실제 cache usage, 제한된 output, 정산된 provider 비용에 적용되는 할인입니다."),
-    focus: ll(["Route routine work to {fast}, balanced production work to {balanced}, and reserve {flagship} for eval-proven hard cases.", "Compare complete input, cached-input and output legs rather than advertising only the cheapest input number.", "Use a lifetime key spending limit and inspect per-request usage so a low rate cannot hide a runaway loop."], ["Отправляйте простые задачи в {fast}, обычный production — в {balanced}, а {flagship} оставляйте для сложных случаев, подтверждённых eval.", "Сравнивайте полные input, cached-input и output компоненты, а не только самую низкую входную ставку.", "Задайте lifetime-лимит ключа и проверяйте usage каждого запроса, чтобы низкая ставка не скрыла бесконечный цикл."], ["常规任务使用 {fast}，平衡型生产任务使用 {balanced}，只有评测证明有必要时才升级到 {flagship}。", "比较完整的 input、cached-input 与 output 成本，不要只展示最低 input 单价。", "设置密钥终身消费上限并检查每次请求的 usage，避免低单价掩盖失控循环。"], ["일상 작업은 {fast}, 균형형 production은 {balanced}, eval로 필요성이 확인된 어려운 작업만 {flagship}으로 보냅니다.", "가장 싼 input 숫자만이 아니라 전체 input, cached-input, output leg를 비교합니다.", "key lifetime 지출 한도와 요청별 usage를 확인해 낮은 단가가 runaway loop를 숨기지 않게 합니다."]),
+    focus: ll(["Route routine work to {economy}, balanced production work to {balanced}, and reserve {flagship} for eval-proven hard cases.", "Compare complete input, cached-input and output legs rather than advertising only the cheapest input number.", "Use a lifetime key spending limit and inspect per-request usage so a low rate cannot hide a runaway loop."], ["Отправляйте простые задачи в {economy}, обычный production — в {balanced}, а {flagship} оставляйте для сложных случаев, подтверждённых eval.", "Сравнивайте полные input, cached-input и output компоненты, а не только самую низкую входную ставку.", "Задайте lifetime-лимит ключа и проверяйте usage каждого запроса, чтобы низкая ставка не скрыла бесконечный цикл."], ["常规任务使用 {economy}，平衡型生产任务使用 {balanced}，只有评测证明有必要时才升级到 {flagship}。", "比较完整的 input、cached-input 与 output 成本，不要只展示最低 input 单价。", "设置密钥终身消费上限并检查每次请求的 usage，避免低单价掩盖失控循环。"], ["일상 작업은 {economy}, 균형형 production은 {balanced}, eval로 필요성이 확인된 어려운 작업만 {flagship}으로 보냅니다.", "가장 싼 input 숫자만이 아니라 전체 input, cached-input, output leg를 비교합니다.", "key lifetime 지출 한도와 요청별 usage를 확인해 낮은 단가가 runaway loop를 숨기지 않게 합니다."]),
   },
   {
     id: "restricted-regions",
@@ -292,7 +298,7 @@ const modelTopics: TopicSpec[] = [
     description: l("Configure {balanced} as the everyday {provider} model for production chat, coding and agents, with explicit routing rules for flagship and fast tiers.", "Настройте {balanced} как повседневную {provider} модель для production chat, coding и agents с явными правилами перехода на flagship и fast tiers.", "将 {balanced} 配置为生产聊天、编程和 agent 的日常 {provider} 模型，并为旗舰与快速层级设置明确路由规则。", "{balanced}를 production chat, coding, agent의 일상 {provider} 모델로 설정하고 flagship·fast tier 전환 규칙을 명시합니다."),
     keywords: ll(["{balanced} api", "best default {provider} model", "{balanced} coding", "{balanced} production"], ["{balanced} api", "лучшая default модель {provider}", "{balanced} для кода", "{balanced} production"], ["{balanced} api", "最佳默认 {provider} 模型", "{balanced} 编程", "{balanced} 生产"], ["{balanced} api", "최고의 기본 {provider} 모델", "{balanced} 코딩", "{balanced} production"]),
     dek: l("A balanced default keeps quality predictable without paying flagship rates for every parser, edit or routine turn. Routing rules matter more than one universal model choice.", "Balanced default сохраняет качество без flagship-цены за каждый parser, edit или обычный turn. Правила routing важнее одной универсальной модели.", "平衡默认可保持质量稳定，又避免每个解析、编辑或常规 turn 都支付旗舰价格；路由规则比单一万能模型更重要。", "balanced default는 모든 parser, edit, routine turn에 flagship 가격을 내지 않고 예측 가능한 품질을 유지합니다. 하나의 universal model보다 routing rule이 중요합니다."),
-    focus: ll(["Use {balanced} for normal coding, production assistants and multi-step agents whose evals do not require {flagship}.", "Escalate only failed or high-risk cases to {flagship}; route extraction and classification down to {fast}.", "Track quality, latency and settled cost by task class so routing changes are evidence-based."], ["Используйте {balanced} для обычного coding, production assistants и multi-step agents, которым по eval не нужен {flagship}.", "Повышайте до {flagship} только failed/high-risk кейсы, а extraction и classification отправляйте в {fast}.", "Измеряйте quality, latency и settled cost по классам задач, чтобы routing опирался на доказательства."], ["常规编程、生产助手和评测不需要 {flagship} 的多步骤 agent 使用 {balanced}。", "仅将失败或高风险案例升级到 {flagship}，提取和分类任务下沉到 {fast}。", "按任务类别跟踪质量、延迟和结算成本，使路由调整有证据。"], ["일반 coding, production assistant, eval상 {flagship}이 필요 없는 multi-step agent에 {balanced}를 사용합니다.", "실패하거나 high-risk인 case만 {flagship}으로 올리고 extraction·classification은 {fast}로 내립니다.", "task class별 quality, latency, settled cost를 추적해 routing 변경을 evidence 기반으로 합니다."]),
+    focus: ll(["Use {balanced} for normal coding, production assistants and multi-step agents whose evals do not require {flagship}.", "Escalate only failed or high-risk cases to {flagship}; route extraction and classification to the lowest-cost passing tier, {economy}.", "Track quality, latency and settled cost by task class so routing changes are evidence-based."], ["Используйте {balanced} для обычного coding, production assistants и multi-step agents, которым по eval не нужен {flagship}.", "Повышайте до {flagship} только failed/high-risk кейсы, а extraction и classification отправляйте в самый дешёвый passing tier — {economy}.", "Измеряйте quality, latency и settled cost по классам задач, чтобы routing опирался на доказательства."], ["常规编程、生产助手和评测不需要 {flagship} 的多步骤 agent 使用 {balanced}。", "仅将失败或高风险案例升级到 {flagship}，提取和分类任务使用通过评测的最低价层级 {economy}。", "按任务类别跟踪质量、延迟和结算成本，使路由调整有证据。"], ["일반 coding, production assistant, eval상 {flagship}이 필요 없는 multi-step agent에 {balanced}를 사용합니다.", "실패하거나 high-risk인 case만 {flagship}으로 올리고 extraction·classification은 통과한 최저비용 tier인 {economy}로 보냅니다.", "task class별 quality, latency, settled cost를 추적해 routing 변경을 evidence 기반으로 합니다."]),
   },
   {
     id: "fast-model",
@@ -300,10 +306,10 @@ const modelTopics: TopicSpec[] = [
     cluster: "free",
     slug: (p) => `${p.id}-${p.models.fast.replace(/[^a-z0-9]+/gi, "-")}-api`.replace(`${p.id}-${p.id}-`, `${p.id}-`),
     title: l("{fast} API for Fast, High-Volume Work", "{fast} API для быстрых массовых задач", "{fast} API：快速高并发任务", "{fast} API: 빠른 대량 작업"),
-    description: l("Use {fast} for classification, extraction, routing and cheap agent substeps while keeping an evidence-based fallback to {balanced} or {flagship}.", "Используйте {fast} для classification, extraction, routing и дешёвых agent substeps с доказуемым fallback на {balanced} или {flagship}.", "将 {fast} 用于分类、提取、路由和低成本 agent 子步骤，并保留基于证据的 {balanced}/{flagship} fallback。", "{fast}를 classification, extraction, routing, 저렴한 agent substep에 사용하고 evidence 기반 {balanced}/{flagship} fallback을 유지합니다."),
+    description: l("Use {fast} for latency-sensitive classification, extraction, routing and agent substeps, then compare its speed premium and validation rate with {balanced} or {flagship}.", "Используйте {fast} для latency-sensitive classification, extraction, routing и agent substeps, сравнивая speed premium и validation rate с {balanced} или {flagship}.", "将 {fast} 用于延迟敏感的分类、提取、路由与 agent 子步骤，并将其速度溢价和验证通过率与 {balanced}/{flagship} 比较。", "{fast}를 latency-sensitive classification, extraction, routing, agent substep에 사용하고 speed premium과 validation rate를 {balanced}/{flagship}과 비교합니다."),
     keywords: ll(["{fast} api", "fast {provider} api", "cheap {provider} model", "{fast} batch tasks"], ["{fast} api", "быстрый {provider} api", "дешёвая модель {provider}", "{fast} массовые задачи"], ["{fast} api", "快速 {provider} api", "低价 {provider} 模型", "{fast} 批量任务"], ["{fast} api", "빠른 {provider} api", "저렴한 {provider} 모델", "{fast} 대량 작업"]),
-    dek: l("Fast tiers save money only when the task is simple enough. Keep schemas, validation and escalation around them so speed does not turn into silent quality loss.", "Fast tiers экономят только на достаточно простых задачах. Добавьте schema, validation и escalation, чтобы скорость не стала скрытой потерей качества.", "快速层级只有在任务足够简单时才省钱；需要配套 schema、验证与升级机制，避免速度变成隐性质量损失。", "fast tier는 작업이 충분히 단순할 때만 비용을 줄입니다. schema, validation, escalation을 두어 속도가 조용한 품질 저하가 되지 않게 합니다."),
-    focus: ll(["Send bounded classification, extraction, tagging, routing and formatting tasks to {fast}.", "Validate structured results locally and retry a failed validation once on {balanced}, not in an unbounded loop.", "Measure total retries: a cheap model that repeatedly escalates can cost more than starting on {balanced}."], ["Отправляйте в {fast} ограниченные classification, extraction, tagging, routing и formatting задачи.", "Проверяйте structured result локально и после failed validation один раз переходите на {balanced}, без бесконечного retry loop.", "Измеряйте все retries: дешёвая модель с частыми escalation может стоить дороже старта на {balanced}."], ["将有边界的分类、提取、标注、路由和格式化任务发送给 {fast}。", "在本地验证结构化结果；验证失败后仅升级一次到 {balanced}，不要无限重试。", "统计全部重试：频繁升级的低价模型可能比直接使用 {balanced} 更贵。"], ["bounded classification, extraction, tagging, routing, formatting 작업을 {fast}로 보냅니다.", "structured result를 로컬 검증하고 실패하면 무제한 loop 대신 {balanced}로 한 번만 올립니다.", "전체 retry를 측정합니다. 자주 escalation되는 싼 모델은 {balanced}로 시작하는 것보다 비쌀 수 있습니다."]),
+    dek: l("A fast tier earns its place when lower latency matters enough to offset its settled price. Keep schemas, validation and escalation around it so speed does not become silent quality loss.", "Fast tier оправдан, когда меньшая latency окупает его settled price. Добавьте schema, validation и escalation, чтобы скорость не стала скрытой потерей качества.", "只有较低延迟足以抵消结算价格时，快速层级才值得使用；应配套 schema、验证与升级，避免速度变成隐性质量损失。", "fast tier는 낮은 latency가 settled price를 상쇄할 만큼 중요할 때 가치가 있습니다. schema, validation, escalation으로 속도가 조용한 품질 저하가 되지 않게 합니다."),
+    focus: ll(["Send bounded, latency-sensitive classification, extraction, tagging, routing and formatting tasks to {fast}.", "Validate structured results locally and retry a failed validation once on {balanced}, not in an unbounded loop.", "Measure end-to-end latency, validation failures, retries and settled cost; a faster model is not automatically the cheapest."], ["Отправляйте в {fast} ограниченные latency-sensitive classification, extraction, tagging, routing и formatting задачи.", "Проверяйте structured result локально и после failed validation один раз переходите на {balanced}, без бесконечного retry loop.", "Измеряйте end-to-end latency, validation failures, retries и settled cost: более быстрая модель не обязательно дешевле."], ["将有边界且延迟敏感的分类、提取、标注、路由和格式化任务发送给 {fast}。", "在本地验证结构化结果；验证失败后仅升级一次到 {balanced}，不要无限重试。", "测量端到端延迟、验证失败、重试与结算成本；更快的模型并不必然最便宜。"], ["bounded latency-sensitive classification, extraction, tagging, routing, formatting 작업을 {fast}로 보냅니다.", "structured result를 로컬 검증하고 실패하면 무제한 loop 대신 {balanced}로 한 번만 올립니다.", "end-to-end latency, validation failure, retry, settled cost를 측정하며 빠른 모델이 자동으로 가장 싸지는 않습니다."]),
   },
 ];
 
@@ -376,10 +382,10 @@ const toolTopics: TopicSpec[] = [
     ["Roo Code에서 OpenAI Compatible을 선택하고 https://router.apitoken.sale/v1와 extension secret field의 key를 설정합니다.", "정확한 namespaced {provider} ID를 사용하고 browser/shell tool 전 보수적인 context/output limit로 시작합니다.", "400 unsupported_parameter는 설정 신호입니다. 숨은 provider preset으로 바꾸지 말고 해당 option을 제거합니다."],
   )),
   integrationTopic("vscode-agents", "vscode-ai-agents", "Free VS Code AI agents", ll(
-    ["Install Cline, Continue or Roo Code and select an OpenAI-compatible provider rather than paying for an editor-bundled model plan.", "Use {fast} for cheap deterministic steps, {balanced} for daily coding and {flagship} only for hard reviews or architecture.", "Separate extension keys by project or environment so one leaked workspace credential can be revoked without replacing every client."],
-    ["Установите Cline, Continue или Roo Code и выберите OpenAI-compatible provider вместо bundled model plan редактора.", "Используйте {fast} для дешёвых шагов, {balanced} для daily coding и {flagship} только для сложного review/architecture.", "Разделяйте extension keys по проектам или environments, чтобы утечка не требовала замены всех клиентов."],
-    ["安装 Cline、Continue 或 Roo Code，选择 OpenAI-compatible provider，无需购买编辑器捆绑模型套餐。", "低成本确定性步骤使用 {fast}，日常编程使用 {balanced}，仅复杂审查或架构使用 {flagship}。", "按项目或环境拆分扩展密钥，单个 workspace 凭据泄露时无需替换所有客户端。"],
-    ["Cline, Continue, Roo Code를 설치하고 editor bundled model plan 대신 OpenAI-compatible provider를 선택합니다.", "저렴한 deterministic step은 {fast}, daily coding은 {balanced}, 어려운 review/architecture만 {flagship}을 사용합니다.", "project/environment별 extension key를 분리해 workspace credential 하나가 유출돼도 모든 client를 교체하지 않게 합니다."],
+    ["Install Cline, Continue or Roo Code and select an OpenAI-compatible provider rather than paying for an editor-bundled model plan.", "Use {economy} for low-cost deterministic steps, {balanced} for daily coding and {flagship} only for hard reviews or architecture.", "Separate extension keys by project or environment so one leaked workspace credential can be revoked without replacing every client."],
+    ["Установите Cline, Continue или Roo Code и выберите OpenAI-compatible provider вместо bundled model plan редактора.", "Используйте {economy} для дешёвых шагов, {balanced} для daily coding и {flagship} только для сложного review/architecture.", "Разделяйте extension keys по проектам или environments, чтобы утечка не требовала замены всех клиентов."],
+    ["安装 Cline、Continue 或 Roo Code，选择 OpenAI-compatible provider，无需购买编辑器捆绑模型套餐。", "低成本确定性步骤使用 {economy}，日常编程使用 {balanced}，仅复杂审查或架构使用 {flagship}。", "按项目或环境拆分扩展密钥，单个 workspace 凭据泄露时无需替换所有客户端。"],
+    ["Cline, Continue, Roo Code를 설치하고 editor bundled model plan 대신 OpenAI-compatible provider를 선택합니다.", "저렴한 deterministic step은 {economy}, daily coding은 {balanced}, 어려운 review/architecture만 {flagship}을 사용합니다.", "project/environment별 extension key를 분리해 workspace credential 하나가 유출돼도 모든 client를 교체하지 않게 합니다."],
   )),
 ];
 
@@ -485,84 +491,97 @@ const advancedTopics: TopicSpec[] = [
   operationsTopic("ai-agents", "explain", "for-ai-agents", l("{provider} API for AI Agents", "{provider} API для AI-агентов", "用于 AI Agent 的 {provider} API", "AI agent용 {provider} API"), l("Build cost-aware AI agents on {provider} with explicit model routing, bounded tool loops, context management, terminal usage and per-agent key controls.", "Стройте cost-aware AI agents на {provider}: model routing, bounded tool loops, context management, terminal usage и отдельные key controls.", "在 {provider} 上构建成本可控 AI agent：明确模型路由、有界 tool loop、上下文管理、终态 usage 与每 agent 密钥控制。", "명시적 model routing, bounded tool loop, context management, terminal usage, agent별 key control로 {provider} AI agent를 구축합니다."), ll(["{provider} api ai agents", "{provider} agent api", "{provider} tool calling", "cost control ai agent {provider}"], ["{provider} api для ai agents", "agent api {provider}", "tool calling {provider}", "контроль цены ai agent {provider}"], ["{provider} api ai agent", "{provider} agent api", "{provider} tool calling", "{provider} ai agent 成本控制"], ["{provider} api ai agent", "{provider} agent api", "{provider} tool calling", "{provider} ai agent 비용 control"]), l("Agents amplify both capability and spend because one user goal can trigger many model calls and tools. Reliability comes from explicit state, budgets, validation and a terminal ledger for every turn.", "Agents усиливают и возможности, и расход: одна цель запускает много model calls/tools. Надёжность дают явное state, budgets, validation и terminal ledger каждого turn.", "Agent 会同时放大能力与消费，因为一个用户目标可能触发多次模型调用和 tool。可靠性来自明确状态、预算、验证及每个 turn 的终态账本。", "agent는 한 사용자 목표가 여러 model call과 tool을 만들기 때문에 capability와 spend를 모두 증폭합니다. 명시적 state, budget, validation, turn별 terminal ledger가 신뢰성을 만듭니다."), ll(["Use {balanced} for ordinary planning and coding, {fast} for bounded deterministic substeps and {flagship} only for eval-proven hard decisions.", "Set maximum turns, tool calls, wall time and output per run; validate tool arguments before execution and never use an unbounded retry loop.", "Give each agent a named expiring key with a lifetime spending limit, then record model, terminal usage, tool outcome and charge per turn."], ["Используйте {balanced} для обычного planning/coding, {fast} для bounded substeps и {flagship} только для сложных решений с eval proof.", "Задайте max turns, tool calls, wall time и output; проверяйте tool arguments и не используйте unbounded retry loop.", "Дайте agent отдельный expiring key с lifetime spending limit и записывайте model, terminal usage, tool outcome и charge каждого turn."], ["常规规划与编程使用 {balanced}，有界确定性子步骤使用 {fast}，只有评测证明的困难决策才使用 {flagship}。", "设置每次运行的最大 turn、tool call、wall time 与 output；执行前验证 tool 参数，禁止无界 retry loop。", "为每个 agent 配置带到期日期与终身消费上限的命名密钥，并逐 turn 记录模型、终态 usage、tool 结果与扣费。"], ["일반 planning/coding은 {balanced}, bounded deterministic substep은 {fast}, eval로 입증된 어려운 결정만 {flagship}을 사용합니다.", "run별 최대 turn, tool call, wall time, output을 설정하고 실행 전 tool argument를 검증하며 unbounded retry loop를 금지합니다.", "agent별 expiring named key와 lifetime spending limit를 두고 turn마다 model, terminal usage, tool outcome, charge를 기록합니다."])),
 ];
 
-const sectionCopy = {
-  intent: l("The decision and the evidence", "Решение и доказательства", "决策与证据", "결정과 근거"),
+const depthSectionCopy = {
+  decision: l("Decision matrix: {title}", "Матрица решений: {title}", "决策矩阵：{title}", "의사결정 매트릭스: {title}"),
   protocol: l("Exact {provider} request path", "Точный request path {provider}", "准确的 {provider} 请求路径", "정확한 {provider} request path"),
-  verification: l("Production verification checklist", "Проверка перед production", "生产验证清单", "production 검증 checklist"),
-  operations: l("Operate it without hidden assumptions", "Эксплуатация без скрытых допущений", "无隐藏假设地运行", "숨은 가정 없이 운영하기"),
+  verification: l("Validation plan for {title}", "Проверка перед rollout: {title}", "{title} 验证计划", "{title} 검증 계획"),
+  operations: l("Troubleshooting and the go/no-go rule", "Troubleshooting и критерий go/no-go", "故障排查与上线判定", "troubleshooting과 go/no-go 기준"),
 } satisfies Record<string, L10n>;
 
-const paragraphCopy = {
-  protocol: l(
-    "apiToken.sale preserves {protocol} for {provider}. Use {base}, authenticate with {auth}, and select an explicit model from {catalog}; the key and prepaid balance are platform-owned rather than a login to {direct}.",
-    "apiToken.sale сохраняет {protocol} для {provider}. Используйте {base}, авторизацию {auth} и явную модель из {catalog}; ключ и prepaid balance принадлежат платформе, а не login в {direct}.",
-    "apiToken.sale 为 {provider} 保留 {protocol}。使用 {base}、{auth} 鉴权，并从 {catalog} 选择明确模型；密钥与预付余额属于平台，而不是 {direct} 登录。",
-    "apiToken.sale는 {provider}의 {protocol}을 보존합니다. {base}, {auth}, {catalog}의 명시적 model을 사용하며 key와 선불 잔액은 {direct} login이 아닌 platform 소유입니다.",
+const tableCopy = {
+  priority: l("Priority", "Приоритет", "优先级", "우선순위"),
+  action: l("Recommended action", "Рекомендуемое действие", "建议操作", "권장 작업"),
+  stop: l("Failure signal", "Стоп-сигнал", "失败信号", "중단 신호"),
+} satisfies Record<string, L10n>;
+
+const protocolCopy: Record<TopicKind, L10n> = {
+  access: l(
+    "After the account or payment decision, {provider} traffic still follows {protocol}: use {base}, send {auth}, and select an exact model returned by {catalog}.",
+    "После решения по аккаунту или оплате трафик {provider} всё равно идёт через {protocol}: используйте {base}, {auth} и точную модель из {catalog}.",
+    "完成账户或付款决策后，{provider} 流量仍使用 {protocol}：访问 {base}、发送 {auth}，并选择 {catalog} 返回的准确模型。",
+    "계정 또는 결제 결정 후에도 {provider} traffic은 {protocol}을 따릅니다. {base}, {auth}, {catalog}가 반환한 정확한 model을 사용합니다.",
   ),
-  probe: l(
-    "The curl example deliberately uses {balanced} and a small deterministic answer. Keep that probe separate from application prompts so endpoint, authentication and model availability can be diagnosed independently.",
-    "Curl-пример специально использует {balanced} и короткий детерминированный ответ. Держите этот probe отдельно от application prompts, чтобы независимо проверять endpoint, auth и model availability.",
-    "curl 示例刻意使用 {balanced} 与短小确定性答案。请将该探针与应用 prompt 分离，以便独立诊断 endpoint、鉴权与模型可用性。",
-    "curl 예제는 의도적으로 {balanced}와 짧은 deterministic answer를 사용합니다. application prompt와 probe를 분리해 endpoint, 인증, model availability를 독립 진단합니다.",
+  model: l(
+    "Model tier changes the ID, not the wire contract. Call {provider} through {protocol} at {base}, authenticate with {auth}, and pin the evaluated ID from {catalog}.",
+    "Model tier меняет ID, а не wire contract. Вызывайте {provider} через {protocol} на {base}, используйте {auth} и закрепляйте проверенный ID из {catalog}.",
+    "模型层级改变的是 ID，而不是 wire contract。通过 {base} 的 {protocol} 调用 {provider}，使用 {auth}，并固定 {catalog} 中已评测的 ID。",
+    "model tier는 ID를 바꾸지만 wire contract는 바꾸지 않습니다. {base}의 {protocol}, {auth}, {catalog}에서 평가한 ID를 사용합니다.",
   ),
-  verification: l(
-    "Discovery, one minimal generation and terminal usage are three separate checks. Run them with the same key and model before connecting an autonomous tool or moving production traffic.",
-    "Discovery, минимальная generation и terminal usage — три отдельные проверки. Выполните их одним ключом и model до autonomous tool или production traffic.",
-    "模型发现、一次最小生成与终态 usage 是三项独立检查。连接自主工具或迁移生产流量前，应使用同一密钥与模型完成验证。",
-    "discovery, 최소 generation, terminal usage는 서로 다른 세 검증입니다. autonomous tool 연결이나 production traffic 이전에 같은 key와 model로 모두 실행합니다.",
+  tool: l(
+    "Keep the client configuration and the provider probe separate. The underlying {provider} proof uses {protocol} at {base} with {auth}; the tool must preserve the selected catalog model and errors.",
+    "Разделяйте client config и provider probe. Базовая проверка {provider} использует {protocol} на {base} с {auth}; tool должен сохранять catalog model и ошибки.",
+    "将客户端配置与提供商探针分开。{provider} 基础验证使用 {base} 的 {protocol} 与 {auth}；工具必须保留所选目录模型和错误。",
+    "client 설정과 provider probe를 분리합니다. {provider} 기본 검증은 {base}의 {protocol}과 {auth}를 사용하며 tool은 선택한 catalog model과 error를 보존해야 합니다.",
+  ),
+  compare: l(
+    "Run an attributable {provider} control request before comparing routes. Use {protocol} at {base}, {auth}, and the same exact catalog model so protocol and billing differences are measurable.",
+    "До сравнения маршрутов выполните атрибутируемый control request {provider}: {protocol} на {base}, {auth} и одна точная catalog model для измеримых различий.",
+    "比较路由前先运行可归因的 {provider} 对照请求：使用 {base} 的 {protocol}、{auth} 与同一个准确目录模型，以便测量协议和结算差异。",
+    "route 비교 전에 귀속 가능한 {provider} control request를 실행합니다. {base}의 {protocol}, {auth}, 동일한 exact catalog model로 protocol과 billing 차이를 측정합니다.",
   ),
   operations: l(
-    "Keep configuration attributable: one named key per service, an expiration date, a lifetime spending limit and logs that retain request IDs but redact credentials. Re-check the catalog before a rollout instead of treating this article as a frozen availability promise.",
-    "Сохраняйте атрибуцию: отдельный named key на сервис, expiration date, lifetime spending limit и логи с request IDs без credentials. Перед rollout снова проверяйте catalog — статья не является вечным обещанием availability.",
-    "保持配置可归因：每个服务使用独立命名密钥、到期日期、终身消费上限，并在日志保留 request ID、脱敏凭据。发布前重新检查目录，不要把本文视为永久可用性承诺。",
-    "설정을 귀속 가능하게 유지합니다. service별 named key, expiration date, lifetime spending limit를 사용하고 log에는 request ID를 남기되 credential을 제거합니다. 이 글을 고정 availability 약속으로 보지 말고 rollout 전 catalog를 다시 확인합니다.",
+    "Measure the operating claim on a real {provider} request. Use {protocol} at {base}, authenticate with {auth}, and keep the exact {catalog} model, request ID and terminal usage together.",
+    "Проверяйте operational claim на реальном запросе {provider}: {protocol} на {base}, {auth}, точная модель из {catalog}, request ID и terminal usage вместе.",
+    "在真实 {provider} 请求上测量运维结论：使用 {base} 的 {protocol} 与 {auth}，并把准确 {catalog} 模型、request ID 和终态 usage 放在一起。",
+    "실제 {provider} 요청에서 운영 주장을 측정합니다. {base}의 {protocol}, {auth}를 사용하고 정확한 {catalog} model, request ID, terminal usage를 함께 보존합니다.",
   ),
-} satisfies Record<string, L10n>;
+};
 
-const verificationSteps = ll(
-  [
-    "Call {catalog} with the exact production key and pin a returned model ID.",
-    "Send a deterministic prompt with a low output cap through {protocol}; require a non-empty, schema-valid response.",
-    "Match the response model and terminal usage to the dashboard ledger, then test the failure path with an intentionally invalid model ID.",
-  ],
-  [
-    "Вызовите {catalog} точным production key и закрепите возвращённый model ID.",
-    "Отправьте детерминированный prompt с low output cap через {protocol}; потребуйте непустой schema-valid response.",
-    "Сверьте response model и terminal usage с ledger в дашборде, затем проверьте failure path заведомо неверным model ID.",
-  ],
-  [
-    "使用实际 production 密钥调用 {catalog}，并固定返回的 model ID。",
-    "通过 {protocol} 发送带低 output 上限的确定性 prompt，并要求响应非空且通过 schema 验证。",
-    "将响应 model 与终态 usage 同仪表板账本核对，再用故意错误的 model ID 测试失败路径。",
-  ],
-  [
-    "실제 production key로 {catalog}를 호출하고 반환된 model ID를 고정합니다.",
-    "{protocol}로 낮은 output cap의 deterministic prompt를 보내고 비어 있지 않은 schema-valid response를 요구합니다.",
-    "response model과 terminal usage를 dashboard ledger와 대조한 뒤 의도적으로 잘못된 model ID로 failure path를 테스트합니다.",
-  ],
+const verificationCopy: Record<TopicKind, L10nList> = {
+  access: ll(
+    ["Confirm the account, named key and usable dashboard balance are three distinct completed states.", "Call {catalog} with that key and pin an exact returned model before spending balance.", "Send one low-cap request through {protocol}; require output, terminal usage and a matching ledger entry."],
+    ["Подтвердите три отдельных состояния: account, named key и usable balance в дашборде.", "Вызовите {catalog} этим ключом и закрепите returned model до расхода баланса.", "Отправьте low-cap запрос через {protocol}; потребуйте output, terminal usage и matching ledger entry."],
+    ["分别确认账户、命名密钥与仪表板可用余额三种状态均已完成。", "使用该密钥调用 {catalog}，并在消费余额前固定准确返回模型。", "通过 {protocol} 发送一次低上限请求；要求有输出、终态 usage 与匹配账本记录。"],
+    ["account, named key, dashboard usable balance가 각각 완료됐는지 확인합니다.", "같은 key로 {catalog}를 호출하고 잔액 사용 전에 반환된 정확한 model을 고정합니다.", "{protocol} low-cap 요청에서 output, terminal usage, 일치하는 ledger entry를 요구합니다."],
+  ),
+  model: ll(
+    ["Build a fixed eval with quality thresholds for the task classes named in this guide.", "Run the same prompts with {fast}, {balanced} and {flagship}; record latency, retries and terminal usage.", "Pin the cheapest tier that passes, then canary its exact catalog ID with an explicit escalation rule."],
+    ["Соберите fixed eval с quality thresholds для классов задач из статьи.", "Запустите одинаковые prompts на {fast}, {balanced} и {flagship}; запишите latency, retries и terminal usage.", "Закрепите самый дешёвый passing tier и canary exact catalog ID с explicit escalation rule."],
+    ["为本文任务类别建立带质量阈值的固定评测。", "在 {fast}、{balanced} 与 {flagship} 上运行相同 prompt，记录延迟、重试与终态 usage。", "固定能通过评测的最低价层级，再以明确升级规则 canary 其准确目录 ID。"],
+    ["글의 task class에 quality threshold가 있는 fixed eval을 만듭니다.", "같은 prompt를 {fast}, {balanced}, {flagship}에서 실행하고 latency, retry, terminal usage를 기록합니다.", "통과한 가장 싼 tier의 exact catalog ID를 명시적 escalation rule과 함께 canary합니다."],
+  ),
+  tool: ll(
+    ["Capture the configured base URL, key source and exact model without exposing the credential.", "Run one bounded client turn and, when relevant, one tool call with fallback disabled.", "Match the client's model, error behavior and terminal usage to the dashboard before autonomous work."],
+    ["Зафиксируйте base URL, key source и exact model без раскрытия credential.", "Выполните один bounded client turn и при необходимости tool call с отключённым fallback.", "Сверьте model, error behavior и terminal usage клиента с дашбордом до autonomous work."],
+    ["记录已配置的 base URL、密钥来源与准确模型，但不暴露凭据。", "关闭 fallback，运行一个有界客户端 turn，并在需要时执行一次 tool call。", "自主工作前，将客户端模型、错误行为和终态 usage 与仪表板核对。"],
+    ["credential 노출 없이 설정된 base URL, key source, exact model을 기록합니다.", "fallback을 끄고 bounded client turn 하나와 필요 시 tool call 하나를 실행합니다.", "autonomous 작업 전 client model, error 동작, terminal usage를 dashboard와 대조합니다."],
+  ),
+  compare: ll(
+    ["Write the decision criteria before testing: protocol fidelity, model identity, settled cost and operational ownership.", "Send the same bounded prompt through both routes and capture output, errors, request IDs and terminal usage.", "Choose only after documenting feature gaps, support boundaries and the total operating cost of the winning route."],
+    ["До теста задайте criteria: protocol fidelity, model identity, settled cost и operational ownership.", "Отправьте один bounded prompt по обоим routes и сохраните output, errors, request IDs и terminal usage.", "Выберите route после фиксации feature gaps, support boundaries и total operating cost."],
+    ["测试前写明决策标准：协议保真、模型身份、结算成本与运维责任。", "通过两条路由发送同一个有界 prompt，记录输出、错误、request ID 与终态 usage。", "记录功能差距、支持边界和胜出路由的总运维成本后再做选择。"],
+    ["테스트 전에 protocol fidelity, model identity, settled cost, operational ownership 기준을 작성합니다.", "두 route에 같은 bounded prompt를 보내 output, error, request ID, terminal usage를 수집합니다.", "feature gap, support boundary, winning route의 총운영비를 문서화한 뒤 선택합니다."],
+  ),
+  operations: ll(
+    ["Record a baseline request with its exact model, configuration, latency, terminal usage and charge.", "Change one operating variable from this guide and repeat the same bounded workload.", "Ship only when the target metric improves without triggering a listed failure signal; otherwise roll back."],
+    ["Запишите baseline request: exact model, config, latency, terminal usage и charge.", "Измените одну operating variable из статьи и повторите тот же bounded workload.", "Выкатывайте только при улучшении target metric без стоп-сигналов; иначе rollback."],
+    ["记录基线请求的准确模型、配置、延迟、终态 usage 与扣费。", "只更改本文中的一个运维变量，再重复相同有界工作负载。", "仅当目标指标改善且未触发失败信号时发布，否则回滚。"],
+    ["baseline request의 exact model, config, latency, terminal usage, charge를 기록합니다.", "이 글의 operating variable 하나만 바꾸고 같은 bounded workload를 반복합니다.", "target metric이 개선되고 failure signal이 없을 때만 배포하며 아니면 rollback합니다."],
+  ),
+};
+
+const probeCopy = l(
+  "Keep this {balanced} smoke probe separate from “{title}” application traffic so endpoint, authentication and model availability remain independently diagnosable.",
+  "Держите smoke probe {balanced} отдельно от application traffic «{title}», чтобы независимо диагностировать endpoint, auth и model availability.",
+  "将这个 {balanced} smoke probe 与“{title}”应用流量分开，以便独立诊断 endpoint、鉴权与模型可用性。",
+  "endpoint, 인증, model availability를 독립 진단할 수 있도록 {balanced} smoke probe를 “{title}” application traffic과 분리합니다.",
 );
 
-const operationsChecklist = ll(
-  [
-    "Treat {catalog} as the availability authority and fail startup when a pinned model disappears.",
-    "Keep provider and model names in logs, preserve request IDs and terminal usage, and redact the full sk-pool credential.",
-    "Reject unsupported controls visibly; do not silently switch provider, model or billing identity to make a request pass.",
-  ],
-  [
-    "Считайте {catalog} источником availability и останавливайте startup, если закреплённая модель исчезла.",
-    "Пишите provider/model, request IDs и terminal usage, но удаляйте полный sk-pool credential из логов.",
-    "Явно отклоняйте unsupported controls; не меняйте скрытно provider, model или billing identity ради успешного запроса.",
-  ],
-  [
-    "以 {catalog} 作为可用性权威；固定模型消失时应让启动失败。",
-    "日志保留 provider/model、request ID 与终态 usage，同时对完整 sk-pool 凭据脱敏。",
-    "明确拒绝不支持的控制项；不要为让请求成功而静默切换 provider、model 或 billing identity。",
-  ],
-  [
-    "{catalog}를 availability 권위로 사용하고 고정 model이 사라지면 startup을 실패시킵니다.",
-    "log에 provider/model, request ID, terminal usage를 보존하고 전체 sk-pool credential은 제거합니다.",
-    "unsupported control을 명시적으로 거부하고 요청 성공을 위해 provider, model, billing identity를 조용히 바꾸지 않습니다.",
-  ],
+const goNoGoCopy = l(
+  "Do not ship “{title}” while any failure signal in the matrix is true. Preserve the request ID and terminal usage, correct the named boundary, repeat the matching validation step, and never switch provider, model or payer silently.",
+  "Не выкатывайте «{title}», пока активен любой стоп-сигнал матрицы. Сохраните request ID и terminal usage, исправьте указанную границу, повторите соответствующий шаг и не меняйте скрытно provider, model или payer.",
+  "矩阵中任一失败信号仍成立时，不要发布“{title}”。保留 request ID 与终态 usage，修正对应边界，重复相关验证步骤，绝不静默切换提供商、模型或付款方。",
+  "매트릭스의 failure signal이 하나라도 참이면 “{title}”를 배포하지 않습니다. request ID와 terminal usage를 보존하고 해당 경계를 수정해 검증을 반복하며 provider, model, payer를 조용히 바꾸지 않습니다.",
 );
 
 function protocolSnippet(facts: ProviderFacts): string {
@@ -585,33 +604,89 @@ function relatedSlugs(current: string, facts: ProviderFacts): string[] {
     .slice(0, 4);
 }
 
+const ECONOMY_FOCUS_INDEXES: Record<string, readonly number[]> = {
+  pricing: [1],
+  "save-tokens": [0],
+  "best-coding-model": [1],
+  "ai-agents": [0],
+};
+
+function applyTopicModelEconomics(topicId: string, focus: string[], facts: ProviderFacts): string[] {
+  const economyIndexes = ECONOMY_FOCUS_INDEXES[topicId] ?? [];
+  return focus.map((item, index) => economyIndexes.includes(index)
+    ? item.replaceAll(facts.models.fast, facts.models.economy)
+    : item);
+}
+
+function topicRiskItems(topicId: string, locale: Locale, facts: ProviderFacts): string[] {
+  const risks = PROVIDER_TOPIC_RISKS[topicId];
+  if (!risks) throw new Error(`Missing provider editorial risks for ${topicId}`);
+  return localizedList(risks, locale, facts);
+}
+
+function localizedTemplate(value: L10n, locale: Locale, facts: ProviderFacts, title: string): string {
+  return localized(value, locale, facts).replaceAll("{title}", title);
+}
+
+function depthSections(
+  title: string,
+  topicId: string,
+  kind: TopicKind,
+  focus: string[],
+  facts: ProviderFacts,
+  locale: Locale,
+  includeProtocol: boolean,
+): LearnSection[] {
+  const risks = topicRiskItems(topicId, locale, facts);
+  const proof = localizedList(verificationCopy[kind], locale, facts);
+  const sections: LearnSection[] = [{
+    h2: localizedTemplate(depthSectionCopy.decision, locale, facts, title),
+    blocks: [{
+      type: "table",
+      headers: [
+        localized(tableCopy.priority, locale, facts),
+        localized(tableCopy.action, locale, facts),
+        localized(tableCopy.stop, locale, facts),
+      ],
+      rows: focus.map((action, index) => [`${index + 1}`, action, risks[index]!]),
+    }],
+  }];
+
+  if (includeProtocol) {
+    sections.push({
+      h2: localized(depthSectionCopy.protocol, locale, facts),
+      blocks: [
+        { type: "p", text: localized(protocolCopy[kind], locale, facts) },
+        { type: "code", code: protocolSnippet(facts).replaceAll("\n+", "\n") },
+        { type: "note", text: localizedTemplate(probeCopy, locale, facts, title) },
+      ],
+    });
+  }
+
+  sections.push(
+    {
+      h2: localizedTemplate(depthSectionCopy.verification, locale, facts, title),
+      blocks: [{ type: "steps", items: proof }],
+    },
+    {
+      h2: localized(depthSectionCopy.operations, locale, facts),
+      blocks: [{ type: "p", text: localizedTemplate(goNoGoCopy, locale, facts, title) }],
+    },
+  );
+  return sections;
+}
+
 function localizedContent(topic: TopicSpec, facts: ProviderFacts, locale: Locale): LocalizedContent {
   const title = localized(topic.title, locale, facts);
-  const focus = localizedList(topic.focus, locale, facts);
-  const protocol = localized(paragraphCopy.protocol, locale, facts);
-  const probe = localized(paragraphCopy.probe, locale, facts);
-  const verification = localized(paragraphCopy.verification, locale, facts);
-  const operations = localized(paragraphCopy.operations, locale, facts);
-  const steps = localizedList(verificationSteps, locale, facts);
-  const operationsItems = localizedList(operationsChecklist, locale, facts);
-  const protocolFaq = l(
-    `Which endpoint does “${title}” use?`,
-    `Какой endpoint использует «${title}»?`,
-    `“${title}”使用哪个 endpoint？`,
-    `“${title}”는 어떤 endpoint를 사용하나요?`,
-  );
-  const verifiedFaq = l(
-    `What proves that “${title}” is ready for production?`,
-    `Что доказывает готовность «${title}» к production?`,
-    `什么能证明“${title}”已可用于生产？`,
-    `“${title}”의 production 준비를 무엇으로 증명하나요?`,
-  );
-  const costFaq = l(
-    `How do I keep “${title}” within budget?`,
-    `Как удержать «${title}» в пределах бюджета?`,
-    `如何让“${title}”保持在预算内？`,
-    `“${title}”의 예산을 어떻게 제한하나요?`,
-  );
+  const focus = applyTopicModelEconomics(topic.id, localizedList(topic.focus, locale, facts), facts);
+  const risks = topicRiskItems(topic.id, locale, facts);
+  const proof = localizedList(verificationCopy[topic.kind], locale, facts);
+  const questions = {
+    decision: l(`What is the first decision for “${title}”?`, `С какого решения начать «${title}»?`, `“${title}”的首要决策是什么？`, `“${title}”의 첫 결정은 무엇인가요?`),
+    failure: l(`What invalidates “${title}”?`, `Что делает «${title}» непригодным к rollout?`, `什么情况会使“${title}”无法上线？`, `무엇이 “${title}” rollout을 무효화하나요?`),
+    proof: l(`What proves that “${title}” is ready?`, `Что доказывает готовность «${title}»?`, `什么能证明“${title}”已准备就绪？`, `“${title}” 준비를 무엇으로 증명하나요?`),
+    protocol: l(`Which protocol does “${title}” use?`, `Какой протокол использует «${title}»?`, `“${title}”使用什么协议？`, `“${title}”는 어떤 protocol을 사용하나요?`),
+  };
 
   return {
     title,
@@ -621,47 +696,38 @@ function localizedContent(topic: TopicSpec, facts: ProviderFacts, locale: Locale
     dek: localized(topic.dek, locale, facts),
     sections: [
       {
-        h2: localized(sectionCopy.intent, locale, facts),
+        h2: localizedTemplate(depthSectionCopy.decision, locale, facts, title),
         blocks: [
           { type: "p", text: localized(topic.dek, locale, facts) },
-          { type: "list", items: focus },
+          {
+            type: "table",
+            headers: [
+              localized(tableCopy.priority, locale, facts),
+              localized(tableCopy.action, locale, facts),
+              localized(tableCopy.stop, locale, facts),
+            ],
+            rows: focus.map((action, index) => [`${index + 1}`, action, risks[index]!]),
+          },
         ],
       },
-      {
-        h2: localized(sectionCopy.protocol, locale, facts),
-        blocks: [
-          { type: "p", text: protocol },
-          { type: "code", code: protocolSnippet(facts) },
-          { type: "note", text: probe },
-        ],
-      },
-      {
-        h2: localized(sectionCopy.verification, locale, facts),
-        blocks: [
-          { type: "p", text: verification },
-          { type: "steps", items: steps },
-        ],
-      },
-      {
-        h2: localized(sectionCopy.operations, locale, facts),
-        blocks: [
-          { type: "p", text: operations },
-          { type: "list", items: operationsItems },
-        ],
-      },
+      ...depthSections(title, topic.id, topic.kind, focus, facts, locale, true).slice(1),
     ],
     faq: [
       {
-        q: localized(protocolFaq, locale, facts),
-        a: protocol,
+        q: localized(questions.decision, locale, facts),
+        a: `${focus[0]!} ${focus[1]!}`,
       },
       {
-        q: localized(verifiedFaq, locale, facts),
-        a: `${verification} ${focus[0]!} ${steps.join(" ")}`,
+        q: localized(questions.failure, locale, facts),
+        a: risks.join(" "),
       },
       {
-        q: localized(costFaq, locale, facts),
-        a: `${operations} ${focus[2]!}`,
+        q: localized(questions.proof, locale, facts),
+        a: `${focus[2]!} ${proof[2]!}`,
+      },
+      {
+        q: localized(questions.protocol, locale, facts),
+        a: localized(protocolCopy[topic.kind], locale, facts),
       },
     ],
   };
@@ -675,6 +741,8 @@ const generatedTopics = [
   ...operationsTopics,
   ...advancedTopics,
 ];
+
+export const PROVIDER_PARITY_TOPIC_IDS: readonly string[] = generatedTopics.map((topic) => topic.id);
 
 const topicsById = new Map(generatedTopics.map((topic) => [topic.id, topic]));
 
@@ -812,3 +880,63 @@ export const CLAUDE_PROVIDER_PARITY: Record<string, Record<ParityProvider, strin
   "claude-api-key-security": topicPages("key-security"),
   "claude-api-for-ai-agents": topicPages("ai-agents"),
 };
+
+type ExistingDepthBinding = {
+  provider: ParityProvider;
+  topicId: "buy" | "quickstart" | "pricing" | "model-comparison" | "cli-setup";
+  kind: TopicKind;
+};
+
+const EXISTING_DEPTH_BINDINGS: Record<string, ExistingDepthBinding> = {
+  "how-to-buy-gpt-api-key": { provider: "gpt", topicId: "buy", kind: "access" },
+  "how-to-buy-gemini-api-key": { provider: "gemini", topicId: "buy", kind: "access" },
+  "how-to-buy-kimi-api-key": { provider: "kimi", topicId: "buy", kind: "access" },
+  "openai-api-quickstart": { provider: "gpt", topicId: "quickstart", kind: "tool" },
+  "gemini-api-quickstart": { provider: "gemini", topicId: "quickstart", kind: "tool" },
+  "kimi-api-quickstart": { provider: "kimi", topicId: "quickstart", kind: "tool" },
+  "gpt-api-pricing": { provider: "gpt", topicId: "pricing", kind: "operations" },
+  "gemini-api-pricing": { provider: "gemini", topicId: "pricing", kind: "operations" },
+  "kimi-api-pricing": { provider: "kimi", topicId: "pricing", kind: "operations" },
+  "gpt-5-6-sol-vs-terra-vs-luna": { provider: "gpt", topicId: "model-comparison", kind: "model" },
+  "gemini-pro-vs-flash-vs-flash-lite": { provider: "gemini", topicId: "model-comparison", kind: "model" },
+  "kimi-k3-vs-kimi-for-coding": { provider: "kimi", topicId: "model-comparison", kind: "model" },
+  "codex-cli-setup": { provider: "gpt", topicId: "cli-setup", kind: "tool" },
+  "kimi-api-for-kimi-code": { provider: "kimi", topicId: "cli-setup", kind: "tool" },
+};
+
+/** Add the same decision/risk/verification depth to manually authored parity entry pages. */
+export function enrichExistingProviderParityContent(
+  slug: string,
+  locale: Locale,
+  content: LocalizedContent,
+): LocalizedContent {
+  const binding = EXISTING_DEPTH_BINDINGS[slug];
+  if (!binding) return content;
+
+  const facts = PROVIDERS[binding.provider];
+  const existingFocus = PROVIDER_EXISTING_FOCUS[binding.topicId];
+  const generatedFocus = topicsById.get(binding.topicId)?.focus;
+  const focusSource = existingFocus ?? generatedFocus;
+  if (!focusSource) throw new Error(`Missing provider editorial focus for ${binding.topicId}`);
+  const focus = applyTopicModelEconomics(binding.topicId, localizedList(focusSource, locale, facts), facts);
+  const proof = localizedList(verificationCopy[binding.kind], locale, facts);
+  const title = content.title;
+  const faqQuestion = localized(l(
+    `What is the rollout gate for “${title}”?`,
+    `Какой rollout gate у «${title}»?`,
+    `“${title}”的上线门槛是什么？`,
+    `“${title}”의 rollout gate는 무엇인가요?`,
+  ), locale, facts);
+
+  return {
+    ...content,
+    sections: [
+      ...content.sections,
+      ...depthSections(title, binding.topicId, binding.kind, focus, facts, locale, false),
+    ],
+    faq: [
+      ...content.faq,
+      { q: faqQuestion, a: `${focus[2]!} ${proof[2]!}` },
+    ],
+  };
+}

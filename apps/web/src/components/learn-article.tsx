@@ -109,7 +109,7 @@ function Block({ block, locale }: { block: LearnBlock; locale: Locale }) {
       return <p className="docs-notice">{block.text}</p>;
     case "table":
       return (
-        <div className="tier-table-wrap">
+        <div className="learn-table-wrap" role="region" tabIndex={0} aria-label={block.headers.join(", ")}>
           <table className="tier-table">
             <thead><tr>{block.headers.map((header) => <th key={header}>{header}</th>)}</tr></thead>
             <tbody>

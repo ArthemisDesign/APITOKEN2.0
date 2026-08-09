@@ -362,6 +362,8 @@
 .learn-section{display:flex;flex-direction:column;gap:12px}
 .learn-section .docs-para{margin:0}
 .learn-section .prod-list{margin:0}
+.learn-table-wrap{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-inline:contain}
+.learn-table-wrap .tier-table{min-width:680px}
 .learn-code{margin:0}
 .learn-steps{list-style:none;counter-reset:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
 .learn-steps li{display:flex;gap:12px;align-items:flex-start;color:var(--txt-2);line-height:1.55}
