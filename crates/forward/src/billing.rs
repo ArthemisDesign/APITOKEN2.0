@@ -49,7 +49,6 @@ use tokio::sync::{mpsc, oneshot, Notify};
 /// retaining an arbitrary number of commands while PostgreSQL/SQLite is unavailable.
 const WRITE_QUEUE_CAPACITY: usize = 4_096;
 const READ_QUEUE_CAPACITY: usize = 1_024;
-const PRICING_SHADOW_READ_QUEUE_CAPACITY: usize = 256;
 const PG_OPERATION_RETRY_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_PENDING_ANTHROPIC_CALIBRATION_EVENTS: usize = 4_096;
 const MAX_PENDING_GEMINI_CALIBRATION_EVENTS: usize = 4_096;
@@ -1737,14 +1736,6 @@ enum ReadCmd {
     ),
 }
 
-enum PricingShadowReadCmd {
-    Bundle {
-        account_id: String,
-        timeout_ms: u64,
-        reply: oneshot::Sender<anyhow::Result<PricingReadBundle>>,
-    },
-}
-
 /// Latency of the single-writer PostgreSQL money commands, measured around `run_pg_with_retry`
 /// so the observation covers reconnect and retry — the budget the request path actually pays.
 /// Owned here rather than in `forward::Metrics` because the billing writer starts before that
@@ -1859,8 +1850,6 @@ pub struct AsyncBilling {
     rr: AtomicUsize, // round-robin по читателям
     /// PostgreSQL-only connections reserved for evaluation-time shadow reads. They never share
     /// the customer authorization reader budget and are absent from live SQLite composition.
-    pricing_shadow_readers: Vec<mpsc::Sender<PricingShadowReadCmd>>,
-    pricing_shadow_rr: AtomicUsize,
     /// Present only for the PostgreSQL authority; the SQLite fallback keeps no latency stats
     /// because it is never the production hot path.
     pg_command: Option<Arc<PgCommandMetrics>>,
@@ -2475,29 +2464,14 @@ impl AsyncBilling {
         readers: usize,
         _auth_ttl_ms: u64,
     ) -> anyhow::Result<Self> {
-        Self::start_authority_with_pricing_shadow(config, owner, readers, 0, _auth_ttl_ms)
-    }
-
-    /// Start the billing actors plus a separate PostgreSQL-only pricing-shadow read budget.
-    /// Shadow evaluation inserts still use the one existing billing writer.
-    pub fn start_authority_with_pricing_shadow(
-        config: registry::authority::AuthorityConfig,
-        owner: Option<registry::pg::Owner>,
-        readers: usize,
-        pricing_shadow_readers: usize,
-        _auth_ttl_ms: u64,
-    ) -> anyhow::Result<Self> {
         match config {
             registry::authority::AuthorityConfig::Sqlite { path } => {
-                if pricing_shadow_readers != 0 {
-                    anyhow::bail!("live pricing shadow readers require PostgreSQL authority");
-                }
                 Self::start_with(path, readers, 0)
             }
             registry::authority::AuthorityConfig::Postgres { url } => {
                 let owner = owner
                     .ok_or_else(|| anyhow::anyhow!("PostgreSQL billing requires owner epoch"))?;
-                Self::start_postgres(url, owner, readers, pricing_shadow_readers, 0)
+                Self::start_postgres(url, owner, readers, 0)
             }
         }
     }
@@ -3229,8 +3203,6 @@ impl AsyncBilling {
             gemini_calibration_delivery,
             readers: rtxs,
             rr: AtomicUsize::new(0),
-            pricing_shadow_readers: Vec::new(),
-            pricing_shadow_rr: AtomicUsize::new(0),
             pg_command: None,
         })
     }
@@ -3239,7 +3211,6 @@ impl AsyncBilling {
         url: String,
         owner: registry::pg::Owner,
         readers: usize,
-        pricing_shadow_readers: usize,
         _auth_ttl_ms: u64,
     ) -> anyhow::Result<Self> {
         const RESERVATION_LEASE_SECS: i64 = 3600;
@@ -4104,39 +4075,6 @@ impl AsyncBilling {
                 })?;
             rtxs.push(rtx);
         }
-        let mut pricing_shadow_rtxs = Vec::with_capacity(pricing_shadow_readers);
-        for i in 0..pricing_shadow_readers {
-            let (rtx, mut rrx) =
-                mpsc::channel::<PricingShadowReadCmd>(PRICING_SHADOW_READ_QUEUE_CAPACITY);
-            let mut pg = registry::pg::PgStore::connect(&url)?;
-            let reader_url = url.clone();
-            std::thread::Builder::new()
-                .name(format!("billing-pg-pricing-shadow-reader-{i}"))
-                .spawn(move || {
-                    while let Some(cmd) = rrx.blocking_recv() {
-                        match cmd {
-                            PricingShadowReadCmd::Bundle {
-                                account_id,
-                                timeout_ms,
-                                reply,
-                            } => {
-                                let result =
-                                    pg.pricing_read_bundle_with_timeout(&account_id, timeout_ms);
-                                if result.is_err() {
-                                    // No per-request log: bounded counters in the worker own
-                                    // observability and prevent account/error-storm disclosure.
-                                    if let Ok(next) = registry::pg::PgStore::connect(&reader_url) {
-                                        pg = next;
-                                    }
-                                }
-                                let _ = reply.send(result);
-                            }
-                        }
-                    }
-                })?;
-            pricing_shadow_rtxs.push(rtx);
-        }
-
         Ok(AsyncBilling {
             writer: wtx,
             detached: Arc::new(DetachedDispatchTracker::default()),
@@ -4144,8 +4082,6 @@ impl AsyncBilling {
             gemini_calibration_delivery,
             readers: rtxs,
             rr: AtomicUsize::new(0),
-            pricing_shadow_readers: pricing_shadow_rtxs,
-            pricing_shadow_rr: AtomicUsize::new(0),
             pg_command: Some(pg_command),
         })
     }
@@ -4155,37 +4091,6 @@ impl AsyncBilling {
         &self.readers[i]
     }
 
-    fn pricing_shadow_reader(&self) -> anyhow::Result<&mpsc::Sender<PricingShadowReadCmd>> {
-        if self.pricing_shadow_readers.is_empty() {
-            anyhow::bail!("pricing shadow reader budget is disabled");
-        }
-        let i = self.pricing_shadow_rr.fetch_add(1, Ordering::Relaxed)
-            % self.pricing_shadow_readers.len();
-        Ok(&self.pricing_shadow_readers[i])
-    }
-
-    pub(crate) fn pricing_shadow_readers_enabled(&self) -> bool {
-        !self.pricing_shadow_readers.is_empty()
-    }
-
-    pub async fn pricing_shadow_read_bundle(
-        &self,
-        account_id: &str,
-        timeout_ms: u64,
-    ) -> anyhow::Result<PricingReadBundle> {
-        let (reply, result) = oneshot::channel();
-        self.pricing_shadow_reader()?
-            .send(PricingShadowReadCmd::Bundle {
-                account_id: account_id.to_owned(),
-                timeout_ms,
-                reply,
-            })
-            .await
-            .map_err(|_| anyhow::anyhow!("pricing shadow reader unavailable"))?;
-        result
-            .await
-            .map_err(|_| anyhow::anyhow!("pricing shadow reader stopped"))?
-    }
 
 
 
