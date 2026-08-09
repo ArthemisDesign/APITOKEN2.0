@@ -383,6 +383,71 @@ describe.runIf(Boolean(connectionString))("new-account direct strict chain", () 
     expect((await bindingState(userId))?.strict_chain_pending).toBe(false);
   });
 
+  it("orders actionable candidates ahead of silently-pending ones", async () => {
+    // A pending candidate keeps its old updated_at and would pin the head of the LIMITed sweep
+    // forever; the completable strict candidate must sort first regardless of age.
+    const { userId: pendingUser } = await registerUser("chain-pending@example.test");
+    // The second binding does not need full provisioning: the test exercises only the selector's
+    // ordering. Seed the row directly in the strict/verified/confirmed shape — binding first
+    // (desired/applied NULL), then its policy version row (the desired/applied FKs point at
+    // account_policy_versions(binding_id, effective_version, content_digest)), then the versions.
+    const strictCreated = await createEmailUser(database, "chain-strict@example.test", "password-hash");
+    const strictAccount = `acct_chain_${strictCreated.id.replaceAll("-", "")}`;
+    await seedClient.query(`
+      UPDATE engine_accounts SET engine_account_id = $2, status = 'active' WHERE user_id = $1
+    `, [strictCreated.id, strictAccount]);
+    await seedClient.query(`
+      INSERT INTO account_policy_bindings (
+        id, user_id, engine_account_record_id, engine_account_id, account_class, product_id, policy_id,
+        policy_enforcement, funding_enforcement, reconciliation_state, sync_state,
+        strict_chain_pending
+      )
+      SELECT gen_random_uuid(), $1,
+             (SELECT id FROM engine_accounts WHERE user_id = $1), $2,
+             'b2c', product_id, policy_id,
+             'legacy_scalar', 'legacy_single', 'pending', 'legacy', true
+      FROM account_policy_bindings WHERE user_id = $3
+    `, [strictCreated.id, strictAccount, pendingUser]);
+    await seedClient.query(`
+      INSERT INTO account_policy_versions (
+        binding_id, effective_version, policy_id, policy_version, policy_digest, product_id,
+        account_class, schema_version, catalog_generation, switch_generation, content_digest,
+        replacement_locked, created_at
+      )
+      SELECT b.id, v.effective_version, v.policy_id, v.policy_version, v.policy_digest, v.product_id,
+             v.account_class, v.schema_version, v.catalog_generation, v.switch_generation,
+             v.content_digest, v.replacement_locked, now()
+      FROM account_policy_versions v
+      JOIN account_policy_bindings b ON b.user_id = $1
+      WHERE v.binding_id = (SELECT id FROM account_policy_bindings WHERE user_id = $2)
+    `, [strictCreated.id, pendingUser]);
+    await seedClient.query(`
+      UPDATE account_policy_bindings b
+      SET desired_effective_version = v.effective_version, desired_digest = v.content_digest,
+          applied_effective_version = v.effective_version, applied_digest = v.content_digest,
+          policy_enforcement = 'strict', funding_enforcement = 'strict',
+          reconciliation_state = 'verified', sync_state = 'confirmed',
+          last_ack_at = now()
+      FROM account_policy_versions v
+      WHERE v.binding_id = b.id AND b.user_id = $1
+    `, [strictCreated.id]);
+    const strictUser = strictCreated.id;
+    await seedClient.query(`
+      UPDATE account_policy_bindings
+      SET policy_enforcement = 'shadow', reconciliation_state = 'verified',
+          sync_state = 'pending', updated_at = now() - interval '2 hours'
+      WHERE user_id = $1
+    `, [pendingUser]);
+    await seedClient.query(`
+      UPDATE account_policy_bindings
+      SET updated_at = now() - interval '1 hour'
+      WHERE user_id = $1
+    `, [strictUser]);
+
+    const ordered = await listPendingStrictChainAccounts(database, 10);
+    expect(ordered.map((candidate) => candidate.userId)).toEqual([strictUser, pendingUser]);
+  });
+
   it("records a blocked funding preflight on the binding and keeps the chain armed", async () => {
     const { userId, engineAccountId } = await registerUser("chain-blocked@example.test");
     await confirmShadowDelivery(userId);

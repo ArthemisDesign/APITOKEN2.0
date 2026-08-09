@@ -90,7 +90,24 @@ export async function listPendingStrictChainAccounts(
            desired_effective_version::text, applied_effective_version::text
     FROM account_policy_bindings
     WHERE strict_chain_pending AND user_id IS NOT NULL
-    ORDER BY updated_at, id
+    ORDER BY
+      -- Actionable first: a silently-pending candidate keeps its old updated_at and would
+      -- otherwise pin the head of a LIMITed sweep forever (observed live: 23 shadow/pending
+      -- rows ahead of every completable strict/verified account, zero completions per hour).
+      -- 0 = strict/verified/confirmed (opt-out can land now), 1 = shadow fully delivered
+      -- (staging can fire now), 2 = everything else.
+      CASE
+        WHEN policy_enforcement = 'strict'
+          AND reconciliation_state = 'verified'
+          AND sync_state = 'confirmed'
+          AND desired_effective_version = applied_effective_version THEN 0
+        WHEN policy_enforcement = 'shadow'
+          AND reconciliation_state = 'verified'
+          AND sync_state = 'confirmed'
+          AND desired_effective_version = applied_effective_version THEN 1
+        ELSE 2
+      END,
+      updated_at, id
     LIMIT $1
   `,
     [limit],
