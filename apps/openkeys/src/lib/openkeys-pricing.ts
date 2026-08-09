@@ -1,32 +1,20 @@
-import {
-  OPENKEYS_PRICING_PRODUCT_ID,
-  type AccountPolicyBinding,
-  type AccountPolicySpec,
-  type IssuedEngineApiKey,
-} from "@claude-api/contracts";
-import {
-  assertOpenKeysCatalog,
-  assertOpenKeysSwitches,
-  buildOfficialOpenKeysPolicy,
-  canonicalPricingJson,
-  EngineClientError,
-  OFFICIAL_ONE_TO_ONE_CONTRACT,
-  OFFICIAL_ONE_TO_ONE_MULT_BP,
-  officialOpenKeysStrictBinding,
-  OpenKeysPolicyError as OpenKeysPricingError,
-  type EngineClient,
-  type OpenKeysPricingAuthority,
-} from "@claude-api/engine-client";
+import { type IssuedEngineApiKey } from "@claude-api/contracts";
+import { EngineClientError, type EngineClient } from "@claude-api/engine-client";
 
-export {
-  assertOpenKeysCatalog,
-  assertOpenKeysSwitches,
-  buildOfficialOpenKeysPolicy,
-  OFFICIAL_ONE_TO_ONE_CONTRACT,
-  OFFICIAL_ONE_TO_ONE_MULT_BP,
-  OpenKeysPricingError,
-  type OpenKeysPricingAuthority,
-};
+/**
+ * The one contract OpenKeys sells: face value at list price. It is a number on the engine
+ * account, not a policy document — an OpenKeys account is 1:1 because its multiplier says so.
+ */
+export const OFFICIAL_ONE_TO_ONE_MULT_BP = 10_000;
+export const OFFICIAL_ONE_TO_ONE_CONTRACT = "official_one_to_one";
+
+export class OpenKeysPricingError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = "OpenKeysPricingError";
+  }
+}
+
 const PRICING_OVERRIDE_FIELDS = new Set([
   "discount",
   "discount_bps",

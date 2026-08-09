@@ -24,9 +24,6 @@ const batches = {
 
 function engine(overrides: Record<string, unknown>) {
   return {
-    getPricingReleaseProvisioningContextV2: vi.fn(async () => null),
-    getActivePricingCatalog: vi.fn(async () => null),
-    getActiveProviderSwitches: vi.fn(async () => null),
     ...overrides,
   };
 }

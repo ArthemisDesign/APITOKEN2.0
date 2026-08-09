@@ -24,14 +24,10 @@ import { EngineClientError } from "@claude-api/engine-client";
 import {
   assertNoOpenKeysPricingOverride,
   assertOfficialEngineAccount,
-  assertOpenKeysCatalog,
-  assertOpenKeysSwitches,
-  buildOfficialOpenKeysPolicy,
   describeIssuanceBlock,
   OFFICIAL_ONE_TO_ONE_MULT_BP,
   OpenKeysPricingError,
   provisionOfficialOpenKeysCredential,
-  type OpenKeysPricingAuthority,
 } from "./openkeys-pricing";
 
 const officialPolicyFixture = JSON.parse(readFileSync(
@@ -75,10 +71,6 @@ function switches(): ProviderSwitchSpec {
       },
     ]),
   };
-}
-
-function authority(): OpenKeysPricingAuthority {
-  return { catalog: catalog(), switches: switches() };
 }
 
 function catalogGen2(): PricingCatalogSpec {
@@ -184,37 +176,7 @@ describe("OpenKeys official 1:1 pricing", () => {
     })).not.toThrow();
   });
 
-  it("uses api_type-independent zero-discount policy rules for both enabled providers", () => {
-    const policy = buildOfficialOpenKeysPolicy("acct_openkeys_current", authority());
-    expect(policy).toMatchObject({
-      account_id: "acct_openkeys_current",
-      owner_type: "open_keys",
-      account_class: "open_keys",
-      product_id: "openkeys",
-      replacement_locked: false,
-    });
-    expect(policy.rules).toHaveLength(2);
-    expect(policy.rules.map((rule) => rule.scope)).toEqual([
-      { provider: { provider_id: "anthropic" } },
-      { provider: { provider_id: "openai" } },
-    ]);
-    for (const rule of policy.rules) {
-      expect(rule).toMatchObject({
-        pricing_mode: "discount",
-        rule_origin: "managed",
-        discount_bps: 0,
-        payable_multiplier_bp: 10_000,
-        track_eligible: false,
-        retention_eligible: false,
-        commission_eligible: false,
-      });
-    }
-  });
 
-  it("matches the shared fixed official policy identity used by Stage 5", () => {
-    const policy = buildOfficialOpenKeysPolicy(officialPolicyFixture.account_id, authority());
-    expect(policy).toMatchObject(officialPolicyFixture);
-  });
 
 
   describe("describeIssuanceBlock", () => {

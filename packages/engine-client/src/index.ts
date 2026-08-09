@@ -1,8 +1,6 @@
 import { Buffer } from "node:buffer";
 import JSONbigFactory from "json-bigint";
 import {
-  accountPolicyBindingSchema,
-  accountPolicySpecSchema,
   engineAccountSchema,
   engineAccountListSchema,
   engineApiKeyListSchema,
@@ -10,29 +8,7 @@ import {
   engineLedgerSchema,
   engineSpendStatsSchema,
   engineUsageSchema,
-  fundingNormalizationApplyRequestV2Schema,
-  fundingNormalizationApplyResultV2Schema,
-  fundingNormalizationPlanV2Schema,
   issuedEngineApiKeySchema,
-  lockedOpenkeysPolicyTransitionIdentitySchema,
-  lockedOpenkeysPolicyTransitionRequestSchema,
-  policyActiveExpectationSchema,
-  pricingActiveExpectationSchema,
-  pricingCatalogSpecSchema,
-  pricingMutationAckSchema,
-  pricingPolicySnapshotSchema,
-  pricingReleaseAssignmentExtensionIdentityV2Schema,
-  pricingReleaseAssignmentExtensionV2Schema,
-  pricingReleaseHeadV2Schema,
-  pricingReleaseInventoryPageV2Schema,
-  pricingReleaseOptOutAckV2Schema,
-  pricingReleaseOptOutRequestV2Schema,
-  pricingReleasePolicyV2Schema,
-  pricingReleaseProvisioningContextEnvelopeV2Schema,
-  pricingReleaseV2Schema,
-  providerSwitchSpecSchema,
-  type AccountPolicyBinding,
-  type AccountPolicySpec,
   type CreateEngineAccount,
   type EngineAccount,
   type EngineApiKey,
@@ -40,61 +16,9 @@ import {
   type EngineLedgerEntry,
   type EngineSpendStats,
   type EngineUsage,
-  type FundingNormalizationApplyRequestV2,
-  type FundingNormalizationApplyResultV2,
-  type FundingNormalizationPlanV2,
   type IssuedEngineApiKey,
-  type LockedOpenkeysPolicyTransitionIdentity,
-  type LockedOpenkeysPolicyTransitionRequest,
-  type PolicyActiveExpectation,
-  type PricingActiveExpectation,
-  type PricingCatalogSpec,
-  type PricingMutationAck,
-  type PricingPolicySnapshot,
-  type PricingReleaseAssignmentExtensionIdentityV2,
-  type PricingReleaseAssignmentExtensionV2,
-  type PricingReleaseHeadV2,
-  type PricingReleaseInventoryPageV2,
-  type PricingReleaseOptOutAckV2,
-  type PricingReleasePolicyV2,
-  type PricingReleaseProvisioningContextV2,
-  type PricingReleaseV2,
-  type ProviderSwitchSpec,
 } from "@claude-api/contracts";
 import { z } from "zod";
-
-export {
-  assertOpenKeysCatalog,
-  assertOpenKeysSwitches,
-  buildOfficialOpenKeysPolicy,
-  canonicalPricingJson,
-  OFFICIAL_ONE_TO_ONE_CONTRACT,
-  OFFICIAL_ONE_TO_ONE_MULT_BP,
-  officialOpenKeysBinding,
-  officialOpenKeysStrictBinding,
-  OPENKEYS_POLICY_PROVIDERS,
-  OpenKeysPolicyError,
-  stage7OpenKeysDigest,
-  type OpenKeysPricingAuthority,
-} from "./openkeys-policy.js";
-
-export {
-  buildPricingReleaseAssignmentExtensionV2,
-  buildServicePricingReleasePolicyV2,
-  canonicalPricingReleaseV2Json,
-  ensureServicePricingReleaseProvisioningV2,
-  PricingReleaseAccountProvisioningV2Error,
-  pricingReleaseV2Digest,
-  type PricingReleaseAccountProvisioningResultV2,
-  type PricingReleaseProvisioningTransportV2,
-} from "./release-provisioning.js";
-
-export {
-  AccountStrictCutoverPreflightError,
-  ensureAccountStrictCutoverPreflight,
-  type AccountStrictCutoverPreflight,
-  type AccountStrictCutoverPreflightTransport,
-} from "./strict-cutover-preflight.js";
 
 const JSONbig = JSONbigFactory({ storeAsString: true, useNativeBigInt: false });
 
@@ -139,44 +63,7 @@ export interface ReplaceEngineKeyPolicyOptions {
   expiresAt: Date | null;
 }
 
-export interface PricingReleaseInventoryV2Options {
-  afterAccountId?: string;
-  limit?: number;
-}
-
-export type TypedPricingMutationAck<Identity> =
-  | { result: "stored" | "applied" | "unchanged"; identity: Identity }
-  | (Extract<PricingMutationAck, { result: "rejected" }> & { identity: Identity });
-
 const maxSignedI64 = 9_223_372_036_854_775_807n;
-const catalogPrepareIdentitySchema = z.object({ catalog: pricingCatalogSpecSchema }).strict();
-const catalogActivationIdentitySchema = z.object({
-  catalog: pricingCatalogSpecSchema,
-  expectation: pricingActiveExpectationSchema,
-}).strict();
-const switchPrepareIdentitySchema = z.object({ switches: providerSwitchSpecSchema }).strict();
-const switchActivationIdentitySchema = z.object({
-  switches: providerSwitchSpecSchema,
-  expectation: pricingActiveExpectationSchema,
-}).strict();
-const policyPrepareIdentitySchema = z.object({ policy: accountPolicySpecSchema }).strict();
-const policyActivationIdentitySchema = z.object({
-  policy: accountPolicySpecSchema,
-  activation: z.object({
-    account_id: z.string(),
-    effective_version: z.number().int().safe().positive(),
-    content_digest: z.string(),
-    binding: accountPolicyBindingSchema,
-  }).strict(),
-  expectation: policyActiveExpectationSchema,
-}).strict();
-const releasePolicyV2PrepareIdentitySchema = pricingReleasePolicyV2Schema.pick({
-  policy_id: true,
-  policy_version: true,
-  content_digest: true,
-});
-const releaseInventoryLimitV2Schema = z.number().int().min(1).max(500);
-const fundingNormalizationAccountIdV2Schema = z.string().startsWith("acct_").max(200);
 // One extra attempt for idempotent GET reads: engine blue-green slot cutovers fail individual
 // requests for a sub-second window, and pausing briefly lets the health-gated origin settle.
 const transientGetRetryDelayMs = 300;
@@ -462,465 +349,30 @@ export class EngineClient {
     });
   }
 
-  async preparePricingCatalog(
-    input: PricingCatalogSpec,
-  ): Promise<TypedPricingMutationAck<{ catalog: PricingCatalogSpec }>> {
-    const catalog = pricingCatalogSpecSchema.parse(input);
-    return this.pricingMutation(
-      "/admin/pricing/catalog/prepare",
-      catalog,
-      catalogPrepareIdentitySchema,
-      { catalog },
-    );
-  }
 
-  async getPricingCatalogVersion(
-    productId: string,
-    generation: number,
-  ): Promise<PricingCatalogSpec | null> {
-    const target = pricingCatalogSpecSchema.pick({ product_id: true, generation: true }).parse({
-      product_id: productId,
-      generation,
-    });
-    const { response, payload } = await this.request(
-      `/admin/pricing/catalog/${encodeURIComponent(target.product_id)}/version/${target.generation}`,
-      { acceptedStatuses: [404] },
-    );
-    if (response.status === 404) return null;
-    return this.parsePricingResponse(
-      z.object({ catalog: pricingCatalogSpecSchema }).strict(),
-      payload,
-      response,
-    ).catalog;
-  }
 
-  async getActivePricingCatalog(productId: string): Promise<PricingCatalogSpec | null> {
-    const target = pricingCatalogSpecSchema.pick({ product_id: true }).parse({ product_id: productId });
-    const { response, payload } = await this.request(
-      `/admin/pricing/catalog/${encodeURIComponent(target.product_id)}/active`,
-      { acceptedStatuses: [404] },
-    );
-    if (response.status === 404) return null;
-    return this.parsePricingResponse(
-      z.object({ catalog: pricingCatalogSpecSchema }).strict(),
-      payload,
-      response,
-    ).catalog;
-  }
 
-  async activatePricingCatalog(
-    input: PricingCatalogSpec,
-    expectation: PricingActiveExpectation,
-  ): Promise<TypedPricingMutationAck<z.infer<typeof catalogActivationIdentitySchema>>> {
-    const catalog = pricingCatalogSpecSchema.parse(input);
-    const expected = pricingActiveExpectationSchema.parse(expectation);
-    return this.pricingMutation(
-      `/admin/pricing/catalog/${encodeURIComponent(catalog.product_id)}/activate`,
-      { catalog, expectation: expected },
-      catalogActivationIdentitySchema,
-      { catalog, expectation: expected },
-    );
-  }
 
-  async prepareProviderSwitches(
-    input: ProviderSwitchSpec,
-  ): Promise<TypedPricingMutationAck<{ switches: ProviderSwitchSpec }>> {
-    const switches = providerSwitchSpecSchema.parse(input);
-    return this.pricingMutation(
-      "/admin/pricing/switches/prepare",
-      switches,
-      switchPrepareIdentitySchema,
-      { switches },
-    );
-  }
 
-  async getProviderSwitchVersion(generation: number): Promise<ProviderSwitchSpec | null> {
-    if (!Number.isSafeInteger(generation) || generation <= 0) {
-      throw new RangeError("generation must be a positive safe integer");
-    }
-    const { response, payload } = await this.request(
-      `/admin/pricing/switches/version/${generation}`,
-      { acceptedStatuses: [404] },
-    );
-    if (response.status === 404) return null;
-    return this.parsePricingResponse(
-      z.object({ switches: providerSwitchSpecSchema }).strict(),
-      payload,
-      response,
-    ).switches;
-  }
 
-  async getActiveProviderSwitches(): Promise<ProviderSwitchSpec | null> {
-    const { response, payload } = await this.request(
-      "/admin/pricing/switches/active",
-      { acceptedStatuses: [404] },
-    );
-    if (response.status === 404) return null;
-    return this.parsePricingResponse(
-      z.object({ switches: providerSwitchSpecSchema }).strict(),
-      payload,
-      response,
-    ).switches;
-  }
 
-  async activateProviderSwitches(
-    input: ProviderSwitchSpec,
-    expectation: PricingActiveExpectation,
-  ): Promise<TypedPricingMutationAck<z.infer<typeof switchActivationIdentitySchema>>> {
-    const switches = providerSwitchSpecSchema.parse(input);
-    const expected = pricingActiveExpectationSchema.parse(expectation);
-    return this.pricingMutation(
-      "/admin/pricing/switches/activate",
-      { switches, expectation: expected },
-      switchActivationIdentitySchema,
-      { switches, expectation: expected },
-    );
-  }
 
-  async prepareAccountPolicy(
-    input: AccountPolicySpec,
-  ): Promise<TypedPricingMutationAck<{ policy: AccountPolicySpec }>> {
-    const policy = accountPolicySpecSchema.parse(input);
-    return this.pricingMutation(
-      "/admin/pricing/policy/prepare",
-      policy,
-      policyPrepareIdentitySchema,
-      { policy },
-    );
-  }
 
-  async getAccountPolicyVersion(
-    accountId: string,
-    effectiveVersion: number,
-  ): Promise<AccountPolicySpec | null> {
-    if (!Number.isSafeInteger(effectiveVersion) || effectiveVersion <= 0) {
-      throw new RangeError("effectiveVersion must be a positive safe integer");
-    }
-    const { response, payload } = await this.request(
-      `/admin/pricing/policy/${encodeURIComponent(accountId)}/version/${effectiveVersion}`,
-      { acceptedStatuses: [404] },
-    );
-    if (response.status === 404) return null;
-    return this.parsePricingResponse(
-      z.object({ policy: accountPolicySpecSchema }).strict(),
-      payload,
-      response,
-    ).policy;
-  }
 
-  async getActiveAccountPolicy(accountId: string): Promise<{
-    policy: AccountPolicySpec;
-    binding: AccountPolicyBinding;
-  } | null> {
-    const { response, payload } = await this.request(
-      `/admin/pricing/policy/${encodeURIComponent(accountId)}/active`,
-      { acceptedStatuses: [404] },
-    );
-    if (response.status === 404) return null;
-    return this.parsePricingResponse(z.object({
-      active: z.object({
-        policy: accountPolicySpecSchema,
-        binding: accountPolicyBindingSchema,
-      }).strict(),
-    }).strict(), payload, response).active;
-  }
 
-  async getAccountPricingState(accountId: string): Promise<PricingPolicySnapshot> {
-    const { response, payload } = await this.request(
-      `/admin/pricing/policy/${encodeURIComponent(accountId)}/state`,
-    );
-    const state = this.parsePricingResponse(z.object({
-      state: z.object({
-        account_id: z.string(),
-        policy: pricingPolicySnapshotSchema,
-      }).passthrough(),
-    }).strict(), payload, response).state;
-    if (state.account_id !== accountId) {
-      throw new EngineClientError("engine returned pricing state for a different account", response.status, false);
-    }
-    return state.policy;
-  }
 
-  async activateAccountPolicy(
-    input: AccountPolicySpec,
-    binding: AccountPolicyBinding,
-    expectation: PolicyActiveExpectation,
-  ): Promise<TypedPricingMutationAck<z.infer<typeof policyActivationIdentitySchema>>> {
-    const policy = accountPolicySpecSchema.parse(input);
-    const targetBinding = accountPolicyBindingSchema.parse(binding);
-    const expected = policyActiveExpectationSchema.parse(expectation);
-    const ack = await this.pricingMutation(
-      `/admin/pricing/policy/${encodeURIComponent(policy.account_id)}/activate`,
-      { policy, binding: targetBinding, expectation: expected },
-      policyActivationIdentitySchema,
-      undefined,
-    );
-    const expectedIdentity = {
-      policy,
-      activation: {
-        account_id: policy.account_id,
-        effective_version: policy.effective_version,
-        content_digest: policy.content_digest,
-        binding: targetBinding,
-      },
-      expectation: expected,
-    };
-    if (JSON.stringify(ack.identity) !== JSON.stringify(expectedIdentity)) {
-      throw new EngineClientError("engine pricing ACK identity does not match the request", undefined, false);
-    }
-    return ack;
-  }
 
-  async lockedOpenkeysPolicyTransition(
-    accountId: string,
-    input: LockedOpenkeysPolicyTransitionRequest,
-  ): Promise<TypedPricingMutationAck<LockedOpenkeysPolicyTransitionIdentity>> {
-    const targetAccountId = fundingNormalizationAccountIdV2Schema.parse(accountId);
-    const request = lockedOpenkeysPolicyTransitionRequestSchema.parse(input);
-    if (request.policy.account_id !== targetAccountId) {
-      throw new EngineClientError(
-        "locked OpenKeys transition policy does not match the target account",
-        undefined,
-        false,
-      );
-    }
-    const expectedIdentity: LockedOpenkeysPolicyTransitionIdentity = {
-      policy: request.policy,
-      active: {
-        target: {
-          version: request.policy.effective_version,
-          content_digest: request.policy.content_digest,
-        },
-        binding: {
-          policy_enforcement: "shadow",
-          funding_enforcement: "legacy_single",
-          reconciliation_state: "verified",
-        },
-      },
-      expected_active: request.expected_active,
-    };
-    return this.pricingMutation(
-      `/admin/pricing/policy/${encodeURIComponent(targetAccountId)}/locked-openkeys-transition`,
-      request,
-      lockedOpenkeysPolicyTransitionIdentitySchema,
-      expectedIdentity,
-    );
-  }
 
-  async preparePricingReleasePolicyV2(
-    input: PricingReleasePolicyV2,
-  ): Promise<TypedPricingMutationAck<z.infer<typeof releasePolicyV2PrepareIdentitySchema>>> {
-    const policy = pricingReleasePolicyV2Schema.parse(input);
-    const identity = releasePolicyV2PrepareIdentitySchema.parse({
-      policy_id: policy.policy_id,
-      policy_version: policy.policy_version,
-      content_digest: policy.content_digest,
-    });
-    return this.pricingMutation(
-      "/admin/pricing/v2/policy/prepare",
-      policy,
-      releasePolicyV2PrepareIdentitySchema,
-      identity,
-    );
-  }
 
-  async getPricingReleasePolicyV2(
-    policyId: string,
-    policyVersion: number,
-  ): Promise<PricingReleasePolicyV2 | null> {
-    const target = releasePolicyV2PrepareIdentitySchema
-      .omit({ content_digest: true })
-      .parse({ policy_id: policyId, policy_version: policyVersion });
-    const { response, payload } = await this.request(
-      `/admin/pricing/v2/policy/${encodeURIComponent(target.policy_id)}/version/${target.policy_version}`,
-      { acceptedStatuses: [404] },
-    );
-    if (response.status === 404) return null;
-    const policy = this.parsePricingResponse(
-      z.object({ policy: pricingReleasePolicyV2Schema }).strict(),
-      payload,
-      response,
-    ).policy;
-    if (policy.policy_id !== target.policy_id || policy.policy_version !== target.policy_version) {
-      throw new EngineClientError("engine returned a different pricing release policy", response.status, false);
-    }
-    return policy;
-  }
 
-  async getPricingReleaseV2(generation: number): Promise<PricingReleaseV2 | null> {
-    const targetGeneration = pricingReleaseV2Schema.shape.generation.parse(generation);
-    const { response, payload } = await this.request(
-      `/admin/pricing/v2/release/${targetGeneration}`,
-      { acceptedStatuses: [404] },
-    );
-    if (response.status === 404) return null;
-    const release = this.parsePricingResponse(
-      z.object({ release: pricingReleaseV2Schema }).strict(),
-      payload,
-      response,
-    ).release;
-    if (release.generation !== targetGeneration) {
-      throw new EngineClientError("engine returned a different pricing release", response.status, false);
-    }
-    return release;
-  }
 
-  /**
-   * `POST /admin/pricing/v2/opt-out` — the one-way release-path retirement marker for an
-   * account already proven to live on the strict policy path. The engine guard fails closed
-   * with 409 `missing_dependency` unless the account is active, holds a strict/strict/verified
-   * binding, and has at least one active unexpired key carrying the exact active-policy ACK.
-   * An already-marked account is an exact replay (`unchanged`), so callers may retry freely.
-   */
-  async optOutPricingReleaseV2(
-    input: { accountId: string; createdBy?: string; reason?: string },
-  ): Promise<PricingReleaseOptOutAckV2> {
-    const request = pricingReleaseOptOutRequestV2Schema.parse({
-      account_id: input.accountId,
-      ...(input.createdBy === undefined ? {} : { created_by: input.createdBy }),
-      ...(input.reason === undefined ? {} : { reason: input.reason }),
-    });
-    const { response, payload } = await this.request("/admin/pricing/v2/opt-out", {
-      method: "POST",
-      body: JSON.stringify(request),
-      acceptedStatuses: [400, 409, 423],
-    });
-    const ack = this.parsePricingResponse(pricingReleaseOptOutAckV2Schema, payload, response);
-    if (ack.result !== "rejected" && response.status !== 200) {
-      throw new EngineClientError("engine returned an inconsistent pricing opt-out status", response.status, false);
-    }
-    return ack;
-  }
 
-  async preparePricingReleaseAssignmentExtensionV2(
-    input: PricingReleaseAssignmentExtensionV2,
-  ): Promise<TypedPricingMutationAck<PricingReleaseAssignmentExtensionIdentityV2>> {
-    const extension = pricingReleaseAssignmentExtensionV2Schema.parse(input);
-    const identity = pricingReleaseAssignmentExtensionIdentityV2Schema.parse({
-      provisioning_head_generation: extension.provisioning_head_generation,
-      provisioning_head_version: extension.provisioning_head_version,
-      account_id: extension.members[0]!.assignment.account_id,
-      extension_group_digest: extension.extension_group_digest,
-    });
-    return this.pricingMutation(
-      "/admin/pricing/v2/assignment-extension/prepare",
-      extension,
-      pricingReleaseAssignmentExtensionIdentityV2Schema,
-      identity,
-    );
-  }
 
-  async getPricingReleaseAssignmentExtensionV2(
-    provisioningHeadVersion: number,
-    accountId: string,
-  ): Promise<PricingReleaseAssignmentExtensionV2 | null> {
-    const target = pricingReleaseAssignmentExtensionIdentityV2Schema
-      .pick({ provisioning_head_version: true, account_id: true })
-      .parse({ provisioning_head_version: provisioningHeadVersion, account_id: accountId });
-    const { response, payload } = await this.request(
-      `/admin/pricing/v2/assignment-extension/${target.provisioning_head_version}/${encodeURIComponent(target.account_id)}`,
-      { acceptedStatuses: [404] },
-    );
-    if (response.status === 404) return null;
-    const extension = this.parsePricingResponse(
-      z.object({ extension: pricingReleaseAssignmentExtensionV2Schema }).strict(),
-      payload,
-      response,
-    ).extension;
-    if (extension.provisioning_head_version !== target.provisioning_head_version
-        || extension.members.some((member) => member.assignment.account_id !== target.account_id)) {
-      throw new EngineClientError("engine returned a different pricing assignment extension", response.status, false);
-    }
-    return extension;
-  }
 
-  async getPricingReleaseHeadV2(): Promise<PricingReleaseHeadV2 | null> {
-    const { response, payload } = await this.request("/admin/pricing/v2/head");
-    return this.parsePricingResponse(
-      z.object({ head: pricingReleaseHeadV2Schema.nullable() }).strict(),
-      payload,
-      response,
-    ).head;
-  }
 
-  async getPricingReleaseProvisioningContextV2(): Promise<PricingReleaseProvisioningContextV2 | null> {
-    const { response, payload } = await this.request("/admin/pricing/v2/provisioning-context");
-    return this.parsePricingResponse(
-      pricingReleaseProvisioningContextEnvelopeV2Schema,
-      payload,
-      response,
-    ).context;
-  }
 
-  /** Returns one bounded page. Callers building release evidence must exhaust the cursor. */
-  async getPricingReleaseInventoryV2(
-    options: PricingReleaseInventoryV2Options = {},
-  ): Promise<PricingReleaseInventoryPageV2> {
-    const query: string[] = [];
-    if (options.afterAccountId !== undefined) {
-      const cursor = pricingReleaseInventoryPageV2Schema.shape.next_after_account_id
-        .unwrap()
-        .parse(options.afterAccountId);
-      query.push(`after_account_id=${encodeURIComponent(cursor)}`);
-    }
-    if (options.limit !== undefined) {
-      const limit = releaseInventoryLimitV2Schema.parse(options.limit);
-      query.push(`limit=${limit}`);
-    }
-    const suffix = query.length === 0 ? "" : `?${query.join("&")}`;
-    const { response, payload } = await this.request(`/admin/pricing/v2/inventory${suffix}`);
-    return this.parsePricingResponse(
-      z.object({ inventory: pricingReleaseInventoryPageV2Schema }).strict(),
-      payload,
-      response,
-    ).inventory;
-  }
 
-  async getFundingNormalizationPlanV2(
-    accountId: string,
-  ): Promise<FundingNormalizationPlanV2 | null> {
-    const targetAccountId = fundingNormalizationAccountIdV2Schema.parse(accountId);
-    const { response, payload } = await this.request(
-      `/admin/pricing/v2/funding/${encodeURIComponent(targetAccountId)}/normalization`,
-      { acceptedStatuses: [404] },
-    );
-    if (response.status === 404) return null;
-    const normalization = this.parsePricingResponse(
-      z.object({ normalization: fundingNormalizationPlanV2Schema }).strict(),
-      payload,
-      response,
-    ).normalization;
-    this.assertAccount(normalization.account_id, targetAccountId, response);
-    return normalization;
-  }
 
-  async applyFundingNormalizationV2(
-    accountId: string,
-    input: FundingNormalizationApplyRequestV2,
-  ): Promise<FundingNormalizationApplyResultV2 | null> {
-    const targetAccountId = fundingNormalizationAccountIdV2Schema.parse(accountId);
-    const request = fundingNormalizationApplyRequestV2Schema.parse(input);
-    const { response, payload } = await this.request(
-      `/admin/pricing/v2/funding/${encodeURIComponent(targetAccountId)}/normalization`,
-      {
-        method: "POST",
-        body: JSON.stringify(request),
-        acceptedStatuses: [404, 409],
-      },
-    );
-    if (response.status === 404) return null;
-    const result = this.parsePricingResponse(
-      z.object({ result: fundingNormalizationApplyResultV2Schema }).strict(),
-      payload,
-      response,
-    ).result;
-    this.assertAccount(result.normalization.account_id, targetAccountId, response);
-    const success = result.status === "stored" || result.status === "unchanged";
-    if (success !== response.ok) {
-      throw new EngineClientError("engine returned an inconsistent funding normalization status", response.status, false);
-    }
-    return result;
-  }
 
   /**
    * Set (`multiplierBp` a number) or clear (`null`) one provider's discount override. Absent
@@ -1091,39 +543,7 @@ export class EngineClient {
     return Buffer.concat(chunks, bytes).toString("utf8");
   }
 
-  private async pricingMutation<Identity>(
-    path: string,
-    body: unknown,
-    identitySchema: z.ZodType<Identity>,
-    expectedIdentity: Identity | undefined,
-  ): Promise<TypedPricingMutationAck<Identity>> {
-    const { response, payload } = await this.request(path, {
-      method: "POST",
-      body: JSON.stringify(body),
-      acceptedStatuses: [400, 409, 423],
-    });
-    const ack = this.parsePricingResponse(pricingMutationAckSchema, payload, response);
-    const identity = this.parsePricingResponse(identitySchema, ack.identity, response);
-    if (expectedIdentity !== undefined && JSON.stringify(identity) !== JSON.stringify(expectedIdentity)) {
-      throw new EngineClientError("engine pricing ACK identity does not match the request", undefined, false);
-    }
-    return {
-      ...ack,
-      identity,
-    } as TypedPricingMutationAck<Identity>;
-  }
 
-  private parsePricingResponse<Schema extends z.ZodTypeAny>(
-    schema: Schema,
-    payload: unknown,
-    response: Response,
-  ): z.output<Schema> {
-    const result = schema.safeParse(payload);
-    if (!result.success) {
-      throw new EngineClientError("engine returned a malformed pricing response", response.status, false);
-    }
-    return result.data as z.output<Schema>;
-  }
 
   private assertAccount(actualAccountId: string, expectedAccountId: string, response: Response): void {
     if (actualAccountId !== expectedAccountId) {
