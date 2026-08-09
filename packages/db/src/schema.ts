@@ -217,7 +217,10 @@ export const enginePricingJobs = pgTable("engine_pricing_jobs", {
   id: uuid("id").primaryKey(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
   engineAccountId: text("engine_account_id").notNull(),
-  multiplierBp: integer("multiplier_bp").notNull(),
+  /** NULL targets the account default; a provider id targets that provider's override. */
+  providerId: text("provider_id"),
+  /** NULL is only valid with a provider id and removes that override. */
+  multiplierBp: integer("multiplier_bp"),
   reason: text("reason").notNull(),
   status: pricingJobStatus("status").notNull().default("pending"),
   attempts: integer("attempts").notNull().default(0),
@@ -229,9 +232,29 @@ export const enginePricingJobs = pgTable("engine_pricing_jobs", {
   createdAt,
   updatedAt,
 }, (table) => [
-  uniqueIndex("engine_pricing_jobs_user_uidx").on(table.userId),
+  uniqueIndex("engine_pricing_jobs_user_provider_uidx").on(table.userId, table.providerId),
   index("engine_pricing_jobs_claim_idx").on(table.status, table.nextAttemptAt),
-  check("engine_pricing_jobs_multiplier_check", sql`${table.multiplierBp} BETWEEN 0 AND 10000`),
+  check("engine_pricing_jobs_multiplier_check",
+    sql`${table.multiplierBp} IS NULL OR ${table.multiplierBp} BETWEEN 0 AND 10000`),
+  check("engine_pricing_jobs_target_check",
+    sql`${table.providerId} IS NOT NULL OR ${table.multiplierBp} IS NOT NULL`),
+]);
+
+/**
+ * A B2B customer's per-provider discount. Absent row = the customer's default multiplier applies
+ * to that provider. This is the whole per-provider pricing surface: no versions, no catalog, no
+ * eligibility rules — the engine resolves `override ?? default` on every request.
+ */
+export const customerProviderDiscounts = pgTable("customer_provider_discounts", {
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  providerId: text("provider_id").notNull(),
+  multiplierBp: integer("multiplier_bp").notNull(),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.providerId] }),
+  check("customer_provider_discounts_multiplier_check",
+    sql`${table.multiplierBp} BETWEEN 0 AND 10000`),
 ]);
 
 export const authIdentities = pgTable("auth_identities", {

@@ -85,8 +85,7 @@ export class AuthService {
       emailBound: invite.email !== null,
       maskedEmail: invite.email ? maskEmail(invite.email) : null,
       email: invite.email,
-      discountPercent: invite.policy ? null : 100 - invite.multiplierBp / 100,
-      pricingPolicy: invite.policy,
+      discountPercent: 100 - invite.multiplierBp / 100,
       expiresAt: invite.expiresAt.toISOString(),
     };
   }

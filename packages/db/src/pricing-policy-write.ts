@@ -16,6 +16,7 @@ import {
 } from "@claude-api/contracts";
 import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
+import { enqueuePricingJob } from "./pricing-discounts.js";
 import { stage5Digest } from "./pricing-release-digest.js";
 import { pricingReleaseCutoverCompleted } from "./pricing-control-jobs.js";
 
@@ -924,44 +925,6 @@ export async function createBusinessInvitationPolicy(
   return policy;
 }
 
-/**
- * Enqueues (or re-arms) the durable legacy-scalar delivery job for an account. The scalar on
- * customer_profiles is the desired state; this job carries it to the engine exactly once per
- * change. Shared by the commerce pricing flows and the managed-policy writer.
- */
-export async function enqueuePricingJob(client: PoolClient, input: {
-  userId: string; engineAccountId: string; multiplierBp: number; reason: string;
-}): Promise<string> {
-  const existing = await client.query<{ id: string; status: "pending" | "processing" | "retry" | "confirmed" }>(`
-    SELECT id, status FROM engine_pricing_jobs WHERE user_id = $1 FOR UPDATE
-  `, [input.userId]);
-  const row = existing.rows[0];
-  if (row?.status === "processing") {
-    // Do not revoke an active lease or let a newer generation run concurrently. The desired
-    // multiplier is already durable on customer_profiles; confirmPricingJob requeues this row
-    // after the in-flight engine request completes if that desired value changed.
-    return row.id;
-  }
-  if (row) {
-    const updated = await client.query<{ id: string }>(`
-      UPDATE engine_pricing_jobs SET
-        engine_account_id = $2, multiplier_bp = $3, reason = $4,
-        status = 'pending', attempts = 0, next_attempt_at = now(),
-        locked_at = NULL, locked_by = NULL, last_error = NULL,
-        confirmed_at = NULL, updated_at = now()
-      WHERE id = $1
-      RETURNING id
-    `, [row.id, input.engineAccountId, input.multiplierBp, input.reason]);
-    return updated.rows[0]!.id;
-  }
-  const id = randomUUID();
-  await client.query(`
-    INSERT INTO engine_pricing_jobs (
-      id, user_id, engine_account_id, multiplier_bp, reason
-    ) VALUES ($1, $2, $3, $4, $5)
-  `, [id, input.userId, input.engineAccountId, input.multiplierBp, input.reason]);
-  return id;
-}
 
 /**
  * A saved b2b_client policy whose rules are a uniform set of provider-level discounts expresses

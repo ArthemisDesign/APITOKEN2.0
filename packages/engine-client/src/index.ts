@@ -922,6 +922,50 @@ export class EngineClient {
     return result;
   }
 
+  /**
+   * Set (`multiplierBp` a number) or clear (`null`) one provider's discount override. Absent
+   * override means the account default prices that provider — the engine resolves
+   * `override ?? default` on every request, so a write is live immediately.
+   */
+  async setAccountProviderDiscount(
+    accountId: string,
+    providerId: string,
+    multiplierBp: number | null,
+  ): Promise<void> {
+    if (multiplierBp !== null
+      && (!Number.isInteger(multiplierBp) || multiplierBp < 0 || multiplierBp > 10_000)) {
+      throw new RangeError("multiplierBp must be an integer from 0 to 10000, or null");
+    }
+    const { response, payload } = await this.request(
+      `/admin/account/${encodeURIComponent(accountId)}/discounts`,
+      { method: "POST", body: JSON.stringify({ provider_id: providerId, mult_bp: multiplierBp }) },
+    );
+    const result = payload as Record<string, unknown>;
+    if (result.account !== accountId || result.provider_id !== providerId) {
+      throw new EngineClientError("engine returned an invalid discount response", response.status, false);
+    }
+  }
+
+  /** The account default plus every per-provider override, as the engine currently prices them. */
+  async getAccountDiscounts(accountId: string): Promise<{
+    multiplierBp: number;
+    providers: Record<string, number>;
+  }> {
+    const { response, payload } = await this.request(
+      `/admin/account/${encodeURIComponent(accountId)}/discounts`,
+      { method: "GET" },
+    );
+    const result = payload as Record<string, unknown>;
+    if (result.account !== accountId || typeof result.mult_bp !== "number") {
+      throw new EngineClientError("engine returned an invalid discount response", response.status, false);
+    }
+    const providers: Record<string, number> = {};
+    for (const [providerId, value] of Object.entries((result.providers ?? {}) as Record<string, unknown>)) {
+      if (typeof value === "number") providers[providerId] = value;
+    }
+    return { multiplierBp: result.mult_bp, providers };
+  }
+
   async setAccountMultiplier(accountId: string, multiplierBp: number): Promise<void> {
     if (!Number.isInteger(multiplierBp) || multiplierBp < 0 || multiplierBp > 10_000) {
       throw new RangeError("multiplierBp must be an integer from 0 to 10000");

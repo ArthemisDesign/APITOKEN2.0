@@ -8,16 +8,7 @@ import {
 } from "@claude-api/contracts";
 import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
-import { pricingReleaseCutoverCompleted } from "./pricing-control-jobs.js";
-import {
-  copyBusinessInvitationPolicyToReplacement,
-  createBusinessInvitationPolicy,
-  enqueuePricingJob,
-  getManagedPricingPolicy,
-  type ManagedPricingPolicyRuleView,
-  PricingPolicyWriteError,
-  provisionBusinessClientPolicy,
-} from "./pricing-policy-write.js";
+import { enqueuePricingJob } from "./pricing-discounts.js";
 
 export class InvalidBusinessInvitationError extends Error {}
 export class BusinessInvitationNotFoundError extends Error {}
@@ -90,7 +81,10 @@ export interface ClaimedPricingJob {
   id: string;
   userId: string;
   engineAccountId: string;
-  multiplierBp: number;
+  /** `null` targets the account default; a provider id targets that provider's override. */
+  providerId: string | null;
+  /** `null` is only produced by a provider job and means "remove the override". */
+  multiplierBp: number | null;
   attempts: number;
 }
 
@@ -704,14 +698,7 @@ export async function createBusinessInvite(database: Database, input: {
   idempotencyKey: string;
   actorId: string;
   reason: string;
-  policyRules?: readonly PricingPolicyEditorRule[];
 }): Promise<BusinessInviteRecord> {
-  if (input.policyRules && input.multiplierBp !== 10_000) {
-    throw new PricingPolicyWriteError(
-      "invalid_owner_rule",
-      "policy-based invitation requires a neutral 10000 compatibility multiplier",
-    );
-  }
   const client = await database.pool.connect();
   const email = input.email?.toLowerCase() ?? null;
   try {
@@ -720,12 +707,10 @@ export async function createBusinessInvite(database: Database, input: {
     const existing = await client.query<{
       id: string; email: string | null; encrypted_token: string | null;
       multiplier_bp: number; expires_at: Date; delivery_status: string | null;
-      invitation_policy_id: string | null;
     }>(`
       SELECT bi.id, bi.email, bi.encrypted_token, bi.multiplier_bp, bi.expires_at,
-             eo.status AS delivery_status, policy.invitation_policy_id
+             eo.status AS delivery_status
       FROM business_invites bi
-      LEFT JOIN business_invite_policy_bindings policy ON policy.invite_id = bi.id
       LEFT JOIN LATERAL (
         SELECT status::text AS status FROM email_outbox
         WHERE business_invite_id = bi.id ORDER BY created_at DESC LIMIT 1
@@ -740,17 +725,6 @@ export async function createBusinessInvite(database: Database, input: {
       }
       if (!prior.encrypted_token) {
         throw new BusinessInvitationConflictError("the invitation token is no longer available");
-      }
-      if (Boolean(prior.invitation_policy_id) !== Boolean(input.policyRules)) {
-        throw new BusinessInvitationConflictError("idempotency key was already used with another pricing policy mode");
-      }
-      if (input.policyRules) {
-        await createBusinessInvitationPolicy(client, {
-          inviteId: prior.id,
-          rules: input.policyRules,
-          actorId: input.actorId,
-          reason: input.reason,
-        });
       }
       await client.query("COMMIT");
       return {
@@ -774,14 +748,6 @@ export async function createBusinessInvite(database: Database, input: {
       id, email, input.tokenHash, input.encryptedToken, input.multiplierBp,
       input.expiresAt, input.idempotencyKey, input.actorId,
     ]);
-    if (input.policyRules) {
-      await createBusinessInvitationPolicy(client, {
-        inviteId: id,
-        rules: input.policyRules,
-        actorId: input.actorId,
-        reason: input.reason,
-      });
-    }
     if (email) {
       await queueBusinessInviteEmail(client, {
         inviteId: id,
@@ -789,7 +755,6 @@ export async function createBusinessInvite(database: Database, input: {
         encryptedToken: input.encryptedToken,
         multiplierBp: input.multiplierBp,
         expiresAt: input.expiresAt,
-        policyBased: Boolean(input.policyRules),
       });
     }
     await client.query(`
@@ -798,7 +763,6 @@ export async function createBusinessInvite(database: Database, input: {
     `, [input.actorId, id, JSON.stringify({
       email,
       multiplierBp: input.multiplierBp,
-      policyBased: Boolean(input.policyRules),
       expiresAt: input.expiresAt.toISOString(),
       delivery: email ? "email" : "copy_only",
       reason: input.reason,
@@ -844,7 +808,6 @@ export async function getBusinessInvitePreview(
   email: string | null;
   multiplierBp: number;
   expiresAt: Date;
-  policy: { currentVersion: number; rules: ManagedPricingPolicyRuleView[] } | null;
 } | null> {
   const result = await database.pool.query<{
     id: string; email: string | null; multiplier_bp: number; expires_at: Date;
@@ -855,15 +818,10 @@ export async function getBusinessInvitePreview(
   `, [tokenHash]);
   const row = result.rows[0];
   if (!row) return null;
-  const policy = await getManagedPricingPolicy(database, {
-    ownerType: "b2b_invitation",
-    ownerId: row.id,
-  });
   return {
     email: row.email,
     multiplierBp: row.multiplier_bp,
     expiresAt: row.expires_at,
-    policy: policy ? { currentVersion: policy.currentVersion, rules: policy.rules } : null,
   };
 }
 
@@ -970,12 +928,10 @@ export async function rotateBusinessInvite(database: Database, input: {
       throw new BusinessInvitationConflictError("idempotency key was already used for another invitation");
     }
     const oldResult = await client.query<{
-      email: string | null; multiplier_bp: number; policy_based: boolean;
+      email: string | null; multiplier_bp: number;
     }>(`
-      SELECT invitation.email, invitation.multiplier_bp,
-             (policy.invitation_policy_id IS NOT NULL) AS policy_based
+      SELECT invitation.email, invitation.multiplier_bp
       FROM business_invites invitation
-      LEFT JOIN business_invite_policy_bindings policy ON policy.invite_id = invitation.id
       WHERE invitation.id = $1 AND invitation.consumed_at IS NULL AND invitation.revoked_at IS NULL
       FOR UPDATE OF invitation
     `, [input.inviteId]);
@@ -983,7 +939,7 @@ export async function rotateBusinessInvite(database: Database, input: {
     if (!old) throw new BusinessInvitationNotFoundError("active invitation not found");
     if (!old.email) throw new BusinessInvitationConflictError("copy-only invitations cannot be emailed; copy the existing link");
     const id = randomUUID();
-    const replacementMultiplierBp = old.policy_based ? 10_000 : old.multiplier_bp;
+    const replacementMultiplierBp = old.multiplier_bp;
     await client.query(`
       INSERT INTO business_invites (
         id, email, token_hash, encrypted_token, multiplier_bp, expires_at,
@@ -993,15 +949,6 @@ export async function rotateBusinessInvite(database: Database, input: {
       id, old.email, input.tokenHash, input.encryptedToken, replacementMultiplierBp,
       input.expiresAt, input.idempotencyKey, input.actorId,
     ]);
-    const replacementPolicy = await copyBusinessInvitationPolicyToReplacement(client, {
-      sourceInviteId: input.inviteId,
-      replacementInviteId: id,
-      actorId: input.actorId,
-      reason: input.reason,
-    });
-    if (Boolean(replacementPolicy) !== old.policy_based) {
-      throw new PricingPolicyWriteError("policy_not_found", "replacement invitation lost its source policy");
-    }
     await client.query(`
       UPDATE business_invites
       SET revoked_at = now(), revoked_by_actor = $2, encrypted_token = NULL,
@@ -1020,7 +967,7 @@ export async function rotateBusinessInvite(database: Database, input: {
       encryptedToken: input.encryptedToken,
       multiplierBp: replacementMultiplierBp,
       expiresAt: input.expiresAt,
-      policyBased: replacementPolicy !== null,
+      policyBased: false,
     });
     await client.query(`
       INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
@@ -1422,28 +1369,9 @@ export async function getCustomerPricingPolicyView(
       await client.query("COMMIT");
       return [];
     }
-    // Post-cutover the release authority owns every price: b2b policies present exactly as
-    // pinned (no legacy-scalar clamp), and b2c presents the managed global policy head — the
-    // content the active release pins — instead of the frozen pre-cutover track artifact rows.
-    const cutoverCompleted = await pricingReleaseCutoverCompleted(client);
-    let globalB2cRules: CustomerPricingRuleRow[] = [];
-    if (cutoverCompleted && bindingResult.rows.some((binding) => binding.account_class === "b2c")) {
-      const globalRulesResult = await client.query<CustomerPricingRuleRow>(`
-        SELECT '' AS binding_id, '' AS effective_version, rule.rule_id,
-               rule.scope_type, rule.provider_id, rule.canonical_model_id,
-               rule.pricing_mode, rule.rule_origin, rule.discount_bps,
-               rule.payable_multiplier_bp, rule.track_eligible,
-               rule.retention_eligible, rule.commission_eligible
-        FROM pricing_policy_rules rule
-        JOIN pricing_policies policy ON policy.id = rule.policy_id
-        JOIN pricing_policy_heads head
-          ON head.policy_id = policy.id AND head.current_version = rule.policy_version
-        WHERE policy.owner_type = 'global_b2c' AND policy.owner_id = 'global-b2c'
-          AND policy.product_id = 'main' AND policy.status = 'active'
-        ORDER BY rule.provider_id, rule.scope_type, rule.canonical_model_id, rule.rule_id
-      `);
-      globalB2cRules = globalRulesResult.rows;
-    }
+    // There is no release authority any more: the account default and its per-provider
+    // overrides are the whole price, so nothing overrides the binding's own rules here.
+    const globalB2cRules: CustomerPricingRuleRow[] = [];
     const bindingIds = bindingResult.rows.map((binding) => binding.id);
     const versionResult = await client.query<CustomerPricingVersionRow>(`
       SELECT version.binding_id, version.effective_version::text,
@@ -1575,7 +1503,7 @@ export async function getCustomerPricingPolicyView(
           admissionCatalogGeneration: catalogHeads.get(binding.product_id) ?? null,
           switchEntries,
           admissionSwitchGeneration,
-          cutoverCompleted,
+          cutoverCompleted: false,
           globalB2cRules,
         });
       };
@@ -1692,44 +1620,14 @@ export async function convertCustomerToBusiness(database: Database, input: {
     if (!row) throw new CustomerProfileNotFoundError("customer profile or engine account not found");
     if (!row.engine_account_id) throw new BusinessCustomerNotFoundError("customer engine account is not provisioned");
     if (row.customer_type === "b2b") {
-      // Customers converted before managed-policy provisioning existed have no b2b_client
-      // policy, so the admin editor cannot manage them. Re-running the conversion repairs
-      // exactly that gap against the multiplier already in effect and stages the delivery;
-      // a fully provisioned customer stays an unchanged no-op.
-      const repaired = await provisionBusinessClientPolicy(client, {
-        userId: input.userId,
-        engineAccountRecordId: row.engine_account_record_id,
-        engineAccountId: row.engine_account_id,
-        multiplierBp: row.multiplier_bp,
-        actorId: input.actorId,
-        reason: input.reason,
-      });
-      if (!repaired.provisioned) {
-        await client.query("ROLLBACK");
-        return {
-          converted: false,
-          multiplierBp: row.multiplier_bp,
-          engineAccountId: row.engine_account_id,
-          jobId: null,
-        };
-      }
-      await client.query(`
-        INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
-        VALUES ('admin', $1, 'pricing.b2b_policy_provisioned', 'user', $2, $3::jsonb)
-      `, [input.actorId, input.userId, JSON.stringify({
-        reason: input.reason,
-        multiplierBp: row.multiplier_bp,
-        policyId: repaired.policyId,
-        policyVersion: repaired.policyVersion,
-        policyDigest: repaired.policyDigest,
-        policyJobId: repaired.jobId,
-      })]);
-      await client.query("COMMIT");
+      // Already B2B: the negotiated default is changed through setBusinessPricing and per-provider
+      // terms through setCustomerProviderDiscount. There is no policy document to repair.
+      await client.query("ROLLBACK");
       return {
         converted: false,
         multiplierBp: row.multiplier_bp,
         engineAccountId: row.engine_account_id,
-        jobId: repaired.jobId,
+        jobId: null,
       };
     }
 
@@ -1743,14 +1641,6 @@ export async function convertCustomerToBusiness(database: Database, input: {
     await client.query(`
       UPDATE engine_accounts SET mult_bp = $2, updated_at = now() WHERE user_id = $1
     `, [input.userId, input.multiplierBp]);
-    const policy = await provisionBusinessClientPolicy(client, {
-      userId: input.userId,
-      engineAccountRecordId: row.engine_account_record_id,
-      engineAccountId: row.engine_account_id,
-      multiplierBp: input.multiplierBp,
-      actorId: input.actorId,
-      reason: input.reason,
-    });
     const jobId = await enqueuePricingJob(client, {
       userId: input.userId,
       engineAccountId: row.engine_account_id,
@@ -1766,10 +1656,6 @@ export async function convertCustomerToBusiness(database: Database, input: {
       negotiatedMultiplierBp: input.multiplierBp,
       previousTier: row.current_tier,
       previousReferralFloorBps: row.referral_floor_bps,
-      managedPolicyId: policy.policyId,
-      managedPolicyVersion: policy.policyVersion,
-      managedPolicyDigest: policy.policyDigest,
-      managedPolicyJobId: policy.jobId,
     })]);
     await client.query("COMMIT");
     return {
@@ -2530,37 +2416,13 @@ export async function claimNextPricingJob(
       WHERE status = 'processing'
         AND (locked_at IS NULL OR locked_at < now() - interval '5 minutes')
     `);
-    // The unversioned scalar stream is retired only for accounts whose binding enforces the
-    // versioned policy ('strict'). While a binding is 'shadow' (pre-cutover), the engine still
-    // bills off the legacy accounts.mult_bp scalar — which only this stream writes — so scalar
-    // jobs must be delivered, not drained. Strict-bound rows are retained as an audit record but
-    // drained without another engine write: the monotonic policy jobs own that account.
-    await client.query(`
-      UPDATE engine_pricing_jobs legacy
-      SET status = 'confirmed',
-          reason = 'drained_to_versioned_policy:' || legacy.reason,
-          confirmed_at = COALESCE(legacy.confirmed_at, now()),
-          locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
-      FROM account_policy_bindings binding
-      WHERE binding.user_id = legacy.user_id
-        AND binding.policy_enforcement = 'strict'
-        AND binding.desired_effective_version IS NOT NULL
-        AND binding.desired_digest IS NOT NULL
-        AND legacy.status IN ('pending', 'retry')
-    `);
     const result = await client.query<{
-      id: string; user_id: string; engine_account_id: string; multiplier_bp: number; attempts: number;
+      id: string; user_id: string; engine_account_id: string;
+      provider_id: string | null; multiplier_bp: number | null; attempts: number;
     }>(`
-      SELECT id, user_id, engine_account_id, multiplier_bp, attempts
+      SELECT id, user_id, engine_account_id, provider_id, multiplier_bp, attempts
       FROM engine_pricing_jobs
       WHERE status IN ('pending', 'retry') AND next_attempt_at <= now()
-        AND NOT EXISTS (
-          SELECT 1 FROM account_policy_bindings binding
-          WHERE binding.user_id = engine_pricing_jobs.user_id
-            AND binding.policy_enforcement = 'strict'
-            AND binding.desired_effective_version IS NOT NULL
-            AND binding.desired_digest IS NOT NULL
-        )
       ORDER BY next_attempt_at, created_at
       FOR UPDATE SKIP LOCKED LIMIT 1
     `);
@@ -2578,6 +2440,7 @@ export async function claimNextPricingJob(
       id: row.id,
       userId: row.user_id,
       engineAccountId: row.engine_account_id,
+      providerId: row.provider_id,
       multiplierBp: row.multiplier_bp,
       attempts: row.attempts + 1,
     };
@@ -2589,80 +2452,89 @@ export async function claimNextPricingJob(
   }
 }
 
+/**
+ * The value commerce currently wants delivered for this job's target: the customer's default
+ * multiplier for an account job, the stored override (or its absence) for a provider job. A job
+ * that delivered a now-stale value is requeued instead of confirmed, so an edit made during an
+ * in-flight delivery is never lost.
+ */
+async function desiredPricingJobValue(
+  database: Database,
+  job: ClaimedPricingJob,
+): Promise<{ engineAccountId: string | null; multiplierBp: number | null }> {
+  const result = await database.pool.query<{
+    engine_account_id: string | null; multiplier_bp: number | null;
+  }>(
+    job.providerId === null
+      ? `SELECT ea.engine_account_id, cp.multiplier_bp
+           FROM customer_profiles cp
+           LEFT JOIN engine_accounts ea ON ea.user_id = cp.user_id
+          WHERE cp.user_id = $1`
+      : `SELECT ea.engine_account_id, d.multiplier_bp
+           FROM engine_accounts ea
+           LEFT JOIN customer_provider_discounts d
+             ON d.user_id = ea.user_id AND d.provider_id = $2
+          WHERE ea.user_id = $1`,
+    job.providerId === null ? [job.userId] : [job.userId, job.providerId],
+  );
+  const row = result.rows[0];
+  return {
+    engineAccountId: row?.engine_account_id ?? null,
+    multiplierBp: row?.multiplier_bp ?? null,
+  };
+}
+
+function pricingJobIsCurrent(
+  job: ClaimedPricingJob,
+  desired: { engineAccountId: string | null; multiplierBp: number | null },
+): boolean {
+  return desired.multiplierBp === job.multiplierBp
+    && (desired.engineAccountId ?? job.engineAccountId) === job.engineAccountId;
+}
+
 export async function confirmPricingJob(database: Database, job: ClaimedPricingJob): Promise<void> {
+  const desired = await desiredPricingJobValue(database, job);
+  if (pricingJobIsCurrent(job, desired)) {
+    await database.pool.query(`
+      UPDATE engine_pricing_jobs
+      SET status = 'confirmed', confirmed_at = now(),
+          locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
+      WHERE id = $1 AND status = 'processing'
+    `, [job.id]);
+    return;
+  }
   await database.pool.query(`
-    UPDATE engine_pricing_jobs legacy
-    SET status = 'confirmed',
-        reason = 'drained_to_versioned_policy_after_processing:' || legacy.reason,
-        confirmed_at = now(), locked_at = NULL, locked_by = NULL,
-        last_error = NULL, updated_at = now()
-    FROM account_policy_bindings binding
-    WHERE legacy.id = $1 AND legacy.status = 'processing'
-      AND binding.user_id = legacy.user_id
-      AND binding.policy_enforcement = 'strict'
-      AND binding.desired_effective_version IS NOT NULL
-      AND binding.desired_digest IS NOT NULL
-  `, [job.id]);
-  await database.pool.query(`
-    UPDATE engine_pricing_jobs job
-    SET engine_account_id = COALESCE(ea.engine_account_id, job.engine_account_id),
-        multiplier_bp = cp.multiplier_bp,
-        reason = CASE
-          WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN job.reason
-          ELSE 'superseded_after_processing'
-        END,
-        status = CASE
-          WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN 'confirmed'::pricing_job_status
-          ELSE 'pending'::pricing_job_status
-        END,
-        attempts = CASE WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN job.attempts ELSE 0 END,
-        next_attempt_at = CASE WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN job.next_attempt_at ELSE now() END,
-        confirmed_at = CASE WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN now() ELSE NULL END,
+    UPDATE engine_pricing_jobs
+    SET engine_account_id = COALESCE($2, engine_account_id), multiplier_bp = $3,
+        reason = 'superseded_after_processing', status = 'pending', attempts = 0,
+        next_attempt_at = now(), confirmed_at = NULL,
         locked_at = NULL, locked_by = NULL, last_error = NULL, updated_at = now()
-    FROM customer_profiles cp
-    LEFT JOIN engine_accounts ea ON ea.user_id = cp.user_id
-    WHERE job.id = $1 AND job.status = 'processing' AND job.multiplier_bp = $2
-      AND cp.user_id = job.user_id
-  `, [job.id, job.multiplierBp]);
+    WHERE id = $1 AND status = 'processing'
+  `, [job.id, desired.engineAccountId, desired.multiplierBp]);
 }
 
 export async function retryPricingJob(database: Database, job: ClaimedPricingJob, error: string): Promise<void> {
-  await database.pool.query(`
-    UPDATE engine_pricing_jobs legacy
-    SET status = 'confirmed',
-        reason = 'drained_to_versioned_policy_after_processing:' || legacy.reason,
-        confirmed_at = now(), locked_at = NULL, locked_by = NULL,
-        last_error = NULL, updated_at = now()
-    FROM account_policy_bindings binding
-    WHERE legacy.id = $1 AND legacy.status = 'processing'
-      AND binding.user_id = legacy.user_id
-      AND binding.policy_enforcement = 'strict'
-      AND binding.desired_effective_version IS NOT NULL
-      AND binding.desired_digest IS NOT NULL
-  `, [job.id]);
+  const desired = await desiredPricingJobValue(database, job);
   const delaySeconds = Math.min(3600, Math.max(5, 2 ** Math.min(job.attempts, 10)));
+  if (pricingJobIsCurrent(job, desired)) {
+    await database.pool.query(`
+      UPDATE engine_pricing_jobs
+      SET status = 'retry', next_attempt_at = now() + ($3 * interval '1 second'),
+          locked_at = NULL, locked_by = NULL, last_error = $2, updated_at = now()
+      WHERE id = $1 AND status = 'processing'
+    `, [job.id, error.slice(0, 2000), delaySeconds]);
+    return;
+  }
+  // The desired value moved while this attempt was in flight: deliver the new one immediately
+  // rather than backing off on a value nobody wants any more.
   await database.pool.query(`
-    UPDATE engine_pricing_jobs job
-    SET engine_account_id = COALESCE(ea.engine_account_id, job.engine_account_id),
-        multiplier_bp = cp.multiplier_bp,
-        reason = CASE
-          WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN job.reason
-          ELSE 'superseded_after_processing'
-        END,
-        status = 'retry',
-        attempts = CASE WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN job.attempts ELSE 0 END,
-        next_attempt_at = CASE
-          WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN now() + ($3 * interval '1 second')
-          ELSE now()
-        END,
-        locked_at = NULL, locked_by = NULL,
-        last_error = CASE WHEN cp.multiplier_bp = job.multiplier_bp AND COALESCE(ea.engine_account_id, job.engine_account_id) = job.engine_account_id THEN $2 ELSE NULL END,
-        updated_at = now()
-    FROM customer_profiles cp
-    LEFT JOIN engine_accounts ea ON ea.user_id = cp.user_id
-    WHERE job.id = $1 AND job.status = 'processing' AND job.multiplier_bp = $4
-      AND cp.user_id = job.user_id
-  `, [job.id, error.slice(0, 2000), delaySeconds, job.multiplierBp]);
+    UPDATE engine_pricing_jobs
+    SET engine_account_id = COALESCE($2, engine_account_id), multiplier_bp = $3,
+        reason = 'superseded_after_processing', status = 'retry', attempts = 0,
+        next_attempt_at = now(), locked_at = NULL, locked_by = NULL,
+        last_error = NULL, updated_at = now()
+    WHERE id = $1 AND status = 'processing'
+  `, [job.id, desired.engineAccountId, desired.multiplierBp]);
 }
 
 export async function recoverStalePricingJobs(database: Database): Promise<number> {

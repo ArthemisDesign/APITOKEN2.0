@@ -316,6 +316,13 @@
       "when": 1786083566491,
       "tag": "0044_pricing_release_orchestrations",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1786083566492,
+      "tag": "0045_customer_provider_discounts",
+      "breakpoints": true
     }
   ]
 }

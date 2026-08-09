@@ -423,7 +423,18 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
       const job = await claimNextPricingJob(this.database, this.workerId);
       if (!job) return;
       try {
-        await this.engine.setAccountMultiplier(job.engineAccountId, job.multiplierBp);
+        // One job, one target: the account default, or one provider's override (a null
+        // multiplier there removes the override and returns that provider to the default).
+        if (job.providerId === null) {
+          if (job.multiplierBp === null) throw new Error("account pricing job carries no multiplier");
+          await this.engine.setAccountMultiplier(job.engineAccountId, job.multiplierBp);
+        } else {
+          await this.engine.setAccountProviderDiscount(
+            job.engineAccountId,
+            job.providerId,
+            job.multiplierBp,
+          );
+        }
         await confirmPricingJob(this.database, job);
       } catch (error) {
         try {

@@ -23,14 +23,6 @@ export function RegisterForm() {
     maskedEmail?: string | null;
     email?: string | null;
     discountPercent?: number | null;
-    pricingPolicy?: {
-      currentVersion: number;
-      rules: Array<{
-        scope: { provider: { providerId: string } } | { model: { providerId: string; canonicalModelId: string } };
-        pricingMode: "track" | "discount";
-        discountBps: number | null;
-      }>;
-    } | null;
     expiresAt?: string;
   } | null>(inviteToken ? { state: "loading" } : null);
   useEffect(() => {
@@ -74,12 +66,9 @@ export function RegisterForm() {
       <aside className="auth-bonus" aria-label={language === "ru" ? "B2B-приглашение" : "B2B invitation"}>
         <span className="auth-bonus-mark" aria-hidden="true">✦</span>
         <span>
-          <strong>{invite.pricingPolicy
-            ? (language === "ru" ? "Индивидуальные B2B-тарифы" : "Negotiated B2B pricing")
-            : (language === "ru" ? `B2B-скидка ${invite.discountPercent}%` : `${invite.discountPercent}% B2B discount`)}</strong>
-          {invite.pricingPolicy ? (
-            <small>{invite.pricingPolicy.rules.map((rule) => inviteRuleLabel(rule, language)).join(" · ")}</small>
-          ) : null}
+          <strong>{language === "ru"
+            ? `B2B-скидка ${invite.discountPercent}%`
+            : `${invite.discountPercent}% B2B discount`}</strong>
           <small>
             {invite.emailBound
               ? (language === "ru" ? `Используйте адрес ${invite.maskedEmail}. ` : `Use the invited address ${invite.maskedEmail}. `)
@@ -105,19 +94,4 @@ export function RegisterForm() {
     {invite?.state !== "invalid" && invite?.state !== "loading" && <SocialAuth inviteToken={inviteToken} />}
     <div className="auth-alt"><span>{t("have_acc")}</span> <LocalizedAuthLink href="/login">{t("to_login")}</LocalizedAuthLink></div>
   </>;
-}
-
-function inviteRuleLabel(
-  rule: {
-    scope: { provider: { providerId: string } } | { model: { providerId: string; canonicalModelId: string } };
-    pricingMode: "track" | "discount";
-    discountBps: number | null;
-  },
-  language: "en" | "ru",
-): string {
-  const target = "provider" in rule.scope
-    ? rule.scope.provider.providerId
-    : `${rule.scope.model.providerId}/${rule.scope.model.canonicalModelId}`;
-  const discount = (rule.discountBps ?? 0) / 100;
-  return `${target}: ${language === "ru" ? "скидка" : "discount"} ${discount}%`;
 }

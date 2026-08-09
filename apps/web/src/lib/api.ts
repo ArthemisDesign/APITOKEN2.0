@@ -310,14 +310,6 @@ export const api = {
       maskedEmail?: string | null;
       email?: string | null;
       discountPercent?: number | null;
-      pricingPolicy?: {
-        currentVersion: number;
-        rules: Array<{
-          scope: { provider: { providerId: string } } | { model: { providerId: string; canonicalModelId: string } };
-          pricingMode: "track" | "discount";
-          discountBps: number | null;
-        }>;
-      } | null;
       expiresAt?: string;
     }>("/auth/business-invite/preview", {
       method: "POST", body: JSON.stringify({ token }),
