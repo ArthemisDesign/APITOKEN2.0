@@ -455,9 +455,12 @@ is only what is needed to walk the relationships when making changes:
   the authenticated key-scoped `/v1/models`: authoritative runtime metadata is
   complemented by a personal pricing projection without changing the original model IDs.
   The consumer is the canonical `packages/opencode-router-plugin`: the live response is
-  translated into the OpenCode model/variant/Fast schema, and the local schema-v2
-  last-good cache contains only encrypted capability records without `pricing` and
-  `cost`, is bound to the exact credential/base URL, and is limited by
+  translated into the OpenCode model/variant/Fast schema; because OpenCode 1.18 requires
+  both `context` and `output` inside any native `model.limit`, a validated partial router limit is
+  retained in the encrypted capability record but omitted from both live and stale OpenCode cards
+  instead of aborting client startup or inventing a ceiling. The local schema-v2 last-good cache
+  contains only encrypted capability records without `pricing` and `cost`, is bound to the exact
+  credential/base URL, and is limited by
   schema/TTL/max-stale guards. The cached fallback is always explicitly stale and
   cost-free. The OpenCode transport does not consume Gemini `inlineData`, so the plugin
   does not advertise generated-image output; the native Gemini API remains the supported

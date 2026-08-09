@@ -247,7 +247,11 @@ unavailable]`, the warning contains the snapshot time, and `cost` is entirely ab
 until the next successful live discovery. This way a brief catalog outage neither
 leaves OpenCode without models nor can show another key's rate or a stale personal
 price. The contract and crypto/negative tests live next to the plugin in
-`packages/opencode-router-plugin`.
+`packages/opencode-router-plugin`. Router limit fields remain independent, but OpenCode 1.18 accepts
+its native `model.limit` only when both `context` and `output` are present. The adapter therefore
+keeps validated partial limits in the encrypted capability record while omitting `model.limit` from
+both live and stale OpenCode cards until both required values are authoritative. It never invents an
+output ceiling, and one model with partial metadata cannot prevent OpenCode from starting.
 The plugin entrypoint has exactly one ESM export — a default factory: OpenCode
 1.18.11 interprets every export of the file as a separate plugin and rejects named
 constants/helpers with `Plugin export is not a function`. The exact export shape is

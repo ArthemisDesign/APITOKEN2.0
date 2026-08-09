@@ -67,6 +67,24 @@ function catalog() {
         },
       },
       {
+        id: "kimi/kimi-for-coding",
+        name: "Kimi for Coding",
+        owned_by: "kimi",
+        apitoken: {
+          limits: { context: 262144, input: 262144 },
+          capabilities: {
+            reasoning_efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+            service_tiers: ["standard"],
+            input_modalities: ["text"],
+            output_modalities: ["text"],
+            tool_calling: true,
+            reasoning: true,
+            streaming: true,
+          },
+          pricing: pricing(),
+        },
+      },
+      {
         id: "google/gemini-3.1-flash-image",
         name: "Gemini 3.1 Flash Image",
         owned_by: "google",
@@ -123,6 +141,8 @@ test("same credential uses explicit stale capability-only models after a transie
   assert.equal(live.models["google/gemini-3.1-flash-image"].reasoning, false)
   assert.equal(live.models["anthropic/claude-opus-5"].structured_output, true)
   assert.deepEqual(live.models["openai/gpt-5.6"].modalities.input, ["text", "image"])
+  assert.equal("limit" in live.models["kimi/kimi-for-coding"], false)
+  assert.equal(live.models["kimi/kimi-for-coding"].tool_call, true)
   assert.equal(fs.statSync(cachePath).mode & 0o777, 0o600)
 
   const warnings = []
@@ -137,6 +157,7 @@ test("same credential uses explicit stale capability-only models after a transie
   assert.equal(stale.source, "stale")
   assert.match(stale.models["anthropic/claude-opus-5"].name, /stale metadata; pricing unavailable/)
   assert.equal(stale.models["anthropic/claude-opus-5"].limit.output, 128000)
+  assert.equal("limit" in stale.models["kimi/kimi-for-coding"], false)
   assert.deepEqual(Object.keys(stale.models["anthropic/claude-opus-5"].variants), ["low", "medium", "high", "xhigh", "max"])
   assert.equal(stale.models["openai/gpt-5.6-fast"].options.service_tier, "priority")
   for (const model of Object.values(stale.models)) {
@@ -155,6 +176,11 @@ test("same credential uses explicit stale capability-only models after a transie
   assert.equal(
     decrypted.records.find((record) => record.id === "google/gemini-3.1-flash-image").tool_calling,
     false,
+  )
+  assert.deepEqual(
+    decrypted.records.find((record) => record.id === "kimi/kimi-for-coding").limits,
+    { context: 262144, input: 262144 },
+    "the encrypted capability cache must preserve truthful partial metadata even when OpenCode cannot express it",
   )
 })
 

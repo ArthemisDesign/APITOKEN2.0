@@ -266,6 +266,11 @@ function effortVariants(efforts) {
   return variants
 }
 
+function openCodeLimits(limits) {
+  if (limits?.context === undefined || limits.output === undefined) return undefined
+  return limits
+}
+
 function describe(record, stale = false) {
   const {
     id,
@@ -288,7 +293,7 @@ function describe(record, stale = false) {
   if (outputModalities !== undefined && compatibleOutput.length === 0) return null
   const base = {
     name: stale ? `${displayName} [stale metadata; pricing unavailable]` : displayName,
-    ...(limits ? { limit: limits } : {}),
+    ...(openCodeLimits(limits) ? { limit: limits } : {}),
     ...(toolCalling !== undefined ? { tool_call: toolCalling } : {}),
     ...(structuredOutputs !== undefined ? { structured_output: structuredOutputs } : {}),
     ...(inputModalities !== undefined ? { attachment: inputModalities.includes("image") } : {}),
