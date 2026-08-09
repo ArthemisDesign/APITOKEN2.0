@@ -2,11 +2,10 @@ import { BadRequestException, HttpException, NotFoundException } from "@nestjs/c
 import {
   PricingPolicyDeliveryRepairError,
   PricingPolicyWriteError,
-  ServiceAccountInventoryV2Error,
 } from "@claude-api/db";
 import { describe, expect, it, vi } from "vitest";
 import { AdminController } from "./admin.controller.js";
-import { AdminServiceAccountInventoryError, type AdminService } from "./admin.service.js";
+import type { AdminService } from "./admin.service.js";
 
 describe("admin user list HTTP contract", () => {
   it("passes bounded pagination and filters to the service", async () => {
@@ -179,142 +178,9 @@ describe("managed pricing HTTP contract", () => {
     expect(listManagedServicePricingPolicies).toHaveBeenCalledOnce();
   });
 
-  it("stages catalog and switch convergence jobs with attributed intent", async () => {
-    const stagePricingCatalogJobV2 = vi.fn().mockResolvedValue({
-      status: "staged",
-      job_id: "11111111-2222-3333-4444-555555555555",
-    });
-    const stagePricingSwitchJobV2 = vi.fn().mockResolvedValue({
-      status: "staged",
-      job_id: "66666666-7777-4888-8999-000000000000",
-    });
-    const controller = new AdminController({
-      stagePricingCatalogJobV2,
-      stagePricingSwitchJobV2,
-    } as unknown as AdminService);
 
-    const catalogBody = {
-      product_id: "main",
-      generation: 3,
-      reason: "converge commerce catalog head with the engine gen 3",
-    };
-    await expect(controller.stagePricingCatalogJobV2(catalogBody, "operator@example.test"))
-      .resolves.toMatchObject({ status: "staged" });
-    expect(stagePricingCatalogJobV2).toHaveBeenCalledWith(catalogBody, "operator@example.test");
 
-    const switchBody = { generation: 3, reason: "converge provider switch head with the engine" };
-    await expect(controller.stagePricingSwitchJobV2(switchBody, "operator@example.test"))
-      .resolves.toMatchObject({ status: "staged" });
-    expect(stagePricingSwitchJobV2).toHaveBeenCalledWith(switchBody, "operator@example.test");
 
-    await expect(controller.stagePricingCatalogJobV2(catalogBody, undefined))
-      .rejects.toBeInstanceOf(BadRequestException);
-    await expect(controller.stagePricingCatalogJobV2({ ...catalogBody, payload: {} }, "operator"))
-      .rejects.toBeInstanceOf(BadRequestException);
-    await expect(controller.stagePricingCatalogJobV2(
-      { ...catalogBody, product_id: "staging" },
-      "operator",
-    )).rejects.toBeInstanceOf(BadRequestException);
-    await expect(controller.stagePricingSwitchJobV2({ generation: 0, reason: "x" }, "operator"))
-      .rejects.toBeInstanceOf(BadRequestException);
-  });
-
-  it("writes service inventory only through strict CAS metadata and a verified actor", async () => {
-    const upsertServiceAccountInventoryV2 = vi.fn().mockResolvedValue({
-      status: "stored",
-      account: { service_id: "crm-parsing", source_version: 1 },
-    });
-    const controller = new AdminController({ upsertServiceAccountInventoryV2 } as unknown as AdminService);
-    const body = {
-      expected_source_version: null,
-      expected_content_digest: null,
-      engine_account_id: "acct_service_crm",
-      purpose: "CRM ingestion and parsing",
-      responsible: "platform",
-      reason: "register the existing engine-native service account",
-    };
-
-    await expect(controller.upsertServiceAccountInventoryV2("crm-parsing", body, "owner@example.test"))
-      .resolves.toMatchObject({ status: "stored" });
-    expect(upsertServiceAccountInventoryV2).toHaveBeenCalledWith(
-      "crm-parsing",
-      body,
-      "owner@example.test",
-    );
-
-    await expect(controller.upsertServiceAccountInventoryV2("", body))
-      .rejects.toBeInstanceOf(BadRequestException);
-    await expect(controller.upsertServiceAccountInventoryV2("crm-parsing", {
-      ...body,
-      expected_content_digest: `sha256:v2:${"a".repeat(64)}`,
-    })).rejects.toBeInstanceOf(BadRequestException);
-  });
-
-  it("queues only an exact audited policy-delivery repair with a verified actor", async () => {
-    const repairPricingPolicyDeliveryV2 = vi.fn().mockResolvedValue({
-      status: "queued",
-      replacement_job_id: "22222222-2222-4222-8222-222222222222",
-    });
-    const controller = new AdminController({ repairPricingPolicyDeliveryV2 } as unknown as AdminService);
-    const body = {
-      job_id: "11111111-1111-4111-8111-111111111111",
-      expected_effective_version: 1,
-      expected_content_digest: `sha256:v1:${"a".repeat(64)}`,
-      reason: "repair the reviewed historical pre-cutover delivery",
-    };
-
-    await expect(controller.repairPricingPolicyDeliveryV2(body, "owner@example.test"))
-      .resolves.toMatchObject({ status: "queued" });
-    expect(repairPricingPolicyDeliveryV2).toHaveBeenCalledWith(body, "owner@example.test");
-    await expect(controller.repairPricingPolicyDeliveryV2(body))
-      .rejects.toBeInstanceOf(BadRequestException);
-    await expect(controller.repairPricingPolicyDeliveryV2({
-      ...body,
-      expected_content_digest: `sha256:v2:${"a".repeat(64)}`,
-    }, "owner@example.test")).rejects.toBeInstanceOf(BadRequestException);
-
-    const missing = new AdminController({
-      repairPricingPolicyDeliveryV2: vi.fn().mockRejectedValue(
-        new PricingPolicyDeliveryRepairError("repair_job_not_found", "missing"),
-      ),
-    } as unknown as AdminService);
-    const conflict = new AdminController({
-      repairPricingPolicyDeliveryV2: vi.fn().mockRejectedValue(
-        new PricingPolicyDeliveryRepairError("repair_precondition_changed", "changed"),
-      ),
-    } as unknown as AdminService);
-    await expect(missing.repairPricingPolicyDeliveryV2(body, "owner@example.test"))
-      .rejects.toBeInstanceOf(NotFoundException);
-    await expect(conflict.repairPricingPolicyDeliveryV2(body, "owner@example.test"))
-      .rejects.toMatchObject({ status: 409 });
-  });
-
-  it("maps missing engine accounts to 404 and all ownership/CAS races to 409", async () => {
-    const missing = new AdminController({
-      upsertServiceAccountInventoryV2: vi.fn().mockRejectedValue(
-        new AdminServiceAccountInventoryError("engine_account_missing", "missing"),
-      ),
-    } as unknown as AdminService);
-    const conflict = new AdminController({
-      upsertServiceAccountInventoryV2: vi.fn().mockRejectedValue(
-        new ServiceAccountInventoryV2Error("version_conflict", "stale"),
-      ),
-    } as unknown as AdminService);
-    const body = {
-      expected_source_version: null,
-      expected_content_digest: null,
-      engine_account_id: "acct_service_crm",
-      purpose: "CRM ingestion and parsing",
-      responsible: "platform",
-      reason: "register the existing engine-native service account",
-    };
-
-    await expect(missing.upsertServiceAccountInventoryV2("crm-parsing", body))
-      .rejects.toBeInstanceOf(NotFoundException);
-    const rejected = conflict.upsertServiceAccountInventoryV2("crm-parsing", body);
-    await expect(rejected).rejects.toBeInstanceOf(HttpException);
-    await expect(rejected).rejects.toMatchObject({ status: 409 });
-  });
 
   it("maps catalog/rule errors to 400, missing policies to 404, and CAS conflicts to 409", async () => {
     const invalid = new AdminController({

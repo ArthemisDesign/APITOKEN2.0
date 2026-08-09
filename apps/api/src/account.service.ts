@@ -8,7 +8,6 @@ import {
   markEngineAccountMissing,
   markOwnedApiKeyDisabled,
   materializeProvisionedUserPolicy,
-  optOutStrictChainAccount,
   PricingPolicyWriteError,
   readUserPolicyBindingState,
   saveIssuedApiKey,
@@ -367,18 +366,12 @@ export class AccountService {
     // exists — the engine serves uncovered accounts only after the one-way opt-out marker, and
     // the marker's guard requires a strict binding plus one ACKed key. Existing accounts are
     // not armed and keep their release coverage untouched.
-    const chainBinding = await this.awaitDirectStrictChain(userId);
     const spendLimitNano = input.spendLimitUsd === undefined ? undefined : usdToNano(input.spendLimitUsd);
     const expiresAt = input.expiresAt === undefined ? undefined : new Date(input.expiresAt);
     const { accountId, value: issued } = await this.withEngineAccountId(
       userId,
       async (id) => {
         const activationAck = await this.strictKeyActivationAck(id);
-        if (chainBinding?.strictChainPending && !("activationPolicyAck" in activationAck)) {
-          // The commerce binding says strict but the engine flip has not landed yet: issuing
-          // now would create a key that cannot pass the opt-out guard. Wait for the worker.
-          throw new ConflictException("engine account strict policy is waiting for synchronization");
-        }
         return this.engine.issueKey(id, {
           ...(input.label !== undefined ? { label: input.label } : {}),
           ...(spendLimitNano !== undefined ? { spendLimitNano } : {}),
@@ -389,22 +382,6 @@ export class AccountService {
     );
     try {
       await this.ensurePolicyReadyForKey(userId);
-      if (chainBinding?.strictChainPending) {
-        // The key was born with the exact activation ACK, so the opt-out guard's last
-        // precondition now holds: write the one-way retirement marker BEFORE the secret is
-        // returned. Without the marker the engine refuses to serve the uncovered account, so a
-        // settled chain is part of key issuance, not an asynchronous afterthought. The call is
-        // replay-safe and the worker's chain pass applies the same marker idempotently.
-        const optOut = await optOutStrictChainAccount(this.database, this.engine, {
-          bindingId: chainBinding.bindingId,
-          engineAccountId: accountId,
-          createdBy: "commerce-api",
-          reason: "new-account direct strict provisioning",
-        });
-        if (optOut !== "opted_out") {
-          throw new ConflictException("pricing release opt-out is still settling");
-        }
-      }
     } catch (error) {
       try {
         await this.engine.disableKey(issued.key_id);

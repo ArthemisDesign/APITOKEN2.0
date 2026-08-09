@@ -30,16 +30,12 @@ import {
   getManagedPricingPolicy,
   getManagedPricingCatalog,
   listManagedServicePricingPolicies,
-  engineAccountIdentityInventoryDigestV2,
   getBusinessInviteToken,
   getEngineAccountMapping,
   listAdminUserOverview,
   recordAdminCredit,
-  readServiceAccountInventoryV2,
   repairDeadPreCutoverPolicyDelivery,
   PricingPolicyDeliveryRepairError,
-  syncPricingReleasePolicyOverrideV2,
-  PricingReleaseOverrideV2Error,
   revokeBusinessInvite,
   rotateBusinessInvite,
   setBusinessPricing,
@@ -48,7 +44,6 @@ import {
   stageStoredProviderSwitchControlJob,
   updateManagedPricingPolicy,
   updateManagedProviderSwitches,
-  upsertServiceAccountInventoryV2,
   type AdminUserOverviewRow,
   type AdminUserOverviewQuery,
   type Database,
@@ -61,19 +56,6 @@ import {
 import type { Environment } from "./config.js";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
 
-export class AdminServiceAccountInventoryError extends Error {
-  constructor(
-    public readonly code:
-      | "engine_account_missing"
-      | "engine_inventory_unstable"
-      | "account_owned_by_openkeys"
-      | "pricing_release_not_ready",
-    message: string,
-  ) {
-    super(message);
-    this.name = "AdminServiceAccountInventoryError";
-  }
-}
 
 @Injectable()
 export class AdminService {
@@ -217,56 +199,9 @@ export class AdminService {
     return { policies: await listManagedServicePricingPolicies(this.database) };
   }
 
-  async getServiceAccountInventoryV2(): Promise<unknown> {
-    return readServiceAccountInventoryV2(this.database);
-  }
 
-  async stagePricingCatalogJobV2(
-    input: PricingCatalogJobStageRequestV2,
-    actorId: string,
-  ): Promise<PricingControlJobStageResponseV2> {
-    const jobId = await stageStoredPricingCatalogControlJob(
-      this.database,
-      input.product_id,
-      input.generation,
-      { actorId, reason: input.reason },
-    );
-    return pricingControlJobStageResponseV2Schema.parse({ status: "staged", job_id: jobId });
-  }
 
-  async stagePricingSwitchJobV2(
-    input: PricingSwitchJobStageRequestV2,
-    actorId: string,
-  ): Promise<PricingControlJobStageResponseV2> {
-    const jobId = await stageStoredProviderSwitchControlJob(
-      this.database,
-      input.generation,
-      { actorId, reason: input.reason },
-    );
-    return pricingControlJobStageResponseV2Schema.parse({ status: "staged", job_id: jobId });
-  }
 
-  async repairPricingPolicyDeliveryV2(
-    input: PricingPolicyDeliveryRepairRequestV2,
-    actorId: string,
-  ): Promise<PricingPolicyDeliveryRepairResponseV2> {
-    const provisioningContext = await this.engine.getPricingReleaseProvisioningContextV2();
-    if (provisioningContext !== null) {
-      throw new PricingPolicyDeliveryRepairError(
-        "repair_not_eligible",
-        "legacy policy delivery repair is unavailable after the global pricing release cutover",
-      );
-    }
-    return pricingPolicyDeliveryRepairResponseV2Schema.parse(
-      await repairDeadPreCutoverPolicyDelivery(this.database, {
-        jobId: input.job_id,
-        expectedEffectiveVersion: input.expected_effective_version,
-        expectedContentDigest: input.expected_content_digest,
-        actorId,
-        reason: input.reason,
-      }),
-    );
-  }
 
   async repairUserProvisioningV2(
     userId: string,
@@ -304,82 +239,6 @@ export class AdminService {
     };
   }
 
-  async upsertServiceAccountInventoryV2(
-    serviceId: string,
-    input: ServiceAccountInventoryMutationV2,
-    actorId: string,
-  ): Promise<unknown> {
-    const engineInventory = await this.stableEngineAccountIdentityInventoryV2();
-    const engineAccount = engineInventory.accounts.find(
-      (account) => account.account_id === input.engine_account_id,
-    );
-    if (!engineAccount) {
-      throw new AdminServiceAccountInventoryError(
-        "engine_account_missing",
-        `engine account ${input.engine_account_id} does not exist`,
-      );
-    }
-
-    const accountDetails = await this.engine.getAccounts([input.engine_account_id]);
-    const details = accountDetails.find((account) => account.account === input.engine_account_id);
-    if (!details) {
-      throw new AdminServiceAccountInventoryError(
-        "engine_account_missing",
-        `engine account ${input.engine_account_id} disappeared during validation`,
-      );
-    }
-    if (details.status !== engineAccount.status) {
-      throw new AdminServiceAccountInventoryError(
-        "engine_inventory_unstable",
-        `engine account ${input.engine_account_id} status changed during validation`,
-      );
-    }
-    if (/^openkeys-/i.test(details.handle ?? "")) {
-      throw new AdminServiceAccountInventoryError(
-        "account_owned_by_openkeys",
-        `engine account ${input.engine_account_id} belongs to OpenKeys`,
-      );
-    }
-
-    const currentInventory = await readServiceAccountInventoryV2(this.database);
-    const current = currentInventory.accounts.find((account) => account.service_id === serviceId);
-    const exactReplay = current !== undefined
-      && current.engine_account_id === input.engine_account_id
-      && current.purpose === input.purpose
-      && current.responsible === input.responsible
-      && current.status === engineAccount.status;
-    if (!exactReplay) {
-      try {
-        await ensureServicePricingReleaseProvisioningV2(this.engine, {
-          accountId: input.engine_account_id,
-          serviceId,
-          purpose: input.purpose,
-          responsible: input.responsible,
-        });
-      } catch (error) {
-        if (error instanceof PricingReleaseAccountProvisioningV2Error) {
-          throw new AdminServiceAccountInventoryError(
-            "pricing_release_not_ready",
-            "service account pricing release provisioning is not durably ready",
-          );
-        }
-        throw error;
-      }
-    }
-
-    return upsertServiceAccountInventoryV2(this.database, {
-      serviceId,
-      expectedSourceVersion: input.expected_source_version,
-      expectedContentDigest: input.expected_content_digest,
-      engineAccountId: input.engine_account_id,
-      purpose: input.purpose,
-      responsible: input.responsible,
-      status: engineAccount.status,
-      engineInventoryDigest: engineInventory.digest,
-      actorId,
-      reason: input.reason,
-    });
-  }
 
   async updateManagedProviderSwitches(
     input: ProviderSwitchEditorMutation,
@@ -388,64 +247,6 @@ export class AdminService {
     return updateManagedProviderSwitches(this.database, { ...input, actorId });
   }
 
-  private async stableEngineAccountIdentityInventoryV2(): Promise<{
-    accounts: PricingReleaseInventoryAccountV2[];
-    digest: string;
-  }> {
-    const scan = async (): Promise<{
-      accounts: PricingReleaseInventoryAccountV2[];
-      digest: string;
-    }> => {
-      const accounts: PricingReleaseInventoryAccountV2[] = [];
-      const seen = new Set<string>();
-      let afterAccountId: string | undefined;
-      let previousAccountId: string | null = null;
-      for (;;) {
-        const page = await this.engine.getPricingReleaseInventoryV2({
-          ...(afterAccountId === undefined ? {} : { afterAccountId }),
-          limit: 500,
-        });
-        for (const account of page.accounts) {
-          if (
-            seen.has(account.account_id)
-            || (previousAccountId !== null
-              && Buffer.compare(Buffer.from(account.account_id, "utf8"), Buffer.from(previousAccountId, "utf8")) <= 0)
-          ) {
-            throw new AdminServiceAccountInventoryError(
-              "engine_inventory_unstable",
-              "engine pricing inventory returned a duplicate or regressing account cursor",
-            );
-          }
-          seen.add(account.account_id);
-          previousAccountId = account.account_id;
-          accounts.push(account);
-        }
-        if (page.next_after_account_id === null) break;
-        if (
-          page.accounts.length === 0
-          || page.next_after_account_id === afterAccountId
-          || page.next_after_account_id !== page.accounts.at(-1)?.account_id
-        ) {
-          throw new AdminServiceAccountInventoryError(
-            "engine_inventory_unstable",
-            "engine pricing inventory returned an invalid continuation cursor",
-          );
-        }
-        afterAccountId = page.next_after_account_id;
-      }
-      return { accounts, digest: engineAccountIdentityInventoryDigestV2(accounts) };
-    };
-
-    const first = await scan();
-    const second = await scan();
-    if (first.digest !== second.digest) {
-      throw new AdminServiceAccountInventoryError(
-        "engine_inventory_unstable",
-        "engine account identity inventory changed during service-account validation",
-      );
-    }
-    return second;
-  }
 
   async updateManagedPricingPolicy(
     ownerType: "global_b2c" | "b2b_client" | "b2b_invitation" | "service",
@@ -548,12 +349,10 @@ export class AdminService {
         actorId,
         reason,
       });
-      const releaseV2 = await this.syncReleasePolicyOverride(userId);
       return {
         userId,
         policy,
         syncStatus: policy.targets.every((target) => target.syncState === "confirmed") ? "confirmed" : "pending",
-        releaseV2,
       };
     }
     if (input.discountPercent === undefined) throw new Error("business pricing mutation is empty");
@@ -566,26 +365,6 @@ export class AdminService {
     return { userId, discountPercent: input.discountPercent, syncStatus: "pending", pricingJobId: result.jobId };
   }
 
-  private async syncReleasePolicyOverride(userId: string): Promise<Record<string, unknown>> {
-    const mapping = await this.database.pool.query<{ engine_account_id: string | null }>(
-      `SELECT engine_account_id FROM engine_accounts WHERE user_id = $1`,
-      [userId],
-    );
-    const engineAccountId = mapping.rows[0]?.engine_account_id;
-    if (!engineAccountId) return { status: "no_engine_account" };
-    try {
-      const result = await syncPricingReleasePolicyOverrideV2(this.database, this.engine, {
-        userId,
-        engineAccountId,
-      });
-      return result;
-    } catch (error) {
-      if (error instanceof PricingReleaseOverrideV2Error) {
-        return { status: "error", code: error.code, message: error.message };
-      }
-      throw error;
-    }
-  }
 
   private inviteUrl(token: string): string {
     const inviteUrl = new URL("/register", this.config.get("PUBLIC_APP_BASE_URL", { infer: true }));

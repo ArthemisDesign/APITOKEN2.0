@@ -16,15 +16,10 @@ import {
 } from "@nestjs/common";
 import {
   createBusinessInviteSchema,
-  pricingCatalogJobStageRequestV2Schema,
-  pricingSwitchJobStageRequestV2Schema,
-  pricingPolicyDeliveryRepairRequestV2Schema,
   pricingReleaseActivationOperatorV2Schema,
   pricingStageControlMutationReasonV2Schema,
   providerSwitchEditorMutationSchema,
   pricingPolicyMutationSchema,
-  serviceAccountInventoryMutationV2Schema,
-  serviceAccountInventoryServiceIdV2Schema,
   setBusinessPricingSchema,
 } from "@claude-api/contracts";
 import {
@@ -34,7 +29,6 @@ import {
   PricingControlJobStageError,
   PricingPolicyDeliveryRepairError,
   PricingPolicyWriteError,
-  ServiceAccountInventoryV2Error,
 } from "@claude-api/db";
 import { EngineClientError } from "@claude-api/engine-client";
 import { z } from "zod";
@@ -42,7 +36,6 @@ import { AdminGuard } from "./admin.guard.js";
 import {
   AdminCreditError,
   AdminService,
-  AdminServiceAccountInventoryError,
 } from "./admin.service.js";
 
 const uuidSchema = z.string().uuid();
@@ -242,90 +235,10 @@ export class AdminController {
     }
   }
 
-  @Get("service-account-inventory")
-  @Header("Cache-Control", "no-store")
-  getServiceAccountInventoryV2(): Promise<unknown> {
-    return this.admin.getServiceAccountInventoryV2();
-  }
 
-  @Post("pricing-catalog-jobs/stage")
-  @Header("Cache-Control", "no-store")
-  async stagePricingCatalogJobV2(
-    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    const input = pricingCatalogJobStageRequestV2Schema.safeParse(body);
-    if (!input.success) throw new BadRequestException(input.error.flatten());
-    const actor = verifiedAdminActor(actorHeader);
-    try {
-      return await this.admin.stagePricingCatalogJobV2(input.data, actor);
-    } catch (error) {
-      throwPricingStageControlHttpError(error);
-      throw error;
-    }
-  }
 
-  @Post("pricing-switch-jobs/stage")
-  @Header("Cache-Control", "no-store")
-  async stagePricingSwitchJobV2(
-    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    const input = pricingSwitchJobStageRequestV2Schema.safeParse(body);
-    if (!input.success) throw new BadRequestException(input.error.flatten());
-    const actor = verifiedAdminActor(actorHeader);
-    try {
-      return await this.admin.stagePricingSwitchJobV2(input.data, actor);
-    } catch (error) {
-      throwPricingStageControlHttpError(error);
-      throw error;
-    }
-  }
 
-  @Post("pricing-policy-delivery-repairs")
-  @Header("Cache-Control", "no-store")
-  async repairPricingPolicyDeliveryV2(    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    const input = pricingPolicyDeliveryRepairRequestV2Schema.safeParse(body);
-    if (!input.success) throw new BadRequestException(input.error.flatten());
-    const actor = verifiedAdminActor(actorHeader);
-    try {
-      return await this.admin.repairPricingPolicyDeliveryV2(input.data, actor);
-    } catch (error) {
-      throwPricingStageControlHttpError(error);
-      throw error;
-    }
-  }
 
-  @Put("service-account-inventory/:id")
-  @Header("Cache-Control", "no-store")
-  async upsertServiceAccountInventoryV2(
-    @Param("id") id: string,
-    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    const serviceId = serviceAccountInventoryServiceIdV2Schema.safeParse(id);
-    const mutation = serviceAccountInventoryMutationV2Schema.safeParse(body);
-    if (!serviceId.success) throw new BadRequestException("service account ID is invalid");
-    if (!mutation.success) throw new BadRequestException(mutation.error.flatten());
-    try {
-      return await this.admin.upsertServiceAccountInventoryV2(
-        serviceId.data,
-        mutation.data,
-        adminActor(actorHeader),
-      );
-    } catch (error) {
-      if (error instanceof AdminServiceAccountInventoryError) {
-        if (error.code === "engine_account_missing") throw new NotFoundException(error.message);
-        throw new HttpException(error.message, 409);
-      }
-      if (error instanceof ServiceAccountInventoryV2Error) {
-        throw new HttpException(error.message, 409);
-      }
-      throw error;
-    }
-  }
 
   @Get("service-policies/:id")
   @Header("Cache-Control", "no-store")

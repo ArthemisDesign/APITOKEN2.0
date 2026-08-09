@@ -1,7 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { multiplierForDiscount } from "@claude-api/contracts";
 import {
-  AccountStrictCutoverError,
   canonicalizeEmail,
   convertCustomerToBusiness,
   findAdminCreditByRef,
@@ -18,14 +17,11 @@ import {
   resetAdminUserTotp,
   revokeAdminUserSessions,
   setAdminUserStatus,
-  stageAccountStrictCutoverJob,
-  syncPricingReleasePolicyOverrideV2,
-  PricingReleaseOverrideV2Error,
   type AdminTopupsQuery,
   type AdminAuditQuery,
   type Database,
 } from "@claude-api/db";
-import { EngineClient, AccountStrictCutoverPreflightError, ensureAccountStrictCutoverPreflight } from "@claude-api/engine-client";
+import { EngineClient } from "@claude-api/engine-client";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
 
 @Injectable()
@@ -315,7 +311,6 @@ export class AdminOperationsService {
     // class-changing assignment extension. The sync is idempotent, so it doubles as the repair
     // path for customers converted before this lane existed; its outcome is reported honestly
     // instead of a blanket "pending".
-    const releaseV2 = await this.syncConversionToReleaseV2(input.userId, result.engineAccountId);
     return {
       user_id: input.userId,
       customer_type: "b2b",
@@ -323,78 +318,10 @@ export class AdminOperationsService {
       multiplier_bp: result.multiplierBp,
       converted: result.converted,
       sync_status: result.jobId ? "pending" : "unchanged",
-      release_v2: releaseV2,
     };
   }
 
-  private async syncConversionToReleaseV2(
-    userId: string,
-    engineAccountId: string,
-  ): Promise<Record<string, unknown>> {
-    try {
-      return await syncPricingReleasePolicyOverrideV2(this.database, this.engine, {
-        userId,
-        engineAccountId,
-      });
-    } catch (error) {
-      if (error instanceof PricingReleaseOverrideV2Error) {
-        return { status: "error", code: error.code, message: error.message };
-      }
-      throw error;
-    }
-  }
 
-  /**
-   * Per-account shadow→strict cutover for one converted B2B client. The engine-side
-   * preconditions are shared with the automatic strict chain
-   * (ensureAccountStrictCutoverPreflight): normalize the account's funding buckets (the strict
-   * trigger requires bucket/aggregate parity), stamp every active key with the exact
-   * active-policy ACK (the cutover trigger requires it), then stage the durable strict control
-   * job — the worker delivers the engine activation and re-stamps keys on the new head. From
-   * the ACK on, the engine bills the materialized per-provider policy instead of the legacy
-   * scalar, and the dashboard projection follows. The engine enforces its side atomically
-   * (funding parity, key ACKs, drained legacy reservations, policy-capable instances), so an
-   * unmet precondition fails the delivery job loudly instead of producing a partial state.
-   */
-  async cutoverUserPolicyToStrict(input: {
-    userId: string;
-    reason: string;
-    actorId: string;
-  }): Promise<Record<string, unknown>> {
-    const target = await getAdminUserControlTarget(this.database, input.userId);
-    if (!target) throw new AdminOperationError(404, "user not found");
-    if (!target.engineAccountId) throw new AdminOperationError(409, "user has no engine account");
-    const accountId = target.engineAccountId;
-
-    let preflight;
-    try {
-      preflight = await ensureAccountStrictCutoverPreflight(this.engine, accountId);
-    } catch (error) {
-      if (error instanceof AccountStrictCutoverPreflightError) {
-        throw new AdminOperationError(409, error.message);
-      }
-      throw error;
-    }
-
-    let staged;
-    try {
-      staged = await stageAccountStrictCutoverJob(this.database, { userId: input.userId });
-    } catch (error) {
-      if (error instanceof AccountStrictCutoverError) {
-        throw new AdminOperationError(error.code === "no_binding" ? 404 : 409, error.message);
-      }
-      throw error;
-    }
-    return {
-      user_id: input.userId,
-      account_id: accountId,
-      cutover: staged.status,
-      job_id: staged.jobId,
-      job_status: staged.jobStatus,
-      effective_version: staged.effectiveVersion,
-      funding: preflight.funding,
-    };
-  }
 
   async revokeSessions(input: { userId: string; reason: string; actorId: string }): Promise<Record<string, unknown>> {
     const count = await revokeAdminUserSessions(this.database, input);
