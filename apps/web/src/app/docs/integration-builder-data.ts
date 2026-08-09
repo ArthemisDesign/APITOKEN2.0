@@ -393,13 +393,23 @@ function kimiCodeGuide(
   language: IntegrationLanguage,
 ): IntegrationGuide {
   const namespace = provider === "gemini" ? "google" : provider;
-  const wireModel = `${namespace}/${model.id}`;
   const alias = `apitoken/${model.id}`;
-  const window = MODEL_WINDOWS[model.id];
-  // `max_context_size` is required by Kimi Code and decides when it compacts, so a model without
-  // a reviewed window must not be emitted with a guess.
-  if (!window) throw new Error(`Unknown context window for ${model.id}`);
-  const inputLine = window.input === undefined ? "" : `\nmax_input_size = ${window.input}`;
+  // Declare the provider's whole catalogue, not just the selected model. Kimi Code picks a model
+  // from the `[models.*]` blocks in its own config, so a single block would leave the harness
+  // with exactly one choice — which is not how anyone uses it. `default_model` carries the
+  // selection made in the builder.
+  const modelBlocks = INTEGRATION_MODELS[provider].map((entry) => {
+    const window = MODEL_WINDOWS[entry.id];
+    // `max_context_size` is required by Kimi Code and decides when it compacts, so a model
+    // without a reviewed window must not be emitted with a guess.
+    if (!window) throw new Error(`Unknown context window for ${entry.id}`);
+    const inputLine = window.input === undefined ? "" : `\nmax_input_size = ${window.input}`;
+    return `[models."apitoken/${entry.id}"]
+provider = "apitoken"
+model = "${namespace}/${entry.id}"
+max_context_size = ${window.context}${inputLine}
+display_name = "${entry.name}"`;
+  }).join("\n\n");
   // Kimi Code reads credentials ONLY from this file — it deliberately does not fall back to the
   // shell — so the key is written here and the file must be locked down.
   const config = `default_model = "${alias}"
@@ -409,11 +419,7 @@ type = "openai"
 base_url = "${ROUTER_OPENAI_BASE_URL}"
 api_key = "${keyPlaceholder}"
 
-[models."${alias}"]
-provider = "apitoken"
-model = "${wireModel}"
-max_context_size = ${window.context}${inputLine}
-display_name = "${model.name}"`;
+${modelBlocks}`;
   const path = isWindows(os)
     ? "%USERPROFILE%\\.kimi-code\\config.toml"
     : "~/.kimi-code/config.toml";
@@ -441,10 +447,10 @@ display_name = "${model.name}"`;
         codeLabel: localize(language, "Terminal", "Терминал"),
       },
       {
-        title: localize(language, "Declare the provider and the model", "Опишите провайдера и модель"),
+        title: localize(language, "Declare the provider and its models", "Опишите провайдера и его модели"),
         text: localize(language,
-          `Save as \`${path}\`, then restrict it: ${isWindows(os) ? "the file holds your key in plain text." : "the file holds your key in plain text."} The model id is the namespaced catalogue id; the alias on the left is only how you address it locally.`,
-          `Сохраните как \`${path}\` и ограничьте доступ: файл хранит ключ в открытом виде. В поле model — namespaced id из каталога; алиас слева нужен только для локального обращения.`),
+          `Save as \`${path}\`, then restrict it — the file holds your key in plain text. Every model of this provider is declared, so all of them show up in the harness picker; \`default_model\` is only the one it starts on. The \`model\` field is the namespaced catalogue id, and the alias on the left is how you address it locally.`,
+          `Сохраните как \`${path}\` и ограничьте доступ — файл хранит ключ в открытом виде. Объявлены все модели этого провайдера, поэтому в пикере харнеса доступны все; \`default_model\` — лишь та, с которой он стартует. В поле \`model\` — namespaced id из каталога, алиас слева нужен для локального обращения.`),
         code: `${config}\n\n${lock}`,
         codeLabel: path,
       },

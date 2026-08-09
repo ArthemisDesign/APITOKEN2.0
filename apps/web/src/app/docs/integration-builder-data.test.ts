@@ -138,6 +138,12 @@ describe("integration builder guide", () => {
     expect(config).toContain('[models."apitoken/k3"]');
     expect(config).toContain('model = "kimi/k3"');
     expect(config).toContain("max_context_size = 1048576");
+    // The harness picks a model from these blocks, so the config must declare the provider's
+    // whole catalogue — one block would leave it with a single choice.
+    for (const entry of INTEGRATION_MODELS.kimi) {
+      expect(config, entry.id).toContain(`[models."apitoken/${entry.id}"]`);
+    }
+    expect(config).toContain('default_model = "apitoken/k3"');
     // Kimi Code refuses to read credentials from the shell, so the file holds the key and must
     // be locked down — dropping that line would publish a world-readable secret.
     expect(config).toContain("chmod 600 ~/.kimi-code/config.toml");
@@ -150,6 +156,15 @@ describe("integration builder guide", () => {
     const gpt = buildIntegrationGuide({ provider: "openai", tool: "kimi-code", os: "unix", modelId: "gpt-5.6-sol", language: "en" });
     expect(gpt.steps[1].code).toContain("max_context_size = 400000");
     expect(gpt.steps[1].code).toContain("max_input_size = 272000");
+
+    // Selecting Claude must put every Claude model in the harness, on our key and our lane.
+    const claude = buildIntegrationGuide({ provider: "anthropic", tool: "kimi-code", os: "unix", modelId: "claude-opus-5", language: "en" });
+    for (const entry of INTEGRATION_MODELS.anthropic) {
+      expect(claude.steps[1].code, entry.id).toContain(`model = "anthropic/${entry.id}"`);
+    }
+    expect(claude.steps[1].code).toContain('default_model = "apitoken/claude-opus-5"');
+    // One provider entry carries them all: the model id selects the provider, not the base URL.
+    expect(claude.steps[1].code.match(/\[providers\./g)).toHaveLength(1);
   });
 
   it("has a reviewed context window for every published model", () => {
