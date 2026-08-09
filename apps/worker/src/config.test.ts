@@ -26,23 +26,6 @@ test("accepts authenticated Brevo STARTTLS configuration in production", () => {
   assert.equal(environment.SMTP_SECURE, false);
 });
 
-test("defaults the release-v2 backfill lane ON with a small canary-first batch", () => {
-  const environment = validateEnvironment(productionEnvironment);
-  assert.equal(environment.PRICING_BACKFILL_ENABLED, true);
-  assert.equal(environment.PRICING_BACKFILL_BATCH_SIZE, 5);
-  assert.equal(environment.PRICING_BACKFILL_ACCOUNT_ALLOWLIST, "");
-
-  const canary = validateEnvironment({
-    ...productionEnvironment,
-    PRICING_BACKFILL_ENABLED: "false",
-    PRICING_BACKFILL_BATCH_SIZE: "2",
-    PRICING_BACKFILL_ACCOUNT_ALLOWLIST: "acct_internal_a, acct_internal_b",
-  });
-  assert.equal(canary.PRICING_BACKFILL_ENABLED, false);
-  assert.equal(canary.PRICING_BACKFILL_BATCH_SIZE, 2);
-  assert.equal(canary.PRICING_BACKFILL_ACCOUNT_ALLOWLIST, "acct_internal_a, acct_internal_b");
-});
-
 test("requires STARTTLS for explicit-TLS SMTP in production", () => {
   assert.deepEqual(smtpSecurityOptions({ NODE_ENV: "production", SMTP_SECURE: false }), {
     secure: false,

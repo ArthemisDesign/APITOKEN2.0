@@ -4,7 +4,6 @@ import {
   applyPricingLedgerPage,
   applyPricingProviderBackfillPage,
   applyPricingTopupBackfillPage,
-  advanceAccountStrictChain,
   claimNextPricingControlJob,
   claimNextPricingJob,
   completePricingProviderBackfill,
@@ -14,14 +13,12 @@ import {
   getPricingUsageCursor,
   getPricingProviderBackfillCursor,
   getPricingTopupBackfillCursor,
-  listPendingStrictChainAccounts,
   listPricingSyncTargets,
   PricingControlNotifyListener,
   recoverStalePricingControlJobs,
   recoverStalePricingJobs,
   releasePricingControlJob,
   retryPricingJob,
-  runPricingBackfillSweep,
   type Database,
   type ClaimedPricingControlJob,
   type PricingControlJobDisposition,
@@ -44,7 +41,6 @@ const PROVIDER_BACKFILL_MAX_PAGES_PER_SYNC = 4;
 const TOPUP_BACKFILL_MAX_PAGES_PER_SYNC = 4;
 // The strict chain advances one durable step per account per pass, so a small bound keeps a
 // flush fast; the remainder is picked up by the next pass.
-const STRICT_CHAIN_MAX_ACCOUNTS_PER_SWEEP = 25;
 
 @Injectable()
 export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown {
@@ -141,7 +137,6 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
         // delivery work, not background recovery.
         this.requestControlFlush();
         await this.flushPricingJobs();
-        await this.flushPendingStrictChains();
       } catch (error) {
         this.logger.error(message(error));
       }
@@ -163,7 +158,6 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
         // getPricingUsageCursor reconciles durable confirmed-credit accrual markers, including
         // refund/dispute reversal, before any engine network I/O. Keep one authority for that
         // mutation: a separate worker-side refund loop can subtract the same marker twice.
-        await this.flushPricingBackfill();
         const targets = await listPricingSyncTargets(this.database);
         for (const target of targets) {
           if (this.stopped) break;
@@ -421,78 +415,6 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
     for (const key of keys) {
       if (key.status !== "active") continue;
       await this.engine.setKeyStatus(key.key_id, "active", ack);
-    }
-  }
-
-  /**
-   * The new-account direct strict chain of the release-v2 retirement (docs/commerce/PRICING.md):
-   * registration provisioning flags the binding strict_chain_pending, and this flush advances
-   * the chain account-locally — shared preflight + durable strict staging once the exact
-   * version confirms under shadow, then the engine opt-out marker once the strict delivery
-   * confirms. The opt-out disarms the flag, so a replay never duplicates the chain; a failed
-   * precondition is recorded on the binding and retried on the next pass instead of producing
-   * a partial state, and an account that cannot reach strict/strict/verified is never opted
-   * out — it keeps working on its current path.
-   */
-  private async flushPendingStrictChains(): Promise<void> {
-    const candidates = await listPendingStrictChainAccounts(
-      this.database,
-      STRICT_CHAIN_MAX_ACCOUNTS_PER_SWEEP,
-    );
-    for (const candidate of candidates) {
-      if (this.stopped) return;
-      try {
-        const result = await advanceAccountStrictChain(this.database, this.engine, candidate);
-        if (result.status === "staged") {
-          this.logger.log(
-            `strict chain staged for ${candidate.userId}: job ${result.jobId} ` +
-            `(funding ${result.funding}, ${result.keysStamped} active keys stamped)`,
-          );
-        } else if (result.status === "opted_out") {
-          this.logger.log(
-            `strict chain completed for ${candidate.userId}: pricing release opt-out marker applied`,
-          );
-        } else if (result.status === "failed") {
-          this.logger.error(`strict chain for ${candidate.userId} cannot advance: ${result.error}`);
-        }
-      } catch (error) {
-        this.logger.error(`strict chain sweep failed for ${candidate.userId}: ${message(error)}`);
-      }
-    }
-  }
-
-  /**
-   * The existing-account backfill of the release-v2 retirement (phase 2.2, runbook
-   * docs/ops/PRICING_RELEASE_BACKFILL.md): a bounded arm lane on the slow sweep. Each pass
-   * takes up to PRICING_BACKFILL_BATCH_SIZE eligible accounts (optionally restricted to the
-   * PRICING_BACKFILL_ACCOUNT_ALLOWLIST canary set), materializes the account's policy at the
-   * live catalog head, proves release/strict equivalence, and arms the SAME direct strict
-   * chain the fast tick already drives — nothing here forks or re-implements the chain.
-   * Per-account failures are recorded on the binding (last_error) by the canonical module
-   * and logged loudly; one account never blocks the others, and a completed account leaves
-   * the candidate set via the durable opt-out audit marker, so the lane is resumable and
-   * replay-safe. The per-account completion log line ("strict chain completed …") is
-   * emitted by flushPendingStrictChains when the engine opt-out marker lands.
-   */
-  private async flushPricingBackfill(): Promise<void> {
-    if (!this.config.get("PRICING_BACKFILL_ENABLED", { infer: true })) return;
-    const batchSize = this.config.get("PRICING_BACKFILL_BATCH_SIZE", { infer: true });
-    const allowlist = this.config.get("PRICING_BACKFILL_ACCOUNT_ALLOWLIST", { infer: true })
-      .split(",")
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0);
-    const summary = await runPricingBackfillSweep(this.database, this.engine, {
-      limit: batchSize,
-      ...(allowlist.length > 0 ? { allowlist } : {}),
-    });
-    for (const accountId of summary.armed) {
-      this.logger.log(`pricing backfill armed the direct strict chain for ${accountId}`);
-    }
-    for (const accountId of summary.armedWithoutReleaseCoverage) {
-      this.logger.log(`pricing backfill for ${accountId}: no release coverage; direct path only`);
-    }
-    for (const failure of summary.failed) {
-      this.logger.error(`pricing backfill for ${failure.engineAccountId} cannot advance: ${failure.error}`);
     }
   }
 

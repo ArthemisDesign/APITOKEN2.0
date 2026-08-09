@@ -44,36 +44,10 @@ test("wakes control-job delivery from LISTEN/NOTIFY with the sweep as recovery",
   // Delivery runs first and on its own short tick (PRICING_DISPATCH_MS), never behind the
   // sweep: control jobs through the coalescing dispatcher so a tick cannot double a
   // NOTIFY-triggered pass, the multiplier queue directly. The tick is the bounded recovery path
-  // for a missed notification; the slow sweep keeps only the strict-chain flush.
+  // for a missed notification.
   assert.match(source, /this\.requestControlFlush\(\);\s*\n\s*await this\.flushPricingJobs\(\);/);
   assert.match(source, /const dispatchMs = this\.config\.get\("PRICING_DISPATCH_MS", \{ infer: true \}\)/);
   assert.match(source, /if \(Date\.now\(\) < nextSweepAt\)/);
-  assert.match(source, /await this\.flushPendingStrictChains\(\);/);
-});
-
-test("advances flagged strict chains once the shadow delivery confirms", () => {
-  // A conversion/policy save flags the binding strict_chain_pending; the sweep runs the shared
-  // preflight + durable staging from the canonical database module and logs failures loudly.
-  assert.match(source, /STRICT_CHAIN_MAX_ACCOUNTS_PER_SWEEP = 25/);
-  assert.match(source, /listPendingStrictChainAccounts\(\s*this\.database,\s*STRICT_CHAIN_MAX_ACCOUNTS_PER_SWEEP,?\s*\)/);
-  assert.match(source, /await advanceAccountStrictChain\(this\.database, this\.engine, candidate\)/);
-  assert.match(source, /strict chain for \$\{candidate\.userId\} cannot advance/);
-  assert.doesNotMatch(source, /UPDATE account_policy_bindings/);
-});
-
-test("runs the existing-account backfill arm lane on the slow sweep with canary knobs", () => {
-  // Phase 2.2 of the release-v2 retirement: the slow sweep arms a bounded page of eligible
-  // accounts into the SAME direct strict chain (never a fork) through the canonical database
-  // module; the enable flag, batch size and allowlist are env-driven for the canary sequence
-  // (docs/ops/PRICING_RELEASE_BACKFILL.md), and per-account armed/failed lines are logged.
-  assert.match(source, /await this\.flushPricingBackfill\(\);/);
-  assert.match(source, /if \(!this\.config\.get\("PRICING_BACKFILL_ENABLED", \{ infer: true \}\)\) return;/);
-  assert.match(source, /this\.config\.get\("PRICING_BACKFILL_BATCH_SIZE", \{ infer: true \}\)/);
-  assert.match(source, /this\.config\.get\("PRICING_BACKFILL_ACCOUNT_ALLOWLIST", \{ infer: true \}\)/);
-  assert.match(source, /runPricingBackfillSweep\(this\.database, this\.engine, \{/);
-  assert.match(source, /pricing backfill armed the direct strict chain for \$\{accountId\}/);
-  assert.match(source, /pricing backfill for \$\{accountId\}: no release coverage; direct path only/);
-  assert.match(source, /pricing backfill for \$\{failure\.engineAccountId\} cannot advance/);
 });
 
 test("re-stamps active keys with the exact new ACK after every strict policy activation", () => {
