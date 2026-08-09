@@ -100,7 +100,34 @@ export type GeminiModel = {
   related: string[];
 };
 
-export type CatalogModel = ClaudeModel | OpenAiModel | GeminiModel;
+
+export type KimiModel = {
+  provider: "kimi";
+  slug: string;
+  /** Subscription alias — exactly what a client sends. Official Open Platform ids are tariff
+   *  keys the gateway refuses on the wire, so they are deliberately not published here. */
+  id: string;
+  name: string;
+  tier: "K3" | "Coding";
+  title: string;
+  description: string;
+  keywords: string[];
+  dek: string;
+  /** Official Moonshot $ per 1M tokens, reviewed against platform.kimi.ai. */
+  inputPerM: number;
+  cachedInputPerM: number;
+  outputPerM: number;
+  /** KIMI publishes no separate cache-write rate: a write is a miss, so this equals input. */
+  cacheWritePerM: number;
+  context: string;
+  maxOutput: string;
+  bestFor: string[];
+  notes: string[];
+  faq: Array<{ q: string; a: string }>;
+  related: string[];
+};
+
+export type CatalogModel = ClaudeModel | OpenAiModel | GeminiModel | KimiModel;
 
 export const DISCOUNT_FLAT = 0.5;
 
@@ -576,6 +603,132 @@ export const openaiModels: OpenAiModel[] = [
 // request) above 200K input tokens on gemini-3.1-pro-preview. gemini-3.1-flash-image (Nano
 // Banana 2) bills image output separately per image-output token. The native /v1beta
 // generateContent surface is served as-is, authenticated with x-goog-api-key.
+
+export const kimiModels: KimiModel[] = [
+  {
+    provider: "kimi",
+    slug: "kimi-k3",
+    id: "k3",
+    name: "Kimi K3",
+    tier: "K3",
+    title: "Kimi K3 API — Price per Token & Access",
+    description: "Kimi K3 API pricing: official $3.00/$15.00 per 1M tokens, $1.50/$7.50 with the flat 50% apiToken.sale discount. Moonshot's frontier model with a 1M-token window.",
+    keywords: ["kimi k3 api", "kimi k3 price", "kimi k3 api cost", "k3 model id", "moonshot kimi pricing", "kimi api"],
+    dek: "Kimi K3 is Moonshot's frontier model — a 1M-token window for agentic coding and long-context work, addressed as k3 on the Anthropic Messages lane.",
+    inputPerM: 3,
+    cachedInputPerM: 0.3,
+    outputPerM: 15,
+    cacheWritePerM: 3,
+    context: "1M tokens",
+    maxOutput: "not published",
+    bestFor: [
+      "Agentic coding sessions that outgrow a 256K window.",
+      "Long-context analysis across a whole repository or corpus.",
+      "Work already configured for Claude Code, which selects this window as k3[1m].",
+    ],
+    notes: [
+      "Cached input bills at 10% of input — caching is automatic on repeated prefixes.",
+      "KIMI publishes no separate cache-write rate: a write is a cache miss and bills at the input rate.",
+    ],
+    faq: [
+      { q: "How much does the Kimi K3 API cost?", a: "Officially $3.00 per 1M input tokens and $15.00 per 1M output tokens, with cached input at $0.30. On apiToken.sale the same requests cost 50% less — $1.50/$7.50 at the flat discount applied to every call." },
+      { q: "What is the model ID for Kimi K3?", a: "k3, or kimi/k3 on the unified router. Claude Code users can also send k3[1m], which is that client's spelling for the same 1M window — both settle identically." },
+      { q: "Is there a 256K variant?", a: "Yes: k3-256k is the same model and the same rate card with a 256K accepted window. Choose it when a smaller window is what your harness expects." },
+    ],
+    related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
+  },
+  {
+    provider: "kimi",
+    slug: "kimi-k3-256k",
+    id: "k3-256k",
+    name: "Kimi K3 (256K)",
+    tier: "K3",
+    title: "Kimi K3 256K API — Price per Token & Access",
+    description: "Kimi K3 with a 256K window: official $3.00/$15.00 per 1M tokens, $1.50/$7.50 with the flat 50% apiToken.sale discount. Same model and same rates as k3, smaller accepted context.",
+    keywords: ["kimi k3 256k", "k3-256k model id", "kimi k3 context window", "kimi api price", "moonshot kimi 256k"],
+    dek: "The same Kimi K3 at the same rates, with a 256K accepted window — for harnesses that expect a smaller context than the 1M variant.",
+    inputPerM: 3,
+    cachedInputPerM: 0.3,
+    outputPerM: 15,
+    cacheWritePerM: 3,
+    context: "256K tokens",
+    maxOutput: "not published",
+    bestFor: [
+      "Tools that cap or mis-handle a 1M-token window.",
+      "Sessions where a smaller window keeps compaction predictable.",
+    ],
+    notes: [
+      "Cached input bills at 10% of input — caching is automatic on repeated prefixes.",
+      "KIMI publishes no separate cache-write rate: a write is a cache miss and bills at the input rate.",
+    ],
+    faq: [
+      { q: "Does k3-256k cost less than k3?", a: "No. It is the same model on the same rate card — $3.00/$15.00 officially, $1.50/$7.50 here. Only the accepted context differs." },
+      { q: "When should I pick it over k3?", a: "When your client compacts against the window it is told about: a harness configured for 256K will behave more predictably on this id than on the 1M one." },
+    ],
+    related: ["how-billing-works", "why-choose-apitoken"],
+  },
+  {
+    provider: "kimi",
+    slug: "kimi-for-coding",
+    id: "kimi-for-coding",
+    name: "Kimi for Coding",
+    tier: "Coding",
+    title: "Kimi for Coding API — Price per Token & Access",
+    description: "Kimi for Coding API pricing: official $0.95/$4.00 per 1M tokens, $0.48/$2.00 with the flat 50% apiToken.sale discount. Moonshot's coding SKU with a 256K window.",
+    keywords: ["kimi for coding api", "kimi for coding price", "kimi coding model", "kimi k2.7 code", "moonshot coding api"],
+    dek: "Kimi for Coding is Moonshot's coding SKU — a stable alias that tracks the current coding model, at roughly a third of the K3 token price.",
+    inputPerM: 0.95,
+    cachedInputPerM: 0.19,
+    outputPerM: 4,
+    cacheWritePerM: 0.95,
+    context: "256K tokens",
+    maxOutput: "not published",
+    bestFor: [
+      "High-volume coding work where K3 token prices dominate the bill.",
+      "Setups that want a stable id rather than a pinned model version.",
+    ],
+    notes: [
+      "Cached input bills at 10% of input — caching is automatic on repeated prefixes.",
+      "KIMI publishes no separate cache-write rate: a write is a cache miss and bills at the input rate.",
+    ],
+    faq: [
+      { q: "How much does Kimi for Coding cost?", a: "Officially $0.95 per 1M input tokens and $4.00 per 1M output tokens, with cached input at $0.19. On apiToken.sale that is $0.48/$2.00 at the flat 50% discount." },
+      { q: "Which model does it actually run?", a: "It is a stable alias maintained by Moonshot that resolves to the current coding model. Pinning a dated id instead is what causes silent retry loops in third-party tools." },
+    ],
+    related: ["how-billing-works", "why-choose-apitoken"],
+  },
+  {
+    provider: "kimi",
+    slug: "kimi-for-coding-highspeed",
+    id: "kimi-for-coding-highspeed",
+    name: "Kimi for Coding HighSpeed",
+    tier: "Coding",
+    title: "Kimi for Coding HighSpeed API — Price per Token & Access",
+    description: "Kimi for Coding HighSpeed API pricing: official $1.90/$8.00 per 1M tokens, $0.95/$4.00 with the flat 50% apiToken.sale discount. Exactly double the base coding SKU on every leg.",
+    keywords: ["kimi for coding highspeed", "kimi highspeed price", "kimi coding fast api", "moonshot highspeed"],
+    dek: "The faster tier of the coding SKU, priced at exactly double the base model on every leg — input, cached input and output alike.",
+    inputPerM: 1.9,
+    cachedInputPerM: 0.38,
+    outputPerM: 8,
+    cacheWritePerM: 1.9,
+    context: "256K tokens",
+    maxOutput: "not published",
+    bestFor: [
+      "Interactive sessions where latency matters more than token price.",
+      "Short agent turns that are dominated by time to first token.",
+    ],
+    notes: [
+      "Cached input bills at 10% of input — caching is automatic on repeated prefixes.",
+      "KIMI publishes no separate cache-write rate: a write is a cache miss and bills at the input rate.",
+    ],
+    faq: [
+      { q: "How much more does HighSpeed cost?", a: "Exactly 2× the base coding SKU on every leg: $1.90/$8.00 officially against $0.95/$4.00, and the same doubling on cached input." },
+      { q: "Is it a different model?", a: "It is the faster tier of the same coding SKU. The rate card is the only thing that differs by a fixed factor." },
+    ],
+    related: ["how-billing-works", "why-choose-apitoken"],
+  },
+];
+
 export const geminiModels: GeminiModel[] = [
   {
     provider: "gemini",
@@ -842,7 +995,11 @@ export const geminiModelBySlug: Record<string, GeminiModel> = Object.fromEntries
   geminiModels.map((model) => [model.slug, model]),
 );
 
-export const catalogModelBySlug: Record<string, CatalogModel> = { ...claudeModelBySlug, ...openaiModelBySlug, ...geminiModelBySlug };
+export const kimiModelBySlug: Record<string, KimiModel> = Object.fromEntries(
+  kimiModels.map((model) => [model.slug, model]),
+);
+
+export const catalogModelBySlug: Record<string, CatalogModel> = { ...claudeModelBySlug, ...openaiModelBySlug, ...geminiModelBySlug, ...kimiModelBySlug };
 
 export function modelPath(slug: string): string {
   return `/models/${slug}`;

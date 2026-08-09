@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { claudeModels, formatUsd, geminiModels, openaiModels, priceHere, type CatalogModel, type ClaudeModel, type GeminiModel, type OpenAiModel } from "@/lib/models";
+import { claudeModels, formatUsd, geminiModels, kimiModels, openaiModels, priceHere, type CatalogModel, type ClaudeModel, type GeminiModel, type KimiModel, type OpenAiModel } from "@/lib/models";
 import { Prose } from "./prose";
 
 type Language = "en" | "ru";
@@ -51,6 +51,19 @@ export function ModelsPricing({ language }: { language: Language }) {
         "Кешированный ввод тарифицируется по ставке кешированного ввода (10% от ввода). `gemini-3.1-pro-preview` переключается на ставки длинного контекста свыше 200K входных токенов: 2× ввод и 1,5× вывод на весь запрос. `gemini-3.1-flash-image` тарифицирует вывод изображений по $60 за 1M токенов изображения.")}
     />
 
+    <ProviderPanel
+      language={language}
+      provider="kimi"
+      title={tr(language, "Kimi · Anthropic Messages API", "Kimi · Anthropic Messages API")}
+      host="router.apitoken.sale"
+      path="POST /v1/messages"
+      auth="x-api-key"
+      models={kimiModels}
+      cacheNote={tr(language,
+        "Cached input bills at the cached-input rate (10% of input). Kimi publishes no separate cache-write rate — a write is a cache miss and bills at the input rate. `k3[1m]` is an alias of `k3` for clients that spell the 1M window that way; `k3-256k` is the same model and the same rates with a 256K window.",
+        "Кешированный ввод тарифицируется по ставке кешированного ввода (10% от ввода). Отдельной ставки записи в кеш у Kimi нет — запись это промах и тарифицируется по ставке ввода. `k3[1m]` — алиас `k3` для клиентов, которые так пишут 1M-окно; `k3-256k` — та же модель и те же ставки с окном 256K.")}
+    />
+
     <MathCard language={language} />
 
     <ul className="mp-notes">
@@ -75,7 +88,7 @@ export function ModelsPricing({ language }: { language: Language }) {
 
 function ProviderPanel({ language, provider, title, host, path, auth, models, cacheNote }: {
   language: Language;
-  provider: "anthropic" | "openai" | "gemini";
+  provider: "anthropic" | "openai" | "gemini" | "kimi";
   title: string;
   host: string;
   path: string;
@@ -110,8 +123,16 @@ function ProviderPanel({ language, provider, title, host, path, auth, models, ca
 }
 
 function ModelRow({ language, model, latest }: { language: Language; model: CatalogModel; latest: boolean }) {
-  const cached = model.provider === "anthropic" ? (model as ClaudeModel).cacheReadPerM : (model as OpenAiModel | GeminiModel).cachedInputPerM;
-  const cacheWrite = model.provider === "anthropic" ? (model as ClaudeModel).cacheWrite5mPerM : model.provider === "openai" ? (model as OpenAiModel).cacheWritePerM : null;
+  const cached = model.provider === "anthropic" ? (model as ClaudeModel).cacheReadPerM : (model as OpenAiModel | GeminiModel | KimiModel).cachedInputPerM;
+  // KIMI has no separate write rate — a write is a cache miss — so the column carries the input
+  // rate. A dash there would read as "free", which is the opposite of what happens.
+  const cacheWrite = model.provider === "anthropic"
+    ? (model as ClaudeModel).cacheWrite5mPerM
+    : model.provider === "openai"
+      ? (model as OpenAiModel).cacheWritePerM
+      : model.provider === "kimi"
+        ? (model as KimiModel).cacheWritePerM
+        : null;
   return <tr>
     <td className="mp-model">
       <Link href={`/models/${model.slug}`}>

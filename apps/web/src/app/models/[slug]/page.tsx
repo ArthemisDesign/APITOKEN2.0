@@ -69,7 +69,7 @@ function priceRowsFor(model: CatalogModel) {
     { rate: "Cache write", official: formatUsd(model.cacheWritePerM), here: priceHere(model.cacheWritePerM) },
     { rate: model.tier === "Image" ? "Image output" : "Output", official: formatUsd(model.outputPerM), here: priceHere(model.outputPerM) },
   ];
-  if (model.imageInputPerM !== undefined) {
+  if (model.provider === "openai" && model.imageInputPerM !== undefined) {
     rows.push({ rate: "Image input", official: formatUsd(model.imageInputPerM), here: priceHere(model.imageInputPerM) });
   }
   return rows;
@@ -87,6 +87,12 @@ const providerCopy = {
     othersHeading: "Other GPT models",
     howTo: (id: string) => <>Create a free account, generate one key, and point any OpenAI-compatible tool at {ROUTER_OPENAI_BASE_URL} with model ID <code>{id}</code> — Responses and Chat Completions both work, authenticated with <code>Authorization: Bearer</code>. Eligible new accounts include $5 of platform bonus credit — enough to test the model before topping up. Existing integrations on the legacy host {OPENAI_BASE_URL} keep working.</>,
     cta: (name: string) => `Run ${name} on the OpenAI-compatible API at a flat 50% off — instant key, prepaid balance, card or crypto.`,
+  },
+  kimi: {
+    officialCol: "Official Moonshot",
+    othersHeading: "Other Kimi models",
+    howTo: (id: string) => <>Create a free account, generate one key, and point any Anthropic-compatible tool at {ROUTER_BASE_URL} with model ID <code>{`kimi/${id}`}</code>, authenticated with <code>x-api-key</code>. Kimi speaks the Anthropic Messages protocol, so the catalogue namespace in the model ID is what selects it — the base URL is the same one Claude uses. Eligible new accounts include $5 of platform bonus credit — enough to test the model before topping up.</>,
+    cta: (name: string) => `Run ${name} on the Anthropic Messages API at a flat 50% off — instant key, prepaid balance, card or crypto.`,
   },
   gemini: {
     officialCol: "Official Google",
