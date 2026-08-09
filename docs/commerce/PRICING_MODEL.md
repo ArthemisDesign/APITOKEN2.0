@@ -52,6 +52,29 @@ materialize and nothing that can disagree with the balance.
 Both bounds are enforced by the engine — an unknown provider id would silently never match a
 request, and an out-of-range multiplier is either free inference or an overcharge.
 
+## The commerce side
+
+Commerce records what was asked for and makes delivery durable; the engine remains the authority
+that prices requests.
+
+- `customer_profiles.multiplier_bp` — the customer's default discount.
+- `customer_provider_discounts (user_id, provider_id, multiplier_bp)` — their per-provider terms.
+- `engine_pricing_jobs` — one row per (user, target). `provider_id IS NULL` delivers the default,
+  a provider id delivers that override, and a null multiplier on a provider job removes it. A
+  default change and a provider change are independent deliveries and never evict one another.
+
+The worker claims a job, calls the engine and confirms. If the desired value moved while the
+delivery was in flight, the job is requeued with the new value rather than confirmed, so an edit
+made during an engine outage is delayed, never lost.
+
+Admin surface: `PATCH /admin/business-users/{id}/pricing` accepts `discountPercent` and/or
+`providers` (a provider mapped to `null` clears its override), `GET` returns the current
+overrides. The panel shows the default and one field per provider; an empty field means "use the
+default".
+
+Invitations carry a discount percent, which the invitee's account is created with. Per-provider
+terms are set on the client after conversion.
+
 ## Why the previous design was removed
 
 The retired design put a second representation of both price and money in front of admission: a
@@ -80,3 +103,15 @@ and the drift surfaces as a customer being told they have no money.
    snapshot to keep in step.
 4. **A funded account can spend.** If a request is refused for money, the account balance must
    actually be insufficient for the hold.
+
+## Still to remove
+
+`crates/registry` keeps the persistence of the retired design — the policy/catalog/switch/release
+tables and their code, plus `funding_v2`. Nothing routes a request through the policy or release
+part any more, so it is dead by callers. `funding_v2` is different: it is still wired into the
+PostgreSQL reserve and settlement transactions for accounts that carry a funding head, so removing
+it changes a money transaction and needs the real-PostgreSQL matrices, not a local build.
+
+The tables themselves (`account_policy_bindings`, `funding_buckets`, `funding_lots_v2`,
+`pricing_*`) stay until an explicit drop migration, per the repository's expand-only rule. Until
+then, nothing may start reading them again.
