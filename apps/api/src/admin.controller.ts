@@ -199,29 +199,12 @@ export class AdminController {
     return this.updateManagedPolicy("global_b2c", "global-b2c", body, actorHeader);
   }
 
-  @Get("business-invites/:id/pricing-policy")
+  /** The customer's per-provider discount overrides; the default lives on the user record. */
+  @Get("business-users/:id/pricing")
   @Header("Cache-Control", "no-store")
-  async getBusinessInvitePricingPolicy(@Param("id") id: string): Promise<unknown> {
-    assertUuid(id, "invitation ID");
-    return this.getManagedPolicy("b2b_invitation", id);
-  }
-
-  @Patch("business-invites/:id/pricing-policy")
-  @Header("Cache-Control", "no-store")
-  async updateBusinessInvitePricingPolicy(
-    @Param("id") id: string,
-    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    assertUuid(id, "invitation ID");
-    return this.updateManagedPolicy("b2b_invitation", id, body, actorHeader);
-  }
-
-  @Get("business-users/:id/pricing-policy")
-  @Header("Cache-Control", "no-store")
-  async getBusinessUserPricingPolicy(@Param("id") id: string): Promise<unknown> {
+  async getBusinessUserPricing(@Param("id") id: string): Promise<unknown> {
     assertUuid(id, "user ID");
-    return this.getManagedPolicy("b2b_client", id);
+    return this.admin.getBusinessPricing(id);
   }
 
   @Get("service-policies")
@@ -336,7 +319,7 @@ export class AdminController {
         id,
         {
           ...(parsed.data.discountPercent === undefined ? {} : { discountPercent: parsed.data.discountPercent }),
-          ...(parsed.data.policy === undefined ? {} : { policy: parsed.data.policy }),
+          ...(parsed.data.providers === undefined ? {} : { providers: parsed.data.providers }),
         },
         adminActor(actorHeader),
         parsed.data.reason,

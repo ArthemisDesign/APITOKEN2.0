@@ -39,6 +39,9 @@ import {
   revokeBusinessInvite,
   rotateBusinessInvite,
   setBusinessPricing,
+  setCustomerProviderDiscount,
+  listCustomerProviderDiscounts,
+  type DiscountProviderId,
   materializeProvisionedUserPolicy,
   stageStoredPricingCatalogControlJob,
   stageStoredProviderSwitchControlJob,
@@ -334,35 +337,66 @@ export class AdminService {
     };
   }
 
+  /**
+   * One B2B pricing change: the customer's default discount and/or per-provider overrides. Both
+   * halves are queued on the same durable lane, so an engine outage delays delivery instead of
+   * losing the change, and a provider mapped to `null` drops back to the default.
+   */
   async setBusinessPricing(
     userId: string,
-    input: { discountPercent?: number; policy?: { expectedVersion: number; rules: readonly PricingPolicyEditorRule[] } },
+    input: {
+      discountPercent?: number;
+      providers?: Partial<Record<DiscountProviderId, number | null>>;
+    },
     actorId: string,
     reason: string,
   ): Promise<Record<string, unknown>> {
-    if (input.policy) {
-      const policy = await updateManagedPricingPolicy(this.database, {
-        ownerType: "b2b_client",
-        ownerId: userId,
-        expectedVersion: input.policy.expectedVersion,
-        rules: input.policy.rules,
+    const jobIds: string[] = [];
+    if (input.discountPercent !== undefined) {
+      const result = await setBusinessPricing(this.database, {
+        userId,
+        multiplierBp: multiplierForDiscount(input.discountPercent),
         actorId,
         reason,
       });
-      return {
-        userId,
-        policy,
-        syncStatus: policy.targets.every((target) => target.syncState === "confirmed") ? "confirmed" : "pending",
-      };
+      jobIds.push(result.jobId);
     }
-    if (input.discountPercent === undefined) throw new Error("business pricing mutation is empty");
-    const result = await setBusinessPricing(this.database, {
+    for (const [providerId, discountPercent] of Object.entries(input.providers ?? {})) {
+      const result = await setCustomerProviderDiscount(this.database, {
+        userId,
+        providerId,
+        multiplierBp: discountPercent === null || discountPercent === undefined
+          ? null
+          : multiplierForDiscount(discountPercent),
+        actorId,
+        reason,
+      });
+      jobIds.push(result.jobId);
+    }
+    if (jobIds.length === 0) throw new Error("business pricing mutation is empty");
+    const providers = await listCustomerProviderDiscounts(this.database, userId);
+    return {
       userId,
-      multiplierBp: multiplierForDiscount(input.discountPercent),
-      actorId,
-      reason,
-    });
-    return { userId, discountPercent: input.discountPercent, syncStatus: "pending", pricingJobId: result.jobId };
+      ...(input.discountPercent === undefined ? {} : { discountPercent: input.discountPercent }),
+      providers: Object.fromEntries(providers.map((row) => [
+        row.providerId,
+        100 - row.multiplierBp / 100,
+      ])),
+      syncStatus: "pending",
+      pricingJobIds: jobIds,
+    };
+  }
+
+  /** The customer's default discount plus every per-provider override, as percentages. */
+  async getBusinessPricing(userId: string): Promise<Record<string, unknown>> {
+    const providers = await listCustomerProviderDiscounts(this.database, userId);
+    return {
+      userId,
+      providers: Object.fromEntries(providers.map((row) => [
+        row.providerId,
+        100 - row.multiplierBp / 100,
+      ])),
+    };
   }
 
 

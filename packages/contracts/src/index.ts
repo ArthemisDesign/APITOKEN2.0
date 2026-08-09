@@ -2365,13 +2365,20 @@ export const createBusinessInviteSchema = z.object({
   (value) => (value.policy === undefined) !== (value.discountPercent === undefined),
   { message: "provide exactly one of policy or the legacy scalar fallback" },
 );
+/** Engine provider ids a discount may target. Closed: a typo would never match a request. */
+export const discountProviderIdSchema = z.enum(["anthropic", "openai", "google", "kimi", "glm"]);
+
+/**
+ * One B2B pricing change: the customer's default discount, and/or per-provider overrides where
+ * their terms differ. A provider mapped to `null` drops back to the default.
+ */
 export const setBusinessPricingSchema = z.object({
   discountPercent: businessDiscountSchema.optional(),
-  policy: pricingPolicyMutationSchema.omit({ reason: true }).optional(),
+  providers: z.record(discountProviderIdSchema, businessDiscountSchema.nullable()).optional(),
   reason: z.string().trim().min(3).max(300),
 }).strict().refine(
-  (value) => (value.policy === undefined) !== (value.discountPercent === undefined),
-  { message: "provide exactly one of policy or discountPercent" },
+  (value) => value.discountPercent !== undefined || value.providers !== undefined,
+  { message: "provide a discountPercent, providers, or both" },
 );
 
 export function multiplierForDiscount(discountPercent: number): number {

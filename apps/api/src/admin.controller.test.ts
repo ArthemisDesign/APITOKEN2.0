@@ -151,20 +151,22 @@ describe("managed pricing HTTP contract", () => {
     expect(updateManagedProviderSwitches).toHaveBeenCalledWith(body, "operator@example.com");
   });
 
-  it("wraps a B2B replacement policy in the existing rolling-compatible endpoint", async () => {
-    const setBusinessPricing = vi.fn().mockResolvedValue({ policy: { currentVersion: 4 } });
+  it("passes the default discount and per-provider overrides through one endpoint", async () => {
+    // A provider mapped to null clears its override and returns that provider to the default.
+    const setBusinessPricing = vi.fn().mockResolvedValue({ providers: { openai: 40 } });
     const controller = new AdminController({ setBusinessPricing } as unknown as AdminService);
     const userId = "4f53639f-ced1-472f-998e-50e426bd5734";
     const body = {
-      policy: { expectedVersion: 3, rules: [rule] },
-      reason: "replace the complete negotiated policy",
+      discountPercent: 30,
+      providers: { openai: 40, google: null },
+      reason: "negotiated per-provider terms",
     };
 
     await expect(controller.setBusinessPricing(userId, body, "operator@example.com"))
-      .resolves.toMatchObject({ policy: { currentVersion: 4 } });
+      .resolves.toMatchObject({ providers: { openai: 40 } });
     expect(setBusinessPricing).toHaveBeenCalledWith(
       userId,
-      { policy: body.policy },
+      { discountPercent: 30, providers: { openai: 40, google: null } },
       "operator@example.com",
       body.reason,
     );
