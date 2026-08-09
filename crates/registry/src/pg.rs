@@ -211,9 +211,11 @@ const MIGRATION_0040: &str =
 const MIGRATION_0041: &str = include_str!("../migrations_pg/0041_strict_funding_lots_v2.sql");
 const MIGRATION_0042: &str =
     include_str!("../migrations_pg/0042_strict_funding_active_generation.sql");
+const MIGRATION_0043: &str =
+    include_str!("../migrations_pg/0043_account_provider_discounts.sql");
 
 /// Highest PostgreSQL schema version understood by this engine build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 42;
+pub const CURRENT_SCHEMA_VERSION: i64 = 43;
 pub const DEFAULT_APPLICATION_NAME: &str = "claude-api-engine";
 
 const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
@@ -259,6 +261,7 @@ const ENGINE_MIGRATIONS: &[(i64, &str)] = &[
     (40, MIGRATION_0040),
     (41, MIGRATION_0041),
     (42, MIGRATION_0042),
+    (43, MIGRATION_0043),
 ];
 
 #[cfg(test)]
@@ -4498,7 +4501,74 @@ impl PgStore {
         tx.commit()?;
         Ok(())
     }
+    /// Per-provider discount rows of the account this key belongs to. Two small primary-key reads
+    /// per authorization instead of one is the entire cost of per-provider pricing; the table
+    /// holds at most one row per provider per account.
+    fn provider_discounts_for_key(&mut self, key: &str) -> Result<Vec<(String, i64)>> {
+        Ok(self
+            .client
+            .query(
+                "SELECT d.provider_id,d.mult_bp FROM account_provider_discounts d
+                   JOIN api_keys k ON k.account_id=d.account_id
+                  WHERE k.key=$1 ORDER BY d.provider_id",
+                &[&key],
+            )?
+            .into_iter()
+            .map(|row| (row.get(0), row.get(1)))
+            .collect())
+    }
+
+    /// Read every per-provider discount of one account (control-plane listing).
+    pub fn account_provider_discounts(&mut self, account_id: &str) -> Result<Vec<(String, i64)>> {
+        Ok(self
+            .client
+            .query(
+                "SELECT provider_id,mult_bp FROM account_provider_discounts
+                  WHERE account_id=$1 ORDER BY provider_id",
+                &[&account_id],
+            )?
+            .into_iter()
+            .map(|row| (row.get(0), row.get(1)))
+            .collect())
+    }
+
+    /// Set (or replace) one provider discount. Effective on the next authorization: there is no
+    /// version to activate and no snapshot that can disagree with it.
+    pub fn set_account_provider_discount(
+        &mut self,
+        account_id: &str,
+        provider_id: &str,
+        mult_bp: i64,
+        ts: i64,
+    ) -> Result<()> {
+        crate::ensure_valid_provider_discount(provider_id, mult_bp)?;
+        let changed = self.client.execute(
+            "INSERT INTO account_provider_discounts(account_id,provider_id,mult_bp,updated_ts)
+             SELECT $1,$2,$3,$4 WHERE EXISTS(SELECT 1 FROM accounts WHERE id=$1)
+             ON CONFLICT(account_id,provider_id) DO UPDATE SET
+                 mult_bp=EXCLUDED.mult_bp,updated_ts=EXCLUDED.updated_ts",
+            &[&account_id, &provider_id, &mult_bp, &ts],
+        )?;
+        if changed == 0 {
+            anyhow::bail!("unknown account");
+        }
+        Ok(())
+    }
+
+    /// Remove one provider discount; the account falls back to its default multiplier.
+    pub fn clear_account_provider_discount(
+        &mut self,
+        account_id: &str,
+        provider_id: &str,
+    ) -> Result<bool> {
+        Ok(self.client.execute(
+            "DELETE FROM account_provider_discounts WHERE account_id=$1 AND provider_id=$2",
+            &[&account_id, &provider_id],
+        )? > 0)
+    }
+
     pub fn key_account(&mut self, key: &str) -> Result<Option<KeyAuth>> {
+        let provider_mult_bp = self.provider_discounts_for_key(key)?;
         let Some(row) = self.client.query_opt(
             "SELECT a.id,a.mult_bp,a.balance_nano,k.spent_nano,k.reserved_nano,
                     k.spend_limit_nano,k.expires_ts,(k.status='active' AND a.status='active'),
@@ -4553,6 +4623,7 @@ impl PgStore {
         Ok(Some(KeyAuth {
             account_id: row.get(0),
             mult_bp: row.get(1),
+            provider_mult_bp,
             balance_nano: row.get(2),
             spent_nano: row.get(3),
             reserved_nano: row.get(4),

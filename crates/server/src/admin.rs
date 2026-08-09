@@ -565,6 +565,97 @@ pub async fn account_pricing(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ProviderDiscountReq {
+    provider_id: String,
+    /// Payable multiplier in basis points, or `null` to remove the override so the account falls
+    /// back to its default discount.
+    mult_bp: Option<i64>,
+}
+
+/// GET /admin/account/{id}/discounts — the account default plus every provider override.
+pub async fn account_discounts(State(app): State<AppState>, Path(id): Path<String>) -> Response {
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let account = match b.account(&id).await {
+        Ok(Some(account)) => account,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "unknown account"})),
+            )
+                .into_response()
+        }
+        Err(error) => return authority_unavailable("account discount read", error),
+    };
+    let overrides = match b.account_provider_discounts(&id).await {
+        Ok(rows) => rows,
+        Err(error) => return authority_unavailable("account discount read", error),
+    };
+    let providers: serde_json::Map<String, serde_json::Value> = overrides
+        .into_iter()
+        .map(|(provider_id, mult_bp)| (provider_id, json!(mult_bp)))
+        .collect();
+    Json(json!({
+        "account": account.id,
+        "mult_bp": account.mult_bp,
+        "providers": providers,
+    }))
+    .into_response()
+}
+
+/// POST /admin/account/{id}/discounts — set or clear one provider override.
+///
+/// This is the whole B2B pricing surface: a customer keeps one default discount and, where their
+/// terms differ, one row per provider. A write is live on the next request — there is no version
+/// to activate, no snapshot to keep in step and nothing that can disagree with the balance.
+pub async fn set_account_discount(
+    State(app): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ProviderDiscountReq>,
+) -> Response {
+    if let Some(mult_bp) = req.mult_bp {
+        if let Err(error) = registry::ensure_valid_provider_discount(&req.provider_id, mult_bp) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error.to_string()})),
+            )
+                .into_response();
+        }
+    } else if !registry::DISCOUNT_PROVIDER_IDS.contains(&req.provider_id.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "unknown provider id"})),
+        )
+            .into_response();
+    }
+    let b = match billing(&app) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    match b
+        .account_provider_discount(&id, &req.provider_id, req.mult_bp)
+        .await
+    {
+        Ok(changed) => Json(json!({
+            "account": id,
+            "provider_id": req.provider_id,
+            "mult_bp": req.mult_bp,
+            "changed": changed,
+        }))
+        .into_response(),
+        Err(error) if error.to_string().contains("unknown account") => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown account"})),
+        )
+            .into_response(),
+        Err(error) => authority_unavailable("account discount update", error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IssueKeyReq {
     account_id: String,
     label: Option<String>,

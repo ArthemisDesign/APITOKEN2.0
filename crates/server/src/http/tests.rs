@@ -871,7 +871,7 @@ async fn hiding_a_profile_that_is_not_disabled_is_a_client_error_not_a_retryable
 
 #[tokio::test]
 async fn every_admin_route_enforces_the_control_key_lattice() {
-    assert_eq!(ADMIN_ROUTE_CASES.len(), 47);
+    assert_eq!(ADMIN_ROUTE_CASES.len(), 49);
     let service = router(admin_auth_test_app(), Arc::new(AtomicBool::new(true)));
     let peer = ConnectInfo(SocketAddr::from(([203, 0, 113, 10], 42_424)));
 

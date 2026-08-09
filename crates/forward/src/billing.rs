@@ -1663,6 +1663,14 @@ enum WriteCmd {
         mult_bp: i64,
         reply: oneshot::Sender<anyhow::Result<usize>>,
     },
+    /// Set or clear one per-provider discount override. `mult_bp: None` removes the row, so the
+    /// account falls back to its default multiplier.
+    AccountProviderDiscount {
+        id: String,
+        provider_id: String,
+        mult_bp: Option<i64>,
+        reply: oneshot::Sender<anyhow::Result<bool>>,
+    },
     KeyStatus {
         key: String,
         status: String,
@@ -1756,6 +1764,8 @@ enum ReadCmd {
     KeyAuth(String, oneshot::Sender<anyhow::Result<Option<KeyAuth>>>),
     KeyGet(String, oneshot::Sender<anyhow::Result<Option<KeyRow>>>),
     Account(String, oneshot::Sender<anyhow::Result<Option<AccountRow>>>),
+    /// Per-provider discount rows of one account, for the control-plane listing.
+    AccountProviderDiscounts(String, oneshot::Sender<anyhow::Result<Vec<(String, i64)>>>),
     AccountFunding(
         String,
         oneshot::Sender<anyhow::Result<Option<AccountFundingSnapshot>>>,
@@ -3257,6 +3267,15 @@ impl AsyncBilling {
                     }
                     WriteCmd::AccountStatus { id, status, reply } => { let _ = reply.send(registry::account_set_status(&conn, &id, &status)); }
                     WriteCmd::AccountMultiplier { id, mult_bp, reply } => { let _ = reply.send(registry::account_set_mult_bp(&conn, &id, mult_bp)); }
+                    WriteCmd::AccountProviderDiscount { id, provider_id, mult_bp, reply } => {
+                        let result = match mult_bp {
+                            Some(mult_bp) => registry::set_account_provider_discount(
+                                &conn, &id, &provider_id, mult_bp, pool::now(),
+                            ).map(|()| true),
+                            None => registry::clear_account_provider_discount(&conn, &id, &provider_id),
+                        };
+                        let _ = reply.send(result);
+                    }
                     WriteCmd::KeyStatus { key, status, activation_policy_ack, reply } => { let _ = reply.send(registry::key_set_status_with_policy_ack(&conn, &key, &status, activation_policy_ack.as_ref())); }
                     WriteCmd::KeyStatusById { key_id, status, activation_policy_ack, reply } => { let _ = reply.send(registry::key_set_status_by_id_with_policy_ack(&conn, &key_id, &status, activation_policy_ack.as_ref())); }
                     WriteCmd::KeyLabelById { key_id, label, reply } => { let _ = reply.send(registry::key_set_label_by_id(&conn, &key_id, &label)); }
@@ -3389,6 +3408,9 @@ impl AsyncBilling {
                             }
                             ReadCmd::Account(id, r) => {
                                 let _ = r.send(registry::account_get(&conn, &id));
+                            }
+                            ReadCmd::AccountProviderDiscounts(id, r) => {
+                                let _ = r.send(registry::account_provider_discounts(&conn, &id));
                             }
                             ReadCmd::AccountFunding(id, r) => {
                                 let _ = r.send(registry::account_funding_snapshot(&conn, &id));
@@ -4443,6 +4465,18 @@ impl AsyncBilling {
                             );
                             let _ = reply.send(result);
                         }
+                        WriteCmd::AccountProviderDiscount { id, provider_id, mult_bp, reply } => {
+                            let result = run_pg_with_retry(
+                                &mut pg, &writer_url, &writer_owner, "account provider discount update",
+                                |pg| match mult_bp {
+                                    Some(mult_bp) => pg
+                                        .set_account_provider_discount(&id, &provider_id, mult_bp, pool::now())
+                                        .map(|()| true),
+                                    None => pg.clear_account_provider_discount(&id, &provider_id),
+                                },
+                            );
+                            let _ = reply.send(result);
+                        }
                         WriteCmd::KeyStatus { key, status, activation_policy_ack, reply } => {
                             let result = run_pg_with_retry(
                                 &mut pg, &writer_url, &writer_owner, "key status update",
@@ -4621,6 +4655,9 @@ impl AsyncBilling {
                             ReadCmd::KeyAuth(k, r) => answer!(r, pg.key_account(&k)),
                             ReadCmd::KeyGet(k, r) => answer!(r, pg.key_get(&k)),
                             ReadCmd::Account(id, r) => answer!(r, pg.account_get(&id)),
+                            ReadCmd::AccountProviderDiscounts(id, r) => {
+                                answer!(r, pg.account_provider_discounts(&id))
+                            }
                             ReadCmd::AccountFunding(id, r) => {
                                 answer!(r, pg.account_funding_snapshot(&id))
                             }
@@ -5421,6 +5458,19 @@ impl AsyncBilling {
         rx.await
             .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
     }
+    /// Per-provider discount overrides of one account (empty when a single default prices it).
+    pub async fn account_provider_discounts(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<Vec<(String, i64)>> {
+        let (r, rx) = oneshot::channel();
+        self.reader()
+            .send(ReadCmd::AccountProviderDiscounts(id.into(), r))
+            .await
+            .map_err(|_| anyhow::anyhow!("billing reader unavailable"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("billing reader stopped"))?
+    }
     pub async fn account_funding(
         &self,
         id: &str,
@@ -6086,6 +6136,27 @@ impl AsyncBilling {
         self.writer
             .send(WriteCmd::AccountMultiplier {
                 id: id.into(),
+                mult_bp,
+                reply: r,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("billing writer unavailable"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("billing writer stopped"))?
+    }
+    /// Set (`Some`) or clear (`None`) one provider discount override for an account. Returns
+    /// whether a row was written or removed.
+    pub async fn account_provider_discount(
+        &self,
+        id: &str,
+        provider_id: &str,
+        mult_bp: Option<i64>,
+    ) -> anyhow::Result<bool> {
+        let (r, rx) = oneshot::channel();
+        self.writer
+            .send(WriteCmd::AccountProviderDiscount {
+                id: id.into(),
+                provider_id: provider_id.into(),
                 mult_bp,
                 reply: r,
             })

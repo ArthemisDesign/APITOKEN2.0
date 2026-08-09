@@ -1284,3 +1284,58 @@ async fn claudestore_post_byte_stream_failure_is_never_replayed() {
     drop(external);
     let _ = std::fs::remove_file(path);
 }
+
+/// Authorization carries the discount that will price the request, resolved per provider. That is
+/// the only pricing decision admission makes, so both halves must be visible on the `Authz` a
+/// request is admitted with: the override where the account has one, the default everywhere else.
+#[tokio::test]
+async fn authorization_resolves_the_discount_per_provider() {
+    const ACCOUNT: &str = "discount-authz-account";
+    const KEY: &str = "sk-pool-discount-authz";
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "claude-api-discount-authz-{}-{unique}.sqlite",
+        std::process::id(),
+    ));
+    let path_string = path.to_string_lossy().into_owned();
+    let billing = Arc::new(AsyncBilling::start(path_string.clone(), 1).unwrap());
+    billing.create_account(ACCOUNT, None, 5_000).await.unwrap();
+    billing
+        .topup(ACCOUNT, 1_000_000, Some("discount-seed"))
+        .await
+        .unwrap();
+    billing
+        .issue_key(KEY, ACCOUNT, None, None, None)
+        .await
+        .unwrap();
+    billing
+        .account_provider_discount(ACCOUNT, registry::PROVIDER_OPENAI, Some(2_000))
+        .await
+        .unwrap();
+
+    let app = anthropic_test_app(Arc::clone(&billing));
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("x-api-key", KEY.parse().unwrap());
+    let peer: std::net::SocketAddr = "127.0.0.1:65000".parse().unwrap();
+    let authz = authorize(&app, &headers, &peer).await;
+
+    assert_eq!(authz.mult_for(registry::PROVIDER_OPENAI), 2_000);
+    assert_eq!(authz.mult_for(registry::PROVIDER_ANTHROPIC), 5_000);
+    assert_eq!(authz.mult_for(registry::PROVIDER_GOOGLE), 5_000);
+
+    // Clearing the override puts that provider straight back on the account default: no
+    // intermediate state and no version to activate.
+    billing
+        .account_provider_discount(ACCOUNT, registry::PROVIDER_OPENAI, None)
+        .await
+        .unwrap();
+    let authz = authorize(&app, &headers, &peer).await;
+    assert_eq!(authz.mult_for(registry::PROVIDER_OPENAI), 5_000);
+
+    drop(app);
+    drop(billing);
+    let _ = std::fs::remove_file(path);
+}

@@ -4837,3 +4837,97 @@ fn service_meter_only_strict_sqlite_lane_meters_without_a_charge_row() {
         PolicyReserveOutcome::NotReserved
     ));
 }
+
+/// The whole pricing policy: one default discount on the account, optionally overridden per
+/// provider. A provider without a row must keep the default — that fallback is what lets a B2C
+/// account stay a single number while a B2B account holds different terms per provider.
+#[test]
+fn provider_discount_overrides_the_account_default_and_falls_back_without_a_row() {
+    let c = db();
+    account_create(&c, "acct-discount", None, 5_000).unwrap();
+    key_issue(&c, "sk-pool-discount", "acct-discount", None).unwrap();
+
+    let auth = key_account(&c, "sk-pool-discount").unwrap().unwrap();
+    assert!(auth.provider_mult_bp.is_empty());
+    for provider in DISCOUNT_PROVIDER_IDS {
+        assert_eq!(auth.mult_for(provider), 5_000, "{provider}");
+    }
+
+    set_account_provider_discount(&c, "acct-discount", PROVIDER_OPENAI, 2_500, 100).unwrap();
+    set_account_provider_discount(&c, "acct-discount", PROVIDER_GOOGLE, 10_000, 100).unwrap();
+    let auth = key_account(&c, "sk-pool-discount").unwrap().unwrap();
+    assert_eq!(auth.mult_for(PROVIDER_OPENAI), 2_500);
+    assert_eq!(auth.mult_for(PROVIDER_GOOGLE), 10_000);
+    assert_eq!(auth.mult_for(PROVIDER_ANTHROPIC), 5_000);
+    assert_eq!(auth.mult_for(PROVIDER_KIMI), 5_000);
+
+    // A rewrite replaces the row rather than accumulating versions, and a cleared override
+    // returns the provider to the account default in the same read.
+    set_account_provider_discount(&c, "acct-discount", PROVIDER_OPENAI, 1_000, 200).unwrap();
+    assert_eq!(
+        key_account(&c, "sk-pool-discount")
+            .unwrap()
+            .unwrap()
+            .mult_for(PROVIDER_OPENAI),
+        1_000
+    );
+    assert!(clear_account_provider_discount(&c, "acct-discount", PROVIDER_OPENAI).unwrap());
+    assert!(!clear_account_provider_discount(&c, "acct-discount", PROVIDER_OPENAI).unwrap());
+    let auth = key_account(&c, "sk-pool-discount").unwrap().unwrap();
+    assert_eq!(auth.mult_for(PROVIDER_OPENAI), 5_000);
+    assert_eq!(
+        account_provider_discounts(&c, "acct-discount").unwrap(),
+        vec![(PROVIDER_GOOGLE.to_string(), 10_000)]
+    );
+}
+
+/// A discount is money, so the writer refuses anything it cannot price: an unknown provider id
+/// would silently never match a request, and a multiplier outside 0..=10000 would either give the
+/// customer free inference or charge above list price.
+#[test]
+fn provider_discount_writes_are_bounded_and_require_a_known_account() {
+    let c = db();
+    account_create(&c, "acct-bounds", None, 5_000).unwrap();
+
+    assert!(
+        set_account_provider_discount(&c, "acct-bounds", "openai-compatible", 5_000, 1).is_err()
+    );
+    assert!(set_account_provider_discount(&c, "acct-bounds", PROVIDER_OPENAI, -1, 1).is_err());
+    assert!(set_account_provider_discount(&c, "acct-bounds", PROVIDER_OPENAI, 10_001, 1).is_err());
+    assert!(
+        set_account_provider_discount(&c, "missing-account", PROVIDER_OPENAI, 5_000, 1).is_err()
+    );
+    assert!(account_provider_discounts(&c, "acct-bounds").unwrap().is_empty());
+
+    // The bounds are inclusive: a free key (0) and list price (10000) are both legitimate.
+    set_account_provider_discount(&c, "acct-bounds", PROVIDER_OPENAI, 0, 1).unwrap();
+    set_account_provider_discount(&c, "acct-bounds", PROVIDER_ANTHROPIC, 10_000, 1).unwrap();
+    assert_eq!(
+        account_provider_discounts(&c, "acct-bounds").unwrap(),
+        vec![
+            (PROVIDER_ANTHROPIC.to_string(), 10_000),
+            (PROVIDER_OPENAI.to_string(), 0),
+        ]
+    );
+}
+
+/// Discounts belong to the account, not the key: every key of an account is priced identically,
+/// and one account's override never reaches another account's key.
+#[test]
+fn provider_discounts_are_shared_by_the_keys_of_one_account_only() {
+    let c = db();
+    account_create(&c, "acct-one", None, 5_000).unwrap();
+    account_create(&c, "acct-two", None, 7_000).unwrap();
+    key_issue(&c, "sk-pool-one-a", "acct-one", None).unwrap();
+    key_issue(&c, "sk-pool-one-b", "acct-one", None).unwrap();
+    key_issue(&c, "sk-pool-two", "acct-two", None).unwrap();
+    set_account_provider_discount(&c, "acct-one", PROVIDER_ANTHROPIC, 1_500, 1).unwrap();
+
+    for key in ["sk-pool-one-a", "sk-pool-one-b"] {
+        let auth = key_account(&c, key).unwrap().unwrap();
+        assert_eq!(auth.mult_for(PROVIDER_ANTHROPIC), 1_500, "{key}");
+    }
+    let other = key_account(&c, "sk-pool-two").unwrap().unwrap();
+    assert!(other.provider_mult_bp.is_empty());
+    assert_eq!(other.mult_for(PROVIDER_ANTHROPIC), 7_000);
+}

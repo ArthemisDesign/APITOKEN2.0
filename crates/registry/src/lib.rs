@@ -1301,6 +1301,14 @@ pub fn open(path: &str) -> Result<Connection> {
          status TEXT NOT NULL DEFAULT 'active', created_ts INTEGER, created TEXT)",
         [],
     )?;
+    // Per-provider discount override. Absent row = the account default `mult_bp`. Mirrors the
+    // PostgreSQL authority (migration 0043) so the SQLite lane keeps API parity.
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS account_provider_discounts(\
+         account_id TEXT NOT NULL, provider_id TEXT NOT NULL, mult_bp INTEGER NOT NULL, \
+         updated_ts INTEGER NOT NULL, PRIMARY KEY(account_id, provider_id))",
+        [],
+    )?;
     // handle (внешняя идентичность: TG id / email) уникален, когда задан.
     let _ = c.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS accounts_handle ON accounts(handle) WHERE handle IS NOT NULL", []);
@@ -3135,7 +3143,11 @@ pub(crate) fn account_funding_snapshot_from_parts(
 #[derive(Clone, Debug)]
 pub struct KeyAuth {
     pub account_id: String,
+    /// Account-wide payable multiplier in basis points — the customer's personal discount.
     pub mult_bp: i64,
+    /// Per-provider overrides of `mult_bp`, empty when one number prices the whole account.
+    /// Resolved through [`KeyAuth::mult_for`]; a provider without a row keeps the default.
+    pub provider_mult_bp: Vec<(String, i64)>,
     pub balance_nano: i64,
     pub spent_nano: i64,
     pub reserved_nano: i64,
@@ -3156,6 +3168,17 @@ pub struct KeyAuth {
 }
 
 impl KeyAuth {
+    /// The multiplier that prices this request: the provider override when the account has one,
+    /// otherwise the account default. This is the entire pricing policy — no catalog, no rule
+    /// lineage, no release generation between a discount and the request it prices.
+    pub fn mult_for(&self, provider_id: &str) -> i64 {
+        self.provider_mult_bp
+            .iter()
+            .find(|(provider, _)| provider == provider_id)
+            .map(|(_, mult_bp)| *mult_bp)
+            .unwrap_or(self.mult_bp)
+    }
+
     pub fn strict_policy(&self) -> bool {
         self.policy_enforcement == Some(pricing::PolicyEnforcement::Strict)
             || self.funding_enforcement == Some(pricing::FundingEnforcement::Strict)
@@ -3661,8 +3684,107 @@ pub fn account_settle_in(
     Ok(bal)
 }
 
+/// Per-provider discount rows of the account this key belongs to. One small indexed read on the
+/// same connection as the auth JOIN; an account without overrides returns an empty vector and is
+/// priced by `accounts.mult_bp` alone.
+fn sqlite_account_provider_discounts_for_key(
+    conn: &Connection,
+    key: &str,
+) -> Result<Vec<(String, i64)>> {
+    let mut statement = conn.prepare(
+        "SELECT d.provider_id, d.mult_bp FROM account_provider_discounts d \
+         JOIN api_keys k ON k.account_id = d.account_id \
+         WHERE k.key = ?1 ORDER BY d.provider_id",
+    )?;
+    let rows = statement.query_map(rusqlite::params![key], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut discounts = Vec::new();
+    for row in rows {
+        discounts.push(row?);
+    }
+    Ok(discounts)
+}
+
+/// Read every per-provider discount of one account (control-plane listing).
+pub fn account_provider_discounts(
+    conn: &Connection,
+    account_id: &str,
+) -> Result<Vec<(String, i64)>> {
+    let mut statement = conn.prepare(
+        "SELECT provider_id, mult_bp FROM account_provider_discounts \
+         WHERE account_id = ?1 ORDER BY provider_id",
+    )?;
+    let rows = statement.query_map(rusqlite::params![account_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut discounts = Vec::new();
+    for row in rows {
+        discounts.push(row?);
+    }
+    Ok(discounts)
+}
+
+/// Set (or replace) one provider discount. `mult_bp` is a payable multiplier in basis points:
+/// 10000 is list price, 5000 is 50% off, 0 is free. Takes effect on the next request — there is
+/// no version, no activation and no snapshot to keep in step.
+pub fn set_account_provider_discount(
+    conn: &Connection,
+    account_id: &str,
+    provider_id: &str,
+    mult_bp: i64,
+    ts: i64,
+) -> Result<()> {
+    ensure_valid_provider_discount(provider_id, mult_bp)?;
+    let changed = conn.execute(
+        "INSERT INTO account_provider_discounts(account_id, provider_id, mult_bp, updated_ts) \
+         SELECT ?1, ?2, ?3, ?4 WHERE EXISTS(SELECT 1 FROM accounts WHERE id = ?1) \
+         ON CONFLICT(account_id, provider_id) DO UPDATE SET \
+           mult_bp = excluded.mult_bp, updated_ts = excluded.updated_ts",
+        rusqlite::params![account_id, provider_id, mult_bp, ts],
+    )?;
+    if changed == 0 {
+        bail!("unknown account");
+    }
+    Ok(())
+}
+
+/// Remove one provider discount; the account falls back to its default multiplier.
+pub fn clear_account_provider_discount(
+    conn: &Connection,
+    account_id: &str,
+    provider_id: &str,
+) -> Result<bool> {
+    let removed = conn.execute(
+        "DELETE FROM account_provider_discounts WHERE account_id = ?1 AND provider_id = ?2",
+        rusqlite::params![account_id, provider_id],
+    )?;
+    Ok(removed > 0)
+}
+
+/// Provider ids the engine actually prices, plus the bounds every discount must respect. A typo
+/// here would silently never match a request, so the set is closed rather than free-form.
+pub const DISCOUNT_PROVIDER_IDS: [&str; 5] = [
+    PROVIDER_ANTHROPIC,
+    PROVIDER_OPENAI,
+    PROVIDER_GOOGLE,
+    PROVIDER_KIMI,
+    PROVIDER_GLM,
+];
+
+pub fn ensure_valid_provider_discount(provider_id: &str, mult_bp: i64) -> Result<()> {
+    if !DISCOUNT_PROVIDER_IDS.contains(&provider_id) {
+        bail!("unknown provider id");
+    }
+    if !(0..=10_000).contains(&mult_bp) {
+        bail!("mult_bp must be between 0 and 10000");
+    }
+    Ok(())
+}
+
 /// Резолв ключа в аккаунт для авторизации запроса (JOIN api_keys→accounts).
 pub fn key_account(conn: &Connection, key: &str) -> Result<Option<KeyAuth>> {
+    let provider_mult_bp = sqlite_account_provider_discounts_for_key(conn, key)?;
     let row = conn.query_row(
         "SELECT a.id, a.mult_bp, a.balance_nano, k.spent_nano, k.reserved_nano, \
          k.spend_limit_nano, k.expires_ts, \
@@ -3727,6 +3849,7 @@ pub fn key_account(conn: &Connection, key: &str) -> Result<Option<KeyAuth>> {
     Ok(Some(KeyAuth {
         account_id: row.0,
         mult_bp: row.1,
+        provider_mult_bp,
         balance_nano: row.2,
         spent_nano: row.3,
         reserved_nano: row.4,

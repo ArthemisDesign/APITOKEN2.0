@@ -96,8 +96,8 @@ impl PendingCodexAdmission {
                 Authz::Metered {
                     account_id,
                     key,
-                    mult_bp,
                     available_nano,
+                    ..
                 },
                 Some(billing),
             ) => {
@@ -117,7 +117,7 @@ impl PendingCodexAdmission {
                     requested_output_tokens,
                     reserve_overhead_tokens,
                     fast,
-                    *mult_bp,
+                    self.authz.mult_for(registry::PROVIDER_OPENAI),
                     *available_nano,
                     &self.execution,
                 )
@@ -158,8 +158,8 @@ impl PendingCodexAdmission {
                 Authz::Metered {
                     account_id,
                     key,
-                    mult_bp,
                     available_nano,
+                    ..
                 },
                 Some(billing),
             ) => Some(
@@ -169,7 +169,7 @@ impl PendingCodexAdmission {
                     key,
                     requested_model_id,
                     operation,
-                    *mult_bp,
+                    self.authz.mult_for(registry::PROVIDER_OPENAI),
                     *available_nano,
                     &self.execution,
                 )

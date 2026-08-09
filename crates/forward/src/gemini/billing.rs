@@ -101,8 +101,8 @@ impl PendingGeminiAdmission {
                 Authz::Metered {
                     account_id,
                     key,
-                    mult_bp,
                     available_nano,
+                    ..
                 },
                 Some(billing),
             ) => {
@@ -124,7 +124,7 @@ impl PendingGeminiAdmission {
                     image_output_tokens,
                     grounding_enabled,
                     allow_output_cap,
-                    *mult_bp,
+                    self.authz.mult_for(registry::PROVIDER_GOOGLE),
                     *available_nano,
                     &request_id,
                     &self.execution,

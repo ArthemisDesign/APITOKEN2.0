@@ -172,6 +172,20 @@ define_admin_routes!(
     (
         get,
         GET,
+        "/admin/account/{id}/discounts",
+        "/admin/account/test-account/discounts",
+        admin::account_discounts
+    ),
+    (
+        post,
+        POST,
+        "/admin/account/{id}/discounts",
+        "/admin/account/test-account/discounts",
+        admin::set_account_discount
+    ),
+    (
+        get,
+        GET,
         "/admin/account/{id}/keys",
         "/admin/account/test-account/keys",
         admin::list_keys

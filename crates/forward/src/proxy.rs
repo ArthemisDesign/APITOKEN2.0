@@ -375,12 +375,14 @@ pub(crate) enum Authz {
     /// Админ (env-ключ/localhost) — без тарификации.
     Admin { affinity_scope: String },
     /// Ключ клиента → АККАУНТ с балансом. Тарифицируем и списываем с БАЛАНСА АККАУНТА (общего на
-    /// все ключи юзера); `key` — для атрибуции расхода по ключу. `mult_bp` — наценка аккаунта.
+    /// все ключи юзера); `key` — для атрибуции расхода по ключу. `mult_bp` — скидка аккаунта по
+    /// умолчанию, `provider_mult_bp` — её переопределения по провайдерам (B2B).
     /// `balance_nano` несём из авторизации → резерв-блок НЕ перечитывает баланс из БД (−1 запрос).
     Metered {
         account_id: String,
         key: String,
         mult_bp: i64,
+        provider_mult_bp: Vec<(String, i64)>,
         available_nano: i64,
     },
     /// Ключ неизвестен/заблокирован (ключ или аккаунт).
@@ -396,6 +398,24 @@ impl Authz {
             Authz::Admin { affinity_scope } => Some(affinity_scope),
             Authz::Metered { account_id, .. } => Some(account_id),
             Authz::Unauthorized | Authz::Unavailable => None,
+        }
+    }
+
+    /// The discount that prices a request on `provider_id`: the account's per-provider override
+    /// when it has one, otherwise its default. Every provider plane resolves it the same way, so
+    /// a B2B customer can hold different terms per provider without a second pricing concept.
+    pub(crate) fn mult_for(&self, provider_id: &str) -> i64 {
+        match self {
+            Authz::Metered {
+                mult_bp,
+                provider_mult_bp,
+                ..
+            } => provider_mult_bp
+                .iter()
+                .find(|(provider, _)| provider == provider_id)
+                .map(|(_, provider_mult)| *provider_mult)
+                .unwrap_or(*mult_bp),
+            _ => 0,
         }
     }
 }
@@ -430,6 +450,7 @@ pub(crate) async fn authorize(app: &AppState, headers: &HeaderMap, peer: &Socket
                     account_id: a.account_id,
                     key: k,
                     mult_bp: a.mult_bp,
+                    provider_mult_bp: a.provider_mult_bp,
                     available_nano,
                 };
             }
@@ -1063,12 +1084,12 @@ pub async fn forward(
                 Authz::Metered {
                     account_id,
                     key,
-                    mult_bp,
                     available_nano,
+                    ..
                 } => Some(crate::kimi::KimiBillingInput {
                     account_id: account_id.clone(),
                     key: key.clone(),
-                    mult_bp: *mult_bp,
+                    mult_bp: authz.mult_for(registry::PROVIDER_KIMI),
                     available_nano: *available_nano,
                 }),
                 Authz::Unauthorized | Authz::Unavailable => {
@@ -1131,12 +1152,12 @@ pub async fn forward(
                 Authz::Metered {
                     account_id,
                     key,
-                    mult_bp,
                     available_nano,
+                    ..
                 } => Some(crate::glm::GlmBillingInput {
                     account_id: account_id.clone(),
                     key: key.clone(),
-                    mult_bp: *mult_bp,
+                    mult_bp: authz.mult_for(registry::PROVIDER_GLM),
                     available_nano: *available_nano,
                 }),
                 Authz::Unauthorized | Authz::Unavailable => {
@@ -1271,12 +1292,14 @@ pub async fn forward(
         Authz::Metered {
             account_id,
             key,
-            mult_bp,
             available_nano,
+            ..
         },
         Some(billing),
     ) = (billable, &authz, &app.billing)
     {
+        // Одна скидка на запрос: переопределение аккаунта по `anthropic`, иначе его дефолт.
+        let mult_bp = &authz.mult_for(registry::PROVIDER_ANTHROPIC);
         // баланс несём из authorize (свежая выборка) — без повторного чтения. Гонку с параллельными
         // запросами всё равно ловит АТОМАРНЫЙ reserve (WHERE balance>=hold): stale-баланс лишь мог бы
         // дать чуть больший cap, но reserve тогда честно откажет (402), в минус не уводя.
