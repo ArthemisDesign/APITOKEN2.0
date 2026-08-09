@@ -494,59 +494,13 @@ pub(crate) async fn pricing(
         }
     };
 
-    if !auth.strict_policy() {
-        return response(
-            "legacy",
-            bases
-                .into_iter()
-                .map(|(candidate, base)| priced_entry(candidate.id.clone(), base, auth.mult_bp))
-                .collect(),
-        );
-    }
-
-    let bundle = match billing.pricing_read_bundle(&auth.account_id).await {
-        Ok(bundle) => bundle,
-        Err(_) => {
-            return error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "pricing_unavailable",
-                "Catalog pricing is temporarily unavailable.",
-            )
-        }
-    };
-    let manifest = RuntimePricingManifest::from_evidence(&app.pricing_manifest);
-    let entries = bases
-        .into_iter()
-        .filter_map(|(candidate, base)| {
-            // Strict Gemini admission is intentionally unavailable today; the catalog must not
-            // advertise a personalized rate for a model that this key cannot execute. KIMI is in
-            // the same position: its gateway refuses a strict key, because the strict reserve
-            // writer needs a `policy_v1` admission snapshot that only a catalog-backed policy can
-            // build, and `kimi` has no catalog entry. Quoting either would be an offer we cannot
-            // honour.
-            if candidate.provider_id == "google" || candidate.provider_id == "kimi" {
-                return None;
-            }
-            match resolve_pricing(
-                &bundle,
-                &PricingResolutionRequest {
-                    account_id: auth.account_id.clone(),
-                    provider_id: candidate.provider_id.clone(),
-                    requested_model_id: candidate.model_id.clone(),
-                    canonical_model_id: base.canonical_model_id.clone(),
-                },
-                &manifest,
-            ) {
-                PricingResolution::Resolved(resolved) => Some(priced_entry(
-                    candidate.id.clone(),
-                    base,
-                    resolved.rule.payable_multiplier_bp,
-                )),
-                PricingResolution::Rejected(_) => None,
-            }
-        })
-        .collect();
-    response("strict", entries)
+    response(
+        "legacy",
+        bases
+            .into_iter()
+            .map(|(candidate, base)| priced_entry(candidate.id.clone(), base, auth.mult_bp))
+            .collect(),
+    )
 }
 
 #[cfg(test)]

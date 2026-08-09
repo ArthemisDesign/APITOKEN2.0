@@ -146,47 +146,8 @@ pub(crate) async fn preflight(
         }
     };
 
-    if !auth.strict_policy() {
-        return response("unrestricted", all());
-    }
-
-    let bundle = match billing.pricing_read_bundle(&auth.account_id).await {
-        Ok(bundle) => bundle,
-        Err(_) => {
-            return error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "policy_unavailable",
-                "Account policy is temporarily unavailable.",
-            )
-        }
-    };
-    let manifest = RuntimePricingManifest::from_evidence(&app.pricing_manifest);
-    let allowed = request
-        .candidates
-        .iter()
-        .filter(|candidate| {
-            // Gemini strict admission itself is intentionally unavailable. The preflight must not
-            // promise an attempt which the money path will fail closed before reserve.
-            if candidate.provider_id == "google" {
-                return false;
-            }
-            matches!(
-                resolve_pricing(
-                    &bundle,
-                    &PricingResolutionRequest {
-                        account_id: auth.account_id.clone(),
-                        provider_id: candidate.provider_id.clone(),
-                        requested_model_id: candidate.canonical_model_id.clone(),
-                        canonical_model_id: candidate.canonical_model_id.clone(),
-                    },
-                    &manifest,
-                ),
-                PricingResolution::Resolved(_)
-            )
-        })
-        .map(|candidate| candidate.id.clone())
-        .collect();
-    response("strict", allowed)
+    let _ = auth;
+    response("unrestricted", all())
 }
 
 #[cfg(test)]

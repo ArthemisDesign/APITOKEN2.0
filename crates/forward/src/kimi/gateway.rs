@@ -63,9 +63,6 @@ pub(crate) struct KimiBillingInput {
     pub key: String,
     pub mult_bp: i64,
     pub available_nano: i64,
-    /// KIMI has no policy snapshot/capability in the strict catalogue yet. Such accounts must not
-    /// silently fall through to the Anthropic tariff identity.
-    pub strict_policy: bool,
 }
 
 pub(crate) struct KimiRequest {
@@ -1269,15 +1266,6 @@ impl KimiGateway {
         //
         // Serving a strict key therefore needs catalog membership for `kimi`, not a smaller
         // change. Until that exists the honest answer is this one refusal.
-        if request
-            .billing
-            .as_ref()
-            .is_some_and(|input| input.strict_policy)
-        {
-            return error_response(GatewayFailure::Unsupported(
-                "kimi_strict_pricing_unavailable",
-            ));
-        }
         if let Err(error) = validate_priced_surface(&request.body) {
             return error_response(error);
         }

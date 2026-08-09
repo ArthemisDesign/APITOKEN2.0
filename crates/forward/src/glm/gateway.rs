@@ -82,9 +82,6 @@ pub(crate) struct GlmBillingInput {
     pub key: String,
     pub mult_bp: i64,
     pub available_nano: i64,
-    /// GLM has no policy snapshot/capability in the strict catalogue yet. Such accounts must not
-    /// silently fall through to the Anthropic tariff identity.
-    pub strict_policy: bool,
 }
 
 pub(crate) struct GlmRequest {
@@ -1028,15 +1025,6 @@ impl GlmGateway {
     pub(crate) async fn handle(self: &Arc<Self>, mut request: GlmRequest) -> Response {
         if self.shutting_down.load(Ordering::Acquire) {
             return error_response(GatewayFailure::Unavailable("glm_shutdown"));
-        }
-        if request
-            .billing
-            .as_ref()
-            .is_some_and(|input| input.strict_policy)
-        {
-            return error_response(GatewayFailure::Unsupported(
-                "glm_strict_pricing_unavailable",
-            ));
         }
         if let Err(error) = validate_priced_surface(&request.body) {
             return error_response(error);
