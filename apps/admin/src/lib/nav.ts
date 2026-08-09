@@ -26,7 +26,6 @@ export const NAV: NavGroup[] = [
       { href: "/partners", label: "Партнёры", icon: "◆" },
       { href: "/openkeys", label: "OpenKeys", icon: "◈" },
       { href: "/business", label: "B2B", icon: "◇" },
-      { href: "/pricing", label: "Pricing", icon: "％" },
     ],
   },
   {

@@ -4,34 +4,20 @@ import {
   applyPricingLedgerPage,
   applyPricingProviderBackfillPage,
   applyPricingTopupBackfillPage,
-  claimNextPricingControlJob,
   claimNextPricingJob,
   completePricingProviderBackfill,
   completePricingUsageSync,
-  confirmPricingControlJob,
   confirmPricingJob,
   getPricingUsageCursor,
   getPricingProviderBackfillCursor,
   getPricingTopupBackfillCursor,
   listPricingSyncTargets,
-  PricingControlNotifyListener,
-  recoverStalePricingControlJobs,
   recoverStalePricingJobs,
-  releasePricingControlJob,
   retryPricingJob,
   type Database,
-  type ClaimedPricingControlJob,
-  type PricingControlJobDisposition,
   type PricingSyncTarget,
 } from "@claude-api/db";
-import type {
-  AccountPolicyBinding,
-  PolicyActiveExpectation,
-  PricingActiveExpectation,
-  PricingMutationAck,
-  PricingPolicySnapshot,
-} from "@claude-api/contracts";
-import { EngineClient, EngineClientError, type EngineKeyActivationPolicyAck } from "@claude-api/engine-client";
+import { EngineClient } from "@claude-api/engine-client";
 import type { Environment } from "./config.js";
 import { DATABASE, ENGINE_CLIENT, WORKER_ID } from "./tokens.js";
 
@@ -39,8 +25,6 @@ const PROVIDER_BACKFILL_MAX_PAGES_PER_SYNC = 4;
 // Догоняющий скан истории пополнений — разовая работа на аккаунт, поэтому лимит страниц за цикл
 // держим таким же скромным: цель не «быстро», а «без всплеска нагрузки на движок».
 const TOPUP_BACKFILL_MAX_PAGES_PER_SYNC = 4;
-// The strict chain advances one durable step per account per pass, so a small bound keeps a
-// flush fast; the remainder is picked up by the next pass.
 
 @Injectable()
 export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown {
@@ -49,9 +33,6 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
   private loop: Promise<void> | undefined;
   private stopSleep!: () => void;
   private readonly stopSignal = new Promise<void>((resolve) => { this.stopSleep = resolve; });
-  private controlNotify: PricingControlNotifyListener | undefined;
-  private controlFlushRunning = false;
-  private controlFlushQueued = false;
 
   constructor(
     @Inject(DATABASE) private readonly database: Database,
@@ -61,58 +42,17 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
   ) {}
 
   async onModuleInit(): Promise<void> {
-    const recoveredControl = await recoverStalePricingControlJobs(this.database);
-    if (recoveredControl > 0) {
-      this.logger.warn(`recovered ${recoveredControl} stale pricing-control jobs`);
-    }
     const recovered = await recoverStalePricingJobs(this.database);
     if (recovered > 0) this.logger.warn(`recovered ${recovered} stale pricing jobs`);
-    // LISTEN/NOTIFY (migration 0041) wakes the control-job flush on the committing
-    // transaction instead of waiting out the sweep. The sweep in run() stays as the
-    // recovery path for notifications missed while the listener was reconnecting.
-    this.controlNotify = new PricingControlNotifyListener(
-      this.config.get("DATABASE_URL", { infer: true }),
-      {
-        onWake: () => this.requestControlFlush(),
-        onError: (error) => this.logger.warn(`pricing-control notify listener reconnecting: ${error.message}`),
-      },
-    );
-    this.controlNotify.start();
     this.loop = this.run();
   }
 
   async onApplicationShutdown(): Promise<void> {
     this.stopped = true;
     this.stopSleep();
-    await this.controlNotify?.stop();
     await this.loop;
   }
 
-  /**
-   * Event-driven dispatch of pricing-control jobs. Bursts coalesce: a wake during an
-   * active flush schedules exactly one follow-up pass, and concurrent passes are safe
-   * anyway because claiming uses FOR UPDATE SKIP LOCKED.
-   */
-  private requestControlFlush(): void {
-    if (this.stopped) return;
-    if (this.controlFlushRunning) {
-      this.controlFlushQueued = true;
-      return;
-    }
-    this.controlFlushRunning = true;
-    void (async () => {
-      try {
-        do {
-          this.controlFlushQueued = false;
-          await this.flushPricingControlJobs();
-        } while (this.controlFlushQueued && !this.stopped);
-      } catch (error) {
-        this.logger.error(message(error));
-      } finally {
-        this.controlFlushRunning = false;
-      }
-    })();
-  }
 
   private async run(): Promise<void> {
     const pollMs = this.config.get("PRICING_POLL_MS", { infer: true });
@@ -121,21 +61,15 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
     // cheap indexed claim and is what a newly provisioned account's first dashboard load blocks
     // on; the sweep walks every pricing target doing per-user engine I/O. Running delivery only
     // once per sweep made a signup wait for the whole sweep plus the poll interval, so the wait
-    // grew with the size of the fleet. Deliver on a short tick, sweep on the slow one. The short
-    // tick is also the bounded recovery for a missed LISTEN/NOTIFY wake: notifications are
-    // fire-and-forget, so without it a dropped event would hide until the next sweep.
+    // grew with the size of the fleet. Deliver on a short tick, sweep on the slow one.
     let nextSweepAt = 0;
     this.logger.log(
       `pricing worker ${this.workerId} started (dispatch ${dispatchMs}ms, sweep ${pollMs}ms)`,
     );
     while (!this.stopped) {
       try {
-        // Delivery first and every tick: never behind the sweep. Control jobs go through the
-        // coalescing dispatcher so a tick never doubles a LISTEN/NOTIFY-triggered pass. The
-        // strict chain advances on the same fast tick: a newly provisioned account's first key
-        // issuance waits on the shadow→strict staging plus delivery, so it is latency-sensitive
-        // delivery work, not background recovery.
-        this.requestControlFlush();
+        // Delivery first and every tick: never behind the sweep — a discount change must reach
+        // the engine without waiting for the fleet-wide usage sweep.
         await this.flushPricingJobs();
       } catch (error) {
         this.logger.error(message(error));
@@ -150,10 +84,6 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
         // processing lease until process restart.
         const recovered = await recoverStalePricingJobs(this.database);
         if (recovered > 0) this.logger.warn(`recovered ${recovered} stale pricing jobs`);
-        const recoveredControl = await recoverStalePricingControlJobs(this.database);
-        if (recoveredControl > 0) {
-          this.logger.warn(`recovered ${recoveredControl} stale pricing-control jobs`);
-        }
 
         // getPricingUsageCursor reconciles durable confirmed-credit accrual markers, including
         // refund/dispute reversal, before any engine network I/O. Keep one authority for that
@@ -282,141 +212,6 @@ export class PricingWorkerService implements OnModuleInit, OnApplicationShutdown
     return resolved;
   }
 
-  private async flushPricingControlJobs(): Promise<void> {
-    for (;;) {
-      const job = await claimNextPricingControlJob(this.database, this.workerId);
-      if (!job) return;
-      try {
-        const ack = await this.deliverPricingControlJob(job);
-        await confirmPricingControlJob(this.database, job, ack);
-      } catch (error) {
-        const disposition = pricingControlDisposition(error);
-        try {
-          await releasePricingControlJob(this.database, job, disposition, message(error));
-        } catch (releaseError) {
-          this.logger.error(`failed to release pricing-control job ${job.id}: ${message(releaseError)}`);
-          throw releaseError;
-        }
-        if (disposition === "dead") {
-          this.logger.error(`pricing-control job ${job.id} failed permanently: ${message(error)}`);
-        }
-      }
-    }
-  }
-
-  private async deliverPricingControlJob(job: ClaimedPricingControlJob): Promise<PricingMutationAck> {
-    if (job.kind === "catalog") {
-      requirePricingMutation(
-        await this.engine.preparePricingCatalog(job.spec),
-        ["stored", "unchanged"],
-        "catalog prepare",
-      );
-      const active = await this.engine.getActivePricingCatalog(job.spec.product_id);
-      const expectation: PricingActiveExpectation = active === null
-        ? "absent"
-        : { exact: { version: active.generation, content_digest: active.content_digest } };
-      fenceVersion(
-        active?.generation,
-        active?.content_digest,
-        job.spec.generation,
-        job.spec.content_digest,
-        "catalog",
-      );
-      const ack = await this.engine.activatePricingCatalog(job.spec, expectation);
-      requirePricingMutation(ack, ["applied", "unchanged"], "catalog activation");
-      return ack;
-    }
-
-    if (job.kind === "switches") {
-      requirePricingMutation(
-        await this.engine.prepareProviderSwitches(job.spec),
-        ["stored", "unchanged"],
-        "provider-switch prepare",
-      );
-      const active = await this.engine.getActiveProviderSwitches();
-      const expectation: PricingActiveExpectation = active === null
-        ? "absent"
-        : { exact: { version: active.generation, content_digest: active.content_digest } };
-      fenceVersion(
-        active?.generation,
-        active?.content_digest,
-        job.spec.generation,
-        job.spec.content_digest,
-        "provider switches",
-      );
-      const ack = await this.engine.activateProviderSwitches(job.spec, expectation);
-      requirePricingMutation(ack, ["applied", "unchanged"], "provider-switch activation");
-      return ack;
-    }
-
-    requirePricingMutation(
-      await this.engine.prepareAccountPolicy(job.spec),
-      ["stored", "unchanged"],
-      "account-policy prepare",
-    );
-    const state = await this.engine.getAccountPricingState(job.spec.account_id);
-    if (strictActivationNeedsPreRestamp(state, job.spec, job.binding)) {
-      // The strict trigger requires every active key to carry the exact ACK at flip time.
-      // Re-stamp before the activation attempt too: a key created between the chain's preflight
-      // and this delivery would otherwise reject the flip again and again.
-      await this.restampActiveKeysForStrictPolicy(job.spec.account_id, {
-        effectivePolicyVersion: job.spec.effective_version,
-        policyDigest: job.spec.content_digest,
-      });
-    }
-    let expectation: PolicyActiveExpectation;
-    if (state === "unbound") {
-      expectation = "unbound";
-    } else if ("inactive" in state) {
-      expectation = { inactive: state.inactive.binding };
-    } else {
-      fenceVersion(
-        state.active.policy.effective_version,
-        state.active.policy.content_digest,
-        job.spec.effective_version,
-        job.spec.content_digest,
-        "account policy",
-      );
-      expectation = {
-        exact: {
-          target: {
-            version: state.active.policy.effective_version,
-            content_digest: state.active.policy.content_digest,
-          },
-          binding: state.active.binding,
-        },
-      };
-    }
-    const ack = await this.engine.activateAccountPolicy(job.spec, job.binding, expectation);
-    requirePricingMutation(ack, ["applied", "unchanged"], "account-policy activation");
-    if (job.binding.policy_enforcement === "strict") {
-      await this.restampActiveKeysForStrictPolicy(job.spec.account_id, {
-        effectivePolicyVersion: job.spec.effective_version,
-        policyDigest: job.spec.content_digest,
-      });
-    }
-    return ack;
-  }
-
-  /**
-   * Request auth on a strict account admits only keys stamped with the exact active policy
-   * head, so every strict activation — the shadow→strict cutover and each later strict→strict
-   * policy advance — must re-stamp the account's active keys with the new ACK before the job
-   * confirms; a failure retries the job (the engine replays the activation as `unchanged`)
-   * until the stamps converge. Keys the customer disabled are left untouched. A key disabled
-   * in the race between the list and the write would be re-enabled once; the customer can
-   * disable it again immediately (disabling needs no ACK), and the next delivery re-stamps.
-   */
-  private async restampActiveKeysForStrictPolicy(
-    accountId: string,
-    ack: EngineKeyActivationPolicyAck,
-  ): Promise<void> {
-    const keys = await this.engine.listKeys(accountId);
-    for (const key of keys) {
-      if (key.status !== "active") continue;
-      await this.engine.setKeyStatus(key.key_id, "active", ack);
-    }
-  }
 
   private async flushPricingJobs(): Promise<void> {
     for (;;) {
@@ -462,88 +257,3 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : "pricing worker failed";
 }
 
-class PricingControlDeliveryError extends Error {
-  constructor(
-    message: string,
-    readonly disposition: PricingControlJobDisposition,
-  ) {
-    super(message);
-    this.name = "PricingControlDeliveryError";
-  }
-}
-
-function fenceVersion(
-  activeVersion: number | undefined,
-  activeDigest: string | undefined,
-  targetVersion: number,
-  targetDigest: string,
-  targetName: string,
-): void {
-  if (activeVersion === undefined) return;
-  if (activeVersion > targetVersion) {
-    throw new PricingControlDeliveryError(
-      `${targetName} target version ${targetVersion} is older than engine version ${activeVersion}`,
-      "superseded",
-    );
-  }
-  if (activeVersion === targetVersion && activeDigest !== targetDigest) {
-    throw new PricingControlDeliveryError(
-      `${targetName} version ${targetVersion} has a different engine digest`,
-      "dead",
-    );
-  }
-}
-
-export function requirePricingMutation(
-  ack: PricingMutationAck,
-  accepted: ReadonlyArray<PricingMutationAck["result"]>,
-  phase: string,
-): void {
-  if (ack.result !== "rejected") {
-    if (accepted.includes(ack.result)) return;
-    throw new PricingControlDeliveryError(`${phase} returned unexpected result ${ack.result}`, "dead");
-  }
-  const disposition: PricingControlJobDisposition =
-    ack.code === "stale" ? "superseded"
-      : ack.code === "invalid" || ack.code === "version_conflict" || ack.code === "locked"
-        ? "dead"
-        : "retry";
-  throw new PricingControlDeliveryError(`${phase} rejected with ${ack.code}`, disposition);
-}
-
-/**
- * Whether the pre-activation key re-stamp is possible for a strict-class policy delivery.
- * The engine accepts a key-ACK write only when the ACK matches the CURRENTLY ACTIVE policy
- * exactly (a strict account's `key set status` with a not-yet-active ACK is rejected with
- * 409 "activation_policy_ack does not match the active policy"). The shadow→strict cutover
- * targets exactly the shadow-confirmed version, so the pre-stamp is accepted there — and it
- * is required, because the migration-0016 trigger checks key ACKs when the OLD enforcement
- * was not strict. A strict→strict advance targets a version that is not active yet: the
- * trigger deliberately skips the key check for old=strict flips, the pre-stamp would only
- * 409, and the post-activation re-stamp converges the keys onto the new head instead.
- */
-export function strictActivationNeedsPreRestamp(
-  state: PricingPolicySnapshot,
-  spec: { effective_version: number; content_digest: string },
-  binding: AccountPolicyBinding,
-): boolean {
-  if (binding.policy_enforcement !== "strict") return false;
-  return typeof state === "object" && state !== null && "active" in state
-    && state.active.policy.effective_version === spec.effective_version
-    && state.active.policy.content_digest === spec.content_digest;
-}
-
-export function pricingControlDisposition(error: unknown): PricingControlJobDisposition {
-  if (error instanceof PricingControlDeliveryError) return error.disposition;
-  // The key-ACK conflict is a transient ordering artifact by construction (a policy advance
-  // landed between the state read and the stamp): retry, never dead.
-  if (
-    error instanceof EngineClientError
-    && error.status === 409
-    && error.message.includes("activation_policy_ack")
-  ) {
-    return "retry";
-  }
-  if (error instanceof EngineClientError) return error.retryable ? "retry" : "dead";
-  return "retry";
-}

@@ -1,20 +1,14 @@
 import { BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import {
-  assertUserPolicyReadyForKey,
   findOwnedApiKey,
   getCustomerPricingPolicyView,
   getPricingView,
-  isSerializationConflictV2,
   markEngineAccountMissing,
   markOwnedApiKeyDisabled,
-  materializeProvisionedUserPolicy,
-  PricingPolicyWriteError,
-  readUserPolicyBindingState,
   saveIssuedApiKey,
   syncEngineApiKey,
   type Database,
   type StoredApiKey,
-  type UserPolicyBindingState,
 } from "@claude-api/db";
 import { EngineClient, EngineClientError, type EngineKeyActivationPolicyAck } from "@claude-api/engine-client";
 import {
@@ -156,39 +150,6 @@ export class AccountService {
         // provisioned account when this compare-and-set loses to an administrative disable.
         throw new EngineAccountUnavailableError("engine account state changed during provisioning");
       }
-      let materialized: Awaited<ReturnType<typeof materializeProvisionedUserPolicy>>;
-      try {
-        materialized = await materializeProvisionedUserPolicy(this.database, {
-          userId,
-          engineAccountId: completed.rows[0].engine_account_id,
-        });
-      } catch (error) {
-        await this.database.pool.query(`
-          UPDATE engine_accounts
-          SET status = 'error', last_error = $3, updated_at = now()
-          WHERE user_id = $1 AND engine_account_id = $2 AND status = 'pending'
-        `, [
-          userId,
-          completed.rows[0].engine_account_id,
-          (error instanceof Error ? error.message : "pricing policy materialization failed").slice(0, 1000),
-        ]);
-        throw new EngineAccountUnavailableError("engine account policy is temporarily unavailable", { cause: error });
-      }
-      if (!materialized.ready) {
-        // The policy is staged and the worker dispatches on a short tick, so this is a race of
-        // seconds, not a failure. Wait it out here instead of answering the customer's first ever
-        // dashboard load with an engine-outage error they can do nothing about. The wait is
-        // bounded and read-only: if it does not settle we fall through to the pending signal and
-        // the worker still owns delivery and retries.
-        materialized = await this.awaitPolicyConfirmation(
-          userId,
-          completed.rows[0].engine_account_id,
-          materialized,
-        );
-      }
-      if (!materialized.ready) {
-        throw new EngineAccountPolicyPendingError("engine account policy is waiting for synchronization");
-      }
       return completed.rows[0].engine_account_id;
     } catch (error) {
       if (transactionOpen) await client.query("ROLLBACK");
@@ -198,40 +159,6 @@ export class AccountService {
     }
   }
 
-  /// Bounded, read-only wait for the staged pricing policy to be confirmed. Retries the same
-  /// idempotent materialization the caller already ran; it observes the binding rather than
-  /// re-staging it, so repeating it cannot duplicate work. Deliberately short: the worker
-  /// dispatches jobs on its own fast tick, and a request must never hang on a background queue.
-  private async awaitPolicyConfirmation(
-    userId: string,
-    engineAccountId: string,
-    current: Awaited<ReturnType<typeof materializeProvisionedUserPolicy>>,
-  ): Promise<Awaited<ReturnType<typeof materializeProvisionedUserPolicy>>> {
-    let materialized = current;
-    for (let attempt = 0; attempt < PROVISIONING_CONFIRMATION_ATTEMPTS; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, PROVISIONING_CONFIRMATION_DELAY_MS));
-      try {
-        materialized = await materializeProvisionedUserPolicy(this.database, {
-          userId,
-          engineAccountId,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        // A SERIALIZABLE conflict here is not a delivery failure — it is this account's own
-        // sibling requests (the dashboard opens keys, ledger, usage and account at once) racing
-        // on the same idempotent materialization. Giving up on it answers the customer's very
-        // first dashboard load with "waiting for synchronization" for whichever sources lost the
-        // race, so keep polling; the loop is bounded either way.
-        if (isSerializationConflictV2(message)) continue;
-        // Anything else is not worse than the pending state the caller already has: keep the
-        // last observation and let the worker finish the delivery.
-        this.logger.warn(`policy confirmation poll failed for user ${userId}: ${message}`);
-        return materialized;
-      }
-      if (materialized.ready) return materialized;
-    }
-    return materialized;
-  }
 
   async getAccount(userId: string): Promise<unknown> {
     const [account, pricing, pricingPolicies] = await Promise.all([
@@ -360,29 +287,20 @@ export class AccountService {
       }
       throw error;
     }
-    await this.ensurePolicyReadyForKey(userId);
-    // Release-v2 retirement (phase 2.1): a newly provisioned account is armed for the direct
-    // strict chain and must be strict/strict/verified with the exact ACK before its first key
-    // exists — the engine serves uncovered accounts only after the one-way opt-out marker, and
-    // the marker's guard requires a strict binding plus one ACKed key. Existing accounts are
-    // not armed and keep their release coverage untouched.
     const spendLimitNano = input.spendLimitUsd === undefined ? undefined : usdToNano(input.spendLimitUsd);
     const expiresAt = input.expiresAt === undefined ? undefined : new Date(input.expiresAt);
     const { accountId, value: issued } = await this.withEngineAccountId(
       userId,
       async (id) => {
-        const activationAck = await this.strictKeyActivationAck(id);
         return this.engine.issueKey(id, {
           ...(input.label !== undefined ? { label: input.label } : {}),
           ...(spendLimitNano !== undefined ? { spendLimitNano } : {}),
           ...(expiresAt !== undefined ? { expiresAt } : {}),
-          ...activationAck,
         });
       },
     );
     try {
-      await this.ensurePolicyReadyForKey(userId);
-    } catch (error) {
+      } catch (error) {
       try {
         await this.engine.disableKey(issued.key_id);
       } catch {
@@ -516,61 +434,8 @@ export class AccountService {
     return (await this.withEngineAccountId(userId, action)).value;
   }
 
-  /**
-   * A strict binding makes the engine reject key writes without the exact active-policy ACK
-   * (request auth requires every key stamped with the current policy head). Shadow and legacy
-   * accounts take no ACK at all — attaching one would only add a new failure mode on a racing
-   * policy delivery, so the ACK is fetched and sent only when the account is strict today.
-   */
-  private async strictKeyActivationAck(
-    accountId: string,
-  ): Promise<{ activationPolicyAck: EngineKeyActivationPolicyAck } | Record<string, never>> {
-    const state = await this.engine.getAccountPricingState(accountId);
-    if (typeof state === "object" && state !== null && "active" in state
-      && state.active.binding.policy_enforcement === "strict") {
-      return {
-        activationPolicyAck: {
-          effectivePolicyVersion: state.active.policy.effective_version,
-          policyDigest: state.active.policy.content_digest,
-        },
-      };
-    }
-    return {};
-  }
 
-  private async ensurePolicyReadyForKey(userId: string): Promise<void> {
-    try {
-      await assertUserPolicyReadyForKey(this.database, userId);
-    } catch (error) {
-      if (error instanceof PricingPolicyWriteError && error.code === "provisioning_policy_missing") {
-        throw new ConflictException(error.message);
-      }
-      throw error;
-    }
-  }
 
-  /**
-   * Bounded, read-only wait for the direct strict chain of a newly provisioned account. Returns
-   * the latest binding state: `strictChainPending` tells the caller whether the opt-out marker
-   * still has to be written (an armed chain) or is already done (disarmed by the worker).
-   * Existing accounts are not armed and return immediately; an armed chain that cannot reach
-   * strict/strict/verified inside the budget fails closed with the pending signal — the
-   * account is never opted out and no unusable key is issued.
-   */
-  private async awaitDirectStrictChain(userId: string): Promise<UserPolicyBindingState | null> {
-    let binding = await readUserPolicyBindingState(this.database, userId);
-    if (!binding?.strictChainPending) return binding;
-    for (let attempt = 0; attempt < STRICT_CHAIN_CONFIRMATION_ATTEMPTS; attempt += 1) {
-      if (isStrictChainConfirmed(binding)) return binding;
-      await new Promise((resolve) => setTimeout(resolve, PROVISIONING_CONFIRMATION_DELAY_MS));
-      binding = await readUserPolicyBindingState(this.database, userId);
-      if (!binding) return null;
-      // The worker may complete the whole chain (including the opt-out) while we wait.
-      if (!binding.strictChainPending) return binding;
-    }
-    if (isStrictChainConfirmed(binding) || !binding.strictChainPending) return binding;
-    throw new ConflictException("engine account strict policy is waiting for synchronization");
-  }
 
   private async withEngineAccountId<T>(
     userId: string,
@@ -754,20 +619,7 @@ function maskApiKey(key: string): string {
 
 // Total bounded wait is attempts x delay. Kept close to the worker's dispatch tick so the common
 // case settles inside one request, without ever turning a dashboard load into a long hang.
-const PROVISIONING_CONFIRMATION_ATTEMPTS = 6;
-const PROVISIONING_CONFIRMATION_DELAY_MS = 500;
-// The strict chain needs one staging pass plus one delivery pass of the worker's fast tick
-// after the shadow confirmation, so its budget is wider than the single-delivery wait above.
-const STRICT_CHAIN_CONFIRMATION_ATTEMPTS = 16;
 
-function isStrictChainConfirmed(binding: UserPolicyBindingState): boolean {
-  return binding.policyEnforcement === "strict"
-    && binding.syncState === "confirmed"
-    && binding.desiredEffectiveVersion !== null
-    && binding.desiredEffectiveVersion === binding.appliedEffectiveVersion
-    && binding.desiredDigest !== null
-    && binding.desiredDigest === binding.appliedDigest;
-}
 
 export function isRetryableEngineFailure(error: unknown): boolean {
   // A 404 is deliberately NOT here. "No such account" is a permanent answer, and reporting it as

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { runStage5Backfill, createDatabase, getManagedPricingPolicy, type Database } from "@claude-api/db";
+import { createDatabase, type Database } from "@claude-api/db";
 import { EngineClient } from "@claude-api/engine-client";
 import { AdminService } from "./admin.service.js";
 import { AdminOperationsService } from "./admin-operations.service.js";
@@ -30,13 +30,6 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
         `TRUNCATE TABLE ${tables.rows.map((row) => `"${row.tablename}"`).join(", ")} RESTART IDENTITY CASCADE`,
       );
     }
-    // The B2B conversion path provisions a managed pricing policy, so the versioned pricing
-    // foundation (catalog, switches, global policy) must exist just like in production.
-    await runStage5Backfill(database, {
-      schema_version: 1,
-      engine_accounts: [],
-      openkeys_accounts: [],
-    }, { mode: "safe" });
     passwordUserId = randomUUID();
     oauthUserId = randomUUID();
     await database.pool.query(`
@@ -238,131 +231,7 @@ describe.runIf(Boolean(connectionString))("admin operations", () => {
     ]);
   });
 
-  it("converts B2C to B2B with the negotiated discount in one transaction", async () => {
-    await database.pool.query(`
-      UPDATE customer_profiles
-      SET current_tier = 2, multiplier_bp = 2750, referral_floor_bps = 7250,
-          tier_window_start = now(), tier_window_spent_nano = 123
-      WHERE user_id = $1
-    `, [passwordUserId]);
 
-    const result = await service.convertToBusiness({
-      userId: passwordUserId,
-      reason: "customer requested business terms",
-      actorId: "admin-q",
-      discountPercent: 80,
-    });
-    expect(result).toMatchObject({
-      customer_type: "b2b",
-      discount_percent: 80,
-      multiplier_bp: 2000,
-      converted: true,
-      sync_status: "pending",
-    });
-
-    const profile = await database.pool.query(`
-      SELECT customer_type, current_tier, multiplier_bp, referral_floor_bps,
-             tier_window_start, tier_window_spent_nano::text
-      FROM customer_profiles WHERE user_id = $1
-    `, [passwordUserId]);
-    expect(profile.rows[0]).toEqual({
-      customer_type: "b2b",
-      current_tier: null,
-      multiplier_bp: 2000,
-      referral_floor_bps: 0,
-      tier_window_start: null,
-      tier_window_spent_nano: "0",
-    });
-    const audit = await database.pool.query(`
-      SELECT actor_id, metadata FROM audit_log WHERE action = 'pricing.b2b_converted'
-    `);
-    expect(audit.rows).toEqual([{
-      actor_id: "admin-q",
-      metadata: expect.objectContaining({
-        reason: "customer requested business terms",
-        previousMultiplierBp: 2750,
-        negotiatedMultiplierBp: 2000,
-        previousTier: 2,
-        previousReferralFloorBps: 7250,
-        managedPolicyId: `policy:main:b2b:${passwordUserId}`,
-        managedPolicyVersion: 1,
-      }),
-    }]);
-
-    // The conversion provisions the managed b2b_client policy so the admin policy editor can
-    // manage the customer exactly like an invite-redeemed one.
-    const policy = await getManagedPricingPolicy(database, {
-      ownerType: "b2b_client",
-      ownerId: passwordUserId,
-    }) as { currentVersion: number; rules: unknown[]; targets: unknown[] } | null;
-    expect(policy).toMatchObject({
-      currentVersion: 1,
-      rules: [{
-        scope: { provider: { providerId: "anthropic" } },
-        pricingMode: "discount",
-        discountBps: 8000,
-      }],
-    });
-    expect(policy!.targets).toHaveLength(1);
-
-    await expect(service.convertToBusiness({
-      userId: passwordUserId,
-      reason: "safe retry",
-      actorId: "admin-q",
-      discountPercent: 70,
-    })).resolves.toMatchObject({ converted: false, multiplier_bp: 2000, sync_status: "unchanged" });
-  });
-
-  it("repairs the missing managed policy of a pre-provisioning B2B conversion", async () => {
-    // Simulates a customer converted before managed-policy provisioning existed: B2B profile
-    // with the negotiated scalar, but no b2b_client policy and no account binding.
-    await database.pool.query(`
-      UPDATE customer_profiles
-      SET customer_type = 'b2b', current_tier = NULL, multiplier_bp = 2000
-      WHERE user_id = $1
-    `, [passwordUserId]);
-
-    const result = await service.convertToBusiness({
-      userId: passwordUserId,
-      reason: "repair missing managed policy",
-      actorId: "admin-q",
-      discountPercent: 50,
-    });
-    // The scalar already in effect is kept (the passed discount is ignored on the repair path),
-    // while the policy provisioning job is staged for engine delivery.
-    expect(result).toMatchObject({ converted: false, multiplier_bp: 2000, sync_status: "pending" });
-    const policy = await getManagedPricingPolicy(database, {
-      ownerType: "b2b_client",
-      ownerId: passwordUserId,
-    }) as { currentVersion: number; rules: unknown[] } | null;
-    expect(policy).toMatchObject({
-      currentVersion: 1,
-      rules: [{
-        scope: { provider: { providerId: "anthropic" } },
-        pricingMode: "discount",
-        discountBps: 8000,
-      }],
-    });
-    const profile = await database.pool.query(`
-      SELECT multiplier_bp FROM customer_profiles WHERE user_id = $1
-    `, [passwordUserId]);
-    expect(profile.rows[0]).toEqual({ multiplier_bp: 2000 });
-    const repairAudit = await database.pool.query(`
-      SELECT actor_id, metadata FROM audit_log WHERE action = 'pricing.b2b_policy_provisioned'
-    `);
-    expect(repairAudit.rows).toEqual([{
-      actor_id: "admin-q",
-      metadata: expect.objectContaining({ multiplierBp: 2000, policyVersion: 1 }),
-    }]);
-
-    // Once repaired, the same action is an unchanged no-op again.
-    await expect(service.convertToBusiness({
-      userId: passwordUserId,
-      reason: "safe retry after repair",
-      actorId: "admin-q",
-      discountPercent: 50,
-    })).resolves.toMatchObject({ converted: false, sync_status: "unchanged" });
-  });
 
 
 

@@ -19,16 +19,12 @@ import {
   pricingReleaseActivationOperatorV2Schema,
   pricingStageControlMutationReasonV2Schema,
   providerSwitchEditorMutationSchema,
-  pricingPolicyMutationSchema,
   setBusinessPricingSchema,
 } from "@claude-api/contracts";
 import {
   BusinessCustomerNotFoundError,
   BusinessInvitationConflictError,
   BusinessInvitationNotFoundError,
-  PricingControlJobStageError,
-  PricingPolicyDeliveryRepairError,
-  PricingPolicyWriteError,
 } from "@claude-api/db";
 import { EngineClientError } from "@claude-api/engine-client";
 import { z } from "zod";
@@ -146,58 +142,18 @@ export class AdminController {
         reason: parsed.data.reason,
         idempotencyKey: parsed.data.idempotencyKey,
         ...(parsed.data.discountPercent === undefined ? {} : { discountPercent: parsed.data.discountPercent }),
-        ...(parsed.data.policy === undefined ? {} : { policy: parsed.data.policy }),
         ...(parsed.data.email === undefined ? {} : { email: parsed.data.email }),
         actorId: adminActor(actorHeader),
       });
     } catch (error) {
       if (error instanceof BusinessInvitationConflictError) throw new HttpException(error.message, 409);
-      throwPricingPolicyHttpError(error);
       throw error;
     }
   }
 
-  @Get("pricing-policies/global-b2c")
-  @Header("Cache-Control", "no-store")
-  async getGlobalB2cPricingPolicy(): Promise<unknown> {
-    return this.getManagedPolicy("global_b2c", "global-b2c");
-  }
 
-  @Get("pricing-catalog")
-  @Header("Cache-Control", "no-store")
-  async getManagedPricingCatalog(@Query("product_id") productId?: string): Promise<unknown> {
-    try {
-      return await this.admin.getManagedPricingCatalog(managedProductId(productId));
-    } catch (error) {
-      throwPricingPolicyHttpError(error);
-      throw error;
-    }
-  }
 
-  @Patch("provider-switches")
-  @Header("Cache-Control", "no-store")
-  async updateManagedProviderSwitches(
-    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    const parsed = providerSwitchEditorMutationSchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
-    try {
-      return await this.admin.updateManagedProviderSwitches(parsed.data, adminActor(actorHeader));
-    } catch (error) {
-      throwPricingPolicyHttpError(error);
-      throw error;
-    }
-  }
 
-  @Patch("pricing-policies/global-b2c")
-  @Header("Cache-Control", "no-store")
-  async updateGlobalB2cPricingPolicy(
-    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-  ): Promise<unknown> {
-    return this.updateManagedPolicy("global_b2c", "global-b2c", body, actorHeader);
-  }
 
   /** The customer's per-provider discount overrides; the default lives on the user record. */
   @Get("business-users/:id/pricing")
@@ -207,47 +163,13 @@ export class AdminController {
     return this.admin.getBusinessPricing(id);
   }
 
-  @Get("service-policies")
-  @Header("Cache-Control", "no-store")
-  async listServicePricingPolicies(): Promise<unknown> {
-    try {
-      return await this.admin.listManagedServicePricingPolicies();
-    } catch (error) {
-      throwPricingPolicyHttpError(error);
-      throw error;
-    }
-  }
 
 
 
 
 
 
-  @Get("service-policies/:id")
-  @Header("Cache-Control", "no-store")
-  async getServicePricingPolicy(
-    @Param("id") id: string,
-    @Query("product_id") productId?: string,
-  ): Promise<unknown> {
-    return this.getManagedPolicy("service", serviceOwnerId(id), managedProductId(productId));
-  }
 
-  @Patch("service-policies/:id")
-  @Header("Cache-Control", "no-store")
-  async updateServicePricingPolicy(
-    @Param("id") id: string,
-    @Body() body: unknown,
-    @Headers("x-admin-actor") actorHeader?: string,
-    @Query("product_id") productId?: string,
-  ): Promise<unknown> {
-    return this.updateManagedPolicy(
-      "service",
-      serviceOwnerId(id),
-      body,
-      actorHeader,
-      managedProductId(productId),
-    );
-  }
 
   @Get("business-invites/:id/link")
   @Header("Cache-Control", "no-store")
@@ -326,47 +248,11 @@ export class AdminController {
       );
     } catch (error) {
       if (error instanceof BusinessCustomerNotFoundError) throw new NotFoundException(error.message);
-      throwPricingPolicyHttpError(error);
       throw error;
     }
   }
 
-  private async getManagedPolicy(
-    ownerType: "global_b2c" | "b2b_client" | "b2b_invitation" | "service",
-    ownerId: string,
-    productId?: string,
-  ): Promise<unknown> {
-    try {
-      return await this.admin.getManagedPricingPolicy(ownerType, ownerId, productId);
-    } catch (error) {
-      if (error instanceof BusinessCustomerNotFoundError) throw new NotFoundException(error.message);
-      throwPricingPolicyHttpError(error);
-      throw error;
-    }
-  }
 
-  private async updateManagedPolicy(
-    ownerType: "global_b2c" | "b2b_client" | "b2b_invitation" | "service",
-    ownerId: string,
-    body: unknown,
-    actorHeader?: string,
-    productId?: string,
-  ): Promise<unknown> {
-    const parsed = pricingPolicyMutationSchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
-    try {
-      return await this.admin.updateManagedPricingPolicy(
-        ownerType,
-        ownerId,
-        parsed.data,
-        adminActor(actorHeader),
-        productId,
-      );
-    } catch (error) {
-      throwPricingPolicyHttpError(error);
-      throw error;
-    }
-  }
 }
 
 function adminActor(value: string | undefined): string {
@@ -400,35 +286,9 @@ function managedProductId(value: string | undefined): string {
   return productId;
 }
 
-function throwPricingPolicyHttpError(error: unknown): void {
-  if (!(error instanceof PricingPolicyWriteError)) return;
-  if (error.code === "policy_not_found") throw new NotFoundException(error.message);
-  if (error.code === "invalid_owner_rule" || error.code === "rule_outside_catalog") {
-    throw new BadRequestException(error.message);
-  }
-  throw new HttpException(error.message, 409);
-}
 
 function pricingStageControlException(message: string, code: string, status: number): HttpException {
   const response = { statusCode: status, message, code };
   return status === 404 ? new NotFoundException(response) : new HttpException(response, status);
 }
 
-function throwPricingStageControlHttpError(error: unknown): void {
-  if (error instanceof PricingControlJobStageError) {
-    throw pricingStageControlException(error.message, "pricing_control_job_not_found", 404);
-  }
-  if (error instanceof PricingPolicyDeliveryRepairError) {
-    if (error.code === "repair_job_not_found") {
-      throw pricingStageControlException(error.message, error.code, 404);
-    }
-    throw pricingStageControlException(error.message, error.code, 409);
-  }
-  if (error instanceof EngineClientError) {
-    throw pricingStageControlException(
-      error.message,
-      error.retryable ? "engine_client_unavailable" : "engine_client_invalid",
-      error.retryable ? 503 : 409,
-    );
-  }
-}

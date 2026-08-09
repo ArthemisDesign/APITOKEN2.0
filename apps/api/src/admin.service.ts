@@ -6,17 +6,6 @@ import {
 import { ConfigService } from "@nestjs/config";
 import {
   multiplierForDiscount,
-  pricingControlJobStageResponseV2Schema,
-  pricingPolicyDeliveryRepairResponseV2Schema,
-  type PricingCatalogJobStageRequestV2,
-  type PricingControlJobStageResponseV2,
-  type PricingSwitchJobStageRequestV2,
-  type PricingPolicyDeliveryRepairRequestV2,
-  type PricingPolicyDeliveryRepairResponseV2,
-  type PricingReleaseInventoryAccountV2,
-  type PricingPolicyEditorRule,
-  type ProviderSwitchEditorMutation,
-  type ServiceAccountInventoryMutationV2,
 } from "@claude-api/contracts";
 import {
   BusinessCustomerNotFoundError,
@@ -27,34 +16,22 @@ import {
   decryptAuthToken,
   encryptAuthToken,
   evaluateRefundEligibility,
-  getManagedPricingPolicy,
-  getManagedPricingCatalog,
-  listManagedServicePricingPolicies,
   getBusinessInviteToken,
   getEngineAccountMapping,
   listAdminUserOverview,
   recordAdminCredit,
-  repairDeadPreCutoverPolicyDelivery,
-  PricingPolicyDeliveryRepairError,
   revokeBusinessInvite,
   rotateBusinessInvite,
   setBusinessPricing,
   setCustomerProviderDiscount,
   listCustomerProviderDiscounts,
   type DiscountProviderId,
-  materializeProvisionedUserPolicy,
-  stageStoredPricingCatalogControlJob,
-  stageStoredProviderSwitchControlJob,
-  updateManagedPricingPolicy,
-  updateManagedProviderSwitches,
   type AdminUserOverviewRow,
   type AdminUserOverviewQuery,
   type Database,
 } from "@claude-api/db";
 import {
   EngineClient,
-  ensureServicePricingReleaseProvisioningV2,
-  PricingReleaseAccountProvisioningV2Error,
 } from "@claude-api/engine-client";
 import type { Environment } from "./config.js";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
@@ -141,7 +118,6 @@ export class AdminService {
   async createBusinessInvite(input: {
     email?: string;
     discountPercent?: number;
-    policy?: { rules: readonly PricingPolicyEditorRule[] };
     expiresInDays: number;
     reason: string;
     idempotencyKey: string;
@@ -159,20 +135,14 @@ export class AdminService {
       idempotencyKey: input.idempotencyKey,
       actorId: input.actorId,
       reason: input.reason,
-      ...(input.policy === undefined ? {} : { policyRules: input.policy.rules }),
     });
     const storedToken = invite.idempotentReplay
       ? decryptAuthToken(invite.encryptedToken, key)
       : token;
-    const policy = input.policy === undefined ? null : await getManagedPricingPolicy(this.database, {
-      ownerType: "b2b_invitation",
-      ownerId: invite.id,
-    });
     return {
       id: invite.id,
       email: invite.email,
-      discountPercent: input.policy === undefined ? 100 - invite.multiplierBp / 100 : null,
-      policy,
+      discountPercent: 100 - invite.multiplierBp / 100,
       expiresAt: invite.expiresAt.toISOString(),
       inviteUrl: this.inviteUrl(storedToken),
       deliveryStatus: invite.deliveryStatus,
@@ -180,27 +150,8 @@ export class AdminService {
     };
   }
 
-  async getManagedPricingPolicy(
-    ownerType: "global_b2c" | "b2b_client" | "b2b_invitation" | "service",
-    ownerId: string,
-    productId?: string,
-  ): Promise<unknown> {
-    const policy = await getManagedPricingPolicy(this.database, {
-      ownerType,
-      ownerId,
-      ...(productId ? { productId } : {}),
-    });
-    if (!policy) throw new BusinessCustomerNotFoundError("managed pricing policy not found");
-    return policy;
-  }
 
-  async getManagedPricingCatalog(productId?: string): Promise<unknown> {
-    return getManagedPricingCatalog(this.database, productId);
-  }
 
-  async listManagedServicePricingPolicies(): Promise<unknown> {
-    return { policies: await listManagedServicePricingPolicies(this.database) };
-  }
 
 
 
@@ -228,46 +179,16 @@ export class AdminService {
     if (row.status === "disabled") {
       throw new ConflictException("engine account is disabled");
     }
-    const staged = await materializeProvisionedUserPolicy(this.database, {
-      userId,
-      engineAccountId: row.engine_account_id,
-    });
     await this.database.pool.query(`
       INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
       VALUES ('admin', $1, 'user.provisioning_repair', 'user', $2, $3::jsonb)
-    `, [actorId, userId, JSON.stringify({ reason, jobId: staged.jobId })]);
-    return {
-      status: staged.ready ? "ready" : "staged",
-      job_id: staged.jobId,
-    };
+    `, [actorId, userId, JSON.stringify({ reason })]);
+    return { status: "pending", job_id: null };
   }
 
 
-  async updateManagedProviderSwitches(
-    input: ProviderSwitchEditorMutation,
-    actorId: string,
-  ): Promise<unknown> {
-    return updateManagedProviderSwitches(this.database, { ...input, actorId });
-  }
 
 
-  async updateManagedPricingPolicy(
-    ownerType: "global_b2c" | "b2b_client" | "b2b_invitation" | "service",
-    ownerId: string,
-    input: { expectedVersion: number; rules: readonly PricingPolicyEditorRule[]; reason: string },
-    actorId: string,
-    productId?: string,
-  ): Promise<unknown> {
-    return updateManagedPricingPolicy(this.database, {
-      ownerType,
-      ownerId,
-      ...(productId ? { productId } : {}),
-      expectedVersion: input.expectedVersion,
-      rules: input.rules,
-      actorId,
-      reason: input.reason,
-    });
-  }
 
   async getBusinessInviteLink(inviteId: string): Promise<Record<string, unknown>> {
     const invite = await getBusinessInviteToken(this.database, inviteId);

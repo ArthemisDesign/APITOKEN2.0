@@ -1,7 +1,5 @@
 import { BadRequestException, HttpException, NotFoundException } from "@nestjs/common";
 import {
-  PricingPolicyDeliveryRepairError,
-  PricingPolicyWriteError,
 } from "@claude-api/db";
 import { describe, expect, it, vi } from "vitest";
 import { AdminController } from "./admin.controller.js";
@@ -72,26 +70,6 @@ describe("admin user list HTTP contract", () => {
     });
   });
 
-  it("accepts a full provider/model invitation policy without a scalar discount", async () => {
-    const createBusinessInvite = vi.fn().mockResolvedValue({ id: "invite-id", policy: { currentVersion: 1 } });
-    const controller = new AdminController({ createBusinessInvite } as unknown as AdminService);
-    const body = {
-      policy: {
-        rules: [{
-          scope: { provider: { providerId: "anthropic" } },
-          pricingMode: "discount",
-          discountBps: 6_000,
-        }],
-      },
-      expiresInDays: 7,
-      reason: "negotiated provider policy",
-      idempotencyKey: "2d20f96d-0f2b-4cff-9fa0-7c4b7fe1a6c5",
-    };
-
-    await expect(controller.createBusinessInvite(body, "owner@example.com"))
-      .resolves.toMatchObject({ policy: { currentVersion: 1 } });
-    expect(createBusinessInvite).toHaveBeenCalledWith({ ...body, actorId: "owner@example.com" });
-  });
 
   it("rejects ambiguous mutations that combine full policy and scalar compatibility fields", async () => {
     const createBusinessInvite = vi.fn();
@@ -124,96 +102,3 @@ describe("admin user list HTTP contract", () => {
   });
 });
 
-describe("managed pricing HTTP contract", () => {
-  const rule = {
-    scope: { provider: { providerId: "anthropic" } },
-    pricingMode: "discount" as const,
-    discountBps: 6_000,
-  };
-
-  it("forwards switch CAS and the bounded admin actor", async () => {
-    const updateManagedProviderSwitches = vi.fn().mockResolvedValue({ switchGeneration: 3 });
-    const controller = new AdminController({ updateManagedProviderSwitches } as unknown as AdminService);
-    const body = {
-      expectedGeneration: 2,
-      reason: "disable only the B2B segment",
-      providers: [{
-        providerId: "anthropic",
-        masterEnabled: true,
-        productEnabled: true,
-        b2cEnabled: true,
-        b2bEnabled: false,
-      }],
-    };
-
-    await expect(controller.updateManagedProviderSwitches(body, "operator@example.com"))
-      .resolves.toMatchObject({ switchGeneration: 3 });
-    expect(updateManagedProviderSwitches).toHaveBeenCalledWith(body, "operator@example.com");
-  });
-
-  it("passes the default discount and per-provider overrides through one endpoint", async () => {
-    // A provider mapped to null clears its override and returns that provider to the default.
-    const setBusinessPricing = vi.fn().mockResolvedValue({ providers: { openai: 40 } });
-    const controller = new AdminController({ setBusinessPricing } as unknown as AdminService);
-    const userId = "4f53639f-ced1-472f-998e-50e426bd5734";
-    const body = {
-      discountPercent: 30,
-      providers: { openai: 40, google: null },
-      reason: "negotiated per-provider terms",
-    };
-
-    await expect(controller.setBusinessPricing(userId, body, "operator@example.com"))
-      .resolves.toMatchObject({ providers: { openai: 40 } });
-    expect(setBusinessPricing).toHaveBeenCalledWith(
-      userId,
-      { discountPercent: 30, providers: { openai: 40, google: null } },
-      "operator@example.com",
-      body.reason,
-    );
-  });
-
-  it("lists service policies without accepting inferred owner input", async () => {
-    const listManagedServicePricingPolicies = vi.fn().mockResolvedValue({ policies: [{ ownerId: "crm" }] });
-    const controller = new AdminController({ listManagedServicePricingPolicies } as unknown as AdminService);
-
-    await expect(controller.listServicePricingPolicies()).resolves.toEqual({ policies: [{ ownerId: "crm" }] });
-    expect(listManagedServicePricingPolicies).toHaveBeenCalledOnce();
-  });
-
-
-
-
-
-  it("maps catalog/rule errors to 400, missing policies to 404, and CAS conflicts to 409", async () => {
-    const invalid = new AdminController({
-      updateManagedProviderSwitches: vi.fn().mockRejectedValue(
-        new PricingPolicyWriteError("rule_outside_catalog", "outside catalog"),
-      ),
-    } as unknown as AdminService);
-    await expect(invalid.updateManagedProviderSwitches({
-      expectedGeneration: 1,
-      reason: "invalid provider test",
-      providers: [{ providerId: "unknown", masterEnabled: true, productEnabled: true, b2cEnabled: true, b2bEnabled: true }],
-    })).rejects.toBeInstanceOf(BadRequestException);
-
-    const missing = new AdminController({
-      getManagedPricingPolicy: vi.fn().mockRejectedValue(
-        new PricingPolicyWriteError("policy_not_found", "missing"),
-      ),
-    } as unknown as AdminService);
-    await expect(missing.getGlobalB2cPricingPolicy()).rejects.toBeInstanceOf(NotFoundException);
-
-    const conflict = new AdminController({
-      updateManagedPricingPolicy: vi.fn().mockRejectedValue(
-        new PricingPolicyWriteError("version_conflict", "stale"),
-      ),
-    } as unknown as AdminService);
-    const rejected = conflict.updateGlobalB2cPricingPolicy({
-      expectedVersion: 1,
-      reason: "stale replacement test",
-      rules: [rule],
-    });
-    await expect(rejected).rejects.toBeInstanceOf(HttpException);
-    await expect(rejected).rejects.toMatchObject({ status: 409 });
-  });
-});

@@ -8,7 +8,6 @@ import {
   completeExternalSignIn,
   consumeEmailVerification,
   ipSubnetOf,
-  materializeProvisionedUserPolicy,
   recordDeviceSighting,
   upsertSignupProfile,
   consumeOAuthTransaction,
@@ -454,11 +453,12 @@ export class AuthService {
         multBp: multiplierBp,
         welcomeBonusAmountNano,
       });
-      const materialized = await materializeProvisionedUserPolicy(this.database, {
-        userId: user.id,
-        engineAccountId: account.account,
-      });
-      user.engineAccountStatus = materialized.ready ? "active" : "pending";
+      await this.database.pool.query(`
+        UPDATE engine_accounts
+        SET engine_account_id = $2, status = 'active', last_error = NULL, updated_at = now()
+        WHERE user_id = $1 AND status IN ('pending', 'error')
+      `, [user.id, account.account]);
+      user.engineAccountStatus = "active";
       return;
 
     } catch (error) {
