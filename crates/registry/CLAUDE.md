@@ -405,6 +405,12 @@ side effect. `serve` may only perform the read-only schema verification before c
   strict-enforcement scoping, the exception text and every caller/trigger are unchanged:
   release-era accounts whose truth lives only in lots can now pass the strict activation, and a
   genuine mismatch still raises.
+- **Strict funding active-generation checkpoint:** migration `0042` expand-only fixes the 0041
+  lot selection: the funding-v2 model retires a lot to `exhausted` with a nonzero balance (a
+  paid residual gone negative as the account spent down), so a `status='active'` filter breaks
+  the sum for exactly those accounts. The normalized branch now sums the lots of the account's
+  ACTIVE funding generation regardless of lot status — the generation head is the authority
+  boundary. The buckets branch, the invariant, scoping and the exception text are unchanged.
 - **Pricing release opt-out dual path:** the dependent runtime of the 0039 marker.
   `pricing_release_resolution_v2_in_transaction` answers `None` for an account with a non-NULL
   `pricing_release_opt_out_ts` (a primary-key read in the same transaction/snapshot as the
