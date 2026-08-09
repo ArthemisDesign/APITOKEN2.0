@@ -11,6 +11,7 @@ import {
   resolveArticle,
 } from "./learn";
 import { learnProviderEn } from "./learn-provider-en";
+import { learnImageSeoEn } from "./learn-image-seo";
 import {
   CLAUDE_PROVIDER_PARITY,
   learnProviderParityEn,
@@ -93,10 +94,95 @@ describe("learn cluster", () => {
     }
   });
 
+  it("publishes a substantive localized image-generation SEO cluster", () => {
+    const expectedSlugs = [
+      "nano-banana-2-api-cost",
+      "gpt-image-2-api-cost",
+      "nano-banana-2-vs-gpt-image-2",
+      "image-generation-api-pricing",
+      "cheapest-image-generation-api",
+      "image-editing-api-guide",
+      "batch-image-generation-api",
+      "image-generation-api-for-ecommerce",
+    ];
+
+    expect(learnImageSeoEn.map((article) => article.slug)).toEqual(expectedSlugs);
+    expect(new Set(learnImageSeoEn.map((article) => article.title)).size).toBe(learnImageSeoEn.length);
+    expect(new Set(learnImageSeoEn.map((article) => article.description)).size).toBe(learnImageSeoEn.length);
+
+    const sitemapUrls = new Set(buildSitemap().map((entry) => entry.url));
+    for (const article of learnImageSeoEn) {
+      expect(article.sections.length, `${article.slug} sections`).toBeGreaterThanOrEqual(3);
+      expect(article.faq.length, `${article.slug} FAQs`).toBeGreaterThanOrEqual(4);
+      expect(article.related.length, `${article.slug} related`).toBeGreaterThanOrEqual(4);
+      expect(article.published, `${article.slug} published`).toBe("2026-08-09");
+      expect(article.updated, `${article.slug} updated`).toBe("2026-08-09");
+
+      for (const locale of LOCALES) {
+        const resolved = resolveArticle(article.slug, locale)!;
+        expect(resolved, `${article.slug} @ ${locale}`).not.toBeNull();
+        expect(resolved.content.sections.length, `${article.slug} @ ${locale} sections`).toBe(article.sections.length);
+        expect(resolved.content.faq.length, `${article.slug} @ ${locale} FAQs`).toBe(article.faq.length);
+        const minimumDepth = locale === "zh" ? 1_500 : 1_800;
+        expect(JSON.stringify(resolved.content).length, `${article.slug} @ ${locale} depth`).toBeGreaterThan(minimumDepth);
+
+        const blocks = resolved.content.sections.flatMap((section) => section.blocks);
+        expect(blocks.some((block) => block.type === "table"), `${article.slug} @ ${locale} table`).toBe(true);
+        expect(blocks.some((block) => block.type === "steps"), `${article.slug} @ ${locale} steps`).toBe(true);
+        expect(JSON.stringify(resolved.content), `${article.slug} @ ${locale} B2C policy`).toMatch(/50%|五折/);
+
+        const path = learnPath(article.slug, locale);
+        expect(sitemapUrls, `${article.slug} @ ${locale} sitemap`).toContain(absoluteUrl(path));
+        const metadata = buildArticleMetadata(article.slug, locale)!;
+        expect(metadata.alternates?.canonical, `${article.slug} @ ${locale} canonical`).toBe(absoluteUrl(path));
+        expect(Object.keys(metadata.alternates?.languages ?? {}).sort(), `${article.slug} @ ${locale} hreflang`).toEqual([
+          "en",
+          "ko",
+          "ru",
+          "x-default",
+          "zh-CN",
+        ]);
+        const graph = buildArticleJsonLd(article.slug, locale)?.["@graph"] ?? [];
+        expect(graph.some((node) => node["@type"] === "Article"), `${article.slug} @ ${locale} Article schema`).toBe(true);
+        expect(graph.some((node) => node["@type"] === "FAQPage"), `${article.slug} @ ${locale} FAQ schema`).toBe(true);
+      }
+    }
+  });
+
+  it("keeps image savings claims tied to authoritative usage and published controls", () => {
+    for (const locale of LOCALES) {
+      const nano = JSON.stringify(resolveArticle("nano-banana-2-api-cost", locale)!.content);
+      expect(nano, locale).toContain("gemini-3.1-flash-image");
+      expect(nano, locale).toContain("$0.0336");
+      expect(nano, locale).toContain("$0.0756");
+      expect(nano, locale).toContain("1K");
+      expect(nano, locale).toContain("4K");
+      expect(nano, locale).toContain("0.5K");
+      expect(nano, locale).toContain("OpenKeys");
+
+      const gpt = JSON.stringify(resolveArticle("gpt-image-2-api-cost", locale)!.content);
+      expect(gpt, locale).toContain("gpt-image-2");
+      expect(gpt, locale).toMatch(/terminal usage|终态 usage/);
+      expect(gpt, locale).toContain("$15");
+      expect(gpt, locale).toContain("opaque/low/auto");
+      expect(gpt, locale).toMatch(/1–5|1~5|one to five/);
+      expect(gpt, locale).toContain("OpenKeys");
+
+      const comparison = JSON.stringify(resolveArticle("nano-banana-2-vs-gpt-image-2", locale)!.content);
+      expect(comparison, locale).toContain("x-goog-api-key");
+      expect(comparison, locale).toContain("Authorization: Bearer");
+      expect(comparison, locale).not.toMatch(/always cheaper|всегда дешевле|总是更便宜|항상 더 저렴/i);
+
+      const llms = buildLlms(locale);
+      for (const article of learnImageSeoEn) expect(llms, `${article.slug} @ ${locale} llms`).toContain(learnPath(article.slug, locale));
+    }
+  });
+
   it("maps every article in the original 47-page catalog to GPT, Gemini and Kimi", () => {
     const providerArticleSlugs = new Set([
       ...learnProviderEn.map((article) => article.slug),
       ...learnProviderParityEn.map((article) => article.slug),
+      ...learnImageSeoEn.map((article) => article.slug),
     ]);
     const originalCatalogSlugs = learnArticles
       .filter((article) => !providerArticleSlugs.has(article.slug))

@@ -592,7 +592,7 @@ export const openaiModels: OpenAiModel[] = [
       { q: "What is the model ID for GPT Image 2?", a: "gpt-image-2, an alias of the immutable snapshot gpt-image-2-2026-04-21. Send it as the model field of POST /v1/images/generations or /v1/images/edits on https://router.apitoken.sale/v1 (the legacy https://openai.api.apitoken.sale/v1 serves the same routes) with your Bearer key." },
       { q: "Does the same balance really cover image generation?", a: "Yes. GPT Image 2 debits the same prepaid balance as every Claude, GPT and Gemini model on the account — no separate image plan or key." },
     ],
-    related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
+    related: ["gpt-image-2-api-guide", "gpt-image-2-api-cost", "nano-banana-2-vs-gpt-image-2", "image-editing-api-guide"],
   },
 ];
 
@@ -979,7 +979,7 @@ export const geminiModels: GeminiModel[] = [
       { q: "What is the model ID for Nano Banana 2?", a: "gemini-3.1-flash-image. Use it unchanged with the Google GenAI SDK or any Gemini-compatible tool pointed at https://router.apitoken.sale, with the key sent as x-goog-api-key." },
       { q: "Flash Image or a text Flash model?", a: "Flash Image is the image-generation model — use it when the response must include rendered images. For text-only work, gemini-3.6-flash gives you a larger context window and lower output cost." },
     ],
-    related: ["openai-api-quickstart", "how-billing-works", "why-choose-apitoken"],
+    related: ["nano-banana-2-api-guide", "nano-banana-2-api-cost", "nano-banana-2-vs-gpt-image-2", "image-generation-api-pricing"],
   },
 ];
 

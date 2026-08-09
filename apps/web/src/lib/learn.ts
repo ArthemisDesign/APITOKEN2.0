@@ -11,6 +11,12 @@ import { learnProviderRu } from "./learn-provider-ru";
 import { learnProviderZh } from "./learn-provider-zh";
 import { learnProviderKo } from "./learn-provider-ko";
 import {
+  learnImageSeoEn,
+  learnImageSeoKo,
+  learnImageSeoRu,
+  learnImageSeoZh,
+} from "./learn-image-seo";
+import {
   enrichExistingProviderParityContent,
   learnProviderParityEn,
   learnProviderParityKo,
@@ -1803,6 +1809,7 @@ export const learnArticles: LearnArticle[] = [
   ...coreLearnArticles,
   ...learnProviderEn,
   ...learnProviderParityEn,
+  ...learnImageSeoEn,
 ];
 
 // Put the broadest provider entry points first inside each hub cluster. The
@@ -1825,18 +1832,27 @@ const LEARN_HUB_FEATURED_SLUGS: Partial<Record<LearnCluster, readonly string[]>>
     "kimi-api-for-opencode",
     "kimi-api-for-claude-code",
     "kimi-api-for-kimi-code",
+    "gpt-image-2-api-guide",
+    "nano-banana-2-api-guide",
+    "image-editing-api-guide",
+    "batch-image-generation-api",
+    "image-generation-api-for-ecommerce",
   ],
   compare: [
     "claude-opus-vs-sonnet",
     "gpt-5-6-sol-vs-terra-vs-luna",
     "gemini-pro-vs-flash-vs-flash-lite",
     "kimi-k3-vs-kimi-for-coding",
+    "nano-banana-2-vs-gpt-image-2",
   ],
   explain: [
     "claude-api-pricing-explained",
     "gpt-api-pricing",
     "gemini-api-pricing",
     "kimi-api-pricing",
+    "image-generation-api-pricing",
+    "nano-banana-2-api-cost",
+    "gpt-image-2-api-cost",
   ],
 };
 const LEARN_HUB_CLUSTER_ORDER: readonly LearnCluster[] = ["buy", "free", "integrate", "compare", "explain"];
@@ -1868,9 +1884,9 @@ export const learnArticlesBySlug: Record<string, LearnArticle> = Object.fromEntr
 );
 
 const translations: Record<Exclude<Locale, "en">, Record<string, LocalizedContent>> = {
-  ru: { ...learnRu, ...learnProviderRu, ...learnProviderParityRu },
-  zh: { ...learnZh, ...learnProviderZh, ...learnProviderParityZh },
-  ko: { ...learnKo, ...learnProviderKo, ...learnProviderParityKo },
+  ru: { ...learnRu, ...learnProviderRu, ...learnProviderParityRu, ...learnImageSeoRu },
+  zh: { ...learnZh, ...learnProviderZh, ...learnProviderParityZh, ...learnImageSeoZh },
+  ko: { ...learnKo, ...learnProviderKo, ...learnProviderParityKo, ...learnImageSeoKo },
 };
 
 function enContent(article: LearnArticle): LocalizedContent {
