@@ -397,6 +397,14 @@ side effect. `serve` may only perform the read-only schema verification before c
   whose pinned snapshot is service/payable-0. No existing row, arm or semantic changes; the old
   runtime neither reads nor writes the new allowance, and the dependent runtime ships in a
   separate SHA after a green migration/watchdog of this checkpoint.
+- **Strict funding dual-source checkpoint:** migration `0041` expand-only re-sources the bucket
+  sum inside `assert_strict_funding_account`: a funding-v2-normalized account (a row in
+  `account_funding_head_v2`) is validated against its active `funding_lots_v2` rows — the
+  authority every modern reserve path maintains — instead of the v1 `funding_buckets`; a
+  pre-normalization account keeps the old `funding_buckets` read. The invariant, its
+  strict-enforcement scoping, the exception text and every caller/trigger are unchanged:
+  release-era accounts whose truth lives only in lots can now pass the strict activation, and a
+  genuine mismatch still raises.
 - **Pricing release opt-out dual path:** the dependent runtime of the 0039 marker.
   `pricing_release_resolution_v2_in_transaction` answers `None` for an account with a non-NULL
   `pricing_release_opt_out_ts` (a primary-key read in the same transaction/snapshot as the

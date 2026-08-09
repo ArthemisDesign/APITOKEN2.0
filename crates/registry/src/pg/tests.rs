@@ -1887,7 +1887,7 @@ fn glm_calibration_migration_is_additive_and_keeps_dual_ledger_identity() {
 
 #[test]
 fn glm_calibration_migration_is_registered_at_the_current_schema_version() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 40);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 41);
     let registered = ENGINE_MIGRATIONS
         .iter()
         .find(|(version, _)| *version == 29)
