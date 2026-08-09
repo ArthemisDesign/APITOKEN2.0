@@ -1,6 +1,7 @@
 # KIMI (Moonshot AI) — provider capability manifest
 
-Integration status: **default-off backend preview runtime, mock-verified and not yet live-verified**.
+Integration status: **live-verified preview runtime; strict-policy pricing is enabled and remaining
+GA unknowns fail closed**.
 Source review date — **2026-08-03**.
 
 This document was created per `docs/engine/PROVIDER_ONBOARDING.md` §3.3 and is the capability manifest
@@ -12,8 +13,8 @@ Every claim below is labeled per the evidence hierarchy from §3.1: `official`, 
 
 The KIMI plane was built **backend-only**, and that scope was widened by the product owner on
 2026-08-08: the provider is now published to the unified **router** catalog under the `kimi/*`
-namespace. It remains unpublished on the marketing site. Commerce/OpenKeys pricing surfaces and
-client documentation are in progress and are tracked separately.
+namespace. On 2026-08-09 the product owner approved publication of the localized Learn guides;
+Commerce/OpenKeys catalogue mirrors and unsupported capabilities remain tracked separately.
 
 - `decision` 2026-08-08 — publish through the router, not through the plane's own `/v1/models`.
   `GET /v1/models` on the Anthropic plane is a byte-for-byte proxy of `api.anthropic.com`, and
@@ -35,7 +36,8 @@ client documentation are in progress and are tracked separately.
   widely repeated claim that a thinking-off request silently reroutes K3/K2.7 down to K2.6 is
   contradicted by our own live turns: the `k3:*:off` legs of the coverage matrix priced under
   `moonshot/kimi/kimi-k3/v2`.
-- `decision` The site keeps no KIMI row until the owner says otherwise.
+- `decision` 2026-08-09 (owner-approved) — publish the EN/RU/ZH/KO Learn guides and API-reference
+  entry, limited to the five routable subscription aliases and evidence-backed capabilities.
 - `decision` This file is an internal engineering instruction (required by `AGENTS.md`,
   "Documentation is a living contract"), not a public storefront.
 
@@ -541,9 +543,10 @@ scheme — only the corresponding live gates are blocked (`PROVIDER_ONBOARDING.m
 ## 7. Delivery status
 
 The current chain continues from `master` with producer-first checkpoints. The plane is enabled on
-the Anthropic slots and published in the unified router catalog; the marketing site still contains
-no KIMI row. Production activation of the router entry and live proofs are claimed only where the
-table below says so.
+the Anthropic slots and published in the unified router catalog. The marketing site publishes the
+owner-approved localized Learn guides and API-reference entry, while unproven capabilities remain
+explicitly labelled preview or absent. Production activation and live proofs are claimed only where
+the table below says so.
 
 | Stage | Artifact | Status |
 |---|---|---|
@@ -567,9 +570,9 @@ table below says so.
 | live matrix on our subscription | `/tmp/kimi-matrix-p1b.json`, `/tmp/kimi-matrix-p3.json` | **done 2026-08-09**: 12/12 legs `complete: true` on each of the two available Vivace profiles — 4 model families × both context modes (256k and 1M) × every accepted reasoning effort, $0.0105 per profile, every money leg recomputed from exact token counts and every quota delta resolved by a post-turn observation. The third profile was refused before dispatch (`exact KIMI profile is cooling`, weekly 100/100) and is recorded as unavailable, not skipped. `kimi-k2.6` is absent from the matrix because no published alias reaches it — the same reason it is not advertised. Tools and inline media stayed `unavailable` with `skipped_before_dispatch: true`: their per-request unit cost is unproven and no probe budget was authorized |
 | router publication | `crates/server/src/router_catalog.rs`, `crates/router/src/{catalog,policy,routing,presets}.rs`, `crates/router/routing-presets.json` | done: internal discovery producer, fourth optional catalog plane over the Anthropic lane, `kimi` arm in the router pricing producer, five aliases advertised |
 
-The next producer-first step is a controlled live run through the live matrix on the connected
-Vivace subscription (after its weekly quota resets and budget permission), then the commerce/
-OpenKeys and client-documentation surfaces.
+The remaining producer-first work is live proof for SSE incrementality, deterministic public error
+classes, the shared monthly ceiling and any provider-executed paid tools before those capabilities
+can be advertised as GA. Commerce/OpenKeys catalogue mirrors remain a separate tracked surface.
 
 ## 8. Sources
 

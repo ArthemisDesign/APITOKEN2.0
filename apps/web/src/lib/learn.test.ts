@@ -184,4 +184,13 @@ describe("learn localization", () => {
     expect(localized.ko).not.toMatch(/일일.*월별|모델 범위 지정|IP 제어|다운타임 없이/i);
     expect(localized.zh).not.toMatch(/每日.*每月|模型限定|IP 管控|不停机轮换/i);
   });
+
+  it("does not advertise unproven incremental Kimi streaming", () => {
+    for (const locale of LOCALES) {
+      const kimi = learnProviderEn
+        .filter((article) => article.slug.includes("kimi"))
+        .map((article) => resolveArticle(article.slug, locale)!.content);
+      expect(JSON.stringify(kimi), locale).not.toMatch(/incremental SSE|инкрементальн.*SSE|增量 SSE|증분 SSE/i);
+    }
+  });
 });

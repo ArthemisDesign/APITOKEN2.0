@@ -383,13 +383,13 @@ export const learnProviderEn: LearnArticle[] = [
     cluster: "integrate",
     title: "Kimi API Quickstart",
     h1: "Kimi API quickstart with the Anthropic SDK",
-    description: "Call Kimi K3 and Kimi for Coding through apiToken.sale using the Anthropic Messages API, x-api-key, namespaced model IDs, streaming and one shared balance.",
+    description: "Call Kimi K3 and Kimi for Coding through apiToken.sale using the Anthropic Messages API, x-api-key, namespaced model IDs, terminal usage and one shared balance.",
     keywords: ["kimi api quickstart", "kimi api tutorial", "kimi anthropic api", "kimi k3 api example", "kimi for coding api", "kimi api curl"],
     dek: "Kimi speaks the Anthropic Messages protocol on the unified router. Existing Anthropic clients need only a custom base URL, the apiToken.sale key and an explicit kimi/* model ID.",
     sections: [
       { h2: "First request with curl", blocks: [
         { type: "code", code: "curl " + ROUTER + "/v1/messages \\\n  -H \"x-api-key: $APITOKEN_API_KEY\" \\\n  -H \"anthropic-version: 2023-06-01\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"model\":\"kimi/k3-256k\",\"max_tokens\":256,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: connected\"}]}'" },
-        { type: "p", text: "Set stream: true for incremental SSE. Terminal usage follows the Anthropic response shape, so existing usage parsers keep working." },
+        { type: "p", text: "Terminal usage follows the Anthropic response shape, so existing usage parsers keep working. The route accepts stream: true, but provider-boundary incrementality remains under live validation." },
       ] },
       { h2: "Use the Anthropic Python SDK", blocks: [
         { type: "code", code: [
@@ -413,7 +413,7 @@ export const learnProviderEn: LearnArticle[] = [
     ],
     faq: [
       { q: "Can I use the Anthropic SDK for Kimi?", a: "Yes. Point its base_url at https://router.apitoken.sale and choose a kimi/* model ID from the scoped catalog." },
-      { q: "Does Kimi support streaming on this route?", a: "Yes. Set stream: true and consume the normal incremental Anthropic SSE events." },
+      { q: "Can I set stream: true on the Kimi route?", a: "The route accepts it, but upstream and public chunk incrementality are still being live-verified. Use non-stream mode when chunk timing matters." },
       { q: "What model ID should I start with?", a: "Use kimi/kimi-for-coding for a coding-oriented default or kimi/k3-256k when you need K3 reasoning without the full 1M window." },
     ],
     related: ["how-to-buy-kimi-api-key", "kimi-api-for-claude-code", "kimi-api-for-kimi-code", "kimi-api-for-opencode"],
@@ -497,7 +497,7 @@ export const learnProviderEn: LearnArticle[] = [
     cluster: "integrate",
     title: "Use the Kimi API in OpenCode",
     h1: "Run Kimi K3 and Kimi for Coding in OpenCode",
-    description: "Connect OpenCode to Kimi through apiToken.sale with the router plugin, live model catalog, explicit kimi/* IDs, streaming and one prepaid API key.",
+    description: "Connect OpenCode to Kimi through apiToken.sale with the router plugin, a key-scoped model catalog, explicit kimi/* IDs and one prepaid API key.",
     keywords: ["kimi opencode", "kimi api opencode", "kimi k3 opencode", "kimi for coding setup", "opencode custom provider", "kimi coding agent"],
     dek: "OpenCode can address the Kimi namespace explicitly and consumes the router's live catalog. That makes it the safest coding-agent setup for switching between K3 and Kimi for Coding without hand-maintaining provider limits.",
     sections: [
