@@ -70,6 +70,19 @@ and advances each independently:
    operator repair clears the marker (`last_error = NULL`) to return the account to the
    sweep.
 
+   The sweep also covers the ARMED legacy cohort: accounts armed during the
+   pre-verification wave (`strict_chain_pending` already true) stuck in
+   `reconciliation_state='pending'` — the chain owns them but structurally cannot advance
+   them. These are selected too (armed + pending only; armed + verified stays exclusively
+   with the fast lane) and get the SAME idempotent steps: materialize — including the
+   re-pin to the live catalog head when the binding's pinned catalog generation is stale
+   (the engine's strict activation rejects those with a `missing_dependency` on the old
+   pin; the re-materialization writes a new desired version at the live head and the
+   delivery lane converges it first, quietly) — then the account-local verification with
+   the engine cross-check. A verified armed account is handed BACK to the chain, never
+   re-armed: the arm write is idempotent by construction, and the sweep reports it as
+   `pending` (waiting on the chain), not `armed`.
+
 New accounts need no alignment pass: B2C registrations are born with `mult_bp=5000`, and B2B
 invitee registrations now start at the full-price fallback (10000) — the negotiated discount
 lives only in the copied policy rules, so a scope outside them never inherits the negotiated

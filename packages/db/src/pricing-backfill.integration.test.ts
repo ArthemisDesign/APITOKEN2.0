@@ -989,4 +989,178 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
     expect(health.counts).toEqual({ eligible: 1, inFlight: 0, done: 0, failed: 1, pending: 0 });
     expect(health.recentFailures[0]?.lastError).toContain("no managed pricing policy");
   });
+
+  it("an ARMED shadow/pending binding (the pre-verification wave) is verified by the sweep and handed back to the chain", async () => {
+    const { userId, engineAccountId } = await provisionedB2cUser("backfill-armed@example.test");
+    await confirmShadowDelivery(userId);
+
+    // Armed + verified: the chain can drive it — the sweep must NOT see it (the fast lane
+    // owns those exclusively).
+    await seedClient.query(`
+      UPDATE account_policy_bindings SET strict_chain_pending = true WHERE user_id = $1
+    `, [userId]);
+    expect(await listPricingBackfillCandidates(database, { limit: 5 })).toEqual([]);
+
+    // The deadlock cohort's exact shape: armed, delivery confirmed, but reconciliation was
+    // never flipped — the chain cannot stage, and before this fix nobody owned the verify.
+    await seedClient.query(`
+      UPDATE account_policy_bindings SET reconciliation_state = 'pending' WHERE user_id = $1
+    `, [userId]);
+    expect((await listPricingBackfillCandidates(database, { limit: 5 }))
+      .map((candidate) => candidate.engineAccountId)).toEqual([engineAccountId]);
+
+    const engine = fakeEngine({
+      ...b2cRelease(engineAccountId),
+      pricingStatePolicy: await desiredPricingState(userId),
+    });
+    const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
+    // Verified in place and handed BACK to the chain — never re-armed.
+    expect(sweep).toEqual({
+      examined: 1,
+      armed: [],
+      armedWithoutReleaseCoverage: [],
+      pending: [engineAccountId],
+      failed: [],
+    });
+    expect(await bindingState(userId)).toMatchObject({
+      reconciliation_state: "verified",
+      strict_chain_pending: true,
+    });
+
+    const staged = await advanceAccountStrictChain(
+      database,
+      engine.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    );
+    expect(staged.status).toBe("staged");
+    await confirmStrictDelivery(userId);
+    await expect(advanceAccountStrictChain(
+      database,
+      engine.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    )).resolves.toEqual({ status: "opted_out" });
+    expect(await listPricingBackfillCandidates(database, { limit: 5 })).toEqual([]);
+  });
+
+  it("an ARMED account with a stale catalog pin is re-materialized at the live head, then verifies and completes", async () => {
+    const { userId, engineAccountId } = await provisionedB2cUser("backfill-stale-pin@example.test");
+
+    // Test-local pre-cutover: the post-cutover editor guard refuses global_b2c saves, but
+    // the stage-5 fixture seeds the retired track-shaped source policy and the auto re-pin
+    // refuses track rules. Production's global-b2c head is already discount-shaped — shape
+    // the fixture the same way with the real writer (which also re-materializes the binding
+    // to the discount-shaped v2 at gen 1).
+    await seedClient.query(`DELETE FROM pricing_release_activation_receipts_v2`);
+    await updateManagedPricingPolicy(database, {
+      ownerType: "global_b2c",
+      ownerId: "global-b2c",
+      expectedVersion: 1,
+      rules: [
+        { scope: { provider: { providerId: "anthropic" } }, pricingMode: "discount", discountBps: 5_000 },
+        { scope: { provider: { providerId: "openai" } }, pricingMode: "discount", discountBps: 5_000 },
+      ],
+      actorId: "admin@example.test",
+      reason: "shape the fixture policy to discount rules (prod shape)",
+    });
+
+    // The armed-stuck cohort's shape: armed, delivery confirmed, reconciliation never flipped.
+    await confirmShadowDelivery(userId);
+    await seedClient.query(`
+      UPDATE account_policy_bindings
+      SET reconciliation_state = 'pending', strict_chain_pending = true
+      WHERE user_id = $1
+    `, [userId]);
+    const pinBefore = await seedClient.query<{ desired: string; catalog: string }>(`
+      SELECT binding.desired_effective_version::text AS desired, version.catalog_generation::text AS catalog
+      FROM account_policy_bindings binding
+      JOIN account_policy_versions version
+        ON version.binding_id = binding.id AND version.effective_version = binding.desired_effective_version
+      WHERE binding.user_id = $1
+    `, [userId]);
+    expect(pinBefore.rows[0]).toEqual({ desired: "2", catalog: "1" });
+
+    // The live catalog head advances: the binding's pinned generation is now stale (the
+    // engine's strict activation rejected these accounts with a missing_dependency on the
+    // old catalog pin).
+    await seedClient.query(`
+      INSERT INTO provider_capability_versions (generation, schema_version, content_digest, observed_at, created_at)
+      VALUES (2, 1, $1, now(), now())
+    `, [digest("capability-2")]);
+    await seedClient.query(`
+      INSERT INTO product_catalog_versions (
+        product_id, generation, schema_version, capability_generation, capability_digest,
+        content_digest, actor_type, reason, created_at
+      )
+      SELECT product_id, 2, schema_version, 2, $1, $2, 'operator', 'test catalog advance', now()
+      FROM product_catalog_versions WHERE product_id = 'main' AND generation = 1
+    `, [digest("capability-2"), digest("catalog-2")]);
+    await seedClient.query(`
+      UPDATE product_catalog_heads SET active_generation = 2, updated_at = now()
+      WHERE product_id = 'main'
+    `);
+
+    // Pass 1: materialize re-pins to the live head — a NEW desired version (gen 2) that the
+    // delivery lane has not converged yet: quiet pending, never an error.
+    const first = fakeEngine({
+      ...b2cRelease(engineAccountId),
+      pricingStatePolicy: await desiredPricingState(userId),
+    });
+    const firstSweep = await runPricingBackfillSweep(database, first.transport, { limit: 5 });
+    expect(firstSweep).toEqual({
+      examined: 1,
+      armed: [],
+      armedWithoutReleaseCoverage: [],
+      pending: [engineAccountId],
+      failed: [],
+    });
+    const pinAfter = await seedClient.query<{ desired: string; catalog: string }>(`
+      SELECT binding.desired_effective_version::text AS desired, version.catalog_generation::text AS catalog
+      FROM account_policy_bindings binding
+      JOIN account_policy_versions version
+        ON version.binding_id = binding.id AND version.effective_version = binding.desired_effective_version
+      WHERE binding.user_id = $1
+    `, [userId]);
+    expect(pinAfter.rows[0]).toEqual({ desired: "3", catalog: "2" });
+    expect(await bindingState(userId)).toMatchObject({
+      reconciliation_state: "pending",
+      sync_state: "pending",
+      last_error: null,
+    });
+
+    // The delivery lane converges the new head; the next pass verifies (cross-checking the
+    // new digest) and hands the account back; the chain stages it and retires the account.
+    await confirmShadowDelivery(userId);
+    await seedClient.query(`
+      UPDATE account_policy_bindings SET reconciliation_state = 'pending' WHERE user_id = $1
+    `, [userId]);
+    const converged = fakeEngine({
+      ...b2cRelease(engineAccountId),
+      pricingStatePolicy: await desiredPricingState(userId),
+    });
+    const secondSweep = await runPricingBackfillSweep(database, converged.transport, { limit: 5 });
+    expect(secondSweep).toEqual({
+      examined: 1,
+      armed: [],
+      armedWithoutReleaseCoverage: [],
+      pending: [engineAccountId],
+      failed: [],
+    });
+    expect(await bindingState(userId)).toMatchObject({
+      reconciliation_state: "verified",
+      strict_chain_pending: true,
+    });
+    const staged = await advanceAccountStrictChain(
+      database,
+      converged.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    );
+    expect(staged.status).toBe("staged");
+    await confirmStrictDelivery(userId);
+    await expect(advanceAccountStrictChain(
+      database,
+      converged.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    )).resolves.toEqual({ status: "opted_out" });
+    expect(await listPricingBackfillCandidates(database, { limit: 5 })).toEqual([]);
+  });
 });

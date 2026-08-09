@@ -50,8 +50,13 @@ import { PRICING_RELEASE_OPT_OUT_AUDIT_ACTION } from "./strict-chain.js";
  * Candidate selection is fail-closed on every exclusion: commerce-known customer bindings
  * only (`account_class IN ('b2c','b2b') AND user_id IS NOT NULL`), service accounts doubly
  * excluded (by the binding identity CHECK they never carry a user binding, and by an
- * explicit `service_account_inventory_v2` probe), already-armed chains excluded (the fast
- * lane owns them), and accounts with a recorded opt-out audit entry excluded (done). The
+ * explicit `service_account_inventory_v2` probe), terminal skips excluded (the hot-loop
+ * guard), and accounts with a recorded opt-out audit entry excluded (done). Accounts ARMED
+ * in the pre-verification wave (`strict_chain_pending` already true) are included exactly
+ * when the chain structurally cannot advance them — `reconciliation_state = 'pending'`:
+ * for those the sweep runs the same idempotent steps (materialize/re-pin → account-local
+ * verification) and hands them BACK to the chain instead of re-arming; armed accounts the
+ * chain can already drive ('verified') stay exclusively with the fast lane. The
  * engine itself remains the ultimate arbiter: its opt-out replay is `unchanged`, so a
  * lost audit write can never double-apply the marker.
  *
@@ -66,6 +71,8 @@ export type PricingBackfillCandidate = {
   engineAccountId: string;
   accountClass: "b2c" | "b2b";
   policyEnforcement: string;
+  /** Already armed (pre-verification wave): the sweep materializes + verifies, the chain owns. */
+  strictChainPending: boolean;
 };
 
 export type PricingBackfillAdvanceResult =
@@ -163,16 +170,20 @@ export async function listPricingBackfillCandidates(
     engine_account_id: string;
     account_class: "b2c" | "b2b";
     policy_enforcement: string;
+    strict_chain_pending: boolean;
   }>(
     `
     SELECT binding.id::text AS binding_id, binding.user_id::text,
            binding.engine_account_id, binding.account_class,
-           binding.policy_enforcement
+           binding.policy_enforcement, binding.strict_chain_pending
     FROM account_policy_bindings binding
     JOIN customer_profiles profile ON profile.user_id = binding.user_id
     WHERE binding.user_id IS NOT NULL
       AND binding.account_class IN ('b2c', 'b2b')
-      AND NOT binding.strict_chain_pending
+      -- Unarmed accounts, plus armed ones the chain structurally cannot advance
+      -- (reconciliation 'pending'): the sweep verifies those account-locally and hands
+      -- them back; armed 'verified' accounts stay exclusively with the fast lane.
+      AND (NOT binding.strict_chain_pending OR binding.reconciliation_state = 'pending')
       AND (binding.last_error IS NULL OR binding.last_error NOT LIKE 'terminal: %')
       AND NOT EXISTS (
         SELECT 1 FROM service_account_inventory_v2 service
@@ -196,6 +207,7 @@ export async function listPricingBackfillCandidates(
     engineAccountId: row.engine_account_id,
     accountClass: row.account_class,
     policyEnforcement: row.policy_enforcement,
+    strictChainPending: row.strict_chain_pending,
   }));
 }
 
@@ -678,6 +690,20 @@ export async function advancePricingBackfillAccount(
   // rotate quietly — arming them is precisely the deadlock.
   const reconciliation = await verifyBackfillShadowReconciliation(database, engine, candidate);
   if (reconciliation === "pending") {
+    await database.pool.query(
+      `
+      UPDATE account_policy_bindings SET updated_at = now() WHERE id = $1
+    `,
+      [candidate.bindingId],
+    );
+    return { status: "pending" };
+  }
+
+  if (candidate.strictChainPending) {
+    // Armed in the pre-verification wave: the chain already owns this account — the sweep's
+    // job was materialize (re-pin included) + verification only. Never re-arm (the arm
+    // write below stays idempotent regardless); rotate quietly and let the fast tick stage
+    // it from here.
     await database.pool.query(
       `
       UPDATE account_policy_bindings SET updated_at = now() WHERE id = $1

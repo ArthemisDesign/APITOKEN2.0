@@ -2029,6 +2029,7 @@ export async function materializeProvisionedUserPolicy(database: Database, input
       `, [input.userId, input.engineAccountId, binding.rows[0].sync_state]);
     }
     const bindingRow = binding.rows[0]!;
+    const liveCatalog = await activeCatalog(client, source.policy.product_id);
     if (bindingRow.desired_effective_version !== null) {
       const desired = await client.query<{
         policy_version: string;
@@ -2047,9 +2048,14 @@ export async function materializeProvisionedUserPolicy(database: Database, input
       const desiredRow = desired.rows[0];
       // A desired version whose delivery died (terminal prepare rejection) must not be reused:
       // falling through re-materializes a fresh effective version with live dependency pins.
+      // A desired version whose SOURCE policy pins a stale catalog generation is not reused
+      // either: the engine can no longer validate that lineage against the live switch head
+      // (strict activation fails missing_dependency on the old pin), so the source policy is
+      // re-pinned below first and the fresh effective version follows.
       if (
         desiredRow
         && desiredRow.job_status !== "dead"
+        && source.catalogGeneration === liveCatalog.generation
         && positiveVersion(desiredRow.policy_version, "desired source policy version") === source.policy.version
         && desiredRow.policy_digest === source.policy.content_digest
         && desiredRow.content_digest === bindingRow.desired_digest
@@ -2073,7 +2079,6 @@ export async function materializeProvisionedUserPolicy(database: Database, input
     // catalog head — then materialize from it. Older effective policies keep referencing their
     // own immutable source versions; nothing already delivered is rewritten.
     let stagedSource = source;
-    const liveCatalog = await activeCatalog(client, source.policy.product_id);
     if (source.catalogGeneration !== liveCatalog.generation) {
       if (source.policy.rules.some((rule) =>
         rule.pricing_mode !== "discount" || rule.discount_bps === null)) {
