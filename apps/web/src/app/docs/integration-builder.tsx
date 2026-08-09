@@ -16,7 +16,7 @@ import {
 import { HighlightedCode } from "./highlighted-code";
 import { Prose } from "./prose";
 
-const providers: Array<{ id: IntegrationProvider; name: string; en: string; ru: string }> = [
+export const INTEGRATION_PROVIDER_TABS: Array<{ id: IntegrationProvider; name: string; en: string; ru: string }> = [
   { id: "anthropic", name: "Claude", en: "Anthropic Messages API", ru: "Anthropic Messages API" },
   { id: "openai", name: "GPT", en: "OpenAI-compatible API", ru: "OpenAI-совместимый API" },
   { id: "gemini", name: "Gemini", en: "Google Gemini API", ru: "Google Gemini API" },
@@ -24,6 +24,7 @@ const providers: Array<{ id: IntegrationProvider; name: string; en: string; ru: 
   // format the user will actually configure, not a dialect we do not have.
   { id: "kimi", name: "Kimi", en: "Anthropic Messages API", ru: "Anthropic Messages API" },
 ];
+const providers = INTEGRATION_PROVIDER_TABS;
 
 const tools: Array<{ id: IntegrationTool; name: string; en: string; ru: string }> = [
   { id: "claude-code", name: "Claude Code", en: "Native Claude agent", ru: "Нативный агент Claude" },

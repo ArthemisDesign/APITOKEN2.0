@@ -39,34 +39,38 @@ client documentation are in progress and are tracked separately.
 - `decision` This file is an internal engineering instruction (required by `AGENTS.md`,
   "Documentation is a living contract"), not a public storefront.
 
-A key under **strict** policy cannot use KIMI at all, and this is the one blocker between the
-published catalog entry and actually selling the provider.
+A key under **strict** policy is served, as of 2026-08-09. It was not, and that refusal was the
+one blocker between the published catalog entry and selling the provider.
 
-`KimiGateway::handle` refuses a strict key with `kimi_strict_pricing_unavailable` as its very
-first check, before any pricing attempt, and `router_pricing.rs` therefore quotes no `kimi/*` rate
-for such a key — the surfaces stay consistent, so the customer sees a clean absence rather than a
-mystery 5xx.
+`KimiGateway::handle` used to refuse a strict key with `kimi_strict_pricing_unavailable` as its
+very first check, before any pricing attempt. The premise was that serving one required a
+release-pinned catalog entry for `kimi`. The release-v2 retirement made that premise false: head
+55 is final, a model outside the pinned catalog is a product gap rather than a fault, and it is
+billed on the account's legacy multiplier through the exact legacy tariff
+(`docs/ops/MODEL_RELEASE_CYCLE.md` Phase B, `docs/commerce/MULTI-DISCOUNT.md` §7.1a) — which is
+exactly how this plane already reserves.
 
-**This is not the position Gemini is in**, and an earlier revision of this file said so wrongly.
-`reserve_gemini_billing` tries `reserve_gemini_release_v2` *first* and serves the strict account
-from it; its strict refusal is only a fallback for the case where no release resolves at all. KIMI
-has no such path, because `SnapshotProvider` (`crates/registry/src/pricing/snapshots.rs`) knows
-only `anthropic`/`openai`/`google`.
+- `decision` 2026-08-09 (owner-approved) — delete the blanket refusal. The one condition that
+  remains is whether this account may use the legacy writers at all, and that is enforced by
+  `legacy_pricing_path_closed` (`crates/registry/src/pg.rs`) inside the transaction that moves the
+  money: the writers stay shut while a release head exists **unless** the account carries the
+  one-way opt-out marker. An unmigrated account is therefore still refused, once, by the authority
+  that owns the decision instead of by a guess in the gateway. GLM keeps its own refusal for now —
+  its money path has no live coverage.
 
-The urgency comes from the release-v2 retirement: `00348678` provisions new accounts (B2C and
-invited B2B) directly on the strict path, and `5b1af567` backfills the existing cohort behind
-`PRICING_BACKFILL_ENABLED`. As that backfill proceeds, KIMI stops being reachable for essentially
-the whole customer base. OpenKeys keys are strict by construction, so KIMI is already unavailable
-there.
+`router_pricing.rs` follows: it quotes `kimi/*` to a strict key at the account's legacy
+multiplier, because that is what settlement bills. Dropping those candidates — as it did while the
+gateway refused them — would now hide from a strict key a provider its own plane serves.
 
-The fix mirrors Gemini rather than reviving the retired release machinery: add
-`SnapshotProvider::Kimi`, and replace the unconditional refusal with a release resolution that
-falls through to the exact legacy tariff on `registry::pricing::is_model_unpriced` — the path
-ratified when generation 55 became final, and the one KIMI already reserves on for legacy keys.
+The urgency was real: `00348678` provisions new accounts (B2C and invited B2B) directly on the
+strict path and `5b1af567` backfills the existing cohort behind `PRICING_BACKFILL_ENABLED`, so the
+refusal was removing customers from KIMI as the migration progressed. OpenKeys keys are strict by
+construction and were affected first.
 
-Until the live matrix is executed, the GA criterion of §1 `PROVIDER_ONBOARDING.md` is **not
-claimed**. The terminal state of this work is a verified **preview**: runtime and calibration are
-proven on mock gates; live gates are executed separately on our own subscription.
+Until the live matrix is executed on every profile, the GA criterion of §1
+`PROVIDER_ONBOARDING.md` is **not claimed**. The terminal state of this work is a verified
+**preview**: runtime and calibration are proven on mock gates; live gates are executed separately
+on our own subscription.
 
 ## 1. Product / plan
 

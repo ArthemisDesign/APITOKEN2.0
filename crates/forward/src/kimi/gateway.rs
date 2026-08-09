@@ -1254,15 +1254,23 @@ impl KimiGateway {
         if self.shutting_down.load(Ordering::Acquire) {
             return error_response(GatewayFailure::Unavailable("kimi_shutdown"));
         }
-        if request
-            .billing
-            .as_ref()
-            .is_some_and(|input| input.strict_policy)
-        {
-            return error_response(GatewayFailure::Unsupported(
-                "kimi_strict_pricing_unavailable",
-            ));
-        }
+        // A strict-policy key was refused here, before any pricing was attempted, on the
+        // assumption that serving one required a release-pinned catalog entry for `kimi`. The
+        // release-v2 retirement removed that requirement: head 55 is final, a model outside the
+        // pinned catalog is a product gap rather than a fault, and it is billed on the account's
+        // legacy multiplier through the exact legacy tariff — which is how this plane already
+        // reserves (`docs/ops/MODEL_RELEASE_CYCLE.md` Phase B, `docs/commerce/MULTI-DISCOUNT.md`
+        // §7.1a).
+        //
+        // The remaining condition is enforced by the authority rather than guessed here:
+        // `legacy_pricing_path_closed` keeps the legacy and strict writers shut while a release
+        // head exists unless the account carries the one-way opt-out marker, so an account that
+        // has not been migrated still cannot spend on this plane — it is refused once, in the
+        // place that owns the decision.
+        //
+        // Keeping the blanket refusal would have made KIMI unreachable for the whole customer
+        // base as strict provisioning and its backfill progress, which is the opposite of what
+        // publishing the provider was for.
         if let Err(error) = validate_priced_surface(&request.body) {
             return error_response(error);
         }

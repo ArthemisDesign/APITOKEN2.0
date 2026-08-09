@@ -1874,3 +1874,22 @@ fn foreign_namespaces_and_tariff_keys_never_reach_the_kimi_plane() {
         assert_eq!(KimiGateway::resolve_public_model(foreign), None, "{foreign}");
     }
 }
+
+/// The blanket strict-policy refusal must not come back.
+///
+/// It was written when serving a strict key was believed to require a release-pinned catalog
+/// entry for `kimi`. After the release-v2 retirement that is false: a model outside the pinned
+/// catalog is billed on the account's legacy multiplier through the exact legacy tariff, and the
+/// one condition that remains — whether this account may use the legacy writers at all — is
+/// enforced by `legacy_pricing_path_closed` in the registry, inside the transaction that moves
+/// the money. Re-adding a gateway-side guess would silently cut KIMI off from every account the
+/// strict provisioning and its backfill have already migrated.
+#[test]
+fn the_gateway_never_refuses_a_strict_key_before_the_authority_decides() {
+    let source = include_str!("../gateway.rs");
+    let refusal = concat!("kimi_strict", "_pricing_unavailable");
+    assert!(
+        !source.contains(refusal),
+        "the blanket strict refusal is back in the KIMI gateway; the authority owns that decision"
+    );
+}

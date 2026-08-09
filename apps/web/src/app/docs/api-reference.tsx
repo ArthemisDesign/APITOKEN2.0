@@ -8,11 +8,15 @@ import { buildApiGuide, type ApiLanguage, type ApiStyle } from "./api-reference-
 import { HighlightedCode } from "./highlighted-code";
 import { Prose } from "./prose";
 
-const providers: Array<{ id: IntegrationProvider; name: string; en: string; ru: string }> = [
+export const API_REFERENCE_PROVIDER_TABS: Array<{ id: IntegrationProvider; name: string; en: string; ru: string }> = [
   { id: "anthropic", name: "Claude", en: "Anthropic Messages API", ru: "Anthropic Messages API" },
   { id: "openai", name: "GPT", en: "OpenAI Responses API", ru: "OpenAI Responses API" },
   { id: "gemini", name: "Gemini", en: "Google Gemini API", ru: "Google Gemini API" },
+  // KIMI has no dialect of its own — it is served over Anthropic Messages under its own
+  // catalogue namespace, so the label states the wire format the reader will actually use.
+  { id: "kimi", name: "Kimi", en: "Anthropic Messages API", ru: "Anthropic Messages API" },
 ];
+const providers = API_REFERENCE_PROVIDER_TABS;
 
 const apiStyles: Array<{ id: ApiStyle; en: string; ru: string }> = [
   { id: "native", en: "Native", ru: "Нативный" },
