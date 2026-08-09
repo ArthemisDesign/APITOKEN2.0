@@ -81,7 +81,11 @@ and advances each independently:
    delivery lane converges it first, quietly) — then the account-local verification with
    the engine cross-check. A verified armed account is handed BACK to the chain, never
    re-armed: the arm write is idempotent by construction, and the sweep reports it as
-   `pending` (waiting on the chain), not `armed`.
+   `pending` (waiting on the chain), not `armed`. The same rescue applies to ARMED +
+   `sync_state='pending'` accounts (strict delivery never confirmed): the materialize step
+   runs for strict bindings too — the reuse branch is a no-op when the pinned catalog
+   generation is current (no new version, no churn), and re-pins to the live head exactly
+   when the pin is stale; the release-covered equivalence gate still applies to them.
 
 New accounts need no alignment pass: B2C registrations are born with `mult_bp=5000`, and B2B
 invitee registrations now start at the full-price fallback (10000) — the negotiated discount

@@ -1878,25 +1878,6 @@ export async function syncProvisionedAccountScalar(client: PoolClient, input: {
   `, [input.userId, input.multiplierBp]);
 }
 
-/** Standalone variant of syncProvisionedAccountScalar for callers outside a materialization transaction. */
-export async function alignProvisionedAccountScalar(database: Database, input: {
-  userId: string;
-  engineAccountId: string;
-  multiplierBp: number;
-}): Promise<void> {
-  const client = await database.pool.connect();
-  try {
-    await client.query("BEGIN");
-    await syncProvisionedAccountScalar(client, input);
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
 export async function materializeProvisionedUserPolicy(database: Database, input: {
   userId: string;
   engineAccountId: string;

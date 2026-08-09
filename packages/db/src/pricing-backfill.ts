@@ -5,7 +5,6 @@ import type {
 import type { EngineClient } from "@claude-api/engine-client";
 import type { Database } from "./client.js";
 import {
-  alignProvisionedAccountScalar,
   materializeProvisionedUserPolicy,
   PricingPolicyWriteError,
 } from "./pricing-policy-write.js";
@@ -28,8 +27,9 @@ import { PRICING_RELEASE_OPT_OUT_AUDIT_ACTION } from "./strict-chain.js";
  *    catalog head through the SAME writer registration provisioning uses
  *    (`materializeProvisionedUserPolicy` with the arming step disabled): B2C takes the
  *    current head of `policy:main:global-b2c`, B2B the account's own `b2b_client` policy,
- *    with per-model/provider scopes preserved exactly by the materializer. A binding that
- *    is already strict skips this step — its enforced policy is already the desired one.
+ *    with per-model/provider scopes preserved exactly by the materializer. Strict bindings
+ *    run it too: the reuse branch is a no-op for a current pin, and a stale catalog pin
+ *    (whose strict delivery can never confirm) is re-pinned to the live head.
  * 3. equivalence — the account's release-side resolution (assignment extension over base,
  *    pinned policy, model → provider → global precedence — mirroring the engine's
  *    `pricing_release_resolution_v2_in_transaction`) must resolve every scope to exactly
@@ -181,9 +181,13 @@ export async function listPricingBackfillCandidates(
     WHERE binding.user_id IS NOT NULL
       AND binding.account_class IN ('b2c', 'b2b')
       -- Unarmed accounts, plus armed ones the chain structurally cannot advance
-      -- (reconciliation 'pending'): the sweep verifies those account-locally and hands
-      -- them back; armed 'verified' accounts stay exclusively with the fast lane.
-      AND (NOT binding.strict_chain_pending OR binding.reconciliation_state = 'pending')
+      -- (reconciliation 'pending': unverifiable; sync 'pending': the strict delivery has
+      -- not confirmed — the sweep re-materializes a stale catalog pin first, then verifies
+      -- account-locally) and hands them back; armed accounts the chain can already drive
+      -- stay exclusively with the fast lane.
+      AND (NOT binding.strict_chain_pending
+           OR binding.reconciliation_state = 'pending'
+           OR binding.sync_state = 'pending')
       AND (binding.last_error IS NULL OR binding.last_error NOT LIKE 'terminal: %')
       AND NOT EXISTS (
         SELECT 1 FROM service_account_inventory_v2 service
@@ -585,35 +589,32 @@ export async function advancePricingBackfillAccount(
     : deriveReleaseFallbackBp(releasePolicy);
   await engine.setAccountMultiplier(candidate.engineAccountId, fallbackBp);
 
-  if (candidate.policyEnforcement === "strict") {
-    await alignProvisionedAccountScalar(database, {
-      userId: candidate.userId,
-      engineAccountId: candidate.engineAccountId,
-      multiplierBp: fallbackBp,
-    });
-  } else {
-    try {
-      const materialized = await materializeProvisionedUserPolicy(
+  // Materialize runs for EVERY candidate class, strict ones included: an armed strict
+  // binding whose policy pins a stale catalog generation can never confirm its strict
+  // delivery (the engine rejects the activation with missing_dependency on the old pin),
+  // and only this step re-pins it to the live head. For a current strict binding the reuse
+  // branch makes it a no-op — no new version, no churn.
+  try {
+    const materialized = await materializeProvisionedUserPolicy(
+      database,
+      { userId: candidate.userId, engineAccountId: candidate.engineAccountId },
+      { armStrictChain: false, alignScalarBp: fallbackBp },
+    );
+    if (!materialized.policyRequired) {
+      // Permanent skip: there is no managed policy to materialize from, so nothing in the
+      // lane can ever advance this account — mark it terminal instead of re-logging it
+      // every pass. Stays visible in pipeline-health; an operator repair clears the marker.
+      return notePricingBackfillTerminalSkip(
         database,
-        { userId: candidate.userId, engineAccountId: candidate.engineAccountId },
-        { armStrictChain: false, alignScalarBp: fallbackBp },
+        candidate.bindingId,
+        "account has no managed pricing policy to materialize",
       );
-      if (!materialized.policyRequired) {
-        // Permanent skip: there is no managed policy to materialize from, so nothing in the
-        // lane can ever advance this account — mark it terminal instead of re-logging it
-        // every pass. Stays visible in pipeline-health; an operator repair clears the marker.
-        return notePricingBackfillTerminalSkip(
-          database,
-          candidate.bindingId,
-          "account has no managed pricing policy to materialize",
-        );
-      }
-    } catch (error) {
-      if (error instanceof PricingPolicyWriteError) {
-        return notePricingBackfillFailure(database, candidate.bindingId, error.message);
-      }
-      throw error;
     }
+  } catch (error) {
+    if (error instanceof PricingPolicyWriteError) {
+      return notePricingBackfillFailure(database, candidate.bindingId, error.message);
+    }
+    throw error;
   }
 
   const binding = await database.pool.query<{

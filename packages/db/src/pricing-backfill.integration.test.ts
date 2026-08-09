@@ -1163,4 +1163,196 @@ describe.runIf(Boolean(connectionString))("existing-account pricing release back
     )).resolves.toEqual({ status: "opted_out" });
     expect(await listPricingBackfillCandidates(database, { limit: 5 })).toEqual([]);
   });
+
+  // The final stragglers' exact shape: armed, strict, verified, sync 'pending' (the strict
+  // delivery keeps retrying), desired=applied. Shared by both tests below.
+  async function armedVerifiedSyncPendingB2b(email: string) {
+    const user = await createEmailUser(database, email, "password-hash");
+    const engineAccountId = `acct_backfill_${user.id.replaceAll("-", "")}`;
+    await seedClient.query(`
+      UPDATE engine_accounts SET engine_account_id = $2, status = 'active' WHERE user_id = $1
+    `, [user.id, engineAccountId]);
+    await runStage5Backfill(database, {
+      schema_version: 1,
+      engine_accounts: [{ account_id: engineAccountId, multiplier_bp: 5_000, status: "active" }],
+      openkeys_accounts: [],
+    }, { mode: "safe" });
+    await convertCustomerToBusiness(database, {
+      userId: user.id,
+      actorId: "admin@example.test",
+      reason: "negotiated business terms",
+      multiplierBp: 4_000,
+    });
+    await updateManagedPricingPolicy(database, {
+      ownerType: "b2b_client",
+      ownerId: user.id,
+      expectedVersion: 1,
+      rules: [
+        { scope: { provider: { providerId: "anthropic" } }, pricingMode: "discount", discountBps: 4_000 },
+        { scope: { model: { providerId: "anthropic", canonicalModelId: "claude-opus-4-8" } }, pricingMode: "discount", discountBps: 6_000 },
+      ],
+      actorId: "admin@example.test",
+      reason: "negotiated model-scoped rules",
+    });
+    await confirmShadowDelivery(user.id);
+    await seedClient.query(`
+      UPDATE account_policy_bindings
+      SET policy_enforcement = 'strict', funding_enforcement = 'strict',
+          reconciliation_state = 'verified', sync_state = 'pending',
+          strict_chain_pending = true
+      WHERE user_id = $1
+    `, [user.id]);
+    const release = releasePolicy({
+      policyId: `release-v2:b2b:${engineAccountId}`,
+      accountClass: "b2b",
+      rules: [
+        { scope: "provider", providerId: "anthropic", payableMultiplierBp: 6_000 },
+        { scope: "model", providerId: "anthropic", canonicalModelId: "claude-opus-4-8", payableMultiplierBp: 4_000 },
+      ],
+    });
+    const fixture: ReleaseFixture = {
+      extensions: { [engineAccountId]: releaseAssignment(engineAccountId, release) },
+      policies: { [`${release.policy_id}@${release.policy_version}`]: release },
+    };
+    return { userId: user.id, engineAccountId, fixture };
+  }
+
+  it("an ARMED+verified+sync-pending account with a stale catalog pin is re-materialized at the live head, then completes", async () => {
+    const { userId, engineAccountId, fixture } = await armedVerifiedSyncPendingB2b("backfill-armed-stale@example.test");
+    const pinBefore = await seedClient.query<{ desired: string; catalog: string }>(`
+      SELECT binding.desired_effective_version::text AS desired, version.catalog_generation::text AS catalog
+      FROM account_policy_bindings binding
+      JOIN account_policy_versions version
+        ON version.binding_id = binding.id AND version.effective_version = binding.desired_effective_version
+      WHERE binding.user_id = $1
+    `, [userId]);
+    const desiredBefore = Number(pinBefore.rows[0]!.desired);
+    expect(pinBefore.rows[0]!.catalog).toBe("1");
+
+    // The live catalog head advances past the pin (engine strict activation keeps rejecting
+    // with missing_dependency on the old pin — the straggler signature).
+    await seedClient.query(`
+      INSERT INTO provider_capability_versions (generation, schema_version, content_digest, observed_at, created_at)
+      VALUES (2, 1, $1, now(), now())
+    `, [digest("capability-2")]);
+    await seedClient.query(`
+      INSERT INTO product_catalog_versions (
+        product_id, generation, schema_version, capability_generation, capability_digest,
+        content_digest, actor_type, reason, created_at
+      )
+      SELECT product_id, 2, schema_version, 2, $1, $2, 'operator', 'test catalog advance', now()
+      FROM product_catalog_versions WHERE product_id = 'main' AND generation = 1
+    `, [digest("capability-2"), digest("catalog-2")]);
+    await seedClient.query(`
+      INSERT INTO provider_capability_entries (generation, provider_id, canonical_model_id, entry_digest, capability_data)
+      SELECT 2, provider_id, canonical_model_id, entry_digest, capability_data
+      FROM provider_capability_entries WHERE generation = 1
+    `);
+    await seedClient.query(`
+      INSERT INTO product_catalog_entries (product_id, generation, capability_generation, provider_id, canonical_model_id, enabled)
+      SELECT product_id, 2, 2, provider_id, canonical_model_id, enabled
+      FROM product_catalog_entries WHERE product_id = 'main' AND generation = 1
+    `);
+    await seedClient.query(`
+      UPDATE product_catalog_heads SET active_generation = 2, updated_at = now()
+      WHERE product_id = 'main'
+    `);
+
+    // Pass 1: materialize re-pins (new desired at the live head, staged strict→strict),
+    // the release-covered equivalence gate passes at the negotiated rules, and the account
+    // rotates quietly while the new desired is unconverged.
+    const first = fakeEngine({
+      ...fixture,
+      pricingStatePolicy: await desiredPricingState(userId),
+    });
+    const firstSweep = await runPricingBackfillSweep(database, first.transport, { limit: 5 });
+    expect(firstSweep).toEqual({
+      examined: 1,
+      armed: [],
+      armedWithoutReleaseCoverage: [],
+      pending: [engineAccountId],
+      failed: [],
+    });
+    const pinAfter = await seedClient.query<{ desired: string; catalog: string }>(`
+      SELECT binding.desired_effective_version::text AS desired, version.catalog_generation::text AS catalog
+      FROM account_policy_bindings binding
+      JOIN account_policy_versions version
+        ON version.binding_id = binding.id AND version.effective_version = binding.desired_effective_version
+      WHERE binding.user_id = $1
+    `, [userId]);
+    expect(pinAfter.rows[0]).toEqual({ desired: String(desiredBefore + 1), catalog: "2" });
+    expect(await bindingState(userId)).toMatchObject({
+      policy_enforcement: "strict",
+      reconciliation_state: "verified",
+      sync_state: "pending",
+      last_error: null,
+    });
+
+    // The strict delivery of the re-pinned version confirms; the account leaves the
+    // candidate set (armed + verified + confirmed is the fast lane's), and the chain
+    // retires it.
+    await confirmStrictDelivery(userId);
+    const converged = fakeEngine({
+      ...fixture,
+      pricingStatePolicy: await desiredPricingState(userId),
+    });
+    const secondSweep = await runPricingBackfillSweep(database, converged.transport, { limit: 5 });
+    expect(secondSweep).toEqual({
+      examined: 0,
+      armed: [],
+      armedWithoutReleaseCoverage: [],
+      pending: [],
+      failed: [],
+    });
+    await expect(advanceAccountStrictChain(
+      database,
+      converged.transport,
+      (await listPendingStrictChainAccounts(database, 10))[0]!,
+    )).resolves.toEqual({ status: "opted_out" });
+    expect(await listPricingBackfillCandidates(database, { limit: 5 })).toEqual([]);
+  });
+
+  it("an ARMED+verified+sync-pending account already at the live head is NOT churned — no new version, quiet rotation", async () => {
+    const { userId, engineAccountId, fixture } = await armedVerifiedSyncPendingB2b("backfill-armed-current@example.test");
+    const desiredBefore = (await seedClient.query<{ desired: string }>(`
+      SELECT desired_effective_version::text AS desired
+      FROM account_policy_bindings WHERE user_id = $1
+    `, [userId])).rows[0]!.desired;
+    const versionsBefore = await seedClient.query<{ n: string }>(`
+      SELECT count(*)::text AS n FROM account_policy_versions
+      WHERE binding_id IN (SELECT id FROM account_policy_bindings WHERE user_id = $1)
+    `, [userId]);
+
+    const engine = fakeEngine({
+      ...fixture,
+      pricingStatePolicy: await desiredPricingState(userId),
+    });
+    const sweep = await runPricingBackfillSweep(database, engine.transport, { limit: 5 });
+    expect(sweep).toEqual({
+      examined: 1,
+      armed: [],
+      armedWithoutReleaseCoverage: [],
+      pending: [engineAccountId],
+      failed: [],
+    });
+    // The pin is current: the materialize reuse branch is a no-op — no new effective
+    // version, no new source version, desired untouched, no error.
+    const versionsAfter = await seedClient.query<{ n: string }>(`
+      SELECT count(*)::text AS n FROM account_policy_versions
+      WHERE binding_id IN (SELECT id FROM account_policy_bindings WHERE user_id = $1)
+    `, [userId]);
+    expect(versionsAfter.rows[0]!.n).toBe(versionsBefore.rows[0]!.n);
+    const desired = await seedClient.query<{ desired: string }>(`
+      SELECT desired_effective_version::text AS desired
+      FROM account_policy_bindings WHERE user_id = $1
+    `, [userId]);
+    expect(desired.rows[0]!.desired).toBe(desiredBefore);
+    expect(await bindingState(userId)).toMatchObject({
+      strict_chain_pending: true,
+      last_error: null,
+    });
+    // Quiet rotation: still a candidate for a later pass (it arms nothing, logs nothing).
+    expect((await listPricingBackfillCandidates(database, { limit: 5 }))
+      .map((candidate) => candidate.engineAccountId)).toEqual([engineAccountId]);
+  });
 });
