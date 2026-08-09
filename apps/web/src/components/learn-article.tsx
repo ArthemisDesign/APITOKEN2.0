@@ -7,6 +7,7 @@ import {
   learnPath,
   learnUi,
   LOCALES,
+  orderLearnHubArticles,
   articleUpdatedDate,
   resolveArticle,
   type LearnBlock,
@@ -52,9 +53,11 @@ function registrationPath(locale: Locale): string {
 export function LearnHubView({ locale }: { locale: Locale }) {
   const ui = learnUi[locale];
   const labels = clusterLabels[locale];
-  const articles = articlesForLocale(locale)
-    .map((slug) => resolveArticle(slug, locale))
-    .filter((entry): entry is ResolvedArticle => Boolean(entry));
+  const articles = orderLearnHubArticles(
+    articlesForLocale(locale)
+      .map((slug) => resolveArticle(slug, locale))
+      .filter((entry): entry is ResolvedArticle => Boolean(entry)),
+  );
 
   return (
     <main className="learn-hub">

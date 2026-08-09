@@ -428,7 +428,7 @@ const coreLearnArticles: LearnArticle[] = [
   },
   {
     slug: "claude-api-quick-setup",
-    cluster: "buy",
+    cluster: "integrate",
     title: "Claude API Setup in Two Minutes",
     h1: "Set up the Claude API in two minutes",
     description: "A two-minute Claude API quickstart: create a key, set your base URL to router.apitoken.sale, and send your first /v1/messages request with curl, Python or your IDE.",
@@ -1793,6 +1793,64 @@ const coreLearnArticles: LearnArticle[] = [
 ];
 
 export const learnArticles: LearnArticle[] = [...coreLearnArticles, ...learnProviderEn];
+
+// Put the broadest provider entry points first inside each hub cluster. The
+// remaining guides keep their source order, so new long-tail content does not
+// unexpectedly reshuffle existing cards.
+const LEARN_HUB_FEATURED_SLUGS: Partial<Record<LearnCluster, readonly string[]>> = {
+  buy: [
+    "how-to-buy-claude-api-key",
+    "how-to-buy-gpt-api-key",
+    "how-to-buy-gemini-api-key",
+    "how-to-buy-kimi-api-key",
+  ],
+  integrate: [
+    "claude-api-quick-setup",
+    "openai-api-quickstart",
+    "gemini-api-quickstart",
+    "kimi-api-quickstart",
+    "claude-code-api-key",
+    "codex-cli-setup",
+    "kimi-api-for-opencode",
+    "kimi-api-for-claude-code",
+    "kimi-api-for-kimi-code",
+  ],
+  compare: [
+    "claude-opus-vs-sonnet",
+    "gpt-5-6-sol-vs-terra-vs-luna",
+    "gemini-pro-vs-flash-vs-flash-lite",
+    "kimi-k3-vs-kimi-for-coding",
+  ],
+  explain: [
+    "claude-api-pricing-explained",
+    "gpt-api-pricing",
+    "gemini-api-pricing",
+    "kimi-api-pricing",
+  ],
+};
+const LEARN_HUB_CLUSTER_ORDER: readonly LearnCluster[] = ["buy", "free", "integrate", "compare", "explain"];
+
+/** Feature provider entry points on the hub while preserving long-tail order. */
+export function orderLearnHubArticles<T extends Pick<LearnArticle, "slug" | "cluster">>(articles: readonly T[]): T[] {
+  const rankByCluster = new Map<LearnCluster, Map<string, number>>();
+  const clusterRank = new Map(LEARN_HUB_CLUSTER_ORDER.map((cluster, index) => [cluster, index]));
+  for (const [cluster, slugs] of Object.entries(LEARN_HUB_FEATURED_SLUGS) as [LearnCluster, readonly string[]][]) {
+    rankByCluster.set(cluster, new Map(slugs.map((slug, index) => [slug, index])));
+  }
+
+  return articles
+    .map((article, index) => ({ article, index }))
+    .sort((left, right) => {
+      if (left.article.cluster !== right.article.cluster) {
+        return clusterRank.get(left.article.cluster)! - clusterRank.get(right.article.cluster)!;
+      }
+      const ranks = rankByCluster.get(left.article.cluster);
+      const leftRank = ranks?.get(left.article.slug) ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = ranks?.get(right.article.slug) ?? Number.MAX_SAFE_INTEGER;
+      return leftRank - rightRank || left.index - right.index;
+    })
+    .map(({ article }) => article);
+}
 
 export const learnArticlesBySlug: Record<string, LearnArticle> = Object.fromEntries(
   learnArticles.map((article) => [article.slug, article]),

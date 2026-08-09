@@ -4,6 +4,7 @@ import {
   learnArticles,
   learnArticlesBySlug,
   LOCALES,
+  orderLearnHubArticles,
   renderLearnMarkdown,
   resolveArticle,
 } from "./learn";
@@ -52,6 +53,55 @@ describe("learn cluster", () => {
       expect(article.faq.length, `${article.slug} FAQs`).toBeGreaterThanOrEqual(3);
       expect(article.published, `${article.slug} published`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       expect(article.updated, `${article.slug} updated`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    }
+  });
+
+  it("features equivalent provider journeys first in every hub cluster", () => {
+    const expected = {
+      buy: [
+        "how-to-buy-claude-api-key",
+        "how-to-buy-gpt-api-key",
+        "how-to-buy-gemini-api-key",
+        "how-to-buy-kimi-api-key",
+      ],
+      integrate: [
+        "claude-api-quick-setup",
+        "openai-api-quickstart",
+        "gemini-api-quickstart",
+        "kimi-api-quickstart",
+        "claude-code-api-key",
+        "codex-cli-setup",
+        "kimi-api-for-opencode",
+        "kimi-api-for-claude-code",
+        "kimi-api-for-kimi-code",
+      ],
+      compare: [
+        "claude-opus-vs-sonnet",
+        "gpt-5-6-sol-vs-terra-vs-luna",
+        "gemini-pro-vs-flash-vs-flash-lite",
+        "kimi-k3-vs-kimi-for-coding",
+      ],
+      explain: [
+        "claude-api-pricing-explained",
+        "gpt-api-pricing",
+        "gemini-api-pricing",
+        "kimi-api-pricing",
+      ],
+    } as const;
+
+    for (const locale of LOCALES) {
+      const ordered = orderLearnHubArticles(
+        articlesForLocale(locale)
+          .map((slug) => resolveArticle(slug, locale))
+          .filter((article) => article !== null),
+      );
+
+      for (const [cluster, slugs] of Object.entries(expected)) {
+        expect(
+          ordered.filter((article) => article.cluster === cluster).slice(0, slugs.length).map((article) => article.slug),
+          `${locale} ${cluster}`,
+        ).toEqual(slugs);
+      }
     }
   });
 });
