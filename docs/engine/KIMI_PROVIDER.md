@@ -43,32 +43,19 @@ Commerce/OpenKeys catalogue mirrors and unsupported capabilities remain tracked 
 - `decision` This file is an internal engineering instruction (required by `AGENTS.md`,
   "Documentation is a living contract"), not a public storefront.
 
-A key under **strict** policy is **not** served, and this is the one blocker between the
-published catalog entry and selling the provider.
+A key under **strict** policy is served, as of 2026-08-10 — because the strict policy concept
+itself was removed by the pricing dismantling ("one price, one settlement, no retired pricing
+left"). `strict_policy` no longer exists in `crates/forward` or `crates/server`, and the refusal
+that used to stand at the top of `KimiGateway::handle` went with it.
 
-`KimiGateway::handle` refuses a strict key with `kimi_strict_pricing_unavailable` before any
-pricing is attempted, and the refusal is terminal rather than retryable.
-
-- `decision` 2026-08-09 — the refusal was removed and restored the same day. Removing it looked
-  justified: after the release-v2 retirement a model outside the pinned catalog bills on the
-  account's legacy multiplier, and `legacy_pricing_path_closed` already gates whether an account
-  may use the legacy writers at all. There is a **second** gate behind that one. The strict
-  reserve writer itself demands a `policy_v1` admission snapshot, which only a provider that
-  resolves a catalog-backed policy can build; KIMI reserves on the plain legacy writer, so the
-  request reached PostgreSQL and died there with `strict reservation lacks a policy_v1 admission
-  snapshot`. The customer saw a `529` with `Retry-After` — a retryable error for a permanently
-  deterministic condition, which is strictly worse than the clean refusal it replaced. Verified
-  live against a real strict account before the restore.
-- `decision` Serving a strict key therefore needs catalog membership for `kimi`, not a smaller
-  change. That is an owner decision about the pricing catalog, not a gateway edit.
-
-`router_pricing.rs` matches: it quotes no `kimi/*` rate to a strict key, so the catalog and
-admission agree and the customer sees a clean absence rather than a rate they cannot spend.
-
-The urgency is real: `00348678` provisions new accounts (B2C and invited B2B) directly on the
-strict path and `5b1af567` backfills the existing cohort behind `PRICING_BACKFILL_ENABLED`, so the
-reachable audience for KIMI shrinks as the migration proceeds. OpenKeys keys are strict by
-construction and cannot reach it at all.
+- `decision` 2026-08-09 — the refusal was removed and restored the same day. Removing it then was
+  wrong: the strict reserve writer demanded a `policy_v1` admission snapshot that only a
+  catalog-backed policy could build, so the request died in PostgreSQL and surfaced as a retryable
+  `529` — worse than the terminal refusal it replaced. The analysis was right about the mechanism
+  and wrong about the remedy: what was missing was not a KIMI catalog entry but the completion of
+  the pricing dismantling above it.
+- Verified live on a real customer key 2026-08-10: `kimi/k3` and `kimi/kimi-for-coding-highspeed`
+  both served.
 
 Until the live matrix is executed on every profile, the GA criterion of §1
 `PROVIDER_ONBOARDING.md` is **not claimed**. The terminal state of this work is a verified

@@ -2,9 +2,10 @@
 
 Question asked: is KIMI fully in production at every stage, and no worse than any other pool?
 
-Answer: **on the legacy-policy path, yes. On the strict-policy path, no** — and since new accounts
-are provisioned strict and the existing cohort is being backfilled, that gap decides whether the
-provider is sellable, not whether it works.
+Answer, as amended 2026-08-10: **yes.** The one axis that failed — strict-policy admission — was
+closed by the pricing dismantling that landed overnight ("one price, one settlement, no retired
+pricing left"). `strict_policy` no longer exists in the engine, and with it went the KIMI refusal.
+Verified with a real customer key: `kimi/k3` and `kimi/kimi-for-coding-highspeed` both served.
 
 Every "yes" below was established by a request, not by reading code. Two claims in this file's
 predecessors were established by reading code and both were wrong; the corrections are recorded at
@@ -25,27 +26,26 @@ the end rather than quietly dropped.
 | 9 | Customer usage attribution | own bucket | own bucket in dashboard, OpenKeys and admin | parity (was a defect, see below) |
 | 10 | Public rate card | on the pricing page | Kimi panel, rates from the audited card | parity |
 | 11 | Client docs | builder + API reference | both, plus Kimi Code and Claude Code guides | parity |
-| 12 | **Strict-policy admission** | **served** | **refused, terminally** | **not parity** |
+| 12 | Strict-policy admission | n/a — concept removed 2026-08-10 | served | parity |
 | 13 | Live coverage matrix | n/a | all 4 subscription model ids; 12/12 legs × 2 of 3 profiles | models complete, profiles quota-bound |
 | 14 | Paid tool/search units | proved for others | unproved, recorded unavailable | not parity, by contract |
 
-## Axis 12 — the one that matters
+## Axis 12 — closed by the pricing dismantling, not by a fix here
 
-`KimiGateway::handle` refuses a strict key with `kimi_strict_pricing_unavailable` before any
-pricing is attempted. This is not a leftover: removing it on 2026-08-09 produced a live regression,
-because there is a second gate behind the obvious one. The strict reserve writer demands a
-`policy_v1` admission snapshot carrying a rule identity (`provider`, `rule_id`, `rule_digest`,
-`rule_scope`, `pricing_mode`), and `SnapshotProvider` has no `kimi` variant. Without the guard the
-request reached PostgreSQL and died with `strict reservation lacks a policy_v1 admission snapshot`,
-surfacing as a `529` with `Retry-After` — a retryable error for a permanently deterministic
-condition. Restored the same day; production verified back to a terminal `404`.
+Until 2026-08-10 `KimiGateway::handle` refused a strict key before any pricing was attempted, and
+that refusal was correct for its time: removing it on 2026-08-09 produced a live regression,
+because the strict reserve writer demanded a `policy_v1` admission snapshot that only a
+catalog-backed policy could build. Without the guard the request reached PostgreSQL and died with
+`strict reservation lacks a policy_v1 admission snapshot`, surfacing as a retryable `529`.
 
-This is **not** the position Gemini is in. Gemini resolves its release path first and serves the
-strict account from it.
+The overnight commits (`9f3f65d0`, `ca3dd6c9`, `0c236aa2`, `a6e7f2e7`) removed the strict policy
+concept entirely — `strict_policy` no longer appears in `crates/forward` or `crates/server`, and
+the KIMI refusal went with it. So the axis did not need the catalog entry I had scoped for it; it
+needed the design above it to be finished. Recorded here because the earlier analysis was correct
+about the mechanism and wrong about the remedy.
 
-What remains undecided is whether a hot policy rule scoped to provider `kimi` is sufficient, or
-whether `gate_lineage` also requires a catalog entry. That is an owner decision about the pricing
-catalog and one cheap reversible experiment, not another gateway edit.
+Live confirmation on a real customer key, 2026-08-10: `kimi/k3` → served `k3`;
+`kimi/kimi-for-coding-highspeed` → served and answered.
 
 ## Axis 13 — coverage
 

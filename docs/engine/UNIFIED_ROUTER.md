@@ -522,11 +522,9 @@ stays visible to us. The three mandatory planes keep the old behaviour: missing 
 Only published subscription aliases are advertised (`k3`, `k3[1m]`, `k3-256k`,
 `kimi-for-coding`, `kimi-for-coding-highspeed`). The official Open Platform ids
 (`kimi-k3`, `kimi-k2.6`, `kimi-k2.7-code…`) are tariff keys the gateway refuses on the wire, so
-neither the producer nor `/internal/router/catalog/pricing` resolves them. A key under strict
-policy sees no `kimi/*` rate at all: the KIMI gateway refuses strict keys terminally, because the
-strict reserve writer needs a `policy_v1` admission snapshot that only a catalog-backed policy can
-build and `kimi` has no catalog entry. The producer drops those candidates so the catalog agrees
-with what admission will actually serve. See `docs/engine/KIMI_PROVIDER.md` §0.
+neither the producer nor `/internal/router/catalog/pricing` resolves them. Every key is quoted for
+`kimi/*` and served: the strict-policy concept that used to exclude KIMI was removed with the
+retired pricing design on 2026-08-10.
 
 A namespaced `kimi/<alias>` is resolved by the Anthropic plane's admission back to the bare
 alias before dispatch (`KimiGateway::resolve_public_model`). The plane strips only its own
