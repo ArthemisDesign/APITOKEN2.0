@@ -58,7 +58,14 @@ from the new cookie instead of depending on a browser's cached Next.js router pa
 
 A new issuance always has `pricing_contract=official_1_to_1`, `mult_bp=10000`: a key with
 a $50 face value receives exactly $50 of engine balance, and $1 of the model's full
-official cost charges $1. Until the global Stage 9 cutover, historical
+official cost charges $1. That literal is a contract between the code and the CHECK in
+`packages/openkeys-db/migrations/0007_openkeys_pricing_contract_expand.sql`, and the two are
+allowed exactly one spelling. They drifted on 2026-08-09 (`official_one_to_one` in
+`OFFICIAL_ONE_TO_ONE_CONTRACT` against `official_1_to_1` in the constraint), which would have
+failed the next batch insert outright; production was spared only because no batch was issued in
+between. The constant is now typed as that literal and the migration test builds its inserts from
+it, so a future divergence fails to compile or fails the DB-backed test instead of the next sale.
+Until the global Stage 9 cutover, historical
 `pricing_contract=legacy` remains the migration source. The target release switches all
 existing and new OpenKeys to 1:1; past ledger rows are not recalculated.
 

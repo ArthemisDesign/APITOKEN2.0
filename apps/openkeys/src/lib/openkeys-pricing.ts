@@ -6,7 +6,11 @@ import { EngineClientError, type EngineClient } from "@claude-api/engine-client"
  * account — an OpenKeys account is 1:1 because its multiplier says so.
  */
 export const OFFICIAL_ONE_TO_ONE_MULT_BP = 10_000;
-export const OFFICIAL_ONE_TO_ONE_CONTRACT = "official_one_to_one";
+// Литерал обязан совпадать с CHECK-констрейнтом в packages/openkeys-db/migrations/
+// 0007_openkeys_pricing_contract_expand.sql. Разошёлся 2026-08-09 (`official_one_to_one` в коде
+// против `official_1_to_1` в БД) — следующий выпуск партии упал бы на констрейнте. Тип сужен до
+// того же union, что и у строк, чтобы расхождение ловилось компилятором, а не продом.
+export const OFFICIAL_ONE_TO_ONE_CONTRACT: "official_1_to_1" = "official_1_to_1";
 
 export class OpenKeysPricingError extends Error {
   constructor(readonly code: string, message: string) {

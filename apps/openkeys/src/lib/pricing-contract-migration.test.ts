@@ -13,6 +13,12 @@ import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client } from "pg";
+// Значения берутся из рантайм-модуля, а не переписываются литералом: тест обязан падать, если
+// код и CHECK-констрейнт БД снова разъедутся (регрессия 2026-08-09).
+import {
+  OFFICIAL_ONE_TO_ONE_CONTRACT,
+  OFFICIAL_ONE_TO_ONE_MULT_BP,
+} from "./openkeys-pricing.js";
 import { describe, expect, it } from "vitest";
 
 const connectionString = process.env.TEST_OPENKEYS_DATABASE_URL;
@@ -230,7 +236,7 @@ describe("OpenKeys pricing-contract migration declaration", () => {
       'ADD COLUMN "pricing_contract" text DEFAULT \'legacy\' NOT NULL',
     );
     expect(migrationSql).toContain(
-      `CHECK ("pricing_contract" <> 'official_1_to_1' OR "mult_bp" = 10000)`,
+      `CHECK ("pricing_contract" <> '${OFFICIAL_ONE_TO_ONE_CONTRACT}' OR "mult_bp" = ${OFFICIAL_ONE_TO_ONE_MULT_BP})`,
     );
     expect(migrationSql).toContain('"openkeys_keys_batch_contract_fk"');
     expect(migrationSql).toContain("NOT VALID");
@@ -325,14 +331,14 @@ describe.runIf(Boolean(connectionString))("OpenKeys pricing-contract migration",
 
       const officialBatchId = await insertBatch(
         database.client,
-        10_000,
-        "official_1_to_1",
+        OFFICIAL_ONE_TO_ONE_MULT_BP,
+        OFFICIAL_ONE_TO_ONE_CONTRACT,
       );
       const officialKeyId = await insertKey(
         database.client,
         officialBatchId,
-        10_000,
-        "official_1_to_1",
+        OFFICIAL_ONE_TO_ONE_MULT_BP,
+        OFFICIAL_ONE_TO_ONE_CONTRACT,
       );
 
       await expectDatabaseFailure(database.client, async () => {
