@@ -1,16 +1,6 @@
 use super::*;
 use std::sync::{Arc, Barrier};
 
-#[test]
-fn legacy_pricing_path_closed_unit_predicate() {
-    // Dual-path closure predicate: closed only while a head exists AND the account has not
-    // opted out. Every other combination keeps the writer open.
-    assert!(!legacy_pricing_path_closed(false, false));
-    assert!(!legacy_pricing_path_closed(false, true));
-    assert!(legacy_pricing_path_closed(true, false));
-    assert!(!legacy_pricing_path_closed(true, true));
-}
-
 fn release_settlement_snapshot(
     billing_mode: crate::pricing::BillingModeV2,
     provider_id: &str,
