@@ -1540,6 +1540,13 @@ fn parse_dynamic_tools(
                 callable_count += 1;
                 dynamic.push(parsed);
             }
+            // Hosted `web_search` is server-executed and billed per call by the provider, so this
+            // gateway cannot meter it and never forwards it. Codex CLI sends the descriptor by
+            // default (mode `cached`), and rejecting the list made every default Codex config
+            // unusable on the models that carry it. Accept it as a declaration we cannot honor —
+            // the same leniency this endpoint already applies to service_tier, tool_choice and
+            // parallel_tool_calls — and drop it: the model simply gets no web search tool.
+            Some("web_search") => {}
             _ => return Err(ApiError::invalid(
                 match source {
                     ToolListSource::TopLevel => {

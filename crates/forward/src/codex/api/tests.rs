@@ -1067,6 +1067,42 @@ fn namespaced_hosted_tools_still_fail_closed() {
 }
 
 #[test]
+fn hosted_web_search_is_accepted_and_never_forwarded() {
+    // Codex CLI ships web search in mode `cached` by default, so the descriptor is present in
+    // every stock config. Rejecting the list made the models that carry it unusable; the tool is
+    // accepted as undeliverable and dropped, never proxied as an unmetered hosted call.
+    let parsed = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "weather?",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "get_weather",
+                    "parameters": {"type": "object", "properties": {}}
+                },
+                {
+                    "type": "web_search",
+                    "external_web_access": false,
+                    "search_content_types": ["text", "image"]
+                }
+            ]
+        }),
+    )
+    .unwrap();
+
+    // The client's declaration is echoed back verbatim, but only the callable tool is dispatched.
+    assert_eq!(parsed.original_tools.len(), 2);
+    assert_eq!(parsed.dynamic_tools.len(), 1);
+    assert_eq!(parsed.dynamic_tools[0]["name"], "get_weather");
+    assert!(!parsed
+        .dynamic_tools
+        .iter()
+        .any(|tool| tool["type"] == "web_search"));
+}
+
+#[test]
 fn codex_diagnostic_metadata_is_bounded() {
     let metadata_error = parse_responses_request(
         &gateway(),

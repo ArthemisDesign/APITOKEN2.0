@@ -634,7 +634,9 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    namespace) and is rebuilt into the upstream body as a group — dropping it would leave the model
    with no callable tool at all. A custom/tool-search call is executed by the
    client, the gateway returns the raw call item and never executes it. Hosted `web_search` never
-   becomes a free client tool and is fail-closed rejected, at any nesting depth.
+   becomes a free client tool: in a tool list it is accepted as an undeliverable declaration and
+   dropped (Codex ships mode `cached` by default, so rejecting it made stock configs unusable),
+   inside a namespace it still fails closed. It is never forwarded upstream in either case.
 4. **Provider windows — from `/wham/usage` and live headers/SSE `codex.rate_limits`.**
    A snapshot is accepted only with real duration+reset; a stale one never rejects and never wins a
    tie-break; one that never arrived equals a fresh one. The `/wham/usage` schema and header names

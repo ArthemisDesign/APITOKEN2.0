@@ -154,9 +154,11 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   inside a `functions` namespace, so a namespace child may be function or custom. The public
   parser accepts the same bounded forms from both lists, translates them to one internal
   dynamic-tool vocabulary and rebuilds namespaces as groups in the upstream body. Hosted
-  `web_search` remains unsupported and fails closed at any nesting depth, so custom-provider
-  harnesses disable it in
-  their isolated config. The upstream request keeps `store:false`, `stream:true`,
+  `web_search` is server-executed and billed per call, so it is never forwarded: Codex sends the
+  descriptor in every stock config (mode `cached`), so a tool list carrying it is accepted and the
+  entry dropped, while a `web_search` nested inside a namespace still fails closed. The model
+  simply gets no web search tool.
+  The upstream request keeps `store:false`, `stream:true`,
   `include:["reasoning.encrypted_content"]`, tenant-scoped
   `prompt_cache_key` and first-party-shaped `client_metadata`. Headers carry the pinned client
   identity (`originator: codex_cli_rs`, UA and `version` pinned to `CODEX_CLI_VERSION`,
