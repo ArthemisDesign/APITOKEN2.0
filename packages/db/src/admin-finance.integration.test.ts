@@ -74,7 +74,7 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
       amount: 600n, paid: 600n, eventProvider: "google",
     });
     await insertEvent(users.get("unattributed")!, {
-      amount: 700n, paid: 0n, eventProvider: null,
+      amount: 700n, paid: 700n, eventProvider: null,
     });
   });
 
@@ -141,7 +141,7 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
     ]);
   }
 
-  it("includes only strict bonus-funded spend and preserves attribution provider authority", async () => {
+  it("includes only fully bonus-funded spend and keeps the engine provider split", async () => {
     const page = await listAdminPayingUsers(database, { days: 30, funding: "bonus" });
     expect(page.total).toBe(1);
     expect(page.rows).toEqual([
@@ -158,7 +158,7 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
         bonusFundedSpentNano: "100",
         otherFundedSpentNano: "0",
         unattributedSpentNano: "0",
-        providerSpendNano: { anthropic: "100", openai: "0", google: "0", kimi: "0", other: "0" },
+        providerSpendNano: { anthropic: "0", openai: "100", google: "0", kimi: "0", other: "0" },
         engineAccountId: `acct-${users.get("bonus")}`,
       }),
     ]);
@@ -170,7 +170,7 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
     });
   });
 
-  it("unions old money cohort with strict bonus-only for all and preserves omitted funding", async () => {
+  it("unions the money cohort with bonus-only for all and preserves omitted funding", async () => {
     const omitted = await listAdminPayingUsers(database, { days: 30 });
     expect(new Set(omitted.rows.map((row) => row.userId))).toEqual(
       new Set([users.get("paid"), users.get("manual")]),
@@ -178,8 +178,8 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
     expect(omitted.summary).toMatchObject({ payingUsers: 2, cohortUsers: 2, bonusOnlyUsers: 0 });
     expect(omitted.rows.find((row) => row.userId === users.get("paid"))).toMatchObject({
       spentNano: "250",
-      paidFundedSpentNano: "200",
-      unattributedSpentNano: "50",
+      paidFundedSpentNano: "250",
+      unattributedSpentNano: "0",
       engineAccountId: `acct-${users.get("paid")}`,
       usageAccountIds: [
         `acct-${users.get("paid")}`,
@@ -258,21 +258,29 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
         email,
         fundingKind: "spend_only",
         spentNano: "700",
-        unattributedSpentNano: "700",
+        // Free-first records an exact split on every event, so nothing is left unattributed.
+        unattributedSpentNano: "0",
       }),
     ]);
   });
 
-  it("keeps provider filtering on COALESCE(attribution provider, event provider)", async () => {
+  it("filters by the provider the engine recorded on the charge", async () => {
+    // The retired attribution carried a second provider id that could disagree with the ledger
+    // row; there is one provider per charge now, and it is the engine's own column.
     const anthropic = await listAdminPayingUsers(database, {
       days: 30, funding: "all", provider: "anthropic",
     });
-    expect(new Set(anthropic.rows.map((row) => row.userId))).toEqual(new Set([users.get("bonus")]));
+    expect(new Set(anthropic.rows.map((row) => row.userId))).toEqual(new Set([users.get("manual")]));
 
     const openai = await listAdminPayingUsers(database, {
       days: 30, funding: "all", provider: "openai",
     });
-    expect(new Set(openai.rows.map((row) => row.userId))).toEqual(new Set([users.get("paid")]));
+    expect(new Set(openai.rows.map((row) => row.userId))).toEqual(new Set([users.get("bonus")]));
+
+    const google = await listAdminPayingUsers(database, {
+      days: 30, funding: "all", provider: "google",
+    });
+    expect(new Set(google.rows.map((row) => row.userId))).toEqual(new Set([users.get("paid")]));
 
     // The KIMI predicate is new. With no KIMI events in the window it must select nobody — a
     // filter that silently matched everything would be indistinguishable from "no filter" here.

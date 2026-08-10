@@ -45,41 +45,17 @@ describe.runIf(Boolean(connectionString))("commercial account and engine integra
       balanceNano: "37000000000",
       reservedNano: "0",
       spentNano: "12",
-      funding: {
-        accountClass: "b2c",
-        fundingEnforcement: "strict",
-        balances: {
-          paidNano: "33000000000",
-          bonusNano: "4000000000",
-          otherNano: "0",
-          unattributedNano: "0",
-        },
-      },
-      pricingPolicies: [],
     });
     expect(JSON.stringify(account)).not.toContain("acct_alice");
 
     const ledger = await service.getLedger(aliceId, 25) as Record<string, unknown>;
     expect(ledger).toMatchObject({
       entries: [
-        { amountNano: "37000000000", reference: "payment:1", attribution: null },
+        { amountNano: "37000000000", reference: "payment:1" },
         {
           requestId: "request-strict",
           provider: "anthropic",
           officialNano: "600",
-          attribution: {
-            snapshotKind: "policy_v1",
-            canonicalModelId: "claude-read",
-            pricingMode: "track",
-            officialCost: { schema_version: 1, official_nano: 600 },
-            bonusFundedNano: "300",
-            trackEligible: true,
-          },
-          fundingAllocations: [{
-            bucketId: "read-bonus",
-            sourceType: "welcome_track_bonus",
-            amountNano: "300",
-          }],
         },
       ],
     });
@@ -516,24 +492,6 @@ class FakeEngine {
         account: accountId, balance_nano: 37_000_000_000,
         spent_nano: 12, reserved_nano: 0, balance: "$37.000000000", mult_bp: 2000,
         status: "active", handle: null,
-        funding: {
-          account_class: "b2c",
-          funding_enforcement: "strict",
-          reconciliation_state: "verified",
-          bucket_count: 2,
-          paid_balance_nano: 33_000_000_000,
-          bonus_balance_nano: 4_000_000_000,
-          other_balance_nano: 0,
-          unattributed_balance_nano: 0,
-          paid_reserved_nano: 0,
-          bonus_reserved_nano: 0,
-          other_reserved_nano: 0,
-          unattributed_reserved_nano: 0,
-          paid_spent_nano: 12,
-          bonus_spent_nano: 0,
-          other_spent_nano: 0,
-          unattributed_spent_nano: 0,
-        },
       });
     }
     return Response.json({ error: "not found" }, { status: 404 });

@@ -129,9 +129,13 @@ export class AccountService {
       }
 
       // AUDIT(C65): never let an in-flight request overwrite a concurrent administrative disable.
+      // The account is servable the moment the engine has it: its price is the multiplier the
+      // engine already carries. `pending` used to mean "waiting for a policy delivery", and the
+      // policy lane that cleared it is gone — leaving it pending would strand the customer with a
+      // working engine account their dashboard and the usage sync both treat as not ready.
       const completed = await client.query<{ engine_account_id: string }>(`
         UPDATE engine_accounts
-        SET engine_account_id = $3, status = 'pending', last_error = NULL, updated_at = now()
+        SET engine_account_id = $3, status = 'active', last_error = NULL, updated_at = now()
         WHERE user_id = $1
           AND status = $2
           AND engine_account_id IS NOT DISTINCT FROM $4
