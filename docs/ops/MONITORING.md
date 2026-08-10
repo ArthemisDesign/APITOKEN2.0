@@ -965,26 +965,64 @@ their lanes were deleted with the dismantled release cycle and the collector doe
 their dead gauges anymore. Terminal rows remaining in those tables are historical evidence from
 the completed cycle — read `last_error` for the record, never requeue, never edit `status`.
 
-## PricingPolicyDeliveryStale
+## SalesSyncCursorStalled
 
-A new customer's `account_policy_bindings` row has waited unconfirmed for over two minutes.
-Expected causes, in order: the `apitoken-worker` unit is down or crash-looping (check
-`node_systemd_unit_state` and the unit journal for `pricing worker` lines), the LISTEN/NOTIFY
-connection and the periodic sweep are both unhealthy (the journal shows repeated
-`pricing-control notify listener reconnecting` warnings), or the engine Control API rejects
-deliveries (`pricing-control job … failed permanently` in the same journal). Do not update the
-binding row by hand: once the cause is fixed the worker re-claims the durable job on its own
-(lease recovery plus `FOR UPDATE SKIP LOCKED` claiming make replay idempotent). Confirm recovery
-by watching `apitoken_pricing_policy_oldest_pending_seconds` return to single digits and the
-binding reach `sync_state = 'confirmed'`.
+The partner portal's `usage_events` cursor has stopped advancing while commerce keeps publishing.
+Nobody sees this from the outside: every service stays up, the portal keeps serving, and referred
+spend simply stops earning commission. On 2026-08-10 that lasted five hours because the feed
+emitted a row shape its consumer rejected, and the only trace was a repeating
+`sync iteration failed` line in `journalctl -u apitoken-sales-api`.
 
-## PricingPolicyDeliveryFailed
+Read that journal first — a parse error names the exact field disagreement. If it is a contract
+mismatch, fix the two ends together (`tests/contracts/sales-usage-feed.golden.json` is the shared
+shape) and deploy; the source rows are never consumed, so the backlog replays on its own once the
+page parses. If instead the sync is erroring on the network or the commerce feed is returning 5xx,
+treat it as an ordinary outage of that dependency. Never advance the cursor by hand to "unstick"
+it: every row it skips is commission that is never paid. Recovery is confirmed when
+`apitoken_sales_cursor{feed="usage_events"}` climbs back to `apitoken_sales_feed_head`.
 
-The engine rejected a policy activation permanently (`sync_state = 'failed'`). Read
-`last_error` on the binding row and the corresponding `engine_policy_jobs.last_error` first.
-Typical causes are an invalid desired policy payload or a superseded desired version. Fix the
-cause, then re-drive the desired policy through the application's own idempotent write path
-(`packages/db` pricing policy write), never by editing `sync_state` directly.
+## PricingMirrorDrift
+
+A customer's default multiplier in `customer_profiles` disagrees with `engine_accounts.mult_bp`.
+Only one of the two prices the customer's requests — the engine — and the panel shows the other,
+so the drift is invisible in every UI until someone compares. This is the shape of the 2026-08-09
+fallout, where nine B2B accounts kept a negotiated discount in a lane nothing read any more and
+paid full list price for 629 requests.
+
+Find the affected users, then read the engine's own value (`GET /admin/account/{id}` on the
+Control API) — it is the authority, not either mirror. If the engine is right, the commerce row is
+stale: re-drive the intended terms through `PATCH /admin/business-users/{id}/pricing`, which
+writes both sides in one transaction and queues delivery. If the engine is wrong, the same PATCH
+requeues the delivery. Never edit `mult_bp` or `multiplier_bp` with SQL — that creates a third
+version of the number.
+
+## PricingJobStaleConfirmed
+
+A delivery job is marked `confirmed` while carrying a multiplier that is not what commerce
+currently wants. The queue believes it delivered a price nobody asked for, which means either a
+verdict landed out of order or the desired value moved without requeueing.
+
+Compare the job's `multiplier_bp` against `customer_profiles.multiplier_bp` (account jobs) or
+`customer_provider_discounts.multiplier_bp` (provider jobs), then against the engine's own value.
+The repair is to re-drive the desired terms through the admin PATCH, which enqueues a fresh
+delivery; the worker fences its verdicts on the lease it holds, so a re-drive cannot be overwritten
+by a straggler. Leave the confirmed row alone otherwise — it is history.
+
+## EngineAccountsBelowFloor
+
+An account's balance is below the −$1 overdraft floor. Admission cannot cause this: the reserve
+gate is atomic on the account row and decrements the balance by the hold, so concurrent
+reservations share one floor rather than each getting their own. Two things can:
+
+- a settlement charged more than its reservation held (the tokens were already spent; the money
+  cannot be refused), which shows up as `actual_nano > hold_nano` on the `reservations` row;
+- money was clawed back after it was spent — a revoked bonus or an admin adjustment against a
+  balance that had already funded requests.
+
+Identify which by reading the account's `ledger`. A clawback is intended and needs no action beyond
+knowing the debt exists. Repeated settlement overshoot on one provider means that provider's
+reservation estimate is systematically low and should be raised — the floor is not the thing to
+change.
 
 ## PricingChargeMismatch
 

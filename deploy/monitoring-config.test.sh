@@ -449,46 +449,56 @@ grep -Fq 'docs/ops/MONITORING.md#balancedivergencedetected' "$ROOT/observability
 grep -Fqi '## BalanceDivergenceDetected' "$ROOT/docs/ops/MONITORING.md" \
   || { printf 'docs/ops/MONITORING.md has no balance-divergence runbook\n' >&2; exit 1; }
 
-# The signup-readiness SLO ("registration to working account") must be a closed
-# collector -> alert -> runbook loop just like money conservation. Pin the operands so a
-# constant-zero replacement cannot satisfy the contract.
-policy_pending_metric=apitoken_pricing_policy_oldest_pending_seconds
-for required in \
-  "$policy_pending_metric" \
-  'account_policy_bindings' \
-  "sync_state = 'pending'" \
-  'queue="engine_policy_jobs"'; do
-  grep -Fq "$required" "$ROOT/deploy/collect-monitoring-metrics.sh" \
-    || { printf 'policy-pending collector is missing %s\n' "$required" >&2; exit 1; }
+# Both 2026-08 pricing incidents were silent because every component was individually healthy
+# while two of them disagreed about one fact. Each drift detector must therefore be a closed
+# collector -> alert -> runbook loop, with its operands pinned so a constant-zero replacement
+# cannot satisfy the contract. The retired design's gauges (account_policy_bindings,
+# engine_policy_jobs, engine_catalog_jobs, engine_switch_jobs) are gone and must not come back:
+# nothing drains those lanes, so their counts described a state that can no longer advance.
+for drift_metric in \
+  apitoken_pricing_mirror_drift \
+  apitoken_pricing_job_stale_confirmed \
+  apitoken_sales_feed_head \
+  apitoken_sales_cursor_age_seconds \
+  apitoken_engine_accounts_below_floor; do
+  grep -Fq "$drift_metric" "$ROOT/deploy/collect-monitoring-metrics.sh" \
+    || { printf 'collector does not export %s\n' "$drift_metric" >&2; exit 1; }
+  grep -Fq "$drift_metric" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'no alert rule consumes %s\n' "$drift_metric" >&2; exit 1; }
 done
-grep -Fq "$policy_pending_metric" "$ROOT/observability/prometheus/rules/application.yml" \
-  || { printf 'no alert rule consumes %s\n' "$policy_pending_metric" >&2; exit 1; }
-grep -Fq 'alert: PricingPolicyDeliveryStale' "$ROOT/observability/prometheus/rules/application.yml" \
-  || { printf 'missing policy-delivery stale alert\n' >&2; exit 1; }
+for drift_operand in \
+  'ea.mult_bp IS DISTINCT FROM cp.multiplier_bp' \
+  "j.status = 'confirmed'" \
+  'FROM sync_cursors' \
+  'balance_nano < -1000000000'; do
+  grep -Fq "$drift_operand" "$ROOT/deploy/collect-monitoring-metrics.sh" \
+    || { printf 'drift collector is missing %s\n' "$drift_operand" >&2; exit 1; }
+done
+for drift_alert in SalesSyncCursorStalled PricingMirrorDrift PricingJobStaleConfirmed EngineAccountsBelowFloor; do
+  grep -Fq "alert: $drift_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf 'missing %s alert\n' "$drift_alert" >&2; exit 1; }
+  lowercase_alert=$(printf '%s' "$drift_alert" | tr '[:upper:]' '[:lower:]')
+  grep -Fq "docs/ops/MONITORING.md#$lowercase_alert" "$ROOT/observability/prometheus/rules/application.yml" \
+    || { printf '%s alert has no runbook anchor\n' "$drift_alert" >&2; exit 1; }
+  grep -Fqi "## $drift_alert" "$ROOT/docs/ops/MONITORING.md" \
+    || { printf 'docs/ops/MONITORING.md has no %s runbook\n' "$drift_alert" >&2; exit 1; }
+done
 grep -Fq 'severity: critical' \
-  <(grep -F 'alert: PricingPolicyDeliveryStale' -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
-  || { printf 'policy-delivery stale alert is not critical\n' >&2; exit 1; }
-grep -Fq 'docs/ops/MONITORING.md#pricingpolicydeliverystale' "$ROOT/observability/prometheus/rules/application.yml" \
-  || { printf 'policy-delivery stale alert has no runbook anchor\n' >&2; exit 1; }
-grep -Fqi '## PricingPolicyDeliveryStale' "$ROOT/docs/ops/MONITORING.md" \
-  || { printf 'docs/ops/MONITORING.md has no policy-delivery runbook\n' >&2; exit 1; }
-grep -Fqi '## PricingPolicyDeliveryFailed' "$ROOT/docs/ops/MONITORING.md" \
-  || { printf 'docs/ops/MONITORING.md has no policy-delivery-failed runbook\n' >&2; exit 1; }
-
-# The live pricing control queues (policy/catalog/switch control lanes) must be a
-# closed collector -> alert -> runbook loop just like signup readiness: a stalled control lane
-# raised no alert until the generic DurableQueue* alerts were extended to these series. Pin every
-# exported series and its exact status mapping so a constant-zero replacement cannot satisfy the
-# contract; the generic alert rules consume the queue label, so no per-queue rule is needed.
-# The release-v2 cycle queues lost their consumers with the dismantled release cycle; their
-# gauges are removed and must not come back.
-for pricing_queue in \
-  engine_catalog_jobs \
-  engine_switch_jobs; do
-  for pricing_series in apitoken_queue_ready apitoken_queue_dead apitoken_queue_oldest_ready_seconds; do
-    grep -Fq "$pricing_series{queue=\"$pricing_queue\"}" "$ROOT/deploy/collect-monitoring-metrics.sh" \
-      || { printf 'collector does not export %s for %s\n' "$pricing_series" "$pricing_queue" >&2; exit 1; }
-  done
+  <(grep -F 'alert: SalesSyncCursorStalled' -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
+  || { printf 'sales-sync stall alert is not critical\n' >&2; exit 1; }
+grep -Fq 'severity: critical' \
+  <(grep -F 'alert: PricingMirrorDrift' -A 8 "$ROOT/observability/prometheus/rules/application.yml") \
+  || { printf 'pricing mirror drift alert is not critical\n' >&2; exit 1; }
+for retired_pricing_series in \
+  account_policy_bindings \
+  'queue="engine_policy_jobs"' \
+  'queue="engine_catalog_jobs"' \
+  'queue="engine_switch_jobs"' \
+  apitoken_pricing_policy_pending; do
+  if grep -Fq "$retired_pricing_series" "$ROOT/deploy/collect-monitoring-metrics.sh"; then
+    printf 'collector still exports the retired pricing series %s\n' "$retired_pricing_series" >&2
+    exit 1
+  fi
 done
 for removed_pricing_queue in \
   pricing_release_control_jobs_v2 \

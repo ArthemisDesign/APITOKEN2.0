@@ -63,12 +63,18 @@ cat >"$temporary" <<'METRICS'
 # TYPE apitoken_sales_pending_referral_events gauge
 # HELP apitoken_sales_failed_payout_batches Sales payout batches in failed state.
 # TYPE apitoken_sales_failed_payout_batches gauge
-# HELP apitoken_pricing_policy_pending Account policy bindings waiting for engine confirmation; new accounts cannot serve spend until confirmed.
-# TYPE apitoken_pricing_policy_pending gauge
-# HELP apitoken_pricing_policy_oldest_pending_seconds Age of the oldest account policy binding still waiting for engine confirmation.
-# TYPE apitoken_pricing_policy_oldest_pending_seconds gauge
-# HELP apitoken_pricing_policy_failed Account policy bindings whose engine activation terminally failed.
-# TYPE apitoken_pricing_policy_failed gauge
+# HELP apitoken_pricing_mirror_drift Customers whose commerce default multiplier disagrees with the engine mirror.
+# TYPE apitoken_pricing_mirror_drift gauge
+# HELP apitoken_pricing_job_stale_confirmed Pricing jobs marked confirmed while carrying a value commerce no longer wants.
+# TYPE apitoken_pricing_job_stale_confirmed gauge
+# HELP apitoken_sales_feed_head Highest usage-event sequence commerce has published to the partner feed.
+# TYPE apitoken_sales_feed_head gauge
+# HELP apitoken_sales_cursor Partner-portal sync cursor per feed; a gap to the feed head that stops closing means commission is not accruing.
+# TYPE apitoken_sales_cursor gauge
+# HELP apitoken_sales_cursor_age_seconds Time since the partner-portal sync cursor last advanced.
+# TYPE apitoken_sales_cursor_age_seconds gauge
+# HELP apitoken_engine_accounts_below_floor Accounts whose balance is below the $1 overdraft floor.
+# TYPE apitoken_engine_accounts_below_floor gauge
 # HELP apitoken_pricing_charge_mismatch Settled charges whose amount does not match the multiplier the same row declares.
 # TYPE apitoken_pricing_charge_mismatch gauge
 # HELP apitoken_pricing_output_overage_absorbed_nano Provider cost of output generated past the ceiling a customer asked for, absorbed by the pool in the last hour.
@@ -87,28 +93,31 @@ SELECT 'apitoken_queue_oldest_ready_seconds{queue="engine_adjustments"} ' || COA
 SELECT 'apitoken_queue_ready{queue="engine_pricing"} ' || count(*) FROM engine_pricing_jobs WHERE status IN ('pending','retry');
 SELECT 'apitoken_queue_dead{queue="engine_pricing"} 0';
 SELECT 'apitoken_queue_oldest_ready_seconds{queue="engine_pricing"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM engine_pricing_jobs WHERE status IN ('pending','retry');
--- The signup path: a fresh account cannot serve spend until its policy control job is delivered
--- and the binding is confirmed. LISTEN/NOTIFY (migration 0041) makes the common case sub-second;
--- these gauges are the "registration to working account" SLO evidence.
-SELECT 'apitoken_queue_ready{queue="engine_policy_jobs"} ' || count(*) FROM engine_policy_jobs WHERE status IN ('pending','retry');
-SELECT 'apitoken_queue_dead{queue="engine_policy_jobs"} ' || count(*) FROM engine_policy_jobs WHERE status = 'dead';
-SELECT 'apitoken_queue_oldest_ready_seconds{queue="engine_policy_jobs"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM engine_policy_jobs WHERE status IN ('pending','retry');
--- The catalog/switch pricing control lanes claimed by claimNextPricingControlJob: a stalled
--- catalog or switch generation blocks every dependent policy job, so they get the same generic
--- durable-queue gauges as engine_policy_jobs. The release-v2 cycle queues
--- (pricing_release_control_jobs_v2, pricing_funding_normalizations_v2,
--- pricing_shadow_policy_jobs_v2, pricing_shadow_rollouts_v2, pricing_stage8_capture_jobs_v2)
--- are deliberately not exported: their lanes were deleted with the dismantled release cycle and
--- no consumer will ever drain them again.
-SELECT 'apitoken_queue_ready{queue="engine_catalog_jobs"} ' || count(*) FROM engine_catalog_jobs WHERE status IN ('pending','retry');
-SELECT 'apitoken_queue_dead{queue="engine_catalog_jobs"} ' || count(*) FROM engine_catalog_jobs WHERE status = 'dead';
-SELECT 'apitoken_queue_oldest_ready_seconds{queue="engine_catalog_jobs"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM engine_catalog_jobs WHERE status IN ('pending','retry');
-SELECT 'apitoken_queue_ready{queue="engine_switch_jobs"} ' || count(*) FROM engine_switch_jobs WHERE status IN ('pending','retry');
-SELECT 'apitoken_queue_dead{queue="engine_switch_jobs"} ' || count(*) FROM engine_switch_jobs WHERE status = 'dead';
-SELECT 'apitoken_queue_oldest_ready_seconds{queue="engine_switch_jobs"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM engine_switch_jobs WHERE status IN ('pending','retry');
-SELECT 'apitoken_pricing_policy_pending ' || count(*) FROM account_policy_bindings WHERE sync_state = 'pending';
-SELECT 'apitoken_pricing_policy_oldest_pending_seconds ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM account_policy_bindings WHERE sync_state = 'pending';
-SELECT 'apitoken_pricing_policy_failed ' || count(*) FROM account_policy_bindings WHERE sync_state = 'failed';
+-- The retired pricing design's queues (policy, catalog and switch control lanes) and its account
+-- binding gauges are gone from here. Nothing drains those lanes any more, so their counts
+-- described a concept that no longer prices anything — the pending gauge sat at 2 for a state that
+-- cannot advance, which is worse than no gauge at all. engine_pricing_jobs above is the one live
+-- delivery queue.
+--
+-- What replaces them are the drift detectors. Both 2026-08 incidents were silent because every
+-- component was individually healthy while two of them disagreed, so what needs watching is the
+-- disagreement itself.
+SELECT 'apitoken_pricing_mirror_drift ' || count(*)
+FROM customer_profiles cp JOIN engine_accounts ea ON ea.user_id = cp.user_id
+WHERE ea.engine_account_id IS NOT NULL AND ea.mult_bp IS DISTINCT FROM cp.multiplier_bp;
+-- A job marked confirmed whose value is not what commerce currently wants means the queue believes
+-- a price was delivered that nobody asked for. Zero is the only healthy value.
+SELECT 'apitoken_pricing_job_stale_confirmed ' || count(*)
+FROM engine_pricing_jobs j
+LEFT JOIN customer_profiles cp ON cp.user_id = j.user_id
+LEFT JOIN customer_provider_discounts d ON d.user_id = j.user_id AND d.provider_id = j.provider_id
+WHERE j.status = 'confirmed'
+  AND j.multiplier_bp IS DISTINCT FROM
+      CASE WHEN j.provider_id IS NULL THEN cp.multiplier_bp ELSE d.multiplier_bp END;
+-- The head of the sales usage feed. Paired with apitoken_sales_cursor below: a growing gap is the
+-- partner sync falling behind or refusing pages, which is exactly how five hours of commission
+-- went unaccrued on 2026-08-10 without a single alert.
+SELECT 'apitoken_sales_feed_head ' || COALESCE(max(feed_seq), 0) FROM pricing_usage_events;
 SELECT 'apitoken_queue_ready{queue="commerce_email"} ' || count(*) FROM email_outbox WHERE status = 'pending';
 SELECT 'apitoken_queue_dead{queue="commerce_email"} ' || count(*) FROM email_outbox WHERE status = 'failed';
 -- Infrastructure installs before application migrations. Cast the enum to text so this collector
@@ -122,6 +131,10 @@ SQL
 if database_exists claude_engine; then
   psql_database claude_engine >>"$temporary" <<'SQL'
 SELECT 'apitoken_engine_settlement_pending ' || count(*) FROM settlement_outbox WHERE state <> 'done';
+-- Admission holds the account at no worse than −$1, atomically on the account row, so this can
+-- only move when a settlement charges more than its reservation held or when an adjustment claws
+-- money back after it was spent. Either way it is a customer carrying debt the pool funded.
+SELECT 'apitoken_engine_accounts_below_floor ' || count(*) FROM accounts WHERE balance_nano < -1000000000;
 -- What a customer was actually charged, checked against the multiplier the same settled row
 -- declares. This replaces the shadow evaluation lane, which computed the comparison ahead of a
 -- rollout, wrote 2654 rows that nothing ever read, and was not running during the cutover it
@@ -192,6 +205,12 @@ SELECT 'apitoken_queue_dead{queue="sales_email"} ' || count(*) FROM partner_emai
 SELECT 'apitoken_queue_oldest_ready_seconds{queue="sales_email"} ' || COALESCE(GREATEST(0, EXTRACT(EPOCH FROM now() - min(created_at)))::bigint, 0) FROM partner_email_outbox WHERE status = 'pending';
 SELECT 'apitoken_sales_pending_referral_events ' || count(*) FROM pending_referral_events;
 SELECT 'apitoken_sales_failed_payout_batches ' || count(*) FROM payout_batches WHERE status = 'failed';
+-- Where the partner sync actually stands. Compared against apitoken_sales_feed_head from commerce,
+-- a gap that stops closing is the whole signal: on 2026-08-10 this cursor stood still for five
+-- hours while every service was up and healthy, and no commission accrued.
+SELECT 'apitoken_sales_cursor{feed="' || feed || '"} ' || last_id FROM sync_cursors;
+SELECT 'apitoken_sales_cursor_age_seconds{feed="' || feed || '"} '
+       || GREATEST(0, EXTRACT(EPOCH FROM now() - updated_at))::bigint FROM sync_cursors;
 SQL
 fi
 
