@@ -39,14 +39,11 @@ function PricingBanner({ account }: { account: AccountView }) {
   const copy = useDashboardCopy();
   const { language } = useI18n();
   const local = pricingCopy[language];
-  const policy = account.pricingPolicies?.[0] ?? null;
-  const applied = policy?.applied ?? null;
-  const availableModels = applied?.providers.flatMap((provider) => provider.models)
-    .filter((model) => model.available).length ?? 0;
+  const discountPercent = account.pricing?.discountPercent ?? null;
   return <section className="pricing-banner pricing-banner-business">
     <div className="pricing-summary">
-      <div><span className="pricing-kicker">{copy.currentPricing}</span><strong>{local.providerModelRules}</strong></div>
-      <div className="pricing-discount"><b>{availableModels}</b><span>{local.availableModels}</span><em className="pricing-mult">{policy?.inSync ? local.active : local.syncing}</em></div>
+      <div><span className="pricing-kicker">{copy.currentPricing}</span><strong>{local.yourDiscount}</strong></div>
+      <div className="pricing-discount"><b>{discountPercent === null ? "—" : `${discountPercent}%`}</b><span>{local.offListPrice}</span></div>
     </div>
     <p>{local.policyExplainer}</p>
   </section>;
@@ -54,46 +51,20 @@ function PricingBanner({ account }: { account: AccountView }) {
 
 const pricingCopy = {
   en: {
-    providerModelRules: "Provider and model rules",
-    availableModels: "available models",
-    active: "Applied by engine",
-    syncing: "Update pending",
-    policyExplainer: "A request is charged by its applied provider/model rule.",
-    paidBalance: "Paid balance",
-    bonusBalance: "Welcome bonus",
-    bonusDetail: "Welcome bonus credit is spent before paid balance across the models available to your account.",
-    splitUnavailable: "Funding split pending reconciliation",
-    rulePricing: "Provider/model pricing",
-    ruleDetail: "The exact rule is shown in Usage; no universal API-value projection applies.",
-    addPaid: "Added to paid balance",
-    paidExactly: "Your paid balance increases by exactly this amount.",
+    yourDiscount: "Your discount",
+    offListPrice: "off the official rate",
+    policyExplainer: "Every request is charged at the official provider rate minus your discount.",
+    addPaid: "Added to your balance",
+    paidExactly: "Your balance increases by exactly this amount.",
     creditAmount: "Amount",
-    fundingSource: "Funding source",
-    paidSource: "Paid",
-    bonusSource: "Welcome bonus",
-    otherSource: "Other credit",
-    unknownSource: "Unattributed legacy credit",
   },
   ru: {
-    providerModelRules: "Правила провайдеров и моделей",
-    availableModels: "доступных моделей",
-    active: "Применено движком",
-    syncing: "Ожидает применения",
-    policyExplainer: "Запрос списывается по применённому правилу провайдера или модели.",
-    paidBalance: "Оплаченный баланс",
-    bonusBalance: "Приветственный бонус",
-    bonusDetail: "Приветственный бонус расходуется раньше оплаченного баланса на доступных аккаунту моделях.",
-    splitUnavailable: "Разбивка средств ожидает сверки",
-    rulePricing: "Тарифы по провайдеру и модели",
-    ruleDetail: "Точное правило показано в Usage; единого пересчёта баланса в API value нет.",
-    addPaid: "Будет зачислено на оплаченный баланс",
-    paidExactly: "Оплаченный баланс увеличится ровно на эту сумму.",
+    yourDiscount: "Ваша скидка",
+    offListPrice: "от официального тарифа",
+    policyExplainer: "Каждый запрос списывается по официальному тарифу провайдера минус ваша скидка.",
+    addPaid: "Будет зачислено на баланс",
+    paidExactly: "Баланс увеличится ровно на эту сумму.",
     creditAmount: "Сумма",
-    fundingSource: "Источник средств",
-    paidSource: "Оплачено",
-    bonusSource: "Приветственный бонус",
-    otherSource: "Другой кредит",
-    unknownSource: "Legacy-кредит без attribution",
   },
 } as const;
 
@@ -137,10 +108,9 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
   return <section className="panel"><PageHeading eyebrow={copy.creditsEyebrow} title={copy.creditsTitle} subtitle={copy.creditsSubtitle} />
     <div className="credits-stack">
       <div className="ov-stats bill4 tc-stats">
-        <div className="ovstat"><span className="dlabel">{policyCopy.paidBalance}</span><b className="num">{account.funding ? formatNanoUsd(account.funding.balances.paidNano, locale) : "—"}</b><span className="dtrend">{account.funding ? copy.available : policyCopy.splitUnavailable}</span></div>
-        <div className="ovstat"><span className="dlabel">{policyCopy.bonusBalance}</span><b className="num">{account.funding ? formatNanoUsd(account.funding.balances.bonusNano, locale) : "—"}</b><span className="dtrend">{policyCopy.bonusDetail}</span></div>
+        <Stat label={copy.available} value={formatNanoUsd(account.balanceNano, locale)} detail={copy.available} />
         <Stat label={copy.used} value={formatNanoUsd(account.spentNano, locale)} detail={copy.balanceAfterDiscount} />
-        <div className="ovstat"><span className="dlabel">{copy.currentPricing}</span><b className="num tc-tier-name">{policyCopy.rulePricing}</b><span className="dtrend">{policyCopy.ruleDetail}</span></div>
+        <div className="ovstat"><span className="dlabel">{copy.currentPricing}</span><b className="num tc-tier-name">{account.pricing ? `${account.pricing.discountPercent}%` : "—"}</b><span className="dtrend">{policyCopy.offListPrice}</span></div>
       </div>
 
       <div className="card topup-convert">
@@ -148,7 +118,7 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
         <div className="tc-body">
           <div className="tc-input">
             <label className="tc-field"><span className="currency-prefix">$</span><input className="set-in" name="topup-amount" autoComplete="off" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => { setAmount(event.target.value); setError(null); }} placeholder="100" aria-label={copy.anyWholeAmount} aria-describedby={amountValidation ? "topup-amount-help topup-amount-error" : "topup-amount-help"} aria-invalid={amountValidation ? true : undefined} /></label>
-            <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} data-topup-preset={preset} aria-pressed={amount === String(preset)} onClick={() => { setAmount(String(preset)); setError(null); }}><b>${preset}</b><span>{policyCopy.paidBalance}</span></button>)}</div>
+            <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} data-topup-preset={preset} aria-pressed={amount === String(preset)} onClick={() => { setAmount(String(preset)); setError(null); }}><b>${preset}</b><span>{policyCopy.addPaid}</span></button>)}</div>
           </div>
           <div className="tc-arrow" aria-hidden="true">→</div>
           <div className="tc-receive tc-receive-up">
@@ -157,7 +127,7 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
             <span className="tc-recv-sub">{amountNano <= 0n ? copy.enterAmount : policyCopy.paidExactly}</span>
           </div>
         </div>
-        <p className="tc-explain">{policyCopy.ruleDetail}</p>
+        <p className="tc-explain">{policyCopy.policyExplainer}</p>
         <div className="tc-pay">
           <span className="tc-pay-label">{localCopy.payWith}</span>
           <div className="tc-methods" role="radiogroup" aria-label={localCopy.payWith}>
@@ -178,12 +148,11 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
       {ledgerAvailable && ledgerMayBePartial && <div className="banner">{localCopy.partialLedger}</div>}
       {ledgerAvailable && <section className="dsec credits-history"><div className="dsec-head"><h2 id="topup-history-title">{copy.topupHistory}</h2></div>
         <div className="table-scroll"><table className="mtable topup-history-table" aria-labelledby="topup-history-title">
-          <thead><tr><th scope="col">{copy.date}</th><th scope="col" className="tnum">{policyCopy.creditAmount}</th><th scope="col">{policyCopy.fundingSource}</th><th scope="col">{copy.reference}</th></tr></thead>
-          <tbody>{topups.length === 0 ? <tr><td colSpan={4} className="empty-cell">{copy.noTopups}</td></tr> : topups.map((entry) => {
+          <thead><tr><th scope="col">{copy.date}</th><th scope="col" className="tnum">{policyCopy.creditAmount}</th><th scope="col">{copy.reference}</th></tr></thead>
+          <tbody>{topups.length === 0 ? <tr><td colSpan={3} className="empty-cell">{copy.noTopups}</td></tr> : topups.map((entry) => {
             return <tr key={entry.id}>
               <td data-label={copy.date}>{formatLedgerTime(entry.timestamp, language)}</td>
               <td className="tnum" data-label={policyCopy.creditAmount}>{formatNanoUsd(entry.amountNano, locale)}</td>
-              <td data-label={policyCopy.fundingSource}>{topupFundingLabel(entry, policyCopy)}</td>
               <td data-label={copy.reference}>{entry.reference ?? "—"}</td>
             </tr>;
           })}</tbody>
@@ -202,13 +171,3 @@ function safeCheckoutUrl(rawUrl: string, provider: CheckoutView["provider"]): st
   } catch { return null; }
 }
 
-function topupFundingLabel(
-  entry: LedgerEntry,
-  copy: typeof pricingCopy.en | typeof pricingCopy.ru,
-): string {
-  const sourceTypes = new Set((entry.fundingAllocations ?? []).map((allocation) => allocation.sourceType));
-  if (sourceTypes.has("paid")) return copy.paidSource;
-  if (sourceTypes.has("welcome_track_bonus")) return copy.bonusSource;
-  if (sourceTypes.size > 0) return copy.otherSource;
-  return copy.unknownSource;
-}

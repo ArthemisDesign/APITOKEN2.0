@@ -74,13 +74,12 @@ describe("listAdminPayingUsers", () => {
     expect(queries).toHaveLength(3);
     expect(queries[0]!.params).toEqual([7, "paid@", "active", "openai", "", 25, 50]);
     expect(queries[0]!.text).toContain("JOIN paid ON paid.user_id = u.id");
-    expect(queries[0]!.text).toContain("pricing_usage_attributions");
-    expect(queries[0]!.text).toContain("COALESCE(a.provider_id, e.provider_id) AS provider_id");
-    expect(queries[0]!.text).toContain("a.snapshot_kind IN ('policy_v1', 'release_v2')");
-    expect(queries[0]!.text).toContain("false\n        ) AS exact_modern_funding");
-    expect(queries[0]!.text).toContain("a.paid_funded_nano + a.bonus_funded_nano + a.other_funded_nano = e.amount_nano");
+    // The paid/bonus split of spend comes from free-first accounting on the immutable usage
+    // event; the retired per-request attribution table is not read at all.
+    expect(queries[0]!.text).not.toContain("pricing_usage_attributions");
+    expect(queries[0]!.text).toContain("e.real_funded_nano");
+    expect(queries[0]!.text).toContain("AS exact_modern_funding");
     expect(queries[0]!.text).toContain("usage.event_count = usage.exact_modern_event_count");
-    expect(queries[0]!.text).not.toContain("real_funded_nano");
     expect(queries[0]!.text).not.toContain("free_balance_nano");
     expect(queries[0]!.text).toContain("array_agg(DISTINCT engine_account_id ORDER BY engine_account_id)");
     expect(queries[0]!.text).toContain("e.occurred_at < now()");

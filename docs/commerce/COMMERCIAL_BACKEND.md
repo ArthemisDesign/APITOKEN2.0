@@ -98,7 +98,7 @@ Transactional email and self-hosted SMTP configuration are documented in `docs/c
 
 B2C global/provider/model discounts, B2B invitations/manual policies, OpenKeys/service boundaries
 and the zero-downtime engine sync pipeline are documented in `docs/commerce/PRICING.md` and
-`docs/commerce/MULTI-DISCOUNT.md`. Progressive tiers, retention and `track` are migration-only
+`docs/commerce/PRICING_MODEL.md`. Progressive tiers, retention and `track` are migration-only
 legacy and must not receive new behavior.
 
 The multi-discount rollout adds a second, versioned synchronization lane beside the legacy scalar

@@ -51,8 +51,7 @@ const localDashboardCopy = {
     bonusBalance: "Welcome bonus",
     fundingUnavailable: "Funding split is not available until reconciliation completes.",
     pricingByRule: "Provider and model rules",
-    providers: "Providers",
-    availableModels: "Available models",
+    discountLabel: "Your discount",
     policyTerms: "Each request uses its provider/model rule; there is no universal balance conversion.",
   },
   ru: {
@@ -65,8 +64,7 @@ const localDashboardCopy = {
     bonusBalance: "Приветственный бонус",
     fundingUnavailable: "Разбивка средств появится после завершения сверки.",
     pricingByRule: "Правила провайдеров и моделей",
-    providers: "Провайдеры",
-    availableModels: "Доступные модели",
+    discountLabel: "Ваша скидка",
     policyTerms: "Каждый запрос тарифицируется по правилу провайдера или модели; единого пересчёта баланса нет.",
   },
 } as const;
@@ -513,11 +511,6 @@ export const Overview = memo(function Overview({ account, user, usableKeys, tota
   const { language } = useI18n();
   const locale = language === "ru" ? "ru-RU" : "en-US";
   const localCopy = localDashboardCopy[language];
-  const policy = account.pricingPolicies?.[0] ?? null;
-  const appliedPolicy = policy?.applied ?? null;
-  const policyModels = appliedPolicy?.providers.flatMap((provider) => provider.models) ?? [];
-  const availableModels = policyModels.filter((model) => model.available);
-  const availableProviders = appliedPolicy?.providers.filter((provider) => provider.available) ?? [];
   const engineReady = account.status === "active" && user.engineAccountStatus === "active";
   const keysReady = engineReady && keysState === "ready" && usableKeys.length > 0;
   const accessTone = keysState === "loading" ? "neutral"
@@ -540,7 +533,9 @@ export const Overview = memo(function Overview({ account, user, usableKeys, tota
       : [],
     [ledger, ledgerState],
   );
-  const pricingTitle = appliedPolicy ? localCopy.pricingByRule : localCopy.policyUnavailable;
+  const pricingTitle = account.pricing
+    ? `${account.pricing.discountPercent}%`
+    : localCopy.policyUnavailable;
   const showOnboarding = engineReady && keysState === "ready" && totalKeys === 0;
 
   let alert: { tone: "danger" | "warning"; title: string; text: string; action: "credits" | "keys" } | null = null;
@@ -561,15 +556,10 @@ export const Overview = memo(function Overview({ account, user, usableKeys, tota
       <article className="card overview-balance-card">
         <div className="overview-card-head">
           <span className="overview-card-label">{copy.platformBalance}</span>
-          <span className="overview-rate-chip">{policy?.inSync ? localCopy.policyActive : localCopy.policySyncing}</span>
         </div>
         <div className="overview-balance-main">
           <strong className="overview-balance-number">{normalizeUsd(account.balanceUsd)}</strong>
           <div className="overview-balance-detail">
-            {account.funding ? <>
-              <p className="overview-balance-value">{localCopy.paidBalance}: <b>{formatNanoUsd(account.funding.balances.paidNano, locale)}</b></p>
-              <p className="overview-balance-rate">{localCopy.bonusBalance}: <b>{formatNanoUsd(account.funding.balances.bonusNano, locale)}</b></p>
-            </> : <p className="overview-balance-rate">{localCopy.fundingUnavailable}</p>}
             <div className="overview-card-actions">
               <button className="btn btn-primary btn-sm" onClick={() => open("credits")}>{copy.topUp}</button>
               <button className="btn btn-ghost btn-sm" onClick={() => open("usage")}>{copy.viewUsage}</button>
@@ -622,8 +612,7 @@ export const Overview = memo(function Overview({ account, user, usableKeys, tota
         <div className="overview-card-head"><span className="overview-card-label">{copy.currentPricing}</span><span className="overview-metric-mark" aria-hidden="true">%</span></div>
         <strong>{pricingTitle}</strong>
         <div className="overview-pricing-facts">
-          <span><small>{localCopy.providers}</small><b>{availableProviders.length}</b></span>
-          <span><small>{localCopy.availableModels}</small><b>{availableModels.length}</b></span>
+          <span><small>{localCopy.discountLabel}</small><b>{pricingTitle}</b></span>
         </div>
       </article>
 

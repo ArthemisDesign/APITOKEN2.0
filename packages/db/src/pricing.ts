@@ -2,9 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
   paymentProviderSchema,
   type EngineLedgerEntry,
-  type EngineSettlementFundingEvidence,
-  type EngineSettlementFundingEvidenceV2,
-  type PricingPolicyEditorRule,
 } from "@claude-api/contracts";
 import type { PoolClient } from "pg";
 import type { Database } from "./client.js";
@@ -15,63 +12,6 @@ export class BusinessInvitationNotFoundError extends Error {}
 export class BusinessInvitationConflictError extends Error {}
 export class BusinessCustomerNotFoundError extends Error {}
 export class CustomerProfileNotFoundError extends Error {}
-export class PricingLedgerAttributionError extends Error {}
-
-export type CustomerPricingUnavailableReason =
-  | "policy_catalog_disabled"
-  | "admission_catalog_disabled"
-  | "policy_master_switch_disabled"
-  | "policy_scoped_switch_disabled"
-  | "admission_master_switch_disabled"
-  | "admission_scoped_switch_disabled"
-  | "missing_pricing_rule";
-
-export interface CustomerPricingRuleView {
-  ruleId: string;
-  scope: "provider" | "model";
-  pricingMode: "track" | "discount";
-  ruleOrigin: "managed" | "legacy";
-  discountBps: number | null;
-  payableMultiplierBp: number;
-  trackEligible: boolean;
-  retentionEligible: boolean;
-  commissionEligible: boolean;
-}
-
-export interface CustomerPricingModelView {
-  modelId: string;
-  available: boolean;
-  unavailableReasons: CustomerPricingUnavailableReason[];
-  rule: CustomerPricingRuleView | null;
-}
-
-export interface CustomerPricingProviderView {
-  providerId: string;
-  available: boolean;
-  models: CustomerPricingModelView[];
-}
-
-export interface CustomerPricingVersionView {
-  effectiveVersion: string;
-  policyVersion: string;
-  catalogGeneration: string;
-  switchGeneration: string;
-  providers: CustomerPricingProviderView[];
-}
-
-export interface CustomerPricingPolicyView {
-  accountClass: "b2c" | "b2b";
-  productId: string;
-  policyEnforcement: "legacy_scalar" | "shadow" | "strict";
-  fundingEnforcement: "legacy_single" | "shadow" | "strict";
-  reconciliationState: "pending" | "verified" | "exception";
-  syncState: "legacy" | "pending" | "confirmed" | "failed";
-  inSync: boolean;
-  lastAcknowledgedAt: string | null;
-  desired: CustomerPricingVersionView | null;
-  applied: CustomerPricingVersionView | null;
-}
-
 export interface PricingSyncTarget {
   userId: string;
   engineAccountId: string;
@@ -123,6 +63,9 @@ export function classifyTopupRef(ref: string | null | undefined): PricingTopupSo
   return "manual";
 }
 
+/** Raised when the engine's own ledger evidence contradicts what was already recorded. */
+export class PricingLedgerEvidenceError extends Error {}
+
 const PRICING_LEDGER_PAGE_SIZE = 1000;
 const POSTGRES_INTEGER_MAX = 2_147_483_647n;
 const SUPPORTED_LEDGER_ATTRIBUTION_SCHEMA_VERSIONS: ReadonlySet<bigint> = new Set([1n, 2n]);
@@ -130,34 +73,6 @@ const PROVIDER_BACKFILL_WINDOW_DAYS = 30;
 const UNATTRIBUTED_PROVIDER_ID = "unattributed";
 const UNAVAILABLE_PROVIDER_ID = "unavailable";
 const PROVIDER_RECOVERY_VERSION = 2;
-
-type LedgerAttribution = NonNullable<EngineLedgerEntry["attribution"]>;
-type LedgerFundingAllocation = NonNullable<EngineLedgerEntry["funding_allocations"]>[number];
-
-interface ValidatedLedgerAttribution {
-  attribution: LedgerAttribution;
-  allocations: Array<{
-    ordinal: number;
-    engineBucketId: string;
-    bucketVersion: string;
-    sourceType: string;
-    sourceRef: string;
-    amountNano: string;
-  }>;
-  paidFundedNano: bigint | null;
-  nonPaidFundedNano: bigint | null;
-  retentionEligible: boolean;
-  // Release-v2 rows carry a NULL engine eligibility and derive the commission authority locally
-  // from the immutable account class plus exact paid funding; other kinds store engine evidence.
-  commissionEligible: boolean;
-}
-
-interface ValidatedPolicyFunding {
-  allocations: ValidatedLedgerAttribution["allocations"];
-  paidFundedNano: bigint;
-  bonusFundedNano: bigint;
-  otherFundedNano: bigint;
-}
 
 function normalizedProviderId(value: string | null | undefined): string | null {
   if (
@@ -174,509 +89,23 @@ function isProviderRecoverySentinel(value: string | null): boolean {
   return value === UNATTRIBUTED_PROVIDER_ID || value === UNAVAILABLE_PROVIDER_ID;
 }
 
+/**
+ * The provider of a charge is the engine's own top-level ledger column. The retired attribution
+ * record carried a second copy of it; there is no second copy to disagree with any more.
+ */
 function ledgerProviderEvidence(entry: EngineLedgerEntry): string {
-  const providerId = normalizedProviderId(entry.provider)
-    ?? normalizedProviderId(entry.attribution?.provider_id);
+  const providerId = normalizedProviderId(entry.provider);
   return providerId === null || isProviderRecoverySentinel(providerId)
     ? UNATTRIBUTED_PROVIDER_ID
     : providerId;
 }
 
-function requiredLedgerText(value: string | null | undefined, field: string): string {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new PricingLedgerAttributionError(`engine ledger attribution is missing ${field}`);
+function epochSecondsDate(value: number | string, label: string): Date {
+  const seconds = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(seconds) || !Number.isSafeInteger(seconds) || seconds <= 0) {
+    throw new Error(`invalid ${label}`);
   }
-  return value;
-}
-
-function requiredLedgerInteger(
-  value: string | null | undefined,
-  field: string,
-  allowZero = false,
-): bigint {
-  if (value === null || value === undefined || !/^\d+$/.test(value)) {
-    throw new PricingLedgerAttributionError(`engine ledger attribution is missing ${field}`);
-  }
-  const parsed = BigInt(value);
-  if (allowZero ? parsed < 0n : parsed <= 0n) {
-    throw new PricingLedgerAttributionError(`engine ledger attribution has invalid ${field}`);
-  }
-  return parsed;
-}
-
-function requiredLedgerBoolean(value: boolean | null | undefined, field: string): boolean {
-  if (typeof value !== "boolean") {
-    throw new PricingLedgerAttributionError(`engine ledger attribution is missing ${field}`);
-  }
-  return value;
-}
-
-function epochSecondsDate(value: string, field: string): Date {
-  const seconds = BigInt(value);
-  // JavaScript Date is bounded to +/-8.64e15 milliseconds. Engine timestamps are non-negative.
-  if (seconds < 0n || seconds > 8_640_000_000_000n) {
-    throw new PricingLedgerAttributionError(`engine ledger ${field} is outside the Date range`);
-  }
-  const result = new Date(Number(seconds) * 1000);
-  if (Number.isNaN(result.getTime())) {
-    throw new PricingLedgerAttributionError(`engine ledger ${field} is invalid`);
-  }
-  return result;
-}
-
-function allocationOrdinal(value: string | null, index: number): number {
-  if (value === null) {
-    throw new PricingLedgerAttributionError(
-      `policy funding allocation ${index} is missing its durable allocation order`,
-    );
-  }
-  const ordinal = requiredLedgerInteger(value, `funding allocation ${index} order`, true);
-  if (ordinal > POSTGRES_INTEGER_MAX) {
-    throw new PricingLedgerAttributionError(`funding allocation ${index} order is too large`);
-  }
-  return Number(ordinal);
-}
-
-function validatePolicyFundingAllocations(
-  attribution: LedgerAttribution,
-  allocations: readonly LedgerFundingAllocation[],
-  chargedNano: bigint,
-): ValidatedPolicyFunding {
-  if (!Array.isArray(attribution.funding_allocation_json)) {
-    throw new PricingLedgerAttributionError("policy attribution is missing raw funding evidence");
-  }
-  // The legacy bucket path only accepts legacy bucket evidence; release-v2 lot evidence belongs to
-  // the separate release-v2 validation path and must not leak into bucket reconciliation.
-  const bucketEvidence: EngineSettlementFundingEvidence[] = attribution.funding_allocation_json.map(
-    (allocation, index) => {
-      if (!("bucket_id" in allocation)) {
-        throw new PricingLedgerAttributionError(
-          `raw funding allocation ${index} is not legacy bucket evidence`,
-        );
-      }
-      return allocation;
-    },
-  );
-  let previousOrder: bigint | null = null;
-  const seenBuckets = new Set<string>();
-  let paidFundedNano = 0n;
-  let bonusFundedNano = 0n;
-  let otherFundedNano = 0n;
-  const chargedEvidence = bucketEvidence.filter((allocation, index) => {
-    const bucketId = requiredLedgerText(allocation.bucket_id, `raw funding allocation ${index} bucket`);
-    const sourceType = requiredLedgerText(
-      allocation.source_type,
-      `raw funding allocation ${index} source type`,
-    );
-    const bucketVersion = requiredLedgerInteger(
-      allocation.bucket_version,
-      `raw funding allocation ${index} bucket version`,
-    );
-    const reservedNano = requiredLedgerInteger(
-      allocation.reserved_nano,
-      `raw funding allocation ${index} reserved amount`,
-    );
-    const evidenceChargedNano = requiredLedgerInteger(
-      allocation.charged_nano,
-      `raw funding allocation ${index} charged amount`,
-      true,
-    );
-    const releasedNano = requiredLedgerInteger(
-      allocation.released_nano,
-      `raw funding allocation ${index} released amount`,
-      true,
-    );
-    const order = requiredLedgerInteger(
-      allocation.allocation_order,
-      `raw funding allocation ${index} order`,
-      true,
-    );
-    if (reservedNano !== evidenceChargedNano + releasedNano) {
-      throw new PricingLedgerAttributionError(
-        `raw funding allocation ${index} does not reconcile reserved, charged, and released amounts`,
-      );
-    }
-    if (previousOrder !== null && order <= previousOrder) {
-      throw new PricingLedgerAttributionError("raw funding allocation order is not strictly increasing");
-    }
-    previousOrder = order;
-    const bucketIdentity = `${bucketId}\u0000${sourceType}\u0000${bucketVersion}`;
-    if (seenBuckets.has(bucketIdentity)) {
-      throw new PricingLedgerAttributionError("raw funding evidence repeats one bucket version");
-    }
-    seenBuckets.add(bucketIdentity);
-    if (sourceType === "paid") paidFundedNano += evidenceChargedNano;
-    else if (sourceType === "welcome_track_bonus") bonusFundedNano += evidenceChargedNano;
-    else otherFundedNano += evidenceChargedNano;
-    return evidenceChargedNano > 0n;
-  });
-  if (chargedEvidence.length !== allocations.length) {
-    throw new PricingLedgerAttributionError(
-      "normalized funding allocations do not match raw charged allocations",
-    );
-  }
-
-  let normalizedTotal = 0n;
-  const normalized = allocations.map((allocation, index) => {
-    const evidence = chargedEvidence[index]!;
-    const amountNano = requiredLedgerInteger(
-      allocation.amount_nano,
-      `funding allocation ${index} amount`,
-    );
-    const bucketVersion = requiredLedgerInteger(
-      allocation.bucket_version,
-      `funding allocation ${index} bucket version`,
-    );
-    const ordinal = allocationOrdinal(allocation.allocation_order, index);
-    if (
-      allocation.direction !== "debit"
-      || allocation.bucket_id !== evidence.bucket_id
-      || allocation.source_type !== evidence.source_type
-      || bucketVersion !== BigInt(evidence.bucket_version)
-      || amountNano !== BigInt(evidence.charged_nano)
-      || BigInt(ordinal) !== BigInt(evidence.allocation_order)
-    ) {
-      throw new PricingLedgerAttributionError(
-        `normalized funding allocation ${index} differs from immutable settlement evidence`,
-      );
-    }
-    normalizedTotal += amountNano;
-    return {
-      ordinal,
-      engineBucketId: requiredLedgerText(allocation.bucket_id, `funding allocation ${index} bucket`),
-      bucketVersion: bucketVersion.toString(),
-      sourceType: requiredLedgerText(allocation.source_type, `funding allocation ${index} source type`),
-      sourceRef: allocation.source_ref,
-      amountNano: amountNano.toString(),
-    };
-  });
-  if (normalizedTotal !== chargedNano) {
-    throw new PricingLedgerAttributionError(
-      "normalized funding allocations do not cover the charged amount",
-    );
-  }
-  return {
-    allocations: normalized,
-    paidFundedNano,
-    bonusFundedNano,
-    otherFundedNano,
-  };
-}
-
-/**
- * Validates the immutable release-v2 lot evidence against the declared funding categories. The
- * v2 path has no normalized bucket rows: raw lot identity stays only in funding_allocation_json,
- * so exact reconciliation happens entirely here.
- */
-function validateReleaseV2FundingAllocations(
-  attribution: LedgerAttribution,
-  chargedNano: bigint,
-): { paidFundedNano: bigint; bonusFundedNano: bigint; otherFundedNano: bigint } {
-  if (!Array.isArray(attribution.funding_allocation_json)) {
-    throw new PricingLedgerAttributionError("release-v2 attribution is missing raw funding evidence");
-  }
-  const lotEvidence: EngineSettlementFundingEvidenceV2[] = attribution.funding_allocation_json.map(
-    (allocation, index) => {
-      if (!("lot_id" in allocation)) {
-        throw new PricingLedgerAttributionError(
-          `raw funding allocation ${index} is not release-v2 lot evidence`,
-        );
-      }
-      return allocation;
-    },
-  );
-  let previousOrder: bigint | null = null;
-  let paidFundedNano = 0n;
-  let bonusFundedNano = 0n;
-  let otherFundedNano = 0n;
-  let totalFundedNano = 0n;
-  lotEvidence.forEach((allocation, index) => {
-    requiredLedgerText(allocation.lot_id, `raw funding allocation ${index} lot`);
-    const sourceType = requiredLedgerText(
-      allocation.lot_source_type,
-      `raw funding allocation ${index} lot source type`,
-    );
-    requiredLedgerInteger(allocation.lot_version, `raw funding allocation ${index} lot version`);
-    const amountNano = requiredLedgerInteger(
-      allocation.amount_nano,
-      `raw funding allocation ${index} amount`,
-    );
-    const order = requiredLedgerInteger(
-      allocation.allocation_order,
-      `raw funding allocation ${index} order`,
-      true,
-    );
-    if (allocation.direction !== "debit") {
-      throw new PricingLedgerAttributionError(
-        `raw funding allocation ${index} is not a debit lot allocation`,
-      );
-    }
-    if (previousOrder !== null && order <= previousOrder) {
-      throw new PricingLedgerAttributionError("raw funding allocation order is not strictly increasing");
-    }
-    previousOrder = order;
-    if (sourceType === "paid") paidFundedNano += amountNano;
-    else if (sourceType === "welcome_bonus") bonusFundedNano += amountNano;
-    else otherFundedNano += amountNano;
-    totalFundedNano += amountNano;
-  });
-  if (totalFundedNano !== chargedNano) {
-    throw new PricingLedgerAttributionError(
-      "release-v2 funding allocations do not cover the charged amount",
-    );
-  }
-  return { paidFundedNano, bonusFundedNano, otherFundedNano };
-}
-
-function validateReleaseV2LedgerAttribution(
-  entry: EngineLedgerEntry,
-  attribution: LedgerAttribution,
-  attributionSchemaVersion: bigint,
-  chargedNano: bigint,
-): ValidatedLedgerAttribution {
-  if (attributionSchemaVersion !== 2n) {
-    throw new PricingLedgerAttributionError("release-v2 attribution requires attribution schema version 2");
-  }
-  requiredLedgerText(entry.request_id, "engine request id");
-  const providerId = requiredLedgerText(attribution.provider_id, "provider id");
-  const officialNano = requiredLedgerInteger(attribution.official_nano, "official amount", true);
-  if (entry.provider !== providerId || entry.official_nano === null || entry.official_nano === undefined) {
-    throw new PricingLedgerAttributionError("ledger and attribution provider/official identity differ");
-  }
-  if (BigInt(entry.official_nano) !== officialNano) {
-    throw new PricingLedgerAttributionError("ledger and attribution monetary identity differ");
-  }
-  const accountClass = requiredLedgerText(attribution.account_class, "account class");
-  const releaseSchemaVersion = requiredLedgerInteger(
-    attribution.release_schema_version,
-    "release schema version",
-  );
-  if (releaseSchemaVersion < 2n) {
-    throw new PricingLedgerAttributionError("release-v2 attribution has an unsupported release schema version");
-  }
-  requiredLedgerInteger(attribution.release_generation, "release generation");
-  requiredLedgerText(attribution.release_digest, "release digest");
-  if (attribution.release_billing_mode === null) {
-    throw new PricingLedgerAttributionError("engine ledger attribution is missing release billing mode");
-  }
-  if (attribution.release_billing_mode === "balance") {
-    requiredLedgerInteger(attribution.release_funding_generation, "release funding generation");
-  } else if (attribution.release_funding_generation !== null) {
-    throw new PricingLedgerAttributionError("meter-only release attribution carries a funding generation");
-  }
-  requiredLedgerText(attribution.policy_id, "policy id");
-  requiredLedgerInteger(attribution.policy_version, "policy version");
-  requiredLedgerText(attribution.policy_digest, "policy digest");
-  requiredLedgerText(attribution.tariff_schedule_id, "tariff schedule id");
-  requiredLedgerInteger(attribution.tariff_priced_ts, "tariff priced timestamp", true);
-  if (attribution.official_cost_json === null) {
-    throw new PricingLedgerAttributionError("release-v2 attribution is missing official cost evidence");
-  }
-  // Progressive pricing is gone from the release-v2 contract: any non-NULL legacy eligibility or
-  // pricing-mode field means upstream tampering rather than a compatible transitional row.
-  if (
-    attribution.pricing_mode !== null
-    || attribution.rule_origin !== null
-    || attribution.track_eligible !== null
-    || attribution.retention_eligible !== null
-    || attribution.commission_eligible !== null
-  ) {
-    throw new PricingLedgerAttributionError("release-v2 attribution carries progressive pricing fields");
-  }
-  // The optional rule is an all-or-nothing discount override; a partial rule cannot be audited.
-  const ruleFields = [
-    attribution.rule_id,
-    attribution.rule_digest,
-    attribution.rule_scope,
-    attribution.payable_multiplier_bp,
-    attribution.discount_bps,
-  ];
-  if (!ruleFields.every((field) => field === null)) {
-    requiredLedgerText(attribution.rule_id, "rule id");
-    requiredLedgerText(attribution.rule_digest, "rule digest");
-    if (attribution.rule_scope === null) {
-      throw new PricingLedgerAttributionError("engine ledger attribution is missing rule scope");
-    }
-    if (attribution.payable_multiplier_bp === null) {
-      throw new PricingLedgerAttributionError("release-v2 rule is missing payable multiplier");
-    }
-    if (
-      attribution.discount_bps !== null
-      && attribution.payable_multiplier_bp !== 10_000 - attribution.discount_bps
-    ) {
-      throw new PricingLedgerAttributionError(
-        "release-v2 rule discount does not complement the payable multiplier",
-      );
-    }
-  }
-
-  const paidFundedNano = requiredLedgerInteger(attribution.paid_funded_nano, "paid funding", true);
-  const bonusFundedNano = requiredLedgerInteger(attribution.bonus_funded_nano, "bonus funding", true);
-  const otherFundedNano = requiredLedgerInteger(attribution.other_funded_nano, "other funding", true);
-  if (paidFundedNano + bonusFundedNano + otherFundedNano !== chargedNano) {
-    throw new PricingLedgerAttributionError("funding categories do not cover the charged amount");
-  }
-  const funding = validateReleaseV2FundingAllocations(attribution, chargedNano);
-  if (
-    funding.paidFundedNano !== paidFundedNano
-    || funding.bonusFundedNano !== bonusFundedNano
-    || funding.otherFundedNano !== otherFundedNano
-  ) {
-    throw new PricingLedgerAttributionError(
-      "funding categories do not match immutable lot allocations",
-    );
-  }
-  return {
-    attribution,
-    allocations: [],
-    paidFundedNano,
-    nonPaidFundedNano: bonusFundedNano + otherFundedNano,
-    retentionEligible: false,
-    // Release-v2 commission authority derives from the immutable account class and exact paid
-    // funding only — deliberately independent of any pricing-mode or engine eligibility flag.
-    commissionEligible: accountClass === "b2c" && paidFundedNano > 0n,
-  };
-}
-
-function validateLedgerAttribution(
-  entry: EngineLedgerEntry,
-  chargedNano: bigint,
-): ValidatedLedgerAttribution | null {
-  const attribution = entry.attribution ?? null;
-  const allocations = entry.funding_allocations ?? [];
-  if (!attribution) {
-    if (allocations.length > 0) {
-      throw new PricingLedgerAttributionError(
-        "engine ledger returned funding allocations without attribution",
-      );
-    }
-    return null;
-  }
-
-  const attributionSchemaVersion = requiredLedgerInteger(
-    attribution.attribution_schema_version,
-    "attribution schema version",
-  );
-  if (!SUPPORTED_LEDGER_ATTRIBUTION_SCHEMA_VERSIONS.has(attributionSchemaVersion)) {
-    throw new PricingLedgerAttributionError("engine ledger attribution schema version is unsupported");
-  }
-  requiredLedgerText(attribution.snapshot_digest, "snapshot digest");
-
-  if (attribution.snapshot_kind === "release_v2") {
-    return validateReleaseV2LedgerAttribution(
-      entry,
-      attribution,
-      attributionSchemaVersion,
-      chargedNano,
-    );
-  }
-  if (attributionSchemaVersion !== 1n) {
-    throw new PricingLedgerAttributionError("engine ledger attribution schema version is unsupported");
-  }
-  const retentionEligible = requiredLedgerBoolean(
-    attribution.retention_eligible,
-    "retention eligibility",
-  );
-  const trackEligible = requiredLedgerBoolean(attribution.track_eligible, "track eligibility");
-  const commissionEligible = requiredLedgerBoolean(
-    attribution.commission_eligible,
-    "commission eligibility",
-  );
-  if (commissionEligible && !trackEligible) {
-    throw new PricingLedgerAttributionError("commission eligibility requires track eligibility");
-  }
-
-  if (attribution.snapshot_kind === "legacy_scalar") {
-    if (
-      attribution.pricing_mode !== "legacy_scalar"
-      || attribution.rule_origin !== "legacy"
-      || attribution.payable_multiplier_bp === null
-      || trackEligible
-      || retentionEligible
-      || commissionEligible
-      || allocations.length > 0
-    ) {
-      throw new PricingLedgerAttributionError("legacy scalar attribution has policy-only fields");
-    }
-    return {
-      attribution,
-      allocations: [],
-      paidFundedNano: null,
-      nonPaidFundedNano: null,
-      retentionEligible: false,
-      commissionEligible: false,
-    };
-  }
-  if (attribution.snapshot_kind !== "policy_v1") {
-    throw new PricingLedgerAttributionError("engine ledger attribution has an unknown snapshot kind");
-  }
-
-  requiredLedgerText(entry.request_id, "engine request id");
-  const providerId = requiredLedgerText(attribution.provider_id, "provider id");
-  const officialNano = requiredLedgerInteger(attribution.official_nano, "official amount", true);
-  if (entry.provider !== providerId || entry.official_nano === null || entry.official_nano === undefined) {
-    throw new PricingLedgerAttributionError("ledger and attribution provider/official identity differ");
-  }
-  if (BigInt(entry.official_nano) !== officialNano) {
-    throw new PricingLedgerAttributionError("ledger and attribution monetary identity differ");
-  }
-
-  requiredLedgerText(attribution.product_id, "product id");
-  requiredLedgerText(attribution.account_class, "account class");
-  requiredLedgerText(attribution.requested_model_id, "requested model id");
-  requiredLedgerText(attribution.canonical_model_id, "canonical model id");
-  requiredLedgerInteger(attribution.alias_generation, "alias generation");
-  requiredLedgerText(attribution.rule_id, "rule id");
-  requiredLedgerText(attribution.rule_digest, "rule digest");
-  requiredLedgerText(attribution.rule_scope, "rule scope");
-  requiredLedgerText(attribution.pricing_mode, "pricing mode");
-  requiredLedgerText(attribution.rule_origin, "rule origin");
-  if (attribution.payable_multiplier_bp === null) {
-    throw new PricingLedgerAttributionError("policy attribution is missing payable multiplier");
-  }
-  requiredLedgerText(attribution.policy_id, "policy id");
-  requiredLedgerInteger(attribution.policy_version, "policy version");
-  requiredLedgerInteger(attribution.effective_policy_version, "effective policy version");
-  requiredLedgerText(attribution.policy_digest, "effective policy digest");
-  requiredLedgerText(attribution.source_policy_digest, "source policy digest");
-  requiredLedgerInteger(attribution.catalog_generation, "catalog generation");
-  requiredLedgerInteger(attribution.switch_generation, "switch generation");
-  requiredLedgerInteger(attribution.admission_catalog_generation, "admission catalog generation");
-  requiredLedgerText(attribution.admission_catalog_digest, "admission catalog digest");
-  requiredLedgerInteger(attribution.admission_switch_generation, "admission switch generation");
-  requiredLedgerText(attribution.admission_switch_digest, "admission switch digest");
-  requiredLedgerInteger(attribution.runtime_manifest_generation, "runtime manifest generation");
-  requiredLedgerText(attribution.runtime_manifest_digest, "runtime manifest digest");
-  requiredLedgerText(attribution.tariff_schedule_id, "tariff schedule id");
-  requiredLedgerInteger(attribution.tariff_priced_ts, "tariff priced timestamp", true);
-  if (attribution.official_cost_json === null) {
-    throw new PricingLedgerAttributionError("policy attribution is missing official cost evidence");
-  }
-
-  const paidFundedNano = requiredLedgerInteger(attribution.paid_funded_nano, "paid funding", true);
-  const bonusFundedNano = requiredLedgerInteger(attribution.bonus_funded_nano, "bonus funding", true);
-  const otherFundedNano = requiredLedgerInteger(attribution.other_funded_nano, "other funding", true);
-  if (paidFundedNano + bonusFundedNano + otherFundedNano !== chargedNano) {
-    throw new PricingLedgerAttributionError("funding categories do not cover the charged amount");
-  }
-  const funding = validatePolicyFundingAllocations(attribution, allocations, chargedNano);
-  if (
-    funding.paidFundedNano !== paidFundedNano
-    || funding.bonusFundedNano !== bonusFundedNano
-    || funding.otherFundedNano !== otherFundedNano
-  ) {
-    throw new PricingLedgerAttributionError(
-      "funding categories do not match immutable bucket allocations",
-    );
-  }
-  return {
-    attribution,
-    allocations: funding.allocations,
-    paidFundedNano,
-    nonPaidFundedNano: bonusFundedNano + otherFundedNano,
-    retentionEligible,
-    commissionEligible,
-  };
+  return new Date(seconds * 1000);
 }
 
 export interface BusinessInviteRecord {
@@ -1045,494 +474,6 @@ export async function getPricingView(database: Database, userId: string): Promis
   };
 }
 
-interface CustomerPricingBindingRow {
-  id: string;
-  account_class: "b2c" | "b2b";
-  product_id: string;
-  desired_effective_version: string | null;
-  desired_digest: string | null;
-  applied_effective_version: string | null;
-  applied_digest: string | null;
-  policy_enforcement: CustomerPricingPolicyView["policyEnforcement"];
-  funding_enforcement: CustomerPricingPolicyView["fundingEnforcement"];
-  reconciliation_state: CustomerPricingPolicyView["reconciliationState"];
-  sync_state: CustomerPricingPolicyView["syncState"];
-  last_ack_at: Date | null;
-  legacy_multiplier_bp: number;
-}
-
-interface CustomerPricingVersionRow {
-  binding_id: string;
-  effective_version: string;
-  policy_version: string;
-  product_id: string;
-  account_class: "b2c" | "b2b";
-  catalog_generation: string;
-  switch_generation: string;
-}
-
-interface CustomerPricingRuleRow {
-  binding_id: string;
-  effective_version: string;
-  rule_id: string;
-  scope_type: "provider" | "model";
-  provider_id: string;
-  canonical_model_id: string | null;
-  pricing_mode: "track" | "discount";
-  rule_origin: "managed" | "legacy";
-  discount_bps: number | null;
-  payable_multiplier_bp: number;
-  track_eligible: boolean;
-  retention_eligible: boolean;
-  commission_eligible: boolean;
-}
-
-interface CustomerCatalogEntryRow {
-  product_id: string;
-  generation: string;
-  provider_id: string;
-  canonical_model_id: string;
-  enabled: boolean;
-}
-
-interface CustomerSwitchEntryRow {
-  generation: string;
-  provider_id: string;
-  scope_type: "master" | "product" | "segment";
-  product_id: string;
-  segment: "" | "b2c" | "b2b";
-  catalog_generation: string | null;
-  enabled: boolean;
-}
-
-function pricingVersionKey(bindingId: string, effectiveVersion: string): string {
-  return `${bindingId}\u0000${effectiveVersion}`;
-}
-
-function catalogEntryKey(productId: string, generation: string): string {
-  return `${productId}\u0000${generation}`;
-}
-
-function customerRuleView(row: CustomerPricingRuleRow): CustomerPricingRuleView {
-  return {
-    ruleId: row.rule_id,
-    scope: row.scope_type,
-    pricingMode: row.pricing_mode,
-    ruleOrigin: row.rule_origin,
-    discountBps: row.discount_bps,
-    payableMultiplierBp: row.payable_multiplier_bp,
-    trackEligible: row.track_eligible,
-    retentionEligible: row.retention_eligible,
-    commissionEligible: row.commission_eligible,
-  };
-}
-
-/**
- * The B2C customer presentation after the fleet cutover: the managed global policy head is the
- * content the active release pins (post-cutover edits are refused with release_cycle_required,
- * so the two cannot diverge), while the binding's own frozen v1 rows are pre-cutover track
- * artifacts — including a missing Google rule — that no longer describe any charge. The view
- * therefore presents the global policy rules as the account's effective rules, keyed to the
- * binding version being rendered.
- */
-function globalB2cPresentationRules(
-  binding: CustomerPricingBindingRow,
-  version: CustomerPricingVersionRow,
-  globalRules: readonly CustomerPricingRuleRow[],
-): CustomerPricingRuleRow[] {
-  return globalRules.map((rule) => ({
-    ...rule,
-    binding_id: binding.id,
-    effective_version: version.effective_version,
-  }));
-}
-
-/**
- * The legacy scalar rule for a binding whose policy is not engine-enforced yet: a plain
- * provider discount mirroring the legacy scalar that billing actually applies. trackEligible and
- * the other capability flags stay false — the legacy lane has no track/retention/commission
- * semantics of its own. Track-mode materialized rules are presented through this rule directly;
- * discount-mode rules go through shadowPresentationRule, which uses it as the clamp ceiling.
- */
-function legacyScalarRule(
-  binding: CustomerPricingBindingRow,
-  version: CustomerPricingVersionRow,
-  providerId: string,
-): CustomerPricingRuleRow {
-  return {
-    binding_id: binding.id,
-    effective_version: version.effective_version,
-    rule_id: `provider:${providerId}:legacy-scalar`,
-    scope_type: "provider",
-    provider_id: providerId,
-    canonical_model_id: null,
-    pricing_mode: "discount",
-    rule_origin: "legacy",
-    discount_bps: 10_000 - binding.legacy_multiplier_bp,
-    payable_multiplier_bp: binding.legacy_multiplier_bp,
-    track_eligible: false,
-    retention_eligible: false,
-    commission_eligible: false,
-  };
-}
-
-/**
- * The customer-facing discount rule for a binding whose policy is not engine-enforced yet: the
- * materialized per-provider policy discount, clamped so it never exceeds the discount the
- * legacy scalar actually bills. A tighter negotiated provider rate (policy discount below the
- * scalar's) is shown as configured — billing can only over-deliver on it until the release
- * cutover; a looser one is clamped to the scalar so the dashboard never promises a discount
- * billing does not apply. The rule keeps the "legacy" origin and no capability flags: the
- * enforced price is still the scalar, not the engine-delivered policy.
- */
-function shadowPresentationRule(
-  binding: CustomerPricingBindingRow,
-  version: CustomerPricingVersionRow,
-  materialized: CustomerPricingRuleRow,
-): CustomerPricingRuleRow {
-  const legacy = legacyScalarRule(binding, version, materialized.provider_id);
-  if (materialized.pricing_mode !== "discount" || materialized.discount_bps === null) return legacy;
-  const discountBps = Math.min(materialized.discount_bps, legacy.discount_bps ?? 0);
-  return {
-    ...materialized,
-    rule_origin: "legacy",
-    discount_bps: discountBps,
-    payable_multiplier_bp: 10_000 - discountBps,
-    track_eligible: false,
-    retention_eligible: false,
-    commission_eligible: false,
-  };
-}
-
-function customerPricingVersionView(input: {
-  binding: CustomerPricingBindingRow;
-  version: CustomerPricingVersionRow;
-  rules: readonly CustomerPricingRuleRow[];
-  catalogEntries: ReadonlyMap<string, readonly CustomerCatalogEntryRow[]>;
-  admissionCatalogGeneration: string | null;
-  switchEntries: ReadonlyMap<string, readonly CustomerSwitchEntryRow[]>;
-  admissionSwitchGeneration: string | null;
-  cutoverCompleted: boolean;
-  globalB2cRules: readonly CustomerPricingRuleRow[];
-}): CustomerPricingVersionView {
-  const { binding, version } = input;
-  const policyCatalog = input.catalogEntries.get(
-    catalogEntryKey(version.product_id, version.catalog_generation),
-  ) ?? [];
-  const admissionCatalog = input.admissionCatalogGeneration === null
-    ? []
-    : input.catalogEntries.get(catalogEntryKey(version.product_id, input.admissionCatalogGeneration)) ?? [];
-  const modelIdentities = new Map<string, { providerId: string; modelId: string }>();
-  for (const entry of [...policyCatalog, ...admissionCatalog]) {
-    modelIdentities.set(`${entry.provider_id}\u0000${entry.canonical_model_id}`, {
-      providerId: entry.provider_id,
-      modelId: entry.canonical_model_id,
-    });
-  }
-
-  const policySwitches = input.switchEntries.get(version.switch_generation) ?? [];
-  const admissionSwitches = input.admissionSwitchGeneration === null
-    ? []
-    : input.switchEntries.get(input.admissionSwitchGeneration) ?? [];
-  const scopedType = binding.account_class === "b2c" || binding.account_class === "b2b"
-    ? "segment"
-    : "product";
-  const scopedSegment = scopedType === "segment" ? binding.account_class : "";
-  const findSwitch = (
-    entries: readonly CustomerSwitchEntryRow[],
-    providerId: string,
-    scopeType: "master" | "product" | "segment",
-  ) => entries.find((entry) => (
-    entry.provider_id === providerId
-    && entry.scope_type === scopeType
-    && entry.product_id === (scopeType === "master" ? "" : version.product_id)
-    && entry.segment === (scopeType === "segment" ? scopedSegment : "")
-  ));
-
-  const modelsByProvider = new Map<string, CustomerPricingModelView[]>();
-  const sortedModels = [...modelIdentities.values()].sort((left, right) => (
-    left.providerId.localeCompare(right.providerId, "en")
-    || left.modelId.localeCompare(right.modelId, "en")
-  ));
-  for (const identity of sortedModels) {
-    const policyModel = policyCatalog.find((entry) => (
-      entry.provider_id === identity.providerId && entry.canonical_model_id === identity.modelId
-    ));
-    const admissionModel = admissionCatalog.find((entry) => (
-      entry.provider_id === identity.providerId && entry.canonical_model_id === identity.modelId
-    ));
-    const policyMaster = findSwitch(policySwitches, identity.providerId, "master");
-    const policyScoped = findSwitch(policySwitches, identity.providerId, scopedType);
-    const admissionMaster = findSwitch(admissionSwitches, identity.providerId, "master");
-    const admissionScoped = findSwitch(admissionSwitches, identity.providerId, scopedType);
-    const effectiveRules = binding.account_class === "b2c"
-        && input.cutoverCompleted
-        && input.globalB2cRules.length > 0
-      ? globalB2cPresentationRules(binding, version, input.globalB2cRules)
-      : input.rules;
-    const exactRule = effectiveRules.find((rule) => (
-      rule.provider_id === identity.providerId
-      && rule.scope_type === "model"
-      && rule.canonical_model_id === identity.modelId
-    ));
-    const providerRule = effectiveRules.find((rule) => (
-      rule.provider_id === identity.providerId && rule.scope_type === "provider"
-    ));
-    // Post-cutover the release authority bills exactly the account's pinned policy, so the
-    // materialized per-provider discount is presented as-is. Pre-cutover (legacy_scalar or
-    // shadow binding), billing still applied the legacy scalar on the engine account to every
-    // provider, so the rule was clamped to never advertise a discount beyond the scalar billing
-    // actually charged: a tighter negotiated provider rate showed as configured, a looser one
-    // clamped to the scalar. Policy and scalar converged at the release cutover.
-    const materialized = exactRule ?? providerRule ?? null;
-    const legacyScalarActive = binding.account_class === "b2b"
-      && binding.policy_enforcement !== "strict"
-      && !input.cutoverCompleted;
-    const rule = legacyScalarActive && materialized !== null
-      ? shadowPresentationRule(binding, version, materialized)
-      : materialized;
-    const reasons: CustomerPricingUnavailableReason[] = [];
-    if (policyModel?.enabled !== true) reasons.push("policy_catalog_disabled");
-    if (admissionModel?.enabled !== true) reasons.push("admission_catalog_disabled");
-    if (policyMaster?.enabled !== true) reasons.push("policy_master_switch_disabled");
-    if (
-      policyScoped?.enabled !== true
-      || policyScoped.catalog_generation !== version.catalog_generation
-    ) reasons.push("policy_scoped_switch_disabled");
-    if (admissionMaster?.enabled !== true) reasons.push("admission_master_switch_disabled");
-    if (
-      admissionScoped?.enabled !== true
-      || (
-        admissionScoped.catalog_generation !== input.admissionCatalogGeneration
-        && admissionScoped.catalog_generation !== version.catalog_generation
-      )
-    ) reasons.push("admission_scoped_switch_disabled");
-    if (!rule) reasons.push("missing_pricing_rule");
-    const model: CustomerPricingModelView = {
-      modelId: identity.modelId,
-      available: reasons.length === 0,
-      unavailableReasons: reasons,
-      rule: rule ? customerRuleView(rule) : null,
-    };
-    const providerModels = modelsByProvider.get(identity.providerId) ?? [];
-    providerModels.push(model);
-    modelsByProvider.set(identity.providerId, providerModels);
-  }
-
-  return {
-    effectiveVersion: version.effective_version,
-    policyVersion: version.policy_version,
-    catalogGeneration: version.catalog_generation,
-    switchGeneration: version.switch_generation,
-    providers: [...modelsByProvider.entries()].map(([providerId, models]) => ({
-      providerId,
-      available: models.some((model) => model.available),
-      models,
-    })),
-  };
-}
-
-/**
- * Returns the complete customer-facing policy projection from one coherent PostgreSQL snapshot.
- * Applied and desired versions remain distinct: callers must never present a desired version as
- * engine-active while a durable ACK is still pending.
- */
-export async function getCustomerPricingPolicyView(
-  database: Database,
-  userId: string,
-): Promise<CustomerPricingPolicyView[]> {
-  const client = await database.pool.connect();
-  try {
-    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
-    const bindingResult = await client.query<CustomerPricingBindingRow>(`
-      SELECT binding.id, binding.account_class, binding.product_id,
-             binding.desired_effective_version::text,
-             binding.desired_digest,
-             binding.applied_effective_version::text,
-             binding.applied_digest,
-             binding.policy_enforcement,
-             binding.funding_enforcement,
-             binding.reconciliation_state,
-             binding.sync_state,
-             binding.last_ack_at,
-             account.mult_bp AS legacy_multiplier_bp
-      FROM account_policy_bindings binding
-      JOIN engine_accounts account
-        ON account.id = binding.engine_account_record_id
-       AND account.user_id = binding.user_id
-       AND account.engine_account_id = binding.engine_account_id
-      WHERE binding.user_id = $1
-        AND binding.account_class IN ('b2c', 'b2b')
-      ORDER BY binding.product_id, binding.created_at, binding.id
-    `, [userId]);
-    if (bindingResult.rows.length === 0) {
-      await client.query("COMMIT");
-      return [];
-    }
-    // There is no release authority any more: the account default and its per-provider
-    // overrides are the whole price, so nothing overrides the binding's own rules here.
-    const globalB2cRules: CustomerPricingRuleRow[] = [];
-    const bindingIds = bindingResult.rows.map((binding) => binding.id);
-    const versionResult = await client.query<CustomerPricingVersionRow>(`
-      SELECT version.binding_id, version.effective_version::text,
-             version.policy_version::text, version.product_id, version.account_class,
-             version.catalog_generation::text, version.switch_generation::text
-      FROM account_policy_versions version
-      JOIN account_policy_bindings binding ON binding.id = version.binding_id
-      WHERE version.binding_id = ANY($1::uuid[])
-        AND version.effective_version IN (
-          binding.desired_effective_version,
-          binding.applied_effective_version
-        )
-      ORDER BY version.binding_id, version.effective_version
-    `, [bindingIds]);
-    const ruleResult = await client.query<CustomerPricingRuleRow>(`
-      SELECT rule.binding_id, rule.effective_version::text, rule.rule_id,
-             rule.scope_type, rule.provider_id, rule.canonical_model_id,
-             rule.pricing_mode, rule.rule_origin, rule.discount_bps,
-             rule.payable_multiplier_bp, rule.track_eligible,
-             rule.retention_eligible, rule.commission_eligible
-      FROM account_policy_rules rule
-      JOIN account_policy_bindings binding ON binding.id = rule.binding_id
-      WHERE rule.binding_id = ANY($1::uuid[])
-        AND rule.effective_version IN (
-          binding.desired_effective_version,
-          binding.applied_effective_version
-        )
-      ORDER BY rule.binding_id, rule.effective_version, rule.provider_id,
-               rule.scope_type, rule.canonical_model_id, rule.rule_id
-    `, [bindingIds]);
-    const catalogResult = await client.query<CustomerCatalogEntryRow>(`
-      SELECT entry.product_id, entry.generation::text, entry.provider_id,
-             entry.canonical_model_id, entry.enabled
-      FROM product_catalog_entries entry
-      WHERE EXISTS (
-        SELECT 1
-        FROM account_policy_versions version
-        JOIN account_policy_bindings binding ON binding.id = version.binding_id
-        WHERE version.binding_id = ANY($1::uuid[])
-          AND version.effective_version IN (
-            binding.desired_effective_version,
-            binding.applied_effective_version
-          )
-          AND version.product_id = entry.product_id
-          AND version.catalog_generation = entry.generation
-      ) OR EXISTS (
-        SELECT 1
-        FROM account_policy_bindings binding
-        JOIN product_catalog_heads head ON head.product_id = binding.product_id
-        WHERE binding.id = ANY($1::uuid[])
-          AND head.product_id = entry.product_id
-          AND head.active_generation = entry.generation
-      )
-      ORDER BY entry.product_id, entry.generation, entry.provider_id,
-               entry.canonical_model_id
-    `, [bindingIds]);
-    const catalogHeadResult = await client.query<{ product_id: string; active_generation: string }>(`
-      SELECT head.product_id, head.active_generation::text
-      FROM product_catalog_heads head
-      WHERE head.product_id IN (
-        SELECT product_id FROM account_policy_bindings WHERE id = ANY($1::uuid[])
-      )
-      ORDER BY head.product_id
-    `, [bindingIds]);
-    const switchResult = await client.query<CustomerSwitchEntryRow>(`
-      SELECT entry.generation::text, entry.provider_id, entry.scope_type,
-             entry.product_id, entry.segment, entry.catalog_generation::text,
-             entry.enabled
-      FROM provider_switch_entries entry
-      WHERE entry.generation IN (
-        SELECT version.switch_generation
-        FROM account_policy_versions version
-        JOIN account_policy_bindings binding ON binding.id = version.binding_id
-        WHERE version.binding_id = ANY($1::uuid[])
-          AND version.effective_version IN (
-            binding.desired_effective_version,
-            binding.applied_effective_version
-          )
-        UNION
-        SELECT head.active_generation FROM provider_switch_head head WHERE head.singleton = 1
-      )
-      ORDER BY entry.generation, entry.provider_id, entry.scope_type,
-               entry.product_id, entry.segment
-    `, [bindingIds]);
-    const switchHeadResult = await client.query<{ active_generation: string }>(`
-      SELECT active_generation::text FROM provider_switch_head WHERE singleton = 1
-    `);
-
-    const versions = new Map(versionResult.rows.map((version) => [
-      pricingVersionKey(version.binding_id, version.effective_version),
-      version,
-    ]));
-    const rules = new Map<string, CustomerPricingRuleRow[]>();
-    for (const rule of ruleResult.rows) {
-      const key = pricingVersionKey(rule.binding_id, rule.effective_version);
-      const rows = rules.get(key) ?? [];
-      rows.push(rule);
-      rules.set(key, rows);
-    }
-    const catalogEntries = new Map<string, CustomerCatalogEntryRow[]>();
-    for (const entry of catalogResult.rows) {
-      const key = catalogEntryKey(entry.product_id, entry.generation);
-      const rows = catalogEntries.get(key) ?? [];
-      rows.push(entry);
-      catalogEntries.set(key, rows);
-    }
-    const catalogHeads = new Map(catalogHeadResult.rows.map((head) => [
-      head.product_id,
-      head.active_generation,
-    ]));
-    const switchEntries = new Map<string, CustomerSwitchEntryRow[]>();
-    for (const entry of switchResult.rows) {
-      const rows = switchEntries.get(entry.generation) ?? [];
-      rows.push(entry);
-      switchEntries.set(entry.generation, rows);
-    }
-    const admissionSwitchGeneration = switchHeadResult.rows[0]?.active_generation ?? null;
-    const view = bindingResult.rows.map((binding): CustomerPricingPolicyView => {
-      const mapVersion = (effectiveVersion: string | null): CustomerPricingVersionView | null => {
-        if (effectiveVersion === null) return null;
-        const key = pricingVersionKey(binding.id, effectiveVersion);
-        const version = versions.get(key);
-        if (!version) return null;
-        return customerPricingVersionView({
-          binding,
-          version,
-          rules: rules.get(key) ?? [],
-          catalogEntries,
-          admissionCatalogGeneration: catalogHeads.get(binding.product_id) ?? null,
-          switchEntries,
-          admissionSwitchGeneration,
-          cutoverCompleted: false,
-          globalB2cRules,
-        });
-      };
-      return {
-        accountClass: binding.account_class,
-        productId: binding.product_id,
-        policyEnforcement: binding.policy_enforcement,
-        fundingEnforcement: binding.funding_enforcement,
-        reconciliationState: binding.reconciliation_state,
-        syncState: binding.sync_state,
-        inSync: binding.sync_state === "confirmed"
-          && binding.desired_effective_version !== null
-          && binding.desired_effective_version === binding.applied_effective_version
-          && binding.desired_digest === binding.applied_digest,
-        lastAcknowledgedAt: binding.last_ack_at?.toISOString() ?? null,
-        desired: mapVersion(binding.desired_effective_version),
-        applied: mapVersion(binding.applied_effective_version),
-      };
-    });
-    await client.query("COMMIT");
-    return view;
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
 export async function setBusinessPricing(database: Database, input: {
   userId: string;
   multiplierBp: number;
@@ -1804,214 +745,6 @@ export async function completePricingUsageSync(
   `, [target.engineAccountId, target.userId]);
 }
 
-async function resolveAttributionBinding(
-  client: PoolClient,
-  target: PricingSyncTarget,
-  validated: ValidatedLedgerAttribution,
-): Promise<string | null> {
-  const attribution = validated.attribution;
-  if (attribution.snapshot_kind !== "policy_v1") return null;
-  const result = await client.query<{ id: string }>(`
-    SELECT binding.id
-    FROM account_policy_bindings binding
-    JOIN account_policy_versions version
-      ON version.binding_id = binding.id
-     AND version.effective_version = $3
-    JOIN account_policy_rules rule
-      ON rule.binding_id = version.binding_id
-     AND rule.effective_version = version.effective_version
-     AND rule.rule_id = $12
-    JOIN product_catalog_versions admission_catalog
-      ON admission_catalog.product_id = version.product_id
-     AND admission_catalog.generation = $24
-     AND admission_catalog.content_digest = $25
-    JOIN provider_switch_versions admission_switch
-      ON admission_switch.generation = $26
-     AND admission_switch.content_digest = $27
-    WHERE binding.user_id = $1
-      AND binding.engine_account_id = $2
-      AND binding.policy_id = $4
-      AND binding.product_id = $7
-      AND binding.account_class = $8
-      AND version.policy_id = $4
-      AND version.policy_version = $5
-      AND version.policy_digest = $6
-      AND version.product_id = $7
-      AND version.account_class = $8
-      AND version.catalog_generation = $9
-      AND version.switch_generation = $10
-      AND version.content_digest = $11
-      AND rule.rule_digest = $13
-      AND rule.scope_type = $14
-      AND rule.provider_id = $15
-      AND rule.canonical_model_id IS NOT DISTINCT FROM $16::text
-      AND rule.pricing_mode = $17
-      AND rule.rule_origin = $18
-      AND rule.discount_bps IS NOT DISTINCT FROM $19::integer
-      AND rule.payable_multiplier_bp = $20
-      AND rule.track_eligible = $21
-      AND rule.retention_eligible = $22
-      AND rule.commission_eligible = $23
-  `, [
-    target.userId,
-    target.engineAccountId,
-    attribution.effective_policy_version,
-    attribution.policy_id,
-    attribution.policy_version,
-    attribution.source_policy_digest,
-    attribution.product_id,
-    attribution.account_class,
-    attribution.catalog_generation,
-    attribution.switch_generation,
-    attribution.policy_digest,
-    attribution.rule_id,
-    attribution.rule_digest,
-    attribution.rule_scope,
-    attribution.provider_id,
-    attribution.rule_scope === "model" ? attribution.canonical_model_id : null,
-    attribution.pricing_mode,
-    attribution.rule_origin,
-    attribution.discount_bps,
-    attribution.payable_multiplier_bp,
-    attribution.track_eligible,
-    attribution.retention_eligible,
-    attribution.commission_eligible,
-    attribution.admission_catalog_generation,
-    attribution.admission_catalog_digest,
-    attribution.admission_switch_generation,
-    attribution.admission_switch_digest,
-  ]);
-  if (result.rows.length !== 1) {
-    throw new PricingLedgerAttributionError(
-      "engine policy attribution does not match one immutable commerce policy version",
-    );
-  }
-  return result.rows[0]!.id;
-}
-
-async function insertPricingUsageAttribution(
-  client: PoolClient,
-  target: PricingSyncTarget,
-  eventId: string,
-  entry: EngineLedgerEntry,
-  chargedNano: bigint,
-  validated: ValidatedLedgerAttribution,
-): Promise<void> {
-  const attribution = validated.attribution;
-  const bindingId = await resolveAttributionBinding(client, target, validated);
-  const effectivePolicyDigest = attribution.snapshot_kind === "policy_v1"
-    ? attribution.policy_digest
-    : null;
-  // policy_v1 stores the source policy digest in the legacy column; release-v2 has a single
-  // policy identity, so its immutable policy_digest lands there directly (its CHECK requires
-  // a non-empty value), while effective/binding columns stay NULL by contract.
-  const storedPolicyDigest = attribution.snapshot_kind === "policy_v1"
-    ? attribution.source_policy_digest
-    : attribution.policy_digest;
-  const tariffPricedAt = attribution.tariff_priced_ts === null
-    ? null
-    : epochSecondsDate(attribution.tariff_priced_ts, "tariff priced timestamp");
-  await client.query(`
-    INSERT INTO pricing_usage_attributions (
-      pricing_usage_event_id, attribution_schema_version, snapshot_kind,
-      engine_request_id, provider_id, product_id, account_class, binding_id,
-      requested_model_id, canonical_model_id, served_model_id,
-      served_canonical_model_id, billing_invariant_code, alias_generation,
-      rule_id, rule_digest, rule_scope, pricing_mode, rule_origin, discount_bps,
-      payable_multiplier_bp, policy_id, policy_version, effective_policy_version,
-      effective_policy_digest, policy_digest, source_policy_digest,
-      catalog_generation, switch_generation, admission_catalog_generation,
-      admission_catalog_digest, admission_switch_generation, admission_switch_digest,
-      runtime_manifest_generation, runtime_manifest_digest, tariff_schedule_id,
-      tariff_priced_at, official_nano, charged_nano, official_cost_json,
-      paid_funded_nano, bonus_funded_nano, other_funded_nano,
-      funding_allocation_json, track_eligible, retention_eligible,
-      commission_eligible, snapshot_digest,
-      release_schema_version, release_generation, release_digest,
-      release_billing_mode, release_funding_generation
-    ) VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-      $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,
-      $33,$34,$35,$36,$37,$38,$39,$40::jsonb,$41,$42,$43,$44::jsonb,
-      $45,$46,$47,$48,$49,$50,$51,$52,$53
-    )
-  `, [
-    eventId,
-    attribution.attribution_schema_version,
-    attribution.snapshot_kind,
-    entry.request_id ?? null,
-    attribution.provider_id,
-    attribution.product_id,
-    attribution.account_class,
-    bindingId,
-    attribution.requested_model_id,
-    attribution.canonical_model_id,
-    attribution.served_model_id,
-    attribution.served_canonical_model_id,
-    attribution.billing_invariant_code,
-    attribution.alias_generation,
-    attribution.rule_id,
-    attribution.rule_digest,
-    attribution.rule_scope,
-    attribution.pricing_mode,
-    attribution.rule_origin,
-    attribution.discount_bps,
-    attribution.payable_multiplier_bp,
-    attribution.policy_id,
-    attribution.policy_version,
-    attribution.effective_policy_version,
-    effectivePolicyDigest,
-    storedPolicyDigest,
-    attribution.source_policy_digest,
-    attribution.catalog_generation,
-    attribution.switch_generation,
-    attribution.admission_catalog_generation,
-    attribution.admission_catalog_digest,
-    attribution.admission_switch_generation,
-    attribution.admission_switch_digest,
-    attribution.runtime_manifest_generation,
-    attribution.runtime_manifest_digest,
-    attribution.tariff_schedule_id,
-    tariffPricedAt,
-    attribution.official_nano,
-    chargedNano.toString(),
-    attribution.official_cost_json === null ? null : JSON.stringify(attribution.official_cost_json),
-    attribution.paid_funded_nano,
-    attribution.bonus_funded_nano,
-    attribution.other_funded_nano,
-    attribution.funding_allocation_json === null
-      ? null
-      : JSON.stringify(attribution.funding_allocation_json),
-    // Release-v2 rows carry NULL engine eligibility by contract; locally they are durable
-    // non-tier rows, and commission authority is the computed class/paid-funding derivation.
-    attribution.track_eligible ?? false,
-    attribution.retention_eligible ?? false,
-    validated.commissionEligible,
-    attribution.snapshot_digest,
-    attribution.release_schema_version,
-    attribution.release_generation,
-    attribution.release_digest,
-    attribution.release_billing_mode,
-    attribution.release_funding_generation,
-  ]);
-  for (const allocation of validated.allocations) {
-    await client.query(`
-      INSERT INTO pricing_usage_funding_allocations (
-        pricing_usage_event_id, ordinal, engine_bucket_id, bucket_version,
-        source_type, source_ref, amount_nano
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7)
-    `, [
-      eventId,
-      allocation.ordinal,
-      allocation.engineBucketId,
-      allocation.bucketVersion,
-      allocation.sourceType,
-      allocation.sourceRef,
-      allocation.amountNano,
-    ]);
-  }
-}
-
 /**
  * Returns the ledger cursor immediately before the oldest recent usage row whose provider has not
  * completed the current evidence algorithm and cannot already be proven by immutable pricing
@@ -2028,14 +761,11 @@ export async function getPricingProviderBackfillCursor(
   const result = await database.pool.query<{ first_ledger_id: string | null }>(`
     SELECT min(event.ledger_entry_id)::text AS first_ledger_id
     FROM pricing_usage_events event
-    LEFT JOIN pricing_usage_attributions attribution
-      ON attribution.pricing_usage_event_id = event.id
     WHERE event.user_id = $1 AND event.engine_account_id = $2
       AND event.ledger_entry_id <= $3
       AND event.occurred_at >= now() - make_interval(days => $4)
       AND event.provider_recovery_version < $5
       AND (event.provider_id IS NULL OR event.provider_id IN ($6, $7))
-      AND attribution.provider_id IS NULL
   `, [
     target.userId,
     target.engineAccountId,
@@ -2075,7 +805,7 @@ export async function applyPricingProviderBackfillPage(
       previous !== undefined
       && (previous.amountNano !== candidate.amountNano || previous.providerId !== candidate.providerId)
     ) {
-      throw new PricingLedgerAttributionError(
+      throw new PricingLedgerEvidenceError(
         `engine provider backfill repeated ledger ${ledgerId} with conflicting evidence`,
       );
     }
@@ -2092,14 +822,10 @@ export async function applyPricingProviderBackfillPage(
       amount_nano: string;
       provider_id: string | null;
       provider_recovery_version: number;
-      attributed_provider_id: string | null;
     }>(`
       SELECT event.ledger_entry_id::text, event.amount_nano::text,
-             event.provider_id, event.provider_recovery_version,
-             attribution.provider_id AS attributed_provider_id
+             event.provider_id, event.provider_recovery_version
       FROM pricing_usage_events event
-      LEFT JOIN pricing_usage_attributions attribution
-        ON attribution.pricing_usage_event_id = event.id
       WHERE event.user_id = $1 AND event.engine_account_id = $2
         AND event.ledger_entry_id = ANY($3::bigint[])
       FOR UPDATE OF event
@@ -2110,18 +836,18 @@ export async function applyPricingProviderBackfillPage(
     for (const row of existing.rows) {
       const candidate = evidence.get(row.ledger_entry_id)!;
       if (row.amount_nano !== candidate.amountNano) {
-        throw new PricingLedgerAttributionError(
+        throw new PricingLedgerEvidenceError(
           `engine provider backfill amount differs for ledger ${row.ledger_entry_id}`,
         );
       }
-      const exactProviders = [row.provider_id, row.attributed_provider_id]
+      const exactProviders = [row.provider_id]
         .map(normalizedProviderId)
         .filter((value): value is string => value !== null && !isProviderRecoverySentinel(value));
       if (
         candidate.providerId !== UNATTRIBUTED_PROVIDER_ID
         && exactProviders.some((providerId) => providerId !== candidate.providerId)
       ) {
-        throw new PricingLedgerAttributionError(
+        throw new PricingLedgerEvidenceError(
           `engine provider backfill identity differs for ledger ${row.ledger_entry_id}`,
         );
       }
@@ -2131,8 +857,7 @@ export async function applyPricingProviderBackfillPage(
       ) continue;
       const currentProviderId = normalizedProviderId(row.provider_id);
       const needsCurrentRecovery = row.provider_recovery_version < PROVIDER_RECOVERY_VERSION
-        && (currentProviderId === null || isProviderRecoverySentinel(currentProviderId))
-        && normalizedProviderId(row.attributed_provider_id) === null;
+        && (currentProviderId === null || isProviderRecoverySentinel(currentProviderId));
       if (needsCurrentRecovery && candidate.providerId !== UNATTRIBUTED_PROVIDER_ID) {
         updateLedgerIds.push(row.ledger_entry_id);
         updateProviderIds.push(candidate.providerId);
@@ -2182,11 +907,6 @@ export async function completePricingProviderBackfill(
       AND event.occurred_at >= now() - make_interval(days => $6)
       AND event.provider_recovery_version < $5
       AND (event.provider_id IS NULL OR event.provider_id IN ($7, $8))
-      AND NOT EXISTS (
-        SELECT 1 FROM pricing_usage_attributions attribution
-        WHERE attribution.pricing_usage_event_id = event.id
-          AND attribution.provider_id IS NOT NULL
-      )
   `, [
     target.userId,
     target.engineAccountId,
@@ -2330,6 +1050,12 @@ export async function applyPricingLedgerPage(
       [target.engineAccountId, target.userId],
     );
     const startCursor = BigInt(cursorRow.rows[0]?.last_ledger_id ?? "0");
+    const freeRow = await client.query<{ free_balance_nano: string }>(
+      "SELECT free_balance_nano::text AS free_balance_nano FROM customer_profiles WHERE user_id = $1 FOR UPDATE",
+      [target.userId],
+    );
+    let freeBalance = BigInt(freeRow.rows[0]?.free_balance_nano ?? "0");
+    let freeBalanceChanged = false;
     let lastLedgerId = 0n;
     for (const entry of ordered) {
       const ledgerId = BigInt(entry.id);
@@ -2341,16 +1067,25 @@ export async function applyPricingLedgerPage(
       // Деньгами и балансом эта таблица не управляет; вставка идемпотентна по (аккаунт, ledger id).
       if (entry.kind === "topup" && amount > 0n) {
         await recordPricingTopup(client, target, entry, amount);
+        // Free credit (welcome bonus, promo, admin credit) tops up the free balance instead of
+        // the commissionable one. The whitelist of real-money refs is the single place that
+        // decides which is which — see isFreeCreditRef.
+        if (isFreeCreditRef(entry.ref)) {
+          freeBalance += amount;
+          freeBalanceChanged = true;
+        }
+        continue;
       }
+      // Only a positive charge creates real_funded/commission. A negative `adjust` (refund,
+      // chargeback, admin clawback) deliberately does not reverse commission already accrued:
+      // ignoring it can only underpay, never overpay.
       if (entry.kind !== "charge" || amount <= 0n) continue;
       const occurredAt = epochSecondsDate(entry.ts, "event timestamp");
-      const validatedAttribution = validateLedgerAttribution(entry, amount);
-      // Комиссионный базис — только доказанные деньги: без immutable engine funding evidence
-      // базиса нет вовсе (недоплатить безопасно, переплатить — нет). The retired free-first
-      // projection no longer manufactures a basis for unattributed rows.
-      const realFunded = validatedAttribution !== null && validatedAttribution.commissionEligible
-        ? validatedAttribution.paidFundedNano ?? 0n
-        : 0n;
+      // Free money is spent first, so real_funded is the part covered by the customer's own
+      // money. This is the whole funding model: one durable free balance per customer, no
+      // per-request funding evidence, nothing to disagree with the engine about.
+      const fromFree = amount < freeBalance ? amount : freeBalance;
+      const realFunded = amount - fromFree;
       const eventId = randomUUID();
       const providerId = ledgerProviderEvidence(entry);
       const inserted = await client.query<{ id: string }>(`
@@ -2371,17 +1106,17 @@ export async function applyPricingLedgerPage(
         occurredAt,
         providerId === UNATTRIBUTED_PROVIDER_ID ? 0 : PROVIDER_RECOVERY_VERSION,
       ]);
-      if (!inserted.rows[0]) continue; // уже обработано — эффекты не дублируем
-      if (validatedAttribution !== null) {
-        await insertPricingUsageAttribution(
-          client,
-          target,
-          eventId,
-          entry,
-          amount,
-          validatedAttribution,
-        );
+      if (!inserted.rows[0]) continue; // already processed — never spend the free balance twice
+      if (fromFree > 0n) {
+        freeBalance -= fromFree;
+        freeBalanceChanged = true;
       }
+    }
+    if (freeBalanceChanged) {
+      await client.query(
+        "UPDATE customer_profiles SET free_balance_nano = $2, updated_at = now() WHERE user_id = $1",
+        [target.userId, freeBalance.toString()],
+      );
     }
     const reachedStablePageEnd = entries.length < PRICING_LEDGER_PAGE_SIZE;
     await client.query(`

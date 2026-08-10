@@ -5,8 +5,6 @@ import { useState, type CSSProperties } from "react";
 import type {
   AccountView,
   ApiKeyView,
-  CustomerPricingModelView,
-  CustomerPricingRuleView,
   LedgerEntry,
   UsageView,
 } from "@/lib/api";
@@ -22,36 +20,22 @@ import {
 
 const policyCopy = {
   en: {
-    availableModels: "Available models",
-    paidBalance: "Paid balance",
-    fundingPending: "Funding split pending",
+    yourDiscount: "Your discount",
+    offListPrice: "off the official rate",
     unavailable: "Unavailable",
     pricingRule: "Pricing rule",
-    legacy: "Legacy account rule",
-    mixed: "Mixed rules",
-    noRule: "No pricing rule",
-    policyPending: "Desired policy is waiting for an engine ACK.",
-    policyUnavailable: "No applied provider/model policy is available yet.",
+    noRule: "No discount",
     providerUnattributed: "Unattributed",
     officialVsCharged: "Official → charged",
-    paidFunding: "paid",
-    bonusFunding: "bonus",
   },
   ru: {
-    availableModels: "Доступные модели",
-    paidBalance: "Оплаченный баланс",
-    fundingPending: "Разбивка средств ожидает сверки",
+    yourDiscount: "Ваша скидка",
+    offListPrice: "от официального тарифа",
     unavailable: "Недоступно",
     pricingRule: "Правило тарификации",
-    legacy: "Legacy-правило аккаунта",
-    mixed: "Разные правила",
-    noRule: "Правило отсутствует",
-    policyPending: "Desired policy ожидает подтверждения движка.",
-    policyUnavailable: "Применённая provider/model policy пока недоступна.",
-    providerUnattributed: "Без attribution",
+    noRule: "Без скидки",
+    providerUnattributed: "Без провайдера",
     officialVsCharged: "Официальная стоимость → списано",
-    paidFunding: "оплачено",
-    bonusFunding: "бонус",
   },
 } as const;
 
@@ -67,10 +51,6 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
   );
   const models = usage.models;
   const modelOfficialTotal = models.reduce((sum, model) => sum + BigInt(model.officialNano), 0n);
-  const policy = account.pricingPolicies?.[0] ?? null;
-  const appliedPolicy = policy?.applied ?? null;
-  const policyModels = appliedPolicy?.providers.flatMap((provider) => provider.models) ?? [];
-  const availablePolicyModels = policyModels.filter((model) => model.available);
 
   // Stable model colours are shared by the distribution bar and model table.
   const modelColor = new Map<string, string>();
@@ -94,25 +74,16 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
     agg.chargedNano += BigInt(model.chargedNano);
     providerAgg.set(id, agg);
   }
-  // Providers served outside the pinned policy catalog have no policy entry to be found in, so
-  // without this they were invisible until the first request — a provider we sell, absent from
-  // the list of providers we sell.
-  const outsidePolicyIds = DASHBOARD_PROVIDERS
-    .filter((provider) => provider.outsidePolicyCatalog)
-    .map((provider) => provider.id);
+  // Every provider we sell is available to every account: one discount prices all of them, so a
+  // provider can no longer be missing from a per-account catalog and invisible until first use.
   const providerIds = new Set([
-    ...(appliedPolicy?.providers.map((provider) => provider.providerId) ?? []),
+    ...DASHBOARD_PROVIDERS.map((provider) => provider.id),
     ...providerAgg.keys(),
-    ...outsidePolicyIds,
   ]);
-  const providerCards = [...providerIds].sort().map((id) => {
-    const metadata = providerMetadata(id);
-    return {
-      ...metadata,
-      agg: providerAgg.get(id),
-      policy: appliedPolicy?.providers.find((provider) => provider.providerId === id) ?? null,
-    };
-  });
+  const providerCards = [...providerIds].sort().map((id) => ({
+    ...providerMetadata(id),
+    agg: providerAgg.get(id),
+  }));
   const [copiedProvider, setCopiedProvider] = useState<string | null>(null);
 
   async function copyProviderEndpoint(id: string, endpoint: string) {
@@ -209,8 +180,8 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
     <div className="ov-stats bill4">
       <div className="ovstat"><span className="dlabel">{copy.officialValue30d}</span><b className="num accent">{formatNanoUsd(summaryOfficialNano, locale)}</b><span className="dtrend">{copy.listPriceEquivalent}</span></div>
       <Stat label={copy.charged30d} value={formatNanoUsd(summaryChargedNano, locale)} detail={copy.settledCredits} />
-      <div className="ovstat"><span className="dlabel">{localPolicyCopy.availableModels}</span><b className="num">{availablePolicyModels.length}</b><span className="dtrend">{policy?.inSync ? copy.ready : localPolicyCopy.policyPending}</span></div>
-      <div className="ovstat"><span className="dlabel">{localPolicyCopy.paidBalance}</span><b className="num">{account.funding ? formatNanoUsd(account.funding.balances.paidNano, locale) : "—"}</b><span className="dtrend">{account.funding ? copy.available : localPolicyCopy.fundingPending}</span></div>
+      <div className="ovstat"><span className="dlabel">{localPolicyCopy.yourDiscount}</span><b className="num">{accountDiscountLabel(account.markupBasisPoints, localPolicyCopy)}</b><span className="dtrend">{localPolicyCopy.offListPrice}</span></div>
+      <Stat label={copy.available} value={formatNanoUsd(account.balanceNano, locale)} detail={copy.available} />
     </div>
 
     <section className="dsec uproviders">
@@ -218,14 +189,10 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
       <div className="uprovider-grid">
         {providerCards.map((card) => {
           const isActive = (card.agg?.requests ?? 0) > 0;
-          // A provider outside the pinned catalog is available whenever its plane is, and its
-          // discount is the account multiplier settlement actually applies — reading the policy
-          // for it would report "unavailable" for a provider that serves.
-          const outsidePolicy = card.outsidePolicyCatalog === true;
-          const available = outsidePolicy || card.policy?.available === true;
-          const ruleSummary = outsidePolicy
-            ? accountDiscountLabel(account.markupBasisPoints, localPolicyCopy)
-            : providerRuleSummary(card.policy?.models ?? [], localPolicyCopy);
+          // The account multiplier is exactly what settlement applies to this provider, so the
+          // card shows the number the invoice will show rather than a nearby approximation.
+          const available = true;
+          const ruleSummary = accountDiscountLabel(account.markupBasisPoints, localPolicyCopy);
           return <article
             className="uprovider-card"
             key={card.id}
@@ -269,7 +236,6 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
           </article>;
         })}
       </div>
-      {!appliedPolicy && <div className="banner">{localPolicyCopy.policyUnavailable}</div>}
     </section>
 
     <div className="usage-graph">
@@ -442,11 +408,10 @@ function LedgerHistory({ ledger, mayBePartial = false }: { ledger: LedgerEntry[]
             <summary><span className="txh-sum-l"><span className="txh-ic" aria-hidden="true">▸</span>{formatBilledEventCount(group.charges.length, locale, copy)}</span><span className="txh-sum-amt">−{formatNanoUsdSmart(chargeNano, locale)}</span></summary>
             <div className="txh-list">
               {group.charges.slice(0, CAP).map((entry) => {
-                const funding = fundingSummary(entry, attributionCopy);
                 return <div className="txh-row" key={entry.id}>
                   <span className="txh-time">{new Date(ledgerMs(entry.timestamp)).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
                   <code className="txh-key">{entry.keyMasked ?? "—"}</code>
-                  <span className="txh-ref">{entry.model ? modelLabel(entry.model) : entry.reference ?? "—"}{entry.provider ? ` · ${providerDisplayName(entry.provider, attributionCopy.providerUnattributed)}` : ""}{funding ? ` · ${funding}` : ""}</span>
+                  <span className="txh-ref">{entry.model ? modelLabel(entry.model) : entry.reference ?? "—"}{entry.provider ? ` · ${providerDisplayName(entry.provider, attributionCopy.providerUnattributed)}` : ""}</span>
                   <span className="txh-amt" title={attributionCopy.officialVsCharged}>{entry.officialNano != null ? `${formatNanoUsdSmart(BigInt(entry.officialNano), locale)} → ` : ""}{formatNanoUsdSmart(BigInt(entry.amountNano), locale)}</span>
                 </div>;
               })}
@@ -505,14 +470,6 @@ function fmtNanoUsd(nano: string, locale: string): string {
   return formatNanoUsd(value, locale, 2, 2);
 }
 
-function pricingRuleLabel(
-  rule: CustomerPricingRuleView | null,
-  copy: typeof policyCopy.en | typeof policyCopy.ru,
-): string {
-  if (!rule) return copy.noRule;
-  if (rule.discountBps !== null) return `−${rule.discountBps / 100}%`;
-  return `${copy.legacy} · ${(100 - rule.payableMultiplierBp / 100).toLocaleString()}%`;
-}
 
 /**
  * Discount label for a provider the pinned policy does not describe.
@@ -531,35 +488,12 @@ function accountDiscountLabel(
   return percent > 0 ? `-${percent}%` : copy.noRule;
 }
 
-function providerRuleSummary(
-  models: readonly CustomerPricingModelView[],
-  copy: typeof policyCopy.en | typeof policyCopy.ru,
-): string {
-  const labels = new Set(models.filter((model) => model.available)
-    .map((model) => pricingRuleLabel(model.rule, copy)));
-  if (labels.size === 0) return copy.noRule;
-  if (labels.size > 1) return copy.mixed;
-  return [...labels][0]!;
-}
 
 function providerDisplayName(providerId: string | null | undefined, unattributed: string): string {
   if (!providerId || providerId === "unattributed") return unattributed;
   return DASHBOARD_PROVIDERS.find((provider) => provider.id === providerId)?.name ?? providerId;
 }
 
-function fundingSummary(
-  entry: LedgerEntry,
-  copy: typeof policyCopy.en | typeof policyCopy.ru,
-): string {
-  const sources = new Set((entry.fundingAllocations ?? []).map((allocation) => (
-    allocation.sourceType === "paid"
-      ? copy.paidFunding
-      : allocation.sourceType === "welcome_track_bonus"
-        ? copy.bonusFunding
-        : allocation.sourceType
-  )));
-  return [...sources].join(" + ");
-}
 function boundedRatio(numerator: bigint, denominator: bigint): number {
   if (denominator <= 0n || numerator <= 0n) return 0;
   const scale = 1_000_000n;

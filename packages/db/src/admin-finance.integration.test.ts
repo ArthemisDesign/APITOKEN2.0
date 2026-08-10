@@ -27,7 +27,7 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
 
   beforeEach(async () => {
     await database.pool.query(`
-      TRUNCATE pricing_usage_attributions, pricing_usage_events, pricing_usage_topups,
+      TRUNCATE pricing_usage_events, pricing_usage_topups,
                payments, checkout_sessions, users RESTART IDENTITY CASCADE
     `);
     users.clear();
@@ -52,34 +52,29 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
     await insertBonusTopup(users.get("bonus_topup")!);
 
     await insertEvent(users.get("bonus")!, {
-      amount: 100n, paid: 0n, bonus: 100n, other: 0n,
-      eventProvider: "openai", attributionProvider: "anthropic",
+      amount: 100n, paid: 0n, eventProvider: "openai",
     });
     await insertEvent(users.get("paid")!, {
-      amount: 200n, paid: 200n, bonus: 0n, other: 0n,
-      eventProvider: "google", attributionProvider: "openai",
+      amount: 200n, paid: 200n, eventProvider: "google",
     });
     await insertEvent(users.get("paid")!, {
-      amount: 50n, eventProvider: "google", attributionProvider: null,
+      amount: 50n, paid: 50n, eventProvider: "google",
       engineAccountId: `acct-historical-${users.get("paid")!}`,
     });
     await insertEvent(users.get("manual")!, {
-      amount: 300n, paid: 300n, bonus: 0n, other: 0n,
-      eventProvider: "anthropic", attributionProvider: "google",
+      amount: 300n, paid: 300n, eventProvider: "anthropic",
     });
     await insertEvent(users.get("mixed")!, {
-      amount: 400n, paid: 100n, bonus: 300n, other: 0n,
-      eventProvider: "anthropic", attributionProvider: "anthropic",
+      amount: 400n, paid: 100n, eventProvider: "anthropic",
     });
     await insertEvent(users.get("other")!, {
-      amount: 500n, paid: 0n, bonus: 400n, other: 100n,
-      eventProvider: "anthropic", attributionProvider: "anthropic",
+      amount: 500n, paid: 100n, eventProvider: "anthropic",
     });
     await insertEvent(users.get("legacy")!, {
-      amount: 600n, eventProvider: "google", attributionProvider: "google", snapshotKind: "legacy_scalar",
+      amount: 600n, paid: 600n, eventProvider: "google",
     });
     await insertEvent(users.get("unattributed")!, {
-      amount: 700n, eventProvider: null, attributionProvider: null,
+      amount: 700n, paid: 0n, eventProvider: null,
     });
   });
 
@@ -125,70 +120,24 @@ describe.runIf(Boolean(connectionString))("paying users funding cohorts", () => 
   async function insertEvent(userId: string, input: {
     amount: bigint;
     eventProvider: string | null;
-    attributionProvider: string | null;
+    /** The part of the charge covered by the customer's own money (free-first). */
     paid?: bigint;
-    bonus?: bigint;
-    other?: bigint;
-    snapshotKind?: "release_v2" | "legacy_scalar";
     engineAccountId?: string;
   }): Promise<void> {
     ledgerId += 1;
-    const eventId = randomUUID();
     await database.pool.query(`
       INSERT INTO pricing_usage_events (
-        id, user_id, engine_account_id, ledger_entry_id, provider_id, amount_nano, occurred_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, now())
+        id, user_id, engine_account_id, ledger_entry_id, provider_id,
+        amount_nano, real_funded_nano, occurred_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, now())
     `, [
-      eventId,
+      randomUUID(),
       userId,
       input.engineAccountId ?? `acct-${userId}`,
       ledgerId,
       input.eventProvider,
       input.amount.toString(),
-    ]);
-    if (input.attributionProvider === null) return;
-    if (input.snapshotKind === "legacy_scalar") {
-      await database.pool.query(`
-        INSERT INTO pricing_usage_attributions (
-          pricing_usage_event_id, attribution_schema_version, snapshot_kind, provider_id,
-          pricing_mode, rule_origin, payable_multiplier_bp, charged_nano,
-          paid_funded_nano, bonus_funded_nano, other_funded_nano, funding_allocation_json,
-          track_eligible, retention_eligible, commission_eligible, snapshot_digest
-        ) VALUES (
-          $1, 1, 'legacy_scalar', $2, 'legacy_scalar', 'legacy', 10000, $3,
-          0, $3, 0, '[]'::jsonb, false, false, false, $4
-        )
-      `, [eventId, input.attributionProvider, input.amount.toString(), `snapshot-${eventId}`]);
-      return;
-    }
-    await database.pool.query(`
-      INSERT INTO pricing_usage_attributions (
-        pricing_usage_event_id, attribution_schema_version, snapshot_kind,
-        engine_request_id, provider_id, account_class,
-        requested_model_id, canonical_model_id,
-        policy_id, policy_version, policy_digest, tariff_schedule_id, tariff_priced_at,
-        official_nano, charged_nano, official_cost_json,
-        paid_funded_nano, bonus_funded_nano, other_funded_nano, funding_allocation_json,
-        track_eligible, retention_eligible, commission_eligible, snapshot_digest,
-        release_schema_version, release_generation, release_digest,
-        release_billing_mode, release_funding_generation
-      ) VALUES (
-        $1, 2, 'release_v2', $2, $3, 'b2c',
-        'requested-model', 'canonical-model',
-        'policy-v2', 1, 'policy-v2-digest', 'tariff-v1', now(),
-        $4, $4, '{}'::jsonb, $5, $6, $7, '[]'::jsonb,
-        false, false, false, $8,
-        2, 1, 'release-v2-digest', 'balance', 1
-      )
-    `, [
-      eventId,
-      `request-${eventId}`,
-      input.attributionProvider,
-      input.amount.toString(),
-      input.paid!.toString(),
-      input.bonus!.toString(),
-      input.other!.toString(),
-      `snapshot-${eventId}`,
+      (input.paid ?? 0n).toString(),
     ]);
   }
 

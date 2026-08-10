@@ -392,9 +392,9 @@ export async function listAdminPayingUsers(
   }
 
   // `money` is lifetime payment/manual authority. `usage` is selected-window charge authority.
-  // Exact modern funding requires policy_v1/release_v2, complete non-negative split, and equality
-  // to both attribution charged_nano and the immutable event amount. No balance/model/top-up proxy
-  // participates in bonus-only classification.
+  // The paid/bonus split of spend comes from the one authority that records it: free-first
+  // accounting on the immutable usage event. real_funded_nano is the part the customer paid for;
+  // the remainder was covered by free credit. No balance/model/top-up proxy participates.
   const commonCtes = (fundingParameter: number) => `
     WITH money AS (
       SELECT user_id,
@@ -418,33 +418,19 @@ export async function listAdminPayingUsers(
         GROUP BY user_id
       ) sources
       GROUP BY user_id
-    ), attributed_window_events AS (
-      SELECT e.user_id, e.engine_account_id, e.amount_nano,
-        COALESCE(a.provider_id, e.provider_id) AS provider_id,
-        a.paid_funded_nano, a.bonus_funded_nano, a.other_funded_nano,
-        COALESCE(
-          a.snapshot_kind IN ('policy_v1', 'release_v2')
-            AND a.paid_funded_nano IS NOT NULL AND a.paid_funded_nano >= 0
-            AND a.bonus_funded_nano IS NOT NULL AND a.bonus_funded_nano >= 0
-            AND a.other_funded_nano IS NOT NULL AND a.other_funded_nano >= 0
-            AND a.charged_nano = e.amount_nano
-            AND a.paid_funded_nano + a.bonus_funded_nano + a.other_funded_nano = e.amount_nano,
-          false
-        ) AS exact_modern_funding
+    ), window_events AS (
+      SELECT e.user_id, e.engine_account_id, e.amount_nano, e.provider_id,
+        e.real_funded_nano >= 0 AND e.real_funded_nano <= e.amount_nano AS exact_modern_funding,
+        LEAST(GREATEST(e.real_funded_nano, 0), e.amount_nano) AS paid_funded_nano,
+        e.amount_nano - LEAST(GREATEST(e.real_funded_nano, 0), e.amount_nano) AS bonus_funded_nano,
+        0::numeric AS other_funded_nano
       FROM pricing_usage_events e
-      LEFT JOIN pricing_usage_attributions a ON a.pricing_usage_event_id = e.id
       -- now() is one coherent transaction-start timestamp at microsecond precision: an event
       -- written microseconds before this query stays inside the window (a JavaScript Date
       -- carries only milliseconds and could truncate above such a row), and all three cohort
       -- queries share the exact same window end.
       WHERE e.occurred_at >= now() - make_interval(days => $1)
         AND e.occurred_at < now()
-    ), window_events AS (
-      SELECT user_id, engine_account_id, amount_nano, provider_id, exact_modern_funding,
-        CASE WHEN exact_modern_funding THEN paid_funded_nano ELSE 0 END AS paid_funded_nano,
-        CASE WHEN exact_modern_funding THEN bonus_funded_nano ELSE 0 END AS bonus_funded_nano,
-        CASE WHEN exact_modern_funding THEN other_funded_nano ELSE 0 END AS other_funded_nano
-      FROM attributed_window_events
     ), usage AS (
       SELECT user_id,
         array_agg(DISTINCT engine_account_id ORDER BY engine_account_id) AS event_account_ids,

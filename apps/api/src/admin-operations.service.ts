@@ -149,10 +149,7 @@ export class AdminOperationsService {
     return { invites: rows.map((row) => ({
       id: row.id,
       email: row.email,
-      discount_percent: row.policyVersion === null ? 100 - row.multiplierBp / 100 : null,
-      policy_version: row.policyVersion,
-      policy_digest: row.policyDigest,
-      policy_rule_count: row.policyRuleCount,
+      discount_percent: 100 - row.multiplierBp / 100,
       expires_at: row.expiresAt.toISOString(),
       consumed_at: row.consumedAt?.toISOString() ?? null,
       consumed_by_user_id: row.consumedByUserId,

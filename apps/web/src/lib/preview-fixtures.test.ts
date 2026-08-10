@@ -12,13 +12,8 @@ describe("web/v2 preview fixtures", () => {
   it("serves account, ledger and usage shaped like the real backend", async () => {
     const account = await previewRequest<AccountView>("/account");
     expect(account.pricing?.customerType).toBe("b2c");
-    expect(account.funding?.balances).toMatchObject({ bonusNano: "4000000000" });
-    expect(account.pricingPolicies?.[0]).toMatchObject({ inSync: true });
-    expect(
-      account.pricingPolicies?.[0]?.applied?.providers.find(
-        (provider) => provider.providerId === "anthropic",
-      ),
-    ).toMatchObject({ available: true });
+    expect(account.pricing?.discountPercent).toBe(50);
+    expect(account.markupBasisPoints).toBe(5000);
     expect(BigInt(account.balanceNano)).toBeGreaterThan(0n);
     const { entries } = await previewRequest<{ entries: LedgerEntry[] }>("/account/ledger?limit=50");
     expect(entries.some((entry) => entry.kind === "topup")).toBe(true);

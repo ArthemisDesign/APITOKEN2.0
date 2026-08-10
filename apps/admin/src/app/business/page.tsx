@@ -176,11 +176,7 @@ const InviteRow = memo(function InviteRow(props: {
         <b>{invite.email || "Без привязки к email"}</b>
         <div className="sub mono">{invite.id}</div>
       </td>
-      <td>{invite.policy_version == null ? (
-        invite.discount_percent == null ? "legacy" : `legacy ${invite.discount_percent}%`
-      ) : (
-        <><b>v{invite.policy_version}</b><div className="sub">{invite.policy_rule_count ?? 0} правил</div></>
-      )}</td>
+      <td>{invite.discount_percent == null ? "—" : `${invite.discount_percent}%`}</td>
       <td>
         <Pill kind={state.kind}>{state.label}</Pill>
       </td>

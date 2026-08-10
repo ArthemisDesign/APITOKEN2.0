@@ -44,18 +44,6 @@ export interface IssueEngineKeyOptions {
   label?: string;
   spendLimitNano?: bigint;
   expiresAt?: Date;
-  activationPolicyAck?: EngineKeyActivationPolicyAck;
-}
-
-/**
- * The exact active policy a strict account's key acknowledges at issue/reactivation time
- * (`POST /admin/key`, `POST /admin/key-id/{key_id}/status`). The engine validates it against
- * the account's current active policy version and digest; a strict binding rejects key writes
- * without it, while shadow/legacy bindings accept and store it for the eventual cutover.
- */
-export interface EngineKeyActivationPolicyAck {
-  effectivePolicyVersion: number;
-  policyDigest: string;
 }
 
 export interface ReplaceEngineKeyPolicyOptions {
@@ -215,12 +203,6 @@ export class EngineClient {
     if (options.label !== undefined) body.label = options.label;
     if (options.spendLimitNano !== undefined) body.spend_limit_nano = options.spendLimitNano.toString();
     if (options.expiresAt !== undefined) body.expires_ts = Math.floor(options.expiresAt.getTime() / 1000);
-    if (options.activationPolicyAck !== undefined) {
-      body.activation_policy_ack = {
-        effective_policy_version: options.activationPolicyAck.effectivePolicyVersion,
-        policy_digest: options.activationPolicyAck.policyDigest,
-      };
-    }
     const { response, payload } = await this.request("/admin/key", {
       method: "POST",
       body: JSON.stringify(body),
@@ -231,18 +213,8 @@ export class EngineClient {
   }
 
   /** Движок принимает active|disabled, поэтому отключение обратимо. */
-  async setKeyStatus(
-    keyId: string,
-    status: "active" | "disabled",
-    activationPolicyAck?: EngineKeyActivationPolicyAck,
-  ): Promise<void> {
+  async setKeyStatus(keyId: string, status: "active" | "disabled"): Promise<void> {
     const body: Record<string, unknown> = { status };
-    if (activationPolicyAck !== undefined) {
-      body.activation_policy_ack = {
-        effective_policy_version: activationPolicyAck.effectivePolicyVersion,
-        policy_digest: activationPolicyAck.policyDigest,
-      };
-    }
     const { response, payload } = await this.request(`/admin/key-id/${encodeURIComponent(keyId)}/status`, {
       method: "POST",
       body: JSON.stringify(body),
@@ -439,7 +411,6 @@ export class EngineClient {
       body?: string;
       authenticated?: boolean;
       acceptedStatuses?: readonly number[];
-      maxResponseBytes?: number;
       signal?: AbortSignal;
     } = {},
   ): Promise<{ response: Response; payload: unknown; rawText: string }> {
@@ -468,7 +439,6 @@ export class EngineClient {
       body?: string;
       authenticated?: boolean;
       acceptedStatuses?: readonly number[];
-      maxResponseBytes?: number;
       signal?: AbortSignal;
     },
   ): Promise<{ response: Response; payload: unknown; rawText: string }> {
@@ -489,7 +459,7 @@ export class EngineClient {
       };
       if (options.body !== undefined) request.body = options.body;
       response = await this.fetchImpl(`${this.baseUrl}${path}`, request);
-      const text = await this.readResponseText(response, options.maxResponseBytes);
+      const text = await response.text();
       return {
         response,
         payload: this.parse(response, text, options.acceptedStatuses ?? []),
@@ -512,38 +482,6 @@ export class EngineClient {
       options.signal?.removeEventListener("abort", abortFromCaller);
     }
   }
-
-  private async readResponseText(response: Response, maxBytes?: number): Promise<string> {
-    if (maxBytes === undefined) return response.text();
-    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
-      throw new RangeError("maxResponseBytes must be a positive safe integer");
-    }
-    if (response.body === null) return "";
-    const reader = response.body.getReader();
-    const chunks: Buffer[] = [];
-    let bytes = 0;
-    try {
-      for (;;) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        bytes += chunk.value.byteLength;
-        if (bytes > maxBytes) {
-          await reader.cancel("bounded engine response exceeded");
-          throw new EngineClientError(
-            "engine Stage 8 evidence exceeds the bounded response size",
-            response.status,
-            false,
-          );
-        }
-        chunks.push(Buffer.from(chunk.value));
-      }
-    } finally {
-      reader.releaseLock();
-    }
-    return Buffer.concat(chunks, bytes).toString("utf8");
-  }
-
-
 
   private assertAccount(actualAccountId: string, expectedAccountId: string, response: Response): void {
     if (actualAccountId !== expectedAccountId) {

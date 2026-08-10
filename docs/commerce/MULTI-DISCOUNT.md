@@ -1,5 +1,10 @@
 # Multi-provider discount contract and online cutover
 
+**Retired.** The catalog/switch/policy/release machinery below was removed on 2026-08-09. The live
+contract is [PRICING_MODEL.md](PRICING_MODEL.md). This file and the `MULTI_DISCOUNT_STAGE*.md`
+documents are history: they explain what existed and why it was withdrawn, not what to build.
+
+
 Document status: approved target contract dated 2026-08-02, LIVE since the Stage 9 one-head CAS
 on 2026-08-04 (release generation 13; durable cutover receipt in commerce and the engine head
 row). The release-v2 authority governs admission and pricing for every account class. What

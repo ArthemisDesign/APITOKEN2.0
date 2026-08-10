@@ -1,6 +1,6 @@
 # Pricing: one balance, one discount
 
-Status: live contract as of 2026-08-09. This document replaces the per-account policy/catalog/
+Status: live contract as of 2026-08-10. This document replaces the per-account policy/catalog/
 switch/release machinery described in `MULTI-DISCOUNT.md` and its stage documents, which are kept
 only as history.
 
@@ -104,14 +104,51 @@ and the drift surfaces as a customer being told they have no money.
 4. **A funded account can spend.** If a request is refused for money, the account balance must
    actually be insufficient for the hold.
 
-## Still to remove
+## Spend accounting: free money is spent first
 
-`crates/registry` keeps the persistence of the retired design — the policy/catalog/switch/release
-tables and their code, plus `funding_v2`. Nothing routes a request through the policy or release
-part any more, so it is dead by callers. `funding_v2` is different: it is still wired into the
-PostgreSQL reserve and settlement transactions for accounts that carry a funding head, so removing
-it changes a money transaction and needs the real-PostgreSQL matrices, not a local build.
+A charge is money the customer spent; part of it may have been covered by free credit (welcome
+bonus, promo, admin credit). That split has exactly one writer:
+
+- `customer_profiles.free_balance_nano` — the durable free balance. A top-up whose engine `ref`
+  is not a payment-provider reference credits it (`isFreeCreditRef`).
+- `pricing_usage_events.real_funded_nano` — the part of that charge the customer paid for. Free
+  balance is consumed first; the remainder is real.
+
+Two things read it, and nothing else may reimplement the split:
+
+- **Partner commission.** The sales feed emits `real_funded_nano` as the commission basis, so free
+  credit never becomes commission.
+- **Refund eligibility.** A top-up is refundable only while no real money has been spent since it.
+
+## What was removed, and what remains
+
+The retired code is gone from every runtime path: the per-account policy/binding resolver, the
+immutable catalog/switch/policy versions, release-v2, the funding buckets and lots, the shadow
+evaluation authority, the bridge sampler, the strict activation ACK on key writes, the per-request
+policy attribution on the ledger, and the paid/bonus funding split on the account read.
+
+Two consequences worth knowing:
+
+- `GET /admin/account/{id}` returns the account. The `funding` object and the per-entry
+  `funding_allocations`/`attribution` on the ledger are gone — they were computed from
+  `funding_buckets`, which only strict accounts ever populated, so they had no writer left.
+- A zero multiplier is now the whole meaning of "free but metered": it holds nothing, charges
+  nothing, and still records the usage row.
 
 The tables themselves (`account_policy_bindings`, `funding_buckets`, `funding_lots_v2`,
-`pricing_*`) stay until an explicit drop migration, per the repository's expand-only rule. Until
-then, nothing may start reading them again.
+`pricing_*`, `pricing_usage_attributions`) stay until an explicit drop migration, per the
+repository's expand-only rule. Until then, nothing may start reading them again.
+
+## The 2026-08-09 aftermath: B2B discounts
+
+The B2B discount lived in `account_policy_rules.discount_bps` while `accounts.mult_bp` held a
+neutral 10000. When the policy lane stopped being consulted, all nine B2B accounts silently fell
+back to full list price; one of them was billed 629 requests at 100% instead of 15% before it was
+caught. Their negotiated rates were recovered from the active policy version and written to
+`accounts.mult_bp`, and the commerce worker's strict-chain/backfill lanes — which kept resetting
+the scalar to 10000 — were disarmed (`PRICING_BACKFILL_ENABLED=false`) and then deleted.
+
+Three of those accounts had negotiated *different* rates per provider. Two carry the most
+favourable of their rates as a single number until their per-provider rows are written:
+`jerryerlawsones698@gmail.com` (default 3700, google 4500, openai 2500) and
+`riyamawanenchi@gmail.com` (default 4000, google 3000, openai 2500).

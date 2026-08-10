@@ -15,10 +15,9 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import {
+  adminActorSchema,
+  adminReasonSchema,
   createBusinessInviteSchema,
-  pricingReleaseActivationOperatorV2Schema,
-  pricingStageControlMutationReasonV2Schema,
-  providerSwitchEditorMutationSchema,
   setBusinessPricingSchema,
 } from "@claude-api/contracts";
 import {
@@ -112,10 +111,10 @@ export class AdminController {
     @Headers("x-admin-actor") actorHeader?: string,
   ): Promise<unknown> {
     if (!uuidSchema.safeParse(id).success) throw new BadRequestException("user ID must be a UUID");
-    const reason = pricingStageControlMutationReasonV2Schema.safeParse(
+    const reason = adminReasonSchema.safeParse(
       (body as { reason?: unknown })?.reason,
     );
-    const actor = pricingReleaseActivationOperatorV2Schema.safeParse(actorHeader?.trim());
+    const actor = adminActorSchema.safeParse(actorHeader?.trim());
     if (!reason.success) throw new BadRequestException("reason is required");
     if (!actor.success) throw new BadRequestException("verified admin actor is required");
     return this.admin.repairUserProvisioningV2(id, actor.data, reason.data);
@@ -261,7 +260,7 @@ function adminActor(value: string | undefined): string {
 }
 
 function verifiedAdminActor(value: string | undefined): string {
-  const actor = pricingReleaseActivationOperatorV2Schema.safeParse(value?.trim());
+  const actor = adminActorSchema.safeParse(value?.trim());
   if (!actor.success) throw new BadRequestException("verified admin actor is required");
   return actor.data;
 }

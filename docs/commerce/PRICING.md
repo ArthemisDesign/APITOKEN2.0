@@ -1,5 +1,11 @@
 # Customer pricing
 
+**Retired.** The release-v2 authority this document describes was removed on 2026-08-09 after it
+refused every request from 166 funded accounts. The live contract is
+[PRICING_MODEL.md](PRICING_MODEL.md): one balance, one discount per account, optional per-provider
+overrides. Everything below is kept as history and must not be implemented against.
+
+
 The contract below was approved on 2026-08-02 and is LIVE: the Stage 9 one-head CAS activated
 the target pricing release on 2026-08-04 (engine `pricing_release_head_v2`, generation 13), and
 the release-v2 authority governs admission and pricing for every account class. The retired

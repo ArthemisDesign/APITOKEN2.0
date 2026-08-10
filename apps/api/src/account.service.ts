@@ -1,7 +1,6 @@
 import { BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import {
   findOwnedApiKey,
-  getCustomerPricingPolicyView,
   getPricingView,
   markEngineAccountMissing,
   markOwnedApiKeyDisabled,
@@ -10,14 +9,11 @@ import {
   type Database,
   type StoredApiKey,
 } from "@claude-api/db";
-import { EngineClient, EngineClientError, type EngineKeyActivationPolicyAck } from "@claude-api/engine-client";
+import { EngineClient, EngineClientError } from "@claude-api/engine-client";
 import {
   B2C_LEGACY_SIGNUP_BONUS_BALANCE_NANO,
   type CreateApiKey,
-  type EngineAccountFunding,
   type EngineApiKey,
-  type EngineLedgerAttribution,
-  type EngineLedgerFundingAllocation,
   type UpdateApiKeyPolicy,
 } from "@claude-api/contracts";
 import { DATABASE, ENGINE_CLIENT } from "./infrastructure.module.js";
@@ -25,7 +21,6 @@ import { createFundedEngineAccount } from "./engine-provisioning.js";
 import { settleSignupBonus } from "./signup-bonus.js";
 
 export class EngineAccountUnavailableError extends Error {}
-class EngineAccountPolicyPendingError extends EngineAccountUnavailableError {}
 
 @Injectable()
 export class AccountService {
@@ -161,10 +156,9 @@ export class AccountService {
 
 
   async getAccount(userId: string): Promise<unknown> {
-    const [account, pricing, pricingPolicies] = await Promise.all([
+    const [account, pricing] = await Promise.all([
       this.withEngineAccount(userId, (accountId) => this.engine.getAccount(accountId)),
       getPricingView(this.database, userId),
-      getCustomerPricingPolicyView(this.database, userId),
     ]);
     return {
       balanceNano: account.balance_nano,
@@ -173,9 +167,7 @@ export class AccountService {
       balanceUsd: account.balance,
       markupBasisPoints: account.mult_bp,
       status: account.status,
-      funding: account.funding ? accountFundingView(account.funding) : null,
       pricing,
-      pricingPolicies,
     };
   }
 
@@ -193,8 +185,6 @@ export class AccountService {
         requestId: entry.request_id ?? null,
         provider: entry.provider ?? null,
         officialNano: entry.official_nano ?? null,
-        attribution: entry.attribution ? ledgerAttributionView(entry.attribution) : null,
-        fundingAllocations: (entry.funding_allocations ?? []).map(ledgerFundingAllocationView),
         balanceAfterNano: entry.balance_after_nano,
         timestamp: entry.ts,
       })),
@@ -275,18 +265,8 @@ export class AccountService {
   }
 
   async createApiKey(userId: string, input: CreateApiKey): Promise<unknown> {
-    // A pending/error mapping may not have a binding yet. Recover/materialize it before the
-    // fail-closed preflight; otherwise the missing binding would prevent the very provisioning
-    // step that creates it. ensureEngineAccount returns only for legacy accounts or exact-ACK-ready
-    // managed accounts.
-    try {
-      await this.ensureEngineAccount(userId);
-    } catch (error) {
-      if (error instanceof EngineAccountPolicyPendingError) {
-        throw new ConflictException("pricing policy is still waiting for an exact engine ACK");
-      }
-      throw error;
-    }
+    // A pending/error mapping may not have an engine account yet; materialize it before issuing.
+    await this.ensureEngineAccount(userId);
     const spendLimitNano = input.spendLimitUsd === undefined ? undefined : usdToNano(input.spendLimitUsd);
     const expiresAt = input.expiresAt === undefined ? undefined : new Date(input.expiresAt);
     const { accountId, value: issued } = await this.withEngineAccountId(
@@ -453,113 +433,8 @@ export class AccountService {
   }
 }
 
-function accountFundingView(funding: EngineAccountFunding): Record<string, unknown> {
-  return {
-    accountClass: funding.account_class,
-    fundingEnforcement: funding.funding_enforcement,
-    reconciliationState: funding.reconciliation_state,
-    bucketCount: funding.bucket_count,
-    balances: {
-      paidNano: funding.paid_balance_nano,
-      bonusNano: funding.bonus_balance_nano,
-      otherNano: funding.other_balance_nano,
-      unattributedNano: funding.unattributed_balance_nano,
-    },
-    reserved: {
-      paidNano: funding.paid_reserved_nano,
-      bonusNano: funding.bonus_reserved_nano,
-      otherNano: funding.other_reserved_nano,
-      unattributedNano: funding.unattributed_reserved_nano,
-    },
-    spent: {
-      paidNano: funding.paid_spent_nano,
-      bonusNano: funding.bonus_spent_nano,
-      otherNano: funding.other_spent_nano,
-      unattributedNano: funding.unattributed_spent_nano,
-    },
-  };
-}
 
-function ledgerFundingAllocationView(
-  allocation: EngineLedgerFundingAllocation,
-): Record<string, unknown> {
-  return {
-    bucketId: allocation.bucket_id,
-    sourceType: allocation.source_type,
-    sourceReference: allocation.source_ref,
-    bucketVersion: allocation.bucket_version,
-    direction: allocation.direction,
-    amountNano: allocation.amount_nano,
-    allocationOrder: allocation.allocation_order,
-  };
-}
 
-function ledgerAttributionView(attribution: EngineLedgerAttribution): Record<string, unknown> {
-  return {
-    schemaVersion: attribution.attribution_schema_version,
-    snapshotKind: attribution.snapshot_kind,
-    providerId: attribution.provider_id,
-    productId: attribution.product_id,
-    accountClass: attribution.account_class,
-    requestedModelId: attribution.requested_model_id,
-    canonicalModelId: attribution.canonical_model_id,
-    servedModelId: attribution.served_model_id,
-    servedCanonicalModelId: attribution.served_canonical_model_id,
-    billingInvariantCode: attribution.billing_invariant_code,
-    aliasGeneration: attribution.alias_generation,
-    ruleId: attribution.rule_id,
-    ruleDigest: attribution.rule_digest,
-    ruleScope: attribution.rule_scope,
-    pricingMode: attribution.pricing_mode,
-    ruleOrigin: attribution.rule_origin,
-    discountBps: attribution.discount_bps,
-    payableMultiplierBp: attribution.payable_multiplier_bp,
-    policyId: attribution.policy_id,
-    policyVersion: attribution.policy_version,
-    effectivePolicyVersion: attribution.effective_policy_version,
-    policyDigest: attribution.policy_digest,
-    sourcePolicyDigest: attribution.source_policy_digest,
-    catalogGeneration: attribution.catalog_generation,
-    switchGeneration: attribution.switch_generation,
-    admissionCatalogGeneration: attribution.admission_catalog_generation,
-    admissionCatalogDigest: attribution.admission_catalog_digest,
-    admissionSwitchGeneration: attribution.admission_switch_generation,
-    admissionSwitchDigest: attribution.admission_switch_digest,
-    runtimeManifestGeneration: attribution.runtime_manifest_generation,
-    runtimeManifestDigest: attribution.runtime_manifest_digest,
-    tariffScheduleId: attribution.tariff_schedule_id,
-    tariffPricedTimestamp: attribution.tariff_priced_ts,
-    officialNano: attribution.official_nano,
-    officialCost: attribution.official_cost_json,
-    paidFundedNano: attribution.paid_funded_nano,
-    bonusFundedNano: attribution.bonus_funded_nano,
-    otherFundedNano: attribution.other_funded_nano,
-    fundingEvidence: attribution.funding_allocation_json?.map((allocation) =>
-      "bucket_id" in allocation
-        ? {
-            bucketId: allocation.bucket_id,
-            sourceType: allocation.source_type,
-            bucketVersion: allocation.bucket_version,
-            reservedNano: allocation.reserved_nano,
-            chargedNano: allocation.charged_nano,
-            releasedNano: allocation.released_nano,
-            allocationOrder: allocation.allocation_order,
-          }
-        : {
-            lotId: allocation.lot_id,
-            lotSourceType: allocation.lot_source_type,
-            lotVersion: allocation.lot_version,
-            direction: allocation.direction,
-            amountNano: allocation.amount_nano,
-            allocationOrder: allocation.allocation_order,
-          },
-    ) ?? null,
-    trackEligible: attribution.track_eligible,
-    retentionEligible: attribution.retention_eligible,
-    commissionEligible: attribution.commission_eligible,
-    snapshotDigest: attribution.snapshot_digest,
-  };
-}
 
 interface EngineAccountMappingRow {
   engine_account_id: string | null;

@@ -49,58 +49,14 @@ export interface LedgerEntry {
   requestId?: string | null;
   provider?: string | null;
   officialNano?: string | null;
-  attribution?: LedgerAttribution | null;
-  fundingAllocations?: LedgerFundingAllocation[];
   balanceAfterNano: string | null;
   timestamp: string;
 }
 
-export interface LedgerFundingAllocation {
-  bucketId: string;
-  sourceType: string;
-  sourceReference: string;
-  bucketVersion: string;
-  direction: "debit" | "credit";
-  amountNano: string;
-  allocationOrder: string | null;
-}
-
-export interface LedgerAttribution {
-  schemaVersion: string;
-  snapshotKind: "policy_v1" | "legacy_scalar" | null;
-  providerId: string | null;
-  productId: string | null;
-  accountClass: "b2c" | "b2b" | "openkeys" | "service" | null;
-  requestedModelId: string | null;
-  canonicalModelId: string | null;
-  servedModelId: string | null;
-  servedCanonicalModelId: string | null;
-  ruleId: string | null;
-  ruleScope: "provider" | "model" | null;
-  pricingMode: "track" | "discount" | "legacy_scalar" | null;
-  ruleOrigin: "managed" | "legacy" | null;
-  discountBps: number | null;
-  payableMultiplierBp: number | null;
-  policyVersion: string | null;
-  effectivePolicyVersion: string | null;
-  catalogGeneration: string | null;
-  switchGeneration: string | null;
-  tariffScheduleId: string | null;
-  tariffPricedTimestamp: string | null;
-  officialNano: string | null;
-  officialCost: Record<string, unknown> | null;
-  paidFundedNano: string | null;
-  bonusFundedNano: string | null;
-  otherFundedNano: string | null;
-  trackEligible: boolean | null;
-  retentionEligible: boolean | null;
-  commissionEligible: boolean | null;
-}
-
 export interface B2CPricing {
   customerType: "b2c";
-  // Flat post-cutover B2C pricing: one global 50% discount (+ provider/model overrides resolved
-  // by the release authority). The progressive tier fields were retired with the cutover.
+  // Flat B2C pricing: one global discount on the account, applied to every provider unless the
+  // account carries a per-provider override.
   pricingMode: "flat";
   discountPercent: number;
   multiplierBp: number;
@@ -120,78 +76,13 @@ export interface AccountView {
   balanceUsd: string;
   markupBasisPoints: number;
   status: "active" | "disabled";
-  funding?: AccountFundingView | null;
   pricing: B2CPricing | B2BPricing | null;
-  pricingPolicies?: CustomerPricingPolicyView[];
-}
-
-export interface AccountFundingView {
-  accountClass: "b2c" | "b2b" | "openkeys" | "service" | null;
-  fundingEnforcement: "legacy_single" | "shadow" | "strict" | null;
-  reconciliationState: "pending" | "verified" | "exception" | null;
-  bucketCount: string;
-  balances: FundingAmounts;
-  reserved: FundingAmounts;
-  spent: FundingAmounts;
-}
-
-export interface FundingAmounts {
-  paidNano: string;
-  bonusNano: string;
-  otherNano: string;
-  unattributedNano: string;
-}
-
-export interface CustomerPricingRuleView {
-  ruleId: string;
-  scope: "provider" | "model";
-  pricingMode: "track" | "discount";
-  ruleOrigin: "managed" | "legacy";
-  discountBps: number | null;
-  payableMultiplierBp: number;
-  trackEligible: boolean;
-  retentionEligible: boolean;
-  commissionEligible: boolean;
-}
-
-export interface CustomerPricingModelView {
-  modelId: string;
-  available: boolean;
-  unavailableReasons: string[];
-  rule: CustomerPricingRuleView | null;
-}
-
-export interface CustomerPricingProviderView {
-  providerId: string;
-  available: boolean;
-  models: CustomerPricingModelView[];
-}
-
-export interface CustomerPricingVersionView {
-  effectiveVersion: string;
-  policyVersion: string;
-  catalogGeneration: string;
-  switchGeneration: string;
-  providers: CustomerPricingProviderView[];
-}
-
-export interface CustomerPricingPolicyView {
-  accountClass: "b2c" | "b2b";
-  productId: string;
-  policyEnforcement: "legacy_scalar" | "shadow" | "strict";
-  fundingEnforcement: "legacy_single" | "shadow" | "strict";
-  reconciliationState: "pending" | "verified" | "exception";
-  syncState: "legacy" | "pending" | "confirmed" | "failed";
-  inSync: boolean;
-  lastAcknowledgedAt: string | null;
-  desired: CustomerPricingVersionView | null;
-  applied: CustomerPricingVersionView | null;
 }
 
 // Полная разбивка расхода по токенам и моделям (движок считает всё это на каждом запросе).
 // Токены — number (безопасно < 2^53); деньги — nano-строки (bigint-safe). officialNano — по
 // официальным ставкам фактически обслужившего провайдера, chargedNano — списано с баланса после
-// правила. Provider приходит из immutable engine attribution и никогда не выводится из model ID.
+// правила. Provider приходит из строки ledger движка и никогда не выводится из model ID.
 export interface UsageBucket {
   tokens: number;
   officialNano: string;

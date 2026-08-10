@@ -222,16 +222,18 @@ describe("completed Next.js migration", () => {
     expect(welcomeCopy).not.toContain("Track-only bonus");
   });
 
-  it("renders dashboard pricing from the applied provider/model policy", () => {
+  it("renders dashboard pricing from the account discount", () => {
     const dashboard = dashboardSource();
     const styles = [
       readFileSync(join(appRoot, "globals.css"), "utf8"),
       readFileSync(join(appRoot, "dashboard", "dashboard.css"), "utf8"),
     ].join("\n");
-    expect(dashboard).toContain("account.pricingPolicies");
-    expect(dashboard).toContain("account.funding.balances.paidNano");
-    expect(dashboard).toContain("account.funding.balances.bonusNano");
-    expect(dashboard).toContain("provider/model rule");
+    // One discount prices the account. The retired policy view and the funding split had
+    // exactly one writer each, and both are gone — a dashboard that still read them would
+    // render a permanently empty state.
+    expect(dashboard).toContain("account.pricing?.discountPercent");
+    expect(dashboard).not.toContain("account.pricingPolicies");
+    expect(dashboard).not.toContain("account.funding");
     expect(dashboard).not.toContain("FLAT_DISCOUNT_PERCENT");
     expect(dashboard).not.toContain("B2C_PRICING_MILESTONES");
     expect(dashboard).not.toContain("officialNanoFromCharged");

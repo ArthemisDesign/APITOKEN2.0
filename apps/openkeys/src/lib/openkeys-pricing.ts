@@ -3,7 +3,7 @@ import { EngineClientError, type EngineClient } from "@claude-api/engine-client"
 
 /**
  * The one contract OpenKeys sells: face value at list price. It is a number on the engine
- * account, not a policy document — an OpenKeys account is 1:1 because its multiplier says so.
+ * account — an OpenKeys account is 1:1 because its multiplier says so.
  */
 export const OFFICIAL_ONE_TO_ONE_MULT_BP = 10_000;
 export const OFFICIAL_ONE_TO_ONE_CONTRACT = "official_one_to_one";
@@ -64,7 +64,7 @@ export function describeIssuanceBlock(error: unknown): IssuanceBlockReason {
   if (error instanceof OpenKeysPricingError) {
     return {
       code: error.code,
-      message: "Активный OpenKeys catalog/provider authority не подтверждён — проверьте pricing authority в коммерции.",
+      message: "Тариф OpenKeys не подтверждён — проверьте pricing authority в коммерции.",
     };
   }
   if (error instanceof EngineClientError) {
@@ -83,15 +83,10 @@ export function describeIssuanceBlock(error: unknown): IssuanceBlockReason {
 
 
 /**
- * Release-v2 retirement (phase 2.1): a new OpenKeys account is born directly on the strict
- * policy path — there is no release assignment extension any more. The order is strict:
- * strict/strict/verified activation first (zero keys and zero balance make the engine's atomic
- * strict preconditions vacuous), then the exact face-value credit (allocated into strict
- * funding buckets), then the key WITH its activation ACK (a strict account accepts no
- * ACK-less key), and finally the one-way engine opt-out marker — only then is the account
- * servable at all, so the usable secret is issued last. Every step is idempotent under the
- * issuance job's retry/compensation: activation and credit replay as unchanged, and the
- * opt-out replay returns the stored marker.
+ * A new OpenKeys account is created, credited with its exact face value, and only then given a
+ * key: the usable secret is issued last, so a half-provisioned account is never servable. Both
+ * steps are idempotent under the issuance job's retry/compensation — the credit replays as
+ * unchanged, and re-issuing returns the same account.
  */
 export async function provisionOfficialOpenKeysCredential(
   engine: OpenKeysPricingEngine,

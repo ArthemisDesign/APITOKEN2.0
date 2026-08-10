@@ -95,38 +95,12 @@ function account(): AccountView {
     balanceUsd: (Number(balanceNano) / 1e9).toFixed(2),
     markupBasisPoints: 5000,
     status: "active",
-    funding: {
-      accountClass: "b2c",
-      fundingEnforcement: "strict",
-      reconciliationState: "verified",
-      bucketCount: "2",
-      balances: {
-        paidNano: (balanceNano - 4n * NANO).toString(),
-        bonusNano: (4n * NANO).toString(),
-        otherNano: "0",
-        unattributedNano: "0",
-      },
-      reserved: { paidNano: "0", bonusNano: "0", otherNano: "0", unattributedNano: "0" },
-      spent: { paidNano: "250000000000", bonusNano: "12752000000", otherNano: "0", unattributedNano: "0" },
-    },
     pricing: {
       customerType: "b2c",
       pricingMode: "flat",
       discountPercent: 50,
       multiplierBp: 5000,
     },
-    pricingPolicies: [{
-      accountClass: "b2c",
-      productId: "main",
-      policyEnforcement: "strict",
-      fundingEnforcement: "strict",
-      reconciliationState: "verified",
-      syncState: "confirmed",
-      inSync: true,
-      lastAcknowledgedAt: new Date().toISOString(),
-      desired: policyVersion(),
-      applied: policyVersion(),
-    }],
   };
 }
 
@@ -186,8 +160,6 @@ const ledger: LedgerEntry[] = charges.map(([daysAgo, amountNano, model], i) => (
   requestId: `request-preview-${i}`,
   provider: model.startsWith("gpt-") ? "openai" : "anthropic",
   officialNano: (BigInt(amountNano) * 2n).toString(),
-  attribution: null,
-  fundingAllocations: [],
   balanceAfterNano: null,
   timestamp: String(nowS - daysAgo * DAY_S - i * 137),
 }));
@@ -201,8 +173,6 @@ ledger.push({
   requestId: null,
   provider: null,
   officialNano: null,
-  attribution: null,
-  fundingAllocations: [],
   balanceAfterNano: null,
   timestamp: String(nowS - 3 * DAY_S),
 });
@@ -404,9 +374,7 @@ export async function previewRequest<T>(path: string, init: RequestInit = {}): P
         requestId: null,
         provider: null,
         officialNano: null,
-        attribution: null,
-        fundingAllocations: [],
-        balanceAfterNano: balanceNano.toString(),
+                    balanceAfterNano: balanceNano.toString(),
         timestamp: String(Math.floor(Date.now() / 1000)),
       });
     }

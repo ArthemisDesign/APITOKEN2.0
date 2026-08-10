@@ -31,9 +31,6 @@ export interface BusinessInvite {
   expires_at?: string | null;
   delivery_status?: string | null;
   delivery_error?: string | null;
-  policy_version?: number | null;
-  policy_digest?: string | null;
-  policy_rule_count?: number | null;
 }
 
 export interface BusinessUsersPage {

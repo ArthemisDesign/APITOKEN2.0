@@ -75,10 +75,12 @@ not import Rust crates.
   neither tokens nor verification/reset URLs may be logged.
 - The public production API of the commercial layer: `https://backend.apitoken.sale`; the client
   domain: `https://apitoken.sale`.
-- B2C target pricing is a global 50% discount with provider/model overrides; progressive tiers,
-  retention and `track` are being removed under `docs/commerce/MULTI-DISCOUNT.md`. B2B
-  invite/manual policies live in commerce PostgreSQL and do not inherit B2C. Pricing changes use
-  durable versioned jobs and the final rollout switches one global release head without downtime.
+- Pricing is one number per account: `accounts.mult_bp` (B2C today 50%), plus optional
+  per-provider overrides in `account_provider_discounts`. B2B carries a negotiated default and,
+  where terms differ, a row per provider. Commerce records the intent and delivers it through
+  durable `engine_pricing_jobs`; the engine remains the authority that prices a request. The
+  retired catalog/switch/policy/release/shadow machinery must not come back — contract and the
+  incident that removed it: `docs/commerce/PRICING_MODEL.md`.
 
 Local map and launch — `docs/commerce/COMMERCIAL_BACKEND.md`. Verification: `pnpm build && pnpm typecheck && pnpm test`.
 

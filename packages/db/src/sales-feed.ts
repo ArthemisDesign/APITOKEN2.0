@@ -2,7 +2,6 @@ import { and, asc, eq, gt, lt, sql } from "drizzle-orm";
 import type { Database } from "./client.js";
 import {
   payments,
-  pricingUsageAttributions,
   pricingUsageEvents,
   referralAttributions,
 } from "./schema.js";
@@ -23,6 +22,12 @@ export interface ReferralAttributionFeedRow {
 export interface UsageEventFeedRow {
   id: bigint;
   userId: string;
+  /**
+   * The commission basis: the part of the charge the customer paid with their own money, under
+   * free-first accounting. Free credit never becomes commission. The retired per-request policy
+   * attribution carried a second, parallel basis; there is only this one now, and the fields it
+   * populated stay in the payload as nulls so the sales contract does not shrink.
+   */
   amountNano: bigint;
   providerId: string | null;
   accountClass: "b2c" | null;
@@ -30,13 +35,6 @@ export interface UsageEventFeedRow {
   paidFundedNano: bigint | null;
   commissionEligible: true | null;
   snapshotDigest: string | null;
-  // Release-v2 expand-only fields; set only for schema-v2 emission, absent on legacy rows.
-  officialNano?: bigint;
-  chargedNano?: bigint;
-  bonusFundedNano?: bigint;
-  otherFundedNano?: bigint;
-  releaseGeneration?: bigint;
-  releaseDigest?: string;
   occurredAt: Date;
 }
 
@@ -100,137 +98,39 @@ export async function listUsageEventsAfter(
 ): Promise<SalesFeedPage<UsageEventFeedRow>> {
   const lagCutoff = new Date(Date.now() - FEED_VISIBILITY_LAG_MS);
   // Limit applies to the source stream before filtering. Every source row therefore advances the
-  // watermark, including unreferred, static-price, service, and zero-paid rows; otherwise an
-  // ineligible tail would be rescanned forever.
+  // watermark, including unreferred and zero-paid rows; otherwise an ineligible tail would be
+  // rescanned forever.
   const rows = await database.db
     .select({
       id: pricingUsageEvents.feedSeq,
       userId: pricingUsageEvents.userId,
-      legacyRealFundedNano: pricingUsageEvents.realFundedNano,
+      realFundedNano: pricingUsageEvents.realFundedNano,
+      providerId: pricingUsageEvents.providerId,
       occurredAt: pricingUsageEvents.occurredAt,
       attributedUserId: referralAttributions.userId,
-      attributionEventId: pricingUsageAttributions.pricingUsageEventId,
-      attributionSchemaVersion: pricingUsageAttributions.attributionSchemaVersion,
-      snapshotKind: pricingUsageAttributions.snapshotKind,
-      providerId: pricingUsageAttributions.providerId,
-      accountClass: pricingUsageAttributions.accountClass,
-      pricingMode: pricingUsageAttributions.pricingMode,
-      paidFundedNano: pricingUsageAttributions.paidFundedNano,
-      bonusFundedNano: pricingUsageAttributions.bonusFundedNano,
-      otherFundedNano: pricingUsageAttributions.otherFundedNano,
-      commissionEligible: pricingUsageAttributions.commissionEligible,
-      snapshotDigest: pricingUsageAttributions.snapshotDigest,
-      officialNano: pricingUsageAttributions.officialNano,
-      chargedNano: pricingUsageAttributions.chargedNano,
-      releaseGeneration: pricingUsageAttributions.releaseGeneration,
-      releaseDigest: pricingUsageAttributions.releaseDigest,
     })
     .from(pricingUsageEvents)
-    // The sales database cannot distinguish a temporarily late attribution from a customer who
-    // was never referred. Filter at the commerce authority, where that distinction is durable, so
-    // ordinary customer spend cannot accumulate forever in pending_referral_events.
+    // The sales database cannot distinguish a temporarily late row from a customer who was never
+    // referred. Filter at the commerce authority, where that distinction is durable, so ordinary
+    // customer spend cannot accumulate forever in pending_referral_events.
     .leftJoin(referralAttributions, eq(referralAttributions.userId, pricingUsageEvents.userId))
-    .leftJoin(
-      pricingUsageAttributions,
-      eq(pricingUsageAttributions.pricingUsageEventId, pricingUsageEvents.id),
-    )
     .where(and(gt(pricingUsageEvents.feedSeq, afterId), lt(pricingUsageEvents.createdAt, lagCutoff)))
     .orderBy(asc(pricingUsageEvents.feedSeq))
     .limit(limit);
   return {
     items: rows.flatMap((row): UsageEventFeedRow[] => {
-      if (row.attributedUserId === null) return [];
-
-      // Compatibility window for ledger rows ingested before immutable attribution was delivered.
-      // Their only available commission basis is the old free-first projection.
-      if (row.attributionEventId === null) {
-        if (row.legacyRealFundedNano <= 0n) return [];
-        return [{
-          id: row.id,
-          userId: row.userId,
-          amountNano: row.legacyRealFundedNano,
-          providerId: null,
-          accountClass: null,
-          pricingMode: null,
-          paidFundedNano: null,
-          commissionEligible: null,
-          snapshotDigest: null,
-          occurredAt: row.occurredAt,
-        }];
-      }
-
-      // Release-v2 emission: commission eligibility is deliberately independent of any pricing
-      // mode. Only a referred B2C row with computed commission authority, positive exact paid
-      // funding and complete release lineage crosses the sales boundary. B2B/OpenKeys/service
-      // rows and bonus-only (zero-paid) B2C rows are durable source rows but never commission
-      // events. pricingMode is NULL by contract — never a synthesized literal.
-      if (row.snapshotKind === "release_v2") {
-        if (
-          row.attributionSchemaVersion !== 2n
-          || row.providerId === null
-          || row.providerId.length === 0
-          || row.accountClass !== "b2c"
-          || row.paidFundedNano === null
-          || row.paidFundedNano <= 0n
-          || row.commissionEligible !== true
-          || row.snapshotDigest === null
-          || row.snapshotDigest.length === 0
-          || row.officialNano === null
-          || row.chargedNano === null
-          || row.bonusFundedNano === null
-          || row.otherFundedNano === null
-          || row.releaseGeneration === null
-          || row.releaseDigest === null
-          || row.releaseDigest.length === 0
-        ) return [];
-        return [{
-          id: row.id,
-          userId: row.userId,
-          amountNano: row.paidFundedNano,
-          providerId: row.providerId,
-          accountClass: "b2c",
-          pricingMode: null,
-          paidFundedNano: row.paidFundedNano,
-          commissionEligible: true,
-          snapshotDigest: row.snapshotDigest,
-          officialNano: row.officialNano,
-          chargedNano: row.chargedNano,
-          bonusFundedNano: row.bonusFundedNano,
-          otherFundedNano: row.otherFundedNano,
-          releaseGeneration: row.releaseGeneration,
-          releaseDigest: row.releaseDigest,
-          occurredAt: row.occurredAt,
-        }];
-      }
-
-      // New commission authority is deliberately narrower than "has paid funding". Only an exact
-      // supported policy snapshot in the B2C track can cross the sales boundary. Static discounts,
-      // B2B/service traffic, non-commissionable rules, unknown schema versions, and zero-paid rows
-      // are durable source rows but never commission events.
-      if (
-        row.attributionSchemaVersion !== 1n
-        || row.snapshotKind !== "policy_v1"
-        || row.providerId === null
-        || row.providerId.length === 0
-        || row.accountClass !== "b2c"
-        || row.pricingMode !== "track"
-        || row.paidFundedNano === null
-        || row.paidFundedNano <= 0n
-        || row.commissionEligible !== true
-        || row.snapshotDigest === null
-        || row.snapshotDigest.length === 0
-      ) return [];
-
+      // Only referred spend funded by the customer's own money crosses the sales boundary.
+      if (row.attributedUserId === null || row.realFundedNano <= 0n) return [];
       return [{
         id: row.id,
         userId: row.userId,
-        amountNano: row.paidFundedNano,
+        amountNano: row.realFundedNano,
         providerId: row.providerId,
-        accountClass: "b2c",
-        pricingMode: "track",
-        paidFundedNano: row.paidFundedNano,
-        commissionEligible: true,
-        snapshotDigest: row.snapshotDigest,
+        accountClass: null,
+        pricingMode: null,
+        paidFundedNano: null,
+        commissionEligible: null,
+        snapshotDigest: null,
         occurredAt: row.occurredAt,
       }];
     }),

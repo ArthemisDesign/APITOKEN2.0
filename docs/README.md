@@ -32,7 +32,8 @@ document, update this index.
 - [COMMERCIAL_BACKEND.md](commerce/COMMERCIAL_BACKEND.md) — map and local launch of the commercial backend.
 - [AUTHENTICATION.md](commerce/AUTHENTICATION.md) — authentication and authorization.
 - [PRICING.md](commerce/PRICING.md) — B2C 50%/overrides, B2B, OpenKeys, service, bonus, and referral.
-- [MULTI-DISCOUNT.md](commerce/MULTI-DISCOUNT.md) — final discount contract and zero-downtime full-inventory cutover.
+- [PRICING_MODEL.md](commerce/PRICING_MODEL.md) — LIVE pricing contract: one balance, one discount, per-provider overrides.
+- [MULTI-DISCOUNT.md](commerce/MULTI-DISCOUNT.md) — retired 2026-08-09; history of the catalog/switch/release design and why it was withdrawn.
 - [MULTI_DISCOUNT_STAGE5.md](commerce/MULTI_DISCOUNT_STAGE5.md) — Stage 5 v2: authoritative inventory and dormant target/recovery materialization (superseded: the commerce firing pins and the materializer cluster are removed; kept as the protocol record).
 - [MULTI_DISCOUNT_STAGE6.md](commerce/MULTI_DISCOUNT_STAGE6.md) — Stage 6: funding reconciliation (superseded: commerce routes/worker lane removed).
 - [MULTI_DISCOUNT_STAGE7.md](commerce/MULTI_DISCOUNT_STAGE7.md) — Stage 7: OpenKeys 1:1 cutover (superseded: the shadow-rollout lane is removed).
